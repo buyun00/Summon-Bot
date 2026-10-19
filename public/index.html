@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f5f5">
+  <meta name="color-scheme" content="light">
+  <title>Relay Bot · 工作台</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='29' fill='%23F93498'/%3E%3Cpath d='M24 25v11m15-11v11' stroke='white' stroke-width='7' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/style.css">
+  <script defer src="/avatars.js"></script>
+  <script defer src="/motion.js"></script>
+  <script defer src="/app.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside id="contact-sidebar" class="contact-sidebar" aria-label="会话与 Bot"></aside>
+    <div class="workspace">
+      <div id="connection-banner" class="connection-banner" hidden role="status"></div>
+      <main id="main-content" class="main-content"><div class="initial-loading"><span class="loading-ring"></span><p>正在打开你的工作空间</p></div></main>
+    </div>
+  </div>
+  <dialog id="modal" class="modal"><div id="modal-content"></div></dialog>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+</body>
+</html>
