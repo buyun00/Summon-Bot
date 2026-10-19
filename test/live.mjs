@@ -45,19 +45,20 @@ try {
   check('知识关联与修订', { nodes: [nodeA.id, nodeB.id], historyEntries: revised.history.length });
 
   const before = (await api('/state')).rooms.length;
-  await api(`/rooms/${dm.id}/messages`, { content: '请现在使用 dm 动作联系 bot-components，询问它对 SQLite 知识来源记录的建议，收回其建议后简短回复。不要创建工作或深聊。', toBotId: 'bot-engineer' });
+  const consultation = await api(`/rooms/${dm.id}/messages`, { content: '请现在使用 dm 动作联系 bot-components，询问它对 SQLite 知识来源记录的建议，收回其建议后简短回复。不要创建工作或深聊。', toBotId: 'bot-engineer' });
   const colleagueRoom = await until('Bot DM', async () => {
     const now = await api('/state');
     return now.rooms.find(r => r.kind === 'dm' && r.members.includes('bot-engineer') && r.members.includes('bot-components') && r.id !== dm.id);
   });
-  const peerReply = await until('Colleague reply', async () => (await api(`/rooms/${colleagueRoom.id}/messages`)).messages.find(m => m.senderId === 'bot-components' && m.kind !== 'error'));
+  const peerRequest = await until('Exact colleague request', async () => (await api(`/rooms/${colleagueRoom.id}/messages`)).messages.find(m => m.senderId === 'bot-engineer' && m.returnTo?.messageId === consultation.id));
+  const peerReply = await until('Colleague reply', async () => (await api(`/rooms/${colleagueRoom.id}/messages`)).messages.find(m => m.senderId === 'bot-components' && m.replyTo === peerRequest.id && m.kind === 'message'));
   const returnedReply = await until('Colleague answer returned to the user', async () => (await api(`/rooms/${dm.id}/messages`)).messages.find(m => m.peerReplyId === peerReply.id && m.senderId === 'bot-engineer'));
   check('真实 Bot 间主动私聊并回传用户', { roomId: colleagueRoom.id, reply: peerReply.content, returnedReply: returnedReply.content, returnedMessageId: returnedReply.id, roomCountBefore: before });
 
   const deep = await api('/rooms', { name: '真实验证 · 知识方案', kind: 'deep', members: ['bot-engineer', 'bot-components'], goal: '用很短的讨论比较 SQLite 中知识来源与版本的最小记录方案。最多两轮，不需要外部工作。结论必须说明这是方案建议、未验证长期稳定性。', originRoomId: dm.id, rounds: 1 });
   const startedFast = Date.now();
-  await api(`/rooms/${dm.id}/messages`, { content: '深聊正在进行；请立即用一句话回复：快聊仍可独立处理。不要调用动作。', toBotId: 'bot-engineer' });
-  const concurrent = await until('Concurrent fast reply', async () => (await api(`/rooms/${dm.id}/messages`)).messages.find(m => m.senderId === 'bot-engineer' && new Date(m.createdAt).getTime() >= startedFast && m.kind !== 'error'));
+  const fastMessage = await api(`/rooms/${dm.id}/messages`, { content: '深聊正在进行；请立即用一句话回复：快聊仍可独立处理。不要调用动作。', toBotId: 'bot-engineer' });
+  const concurrent = await until('Concurrent fast reply', async () => (await api(`/rooms/${dm.id}/messages`)).messages.find(m => m.senderId === 'bot-engineer' && m.replyTo === fastMessage.id && m.kind === 'message'));
   check('深聊期间真实快聊', { elapsedMs: Date.now() - startedFast, reply: concurrent.content, deepRoomId: deep.id });
   const ended = await until('Deep conclusion', async () => (await api('/state')).rooms.find(r => r.id === deep.id && r.status === 'concluded'), 240000);
   const conclusion = (await api('/state')).knowledge.nodes.find(n => n.id === ended.conclusionId);

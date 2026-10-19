@@ -56,7 +56,7 @@ Bot 发起私聊咨询时，每条请求消息保存 `returnTo`（原房间、�
 用户授权采用 pi-agent-core，让所有现有及新建 Bot 都能直接使用文件和命令工具，同时保留群聊、深聊、记忆、知识、职责和 Codex 委托。现已按以下设计实施，验收状态只写 DEVELOPMENT.md。
 
 - Relay 继续持有身份、消息、长期记忆和业务状态；pi-agent-core 负责“模型调用 → 工具执行 → 真实结果 → 下一轮模型”的循环。DeepSeek Flash 继续作为模型，摘要等无工具调用保留原接口。
-- 每次 Bot 响应建立独立 agent run，以 botId、roomId、jobId 关联；工具输入、结果和执行状态保存在现有 SQLite，完整执行上下文不灌入其他房间。用户在同一 Bot 的其他房间仍能交流。
+- 每次 Bot 响应建立独立 agent run，以 botId、roomId、jobId 关联；2026-10-19 后续修订引入下节的持久 Session，run 不再意味着重新组装一段独立对话。
 - 基础工具为列目录、读文件、文本搜索、写文件、精确编辑和命令执行。Windows 使用 PowerShell；相对路径默认解析到该 Bot 的个人工作目录。另提供明确的共享项目根目录，文件工具校验规范化真实路径，拒绝越界和链接绕过。个人目录按需创建。
 - 命令执行是本机用户权限的可信执行能力，cwd 不是操作系统沙箱；本轮不引入容器或复杂审批平台。命令有超时、输出上限、取消与进程树清理；凭据不主动注入子进程或写入执行日志。
 - 原 dm/deep/memory/knowledge/relation/routine/work 通过 Relay 工具调用原业务逻辑；专业工作仍进入 Codex 队列，不在 agent 中另造一套委托记录。
@@ -71,6 +71,19 @@ Bot 发起私聊咨询时，每条请求消息保存 `returnTo`（原房间、�
 `agentRuns` 与 `toolRuns` 为 SQLite 新集合，无需迁移已有记录。工具记录和协作幂等键包含 run、轮次、call ID；跨轮复用 call ID 不会覆盖记录。重试上下文保留全部历史调用摘要，对截断参数显式标记。`src/execution-lock.mjs` 为进程内 FIFO 互斥锁，串行化 Bot 写/编辑/命令和整个 Codex 工作；它不协调用户手动命令、其他 Relay 进程或外部编辑器。
 
 参考：[pi-agent-core](https://github.com/earendil-works/pi/tree/main/packages/agent)、[DeepSeek Tool Calls](https://api-docs.deepseek.com/guides/tool_calls/)。pi 提供运行循环，文件工具、执行协调与持久化由 Relay 实现；不把集成完成等同于真实执行通过。
+
+### 2026-10-19：持久 Session 修订（先文档，后实施）
+
+用户要求同一 Bot 在同一房间连续对话、重启恢复工具上下文，并以真实 API 用量验证缓存。以 `botId + roomId` 为唯一会话键；同一个 Bot 的不同房间、同房间的不同 Bot 分别持有 Session。run 继续记录一次响应的预算、状态、取消和工具结果，关联 sessionId。
+
+- SQLite 新增 `agentSessions`，保存 pi 原生 system/user/assistant/toolResult transcript、已消费房间消息、动态上下文版本及最近 run。每次用 `initialState.messages` 恢复，末尾追加未消费的房间消息和必要的当前任务指令；不再每次把最近24条消息重新包装成整个对话。当前 Bot 自己已经存在于 transcript 中的答复不重复注入。
+- 固定 system/tool schema 保持稳定；记忆、检索知识、同事及工作状态变更以尾部增量上下文提供，不能改写已保存的历史前缀。配置变更须明确记录，正确性优先于缓存复用。已存在的旧 run 原生消息在首次创建 Session 时按房间/Bot归属恢复，不能把其他房间内容混入。
+- 每个完整消息事件持久保存 Session 与本次 run；工具调用先保存，再执行。取消、异常或重启留下的未配对调用，优先从同 run、同轮次、同调用ID的已保存工具记录恢复真实结果；没有可确认结果时补充明确“结果未确认”的错误观察，不重新执行工具、不伪造成功。中断不自动重发原任务；显式重试或新用户消息才继续。保存的工具结果与调用ID必须成对且可被模型继续读取。
+- 同 Session 串行，跨房间保留并发；停止时等待运行任务落盘。重启后已完成会话可以续聊，无需保留常驻 JavaScript Agent 对象。
+- 本轮优先完整保留 transcript，不按消息条数滚动丢弃。达到 `agentSessionMaxBytes` 容量时清楚报错并保留原文，默认384000字节（UTF-8 JSON大小，非精确token计数），不静默截断或把摘要冒充完整历史；自动压缩留作单独明确的后续能力。
+- 缓存由 DeepSeek 服务端按消息前缀匹配，不能靠 sessionId 保证命中。每次模型请求保存命中/未命中 token 数并区分 run 首次请求与内部工具循环，验收要实际观察连续 run 和重启后首请求的命中情况，不能用单次 run 累计值代替。
+
+实施与验收顺序：先更新本文和 DEVELOPMENT.md；实现持久化、增量上下文与异常恢复；自动验证隔离/顺序/工具成对/取消/迁移/重启；隔离真实模型完成连续文件任务、重启续聊和缓存观察；只提交此范围并推送，手机/PWA/隧道修改保持原样。
 
 ### Codex 专业工作
 

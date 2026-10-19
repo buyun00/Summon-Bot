@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { mkdirSync } from 'node:fs';
 
-const KINDS = new Set(['bots', 'rooms', 'messages', 'jobs', 'memories', 'nodes', 'edges', 'routines', 'works', 'workEvents', 'agentRuns', 'toolRuns']);
+const KINDS = new Set(['bots', 'rooms', 'messages', 'jobs', 'memories', 'nodes', 'edges', 'routines', 'works', 'workEvents', 'agentRuns', 'toolRuns', 'agentSessions']);
 
 /** One database owns all durable state. JSON keeps the first version's records editable. */
 export class Store {

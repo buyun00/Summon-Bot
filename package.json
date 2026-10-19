@@ -13,7 +13,8 @@
     "test:live": "node test/live.mjs",
     "test:codex": "node test/codex.live.mjs",
     "test:agency": "node test/agency.live.mjs",
-    "test:pi": "node test/pi.live.mjs"
+    "test:pi": "node test/pi.live.mjs",
+    "test:session": "node test/session.live.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "1.3.0",

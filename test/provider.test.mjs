@@ -82,6 +82,8 @@ test('pi executes a tool-only response and returns its exact call ID and reasoni
   assert.equal(provider.status.calls, 2);
   assert.equal(provider.status.promptTokens, 20);
   assert.equal(provider.status.completionTokens, 8);
+  assert.equal(provider.status.cacheHitTokens, 12);
+  assert.equal(provider.status.cacheMissTokens, 8);
   assert.equal(provider.controllers.size, 0);
 });
 
@@ -101,6 +103,29 @@ test('system deltas replace named sections and remove tools in the outgoing requ
   assert.deepEqual(requests[0].tools.map(tool => tool.function.name), ['new_tool']);
   assert.ok(requests[0].messages[0].content.includes('replacement'));
   assert.ok(!requests[0].messages[0].content.includes('old instruction'));
+});
+
+test('a recreated Agent preserves the exact wire prefix including assistant tool calls and results', async t => {
+  const { provider, requests } = await fixture(t, (_body, round) => round === 1
+    ? ok({ content: null, tool_calls: [toolCall()] }, 'tool_calls')
+    : ok({ content: round === 2 ? 'ready without quoting the tool secret' : 'continued' }));
+  let executions = 0;
+  const tools = [{ name: 'read_file', label: 'Read', description: 'Read a report', parameters: Type.Object({ path: Type.String() }),
+    execute: async () => { executions++; return { content: [{ type: 'text', text: 'TOOL_ONLY_SECRET' }] }; } }];
+  const initialState = { model, systemPrompt: 'Keep the conversation.', thinkingLevel: 'off', tools };
+  const first = new Agent({ initialState, streamFn: provider.stream.bind(provider) });
+  await first.prompt(user);
+  const persisted = JSON.parse(JSON.stringify(first.state.messages));
+  const second = new Agent({ initialState: { ...initialState, messages: persisted }, streamFn: provider.stream.bind(provider) });
+  await second.prompt('Continue using the tool observation.');
+  assert.equal(executions, 1, 'restoring tool history must not execute its calls again');
+  assert.deepEqual(requests[2].messages.slice(0, requests[1].messages.length), requests[1].messages);
+  assert.deepEqual(requests[2].tools, requests[0].tools);
+  assert.equal(requests[2].messages.at(-2).content, 'ready without quoting the tool secret');
+  assert.equal(requests[2].messages.at(-1).content, 'Continue using the tool observation.');
+  assert.equal(requests[2].messages.filter(message => message.role === 'tool')[0].content, 'TOOL_ONLY_SECRET');
+  assert.equal(provider.status.cacheHitTokens, 18);
+  assert.equal(provider.status.cacheMissTokens, 12);
 });
 
 test('empty, truncated, malformed and HTTP failure responses terminate with errors and are never retried', async t => {

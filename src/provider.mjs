@@ -83,7 +83,7 @@ export class DeepSeekProvider {
   constructor(config) {
     this.config = config;
     this.status = { model: 'deepseek-flash', configured: Boolean(config.apiKey), credentialSource: config.credentialSource,
-      connected: false, calls: 0, failures: 0, promptTokens: 0, completionTokens: 0, lastError: null, lastSuccessAt: null };
+      connected: false, calls: 0, failures: 0, promptTokens: 0, completionTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0, lastError: null, lastSuccessAt: null };
     this.controllers = new Set();
   }
 
@@ -111,6 +111,9 @@ export class DeepSeekProvider {
       // A rejected/truncated answer can still be billed; retain its reported usage.
       this.status.promptTokens += tokenCount(usage.prompt_tokens);
       this.status.completionTokens += tokenCount(usage.completion_tokens);
+      const cacheHit = Math.min(tokenCount(usage.prompt_tokens), tokenCount(usage.prompt_cache_hit_tokens ?? usage.prompt_tokens_details?.cached_tokens));
+      this.status.cacheHitTokens += cacheHit;
+      this.status.cacheMissTokens += tokenCount(usage.prompt_tokens) - cacheHit;
       const value = validate(result);
       this.status.calls += 1;
       Object.assign(this.status, { connected: true, lastError: null, lastSuccessAt: new Date().toISOString(), lastLatencyMs: Date.now() - started, actualModel: result.model });

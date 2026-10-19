@@ -401,12 +401,12 @@ export class SocialRuntime {
     return room;
   }
 
-  context(botId, room, messageId) {
+  context(botId, room, messageId, { fullHistory = false } = {}) {
     // Visual profile data (especially uploaded image bytes) must stay out of model prompts.
     const bot = pick(this.need('bots', botId), ['id', 'name', 'role', 'expertise', 'prompt', 'status', 'skills', 'executor', 'model']);
     const all = this.roomMessages(room.id).filter(message => message.kind !== 'error');
     const watermark = room.summaryThrough ? all.findIndex(message => message.id === room.summaryThrough) : -1;
-    const messages = all.slice(Math.max(watermark + 1, all.length - 24));
+    const messages = fullHistory ? all : all.slice(Math.max(watermark + 1, all.length - 24));
     const trigger = this.store.get('messages', messageId);
     const memories = this.store.list('memories').filter(item => item.botId === botId && item.status !== 'expired').slice(-12);
     const found = this.search(trigger?.content || room.goal || '', botId);
@@ -437,9 +437,9 @@ ${this.agentRuntime
   }
 
   async turn(job, generation) {
-    const room = await this.summarize(job.roomId, generation);
+    const room = this.agentRuntime ? this.need('rooms', job.roomId) : await this.summarize(job.roomId, generation);
     if (!this.live(generation)) return;
-    const context = this.context(job.botId, room, job.messageId);
+    const context = this.context(job.botId, room, job.messageId, { fullHistory: Boolean(this.agentRuntime) });
     const dmResult = job.type === 'dm_result' ? {
       request: this.need('messages', job.requestMessageId),
       answer: this.need('messages', job.replyMessageId),
