@@ -71,10 +71,35 @@ async function api(path, method = 'GET', body) {
   return data;
 }
 function showConnection(message = '') { const banner = $('#connection-banner'); banner.hidden = !message; banner.textContent = message; }
+function captureChatScroll(messages) {
+  if (!messages) return null;
+  const top = messages.getBoundingClientRect().top;
+  const item = [...messages.querySelectorAll('[data-message-id],[data-agent-run-id]')].find(node => node.getBoundingClientRect().bottom > top);
+  return {
+    top: messages.scrollTop,
+    anchor: item && { attribute: item.hasAttribute('data-message-id') ? 'data-message-id' : 'data-agent-run-id', id: item.dataset.messageId || item.dataset.agentRunId, offset: item.getBoundingClientRect().top - top },
+    outputs: [...messages.querySelectorAll('.agent-tool-body[id]')].map(body => ({ id: body.id, positions: [...body.querySelectorAll('pre')].map(pre => ({ top: pre.scrollTop, left: pre.scrollLeft })) })),
+  };
+}
+function restoreChatScroll(messages, saved) {
+  if (!messages || !saved) return;
+  messages.scrollTop = saved.top;
+  if (saved.anchor) {
+    const item = [...messages.querySelectorAll(`[${saved.anchor.attribute}]`)].find(node => node.getAttribute(saved.anchor.attribute) === saved.anchor.id);
+    if (item) messages.scrollTop += item.getBoundingClientRect().top - messages.getBoundingClientRect().top - saved.anchor.offset;
+  }
+  for (const output of saved.outputs) {
+    const body = document.getElementById(output.id);
+    if (body) [...body.querySelectorAll('pre')].forEach((pre, index) => {
+      const position = output.positions[index];
+      if (position) { pre.scrollTop = position.top; pre.scrollLeft = position.left; }
+    });
+  }
+}
 function preserveView() {
   const main = $('#main-content'), messages = $('.messages'), works = $('.works-list'), detail = $('.work-detail');
   const active = document.activeElement;
-  return { key: main.dataset.viewKey, fields: $$('input[id]:not([type=file]),textarea[id],select[id]', main).map(field => ({ id: field.id, value: field.value })), panelTop: $('.detail-panel')?.scrollTop, panelSection: $('.detail-panel')?.dataset.section, top: main.scrollTop, messagesTop: messages?.scrollTop, atBottom: messages ? messages.scrollHeight - messages.scrollTop - messages.clientHeight < 100 : true, workTop: works?.scrollTop, detailTop: detail?.scrollTop, focusId: active?.id, start: active?.selectionStart, end: active?.selectionEnd };
+  return { key: main.dataset.viewKey, fields: $$('input[id]:not([type=file]),textarea[id],select[id]', main).map(field => ({ id: field.id, value: field.value })), panelTop: $('.detail-panel')?.scrollTop, panelSection: $('.detail-panel')?.dataset.section, top: main.scrollTop, chatScroll: captureChatScroll(messages), workTop: works?.scrollTop, detailTop: detail?.scrollTop, focusId: active?.id, start: active?.selectionStart, end: active?.selectionEnd };
 }
 function render() {
   if (ui.composing && document.activeElement?.id === 'message-input' && document.activeElement.form?.dataset.roomId === ui.roomId) { ui.renderDeferred = true; return; }
@@ -90,13 +115,13 @@ function render() {
   main.dataset.viewKey = key;
   if (saved.key === key) for (const field of saved.fields) { const target = document.getElementById(field.id); if (target) target.value = field.value; }
   $('#main-content').scrollTop = saved.top;
-  const messages = $('.messages'); if (messages) messages.scrollTop = saved.atBottom ? messages.scrollHeight : saved.messagesTop || 0;
   const works = $('.works-list'); if (works) works.scrollTop = saved.workTop || 0;
   const detail = $('.work-detail'); if (detail) detail.scrollTop = saved.detailTop || 0;
   resizeComposer($('#message-input'));
   hydrateMotion(main, motion);
   const panel = $('.detail-panel:not([data-motion-ghost])'); if (panel && panel.dataset.section === saved.panelSection) panel.scrollTop = saved.panelTop || 0;
   restoreFocus(saved);
+  if (saved.key === key) restoreChatScroll($('.messages'), saved.chatScroll);
 }
 function restoreFocus(saved) { if (!saved.focusId) return; const target = document.getElementById(saved.focusId); if (target) { target.focus({ preventScroll: true }); if (saved.start != null && target.setSelectionRange && !['number','email','file'].includes(target.type)) target.setSelectionRange(saved.start, saved.end); } }
 function resizeComposer(input) { if (!input) return; input.style.height = 'auto'; const height = input.scrollHeight; input.style.height = `${Math.min(150, height)}px`; input.style.overflowY = height > 150 ? 'auto' : 'hidden'; }
