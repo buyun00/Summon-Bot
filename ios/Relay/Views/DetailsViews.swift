@@ -27,7 +27,12 @@ struct BotDetailsView: View {
                     Spacer()
                     BotAvatar(shape: avatar.shape, color: avatar.color, image: avatar.image, size: 112)
                     Spacer()
-                }.listRowBackground(Color.clear).padding(.vertical, 14)
+                }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .padding(.vertical, 14)
+            }
+            Section {
                 DisclosureGroup("编辑头像") {
                     AvatarPicker(avatar: $avatar).padding(.vertical, 18)
                     PhotosPicker(selection: $photo, matching: .images) { Label("使用自己的图片", systemImage: "photo") }

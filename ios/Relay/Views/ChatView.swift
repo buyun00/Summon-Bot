@@ -329,8 +329,10 @@ private struct MessageRow: View {
                     Text(RelayFormat.time(message.createdAt)).font(.caption2).foregroundStyle(.tertiary)
                 }.foregroundStyle(.secondary)
                 if let replyID = message.replyTo,
-                   let quoted = store.messagesForRoom(roomID).first(where: { $0.id == replyID }) {
-                    Text("回复：\(quoted.content)").font(.caption).lineLimit(3)
+                   let quoted = store.messagesForRoom(roomID).first(where: { $0.id == replyID }),
+                   quoted.senderId != message.senderId,
+                   store.bot(id: quoted.senderId) != nil {
+                    Text("\(store.name(for: quoted.senderId))：\(quoted.content)").font(.caption).lineLimit(3)
                         .foregroundStyle(.secondary).padding(10)
                         .background(RelayTheme.surface, in: RoundedRectangle(cornerRadius: 12))
                 }
