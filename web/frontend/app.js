@@ -4,7 +4,7 @@ const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
 // Display preferences are local to this browser and independent for each layout.
-const UI_BUILD = '2026.10.21.2';
+const UI_BUILD = '2026.10.21.3';
 let displayDiagnosticSnapshot = null;
 function isIosStandalone() {
   const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -1192,23 +1192,27 @@ function syncMobileViewport() {
   const standalone = matchMedia('(max-width:820px)').matches && isIosStandalone();
   root.classList.toggle('ios-standalone', standalone);
   if (!standalone) root.style.removeProperty('--standalone-vh');
-  if (!matchMedia('(max-width:820px)').matches || (viewport && Math.abs(viewport.scale - 1) > .02)) {
-    root.style.removeProperty('--mobile-vh'); root.style.removeProperty('--mobile-vtop'); root.classList.remove('keyboard-open'); return;
+  if (!matchMedia('(max-width:820px)').matches) {
+    root.style.removeProperty('--mobile-vh'); root.style.removeProperty('--mobile-vtop'); root.style.removeProperty('--mobile-page-top'); root.classList.remove('keyboard-open'); return;
   }
   const messages = $('.messages'), atBottom = messages && messages.scrollHeight - messages.scrollTop - messages.clientHeight < 100;
   const zoom = Number(getComputedStyle(root).zoom) || 1;
   const editing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '');
-  const layoutHeight = Math.max(innerHeight, root.clientHeight);
-  const keyboardOpen = editing && !!viewport && layoutHeight - viewport.height > 100;
+  const units = readViewportUnits();
+  // Root height is affected by our own layout. Use viewport units instead so
+  // keyboard detection cannot toggle itself while the shell is being resized.
+  const layoutHeight = Math.max(innerHeight, parseFloat(units.vh) || 0);
+  // Scale removes pinch-zoom's reduction from keyboard detection; an input's
+  // automatic zoom must not disable fitting a genuinely open keyboard.
+  const keyboardOpen = editing && !!viewport && layoutHeight - viewport.height * viewport.scale > 100;
   if (standalone) {
-    const units = readViewportUnits();
     const largeHeight = parseFloat(units.vh), dynamicHeight = parseFloat(units.dvh), safeTop = parseFloat(units.safeTop);
     // Some installed iOS WebViews subtract the top inset from dvh while
     // still exposing that same inset to the page. Correct only that signature.
     // A system-reserved status bar reports safeTop=0 and must not be stretched.
     const shortened = Number.isFinite(largeHeight) && Number.isFinite(dynamicHeight) && Number.isFinite(safeTop)
       && dynamicHeight > 0 && safeTop > 0 && largeHeight > dynamicHeight && Math.abs(largeHeight - dynamicHeight - safeTop) <= 2;
-    if (shortened && !keyboardOpen) root.style.setProperty('--standalone-vh', `${100 / zoom}vh`);
+    if (shortened) root.style.setProperty('--standalone-vh', `${100 / zoom}vh`);
     else root.style.removeProperty('--standalone-vh');
   }
   // A dismissed iOS keyboard can leave a stale visual viewport. Let CSS own
@@ -1216,8 +1220,12 @@ function syncMobileViewport() {
   if (keyboardOpen) {
     root.style.setProperty('--mobile-vh', `${viewport.height / zoom}px`);
     root.style.setProperty('--mobile-vtop', `${Math.max(0, viewport.offsetTop) / zoom}px`);
+    const pageTop = Number.isFinite(viewport.pageTop) ? viewport.pageTop : window.scrollY + viewport.offsetTop;
+    root.style.setProperty('--mobile-page-top', `${Math.max(0, pageTop) / zoom}px`);
   } else {
-    root.style.removeProperty('--mobile-vh'); root.style.removeProperty('--mobile-vtop');
+    root.style.removeProperty('--mobile-vh'); root.style.removeProperty('--mobile-vtop'); root.style.removeProperty('--mobile-page-top');
+    // Only the inner panels scroll. Undo WebKit's document pan after dismissal.
+    if ((!viewport || Math.abs(viewport.scale - 1) < .02) && window.scrollY) window.scrollTo(window.scrollX, 0);
   }
   root.classList.toggle('keyboard-open', keyboardOpen);
   if (atBottom) requestAnimationFrame(() => { if (messages.isConnected) messages.scrollTop = messages.scrollHeight; });
@@ -1227,6 +1235,7 @@ function queueViewportSync() { cancelAnimationFrame(viewportFrame); viewportFram
 window.visualViewport?.addEventListener('resize', queueViewportSync);
 window.visualViewport?.addEventListener('scroll', queueViewportSync);
 window.addEventListener('resize', queueViewportSync);
+window.addEventListener('scroll', queueViewportSync, { passive: true });
 window.addEventListener('pageshow', queueViewportSync);
 window.addEventListener('orientationchange', queueViewportSync);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) queueViewportSync(); });
