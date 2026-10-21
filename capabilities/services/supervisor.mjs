@@ -110,7 +110,7 @@ export class CapabilityServiceSupervisor {
         if (health.state !== 'ready') throw failure(`Existing capability is ${health.state}`, 'SERVICE_NOT_READY', 409);
         return { ...descriptor, manifest, reused: true };
       }
-      const savedOptions = previous ? { ...previous.options, ...Object.fromEntries(['gatewayUrl', 'gatewayToken'].filter(field => options[field] !== undefined).map(field => [field, options[field]])) } : options;
+      const savedOptions = previous ? { ...previous.options, ...Object.fromEntries(['gatewayUrl', 'gatewayToken', 'deferStart'].filter(field => options[field] !== undefined).map(field => [field, options[field]])) } : options;
       const config = { id, version, stateVersion, module: modulePath, moduleDigest, options: savedOptions, dataRoot: this.dataRoot, releaseRoot: previous?.releaseRoot || options.releaseRoot || this.releaseRoot,
         serviceRoot: paths.root, token: previous?.token || randomBytes(32).toString('hex') };
       await writePrivateJson(paths.config, config);

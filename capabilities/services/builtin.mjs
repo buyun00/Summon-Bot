@@ -62,11 +62,12 @@ export async function createCapability(options) {
     });
     // Only the first service bootstrap adopts records from the pre-service layout.
     store(id).transaction(()=>{for(const work of codex.list())if(!work.serviceVersion)store(id).save('works',{id:work.id,serviceVersion:version});});
-    await codex.start();
+    if(!options.deferStart)await codex.start();
   }
   if (chatroom) {
     store(id).transaction(()=>{for(const job of chatroom.jobs())if(!job.serviceVersion)store(id).save('deliveries',{id:job.id,serviceVersion:version});});
-    const tick=chatroom.tick.bind(chatroom);chatroom.tick=()=>locked(tick);chatroom.start();
+    const tick=chatroom.tick.bind(chatroom);chatroom.tick=()=>locked(tick);
+    if(options.deferStart)chatroom.closed=true;else chatroom.start();
   }
   const assertOwner=(actor,botId)=>{if(actor!=='controller'&&actor!==botId&&!['manager','memory'].includes(manager.get(actor).roleId))fail('This Bot cannot access another Bot private data',403);};
   const tools=toolDefinitions.filter(tool=>capabilityForTool(tool.name)===id);

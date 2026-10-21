@@ -199,7 +199,8 @@ export async function startGateway(options={}) {
         const identity=await supervisor.descriptor(entry.capabilityId,entry.version);
         if(identity&&identity.state!=='stopped')continue;
         store('registry').save('service-restarts',{id:key,attempts,lastAttemptAt:now(),nextAttemptAt:new Date(Date.now()+Math.min(60000,1000*2**Math.min(attempts,6))).toISOString()});
-        const instance=await registerWorker({id:entry.capabilityId,version:entry.version,stateVersion:config.stateVersion,module:config.module,options:{...config.options,gatewayUrl:url,gatewayToken:token}});
+        const instance=await registerWorker({id:entry.capabilityId,version:entry.version,stateVersion:config.stateVersion,module:config.module,options:{...config.options,gatewayUrl:url,gatewayToken:token,deferStart:true}});
+        if(['bot-management','chatroom','codex'].includes(entry.capabilityId))await rpc(entry.capabilityId,'resumeService',[],entry.version);
         store('registry').save('service-restarts',{id:key,attempts:0,nextAttemptAt:null,error:null,restartedAt:now()});
         emit('capability-restarted',{id:entry.capabilityId,version:entry.version,pid:instance.pid});
       }catch(error){
@@ -215,7 +216,7 @@ export async function startGateway(options={}) {
     let build;
     try{build=JSON.parse(await readFile(join(releaseRoot,'release-manifest.json'),'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;}
     const version=options.capabilityVersion||build?.buildId||'1.0.0';
-    const workerOptions={dataRoot,releaseRoot,defaultCwd,model:options.model,codexPath:options.codexPath,gatewayUrl:url,gatewayToken:token,...(build?.contentHash?{contentHash:build.contentHash}:{})};
+    const workerOptions={dataRoot,releaseRoot,defaultCwd,model:options.model,codexPath:options.codexPath,gatewayUrl:url,gatewayToken:token,deferStart:true,...(build?.contentHash?{contentHash:build.contentHash}:{})};
     for(const id of BUILTIN_CAPABILITIES){
       const previouslyRegistered=registry.inventory().services.some(service=>service.id===id);
       await registerWorker({id,version,module:join(releaseRoot,'capabilities/services/builtin.mjs'),options:workerOptions});
@@ -225,7 +226,7 @@ export async function startGateway(options={}) {
     // source. Registration of this release never overwrites a Bot's old binding.
     for(const entry of requiredManagedVersions()){
       const config=await managedConfig(entry.capabilityId,entry.version);if(!config)continue;
-      await registerWorker({id:entry.capabilityId,version:entry.version,stateVersion:config.stateVersion,module:config.module,options:{...config.options,gatewayUrl:url,gatewayToken:token}});
+      await registerWorker({id:entry.capabilityId,version:entry.version,stateVersion:config.stateVersion,module:config.module,options:{...config.options,gatewayUrl:url,gatewayToken:token,deferStart:true}});
     }
     for(const id of ['bot-management','chatroom','codex'])await invokeManagedVersions(id,'resumeService');
     if(options.seed!==false){await manager.seed();await chatroom.seed();}

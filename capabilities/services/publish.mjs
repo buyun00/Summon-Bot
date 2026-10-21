@@ -64,7 +64,7 @@ export async function deployCapability(input,{dataRoot,defaultCwd,model,codexPat
     const staged=await stageCapabilityPackage({packageRoot:input.packageRoot,dataRoot,id,version});
     module=staged.module;stateVersion=staged.stateVersion;sourceRoot=staged.root;integrity={packageRoot:sourceRoot,contentHash:staged.contentHash};
   }
-  const instance=await supervisor.start({id,version,stateVersion,module,options:{...(input.options||{}),id,version,dataRoot,releaseRoot:sourceRoot,defaultCwd,model,codexPath,gatewayUrl,gatewayToken,...integrity}});
+  const instance=await supervisor.start({id,version,stateVersion,module,options:{...(input.options||{}),id,version,dataRoot,releaseRoot:sourceRoot,defaultCwd,model,codexPath,gatewayUrl,gatewayToken,deferStart:false,...integrity}});
   const current=registry.getVersion(id,version);
   if(current)await registry.relocate(id,version,{endpoint:instance.url,token:instance.token});
   else await registry.register({id,version,endpoint:instance.url,token:instance.token,stateVersion});

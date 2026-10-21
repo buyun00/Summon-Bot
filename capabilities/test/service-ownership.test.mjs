@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -137,8 +137,8 @@ async function builtinFixture(t, seed) {
   await new Promise(resolve => bridge.listen(0, '127.0.0.1', resolve));
   const capabilities = [];
   t.after(async () => { await Promise.all(capabilities.map(capability => capability.close())); store.close(); bridge.closeAllConnections(); await new Promise(resolve => bridge.close(resolve)); await rm(directory, { recursive: true, force: true }); });
-  const create = async version => {
-    const capability = await createCapability({ id: 'codex', version, dataRoot: directory, releaseRoot: resolve(import.meta.dirname, '../..'), defaultCwd: directory, gatewayUrl: `http://127.0.0.1:${bridge.address().port}`, gatewayToken: 'test-only', codexPath: [process.execPath, fake] }); capabilities.push(capability); return capability;
+  const create = async (version, options={}) => {
+    const capability = await createCapability({ id: 'codex', version, dataRoot: directory, releaseRoot: resolve(import.meta.dirname, '../..'), defaultCwd: directory, gatewayUrl: `http://127.0.0.1:${bridge.address().port}`, gatewayToken: 'test-only', codexPath: [process.execPath, fake], ...options }); capabilities.push(capability); return capability;
   };
   return { store, create };
 }
@@ -165,4 +165,39 @@ test('builtin mutation locks deduplicate simultaneous request IDs across old and
   assert.equal(store.list('workEvents').filter(event => event.workId === first.id && event.type === 'thread_started').length, 1);
   await until(() => v1.pendingWork() + v2.pendingWork() === 0);
   assert.equal(v1.pendingWork() + v2.pendingWork(), 0);
+});
+
+test('deferred Codex startup preserves queued work until the gateway explicitly resumes the service', async t => {
+  const { store, create } = await builtinFixture(t, (db, directory) => {
+    db.save('works', { id: 'boot-queue', goal: 'Run only after all capabilities register', cwd: directory, status: 'queued' });
+  });
+  const capability = await create('1', { deferStart: true });
+  await delay(100);
+  assert.equal(store.get('works','boot-queue').status,'queued');
+  assert.equal(store.get('works','boot-queue').serviceVersion,'1');
+  assert.equal(store.list('workEvents').length,0);
+  await capability.operations.resumeService();
+  await until(() => store.get('works','boot-queue').status === 'completed');
+  assert.equal(store.list('workEvents').filter(event=>event.type==='thread_started').length,1);
+});
+
+test('deferred chatroom startup does not deliver legacy queued messages before explicit resume', async t => {
+  const directory=await mkdtemp(join(tmpdir(),'relay-deferred-chat-'));
+  const store=new RecordStore(join(directory,'capabilities/chatroom/state.sqlite'));
+  const bots=new RecordStore(join(directory,'capabilities/bot-management/state.sqlite'));
+  bots.save('bots',{id:'bot-fixture',name:'Protocol fixture',status:'active',roleId:'engineer'});
+  await mkdir(join(directory,'bots/bot-fixture'),{recursive:true});
+  await writeFile(join(directory,'bots/bot-fixture/config.json'),JSON.stringify({workspace:directory}));
+  store.save('rooms',{id:'room-fixture',kind:'group',members:['user','bot-fixture'],status:'active'});
+  store.save('messages',{id:'message-fixture',roomId:'room-fixture',senderId:'user',content:'Defer this delivery',rootId:'message-fixture',attachments:[]});
+  store.save('deliveries',{id:'delivery-fixture',roomId:'room-fixture',messageId:'message-fixture',botId:'bot-fixture',status:'queued',attempts:0});
+  let sends=0,capability;
+  const bridge=createServer(async(req,res)=>{const chunks=[];for await(const chunk of req)chunks.push(chunk);const body=JSON.parse(Buffer.concat(chunks));if(body.operation==='send')sends++;res.setHeader('Content-Type','application/json');res.end(JSON.stringify(body.operation==='send'?{taskId:'fixture-task'}:{}));});
+  await new Promise(done=>bridge.listen(0,'127.0.0.1',done));
+  t.after(async()=>{if(capability){await capability.operations.pause();await capability.close();}store.close();bots.close();bridge.closeAllConnections();await new Promise(done=>bridge.close(done));await rm(directory,{recursive:true,force:true});});
+  capability=await createCapability({id:'chatroom',version:'1',dataRoot:directory,releaseRoot:resolve(import.meta.dirname,'../..'),defaultCwd:directory,gatewayUrl:`http://127.0.0.1:${bridge.address().port}`,gatewayToken:'test-only',deferStart:true});
+  await delay(800);assert.equal(sends,0);assert.equal(store.get('deliveries','delivery-fixture').status,'queued');
+  assert.equal(store.get('deliveries','delivery-fixture').serviceVersion,'1');
+  await capability.operations.resumeService();await until(()=>sends===1);
+  assert.equal(bots.get('bots','bot-fixture').roleId,'engineer');
 });

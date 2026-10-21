@@ -57,7 +57,7 @@ export async function inspectService(config, type) {
   } catch { return { ...run, state: 'unreachable' }; }
 }
 
-export async function launchService(config, type, { foreground = false, timeoutMs = 60000 } = {}) {
+export async function launchService(config, type, { foreground = false, timeoutMs = 180000 } = {}) {
   const current = await inspectService(config, type);
   if (current.state === 'ready') {
     if (resolve(current.releaseRoot) !== resolve(config.releaseRoot)) throw new Error(`${type} still runs another release; stop it before switching`);
