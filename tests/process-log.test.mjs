@@ -15,6 +15,21 @@ const model = { provider: 'openai-compatible', model: 'test', baseUrl: 'http://1
 const pause = ms => new Promise(done => setTimeout(done, ms));
 async function rootDirectory() { return mkdtemp(join(tmpdir(), 'relay-service-log-test-')); }
 async function removeRoot(root) { assert.equal(dirname(root), resolve(tmpdir())); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+async function stopFixture(config) {
+  const deadline = Date.now() + 20000;
+  while (true) {
+    try { return await stopService(config, 'gateway'); }
+    catch (error) {
+      // The production API correctly refuses an unverified owner. Cleanup may
+      // re-observe a transiently busy fixture, but never force-kills it or
+      // ignores persistent uncertainty, replacement, or shutdown failures.
+      const uncertain = error.code === 'SERVICE_IDENTITY_UNAVAILABLE'
+        || /^gateway cannot be safely stopped while (unreachable|starting|stopping)$/.test(error.message);
+      if (!uncertain || Date.now() >= deadline) throw error;
+      await pause(200);
+    }
+  }
+}
 
 test('service startup IPC reports invalid logging configuration and releases its OS lock', { timeout: 30000 }, async t => {
   const root = await rootDirectory(); t.after(() => removeRoot(root));
@@ -24,9 +39,9 @@ test('service startup IPC reports invalid logging configuration and releases its
   assert.equal(await inspectServiceLock(root, 'gateway'), null);
 });
 
-test('a failed duplicate service cannot modify the active process log', { timeout: 20000 }, async t => {
+test('a failed duplicate service cannot modify the active process log', { timeout: 40000 }, async t => {
   const root = await rootDirectory(), { config } = await initializeDeployment({ dataRoot: root, releaseRoot, port: 0 });
-  t.after(async () => { await stopService(config, 'gateway'); await removeRoot(root); });
+  t.after(async () => { await stopFixture(config); await removeRoot(root); });
   const live = await launchService(config, 'gateway'); await pause(50);
   const path = join(root, 'capabilities/gateway/logs/process.log'), before = await readFile(path);
   const child = fork(new URL('../scripts/installation/service.mjs', import.meta.url), ['--type', 'gateway', '--config', deploymentPath(root)], { windowsHide: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'], execArgv: [] });
@@ -35,9 +50,9 @@ test('a failed duplicate service cannot modify the active process log', { timeou
   assert.deepEqual(await readFile(path), before); assert.equal((await inspectService(config, 'gateway')).bootId, live.bootId);
 });
 
-test('service launch completes with no retained parent pipe or IPC dependency', { timeout: 20000 }, async t => {
+test('service launch completes with no retained parent pipe or IPC dependency', { timeout: 40000 }, async t => {
   const root = await rootDirectory(), { config } = await initializeDeployment({ dataRoot: root, releaseRoot, port: 0 });
-  t.after(async () => { await stopService(config, 'gateway'); await removeRoot(root); });
+  t.after(async () => { await stopFixture(config); await removeRoot(root); });
   const source = `import {launchService} from ${JSON.stringify(new URL('../scripts/installation/system.mjs', import.meta.url).href)};
     console.log(JSON.stringify(await launchService(${JSON.stringify(config)},'gateway')));`;
   const parent = spawn(process.execPath, ['--input-type=module', '-e', source], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });

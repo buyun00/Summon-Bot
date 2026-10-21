@@ -6,6 +6,10 @@
 
 ## 结果时间线
 
+收尾复查（2026-10-21，Asia/Shanghai）：用户手动运行清理脚本，14:46:24生成成功结果，原43项旧路径及后续9项目标全部不存在。同时发现R8前台监督在14:30:02遇到服务身份不确定后退出；PowerShell事件4100/4575850及403/9900182证明了退出链条，但没有保留底层握手失败类型。入口/聊天室两个Pi进程仍存活，恢复原StartupHub后再次完成真实工具任务。新增监督实现保留未知状态、按间隔复查且不启动副本；可恢复诊断写stdout避免PS5将stderr作为致命错误。定向7/7、完整回归187/187通过，另补运行测试临时目录回收后5/5通过；待安装包含监督修复的新发行物。
+
+本轮两次未限文件并发的完整测试分别186/187、184/187，保留于supervision-fixed-tests.log、supervision-final-tests.log；失败涉及真实CLI就绪或身份握手超时，不能计通过。测试机availableParallelism=12，测试文件还会创建多个真实子进程，现完整30文件统一并发4，全部187项通过（supervision-bounded-tests.log，36.3秒）。没有跳过用例或放宽产品握手。日志测试teardown仅对未知/暂态重新核验，重试预算20秒，保留确证失败；运行测试在全部Bot关闭后回收本次创建的目录，避免持续留下测试临时数据。此前失败遗留的服务已按真实身份正常关闭，不强杀未知进程。
+
 | 检查 | 已观察到的结果 | 限制或后续状态 |
 | --- | --- | --- |
 | 重构前工作区基线 | 229/229，baseline-tests.log | 仅为迁移前基线，不替代新架构验收 |
@@ -44,6 +48,8 @@
 | E13 | service-lock-fixed-tests.log；tests/service-lock.test.mjs、tests/migration.test.mjs | 完整180/180；服务身份绝对2秒握手期限、最多3次握手、未知身份拒绝判停、250ms回复排空及幂等关闭；全新目标根迁移及只读预览 |
 | E14 | build-r8.json、install-r8.json、verify-r8-installed.json、start-r8-manual.json、stop-r8-manual.json、stopped-r8.json、startup-r8.json、final-deployment.json | 最终R8构建/安装校验、安装包启停、原计划任务冷启动、4个活动进程日志中本次bootId及269项源码文件一致性 |
 | E15 | deployed-r8-bots.json、deployed-r8-instances.json、deployed-r8-http.json、deployed-r8-sse-local.json、deployed-r8-sse-public.json、browser-r8.json、browser-r8.png | 最终运行现场真实DeepSeek两任务、8实例初始化、本地/公网同步与SSE；浏览器正常刷新后的历史和8角色 |
+| E16 | startup-r8-exit-diagnosis.json、supervision-fixed-tests.log、deployed-after-cleanup-bots.json；tests/supervise.test.mjs | R8前台监督退出事件、未知身份保留/恢复、信号幂等、真实PS5合并输出回归及恢复后原Pi实例真实工具任务；底层握手原因未确定 |
+| E17 | supervision-final-tests.log、supervision-bounded-tests.log、runtime-fixture-cleanup-tests.log、cleanup-final-result.json | 未限并发失败保留；并发4的完整187/187和临时目录回收5/5；用户实际完成原9项目标清理，随后读回确认 |
 
 ## Bot本体和能力：B01–B10
 

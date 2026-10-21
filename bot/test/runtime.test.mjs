@@ -1,14 +1,27 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { mkdtemp, writeFile, mkdir, readFile } from 'node:fs/promises';
+import { mkdtemp, writeFile, mkdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, resolve, dirname } from 'node:path';
 import { fork } from 'node:child_process';
 import { once } from 'node:events';
 import { startBot, requestBot, sendMessage, waitForTask, inspectBotIdentity, withBotDataLease } from '../src/index.mjs';
 
 const token = 'test-management-token-at-least-24';
+const fixtureDirectories = [];
+async function fixtureDirectory(prefix) {
+  const dir = await mkdtemp(join(tmpdir(), prefix));
+  fixtureDirectories.push(dir);
+  return dir;
+}
+// File-level cleanup runs after all per-test Bot/server shutdown hooks.
+after(async () => {
+  for (const dir of fixtureDirectories) {
+    assert.equal(dirname(resolve(dir)), resolve(tmpdir()));
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
 async function modelServer(handler) {
   const requests = [];
   const server = http.createServer(async (req, res) => {
@@ -27,7 +40,7 @@ const call = (name, args, id = 'call-1') => ({ id, type: 'function', function: {
 const contact = bot => ({ botId: bot.config.botId, url: bot.url, token: bot.config.token });
 
 test('one actual Pi agent executes tools, persists transcripts/artifacts and deduplicates messages', async t => {
-  const dir = await mkdtemp(join(tmpdir(), 'relay-core-pi-'));
+  const dir = await fixtureDirectory('relay-core-pi-');
   const model = await modelServer(input => input.messages.at(-1).role === 'tool' ? { content: '完成，已记录状态。' } :
     { content: null, tool_calls: [call('state_set', { scope: 'test', key: 'count', value: 1 }), call('artifact_save', { name: '结果.txt', content: '中文证据' }, 'call-2')] });
   t.after(() => model.close());
@@ -50,7 +63,7 @@ test('one actual Pi agent executes tools, persists transcripts/artifacts and ded
 });
 
 test('external data lease excludes Bot startup and releases OS ownership even when maintenance fails', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'relay-core-lease-'));
+  const dir = await fixtureDirectory('relay-core-lease-');
   await assert.rejects(withBotDataLease(dir, async () => {
     assert.equal((await inspectBotIdentity(dir)).state, 'maintenance');
     await assert.rejects(startBot(configFor(dir, 'http://127.0.0.1:1/v1')), { code: 'INSTANCE_ALREADY_RUNNING' });
@@ -60,7 +73,7 @@ test('external data lease excludes Bot startup and releases OS ownership even wh
 });
 
 test('configured skills are loaded explicitly and both peers communicate with their own authenticated identity', async t => {
-  const dir = await mkdtemp(join(tmpdir(), 'relay-core-peer-')), skill = join(dir, 'skill'); await mkdir(skill);
+  const dir = await fixtureDirectory('relay-core-peer-'), skill = join(dir, 'skill'); await mkdir(skill);
   await writeFile(join(skill, 'SKILL.md'), '---\nname: evidence\ndescription: Record clear observations\n---\nOBSERVATION_SENTINEL 中文技能');
   const model = await modelServer(() => ({ content: 'peer response' })); t.after(() => model.close());
   const peerToken = 'peer-shared-token-at-least-24';
@@ -75,7 +88,7 @@ test('configured skills are loaded explicitly and both peers communicate with th
 });
 
 test('imported contextKey resumes the original session and current task policy blocks builtin writes', async t => {
-  const dir = await mkdtemp(join(tmpdir(), 'relay-core-history-'));
+  const dir = await fixtureDirectory('relay-core-history-');
   const model = await modelServer(input => input.messages.at(-1).role === 'tool' ? { content: '只读策略阻止了写入。' } :
     { content: null, tool_calls: [call('memory_write', { text: 'MUST_NOT_WRITE' })] }); t.after(() => model.close());
   const bot = await startBot(configFor(dir, model.url)); t.after(() => bot.close());
@@ -108,7 +121,7 @@ async function childBot(configPath) {
 }
 
 test('real subprocess crash recovers uncertain task without replay and releases OS identity', async t => {
-  const dir = await mkdtemp(join(tmpdir(), 'relay-core-crash-'));
+  const dir = await fixtureDirectory('relay-core-crash-');
   let notify; const entered = new Promise(resolve => notify = resolve);
   const model = await modelServer(async () => { notify(); await new Promise(resolve => setTimeout(resolve, 700)); return { content: 'late result' }; }); t.after(() => model.close());
   const path = join(dir, 'input.json'); await writeFile(path, JSON.stringify(configFor(join(dir, 'data'), model.url)));

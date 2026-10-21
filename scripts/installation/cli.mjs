@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import { parseArgs, readJson } from '../build/files.mjs';
 import { initializeDeployment, deploymentPath, startSystem, stopSystem, inspectService } from './system.mjs';
+import { superviseServices } from './supervise.mjs';
 
 const installedRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 export async function main(args = process.argv.slice(2)) {
@@ -26,16 +27,7 @@ export async function main(args = process.argv.slice(2)) {
     result = await startSystem(config, { foreground: Boolean(options.foreground), respectIntent: Boolean(options['respect-intent']) });
     console.log(JSON.stringify(result, null, 2));
     if (options.foreground && result.state === 'ready') {
-      await new Promise((accept, reject) => {
-        let stopping = false;
-        const timer = setInterval(async () => {
-          if (stopping) return;
-          try { const states = await Promise.all(['gateway', 'web'].map(type => inspectService(config, type))); if (states.some(state => state.state !== 'ready')) { clearInterval(timer); reject(new Error('A managed service stopped; inspect service logs')); } }
-          catch (error) { clearInterval(timer); reject(error); }
-        }, 5000);
-        const stop = async () => { if (stopping) return; stopping = true; clearInterval(timer); try { await stopSystem(config); accept(); } catch (error) { reject(error); } };
-        process.once('SIGINT', stop); process.once('SIGTERM', stop);
-      });
+      await superviseServices({ inspect: type => inspectService(config, type), shutdown: () => stopSystem(config) });
     }
     return result;
   } else throw new Error(`Unknown command: ${command}`);

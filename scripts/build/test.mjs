@@ -9,6 +9,8 @@ for (const folder of ['bot/test', 'web/test', 'capabilities/test', 'tests']) {
     if (name.endsWith('.test.mjs')) files.push(join(root, folder, name));
 }
 if (!files.length) throw new Error('No tests found');
-const child = spawn(process.execPath, ['--test', ...files], { cwd: root, stdio: 'inherit', windowsHide: true });
+// These files start real CLI, MCP and PowerShell children. Bound file-level
+// concurrency so unrelated fixtures do not starve their identity handshakes.
+const child = spawn(process.execPath, ['--test', '--test-concurrency=4', ...files], { cwd: root, stdio: 'inherit', windowsHide: true });
 child.once('error', error => { console.error(error.message); process.exitCode = 1; });
 child.once('exit', code => { process.exitCode = code || 0; });
