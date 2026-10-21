@@ -78,6 +78,10 @@ export async function migrate({sourceRoot,dataRoot,releaseRoot,execute=false,mod
   const {BotStore,inspectBotIdentity}=await import(pathToFileURL(join(releaseRoot,'bot/src/index.mjs'))),{RecordStore}=await import(pathToFileURL(join(releaseRoot,'capabilities/shared/store.mjs'))),{BotManager}=await import(pathToFileURL(join(releaseRoot,'capabilities/bot-management/service.mjs')));
   for(const instance of plan.instances)if(await inspectBotIdentity(instance.root))throw new Error(`Source instance still owns its data: ${instance.instanceId}`);
   for(const {row}of plan.selected.values())if(row.kind==='bots'&&await inspectBotIdentity(join(plan.dataRoot,'bots',row.id)))throw new Error(`Target Bot is running: ${row.id}`);
+  // Execute may import source-only history into a new, explicitly chosen root.
+  // Establish its canonical path before the OS lock check; the lock inspector
+  // must not infer a stopped owner from a missing path.
+  await mkdir(plan.dataRoot,{recursive:true});
   if(await inspectServiceLock(plan.dataRoot,'gateway'))throw new Error('Target capability gateway is running');
   // Check source writers before opening any target database. No PID-based termination.
   for(const instance of plan.instances){const runPath=join(instance.root,'run.json');if(!existsSync(runPath))continue;const run=await readJson(runPath);if(!Number.isInteger(run.pid))continue;let alive=true;try{process.kill(run.pid,0);}catch(error){if(error.code==='ESRCH')alive=false;}if(alive&&run.state!=='stopped')throw new Error(`Source instance may still be running: ${instance.instanceId}; stop it before migration`);}

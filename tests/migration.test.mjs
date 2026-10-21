@@ -4,11 +4,25 @@ import { mkdtemp,mkdir,writeFile,readFile,rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join,resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { existsSync } from 'node:fs';
 import { migrate } from '../scripts/migration/migrate.mjs';
 import { BotStore } from '@relay/bot';
 import { RecordStore } from '../capabilities/shared/store.mjs';
 
 async function database(path,rows){await mkdir(resolve(path,'..'),{recursive:true});const db=new DatabaseSync(path);db.exec('CREATE TABLE records(kind TEXT,id TEXT,created_at TEXT,updated_at TEXT,data TEXT,PRIMARY KEY(kind,id))');for(const [kind,value]of rows)db.prepare('INSERT INTO records VALUES(?,?,?,?,?)').run(kind,value.id,'2026-01-01','2026-01-02',JSON.stringify(value));db.close();}
+test('source-only history migrates into a new data root while preview remains read-only',async t=>{
+  const root=await mkdtemp(join(tmpdir(),'relay-new-root-migration-'));t.after(()=>rm(root,{recursive:true,force:true}));
+  const sourceRoot=join(root,'source'),dataRoot=join(root,'new-data');
+  const room={id:'source-only-room',name:'retained',kind:'group',members:['user'],createdAt:'2026-01-01',updatedAt:'2026-01-02'};
+  const message={id:'source-only-message',roomId:room.id,senderId:'user',content:'original history',createdAt:'2026-01-01',updatedAt:'2026-01-02'};
+  await database(join(sourceRoot,'.relay','relay.sqlite'),[['rooms',room],['messages',message]]);
+  const options={sourceRoot,dataRoot,releaseRoot:resolve('.')};
+  assert.equal((await migrate(options)).mode,'preview');assert.equal(existsSync(dataRoot),false);
+  const result=await migrate({...options,execute:true});assert.equal(result.mode,'imported');assert.equal(result.backupCreated,false);assert.equal(result.automaticReplay,false);
+  const chat=new RecordStore(join(dataRoot,'capabilities','chatroom','state.sqlite'));
+  try{assert.deepEqual(chat.get('rooms',room.id),room);assert.deepEqual(chat.get('messages',message.id),message);}finally{chat.close();}
+  assert.equal((await migrate({...options,execute:true})).mode,'unchanged');
+});
 test('migration prefers worker transcript, retains IDs and attachments, and never queues uncertain work',async t=>{
   const root=await mkdtemp(join(tmpdir(),'relay-layout-migration-'));t.after(()=>rm(root,{recursive:true,force:true}));
   const sourceRoot=join(root,'source'),dataRoot=join(root,'data'),instance=join(dataRoot,'instances','worker-a');await mkdir(instance,{recursive:true});

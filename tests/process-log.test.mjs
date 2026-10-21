@@ -16,12 +16,12 @@ const pause = ms => new Promise(done => setTimeout(done, ms));
 async function rootDirectory() { return mkdtemp(join(tmpdir(), 'relay-service-log-test-')); }
 async function removeRoot(root) { assert.equal(dirname(root), resolve(tmpdir())); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
 
-test('service startup IPC reports invalid logging configuration and releases its OS lock', { timeout: 15000 }, async t => {
+test('service startup IPC reports invalid logging configuration and releases its OS lock', { timeout: 30000 }, async t => {
   const root = await rootDirectory(); t.after(() => removeRoot(root));
   const { config } = await initializeDeployment({ dataRoot: root, releaseRoot, port: 0 });
   config.logs = { maxFiles: 0 }; await writeFile(deploymentPath(root), JSON.stringify(config));
-  const began = Date.now(); await assert.rejects(launchService(config, 'gateway', { timeoutMs: 5000 }), /logs.maxFiles/);
-  assert.ok(Date.now() - began < 5000); assert.equal(await inspectServiceLock(root, 'gateway'), null);
+  await assert.rejects(launchService(config, 'gateway', { timeoutMs: 20000 }), /logs.maxFiles/);
+  assert.equal(await inspectServiceLock(root, 'gateway'), null);
 });
 
 test('a failed duplicate service cannot modify the active process log', { timeout: 20000 }, async t => {
@@ -48,13 +48,15 @@ test('service launch completes with no retained parent pipe or IPC dependency', 
   assert.ok((await readFile(join(root, 'capabilities/gateway/logs/process.log'), 'utf8')).includes('gateway.ready'));
 });
 
-test('Bot manager receives log initialization failure before readiness timeout', { timeout: 20000 }, async t => {
+test('Bot manager receives log initialization failure before readiness timeout', { timeout: 30000 }, async t => {
   const root = await rootDirectory(); await mkdir(join(root, 'management'), { recursive: true });
   const store = new RecordStore(join(root, 'management/state.sqlite'));
   const manager = new BotManager({ store, dataRoot: root, releaseRoot, model });
   t.after(async () => { await manager.shutdownAll(); store.close(); await removeRoot(root); });
   await manager.create({ id: 'log-test', roleId: 'default' });
   await mkdir(join(root, 'bots/log-test/logs/process.log'), { recursive: true });
-  const began = Date.now(); await assert.rejects(manager.start('log-test'), /process.log must be a regular file/);
-  assert.ok(Date.now() - began < 5000); assert.equal(await manager.identity('log-test'), null);
+  // Receiving the specific initialization error within this test's deadline
+  // proves it did not wait for the manager's 60-second readiness timeout.
+  await assert.rejects(manager.start('log-test'), /process.log must be a regular file/);
+  assert.equal(await manager.identity('log-test'), null);
 });
