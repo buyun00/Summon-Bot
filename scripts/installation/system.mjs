@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { mkdir, open, readFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -68,24 +68,28 @@ export async function launchService(config, type, { foreground = false, timeoutM
   if (!existsSync(entry)) throw new Error(`Missing service entry: ${entry}`);
   const logRoot = join(config.dataRoot, type === 'web' ? 'web' : 'capabilities/gateway', 'logs');
   await mkdir(logRoot, { recursive: true });
-  const log = await open(join(logRoot, 'process.log'), 'a');
   const bundled = join(config.releaseRoot, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node');
   const child = spawn(existsSync(bundled) ? bundled : process.execPath,
     [entry, '--type', type, '--config', deploymentPath(config.dataRoot)],
-    { cwd: config.defaultCwd, env: await deploymentEnvironment(config), detached: !foreground, windowsHide: true, stdio: ['ignore', log.fd, log.fd] });
-  await log.close();
+    { cwd: config.defaultCwd, env: await deploymentEnvironment(config), detached: !foreground, windowsHide: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
   let failure;
   child.once('error', error => { failure = error; });
-  child.once('exit', (code, signal) => { failure = new Error(`${type} exited before readiness (${code ?? signal}); see ${logRoot}`); });
+  child.once('exit', (code, signal) => { failure ||= new Error(`${type} exited before readiness (${code ?? signal}); see ${logRoot}`); });
+  child.on('message', message => {
+    if (message.type === 'error') failure = Object.assign(new Error(message.message), { code: message.code });
+    if (['ready', 'error'].includes(message.type) && child.connected) child.disconnect();
+  });
   child.unref();
   const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (failure) throw failure;
-    const next = await inspectService(config, type);
-    if (next.state === 'ready' && next.pid === child.pid) return next;
-    await pause(150);
-  }
-  throw new Error(`${type} is still loading; inspect its logs before retrying (PID ${child.pid})`);
+  try {
+    while (Date.now() < deadline) {
+      if (failure) throw failure;
+      const next = await inspectService(config, type);
+      if (next.state === 'ready' && next.pid === child.pid) return next;
+      await pause(150);
+    }
+    throw new Error(`${type} is still loading; inspect its logs before retrying (PID ${child.pid})`);
+  } finally { if (child.connected) child.disconnect(); }
 }
 
 export async function startSystem(config, { foreground = false, respectIntent = false } = {}) {

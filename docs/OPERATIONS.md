@@ -17,6 +17,23 @@
 
 Web 日志在 `web/logs/`，网关日志在 `capabilities/gateway/logs/`，各 Bot 日志在 `bots/<botId>/logs/`。run/current.json 用于发现控制地址；控制端校验 bootId 与身份。
 
+各进程取得自身身份锁后打开日志，直接写入并轮转 `process.log`；不依赖父进程的管道。独立 Bot 的 `config.json` 使用 `logs`，部署配置的 `logs` 为 Web/网关默认值，`web.logs` 和 `gateway.logs` 可以分别覆盖：
+
+```json
+{
+  "logs": {
+    "maxFileBytes": 10485760,
+    "maxFiles": 5,
+    "retentionDays": 7,
+    "sweepIntervalMs": 60000
+  }
+}
+```
+
+默认每个文件不超过 10 MiB，最多 5 个文件（含当前文件），保留 7 天，每分钟检查闲置日志。大块输出按完整 UTF-8 字符切段，容量达到上限立即轮转，并至多每日轮转一次；仅清理本目录中符合约定名称的日志。迁入的旧超大 `process.log` 只保留容量以内的最新文本。任务、工具事实与完整产物仍保存在 SQLite/artifacts，日志轮转不删除这些内容。修改配置后正常重启对应进程生效。
+
+CLI 自动记录标准输出/错误；嵌入式 `startBot(config)` 默认保持宿主输出不变。需要由宿主独占管理进程日志时，可显式使用 `startBot(config, { captureProcessOutput: true })`；通用写入器公开为 `@relay/bot/process-log`。同一进程只能安装一个输出记录器，日志初始化失败会释放身份锁并报告启动错误。
+
 StartupHub 沿用已有 `relay-bot` 条目和 `Relay Bot Foundation` 任务标识，任务动作已改为安装根的新 Start.ps1。这个名称只是 Windows 任务标识；旧 Foundation 程序及目录已不参与启动。重新注册使用安装包内 `scripts/installation/register-startup.ps1`，保留其他 Hub 条目和自动启动设置。
 
 当前配置 8 个 Bot：工程、组件、质量、lumi，以及入口、聊天室、管理、记忆。角色模板数量不等于运行进程数量；Bot 按需启动，每个已运行实例独占自己的 Pi Agent 和数据目录。暂停 Web 不会停止它们；完整 Stop 才会关闭所有受管 Bot。

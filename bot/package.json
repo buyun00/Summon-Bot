@@ -9,7 +9,8 @@
   "exports": {
     ".": "./src/index.mjs",
     "./store": "./src/storage/store.mjs",
-    "./tools": "./src/capabilities/registry.mjs"
+    "./tools": "./src/capabilities/registry.mjs",
+    "./process-log": "./src/runtime/process-log.mjs"
   },
   "bin": {
     "relay-bot": "./bin/relay-bot.mjs"

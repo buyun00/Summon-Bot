@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto';
 import { normalizeBotConfig, createRedactor } from './config.mjs';
 import { acquireIdentityLock } from './identity-lock.mjs';
+import { installProcessLog } from './process-log.mjs';
 import { BotStore, terminalTaskStates } from '../storage/store.mjs';
 import { saveArtifact } from '../storage/artifacts.mjs';
 import { BotEngine } from '../agent/engine.mjs';
@@ -21,14 +22,15 @@ async function readBody(request) {
 }
 
 /** A single mandatory Pi engine behind an authenticated, durable Bot API. */
-export async function startBot(input) {
+export async function startBot(input, { captureProcessOutput = false } = {}) {
   const config = normalizeBotConfig(input), bootId = randomUUID(), startedAt = at();
-  let state = 'loading', url = null, readyAt = null, store, engine, server, closing;
+  let state = 'loading', url = null, readyAt = null, store, engine, server, closing, processLog;
   const jobs = new Map(), subscribers = new Set();
   await mkdir(config.dataDir, { recursive: true });
   const identity = () => ({ botId: config.botId, instanceId: config.botId, pid: process.pid, bootId, url, state, startedAt, readyAt });
   const lock = await acquireIdentityLock(config.dataDir, identity);
   try {
+    if (captureProcessOutput) processLog = installProcessLog(join(config.dataDir, 'logs'), config.logs);
     await mkdir(config.workspace, { recursive: true }); await mkdir(join(config.dataDir, 'run'), { recursive: true });
     const privatePath = join(config.dataDir, 'config.json');
     if (!config.token) {
@@ -93,7 +95,8 @@ export async function startBot(input) {
         if (task?.status === 'accepted') store.updateTask(id, { status: 'interrupted', error: { code: 'BOT_STOPPED', message: 'Accepted task did not execute; no automatic replay' }, finishedAt: at() }); }
       await engine.close(); await Promise.allSettled([...jobs.values()].map(job => job.promise));
       if (server?.listening) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
-      state = 'stopped'; emit('bot.stopped', identity()); await atomicJson(join(config.dataDir, 'run', 'current.json'), identity()); store.close(); await lock.close();
+      state = 'stopped'; emit('bot.stopped', identity()); await atomicJson(join(config.dataDir, 'run', 'current.json'), identity()); store.close();
+      try { processLog?.close(); } finally { await lock.close(); }
     })();
     const authenticate = request => {
       const token = request.headers.authorization?.replace(/^Bearer /, '');
@@ -167,6 +170,8 @@ export async function startBot(input) {
   } catch (error) {
     await engine?.close().catch(() => {});
     if (server?.listening) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
-    store?.close(); await lock.close(); throw error;
+    store?.close();
+    try { if (processLog) console.error(error.stack || error.message); } finally { try { processLog?.close(); } finally { await lock.close(); } }
+    throw error;
   }
 }

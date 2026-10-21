@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { resolve, dirname, isAbsolute } from 'node:path';
+import { normalizeLogConfig } from './process-log.mjs';
 
 export function normalizeBotConfig(input, baseDirectory = process.cwd()) {
   if (!input || typeof input !== 'object') throw new TypeError('Bot configuration is required');
@@ -14,6 +15,7 @@ export function normalizeBotConfig(input, baseDirectory = process.cwd()) {
   config.listen = { host: '127.0.0.1', port: 0, ...input.listen };
   if (!['127.0.0.1', '::1'].includes(config.listen.host) || !Number.isInteger(config.listen.port) || config.listen.port < 0 || config.listen.port > 65535) throw new Error('Bot listener must use a valid loopback address');
   config.concurrency ??= 1;
+  config.logs = normalizeLogConfig(input.logs);
   if (config.concurrency !== 1) throw new Error('A Bot has one serial Pi Agent; concurrency must be 1');
   config.shutdownGraceMs ??= 3000;
   if (!Number.isSafeInteger(config.shutdownGraceMs) || config.shutdownGraceMs < 0 || config.shutdownGraceMs > 60000) throw new Error('shutdownGraceMs must be 0..60000');

@@ -1,6 +1,6 @@
 # 验证记录
 
-日期：2026-10-21。验收依据为 [REFACTOR_PLAN.md](REFACTOR_PLAN.md) 第 11 节。最终代码回归、R6部署、真实任务及数据迁移已验证。旧目录清理还剩3个被执行策略阻止的目标，见文末；因此整体目标尚不能标为全部完成。
+日期：2026-10-21。验收依据为 [REFACTOR_PLAN.md](REFACTOR_PLAN.md) 第 11 节。R6部署、真实任务及数据迁移已验证；随后复核补齐日志轮转与上下文压缩适配层测试，当前源码完整回归172/172通过。部署更新及剩余清理状态见文末；整体目标尚不能标为全部完成。
 
 模型协议 fixture 验证本地机制；真实 Pi、HTTP、SQLite 和子进程不等于真实外部模型调用。下文分别标明自动化、真实 DeepSeek、真实 Codex、迁移及现场界面证据。
 
@@ -19,6 +19,7 @@
 | 真实Codex app-server | 实际写读59字节文件，内容精确匹配，thread/turn与执行事件关联完整 | 真实任务验证创建/执行/结果；取消、恢复、超时另由fixture验证 |
 | R6现场角色与HTTP | 入口、聊天室各完成真实DeepSeek只读工具任务；8个配置均以独立Pi进程初始化；本地/公网状态、增量和两项历史下载完成 | 初始化不等于8个角色都调用过模型；6个原先未运行的Bot已恢复停止 |
 | 在线母体与分身 | 3个真实Pi任务、7次DeepSeek请求、4次工具；子工具等待期间母体完成新事件和记忆写入 | 子工具等待gate为受控HTTP测试夹具，模型为真实DeepSeek；所有隔离进程已正常关闭 |
+| 追加完成审计 | 发现方案要求的日志轮转尚未实现，以及Relay上下文压缩适配层缺少直接测试；补实现/测试后完整回归172/172通过，约26.9秒 | post-audit-tests.log；新增13项日志/启动回归与5项上下文测试，均未跳过 |
 
 ## 证据索引
 
@@ -36,6 +37,8 @@
 | E08 | cleanup-plan.json、cleanup-result.json、cleanup-final.ps1 | 43项原清单中42项路径已不存在；旧回退目录及后续R5的2份中间发行物尚待清理；最后脚本供用户手动执行，代理未执行 |
 | E09 | clone-online-2026-10-21T05-23-27-785Z-71d98125.json；tests/clone-online.live.mjs | 在线母体与分身并发、事件接收、记忆隔离、正常关闭 |
 | E10 | final-deployment.json、git-delivery.json | 最终发行哈希、真实服务身份、StartupHub及本地/远程提交核对 |
+| E11 | post-audit-tests.log；bot/test/process-log.test.mjs、tests/process-log.test.mjs、bot/test/context.test.mjs | 追加审计后的172/172；真实子进程日志轮转、容量/保留期、启动错误与上下文适配完整路径 |
+| E12 | bot-package-r7.json；package-r7/installed-tests.log、smoke-result.json | 日志补齐后的221文件独立包，仓库外安装182个生产依赖；21/21安装后定向测试及两个独立CLI直接通信通过，明确模型fixture |
 
 ## Bot本体和能力：B01–B10
 
@@ -45,7 +48,7 @@
 | B02 独立身份和上下文 | E02、E03；capabilities/test/lifecycle.test.mjs、bot/test/runtime.test.mjs | 两个CLI及真实入口/聊天室拥有不同PID、数据目录、身份令牌和会话，Pi引擎可观测 |
 | B03 基础设施角色 | E03、E06；tests/live.mjs、web/test/server.test.mjs | 入口实际调用bots_list，聊天室实际调用房间工具，独立Pi与真实用量已记录。Web仅转发，关闭Web不关闭网关 |
 | B04 状态与长工具 | bot/test/lifecycle.test.mjs、runtime.test.mjs、identity-lock.test.mjs；E01 | 长HTTP工具期间health/messages仍响应，取消、等待与状态可观察。关闭握手曾失败，修复后新增7项回归并完成全套154/154 |
-| B05 上下文与历史 | bot/test/store.test.mjs、runtime.test.mjs、capabilities/test/chatroom.test.mjs；E02、E05 | 会话持久化、旧contextKey续接、多私聊回到各自原房间；Pi压缩/序列化上游测试通过，导入历史保留来源 |
+| B05 上下文与历史 | bot/test/context.test.mjs、store.test.mjs、runtime.test.mjs、capabilities/test/chatroom.test.mjs；E02、E05 | 新增5项Relay适配层测试：超限触发摘要、checkpoint持久化、重开数据库后重建模型视图、完整原文分页检索与会话隔离；失败/过长摘要/超大当前输入/并发新历史均不覆盖原文。摘要供应商是显式fixture，SQLite、Pi压缩与Relay适配层为真实代码；不是新的真实模型验收 |
 | B06 P2P与回流 | E02；bot/test/runtime.test.mjs、capabilities/test/chatroom.test.mjs、tests/installation.test.mjs | 无Web的独立CLI实际直接通信，发送方停止后接收方继续；另测Web停机不影响网关。群去重、回流、协作跳数、深聊轮数有确定性测试 |
 | B07 API/MCP/Skill | bot/test/remote-tools.test.mjs、runtime.test.mjs、capabilities/test/gateway.test.mjs；E03 | 配置式HTTP工具、真实MCP stdio子进程和官方SDK Streamable HTTP通过；Skill显式加载、工具调用可追溯；真实DeepSeek实际调用HTTP能力 |
 | B08 原工具行为 | capabilities/test/filesystem.test.mjs、gateway.test.mjs、web/test/attachment-ui.test.mjs、artifact-ui.test.mjs；E04、E06 | 实际写读、搜索、精确编辑、UTF-8命令、真实子进程取消、路径边界、完整输出及迁移后下载验证 |
@@ -66,7 +69,7 @@
 
 | ID | 对应测试与证据 | 已证明的范围与限制 |
 | --- | --- | --- |
-| D01 程序/数据隔离 | tests/installation.test.mjs、capabilities/test/management.test.mjs、filesystem.test.mjs；E05、E10 | 安装拒绝重叠程序/数据根；每Bot私有数据、共享能力库、受管tmp分开；R6安装在app根，业务数据留在data根 |
+| D01 程序/数据隔离 | tests/installation.test.mjs、capabilities/test/management.test.mjs、filesystem.test.mjs；E05、E10、E11 | 安装拒绝重叠程序/数据根；每Bot私有数据、共享能力库、受管tmp分开。追加日志轮转：默认10MiB/文件、最多5文件、7天保留；UTF-8大块写入、最后写入时间保留期、闲置清理、父进程退出后继续记录、重复启动保护均有真实子进程验证 |
 | D02 安全清理tmp | capabilities/test/maintenance.test.mjs、bot/test/maintenance.test.mjs、runtime.test.mjs | 全程持有Bot同一OS所有权租约，拒绝活动身份、未知/中断任务、外部未完成工作；无10,000条分页截断；拒绝junction越界，保留成果和外部工作区 |
 | D03 真实迁移 | E05、E06；tests/migration.test.mjs、bot/test/store.test.mjs | **348条逻辑记录；2,353条来源到目标文件映射，对应1,194个唯一目标文件；598项行级及原生记录读回校验。** 口径不同，不能写成2,353个唯一目标文件或598条业务记录。verification.verified=true，文件按SHA256读回，未确认旧任务中断且不自动重放 |
 | D04 旧路径清理 | E08、post-cleanup-fixed-tests.log | 根src/public/bots/adapters/templates/test/third_party/.relay、旧脚本/冲突文档、旧data legacy/instances/backups、dist/current及previous已清除；新源码没有活动旧路径导入。3个禁止删除目标仍存在，D04尚未完全关闭 |
@@ -100,6 +103,8 @@ R6已对8个真实配置执行start/health并核对Skill路径重定位到新安
 最终运行发行物：`2026-10-21T05-21-14-843Z-ca0fa8bf`，内容哈希`4042fdb3d8d19b160d05df129a56f1e69d5160a0a275b60fcbd692880438a04c`。manifest sourceDirty=true如实标识构建时未提交工作区；最终Git提交与此内容哈希由E10关联。包内VERIFICATION为构建时快照，本文件的最终Git版本记录构建后的验证结果。
 
 ## 剩余清理与未执行验证
+
+追加审计中，服务日志集成测试曾出现一次整个Node测试子进程提前退出，只报告test failed，没有单项异常或堆栈；根因尚未确定。随后同范围联合测试通过，最终由主控运行的完整回归172/172及仓库外安装后21/21通过，没有跳过失败项。失败测试创建的3个临时目录列入最终清理记录；其中一项原生PowerShell删除被执行策略拒绝，其余未绕过该限制。代码与包验证已完成，现场此时仍为R6，待安装含日志管理的新发行物。
 
 - 执行策略拒绝删除以下3个目录；旧回退目录已获得用户再次明确授权，仍被拒绝。更小范围的单文件哈希核对删除也被拒绝，未绕过限制。用户可手动运行证据根的cleanup-final.ps1；脚本校验当前发行版本、路径范围与进程引用，仅处理下列目标，不操作Git/有效数据。
   - `D:/Relay-Bot-rollback/foundation-20261020`

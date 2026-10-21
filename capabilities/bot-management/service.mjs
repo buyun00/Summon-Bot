@@ -1,6 +1,6 @@
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { readFile, writeFile, mkdir, cp, realpath, lstat, rm, readdir } from 'node:fs/promises';
-import { openSync,closeSync,existsSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join,resolve,relative } from 'node:path';
 import { spawn } from 'node:child_process';
 import { safeId,required,fail,avatarOf,pick,within,now } from '../shared/validation.mjs';
@@ -68,11 +68,17 @@ export class BotManager {
     config.tools=[...this.getTools(record).map(tool=>({...tool,headers:{Authorization:`Bearer ${record.capabilityToken}`}})),...customTools];
     config.bundleRoot=this.releaseRoot;config.bundledSkills=profile.skills||[];config.bundledToolNames=this.getTools(record).map(tool=>tool.name);
     await writeFile(join(dir,'config.json'),JSON.stringify(config,null,2),{mode:0o600});await mkdir(join(dir,'logs'),{recursive:true});
-    this.assertAccepting();const fd=openSync(join(dir,'logs','process.log'),'a');
-    try { const child=spawn(process.execPath,[join(this.releaseRoot,'bot','bin','relay-bot.mjs'),'--config',join(dir,'config.json')],{cwd:this.releaseRoot,detached:true,windowsHide:true,stdio:['ignore',fd,fd]});child.on('error',error=>this.emit('bot-error',{botId:id,error:error.message}));child.unref(); } finally {closeSync(fd);}
+    this.assertAccepting();let failure;
+    const child=spawn(process.execPath,[join(this.releaseRoot,'bot','bin','relay-bot.mjs'),'--config',join(dir,'config.json')],{cwd:this.releaseRoot,detached:true,windowsHide:true,stdio:['ignore','ignore','ignore','ipc']});
+    child.on('error',error=>{failure=error;this.emit('bot-error',{botId:id,error:error.message});});
+    child.once('exit',(code,signal)=>{failure ||= new Error(`Bot exited during startup (${code??signal}); inspect ${join(dir,'logs')}`);});
+    child.on('message',message=>{if(message.type==='error'){failure=Object.assign(new Error(message.message),{code:message.code});}if(['ready','error'].includes(message.type)&&child.connected)child.disconnect();});
+    child.unref();
     this.store.save('bots',{id,runIntent:'running'});
-    for(let i=0;i<600;i++){await sleep(100);const state=await this.identity(id);if(state?.state==='ready'){this.emit('bot-state',state);return state;}}
-    fail('Bot startup timed out; inspect process log before retrying',504);
+    try {
+      for(let i=0;i<600;i++){await sleep(100);if(failure)throw failure;const state=await this.identity(id);if(state?.state==='ready'){this.emit('bot-state',state);return state;}}
+      fail('Bot startup timed out; inspect process log before retrying',504);
+    } finally {if(child.connected)child.disconnect();}
   }
   async stop(id,{persistIntent=true}={}) {
     if(persistIntent)this.store.save('bots',{id,runIntent:'stopped'});
