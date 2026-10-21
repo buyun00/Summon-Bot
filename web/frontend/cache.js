@@ -7,8 +7,8 @@
     room: ['messages', 'jobs'],
   };
   const valuePaths = {
-    workspace: ['provider', 'defaultCwd', 'runtime.started', 'runtime.fast', 'runtime.deep'],
-    room: ['room'],
+    workspace: ['historyEpoch', 'provider', 'defaultCwd', 'runtime.started', 'runtime.fast', 'runtime.deep'],
+    room: ['historyEpoch', 'room'],
   };
   const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
   const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -35,6 +35,7 @@
     return valuePaths[kind].every(path => {
       const value = getPath(snapshot, path);
       if (value === undefined) return true;
+      if (path === 'historyEpoch') return value === null || validId(value);
       if (path === 'defaultCwd') return typeof value === 'string';
       if (path === 'runtime.started') return typeof value === 'boolean';
       return object(value);
@@ -65,6 +66,7 @@
       return copy(response.snapshot);
     }
     if (!snapshotValid(previous, sync.scope) || !object(response.patch)) throw new Error('缺少增量同步的完整基础数据');
+    if (own(response, 'historyEpoch') && (previous.historyEpoch ?? null) !== response.historyEpoch) throw new Error('历史已清空，需要重新读取完整数据');
     const patch = response.patch;
     if (Object.keys(patch).some(key => !['values', 'collections'].includes(key))) throw new Error('未知的同步操作');
     if (!object(patch.values) || !object(patch.collections)) throw new Error('无效的增量同步数据');
@@ -100,7 +102,37 @@
   const memory = new Map();
   const queues = new Map();
   const storageStatus = { persistent: false, error: null };
-  let database = null, opening = null;
+  let database = null, opening = null, generation = 0, resetBarrier = Promise.resolve();
+
+  // Drain writes captured before the reset, then erase all conversation stores
+  // in one transaction. New reads/writes wait behind this barrier.
+  function resetHistory(historyEpoch, session = {}) {
+    const pending = [...queues.values()], previousBarrier = resetBarrier;
+    generation++; memory.clear();
+    const record = { schema: 1, savedAt: Date.now(), value: { ...copy(session), historyEpoch } };
+    const reset = previousBarrier.then(async () => {
+      await Promise.allSettled(pending); await ready(); memory.clear();
+      memory.set('session:current', record);
+      if (database) {
+        try {
+          await new Promise((resolve, reject) => {
+            let tx, settled = false;
+            const finish = error => { if (settled) return; settled = true; clearTimeout(timer); error ? reject(error) : resolve(); };
+            const timer = setTimeout(() => { try { tx?.abort(); } catch {} finish(new Error('清除历史缓存超时')); }, 2500);
+            try {
+              tx = database.transaction(['workspace', 'rooms', 'session'], 'readwrite');
+              for (const name of ['workspace', 'rooms', 'session']) tx.objectStore(name).clear();
+              tx.objectStore('session').put(record, 'current');
+              tx.oncomplete = () => finish(); tx.onerror = tx.onabort = () => finish(tx.error || new Error('无法清除历史缓存'));
+            } catch (error) { finish(error); }
+          });
+        } catch (error) { unavailable(error); }
+      }
+      return true;
+    });
+    resetBarrier = reset.catch(() => {});
+    return reset;
+  }
 
   function unavailable(error) {
     storageStatus.persistent = false;
@@ -176,8 +208,11 @@
   }
 
   async function read(store, key, validate) {
+    const capturedGeneration = generation, barrier = resetBarrier;
     return serialize(store, key, async () => {
       try {
+        await barrier;
+        if (capturedGeneration !== generation) return null;
         await ready();
         const memoryKey = `${store}:${key}`;
         let record = memory.get(memoryKey);
@@ -187,12 +222,13 @@
             if (validate(record)) memory.set(memoryKey, record);
           } catch (error) { unavailable(error); }
         }
-        return validate(record) ? copy(record) : null;
+        return capturedGeneration === generation && validate(record) ? copy(record) : null;
       } catch { return null; }
     });
   }
 
   function write(store, key, record, validate) {
+    const capturedGeneration = generation, barrier = resetBarrier;
     let captured;
     try {
       if (!validate(record)) return Promise.resolve(false);
@@ -201,6 +237,8 @@
     } catch { return Promise.resolve(false); }
     return serialize(store, key, async () => {
       try {
+        await barrier;
+        if (capturedGeneration !== generation) return false;
         await ready();
         memory.set(`${store}:${key}`, captured);
         if (database) {
@@ -215,7 +253,7 @@
   const snapshotRecord = value => ({ schema: 1, savedAt: Date.now(), snapshot: value?.snapshot, cursor: value?.cursor ?? null });
   const sessionValid = record => object(record) && record.schema === 1 && Number.isFinite(record.savedAt) && object(record.value);
   window.RelayCache = Object.freeze({
-    ready, applySync,
+    ready, applySync, resetHistory,
     get status() { return { ...storageStatus }; },
     readWorkspace: () => read('workspace', 'current', record => recordValid(record, 'workspace')),
     writeWorkspace: value => write('workspace', 'current', snapshotRecord(value), record => recordValid(record, 'workspace')),

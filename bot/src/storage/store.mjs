@@ -7,6 +7,9 @@ const now = () => new Date().toISOString();
 const encode = value => JSON.stringify(value ?? null);
 const decode = row => row ? JSON.parse(row.data) : null;
 export const terminalTaskStates = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
+const historyTables = ['messages', 'tasks', 'sessions', 'tools', 'events', 'outbox'];
+const historyRecordKinds = new Set(['messages', 'tasks', 'sessions', 'tools', 'events', 'outbox', 'receipts', 'requests',
+  'agentSessions', 'agentRuns', 'toolRuns', 'jobs', 'imported-events', 'imported-requests', 'imported-sessions', 'imported-tool_runs', 'imported-kv_state']);
 const conflict = message => Object.assign(new Error(message), { code: 'REVISION_CONFLICT', status: 409 });
 
 /** SQLite is the sole authority for transcripts, task receipts and state. */
@@ -188,6 +191,20 @@ export class BotStore {
         error: { code: 'PROCESS_RESTARTED', message: 'Previous execution is unconfirmed; automatic replay disabled', recoveredByBootId: bootId } });
       for (const tool of this.listTools()) if (['running', 'queued'].includes(tool.status)) this.saveTool({ ...tool, status: 'unknown', finishedAt: now(), error: { message: 'Process stopped before a durable tool result' } });
       for (const item of this.listOutbox()) if (item.status === 'sending') this.saveOutbox({ ...item, status: 'unknown' });
+    });
+  }
+  /** Storage primitive. External maintenance must hold the Bot's data lease.
+   * Durable facts, arbitrary user state, configuration and artifact metadata stay intact. */
+  clearHistory() {
+    return this.transaction(() => {
+      const tables = {}, records = {};
+      for (const table of historyTables) tables[table] = Number(this.db.prepare(`DELETE FROM ${table}`).run().changes);
+      const remove = this.db.prepare('DELETE FROM records WHERE kind=?');
+      for (const kind of historyRecordKinds) {
+        const count = Number(remove.run(kind).changes);
+        if (count) records[kind] = count;
+      }
+      return { tables, records };
     });
   }
   close() { if (!this.closed) { this.db.close(); this.closed = true; } }

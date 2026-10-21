@@ -4,7 +4,7 @@ const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
 // Display preferences are local to this browser and independent for each layout.
-const UI_BUILD = '2026.10.21.1';
+const UI_BUILD = '2026.10.21.2';
 let displayDiagnosticSnapshot = null;
 function isIosStandalone() {
   const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -126,6 +126,7 @@ const state = { bots: [], rooms: [], works: [], agentRuns: [], routines: [], kno
 const ui = { view: 'chat', roomId: 'room-lobby', botId: null, workId: null, nodeId: null, messages: [], roomJobs: [], memories: [], workDetail: null, graph: null, query: '', knowledgeResults: null, roomQuery: '', workFilter: 'all', mobileRoom: false, reply: null, drafts: {}, outbound: {}, loading: true, refreshing: false, refreshAgain: false, streamConnected: false };
 Object.assign(ui, { detailOpen: false, detailTab: 'details', profileBotId: null, avatarEditing: false, avatarDraft: null, avatarTab: 'bot', searchOpen: false, menu: null, avatarSaving: false, sendingRooms: new Set(), draftTargets: {}, navigationSeq: 0, messageCache: new Map() });
 Object.assign(ui, { agentRunsOpen: new Set(), agentToolsOpen: new Set(), agentRunDetails: new Map(), agentRunRequests: new Map(), agentRunsCancelling: new Set(), draftAttachments: {}, localMessages: {}, roomReadSeq: {} });
+Object.assign(ui, { historyEpoch: null, historyGeneration: 0, retiredHistoryEpochs: new Set(), systemBotsOpen: false, retryingJobs: new Set() });
 const attachmentLimit = 8, attachmentMaxBytes = 20 * 1024 * 1024;
 const attachmentDrafts = (roomId = ui.roomId) => ui.draftAttachments[roomId] || [];
 const attachmentBusy = (roomId = ui.roomId) => attachmentDrafts(roomId).some(item => item.status !== 'ready');
@@ -194,7 +195,7 @@ function preserveUpdateDrafts() {
   try {
     const attachments = Object.fromEntries(Object.entries(ui.draftAttachments).map(([room, items]) => [room, items.map(({ key, name, size, attachment }) => ({ key, name, size, attachment, status: 'ready' }))]));
     const localMessages = Object.fromEntries(Object.entries(ui.localMessages || {}).map(([room, entries]) => [room, Object.values(entries).filter(entry => !entry.remoteConfirmed)]));
-    sessionStorage.setItem(updateDraftKey, JSON.stringify({ savedAt: Date.now(), drafts: ui.drafts, targets: ui.draftTargets, attachments, outbound: ui.outbound, localMessages, roomId: ui.roomId, mobileRoom: ui.mobileRoom, reply: ui.reply }));
+    sessionStorage.setItem(updateDraftKey, JSON.stringify({ savedAt: Date.now(), historyEpoch: ui.historyEpoch ?? null, drafts: ui.drafts, targets: ui.draftTargets, attachments, outbound: ui.outbound, localMessages, roomId: ui.roomId, mobileRoom: ui.mobileRoom, roomChosenByUser: !!ui.roomChosenByUser, reply: ui.reply }));
   } catch { toast('浏览器无法暂存草稿，请先复制未发送的文字。', true); return false; }
   updateDraftArmed = true;
   return true;
@@ -204,6 +205,7 @@ try {
   sessionStorage.removeItem(updateDraftKey);
   if (saved && Date.now() - saved.savedAt < 86400000 && typeof saved.drafts === 'object' && saved.drafts) {
     ui.updateSnapshotRestored = true;
+    ui.historyEpoch = saved.historyEpoch ?? null;
     ui.drafts = Object.fromEntries(Object.entries(saved.drafts).filter(([, value]) => typeof value === 'string'));
     ui.draftTargets = Object.fromEntries(Object.entries(saved.targets || {}).filter(([, value]) => typeof value === 'string'));
     ui.draftAttachments = Object.fromEntries(Object.entries(saved.attachments || {}).filter(([, value]) => Array.isArray(value)).map(([room, items]) => [room, items.filter(item => item.status === 'ready' && attachmentUrl(item.attachment)).slice(0, attachmentLimit)]));
@@ -216,7 +218,7 @@ try {
         messages[entry.clientId] = { ...entry, roomId, status: entry.status === 'sent' ? 'sent' : 'failed', error: entry.status === 'sent' ? '' : '尚未确认送达，可重试' };
       }
     }
-    if (typeof saved.roomId === 'string') { ui.roomId = saved.roomId; ui.mobileRoom = !!saved.mobileRoom; }
+    if (typeof saved.roomId === 'string') { ui.roomId = saved.roomId; ui.mobileRoom = !!saved.mobileRoom; ui.roomChosenByUser = !!saved.roomChosenByUser; }
     if (saved.reply && typeof saved.reply.id === 'string' && typeof saved.reply.content === 'string') ui.reply = saved.reply;
   }
 } catch { /* A blocked or invalid session snapshot must not block the workspace. */ }
@@ -245,7 +247,8 @@ function queueLocalMessage(roomId, payload, attachments) {
   return entries[clientId] = { roomId, clientId, payload, message, status: 'sending', error: '' };
 }
 async function sendLocalMessage(entry, scrollToEnd = false) {
-  if (!entry || entry.status === 'sent' || ui.sendingRooms.has(entry.roomId)) return;
+  if (!entry || entry.status === 'sent' || ui.sendingRooms.has(entry.roomId) || ui.localMessages?.[entry.roomId]?.[entry.clientId] !== entry) return;
+  const generation = ui.historyGeneration || 0;
   ui.sendingRooms.add(entry.roomId); entry.status = 'sending'; entry.error = '';
   render();
   const messages = $('.messages');
@@ -255,13 +258,15 @@ async function sendLocalMessage(entry, scrollToEnd = false) {
   }
   try {
     const message = await api(`/api/rooms/${encodeURIComponent(entry.roomId)}/messages`, 'POST', { ...entry.payload, clientId: entry.clientId });
+    if (generation !== (ui.historyGeneration || 0)) return;
     if (!message?.id || message.clientId !== entry.clientId || message.roomId !== entry.roomId) throw new Error('服务器回执不完整，请重试确认');
     entry.message = message; entry.status = 'sent'; entry.error = '';
   } catch (error) {
     // An SSE-triggered GET may already have confirmed this message before POST fails.
-    if (entry.status !== 'sent') { entry.status = 'failed'; entry.error = error.message; toast('消息尚未确认送达，可在消息下方重试。', true); }
+    if (generation === (ui.historyGeneration || 0) && entry.status !== 'sent') { entry.status = 'failed'; entry.error = error.message; toast('消息尚未确认送达，可在消息下方重试。', true); }
   } finally {
-    ui.sendingRooms.delete(entry.roomId); render(); scheduleRefresh();
+    if (generation === (ui.historyGeneration || 0)) ui.sendingRooms.delete(entry.roomId);
+    render(); scheduleRefresh();
   }
 }
 let refreshTimer;
@@ -422,14 +427,26 @@ function render() {
 function restoreFocus(saved) { if (!saved.focusId) return; const target = document.getElementById(saved.focusId); if (target) { target.focus({ preventScroll: true }); if (saved.start != null && target.setSelectionRange && !['number','email','file'].includes(target.type)) target.setSelectionRange(saved.start, saved.end); } }
 function resizeComposer(input) { if (!input) return; input.style.height = 'auto'; const height = input.scrollHeight; input.style.height = `${Math.min(150, height)}px`; input.style.overflowY = height > 150 ? 'auto' : 'hidden'; }
 
-function roomNotices(room) {
-  const failed = ui.roomJobs.filter(job => ['failed', 'interrupted'].includes(job.status));
+function unresolvedJobLeaves(jobs = ui.roomJobs, messages = ui.messages) {
+  const parents = new Set(jobs.map(job => job.retryOf).filter(Boolean));
+  return jobs.filter(job => !parents.has(job.id) && ['failed', 'interrupted'].includes(job.status) && !messages.some(message =>
+    message.jobId === job.id && message.replyTo === job.messageId && message.senderId === job.botId && message.kind !== 'error'));
+}
+function messageJobNotices(messageId, failures) {
+  return failures.filter(job => job.messageId === messageId).map(job => {
+    const retrying = ui.retryingJobs?.has(job.id);
+    return `<div class="job-notice" data-job-id="${esc(job.id)}" role="status"><div><strong>${esc(nameOf(job.botId))} 的${job.lane === 'deep' ? '深聊' : '回复'}${job.status === 'interrupted' ? '已中断' : '未完成'}</strong><p>${esc(job.error || '可根据当前状态重新尝试。')}</p></div><button class="small-button" data-action="retry-job" data-id="${esc(job.id)}" ${retrying ? 'disabled' : ''}>${retrying ? '正在安排…' : '重新尝试'}</button></div>`;
+  }).join('');
+}
+function roomNotices(room, failures = unresolvedJobLeaves()) {
   const conclusion = room?.conclusion ? `<details class="conclusion-panel" open><summary>${icon('knowledge', 14)} 深聊结论</summary><div class="message-content">${richText(room.conclusion)}</div>${room.conclusionId ? `<button class="text-button" data-action="open-knowledge" data-id="${esc(room.conclusionId)}">查看知识记录 ${icon('arrow', 12)}</button>` : ''}</details>` : '';
-  return `${conclusion}${failed.map(job => `<div class="job-notice"><div><strong>${esc(nameOf(job.botId))} 的${job.lane === 'deep' ? '深聊' : '回复'}${job.status === 'interrupted' ? '已中断' : '未完成'}</strong><p>${esc(job.error || '可根据当前状态重新尝试。')}</p></div><button class="small-button" data-action="retry-job" data-id="${esc(job.id)}">重新尝试</button></div>`).join('')}`;
+  const orphaned = failures.filter(job => !ui.messages.some(message => message.id === job.messageId));
+  return `${conclusion}${orphaned.length ? `<details class="historical-job-notices"><summary>历史任务记录 · ${orphaned.length}</summary><p>以下任务的原消息不在当前会话记录中。</p>${orphaned.map(job => messageJobNotices(job.messageId, [job])).join('')}</details>` : ''}`;
 }
 function agentRunVersion(run) { return JSON.stringify([run?.status, run?.toolCount, run?.finishedAt, run?.error]); }
 function visibleAgentRuns(roomId = ui.roomId) { return (state.agentRuns || []).filter(run => run.roomId === roomId && (run.status === 'running' || Number(run.toolCount) > 0)); }
 async function loadAgentRunDetails(id, force = false) {
+  const generation = ui.historyGeneration || 0;
   if (ui.agentRunRequests.has(id)) return ui.agentRunRequests.get(id);
   const run = state.agentRuns.find(item => item.id === id), version = agentRunVersion(run), previous = ui.agentRunDetails.get(id);
   if (!force && run?.status !== 'running' && previous?.version === version) return;
@@ -437,8 +454,9 @@ async function loadAgentRunDetails(id, force = false) {
     ui.agentRunDetails.set(id, { ...previous, version, loading: true, error: '' });
     try {
       const detail = await api(`/api/agent-runs/${encodeURIComponent(id)}`);
+      if (generation !== (ui.historyGeneration || 0)) return;
       ui.agentRunDetails.set(id, { detail, version, loading: false, error: '' });
-    } catch (error) { ui.agentRunDetails.set(id, { ...previous, version, loading: false, error: error.message }); }
+    } catch (error) { if (generation === (ui.historyGeneration || 0)) ui.agentRunDetails.set(id, { ...previous, version, loading: false, error: error.message }); }
     finally {
       ui.agentRunRequests.delete(id);
       if (ui.view === 'chat' && ui.agentRunsOpen.has(id) && state.agentRuns.some(item => item.id === id && item.roomId === ui.roomId)) render();
@@ -501,12 +519,14 @@ async function refresh(force = false) {
   try {
     const avatarReadEpoch = avatarSaveEpoch;
     const synced = await requestSyncedSnapshot('/api/state', ui.workspaceSnapshot ? { snapshot: ui.workspaceSnapshot, cursor: ui.workspaceCursor } : null);
+    if (!synced) return;
     const next = synced.snapshot;
     ui.workspaceSnapshot = next; ui.workspaceCursor = synced.cursor;
     void globalThis.RelayCache?.writeWorkspace(synced);
     Object.assign(state, structuredClone(next)); for (const [id, pending] of avatarSaves) { const bot = state.bots?.find(item => item.id === id); if (bot && (pending.running || pending.error || pending.savedVersion !== pending.version || avatarReadEpoch < pending.confirmedEpoch)) bot.avatar = { ...pending.target }; else if (!pending.running && !pending.error) avatarSaves.delete(id); } state.bots ||= []; state.rooms ||= []; state.works ||= []; state.agentRuns ||= []; state.routines ||= []; state.knowledge ||= { nodes: [], edges: [] };
-    if (!roomById(ui.roomId)) { ui.roomId = state.rooms[0]?.id || null; ui.reply = null; await restoreRoomMessages(ui.roomId); }
-    if (!botById(ui.botId)) ui.botId = state.bots[0]?.id || null;
+    const preferred = defaultConversationId();
+    if (!roomById(ui.roomId) || !ui.roomChosenByUser && preferred !== ui.roomId) { ui.roomId = preferred; ui.reply = null; await restoreRoomMessages(ui.roomId); }
+    if (!botById(ui.botId)) ui.botId = state.bots.find(bot => !bot.presetId)?.id || null;
     if (!state.works.some(work => work.id === ui.workId)) ui.workId = state.works[0]?.id || null;
     if (!state.knowledge.nodes?.some(node => node.id === ui.nodeId)) ui.nodeId = state.knowledge.nodes?.[0]?.id || null;
     // Publish the workspace immediately; a slow room GET must not blank the list.
@@ -521,6 +541,7 @@ async function loadCurrent() {
     const id = ui.roomId, sequence = ui.roomReadSeq[id] = (ui.roomReadSeq[id] || 0) + 1;
     const baseline = ui.messageCache.get(id);
     const synced = await requestSyncedSnapshot(`/api/rooms/${encodeURIComponent(id)}/messages`, baseline?.snapshot ? { snapshot: baseline.snapshot, cursor: baseline.cursor } : null);
+    if (!synced) return;
     const response = synced.snapshot;
     if (sequence !== ui.roomReadSeq[id]) return;
     const cached = { snapshot: response, cursor: synced.cursor, messages: Array.isArray(response) ? response : response.messages || [], jobs: response.jobs || [] }; ui.messageCache.set(id, cached);
@@ -542,11 +563,18 @@ async function loadCurrent() {
     if (ui.nodeId) ui.graph = await api(`/api/knowledge/graph?id=${encodeURIComponent(ui.nodeId)}&depth=1`);
   }
 }
+function defaultConversationId() {
+  const custom = new Set(state.bots.filter(bot => !bot.presetId).map(bot => bot.id));
+  return state.rooms.find(room => room.kind === 'dm' && room.members?.includes('user') && room.members.some(id => custom.has(id)))?.id
+    || state.rooms.find(room => room.kind !== 'dm')?.id || null;
+}
 async function restoreRoomMessages(id) {
+  const generation = ui.historyGeneration || 0;
   let cached = ui.messageCache.get(id);
   if (!cached && id && globalThis.RelayCache) {
     const stored = await globalThis.RelayCache.readRoom(id);
-    if (stored) {
+    if (generation !== (ui.historyGeneration || 0)) return;
+    if (stored && (stored.snapshot.historyEpoch ?? null) === (ui.historyEpoch ?? null)) {
       cached = { ...stored, messages: stored.snapshot.messages, jobs: stored.snapshot.jobs };
       // A live response can arrive while IndexedDB is being read.
       if (!ui.messageCache.has(id)) ui.messageCache.set(id, cached);
@@ -556,16 +584,56 @@ async function restoreRoomMessages(id) {
   if (ui.roomId !== id) return;
   ui.messages = cached?.messages || []; ui.roomJobs = cached?.jobs || []; ui.messagesRoomId = cached ? id : null;
 }
+function clientSessionSnapshot() {
+  const localMessages = Object.fromEntries(Object.entries(ui.localMessages || {}).map(([roomId, entries]) => [roomId,
+    Object.values(entries).filter(entry => !entry.remoteConfirmed && (entry.status !== 'sent' || !ui.messageCache.get(roomId)?.messages.some(message => message.clientId === entry.clientId)))]));
+  const attachments = Object.fromEntries(Object.entries(ui.draftAttachments || {}).map(([roomId, entries]) => [roomId,
+    entries.filter(entry => entry.status === 'ready').map(({ key, name, size, attachment }) => ({ key, name, size, attachment, status: 'ready' }))]));
+  return { historyEpoch: ui.historyEpoch ?? null, roomId: ui.roomId, roomChosenByUser: !!ui.roomChosenByUser, mobileRoom: ui.mobileRoom, drafts: ui.drafts, targets: ui.draftTargets, reply: ui.reply, attachments, localMessages };
+}
+async function acceptHistoryEpoch(response, requestedGeneration) {
+  const epoch = response?.historyEpoch ?? response?.snapshot?.historyEpoch ?? null;
+  if (epoch === (ui.historyEpoch ?? null)) return true;
+  // A response started before an accepted reset must never restore an older
+  // epoch, even when its room request happens to be the most recent one.
+  if (requestedGeneration !== (ui.historyGeneration || 0) || ui.retiredHistoryEpochs?.has(epoch)) { scheduleRefresh(); return false; }
+  (ui.retiredHistoryEpochs ||= new Set()).add(ui.historyEpoch ?? null);
+  ui.historyEpoch = epoch; ui.historyGeneration = (ui.historyGeneration || 0) + 1;
+  ui.messages = []; ui.roomJobs = []; ui.messagesRoomId = null;
+  ui.messageCache.clear(); ui.workspaceSnapshot = null; ui.workspaceCursor = null;
+  ui.localMessages = {}; ui.outbound = {}; ui.reply = null; ui.sendingRooms.clear();
+  ui.agentRunDetails?.clear(); ui.agentRunRequests?.clear(); ui.agentRunsOpen?.clear(); ui.agentToolsOpen?.clear(); ui.retryingJobs?.clear();
+  if (typeof state !== 'undefined') {
+    state.agentRuns = []; state.activity = []; state.works = [];
+    if (state.runtime) state.runtime.jobs = [];
+    for (const room of state.rooms || []) delete room.lastMessage;
+  }
+  try { sessionStorage.removeItem('relay:update-drafts'); } catch { /* Storage may be blocked. */ }
+  const session = clientSessionSnapshot();
+  ui.lastSessionSignature = JSON.stringify(session);
+  // UI updates immediately; durable cache clearing is a barrier for the new
+  // epoch's subsequent snapshot/session writes. Unsent drafts are retained.
+  const reset = globalThis.RelayCache?.resetHistory?.(epoch, session);
+  render();
+  await reset;
+  return true;
+}
 async function requestSyncedSnapshot(path, previous) {
   const cache = globalThis.RelayCache;
-  if (!cache) return { snapshot: await api(path), cursor: null };
-  const read = cursor => api(`${path}?sync=1${cursor ? `&since=${encodeURIComponent(cursor)}` : ''}`);
+  const read = async cursor => {
+    const generation = ui.historyGeneration || 0;
+    const response = await api(cache ? `${path}?sync=1${cursor ? `&since=${encodeURIComponent(cursor)}` : ''}` : path);
+    if (!await acceptHistoryEpoch(response, generation)) return null;
+    return response;
+  };
   const response = await read(previous?.cursor);
+  if (!response) return null;
   if (!response.sync) return { snapshot: response, cursor: null }; // Rolling server update.
   try { return { snapshot: cache.applySync(previous?.snapshot, response), cursor: response.sync.cursor }; }
   catch (error) {
     if (!previous?.cursor) throw error;
     const reset = await read(null);
+    if (!reset) return null;
     if (!reset.sync) return { snapshot: reset, cursor: null };
     return { snapshot: cache.applySync(null, reset), cursor: reset.sync.cursor };
   }
@@ -573,11 +641,7 @@ async function requestSyncedSnapshot(path, previous) {
 function persistClientSession() {
   const cache = globalThis.RelayCache;
   if (!cache || !ui.cacheReady) return;
-  const localMessages = Object.fromEntries(Object.entries(ui.localMessages || {}).map(([roomId, entries]) => [roomId,
-    Object.values(entries).filter(entry => !entry.remoteConfirmed && (entry.status !== 'sent' || !ui.messageCache.get(roomId)?.messages.some(message => message.clientId === entry.clientId)))]));
-  const attachments = Object.fromEntries(Object.entries(ui.draftAttachments || {}).map(([roomId, entries]) => [roomId,
-    entries.filter(entry => entry.status === 'ready').map(({ key, name, size, attachment }) => ({ key, name, size, attachment, status: 'ready' }))]));
-  const session = { roomId: ui.roomId, mobileRoom: ui.mobileRoom, drafts: ui.drafts, targets: ui.draftTargets, reply: ui.reply, attachments, localMessages };
+  const session = clientSessionSnapshot();
   const signature = JSON.stringify(session);
   if (signature === ui.lastSessionSignature) return;
   ui.lastSessionSignature = signature;
@@ -585,12 +649,14 @@ function persistClientSession() {
 }
 function restoreClientSession(saved) {
   if (!saved || ui.updateSnapshotRestored) return;
-  if (typeof saved.roomId === 'string' && roomById(saved.roomId)) { ui.roomId = saved.roomId; ui.mobileRoom = !!saved.mobileRoom; }
+  const selected = roomById(saved.roomId);
+  const systemRoom = selected?.kind === 'dm' && selected.members?.includes('user') && selected.members.some(id => state.bots.find(bot => bot.id === id)?.presetId);
+  if (typeof saved.roomId === 'string' && selected && (!systemRoom || saved.roomChosenByUser)) { ui.roomId = saved.roomId; ui.mobileRoom = !!saved.mobileRoom; ui.roomChosenByUser = saved.roomChosenByUser !== false; }
   ui.drafts = Object.fromEntries(Object.entries(saved.drafts || {}).filter(([, text]) => typeof text === 'string'));
   ui.draftTargets = Object.fromEntries(Object.entries(saved.targets || {}).filter(([, id]) => typeof id === 'string'));
   ui.draftAttachments = Object.fromEntries(Object.entries(saved.attachments || {}).filter(([, entries]) => Array.isArray(entries)).map(([id, entries]) =>
     [id, entries.filter(entry => entry?.status === 'ready' && attachmentUrl(entry.attachment)).slice(0, attachmentLimit)]));
-  for (const [roomId, entries] of Object.entries(saved.localMessages || {})) {
+  for (const [roomId, entries] of Object.entries((saved.historyEpoch ?? null) === (ui.historyEpoch ?? null) ? saved.localMessages || {} : {})) {
     if (!Array.isArray(entries)) continue;
     for (const entry of entries) {
       if (typeof entry?.clientId !== 'string' || typeof entry.payload?.content !== 'string' || !entry.message) continue;
@@ -598,7 +664,7 @@ function restoreClientSession(saved) {
         status: entry.status === 'sent' ? 'sent' : 'failed', error: entry.status === 'sent' ? '' : '尚未确认送达，可重试' };
     }
   }
-  if (saved.reply && typeof saved.reply.id === 'string' && typeof saved.reply.content === 'string') ui.reply = saved.reply;
+  if ((saved.historyEpoch ?? null) === (ui.historyEpoch ?? null) && saved.reply && typeof saved.reply.id === 'string' && typeof saved.reply.content === 'string') ui.reply = saved.reply;
 }
 async function restoreCachedWorkspace() {
   try {
@@ -606,11 +672,14 @@ async function restoreCachedWorkspace() {
     if (!cache) return;
     await cache.ready();
     const [workspace, session] = await Promise.all([cache.readWorkspace(), cache.readSession()]);
+    const storedEpoch = workspace?.snapshot?.historyEpoch ?? session?.historyEpoch ?? null;
+    if (ui.updateSnapshotRestored && (ui.historyEpoch ?? null) !== storedEpoch) { ui.localMessages = {}; ui.outbound = {}; ui.reply = null; }
+    ui.historyEpoch = storedEpoch;
     if (workspace) {
       ui.workspaceSnapshot = workspace.snapshot; ui.workspaceCursor = workspace.cursor;
       Object.assign(state, structuredClone(workspace.snapshot));
       restoreClientSession(session);
-      if (!roomById(ui.roomId)) ui.roomId = state.rooms[0]?.id || null;
+      if (!roomById(ui.roomId) || !ui.roomChosenByUser) ui.roomId = defaultConversationId();
       await restoreRoomMessages(ui.roomId);
       ui.loading = false;
       showConnection('已显示本机记录，正在同步最新消息…');
@@ -710,7 +779,7 @@ function openRoomForm(kind = 'group') {
     if (roomKind === 'dm' && members.length > 2) throw new Error('私聊最多选择两位成员；多人讨论请选择群聊。');
     if (roomKind === 'deep' && !data.get('goal').trim()) throw new Error('请填写深聊目标。');
     const room = await api('/api/rooms', 'POST', { name: data.get('name').trim(), kind: roomKind, members: roomKind === 'dm' && members.length === 2 ? members : ['user', ...members], goal: data.get('goal').trim(), originRoomId: data.get('originRoomId') || null });
-    ui.navigationSeq++; ui.roomId = room.id || room.room?.id; ui.view = 'chat'; location.hash = 'chat'; ui.mobileRoom = true; ui.reply = null; ui.detailOpen = false; ui.profileBotId = null; ui.avatarEditing = false; toast('会话已创建');
+    ui.roomChosenByUser = true; ui.navigationSeq++; ui.roomId = room.id || room.room?.id; ui.view = 'chat'; location.hash = 'chat'; ui.mobileRoom = true; ui.reply = null; ui.detailOpen = false; ui.profileBotId = null; ui.avatarEditing = false; toast('会话已创建');
   }, '创建会话');
 }
 function openBotForm(id) {
@@ -805,7 +874,7 @@ async function act(action, element) {
   if (action === 'close-modal') return closeModal();
   if (action === 'new-room') return openRoomForm();
   if (action === 'new-deep') return openRoomForm('deep');
-  if (action === 'select-room') { const navigationSeq = ++ui.navigationSeq; ui.roomId = id; ui.view = 'chat'; location.hash = 'chat'; ui.reply = null; ui.menu = null; ui.detailOpen = false; ui.profileBotId = null; ui.avatarEditing = false; ui.mobileRoom = true; await restoreRoomMessages(id); if (navigationSeq !== ui.navigationSeq) return; render(); await loadCurrent(); if (navigationSeq !== ui.navigationSeq) return; render(); return; }
+  if (action === 'select-room') { ui.roomChosenByUser = true; const navigationSeq = ++ui.navigationSeq; ui.roomId = id; ui.view = 'chat'; location.hash = 'chat'; ui.reply = null; ui.menu = null; ui.detailOpen = false; ui.profileBotId = null; ui.avatarEditing = false; ui.mobileRoom = true; await restoreRoomMessages(id); if (navigationSeq !== ui.navigationSeq) return; render(); await loadCurrent(); if (navigationSeq !== ui.navigationSeq) return; render(); return; }
   if (action === 'room-back') { ++ui.navigationSeq; ui.mobileRoom = false; ui.menu = null; ui.detailOpen = false; document.activeElement?.blur?.(); return render(); }
   if (action === 'reply-message') { ui.reply = mergedRoomMessages(ui.roomId, ui.messages).find(message => message.id === id && !message._delivery); render(); $('#message-input')?.focus(); return; }
   if (action === 'retry-message') return sendLocalMessage(ui.localMessages?.[ui.roomId]?.[id]);
@@ -823,7 +892,7 @@ async function act(action, element) {
     const room = existing || await api('/api/rooms', 'POST', { name: `与 ${nameOf(id)} 的私聊`, kind: 'dm', members: ['user', id] });
     if (!existing) state.rooms.push(room);
     if (navigationSeq !== ui.navigationSeq) return;
-    ui.roomId = room.id; ui.botId = id; ui.reply = null; ui.menu = null; ui.detailOpen = false; ui.profileBotId = null; ui.avatarEditing = false; ui.mobileRoom = true; ui.view = 'chat'; location.hash = 'chat'; await restoreRoomMessages(room.id); if (navigationSeq !== ui.navigationSeq) return; render(); await refresh(); return;
+    ui.roomChosenByUser = true; ui.roomId = room.id; ui.botId = id; ui.reply = null; ui.menu = null; ui.detailOpen = false; ui.profileBotId = null; ui.avatarEditing = false; ui.mobileRoom = true; ui.view = 'chat'; location.hash = 'chat'; await restoreRoomMessages(room.id); if (navigationSeq !== ui.navigationSeq) return; render(); await refresh(); return;
   }
   if (action === 'new-memory') return openMemoryForm();
   if (action === 'edit-memory') return openMemoryForm(id);
@@ -837,7 +906,19 @@ async function act(action, element) {
   if (action === 'edit-edge') return openEdgeEdit(id);
   if (action === 'select-node') { ui.nodeId = id; ui.graph = null; await loadCurrent(); return render(); }
   if (action === 'open-knowledge') { ui.nodeId = id; return navigate('knowledge'); }
-  if (action === 'retry-job') { element.disabled = true; try { await api(`/api/jobs/${encodeURIComponent(id)}/retry`, 'POST', {}); toast('已重新安排处理'); await refresh(); } finally { element.disabled = false; } return; }
+  if (action === 'toggle-system-bots') { ui.systemBotsOpen = !ui.systemBotsOpen; return renderTopbar(); }
+  if (action === 'retry-job') {
+    const retrying = ui.retryingJobs ||= new Set();
+    if (retrying.has(id)) return;
+    retrying.add(id); element.disabled = true;
+    const generation = ui.historyGeneration || 0;
+    try {
+      const result = await api(`/api/jobs/${encodeURIComponent(id)}/retry`, 'POST', {});
+      if (generation !== (ui.historyGeneration || 0)) return;
+      toast(result.status === 'completed' ? '任务已经完成' : '已重新安排处理'); await refresh();
+    } finally { retrying.delete(id); element.disabled = false; if (generation === (ui.historyGeneration || 0)) render(); }
+    return;
+  }
   if (action === 'clear-search') { ui.query = ''; if ($('#knowledge-query')) $('#knowledge-query').value = ''; ui.knowledgeResults = null; return render(); }
   if (action === 'new-routine') return openRoutineForm();
   if (action === 'edit-routine') return openRoutineForm(id);
@@ -922,23 +1003,31 @@ function providerLabel() {
   if (provider.testDouble || /test.?double|regression double/i.test(provider.model || '')) return '界面验证替身';
   return provider.lastError ? '连接异常' : provider.connected ? '已连接' : provider.configured ? '已配置 · 待调用' : '未配置';
 }
+function isSystemBot(bot) { return typeof bot?.presetId === 'string' && bot.presetId.length > 0; }
+function renderBotContact(bot, selectedBot) {
+  const dm = state.rooms.find(room => room.kind === 'dm' && room.members?.includes('user') && room.members?.includes(bot.id));
+  const preview = dm?.lastMessage?.content || dm?.lastMessage?.attachments?.map(item => `[附件] ${item.name}`).join('、') || bot.role || '开始聊天';
+  const busy = (state.runtime.jobs || []).some(job => job.botId === bot.id && ['running', 'queued'].includes(job.status));
+  return `<button class="contact-row ${ui.view === 'chat' && selectedBot?.id === bot.id && !ui.profileBotId ? 'selected' : ''}" data-action="dm-bot" data-id="${esc(bot.id)}">${avatar(bot.id, 60, `sidebar:${bot.id}`)}<span class="contact-copy"><span class="contact-heading"><strong>${esc(bot.name)}</strong>${dm?.lastMessage?.createdAt ? `<time class="contact-time" datetime="${esc(dm.lastMessage.createdAt)}" title="${esc(formatTime(dm.lastMessage.createdAt, true))}">${esc(contactTime(dm.lastMessage.createdAt))}</time>` : ''}</span><span>${esc(bot.status === 'paused' ? '已暂停' : busy ? '正在处理…' : preview)}</span></span>${busy ? '<i class="activity-dot" title="正在处理"></i>' : ''}</button>`;
+}
 function renderTopbar() {
   const oldContactTop = $('.contacts-scroll')?.scrollTop || 0, oldPeerOpen = $('.peer-conversations')?.open;
   const query = (ui.roomQuery || '').trim().toLowerCase();
   const groups = state.rooms.filter(room => room.kind !== 'dm' && (!query || `${room.name} ${room.goal}`.toLowerCase().includes(query)));
-  const bots = state.bots.filter(bot => !query || `${bot.name} ${bot.role} ${bot.expertise}`.toLowerCase().includes(query));
+  const matchingBots = state.bots.filter(bot => !query || `${bot.name} ${bot.role} ${bot.expertise}`.toLowerCase().includes(query));
+  const bots = matchingBots.filter(bot => !isSystemBot(bot)), systemBots = matchingBots.filter(isSystemBot);
   const peerRooms = state.rooms.filter(room => room.kind === 'dm' && !room.members?.includes('user') && (!query || room.name.toLowerCase().includes(query)));
   const selectedBot = currentBot();
+  const selectedSystem = ui.view === 'chat' && isSystemBot(selectedBot) ? selectedBot : null;
+  if (selectedSystem && selectedSystem.id !== ui.selectedSystemBotId) ui.systemBotsOpen = true;
+  ui.selectedSystemBotId = selectedSystem?.id || null;
+  const systemOpen = ui.systemBotsOpen || !!query;
+  const systemGroup = systemBots.length ? `<section class="system-bots ${selectedSystem ? 'has-selection' : ''}" aria-label="系统 Bot"><button class="system-bots-toggle" data-action="toggle-system-bots" aria-expanded="${systemOpen}" aria-controls="system-bot-contacts">${icon('settings', 18)}<span>系统 Bot${selectedSystem ? `<small>当前：${esc(selectedSystem.name)}</small>` : ''}</span><span class="system-bots-count">${systemBots.length}</span><span aria-hidden="true">${systemOpen ? '▾' : '▸'}</span></button>${systemOpen ? `<div id="system-bot-contacts">${systemBots.map(bot => renderBotContact(bot, selectedBot)).join('')}</div>` : '<div id="system-bot-contacts" hidden></div>'}</section>` : '';
   const activeWorks = state.works.filter(work => ['queued', 'running', 'waiting'].includes(work.status)).length;
   const menu = ui.menu === 'create' ? `<div class="context-menu create-menu"><button data-action="new-bot">${icon('person', 19)}创建新 Bot</button><button data-action="new-room">${icon('people', 19)}创建群聊</button><button data-action="new-deep">${icon('layers', 19)}创建深聊</button></div>` : '';
   const appMenu = ui.menu === 'apps' ? `<div class="context-menu apps-menu"><div class="menu-title">连接应用</div><div class="connection-row"><span class="app-emblem flash">D</span><div><strong>DeepSeek Flash</strong><small class="${state.provider.lastError ? 'error-text' : ''}">${esc(providerLabel())}</small></div><button class="icon-button" data-action="refresh" title="刷新状态" aria-label="刷新状态">${icon('refresh', 17)}</button></div>${state.provider.lastError ? `<p class="menu-error">${esc(state.provider.lastError)}</p>` : ''}<div class="connection-row"><span class="app-emblem codex">${icon('computer', 21)}</span><div><strong>Codex</strong><small>${activeWorks ? `${activeWorks} 项工作进行中` : '专业执行端'}</small></div></div><div class="menu-separator"></div>${tabs.filter(tab => tab.id !== 'chat').map(tab => `<button data-action="navigate" data-view="${tab.id}">${icon(tab.icon, 19)}${tab.id === 'members' ? '管理 Bot' : tab.title}${tab.id === 'works' && activeWorks ? `<span class="menu-count">${activeWorks}</span>` : ''}</button>`).join('')}<button data-action="new-event">${icon('event', 19)}投递事件</button><div class="menu-separator"></div><button data-action="display-settings">${icon('settings', 19)}显示设置</button><button data-action="install-app">${icon('install', 19)}安装到设备</button>${window.RelayPwa?.getState?.().updateAvailable ? `<button data-action="update-app">${icon('refresh', 19)}更新应用</button>` : ''}</div>` : '';
   const sidebar = $('#contact-sidebar');
-  const html = `<div class="sidebar-toolbar"><div class="search-slot ${ui.searchOpen ? 'open' : ''}">${ui.searchOpen ? `<input id="room-search" value="${esc(ui.roomQuery)}" placeholder="搜索" aria-label="搜索会话与 Bot">` : ''}<button class="round-button" data-action="toggle-search" title="搜索" aria-label="搜索">${icon('search', 24)}</button></div><div class="menu-anchor"><button class="round-button" data-action="toggle-create" aria-label="新建" title="新建" aria-expanded="${ui.menu === 'create'}">${icon('plus', 27)}</button>${menu}</div></div><div class="contacts-scroll"><div class="group-grid">${groups.map(room => `<button class="group-tile ${room.id === ui.roomId && ui.view === 'chat' ? 'selected' : ''}" data-action="select-room" data-id="${esc(room.id)}" title="${esc(room.name)}">${groupAvatar(room)}<span>${esc(room.name)}</span>${room.kind === 'deep' ? `<small>${room.status === 'concluded' ? '已结束' : '深聊'}</small>` : ''}</button>`).join('')}</div><div class="bot-contacts">${bots.map(bot => {
-    const dm = state.rooms.find(room => room.kind === 'dm' && room.members?.includes('user') && room.members?.includes(bot.id));
-    const preview = dm?.lastMessage?.content || dm?.lastMessage?.attachments?.map(item => `[附件] ${item.name}`).join('、') || bot.role || '开始聊天';
-    const busy = (state.runtime.jobs || []).some(job => job.botId === bot.id && ['running', 'queued'].includes(job.status));
-    return `<button class="contact-row ${ui.view === 'chat' && selectedBot?.id === bot.id && !ui.profileBotId ? 'selected' : ''}" data-action="dm-bot" data-id="${esc(bot.id)}">${avatar(bot.id, 60, `sidebar:${bot.id}`)}<span class="contact-copy"><span class="contact-heading"><strong>${esc(bot.name)}</strong>${dm?.lastMessage?.createdAt ? `<time class="contact-time" datetime="${esc(dm.lastMessage.createdAt)}" title="${esc(formatTime(dm.lastMessage.createdAt, true))}">${esc(contactTime(dm.lastMessage.createdAt))}</time>` : ''}</span><span>${esc(bot.status === 'paused' ? '已暂停' : busy ? '正在处理…' : preview)}</span></span>${busy ? '<i class="activity-dot" title="正在处理"></i>' : ''}</button>`;
-  }).join('')}</div>${peerRooms.length ? `<details class="peer-conversations" ${query ? 'open' : ''}><summary>Bot 之间的对话 <span>${peerRooms.length}</span>${icon('chevron', 14)}</summary>${peerRooms.map(room => `<button class="peer-room ${room.id === ui.roomId ? 'selected' : ''}" data-action="select-room" data-id="${esc(room.id)}">${groupAvatar(room, 44)}<span>${esc(room.name)}</span></button>`).join('')}</details>` : ''}${!bots.length && !groups.length ? '<div class="sidebar-empty">没有找到匹配项</div>' : ''}</div><div class="sidebar-footer"><button class="my-avatar-button" data-action="show-owner" title="设置" aria-label="设置">${avatar('user', 54)}</button><div class="menu-anchor apps-anchor"><button class="connect-apps" data-action="toggle-apps" aria-expanded="${ui.menu === 'apps'}">连接应用<span class="mini-app-icon flash">D</span><span class="mini-app-icon">${icon('computer', 15)}</span></button>${appMenu}</div></div>`;
+  const html = `<div class="sidebar-toolbar"><div class="search-slot ${ui.searchOpen ? 'open' : ''}">${ui.searchOpen ? `<input id="room-search" value="${esc(ui.roomQuery)}" placeholder="搜索" aria-label="搜索会话与 Bot">` : ''}<button class="round-button" data-action="toggle-search" title="搜索" aria-label="搜索">${icon('search', 24)}</button></div><div class="menu-anchor"><button class="round-button" data-action="toggle-create" aria-label="新建" title="新建" aria-expanded="${ui.menu === 'create'}">${icon('plus', 27)}</button>${menu}</div></div><div class="contacts-scroll"><div class="group-grid">${groups.map(room => `<button class="group-tile ${room.id === ui.roomId && ui.view === 'chat' ? 'selected' : ''}" data-action="select-room" data-id="${esc(room.id)}" title="${esc(room.name)}">${groupAvatar(room)}<span>${esc(room.name)}</span>${room.kind === 'deep' ? `<small>${room.status === 'concluded' ? '已结束' : '深聊'}</small>` : ''}</button>`).join('')}</div><div class="bot-contacts">${bots.map(bot => renderBotContact(bot, selectedBot)).join('')}</div>${systemGroup}${peerRooms.length ? `<details class="peer-conversations" ${query ? 'open' : ''}><summary>Bot 之间的对话 <span>${peerRooms.length}</span>${icon('chevron', 14)}</summary>${peerRooms.map(room => `<button class="peer-room ${room.id === ui.roomId ? 'selected' : ''}" data-action="select-room" data-id="${esc(room.id)}">${groupAvatar(room, 44)}<span>${esc(room.name)}</span></button>`).join('')}</details>` : ''}${!matchingBots.length && !groups.length ? '<div class="sidebar-empty">没有找到匹配项</div>' : ''}</div><div class="sidebar-footer"><button class="my-avatar-button" data-action="show-owner" title="设置" aria-label="设置">${avatar('user', 54)}</button><div class="menu-anchor apps-anchor"><button class="connect-apps" data-action="toggle-apps" aria-expanded="${ui.menu === 'apps'}">连接应用<span class="mini-app-icon flash">D</span><span class="mini-app-icon">${icon('computer', 15)}</span></button>${appMenu}</div></div>`;
   const signature = renderSignature(html);
   if (ui.lastSidebarHtml !== signature) { const motion = captureMotion(sidebar); sidebar.innerHTML = html; ui.lastSidebarHtml = signature; hydrateMotion(sidebar, motion); }
   if ($('.contacts-scroll')) $('.contacts-scroll').scrollTop = oldContactTop;
@@ -969,6 +1058,7 @@ function renderChat() {
   const activities = (state.activity || []).filter(message => message.returnTo?.roomId === ui.roomId && message.roomId !== ui.roomId && message.toBotId).map(message => ({ ...message, _activity: 'sent' }));
   const runs = visibleAgentRuns().map(run => ({ ...run, _agentRun: true, createdAt: run.startedAt }));
   const conversationMessages = mergedRoomMessages(ui.roomId, ui.messages);
+  const failures = unresolvedJobLeaves(ui.roomJobs, conversationMessages);
   const timeline = [...conversationMessages, ...activities, ...runs].sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
   let previousDay = '';
   const messages = timeline.map(message => {
@@ -977,12 +1067,12 @@ function renderChat() {
     const sender = message.senderId || 'system', own = sender === 'user', system = sender === 'system' || message.kind === 'event';
     const senderBot = botById(sender);
     const date = formatDay(message.createdAt), divider = date !== previousDay ? `<div class="date-divider">${esc(date)}</div>` : ''; previousDay = date;
-    if (system && message.kind !== 'error') return `${divider}<div class="chat-activity system-event">${icon(message.kind === 'work' ? 'work' : 'event', 17)}<span>${esc(message.content)}</span></div>`;
+    if (system && message.kind !== 'error') return `${divider}<div class="chat-activity system-event">${icon(message.kind === 'work' ? 'work' : 'event', 17)}<span>${esc(message.content)}</span></div>${messageJobNotices(message.id, failures)}`;
     const reply = message.replyTo ? conversationMessages.find(item => item.id === message.replyTo) : null;
-    return `${divider}${messageActivity(message, room)}<article data-message-id="${esc(message.id)}" data-motion-key="message:${esc(message.clientId || message.id)}" class="chat-message ${own ? 'outgoing' : 'incoming'} ${isGroup ? 'in-group' : ''} ${message.kind === 'error' ? 'error' : ''}">${isGroup && !own ? `<button class="message-avatar-button" data-action="open-bot-details" data-id="${esc(sender)}" title="${esc(nameOf(sender))}">${avatar(sender, 38, `message:${message.id}`)}</button>` : ''}<div class="bubble-column">${isGroup && !own ? `<button class="speaker-name" style="color:${esc(senderBot ? botAvatar(senderBot).color : '#777777')}" data-action="open-bot-details" data-id="${esc(sender)}">${esc(nameOf(sender))}</button>` : ''}<div class="message-bubble" tabindex="0" title="${esc(formatTime(message.createdAt, true))}">${message.toBotId ? `<div class="bubble-target">致 ${esc(nameOf(message.toBotId))}</div>` : ''}${reply && own ? `<div class="bubble-reply">${esc(nameOf(reply.senderId))}：${esc(reply.content?.slice(0, 100))}</div>` : ''}${message.content ? `<div class="message-content">${richText(message.content)}</div>` : ''}${renderMessageAttachments(message.attachments)}</div>${renderSendStatus(message)}<div class="bubble-actions" ${message._delivery ? 'hidden' : ''}><span>${formatTime(message.createdAt)}</span><button data-action="reply-message" data-id="${esc(message.id)}" title="回复" aria-label="回复">${icon('back', 17)}</button><button data-action="save-message" data-id="${esc(message.id)}" title="保存为知识" aria-label="保存为知识">${icon('knowledge', 17)}</button></div></div></article>`;
+    return `${divider}${messageActivity(message, room)}<article data-message-id="${esc(message.id)}" data-motion-key="message:${esc(message.clientId || message.id)}" class="chat-message ${own ? 'outgoing' : 'incoming'} ${isGroup ? 'in-group' : ''} ${message.kind === 'error' ? 'error' : ''}">${isGroup && !own ? `<button class="message-avatar-button" data-action="open-bot-details" data-id="${esc(sender)}" title="${esc(nameOf(sender))}">${avatar(sender, 38, `message:${message.id}`)}</button>` : ''}<div class="bubble-column">${isGroup && !own ? `<button class="speaker-name" style="color:${esc(senderBot ? botAvatar(senderBot).color : '#777777')}" data-action="open-bot-details" data-id="${esc(sender)}">${esc(nameOf(sender))}</button>` : ''}<div class="message-bubble" tabindex="0" title="${esc(formatTime(message.createdAt, true))}">${message.toBotId ? `<div class="bubble-target">致 ${esc(nameOf(message.toBotId))}</div>` : ''}${reply && own ? `<div class="bubble-reply">${esc(nameOf(reply.senderId))}：${esc(reply.content?.slice(0, 100))}</div>` : ''}${message.content ? `<div class="message-content">${richText(message.content)}</div>` : ''}${renderMessageAttachments(message.attachments)}</div>${renderSendStatus(message)}<div class="bubble-actions" ${message._delivery ? 'hidden' : ''}><span>${formatTime(message.createdAt)}</span><button data-action="reply-message" data-id="${esc(message.id)}" title="回复" aria-label="回复">${icon('back', 17)}</button><button data-action="save-message" data-id="${esc(message.id)}" title="保存为知识" aria-label="保存为知识">${icon('knowledge', 17)}</button></div>${messageJobNotices(message.id, failures)}</div></article>`;
   }).join('');
   const chatMenu = ui.menu === 'chat-menu' ? `<div class="context-menu chat-menu"><button data-action="toggle-details">${icon('info', 19)}查看${isGroup ? '群聊' : 'Bot'}详情</button><button data-action="copy-conversation">${icon('copy', 19)}复制会话文字</button><button data-action="display-settings">${icon('settings', 19)}显示设置</button><button data-action="new-work">${icon('work', 19)}委托工作</button><button data-action="new-deep">${icon('layers', 19)}发起深聊</button>${room?.kind === 'deep' && room.status !== 'concluded' ? `<button data-action="conclude-room">${icon('check', 19)}结束深聊</button>` : ''}</div>` : '';
-  return `<div data-room-id="${esc(ui.roomId)}" data-ready="${ui.messagesRoomId === ui.roomId}" class="chat-layout ${ui.detailOpen ? 'detail-open' : ''}" style="--accent:${esc(accent)}"><section class="conversation"><div class="floating-header"><button class="mobile-back icon-button" data-action="room-back" aria-label="返回会话">${icon('chevronBack', 23)}</button><button class="chat-title-pill" data-action="toggle-details" aria-expanded="${!!ui.detailOpen}" title="查看${isGroup ? '会话' : 'Bot'}详情">${bot ? avatar(bot.id, 39, 'slot:title') : groupAvatar(room, 38, 'slot:title-group')}<span>${esc(title)}</span></button><div class="mobile-chat-actions menu-anchor"><button class="round-button" data-action="toggle-chat-menu" aria-label="会话更多操作" aria-expanded="${ui.menu === 'chat-menu'}">${icon('more', 22)}</button>${chatMenu}</div></div>${room ? `<div class="messages ${isGroup ? 'group-messages' : ''}" role="log" aria-label="聊天记录">${messages || `<div class="conversation-empty">${bot ? avatar(bot.id, 104, 'slot:empty') : groupAvatar(room, 98)}<span>${esc(title)}</span><p>${esc(ui.messagesRoomId === ui.roomId ? room.goal || '发一条消息开始聊天' : '正在读取消息…')}</p></div>`}${roomNotices(room)}<div class="typing-status">${jobs.length ? `${avatar(jobs[0].botId, 43, `typing:${ui.roomId}`)}<span>${jobs.some(job => job.status === 'running') ? '正在处理' : '等待回复'}<span class="typing-ellipsis">…</span></span>` : ''}</div></div><div class="composer-wrap">${room.status === 'concluded' ? `<div class="closed-notice">深聊已结束 <button class="text-button" data-action="new-deep">发起新的深聊</button></div>` : `${ui.reply ? `<div class="reply-preview"><span>回复 ${esc(nameOf(ui.reply.senderId))}：${esc(ui.reply.content?.slice(0, 100))}</span><button class="icon-button" data-action="cancel-reply" aria-label="取消回复">${icon('close', 16)}</button></div>` : ''}${renderAttachmentDrafts()}<form id="message-form" class="composer" data-room-id="${esc(ui.roomId)}"><div class="menu-anchor"><button class="composer-plus" type="button" data-action="attach-file" aria-label="添加附件" ${ui.sendingRooms.has(ui.roomId) ? 'disabled' : ''}>${icon('plus', 28)}</button></div><textarea id="message-input" name="content" rows="1" aria-label="消息内容" placeholder="给 ${esc(title)} 发消息">${esc(ui.drafts[ui.roomId] || '')}</textarea><select id="message-target" class="message-target ${isGroup ? '' : 'visually-hidden'}" aria-label="消息对象"><option value="">${isGroup ? '@' : '成员'}</option>${members.map(item => `<option value="${esc(item.id)}" ${ui.draftTargets[ui.roomId] === item.id ? 'selected' : ''}>@ ${esc(item.name)}</option>`).join('')}</select><button type="submit" class="composer-send" ${sendBusy() ? 'disabled' : ''} title="发送消息" aria-label="发送消息">${icon('send', 22)}</button></form>`}</div>` : `<div class="conversation-empty"><p>选择一位 Bot，开始聊天</p><button class="secondary-button" data-action="new-bot">创建新 Bot</button></div>`}</section>${ui.detailOpen ? renderDetailPanel(room, profileBot()) : ''}</div>`;
+  return `<div data-room-id="${esc(ui.roomId)}" data-ready="${ui.messagesRoomId === ui.roomId}" class="chat-layout ${ui.detailOpen ? 'detail-open' : ''}" style="--accent:${esc(accent)}"><section class="conversation"><div class="floating-header"><button class="mobile-back icon-button" data-action="room-back" aria-label="返回会话">${icon('chevronBack', 23)}</button><button class="chat-title-pill" data-action="toggle-details" aria-expanded="${!!ui.detailOpen}" title="查看${isGroup ? '会话' : 'Bot'}详情">${bot ? avatar(bot.id, 39, 'slot:title') : groupAvatar(room, 38, 'slot:title-group')}<span>${esc(title)}</span></button><div class="mobile-chat-actions menu-anchor"><button class="round-button" data-action="toggle-chat-menu" aria-label="会话更多操作" aria-expanded="${ui.menu === 'chat-menu'}">${icon('more', 22)}</button>${chatMenu}</div></div>${room ? `<div class="messages ${isGroup ? 'group-messages' : ''}" role="log" aria-label="聊天记录">${messages || `<div class="conversation-empty">${bot ? avatar(bot.id, 104, 'slot:empty') : groupAvatar(room, 98)}<span>${esc(title)}</span><p>${esc(ui.messagesRoomId === ui.roomId ? room.goal || '发一条消息开始聊天' : '正在读取消息…')}</p></div>`}${roomNotices(room, failures)}<div class="typing-status">${jobs.length ? `${avatar(jobs[0].botId, 43, `typing:${ui.roomId}`)}<span>${jobs.some(job => job.status === 'running') ? '正在处理' : '等待回复'}<span class="typing-ellipsis">…</span></span>` : ''}</div></div><div class="composer-wrap">${room.status === 'concluded' ? `<div class="closed-notice">深聊已结束 <button class="text-button" data-action="new-deep">发起新的深聊</button></div>` : `${ui.reply ? `<div class="reply-preview"><span>回复 ${esc(nameOf(ui.reply.senderId))}：${esc(ui.reply.content?.slice(0, 100))}</span><button class="icon-button" data-action="cancel-reply" aria-label="取消回复">${icon('close', 16)}</button></div>` : ''}${renderAttachmentDrafts()}<form id="message-form" class="composer" data-room-id="${esc(ui.roomId)}"><div class="menu-anchor"><button class="composer-plus" type="button" data-action="attach-file" aria-label="添加附件" ${ui.sendingRooms.has(ui.roomId) ? 'disabled' : ''}>${icon('plus', 28)}</button></div><textarea id="message-input" name="content" rows="1" aria-label="消息内容" placeholder="给 ${esc(title)} 发消息">${esc(ui.drafts[ui.roomId] || '')}</textarea><select id="message-target" class="message-target ${isGroup ? '' : 'visually-hidden'}" aria-label="消息对象"><option value="">${isGroup ? '@' : '成员'}</option>${members.map(item => `<option value="${esc(item.id)}" ${ui.draftTargets[ui.roomId] === item.id ? 'selected' : ''}>@ ${esc(item.name)}</option>`).join('')}</select><button type="submit" class="composer-send" ${sendBusy() ? 'disabled' : ''} title="发送消息" aria-label="发送消息">${icon('send', 22)}</button></form>`}</div>` : `<div class="conversation-empty"><p>选择一位 Bot，开始聊天</p><button class="secondary-button" data-action="new-bot">创建新 Bot</button></div>`}</section>${ui.detailOpen ? renderDetailPanel(room, profileBot()) : ''}</div>`;
 }
 function renderDetailPanel(room, bot) {
   const tab = ui.detailTab || 'details', isBot = !!bot;

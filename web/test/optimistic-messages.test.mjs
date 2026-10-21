@@ -165,3 +165,17 @@ test('a malformed POST receipt keeps the message available for retry instead of 
   assert.equal(f.context.mergedRoomMessages('room-a')[0].content, 'needs matching receipt');
 });
 
+test('history reset invalidates an in-flight POST and its old retry handle without losing a new draft', async () => {
+  const post = deferred(), f = fixture(() => post.promise);
+  const sending = f.submit('old confirmed message');
+  const entry = f.context.localRoomMessages('room-a')[0];
+  f.ui.drafts['room-a'] = 'new unsent draft';
+  await f.context.acceptHistoryEpoch({ historyEpoch: 'cleared' }, 0);
+  post.resolve(received(entry)); await sending;
+  assert.equal(f.context.mergedRoomMessages('room-a', []).length, 0);
+  assert.equal(f.ui.drafts['room-a'], 'new unsent draft');
+  assert.equal(f.notices.length, 0);
+  await f.context.sendLocalMessage(entry);
+  assert.equal(f.calls.length, 1, 'a stale retry handle cannot send the cleared message again');
+});
+

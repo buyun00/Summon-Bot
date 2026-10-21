@@ -11,6 +11,8 @@ const pause = milliseconds => new Promise(resolvePause => setTimeout(resolvePaus
 export const deploymentPath = dataRoot => join(resolve(dataRoot), 'config', 'deployment.json');
 export const serviceRunPath = (dataRoot, type) => join(dataRoot, type === 'web' ? 'web' : 'capabilities/gateway', 'run', 'current.json');
 const token = () => randomBytes(32).toString('base64url');
+const transientStartupHandshake = error => error.code === 'SERVICE_IDENTITY_UNAVAILABLE'
+  && ['SERVICE_HANDSHAKE_TIMEOUT', 'SERVICE_HANDSHAKE_INCOMPLETE', 'ECONNRESET', 'EPIPE'].includes(error.cause?.code);
 
 export async function initializeDeployment({ dataRoot, releaseRoot, defaultCwd, publicOrigin = '', port = 8787 } = {}) {
   dataRoot = resolve(dataRoot); releaseRoot = resolve(releaseRoot);
@@ -52,9 +54,9 @@ export async function inspectService(config, type) {
     const response = await fetch(new URL('/health', run.controlUrl), { headers: { Authorization: `Bearer ${config.controlToken}` }, signal: AbortSignal.timeout(2000) });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const actual = await response.json();
-    if (actual.bootId !== run.bootId || actual.pid !== run.pid || actual.type !== type) throw new Error('Service identity mismatch');
+    if (actual.bootId !== run.bootId || actual.pid !== run.pid || actual.type !== type) throw Object.assign(new Error('Service identity mismatch'), { code: 'SERVICE_IDENTITY_MISMATCH' });
     return actual;
-  } catch { return { ...run, state: 'unreachable' }; }
+  } catch (error) { if (error.code === 'SERVICE_IDENTITY_MISMATCH') throw error; return { ...run, state: 'unreachable' }; }
 }
 
 export async function launchService(config, type, { foreground = false, timeoutMs = 180000 } = {}) {
@@ -81,14 +83,27 @@ export async function launchService(config, type, { foreground = false, timeoutM
   });
   child.unref();
   const deadline = Date.now() + timeoutMs;
+  let lastHandshakeError;
   try {
     while (Date.now() < deadline) {
       if (failure) throw failure;
-      const next = await inspectService(config, type);
-      if (next.state === 'ready' && next.pid === child.pid) return next;
-      await pause(150);
+      let next;
+      try { next = await inspectService(config, type); }
+      catch (error) {
+        if (failure) throw failure;
+        // Only re-observe the child we already spawned. Uncertain ownership is
+        // never permission to spawn again or to report successful startup.
+        if (!transientStartupHandshake(error)) throw error;
+        lastHandshakeError = error;
+      }
+      if (failure) throw failure;
+      if (next && next.state !== 'stopped' && next.pid !== child.pid) throw Object.assign(new Error(`${type} startup identity belongs to another process`), { code: 'SERVICE_IDENTITY_MISMATCH' });
+      if (Date.now() >= deadline) break;
+      if (next?.state === 'ready') return next;
+      await pause(Math.min(150, deadline - Date.now()));
     }
-    throw new Error(`${type} is still loading; inspect its logs before retrying (PID ${child.pid})`);
+    if (failure) throw failure;
+    throw Object.assign(new Error(`${type} did not become ready before the startup deadline; inspect its identity and logs before retrying (PID ${child.pid})`, { cause: lastHandshakeError }), { code: 'SERVICE_STARTUP_TIMEOUT' });
   } finally { if (child.connected) child.disconnect(); }
 }
 

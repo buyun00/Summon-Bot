@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { copyTree, walk, readJson, writeJson, digest, within, parseArgs } from './files.mjs';
 
 export const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const directories = ['bot', 'web', 'capabilities', 'roles', 'skills', 'scripts/build', 'scripts/installation', 'scripts/migration'];
+const directories = ['bot', 'web', 'capabilities', 'roles', 'skills', 'scripts/build', 'scripts/installation', 'scripts/migration', 'scripts/maintenance'];
 const rootFiles = ['package.json', 'package-lock.json', 'README.md', 'Start.ps1', 'Stop.ps1', 'Run.cmd'];
 const include = name => !name.split('/').some(part => ['node_modules', '.git', '.relay', 'test', 'tests', 'coverage', 'dist'].includes(part)
   || /^\.env(?:\.|$)/.test(part) || /(?:\.sqlite(?:-\w+)?|\.log|\.tmp)$/.test(part));

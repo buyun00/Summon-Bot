@@ -120,3 +120,10 @@
  .create-bot-modal #modal-content{max-height:calc(var(--ui-vh) - 26px)}
 }
 
+/* System instances stay reachable without crowding personal contacts. */
+.system-bots{margin:18px 16px 10px;border-top:1px solid #e5e5e5;padding-top:10px}
+.system-bots-toggle{display:flex;align-items:center;gap:10px;width:100%;min-height:48px;padding:10px 12px;border:0;border-radius:12px;background:transparent;color:inherit;text-align:left;font:inherit;cursor:pointer}
+.system-bots-toggle>span:first-of-type{flex:1;font-weight:600}.system-bots-toggle small{display:block;margin-top:3px;font-size:.8em;font-weight:400;color:#777}
+.system-bots-count{font-size:.85em;color:#777}.system-bots-toggle:hover,.system-bots.has-selection>.system-bots-toggle{background:#ededed}.system-bots .contact-row{width:100%}
+.bubble-column>.job-notice{margin:8px 0 14px;max-width:100%;overflow-wrap:anywhere}.historical-job-notices{margin:18px 0;color:#777;font-size:14px}.historical-job-notices>summary{cursor:pointer}.historical-job-notices>p{margin:10px 0}
+@media(max-width:820px){.system-bots{border-top-color:#2f2f2f;margin:14px 12px 10px}.system-bots-toggle{color:#ddd;min-height:48px}.system-bots-toggle:hover,.system-bots.has-selection>.system-bots-toggle{background:#232323}.system-bots-toggle small,.system-bots-count{color:#aaa}}

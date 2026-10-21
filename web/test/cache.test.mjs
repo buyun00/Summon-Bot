@@ -23,6 +23,14 @@ function fakeStorage() {
     createObjectStore(name) { stores.set(name, new Map()); },
     close() {},
     transaction(name, mode) {
+      if (Array.isArray(name)) {
+        const actions = [], tx = { objectStore(store) { return {
+          clear() { actions.push(() => stores.get(store).clear()); },
+          put(value, key) { actions.push(() => stores.get(store).set(key, clone(value))); },
+        }; }, abort() { tx.onabort?.(); } };
+        setTimeout(() => { for (const action of actions) action(); tx.oncomplete?.(); }, 1);
+        return tx;
+      }
       const tx = {
         objectStore() {
           return {
@@ -77,6 +85,27 @@ function load(indexedDB) {
   vm.runInContext(source, context);
   return window.RelayCache;
 }
+
+test('history reset drains old queued writes and atomically clears IndexedDB across a fresh page', async () => {
+  const storage = fakeStorage(), cache = load(storage.indexedDB);
+  await cache.writeWorkspace({ snapshot: workspace(), cursor: 'old-workspace' });
+  await cache.writeRoom('room-a', { snapshot: room(), cursor: 'old-room' });
+  await cache.writeSession({ drafts: { 'room-a': 'keep this draft' }, localMessages: { old: 'old message' } });
+  storage.control.writeDelays.push(35);
+  const staleWrite = cache.writeRoom('room-a', { snapshot: room(), cursor: 'stale-pending' });
+  const resetting = cache.resetHistory('new-epoch', { drafts: { 'room-a': 'keep this draft' }, localMessages: {} });
+  const next = { ...room(), historyEpoch: 'new-epoch', messages: [] };
+  const newWrite = cache.writeRoom('room-a', { snapshot: next, cursor: 'new-room' });
+  await Promise.all([staleWrite, resetting, newWrite]);
+  const reloaded = load(storage.indexedDB);
+  assert.equal(await reloaded.readWorkspace(), null);
+  assert.equal((await reloaded.readRoom('room-a')).cursor, 'new-room');
+  assert.equal((await reloaded.readRoom('room-a')).snapshot.messages.length, 0);
+  const session = await reloaded.readSession();
+  assert.equal(session.historyEpoch, 'new-epoch');
+  assert.deepEqual(session.localMessages, {});
+  assert.equal(session.drafts['room-a'], 'keep this draft');
+});
 
 test('snapshot and cursor survive a fresh page with complete message history', async () => {
   const storage = fakeStorage(), cache = load(storage.indexedDB);

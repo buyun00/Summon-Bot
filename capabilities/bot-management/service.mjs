@@ -29,14 +29,23 @@ export class BotManager {
     const dir=this.directory(id), token=randomBytes(32).toString('hex'), capabilityToken=randomBytes(32).toString('hex');
     await mkdir(dir,{recursive:true}); await mkdir(join(dir,'workspace'),{recursive:true});
     const config={schemaVersion:1,botId:id,dataDir:dir,workspace:input.cwd?resolve(input.cwd):join(dir,'workspace'),model:{...this.model,...input.modelConfig},prompt:input.prompt||await readFile(join(this.releaseRoot,'roles',roleId,'prompt.md'),'utf8'),skills:(profile.skills||[]).map(skill=>join(this.releaseRoot,'skills',skill)),bundleRoot:this.releaseRoot,bundledSkills:profile.skills||[],token,listen:{host:'127.0.0.1',port:0},concurrency:1,tools:[],limits:input.limits};
-    const bot=this.store.save('bots',{id,name:required(input.name||profile.name,'name',100),role:input.role||profile.role,roleId,expertise:input.expertise||profile.role,prompt:input.prompt||'',status:input.status==='paused'?'paused':'active',skills:profile.skills,model:config.model.model||'deepseek-flash',executor:'codex',capabilityToken,allowedTools:profile.tools,runIntent:'stopped',...(input.avatar?{avatar:avatarOf(input.avatar)}:{})});
+    const bot=this.store.save('bots',{id,name:required(input.name||profile.name,'name',100),role:input.role||profile.role,roleId,creationSource:'custom',expertise:input.expertise||profile.role,prompt:input.prompt||'',status:input.status==='paused'?'paused':'active',skills:profile.skills,model:config.model.model||'deepseek-flash',executor:'codex',capabilityToken,allowedTools:profile.tools,runIntent:'stopped',...(input.avatar?{avatar:avatarOf(input.avatar)}:{})});
     config.tools=(await this.getTools(bot)).map(tool=>({...tool,headers:{Authorization:`Bearer ${capabilityToken}`}}));
     config.bundledToolNames=config.tools.map(tool=>tool.name);
     await writeFile(join(dir,'config.json'),JSON.stringify(config,null,2),{mode:0o600});
     this.emit('bot',this.public(bot)); return this.public(bot);
   }
   async seed() {
-    for(const roleId of ['engineer','components','qa','entry','chatroom','manager','memory']) await this.create({id:`bot-${roleId}`,roleId});
+    for(const roleId of ['engineer','components','qa','entry','chatroom','manager','memory']) {
+      const id=`bot-${roleId}`,previous=this.store.get('bots',id);
+      await this.create({id,roleId});
+      // Existing installations predate explicit provenance. Only this exact
+      // fixed-ID/role pair is repaired; newly custom-created Bots are excluded.
+      if(!previous||(!previous.presetId&&!previous.creationSource&&previous.roleId===roleId)) {
+        const marked=this.store.save('bots',{id,presetId:roleId,creationSource:'preset'});
+        this.emit('bot',this.public(marked));
+      }
+    }
   }
   async update(id,input) {
     const previous=this.get(id);

@@ -22,6 +22,10 @@ import { coreTools } from '../../bot/src/capabilities/core-tools.mjs';
 const same=(a,b)=>typeof a==='string'&&typeof b==='string'&&Buffer.byteLength(a)===Buffer.byteLength(b)&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
 export async function startGateway(options={}) {
   const dataRoot=resolve(required(options.dataRoot,'dataRoot')),releaseRoot=resolve(required(options.releaseRoot,'releaseRoot')),defaultCwd=resolve(options.defaultCwd||releaseRoot),token=options.token||randomBytes(32).toString('hex');
+  // History is cleared only while every writer is stopped; one startup snapshot
+  // keeps the epoch and all responses from this process in the same generation.
+  let historyEpoch=null;
+  try{const history=JSON.parse(await readFile(join(dataRoot,'history.json'),'utf8'));historyEpoch=history.historyEpoch;if(typeof historyEpoch!=='string'||!historyEpoch||historyEpoch.length>128)throw new Error('Invalid history epoch');if(history.status&&history.status!=='complete')throw new Error('History maintenance has not completed; finish offline cleanup before starting');}catch(error){if(error.code!=='ENOENT')throw error;}
   if(!['127.0.0.1','::1'].includes(options.host||'127.0.0.1'))throw new Error('Capability gateway must use loopback');
   const clients=new Set(),stores=new Map(),pending=new Set();let url,closing=false,quiescing=false,ticking=false,monitoring=false,serviceMonitoring=false,stopBotsPromise;
   const store=name=>{if(!stores.has(name))stores.set(name,new RecordStore(join(dataRoot,'capabilities',name,'state.sqlite')));return stores.get(name);};
@@ -70,7 +74,7 @@ export async function startGateway(options={}) {
     }
     const messages=chatroom.store.list('messages'),jobs=chatroom.jobs(),runtime={started:true,fast:{running:jobs.filter(job=>['running','accepted'].includes(job.status)).length,queued:jobs.filter(job=>job.status==='queued').length},deep:{running:0,queued:0},jobs:jobs.slice(-80)};
     const latestProvider=providers.slice().sort((a,b)=>String(b.lastSuccessAt||'').localeCompare(String(a.lastSuccessAt||'')))[0]||{};
-    return {bots:manager.list(),rooms:chatroom.rooms(),routines:manager.store.list('routines'),knowledge:knowledge.graph(),runtime,activity:messages.filter(message=>message.returnTo||message.peerReplyId||['event','work'].includes(message.kind)).slice(-100),works:codex.list(),agentRuns:agentRuns.slice(-100),provider:{configured:Boolean(options.model?.apiKey||process.env[options.model?.apiKeyEnv||'DEEPSEEK_API_KEY']),model:options.model?.model||'deepseek-flash',...latestProvider},defaultCwd};
+    return {historyEpoch,bots:manager.list(),rooms:chatroom.rooms(),routines:manager.store.list('routines'),knowledge:knowledge.graph(),runtime,activity:messages.filter(message=>message.returnTo||message.peerReplyId||['event','work'].includes(message.kind)).slice(-100),works:codex.list(),agentRuns:agentRuns.slice(-100),provider:{configured:Boolean(options.model?.apiKey||process.env[options.model?.apiKeyEnv||'DEEPSEEK_API_KEY']),model:options.model?.model||'deepseek-flash',...latestProvider},defaultCwd};
   }
   function visibleTools(actor) {
     const allowed=actor==='controller'?null:manager.get(actor).allowedTools||[];
@@ -99,7 +103,7 @@ export async function startGateway(options={}) {
     if(method==='GET'&&path==='/api/health')return {ok:true,service:'relay-capabilities'};
     if(method==='GET'&&path==='/api/capabilities')return control.inventory();
     if(method==='POST'&&(match=path.match(/^\/api\/capabilities\/(register|deploy|activate|unload|grant|retire|retry|reconcile)$/)))return control.call(`capabilities_${match[1]}`,body);
-    if(method==='GET'&&path==='/api/state'){const value=await state();return params.get('sync')==='1'?sync.respond('workspace',value,params.get('since')):value;}
+    if(method==='GET'&&path==='/api/state'){const value=await state();return params.get('sync')==='1'?{...sync.respond('workspace',value,params.get('since')),historyEpoch}:value;}
     if(method==='GET'&&path==='/api/bots')return {bots:manager.list()};
     if(method==='POST'&&path==='/api/bots')return manager.create(body);
     if((match=path.match(/^\/api\/bots\/([^/]+)$/))&&method==='PATCH')return manager.update(decodeURIComponent(match[1]),body);
@@ -108,7 +112,7 @@ export async function startGateway(options={}) {
     if(method==='GET'&&path==='/api/rooms')return {rooms:chatroom.rooms()};
     if(method==='POST'&&path==='/api/rooms')return chatroom.createRoom(body);
     if((match=path.match(/^\/api\/rooms\/([^/]+)$/))&&method==='PATCH')return chatroom.updateRoom(decodeURIComponent(match[1]),body);
-    if((match=path.match(/^\/api\/rooms\/([^/]+)\/messages$/))){const id=decodeURIComponent(match[1]);if(method==='GET'){const value={room:chatroom.need('rooms',id),messages:chatroom.messages(id),jobs:chatroom.jobs(id)};return params.get('sync')==='1'?sync.respond(`room:${id}`,value,params.get('since')):value;}if(method==='POST')return chatroom.post(id,body);}
+    if((match=path.match(/^\/api\/rooms\/([^/]+)\/messages$/))){const id=decodeURIComponent(match[1]);if(method==='GET'){const value={historyEpoch,room:chatroom.need('rooms',id),messages:chatroom.messages(id),jobs:chatroom.jobs(id)};return params.get('sync')==='1'?{...sync.respond(`room:${id}`,value,params.get('since')),historyEpoch}:value;}if(method==='POST')return chatroom.post(id,body);}
     if((match=path.match(/^\/api\/rooms\/([^/]+)\/conclude$/))&&method==='POST')return chatroom.conclude(decodeURIComponent(match[1]));
     if(method==='GET'&&path==='/api/knowledge/search'){const result=knowledge.search(params.get('q')||'');return {...result,memories:params.get('botId')?(await memories.list(params.get('botId'))).map(memory=>({...memory,content:memory.text})):[]};}
     if(method==='GET'&&path==='/api/knowledge/graph')return knowledge.graph(params.get('id'),params.get('depth'));

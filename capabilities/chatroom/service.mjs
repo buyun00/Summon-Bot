@@ -93,7 +93,32 @@ export class ChatroomService {
   }
   conclude(roomId,actor='user') {const room=this.need('rooms',roomId);if(room.kind!=='deep')fail('Not a discussion room');if(room.status==='concluded')return room;const host=room.members.find(id=>this.manager.store.get('bots',id)?.roleId==='chatroom')||room.members.find(id=>id!=='user');const message=this.append(room.id,{content:'请根据实际讨论与证据形成结论，并调用 chatroom_conclude 保存结论。',kind:'event',toBotId:host},'system');return this.enqueue(message,host);}
   saveConclusion(roomId,input) {const room=this.need('rooms',roomId);if(room.status==='concluded')return room;const record=this.store.save('rooms',{...room,status:'concluded',summary:required(input.summary,'summary'),concludedAt:now()});this.emit('room',record);if(room.originRoomId&&this.store.get('rooms',room.originRoomId))this.append(room.originRoomId,{id:`conclusion:${room.id}`,content:`讨论「${room.name}」结论：\n${record.summary}`,kind:'event',hop:4},'system');return record;}
-  retry(id) {const item=this.need('deliveries',id);if(!TERMINAL.has(item.status)||item.status==='completed')fail('Only interrupted/failed work can be explicitly retried');const room=this.need('rooms',item.roomId);if(room.status==='concluded')fail('Discussion has concluded',409);if(!item.taskId)return this.store.save('deliveries',{...item,status:'queued',serviceVersion:this.version,attempts:0,error:null});const trigger=this.need('messages',item.messageId);return this.enqueue(trigger,item.botId,{id:`retry:${randomUUID()}`,retryOf:id});}
+  retry(id) {
+    const original=this.need('deliveries',id),room=this.need('rooms',original.roomId);
+    const family=[original],seen=new Set([original.id]);
+    const jobs=this.jobs(original.roomId).filter(job=>job.botId===original.botId&&job.messageId===original.messageId);
+    // A stale button may address any ancestor. Reuse an existing attempt across
+    // service versions rather than executing the same work twice.
+    for(let index=0;index<family.length;index++)for(const job of jobs){
+      if(job.retryOf===family[index].id&&!seen.has(job.id)){family.push(job);seen.add(job.id);}
+    }
+    const completed=family.find(job=>job.status==='completed');if(completed)return completed;
+    const active=family.find(job=>!TERMINAL.has(job.status));if(active)return active;
+    if(room.status==='concluded')fail('Discussion has concluded',409);
+    // Historical migrations can retain a stale failure after a final reply was
+    // recorded. Keep the evidence intact and do not replay its side effects.
+    if(this.messages(room.id).some(message=>seen.has(message.jobId)&&message.replyTo===original.messageId&&message.senderId===original.botId&&message.kind!=='error'))
+      fail('This task already has a recorded reply; inspect its history instead of retrying',409);
+    const item=family.at(-1);let retry;
+    if(!item.taskId){
+      retry=this.store.save('deliveries',{...item,status:'queued',serviceVersion:this.version,attempts:0,error:null,startedAt:null,finishedAt:null});
+      this.emit('job',retry);
+    }else{
+      const trigger=this.need('messages',item.messageId);
+      retry=this.enqueue(trigger,item.botId,{...pick(item,['instruction','peerAnswer','routineId','discussionBatch','hop','lane']),id:`retry:${randomUUID()}`,retryOf:item.id});
+    }
+    void this.tick();return retry;
+  }
   start() {this.closed=false;this.timer=setInterval(()=>void this.tick(),750);this.timer.unref();void this.tick();}
   async close() {this.closed=true;clearInterval(this.timer);while(this.busy)await new Promise(done=>setTimeout(done,20));}
 }

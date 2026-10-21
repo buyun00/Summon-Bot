@@ -13,6 +13,7 @@ import { startCapabilityService } from '../services/host.mjs';
 
 async function fixture(t,options={}) {
  const root=await mkdtemp(join(tmpdir(),'relay-gateway-')),dataRoot=join(root,'data'),project=join(root,'project');await mkdir(project);
+ if(options.historyEpoch){await mkdir(dataRoot);await writeFile(join(dataRoot,'history.json'),JSON.stringify({historyEpoch:options.historyEpoch}));}
  const gateway=await startGateway({dataRoot,releaseRoot:resolve(import.meta.dirname,'../..'),defaultCwd:project,model:{provider:'openai-compatible',model:'test',baseUrl:'http://127.0.0.1:1/v1'},botApi:async()=>({BotStore,saveArtifact,inspectBotIdentity:async()=>null}),...options});
  t.after(async()=>{await gateway.stopBots();await gateway.close();await rm(root,{recursive:true,force:true});});
  const request=async(path,body,method=body===undefined?'GET':'POST',token=gateway.token)=>fetch(gateway.url+path,{method,headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
@@ -32,6 +33,25 @@ test('gateway preserves public history, attachment references, sync and private 
  assert.equal((await request('/api/state',undefined,'GET',botToken)).status,403);
  assert.equal((await request('/tools/bots_stop',{arguments:{botId:'bot-qa'}},'POST',botToken)).status,403);
  const config=await gateway.manager.config('bot-engineer');assert.ok(config.tools.every(tool=>tool.type==='http'));assert.ok(config.skills.length);
+});
+
+test('workspace and room snapshots expose one persisted history epoch on full, reset and delta responses',async t=>{
+ const {request}=await fixture(t,{historyEpoch:'explicit-cleared-history-fixture'});
+ const room=await(await request('/api/rooms',{name:'Empty after reset',members:['user']})).json();
+ for(const path of ['/api/state',`/api/rooms/${room.id}/messages`]){
+  const full=await(await request(path)).json();assert.equal(full.historyEpoch,'explicit-cleared-history-fixture');
+  const first=await(await request(path+'?sync=1')).json();assert.equal(first.historyEpoch,full.historyEpoch);assert.equal(first.snapshot.historyEpoch,full.historyEpoch);assert.equal(first.sync.reset,true);
+  const next=await(await request(path+`?sync=1&since=${first.sync.cursor}`)).json();assert.equal(next.historyEpoch,full.historyEpoch);assert.equal(next.sync.reset,false);
+ }
+});
+
+test('an incomplete history clear blocks gateway startup before any worker is started',async t=>{
+ const dataRoot=await mkdtemp(join(tmpdir(),'relay-gateway-incomplete-history-'));
+ t.after(()=>rm(dataRoot,{recursive:true,force:true}));
+ for(const status of ['clearing','failed']){
+  await writeFile(join(dataRoot,'history.json'),JSON.stringify({historyEpoch:'incomplete-fixture',status}));
+  await assert.rejects(startGateway({dataRoot,releaseRoot:resolve(import.meta.dirname,'../..')}),/History maintenance has not completed/);
+ }
 });
 test('a real MCP SDK client initializes, discovers and calls the capability gateway',async t=>{
  const {gateway}=await fixture(t),token=gateway.manager.store.get('bots','bot-components').capabilityToken;

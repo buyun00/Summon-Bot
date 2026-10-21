@@ -347,3 +347,75 @@ test('server journal composition is accepted by the real browser cache merger ac
   assert.deepEqual(cache.applySync(client, delta), current);
 });
 
+test('history epoch clears every cached room and confirmed or retryable local bubble while retaining unsent drafts', async () => {
+  const cache = localCache(); await seed(cache);
+  await cache.writeRoom('room-b', { snapshot: room('room-b'), cursor: 'old-b' });
+  const f = fixture(cache); await f.context.restoreCachedWorkspace();
+  f.ui.localMessages['room-a'] = {
+    post: { clientId: 'post', status: 'sent', payload: { content: 'confirmed by POST only' }, message: message('post') },
+    failed: { clientId: 'failed', status: 'failed', payload: { content: 'old retry' }, message: message('failed') },
+  };
+  f.ui.outbound['room-a'] = { id: 'old-retry', signature: 'old' };
+  f.ui.reply = message('old-reply');
+  f.context.api = async () => ({ ...room('room-a', []), historyEpoch: 'cleared-1' });
+  await f.context.loadCurrent();
+  assert.equal(f.ui.historyEpoch, 'cleared-1');
+  assert.equal(f.ui.messages.length, 0);
+  assert.equal(Object.keys(f.ui.localMessages).length, 0);
+  assert.equal(Object.keys(f.ui.outbound).length, 0);
+  assert.equal(f.ui.reply, null);
+  assert.equal(f.ui.drafts['room-a'], '草稿');
+  assert.equal(await cache.readRoom('room-b'), null);
+  assert.equal(await cache.readWorkspace(), null);
+  const saved = await cache.readSession();
+  assert.equal(saved.historyEpoch, 'cleared-1');
+  assert.equal(saved.drafts['room-a'], '草稿');
+  assert.equal(Object.keys(saved.localMessages).length, 0);
+});
+
+test('a pre-reset HTTP response and a slow cached read cannot resurrect cleared messages', async () => {
+  const cache = localCache(); await seed(cache);
+  const f = fixture(cache); await f.context.restoreCachedWorkspace();
+  const pending = deferred(); f.context.api = () => pending.promise;
+  const oldGet = f.context.loadCurrent();
+  await f.context.acceptHistoryEpoch({ historyEpoch: 'cleared-2' }, 0);
+  pending.resolve({ ...room(), historyEpoch: null }); await oldGet;
+  assert.equal(f.ui.messages.length, 0); assert.equal(f.ui.messageCache.size, 0);
+  assert.equal(f.ui.historyEpoch, 'cleared-2');
+  const disk = deferred(); f.context.RelayCache = { ...cache, readRoom: () => disk.promise };
+  const oldDisk = f.context.restoreRoomMessages('room-a');
+  await f.context.acceptHistoryEpoch({ historyEpoch: 'cleared-3' }, 1);
+  disk.resolve({ snapshot: { ...room(), historyEpoch: 'cleared-2' }, cursor: 'old' }); await oldDisk;
+  assert.equal(f.ui.messages.length, 0); assert.equal(f.ui.messageCache.size, 0);
+});
+
+test('an epoch change on an incremental response requires a fresh full snapshot', async () => {
+  const f = fixture(); Object.assign(f.state, workspace());
+  const oldSnapshot = { ...room(), historyEpoch: 'old' }; f.ui.historyEpoch = 'old';
+  const requests = [];
+  f.context.api = async path => {
+    requests.push(path);
+    if (path.includes('since=')) return { historyEpoch: 'new', sync: { version: 1, scope: 'room:room-a', cursor: 'bad-delta', reset: false }, patch: { values: {}, collections: {} } };
+    return { historyEpoch: 'new', sync: { version: 1, scope: 'room:room-a', cursor: 'new-full', reset: true }, snapshot: { ...room('room-a', []), historyEpoch: 'new' } };
+  };
+  const result = await f.context.requestSyncedSnapshot('/api/rooms/room-a/messages', { snapshot: oldSnapshot, cursor: 'old-cursor' });
+  assert.equal(requests.length, 2); assert.equal(result.snapshot.messages.length, 0);
+  assert.equal(result.cursor, 'new-full');
+});
+
+test('default selection prefers a custom Bot and only explicitly selected system conversations survive restoration', async () => {
+  const f = fixture(); Object.assign(f.state, workspace());
+  f.state.bots = [{ id: 'system', presetId: 'engineer' }, { id: 'lumi', roleId: 'engineer' }];
+  f.state.rooms = [
+    { id: 'system-room', kind: 'dm', members: ['user', 'system'] },
+    { id: 'lumi-room', kind: 'dm', members: ['user', 'lumi'] },
+  ];
+  assert.equal(f.context.defaultConversationId(), 'lumi-room');
+  f.context.restoreClientSession({ roomId: 'system-room', drafts: {} });
+  assert.notEqual(f.ui.roomId, 'system-room');
+  f.context.restoreClientSession({ roomId: 'system-room', roomChosenByUser: true, drafts: {} });
+  assert.equal(f.ui.roomId, 'system-room'); assert.equal(f.ui.roomChosenByUser, true);
+  f.state.bots = f.state.bots.filter(bot => bot.presetId); f.state.rooms.pop();
+  assert.equal(f.context.defaultConversationId(), null, 'system Bots must not become the implicit default');
+});
+

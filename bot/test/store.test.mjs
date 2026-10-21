@@ -174,3 +174,27 @@ test('acceptance and multi-record imports roll back with their events when durab
   assert.equal(store.getMemory('must-rollback'), null); assert.equal(store.getState('import', 'partial'), null);
   assert.equal(store.listEvents().length, eventCount);
 });
+
+test('external history clearing removes native and migrated execution history while retaining durable facts and artifacts',async t=>{
+ const {store,open}=await fixture(t);
+ const task=store.acceptMessage(message('before-clear'),'controller','old-boot').task;
+ store.saveSession({id:'room:old',messages:[{role:'user',content:'old transcript'}],checkpoints:[{summary:'old context'}]});
+ store.saveTool({id:'old-tool',taskId:task.id,name:'read',status:'completed'});
+ store.saveOutbox({id:'old-send',status:'accepted',message:{content:'old send'}});
+ store.putMemory({id:'long-term',text:'Keep this learned fact'});store.setState('preferences','language','zh');
+ store.saveArtifact({id:'retained-file',path:'artifacts/proof.txt',sha256:'retained'});
+ const oldKinds=['agentRuns','agentSessions','jobs','toolRuns','imported-events','imported-requests','imported-sessions','imported-kv_state','imported-tool_runs'];
+ for(const kind of oldKinds)store.putRecord(kind,{id:'old',content:'historical text'});
+ store.putRecord('capability-updates',{id:'current-route',phase:'committed'});
+ store.putRecord('memories',{id:'old-long-term',text:'Keep migrated facts too'});
+ const memory=store.getMemory('long-term'),state=store.getState('preferences','language'),artifact=store.getArtifact('retained-file');
+ const result=store.clearHistory();
+ assert.equal(result.tables.messages,1);assert.equal(result.tables.tasks,1);assert.equal(result.tables.sessions,1);assert.equal(result.tables.tools,1);assert.equal(result.tables.outbox,1);assert.ok(result.tables.events>0);
+ for(const table of ['messages','tasks','sessions','tools','outbox'])assert.equal(store.list(table).length,0);assert.equal(store.listEvents().length,0);
+ for(const kind of oldKinds){assert.equal(result.records[kind],1);assert.equal(store.listRecords(kind).length,0);}
+ assert.deepEqual(store.getMemory('long-term'),memory);assert.deepEqual(store.getState('preferences','language'),state);assert.deepEqual(store.getArtifact('retained-file'),artifact);
+ assert.equal(store.getRecord('capability-updates','current-route').phase,'committed');assert.equal(store.getRecord('memories','old-long-term').text,'Keep migrated facts too');
+ const second=store.clearHistory();assert.ok(Object.values(second.tables).every(value=>value===0));assert.deepEqual(second.records,{});
+ assert.equal(store.acceptMessage(message('before-clear'),'controller','new-boot').duplicate,false,'old receipt is cleared with its history');
+ assert.throws(()=>open({readOnly:true}).clearHistory(),/readonly|read.only/i);
+});

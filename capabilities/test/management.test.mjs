@@ -44,3 +44,20 @@ test('offline delivery, parent conflict, explicit merge and recycling retain art
  assert.ok(JSON.parse(await readFile(join(dataRoot,'archives',child,'record.json'),'utf8')).deliveryId);
 });
 test('recycling without durable delivery is rejected',async t=>{const {manager}=await fixture(t);await manager.create({id:'parent'});const fork=await manager.clone({parentId:'parent',requestId:'missing-delivery',start:false});await assert.rejects(manager.archive(fork.childId),/Deliver results/);});
+
+test('only seeding marks presets; custom Bots and clones cannot inherit preset identity',async t=>{
+ const {manager,store}=await fixture(t);
+ await manager.create({id:'bot-engineer',roleId:'engineer',presetId:'engineer',creationSource:'preset'});
+ await manager.create({id:'named-like-preset',roleId:'chatroom',name:'聊天室伙伴',presetId:'chatroom'});
+ await manager.seed();
+ assert.equal(manager.get('bot-engineer').presetId,undefined,'a custom instance occupying a fixed ID is still custom');
+ assert.equal(manager.get('named-like-preset').presetId,undefined);
+ const seeded=manager.get('bot-chatroom');assert.equal(seeded.presetId,'chatroom');assert.equal(seeded.creationSource,'preset');
+ const child=await manager.clone({parentId:'bot-chatroom',requestId:'clone-preset',start:false});
+ assert.equal(manager.get(child.childId).presetId,undefined);assert.equal(manager.get(child.childId).creationSource,'custom');
+ const prior=store.get('bots','bot-entry');delete prior.creationSource;delete prior.presetId;store.import('bots',prior);
+ await manager.seed();assert.equal(manager.get('bot-entry').presetId,'entry','exact legacy fixed ID/role is backfilled by seed');
+ const modified=store.get('bots','bot-memory');delete modified.creationSource;delete modified.presetId;modified.roleId='engineer';store.import('bots',modified);
+ await manager.seed();assert.equal(manager.get('bot-memory').presetId,undefined,'fixed ID with a different role is not classified as preset');
+ const before=store.get('bots','bot-chatroom');await manager.seed();assert.deepEqual(store.get('bots','bot-chatroom'),before,'repeated seed does not rewrite existing provenance');
+});

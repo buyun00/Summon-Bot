@@ -19,6 +19,53 @@ test('public message dedup is independent of Bot execution and multiple DMs retu
 test('nested requests retain the collaboration root/hop and reject unlimited automatic handoff',t=>{const {service}=fixture(t);const room=service.createRoom({members:['user','a']});const trigger=service.post(room.id,{content:'start',toBotId:'a'});const first=service.dm('a',{targetBotId:'b',message:'first',originRoomId:room.id,originMessageId:trigger.id});const second=service.dm('b',{targetBotId:'c',message:'second',originRoomId:first.roomId,originMessageId:first.id});assert.equal(second.rootId,trigger.id);assert.equal(second.hop,2);const third=service.dm('c',{targetBotId:'a',message:'third',originRoomId:second.roomId,originMessageId:second.id});assert.equal(third.hop,3);assert.throws(()=>service.dm('a',{targetBotId:'b',message:'fourth',originRoomId:third.roomId,originMessageId:third.id}),/hop limit/);});
 test('uncertain receipt retry reuses the delivery identifier instead of creating another task',t=>{const {service,store}=fixture(t);const room=service.createRoom({members:['user','a']});const message=service.post(room.id,{content:'side effect',toBotId:'a'}),job=service.jobs().find(job=>job.messageId===message.id);store.save('deliveries',{...job,status:'interrupted',error:'Receipt not observed'});assert.equal(service.retry(job.id).id,job.id);assert.equal(service.jobs().length,1);});
 
+test('repeated retries share one attempt and a successful replacement prevents replay',async t=>{
+ const {service,store,sent}=fixture(t),room=service.createRoom({members:['user','a']});
+ const message=service.post(room.id,{content:'perform once',toBotId:'a'}),original=service.jobs(room.id)[0];
+ store.save('deliveries',{id:original.id,status:'failed',taskId:'old-task',error:'failed before a reply'});
+ const first=service.retry(original.id),second=service.retry(original.id);
+ assert.equal(first.id,second.id);assert.equal(service.jobs(room.id).length,2);
+ await service.deliver(first);
+ const completed=service.retry(original.id);assert.equal(completed.id,first.id);assert.equal(completed.status,'completed');
+ assert.equal(service.retry(first.id).id,first.id);assert.equal(sent.length,1);
+ assert.equal(service.messages(room.id).filter(item=>item.replyTo===message.id).length,1);
+ assert.equal(store.get('deliveries',original.id).status,'failed','preserve the original attempt as historical evidence');
+});
+
+test('retrying a failed replacement advances the chain and preserves its instruction',t=>{
+ const {service,store}=fixture(t),room=service.createRoom({members:['user','a']});
+ service.post(room.id,{content:'original question',toBotId:'a'});const original=service.jobs(room.id)[0];
+ store.save('deliveries',{id:original.id,status:'interrupted',taskId:'old-task',instruction:'Return the recorded peer answer',peerAnswer:{answer:'fact'},routineId:'routine'});
+ const first=service.retry(original.id);store.save('deliveries',{id:first.id,status:'failed',taskId:'second-task'});
+ const second=service.retry(original.id);assert.equal(second.retryOf,first.id);
+ assert.equal(service.retry(first.id).id,second.id);assert.equal(service.jobs(room.id).length,3);
+ assert.equal(second.instruction,'Return the recorded peer answer');assert.deepEqual(second.peerAnswer,{answer:'fact'});assert.equal(second.routineId,'routine');
+});
+
+test('a recorded reply blocks replay of a stale migrated failure, but unrelated replies do not',t=>{
+ const {service,store}=fixture(t),room=service.createRoom({members:['user','a']});
+ const message=service.post(room.id,{content:'old request',toBotId:'a'}),job=service.jobs(room.id)[0];
+ store.save('deliveries',{id:job.id,status:'interrupted',error:'Migration stopped unconfirmed work; explicit retry required'});
+ service.append(room.id,{content:'old final answer',jobId:job.id,replyTo:message.id},'a');
+ assert.throws(()=>service.retry(job.id),error=>error.status===409&&/recorded reply/.test(error.message));
+ assert.equal(store.get('deliveries',job.id).status,'interrupted');assert.equal(service.jobs(room.id).length,1);
+ const other=service.post(room.id,{content:'unrelated request',toBotId:'a'}),unanswered=service.jobs(room.id).find(item=>item.messageId===other.id);
+ store.save('deliveries',{id:unanswered.id,status:'interrupted'});
+ assert.equal(service.retry(unanswered.id).id,unanswered.id);
+});
+
+test('a retry owned by another service version is reused and uncertain receipts emit a queue event',t=>{
+ const {service,store}=fixture(t),room=service.createRoom({members:['user','a']});
+ service.post(room.id,{content:'request',toBotId:'a'});const original=service.jobs(room.id)[0];
+ store.save('deliveries',{id:original.id,status:'failed',taskId:'prior-task'});service.version='old';
+ const first=service.retry(original.id);service.version='new';
+ assert.equal(service.retry(original.id).id,first.id);assert.equal(service.retry(original.id).serviceVersion,'old');
+ const events=[];service.emit=(type,value)=>events.push({type,value});
+ store.save('deliveries',{id:first.id,status:'interrupted',taskId:null,finishedAt:'old-time'});
+ const resumed=service.retry(original.id);assert.equal(resumed.id,first.id);assert.equal(resumed.serviceVersion,'new');
+ assert.equal(resumed.finishedAt,null);assert.equal(events.at(-1).type,'job');assert.equal(events.at(-1).value.status,'queued');
+});
+
 test('deep discussion groups a host turn, waits for every participant, and obeys its round limit',async t=>{
  const {service,store,bots}=fixture(t);bots.save('bots',{id:'bot-chatroom',roleId:'chatroom',name:'Host',status:'active'});
  const origin=service.createRoom({members:['user','a']}),room=service.createRoom({kind:'deep',members:['user','a','b'],goal:'Compare actual evidence',rounds:2,originRoomId:origin.id});
