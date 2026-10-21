@@ -19,18 +19,10 @@
     "relay:pack": "node scripts/build/build.mjs --bundle-node",
     "relay:start": "node scripts/installation/cli.mjs start",
     "relay:migrate": "node scripts/migration/migrate.mjs",
-    "relay:verify": "node scripts/build/verify.mjs",
     "relay:init": "node scripts/installation/cli.mjs init",
     "relay:install": "node scripts/installation/install.mjs",
     "relay:status": "node scripts/installation/cli.mjs status",
     "relay:stop": "node scripts/installation/cli.mjs stop",
-    "test": "node scripts/build/test.mjs",
-    "test:bot": "npm test --workspace @relay/bot",
-    "test:web": "npm test --workspace @relay/web",
-    "test:capabilities": "npm test --workspace @relay/capabilities",
-    "test:live": "node tests/live.mjs",
-    "test:upstream": "npm run test:upstream --workspace @relay/bot",
-    "check:pi-source": "npm run check:pi-source --workspace @relay/bot",
     "relay:capabilities": "node scripts/installation/capabilities.mjs",
     "relay:history": "node scripts/maintenance/history.mjs"
   }

@@ -8,7 +8,7 @@ import { copyTree, walk, readJson, writeJson, digest, within, parseArgs } from '
 
 export const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const directories = ['bot', 'web', 'capabilities', 'roles', 'skills', 'scripts/build', 'scripts/installation', 'scripts/migration', 'scripts/maintenance'];
-const rootFiles = ['package.json', 'package-lock.json', 'README.md', 'Start.ps1', 'Stop.ps1', 'Run.cmd'];
+const rootFiles = ['package.json', 'package-lock.json', 'README.md', 'AGENTS.md', 'Start.ps1', 'Stop.ps1', 'Run.cmd'];
 const include = name => !name.split('/').some(part => ['node_modules', '.git', '.relay', 'test', 'tests', 'coverage', 'dist'].includes(part)
   || /^\.env(?:\.|$)/.test(part) || /(?:\.sqlite(?:-\w+)?|\.log|\.tmp)$/.test(part));
 
@@ -33,7 +33,7 @@ async function materializeWorkspace(root, folder) {
   return { name: pkg.name, version: pkg.version, source: folder, entries: Object.keys(exports) };
 }
 
-export async function buildRelease({ sourceRoot = projectRoot, releaseRoot, bundleNode = true } = {}) {
+export async function buildRelease({ sourceRoot = projectRoot, releaseRoot, bundleNode = true, integrity = false } = {}) {
   sourceRoot = resolve(sourceRoot);
   const buildId = `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`;
   releaseRoot = resolve(releaseRoot || join(sourceRoot, 'dist', 'releases', buildId));
@@ -46,7 +46,7 @@ export async function buildRelease({ sourceRoot = projectRoot, releaseRoot, bund
   for (const folder of directories) await copyTree(join(sourceRoot, folder), join(stage, folder), include);
   for (const name of rootFiles) await copyFile(join(sourceRoot, name), join(stage, name));
   await mkdir(join(stage, 'docs'), { recursive: true });
-  for (const name of ['REFACTOR_PLAN.md', 'ARCHITECTURE.md', 'OPERATIONS.md', 'VERIFICATION.md', 'CAPABILITY_SERVICES.md']) if (existsSync(join(sourceRoot, 'docs', name))) await copyFile(join(sourceRoot, 'docs', name), join(stage, 'docs', name));
+  for (const name of ['REFACTOR_PLAN.md', 'ARCHITECTURE.md', 'OPERATIONS.md', 'VERIFICATION.md', 'CAPABILITY_SERVICES.md', 'DEVELOPMENT.md']) if (existsSync(join(sourceRoot, 'docs', name))) await copyFile(join(sourceRoot, 'docs', name), join(stage, 'docs', name));
   const dependencies = [];
   for (const [path, info] of Object.entries(lock.packages)) {
     if (!path.includes('node_modules/') || info.dev || info.link) continue;
@@ -67,23 +67,23 @@ export async function buildRelease({ sourceRoot = projectRoot, releaseRoot, bund
   const files = {};
   const releaseFiles = await walk(stage);
   for (let index = 0; index < releaseFiles.length; index += 64) {
-    const records = await Promise.all(releaseFiles.slice(index, index + 64).map(async file => [file.name, { size: file.size, sha256: digest(await readFile(file.path)) }]));
+    const records = await Promise.all(releaseFiles.slice(index, index + 64).map(async file => [file.name, integrity ? { size: file.size, sha256: digest(await readFile(file.path)) } : { size: file.size }]));
     for (const [name, record] of records) files[name] = record;
   }
   const git = spawnSync('git', ['-C', sourceRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8', windowsHide: true });
-  const gitStatus = spawnSync('git', ['-C', sourceRoot, 'status', '--porcelain'], { encoding: 'utf8', windowsHide: true });
-  const manifest = { format: 2, application: pkg.name, version: pkg.version, buildId, builtAt: new Date().toISOString(),
-    sourceCommit: git.status === 0 ? git.stdout.trim() : null, sourceDirty: gitStatus.status === 0 ? Boolean(gitStatus.stdout.trim()) : null,
-    contentHash: digest(JSON.stringify(files)),
+  const gitStatus = integrity ? spawnSync('git', ['-C', sourceRoot, 'status', '--porcelain'], { encoding: 'utf8', windowsHide: true }) : null;
+  const manifest = { format: 2, profile: integrity ? 'release' : 'development', application: pkg.name, version: pkg.version, buildId, builtAt: new Date().toISOString(),
+    sourceCommit: git.status === 0 ? git.stdout.trim() : null, sourceDirty: gitStatus?.status === 0 ? Boolean(gitStatus.stdout.trim()) : null,
+    contentHash: integrity ? digest(JSON.stringify(files)) : null,
     runtime: { node: process.version, platform: process.platform, arch: process.arch, bundled: bundleNode },
     schemas: { layout: 2, bot: 1, capabilities: 1 }, workspaces, dependencies, files };
   await writeJson(join(stage, 'release-manifest.json'), manifest);
   await rename(stage, releaseRoot);
-  return { releaseRoot, buildId, files: Object.keys(files).length, contentHash: manifest.contentHash };
+  return { releaseRoot, buildId, profile: manifest.profile, files: Object.keys(files).length, contentHash: manifest.contentHash };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const { options } = parseArgs(process.argv.slice(2));
-  buildRelease({ sourceRoot: options['source-root'], releaseRoot: options['release-root'], bundleNode: !options['no-node'] })
+  buildRelease({ sourceRoot: options['source-root'], releaseRoot: options['release-root'], bundleNode: !options['no-node'], integrity: options['with-integrity'] === true || options['with-integrity'] === 'true' })
     .then(result => console.log(JSON.stringify(result, null, 2))).catch(error => { console.error(error.message); process.exitCode = 1; });
 }

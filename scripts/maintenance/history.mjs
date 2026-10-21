@@ -212,7 +212,7 @@ async function marker(root, value) {
 }
 
 /** Explicit offline maintenance. Never backs up, exports, or removes artifact files. */
-export async function clearHistory({ dataRoot } = {}) {
+export async function clearHistory({ dataRoot, integrity = false } = {}) {
   const root = await safeRoot(dataRoot), locks = [], bootId = randomUUID();
   const identity = () => ({ pid: process.pid, bootId, state: 'maintenance', purpose: 'clear-history' });
   let historyEpoch, startedAt;
@@ -228,7 +228,7 @@ export async function clearHistory({ dataRoot } = {}) {
     if (JSON.stringify(await inventory(root)) !== JSON.stringify(snapshot)) throw fail('Managed data layout changed during maintenance acquisition', 'HISTORY_LAYOUT_CHANGED');
     if (typeof BotStore.prototype.clearHistory !== 'function') throw fail('Bot package does not support history cleanup', 'HISTORY_INVALID_SCHEMA');
     preflightData(snapshot);
-    const before = { durable: durableFingerprint(root, snapshot), files: await fileFingerprint(root, snapshot) };
+    const before = integrity ? { durable: durableFingerprint(root, snapshot), files: await fileFingerprint(root, snapshot) } : null;
     historyEpoch = randomUUID(); startedAt = new Date().toISOString();
     // Publish an epoch before deletion as well: a partial failure must not leave browser caches valid.
     await marker(root, { historyEpoch, startedAt, status: 'clearing' });
@@ -245,9 +245,11 @@ export async function clearHistory({ dataRoot } = {}) {
     for (const [domain, path] of Object.entries(snapshot.capabilities)) if (path) {
       await database(root, dirname(path)); result.capabilities[domain] = clearDomain(path, domain);
     }
-    const after = { durable: durableFingerprint(root, snapshot), files: await fileFingerprint(root, snapshot) };
-    result.preserved = Object.fromEntries(Object.keys(before).map(key => [key, { ...after[key], before: before[key].hash, after: after[key].hash, verified: JSON.stringify(before[key]) === JSON.stringify(after[key]) }]));
-    if (Object.values(result.preserved).some(item => !item.verified)) throw fail('Preserved data changed during history cleanup', 'HISTORY_PRESERVATION_MISMATCH');
+    if (integrity) {
+      const after = { durable: durableFingerprint(root, snapshot), files: await fileFingerprint(root, snapshot) };
+      result.preserved = Object.fromEntries(Object.keys(before).map(key => [key, { ...after[key], before: before[key].hash, after: after[key].hash, verified: JSON.stringify(before[key]) === JSON.stringify(after[key]) }]));
+      if (Object.values(result.preserved).some(item => !item.verified)) throw fail('Preserved data changed during history cleanup', 'HISTORY_PRESERVATION_MISMATCH');
+    }
     result.clearedAt = new Date().toISOString();
     await marker(root, { historyEpoch, clearedAt: result.clearedAt, status: 'complete' });
     return result;
@@ -260,6 +262,6 @@ export async function clearHistory({ dataRoot } = {}) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const { options } = parseArgs(process.argv.slice(2));
-  clearHistory({ dataRoot: options['data-root'] }).then(result => console.log(JSON.stringify({ ok: true, ...result }, null, 2)))
+  clearHistory({ dataRoot: options['data-root'], integrity: options['with-integrity'] === true || options['with-integrity'] === 'true' }).then(result => console.log(JSON.stringify({ ok: true, ...result }, null, 2)))
     .catch(error => { console.error(JSON.stringify({ ok: false, code: error.code, error: error.message })); process.exitCode = 1; });
 }

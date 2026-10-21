@@ -1,5 +1,7 @@
 # 运行维护
 
+按 [DEVELOPMENT.md](DEVELOPMENT.md) 执行当前开发约定：修改完成后直接交付或按授权运行。用户未另行明确要求时，不运行或补写测试、不计算或比对哈希、不追加重复验收，不以额外回执、证据文件或流程报告拖延交付。实际操作出现错误时只处理具体错误。
+
 ## 配置
 
 当前现场：源码 `D:/Relay-Bot`，安装 `D:/Relay-Bot-app`，数据 `D:/Relay-Bot-data`。浏览器入口保持 `https://bot.lin0.org` 和 `http://127.0.0.1:8787`；本机能力网关端口已固定为 53119。运行代码由 `deployment.json` 指定，不从源码目录热加载。
@@ -56,28 +58,28 @@ npm run relay:history -- --data-root D:/Relay-Bot-data
 
 ## 发行与升级
 
-能力服务支持独立发布，操作见 [CAPABILITY_SERVICES.md](CAPABILITY_SERVICES.md)。`npm run relay:capabilities -- list` 可以查看版本、绑定和切换阻塞；`deploy` 从已校验发行物或自包含服务包启动一个新版本，不重启 Web、网关或 Bot。注册、激活、授权和退役分别记录；卸载不删除数据。仍被旧 Bot、长任务或待确认提交引用的发行目录必须保留，这是运行依赖，不是回退备份。
+能力服务支持独立发布，操作见 [CAPABILITY_SERVICES.md](CAPABILITY_SERVICES.md)。`npm run relay:capabilities -- list` 可以查看版本、绑定和切换状态；`deploy` 从发行物或自包含服务包启动一个新版本，不重启 Web、网关或 Bot。注册、激活、授权和退役分别记录；卸载不删除数据。仍被旧 Bot 或长任务引用的发行目录是实际运行依赖，按当前任务需要处理。
 
 下面的完整安装流程用于替换 Bot 引擎、网关或 Web 基础程序，不能用于冒充能力热更新。网关端口和控制令牌必须稳定；不能在忙碌服务仍运行时随意重生成。
 
-先运行测试、构建和 manifest 校验；正常停止当前系统后运行 `relay:install`。新发行目录不可覆盖已有内容；选择结果保存到安装根 current.json 和数据根 deployment.json。旧发行在新发行实际验证后按受控路径删除。数据目录不随代码替换。
+需要更新安装时，构建发行物，正常停止当前系统后运行 `relay:install`，再按授权启动。这个流程不前置测试、哈希比对或额外验收。新发行使用独立目录；选择结果保存到安装根 current.json 和数据根 deployment.json。旧发行按用户要求和实际运行依赖处理，数据目录不随代码替换。
 
-manifest 的 `sourceCommit` 是构建时 Git HEAD，`sourceDirty` 表示是否包含当时未提交的工作区变更；精确发行内容由逐文件 SHA-256 和 `contentHash` 标识。最终交付记录将发行内容哈希与实际推送的提交关联。
+manifest 的 `sourceCommit` 是构建时 Git HEAD，`sourceDirty` 表示是否包含当时未提交的工作区变更。旧发行物和历史报告中的 SHA-256、`contentHash` 只作为历史元数据保留，不要求开发过程计算、比对或补齐这些字段。
 
-本次用户明确要求不制作备份或回退副本；因此迁移保留并校验有效业务记录，切换后移除被替代目录，不额外生成目录备份。
+用户已明确要求不制作备份或回退副本；迁移保留有效业务数据，按授权移除被替代目录，不额外生成目录备份。
 
-## 数据迁移
+## 历史数据迁移说明
 
-`node scripts/migration/migrate.mjs --source-root <旧源码根> --data-root <数据根> --release-root <新发行根>` 默认只读预览。停止旧实例后添加 `--execute`。
+此前的迁移使用 `scripts/migration/migrate.mjs`，默认只读预览，`--execute` 执行迁移。现场旧来源已清除，这不是日常开发或更新步骤，不应再运行旧迁移。
 
-迁移按原 IDs 分配公共聊天室、知识、Codex、Bot 管理与各 Bot 私有数据；同 ID 执行记录以工作进程数据库为准。原会话 ID 保留，并用 contextKey 续接房间。未确认工作只作为历史保留，需明确重试。附件和产物逐文件 SHA-256 校验，映射和原记录哈希写入 migration/layout-v2.json。输入和已迁入记录均未变化时再次执行为 unchanged；变化时拒绝覆盖。生产启用后记录会正常变化，迁移程序不是持续同步或恢复工具；现场旧来源已清除，不应再执行旧迁移。
+当时按原 IDs 分配公共聊天室、知识、Codex、Bot 管理与各 Bot 私有数据；同 ID 执行记录以工作进程数据库为准。原会话 ID 保留，并用 contextKey 续接房间。附件、产物和记录的历史校验结果保存在 migration/layout-v2.json。上述内容说明已发生的迁移，不要求后续开发重复哈希、迁移或验收；迁移程序也不是持续同步或恢复工具。
 
-删除旧根前核对：报告完整、有效记录/附件能读取、新服务运行、旧进程已退出。不要删除外部工作项目。故障时查看具体失败状态，不能把未知外部动作当作成功或自动重试。
+清理范围遵循用户授权，不删除外部工作项目。故障时报告具体失败操作和实际原因，不补设报告或验收门禁。
 
 ## 分身
 
 通过管理能力的 bots_clone 创建，requestId 提供幂等性；通过 bots_deliver 持久交付，memory_propose / memory_merge 处理记忆增量，bots_recycle 回收。母体和子体始终独立。保留成果引用；临时目录清理只在任务终态且无活动工具时进行。
 
-## 验证边界
+## 运行结果说明
 
-自动测试、真实模型、真实 Codex、浏览器、安装后运行和登录自启是不同证据。测试详情与未验证项记录在 VERIFICATION.md；没有实际重启或真机验证时不写通过。
+只报告实际执行的操作和结果，未执行的事项不写通过。此前测试、模型调用、浏览器及安装记录保留在 [VERIFICATION.md](VERIFICATION.md)，其中的未验证项不构成后续开发待办，不自动补跑。

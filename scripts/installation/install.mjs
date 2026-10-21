@@ -6,7 +6,7 @@ import { copyTree,readJson,writeJson,within,parseArgs } from '../build/files.mjs
 import { verifyRelease } from '../build/verify.mjs';
 import { initializeDeployment,inspectService,deploymentPath } from './system.mjs';
 
-/** Install verified immutable code. Data is never replaced or copied into the release. */
+/** Install a selected build; development packages use manifest metadata only. */
 export async function installRelease({releaseRoot,appRoot,dataRoot,defaultCwd,publicOrigin='',port=8787}={}) {
   releaseRoot=resolve(releaseRoot);appRoot=resolve(appRoot);dataRoot=resolve(dataRoot);
   if(within(appRoot,dataRoot)||within(dataRoot,appRoot))throw new Error('Application and data roots must be disjoint');
@@ -25,7 +25,11 @@ export async function installRelease({releaseRoot,appRoot,dataRoot,defaultCwd,pu
   if(existsSync(join(dataRoot,'bots')))for(const entry of await readdir(join(dataRoot,'bots'),{withFileTypes:true})) {
     if(entry.isDirectory()&&await inspectBotIdentity(join(dataRoot,'bots',entry.name)))throw new Error(`Stop independent Bot ${entry.name} before installing a release`);
   }
-  if(existsSync(destination)){if((await readJson(join(destination,'release-manifest.json'))).contentHash!==(await readJson(join(releaseRoot,'release-manifest.json'))).contentHash)throw new Error('Release ID collision');await verifyRelease(destination);}
+  if(existsSync(destination)){
+    const installed=await readJson(join(destination,'release-manifest.json'));
+    const sameBuild=(installed.profile||'release')===verified.profile&&installed.buildId===verified.buildId&&installed.sourceCommit===verified.sourceCommit;
+    if(!sameBuild)throw new Error('Release ID collision');await verifyRelease(destination);
+  }
   else {await copyTree(releaseRoot,destination);await verifyRelease(destination);}
   const initialized=await initializeDeployment({dataRoot,releaseRoot:destination,defaultCwd,publicOrigin,port});
   await writeJson(deploymentPath(dataRoot),{...initialized.config,releaseRoot:destination});

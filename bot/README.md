@@ -2,9 +2,9 @@
 
 A standalone Bot with exactly one Pi Agent 1.3.0, its own SQLite transcript and durable task receipts. It has no dependency on the Relay website, rooms, filesystem tools, process manager or other business services. It never creates or copies another Bot. API, module and MCP tools are explicit configuration.
 
-Requires Node.js 24 or later. From this directory run `npm install`, `npm test` and `npm run check:pi`. `npm pack` produces an independently installable package. Install the tarball in another project with `npm install /path/relay-bot-0.2.0.tgz`; copy `examples/config.json` to your own location, set its model endpoint/model and the named `BOT_MODEL_API_KEY` environment variable, then run `npx relay-bot --config /absolute/path/config.json`. No repository `.env` or another application's credentials are discovered. Relative configuration paths resolve against the config file.
+Requires Node.js 24 or later. From this directory run `npm install` when dependencies are needed. `npm pack` produces an independently installable package. Install the tarball in another project with `npm install /path/relay-bot-0.2.0.tgz`; copy `examples/config.json` to your own location, set its model endpoint/model and the named `BOT_MODEL_API_KEY` environment variable, then run `npx relay-bot --config /absolute/path/config.json`. No repository `.env` or another application's credentials are discovered. Relative configuration paths resolve against the config file. Development does not require tests or hash comparisons; follow the repository's `AGENTS.md`.
 
-`node node_modules/@relay/bot/examples/start.mjs /absolute/path/config.json` is a minimal complete start/send/query/close example. The model in that example is real; the package tests instead use explicitly identified local model-protocol fixtures.
+`node node_modules/@relay/bot/examples/start.mjs /absolute/path/config.json` is a minimal complete start/send/query/close example. It calls a real model; run it only when that operation is requested.
 
 ## Public interface
 

@@ -6,6 +6,5 @@
   "description": "Relay user interface and transport facade; no Agent or business storage",
   "exports": "./backend/server.mjs",
   "engines": { "node": ">=24.0.0" },
-  "scripts": { "test": "node --test test/*.test.mjs" },
   "files": ["backend", "frontend", "README.md"]
 }

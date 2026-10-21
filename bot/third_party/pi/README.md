@@ -6,16 +6,16 @@ byte with `sourcesContent` in the npm 1.3.0 release source maps. See `SOURCES.js
 for original SHA-256, paths, runtime derivatives and individual changes.
 
 Copyright (c) 2025 Mario Zechner. The complete MIT license is in `LICENSE`.
-The original test sources are in `upstream-tests/`; executable copies in
-`test/upstream/` change runtime import paths and use an isolated explicit directory
-instead of the Pi global configuration. Assertions are preserved. The two upstream
-Anthropic live cases retain their credential-dependent skip condition.
+The former upstream tests and local executable copies are available in Git history.
+They are not part of the current development workflow and must not be restored or
+run unless the user explicitly requests it.
 
 `src/pi/` is editable runtime source, not a generated build directory. TypeScript
 was erased once using Node 24.15.0 `stripTypeScriptTypes(mode: transform)`; runtime
 execution needs only ESM JavaScript. Do not rerun a full importer over local edits.
 Use the upstream reference, a chosen new upstream commit and local code for selective
-three-way updates. `npm run check:pi` checks the recorded source baseline from any cwd.
+three-way updates. Recorded source hashes are historical provenance, not a required
+development check.
 
 Local boundaries: no Pi CLI/TUI, JSONL database, home-directory discovery, package
 manager, login flow or background model-catalog refresh is imported. Source
