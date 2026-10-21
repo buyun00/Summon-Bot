@@ -1,6 +1,6 @@
 # 验证记录
 
-日期：2026-10-21。验收依据为 [REFACTOR_PLAN.md](REFACTOR_PLAN.md) 第 11 节。当前R9已安装并由StartupHub运行，包含日志轮转、上下文压缩适配层测试、服务关闭身份握手及前台监督修复；完整回归187/187通过、0跳过，另有测试目录回收5/5通过。安装包启停、真实角色工具调用、本地/公网HTTP和SSE复验及浏览器正常刷新后同步通过。原43项旧路径及后续9项已清除，新增98项收尾清单仍待手动处理，Git交付结果单独记录于git-delivery.json，整体目标尚不能标为全部完成。
+日期：2026-10-21。验收依据为 [REFACTOR_PLAN.md](REFACTOR_PLAN.md) 第 11 节。当前R9已安装并由StartupHub运行，包含日志轮转、上下文压缩适配层测试、服务关闭身份握手及前台监督修复；完整回归187/187通过、0跳过，另有测试目录回收5/5通过。安装包启停、真实角色工具调用、本地/公网HTTP和SSE复验及浏览器正常刷新后同步通过。原旧路径及后续9项已清除；用户于15:27:42完成最后98项清理，独立读回确认旧残留为零。新建的未跟踪P2P设计文档保留，详见清理结果。技术验收与清理已完成，Git交付结果单独记录于git-delivery.json。
 
 模型协议 fixture 验证本地机制；真实 Pi、HTTP、SQLite 和子进程不等于真实外部模型调用。下文分别标明自动化、真实 DeepSeek、真实 Codex、迁移及现场界面证据。
 
@@ -52,7 +52,7 @@
 | E16 | startup-r8-exit-diagnosis.json、supervision-fixed-tests.log、deployed-after-cleanup-bots.json；tests/supervise.test.mjs | R8前台监督退出事件、未知身份保留/恢复、信号幂等、真实PS5合并输出回归及恢复后原Pi实例真实工具任务；底层握手原因未确定 |
 | E17 | supervision-final-tests.log、supervision-bounded-tests.log、runtime-fixture-cleanup-tests.log、cleanup-final-result.json | 未限并发失败保留；并发4的完整187/187和临时目录回收5/5；用户实际完成原9项目标清理，随后读回确认 |
 | E18 | build-r9.json、install-r9.json、verify-r9-installed.json、start-r9-manual.json、stopped-r9.json、startup-r9.json；deployed-r9-bots.json、deployed-r9-instances.json、deployed-r9-http.json、deployed-r9-sse-local.json、deployed-r9-sse-public.json、browser-r9.json、browser-r9.png；final-deployment.json | 当前R9安装包启停、16111文件校验、原计划任务冷启动、2个真实模型任务、8个Pi初始化及6个恢复停止、HTTP/SSE与正常刷新后的浏览器；汇总时270项源码文件0差异，发生在本次文档更新前 |
-| E19 | cleanup-closeout-plan.json | 新增98项目标：2份R8发行物、2个失败测试目录、93个运行测试目录及空回退根；仅为待手动处理的计划，执行策略拒绝删除，尚无完成结果 |
+| E19 | cleanup-closeout-plan.json、cleanup-closeout.log、cleanup-closeout-result.json、cleanup-closeout-readback.json | 用户15:27:42完成98项目标清理；主控独立读回剩余0、旧残留0；源码/安装各只保留R9，Git及有效数据保留，无备份；新建未跟踪文档明确排除 |
 
 ## Bot本体和能力：B01–B10
 
@@ -86,7 +86,7 @@
 | D01 程序/数据隔离 | tests/installation.test.mjs、capabilities/test/management.test.mjs、filesystem.test.mjs；E05、E10、E11 | 安装拒绝重叠程序/数据根；每Bot私有数据、共享能力库、受管tmp分开。追加日志轮转：默认10MiB/文件、最多5文件、7天保留；UTF-8大块写入、最后写入时间保留期、闲置清理、父进程退出后继续记录、重复启动保护均有真实子进程验证 |
 | D02 安全清理tmp | capabilities/test/maintenance.test.mjs、bot/test/maintenance.test.mjs、runtime.test.mjs | 全程持有Bot同一OS所有权租约，拒绝活动身份、未知/中断任务、外部未完成工作；无10,000条分页截断；拒绝junction越界，保留成果和外部工作区 |
 | D03 真实迁移 | E05、E06；tests/migration.test.mjs、bot/test/store.test.mjs | **348条逻辑记录；2,353条来源到目标文件映射，对应1,194个唯一目标文件；598项行级及原生记录读回校验。** 口径不同，不能写成2,353个唯一目标文件或598条业务记录。verification.verified=true，文件按SHA256读回，未确认旧任务中断且不自动重放 |
-| D04 旧路径清理 | E08、E19、post-cleanup-fixed-tests.log | 根src/public/bots/adapters/templates/test/third_party/.relay、旧脚本/冲突文档、旧data legacy/instances/backups、dist/current及previous已清除；新源码没有活动旧路径导入。原43项及后续9项清理已完成；新增98项收尾清单待手动处理，D04尚未完全关闭 |
+| D04 旧路径清理 | E08、E19、post-cleanup-fixed-tests.log | 根src/public/bots/adapters/templates/test/third_party/.relay、旧脚本/冲突文档、旧data legacy/instances/backups、dist/current及previous已清除；新源码没有活动旧路径导入。原旧路径、后续9项及最后98项已清理，D04关闭；原路径中的P2P设计文档是15:05新建的无关未跟踪工作，单独保留，不作为旧残留 |
 
 R5迁移后本地及公网实际下载结果，见E06：
 
@@ -106,7 +106,7 @@ R5迁移后本地及公网实际下载结果，见E06：
 | R03 入口/StartupHub | tests/installation.test.mjs；E18 | R9安装包正常启停后经原计划任务于14:58:34冷启动，Running；复用既有StartupHub入口，固定网关53119。未实际注销后重新登录电脑 |
 | U01 主要工作台流程 | web/test/、capabilities/test/chatroom.test.mjs、gateway.test.mjs；E06、E18 | 聊天发送/重试/缓存、群、知识工具、任务、附件、完整产物、增量合并由当前测试覆盖；R9本地/公网返回8 Bots、9房间，浏览器原历史可见。历史下载另见R5/R6证据；截图不证明所有交互均人工验收 |
 | U02 浏览器/PWA | E07、E18；web/test/cache-integration.test.mjs、mobile-viewport.test.mjs | R9本机浏览器正常刷新并同步完成后，无断线/同步提示，原历史与8角色可见；更新草稿/缓存和移动视口由自动化覆盖。**自动重连恢复、手机真机PWA安装/升级/离线恢复未验证** |
-| G01 提交/远程一致 | E10、当前main提交及最终回复 | 保留.git与既有历史；R9构建来自已提交源码且sourceDirty=false。本轮提交、推送和本地HEAD/origin/main/远程SHA核对结果单独写入git-delivery.json；清理状态单独记录，提交不代表清理已完成 |
+| G01 提交/远程一致 | E10、当前main提交及最终回复 | 保留.git与既有历史；R9构建来自已提交源码且sourceDirty=false。本轮提交、推送和本地HEAD/origin/main/远程SHA核对结果单独写入git-delivery.json；Git交付与清理各有独立读回记录 |
 
 R5 HTTP实测中，/api/state、sync=1全量及带cursor增量在本地/公网均为HTTP 200有效JSON，前端RelayCache.applySync成功应用；无变化增量203字节。Web不转发/tools、/mcp、/internal，本轮保持原公网入口/登录方式。
 
@@ -120,15 +120,17 @@ R9入口和聊天室分别完成bots_list、chatroom_list的真实DeepSeek任务
 
 R9本地/公网state、sync reset、delta均为HTTP 200有效JSON，8 Bots、9房间，RelayCache.applySync成功；无变化增量203字节。本地耗时分别0.204秒、0.158秒、0.170秒，公网7.590秒、6.626秒、2.835秒。SSE本地59毫秒收到connected、18.063秒收到心跳；公网1.444秒、18.313秒；均无失败或重试，SSE未压缩。浏览器刷新前仍显示断线提示，正常刷新同步后提示消失，原历史与8角色可见；这不证明自动重连恢复。
 
-## 剩余清理与未执行验证
+## 清理结果与未执行验证
+
+原43路径在14:46清理完成后，`docs/P2P_BOT_RUNTIME_DESIGN.md`于15:05:08重新出现为40158字节的未跟踪文件。它是随后新增的工作，不作为旧残留删除，也不纳入本轮提交。最终读回记录这一项存在及其新建时间和哈希；其余42个原路径均不存在，新文件哈希与清理前相同。不能将它误报为旧源码未清，也不声称43个物理路径当前全部不存在。
 
 服务锁联合测试曾因负载下启动耗时5.88秒超过测试自设的5秒速度断言失败。该断言不属于产品SLO，现改为30秒测试期限并继续断言具体初始化错误和OS锁释放；Bot管理器正常就绪超时为60秒，因此仍验证错误提前返回。该阶段180/180通过，没有跳过失败项。未安装的R7仅含日志补齐，R8及当前R9均包含服务锁修复。
 
 追加审计中，服务日志集成测试曾出现一次整个Node测试子进程提前退出，只报告test failed，没有单项异常或堆栈；根因尚未确定。随后同范围联合测试通过，由主控运行的完整回归172/172、后续180/180及仓库外安装后21/21通过，没有跳过失败项。失败测试创建的原3个临时目录曾受删除策略限制，已纳入用户14:46:24完成的9项清理。当前R9包含日志管理并现场运行。
 
 - 自动审批曾多次拒绝旧回退、旧发行物及失败测试目录删除，仅返回“blocked by policy”，未给更具体原因；代理未绕过限制。用户已手动完成原43项旧路径及后续9项清理，不能继续把它们列为待清理。
-- 新增cleanup-closeout-plan.json共98项目标：2份被R9替代的R8源码/安装发行物、2个失败测试目录、93个运行测试目录（pi 21、lease 12、peer 21、history 18、crash 21）及空回退根。此清单仍待手动处理，受执行策略限制，尚无执行完成报告；计划中的路径和身份检查不等于已删除，执行前仍须重新核验保护范围和进程引用。
+- 新增cleanup-closeout-plan.json共98项目标：2份被R9替代的R8源码/安装发行物、2个失败测试目录、93个运行测试目录（pi 21、lease 12、peer 21、history 18、crash 21）及空回退根。用户手动执行带进度和日志的cleanup-closeout.bat，于15:27:42成功完成。主控独立读回全部98项不存在、两处releases各仅R9、.git及有效数据仍在。每项删除前再次检查路径、链接、创建时间、可读进程引用及OS身份；两项早于本goal的Node进程命令行不可读，这一可见性限制保留于计划，它们未被删除或强杀。
 - 手机真机PWA安装/更新/离线恢复、电脑注销后重新登录的自动启动，以及浏览器自动重连恢复均未验证。正常刷新后的恢复不能替代自动重连验收。
-- R9现场汇总已经生成；Git交付结果另见git-delivery.json，清理未完成不因代码推送而关闭。
+- R9现场汇总、清理结果与独立读回均已生成；Git交付结果另见git-delivery.json。未跟踪的P2P设计文档未纳入本次提交。
 
 上述限制不能用历史通过数、fixture、进程存在、静态截图或计划文件替代。
