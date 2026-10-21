@@ -1,0 +1,16 @@
+{
+  "botId": "my-bot",
+  "dataDir": "./my-bot-data",
+  "model": {
+    "provider": "openai-compatible",
+    "model": "your-model-id",
+    "baseUrl": "https://your-provider.example/v1",
+    "apiKeyEnv": "BOT_MODEL_API_KEY",
+    "contextWindow": 128000,
+    "maxTokens": 6000
+  },
+  "prompt": "Work on the user's task and report confirmed results clearly.",
+  "skills": [],
+  "tools": [],
+  "listen": { "host": "127.0.0.1", "port": 0 }
+}

@@ -1,12 +1,9 @@
+param([string]$DataRoot = '', [string]$ReleaseRoot = '')
 $ErrorActionPreference = 'Stop'
-$relayPidPath = Join-Path $PSScriptRoot '.relay\server.pid'
-if (!(Test-Path -LiteralPath $relayPidPath)) { Write-Output '没有后台启动记录。'; exit 0 }
-$relayProcessId = [int](Get-Content -LiteralPath $relayPidPath -Raw)
-$relayProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$relayProcessId" -ErrorAction SilentlyContinue
-$relayEntry = Join-Path $PSScriptRoot 'src\server.mjs'
-if ($relayProcess -and $relayProcess.CommandLine.Contains($relayEntry)) {
-    # Terminate only this service and its executor children, never the desktop Codex server.
-    & taskkill.exe /PID $relayProcessId /T /F | Out-Null
-    Write-Output 'Relay Bot 已停止；未完成执行将在下次启动显示为已中断。'
-} elseif ($relayProcess) { throw 'PID 已属于其他进程，未进行停止操作。' }
-Remove-Item -LiteralPath $relayPidPath -Force
+if (!$DataRoot) { $DataRoot = if ($env:RELAY_DATA_ROOT) { $env:RELAY_DATA_ROOT } else { Join-Path (Split-Path $PSScriptRoot -Parent) 'Relay-Bot-data' } }
+$DataRoot = [IO.Path]::GetFullPath($DataRoot)
+if (!$ReleaseRoot) { $ReleaseRoot = (Get-Content -LiteralPath (Join-Path $DataRoot 'config\deployment.json') -Raw | ConvertFrom-Json).releaseRoot }
+$relayNode = Join-Path $ReleaseRoot 'runtime\node.exe'
+if (!(Test-Path -LiteralPath $relayNode)) { $relayNode = (Get-Command node.exe -ErrorAction Stop).Source }
+& $relayNode (Join-Path $ReleaseRoot 'scripts\installation\cli.mjs') stop --release-root $ReleaseRoot --data-root $DataRoot
+if ($LASTEXITCODE -ne 0) { throw 'Relay shutdown failed. Inspect service identities and logs.' }

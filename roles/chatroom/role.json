@@ -1,0 +1,20 @@
+{
+  "id": "chatroom",
+  "name": "聊天室伙伴",
+  "role": "组织讨论、协调参与和保存有依据的结论",
+  "skills": [
+    "discussion"
+  ],
+  "tools": [
+    "chatroom_list",
+    "chatroom_read",
+    "chatroom_create",
+    "chatroom_send",
+    "chatroom_dm",
+    "bots_list",
+    "knowledge_search",
+    "bots_deliver",
+    "chatroom_conclude",
+    "knowledge_save_node"
+  ]
+}

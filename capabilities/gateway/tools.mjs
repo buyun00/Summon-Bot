@@ -1,0 +1,37 @@
+const object = properties => ({type:'object',properties,additionalProperties:true});
+const string={type:'string'},number={type:'number'},boolean={type:'boolean'},array={type:'array',items:{type:'string'}};
+const definitions=[
+ ['chatroom_list','List shared conversations',{},'read'],
+ ['chatroom_read','Read room messages and delivery states',{roomId:string},'read'],
+ ['chatroom_create','Create a group, DM or discussion',{name:string,kind:string,members:array,goal:string},'write'],
+ ['chatroom_send','Post a message to a room you belong to',{roomId:string,content:string,toBotId:string,replyTo:string,clientId:string},'external'],
+ ['chatroom_dm','Ask another Bot. Use originRoomId and originMessageId to route its answer back.',{targetBotId:string,message:string,originRoomId:string,originMessageId:string,clientId:string},'external'],
+ ['chatroom_conclude','Save an evidence-based discussion conclusion',{roomId:string,summary:string},'write'],
+ ['knowledge_search','Search shared sourced knowledge',{query:string},'read'],
+ ['knowledge_save_node','Add/revise a sourced shared knowledge record',{id:string,title:string,content:string,type:string,source:string,expectedRevision:number},'write'],
+ ['knowledge_save_edge','Connect two shared knowledge records',{from:string,to:string,relation:string,source:string},'write'],
+ ['list_files','List files inside the configured workspace/project',{path:string,recursive:boolean,maxEntries:number,maxDepth:number},'read'],
+ ['read_file','Read UTF-8 file with output limits',{path:string,startLine:number,maxLines:number},'read'],
+ ['search_files','Search literal text in allowed files',{path:string,query:string,caseSensitive:boolean,maxResults:number},'read'],
+ ['write_file','Write an allowed workspace/project file',{path:string,content:string,overwrite:boolean},'write'],
+ ['edit_file','Replace exact text in an allowed file',{path:string,oldText:string,newText:string,replaceAll:boolean},'write'],
+ ['run_command','Execute a bounded noninteractive shell command; host privileges apply',{command:string,cwd:string,timeoutMs:number},'process'],
+ ['codex_submit','Submit a professional backend task; receipt is not completion',{goal:string,cwd:string,constraints:string,roomId:string,inputRefs:array,requestId:string},'external'],
+ ['codex_status','Read backend task progress and actual result',{workId:string},'read'],
+ ['codex_cancel','Request cancellation of a backend task',{workId:string},'external'],
+ ['codex_resume','Explicitly continue a saved backend thread',{workId:string,content:string},'external'],
+ ['bots_list','List peer identities and roles',{},'read'],
+ ['bots_create','Create an ordinary Bot from a role',{name:string,roleId:string,prompt:string,cwd:string},'external'],
+ ['bots_start','Start a configured Bot',{botId:string},'external'],
+ ['bots_stop','Normally stop a managed Bot',{botId:string},'external'],
+ ['bots_clone','Create a temporary Bot from current context/memory, excluding pending side effects',{parentId:string,requestId:string,name:string,task:string,roleId:string,start:boolean},'external'],
+ ['bots_deliver','Persist temporary Bot results and memory changes before exit',{childId:string,requestId:string,result:string},'external'],
+ ['bots_recycle','Archive a delivered temporary Bot, retaining referenced evidence',{botId:string},'external'],
+ ['bots_cleanup','Clean disposable tmp only when stopped and no unknown/background work remains',{botId:string},'external'],
+ ['bot_memory_read','Inspect a managed Bot persistent memories when authorized',{botId:string},'read'],
+ ['memory_propose','Compare delivered child memories with their parent baseline',{deliveryId:string},'read'],
+ ['memory_merge','Apply ready memory changes or explicit conflict resolutions',{deliveryId:string,resolutions:{type:'object'}},'write'],
+ ['routines_create','Create a durable timed message for a Bot',{botId:string,roomId:string,name:string,instruction:string,intervalSeconds:number},'external'],
+];
+export const toolDefinitions=definitions.map(([name,description,properties,effect])=>({name,description,inputSchema:object(properties),effect}));
+export const FILE_TOOLS=new Set(['list_files','read_file','search_files','write_file','edit_file','run_command']);

@@ -19,3 +19,7 @@ __pycache__/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Immutable release artifacts; mutable data lives outside the repository
+dist/
+*.building-*/

@@ -1,0 +1,26 @@
+# Pi sources used by @relay/bot
+
+The original files in `upstream/` come from earendil-works/pi v1.3.0, commit
+`71023aec1546d6d677a65669c5665c0927ce0dd0`. Every selected file was compared byte for
+byte with `sourcesContent` in the npm 1.3.0 release source maps. See `SOURCES.json`
+for original SHA-256, paths, runtime derivatives and individual changes.
+
+Copyright (c) 2025 Mario Zechner. The complete MIT license is in `LICENSE`.
+The original test sources are in `upstream-tests/`; executable copies in
+`test/upstream/` change runtime import paths and use an isolated explicit directory
+instead of the Pi global configuration. Assertions are preserved. The two upstream
+Anthropic live cases retain their credential-dependent skip condition.
+
+`src/pi/` is editable runtime source, not a generated build directory. TypeScript
+was erased once using Node 24.15.0 `stripTypeScriptTypes(mode: transform)`; runtime
+execution needs only ESM JavaScript. Do not rerun a full importer over local edits.
+Use the upstream reference, a chosen new upstream commit and local code for selective
+three-way updates. `npm run check:pi` checks the recorded source baseline from any cwd.
+
+Local boundaries: no Pi CLI/TUI, JSONL database, home-directory discovery, package
+manager, login flow or background model-catalog refresh is imported. Source
+session-manager contains pure parsing/projection only. Bot uses its SQLite
+state and disables retry in the adapter, including summarization calls.
+
+See `LOCAL_CHANGES.md` and `DEPENDENCIES.json` for adaptation and installed package
+license records. Public package behavior is documented in ../../README.md.

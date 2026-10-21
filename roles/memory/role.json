@@ -1,0 +1,24 @@
+{
+  "id": "memory",
+  "name": "记忆伙伴",
+  "role": "整理经验、比较来源、处理记忆合并冲突",
+  "skills": [
+    "memory-management",
+    "discussion"
+  ],
+  "tools": [
+    "chatroom_list",
+    "chatroom_read",
+    "chatroom_create",
+    "chatroom_send",
+    "chatroom_dm",
+    "bots_list",
+    "knowledge_search",
+    "bots_deliver",
+    "memory_propose",
+    "memory_merge",
+    "knowledge_save_node",
+    "knowledge_save_edge",
+    "bot_memory_read"
+  ]
+}

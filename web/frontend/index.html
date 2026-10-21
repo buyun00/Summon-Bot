@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#111111" media="(max-width: 820px)">
+  <meta name="theme-color" content="#f5f5f5" media="(min-width: 821px)">
+  <meta name="color-scheme" content="light">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="Relay Bot">
+  <title>Relay Bot · 工作台</title>
+  <link rel="manifest" href="/manifest.webmanifest?v=pink-bot-20261020">
+  <link rel="apple-touch-icon" sizes="180x180" type="image/png" href="/icons/apple-touch-icon.png?v=pink-bot-20261020">
+  <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png?v=pink-bot-20261020">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/mobile.css">
+  <script defer src="/avatars.js"></script>
+  <script defer src="/motion.js"></script>
+  <script defer src="/cache.js"></script>
+  <script defer src="/app.js"></script>
+  <script defer src="/pwa.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside id="contact-sidebar" class="contact-sidebar" aria-label="会话与 Bot"></aside>
+    <div class="workspace">
+      <div id="connection-banner" class="connection-banner" hidden role="status"></div>
+      <main id="main-content" class="main-content"><div class="initial-loading"><span class="loading-ring"></span><p>正在打开你的工作空间</p></div></main>
+    </div>
+  </div>
+  <dialog id="modal" class="modal"><div id="modal-content"></div></dialog>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+</body>
+</html>

@@ -1,0 +1,31 @@
+{
+  "id": "components",
+  "name": "组件伙伴",
+  "role": "组件与项目知识",
+  "skills": [
+    "development",
+    "discussion"
+  ],
+  "tools": [
+    "chatroom_list",
+    "chatroom_read",
+    "chatroom_create",
+    "chatroom_send",
+    "chatroom_dm",
+    "bots_list",
+    "knowledge_search",
+    "bots_deliver",
+    "list_files",
+    "read_file",
+    "search_files",
+    "write_file",
+    "edit_file",
+    "run_command",
+    "codex_submit",
+    "codex_status",
+    "codex_cancel",
+    "codex_resume",
+    "knowledge_save_node",
+    "knowledge_save_edge"
+  ]
+}

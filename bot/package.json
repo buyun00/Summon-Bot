@@ -1,0 +1,43 @@
+{
+  "name": "@relay/bot",
+  "version": "0.2.0",
+  "description": "Independent Pi Agent with durable messages, tasks, state and configured capabilities",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "exports": {
+    ".": "./src/index.mjs",
+    "./store": "./src/storage/store.mjs",
+    "./tools": "./src/capabilities/registry.mjs"
+  },
+  "bin": {
+    "relay-bot": "./bin/relay-bot.mjs"
+  },
+  "files": [
+    "src",
+    "bin",
+    "examples",
+    "third_party",
+    "README.md",
+    "test",
+    "vitest.config.mjs"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs && vitest run --config vitest.config.mjs",
+    "check:pi": "node bin/check-pi-source.mjs",
+    "test:upstream": "vitest run --config vitest.config.mjs",
+    "check:pi-source": "node bin/check-pi-source.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "1.3.0",
+    "@earendil-works/pi-ai": "1.3.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "ignore": "7.0.8",
+    "yaml": "2.9.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "vitest": "4.1.11"
+  }
+}

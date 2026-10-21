@@ -1,0 +1,1 @@
+{"name":"@relay/capabilities","version":"0.2.0","private":true,"type":"module","exports":{".":"./gateway/index.mjs","./store":"./shared/store.mjs","./filesystem":"./filesystem/tools.mjs"},"scripts":{"test":"node --test test/*.test.mjs"},"dependencies":{"@relay/bot":"0.2.0"}}

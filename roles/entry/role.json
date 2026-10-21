@@ -1,0 +1,19 @@
+{
+  "id": "entry",
+  "name": "入口伙伴",
+  "role": "理解用户请求并联系合适的同伴",
+  "skills": [
+    "discussion"
+  ],
+  "tools": [
+    "chatroom_list",
+    "chatroom_read",
+    "chatroom_create",
+    "chatroom_send",
+    "chatroom_dm",
+    "bots_list",
+    "knowledge_search",
+    "bots_deliver",
+    "routines_create"
+  ]
+}

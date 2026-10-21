@@ -1,23 +1,35 @@
 {
   "name": "relay-bot",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Independent local Bot society with durable conversations and external work sessions",
+  "description": "Independent Pi Bots, external capabilities and a separate Web interface",
   "type": "module",
+  "workspaces": [
+    "bot",
+    "web",
+    "capabilities"
+  ],
   "engines": {
     "node": ">=24.0.0"
   },
   "scripts": {
-    "start": "node src/server.mjs",
-    "test": "node --test test/*.test.mjs",
-    "test:live": "node test/live.mjs",
-    "test:codex": "node test/codex.live.mjs",
-    "test:agency": "node test/agency.live.mjs",
-    "test:pi": "node test/pi.live.mjs",
-    "test:session": "node test/session.live.mjs"
-  },
-  "dependencies": {
-    "@earendil-works/pi-agent-core": "1.3.0",
-    "@earendil-works/pi-ai": "1.3.0"
+    "start": "node scripts/installation/cli.mjs start",
+    "relay:dev": "node scripts/installation/cli.mjs dev",
+    "relay:build": "node scripts/build/build.mjs",
+    "relay:pack": "node scripts/build/build.mjs --bundle-node",
+    "relay:start": "node scripts/installation/cli.mjs start",
+    "relay:migrate": "node scripts/migration/migrate.mjs",
+    "relay:verify": "node scripts/build/verify.mjs",
+    "relay:init": "node scripts/installation/cli.mjs init",
+    "relay:install": "node scripts/installation/install.mjs",
+    "relay:status": "node scripts/installation/cli.mjs status",
+    "relay:stop": "node scripts/installation/cli.mjs stop",
+    "test": "node scripts/build/test.mjs",
+    "test:bot": "npm test --workspace @relay/bot",
+    "test:web": "npm test --workspace @relay/web",
+    "test:capabilities": "npm test --workspace @relay/capabilities",
+    "test:live": "node tests/live.mjs",
+    "test:upstream": "npm run test:upstream --workspace @relay/bot",
+    "check:pi-source": "npm run check:pi-source --workspace @relay/bot"
   }
 }

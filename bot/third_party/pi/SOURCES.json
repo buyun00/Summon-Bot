@@ -1,0 +1,339 @@
+{
+  "repository": "https://github.com/earendil-works/pi",
+  "version": "1.3.0",
+  "tag": "v1.3.0",
+  "commit": "71023aec1546d6d677a65669c5665c0927ce0dd0",
+  "license": "MIT",
+  "copyright": "Copyright (c) 2025 Mario Zechner",
+  "modules": [
+    {
+      "upstreamPath": "packages/coding-agent/src/core/compaction/compaction.ts",
+      "upstreamSha256": "d5aebd41333957b57fa3f1bee2a18b3c00b5d47bb1b4af6f913cf8cd791099c8",
+      "releaseSourceIdentical": true,
+      "original": "third_party/pi/upstream/core/compaction/compaction.ts",
+      "local": "src/pi/core/compaction/compaction.mjs",
+      "initialLocalSha256": "8192ccbe665ac31a86f5e6648b9c68a139494965e483459f85ccb50c8924a026",
+      "changes": [
+        "TypeScript erased to ESM using Node 24; relative imports use .mjs."
+      ],
+      "localSha256": "8192ccbe665ac31a86f5e6648b9c68a139494965e483459f85ccb50c8924a026"
+    },
+    {
+      "upstreamPath": "packages/coding-agent/src/core/compaction/utils.ts",
+      "upstreamSha256": "37eab7698cdbff8b5987d4529005ea16d7e1ae4a5344d7d0443c3466444aa90e",
+      "releaseSourceIdentical": true,
+      "original": "third_party/pi/upstream/core/compaction/utils.ts",
+      "local": "src/pi/core/compaction/utils.mjs",
+      "initialLocalSha256": "be4e7650dae2020c8aaeff2e89ee615e418460e021d876e86cc6089c10d6414e",
+      "changes": [
+        "TypeScript erased to ESM using Node 24; relative imports use .mjs.",
+        "Recognize Relay read_file/read_resource/write_file/edit_file in file-operation summaries."
+      ],
+      "localSha256": "d1aaa03d86045c7278f79860ee0f4ccabbcb75deedcb7bc4c7ced1b7796a34ba"
+    },
+    {
+      "upstreamPath": "packages/coding-agent/src/core/messages.ts",
+      "upstreamSha256": "5397e3c96c9504266e4ee8b6e88d5098b3280ee7dbb0c687b74708c62a06c8d4",
+      "releaseSourceIdentical": true,
+      "original": "third_party/pi/upstream/core/messages.ts",
+      "local": "src/pi/core/messages.mjs",
+      "initialLocalSha256": "6779adf37709ab23619e7449a80c46fcd250d430f73913ab5be45e8a91760485",
+      "changes": [
+        "TypeScript erased to ESM using Node 24; relative imports use .mjs."
+      ],
+      "localSha256": "6779adf37709ab23619e7449a80c46fcd250d430f73913ab5be45e8a91760485"
+    },
+    {
+      "upstreamPath": "packages/coding-agent/src/core/usage-totals.ts",
+      "upstreamSha256": "8b18dd04d65e90af9b331cd5aa23d7891aab8a296f38a6026ce17a098d674ee9",
+      "releaseSourceIdentical": true,
+      "original": "third_party/pi/upstream/core/usage-totals.ts",
+      "local": "src/pi/core/usage-totals.mjs",
+      "initialLocalSha256": "9f1eb85a1d2446c8ed50ad45e8efa5dd8a6d8d3b480b602ed6913c60a693d000",
+      "changes": [
+        "TypeScript erased to ESM using Node 24; relative imports use .mjs."
+      ],
+      "localSha256": "9f1eb85a1d2446c8ed50ad45e8efa5dd8a6d8d3b480b602ed6913c60a693d000"
+    },
+    {
+      "upstreamPath": "packages/coding-agent/src/core/session-manager.ts",
+      "upstreamSha256": "450d82c529933214e088b8422f00061815e617f352f6c834689787a314064bff",
+      "releaseSourceIdentical": true,
+      "original": "third_party/pi/upstream/core/session-manager.ts",
+      "local": "src/pi/core/session-manager.mjs",
+      "initialLocalSha256": "1a98891b93a77ed30a5820f12a224e3b4fe88ea54f7dbbfd0590a51d08d1367c",
+      "changes": [
+        "TypeScript erased to ESM using Node 24; relative imports use .mjs.",
+        "Only pure entry migration/parsing/projection functions retained; removed JSONL persistence, directory discovery and SessionManager."
+      ],
+      "localSha256": "1a98891b93a77ed30a5820f12a224e3b4fe88ea54f7dbbfd0590a51d08d1367c"
+    },
+    {
+      "upstreamPath": "packages/coding-agent/src/core/skills.ts",
+      "upstreamSha256": "8dcc644dbabbb34238f609ecf191c0da370d74873ccaccaf3c3cd0e7703d9431",
+      "releaseSourceIdentical": true,
+      "original": "third_party/pi/upstream/core/skills.ts",
+      "local": "src/pi/core/skills.mjs",
+      "initialLocalSha256": "544cb460e0df0b1adbc6cb8786875042b9ce415e861019d9d1fe7addcba0d95a",
+      "changes": [
+        "TypeScript erased to ESM using Node 24; relative imports use .mjs.",
+        "No implicit home-directory configuration: callers must provide agentDir. Relay always sets includeDefaults:false.",
+        "Stable directory order, no descendant symlink traversal, maximum depth 20, 128 KiB source limit, robust null/scalar frontmatter."
+      ],
+      "localSha256": "91f387774c5be5ebe5307d1335d0277cd45b4234c061fa8fef7c43a568e7118c"
+    },
+    {
+      "upstreamPath": "packages/coding-agent/src/core/prompt-templates.ts",
+      "upstreamSha256": "1bdaa7b3825f92bf33203fd7587014b878c55b3d812900cca5cad08fefd92171",
+      "releaseSourceIdentical": true,
+      "original": "third_party/pi/upstream/core/prompt-templates.ts",
+      "local": "src/pi/core/prompt-templates.mjs",
+      "initialLocalSha256": "127a9d4ae1ae49ac852ef31deac7554f82ea2482112af39a11ed663972336e47",
+      "changes": [
+        "TypeScript erased to ESM using Node 24; relative imports use .mjs.",
+        "Removed host config import; Relay always sets explicit paths and includeDefaults:false.",
+        "Stable directory order, no descendant symlinks, 128 KiB source limit, robust null/scalar frontmatter."
+      ],
+      "localSha256": "40aa8159fc9aeda45e2bf508e965da3b856365527433b14fd0b559606467f265"
+    },
+    {
+      "upstreamPath": "packages/coding-agent/src/core/source-info.ts",
+      "upstreamSha256": "52648af6e9bb29858ece4eaeccedd960c5de8a0ac4ec25c0ee851ff00de27f5c",
+      "releaseSourceIdentical": true,
+      "original": "third_party/pi/upstream/core/source-info.ts",
+      "local": "src/pi/core/source-info.mjs",
+      "initialLocalSha256": "67961784afb9b0a9bcdda4dc45104e4f4018620f943795d7cfa18e43f3ba2563",
+      "changes": [
+        "TypeScript erased to ESM using Node 24; relative imports use .mjs."
+      ],
+      "localSha256": "67961784afb9b0a9bcdda4dc45104e4f4018620f943795d7cfa18e43f3ba2563"
+    },
+    {
+      "upstreamPath": "packages/coding-agent/src/core/event-bus.ts",
+      "upstreamSha256": "fe5c39a57081fb9674c5bdc8c4bc6779bb8524c8895afc337af5ea517bdc71a2",
+      "releaseSourceIdentical": true,
+      "original": "third_party/pi/upstream/core/event-bus.ts",
+      "local": "src/pi/core/event-bus.mjs",
+      "initialLocalSha256": "2b24e9e0f50bdb5a2744acc58d7ae095251a1ab70fed04b326f318546c2d9ef0",
+      "changes": [
+        "TypeScript erased to ESM using Node 24; relative imports use .mjs."
+      ],
+      "localSha256": "2b24e9e0f50bdb5a2744acc58d7ae095251a1ab70fed04b326f318546c2d9ef0"
+    },
+    {
+      "upstreamPath": "packages/coding-agent/src/core/tools/truncate.ts",
+      "upstreamSha256": "8e4507c3ed7ca7548cf7c2d7f77d07f2ae63a38b756789cbb44e9062db6c8762",
+      "releaseSourceIdentical": true,
+      "original": "third_party/pi/upstream/core/tools/truncate.ts",
+      "local": "src/pi/core/tools/truncate.mjs",
+      "initialLocalSha256": "512ce9c346834f7950495110596add91c69b0511ec2247199480e88221f23a0d",
+      "changes": [
+        "TypeScript erased to ESM using Node 24; relative imports use .mjs."
+      ],
+      "localSha256": "512ce9c346834f7950495110596add91c69b0511ec2247199480e88221f23a0d"
+    },
+    {
+      "upstreamPath": "packages/coding-agent/src/utils/frontmatter.ts",
+      "upstreamSha256": "99142d78b94e658e0be65cf05046be8069b3700168a683e0af64219ad903bcd6",
+      "releaseSourceIdentical": true,
+      "original": "third_party/pi/upstream/utils/frontmatter.ts",
+      "local": "src/pi/utils/frontmatter.mjs",
+      "initialLocalSha256": "e73da867c2758e2ad01470c218ce41a869ffbebada6bbf4a9055bf235a9a5364",
+      "changes": [
+        "TypeScript erased to ESM using Node 24; relative imports use .mjs."
+      ],
+      "localSha256": "e73da867c2758e2ad01470c218ce41a869ffbebada6bbf4a9055bf235a9a5364"
+    },
+    {
+      "upstreamPath": "packages/coding-agent/src/utils/text.ts",
+      "upstreamSha256": "bb323f9607c499115b532021f4f0163c6df04d834aee9c32c3c77b273bd2d7c6",
+      "releaseSourceIdentical": true,
+      "original": "third_party/pi/upstream/utils/text.ts",
+      "local": "src/pi/utils/text.mjs",
+      "initialLocalSha256": "6776004a8856b8aa263c062e79b06763713629bf138168c6252c63efb6b1ec41",
+      "changes": [
+        "TypeScript erased to ESM using Node 24; relative imports use .mjs."
+      ],
+      "localSha256": "6776004a8856b8aa263c062e79b06763713629bf138168c6252c63efb6b1ec41"
+    },
+    {
+      "upstreamPath": "packages/coding-agent/src/utils/paths.ts",
+      "upstreamSha256": "64c3ebef724fa21ed0042e127908b4323a5d2f1b8aaa91eee550442332fe8502",
+      "releaseSourceIdentical": true,
+      "original": "third_party/pi/upstream/utils/paths.ts",
+      "local": "src/pi/utils/paths.mjs",
+      "initialLocalSha256": "d90de148affc3c0c05f53be1f93d4ea5e7686ea8e07813ac80c6f3f87b4316af",
+      "changes": [
+        "TypeScript erased to ESM using Node 24; relative imports use .mjs.",
+        "Removed external cloud-sync commands and child-process dependency."
+      ],
+      "localSha256": "d90de148affc3c0c05f53be1f93d4ea5e7686ea8e07813ac80c6f3f87b4316af"
+    }
+  ],
+  "tests": [
+    {
+      "upstreamPath": "packages/coding-agent/test/compaction.test.ts",
+      "sha256": "829f29b4dc268b77baa4904c6283206ff19993f65e4503bcc1ce995be26c4b3b",
+      "local": "test/upstream/compaction.test.ts",
+      "changes": [
+        "Only relative runtime import paths changed; assertions retained. Type-only imports erased by Vitest."
+      ],
+      "original": "third_party/pi/upstream-tests/compaction.test.ts",
+      "localSha256": "d540b509c40004ce607f2f7ab499153c340a9236ebd1dd207f6a9e9dda92b8e9"
+    },
+    {
+      "upstreamPath": "packages/coding-agent/test/compaction-serialization.test.ts",
+      "sha256": "c02bf3f404f568116e699bb048e18e16d4af63c5a5a0467e9732c97e144f459a",
+      "local": "test/upstream/compaction-serialization.test.ts",
+      "changes": [
+        "Only relative runtime import paths changed; assertions retained. Type-only imports erased by Vitest."
+      ],
+      "original": "third_party/pi/upstream-tests/compaction-serialization.test.ts",
+      "localSha256": "0f26f817e1a1ee7680d2193fe268757cab77e252954951e0c72d1cd37d17c4ae"
+    },
+    {
+      "upstreamPath": "packages/coding-agent/test/compaction-nested-calls.test.ts",
+      "sha256": "6dd449d0766c4271e8fd80f59f72607b3c4de81a1eaefbe3b8bfbb76b319d685",
+      "local": "test/upstream/compaction-nested-calls.test.ts",
+      "changes": [
+        "Only relative runtime import paths changed; assertions retained. Type-only imports erased by Vitest."
+      ],
+      "original": "third_party/pi/upstream-tests/compaction-nested-calls.test.ts",
+      "localSha256": "a0af5fb25efc8d8e68a61b1c2cba8e30f606b0f792b5fbcfd5c908e9fa731558"
+    },
+    {
+      "upstreamPath": "packages/coding-agent/test/compaction-summary-reasoning.test.ts",
+      "sha256": "f62656a452475d9adaea20e7ae789f6ba05431c8874cf3023fc06427611e62c6",
+      "local": "test/upstream/compaction-summary-reasoning.test.ts",
+      "changes": [
+        "Only relative runtime import paths changed; assertions retained. Type-only imports erased by Vitest."
+      ],
+      "original": "third_party/pi/upstream-tests/compaction-summary-reasoning.test.ts",
+      "localSha256": "beb0787c2cd9cd2ac850fe887c137c2a3cb9da2cadaef18574e8a9e3a94a99c8"
+    },
+    {
+      "upstreamPath": "packages/coding-agent/test/skills.test.ts",
+      "sha256": "f7d5fe8633df112c10c61c4ee17748ad1f7069f76d71fb8357d7e27a17b2a533",
+      "local": "test/upstream/skills.test.ts",
+      "changes": [
+        "Only relative runtime import paths changed; assertions retained. Type-only imports erased by Vitest."
+      ],
+      "original": "third_party/pi/upstream-tests/skills.test.ts",
+      "localSha256": "ba8ecc9ffe10bf88187075aef280f75a4df242a53c2385eaf42752dc5edd6032"
+    },
+    {
+      "upstreamPath": "packages/coding-agent/test/frontmatter.test.ts",
+      "sha256": "88309e13d75cec874a1fa43b921c4bb3dbcbce55c6ace5acf9742e81667ad2dd",
+      "local": "test/upstream/frontmatter.test.ts",
+      "changes": [
+        "Only relative runtime import paths changed; assertions retained. Type-only imports erased by Vitest."
+      ],
+      "original": "third_party/pi/upstream-tests/frontmatter.test.ts",
+      "localSha256": "a597fa5b56cccd794c2014b0a6fe73aa64557622ccf71034307efaf8dacfce1a"
+    },
+    {
+      "upstreamPath": "packages/coding-agent/test/prompt-templates.test.ts",
+      "sha256": "34b17a2f491c9d2647b746754bb71ac87d4cc72f6064f73bfd128c79ad452f4c",
+      "local": "test/upstream/prompt-templates.test.ts",
+      "changes": [
+        "Runtime imports target local ESM source. getAgentDir replaced with an explicit isolated temporary directory; original assertions retained."
+      ],
+      "original": "third_party/pi/upstream-tests/prompt-templates.test.ts",
+      "localSha256": "8862ae28ecea49f23bbd5b7978f8d12c3e445eeb4ba8935fc47eaad5d53e4cca"
+    }
+  ],
+  "relayWrappers": [
+    {
+      "local": "src/pi/core/compaction/index.mjs",
+      "localSha256": "03396764c253cfb8ccb67e3000c4c1b8ea6669cf366edb569920f603cae95449",
+      "note": "Relay export-only entry for selected modules; not a copy of the upstream branch-summary barrel."
+    }
+  ],
+  "fixtures": [
+    {
+      "local": "test/upstream/fixtures/large-session.jsonl",
+      "localSha256": "f029e59c3aec82fd6227eae51fc8839862a92b5e2426731ea9715eaf968a0ba4",
+      "upstreamPath": "packages/coding-agent/test/fixtures/large-session.jsonl"
+    },
+    {
+      "local": "test/upstream/fixtures/skills/consecutive-hyphens/SKILL.md",
+      "localSha256": "52e4b2685c63c0037c8107334b49cfa146341b668db703cb3594c0c6cf629684",
+      "upstreamPath": "packages/coding-agent/test/fixtures/skills/consecutive-hyphens/SKILL.md"
+    },
+    {
+      "local": "test/upstream/fixtures/skills/disable-model-invocation/SKILL.md",
+      "localSha256": "da0457eefec51f8aba12e1c7090ece7983043688704ed6b74c881df1aed09a58",
+      "upstreamPath": "packages/coding-agent/test/fixtures/skills/disable-model-invocation/SKILL.md"
+    },
+    {
+      "local": "test/upstream/fixtures/skills/invalid-name-chars/SKILL.md",
+      "localSha256": "bd0121b407fe21640002b61ecb2d559c43fba74dbe3eeac82ba442112fea580f",
+      "upstreamPath": "packages/coding-agent/test/fixtures/skills/invalid-name-chars/SKILL.md"
+    },
+    {
+      "local": "test/upstream/fixtures/skills/invalid-yaml/SKILL.md",
+      "localSha256": "ef6bba8e89e5a697f5f87e5b0de2785b170e02d1f344c3d0c1e40114ffde2a11",
+      "upstreamPath": "packages/coding-agent/test/fixtures/skills/invalid-yaml/SKILL.md"
+    },
+    {
+      "local": "test/upstream/fixtures/skills/long-name/SKILL.md",
+      "localSha256": "dfe930f367e25c4b0703cd7c8906070f87b345f867dea6fef34f9074c3cb052f",
+      "upstreamPath": "packages/coding-agent/test/fixtures/skills/long-name/SKILL.md"
+    },
+    {
+      "local": "test/upstream/fixtures/skills/missing-description/SKILL.md",
+      "localSha256": "ac54cca8108cc426fab7fd46a5cc9379afedbd7bafeca43ce6e3413da2503713",
+      "upstreamPath": "packages/coding-agent/test/fixtures/skills/missing-description/SKILL.md"
+    },
+    {
+      "local": "test/upstream/fixtures/skills/multiline-description/SKILL.md",
+      "localSha256": "30a57026f007961b421e8556e8c4d277208a6b61504ebcd8ee20e7102baa0022",
+      "upstreamPath": "packages/coding-agent/test/fixtures/skills/multiline-description/SKILL.md"
+    },
+    {
+      "local": "test/upstream/fixtures/skills/name-mismatch/SKILL.md",
+      "localSha256": "53686d98a0e1b92d1f90d5f192cefbe011121507debb5a407653b1ae80b9694c",
+      "upstreamPath": "packages/coding-agent/test/fixtures/skills/name-mismatch/SKILL.md"
+    },
+    {
+      "local": "test/upstream/fixtures/skills/nested/child-skill/SKILL.md",
+      "localSha256": "0050995f18550fc4554a1dc3723026474c080d2e2772da1ce5c7f14b0b462ce7",
+      "upstreamPath": "packages/coding-agent/test/fixtures/skills/nested/child-skill/SKILL.md"
+    },
+    {
+      "local": "test/upstream/fixtures/skills/no-frontmatter/SKILL.md",
+      "localSha256": "e5ca5b4ffb7aaada8b4decc54fc4af732de355786ef54d38db97bb9f75d25672",
+      "upstreamPath": "packages/coding-agent/test/fixtures/skills/no-frontmatter/SKILL.md"
+    },
+    {
+      "local": "test/upstream/fixtures/skills/root-skill-preferred/nested-child/SKILL.md",
+      "localSha256": "f07ee61492ee356de86d13b785f3e67c7db491521780e8087fe558b91bd61fe5",
+      "upstreamPath": "packages/coding-agent/test/fixtures/skills/root-skill-preferred/nested-child/SKILL.md"
+    },
+    {
+      "local": "test/upstream/fixtures/skills/root-skill-preferred/SKILL.md",
+      "localSha256": "347fa1b7bd4f21992a5cf2aee1b9af9a05ec991ae644c96aa8e68b356e5f0f3f",
+      "upstreamPath": "packages/coding-agent/test/fixtures/skills/root-skill-preferred/SKILL.md"
+    },
+    {
+      "local": "test/upstream/fixtures/skills/unknown-field/SKILL.md",
+      "localSha256": "df6e1ecfff7a6b65a8d0d5280457fde480c819a76be6926dafef6895c8bed650",
+      "upstreamPath": "packages/coding-agent/test/fixtures/skills/unknown-field/SKILL.md"
+    },
+    {
+      "local": "test/upstream/fixtures/skills/valid-skill/SKILL.md",
+      "localSha256": "db6af8bf9364290c5376d39e97c622f0152b6cd64f379bc03855d79ea058c0ba",
+      "upstreamPath": "packages/coding-agent/test/fixtures/skills/valid-skill/SKILL.md"
+    },
+    {
+      "local": "test/upstream/fixtures/skills-collision/first/calendar/SKILL.md",
+      "localSha256": "422f8cbd0bd678fd2b0f10ecbb6df78a470316ee0dc524ea5addb0f56c8a8905",
+      "upstreamPath": "packages/coding-agent/test/fixtures/skills-collision/first/calendar/SKILL.md"
+    },
+    {
+      "local": "test/upstream/fixtures/skills-collision/second/calendar/SKILL.md",
+      "localSha256": "adceefcc79f6e7a79bf75cdae7d5bd0364b2c525296e4f0ec4c5240f9a11a44d",
+      "upstreamPath": "packages/coding-agent/test/fixtures/skills-collision/second/calendar/SKILL.md"
+    }
+  ]
+}

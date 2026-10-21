@@ -1,0 +1,30 @@
+{
+  "id": "qa",
+  "name": "质量伙伴",
+  "role": "验证与问题分析",
+  "skills": [
+    "development",
+    "discussion"
+  ],
+  "tools": [
+    "chatroom_list",
+    "chatroom_read",
+    "chatroom_create",
+    "chatroom_send",
+    "chatroom_dm",
+    "bots_list",
+    "knowledge_search",
+    "bots_deliver",
+    "list_files",
+    "read_file",
+    "search_files",
+    "write_file",
+    "edit_file",
+    "run_command",
+    "codex_submit",
+    "codex_status",
+    "codex_cancel",
+    "codex_resume",
+    "knowledge_save_node"
+  ]
+}
