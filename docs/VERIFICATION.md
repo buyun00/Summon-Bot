@@ -1,6 +1,6 @@
 # 验证记录
 
-日期：2026-10-21。验收依据为 [REFACTOR_PLAN.md](REFACTOR_PLAN.md) 第 11 节。R6部署、真实任务及数据迁移已验证；随后补齐日志轮转、上下文压缩适配层测试及服务关闭身份握手修复，当前源码完整回归180/180通过。部署更新及剩余清理状态见文末；整体目标尚不能标为全部完成。
+日期：2026-10-21。验收依据为 [REFACTOR_PLAN.md](REFACTOR_PLAN.md) 第 11 节。最终R8已安装并由StartupHub运行，包含日志轮转、上下文压缩适配层测试及服务关闭身份握手修复；当前源码完整回归180/180通过，安装包启停、真实角色工具调用及本地/公网HTTP和SSE复验通过。剩余目录清理受执行策略阻止，整体目标尚不能标为全部完成。
 
 模型协议 fixture 验证本地机制；真实 Pi、HTTP、SQLite 和子进程不等于真实外部模型调用。下文分别标明自动化、真实 DeepSeek、真实 Codex、迁移及现场界面证据。
 
@@ -21,6 +21,7 @@
 | 在线母体与分身 | 3个真实Pi任务、7次DeepSeek请求、4次工具；子工具等待期间母体完成新事件和记忆写入 | 子工具等待gate为受控HTTP测试夹具，模型为真实DeepSeek；所有隔离进程已正常关闭 |
 | 追加完成审计 | 发现方案要求的日志轮转尚未实现，以及Relay上下文压缩适配层缺少直接测试；补实现/测试后完整回归172/172通过，约26.9秒 | post-audit-tests.log；新增13项日志/启动回归与5项上下文测试，均未跳过 |
 | 服务关闭修复 | R6停止时曾返回Incomplete service identity；随后确认服务已停并恢复R6。修复握手排空和有限重试后完整回归180/180通过，约24.3秒 | service-stop-race.json、recovered-r6.json、service-lock-fixed-tests.log；新增7项真实服务锁测试及1项全新数据根迁移测试 |
+| 最终R8安装运行 | 16110文件清单校验通过；安装包Start/Stop正常返回且OS身份确认停止，随后由原StartupHub冷启动。入口/聊天室真实DeepSeek工具任务完成；8实例独立Pi初始化、6实例恢复停止 | 源码来自已提交的aa29c6c，sourceDirty=false；HTTP及SSE本地/公网通过；浏览器正常刷新后同步完成，不计为自动重连恢复通过 |
 
 ## 证据索引
 
@@ -35,12 +36,14 @@
 | E05 | D:/Relay-Bot-data/migration/layout-v2.json | 迁移来源/目标、原始ID、逐项文件及行级哈希读回 |
 | E06 | deployed-bots.json、deployed-instances.json、deployed-r6-http.json；deployed-http.json保留R5记录 | R6真实角色任务、8个Pi初始化、HTTP/SSE、历史产物与附件校验 |
 | E07 | browser-version.png | 本机浏览器界面2026.10.21.1、原历史与8个成员可见；不是手机真机证据 |
-| E08 | cleanup-plan.json、cleanup-result.json、cleanup-final.ps1 | 43项原清单中42项路径已不存在；旧回退目录及后续R5的2份中间发行物尚待清理；最后脚本供用户手动执行，代理未执行 |
+| E08 | cleanup-plan.json、cleanup-result.json、cleanup-final.ps1 | 43项原清单中42项路径已不存在；最终还剩旧回退目录、5份中间发行物及3个失败测试临时目录；脚本固定保护R8，供用户手动执行，代理未执行 |
 | E09 | clone-online-2026-10-21T05-23-27-785Z-71d98125.json；tests/clone-online.live.mjs | 在线母体与分身并发、事件接收、记忆隔离、正常关闭 |
 | E10 | final-deployment.json、git-delivery.json | 最终发行哈希、真实服务身份、StartupHub及本地/远程提交核对 |
 | E11 | post-audit-tests.log；bot/test/process-log.test.mjs、tests/process-log.test.mjs、bot/test/context.test.mjs | 追加审计后的172/172；真实子进程日志轮转、容量/保留期、启动错误与上下文适配完整路径 |
 | E12 | bot-package-r7.json；package-r7/installed-tests.log、smoke-result.json | 日志补齐后的221文件独立包，仓库外安装182个生产依赖；21/21安装后定向测试及两个独立CLI直接通信通过，明确模型fixture |
 | E13 | service-lock-fixed-tests.log；tests/service-lock.test.mjs、tests/migration.test.mjs | 完整180/180；服务身份绝对2秒握手期限、最多3次握手、未知身份拒绝判停、250ms回复排空及幂等关闭；全新目标根迁移及只读预览 |
+| E14 | build-r8.json、install-r8.json、verify-r8-installed.json、start-r8-manual.json、stop-r8-manual.json、stopped-r8.json、startup-r8.json、final-deployment.json | 最终R8构建/安装校验、安装包启停、原计划任务冷启动、4个活动进程日志中本次bootId及269项源码文件一致性 |
+| E15 | deployed-r8-bots.json、deployed-r8-instances.json、deployed-r8-http.json、deployed-r8-sse-local.json、deployed-r8-sse-public.json、browser-r8.json、browser-r8.png | 最终运行现场真实DeepSeek两任务、8实例初始化、本地/公网同步与SSE；浏览器正常刷新后的历史和8角色 |
 
 ## Bot本体和能力：B01–B10
 
@@ -74,7 +77,7 @@
 | D01 程序/数据隔离 | tests/installation.test.mjs、capabilities/test/management.test.mjs、filesystem.test.mjs；E05、E10、E11 | 安装拒绝重叠程序/数据根；每Bot私有数据、共享能力库、受管tmp分开。追加日志轮转：默认10MiB/文件、最多5文件、7天保留；UTF-8大块写入、最后写入时间保留期、闲置清理、父进程退出后继续记录、重复启动保护均有真实子进程验证 |
 | D02 安全清理tmp | capabilities/test/maintenance.test.mjs、bot/test/maintenance.test.mjs、runtime.test.mjs | 全程持有Bot同一OS所有权租约，拒绝活动身份、未知/中断任务、外部未完成工作；无10,000条分页截断；拒绝junction越界，保留成果和外部工作区 |
 | D03 真实迁移 | E05、E06；tests/migration.test.mjs、bot/test/store.test.mjs | **348条逻辑记录；2,353条来源到目标文件映射，对应1,194个唯一目标文件；598项行级及原生记录读回校验。** 口径不同，不能写成2,353个唯一目标文件或598条业务记录。verification.verified=true，文件按SHA256读回，未确认旧任务中断且不自动重放 |
-| D04 旧路径清理 | E08、post-cleanup-fixed-tests.log | 根src/public/bots/adapters/templates/test/third_party/.relay、旧脚本/冲突文档、旧data legacy/instances/backups、dist/current及previous已清除；新源码没有活动旧路径导入。3个禁止删除目标仍存在，D04尚未完全关闭 |
+| D04 旧路径清理 | E08、post-cleanup-fixed-tests.log | 根src/public/bots/adapters/templates/test/third_party/.relay、旧脚本/冲突文档、旧data legacy/instances/backups、dist/current及previous已清除；新源码没有活动旧路径导入。最终9个待清理目录仍存在，D04尚未完全关闭 |
 
 R5迁移后本地及公网实际下载结果，见E06：
 
@@ -89,9 +92,9 @@ R5迁移后本地及公网实际下载结果，见E06：
 
 | ID | 对应测试与证据 | 已证明的范围与限制 |
 | --- | --- | --- |
-| R01 不同cwd启动 | E02、E06、E10；tests/installation.test.mjs | R6由StartupHub使用安装根随包Node冷启动；验证命令从D:/执行。Web/网关独立PID，8个Bot实例各有独立PID及新安装根Skill路径 |
-| R02 manifest/schema/秘密信息 | scripts/build/verify.mjs、tests/migration.test.mjs；E05、E10 | R6共16108文件，安装前后manifest验证；固定schema；构建排除凭据/数据库/运行日志，无开发目录链接；提交前检查无私钥/真实令牌/运行数据 |
-| R03 入口/StartupHub | tests/installation.test.mjs；E10 | 原系统正常停止后R6经计划任务冷启动，Running、autoStart=true，其他Hub条目保持不变；固定网关53119。未实际重新登录电脑 |
+| R01 不同cwd启动 | E02、E14、E15；tests/installation.test.mjs | R8由StartupHub使用安装根随包Node冷启动；安装包Start/Stop从D:/执行。Web/网关独立PID，8个Bot实例各有独立PID及新安装根Skill路径 |
+| R02 manifest/schema/秘密信息 | scripts/build/verify.mjs、tests/migration.test.mjs；E05、E14 | R8共16110文件，安装前后manifest验证；269项源码文件在最终报告更新前逐一哈希一致。固定schema；构建排除凭据/数据库/运行日志，无开发目录链接；提交前检查无私钥/真实令牌/运行数据 |
+| R03 入口/StartupHub | tests/installation.test.mjs；E14 | R8安装包正常启停后经原计划任务冷启动，Running；复用既有autoStart设置，其他Hub条目未改，独立触发器为0；固定网关53119。未实际重新登录电脑 |
 | U01 主要工作台流程 | web/test/、capabilities/test/chatroom.test.mjs、gateway.test.mjs；E06、E07 | 聊天发送/重试/缓存、群、知识工具、任务、附件、完整产物、增量合并由当前测试覆盖；R5本地/公网返回8 Bots、9房间，历史可见且下载有效。截图不证明所有交互均人工验收 |
 | U02 浏览器/PWA | E07；web/test/cache-integration.test.mjs、mobile-viewport.test.mjs | 本机浏览器截图显示2026.10.21.1与既有会话；更新草稿/缓存和移动视口由自动化覆盖。**手机真机PWA安装、升级、离线恢复未执行** |
 | G01 提交/远程一致 | E10、当前main提交及最终回复 | 保留.git与既有历史；精确暂存本次源码及旧源码删除。最终本地HEAD与origin/main/远程SHA独立记录在git-delivery.json，避免把文件自身提交号写入文件 |
@@ -102,18 +105,28 @@ R5 HTTP实测中，/api/state、sync=1全量及带cursor增量在本地/公网�
 
 R6已对8个真实配置执行start/health并核对Skill路径重定位到新安装根，之后恢复原先未运行的6个Bot为停止、保留入口/聊天室运行。**health=ready只证明Agent初始化，不能算作8个角色都完成真实模型调用。** 实际调用以deployed-bots报告为准。R6复验本地/公网state、reset、delta和两项历史下载均通过，本地SSE收到connected；本轮公网附件14.3秒、完整state14.0秒，无重试。
 
-最终运行发行物：`2026-10-21T05-21-14-843Z-ca0fa8bf`，内容哈希`4042fdb3d8d19b160d05df129a56f1e69d5160a0a275b60fcbd692880438a04c`。manifest sourceDirty=true如实标识构建时未提交工作区；最终Git提交与此内容哈希由E10关联。包内VERIFICATION为构建时快照，本文件的最终Git版本记录构建后的验证结果。
+最终运行发行物：`2026-10-21T06-13-42-028Z-337b3e70`，内容哈希`c787697d60b514ed925c822b32e5f6b85ff6d0a366a37410c289ed1c366d052c`。manifest sourceCommit=`aa29c6c0e6d686b4a77e9d3be1cb6c132965d22a`，sourceDirty=false。最终Git提交与发行物由E10/E14关联；包内VERIFICATION为构建时快照，本文件的最终Git版本记录构建后的验证结果。
+
+R8入口和聊天室分别完成bots_list、chatroom_list的真实DeepSeek任务；8个配置的独立Pi进程均初始化成功，之后恢复6个原先未运行实例为停止，保留入口/聊天室。Web PID 31256、网关PID 8896、入口PID 228904、聊天室PID 234508为06:17Z附近的现场快照，后续重启可能变化。4个活动进程日志均包含本次bootId，容量在配置上限以内。
+
+R8本地/公网state、sync reset、delta均为HTTP 200有效JSON，8 Bots、9房间，cache apply成功；公网耗时分别8.267秒、4.929秒、0.985秒。SSE本地78毫秒收到connected、18.082秒收到心跳；公网1.182秒、18.268秒；无失败或重试。浏览器刷新前显示断线提示，正常刷新同步后提示消失，原历史与8角色可见；这不证明自动重连提示恢复。
 
 ## 剩余清理与未执行验证
 
-服务锁联合测试曾因负载下启动耗时5.88秒超过测试自设的5秒速度断言失败。该断言不属于产品SLO，现改为30秒测试期限并继续断言具体初始化错误和OS锁释放；Bot管理器正常就绪超时为60秒，因此仍验证错误提前返回。最终180/180通过，没有跳过失败项。未安装的R7仅含日志补齐，最终发行物还需包含本次服务锁修复。
+服务锁联合测试曾因负载下启动耗时5.88秒超过测试自设的5秒速度断言失败。该断言不属于产品SLO，现改为30秒测试期限并继续断言具体初始化错误和OS锁释放；Bot管理器正常就绪超时为60秒，因此仍验证错误提前返回。最终180/180通过，没有跳过失败项。未安装的R7仅含日志补齐，最终R8同时包含服务锁修复。
 
-追加审计中，服务日志集成测试曾出现一次整个Node测试子进程提前退出，只报告test failed，没有单项异常或堆栈；根因尚未确定。随后同范围联合测试通过，最终由主控运行的完整回归172/172及仓库外安装后21/21通过，没有跳过失败项。失败测试创建的3个临时目录列入最终清理记录；其中一项原生PowerShell删除被执行策略拒绝，其余未绕过该限制。代码与包验证已完成，现场此时仍为R6，待安装含日志管理的新发行物。
+追加审计中，服务日志集成测试曾出现一次整个Node测试子进程提前退出，只报告test failed，没有单项异常或堆栈；根因尚未确定。随后同范围联合测试通过，由主控运行的完整回归172/172、后续180/180及仓库外安装后21/21通过，没有跳过失败项。失败测试创建的3个临时目录列入最终清理记录；其中一项原生PowerShell删除被执行策略拒绝，其余未绕过该限制。最终R8已包含日志管理并现场运行。
 
-- 执行策略拒绝删除以下3个目录；旧回退目录已获得用户再次明确授权，仍被拒绝。更小范围的单文件哈希核对删除也被拒绝，未绕过限制。用户可手动运行证据根的cleanup-final.ps1；脚本校验当前发行版本、路径范围与进程引用，仅处理下列目标，不操作Git/有效数据。
+- 自动审批多次拒绝旧回退、旧发行物及失败测试目录的删除，只返回“blocked by policy”，未给更具体原因；旧回退目录已获用户再次明确授权。更小范围的单文件哈希核对删除也被拒绝，未绕过限制。以下9个目录尚待清理（不是9个都重新尝试删除过）。用户可手动运行证据根的cleanup-final.ps1；脚本校验当前发行版本、路径范围与进程引用，仅处理下列目标，不操作Git/有效数据，代理未执行该脚本。
   - `D:/Relay-Bot-rollback/foundation-20261020`
   - `D:/Relay-Bot/dist/releases/2026-10-21T04-56-53-963Z-f769f8ce`
   - `D:/Relay-Bot-app/releases/2026-10-21T04-56-53-963Z-f769f8ce`
+  - `D:/Relay-Bot/dist/releases/2026-10-21T05-21-14-843Z-ca0fa8bf`
+  - `D:/Relay-Bot-app/releases/2026-10-21T05-21-14-843Z-ca0fa8bf`
+  - `D:/Relay-Bot/dist/releases/2026-10-21T06-02-00-210Z-bea03243`
+  - `C:/Users/win11/AppData/Local/Temp/relay-context-4awK3Y`
+  - `C:/Users/win11/AppData/Local/Temp/relay-process-log-test-0BrqL9`
+  - `C:/Users/win11/AppData/Local/Temp/relay-service-log-test-bNx3rH`
 - 手机真机PWA安装/更新/离线恢复，以及电脑注销后重新登录的自动启动。
 
 上述限制不能用历史通过数、fixture、进程存在、静态截图或计划文件替代。
