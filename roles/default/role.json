@@ -6,6 +6,10 @@
     "discussion"
   ],
   "tools": [
+    "read_file",
+    "write_file",
+    "edit_file",
+    "run_command",
     "chatroom_list",
     "chatroom_read",
     "chatroom_create",

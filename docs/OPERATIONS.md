@@ -10,6 +10,8 @@
 
 每个 Bot 的 `config.json` 可配置模型、提示词、skills、HTTP/module/MCP tools、contacts、peers、并发与预算。独立使用示例见 `bot/README.md` 与 `bot/examples/`。
 
+新建普通 Bot 使用 `default` 角色时，默认挂载 Pi 风格的四项基础工具：`read_file`（读文件）、`write_file`（写文件）、`edit_file`（修改文件）和 `run_command`（执行命令），并保留已有的协作与自身记忆能力。这四项工具由独立的 filesystem 能力服务提供，Bot 引擎负责调用。文件工具可访问该 Bot 的 workspace 和已配置的项目目录；命令以宿主用户身份运行，工作目录约定不等于操作系统沙箱。角色模板变更用于新建实例，已有 Bot 通过能力授权更新其工具配置。
+
 ## 日常启停
 
 - `Start.ps1 -DataRoot <数据根>` 启动，已就绪实例不重复启动。
