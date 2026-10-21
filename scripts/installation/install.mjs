@@ -12,7 +12,15 @@ export async function installRelease({releaseRoot,appRoot,dataRoot,defaultCwd,pu
   if(within(appRoot,dataRoot)||within(dataRoot,appRoot))throw new Error('Application and data roots must be disjoint');
   const verified=await verifyRelease(releaseRoot),destination=join(appRoot,'releases',verified.buildId);
   if(!within(join(appRoot,'releases'),destination))throw new Error('Invalid release build ID');
-  if(existsSync(deploymentPath(dataRoot))){const current=await readJson(deploymentPath(dataRoot));for(const type of ['gateway','web'])if((await inspectService(current,type)).state!=='stopped')throw new Error('Stop managed services before installing a different release');}
+  if(existsSync(deploymentPath(dataRoot))){
+    const current=await readJson(deploymentPath(dataRoot));for(const type of ['gateway','web'])if((await inspectService(current,type)).state!=='stopped')throw new Error('Stop managed services before installing a different release');
+    const module=join(releaseRoot,'capabilities/services/supervisor.mjs');
+    if(existsSync(module)){
+      const {CapabilityServiceSupervisor}=await import(pathToFileURL(module));
+      const services=await new CapabilityServiceSupervisor({dataRoot,releaseRoot}).list();
+      if(services.some(service=>service.state!=='stopped'))throw new Error('Stop managed capability services before replacing the full runtime; use capability deploy for a hot upgrade');
+    }
+  }
   const {inspectBotIdentity}=await import(pathToFileURL(join(releaseRoot,'bot/src/index.mjs')));
   if(existsSync(join(dataRoot,'bots')))for(const entry of await readdir(join(dataRoot,'bots'),{withFileTypes:true})) {
     if(entry.isDirectory()&&await inspectBotIdentity(join(dataRoot,'bots',entry.name)))throw new Error(`Stop independent Bot ${entry.name} before installing a release`);

@@ -1,47 +1,59 @@
 import { createServer } from 'node:http';
-import { randomBytes,timingSafeEqual,randomUUID } from 'node:crypto';
+import { randomBytes,timingSafeEqual } from 'node:crypto';
 import { mkdir,writeFile,readFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
 import { join,resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { RecordStore } from '../shared/store.mjs';
 import { IncrementalSync } from '../shared/sync.mjs';
-import { WorkspaceExecutionLock } from '../shared/workspace-lock.mjs';
 import { RunArtifactDownloads,projectRunArtifacts } from '../shared/run-artifacts.mjs';
 import { BotManager } from '../bot-management/service.mjs';
-import { cleanTemporaryData } from '../bot-management/maintenance.mjs';
 import { ChatroomService } from '../chatroom/service.mjs';
 import { AttachmentStore,MAX_ATTACHMENT_REQUEST_BYTES } from '../chatroom/attachments.mjs';
 import { KnowledgeService } from '../knowledge/service.mjs';
 import { MemoryManagement } from '../memory-management/service.mjs';
-import { CodexExecutor } from '../codex/executor.mjs';
-import { createFileTools } from '../filesystem/tools.mjs';
-import { fail,required,now,pick } from '../shared/validation.mjs';
-import { toolDefinitions,FILE_TOOLS } from './tools.mjs';
+import { fail,required,now } from '../shared/validation.mjs';
+import { CapabilityRegistry } from '../services/registry.mjs';
+import { CapabilityControl,controlTools } from '../services/control.mjs';
+import { CapabilityServiceSupervisor } from '../services/supervisor.mjs';
+import { BUILTIN_CAPABILITIES } from '../services/builtin.mjs';
+import { deployCapability } from '../services/publish.mjs';
+import { coreTools } from '../../bot/src/capabilities/core-tools.mjs';
 
 const same=(a,b)=>typeof a==='string'&&typeof b==='string'&&Buffer.byteLength(a)===Buffer.byteLength(b)&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
-const normalizeList=(value,key)=>Array.isArray(value)?value:value?.[key]||[];
 export async function startGateway(options={}) {
   const dataRoot=resolve(required(options.dataRoot,'dataRoot')),releaseRoot=resolve(required(options.releaseRoot,'releaseRoot')),defaultCwd=resolve(options.defaultCwd||releaseRoot),token=options.token||randomBytes(32).toString('hex');
   if(!['127.0.0.1','::1'].includes(options.host||'127.0.0.1'))throw new Error('Capability gateway must use loopback');
-  const clients=new Set(),stores=new Map(),pending=new Set();let url,closing=false,quiescing=false,ticking=false,monitoring=false,stopBotsPromise;
+  const clients=new Set(),stores=new Map(),pending=new Set();let url,closing=false,quiescing=false,ticking=false,monitoring=false,serviceMonitoring=false,stopBotsPromise;
   const store=name=>{if(!stores.has(name))stores.set(name,new RecordStore(join(dataRoot,'capabilities',name,'state.sqlite')));return stores.get(name);};
   const emit=(type,payload={})=>{const line=`data: ${JSON.stringify({type,...payload})}\n\n`;for(const client of clients)client.write(line);};
-  const manager=new BotManager({store:store('bot-management'),dataRoot,releaseRoot,defaultCwd,model:options.model,emit,botApi:options.botApi,gatewayUrl:()=>url,getTools:bot=>toolDefinitions.filter(tool=>(bot.allowedTools||[]).includes(tool.name)).map(tool=>({...tool,type:'http',url:`${url}/tools/${tool.name}`,method:'POST',timeoutMs:tool.name==='run_command'?130000:60000}))});
+  const botToolNames=[...coreTools({},{}).map(tool=>tool.name),'read_resource','read_session_history'];
+  const registry=new CapabilityRegistry({store:store('registry'),emit,reservedTools:[...botToolNames,...controlTools.map(tool=>tool.name)]});
+  const supervisor=new CapabilityServiceSupervisor({dataRoot,releaseRoot});
+  let control;
+  const manager=new BotManager({store:store('bot-management'),dataRoot,releaseRoot,defaultCwd,model:options.model,emit,botApi:options.botApi,gatewayUrl:()=>url,getTools:bot=>control.tools(bot)});
+  const deploy=args=>deployCapability(args,{dataRoot,defaultCwd,model:options.model,codexPath:options.codexPath,gatewayUrl:url,gatewayToken:token,supervisor,registry,control});
+  control=new CapabilityControl({registry,supervisor,manager,store:store('registry'),gatewayUrl:()=>url,emit,deploy});
+  const rpc=(id,operation,args=[],version)=>{
+    const selected=version||registry.active(id)?.version;
+    if(!selected)fail(`Capability ${id} has no active service`,503);
+    return registry.invokeVersion(id,selected,operation,args,{context:{actor:'controller'}});
+  };
+  const proxy=(target,id,names)=>{for(const name of names)target[name]=(...args)=>rpc(id,name,args);};
+  proxy(manager,'bot-management',['create','update','start','stop','send','clone','archive','saveRoutine','seed','restore','monitor','quiesce','shutdownAll']);
   const attachments=new AttachmentStore(join(dataRoot,'capabilities','chatroom'));
   const chatroom=new ChatroomService({store:store('chatroom'),manager,attachments,emit});
   const knowledge=new KnowledgeService({store:store('knowledge'),emit}),memories=new MemoryManagement({store:store('memory-management'),manager,dataRoot,emit});
-  const locks=new Map(),lockFor=cwd=>{const key=resolve(cwd);if(!locks.has(key))locks.set(key,new WorkspaceExecutionLock(key));return locks.get(key);};
-  let codex;
-  const consult=async(work,question,targetId)=>{
-    const botId=targetId||work.botId;if(!botId)fail('No consultation target');
-    // Codex holds the workspace mutation lock. Requests explicitly require a read-only answer.
-    const receipt=await manager.send(botId,{id:`consult:${work.id}:${work.question?.requestId||randomUUID()}`,kind:'request',sessionId:`consult:${work.id}`,metadata:{toolPolicy:{allowedEffects:['read']}},content:{text:`只读项目事实咨询，不得调用写入、命令或创建新 Codex 工作，避免与等待你的执行器争用工作区。\n${question}`,work:pick(work,['id','goal','cwd','constraints']),metadata:{readOnlyConsult:true}}});
-    for(;;){if(closing)throw new Error('Gateway stopping');const current=codex.require(work.id);if(current.status!=='waiting')throw new Error('Consultation no longer pending');const task=await manager.request(botId,`/tasks/${receipt.taskId}`);if(task.status==='completed')return task.result?.content||'';if(['failed','cancelled','interrupted'].includes(task.status))throw new Error('Consultation failed');await new Promise(done=>setTimeout(done,400));}
+  proxy(chatroom,'chatroom',['createRoom','updateRoom','post','append','dm','conclude','saveConclusion','retry','seed']);
+  proxy(knowledge,'knowledge',['saveNode','saveEdge']);
+  proxy(memories,'memory-management',['write','deliver','propose','merge']);
+  proxy(attachments,'chatroom',['upload']);
+  const codex={store:store('codex'),list:()=>store('codex').list('works'),require:id=>{const work=store('codex').get('works',id);if(!work)fail('Work not found',404);return work;},
+    get:id=>{const work=store('codex').get('works',id);return work?{...work,events:store('codex').list('workEvents').filter(event=>event.workId===id)}:null;},
+    create:input=>rpc('codex','create',[input])};
+  for(const operation of ['cancel','resume','answer'])codex[operation]=(id,args)=>{
+    const work=codex.require(id),version=operation==='resume'&&!['queued','running','waiting'].includes(work.status)?undefined:work.serviceVersion;
+    return rpc('codex',operation,args===undefined?[id]:[id,args],version);
   };
-  codex=new CodexExecutor({store:store('codex'),emit,defaultCwd,codexPath:options.codexPath,executionLock:{acquire:(owner,signal)=>lockFor(codex.require(codex.active.id).cwd).acquire(owner,signal)},consult,onResult:work=>{
-    if(work.roomId&&chatroom.store.get('rooms',work.roomId))chatroom.append(work.roomId,{id:`work-result:${work.id}:${work.status}:${work.finishedAt||''}`,content:`工作「${work.goal}」：${work.status}\n${String(work.result?.content||work.summary||work.error||'').slice(0,15000)}`,kind:'work',workId:work.id,hop:4},work.botId||'system');
-  }});
   const sync=new IncrementalSync(store('gateway'));
   async function ownRun(id) {
     for(const bot of manager.list()){
@@ -60,53 +72,33 @@ export async function startGateway(options={}) {
     const latestProvider=providers.slice().sort((a,b)=>String(b.lastSuccessAt||'').localeCompare(String(a.lastSuccessAt||'')))[0]||{};
     return {bots:manager.list(),rooms:chatroom.rooms(),routines:manager.store.list('routines'),knowledge:knowledge.graph(),runtime,activity:messages.filter(message=>message.returnTo||message.peerReplyId||['event','work'].includes(message.kind)).slice(-100),works:codex.list(),agentRuns:agentRuns.slice(-100),provider:{configured:Boolean(options.model?.apiKey||process.env[options.model?.apiKeyEnv||'DEEPSEEK_API_KEY']),model:options.model?.model||'deepseek-flash',...latestProvider},defaultCwd};
   }
-  const assertOwner=(actor,botId)=>{if(actor!=='controller'&&actor!==botId&&!['manager','memory'].includes(manager.get(actor).roleId))fail('This Bot cannot access another Bot private data',403);};
-  async function callTool(name,args={},actor='controller',signal) {
-    if(quiescing&&toolDefinitions.find(tool=>tool.name===name)?.effect!=='read')fail('Gateway is stopping; new work is unavailable',503);
+  function visibleTools(actor) {
+    const allowed=actor==='controller'?null:manager.get(actor).allowedTools||[];
+    return [...registry.toolsFor(actor,allowed),...controlTools.filter(tool=>allowed===null||allowed.includes(tool.name))];
+  }
+  async function callTool(name,args={},actor='controller',signal,pin) {
+    const definition=visibleTools(actor).find(tool=>tool.name===name);
+    if(quiescing&&definition?.effect!=='read')fail('Gateway is stopping; new work is unavailable',503);
     if(actor!=='controller'&&!(manager.store.get('bots',actor)?.allowedTools||[]).includes(name))fail('Tool not authorized for this Bot',403);
     const activeConsultation=actor!=='controller'&&codex.list().find(work=>work.status==='waiting'&&(work.question?.targetBotId||work.botId)===actor);
     if(activeConsultation&&!['list_files','read_file','search_files','chatroom_list','chatroom_read','knowledge_search','bots_list','bot_memory_read','codex_status'].includes(name))fail('Only read-only capabilities are available while answering an executor consultation',409);
-    if(FILE_TOOLS.has(name)){
-      if(actor==='controller')fail('Filesystem tools require an explicit Bot identity');
-      // Consultations may read facts, but never wait for a lock held by their caller.
-      const waiting=codex.list().find(work=>work.status==='waiting'&&(work.question?.targetBotId||work.botId)===actor);
-      if(waiting&&!['read_file','list_files','search_files'].includes(name))fail('Only read-only tools are available while answering an executor consultation',409);
-      const config=await manager.config(actor),artifacts=[],tools=createFileTools({workspace:config.workspace,projectRoot:defaultCwd,protectedRoot:dataRoot,tempRoot:join(manager.directory(actor),'tmp','gateway-tools'),onArtifacts:items=>artifacts.push(...items),withExecution:(fn,toolSignal)=>lockFor(defaultCwd).withLock(`bot:${actor}`,fn,toolSignal),saveArtifact:async input=>{
-        const api=await manager.botApi();return api.saveArtifact(join(manager.directory(actor),'artifacts'),input);
-      }});const tool=tools.find(tool=>tool.name===name),result=await tool.execute(randomUUID(),args,signal);return {...result,artifacts,isError:Boolean(result.details?.timedOut||result.details?.aborted||(result.details?.exitCode!==undefined&&result.details.exitCode!==0))};
+    if(controlTools.some(tool=>tool.name===name))return control.call(name,args,{actor});
+    if(pin&&!control.permittedVersion(actor,pin.id,pin.version))fail('This capability version is not bound to the Bot',403);
+    if(['codex_status','codex_cancel','codex_resume'].includes(name)){
+      const work=codex.require(args.workId);
+      if(name==='codex_status')return registry.callVersion('codex',registry.active('codex')?.version||work.serviceVersion||pin?.version,name,args,{signal,context:{actor}});
+      if(name==='codex_resume'&&!['queued','running','waiting'].includes(work.status))return registry.callVersion('codex',registry.active('codex')?.version,name,args,{signal,context:{actor}});
+      if(work.serviceVersion)return registry.callVersion('codex',work.serviceVersion,name,args,{signal,context:{actor}});
     }
-    switch(name){
-      case 'chatroom_list':return chatroom.rooms().filter(room=>actor==='controller'||room.members.includes(actor));
-      case 'chatroom_read':{const room=chatroom.need('rooms',args.roomId);if(actor!=='controller'&&!room.members.includes(actor))fail('Not a room member',403);return {room,messages:chatroom.messages(room.id),jobs:chatroom.jobs(room.id)};}
-      case 'chatroom_create':return chatroom.createRoom({...args,members:[...new Set([...(args.members||[]),...(actor==='controller'?[]:[actor])])]});
-      case 'chatroom_send':return chatroom.post(args.roomId,args,actor==='controller'?'user':actor);
-      case 'chatroom_dm':return chatroom.dm(actor,args);
-      case 'chatroom_conclude':{const room=chatroom.need('rooms',args.roomId);if(actor!=='controller'&&!room.members.includes(actor))fail('Not a room member',403);return chatroom.saveConclusion(args.roomId,args);}
-      case 'knowledge_search':return knowledge.search(args.query);
-      case 'knowledge_save_node':return knowledge.saveNode(args);
-      case 'knowledge_save_edge':return knowledge.saveEdge(args);
-      case 'bots_list':return manager.list();
-      case 'bots_create':return manager.create(args);
-      case 'bots_start':return manager.start(args.botId);
-      case 'bots_stop':return manager.stop(args.botId);
-      case 'bots_clone':{const parentId=args.parentId||actor;assertOwner(actor,parentId);return manager.clone({...args,parentId});}
-      case 'bots_deliver':{assertOwner(actor,args.childId||actor);return memories.deliver({...args,childId:args.childId||actor});}
-      case 'bots_recycle':return manager.archive(args.botId);
-      case 'bots_cleanup':return cleanTemporaryData(manager,args.botId,{externalTasks:()=>codex.list()});
-      case 'bot_memory_read':{const id=args.botId||actor;assertOwner(actor,id);return memories.list(id);}
-      case 'memory_propose':return memories.propose(args.deliveryId);
-      case 'memory_merge':return memories.merge(args.deliveryId,args);
-      case 'routines_create':return manager.saveRoutine({...args,botId:args.botId||actor});
-      case 'codex_submit':return codex.create({...args,botId:actor,sourceActionId:args.requestId||null});
-      case 'codex_status':{const work=codex.require(args.workId);assertOwner(actor,work.botId);return codex.get(args.workId);}
-      case 'codex_cancel':case 'codex_resume':{const work=codex.require(args.workId);assertOwner(actor,work.botId);return codex[name==='codex_cancel'?'cancel':'resume'](args.workId,args);}
-      default:fail('Unknown capability tool',404);
-    }
+    if(pin)return registry.callVersion(pin.id,pin.version,name,args,{signal,context:{actor}});
+    return registry.call(actor,name,args,{signal,context:{actor}});
   }
   async function handleApi(method,path,body={},params=new URLSearchParams()) {
     if(quiescing&&!['GET','HEAD'].includes(method))fail('Gateway is stopping; new work is unavailable',503);
     let match;
     if(method==='GET'&&path==='/api/health')return {ok:true,service:'relay-capabilities'};
+    if(method==='GET'&&path==='/api/capabilities')return control.inventory();
+    if(method==='POST'&&(match=path.match(/^\/api\/capabilities\/(register|deploy|activate|unload|grant|retire|retry|reconcile)$/)))return control.call(`capabilities_${match[1]}`,body);
     if(method==='GET'&&path==='/api/state'){const value=await state();return params.get('sync')==='1'?sync.respond('workspace',value,params.get('since')):value;}
     if(method==='GET'&&path==='/api/bots')return {bots:manager.list()};
     if(method==='POST'&&path==='/api/bots')return manager.create(body);
@@ -125,7 +117,7 @@ export async function startGateway(options={}) {
     if(method==='POST'&&path==='/api/knowledge/edges')return knowledge.saveEdge(body);
     if(method==='POST'&&path==='/api/routines')return manager.saveRoutine(body);
     if((match=path.match(/^\/api\/routines\/([^/]+)$/))&&method==='PATCH')return manager.saveRoutine({...body,id:decodeURIComponent(match[1])});
-    if(method==='POST'&&path==='/api/events'){const event=chatroom.post(body.roomId||'room-lobby',{...body,toBotId:body.botId,kind:'event',notify:true},'system');return {event,jobs:chatroom.jobs().filter(job=>job.messageId===event.id)};}
+    if(method==='POST'&&path==='/api/events'){const event=await chatroom.post(body.roomId||'room-lobby',{...body,toBotId:body.botId,kind:'event',notify:true},'system');return {event,jobs:chatroom.jobs().filter(job=>job.messageId===event.id)};}
     if(method==='GET'&&path==='/api/jobs')return {jobs:chatroom.jobs()};
     if((match=path.match(/^\/api\/jobs\/([^/]+)\/retry$/))&&method==='POST')return chatroom.retry(decodeURIComponent(match[1]));
     if(method==='POST'&&path==='/api/works'){manager.get(body.botId);chatroom.need('rooms',body.roomId);return codex.create(body);}
@@ -139,16 +131,22 @@ export async function startGateway(options={}) {
   const server=createServer((req,res)=>{const work=(async()=>{
     try{const actor=authenticate(req),requestUrl=new URL(req.url,'http://localhost'),path=requestUrl.pathname;
       if(actor!=='controller'&&(path.startsWith('/api/')||path.startsWith('/internal/')))fail('User API requires controller authentication',403);
+      if(closing&&!path.startsWith('/internal/service/'))fail('Gateway is stopping; new requests are unavailable',503);
       if(req.method==='GET'&&path==='/api/stream'){res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-store',Connection:'keep-alive'});res.write('data: {"type":"connected"}\n\n');clients.add(res);req.on('close',()=>clients.delete(res));return;}
       let body={};if(['POST','PATCH','PUT'].includes(req.method)){const chunks=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>(path==='/api/attachments'?MAX_ATTACHMENT_REQUEST_BYTES:2*1024*1024))fail('Request too large',413);chunks.push(chunk);}body=JSON.parse(Buffer.concat(chunks).toString()||'{}');}
       if(req.method==='POST'&&path==='/internal/bots/stop-all')return json(res,200,await stopBots(body));
-      if(req.method==='GET'&&path==='/tools')return json(res,200,{tools:toolDefinitions.filter(tool=>actor==='controller'||manager.store.get('bots',actor).allowedTools.includes(tool.name))});
+      if(req.method==='POST'&&path==='/internal/service/tools')return json(res,200,control.tools(manager.get(body.botId)));
+      if(req.method==='POST'&&path==='/internal/service/invoke')return json(res,200,await rpc(body.capability,body.operation,body.args||[]));
+      if(req.method==='POST'&&path==='/internal/service/event'){emit(required(body.type,'type',128),body.payload||{});return json(res,200,{accepted:true});}
+      if(req.method==='GET'&&path==='/tools')return json(res,200,{tools:visibleTools(actor)});
+      const pinnedTool=path.match(/^\/capabilities\/([^/]+)\/versions\/([^/]+)\/tools\/([^/]+)$/);
+      if(req.method==='POST'&&pinnedTool){const abort=new AbortController();res.on('close',()=>{if(!res.writableEnded)abort.abort();});return json(res,200,await callTool(decodeURIComponent(pinnedTool[3]),body.arguments||body,actor,abort.signal,{id:decodeURIComponent(pinnedTool[1]),version:decodeURIComponent(pinnedTool[2])}));}
       if(req.method==='POST'&&path.startsWith('/tools/')){const abort=new AbortController();res.on('close',()=>{if(!res.writableEnded)abort.abort();});return json(res,200,await callTool(decodeURIComponent(path.slice(7)),body.arguments||body,actor,abort.signal));}
       if(req.method==='POST'&&path==='/mcp'){
         if(body.jsonrpc!=='2.0'||typeof body.method!=='string')return json(res,400,{jsonrpc:'2.0',id:body.id??null,error:{code:-32600,message:'Invalid JSON-RPC request'}});
         if(body.id===undefined){res.writeHead(202);res.end();return;}
         try{let result;if(body.method==='initialize')result={protocolVersion:['2025-03-26','2024-11-05','2025-06-18'].includes(body.params?.protocolVersion)?body.params.protocolVersion:'2025-03-26',capabilities:{tools:{}},serverInfo:{name:'relay-capabilities',version:'0.2.0'}};
-          else if(body.method==='ping')result={};else if(body.method==='tools/list')result={tools:toolDefinitions.filter(tool=>actor==='controller'||manager.store.get('bots',actor).allowedTools.includes(tool.name)).map(({name,description,inputSchema})=>({name,description,inputSchema}))};
+          else if(body.method==='ping')result={};else if(body.method==='tools/list')result={tools:visibleTools(actor).map(({name,description,inputSchema})=>({name,description,inputSchema}))};
           else if(body.method==='tools/call'){try{const value=await callTool(body.params?.name,body.params?.arguments||{},actor);result={content:[{type:'text',text:JSON.stringify(value)}],isError:false};}catch(error){result={content:[{type:'text',text:error.message}],isError:true};}}
           else return json(res,200,{jsonrpc:'2.0',id:body.id,error:{code:-32601,message:'Method not found'}});return json(res,200,{jsonrpc:'2.0',id:body.id,result});
         }catch(error){return json(res,200,{jsonrpc:'2.0',id:body.id,error:{code:-32603,message:error.message}});}
@@ -158,19 +156,106 @@ export async function startGateway(options={}) {
       const result=await handleApi(req.method,path,body,requestUrl.searchParams);if(result===undefined)fail('Not found',404);json(res,200,result);
     }catch(error){if(!res.headersSent)json(res,error.status||400,{error:String(error.message).replace(/\bsk-[a-zA-Z0-9_-]+/g,'[redacted]')});else res.end();}
   })();pending.add(work);work.finally(()=>pending.delete(work));});
+  async function stopIdleWorkers() {
+    for(const service of await supervisor.list())if(service.state!=='stopped'&&!service.pendingWork&&!service.activeRequests){
+      try{await supervisor.stop(service.id,service.version);}catch(error){if(error.code!=='CAPABILITY_BUSY')throw error;}
+    }
+  }
+  async function registerWorker(input) {
+    const instance=await supervisor.start(input);
+    if(registry.getVersion(input.id,input.version))await registry.relocate(input.id,input.version,{endpoint:instance.url,token:instance.token});
+    else await registry.register({id:input.id,version:input.version,endpoint:instance.url,token:instance.token,stateVersion:input.stateVersion||'1'});
+    return instance;
+  }
+  async function invokeManagedVersions(id,operation,args=[]) {
+    const results=[];
+    for(const version of registry.inventory().versions.filter(item=>item.capabilityId===id)){
+      if(!await managedConfig(id,version.version))continue;
+      const status=await supervisor.status(id,version.version);
+      if(status.state!=='stopped')results.push(await rpc(id,operation,args,version.version));
+    }
+    return results;
+  }
+  function requiredManagedVersions() {
+    const transitions=control.inventory().switches.filter(item=>item.phase!=='complete');
+    return registry.inventory().versions.filter(entry=>{
+      const ownsJob=entry.capabilityId==='codex'?codex.list().some(work=>work.serviceVersion===entry.version&&['queued','running','waiting'].includes(work.status)):entry.capabilityId==='chatroom'&&chatroom.jobs().some(job=>job.serviceVersion===entry.version&&['queued','accepted','running','waiting'].includes(job.status));
+      const switching=transitions.some(item=>item.bindings?.[entry.capabilityId]===entry.version||item.previousBindings?.[entry.capabilityId]===entry.version);
+      return entry.accepting||entry.bindingCount||entry.unknownRequests.length||ownsJob||switching;
+    });
+  }
+  async function managedConfig(id,version) {
+    try{return JSON.parse(await readFile(supervisor.paths(id,version).config,'utf8'));}catch(error){if(error.code==='ENOENT'||error.code==='INVALID_REQUEST')return null;throw error;}
+  }
+  async function monitorServices() {
+    if(serviceMonitoring||closing||quiescing)return;serviceMonitoring=true;
+    try{for(const entry of requiredManagedVersions()){
+      if(closing||quiescing)break;
+      const key=`${entry.capabilityId}@${entry.version}`,prior=store('registry').get('service-restarts',key);
+      if(prior?.nextAttemptAt&&Date.parse(prior.nextAttemptAt)>Date.now())continue;
+      const attempts=(prior?.attempts||0)+1;
+      try{
+        const config=await managedConfig(entry.capabilityId,entry.version);if(!config)continue;
+        const identity=await supervisor.descriptor(entry.capabilityId,entry.version);
+        if(identity&&identity.state!=='stopped')continue;
+        store('registry').save('service-restarts',{id:key,attempts,lastAttemptAt:now(),nextAttemptAt:new Date(Date.now()+Math.min(60000,1000*2**Math.min(attempts,6))).toISOString()});
+        const instance=await registerWorker({id:entry.capabilityId,version:entry.version,stateVersion:config.stateVersion,module:config.module,options:{...config.options,gatewayUrl:url,gatewayToken:token}});
+        store('registry').save('service-restarts',{id:key,attempts:0,nextAttemptAt:null,error:null,restartedAt:now()});
+        emit('capability-restarted',{id:entry.capabilityId,version:entry.version,pid:instance.pid});
+      }catch(error){
+        store('registry').save('service-restarts',{id:key,attempts,error:error.message,nextAttemptAt:new Date(Date.now()+Math.min(60000,1000*2**Math.min(attempts,6))).toISOString()});
+        emit('capability-service-error',{id:entry.capabilityId,version:entry.version,error:error.message});
+      }
+    }}finally{serviceMonitoring=false;}
+  }
   try {
     await new Promise((done,reject)=>{server.once('error',reject);server.listen(options.port||0,options.host||'127.0.0.1',done);});url=`http://${options.host==='::1'?'[::1]':'127.0.0.1'}:${server.address().port}`;
+    await options.onListening?.({url,port:server.address().port});
     await mkdir(join(dataRoot,'capabilities','gateway'),{recursive:true});await writeFile(join(dataRoot,'capabilities','gateway','run.json'),JSON.stringify({pid:process.pid,url,startedAt:now()}));
-    if(options.seed!==false){await manager.seed();chatroom.seed();}await codex.start();chatroom.start();
+    let build;
+    try{build=JSON.parse(await readFile(join(releaseRoot,'release-manifest.json'),'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;}
+    const version=options.capabilityVersion||build?.buildId||'1.0.0';
+    const workerOptions={dataRoot,releaseRoot,defaultCwd,model:options.model,codexPath:options.codexPath,gatewayUrl:url,gatewayToken:token,...(build?.contentHash?{contentHash:build.contentHash}:{})};
+    for(const id of BUILTIN_CAPABILITIES){
+      const previouslyRegistered=registry.inventory().services.some(service=>service.id===id);
+      await registerWorker({id,version,module:join(releaseRoot,'capabilities/services/builtin.mjs'),options:workerOptions});
+      if(!previouslyRegistered)registry.activate(id,version);
+    }
+    // A stopped but still-bound version is resumed from its original immutable
+    // source. Registration of this release never overwrites a Bot's old binding.
+    for(const entry of requiredManagedVersions()){
+      const config=await managedConfig(entry.capabilityId,entry.version);if(!config)continue;
+      await registerWorker({id:entry.capabilityId,version:entry.version,stateVersion:config.stateVersion,module:config.module,options:{...config.options,gatewayUrl:url,gatewayToken:token}});
+    }
+    for(const id of ['bot-management','chatroom','codex'])await invokeManagedVersions(id,'resumeService');
+    if(options.seed!==false){await manager.seed();await chatroom.seed();}
+    control.pinExisting();await control.tick();
     if(options.restore!==false)await manager.restore();
   } catch(error) {
-    closing=true;await Promise.allSettled([chatroom.close(),codex.stop()]);for(const client of clients)client.end();server.closeAllConnections();if(server.listening)await new Promise(done=>server.close(done));await Promise.allSettled([...pending]);for(const value of stores.values())value.close();throw error;
+    closing=true;await control.close();await stopIdleWorkers().catch(()=>{});for(const client of clients)client.end();server.closeAllConnections();if(server.listening)await new Promise(done=>server.close(done));await Promise.allSettled([...pending]);for(const value of stores.values())value.close();throw error;
   }
-  const monitor=setInterval(async()=>{if(monitoring||closing||quiescing)return;monitoring=true;try{await manager.monitor();}finally{monitoring=false;}},5000);monitor.unref();
-  let polling=false;const eventPoll=setInterval(async()=>{if(polling||closing)return;polling=true;try{for(const bot of manager.list()){const cursor=manager.store.get('event-cursors',bot.id)?.after||0;const events=await manager.readState(bot.id,db=>db?.listEvents({after:cursor,limit:1000})||[]);if(events.length){manager.store.save('event-cursors',{id:bot.id,after:events.at(-1).seq});emit('bot-event',{botId:bot.id,eventType:events.at(-1).type});}}}catch(error){emit('gateway-error',{error:error.message});}finally{polling=false;}},750);eventPoll.unref();
-  const scheduler=setInterval(async()=>{if(ticking||closing||quiescing)return;ticking=true;try{for(const routine of manager.store.list('routines'))if(routine.enabled&&new Date(routine.nextRunAt)<=new Date()){const due=routine.nextRunAt;try{chatroom.post(routine.roomId||'room-lobby',{content:`定时职责「${routine.name}」：${routine.instruction}`,toBotId:routine.botId,clientId:`routine:${routine.id}:${due}`,kind:'event',notify:true},'system');manager.store.save('routines',{...routine,lastRunAt:now(),lastStatus:'queued',nextRunAt:new Date(Date.now()+routine.intervalSeconds*1000).toISOString()});}catch(error){manager.store.save('routines',{...routine,lastStatus:'failed',error:error.message,nextRunAt:new Date(Date.now()+routine.intervalSeconds*1000).toISOString()});}}}finally{ticking=false;}},1000);scheduler.unref();
+  const monitor=setInterval(async()=>{if(monitoring||closing||quiescing)return;monitoring=true;try{await manager.monitor();}catch(error){emit('gateway-error',{error:error.message});}finally{monitoring=false;}},5000);monitor.unref();
+  const serviceMonitor=setInterval(()=>{void monitorServices().catch(error=>emit('gateway-error',{error:error.message}));},2000);serviceMonitor.unref();
+  let polling=false;const eventPoll=setInterval(async()=>{if(polling||closing)return;polling=true;try{for(const bot of manager.list()){const cursor=store('gateway').get('event-cursors',bot.id)?.after||0;const events=await manager.readState(bot.id,db=>db?.listEvents({after:cursor,limit:1000})||[]);if(events.length){store('gateway').save('event-cursors',{id:bot.id,after:events.at(-1).seq});emit('bot-event',{botId:bot.id,eventType:events.at(-1).type});}}}catch(error){emit('gateway-error',{error:error.message});}finally{polling=false;}},750);eventPoll.unref();
+  const scheduler=setInterval(async()=>{if(ticking||closing||quiescing)return;ticking=true;try{for(const routine of manager.store.list('routines'))if(routine.enabled&&new Date(routine.nextRunAt)<=new Date()){const due=routine.nextRunAt;try{await chatroom.post(routine.roomId||'room-lobby',{content:`定时职责「${routine.name}」：${routine.instruction}`,toBotId:routine.botId,clientId:`routine:${routine.id}:${due}`,kind:'event',notify:true},'system');await manager.saveRoutine({...routine,lastRunAt:now(),lastStatus:'queued',nextRunAt:new Date(Date.now()+routine.intervalSeconds*1000).toISOString()});}catch(error){await manager.saveRoutine({...routine,lastStatus:'failed',error:error.message,nextRunAt:new Date(Date.now()+routine.intervalSeconds*1000).toISOString()});}}}catch(error){emit('gateway-error',{error:error.message});}finally{ticking=false;}},1000);scheduler.unref();
+  const switches=setInterval(()=>{if(!closing&&!quiescing)void control.tick().catch(error=>emit('gateway-error',{error:error.message}));},300);switches.unref();
   const heartbeat=setInterval(()=>{for(const client of clients)client.write(': keepalive\n\n');},20000);heartbeat.unref();
-  function stopBots(options={}) {return stopBotsPromise||=(async()=>{quiescing=true;await Promise.all([manager.quiesce(),chatroom.close()]);while(ticking||monitoring)await new Promise(done=>setTimeout(done,10));return manager.shutdownAll(options);})().catch(error=>{stopBotsPromise=null;throw error;});}
-  let closePromise;const close=()=>closePromise||=(async()=>{closing=true;clearInterval(scheduler);clearInterval(heartbeat);clearInterval(monitor);clearInterval(eventPoll);await chatroom.close();await codex.stop();for(const client of clients)client.end();server.closeAllConnections();await new Promise(done=>server.close(done));await Promise.allSettled([...pending]);while(ticking||monitoring||polling)await new Promise(done=>setTimeout(done,10));for(const value of stores.values())value.close();})();
-  return {url,token,server,manager,chatroom,knowledge,codex,memories,attachments,state,handleApi,callTool,close};
+  function stopBots(stopOptions={}) {return stopBotsPromise||=(async()=>{
+    quiescing=true;manager.quiescing=true;
+    while(serviceMonitoring)await new Promise(done=>setTimeout(done,10));
+    await invokeManagedVersions('chatroom','pause');chatroom.closed=true;
+    await invokeManagedVersions('codex','pause');
+    await invokeManagedVersions('bot-management','quiesce');
+    while(ticking||monitoring)await new Promise(done=>setTimeout(done,10));
+    return manager.shutdownAll(stopOptions);
+  })().catch(error=>{stopBotsPromise=null;throw error;});}
+  let closePromise;const close=()=>closePromise||=(async()=>{
+    closing=true;clearInterval(scheduler);clearInterval(heartbeat);clearInterval(monitor);clearInterval(serviceMonitor);clearInterval(eventPoll);clearInterval(switches);
+    await control.close();while(ticking||monitoring||serviceMonitoring||polling)await new Promise(done=>setTimeout(done,10));
+    while(pending.size)await Promise.allSettled([...pending]);
+    await stopIdleWorkers();for(const client of clients)client.end();
+    await new Promise(done=>{server.close(done);server.closeIdleConnections?.();});
+    await Promise.allSettled([...pending]);for(const value of stores.values())value.close();
+  })();
+  return {url,token,server,manager,chatroom,knowledge,codex,memories,attachments,registry,supervisor,control,state,handleApi,callTool,monitorServices,stopBots,close};
 }

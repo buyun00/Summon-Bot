@@ -17,16 +17,16 @@ test('real independent Pi processes consume deterministic group deliveries and e
  t.after(async()=>{
   const failures=[];
   const cleanup=async(name,operation)=>{try{await operation();return true;}catch(error){failures.push(new Error(`Lifecycle fixture cleanup failed: ${name}`,{cause:error}));return false;}};
-  const stopped=await cleanup('stop independent Bots',()=>gateway.manager.shutdownAll());
+  const stopped=await cleanup('stop independent Bots and capability work',()=>gateway.stopBots());
   await cleanup('close capability gateway',()=>gateway.close());
   await cleanup('close fixture provider',async()=>{provider.closeAllConnections();await new Promise((done,reject)=>provider.close(error=>error?reject(error):done()));});
   if(stopped)await cleanup('remove stopped fixture data',()=>rm(dataRoot,{recursive:true,force:true}));
   else t.diagnostic(`Fixture data retained because Bot shutdown could not be confirmed: ${dataRoot}`);
   if(failures.length)throw new AggregateError(failures,'Lifecycle fixture cleanup did not complete');
  });
- const room=gateway.chatroom.createRoom({name:'Actual process discussion',members:['user','bot-chatroom']});
- const message=gateway.chatroom.post(room.id,{content:'Use shared knowledge then reply',clientId:'unique'});
- const repeated=gateway.chatroom.post(room.id,{content:'Use shared knowledge then reply',clientId:'unique'});assert.equal(message.id,repeated.id);
+ const room=await gateway.chatroom.createRoom({name:'Actual process discussion',members:['user','bot-chatroom']});
+ const message=await gateway.chatroom.post(room.id,{content:'Use shared knowledge then reply',clientId:'unique'});
+ const repeated=await gateway.chatroom.post(room.id,{content:'Use shared knowledge then reply',clientId:'unique'});assert.equal(message.id,repeated.id);
  await until(()=>gateway.chatroom.messages(room.id).find(item=>item.senderId==='bot-chatroom'));
  const identity=await gateway.manager.identity('bot-chatroom');assert.notEqual(identity.pid,process.pid);
  const health=await gateway.manager.request('bot-chatroom','/health');assert.ok(health.engine);

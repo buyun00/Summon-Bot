@@ -30,6 +30,7 @@ export class BotEngine {
       agentKeepRecentTokens: config.limits.keepRecentTokens,
     }, onCheckpoint: (sessionId, checkpoint) => emit('engine.compaction', { checkpoint }, { sessionId, taskId: checkpoint.runId }) });
     this.queue = Promise.resolve(); this.closed = false; this.active = null;
+    this.taskGate = null; this.idleWaiters = new Set();
   }
   async initialize() {
     this.prompt = [
@@ -39,15 +40,38 @@ export class BotEngine {
     this.resources = await loadResources({ config: this.config, workspace: this.config.workspace });
     this.configured = await loadConfiguredTools(this.config.tools, { botId: this.config.botId, dataDir: this.config.dataDir,
       workspace: this.config.workspace, redact: this.clean });
-    // Reject collisions before accepting the first message, including builtins.
+    this.toolNames = this.validateConfigured(this.configured);
+    for (const session of this.store.listSessions()) this.repairSession(session);
+    return this;
+  }
+  validateConfigured(configured) {
+    // Reject collisions before accepting messages or acknowledging an update.
     const names = new Set();
-    for (const tool of [...this.services.coreTools({}), ...this.configured.tools, this.resources.tool, this.context.historyTool('__validation__')]) {
+    for (const tool of [...this.services.coreTools({}), ...configured.tools, this.resources.tool, this.context.historyTool('__validation__')]) {
       if (names.has(tool.name)) throw new Error(`Duplicate tool: ${tool.name}`);
       names.add(tool.name);
     }
-    this.toolNames = [...names];
-    for (const session of this.store.listSessions()) this.repairSession(session);
-    return this;
+    return [...names];
+  }
+  async stageConfigured(definitions, signal) {
+    const configured = await loadConfiguredTools(definitions, { botId: this.config.botId, dataDir: this.config.dataDir,
+      workspace: this.config.workspace, redact: this.clean, signal });
+    try { this.validateConfigured(configured); return configured; }
+    catch (error) { await configured.close(); throw error; }
+  }
+  holdTasks() {
+    if (this.taskGate) throw new Error('Bot task boundary is already held');
+    let release;
+    const gate = { promise: new Promise(resolve => release = resolve) };
+    this.taskGate = gate;
+    const idle = this.active ? new Promise(resolve => this.idleWaiters.add(resolve)) : Promise.resolve();
+    return { idle, release: () => { if (this.taskGate === gate) this.taskGate = null; release(); } };
+  }
+  replaceConfigured(configured) {
+    if (this.active || !this.taskGate) throw new Error('Capabilities can only change at a held task boundary');
+    const names = this.validateConfigured(configured), previous = this.configured;
+    this.configured = configured; this.toolNames = names;
+    return previous;
   }
   repairSession(session) {
     const repaired = repairTranscript(session.messages || [], (call, assistant) => {
@@ -63,10 +87,13 @@ export class BotEngine {
       recoveryRecords: [...(session.recoveryRecords || []), ...repaired.recoveryRecords] });
     return session;
   }
-  run(task, { signal } = {}) {
+  run(task, { signal, onStart } = {}) {
     if (this.closed) return Promise.reject(new Error('Bot engine is closed'));
-    const work = this.queue.catch(() => {}).then(() => {
+    const work = this.queue.catch(() => {}).then(async () => {
+      while (this.taskGate) await this.taskGate.promise;
       signal?.throwIfAborted();
+      if (this.closed) throw new Error('Bot engine is closed');
+      onStart?.();
       return this.execute(task, signal);
     });
     this.queue = work; return work;
@@ -104,7 +131,8 @@ export class BotEngine {
       for (const tool of [...this.services.coreTools(task), ...this.configured.tools]) registry.register(tool);
       registerSdkTools(registry, [this.resources.tool, this.context.historyTool(task.sessionId)]);
       const tools = registry.toSdkTools(), declarations = tools.map(toToolDeclaration);
-      const systemPrompt = [this.prompt, this.resources.prompt].filter(Boolean).join('\n\n');
+      const capabilityNotice = this.config.capabilityBindingRevision ? `Your external capabilities were switched at a completed task boundary. Current binding revision: ${this.config.capabilityBindingRevision}. Use the current tool declarations; earlier task receipts refer to their original capability versions.` : '';
+      const systemPrompt = [this.prompt, this.resources.prompt, capabilityNotice].filter(Boolean).join('\n\n');
       const promptHash = digest({ systemPrompt, declarations });
       if (session.promptHash !== promptHash) {
         const removed = getCurrentTools(session.messages).filter(tool => !tools.some(value => value.name === tool.name)).map(tool => ({ name: tool.name }));
@@ -177,10 +205,11 @@ export class BotEngine {
       const session = this.store.getSession(task.sessionId);
       if (session && !this.store.closed) this.repairSession(session);
       throw error;
-    } finally { clearTimeout(timer); unsubscribe?.(); this.active = null; }
+    } finally { clearTimeout(timer); unsubscribe?.(); this.active = null; for (const resolve of this.idleWaiters) resolve(); this.idleWaiters.clear(); }
   }
   health() { return { engine: 'pi-agent-core', version: '1.3.0', initialized: Boolean(this.agent), activity: this.active ? (this.active.waitingFor ? 'waiting' : 'running') : 'idle', waitingFor: this.active?.waitingFor || null, configured: this.provider.status?.configured !== false,
-    activeTaskId: this.active?.taskId || null, model: this.model.id, provider: this.clean(this.provider.status || {}), tools: this.toolNames || [], skills: this.resources?.manifest || null }; }
+    activeTaskId: this.active?.taskId || null, capabilitySwitchPending: Boolean(this.taskGate), capabilityBindingRevision: this.config.capabilityBindingRevision || null,
+    model: this.model.id, provider: this.clean(this.provider.status || {}), tools: this.toolNames || [], skills: this.resources?.manifest || null }; }
   async close() {
     this.closed = true; this.active?.controller.abort(new Error('Bot is closing')); this.agent.abort();
     await this.queue.catch(() => {}); await this.configured?.close(); this.provider.stop?.();

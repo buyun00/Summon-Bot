@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { required,fail,pick,now } from '../shared/validation.mjs';
 const TERMINAL=new Set(['completed','failed','cancelled','interrupted']);
 export class ChatroomService {
-  constructor({store,manager,attachments,emit=()=>{}}) { Object.assign(this,{store,manager,attachments,emit});this.busy=false;this.closed=false; }
+  constructor({store,manager,attachments,emit=()=>{},version=null}) { Object.assign(this,{store,manager,attachments,emit,version});this.busy=false;this.closed=false; }
   seed() { if(!this.store.get('rooms','room-lobby'))this.createRoom({id:'room-lobby',name:'项目大群',kind:'group',members:['user','bot-engineer','bot-components','bot-qa']}); }
   need(kind,id) { const value=this.store.get(kind,id);if(!value)fail(`${kind} not found`,404);return value; }
   rooms() { return this.store.list('rooms').map(room=>({...room,lastMessage:this.messages(room.id).at(-1)||null})); }
@@ -39,12 +39,13 @@ export class ChatroomService {
     const mentions=this.mentions(message.content,active),selected=input.toBotId?active.filter(id=>id===input.toBotId):mentions.length?mentions:senderId==='user'||room.kind==='dm'||input.notify?active:[];
     for(const botId of selected)this.enqueue(message,botId);void this.tick();return message;
   }
-  enqueue(message,botId,extra={}) {const id=extra.id||`delivery:${message.id}:${botId}`;if(this.store.get('deliveries',id))return this.store.get('deliveries',id);const item=this.store.save('deliveries',{id,botId,roomId:message.roomId,messageId:message.id,status:'queued',rootId:message.rootId,hop:message.hop,routineId:message.routineId,discussionBatch:message.discussionBatch,...extra});this.emit('job',item);return item;}
+  enqueue(message,botId,extra={}) {const id=extra.id||`delivery:${message.id}:${botId}`;if(this.store.get('deliveries',id))return this.store.get('deliveries',id);const item=this.store.save('deliveries',{id,botId,roomId:message.roomId,messageId:message.id,status:'queued',rootId:message.rootId,hop:message.hop,routineId:message.routineId,discussionBatch:message.discussionBatch,...extra,serviceVersion:this.version});this.emit('job',item);return item;}
   async tick() {
     if(this.busy||this.closed)return;this.busy=true;
-    try{await Promise.allSettled(this.jobs().filter(item=>!TERMINAL.has(item.status)).map(item=>this.deliver(item)));}finally{this.busy=false;}
+    try{await Promise.allSettled(this.jobs().filter(item=>!TERMINAL.has(item.status)&&(!this.version||item.serviceVersion===this.version)).map(item=>this.deliver(item)));}finally{this.busy=false;}
   }
   async deliver(item) {
+    if(this.version&&item.serviceVersion!==this.version)fail('This capability version does not own the delivery',409);
     try {
       if(item.status==='queued'){
         const room=this.need('rooms',item.roomId),trigger=this.need('messages',item.messageId),config=await this.manager.config(item.botId);
@@ -92,7 +93,7 @@ export class ChatroomService {
   }
   conclude(roomId,actor='user') {const room=this.need('rooms',roomId);if(room.kind!=='deep')fail('Not a discussion room');if(room.status==='concluded')return room;const host=room.members.find(id=>this.manager.store.get('bots',id)?.roleId==='chatroom')||room.members.find(id=>id!=='user');const message=this.append(room.id,{content:'请根据实际讨论与证据形成结论，并调用 chatroom_conclude 保存结论。',kind:'event',toBotId:host},'system');return this.enqueue(message,host);}
   saveConclusion(roomId,input) {const room=this.need('rooms',roomId);if(room.status==='concluded')return room;const record=this.store.save('rooms',{...room,status:'concluded',summary:required(input.summary,'summary'),concludedAt:now()});this.emit('room',record);if(room.originRoomId&&this.store.get('rooms',room.originRoomId))this.append(room.originRoomId,{id:`conclusion:${room.id}`,content:`讨论「${room.name}」结论：\n${record.summary}`,kind:'event',hop:4},'system');return record;}
-  retry(id) {const item=this.need('deliveries',id);if(!TERMINAL.has(item.status)||item.status==='completed')fail('Only interrupted/failed work can be explicitly retried');const room=this.need('rooms',item.roomId);if(room.status==='concluded')fail('Discussion has concluded',409);if(!item.taskId)return this.store.save('deliveries',{...item,status:'queued',attempts:0,error:null});const trigger=this.need('messages',item.messageId);return this.enqueue(trigger,item.botId,{id:`retry:${randomUUID()}`,retryOf:id});}
+  retry(id) {const item=this.need('deliveries',id);if(!TERMINAL.has(item.status)||item.status==='completed')fail('Only interrupted/failed work can be explicitly retried');const room=this.need('rooms',item.roomId);if(room.status==='concluded')fail('Discussion has concluded',409);if(!item.taskId)return this.store.save('deliveries',{...item,status:'queued',serviceVersion:this.version,attempts:0,error:null});const trigger=this.need('messages',item.messageId);return this.enqueue(trigger,item.botId,{id:`retry:${randomUUID()}`,retryOf:id});}
   start() {this.closed=false;this.timer=setInterval(()=>void this.tick(),750);this.timer.unref();void this.tick();}
   async close() {this.closed=true;clearInterval(this.timer);while(this.busy)await new Promise(done=>setTimeout(done,20));}
 }

@@ -5,7 +5,7 @@
 ## 工程
 
 - `bot/`：可单独安装的 Bot 包，生命周期、任务/消息、上下文、持久化、工具/MCP/Skill 接入。
-- `capabilities/`：聊天室、知识、文件、Codex、Bot 管理、记忆管理和能力网关。
+- `capabilities/`：六类独立 MCP/API 服务，以及注册、版本绑定和协商热更网关。
 - `roles/`：角色配置与提示词；`skills/`：可加载流程说明。
 - `web/`：前端与轻量网关；`scripts/`：构建、安装、迁移。
 - `tests/`：跨模块验证；各模块另有自己的测试。
@@ -34,4 +34,4 @@ npm run relay:install -- --release-root <构建输出路径> --app-root D:\Relay
 & D:\Relay-Bot-app\Stop.ps1
 ```
 
-发行物带 Node 运行时和生产依赖，可从不同 cwd 启动，无开发目录链接。安装不覆盖数据；切换版本前必须正常停止服务和 Bot。操作说明见 [OPERATIONS](docs/OPERATIONS.md)，设计见 [ARCHITECTURE](docs/ARCHITECTURE.md)，完整重构依据见 [REFACTOR_PLAN](docs/REFACTOR_PLAN.md)。当前验证事实见 [VERIFICATION](docs/VERIFICATION.md)。
+发行物带 Node 运行时和生产依赖，可从不同 cwd 启动，无开发目录链接。完整基础程序安装前正常停止服务和 Bot；独立能力发布支持新旧版本并存，在 Bot 准备好后切换，见 [能力服务与热更新](docs/CAPABILITY_SERVICES.md)。操作说明见 [OPERATIONS](docs/OPERATIONS.md)，设计见 [ARCHITECTURE](docs/ARCHITECTURE.md)，完整重构依据见 [REFACTOR_PLAN](docs/REFACTOR_PLAN.md)。当前验证事实见 [VERIFICATION](docs/VERIFICATION.md)。

@@ -127,6 +127,15 @@ export async function stopSystem(config) {
   } else if (gateway.state !== 'stopped') throw new Error('Gateway unreachable; inspect active Bots before stopping the system');
   else {
     // A crashed gateway must not strand independently running Bots.
+    // Stop producers before stopping their consumers. These private service
+    // endpoints remain usable without the gateway; no stale PID is killed.
+    const supervisor = await capabilitySupervisor(config);
+    if (supervisor) {
+      const services = await supervisor.list();
+      for (const id of ['chatroom', 'codex', 'bot-management']) for (const service of services.filter(item => item.id === id && item.state !== 'stopped')) {
+        await supervisor.request(service.id, service.version, `/rpc/${id === 'bot-management' ? 'quiesce' : 'pause'}`, { body: { arguments: [] }, timeoutMs: 180000 });
+      }
+    }
     const { RecordStore } = await import(pathToFileURL(join(config.releaseRoot, 'capabilities/shared/store.mjs')));
     const { BotManager } = await import(pathToFileURL(join(config.releaseRoot, 'capabilities/bot-management/service.mjs')));
     const path = join(config.dataRoot, 'capabilities/bot-management/state.sqlite');
@@ -138,5 +147,14 @@ export async function stopSystem(config) {
   }
   const web = await stopService(config, 'web');
   const stoppedGateway = await stopService(config, 'gateway');
-  return { state: 'stopped', web, gateway: stoppedGateway };
+  const supervisor = await capabilitySupervisor(config), capabilities = [];
+  if (supervisor) for (const service of await supervisor.list()) capabilities.push(await supervisor.stop(service.id, service.version));
+  return { state: 'stopped', web, gateway: stoppedGateway, capabilities };
+}
+
+async function capabilitySupervisor(config) {
+  const modulePath = join(config.releaseRoot, 'capabilities/services/supervisor.mjs');
+  if (!existsSync(modulePath)) return null; // Initial upgrade from the old layout.
+  const { CapabilityServiceSupervisor } = await import(pathToFileURL(modulePath));
+  return new CapabilityServiceSupervisor({dataRoot:config.dataRoot,releaseRoot:config.releaseRoot});
 }

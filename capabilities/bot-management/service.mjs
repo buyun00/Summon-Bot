@@ -30,7 +30,7 @@ export class BotManager {
     await mkdir(dir,{recursive:true}); await mkdir(join(dir,'workspace'),{recursive:true});
     const config={schemaVersion:1,botId:id,dataDir:dir,workspace:input.cwd?resolve(input.cwd):join(dir,'workspace'),model:{...this.model,...input.modelConfig},prompt:input.prompt||await readFile(join(this.releaseRoot,'roles',roleId,'prompt.md'),'utf8'),skills:(profile.skills||[]).map(skill=>join(this.releaseRoot,'skills',skill)),bundleRoot:this.releaseRoot,bundledSkills:profile.skills||[],token,listen:{host:'127.0.0.1',port:0},concurrency:1,tools:[],limits:input.limits};
     const bot=this.store.save('bots',{id,name:required(input.name||profile.name,'name',100),role:input.role||profile.role,roleId,expertise:input.expertise||profile.role,prompt:input.prompt||'',status:input.status==='paused'?'paused':'active',skills:profile.skills,model:config.model.model||'deepseek-flash',executor:'codex',capabilityToken,allowedTools:profile.tools,runIntent:'stopped',...(input.avatar?{avatar:avatarOf(input.avatar)}:{})});
-    config.tools=this.getTools(bot).map(tool=>({...tool,headers:{Authorization:`Bearer ${capabilityToken}`}}));
+    config.tools=(await this.getTools(bot)).map(tool=>({...tool,headers:{Authorization:`Bearer ${capabilityToken}`}}));
     config.bundledToolNames=config.tools.map(tool=>tool.name);
     await writeFile(join(dir,'config.json'),JSON.stringify(config,null,2),{mode:0o600});
     this.emit('bot',this.public(bot)); return this.public(bot);
@@ -41,8 +41,16 @@ export class BotManager {
   async update(id,input) {
     const previous=this.get(id);
     if(input.status!==undefined&&!['active','paused'].includes(input.status)) fail('Invalid Bot status');
-    const record=this.store.save('bots',{...previous,...pick(input,['name','role','expertise','prompt','status','skills']),...(input.avatar?{avatar:avatarOf(input.avatar,previous.avatar)}:{})});
-    if(input.prompt!==undefined) { const config=await this.config(id);config.prompt=input.prompt;await writeFile(join(this.directory(id),'config.json'),JSON.stringify(config,null,2),{mode:0o600}); }
+    if(input.prompt!==undefined) {
+      if(typeof input.prompt!=='string')fail('Bot prompt must be a string');
+      const identity=await this.identity(id);
+      if(identity) await this.request(id,'/config',{method:'PATCH',body:JSON.stringify({prompt:input.prompt})});
+      else {
+        const api=await this.botApi();
+        await api.withBotDataLease(this.directory(id),async()=>{const config=await this.config(id);config.prompt=input.prompt;await writeFile(join(this.directory(id),'config.json'),JSON.stringify(config,null,2),{mode:0o600});},{botId:id,purpose:'update-prompt'});
+      }
+    }
+    const record=this.store.save('bots',{id,...pick(input,['name','role','expertise','prompt','status','skills']),...(input.avatar?{avatar:avatarOf(input.avatar,previous.avatar)}:{})});
     this.emit('bot',this.public(record)); return this.public(record);
   }
   async identity(id) { return (await this.botApi()).inspectBotIdentity(this.directory(id)); }
@@ -65,8 +73,9 @@ export class BotManager {
     config.skills=[...(config.skills||[]).filter(path=>!oldSkills.has(resolve(path))),...(profile.skills||[]).map(skill=>join(this.releaseRoot,'skills',skill))];
     const previousTools=new Set(config.bundledToolNames||(record.allowedTools||[]));
     const customTools=(config.tools||[]).filter(tool=>!previousTools.has(tool.name)).map(tool=>tool.type==='module'&&within(priorRoot,tool.module)?{...tool,module:join(this.releaseRoot,relative(priorRoot,tool.module))}:tool);
-    config.tools=[...this.getTools(record).map(tool=>({...tool,headers:{Authorization:`Bearer ${record.capabilityToken}`}})),...customTools];
-    config.bundleRoot=this.releaseRoot;config.bundledSkills=profile.skills||[];config.bundledToolNames=this.getTools(record).map(tool=>tool.name);
+    const bundledTools=await this.getTools(record);
+    config.tools=[...bundledTools.map(tool=>({...tool,headers:{Authorization:`Bearer ${record.capabilityToken}`}})),...customTools];
+    config.bundleRoot=this.releaseRoot;config.bundledSkills=profile.skills||[];config.bundledToolNames=bundledTools.map(tool=>tool.name);
     await writeFile(join(dir,'config.json'),JSON.stringify(config,null,2),{mode:0o600});await mkdir(join(dir,'logs'),{recursive:true});
     this.assertAccepting();let failure;
     const child=spawn(process.execPath,[join(this.releaseRoot,'bot','bin','relay-bot.mjs'),'--config',join(dir,'config.json')],{cwd:this.releaseRoot,detached:true,windowsHide:true,stdio:['ignore','ignore','ignore','ipc']});

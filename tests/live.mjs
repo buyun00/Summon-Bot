@@ -56,7 +56,7 @@ try {
     model: { provider: 'deepseek', model: report.model, baseUrl: report.baseUrl, apiKeyEnv: 'RELAY_LIVE_MODEL_KEY', contextWindow: 128000, maxTokens: 3000 } });
   const entry = await gateway.manager.create({ id: 'live-entry', roleId: 'entry', name: '真实入口验收' });
   const host = await gateway.manager.create({ id: 'live-chatroom', roleId: 'chatroom', name: '真实聊天室验收' });
-  const room = gateway.chatroom.createRoom({ id: 'live-discussion', name: '隔离真实验收', kind: 'deep', members: ['user', entry.id, host.id], goal: '验证两个角色独立调用工具' });
+  const room = await gateway.chatroom.createRoom({ id: 'live-discussion', name: '隔离真实验收', kind: 'deep', members: ['user', entry.id, host.id], goal: '验证两个角色独立调用工具' });
   await execute(entry.id, `这是明确授权的隔离真实验收。请实际调用 bots_list 查看同伴，再调用 memory_write 写入 id="baseline-memory"，text="继承基准 ${nonce}"。仅完成这两项，最后简短报告。`, 'entry-live', ['bots_list', 'memory_write']);
   await execute(host.id, `这是明确授权的隔离真实验收。请实际调用 chatroom_read，roomId="${room.id}"，核对成员后调用 chatroom_conclude 保存 summary="实际读取成员后形成结论 ${nonce}"。不要发送消息或创建新工作。`, 'chatroom-live', ['chatroom_read', 'chatroom_conclude']);
   const firstIdentities = await Promise.all([gateway.manager.identity(entry.id), gateway.manager.identity(host.id)]);
@@ -105,7 +105,7 @@ try {
   report.error = clean({ name: error.name, message: error.message, stack: error.stack }); progress(`FAILED: ${report.error.message}`); process.exitCode = 1;
 } finally {
   if (gateway) {
-    try { await gateway.manager.shutdownAll(); report.cleanup.botsStopped = true; } catch (error) { report.cleanup.error = clean(error.message); report.passed = false; process.exitCode = 1; }
+    try { await gateway.stopBots(); report.cleanup.botsStopped = true; } catch (error) { report.cleanup.error = clean(error.message); report.passed = false; process.exitCode = 1; }
     try { report.cleanup.liveIdentities = (await Promise.all(gateway.manager.list().map(async bot => ({ botId: bot.id, identity: await inspectBotIdentity(join(dataRoot, 'bots', bot.id)) })))).filter(item => item.identity); assert.equal(report.cleanup.liveIdentities.length, 0); }
     catch (error) { report.cleanup.identityError = clean(error.message); report.passed = false; process.exitCode = 1; }
     await gateway.close(); report.cleanup.gatewayClosed = true;

@@ -1,0 +1,30 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { mkdtemp,rm,writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { resolve,join } from 'node:path';
+import { initializeDeployment,stopSystem } from '../scripts/installation/system.mjs';
+import { CapabilityServiceSupervisor } from '../capabilities/services/supervisor.mjs';
+import { inspectBotIdentity } from '../bot/src/index.mjs';
+
+test('full stop without a gateway stops independent producers and Bots, and refuses a busy custom service', {timeout:60000}, async t=>{
+  const root=await mkdtemp(join(tmpdir(),'relay-cap-stop-')),dataRoot=join(root,'data'),releaseRoot=resolve(import.meta.dirname,'..');
+  const bridge=createServer(async(req,res)=>{for await(const _chunk of req){}res.setHeader('Content-Type','application/json');res.end(req.url==='/internal/service/tools'?'[]':'{}');});
+  await new Promise(done=>bridge.listen(0,'127.0.0.1',done));
+  const {config}=await initializeDeployment({dataRoot,releaseRoot,defaultCwd:root,port:0});
+  const supervisor=new CapabilityServiceSupervisor({dataRoot,releaseRoot});
+  t.after(async()=>{for(const service of await supervisor.list())if(service.state!=='stopped'){if(service.id==='custom-busy')await supervisor.request(service.id,service.version,'/rpc/release',{body:{arguments:[]}});await supervisor.stop(service.id,service.version);}bridge.closeAllConnections();await new Promise(done=>bridge.close(done));await rm(root,{recursive:true,force:true});});
+  for(const id of ['bot-management','chatroom','codex'])await supervisor.start({id,version:'v1',module:join(releaseRoot,'capabilities/services/builtin.mjs'),options:{dataRoot,releaseRoot,defaultCwd:root,model:{provider:'openai-compatible',model:'fixture',baseUrl:'http://127.0.0.1:1/v1'},gatewayUrl:`http://127.0.0.1:${bridge.address().port}`,gatewayToken:'fixture-gateway-token'}});
+  await supervisor.request('bot-management','v1','/rpc/create',{body:{arguments:[{id:'bot-fixture',roleId:'engineer'}]}});
+  await supervisor.request('bot-management','v1','/rpc/start',{body:{arguments:['bot-fixture']}});
+  assert.ok(await inspectBotIdentity(join(dataRoot,'bots','bot-fixture')));
+  const module=join(root,'custom.mjs');await writeFile(module,"export function createCapability(){let pending=1;return {tools:[],pendingWork:()=>pending,operations:{release:()=>{pending=0;return {released:true};}}};}\n");
+  await supervisor.start({id:'custom-busy',version:'v1',module});
+  await assert.rejects(stopSystem(config),error=>error.code==='CAPABILITY_BUSY');
+  assert.equal(await inspectBotIdentity(join(dataRoot,'bots','bot-fixture')),null);
+  assert.equal((await supervisor.status('custom-busy','v1')).state,'ready');
+  await supervisor.request('custom-busy','v1','/rpc/release',{body:{arguments:[]}});
+  assert.equal((await stopSystem(config)).state,'stopped');
+  assert.ok((await supervisor.list()).every(service=>service.state==='stopped'));
+});

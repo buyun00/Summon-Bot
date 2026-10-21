@@ -4,7 +4,8 @@
   "role": "创建复制运行回收Bot，维护交付状态",
   "skills": [
     "bot-management",
-    "discussion"
+    "discussion",
+    "capability-management"
   ],
   "tools": [
     "chatroom_list",
@@ -23,6 +24,15 @@
     "memory_propose",
     "routines_create",
     "bot_memory_read",
-    "bots_cleanup"
+    "bots_cleanup",
+    "capabilities_list",
+    "capabilities_register",
+    "capabilities_deploy",
+    "capabilities_activate",
+    "capabilities_unload",
+    "capabilities_retire",
+    "capabilities_retry",
+    "capabilities_grant",
+    "capabilities_reconcile"
   ]
 }

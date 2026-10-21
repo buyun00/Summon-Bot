@@ -8,11 +8,13 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { startGateway } from '../gateway/index.mjs';
 import { BotStore } from '../../bot/src/storage/store.mjs';
 import { saveArtifact } from '../../bot/src/storage/artifacts.mjs';
+import { inspectBotIdentity } from '../../bot/src/index.mjs';
+import { startCapabilityService } from '../services/host.mjs';
 
-async function fixture(t) {
+async function fixture(t,options={}) {
  const root=await mkdtemp(join(tmpdir(),'relay-gateway-')),dataRoot=join(root,'data'),project=join(root,'project');await mkdir(project);
- const gateway=await startGateway({dataRoot,releaseRoot:resolve(import.meta.dirname,'../..'),defaultCwd:project,model:{provider:'openai-compatible',model:'test',baseUrl:'http://127.0.0.1:1/v1'},botApi:async()=>({BotStore,saveArtifact,inspectBotIdentity:async()=>null})});
- t.after(async()=>{await gateway.close();await rm(root,{recursive:true,force:true});});
+ const gateway=await startGateway({dataRoot,releaseRoot:resolve(import.meta.dirname,'../..'),defaultCwd:project,model:{provider:'openai-compatible',model:'test',baseUrl:'http://127.0.0.1:1/v1'},botApi:async()=>({BotStore,saveArtifact,inspectBotIdentity:async()=>null}),...options});
+ t.after(async()=>{await gateway.stopBots();await gateway.close();await rm(root,{recursive:true,force:true});});
  const request=async(path,body,method=body===undefined?'GET':'POST',token=gateway.token)=>fetch(gateway.url+path,{method,headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
  return {root,dataRoot,project,gateway,request};
 }
@@ -58,26 +60,77 @@ test('Codex consultation blocks every mutating capability, including new work an
  assert.ok(Array.isArray(await gateway.callTool('bots_list',{},'bot-engineer')));
 });
 
-test('system stop quiesces a concurrent delivery before stopping Bots and rejects restart races',async t=>{
- const {gateway,request}=await fixture(t);let entered,release;
- const staging=new Promise(done=>{entered=done;}),continueStaging=new Promise(done=>{release=done;});
- gateway.attachments.stageContext=async context=>{entered();await continueStaging;return context;};
- let stopped=0;const originalStop=gateway.manager.stop.bind(gateway.manager);
- gateway.manager.stop=async(...args)=>{assert.equal(gateway.chatroom.busy,false);stopped++;return originalStop(...args);};
- const room=gateway.chatroom.createRoom({members:['user','bot-engineer']});
- gateway.chatroom.post(room.id,{content:'A delivery concurrent with stop',toBotId:'bot-engineer'});await staging;
+test('system stop quiesces real service deliveries before stopping Bots and rejects restart races',async t=>{
+ const {gateway,request}=await fixture(t);
+ const identity=await gateway.manager.start('bot-engineer');assert.notEqual(identity.pid,process.pid);
+ const room=await gateway.chatroom.createRoom({members:['user','bot-engineer']});
+ await gateway.chatroom.post(room.id,{content:'A real service delivery concurrent with stop',toBotId:'bot-engineer'});
  const stopping=request('/internal/bots/stop-all',{});
  for(let i=0;i<100&&!gateway.manager.quiescing;i++)await new Promise(done=>setTimeout(done,10));
- assert.equal(gateway.manager.quiescing,true);assert.equal(stopped,0);
- try {
-   assert.equal((await request(`/api/rooms/${room.id}/messages`,{content:'Too late'})).status,503);
-   await assert.rejects(gateway.callTool('bots_start',{botId:'bot-engineer'}),/stopping/);
-   await assert.rejects(gateway.manager.start('bot-engineer'),/stopping/);
-   await assert.rejects(gateway.manager.send('bot-engineer',{content:'Too late'}),/stopping/);
-   assert.deepEqual(await gateway.manager.monitor(),[]);
-   assert.equal((await request('/api/state')).status,200);
- } finally {release();}
- assert.equal((await stopping).status,200);assert.equal(stopped,gateway.manager.list().length);
- assert.equal(gateway.chatroom.closed,true);assert.equal(gateway.chatroom.jobs(room.id)[0].taskId,undefined);
- assert.equal((await request('/internal/bots/stop-all',{})).status,200);assert.equal(stopped,gateway.manager.list().length);
+ assert.equal(gateway.manager.quiescing,true);
+ assert.equal((await request(`/api/rooms/${room.id}/messages`,{content:'Too late'})).status,503);
+ await assert.rejects(gateway.callTool('bots_start',{botId:'bot-engineer'}),/stopping/);
+ const stopped=await stopping;assert.equal(stopped.status,200);assert.equal((await stopped.json()).length,gateway.manager.list().length);
+ await assert.rejects(gateway.manager.start('bot-engineer'),/stopping/);
+ await assert.rejects(gateway.manager.send('bot-engineer',{content:'Too late'}),/stopping/);
+ assert.deepEqual(await gateway.manager.monitor(),[]);
+ assert.equal(await inspectBotIdentity(gateway.manager.directory('bot-engineer')),null);
+ assert.equal((await request('/api/state')).status,200);
+ assert.equal(gateway.chatroom.closed,true);
+ assert.ok(gateway.chatroom.jobs(room.id).every(job=>['completed','failed','cancelled','interrupted'].includes(job.status)));
+ assert.equal((await request('/internal/bots/stop-all',{})).status,200);
+});
+
+test('unloaded builtin stays unloaded across a gateway restart with stable endpoint and credential',async t=>{
+ const dataRoot=await mkdtemp(join(tmpdir(),'relay-gateway-unload-')),releaseRoot=resolve(import.meta.dirname,'../..');
+ let gateway;
+ t.after(async()=>{if(gateway){await gateway.stopBots();await gateway.close();}await rm(dataRoot,{recursive:true,force:true});});
+ gateway=await startGateway({dataRoot,releaseRoot,defaultCwd:dataRoot,model:{provider:'openai-compatible',model:'test',baseUrl:'http://127.0.0.1:1/v1'}});
+ const token=gateway.token,port=Number(new URL(gateway.url).port);
+ await gateway.control.unload('knowledge');
+ for(let i=0;i<100&&gateway.registry.inventory().bindings.some(actor=>actor.bindings.knowledge);i++){await gateway.control.tick();await new Promise(done=>setTimeout(done,20));}
+ assert.ok(gateway.registry.inventory().bindings.every(actor=>!actor.bindings.knowledge));
+ await gateway.close();gateway=null;
+ gateway=await startGateway({dataRoot,releaseRoot,defaultCwd:dataRoot,token,port,model:{provider:'openai-compatible',model:'test',baseUrl:'http://127.0.0.1:1/v1'}});
+ assert.equal(gateway.registry.active('knowledge'),undefined);
+ assert.equal(gateway.registry.inventory().services.find(service=>service.id==='knowledge').status,'draining');
+ assert.ok(gateway.registry.inventory().bindings.every(actor=>!actor.bindings.knowledge));
+ assert.ok(!gateway.control.tools(gateway.manager.get('bot-engineer')).some(tool=>tool.name==='knowledge_search'));
+ await assert.rejects(gateway.callTool('knowledge_search',{query:'still unloaded'},'bot-engineer'),{code:'CAPABILITY_TOOL_NOT_BOUND'});
+});
+
+test('gateway reserves Bot core and resource tools before external capability registration',async t=>{
+ const {gateway}=await fixture(t);
+ for(const name of ['memory_write','messages_send','read_resource','read_session_history']){
+  const service=await startCapabilityService({id:'reserved-probe',version:name,token:'explicit-reserved-tool-fixture-token',tools:[{name,description:'Collision fixture',effect:'read',inputSchema:{type:'object'}}],callTool:()=>({})});
+  try{await assert.rejects(gateway.registry.register({id:'reserved-probe',version:name,endpoint:service.url,token:'explicit-reserved-tool-fixture-token'}),{code:'CAPABILITY_TOOL_COLLISION'});}
+  finally{await service.close();}
+ }
+ assert.ok(!gateway.registry.inventory().services.some(service=>service.id==='reserved-probe'));
+});
+
+test('Codex status and cancellation remain routed to an existing job after capability unload',async t=>{
+ const {gateway}=await fixture(t,{codexPath:[process.execPath,resolve(import.meta.dirname,'helpers/fake-codex.mjs')]});
+ const work=await gateway.callTool('codex_submit',{goal:'HOLD explicit protocol fixture'},'bot-engineer');
+ for(let i=0;i<150&&!gateway.codex.get(work.id).turnId;i++)await new Promise(done=>setTimeout(done,20));
+ assert.ok(gateway.codex.get(work.id).turnId);
+ await gateway.control.unload('codex');
+ assert.equal(gateway.registry.active('codex'),undefined);
+ const result=await gateway.callTool('codex_status',{workId:work.id});
+ assert.equal(result.serviceVersion,work.serviceVersion);assert.equal(result.status,'running');
+ const cancelled=await gateway.callTool('codex_cancel',{workId:work.id});assert.equal(cancelled.status,'cancelled');
+});
+
+test('gateway supervisor restarts a crashed required worker and relocates its existing version',async t=>{
+ let listening;
+ const {gateway}=await fixture(t,{onListening:value=>{listening=value;}});
+ assert.equal(listening.url,gateway.url);assert.equal(listening.port,Number(new URL(gateway.url).port));
+ const version=gateway.registry.active('knowledge').version,previous=await gateway.supervisor.status('knowledge',version);
+ assert.equal(previous.state,'ready');assert.notEqual(previous.pid,process.pid);
+ process.kill(previous.pid,'SIGKILL');
+ for(let i=0;i<150;i++){await gateway.monitorServices();const status=await gateway.supervisor.status('knowledge',version);if(status.state==='ready'&&status.pid!==previous.pid)break;await new Promise(done=>setTimeout(done,30));}
+ const restored=await gateway.supervisor.status('knowledge',version);
+ assert.equal(restored.state,'ready');assert.notEqual(restored.pid,previous.pid);assert.notEqual(restored.bootId,previous.bootId);
+ assert.equal(gateway.registry.getVersion('knowledge',version).endpoint,restored.url);
+ assert.deepEqual(await gateway.callTool('knowledge_search',{query:'after restart'},'bot-engineer'),{nodes:[],edges:[]});
 });

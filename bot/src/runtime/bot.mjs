@@ -8,6 +8,7 @@ import { installProcessLog } from './process-log.mjs';
 import { BotStore, terminalTaskStates } from '../storage/store.mjs';
 import { saveArtifact } from '../storage/artifacts.mjs';
 import { BotEngine } from '../agent/engine.mjs';
+import { CapabilityUpdates } from './capability-updates.mjs';
 import { coreTools } from '../capabilities/core-tools.mjs';
 import { requestBot, sendMessage } from '../messaging/client.mjs';
 
@@ -24,7 +25,7 @@ async function readBody(request) {
 /** A single mandatory Pi engine behind an authenticated, durable Bot API. */
 export async function startBot(input, { captureProcessOutput = false } = {}) {
   const config = normalizeBotConfig(input), bootId = randomUUID(), startedAt = at();
-  let state = 'loading', url = null, readyAt = null, store, engine, server, closing, processLog;
+  let state = 'loading', url = null, readyAt = null, store, engine, updates, server, closing, processLog;
   const jobs = new Map(), subscribers = new Set();
   await mkdir(config.dataDir, { recursive: true });
   const identity = () => ({ botId: config.botId, instanceId: config.botId, pid: process.pid, bootId, url, state, startedAt, readyAt });
@@ -39,7 +40,17 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
     }
     if (config.peers.some(peer => tokenEquals(peer.token, config.token))) throw new Error('Peer token must differ from management token');
     await atomicJson(privatePath, config);
-    const clean = createRedactor(config);
+    let redact = createRedactor(config);
+    const clean = value => redact(value);
+    let configWrites = Promise.resolve();
+    const persistConfig = patch => {
+      const operation = configWrites.catch(() => {}).then(async () => {
+        const current = JSON.parse(await readFile(privatePath, 'utf8'));
+        await atomicJson(privatePath, { ...current, ...patch });
+        Object.assign(config, patch); redact = createRedactor(config);
+      });
+      configWrites = operation; return operation;
+    };
     store = new BotStore(join(config.dataDir, 'state.sqlite'));
     store.recover(bootId);
     store.onEvent = event => { for (const listener of subscribers) { try { listener(event); } catch {} } };
@@ -68,13 +79,14 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       } }; },
     };
     engine = new BotEngine({ config, store, emit, services, clean });
+    updates = new CapabilityUpdates({ config, store, engine, emit, clean, persist: persistConfig });
     let dispatch = Promise.resolve();
     const schedule = task => {
       const controller = new AbortController();
       const promise = dispatch.catch(() => {}).then(async () => {
         if (controller.signal.aborted) return;
-        store.updateTask(task.id, { status: 'running', startedAt: at() });
-        try { const result = await engine.run(task, { signal: controller.signal }); store.updateTask(task.id, { status: 'completed', result, finishedAt: at() }); }
+        try { const result = await engine.run(task, { signal: controller.signal,
+          onStart: () => store.updateTask(task.id, { status: 'running', startedAt: at() }) }); store.updateTask(task.id, { status: 'completed', result, finishedAt: at() }); }
         catch (error) { store.updateTask(task.id, { status: controller.signal.aborted ? (state === 'stopping' ? 'interrupted' : 'cancelled') : 'failed',
           error: clean({ name: error.name, code: error.code, message: error.message }), finishedAt: at() }); }
       }).finally(() => jobs.delete(task.id));
@@ -93,7 +105,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       // Graceful shutdown stops only this Bot. Contacts remain independent.
       for (const [id, job] of jobs) { job.controller.abort(new Error('Bot is stopping')); const task = store.getTask(id);
         if (task?.status === 'accepted') store.updateTask(id, { status: 'interrupted', error: { code: 'BOT_STOPPED', message: 'Accepted task did not execute; no automatic replay' }, finishedAt: at() }); }
-      await engine.close(); await Promise.allSettled([...jobs.values()].map(job => job.promise));
+      await updates.close(); await engine.close(); await Promise.allSettled([...jobs.values()].map(job => job.promise)); await configWrites.catch(() => {});
       if (server?.listening) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
       state = 'stopped'; emit('bot.stopped', identity()); await atomicJson(join(config.dataDir, 'run', 'current.json'), identity()); store.close();
       try { processLog?.close(); } finally { await lock.close(); }
@@ -128,6 +140,21 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       }
       if (method === 'GET' && parts[0] === 'messages') return store.listMessages().filter(message => auth.admin || message.from === auth.source);
       needAdmin();
+      if (method === 'PATCH' && parts[0] === 'config' && parts.length === 1) {
+        if (state !== 'ready') throw failure(503, `Bot is ${state}`);
+        const body = await readBody(request);
+        if (!body || typeof body.prompt !== 'string' || Object.keys(body).some(key => key !== 'prompt')) throw failure(400, 'Only a prompt string may be patched through this endpoint');
+        await persistConfig({ prompt: body.prompt });
+        emit('bot.config.updated', { fields: ['prompt'], requiresRestart: true });
+        return { updated: ['prompt'], requiresRestart: true };
+      }
+      if (parts[0] === 'capability-updates') {
+        if (state !== 'ready') throw failure(503, `Bot is ${state}`);
+        if (method === 'POST' && parts[1] === 'prepare' && parts.length === 2) { response.statusCode = 202; return updates.prepare(await readBody(request)); }
+        if (method === 'GET' && parts.length === 2) return updates.get(parts[1]);
+        if (method === 'POST' && parts.length === 3 && parts[2] === 'commit') return updates.commit(parts[1]);
+        if (method === 'POST' && parts.length === 3 && parts[2] === 'abort') return updates.abort(parts[1]);
+      }
       if (method === 'POST' && parts[0] === 'shutdown') { setImmediate(() => close().catch(() => {})); return { stopping: true, bootId }; }
       if (method === 'GET' && parts[0] === 'events' && (parsed.searchParams.get('stream') === '1' || request.headers.accept?.includes('text/event-stream'))) {
         let after = Number(parsed.searchParams.get('after') || request.headers['last-event-id']) || 0;
@@ -165,10 +192,10 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
     server.on('error', () => {}); server.requestTimeout = 30000;
     url = `http://${config.listen.host === '::1' ? '[::1]' : config.listen.host}:${server.address().port}`;
     emit('bot.loading', identity()); await atomicJson(join(config.dataDir, 'run', 'current.json'), identity());
-    await engine.initialize(); state = 'ready'; readyAt = at(); emit('bot.ready', identity()); await atomicJson(join(config.dataDir, 'run', 'current.json'), identity());
+    await engine.initialize(); updates.recover(); state = 'ready'; readyAt = at(); emit('bot.ready', identity()); await atomicJson(join(config.dataDir, 'run', 'current.json'), identity());
     return { config, store, url, bootId, engine, close, health, emit, subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } };
   } catch (error) {
-    await engine?.close().catch(() => {});
+    await updates?.close().catch(() => {}); await engine?.close().catch(() => {});
     if (server?.listening) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
     store?.close();
     try { if (processLog) console.error(error.stack || error.message); } finally { try { processLog?.close(); } finally { await lock.close(); } }

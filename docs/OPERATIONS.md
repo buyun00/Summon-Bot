@@ -40,6 +40,10 @@ StartupHub 沿用已有 `relay-bot` 条目和 `Relay Bot Foundation` 任务标�
 
 ## 发行与升级
 
+能力服务支持独立发布，操作见 [CAPABILITY_SERVICES.md](CAPABILITY_SERVICES.md)。`npm run relay:capabilities -- list` 可以查看版本、绑定和切换阻塞；`deploy` 从已校验发行物或自包含服务包启动一个新版本，不重启 Web、网关或 Bot。注册、激活、授权和退役分别记录；卸载不删除数据。仍被旧 Bot、长任务或待确认提交引用的发行目录必须保留，这是运行依赖，不是回退备份。
+
+下面的完整安装流程用于替换 Bot 引擎、网关或 Web 基础程序，不能用于冒充能力热更新。网关端口和控制令牌必须稳定；不能在忙碌服务仍运行时随意重生成。
+
 先运行测试、构建和 manifest 校验；正常停止当前系统后运行 `relay:install`。新发行目录不可覆盖已有内容；选择结果保存到安装根 current.json 和数据根 deployment.json。旧发行在新发行实际验证后按受控路径删除。数据目录不随代码替换。
 
 manifest 的 `sourceCommit` 是构建时 Git HEAD，`sourceDirty` 表示是否包含当时未提交的工作区变更；精确发行内容由逐文件 SHA-256 和 `contentHash` 标识。最终交付记录将发行内容哈希与实际推送的提交关联。

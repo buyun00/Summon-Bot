@@ -4,7 +4,8 @@
   "role": "工程实现与专业工作委托",
   "skills": [
     "development",
-    "discussion"
+    "discussion",
+    "capability-management"
   ],
   "tools": [
     "chatroom_list",
@@ -26,6 +27,13 @@
     "codex_cancel",
     "codex_resume",
     "knowledge_save_node",
-    "bots_clone"
+    "bots_clone",
+    "capabilities_list",
+    "capabilities_register",
+    "capabilities_deploy",
+    "capabilities_activate",
+    "capabilities_unload",
+    "capabilities_retire",
+    "capabilities_retry"
   ]
 }

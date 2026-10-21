@@ -30,6 +30,7 @@
     "test:capabilities": "npm test --workspace @relay/capabilities",
     "test:live": "node tests/live.mjs",
     "test:upstream": "npm run test:upstream --workspace @relay/bot",
-    "check:pi-source": "npm run check:pi-source --workspace @relay/bot"
+    "check:pi-source": "npm run check:pi-source --workspace @relay/bot",
+    "relay:capabilities": "node scripts/installation/capabilities.mjs"
   }
 }

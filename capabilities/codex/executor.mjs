@@ -119,9 +119,9 @@ const CONSULT_TOOL = {
 const EXECUTOR_INSTRUCTIONS = `You are the professional executor for a Relay Bot work order. The human is the final authority and all Relay Bots are peers. Stay within the supplied work order. Keep this execution session separate from social chat. Use relay_consult when a project fact or clarification is needed; the Relay Bot can contact a colleague. Do not commit, push, publish, or change branches unless the work order explicitly authorizes that. Preserve unrelated existing changes. Report progress concisely. Your final response must distinguish actual changes and verification from unverified limitations, and list relevant files or artifacts. Never claim a test or integration passed without observing it.`;
 
 export class CodexExecutor {
-  constructor({ store, emit = () => {}, consult, onResult = () => {}, defaultCwd = process.cwd(), codexPath, executionLock } = {}) {
+  constructor({ store, emit = () => {}, consult, onResult = () => {}, defaultCwd = process.cwd(), codexPath, executionLock, version = null } = {}) {
     if (!store) throw new Error('CodexExecutor requires a store');
-    Object.assign(this, { store, emit, consult, onResult, defaultCwd, executionLock });
+    Object.assign(this, { store, emit, consult, onResult, defaultCwd, executionLock, version });
     this.command = commandFor(codexPath || process.env.RELAY_CODEX_PATH);
     this.active = null;
     this.started = false;
@@ -133,7 +133,7 @@ export class CodexExecutor {
     this.started = true;
     this.stopping = false;
     for (const work of this.list()) {
-      if (BUSY.has(work.status)) {
+      if (BUSY.has(work.status) && (!this.version || work.serviceVersion === this.version)) {
         this.save({ ...work, status: 'interrupted', error: 'Relay restarted before execution completion was confirmed. Resume explicitly to continue the saved Codex thread.' });
         this.event(work.id, 'interrupted', { reason: 'service_restart' });
       }
@@ -172,6 +172,11 @@ export class CodexExecutor {
     return event;
   }
   require(id) { const work = this.store.get('works', id); if (!work) throw new Error('Work not found'); return work; }
+  assertActiveOwner(work) {
+    if (this.version && work.serviceVersion && work.serviceVersion !== this.version && ['queued', 'running', 'waiting'].includes(work.status)) {
+      throw Object.assign(new Error(`Work is still owned by capability version ${work.serviceVersion}`), { status: 409, statusCode: 409, code: 'CAPABILITY_WORK_OWNER_MISMATCH', serviceVersion: work.serviceVersion });
+    }
+  }
 
   create(input = {}) {
     if (input.sourceActionId) {
@@ -188,7 +193,7 @@ export class CodexExecutor {
     const work = this.save({ botId: input.botId || null, roomId: input.roomId || null, goal, cwd,
       constraints: input.constraints || '', inputRefs: input.inputRefs || [], status: 'queued',
       sourceActionId: input.sourceActionId || null, sourceMessageId: input.sourceMessageId || null,
-      timeoutSeconds,
+      timeoutSeconds, serviceVersion: this.version,
       threadId: null, turnId: null, summary: '', error: null, question: null,
     });
     this.event(work.id, 'queued', { goal, cwd });
@@ -199,6 +204,7 @@ export class CodexExecutor {
   async cancel(id) {
     let work = this.require(id);
     if (['completed', 'failed', 'cancelled'].includes(work.status)) return work;
+    this.assertActiveOwner(work);
     const active = this.active?.id === id ? this.active : null;
     if (active) {
       active.stopping = true;
@@ -213,13 +219,14 @@ export class CodexExecutor {
     }
     work = this.save({ ...this.require(id), status: 'cancelled', finishedAt: iso(), error: null });
     this.event(id, 'cancelled');
-    if (active && this.active === active) this.active = null;
+    if (active) await active.done;
     this.pump();
     return work;
   }
 
   async resume(id, input = {}) {
     let work = this.require(id);
+    this.assertActiveOwner(work);
     const content = typeof input === 'string' ? input : input.content || input.goal || input.constraints || '';
     if (BUSY.has(work.status)) {
       if (!content) throw new Error('This work is already active');
@@ -229,7 +236,7 @@ export class CodexExecutor {
       return this.require(id);
     }
     if (work.status === 'queued') return work;
-    work = this.save({ ...work, status: 'queued', resumeInput: String(content), error: null, finishedAt: null });
+    work = this.save({ ...work, status: 'queued', serviceVersion: this.version, resumeInput: String(content), error: null, finishedAt: null });
     this.event(id, 'resume_queued', { content: String(content), threadId: work.threadId });
     this.pump();
     return work;
@@ -239,6 +246,7 @@ export class CodexExecutor {
     const text = String(input.answer || input.content || '').trim();
     if (!text) throw new Error('Answer is required');
     const work = this.require(id);
+    this.assertActiveOwner(work);
     if (!work.question) throw new Error('No pending question for this work');
     const active = this.active?.id === id ? this.active : null;
     if (active?.pendingQuestion) return this.resolveQuestion(active, text, 'user');
@@ -249,7 +257,7 @@ export class CodexExecutor {
 
   pump() {
     if (!this.started || this.stopping || this.active) return;
-    const next = this.list().find(work => work.status === 'queued');
+    const next = this.list().find(work => work.status === 'queued' && (!this.version || work.serviceVersion === this.version));
     if (!next) return;
     const active = { id: next.id, stopping: false, rpc: null, finish: null, pendingQuestion: null, requestTasks: new Set(), questionChain: Promise.resolve(), lockController: new AbortController() };
     let complete;
@@ -337,12 +345,12 @@ export class CodexExecutor {
       await active.rpc?.close();
       await Promise.allSettled([...active.requestTasks]);
       active.releaseExecution?.();
-      if (this.active === active) this.active = null;
       const work = this.require(active.id);
       if (['completed', 'failed'].includes(work.status)) {
         try { await this.onResult(work); }
         catch (error) { this.event(work.id, 'result_delivery_error', { message: error.message }); }
       }
+      if (this.active === active) this.active = null;
       this.pump();
     }
   }

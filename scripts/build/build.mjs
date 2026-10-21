@@ -46,7 +46,7 @@ export async function buildRelease({ sourceRoot = projectRoot, releaseRoot, bund
   for (const folder of directories) await copyTree(join(sourceRoot, folder), join(stage, folder), include);
   for (const name of rootFiles) await copyFile(join(sourceRoot, name), join(stage, name));
   await mkdir(join(stage, 'docs'), { recursive: true });
-  for (const name of ['REFACTOR_PLAN.md', 'ARCHITECTURE.md', 'OPERATIONS.md', 'VERIFICATION.md']) if (existsSync(join(sourceRoot, 'docs', name))) await copyFile(join(sourceRoot, 'docs', name), join(stage, 'docs', name));
+  for (const name of ['REFACTOR_PLAN.md', 'ARCHITECTURE.md', 'OPERATIONS.md', 'VERIFICATION.md', 'CAPABILITY_SERVICES.md']) if (existsSync(join(sourceRoot, 'docs', name))) await copyFile(join(sourceRoot, 'docs', name), join(stage, 'docs', name));
   const dependencies = [];
   for (const [path, info] of Object.entries(lock.packages)) {
     if (!path.includes('node_modules/') || info.dev || info.link) continue;

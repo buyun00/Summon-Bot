@@ -137,7 +137,7 @@ try {
 } finally {
   releaseGate(false);
   if (gateway) {
-    try { await gateway.manager.shutdownAll(); report.cleanup.botsStopped = true; }
+    try { await gateway.stopBots(); report.cleanup.botsStopped = true; }
     catch (error) { report.cleanup.shutdownError = clean(error.message); report.passed = false; process.exitCode = 1; }
     try {
       report.cleanup.liveIdentities = (await Promise.all(gateway.manager.list().map(async bot => ({ botId: bot.id, identity: await inspectBotIdentity(join(dataRoot, 'bots', bot.id)) })))).filter(item => item.identity);
