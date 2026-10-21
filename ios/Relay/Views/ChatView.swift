@@ -16,6 +16,7 @@ struct ChatView: View {
     @State private var showDetails = false
     @State private var localError: String?
     @State private var nearBottom = true
+    @State private var userScrolling = false
     @FocusState private var composing: Bool
 
     private var room: RelayRoom? { store.rooms.first { $0.id == roomID } }
@@ -25,7 +26,66 @@ struct ChatView: View {
     }
     private var title: String { directBot?.name ?? room?.name ?? "聊天" }
     private var messages: [RelayMessage] { store.messagesForRoom(roomID) }
-    private var runs: [RelayAgentRun] { store.agentRuns.filter { $0.roomId == roomID } }
+    private var workingBots: [RelayBot] {
+        let jobs = store.selectedRoomID == roomID ? store.jobs : []
+        let repliedJobs = Set(messages.filter { !$0.isOwn && $0.kind != "error" }.compactMap(\.jobId))
+        var ids = Set(jobs.filter { $0.isActive && !repliedJobs.contains($0.id) }.map(\.botId))
+        for run in store.agentRuns where run.roomId == roomID && run.isActive {
+            guard let botID = run.botId else { continue }
+            if let detail = store.agentRunDetails[run.id], !detail.isActive { continue }
+            if let job = jobs.first(where: { $0.taskId == run.id || $0.agentRunId == run.id }) {
+                if job.isActive && !repliedJobs.contains(job.id) { ids.insert(botID) }
+            } else {
+                ids.insert(botID)
+            }
+        }
+        // Start the waiting feedback as soon as the outgoing message is being sent.
+        for pending in store.pendingMessages where pending.roomID == roomID && ["sending", "sent"].contains(pending.status) {
+            if let target = pending.message.toBotId { ids.insert(target) }
+            else { ids.formUnion(room?.members ?? []) }
+        }
+        return store.bots.filter { ids.contains($0.id) && !$0.isPaused }
+    }
+
+    private func workingStatus(for bot: RelayBot, at date: Date) -> String {
+        let job = store.selectedRoomID == roomID ? store.jobs.last { $0.botId == bot.id && $0.isActive } : nil
+        let run = store.agentRuns.last {
+            $0.roomId == roomID && $0.botId == bot.id && $0.isActive
+                && (job?.taskId == nil || job?.taskId == $0.id || job?.agentRunId == $0.id)
+        }
+        let runID = job?.taskId ?? job?.agentRunId ?? run?.id
+        let detail = runID.flatMap { store.agentRunDetails[$0] }
+        let status = detail?.status ?? run?.status ?? job?.status
+        if status == "queued" { return "正在挽起袖子" }
+        if status == "accepted" { return "正在认真读题" }
+        if status == "waiting" { return "正在等一点小提示" }
+        if status == "completed" { return "正在把结果整理好" }
+        if let tool = detail?.tools?.last(where: { ["running", "queued", "accepted"].contains($0.status ?? "") }) {
+            let name = tool.displayName.lowercased()
+            if ["image_gen", "generate_image", "edit_image", "text_to_image", "draw", "paint", "comfy"].contains(where: { name.contains($0) }) {
+                return "正在学习画画"
+            }
+            if ["execute_command", "run_command", "exec_command", "terminal", "computer", "codex"].contains(where: { name.contains($0) }) {
+                return "正在修理电脑"
+            }
+            if ["write_file", "edit_file", "apply_patch", "create_file"].contains(where: { name.contains($0) }) {
+                return "正在敲敲打打"
+            }
+            if ["search", "browse", "fetch", "knowledge"].contains(where: { name.contains($0) }) {
+                return "正在翻箱倒柜找资料"
+            }
+            if ["read", "list_files", "resource"].contains(where: { name.contains($0) }) {
+                return "正在认真翻笔记"
+            }
+            if ["relay", "chat", "consult", "send_message"].contains(where: { name.contains($0) }) {
+                return "正在和小伙伴商量"
+            }
+        }
+        let phrases = ["正在仔细分析", "正在认真琢磨", "正在组织语言", "正在纠结措辞"]
+        let start = RelayDate.parse(run?.startedAt ?? run?.createdAt ?? job?.createdAt)
+        let elapsed = max(0, date.timeIntervalSince(start ?? Date(timeIntervalSince1970: 0)))
+        return phrases[Int(elapsed / 6) % phrases.count]
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -41,30 +101,39 @@ struct ChatView: View {
                             composing = true
                         }.id(message.id)
                     }
-                    ForEach(runs) { run in AgentRunRow(run: run) }
-                    if store.selectedRoomID == roomID {
-                        ForEach(store.jobs.filter { $0.isActive }) { job in
-                            HStack(spacing: 10) {
-                                ProgressView().controlSize(.small)
-                                Text("\(store.bots.first { $0.id == job.botId }?.name ?? "Bot") · \(RelayFormat.status(job.status))")
-                                    .font(.footnote).foregroundStyle(.secondary)
-                            }
+                    ForEach(workingBots) { bot in
+                        TimelineView(.periodic(from: .now, by: 6)) { context in
+                            BotWorkingIndicator(bot: bot, name: room?.kind == "dm" ? "" : bot.name,
+                                                status: workingStatus(for: bot, at: context.date))
                         }
                     }
                     Color.clear.frame(height: 1).id("conversation-bottom")
-                        .onAppear { nearBottom = true }
-                        .onDisappear { nearBottom = false }
                 }
                 .padding(.horizontal, 18).padding(.top, 18).padding(.bottom, 8)
             }
             .scrollDismissesKeyboard(.interactively)
             .defaultScrollAnchor(.bottom)
+            .onScrollPhaseChange { _, phase in
+                switch phase {
+                case .tracking, .interacting, .decelerating: userScrolling = true
+                default: userScrolling = false
+                }
+            }
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentSize.height - geometry.visibleRect.maxY < 80
+            } action: { _, atBottom in
+                // A newly appended reply can move the end marker offscreen without a user scroll.
+                if userScrolling || atBottom { nearBottom = atBottom }
+            }
             .onChange(of: messages.last?.id) { _, _ in
+                if nearBottom { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("conversation-bottom", anchor: .bottom) } }
+            }
+            .onChange(of: workingBots.map(\.id)) { _, _ in
                 if nearBottom { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("conversation-bottom", anchor: .bottom) } }
             }
             .overlay(alignment: .bottomTrailing) {
                 if !nearBottom && !messages.isEmpty {
-                    Button { withAnimation { proxy.scrollTo("conversation-bottom", anchor: .bottom) } } label: {
+                    Button { nearBottom = true; withAnimation { proxy.scrollTo("conversation-bottom", anchor: .bottom) } } label: {
                         Image(systemName: "arrow.down").frame(width: 26, height: 30)
                     }.buttonStyle(.glass).buttonBorderShape(.circle).padding(16)
                         .accessibilityLabel("回到最新消息")
@@ -92,6 +161,8 @@ struct ChatView: View {
                 reply = store.messagesForRoom(roomID).first { $0.id == replyID }
             }
         }
+        .onAppear { store.ensureRoomActive(roomID) }
+        .onDisappear { store.deactivateRoom(roomID) }
         .onChange(of: text) { _, value in store.setDraft(value, for: roomID) }
         .onChange(of: attachments) { _, value in store.setDraftAttachments(value, for: roomID) }
         .onChange(of: target) { _, value in store.setDraftTarget(value.isEmpty ? nil : value, for: roomID) }
@@ -266,8 +337,13 @@ private struct MessageRow: View {
                 if !message.content.isEmpty {
                     Text(.init(message.content))
                         .textSelection(.enabled)
-                        .padding(message.isOwn ? 14 : 0)
-                        .background(message.isOwn ? RelayTheme.surface : Color.clear, in: RoundedRectangle(cornerRadius: 21))
+                        .padding(.horizontal, message.isOwn ? 14 : 0)
+                        .padding(.vertical, message.isOwn ? 14 : 12)
+                        .background {
+                            // Grow the bot bubble around the existing text area, preserving its line width.
+                            RoundedRectangle(cornerRadius: 21).fill(RelayTheme.surface)
+                                .padding(.horizontal, message.isOwn ? 0 : -10)
+                        }
                 }
                 ForEach(message.attachments) { attachment in AttachmentRow(attachment: attachment) }
                 if let pending, pending.status != "sent" {
@@ -338,90 +414,3 @@ struct AttachmentRow: View {
     }
 }
 
-private struct AgentRunRow: View {
-    @Environment(RelayStore.self) private var store
-    let run: RelayAgentRun
-    @State private var detail: RelayAgentRun?
-    @State private var expanded = false
-    @State private var errorMessage: String?
-    @State private var busy = false
-
-    var body: some View {
-        DisclosureGroup(isExpanded: $expanded) {
-            VStack(alignment: .leading, spacing: 10) {
-                if !run.outputText.isEmpty { Text(run.outputText).font(.footnote).textSelection(.enabled) }
-                if let detail {
-                    ForEach(detail.tools ?? []) { tool in
-                        DisclosureGroup(tool.displayName) {
-                            VStack(alignment: .leading, spacing: 8) {
-                                if let input = tool.arguments ?? tool.input {
-                                    Text(input.prettyPrinted).font(.caption.monospaced()).textSelection(.enabled)
-                                }
-                                if !tool.outputText.isEmpty {
-                                    Text(tool.outputText).font(.caption.monospaced()).textSelection(.enabled)
-                                }
-                                ForEach(tool.artifacts ?? []) { artifact in
-                                    ArtifactRow(artifact: artifact, runID: run.id, toolID: tool.id)
-                                }
-                            }.padding(.vertical, 8)
-                        }
-                    }
-                    if let error = detail.error, error != .null { InlineError(message: error.stringValue) }
-                }
-                if let errorMessage { InlineError(message: errorMessage) }
-                if run.isActive {
-                    Button("停止执行", role: .destructive) {
-                        Task {
-                            busy = true
-                            defer { busy = false }
-                            do { try await store.cancelRun(id: run.id) }
-                            catch { errorMessage = error.localizedDescription }
-                        }
-                    }.buttonStyle(.glass).disabled(busy)
-                }
-            }.padding(.top, 8)
-        } label: {
-            Label("执行记录 · \(RelayFormat.status(run.status ?? ""))", systemImage: "terminal")
-                .font(.footnote).foregroundStyle(.secondary)
-        }
-        .onChange(of: expanded) { _, value in
-            guard value else { return }
-            Task {
-                busy = true
-                defer { busy = false }
-                do { detail = try await store.fetchAgentRun(id: run.id) }
-                catch { errorMessage = error.localizedDescription }
-            }
-        }
-    }
-}
-
-private struct ArtifactRow: View {
-    @Environment(RelayStore.self) private var store
-    let artifact: RelayArtifact
-    let runID: String
-    let toolID: String
-    @State private var fileURL: URL?
-    @State private var previewURL: URL?
-    @State private var busy = false
-    @State private var errorMessage: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Button {
-                Task {
-                    busy = true
-                    defer { busy = false }
-                    do {
-                        let url = try await store.artifactFileURL(artifact, runID: runID, toolID: toolID)
-                        fileURL = url; previewURL = url
-                    } catch { errorMessage = error.localizedDescription }
-                }
-            } label: {
-                Label(artifact.name ?? "文件", systemImage: "doc.badge.arrow.up")
-            }.buttonStyle(.glass).disabled(busy)
-            if let fileURL { ShareLink(item: fileURL) }
-            if let errorMessage { InlineError(message: errorMessage) }
-        }.quickLookPreview($previewURL)
-    }
-}

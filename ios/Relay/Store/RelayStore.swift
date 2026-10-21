@@ -29,13 +29,29 @@ final class RelayStore {
     @ObservationIgnored private var client: RelayAPIClient?
     @ObservationIgnored private var streamTask: Task<Void, Never>?
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
+    @ObservationIgnored private var roomRefreshTask: Task<Void, Never>?
+    @ObservationIgnored private var roomRecoveryTask: Task<Void, Never>?
+    @ObservationIgnored private var workspaceRequest: Task<RelayWorkspace, Error>?
+    @ObservationIgnored private var roomRequests: [String: Task<RelayRoomSnapshot, Error>] = [:]
+    @ObservationIgnored private var runDetailRequests: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var runDetailTokens: [String: UUID] = [:]
+    @ObservationIgnored private var runDetailLastRequested: [String: ContinuousClock.Instant] = [:]
+    @ObservationIgnored private var runDetailGeneration = 0
     @ObservationIgnored private var persistenceTask: Task<Void, Never>?
     @ObservationIgnored private var connectionGeneration = 0
     @ObservationIgnored private var historyGeneration = 0
     @ObservationIgnored private var roomReadGeneration: [String: Int] = [:]
+    @ObservationIgnored private var roomLoadsInFlight: Set<String> = []
+    @ObservationIgnored private var roomsNeedingReload: Set<String> = []
+    @ObservationIgnored private var roomLastRead: [String: ContinuousClock.Instant] = [:]
+    @ObservationIgnored private var workspaceLastRequested: ContinuousClock.Instant?
+    @ObservationIgnored private var activeRoomID: String?
+    @ObservationIgnored private var isForeground = false
     @ObservationIgnored private var historyEpoch: String?
     @ObservationIgnored private var hasSnapshot = false
     @ObservationIgnored private var refreshAgain = false
+    @ObservationIgnored private var roomRefreshAgain = false
+    @ObservationIgnored private var roomRefreshGeneration = 0
     @ObservationIgnored private var startingConnection: Int?
     @ObservationIgnored private let defaults = UserDefaults.standard
     @ObservationIgnored private let settingsKey = "RelayNative.connection.v1"
@@ -71,10 +87,12 @@ final class RelayStore {
 
     func start() async {
         guard client != nil, startingConnection != connectionGeneration else { return }
+        isForeground = true
         let connection = connectionGeneration
         startingConnection = connection
         defer { if startingConnection == connection { startingConnection = nil } }
         startStream()
+        startRoomRecovery()
         await refresh()
     }
 
@@ -89,15 +107,29 @@ final class RelayStore {
 
     func disconnect() {
         connectionGeneration += 1
+        isForeground = false
         startingConnection = nil
         streamTask?.cancel()
         streamTask = nil
         refreshTask?.cancel()
         refreshTask = nil
+        roomRefreshTask?.cancel()
+        roomRefreshTask = nil
+        roomRefreshGeneration += 1
+        roomRecoveryTask?.cancel()
+        roomRecoveryTask = nil
+        workspaceRequest?.cancel()
+        workspaceRequest = nil
+        for task in roomRequests.values { task.cancel() }
+        roomRequests = [:]
+        cancelRunDetailRefreshes()
+        roomLoadsInFlight = []
+        roomsNeedingReload = []
         isConnected = false
         isRefreshing = false
         isLoading = false
         refreshAgain = false
+        roomRefreshAgain = false
         for index in pendingMessages.indices where pendingMessages[index].status == "sending" {
             pendingMessages[index].status = "failed"
             pendingMessages[index].error = "连接已暂停，送达状态待确认。请刷新后手动重试。"
@@ -130,23 +162,37 @@ final class RelayStore {
 
     func refresh() async {
         guard let client else { return }
+        // The visible conversation must not wait for the gateway to inspect every
+        // Bot's tasks and health while building the much larger /api/state response.
+        scheduleRoomRefresh()
         if isRefreshing { refreshAgain = true; return }
         let connection = connectionGeneration
+        workspaceLastRequested = ContinuousClock.now
         isRefreshing = true
         isLoading = !hasSnapshot
         defer {
             if connection == connectionGeneration {
+                workspaceRequest = nil
                 isRefreshing = false
                 isLoading = false
                 if refreshAgain { refreshAgain = false; scheduleRefresh() }
             }
         }
         do {
-            let snapshot = try await client.request(RelayWorkspace.self, path: "/api/state")
+            let request = Task { try await client.request(RelayWorkspace.self, path: "/api/state") }
+            workspaceRequest = request
+            let snapshot = try await withTaskCancellationHandler {
+                try await request.value
+            } onCancel: { request.cancel() }
             guard connection == connectionGeneration, !Task.isCancelled else { return }
             acceptEpoch(snapshot.historyEpoch)
             bots = snapshot.bots
-            rooms = snapshot.rooms
+            rooms = snapshot.rooms.map { room in
+                var updated = room
+                if let latest = messageHistory[room.id]?.last,
+                   (latest.createdAt ?? "") > (room.lastMessage?.createdAt ?? "") { updated.lastMessage = latest }
+                return updated
+            }
             agentRuns = snapshot.agentRuns ?? []
             hasSnapshot = true
             lastSyncAt = Date()
@@ -155,8 +201,9 @@ final class RelayStore {
                 selectedRoomID = nil
                 messages = []
                 jobs = []
+                if activeRoomID == selected { deactivateRoom(selected) }
             }
-            if let selected = selectedRoomID { await loadRoom(selected, client: client, connection: connection) }
+            scheduleRoomRefresh()
             schedulePersistence()
         } catch {
             if connection == connectionGeneration, !Task.isCancelled { errorMessage = error.localizedDescription }
@@ -164,12 +211,55 @@ final class RelayStore {
     }
 
     func selectRoom(_ id: String) async {
+        if activeRoomID != id { cancelRunDetailRefreshes() }
         selectedRoomID = id
+        activeRoomID = id
+        roomRefreshTask?.cancel()
+        roomRefreshTask = nil
+        roomRefreshAgain = false
+        roomRefreshGeneration += 1
         messages = messagesForRoom(id)
         jobs = []
         schedulePersistence()
+        startRoomRecovery()
         guard let client else { return }
         await loadRoom(id, client: client, connection: connectionGeneration)
+    }
+
+    /// Restore page activity on appearance, including returning from a sheet.
+    /// Unlike a new selection this keeps the current job snapshot while scheduling a fresh read.
+    func ensureRoomActive(_ id: String) {
+        guard activeRoomID != id else { return }
+        cancelRunDetailRefreshes()
+        roomRefreshTask?.cancel()
+        roomRefreshTask = nil
+        roomRefreshAgain = false
+        roomRefreshGeneration += 1
+        activeRoomID = id
+        if selectedRoomID != id {
+            selectedRoomID = id
+            messages = messagesForRoom(id)
+            jobs = []
+            schedulePersistence()
+        }
+        startRoomRecovery()
+        scheduleRoomRefresh(id)
+    }
+
+    /// Called when the conversation page closes. Keep its selected/cache state,
+    /// while stopping foreground reads for a page that is no longer visible.
+    func deactivateRoom(_ id: String) {
+        guard activeRoomID == id else { return }
+        activeRoomID = nil
+        roomRefreshTask?.cancel()
+        roomRefreshTask = nil
+        roomRefreshAgain = false
+        roomRefreshGeneration += 1
+        roomRecoveryTask?.cancel()
+        roomRecoveryTask = nil
+        roomRequests[id]?.cancel()
+        roomsNeedingReload.remove(id)
+        cancelRunDetailRefreshes()
     }
 
     func messagesForRoom(_ id: String) -> [RelayMessage] {
@@ -345,6 +435,7 @@ final class RelayStore {
                 sendingRoomIDs.remove(item.roomID)
                 updateVisibleMessages(item.roomID)
                 schedulePersistence()
+                scheduleRoomRefresh(item.roomID)
                 scheduleRefresh()
             }
         }
@@ -372,11 +463,28 @@ final class RelayStore {
     }
 
     private func loadRoom(_ id: String, client: RelayAPIClient, connection: Int) async {
+        guard isForeground, connection == connectionGeneration else { return }
+        if roomLoadsInFlight.contains(id) { roomsNeedingReload.insert(id); return }
+        roomLoadsInFlight.insert(id)
         let read = (roomReadGeneration[id] ?? 0) + 1
         roomReadGeneration[id] = read
         let history = historyGeneration
+        defer {
+            if connection == connectionGeneration {
+                roomRequests[id] = nil
+                roomLoadsInFlight.remove(id)
+                if roomsNeedingReload.remove(id) != nil {
+                    if roomRefreshTask != nil { roomRefreshAgain = true }
+                    else { scheduleRoomRefresh(id) }
+                }
+            }
+        }
         do {
-            let snapshot = try await client.request(RelayRoomSnapshot.self, path: "/api/rooms/\(RelayAPIClient.component(id))/messages")
+            let request = Task { try await client.request(RelayRoomSnapshot.self, path: "/api/rooms/\(RelayAPIClient.component(id))/messages") }
+            roomRequests[id] = request
+            let snapshot = try await withTaskCancellationHandler {
+                try await request.value
+            } onCancel: { request.cancel() }
             guard connection == connectionGeneration, history == historyGeneration,
                   roomReadGeneration[id] == read, !Task.isCancelled else { return }
             if hasSnapshot && snapshot.historyEpoch != historyEpoch {
@@ -384,24 +492,36 @@ final class RelayStore {
                 scheduleRefresh()
                 return
             }
-            upsertRoom(snapshot.room)
+            var updatedRoom = snapshot.room
+            updatedRoom.lastMessage = snapshot.messages.last
+            upsertRoom(updatedRoom)
             messageHistory[id] = snapshot.messages
             let confirmed = Set(snapshot.messages.filter { $0.senderId == "user" }.compactMap(\.clientId))
             pendingMessages.removeAll { $0.roomID == id && confirmed.contains($0.clientID) }
-            if selectedRoomID == id { messages = messagesForRoom(id); jobs = snapshot.jobs }
+            let replied = Set(snapshot.messages.compactMap(\.jobId))
+            if selectedRoomID == id {
+                messages = messagesForRoom(id)
+                // Preserve the job/run relationship even during the brief reply-before-terminal window.
+                // The UI can suppress a stale active job using the recorded message.jobId.
+                jobs = snapshot.jobs
+            }
+            scheduleActiveRunDetails(roomID: id, roomJobs: snapshot.jobs, repliedJobIDs: replied)
             lastSyncAt = Date()
+            roomLastRead[id] = ContinuousClock.now
             schedulePersistence()
         } catch {
-            if connection == connectionGeneration, selectedRoomID == id, !Task.isCancelled { errorMessage = error.localizedDescription }
+            if connection == connectionGeneration, activeRoomID == id, !Task.isCancelled,
+               (error as? URLError)?.code != .cancelled { errorMessage = error.localizedDescription }
         }
     }
 
     private func startStream() {
-        guard streamTask == nil, let client else { return }
+        guard isForeground, streamTask == nil, let client else { return }
         let connection = connectionGeneration
         streamTask = Task { [weak self] in
             var delay: UInt64 = 1
             while !Task.isCancelled {
+                let attemptStarted = ContinuousClock.now
                 do {
                     try await RelayEventStream(client: client).consume { [weak self] event in
                         await self?.receiveStream(event, connection: connection)
@@ -410,6 +530,8 @@ final class RelayStore {
                 } catch {
                     guard !Task.isCancelled, let self, connection == self.connectionGeneration else { return }
                     self.isConnected = false
+                    if attemptStarted.duration(to: ContinuousClock.now) >= .seconds(30) { delay = 1 }
+                    self.scheduleRoomRefresh()
                     do { try await Task.sleep(for: .seconds(delay)) } catch { return }
                     delay = min(delay * 2, 30)
                 }
@@ -418,19 +540,133 @@ final class RelayStore {
     }
 
     private func receiveStream(_ event: RelayStreamEvent, connection: Int) {
-        guard connection == connectionGeneration else { return }
-        if case .connected = event { isConnected = true }
-        scheduleRefresh()
+        guard isForeground, connection == connectionGeneration else { return }
+        // A complete SSE frame or comment proves bytes are arriving, unlike HTTP headers alone.
+        isConnected = true
+        switch event {
+        case .connected:
+            scheduleRoomRefresh()
+            scheduleRefresh()
+        case .keepAlive:
+            break
+        case .change(let type, let roomID, let botID):
+            let active = activeRoomID.flatMap { id in rooms.first { $0.id == id } }
+            let concernsActiveRoom: Bool
+            if let roomID { concernsActiveRoom = roomID == activeRoomID }
+            else if let botID { concernsActiveRoom = active?.members.contains(botID) == true }
+            else { concernsActiveRoom = type == nil || type == "change" || type == "state" }
+            if concernsActiveRoom { scheduleRoomRefresh() }
+            // Changes are coalesced and rate limited; no state request is made for heartbeats.
+            // Agent records and off-page conversation previews still refresh after real events.
+            if type != "connected" { scheduleRefresh() }
+        }
     }
 
     private func scheduleRefresh() {
-        guard client != nil, refreshTask == nil else { return }
+        guard isForeground, client != nil, refreshTask == nil else { return }
+        let connection = connectionGeneration
+        let now = ContinuousClock.now
+        let minimumDelay = workspaceLastRequested.map { now.duration(to: $0.advanced(by: .seconds(5))) } ?? .zero
+        let delay = max(.milliseconds(300), minimumDelay)
         refreshTask = Task { [weak self] in
-            do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
-            guard let self, !Task.isCancelled else { return }
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard let self, !Task.isCancelled, connection == self.connectionGeneration else { return }
             self.refreshTask = nil
             await self.refresh()
         }
+    }
+
+    private func scheduleRoomRefresh(_ id: String? = nil) {
+        guard isForeground, let active = activeRoomID, id == nil || id == active,
+              let client else { return }
+        if roomRefreshTask != nil {
+            if roomLoadsInFlight.contains(active) { roomRefreshAgain = true }
+            return
+        }
+        let connection = connectionGeneration
+        roomRefreshGeneration += 1
+        let refreshGeneration = roomRefreshGeneration
+        roomRefreshTask = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
+            guard let self else { return }
+            defer {
+                if connection == self.connectionGeneration, refreshGeneration == self.roomRefreshGeneration {
+                    self.roomRefreshTask = nil
+                    if self.roomRefreshAgain { self.roomRefreshAgain = false; self.scheduleRoomRefresh() }
+                }
+            }
+            guard !Task.isCancelled, self.isForeground,
+                  connection == self.connectionGeneration, refreshGeneration == self.roomRefreshGeneration,
+                  active == self.activeRoomID else { return }
+            await self.loadRoom(active, client: client, connection: connection)
+        }
+    }
+
+    private func startRoomRecovery() {
+        guard isForeground, activeRoomID != nil, roomRecoveryTask == nil else { return }
+        let connection = connectionGeneration
+        roomRecoveryTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(5)) } catch { return }
+                guard let self, self.isForeground, connection == self.connectionGeneration,
+                      let id = self.activeRoomID, let client = self.client else { return }
+                // Real SSE traffic usually satisfies this age check, so recovery adds no request.
+                // A stalled stream or active multi-Bot reply gets a room-only read every 5 seconds;
+                // an otherwise quiet open conversation gets one after 15 seconds without a read.
+                let interval: Duration = !self.isConnected || self.jobs.contains(where: \.isActive) ? .seconds(5) : .seconds(15)
+                if let last = self.roomLastRead[id], last.duration(to: ContinuousClock.now) < interval { continue }
+                await self.loadRoom(id, client: client, connection: connection)
+            }
+        }
+    }
+
+    private func scheduleActiveRunDetails(roomID: String, roomJobs: [RelayJob], repliedJobIDs: Set<String>) {
+        guard isForeground, activeRoomID == roomID, let client else { return }
+        let settled = roomJobs.filter { !$0.isActive || repliedJobIDs.contains($0.id) }
+        let settledIDs = Set(settled.flatMap { [$0.taskId, $0.agentRunId].compactMap { $0 } })
+        var wanted = Set(roomJobs.filter { $0.isActive && !repliedJobIDs.contains($0.id) }
+            .compactMap { $0.agentRunId ?? $0.taskId })
+        // Some running records precede their delivery's accepted/taskId update.
+        for run in agentRuns where run.roomId == roomID && run.isActive && !settledIDs.contains(run.id) { wanted.insert(run.id) }
+        for id in Array(runDetailRequests.keys) where !wanted.contains(id) {
+            runDetailRequests[id]?.cancel()
+            runDetailRequests[id] = nil
+            runDetailTokens[id] = nil
+        }
+        let connection = connectionGeneration, generation = runDetailGeneration
+        for id in wanted {
+            guard runDetailRequests[id] == nil else { continue }
+            let now = ContinuousClock.now
+            if let previous = runDetailLastRequested[id], previous.duration(to: now) < .seconds(5) { continue }
+            runDetailLastRequested[id] = now
+            let token = UUID()
+            runDetailTokens[id] = token
+            runDetailRequests[id] = Task { [weak self] in
+                defer {
+                    if let self, connection == self.connectionGeneration, generation == self.runDetailGeneration,
+                       self.runDetailTokens[id] == token {
+                        self.runDetailRequests[id] = nil
+                        self.runDetailTokens[id] = nil
+                    }
+                }
+                do {
+                    let detail = try await client.request(RelayAgentRun.self, path: "/api/agent-runs/\(RelayAPIClient.component(id))")
+                    guard let self, !Task.isCancelled, self.isForeground, self.activeRoomID == roomID,
+                          connection == self.connectionGeneration, generation == self.runDetailGeneration,
+                          self.runDetailTokens[id] == token else { return }
+                    self.agentRunDetails[id] = detail
+                } catch {
+                    // Waiting copy is optional; a detail read must never hide a message or its error.
+                }
+            }
+        }
+    }
+
+    private func cancelRunDetailRefreshes() {
+        runDetailGeneration += 1
+        for task in runDetailRequests.values { task.cancel() }
+        runDetailRequests = [:]
+        runDetailTokens = [:]
     }
 
     private func acceptEpoch(_ epoch: String?) {
@@ -446,6 +682,8 @@ final class RelayStore {
             draftReplies = [:]
             sendingRoomIDs = []
             agentRunDetails = [:]
+            cancelRunDetailRefreshes()
+            runDetailLastRequested = [:]
         }
         historyEpoch = epoch
     }
@@ -457,6 +695,9 @@ final class RelayStore {
         bots = []; rooms = []; messages = []; jobs = []; agentRuns = []; agentRunDetails = [:]
         messageHistory = [:]; pendingMessages = []; drafts = [:]; draftAttachments = [:]
         draftTargets = [:]; draftReplies = [:]; selectedRoomID = nil; sendingRoomIDs = []; lastSyncAt = nil
+        activeRoomID = nil
+        roomLastRead = [:]
+        runDetailLastRequested = [:]
     }
 
     private func upsertBot(_ bot: RelayBot) {
