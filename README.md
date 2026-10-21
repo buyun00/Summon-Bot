@@ -8,6 +8,7 @@
 - `capabilities/`：六类独立 MCP/API 服务，以及注册、版本绑定和协商热更网关。
 - `roles/`：角色配置与提示词；`skills/`：可加载流程说明。
 - `web/`：前端与轻量网关；`scripts/`：构建、安装、迁移。
+- `ios/`：Swift / SwiftUI 原生 iPhone、iPad 客户端；Mac 直接打开 `ios/Relay.xcodeproj`，详见 [iOS 运行说明](ios/README.md)。
 
 ## 开发与运行
 
