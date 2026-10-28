@@ -9,11 +9,11 @@
   function guide(text) {
     const dialog = document.createElement('dialog');
     dialog.setAttribute('aria-label', '安装 Relay Bot');
-    dialog.style.cssText = 'max-width:360px;width:calc(100% - 48px);box-sizing:border-box;border:1px solid #555;border-radius:24px;background:#242426;color:#fff;padding:26px;font:17px/1.65 system-ui,sans-serif;box-shadow:0 20px 80px #0006;';
+    dialog.style.cssText = 'max-width:360px;width:calc(100% - 48px);box-sizing:border-box;border:1px solid #dfe2e9;border-radius:18px;background:#fff;color:#343b4e;padding:26px;font:17px/1.65 system-ui,sans-serif;box-shadow:0 20px 80px #252b4026;';
     const title = document.createElement('strong'); title.textContent = '安装 Relay Bot';
     const paragraph = document.createElement('p'); paragraph.textContent = text;
     const button = document.createElement('button'); button.textContent = '知道了';
-    button.style.cssText = 'border:0;border-radius:24px;background:#8750eb;color:#fff;padding:12px 22px;min-height:44px;font:inherit;float:right;cursor:pointer;';
+    button.style.cssText = 'border:0;border-radius:12px;background:#009c9e;color:#fff;padding:12px 22px;min-height:44px;font:inherit;float:right;cursor:pointer;';
     button.onclick = () => dialog.close();
     dialog.append(title, paragraph, button); document.body.append(dialog);
     dialog.addEventListener('close', () => dialog.remove(), { once: true }); dialog.showModal();

@@ -20,6 +20,14 @@ import { deployCapability } from '../services/publish.mjs';
 import { coreTools } from '../../bot/src/capabilities/core-tools.mjs';
 
 const same=(a,b)=>typeof a==='string'&&typeof b==='string'&&Buffer.byteLength(a)===Buffer.byteLength(b)&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
+const activityText=(value,max=512)=>typeof value==='string'?value.replace(/[\u0000-\u001f\u007f]/g,' ').slice(0,max):null;
+function toolActivity(row) {
+  const name=activityText(row.name,128),status=activityText(row.status,32);
+  // Only expose display metadata, never command text, contents, results or raw arguments.
+  return {name,status,path:['read_file','write_file','edit_file'].includes(name)?activityText(row.path):null,
+    targetBotId:['messages_send','tasks_get','tasks_cancel','chatroom_dm','chatroom_send','bots_deliver'].includes(name)?activityText(row.targetBotId,128):null,
+    startedAt:activityText(row.startedAt,64),finishedAt:activityText(row.finishedAt,64)};
+}
 export async function startGateway(options={}) {
   const dataRoot=resolve(required(options.dataRoot,'dataRoot')),releaseRoot=resolve(required(options.releaseRoot,'releaseRoot')),defaultCwd=resolve(options.defaultCwd||releaseRoot),token=options.token||randomBytes(32).toString('hex');
   // History is cleared only while every writer is stopped; one startup snapshot
@@ -73,11 +81,19 @@ export async function startGateway(options={}) {
       // A single durable snapshot per Bot avoids reopening its database for every
       // historical task and reading every full tool result on every UI refresh.
       const snapshot=await manager.readState(bot.id,db=>{
-        if(!db)return {tasks:[],legacy:[],counts:{}};
+        if(!db)return {tasks:[],legacy:[],counts:{},lastTools:{}};
         return {tasks:db.listTasks().slice(-100),legacy:db.listRecords?.('agentRuns')||[],
-          counts:Object.fromEntries(db.db.prepare('SELECT task_id,COUNT(*) AS count FROM tools GROUP BY task_id').all().map(row=>[row.task_id,row.count]))};
+          counts:Object.fromEntries(db.db.prepare('SELECT task_id,COUNT(*) AS count FROM tools GROUP BY task_id').all().map(row=>[row.task_id,row.count])),
+          lastTools:Object.fromEntries(db.db.prepare(`SELECT task_id,
+            COALESCE(json_extract(data,'$.name'),json_extract(data,'$.toolName')) AS name,
+            json_extract(data,'$.status') AS status,
+            COALESCE(json_extract(data,'$.args.path'),json_extract(data,'$.args.filePath')) AS path,
+            COALESCE(json_extract(data,'$.args.to'),json_extract(data,'$.args.targetBotId'),json_extract(data,'$.args.toBotId'),json_extract(data,'$.args.botId'),json_extract(data,'$.args.childId')) AS targetBotId,
+            json_extract(data,'$.startedAt') AS startedAt,json_extract(data,'$.finishedAt') AS finishedAt
+            FROM tools WHERE rowid IN (SELECT MAX(rowid) FROM tools GROUP BY task_id)`)
+            .all().map(row=>[row.task_id,toolActivity(row)]))};
       });
-      for(const task of snapshot.tasks)agentRuns.push({id:task.id||task.taskId,...task,botId:bot.id,summary:task.result?.content||task.summary||'',toolCount:task.result?.toolsCalled??snapshot.counts[task.id||task.taskId]??0,roomId:task.sessionId?.replace(/^room:/,'')});
+      for(const task of snapshot.tasks)agentRuns.push({id:task.id||task.taskId,...task,botId:bot.id,summary:task.result?.content||task.summary||'',toolCount:task.result?.toolsCalled??snapshot.counts[task.id||task.taskId]??0,lastTool:snapshot.lastTools[task.id||task.taskId]||null,roomId:task.sessionId?.replace(/^room:/,'')});
       for(const record of snapshot.legacy)if(!agentRuns.some(run=>run.id===record.id))agentRuns.push({...record,botId:bot.id});
       try{const health=await manager.request(bot.id,'/health',{signal:AbortSignal.timeout(2000)});if(health.engine?.provider)providers.push(health.engine.provider);}catch{}
     }));

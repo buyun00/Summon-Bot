@@ -1,7 +1,7 @@
 const shapes=Object.entries(characters).map(([id,m])=>({id,label:m.name})),colors=templates.map(p=>p.color);
 const safeImage=value=>typeof value==='string'&&/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(value)?value:null;
-function normalize(value={}){const role=characters[value.shape]?value.shape:legacyRoles[value.shape]||'dev',m=characters[role];return {shape:role,color:hex(value.color,m.color),secondary:hex(value.secondary,m.secondary),ink:hex(value.ink,'#142443'),paper:hex(value.paper,'#FFFAF1'),image:safeImage(value.image)};}
-function defaults(botId,index=0){const seeded={'bot-engineer':'dev','bot-components':'plan','bot-qa':'qa'};let value=5381;for(const c of String(botId||`bot-${index}`))value=(Math.imul(value,33)^c.codePointAt(0))>>>0;return normalize({shape:seeded[botId]||shapes[value%shapes.length].id});}
+function normalize(value={}){const role=characters[value.shape]?value.shape:legacyRoles[value.shape]||'dev',m=characters[role];return {shape:role,color:hex(value.color,m.color),secondary:hex(value.secondary,m.secondary),ink:hex(value.ink,'#142443'),paper:hex(value.paper,'#FFFFFF'),image:safeImage(value.image)};}
+function defaults(botId,index=0){const seeded={'bot-engineer':'dev','bot-components':'plan','bot-qa':'qa','bot-lumi':'lead','lumi':'lead','bot-entry':'lead','bot-chatroom':'translate','bot-manager':'ops','bot-memory':'knowledge'};let value=5381;for(const c of String(botId||`bot-${index}`))value=(Math.imul(value,33)^c.codePointAt(0))>>>0;return normalize({shape:seeded[botId]||shapes[value%shapes.length].id});}
 function paletteOf(a){return {accent:a.color,secondary:a.secondary,ink:a.ink,paper:a.paper};}
 const mountedAvatars=new Map();let raf=0,last=0;
 const reduce=matchMedia('(prefers-reduced-motion: reduce)');

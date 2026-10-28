@@ -4,7 +4,7 @@ const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
 // Display preferences are local to this browser and independent for each layout.
-const UI_BUILD = '2026.10.22.1';
+const UI_BUILD = '2026.10.28.2';
 let displayDiagnosticSnapshot = null;
 function isIosStandalone() {
   const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -37,8 +37,8 @@ function captureDisplayDiagnostics() {
     zoom: getComputedStyle(root).zoom, keyboard: root.classList.contains('keyboard-open'), units,
     shell: measure('.app-shell'), composer: measure('.composer'), composerWrap: measure('.composer-wrap') };
 }
-const displayPreferenceKey = 'relay:display-preferences:v1';
-const displayDefaults = { desktop: { zoom: 67, font: 120 }, mobile: { zoom: 100, font: 100 } };
+const displayPreferenceKey = 'relay:display-preferences:v2';
+const displayDefaults = { desktop: { zoom: 100, font: 100 }, mobile: { zoom: 100, font: 100 } };
 function normalizeDisplayPreferences(value) {
   const limit = (number, fallback, min, max) => typeof number === 'number' && Number.isFinite(number) ? Math.min(max, Math.max(min, Math.round(number))) : fallback;
   return Object.fromEntries(Object.entries(displayDefaults).map(([mode, fallback]) => [mode, {
@@ -47,7 +47,15 @@ function normalizeDisplayPreferences(value) {
   }]));
 }
 function readDisplayPreferences() {
-  try { return normalizeDisplayPreferences(JSON.parse(localStorage.getItem(displayPreferenceKey))); }
+  try {
+    const saved = localStorage.getItem(displayPreferenceKey);
+    if (saved) return normalizeDisplayPreferences(JSON.parse(saved));
+    const previous = JSON.parse(localStorage.getItem('relay:display-preferences:v1'));
+    if (previous?.desktop?.zoom === 67 && previous.desktop.font === 120) previous.desktop = { ...displayDefaults.desktop };
+    const migrated = normalizeDisplayPreferences(previous);
+    localStorage.setItem(displayPreferenceKey, JSON.stringify(migrated));
+    return migrated;
+  }
   catch { return normalizeDisplayPreferences(null); }
 }
 const displayMedia = matchMedia('(max-width:820px)');
@@ -295,7 +303,7 @@ function contactTime(value) {
 function formatDay(value) { const time = new Date(value); return Number.isNaN(time.getTime()) ? '' : new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(time); }
 function botById(id) { return state.bots.find(bot => bot.id === id); }
 function roomById(id) { return state.rooms.find(room => room.id === id); }
-function nameOf(id) { return id === 'user' ? '你' : (String(id || '').startsWith('executor:') ? '专业执行端' : botById(id)?.name || (id === 'system' ? 'Relay' : id || 'Relay')); }
+function nameOf(id) { return id === 'user' ? ownerName() : (String(id || '').startsWith('executor:') ? '专业执行端' : botById(id)?.name || (id === 'system' ? 'Relay' : id || 'Relay')); }
 function statusPill(value) { return `<span class="status ${esc(value)}">${esc(labels[value] || value || '未知')}</span>`; }
 function listText(value) { return Array.isArray(value) ? value.join('、') : String(value || ''); }
 function emptyState(title, description, button = '', iconName = 'spark') { return `<div class="empty-state">${icon(iconName, 32)}<h3>${esc(title)}</h3><p>${esc(description)}</p>${button}</div>`; }
@@ -404,7 +412,7 @@ function render() {
   persistClientSession();
   if (ui.composing && document.activeElement?.id === 'message-input' && document.activeElement.form?.dataset.roomId === ui.roomId) { ui.renderDeferred = true; return; }
   ui.renderDeferred = false;
-  const saved = preserveView(); renderTopbar();
+  const saved = preserveView(); markCurrentRoomRead(); renderTopbar();
   const views = { chat: renderChat, members: renderMembers, works: renderWorks, knowledge: renderKnowledge, routines: renderRoutines };
   const key = `${ui.view}:${ui.view === 'chat' ? ui.roomId : ui.view === 'members' ? ui.botId : ui.view === 'works' ? ui.workId : ''}`;
   const main = $('#main-content'), html = views[ui.view]();
@@ -444,8 +452,8 @@ function roomNotices(room, failures = unresolvedJobLeaves()) {
   const orphaned = failures.filter(job => !ui.messages.some(message => message.id === job.messageId));
   return `${conclusion}${orphaned.length ? `<details class="historical-job-notices"><summary>历史任务记录 · ${orphaned.length}</summary><p>以下任务的原消息不在当前会话记录中。</p>${orphaned.map(job => messageJobNotices(job.messageId, [job])).join('')}</details>` : ''}`;
 }
-function agentRunVersion(run) { return JSON.stringify([run?.status, run?.toolCount, run?.finishedAt, run?.error]); }
-function visibleAgentRuns(roomId = ui.roomId) { return (state.agentRuns || []).filter(run => run.roomId === roomId && (run.status === 'running' || Number(run.toolCount) > 0)); }
+function agentRunVersion(run) { return JSON.stringify([run?.status, run?.toolCount, run?.finishedAt, run?.error, run?.lastTool]); }
+function visibleAgentRuns(roomId = ui.roomId) { return (state.agentRuns || []).filter(run => run.roomId === roomId && (['accepted', 'queued', 'running', 'waiting'].includes(run.status) || Number(run.toolCount) > 0)); }
 async function loadAgentRunDetails(id, force = false) {
   const generation = ui.historyGeneration || 0;
   if (ui.agentRunRequests.has(id)) return ui.agentRunRequests.get(id);
@@ -502,7 +510,7 @@ function renderAgentContext(run) {
     (resources?.diagnostics || []).map(item => '<p class="agent-run-note">资源提示：' + esc(item.message) + '</p>').join('') +
     (run.extensionErrors || []).map(message => '<p class="agent-run-error">扩展事件：' + esc(message) + '</p>').join('');
 }
-function renderAgentRun(run) {
+function renderAgentRun(run, { showBot = false } = {}) {
   const open = ui.agentRunsOpen.has(run.id), entry = ui.agentRunDetails.get(run.id), detail = entry?.detail, cancelling = ui.agentRunsCancelling.has(run.id);
   const toolNames = { read_file: '读取文件', write_file: '写入文件', edit_file: '修改文件', list_files: '查看目录', search_files: '搜索文件', search_text: '搜索内容', execute_command: '执行命令', run_command: '执行命令', relay_action: '成员协作', search_knowledge: '搜索知识', read_resource: '读取技能资源', read_session_history: '读取会话原文' };
   const tools = Array.isArray(detail?.tools) ? detail.tools : [];
@@ -511,7 +519,9 @@ function renderAgentRun(run) {
     const hint = tool.args && typeof tool.args === 'object' ? tool.args.path || tool.args.command || tool.args.query || tool.args.pattern || '' : '';
     return `<div class="agent-tool"><button class="agent-tool-heading" data-action="toggle-agent-tool" data-id="${esc(key)}" aria-expanded="${toolOpen}" aria-controls="agent-tool-${esc(key)}"><span class="agent-disclosure" aria-hidden="true">${toolOpen ? '▾' : '▸'}</span><strong>${esc(toolNames[tool.name] || tool.name || '工具')}</strong>${hint ? `<span class="agent-tool-hint" title="${esc(hint)}">${esc(hint)}</span>` : ''}${statusPill(tool.status)}</button>${toolOpen ? `<div class="agent-tool-body" id="agent-tool-${esc(key)}"><div class="agent-tool-meta"><code>${esc(tool.name)}</code><time>${esc(formatTime(tool.startedAt, true))}${tool.finishedAt ? ` → ${esc(formatTime(tool.finishedAt))}` : ''}</time></div>${renderAgentArtifacts(run.id, tool)}<span class="agent-output-label">输入</span><pre>${esc(input || '无参数')}</pre>${result ? renderAgentToolResult(tool.result) : ''}${tool.error ? `<p class="agent-run-error">${esc(agentToolText(tool.error))}</p>` : ''}${!result && !tool.error ? `<p class="agent-run-note">${tool.status === 'running' ? '工具正在执行，尚无结果。' : '没有记录到结果内容。'}</p>` : ''}</div>` : ''}</div>`;
   }).join('')}${!tools.length && !entry?.loading && !entry?.error ? `<p class="agent-run-note">${run.status === 'running' ? '正在处理，尚无工具调用记录。' : '没有工具调用记录。'}</p>` : ''}${run.error ? `<p class="agent-run-error">${esc(agentToolText(run.error))}</p>` : ''}${run.summary ? `<p class="agent-run-summary">${esc(agentToolText(run.summary))}</p>` : ''}${run.finishedAt ? `<time class="agent-run-note">结束于 ${esc(formatTime(run.finishedAt, true))}</time>` : ''}</div>` : '';
-  return `<article class="agent-run-card" data-agent-run-id="${esc(run.id)}"><div class="agent-run-header"><button class="agent-run-heading" data-action="toggle-agent-run" data-id="${esc(run.id)}" aria-expanded="${open}" aria-controls="agent-run-${esc(run.id)}"><span class="agent-disclosure" aria-hidden="true">${open ? '▾' : '▸'}</span>${icon('computer', 16)}<span><strong>${esc(nameOf(run.botId))} 的操作</strong><small>${esc(formatTime(run.startedAt))} · ${Number(run.toolCount) || 0} 次工具调用</small></span>${statusPill(run.status)}</button>${run.status === 'running' ? `<button class="agent-run-cancel text-button" data-action="cancel-agent-run" data-id="${esc(run.id)}" ${cancelling ? 'disabled' : ''} aria-label="取消${esc(nameOf(run.botId))}的操作">${cancelling ? '正在取消…' : '取消'}</button>` : ''}</div>${content}</article>`;
+  const latestTool = run.lastTool || tools.at(-1), summary = executionSummary(run, latestTool);
+  const memberColor = botById(run.botId) ? botAvatar(run.botId).color : '#8b8e9f';
+  return `<div class="message-work-status ${esc(run.status)} ${open ? 'expanded' : ''}" data-agent-run-id="${esc(run.id)}" style="--member-color:${esc(memberColor)}"><div class="work-status-line"><button class="work-status-toggle" data-action="toggle-agent-run" data-id="${esc(run.id)}" aria-expanded="${open}" aria-controls="agent-run-${esc(run.id)}">${showBot ? avatar(run.botId, 22, `run:${run.id}:owner`) : '<i class="work-status-dot" aria-hidden="true"></i>'}<span>${showBot ? `${esc(nameOf(run.botId))} · ` : ''}${esc(summary.text)}</span><span class="work-status-chevron" aria-hidden="true">${icon('chevron', 15)}</span>${summary.path ? `<small class="work-status-path" title="${esc(summary.path)}">${esc(summary.path)}</small>` : ''}</button>${open && ['running', 'accepted', 'queued', 'waiting'].includes(run.status) ? `<button class="agent-run-cancel text-button" data-action="cancel-agent-run" data-id="${esc(run.id)}" ${cancelling ? 'disabled' : ''} aria-label="取消${esc(nameOf(run.botId))}的操作">${cancelling ? '正在取消…' : '取消'}</button>` : ''}</div>${content}</div>`;
 }
 async function refresh(force = false) {
   if (ui.cacheBootPromise && !ui.cacheReady) await ui.cacheBootPromise;
@@ -851,6 +861,13 @@ async function act(action, element) {
     return;
   }
   if (action === 'toggle-search') { ui.searchOpen = !ui.searchOpen; if (!ui.searchOpen) ui.roomQuery = ''; render(); $('#room-search')?.focus(); return; }
+  if (action === 'toggle-mention-menu') { ui.menu = ui.menu === 'mentions' ? null : 'mentions'; return render(); }
+  if (action === 'choose-message-target') {
+    if (id && !roomById(ui.roomId)?.members?.includes(id)) return;
+    ui.draftTargets[ui.roomId] = id || '';
+    const select = $('#message-target'); if (select) select.value = id || '';
+    ui.menu = null; render(); $('#message-input')?.focus(); return;
+  }
   if (['toggle-create', 'toggle-apps', 'toggle-chat-menu'].includes(action)) { const menu = action.slice(7); ui.menu = ui.menu === menu ? null : menu; return render(); }
   if (action === 'toggle-details') { ui.menu = null; ui.detailOpen = !ui.detailOpen; ui.profileBotId = null; ui.avatarEditing = false; ui.detailTab = 'details'; render(); await loadCurrent(); return render(); }
   if (action === 'close-details') { ui.detailOpen = false; ui.profileBotId = null; ui.avatarEditing = false; return render(); }
@@ -978,6 +995,9 @@ $('#modal').addEventListener('cancel', event => { event.preventDefault(); closeM
 window.addEventListener('hashchange', () => { const view = location.hash.slice(1); if (tabs.some(tab => tab.id === view) && ui.view !== view) navigate(view); });
 // Conversation-first layout, matched to the supplied reference screens.
 Object.assign(icons, {
+  send: '<path d="M12 21V3m-7 7 7-7 7 7"/>',
+  attachment: '<path d="m8 13 7-7a3 3 0 0 1 4 4L9 20a5 5 0 0 1-7-7L12 3a2.5 2.5 0 0 1 4 3L6 16a1 1 0 0 1-2-2l8-8" transform="translate(1 0)"/>',
+  settings: '<path d="m9 3-.5 2.2-2 .8-1.9-1.1-2 3.5L4.2 10v2l-1.6 1.6 2 3.5 2.2-.5 1.7 1.1L9 21h4l.5-2.3 1.7-1.1 2.2.5 2-3.5L17.8 13v-2l1.6-1.6-2-3.5L15.5 7l-2-.8L13 3Z"/><circle cx="11" cy="12" r="3"/>',
   more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
   chevron: '<path d="m6 9 6 6 6-6"/>',
   computer: '<rect x="3" y="3" width="18" height="13" rx="2"/><path d="M8 21h8m-4-5v5"/>',
@@ -995,12 +1015,13 @@ function botAvatar(botOrId) {
 function face(config, size = 60, options = {}) { return window.RelayAvatars ? window.RelayAvatars.render(config, size, options) : `<span class="face-fallback" style="width:${size}px;height:${size}px;background:${esc(config?.color || '#959595')}"></span>`; }
 function avatar(id, large = false, key = `bot:${id}`) {
   const size = typeof large === 'number' ? large : large ? 104 : 60;
-  if (id === 'user') return `<span class="user-avatar" style="width:${size}px;height:${size}px" aria-hidden="true">${icon('person', Math.round(size * .48))}</span>`;
+  if (id === 'user') return `<img class="user-avatar" src="/icons/user-avatar.jpg?v=owner-20261028" width="${size}" height="${size}" style="width:${size}px;height:${size}px" alt="" aria-hidden="true">`;
   if (!botById(id)) return `<span class="system-avatar" style="width:${size}px;height:${size}px">${icon(String(id).startsWith('executor:') ? 'computer' : 'event', Math.round(size * .5))}</span>`;
   return `<span class="bot-avatar" style="width:${size}px;height:${size}px" aria-hidden="true">${face(botAvatar(id), size, { key, identity: `bot:${id}`, state: (state.runtime?.jobs || []).some(job => job.botId === id && job.status === 'running') ? 'work' : (state.runtime?.jobs || []).some(job => job.botId === id && job.status === 'queued') ? 'think' : 'idle' })}</span>`;
 }
 function groupAvatar(room, size = 96, key = `group:${room?.id}:${size}`) {
-  const members = (room?.members || []).filter(id => id === 'user' || botById(id)).slice(0, 4);
+  const members = (room?.members || []).filter(id => botById(id)).slice(0, 4);
+  if (!members.length) return `<span class="group-avatar group-avatar-empty" style="width:${size}px;height:${size}px">${icon(room?.kind === 'deep' ? 'layers' : 'chat', Math.round(size * .6))}</span>`;
   return `<span class="group-avatar" style="width:${size}px;height:${size}px">${members.map((id, index) => `<span class="group-face pos-${index}">${avatar(id, Math.round(size * .57), `${key}:${index}`)}</span>`).join('')}</span>`;
 }
 function currentBot() {
@@ -1015,11 +1036,62 @@ function providerLabel() {
   return provider.lastError ? '连接异常' : provider.connected ? '已连接' : provider.configured ? '已配置 · 待调用' : '未配置';
 }
 function isSystemBot(bot) { return typeof bot?.presetId === 'string' && bot.presetId.length > 0; }
+function ownerName() { return state.user?.name || state.owner?.name || '你'; }
+function botRole(bot) { return listText(bot?.expertise) || bot?.role || ''; }
+function executionSummary(run, tool) {
+  const count = Number(run.toolCount) || 0, path = typeof tool?.path === 'string' ? tool.path : typeof tool?.args?.path === 'string' ? tool.args.path : '';
+  if (run.status === 'completed') return { text: count ? `已完成 ${count} 项操作` : '已完成回复', path: '' };
+  if (['failed', 'interrupted', 'cancelled'].includes(run.status)) return { text: labels[run.status] || run.status, path: '' };
+  if (run.status === 'waiting') return { text: '等待答复', path: '' };
+  if (['queued', 'accepted'].includes(run.status)) return { text: run.status === 'queued' ? '等待执行' : '已接收，准备处理', path: '' };
+  const actions = { read_file: '正在读取文件', write_file: '正在写入文件', edit_file: '正在修改文件', list_files: '正在查看目录', search_files: '正在查找文件', search_text: '正在搜索内容', execute_command: '正在执行命令', run_command: '正在执行命令', messages_send: '正在联系同伴', chatroom_dm: '正在联系同伴', chatroom_send: '正在发送消息', tasks_get: '正在查看同伴进度', tasks_cancel: '正在取消同伴任务', bots_deliver: '正在交付工作', contacts_list: '正在查看联系人', search_knowledge: '正在搜索知识', read_resource: '正在读取技能', read_session_history: '正在回顾会话' };
+  const target = tool?.targetBotId || tool?.args?.targetBotId || tool?.args?.toBotId;
+  const text = tool?.status === 'running' ? actions[tool.name] || '正在执行操作' : count ? `正在处理 · ${count} 项操作` : '正在处理';
+  return { text: target && botById(target) ? `${text} · ${nameOf(target)}` : text, path };
+}
+function botWorkState(bot) {
+  if (bot.status === 'paused') return { kind: 'paused', text: '已暂停' };
+  const job = (state.runtime?.jobs || []).filter(job => job.botId === bot.id && ['accepted', 'queued', 'running', 'waiting'].includes(job.status)).at(-1);
+  const run = (state.agentRuns || []).filter(run => run.botId === bot.id && ['accepted', 'queued', 'running', 'waiting'].includes(run.status)).at(-1);
+  if (run) return { kind: run.status === 'running' ? 'working' : 'waiting', text: executionSummary(run, run.lastTool).text };
+  if (job) return { kind: job.status === 'running' ? 'working' : 'waiting', text: job.status === 'running' ? '正在处理' : job.status === 'waiting' ? '等待答复' : '等待执行' };
+  return { kind: 'idle', text: '空闲' };
+}
+function roomPreview(room) {
+  const message = room.lastMessage;
+  if (!message) return room.status === 'concluded' ? '已结束 · 结论已保留' : room.goal || '还没有消息';
+  const content = message.content || message.attachments?.map(item => `[附件] ${item.name}`).join('、') || '附件';
+  return `${nameOf(message.senderId)}：${content.replace(/\s+/g, ' ')}`;
+}
+function roomReadMarkers() {
+  if (ui.readMarkersEpoch !== ui.historyEpoch || !ui.readMarkers) {
+    ui.readMarkersEpoch = ui.historyEpoch;
+    try { const saved = JSON.parse(localStorage.getItem('relay:room-read-markers:v1')); ui.readMarkers = saved?.historyEpoch === (ui.historyEpoch ?? null) ? saved.rooms || {} : {}; }
+    catch { ui.readMarkers = {}; }
+  }
+  return ui.readMarkers;
+}
+function saveRoomReadMarkers() { try { localStorage.setItem('relay:room-read-markers:v1', JSON.stringify({ historyEpoch: ui.historyEpoch ?? null, rooms: ui.readMarkers })); } catch {} }
+function markCurrentRoomRead() {
+  if (ui.view !== 'chat' || document.hidden || displayMedia.matches && !ui.mobileRoom || ui.messagesRoomId !== ui.roomId) return;
+  const last = mergedRoomMessages(ui.roomId, ui.messages).filter(message => !message._delivery).at(-1);
+  if (!last?.createdAt) return;
+  const markers = roomReadMarkers();
+  if (markers[ui.roomId] !== last.createdAt) { markers[ui.roomId] = last.createdAt; saveRoomReadMarkers(); }
+}
+function unreadRoomBadge(room) {
+  const count = Number(room.unreadCount);
+  if (Number.isFinite(count) && count > 0) return `<span class="unread-count" aria-label="${count} 条未读">${count > 99 ? '99+' : count}</span>`;
+  const markers = roomReadMarkers(), last = room.lastMessage;
+  if (!last?.createdAt) return '';
+  if (!markers[room.id]) { markers[room.id] = last.createdAt; saveRoomReadMarkers(); return ''; }
+  if (last.senderId === 'user' || last.createdAt <= markers[room.id]) return '';
+  const known = ui.messageCache.get(room.id)?.messages?.filter(message => message.senderId !== 'user' && message.createdAt > markers[room.id]).length;
+  return known ? `<span class="unread-count" aria-label="${known} 条未读">${known > 99 ? '99+' : known}</span>` : '<i class="unread-dot" aria-label="有新消息"></i>';
+}
 function renderBotContact(bot, selectedBot) {
-  const dm = state.rooms.find(room => room.kind === 'dm' && room.members?.includes('user') && room.members?.includes(bot.id));
-  const preview = dm?.lastMessage?.content || dm?.lastMessage?.attachments?.map(item => `[附件] ${item.name}`).join('、') || bot.role || '开始聊天';
-  const busy = (state.runtime.jobs || []).some(job => job.botId === bot.id && ['running', 'queued'].includes(job.status));
-  return `<button class="contact-row ${ui.view === 'chat' && selectedBot?.id === bot.id && !ui.profileBotId ? 'selected' : ''}" data-action="dm-bot" data-id="${esc(bot.id)}">${avatar(bot.id, 60, `sidebar:${bot.id}`)}<span class="contact-copy"><span class="contact-heading"><strong>${esc(bot.name)}</strong>${dm?.lastMessage?.createdAt ? `<time class="contact-time" datetime="${esc(dm.lastMessage.createdAt)}" title="${esc(formatTime(dm.lastMessage.createdAt, true))}">${esc(contactTime(dm.lastMessage.createdAt))}</time>` : ''}</span><span>${esc(bot.status === 'paused' ? '已暂停' : busy ? '正在处理…' : preview)}</span></span>${busy ? '<i class="activity-dot" title="正在处理"></i>' : ''}</button>`;
+  const work = botWorkState(bot), dm = state.rooms.find(room => room.kind === 'dm' && room.members?.includes('user') && room.members?.includes(bot.id));
+  return `<button class="contact-row ${ui.view === 'chat' && selectedBot?.id === bot.id && !ui.profileBotId ? 'selected' : ''}" data-action="dm-bot" data-id="${esc(bot.id)}" style="--member-color:${esc(botAvatar(bot).color)}"><span class="contact-avatar-wrap">${avatar(bot.id, 56, `sidebar:${bot.id}`)}<i class="presence-dot ${work.kind}" aria-hidden="true"></i></span><span class="contact-copy"><span class="contact-heading"><strong>${esc(bot.name)}</strong><small class="contact-role">${esc(botRole(bot))}</small></span><span class="contact-status ${work.kind}"><i class="status-dot" aria-hidden="true"></i>${esc(work.text)}</span></span>${dm ? unreadRoomBadge(dm) : ''}</button>`;
 }
 function renderTopbar() {
   const oldContactTop = $('.contacts-scroll')?.scrollTop || 0, oldPeerOpen = $('.peer-conversations')?.open;
@@ -1038,7 +1110,7 @@ function renderTopbar() {
   const menu = ui.menu === 'create' ? `<div class="context-menu create-menu"><button data-action="new-bot">${icon('person', 19)}创建新 Bot</button><button data-action="new-room">${icon('people', 19)}创建群聊</button><button data-action="new-deep">${icon('layers', 19)}创建深聊</button></div>` : '';
   const appMenu = ui.menu === 'apps' ? `<div class="context-menu apps-menu"><div class="menu-title">连接应用</div><div class="connection-row"><span class="app-emblem flash">D</span><div><strong>DeepSeek Flash</strong><small class="${state.provider.lastError ? 'error-text' : ''}">${esc(providerLabel())}</small></div><button class="icon-button" data-action="refresh" title="刷新状态" aria-label="刷新状态">${icon('refresh', 17)}</button></div>${state.provider.lastError ? `<p class="menu-error">${esc(state.provider.lastError)}</p>` : ''}<div class="connection-row"><span class="app-emblem codex">${icon('computer', 21)}</span><div><strong>Codex</strong><small>${activeWorks ? `${activeWorks} 项工作进行中` : '专业执行端'}</small></div></div><div class="menu-separator"></div>${tabs.filter(tab => tab.id !== 'chat').map(tab => `<button data-action="navigate" data-view="${tab.id}">${icon(tab.icon, 19)}${tab.id === 'members' ? '管理 Bot' : tab.title}${tab.id === 'works' && activeWorks ? `<span class="menu-count">${activeWorks}</span>` : ''}</button>`).join('')}<button data-action="new-event">${icon('event', 19)}投递事件</button><div class="menu-separator"></div><button data-action="display-settings">${icon('settings', 19)}显示设置</button><button data-action="install-app">${icon('install', 19)}安装到设备</button>${window.RelayPwa?.getState?.().updateAvailable ? `<button data-action="update-app">${icon('refresh', 19)}更新应用</button>` : ''}</div>` : '';
   const sidebar = $('#contact-sidebar');
-  const html = `<div class="sidebar-toolbar"><div class="search-slot ${ui.searchOpen ? 'open' : ''}">${ui.searchOpen ? `<input id="room-search" value="${esc(ui.roomQuery)}" placeholder="搜索" aria-label="搜索会话与 Bot">` : ''}<button class="round-button" data-action="toggle-search" title="搜索" aria-label="搜索">${icon('search', 24)}</button></div><div class="menu-anchor"><button class="round-button" data-action="toggle-create" aria-label="新建" title="新建" aria-expanded="${ui.menu === 'create'}">${icon('plus', 27)}</button>${menu}</div></div><div class="contacts-scroll"><div class="group-grid">${groups.map(room => `<button class="group-tile ${room.id === ui.roomId && ui.view === 'chat' ? 'selected' : ''}" data-action="select-room" data-id="${esc(room.id)}" title="${esc(room.name)}">${groupAvatar(room)}<span>${esc(room.name)}</span>${room.kind === 'deep' ? `<small>${room.status === 'concluded' ? '已结束' : '深聊'}</small>` : ''}</button>`).join('')}</div><div class="bot-contacts">${bots.map(bot => renderBotContact(bot, selectedBot)).join('')}</div>${systemGroup}${peerRooms.length ? `<details class="peer-conversations" ${query ? 'open' : ''}><summary>Bot 之间的对话 <span>${peerRooms.length}</span>${icon('chevron', 14)}</summary>${peerRooms.map(room => `<button class="peer-room ${room.id === ui.roomId ? 'selected' : ''}" data-action="select-room" data-id="${esc(room.id)}">${groupAvatar(room, 44)}<span>${esc(room.name)}</span></button>`).join('')}</details>` : ''}${!matchingBots.length && !groups.length ? '<div class="sidebar-empty">没有找到匹配项</div>' : ''}</div><div class="sidebar-footer"><button class="my-avatar-button" data-action="show-owner" title="设置" aria-label="设置">${avatar('user', 54)}</button><div class="menu-anchor apps-anchor"><button class="connect-apps" data-action="toggle-apps" aria-expanded="${ui.menu === 'apps'}">连接应用<span class="mini-app-icon flash">D</span><span class="mini-app-icon">${icon('computer', 15)}</span></button>${appMenu}</div></div>`;
+  const html = `<div class="sidebar-toolbar"><span class="relay-wordmark" aria-label="Relay">RELAY<span>.</span></span><div class="search-slot ${ui.searchOpen ? 'open' : ''}">${ui.searchOpen ? `<input id="room-search" value="${esc(ui.roomQuery)}" placeholder="搜索群聊与伙伴" aria-label="搜索会话与 Bot">` : ''}<button class="round-button" data-action="toggle-search" title="搜索" aria-label="搜索">${icon('search', 24)}</button></div><div class="menu-anchor"><button class="round-button create-button" data-action="toggle-create" aria-label="新建" title="新建" aria-expanded="${ui.menu === 'create'}">${icon('plus', 27)}</button>${menu}</div></div><div class="contacts-scroll"><section class="sidebar-section group-section"><h2 class="sidebar-section-title">群聊</h2><div class="group-grid">${groups.map(room => `<button class="group-tile ${room.id === ui.roomId && ui.view === 'chat' ? 'selected' : ''}" data-action="select-room" data-id="${esc(room.id)}" title="${esc(room.name)}">${groupAvatar(room, 58)}<span class="group-copy"><strong>${esc(room.name)}</strong><span class="group-preview">${room.kind === 'deep' ? `<span class="group-kind">${room.status === 'concluded' ? '已结束' : '深聊'}</span>` : ''}${esc(roomPreview(room))}</span></span>${unreadRoomBadge(room)}</button>`).join('') || '<p class="sidebar-empty">还没有群聊</p>'}</div></section><section class="sidebar-section partner-section"><h2 class="sidebar-section-title">伙伴</h2><div class="bot-contacts">${bots.map(bot => renderBotContact(bot, selectedBot)).join('') || (!query ? '<p class="sidebar-empty">创建一位伙伴，开始协作</p>' : '')}</div></section>${systemGroup}${peerRooms.length ? `<details class="peer-conversations" ${query ? 'open' : ''}><summary>Bot 之间的对话 <span>${peerRooms.length}</span>${icon('chevron', 14)}</summary>${peerRooms.map(room => `<button class="peer-room ${room.id === ui.roomId ? 'selected' : ''}" data-action="select-room" data-id="${esc(room.id)}">${groupAvatar(room, 44)}<span>${esc(room.name)}</span>${unreadRoomBadge(room)}</button>`).join('')}</details>` : ''}${!matchingBots.length && !groups.length && query ? '<div class="sidebar-empty">没有找到匹配项</div>' : ''}</div><div class="sidebar-footer"><button class="sidebar-owner" data-action="show-owner" title="显示设置"><span class="contact-avatar-wrap">${avatar('user', 50)}<i class="presence-dot ${ui.streamConnected ? 'idle' : 'paused'}" aria-hidden="true"></i></span><span class="owner-copy"><strong>${esc(ownerName())}</strong><small>${navigator.onLine === false ? '离线' : ui.streamConnected ? '在线' : '正在连接'}</small></span></button><div class="menu-anchor apps-anchor"><button class="sidebar-settings icon-button" data-action="toggle-apps" title="设置与应用" aria-label="设置与应用" aria-expanded="${ui.menu === 'apps'}">${icon('settings', 27)}</button>${appMenu}</div></div>`;
   const signature = renderSignature(html);
   if (ui.lastSidebarHtml !== signature) { const motion = captureMotion(sidebar); sidebar.innerHTML = html; ui.lastSidebarHtml = signature; hydrateMotion(sidebar, motion); }
   if ($('.contacts-scroll')) $('.contacts-scroll').scrollTop = oldContactTop;
@@ -1047,41 +1119,119 @@ function renderTopbar() {
   $('.app-shell').classList.toggle('management-open', ui.view !== 'chat');
 }
 function richText(value) {
-  return String(value || '').split(/```(?:[\w-]+)?\n?([\s\S]*?)```/g).map((part, i) => {
+  const blocks = String(value || '').split(/```(?:[\w-]+)?\n?([\s\S]*?)```/g);
+  return blocks.map((part, i) => {
     if (i % 2) return `<pre><code>${esc(part.trim())}</code></pre>`;
-    return esc(part).replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>').replace(/`([^`\n]+)`/g, '<code>$1</code>').replace(/^[-*] (.+)$/gm, '<span class="markdown-li">$1</span>');
+    let offset = 0;
+    return part.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*)/g).map((segment, index) => {
+      const before = offset ? part[offset - 1] : i ? '`' : ''; offset += segment.length;
+      const after = part[offset] || (i < blocks.length - 1 ? '`' : '');
+      if (index % 2 && segment.startsWith('`')) return `<code>${esc(segment.slice(1, -1))}</code>`;
+      if (index % 2) return `<strong>${mentionText(segment.slice(2, -2), '*', '*')}</strong>`;
+      return mentionText(segment, before, after);
+    }).join('').replace(/^[-*] (.+)$/gm, '<span class="markdown-li">$1</span>');
   }).join('');
 }
+function botMention(id, label) {
+  const bot = botById(id); if (!bot) return esc(label || nameOf(id));
+  return `<button type="button" class="bot-mention" data-action="open-bot-details" data-id="${esc(id)}" style="--member-color:${esc(botAvatar(bot).color)}">${avatar(id, 25, '')}<span>@${esc(label || bot.name)}</span></button>`;
+}
+function mentionText(text, before = '', after = '') {
+  const aliases = state.bots.flatMap(bot => [[bot.name, bot.id], [bot.id, bot.id]]).filter(([name]) => name).sort((a, b) => b[0].length - a[0].length);
+  if (!aliases.length) return esc(text);
+  const byAlias = new Map(aliases.map(([name, id]) => [name.toLowerCase(), id])), expression = new RegExp(`(^|\\s)@(${aliases.map(([name]) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})(?=$|[\\s，。！？:：,!?])`, 'giu');
+  let cursor = 0, result = '';
+  for (const match of text.matchAll(expression)) {
+    if (!match[1] && match.index === 0 && before && !/\s/.test(before)) continue;
+    if (match.index + match[0].length === text.length && after && !/[\s，。！？:：,!?]/.test(after)) continue;
+    result += esc(text.slice(cursor, match.index)) + esc(match[1]) + botMention(byAlias.get(match[2].toLowerCase()));
+    cursor = match.index + match[0].length;
+  }
+  return result + esc(text.slice(cursor));
+}
 function messageActivity(message, room) {
-  if (message._activity === 'sent') return `<div class="chat-activity">已发消息给 ${avatar(message.toBotId, 27, `activity:sent:${message.id}`)}<button data-action="dm-bot" data-id="${esc(message.toBotId)}">${esc(nameOf(message.toBotId))}</button></div>`;
+  if (message._activity === 'sent') return `<div class="message-work-status collaboration-status"><span>已联系</span>${botMention(message.toBotId)}</div>`;
   if (message.peerReplyId) {
     const peer = (state.activity || []).find(item => item.id === message.peerReplyId);
-    return `<div class="chat-activity">${peer ? `消息来自 ${avatar(peer.senderId, 27, `activity:received:${message.id}`)}<button data-action="dm-bot" data-id="${esc(peer.senderId)}">${esc(nameOf(peer.senderId))}</button>` : '同事回复已回到本会话'}</div>`;
+    return `<div class="message-work-status collaboration-status">${peer ? `消息来自 ${botMention(peer.senderId)}` : '同伴回复已回到本会话'}</div>`;
   }
   return '';
+}
+function chatExecutionBindings(messages) {
+  const runs = visibleAgentRuns(), byMessage = new Map(), orphaned = [], linkedJobs = new Set();
+  for (const run of runs) {
+    const job = ui.roomJobs.find(job => job.taskId === run.id || job.agentRunId === run.id);
+    if (job) linkedJobs.add(job.id);
+    const sourceId = job?.messageId || run.input?.trigger?.id;
+    const explicitReply = job && messages.find(message => message.jobId === job.id && message.senderId === run.botId && message.kind !== 'error');
+    const directReply = sourceId ? messages.filter(message => message.senderId === run.botId && !message.jobId && message.replyTo === sourceId && message.kind !== 'error').at(-1) : null;
+    const anchor = explicitReply || directReply || messages.find(message => message.id === sourceId);
+    if (!anchor) { orphaned.push(run); continue; }
+    if (!byMessage.has(anchor.id)) byMessage.set(anchor.id, []);
+    byMessage.get(anchor.id).push(run);
+  }
+  const pending = ui.roomJobs.filter(job => !linkedJobs.has(job.id) && ['accepted', 'queued', 'running', 'waiting'].includes(job.status));
+  return { byMessage, orphaned, pending };
+}
+function pendingJobStatus(job) {
+  const text = job.status === 'running' ? '正在处理' : job.status === 'waiting' ? '等待答复' : '等待执行';
+  return `<div class="message-work-status ${esc(job.status)}" role="status">${avatar(job.botId, 22, `pending:${job.id}`)}<span>${esc(nameOf(job.botId))} · ${text}</span></div>`;
+}
+function collaborationBindings(messages, activities) {
+  const byMessage = new Map(), orphaned = [];
+  for (const activity of activities) {
+    const sourceId = activity.returnTo?.messageId;
+    const reply = messages.filter(message => message.senderId === activity.senderId && message.replyTo === sourceId && message.kind !== 'error').at(-1);
+    const anchor = reply || messages.find(message => message.id === sourceId);
+    if (!anchor) { orphaned.push(activity); continue; }
+    if (!byMessage.has(anchor.id)) byMessage.set(anchor.id, []);
+    byMessage.get(anchor.id).push(activity);
+  }
+  return { byMessage, orphaned };
+}
+function renderCollaborationStatus(activities) {
+  const targets = [...new Set(activities.map(activity => activity.toBotId).filter(id => botById(id)))];
+  if (!targets.length) return '';
+  return `<div class="message-work-status collaboration-status"><span class="collaboration-avatars">${targets.map(id => `<button type="button" data-action="dm-bot" data-id="${esc(id)}" title="查看与 ${esc(nameOf(id))} 的对话" aria-label="查看与 ${esc(nameOf(id))} 的对话">${avatar(id, 28, '')}</button>`).join('')}</span><span>已联系 ${targets.length} 位伙伴</span></div>`;
+}
+function renderChatMessage(message, { isGroup, conversationMessages, failures, executions, collaborations }) {
+  const sender = message.senderId || 'system', own = sender === 'user', senderBot = botById(sender);
+  const memberColor = senderBot ? botAvatar(senderBot).color : '#8b8e9f';
+  const reply = message.replyTo ? conversationMessages.find(item => item.id === message.replyTo) : null;
+  const replyColor = reply && botById(reply.senderId) ? botAvatar(reply.senderId).color : '#8b8e9f';
+  const replyHtml = reply ? `<div class="bubble-reply" style="--reply-color:${esc(replyColor)}"><span class="reply-avatar">${avatar(reply.senderId, 42, '')}</span><span class="reply-copy"><span class="reply-author" style="color:${esc(replyColor)}">${botById(reply.senderId) ? '@' : ''}${esc(nameOf(reply.senderId))}</span><span class="reply-text">${esc(reply.content?.slice(0, 140) || (reply.attachments?.length ? '[附件]' : '消息'))}</span></span></div>` : '';
+  const alreadyMentioned = message.toBotId && [botById(message.toBotId)?.name, message.toBotId].filter(Boolean).some(name => message.content?.includes(`@${name}`));
+  const workStatuses = (executions.byMessage.get(message.id) || []).map(run => renderAgentRun(run, { showBot: sender !== run.botId })).join('');
+  return `<article data-message-id="${esc(message.id)}" data-motion-key="message:${esc(message.clientId || message.id)}" class="chat-message ${own ? 'outgoing' : 'incoming'} ${isGroup ? 'in-group' : ''} ${message.kind === 'error' ? 'error' : ''} ${sender === 'system' || message.kind === 'event' ? 'system-message' : ''}" style="--member-color:${esc(memberColor)}">${!own ? senderBot ? `<button class="message-avatar-button" data-action="open-bot-details" data-id="${esc(sender)}" title="${esc(nameOf(sender))}">${avatar(sender, 56, `message:${message.id}`)}</button>` : `<span class="message-avatar-button">${avatar(sender, 56, `message:${message.id}`)}</span>` : ''}<div class="bubble-column"><div class="message-meta">${senderBot ? `<button class="speaker-name" data-action="open-bot-details" data-id="${esc(sender)}">${esc(nameOf(sender))}</button>` : `<span class="speaker-name">${esc(nameOf(sender))}</span>`}${senderBot && botRole(senderBot) ? `<span class="speaker-role">${esc(botRole(senderBot))}</span>` : ''}<time datetime="${esc(message.createdAt)}" title="${esc(formatTime(message.createdAt, true))}">${esc(formatTime(message.createdAt))}</time></div><div class="message-bubble" tabindex="0">${replyHtml}${message.toBotId && !alreadyMentioned ? `<div class="bubble-target">${botMention(message.toBotId)}</div>` : ''}${message.content ? `<div class="message-content">${richText(message.content)}</div>` : ''}${renderMessageAttachments(message.attachments)}</div>${renderSendStatus(message)}${workStatuses}${executions.pending.filter(job => job.messageId === message.id).map(pendingJobStatus).join('')}${renderCollaborationStatus(collaborations.byMessage.get(message.id) || [])}${messageActivity(message)}<div class="bubble-actions" ${message._delivery ? 'hidden' : ''}><button data-action="reply-message" data-id="${esc(message.id)}" title="回复" aria-label="回复">${icon('back', 17)}</button><button data-action="save-message" data-id="${esc(message.id)}" title="保存为知识" aria-label="保存为知识">${icon('knowledge', 17)}</button></div>${messageJobNotices(message.id, failures)}</div></article>`;
 }
 function renderChat() {
   const room = roomById(ui.roomId), bot = currentBot(), isGroup = room?.kind !== 'dm' || !room?.members?.includes('user');
   const members = (room?.members || []).filter(id => id !== 'user').map(botById).filter(Boolean);
-  const jobs = ui.roomJobs.filter(job => ['queued', 'running'].includes(job.status));
   const title = bot?.name || room?.name || 'Relay Bot';
   const accent = currentAccent();
   const activities = (state.activity || []).filter(message => message.returnTo?.roomId === ui.roomId && message.roomId !== ui.roomId && message.toBotId).map(message => ({ ...message, _activity: 'sent' }));
   const conversationMessages = mergedRoomMessages(ui.roomId, ui.messages);
   const failures = unresolvedJobLeaves(ui.roomJobs, conversationMessages);
-  const timeline = [...conversationMessages, ...activities].sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+  const executions = chatExecutionBindings(conversationMessages), collaborations = collaborationBindings(conversationMessages, activities);
+  const timeline = conversationMessages.slice().sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
   let previousDay = '';
   const messages = timeline.map(message => {
-    if (message._activity) return messageActivity(message, room);
-    const sender = message.senderId || 'system', own = sender === 'user', system = sender === 'system' || message.kind === 'event';
-    const senderBot = botById(sender);
     const date = formatDay(message.createdAt), divider = date !== previousDay ? `<div class="date-divider">${esc(date)}</div>` : ''; previousDay = date;
-    if (system && message.kind !== 'error') return `${divider}<div class="chat-activity system-event">${icon(message.kind === 'work' ? 'work' : 'event', 17)}<span>${esc(message.content)}</span></div>${messageJobNotices(message.id, failures)}`;
-    const reply = message.replyTo ? conversationMessages.find(item => item.id === message.replyTo) : null;
-    return `${divider}${messageActivity(message, room)}<article data-message-id="${esc(message.id)}" data-motion-key="message:${esc(message.clientId || message.id)}" class="chat-message ${own ? 'outgoing' : 'incoming'} ${isGroup ? 'in-group' : ''} ${message.kind === 'error' ? 'error' : ''}">${isGroup && !own ? `<button class="message-avatar-button" data-action="open-bot-details" data-id="${esc(sender)}" title="${esc(nameOf(sender))}">${avatar(sender, 38, `message:${message.id}`)}</button>` : ''}<div class="bubble-column">${isGroup && !own ? `<button class="speaker-name" style="color:${esc(senderBot ? botAvatar(senderBot).color : '#777777')}" data-action="open-bot-details" data-id="${esc(sender)}">${esc(nameOf(sender))}</button>` : ''}<div class="message-bubble" tabindex="0" title="${esc(formatTime(message.createdAt, true))}">${message.toBotId ? `<div class="bubble-target">致 ${esc(nameOf(message.toBotId))}</div>` : ''}${reply && botById(reply.senderId) && reply.senderId !== sender ? `<div class="bubble-reply">${esc(nameOf(reply.senderId))}：${esc(reply.content?.slice(0, 100))}</div>` : ''}${message.content ? `<div class="message-content">${richText(message.content)}</div>` : ''}${renderMessageAttachments(message.attachments)}</div>${renderSendStatus(message)}<div class="bubble-actions" ${message._delivery ? 'hidden' : ''}><span>${formatTime(message.createdAt)}</span><button data-action="reply-message" data-id="${esc(message.id)}" title="回复" aria-label="回复">${icon('back', 17)}</button><button data-action="save-message" data-id="${esc(message.id)}" title="保存为知识" aria-label="保存为知识">${icon('knowledge', 17)}</button></div>${messageJobNotices(message.id, failures)}</div></article>`;
+    return divider + renderChatMessage(message, { isGroup, conversationMessages, failures, executions, collaborations });
   }).join('');
   const chatMenu = ui.menu === 'chat-menu' ? `<div class="context-menu chat-menu"><button data-action="toggle-details">${icon('info', 19)}查看${isGroup ? '群聊' : 'Bot'}详情</button><button data-action="copy-conversation">${icon('copy', 19)}复制会话文字</button><button data-action="display-settings">${icon('settings', 19)}显示设置</button><button data-action="new-work">${icon('work', 19)}委托工作</button><button data-action="new-deep">${icon('layers', 19)}发起深聊</button>${room?.kind === 'deep' && room.status !== 'concluded' ? `<button data-action="conclude-room">${icon('check', 19)}结束深聊</button>` : ''}</div>` : '';
-  return `<div data-room-id="${esc(ui.roomId)}" data-ready="${ui.messagesRoomId === ui.roomId}" class="chat-layout ${ui.detailOpen ? 'detail-open' : ''}" style="--accent:${esc(accent)}"><section class="conversation"><div class="floating-header"><button class="mobile-back icon-button" data-action="room-back" aria-label="返回会话">${icon('chevronBack', 23)}</button><button class="chat-title-pill" data-action="toggle-details" aria-expanded="${!!ui.detailOpen}" title="查看${isGroup ? '会话' : 'Bot'}详情">${bot ? avatar(bot.id, 39, 'slot:title') : groupAvatar(room, 38, 'slot:title-group')}<span>${esc(title)}</span></button><div class="mobile-chat-actions menu-anchor"><button class="round-button" data-action="toggle-chat-menu" aria-label="会话更多操作" aria-expanded="${ui.menu === 'chat-menu'}">${icon('more', 22)}</button>${chatMenu}</div></div>${room ? `<div class="messages ${isGroup ? 'group-messages' : ''}" role="log" aria-label="聊天记录">${messages || `<div class="conversation-empty">${bot ? avatar(bot.id, 104, 'slot:empty') : groupAvatar(room, 98)}<span>${esc(title)}</span><p>${esc(ui.messagesRoomId === ui.roomId ? room.goal || '发一条消息开始聊天' : '正在读取消息…')}</p></div>`}${roomNotices(room, failures)}<div class="typing-status">${jobs.length ? `${avatar(jobs[0].botId, 43, `typing:${ui.roomId}`)}<span>${jobs.some(job => job.status === 'running') ? '正在处理' : '等待回复'}<span class="typing-ellipsis">…</span></span>` : ''}</div></div><div class="composer-wrap">${room.status === 'concluded' ? `<div class="closed-notice">深聊已结束 <button class="text-button" data-action="new-deep">发起新的深聊</button></div>` : `${ui.reply ? `<div class="reply-preview"><span>回复 ${esc(nameOf(ui.reply.senderId))}：${esc(ui.reply.content?.slice(0, 100))}</span><button class="icon-button" data-action="cancel-reply" aria-label="取消回复">${icon('close', 16)}</button></div>` : ''}${renderAttachmentDrafts()}<form id="message-form" class="composer" data-room-id="${esc(ui.roomId)}"><div class="menu-anchor"><button class="composer-plus" type="button" data-action="attach-file" aria-label="添加附件" ${ui.sendingRooms.has(ui.roomId) ? 'disabled' : ''}>${icon('plus', 28)}</button></div><textarea id="message-input" name="content" rows="1" aria-label="消息内容" placeholder="给 ${esc(title)} 发消息">${esc(ui.drafts[ui.roomId] || '')}</textarea><select id="message-target" class="message-target ${isGroup ? '' : 'visually-hidden'}" aria-label="消息对象"><option value="">${isGroup ? '@' : '成员'}</option>${members.map(item => `<option value="${esc(item.id)}" ${ui.draftTargets[ui.roomId] === item.id ? 'selected' : ''}>@ ${esc(item.name)}</option>`).join('')}</select><button type="submit" class="composer-send" ${sendBusy() ? 'disabled' : ''} title="发送消息" aria-label="发送消息">${icon('send', 22)}</button></form>`}</div>` : `<div class="conversation-empty"><p>选择一位 Bot，开始聊天</p><button class="secondary-button" data-action="new-bot">创建新 Bot</button></div>`}</section>${ui.detailOpen ? renderDetailPanel(room, profileBot()) : ''}</div>`;
+  const memberSummary = isGroup ? `${room?.members?.includes('user') ? '你和 ' : ''}${members.length} 位伙伴` : bot ? botRole(bot) || '私聊' : '选择一个会话';
+  const header = `<div class="floating-header"><button class="mobile-back icon-button" data-action="room-back" aria-label="返回会话">${icon('chevronBack', 23)}</button><button class="chat-title-pill" data-action="toggle-details" aria-expanded="${!!ui.detailOpen}" title="查看${isGroup ? '群聊' : 'Bot'}详情">${bot ? avatar(bot.id, 56, 'slot:title') : groupAvatar(room, 58, 'slot:title-group')}<span class="chat-title-copy"><strong>${esc(title)}</strong><small>${esc(memberSummary)}</small></span></button><div class="header-members" aria-label="会话成员">${members.slice(0, 8).map(member => `<button class="header-member" data-action="open-bot-details" data-id="${esc(member.id)}" aria-label="查看 ${esc(member.name)}" title="${esc(member.name)} · ${esc(botRole(member))}">${avatar(member.id, 39, `header:${member.id}`)}</button>`).join('')}${members.length > 8 ? `<button class="header-member member-overflow" data-action="toggle-details" title="查看全部成员">+${members.length - 8}</button>` : ''}</div><div class="mobile-chat-actions menu-anchor"><button class="round-button" data-action="toggle-chat-menu" aria-label="会话更多操作" aria-expanded="${ui.menu === 'chat-menu'}">${icon('more', 24)}</button>${chatMenu}</div></div>`;
+  const extraStatuses = executions.orphaned.map(run => renderAgentRun(run, { showBot: true })).join('') + executions.pending.filter(job => !conversationMessages.some(message => message.id === job.messageId)).map(pendingJobStatus).join('') + renderCollaborationStatus(collaborations.orphaned);
+  const body = room ? `<div class="messages ${isGroup ? 'group-messages' : ''}" role="log" aria-label="聊天记录">${messages || `<div class="conversation-empty">${bot ? avatar(bot.id, 86, 'slot:empty') : groupAvatar(room, 86)}<span>${esc(title)}</span><p>${esc(ui.messagesRoomId === ui.roomId ? room.goal || '发一条消息，和伙伴一起开始' : '正在读取消息…')}</p></div>`}${roomNotices(room, failures)}${extraStatuses ? `<div class="conversation-activity">${extraStatuses}</div>` : ''}</div>${renderChatComposer(room, members, title, isGroup)}` : `<div class="conversation-empty"><p>选择一位伙伴，开始聊天</p><button class="secondary-button" data-action="new-bot">创建新 Bot</button></div>`;
+  return `<div data-room-id="${esc(ui.roomId)}" data-ready="${ui.messagesRoomId === ui.roomId}" class="chat-layout ${ui.detailOpen ? 'detail-open' : ''}" style="--accent:${esc(accent)}"><section class="conversation">${header}${body}</section>${ui.detailOpen ? renderDetailPanel(room, profileBot()) : ''}</div>`;
+}
+function renderChatComposer(room, members, title, isGroup) {
+  if (room.status === 'concluded') return '<div class="composer-wrap"><div class="closed-notice">深聊已结束 <button class="text-button" data-action="new-deep">发起新的深聊</button></div></div>';
+  const target = members.find(member => member.id === ui.draftTargets[ui.roomId]);
+  const mentionMenu = ui.menu === 'mentions' ? `<div class="mention-menu context-menu" role="menu" aria-label="选择参与的伙伴"><button type="button" class="mention-choice" data-action="choose-message-target" data-id="" role="menuitem">${icon('people', 25)}<span>所有伙伴<small>让群内成员参与</small></span>${!target ? icon('check', 16) : ''}</button>${members.map(member => `<button type="button" class="mention-choice" style="--member-color:${esc(botAvatar(member).color)}" data-action="choose-message-target" data-id="${esc(member.id)}" role="menuitem">${avatar(member.id, 32, '')}<span>${esc(member.name)}<small>${esc(botRole(member))}</small></span>${target?.id === member.id ? icon('check', 16) : ''}</button>`).join('')}</div>` : '';
+  const reply = ui.reply ? `<div class="reply-preview">${avatar(ui.reply.senderId, 25, '')}<span>回复 ${esc(nameOf(ui.reply.senderId))}：${esc(ui.reply.content?.slice(0, 100) || '[附件]')}</span><button type="button" class="icon-button" data-action="cancel-reply" aria-label="取消回复">${icon('close', 16)}</button></div>` : '';
+  return `<div class="composer-wrap">${reply}${renderAttachmentDrafts()}<form id="message-form" class="composer" data-room-id="${esc(ui.roomId)}"><textarea id="message-input" name="content" rows="1" aria-label="消息内容" placeholder="发到 ${esc(title)}${isGroup ? '，@ 伙伴参与…' : '…'}">${esc(ui.drafts[ui.roomId] || '')}</textarea><div class="composer-tools"><button class="composer-plus" type="button" data-action="attach-file" title="添加附件" aria-label="添加附件" ${ui.sendingRooms.has(ui.roomId) ? 'disabled' : ''}>${icon('attachment', 22)}</button>${isGroup ? `<div class="menu-anchor"><button class="composer-mention ${target ? 'has-target' : ''}" style="--member-color:${esc(target ? botAvatar(target).color : '#747a8d')}" type="button" data-action="toggle-mention-menu" aria-label="${target ? `消息对象：${esc(target.name)}` : '选择参与的伙伴'}" aria-expanded="${ui.menu === 'mentions'}">${target ? `${avatar(target.id, 23, '')}<span>@${esc(target.name)}</span>` : '@'}</button>${mentionMenu}</div>` : ''}<select id="message-target" class="message-target visually-hidden" aria-label="消息对象" tabindex="-1" aria-hidden="true"><option value="">所有伙伴</option>${members.map(item => `<option value="${esc(item.id)}" ${target?.id === item.id ? 'selected' : ''}>@ ${esc(item.name)}</option>`).join('')}</select></div><button type="submit" class="composer-send" ${sendBusy() ? 'disabled' : ''} title="发送消息" aria-label="发送消息">${icon('send', 25)}</button></form></div>`;
 }
 function renderDetailPanel(room, bot) {
   const tab = ui.detailTab || 'details', isBot = !!bot;
@@ -1100,7 +1250,7 @@ function renderAvatarPicker(mode = 'create') {
   const selected = ui.avatarDraft || botAvatar(profileBot()), tab = ui.avatarTab || 'bot';
   const save = mode === 'edit' ? avatarSaves.get(profileBot()?.id) : null;
   const saveStatus = save?.error ? `<div class="avatar-save-status error" role="status">头像尚未保存<button type="button" data-action="avatar-save-retry">重试</button><small>${esc(save.error)}</small></div>` : save && (save.running || save.savedVersion !== save.version) ? '<div class="avatar-save-status" role="status">正在保存…</div>' : mode === 'edit' ? '<div class="avatar-save-status" aria-hidden="true"></div>' : ''; 
-  const picker = `<div class="shape-grid">${window.RelayAvatars.shapes.map(shape => `<button type="button" class="shape-choice ${selected.shape === shape.id && !selected.image ? 'selected' : ''}" data-action="avatar-shape" data-shape="${shape.id}" data-mode="${mode}" aria-label="${shape.label}" aria-pressed="${selected.shape === shape.id}">${face({ ...selected, shape: shape.id, image: null }, 52, { static: true })}<small>${shape.label}</small></button>`).join('')}</div><div class="crew-palettes">${window.RelayAvatars.templates.map(p => `<button type="button" data-action="avatar-template" data-template="${p.id}" data-mode="${mode}" title="${p.name}" aria-label="${p.name}" aria-pressed="${selected.color?.toUpperCase() === p.color && selected.secondary?.toUpperCase() === p.secondary}" style="background:linear-gradient(135deg,${p.color} 50%,${p.secondary} 50%)">${p.name}</button>`).join('')}</div><details class="crew-custom" ${ui.avatarCustomOpen ? 'open' : ''}><summary>自定义颜色</summary>${[['color','主色块'],['secondary','辅助色'],['ink','描边与眼睛'],['paper','底色']].map(([key,label])=>`<label>${label}<input type="color" data-avatar-custom="${key}" data-mode="${mode}" value="${window.RelayAvatars.normalize(selected)[key]}"></label>`).join('')}</details>`;
+  const picker = `<div class="shape-grid">${window.RelayAvatars.shapes.map(shape => `<button type="button" class="shape-choice ${selected.shape === shape.id && !selected.image ? 'selected' : ''}" data-action="avatar-shape" data-shape="${shape.id}" data-mode="${mode}" aria-label="${shape.label}" aria-pressed="${selected.shape === shape.id}">${face({ ...selected, shape: shape.id, image: null }, 52, { static: true })}<small>${shape.label}</small></button>`).join('')}</div><div class="crew-palettes">${window.RelayAvatars.templates.map(p => `<button type="button" data-action="avatar-template" data-template="${p.id}" data-mode="${mode}" title="${p.name}" aria-label="${p.name}" aria-pressed="${selected.color?.toUpperCase() === p.color && selected.secondary?.toUpperCase() === p.secondary}" style="background:linear-gradient(135deg,${p.color} 50%,${p.secondary} 50%)">${p.name}</button>`).join('')}</div><details class="crew-custom" ${ui.avatarCustomOpen ? 'open' : ''}><summary>自定义颜色</summary>${[['color','主色块'],['secondary','辅助色'],['ink','细节描边'],['paper','底色']].map(([key,label])=>`<label>${label}<input type="color" data-avatar-custom="${key}" data-mode="${mode}" value="${window.RelayAvatars.normalize(selected)[key]}"></label>`).join('')}</details>`;
 
   return `${saveStatus}<div class="avatar-picker ${mode === 'create' ? 'create-picker' : ''}">${mode === 'edit' ? `<div class="avatar-tabs">${[{ id: 'bot', label: 'Bot' }, { id: 'generate', label: '生成' }, { id: 'upload', label: '上传' }].map(item => `<button type="button" class="${tab === item.id ? 'active' : ''}" data-action="avatar-tab" data-tab="${item.id}">${item.label}</button>`).join('')}<button class="avatar-reset" type="button" data-action="avatar-reset">重置</button></div>` : ''}${mode === 'create' || tab === 'bot' ? picker : tab === 'generate' ? `<div class="avatar-tool"><p>随机组合造型与颜色</p><button class="secondary-button" data-action="avatar-random" type="button">${icon('spark', 18)}生成一个造型</button></div>` : `<div class="avatar-tool"><p>使用自己的图片</p><label class="upload-label" for="avatar-upload">${icon('upload', 23)}选择图片</label><input id="avatar-upload" type="file" accept="image/png,image/jpeg,image/webp" hidden><small>PNG、JPG 或 WebP，将缩放后保存在本机</small></div>`}</div>`;
 }

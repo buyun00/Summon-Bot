@@ -1,12 +1,12 @@
 export const legacyRoles={circle:'dev',cloud:'qa',square:'dev',star4:'plan',clover:'art',heart:'lead',flower:'music',drop:'research',pill:'translate',triangle:'write',pentagon:'knowledge',star6:'data',hexagon:'ops'};
 export const templates=[
- ['apricot','杏桃手记','#FFC18E','#FFE1BA'],['rose','珊瑚花笺','#FF9C9C','#FFD4B6'],
- ['lavender','薰衣草','#C5AFF1','#E7D6FF'],['sun','奶油阳光','#FFE39A','#FFF0BD'],
- ['mint','薄荷花园','#AFDCB7','#D4F0D0'],['sky','晴空蓝','#B6C9FF','#DCE4FF'],
- ['slate','雾蓝石','#A6B9D6','#D5E1EF'],['aqua','海盐青','#81D4CF','#B9EEEA'],
- ['peach','蜜桃汽水','#FFC395','#FFE1B8'],['pink','莓果奶昔','#FFAAAA','#FFD1D0'],
- ['iris','鸢尾双色','#B9BCFF','#FFE39B'],['sage','鼠尾草','#BFDCA9','#E1EFCF'],
- ['sunset','落日双色','#F7AE87','#CEB8EE'],['ocean','海岸双色','#8BCAD7','#F5D49C'],
- ['ink','水墨纸笺','#B8C4C5','#E1E6DE'],['berry','莓紫夜话','#D7A3CC','#C4C0EC'],
-].map(([id,name,color,secondary])=>({id,name,color,secondary,ink:'#142443',paper:'#FFFAF1'}));
+ ['apricot','开发橙','#FF6A0B','#FFAD59'],['rose','设计红','#FF5B59','#FF9C91'],
+ ['lavender','质量紫','#6A48D8','#AA8AF4'],['sun','策划金','#E7A728','#FFD676'],
+ ['mint','活力绿','#31A86C','#8DD0A9'],['sky','研究蓝','#1478FA','#69B5FF'],
+ ['slate','运维灰蓝','#547697','#92B4D1'],['aqua','协调青绿','#009C9C','#4AD0C9'],
+ ['peach','数据橙','#EC9B29','#FFC879'],['pink','创作粉','#E95883','#FFA2BB'],
+ ['iris','翻译紫','#8058DD','#C29BFF'],['sage','知识绿','#479C76','#8DD0A9'],
+ ['sunset','落日双色','#F47B3D','#A475D9'],['ocean','海岸双色','#1795AE','#F4C563'],
+ ['ink','水墨纸笺','#5B7377','#AFBFBC'],['berry','音乐莓紫','#BB52C9','#DF96E3'],
+].map(([id,name,color,secondary])=>({id,name,color,secondary,ink:'#142443',paper:'#FFFFFF'}));
 export const hex=(value,fallback)=>/^#[\da-f]{6}$/i.test(value||'')?value.toUpperCase():fallback;

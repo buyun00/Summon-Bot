@@ -8,9 +8,10 @@ const defaultFrontend = fileURLToPath(new URL('../frontend/', import.meta.url));
 const assets = new Map([
   ['/', ['index.html', 'text/html']],
   ...['app', 'cache', 'avatars', 'motion', 'pwa', 'sw'].map(name => [`/${name}.js`, [`${name}.js`, 'text/javascript']]),
-  ...['style', 'mobile'].map(name => [`/${name}.css`, [`${name}.css`, 'text/css']]),
+  ...['style', 'mobile', 'group-chat'].map(name => [`/${name}.css`, [`${name}.css`, 'text/css']]),
   ['/manifest.webmanifest', ['manifest.webmanifest', 'application/manifest+json']],
   ['/offline.html', ['offline.html', 'text/html']],
+  ['/icons/user-avatar.jpg', ['icons/user-avatar.jpg', 'image/jpeg']],
   ...['icon-192', 'icon-512', 'icon-maskable-192', 'icon-maskable-512', 'apple-touch-icon']
     .map(name => [`/icons/${name}.png`, [`icons/${name}.png`, 'image/png']]),
 ]);
@@ -81,7 +82,7 @@ export async function startWeb({ host = '127.0.0.1', port = 8787, publicOrigin =
       if (!entry || !['GET', 'HEAD'].includes(req.method)) { res.writeHead(404); res.end('Not found'); return; }
       const [filename, mime] = entry;
       const content = await readFile(join(frontendRoot, filename));
-      res.writeHead(200, { 'Content-Type': mime === 'image/png' ? mime : `${mime}; charset=utf-8`, 'Content-Length': content.length,
+      res.writeHead(200, { 'Content-Type': mime.startsWith('image/') ? mime : `${mime}; charset=utf-8`, 'Content-Length': content.length,
         'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
         ...(url.pathname === '/sw.js' ? { 'Service-Worker-Allowed': '/' } : {}) });
       res.end(req.method === 'HEAD' ? undefined : content);
