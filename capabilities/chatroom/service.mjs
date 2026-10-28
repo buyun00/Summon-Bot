@@ -34,7 +34,13 @@ export class ChatroomService {
       if(room.kind==='deep'&&senderId==='bot-chatroom'&&(room.completedRounds||0)>=room.rounds)fail('Discussion round limit reached; save an evidence-based conclusion with chatroom_conclude',409);
     }
     if(input.toBotId&&!room.members.includes(input.toBotId))fail('Target is not a member');
-    const message=this.append(roomId,input,senderId);if(message.hop>=4)return message;
+    const recipients=input.toBotId?[input.toBotId]:room.kind==='dm'?room.members.filter(id=>id!==senderId&&id!=='user'):[];
+    for(const id of recipients){const bot=this.manager.store.get('bots',id);if(bot&&bot.status!=='active')fail(`成员「${bot.name||id}」已暂停或不可用；消息未投递，请恢复成员后重试`,409);}
+    const message=this.append(roomId,input,senderId);
+    // Tool-posted replies must use the same origin route as automatic replies.
+    // Do not also wake the requester in the DM: it receives the origin event.
+    if(this.returnReply(message))return message;
+    if(message.hop>=4)return message;
     const active=room.members.filter(id=>id!==senderId&&this.manager.store.get('bots',id)?.status==='active');
     const mentions=this.mentions(message.content,active),selected=input.toBotId?active.filter(id=>id===input.toBotId):mentions.length?mentions:senderId==='user'||room.kind==='dm'||input.notify?active:[];
     for(const botId of selected)this.enqueue(message,botId);void this.tick();return message;
@@ -50,14 +56,17 @@ export class ChatroomService {
       if(item.status==='queued'){
         const room=this.need('rooms',item.roomId),trigger=this.need('messages',item.messageId),config=await this.manager.config(item.botId);
         const context=await this.attachments.stageContext({messages:this.messages(room.id).slice(-30),trigger},config.workspace);
-        const receipt=await this.manager.send(item.botId,{id:item.id,kind:'request',sessionId:`room:${room.id}`,correlationId:trigger.rootId,replyTo:trigger.id,content:{text:item.instruction||'回应触发消息；以实际工具和证据为依据，无新增贡献时仅回复 PASS。',room:pick(room,['id','name','kind','goal','members']),...context,...(item.peerAnswer?{peerAnswer:item.peerAnswer}:{}),metadata:{actor:trigger.senderId,roomId:room.id,deliveryId:item.id}}});
+        const receipt=await this.manager.send(item.botId,{id:item.id,kind:'request',sessionId:`room:${room.id}`,correlationId:trigger.rootId,replyTo:trigger.id,content:{text:item.instruction||'回应触发消息；以实际工具和证据为依据。你的最终回复会自动发送到当前房间，不要为同一回复再调用 chatroom_send。若已用工具在当前房间发出答案或没有新增贡献，最终单独返回 PASS。chatroom_dm 带来源关联后会异步回传答复，不必在当前轮反复轮询；回执不是同伴的答案。',room:pick(room,['id','name','kind','goal','members']),...context,...(item.peerAnswer?{peerAnswer:item.peerAnswer}:{}),metadata:{actor:trigger.senderId,roomId:room.id,deliveryId:item.id}}});
         item=this.store.save('deliveries',{...item,status:'accepted',taskId:receipt.taskId,startedAt:now()});this.emit('job',item);
       }
       if(!item.taskId)return;
       const task=await this.manager.request(item.botId,`/tasks/${encodeURIComponent(item.taskId)}`);
       const status=task.status;if(!TERMINAL.has(status)){if(item.status!==status){this.store.save('deliveries',{...item,status});this.emit('job',{...item,status});}return;}
       if(status==='completed') {
-        let text=String(task.result?.content||''),passed=/^PASS\s*$/i.test(text);try{const parsed=JSON.parse(text);if(typeof parsed.reply==='string'){text=parsed.reply;passed=parsed.pass||!text;}}catch{}
+        let text=String(task.result?.content||''),passed=/^PASS(?:\s*$|\s*\n)/i.test(text);try{const parsed=JSON.parse(text);if(typeof parsed.reply==='string'){text=parsed.reply;passed=parsed.pass||!text;}}catch{}
+        // A Bot may already have replied through chatroom_send. Its final
+        // completion text is then an execution summary, not a second message.
+        if(this.messages(item.roomId).some(message=>message.senderId===item.botId&&message.replyTo===item.messageId&&!message.jobId))passed=true;
         if(text&&!passed){const reply=this.append(item.roomId,{id:`reply:${item.id}`,content:text.slice(0,16000),replyTo:item.messageId,rootId:item.rootId,hop:item.hop+1,jobId:item.id,usage:task.result?.usage,model:task.result?.model},item.botId);this.returnReply(reply);}
       } else this.append(item.roomId,{id:`error:${item.id}`,content:`任务${status}：${task.error?.message||task.error||'执行未完成'}`,kind:'error',jobId:item.id,hop:4},'system');
       const result=this.store.save('deliveries',{...item,status,finishedAt:now(),agentRunId:item.taskId,error:task.error||null});this.emit('job',result);
@@ -79,9 +88,10 @@ export class ChatroomService {
     }
   }
   returnReply(reply) {
-    const request=this.store.get('messages',reply.replyTo),route=request?.returnTo;if(!route||request.toBotId!==reply.senderId||reply.hop>=4)return;
+    const request=this.store.get('messages',reply.replyTo),route=request?.returnTo;if(!route||request.toBotId!==reply.senderId)return;
     const origin=this.store.get('messages',route.messageId),room=this.store.get('rooms',route.roomId);if(!origin||!room||room.status==='concluded'||!room.members.includes(route.botId))return;
-    this.enqueue(origin,route.botId,{id:`dm-return:${reply.id}`,peerAnswer:{request:request.content,answer:reply.content,senderId:reply.senderId},instruction:'同伴已回复。根据 peerAnswer 向原请求方转达实际答案，不再次询问或只道谢。',hop:reply.hop});
+    this.enqueue(origin,route.botId,{id:`dm-return:${reply.id}`,peerAnswer:{requestId:request.id,replyId:reply.id,request:request.content,answer:reply.content,senderId:reply.senderId},instruction:'这是同伴答复的异步通知，不是用户的新请求。先检查本会话历史和你已发送的回复：如果你已通过 chatroom_read 等方式取得并向用户转达了这份答案，单独返回 PASS，不重复总结。只有尚未转达的新信息才根据 peerAnswer 回答原请求方；最终回复会自动发回当前房间，不再调用 chatroom_send。不要再次询问、只道谢或复述同一答案。',hop:origin.hop});
+    return true;
   }
   dm(actor,input) {
     if(actor===input.targetBotId)fail('Cannot DM self');

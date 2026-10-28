@@ -1,0 +1,10 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { CONFIG_FILE } from '../src/config.js';
+const file = path.resolve(process.env.CODEX_DESKTOP_API_CONFIG || CONFIG_FILE);
+const config = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+config.auth = { enabled: false, localhostBypass: true, ...config.auth, bearerToken: randomBytes(32).toString('base64url') };
+fs.mkdirSync(path.dirname(file), { recursive: true });
+fs.writeFileSync(file, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
+console.log('Generated/rotated token in local config. Restart the service to apply. Token was not printed.');

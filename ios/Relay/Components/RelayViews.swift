@@ -8,11 +8,12 @@ enum RelayTheme {
 struct MemberAvatar: View {
     let bot: RelayBot?
     var size: CGFloat = 48
+    var motion: String = "idle"
 
     var body: some View {
         let avatar = bot?.resolvedAvatar ?? RelayAvatar()
         BotAvatar(shape: avatar.shape, color: avatar.color,
-                  image: avatar.image, size: size)
+                  image: avatar.image, size: size, secondary: avatar.secondary, ink: avatar.ink, paper: avatar.paper, motion: motion)
     }
 }
 

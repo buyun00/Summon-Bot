@@ -38,15 +38,11 @@ struct BotWorkingIndicator: View {
     }
 
     private func content(at time: TimeInterval, animated: Bool) -> some View {
-        let breath: CGFloat = animated ? CGFloat(sin(time * 2 * .pi / 2.8)) : 0
-        let sway = animated ? sin(time * 2 * .pi / 4.1) : 0
         let shimmer: CGFloat = animated ? CGFloat(time.truncatingRemainder(dividingBy: 2.3) / 2.3) : 0
 
         return HStack(spacing: 9) {
-            MemberAvatar(bot: bot, size: 28)
-                .scaleEffect(1 + breath * 0.035)
-                .rotationEffect(.degrees(sway * 4))
-                .offset(y: breath * 0.5)
+            MemberAvatar(bot: bot, size: 28, motion: "work")
+
 
             VStack(alignment: .leading, spacing: 2) {
                 if let displayName {

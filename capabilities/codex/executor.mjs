@@ -111,12 +111,12 @@ const CONSULT_TOOL = {
   type: 'function', name: 'relay_consult',
   description: 'Ask the delegating Relay Bot or a named colleague for project facts or a decision while working. The reply is returned to this tool so work can continue. Do not ask the human to relay routine questions.',
   inputSchema: {
-    type: 'object', properties: { question: { type: 'string' }, targetBotId: { type: 'string', description: 'Optional colleague ID; omit for the delegating Bot.' } },
+    type: 'object', properties: { question: { type: 'string' }, targetBotId: { type: 'string', description: 'Colleague ID for facts; use "user" for a human decision, which stays waiting in the Relay web UI. Omit for the delegating Bot.' } },
     required: ['question'], additionalProperties: false,
   },
 };
 
-const EXECUTOR_INSTRUCTIONS = `You are the professional executor for a Relay Bot work order. The human is the final authority and all Relay Bots are peers. Stay within the supplied work order. Keep this execution session separate from social chat. Use relay_consult when a project fact or clarification is needed; the Relay Bot can contact a colleague. Do not commit, push, publish, or change branches unless the work order explicitly authorizes that. Preserve unrelated existing changes. Report progress concisely. Your final response must distinguish actual changes and verification from unverified limitations, and list relevant files or artifacts. Never claim a test or integration passed without observing it.`;
+const EXECUTOR_INSTRUCTIONS = `You are the professional executor for a Relay Bot work order. The human is the final authority and all Relay Bots are peers. Stay within the supplied work order. Keep this execution session separate from social chat. Use relay_consult when a project fact or clarification is needed; the Relay Bot can contact a colleague. For decisions requiring the human, call relay_consult with targetBotId="user" and wait for its result; this is the supported Relay web question channel in every collaboration mode. Never use unrelated async question plugins or claim a user question is resolved while waiting. Do not commit, push, publish, or change branches unless the work order explicitly authorizes that. Preserve unrelated existing changes. Report progress concisely. Your final response must distinguish actual changes and verification from unverified limitations, and list relevant files or artifacts. Never claim a test or integration passed without observing it.`;
 
 export class CodexExecutor {
   constructor({ store, emit = () => {}, consult, onResult = () => {}, defaultCwd = process.cwd(), codexPath, executionLock, version = null } = {}) {
@@ -401,7 +401,7 @@ export class CodexExecutor {
       const work = this.save({ ...this.require(active.id), status: 'waiting', question });
       this.event(work.id, 'consult_requested', { question: text, targetBotId, kind: method });
       // A request addressed to the human is never answered by another model.
-      if (this.consult && method === 'item/tool/call') {
+      if (this.consult && method === 'item/tool/call' && targetBotId !== 'user') {
         try {
           const answer = await this.consult(work, text, targetBotId);
           if (answer && !active.stopping && active.pendingQuestion?.id === id) await this.resolveQuestion(active, asText(answer), 'bot');

@@ -27,6 +27,11 @@ try {
   runPath = join(serviceRoot, 'run', 'current.json');
   ownership = await acquireServiceLock(config.dataRoot, type, () => record || { pid: process.pid, bootId, state: 'starting', releaseRoot: config.releaseRoot });
   processLog = installProcessLog(join(serviceRoot, 'logs'), { ...config.logs, ...config[type]?.logs });
+  // Node's fatal stderr path can bypass the redirected stream on Windows.
+  // Observe without swallowing the exception or leaving a broken service alive.
+  process.on('uncaughtExceptionMonitor', (error, origin) => {
+    try { console.error(JSON.stringify({type:'service.fatal',origin,message:error.message,stack:error.stack})); } catch {}
+  });
   const authorized = value => { const expected = Buffer.from(`Bearer ${config.controlToken}`), actual = Buffer.from(value || ''); return actual.length === expected.length && timingSafeEqual(actual, expected); };
   control = createServer(async (req, res) => {
     if (!authorized(req.headers.authorization)) return json(res, 401, { error: 'Unauthorized' });

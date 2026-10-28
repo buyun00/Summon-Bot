@@ -1,11 +1,12 @@
 import SwiftUI
+import UIKit
 
 struct CreateBotView: View {
     @Environment(RelayStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     let onCreated: (RelayRoom) -> Void
     @State private var name = ""
-    @State private var avatar = RelayAvatar(shape: "clover", color: "#8F59F9")
+    @State private var avatar = RelayAvatar()
     @State private var busy = false
     @State private var createdBot: RelayBot?
     @State private var errorMessage: String?
@@ -14,7 +15,7 @@ struct CreateBotView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 28) {
-                    BotAvatar(shape: avatar.shape, color: avatar.color, image: avatar.image, size: 148)
+                    BotAvatar(shape: avatar.shape, color: avatar.color, image: avatar.image, size: 148, secondary: avatar.secondary, ink: avatar.ink, paper: avatar.paper)
                         .padding(.top, 28).padding(.bottom, 10)
                     TextField("为 Bot 取个名字", text: $name)
                         .font(.title3.weight(.medium)).multilineTextAlignment(.center)
@@ -63,37 +64,52 @@ struct CreateBotView: View {
 
 struct AvatarPicker: View {
     @Binding var avatar: RelayAvatar
-
+    @State private var custom = false
     var body: some View {
-        VStack(spacing: 26) {
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 5), spacing: 12) {
+        VStack(spacing: 20) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 12) {
                 ForEach(AvatarPalette.shapes, id: \.id) { shape in
-                    Button {
-                        avatar.shape = shape.id; avatar.image = nil
-                    } label: {
-                        BotAvatar(shape: shape.id, color: avatar.color, size: 43)
-                            .padding(6)
-                            .background {
-                                if avatar.shape == shape.id && avatar.image == nil {
-                                    RoundedRectangle(cornerRadius: 17).stroke(.secondary, lineWidth: 2)
-                                }
-                            }
+                    Button { avatar.shape=shape.id; avatar.image=nil } label: {
+                        VStack(spacing:4) {
+                            BotAvatar(shape:shape.id,color:avatar.color,size:43,secondary:avatar.secondary,ink:avatar.ink,paper:avatar.paper,animated:false)
+                            Text(shape.label).font(.caption2)
+                        }.padding(5).background(RoundedRectangle(cornerRadius:12).stroke(CrewLibrary.role(avatar.shape) == shape.id && avatar.image == nil ? Color.primary : .clear,lineWidth:2))
                     }.buttonStyle(.plain).accessibilityLabel(shape.label)
-                        .accessibilityAddTraits(avatar.shape == shape.id ? .isSelected : [])
                 }
             }
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 6), spacing: 17) {
-                ForEach(AvatarPalette.colors, id: \.self) { color in
-                    Button { avatar.color = color; avatar.image = nil } label: {
-                        Circle().fill(Color(relayHex: color)).frame(width: 30, height: 30)
-                            .overlay { Circle().strokeBorder(.white.opacity(0.18), lineWidth: 1) }
-                            .padding(5)
-                            .overlay { if avatar.color == color { Circle().stroke(.secondary, lineWidth: 2) } }
-                    }.buttonStyle(.plain).accessibilityLabel("颜色 \(color)")
-                        .accessibilityAddTraits(avatar.color == color ? .isSelected : [])
+            LazyVGrid(columns:Array(repeating:GridItem(.flexible()),count:4),spacing:10) {
+                ForEach(CrewLibrary.templates.indices, id: \.self) { index in
+                    let template = CrewLibrary.templates[index]
+                    Button {
+                        avatar.color=template["color"]!;avatar.secondary=template["secondary"];avatar.ink=template["ink"];avatar.paper=template["paper"];avatar.image=nil
+                    } label: {
+                        VStack(spacing:4) {
+                            HStack(spacing:0) { Color(relayHex:template["color"]!);Color(relayHex:template["secondary"]!) }.frame(height:26).clipShape(RoundedRectangle(cornerRadius:7))
+                            Text(template["name"]!).font(.system(size:10))
+                        }.padding(3).overlay(RoundedRectangle(cornerRadius:9).stroke(avatar.color.uppercased() == template["color"] && avatar.secondary?.uppercased() == template["secondary"] ? Color.primary : .clear,lineWidth:2))
+                    }.buttonStyle(.plain)
                 }
+            }
+            DisclosureGroup("自定义颜色",isExpanded:$custom) {
+                ColorPicker("主色块",selection:binding("color"),supportsOpacity:false)
+                ColorPicker("辅助色",selection:binding("secondary"),supportsOpacity:false)
+                ColorPicker("描边与眼睛",selection:binding("ink"),supportsOpacity:false)
+                ColorPicker("底色",selection:binding("paper"),supportsOpacity:false)
             }
         }
+    }
+    private func binding(_ field:String) -> Binding<Color> {
+        Binding(get:{
+            let model=CrewLibrary.models[CrewLibrary.role(avatar.shape)]
+            let hex = field == "color" ? avatar.color : field == "secondary" ? avatar.secondary ?? model?["secondary"] as? String ?? "#FFE1BA" : field == "ink" ? avatar.ink ?? "#142443" : avatar.paper ?? "#FFFAF1"
+            return Color(relayHex:hex)
+        },set:{ value in
+            var r:CGFloat=0,g:CGFloat=0,b:CGFloat=0,a:CGFloat=0
+            UIColor(value).getRed(&r,green:&g,blue:&b,alpha:&a)
+            let hex=String(format:"#%02X%02X%02X",Int(r*255),Int(g*255),Int(b*255))
+            switch field {case "color":avatar.color=hex;case "secondary":avatar.secondary=hex;case "ink":avatar.ink=hex;default:avatar.paper=hex}
+            avatar.image=nil
+        })
     }
 }
 

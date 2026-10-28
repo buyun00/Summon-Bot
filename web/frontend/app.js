@@ -236,7 +236,7 @@ function mergedRoomMessages(roomId, remote = []) {
 }
 function renderSendStatus(message) {
   if (!message._delivery) return '';
-  return `<div class="message-delivery ${message._delivery === 'failed' ? 'failed' : ''}" role="status">${message._delivery === 'failed' ? `<span title="${esc(message._sendError)}">未确认送达</span><button class="text-button" data-action="retry-message" data-id="${esc(message._retryId)}" ${ui.sendingRooms.has(message.roomId) ? 'disabled' : ''}>重试发送</button>` : '<span>正在发送…</span>'}</div>`;
+  return `<div class="message-delivery ${message._delivery === 'failed' ? 'failed' : ''}" role="status">${message._delivery === 'failed' ? `<span title="${esc(message._sendError)}">${esc(message._sendError || '未确认送达')}</span><button class="text-button" data-action="retry-message" data-id="${esc(message._retryId)}" ${ui.sendingRooms.has(message.roomId) ? 'disabled' : ''}>重试发送</button>` : '<span>正在发送…</span>'}</div>`;
 }
 function queueLocalMessage(roomId, payload, attachments) {
   const signature = JSON.stringify(payload), legacy = ui.outbound[roomId];
@@ -277,7 +277,7 @@ function captureMotion(root) { return window.RelayMotion?.capture(root) || (wind
 function hydrateMotion(root, before) { if (window.RelayMotion) window.RelayMotion.hydrate(root, before || undefined); else window.RelayAvatars?.hydrate?.(root); }
 function showModal(modal) { if (window.RelayMotion) window.RelayMotion.openDialog(modal); else { if (!modal.open) modal.showModal(); window.RelayAvatars?.hydrate?.(modal); } }
 async function closeModal(modal = $('#modal')) { if (window.RelayMotion) await window.RelayMotion.closeDialog(modal); else modal.close(); }
-const renderSignature = html => html.replace(/relay-avatar-clip-\d+/g, 'relay-avatar-clip');
+const renderSignature = html => html.replace(/relay-avatar-clip-\d+/g, 'relay-avatar-clip').replace(/crew-\d+/g, 'crew-id');
 
 
 function formatTime(value, date = false) {
@@ -305,10 +305,10 @@ function toast(message, error = false) {
   setTimeout(() => node.remove(), error ? 10000 : 4000);
 }
 async function api(path, method = 'GET', body) {
-  const response = await fetch(path, { method, headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+  const response = await fetch(path, { method, headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(method === 'GET' ? 30000 : 120000) });
   let data;
   try { data = await response.json(); } catch { throw new Error(`服务返回了无法读取的内容（${response.status}）`); }
-  if (!response.ok) throw new Error(data.error || `请求失败（${response.status}）`);
+  if (!response.ok) throw new Error(data.error?.message || data.error || `请求失败（${response.status}）`);
   return data;
 }
 function showConnection(message = '') { const banner = $('#connection-banner'); banner.hidden = !message; banner.textContent = message; }
@@ -321,7 +321,7 @@ function captureChatScroll(messages) {
   return {
     top: messages.scrollTop,
     visible,
-    atBottom: visible && (tracking ? tracking.followBottom && messages.scrollTop >= tracking.lastTop - 1 : nearBottom),
+    atBottom: visible && (nearBottom || !!tracking?.followBottom && messages.scrollTop >= tracking.lastTop - 1),
     anchor: item && { attribute: item.hasAttribute('data-message-id') ? 'data-message-id' : 'data-agent-run-id', id: item.dataset.messageId || item.dataset.agentRunId, offset: item.getBoundingClientRect().top - top },
     outputs: [...messages.querySelectorAll('.agent-tool-body[id]')].map(body => ({ id: body.id, positions: [...body.querySelectorAll('pre')].map(pre => ({ top: pre.scrollTop, left: pre.scrollLeft })) })),
   };
@@ -360,14 +360,14 @@ function installChatScrollTracking(messages, followBottom) {
       frame = 0;
       if (tracking.stopped || !messages.isConnected || !messages.clientHeight || !tracking.followBottom) return;
       // A user scroll may precede its scroll event; never undo that input.
-      if (messages.scrollTop < tracking.lastTop - 1) { tracking.followBottom = false; return; }
+      if (messages.scrollTop < tracking.lastTop - 1 && messages.scrollHeight - messages.scrollTop - messages.clientHeight >= 40) { tracking.followBottom = false; return; }
       messages.scrollTop = messages.scrollHeight; tracking.lastTop = messages.scrollTop;
     });
   };
   const onScroll = () => {
     const top = messages.scrollTop;
-    if (top < tracking.lastTop - 1) tracking.followBottom = false;
-    else if (messages.scrollHeight - top - messages.clientHeight < 40) tracking.followBottom = true;
+    if (messages.scrollHeight - top - messages.clientHeight < 40) tracking.followBottom = true;
+    else if (top < tracking.lastTop - 1) tracking.followBottom = false;
     tracking.lastTop = top;
   };
   messages.addEventListener('scroll', onScroll, { passive: true });
@@ -375,6 +375,7 @@ function installChatScrollTracking(messages, followBottom) {
   messages.addEventListener('error', schedule, true);
   // Images, fonts and expanded content can change height after the first paint.
   const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(schedule) : null;
+  observer?.observe(messages);
   for (const child of messages.children) observer?.observe(child);
   tracking.schedule = schedule;
   tracking.stop = () => {
@@ -435,7 +436,7 @@ function unresolvedJobLeaves(jobs = ui.roomJobs, messages = ui.messages) {
 function messageJobNotices(messageId, failures) {
   return failures.filter(job => job.messageId === messageId).map(job => {
     const retrying = ui.retryingJobs?.has(job.id);
-    return `<div class="job-notice" data-job-id="${esc(job.id)}" role="status"><div><strong>${esc(nameOf(job.botId))} 的${job.lane === 'deep' ? '深聊' : '回复'}${job.status === 'interrupted' ? '已中断' : '未完成'}</strong><p>${esc(job.error || '可根据当前状态重新尝试。')}</p></div><button class="small-button" data-action="retry-job" data-id="${esc(job.id)}" ${retrying ? 'disabled' : ''}>${retrying ? '正在安排…' : '重新尝试'}</button></div>`;
+    return `<div class="job-notice" data-job-id="${esc(job.id)}" role="status"><div><strong>${esc(nameOf(job.botId))} 的${job.lane === 'deep' ? '深聊' : '回复'}${job.status === 'interrupted' ? '已中断' : '未完成'}</strong><p>${esc(job.error?.message || (typeof job.error === 'string' ? job.error : '') || '可根据当前状态重新尝试。')}</p></div><button class="small-button" data-action="retry-job" data-id="${esc(job.id)}" ${retrying ? 'disabled' : ''}>${retrying ? '正在安排…' : '重新尝试'}</button></div>`;
   }).join('');
 }
 function roomNotices(room, failures = unresolvedJobLeaves()) {
@@ -687,7 +688,7 @@ async function restoreCachedWorkspace() {
   } catch { /* An unreadable local cache must not prevent network recovery. */ }
   finally { ui.cacheReady = true; if (!ui.loading) render(); else renderTopbar(); }
 }
-function scheduleRefresh() { clearTimeout(refreshTimer); refreshTimer = setTimeout(() => refresh(), 230); }
+function scheduleRefresh() { if (refreshTimer) return; refreshTimer = setTimeout(() => { refreshTimer = null; void refresh(); }, 230); }
 async function navigate(view) { ui.navigationSeq++; ui.menu = null; ui.view = view; location.hash = view; renderTopbar(); try { await loadCurrent(); render(); } catch (error) { toast(error.message, true); render(); } }
 
 function roomSection(title, kind, rooms) {
@@ -796,6 +797,14 @@ function openMemoryForm(id) {
     await api(memory ? `/api/memories/${encodeURIComponent(memory.id)}` : `/api/bots/${encodeURIComponent(ui.botId)}/memories`, memory ? 'PATCH' : 'POST', Object.fromEntries(data)); toast('记忆已保存');
   });
 }
+async function openBotContacts(id) {
+  const {contacts=[]}=await api(`/api/bots/${encodeURIComponent(id)}/contacts`);
+  const connected=new Set(contacts.map(contact=>contact.botId));
+  const candidates=state.bots.filter(bot=>bot.id!==id&&!bot.archivedAt);
+  openModal('Bot 直连联系人', `${nameOf(id)} 可直接与这些联系人交换消息，已有连接不依赖群聊转发。`,
+    `<div class="context-note">已连接：${contacts.map(contact=>esc(nameOf(contact.botId))).join('、')||'暂无'}</div>${selectField('联系人','botId',candidates.map(bot=>({value:bot.id,label:`${bot.name}${connected.has(bot.id)?' · 已连接':''}`})),candidates[0]?.id)}${selectField('操作','enabled',[{value:'true',label:'建立双向直连'},{value:'false',label:'断开双向直连'}],'true')}`,
+    async data=>{await api(`/api/bots/${encodeURIComponent(id)}/contacts`,'POST',{botId:data.get('botId'),enabled:data.get('enabled')==='true'});toast('直连联系人已更新');});
+}
 function openWorkForm() {
   openModal('委托一项工作', '明确目标与边界，成员会将专业执行交给 Codex。', `${field('工作目标', 'goal', '', { type: 'textarea', required: true, placeholder: '希望完成什么？请描述可以观察的结果。', rows: 4 })}<div class="form-row">${selectField('委托成员', 'botId', botOptions(), ui.view === 'members' ? ui.botId : profileBot()?.id || state.bots[0]?.id)}${selectField('结果回到', 'roomId', roomOptions(), ui.roomId)}</div>${field('工作目录', 'cwd', state.defaultCwd || '', { required: true, placeholder: '项目的绝对路径' })}${field('约束与注意事项', 'constraints', '', { type: 'textarea', placeholder: '已有修改、操作边界、需要保留的行为…' })}${field('输入资料', 'inputRefs', '', { type: 'textarea', placeholder: '每行一项：文件路径、资料说明或链接', help: '提供已有资料的位置，方便执行端理解上下文。' })}`, async data => {
     const work = await api('/api/works', 'POST', { ...Object.fromEntries(data), inputRefs: data.get('inputRefs').split('\n').map(text => text.trim()).filter(Boolean) }); ui.workId = work.id || work.work?.id; ui.view = 'works'; toast('工作已交给执行端');
@@ -850,9 +859,10 @@ async function act(action, element) {
   if (action === 'edit-avatar') { ui.avatarSelectionRevision++; const bot = profileBot(); if (!bot) return; ui.avatarEditing = !ui.avatarEditing; ui.avatarDraft = { ...botAvatar(bot) }; ui.avatarTab = 'bot'; return render(); }
   if (action === 'avatar-tab') { ui.avatarTab = element.dataset.tab; return render(); }
   if (action === 'avatar-save-retry') return persistAvatar();
-  if (['avatar-shape', 'avatar-color', 'avatar-random', 'avatar-reset'].includes(action)) {
+  if (['avatar-shape', 'avatar-color', 'avatar-template', 'avatar-random', 'avatar-reset'].includes(action)) {
     ui.avatarSelectionRevision++;
     if (action === 'avatar-shape') ui.avatarDraft = { ...ui.avatarDraft, shape: element.dataset.shape, image: null };
+    if (action === 'avatar-template') { const template = window.RelayAvatars.templates.find(p => p.id === element.dataset.template); if (template) { const {id, name, ...palette} = template; ui.avatarDraft = { ...ui.avatarDraft, ...palette, image: null }; } }
     if (action === 'avatar-color') ui.avatarDraft = { ...ui.avatarDraft, color: element.dataset.color, image: null };
     if (action === 'avatar-random') { const shapes = window.RelayAvatars.shapes, colors = window.RelayAvatars.colors; ui.avatarDraft = { shape: shapes[Math.floor(Math.random() * shapes.length)].id, color: colors[Math.floor(Math.random() * colors.length)], image: null }; }
     if (action === 'avatar-reset') ui.avatarDraft = { ...window.RelayAvatars.defaults(profileBot()?.id, state.bots.findIndex(bot => bot.id === profileBot()?.id)), image: null };
@@ -883,6 +893,7 @@ async function act(action, element) {
   if (action === 'conclude-room') { element.disabled = true; try { await api(`/api/rooms/${encodeURIComponent(ui.roomId)}/conclude`, 'POST', {}); toast('深聊结束请求已提交，结论将保留在会话中。'); await refresh(); } finally { element.disabled = false; } return; }
   if (action === 'new-bot') return openCreateBot();
   if (action === 'edit-bot') return openBotForm(id);
+  if (action === 'bot-contacts') return openBotContacts(id);
   if (action === 'select-bot' || action === 'open-profile') { ui.botId = id; ui.memories = []; return navigate('members'); }
   if (action === 'toggle-bot') { const bot = botById(id); await api(`/api/bots/${encodeURIComponent(id)}`, 'PATCH', { status: bot.status === 'paused' ? 'active' : 'paused' }); toast(bot.status === 'paused' ? '成员已恢复' : '成员已暂停'); return refresh(); }
   if (action === 'dm-bot') {
@@ -979,14 +990,14 @@ Object.assign(icons, {
 function botAvatar(botOrId) {
   const bot = typeof botOrId === 'string' ? botById(botOrId) : botOrId;
   const index = Math.max(0, state.bots.findIndex(item => item.id === bot?.id));
-  return { ...(window.RelayAvatars?.defaults(bot?.id || '', index) || { shape: 'circle', color: '#F93498', image: null }), ...(bot?.avatar || {}) };
+  return window.RelayAvatars.normalize({ ...window.RelayAvatars.defaults(bot?.id || '', index), ...(bot?.avatar || {}) });
 }
 function face(config, size = 60, options = {}) { return window.RelayAvatars ? window.RelayAvatars.render(config, size, options) : `<span class="face-fallback" style="width:${size}px;height:${size}px;background:${esc(config?.color || '#959595')}"></span>`; }
 function avatar(id, large = false, key = `bot:${id}`) {
   const size = typeof large === 'number' ? large : large ? 104 : 60;
   if (id === 'user') return `<span class="user-avatar" style="width:${size}px;height:${size}px" aria-hidden="true">${icon('person', Math.round(size * .48))}</span>`;
   if (!botById(id)) return `<span class="system-avatar" style="width:${size}px;height:${size}px">${icon(String(id).startsWith('executor:') ? 'computer' : 'event', Math.round(size * .5))}</span>`;
-  return `<span class="bot-avatar" style="width:${size}px;height:${size}px" aria-hidden="true">${face(botAvatar(id), size, { key, identity: `bot:${id}` })}</span>`;
+  return `<span class="bot-avatar" style="width:${size}px;height:${size}px" aria-hidden="true">${face(botAvatar(id), size, { key, identity: `bot:${id}`, state: (state.runtime?.jobs || []).some(job => job.botId === id && job.status === 'running') ? 'work' : (state.runtime?.jobs || []).some(job => job.botId === id && job.status === 'queued') ? 'think' : 'idle' })}</span>`;
 }
 function groupAvatar(room, size = 96, key = `group:${room?.id}:${size}`) {
   const members = (room?.members || []).filter(id => id === 'user' || botById(id)).slice(0, 4);
@@ -1056,14 +1067,12 @@ function renderChat() {
   const title = bot?.name || room?.name || 'Relay Bot';
   const accent = currentAccent();
   const activities = (state.activity || []).filter(message => message.returnTo?.roomId === ui.roomId && message.roomId !== ui.roomId && message.toBotId).map(message => ({ ...message, _activity: 'sent' }));
-  const runs = visibleAgentRuns().map(run => ({ ...run, _agentRun: true, createdAt: run.startedAt }));
   const conversationMessages = mergedRoomMessages(ui.roomId, ui.messages);
   const failures = unresolvedJobLeaves(ui.roomJobs, conversationMessages);
-  const timeline = [...conversationMessages, ...activities, ...runs].sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+  const timeline = [...conversationMessages, ...activities].sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
   let previousDay = '';
   const messages = timeline.map(message => {
     if (message._activity) return messageActivity(message, room);
-    if (message._agentRun) { const date = formatDay(message.createdAt), divider = date !== previousDay ? `<div class="date-divider">${esc(date)}</div>` : ''; previousDay = date; return `${divider}${renderAgentRun(message)}`; }
     const sender = message.senderId || 'system', own = sender === 'user', system = sender === 'system' || message.kind === 'event';
     const senderBot = botById(sender);
     const date = formatDay(message.createdAt), divider = date !== previousDay ? `<div class="date-divider">${esc(date)}</div>` : ''; previousDay = date;
@@ -1084,20 +1093,22 @@ function renderDetailPanel(room, bot) {
   else if (tab === 'members' && !isBot) body = `<div class="profile-members">${(room?.members || []).filter(id => id !== 'user').map(id => `<button data-action="open-bot-details" data-id="${esc(id)}">${avatar(id, 50)}<span>${esc(nameOf(id))}</span></button>`).join('')}<button class="add-member" data-action="edit-room-members">${icon('plus', 24)}<span>添加成员</span></button></div>`;
   else if (tab === 'library') body = `<div class="profile-section-heading"><span>${isBot ? '记忆' : '共享知识'}</span><button class="icon-button" data-action="${isBot ? 'new-memory' : 'new-node'}" aria-label="${isBot ? '添加记忆' : '新增知识'}">${icon('plus', 20)}</button></div>${isBot ? ui.memories.map(memory => `<article class="profile-record"><p>${esc(memory.content)}</p><div class="item-meta">${esc(labels[memory.category] || '记忆')} · ${memory.status === 'expired' ? '已过期' : '有效'}<button class="text-button" data-action="edit-memory" data-id="${esc(memory.id)}">修订</button></div></article>`).join('') || '<p class="panel-empty">还没有记忆</p>' : ''}${(state.knowledge.nodes || []).map(node => `<button class="profile-record record-button" data-action="open-knowledge" data-id="${esc(node.id)}"><strong>${esc(node.title)}</strong><p>${esc(node.content?.slice(0, 150))}</p></button>`).join('') || (!isBot ? '<p class="panel-empty">还没有知识记录</p>' : '')}<button class="panel-footer-link" data-action="navigate" data-view="knowledge">查看全部知识 ${icon('arrow', 17)}</button>`;
   else if (tab === 'computer') body = `<div class="profile-section-heading"><span>Codex 工作</span><button class="icon-button" data-action="new-work" aria-label="委托工作">${icon('plus', 20)}</button></div>${ownedWorks.map(work => `<button class="profile-record record-button" data-action="open-work" data-id="${esc(work.id)}"><strong>${esc(work.goal)}</strong><div class="item-meta">${statusPill(work.status)}</div></button>`).join('') || '<p class="panel-empty">还没有委托工作</p>'}<button class="panel-footer-link" data-action="navigate" data-view="works">查看所有工作 ${icon('arrow', 17)}</button>`;
-  else body = `${isBot ? `<button class="profile-description" data-action="edit-bot" data-id="${esc(bot.id)}"><span>${esc(bot.role || '项目协作')}</span>${icon('edit', 16)}</button>${bot.prompt ? `<p class="profile-prompt">${esc(bot.prompt)}</p>` : ''}${bot.skills?.length ? `<div class="tag-list">${bot.skills.map(skill => `<span class="tag">${esc(skill)}</span>`).join('')}</div>` : ''}` : `<button class="profile-description" data-action="edit-room"><span>${esc(room?.goal || '添加群聊说明')}</span>${icon('edit', 16)}</button>`}<div class="profile-section-heading"><span>例行任务</span><button class="icon-button" data-action="new-routine" aria-label="新增职责">${icon('plus', 20)}</button></div>${ownedRoutines.map(routine => `<div class="profile-routine"><button class="routine-text" data-action="edit-routine" data-id="${esc(routine.id)}"><strong>${esc(routine.name)}</strong><span>每 ${Math.round(routine.intervalSeconds / 60)} 分钟</span></button><button class="toggle ${routine.enabled ? 'on' : ''}" data-action="toggle-routine" data-id="${esc(routine.id)}" role="switch" aria-checked="${!!routine.enabled}" aria-label="${routine.enabled ? '暂停' : '启用'}${esc(routine.name)}"></button></div>`).join('') || '<p class="panel-empty">没有例行任务</p>'}<div class="profile-more-actions">${isBot ? `<button data-action="edit-bot" data-id="${esc(bot.id)}">编辑 Bot 资料</button><button data-action="toggle-bot" data-id="${esc(bot.id)}">${bot.status === 'paused' ? '恢复 Bot' : '暂停 Bot'}</button>` : `<button data-action="new-deep">发起深聊</button>${room?.kind === 'deep' && room.status !== 'concluded' ? '<button data-action="conclude-room">结束深聊并保留结论</button>' : ''}<button data-action="new-work">委托工作</button>`}</div>`;
+  else body = `${isBot ? `<button class="profile-description" data-action="edit-bot" data-id="${esc(bot.id)}"><span>${esc(bot.role || '项目协作')}</span>${icon('edit', 16)}</button>${bot.prompt ? `<p class="profile-prompt">${esc(bot.prompt)}</p>` : ''}${bot.skills?.length ? `<div class="tag-list">${bot.skills.map(skill => `<span class="tag">${esc(skill)}</span>`).join('')}</div>` : ''}` : `<button class="profile-description" data-action="edit-room"><span>${esc(room?.goal || '添加群聊说明')}</span>${icon('edit', 16)}</button>`}<div class="profile-section-heading"><span>例行任务</span><button class="icon-button" data-action="new-routine" aria-label="新增职责">${icon('plus', 20)}</button></div>${ownedRoutines.map(routine => `<div class="profile-routine"><button class="routine-text" data-action="edit-routine" data-id="${esc(routine.id)}"><strong>${esc(routine.name)}</strong><span>每 ${Math.round(routine.intervalSeconds / 60)} 分钟</span></button><button class="toggle ${routine.enabled ? 'on' : ''}" data-action="toggle-routine" data-id="${esc(routine.id)}" role="switch" aria-checked="${!!routine.enabled}" aria-label="${routine.enabled ? '暂停' : '启用'}${esc(routine.name)}"></button></div>`).join('') || '<p class="panel-empty">没有例行任务</p>'}<div class="profile-more-actions">${isBot ? `<button data-action="edit-bot" data-id="${esc(bot.id)}">编辑 Bot 资料</button><button data-action="bot-contacts" data-id="${esc(bot.id)}">直连联系人</button><button data-action="toggle-bot" data-id="${esc(bot.id)}">${bot.status === 'paused' ? '恢复 Bot' : '暂停 Bot'}</button>` : `<button data-action="new-deep">发起深聊</button>${room?.kind === 'deep' && room.status !== 'concluded' ? '<button data-action="conclude-room">结束深聊并保留结论</button>' : ''}<button data-action="new-work">委托工作</button>`}</div>`;
   return `<aside class="detail-panel" data-section="${ui.avatarEditing ? `avatar:${ui.avatarTab}` : tab}:${bot?.id || room?.id}"><div class="detail-panel-inner"><div class="detail-panel-toolbar"><button class="round-button" data-action="copy-conversation" title="复制会话文字" aria-label="复制会话文字">${icon('copy', 21)}</button><button class="round-button" data-action="close-details" title="关闭详情" aria-label="关闭详情">${icon('close', 26)}</button></div><div class="profile-identity ${ui.avatarEditing ? 'editing-avatar' : ''}">${isBot ? `<button class="profile-avatar" data-action="edit-avatar" data-id="${esc(bot.id)}" aria-label="编辑头像" title="编辑头像">${face(selectedAvatar, 104, { key: 'slot:profile', identity: `bot:${bot.id}`, preview: true, intro: true })}<span class="avatar-pencil">${icon('edit', 23)}</span></button>` : groupAvatar(room, 104)}${!ui.avatarEditing ? `<h2>${esc(bot?.name || room?.name)}</h2>${isBot ? `<button class="profile-subtitle" data-action="edit-bot" data-id="${esc(bot.id)}">${esc(listText(bot.expertise) || '添加专业标签')}</button>` : ''}` : ''}</div>${!ui.avatarEditing ? `<nav class="profile-tabs" aria-label="详情分类">${[{ id: 'details', label: '详情' }, { id: 'library', label: '资料库' }, { id: isBot ? 'computer' : 'members', label: isBot ? '电脑' : '成员' }].map(item => `<button class="${tab === item.id ? 'active' : ''}" data-action="detail-tab" data-tab="${item.id}">${item.label}</button>`).join('')}</nav>` : ''}<div class="detail-panel-body" data-motion-key="detail-content">${body}</div></div></aside>`;
 }
 function renderAvatarPicker(mode = 'create') {
   const selected = ui.avatarDraft || botAvatar(profileBot()), tab = ui.avatarTab || 'bot';
   const save = mode === 'edit' ? avatarSaves.get(profileBot()?.id) : null;
   const saveStatus = save?.error ? `<div class="avatar-save-status error" role="status">头像尚未保存<button type="button" data-action="avatar-save-retry">重试</button><small>${esc(save.error)}</small></div>` : save && (save.running || save.savedVersion !== save.version) ? '<div class="avatar-save-status" role="status">正在保存…</div>' : mode === 'edit' ? '<div class="avatar-save-status" aria-hidden="true"></div>' : ''; 
-  const picker = `<div class="shape-grid">${(window.RelayAvatars?.shapes || []).map(shape => `<button type="button" class="shape-choice ${selected.shape === shape.id && !selected.image ? 'selected' : ''}" data-action="avatar-shape" data-shape="${esc(shape.id)}" data-mode="${mode}" aria-label="${esc(shape.label)}" title="${esc(shape.label)}" aria-pressed="${selected.shape === shape.id && !selected.image}">${face({ shape: shape.id, color: selected.color }, 64, { key: `picker:${mode}:${shape.id}`, static: true })}</button>`).join('')}</div><div class="color-grid">${(window.RelayAvatars?.colors || []).map(color => `<button type="button" class="color-choice ${selected.color?.toLowerCase() === color.toLowerCase() ? 'selected' : ''}" style="--swatch:${color}" data-action="avatar-color" data-color="${color}" data-mode="${mode}" aria-label="颜色 ${color}" title="${color}" aria-pressed="${selected.color?.toLowerCase() === color.toLowerCase()}"></button>`).join('')}</div>`;
+  const picker = `<div class="shape-grid">${window.RelayAvatars.shapes.map(shape => `<button type="button" class="shape-choice ${selected.shape === shape.id && !selected.image ? 'selected' : ''}" data-action="avatar-shape" data-shape="${shape.id}" data-mode="${mode}" aria-label="${shape.label}" aria-pressed="${selected.shape === shape.id}">${face({ ...selected, shape: shape.id, image: null }, 52, { static: true })}<small>${shape.label}</small></button>`).join('')}</div><div class="crew-palettes">${window.RelayAvatars.templates.map(p => `<button type="button" data-action="avatar-template" data-template="${p.id}" data-mode="${mode}" title="${p.name}" aria-label="${p.name}" aria-pressed="${selected.color?.toUpperCase() === p.color && selected.secondary?.toUpperCase() === p.secondary}" style="background:linear-gradient(135deg,${p.color} 50%,${p.secondary} 50%)">${p.name}</button>`).join('')}</div><details class="crew-custom" ${ui.avatarCustomOpen ? 'open' : ''}><summary>自定义颜色</summary>${[['color','主色块'],['secondary','辅助色'],['ink','描边与眼睛'],['paper','底色']].map(([key,label])=>`<label>${label}<input type="color" data-avatar-custom="${key}" data-mode="${mode}" value="${window.RelayAvatars.normalize(selected)[key]}"></label>`).join('')}</details>`;
+
   return `${saveStatus}<div class="avatar-picker ${mode === 'create' ? 'create-picker' : ''}">${mode === 'edit' ? `<div class="avatar-tabs">${[{ id: 'bot', label: 'Bot' }, { id: 'generate', label: '生成' }, { id: 'upload', label: '上传' }].map(item => `<button type="button" class="${tab === item.id ? 'active' : ''}" data-action="avatar-tab" data-tab="${item.id}">${item.label}</button>`).join('')}<button class="avatar-reset" type="button" data-action="avatar-reset">重置</button></div>` : ''}${mode === 'create' || tab === 'bot' ? picker : tab === 'generate' ? `<div class="avatar-tool"><p>随机组合造型与颜色</p><button class="secondary-button" data-action="avatar-random" type="button">${icon('spark', 18)}生成一个造型</button></div>` : `<div class="avatar-tool"><p>使用自己的图片</p><label class="upload-label" for="avatar-upload">${icon('upload', 23)}选择图片</label><input id="avatar-upload" type="file" accept="image/png,image/jpeg,image/webp" hidden><small>PNG、JPG 或 WebP，将缩放后保存在本机</small></div>`}</div>`;
 }
 function openCreateBot() {
   ui.avatarSelectionRevision++;
   ui.avatarEditing = false;
-  ui.avatarDraft = { shape: 'clover', color: '#8F59F9', image: null };
+  ui.avatarCustomOpen = false;
+  ui.avatarDraft = window.RelayAvatars.normalize({ shape: 'dev' });
   ui.menu = null; render();
   const modal = $('#modal'); captureMotion($('#modal-content')); modal.classList.add('create-bot-modal');
   $('#modal-content').innerHTML = `<div class="modal-header"><h2>创建新 Bot</h2><button class="icon-button" data-action="close-modal" aria-label="关闭">${icon('close', 24)}</button></div><form id="modal-form" class="create-bot-form"><div class="create-bot-body"><div id="create-avatar-preview" class="create-avatar-preview">${face(ui.avatarDraft, 144, { key: 'slot:create-preview', identity: 'create-preview', preview: true, intro: true })}</div><input id="create-bot-name" name="name" placeholder="给你的 Bot 起个名字" aria-label="Bot 名字" required maxlength="100" autocomplete="off"><div class="create-picker-scroll"><div id="create-avatar-picker">${renderAvatarPicker('create')}</div><div class="form-error" role="alert"></div></div></div><div class="modal-footer"><button class="secondary-button" type="button" data-action="close-modal">取消</button><button id="create-bot-submit" class="primary-button" type="submit" disabled>创建</button></div></form>`;
@@ -1154,6 +1165,7 @@ function openRoomEdit(membersOnly = false) {
 
 document.addEventListener('change', async event => {
   if (event.target.id === 'message-target') { ui.draftTargets[event.target.form.dataset.roomId] = event.target.value; persistClientSession(); }
+  if (event.target.dataset.avatarCustom) { const key = event.target.dataset.avatarCustom; if (!['color','secondary','ink','paper'].includes(key)) return; ui.avatarSelectionRevision++; ui.avatarDraft = { ...ui.avatarDraft, [key]: event.target.value, image: null }; if(event.target.dataset.mode === 'create') { const root = $('#create-avatar-preview'); root.innerHTML = face(ui.avatarDraft,144,{key:'slot:create-preview',preview:true}); hydrateMotion(root); } else await persistAvatar(); return; }
   if (event.target.id !== 'avatar-upload') return;
   const file = event.target.files?.[0], botId = profileBot()?.id;
   if (!file || !botId) return;
@@ -1182,6 +1194,8 @@ stream.onmessage = () => scheduleRefresh();
 stream.addEventListener('change', () => scheduleRefresh());
 stream.addEventListener('state', () => scheduleRefresh());
 stream.onerror = () => { ui.streamConnected = false; showConnection('实时连接已断开，正在自动重连。已显示的记录仍然保留。'); };
+window.addEventListener('offline', () => { ui.streamConnected = false; persistClientSession(); showConnection('当前离线，草稿与未确认消息已保留；恢复网络后可重试发送。'); });
+window.addEventListener('online', () => { showConnection('网络已恢复，正在同步最新状态…'); scheduleRefresh(); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); else persistClientSession(); });
 
 
@@ -1251,3 +1265,5 @@ window.addEventListener('relay:pwa-change', () => renderTopbar());
 window.addEventListener('relay:pwa-before-update', event => { if (!preserveUpdateDrafts()) event.preventDefault(); });
 window.addEventListener('pagehide', () => { persistClientSession(); if (updateDraftArmed) preserveUpdateDrafts(); });
 syncMobileViewport();
+
+document.addEventListener('toggle', event => { if(event.target.matches?.('.crew-custom')) ui.avatarCustomOpen = event.target.open; }, true);

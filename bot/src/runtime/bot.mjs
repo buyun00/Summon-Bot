@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto';
 import { normalizeBotConfig, createRedactor } from './config.mjs';
-import { acquireIdentityLock } from './identity-lock.mjs';
+import { acquireIdentityLock, inspectInstanceIdentity } from './identity-lock.mjs';
 import { installProcessLog } from './process-log.mjs';
 import { BotStore, terminalTaskStates } from '../storage/store.mjs';
 import { saveArtifact } from '../storage/artifacts.mjs';
@@ -46,6 +46,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
     const persistConfig = patch => {
       const operation = configWrites.catch(() => {}).then(async () => {
         const current = JSON.parse(await readFile(privatePath, 'utf8'));
+        if (typeof patch === 'function') patch = patch(current);
         await atomicJson(privatePath, { ...current, ...patch });
         Object.assign(config, patch); redact = createRedactor(config);
       });
@@ -55,23 +56,45 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
     store.recover(bootId);
     store.onEvent = event => { for (const listener of subscribers) { try { listener(event); } catch {} } };
     const emit = (type, payload, refs = {}) => store.appendEvent(type, clean(payload), refs);
-    const contactFor = botId => { const value = config.contacts.find(contact => contact.botId === botId); if (!value) throw failure(404, `Unknown configured contact ${botId}`); return value; };
+    const contactFor = async botId => {
+      const value = config.contacts.find(contact => contact.botId === botId);
+      if (!value) throw failure(404, `Unknown configured contact ${botId}`);
+      if (!value.dataDir) return value;
+      // The peer owns its OS identity endpoint; resolving it does not involve
+      // the gateway or chatroom, and survives a peer's dynamic-port restart.
+      const peer = await inspectInstanceIdentity(value.dataDir);
+      if (peer?.botId !== botId || peer.state !== 'ready') throw failure(503, 'Contact is not ready');
+      const endpoint = new URL(peer.url);
+      if (endpoint.protocol !== 'http:' || !['127.0.0.1', '[::1]'].includes(endpoint.hostname)) throw failure(503, 'Invalid local contact identity');
+      return { ...value, url: peer.url };
+    };
     const taskDetails = id => { const value = store.getTask(id); return value && { ...value, tools: store.listTools(id) }; };
     const services = {
       store,
+      contacts: () => config.contacts.map(({botId,name,dataDir}) => ({botId,name,transport:dataDir?'local-direct':'http-direct'})),
       async send(to, envelope, { signal, taskId } = {}) {
-        const contact = contactFor(to), id = envelope.id || randomUUID(), key = `${to}:${id}`;
+        const id = envelope.id || randomUUID(), key = `${to}:${id}`;
         const previous = store.getOutbox(key);
         const message = { ...envelope, id, to, from: config.botId, kind: envelope.kind || 'request' };
         if (previous && JSON.stringify(previous.message) !== JSON.stringify(clean(message))) throw failure(409, 'Message ID already belongs to another payload');
         if (previous?.receipt) return previous.receipt;
         store.saveOutbox({ id: key, message: clean(message), taskId, to, status: 'sending', createdAt: previous?.createdAt || at() });
         try {
+          const contact = await contactFor(to);
           const receipt = await sendMessage(contact, message, { signal });
           store.saveOutbox({ id: key, status: 'accepted', receipt: clean(receipt) }); return receipt;
         } catch (error) { store.saveOutbox({ id: key, status: 'unknown', error: clean({ message: error.message }) }); throw error; }
       },
-      getTask(id, botId, signal) { return botId && botId !== config.botId ? requestBot(contactFor(botId), `/tasks/${encodeURIComponent(id)}`, { signal }) : taskDetails(id); },
+      async getTask(id, botId, signal, waitMs = 0) {
+        if (!Number.isInteger(waitMs) || waitMs < 0 || waitMs > 60000) throw failure(400, 'waitMs must be 0..60000');
+        const deadline = Date.now() + waitMs;
+        for (;;) {
+          const value = botId && botId !== config.botId ? await requestBot(await contactFor(botId), `/tasks/${encodeURIComponent(id)}`, { signal }) : taskDetails(id);
+          if (!value || terminalTaskStates.has(value.status) || Date.now() >= deadline) return value;
+          await new Promise(resolve => setTimeout(resolve, Math.min(500, deadline - Date.now()))); signal?.throwIfAborted();
+        }
+      },
+      async cancelTask(id, botId, signal) { return botId && botId !== config.botId ? requestBot(await contactFor(botId), `/tasks/${encodeURIComponent(id)}/cancel`, { method:'POST', body:{}, signal }) : cancel(id); },
       coreTools(task) { return coreTools(services, task); },
       toolContext(task) { return { saveArtifact: async input => {
         const artifact = await saveArtifact(join(config.dataDir, 'artifacts'), input, { botId: config.botId, taskId: task.id, runId: task.id, sessionId: task.sessionId, createdAt: at() });
@@ -126,6 +149,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       if (method === 'GET' && parts[0] === 'capabilities') return { botId: config.botId, protocol: 'relay-bot-v1', engine: engine.health(), messages: true, tasks: true, state: true, memories: true };
       if (method === 'POST' && parts[0] === 'messages') {
         if (state !== 'ready') throw failure(503, `Bot is ${state}`);
+        if (config.accepting === false) throw failure(409, 'Bot is paused');
         if (!engine.health().configured) throw failure(503, 'Model credential is not configured', 'MODEL_UNCONFIGURED');
         const body = await readBody(request);
         if (typeof body.id !== 'string' || !body.id || body.id.length > 512 || body.to !== config.botId || !['request', 'event'].includes(body.kind || 'request') || body.content === undefined || (body.from && body.from !== auth.source) || (body.sessionId !== undefined && (typeof body.sessionId !== 'string' || !body.sessionId || body.sessionId.length > 512))) throw failure(400, 'Invalid message envelope or authenticated sender');
@@ -140,13 +164,29 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       }
       if (method === 'GET' && parts[0] === 'messages') return store.listMessages().filter(message => auth.admin || message.from === auth.source);
       needAdmin();
+      if (parts[0] === 'availability' && parts.length === 1 && method === 'PATCH') {
+        const body=await readBody(request);if(typeof body.accepting!=='boolean')throw failure(400,'accepting must be boolean');
+        await persistConfig({accepting:body.accepting});return {accepting:config.accepting};
+      }
+      if (parts[0] === 'contacts' && parts.length === 2 && ['PUT','DELETE'].includes(method)) {
+        if (state !== 'ready') throw failure(503, `Bot is ${state}`);
+        const id = parts[1], body = method === 'PUT' ? await readBody(request) : null;
+        if (body && (body.contact?.botId !== id || body.peer?.botId !== id)) throw failure(400, 'Contact and peer identities must match');
+        await persistConfig(current => {
+          const patch = { contacts:(current.contacts||[]).filter(value => value.botId !== id), peers:(current.peers||[]).filter(value => value.botId !== id) };
+          if (body) { patch.contacts.push(body.contact); patch.peers.push(body.peer); }
+          normalizeBotConfig({...current,...patch}); return patch;
+        });
+        emit('bot.contacts.updated', { botId:id, connected:!!body });
+        return {botId:id,connected:!!body};
+      }
       if (method === 'PATCH' && parts[0] === 'config' && parts.length === 1) {
         if (state !== 'ready') throw failure(503, `Bot is ${state}`);
         const body = await readBody(request);
         if (!body || typeof body.prompt !== 'string' || Object.keys(body).some(key => key !== 'prompt')) throw failure(400, 'Only a prompt string may be patched through this endpoint');
         await persistConfig({ prompt: body.prompt });
-        emit('bot.config.updated', { fields: ['prompt'], requiresRestart: true });
-        return { updated: ['prompt'], requiresRestart: true };
+        emit('bot.config.updated', { fields: ['prompt'], requiresRestart: false, effectiveAt: 'next-task' });
+        return { updated: ['prompt'], requiresRestart: false, effectiveAt: 'next-task' };
       }
       if (parts[0] === 'capability-updates') {
         if (state !== 'ready') throw failure(503, `Bot is ${state}`);

@@ -31,7 +31,7 @@ const definitions=[
  ['bot_memory_read','Inspect a managed Bot persistent memories when authorized',{botId:string},'read'],
  ['memory_propose','Compare delivered child memories with their parent baseline',{deliveryId:string},'read'],
  ['memory_merge','Apply ready memory changes or explicit conflict resolutions',{deliveryId:string,resolutions:{type:'object'}},'write'],
- ['routines_create','Create a durable timed message for a Bot',{botId:string,roomId:string,name:string,instruction:string,intervalSeconds:number},'external'],
+ ['routines_create','Create or update a durable timed message. Reuse id; enabled:false stops follow-up.',{id:string,botId:string,roomId:string,name:string,instruction:string,intervalSeconds:number,enabled:boolean,nextRunAt:string},'external'],
 ];
 export const toolDefinitions=definitions.map(([name,description,properties,effect])=>({name,description,inputSchema:object(properties),effect}));
 export const FILE_TOOLS=new Set(['list_files','read_file','search_files','write_file','edit_file','run_command']);

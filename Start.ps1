@@ -19,6 +19,26 @@ if ($RespectIntent) { $relayArgs += '--respect-intent' }
 if ($RespectIntent -and $Foreground) {
     $relayLogRoot = Join-Path $DataRoot 'web\logs'
     New-Item -ItemType Directory -Path $relayLogRoot -Force | Out-Null
-    & $relayNode @relayArgs *>> (Join-Path $relayLogRoot 'startup.log')
+    # Keep the task's PowerShell host alive if its Node watchdog is killed.
+    # Windows' failure retry did not fire for this on-demand task in production.
+    while ($true) {
+        $relayIntent = Get-Content -LiteralPath (Join-Path $DataRoot 'config\deployment.json') -Raw | ConvertFrom-Json
+        if ($relayIntent.runIntent -eq 'stopped') { exit 0 }
+        $relayExit = 1
+        try {
+            & $relayNode @relayArgs *>> (Join-Path $relayLogRoot 'startup.log')
+            $relayExit = $LASTEXITCODE
+        } catch {
+            Add-Content -LiteralPath (Join-Path $relayLogRoot 'startup.log') -Value ('{0} launcher child failed: {1}' -f [DateTime]::UtcNow.ToString('o'), $_.Exception.Message)
+        }
+        $relayIntent = Get-Content -LiteralPath (Join-Path $DataRoot 'config\deployment.json') -Raw | ConvertFrom-Json
+        if ($relayIntent.runIntent -eq 'stopped') { exit 0 }
+        Add-Content -LiteralPath (Join-Path $relayLogRoot 'startup.log') -Value ('{0} launcher watchdog exited ({1}); restarting in 60 seconds' -f [DateTime]::UtcNow.ToString('o'), $relayExit)
+        Start-Sleep -Seconds 60
+    }
 } else { & $relayNode @relayArgs }
 if ($LASTEXITCODE -ne 0) { throw "Relay failed to start ($LASTEXITCODE). Check managed service logs." }
+if (!$Foreground) {
+    $relayTask = Get-ScheduledTask -TaskName 'Relay Bot Foundation' -ErrorAction SilentlyContinue
+    if ($relayTask -and $relayTask.State -ne 'Running') { Start-ScheduledTask -InputObject $relayTask }
+}

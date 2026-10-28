@@ -127,7 +127,7 @@ fun WorkspaceScreen(store: RelayStore, section: WorkspaceSection, onBack: () -> 
                         if (bots.isEmpty() && !loading) Text("还没有 Bot")
                         bots.forEach { bot ->
                             Row(Modifier.fillMaxWidth().clickable { page = WorkspacePage.Bot(bot.id) }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                BotAvatar(bot.value["avatar"]["shape"].string ?: "circle", bot.value["avatar"]["color"].string ?: "#8F59F9", bot.value["avatar"]["image"].string, 42.dp)
+                                BotAvatar(bot.value["avatar"]["shape"].string ?: "dev", bot.value["avatar"]["color"].string ?: "#FFC18E", bot.value["avatar"]["image"].string, 42.dp, secondary=bot.value["avatar"]["secondary"].string, ink=bot.value["avatar"]["ink"].string, paper=bot.value["avatar"]["paper"].string)
                                 Spacer(Modifier.width(12.dp))
                                 Column(Modifier.weight(1f)) {
                                     Text(bot.value["name"].string ?: bot.id)

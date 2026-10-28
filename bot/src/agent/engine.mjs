@@ -33,10 +33,7 @@ export class BotEngine {
     this.taskGate = null; this.idleWaiters = new Set();
   }
   async initialize() {
-    this.prompt = [
-      `You are Bot ${this.config.botId}. Use only your configured capabilities. Tool receipts and final task results are distinct from delivery acknowledgments. Do not replay uncertain side effects.`,
-      this.config.prompt || '', this.config.promptFile ? await readFile(this.config.promptFile, 'utf8') : '',
-    ].filter(Boolean).join('\n\n');
+    this.promptFileContent = this.config.promptFile ? await readFile(this.config.promptFile, 'utf8') : '';
     this.resources = await loadResources({ config: this.config, workspace: this.config.workspace });
     this.configured = await loadConfiguredTools(this.config.tools, { botId: this.config.botId, dataDir: this.config.dataDir,
       workspace: this.config.workspace, redact: this.clean });
@@ -101,9 +98,8 @@ export class BotEngine {
   async execute(task, signal) {
     const controller = new AbortController(), combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
     this.active = { taskId: task.id, controller };
-    const timer = setTimeout(() => controller.abort(new Error('Bot execution timed out')), this.config.limits.timeoutMs);
     const refs = { taskId: task.id, sessionId: task.sessionId };
-    let turns = 0, toolsCalled = 0, exhausted = false;
+    let turns = 0, toolsCalled = 0;
     const usage = emptyUsage();
     const addUsage = message => { for (const key of ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens']) usage[key] += message.usage?.[key] || 0; };
     const clean = this.clean;
@@ -132,7 +128,10 @@ export class BotEngine {
       registerSdkTools(registry, [this.resources.tool, this.context.historyTool(task.sessionId)]);
       const tools = registry.toSdkTools(), declarations = tools.map(toToolDeclaration);
       const capabilityNotice = this.config.capabilityBindingRevision ? `Your external capabilities were switched at a completed task boundary. Current binding revision: ${this.config.capabilityBindingRevision}. Use the current tool declarations; earlier task receipts refer to their original capability versions.` : '';
-      const systemPrompt = [this.prompt, this.resources.prompt, capabilityNotice].filter(Boolean).join('\n\n');
+      // Snapshot the current persisted prompt once per task, so profile edits
+      // affect the next task without changing an in-flight conversation.
+      const peerNotice = 'For one-to-one work with a configured Bot contact, prefer contacts_list and messages_send. Use tasks_get with botId and waitMs (up to 60000) to obtain its actual result; acceptance is not completion. These core tools connect directly to the peer and remain available without chatroom or gateway. Use chatroom tools for group conversations or when the user explicitly requests that channel. A peer should normally return its answer as the task result; do not create automatic reply loops.';
+      const systemPrompt = [`You are Bot ${this.config.botId}. Use only your configured capabilities. Tool receipts and final task results are distinct from delivery acknowledgments. Do not replay uncertain side effects.`, this.config.prompt || '', this.promptFileContent, this.resources.prompt, capabilityNotice, peerNotice].filter(Boolean).join('\n\n');
       const promptHash = digest({ systemPrompt, declarations });
       if (session.promptHash !== promptHash) {
         const removed = getCurrentTools(session.messages).filter(tool => !tools.some(value => value.name === tool.name)).map(tool => ({ name: tool.name }));
@@ -168,12 +167,8 @@ export class BotEngine {
           stream.push({ type: 'error', reason: message.stopReason, error: message }); stream.end(message); return stream;
         }
       };
-      this.agent.beforeToolCall = () => {
-        if (++toolsCalled > this.config.limits.maxTools) { exhausted = true; return { block: true, reason: 'Tool budget exceeded', terminate: true }; }
-      };
-      this.agent.finishTurn = ({ message }) => {
-        if (turns >= this.config.limits.maxTurns && message.content?.some(value => value.type === 'toolCall')) { exhausted = true; return { action: 'end' }; }
-      };
+      // Count work for reporting without imposing a per-task execution budget.
+      this.agent.beforeToolCall = () => { toolsCalled++; };
       unsubscribe = this.agent.subscribe(event => {
         if (event.type === 'turn_start') turns++;
         if (event.type === 'message_end') {
@@ -197,7 +192,6 @@ export class BotEngine {
         combined.throwIfAborted();
       } finally { combined.removeEventListener('abort', abort); }
       const last = this.agent.state.messages.findLast(message => message.role === 'assistant');
-      if (exhausted) throw new Error('Execution budget exceeded; inspect existing tool receipts before retrying');
       if (!last || ['error', 'aborted'].includes(last.stopReason)) throw new Error(last?.errorMessage || 'Agent ended without a result');
       return clean({ content: last.content.filter(value => value.type === 'text').map(value => value.text).join('\n'), model: this.model.id,
         usage: { prompt_tokens: usage.input + usage.cacheRead, completion_tokens: usage.output, total_tokens: usage.totalTokens }, turns, toolsCalled });
@@ -205,7 +199,7 @@ export class BotEngine {
       const session = this.store.getSession(task.sessionId);
       if (session && !this.store.closed) this.repairSession(session);
       throw error;
-    } finally { clearTimeout(timer); unsubscribe?.(); this.active = null; for (const resolve of this.idleWaiters) resolve(); this.idleWaiters.clear(); }
+    } finally { unsubscribe?.(); this.active = null; for (const resolve of this.idleWaiters) resolve(); this.idleWaiters.clear(); }
   }
   health() { return { engine: 'pi-agent-core', version: '1.3.0', initialized: Boolean(this.agent), activity: this.active ? (this.active.waitingFor ? 'waiting' : 'running') : 'idle', waitingFor: this.active?.waitingFor || null, configured: this.provider.status?.configured !== false,
     activeTaskId: this.active?.taskId || null, capabilitySwitchPending: Boolean(this.taskGate), capabilityBindingRevision: this.config.capabilityBindingRevision || null,

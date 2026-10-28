@@ -79,7 +79,7 @@ fun BotDetailsScreen(store: RelayStore, botID: String, onBack: () -> Unit) {
             Text(bot?.name ?: "Bot 资料", modifier = Modifier.weight(1f))
             TextButton(onClick = onBack) { Text("完成") }
         }
-        BotAvatar(avatar.shape, avatar.color, avatar.image, 112.dp)
+        BotAvatar(avatar.shape, avatar.color, avatar.image, 112.dp, secondary=avatar.secondary, ink=avatar.ink, paper=avatar.paper)
         TextButton(onClick = { showAvatar = !showAvatar }) { Text("编辑头像") }
         if (showAvatar) {
             AvatarPicker(avatar) { avatar = it; saved = false }

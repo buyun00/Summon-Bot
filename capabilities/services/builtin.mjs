@@ -103,7 +103,7 @@ export async function createCapability(options) {
       case 'bot_memory_read':{const botId=args.botId||actor;assertOwner(actor,botId);return memories.list(botId);}
       case 'memory_propose':return memories.propose(args.deliveryId);
       case 'memory_merge':return memories.merge(args.deliveryId,args);
-      case 'routines_create':return manager.saveRoutine({...args,botId:args.botId||actor});
+      case 'routines_create':{const previous=args.id&&manager.store.get('routines',args.id);if(previous)assertOwner(actor,previous.botId);const botId=args.botId||previous?.botId||actor;assertOwner(actor,botId);return manager.saveRoutine({...args,botId});}
       case 'codex_submit':return codex.create({...args,botId:actor,sourceActionId:args.requestId||null});
       case 'codex_status':{const work=codex.require(args.workId);assertOwner(actor,work.botId);return codex.get(args.workId);}
       case 'codex_cancel':case 'codex_resume':{const work=codex.require(args.workId);assertOwner(actor,work.botId);return codex[name==='codex_cancel'?'cancel':'resume'](args.workId,args);}
@@ -112,7 +112,7 @@ export async function createCapability(options) {
   }
   const operations={};
   const expose=(target,names)=>{for(const name of names)operations[name]=(...args)=>locked(()=>target[name](...args));};
-  if(id==='bot-management')expose(manager,['create','update','start','stop','send','clone','archive','saveRoutine','seed','restore','monitor','quiesce','shutdownAll']);
+  if(id==='bot-management')expose(manager,['create','update','start','stop','send','clone','archive','saveRoutine','seed','restore','monitor','quiesce','shutdownAll','connect']);
   if(chatroom){
     expose(chatroom,['createRoom','updateRoom','post','append','dm','conclude','saveConclusion','retry','seed']);operations.upload=(...args)=>locked(()=>attachments.upload(...args));
     operations.pause=async()=>{await chatroom.close();for(const job of chatroom.jobs())if(job.serviceVersion===version&&unfinished(job))store(id).save('deliveries',{id:job.id,status:'interrupted',error:'Platform stopped before delivery completion was confirmed',finishedAt:new Date().toISOString()});return {paused:true};};

@@ -1,0 +1,7 @@
+{
+  "id": "codex-relay",
+  "name": "Codex 中继",
+  "role": "通过本机桌面 API 操作 Codex，跟进任务并向委托者回传结果",
+  "skills": ["discussion", "codex-desktop-api"],
+  "tools": ["read_file", "write_file", "edit_file", "run_command", "chatroom_list", "chatroom_read", "chatroom_send", "chatroom_dm", "bots_list", "routines_create"]
+}

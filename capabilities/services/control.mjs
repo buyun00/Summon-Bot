@@ -10,7 +10,7 @@ import { coreTools } from '../../bot/src/capabilities/core-tools.mjs';
 const object = (properties = {}, required = []) => ({ type: 'object', properties, ...(required.length ? { required } : {}), additionalProperties: true });
 const text = { type: 'string' }, names = { type: 'array', items: text };
 export const controlTools = [
-  ['capabilities_list', 'Inspect capability versions, bindings and migration blockers', 'read', object()],
+  ['capabilities_list', 'Inspect a compact paginated capability inventory; filter id or botId and use nextOffset for more. Tool schemas are omitted.', 'read', object({ id: text, botId: text, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 20 } })],
   ['capabilities_register', 'Register an independent API/MCP service manifest; registration does not grant access', 'external', object({ id: text, version: text, endpoint: text, token: text }, ['id', 'version', 'endpoint'])],
   ['capabilities_deploy', 'Deploy an immutable capability package or verified release through the configured publisher', 'external',
     { ...object({ id: text, version: text, packageRoot: text, releaseRoot: text, activate: { type: 'boolean' }, options: object() }, ['id', 'version']),
@@ -90,6 +90,19 @@ export class CapabilityControl {
   }
   inventory() {
     return { ...this.registry.inventory(), switches: this.store.list('switches').map(({ tools, toolSnapshot, ...record }) => record) };
+  }
+  toolInventory({ id, botId, offset = 0, limit = 10 } = {}) {
+    if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 20) fail('Invalid inventory pagination');
+    const inventory = this.inventory();
+    const groups = {
+      services: inventory.services.filter(item => !id || item.id === id),
+      versions: inventory.versions.filter(item => !id || item.capabilityId === id).map(({ tools, unknownRequests, ...item }) => ({ ...item, tools: tools.map(tool => ({ name: tool.name, effect: tool.effect })), unknownRequestCount: unknownRequests?.length || 0, unknownRequests: unknownRequests?.slice(0, 10) || [] })),
+      bindings: inventory.bindings.filter(item => !botId || item.id === botId).map(({ id, bindings, revision, allowedNames }) => ({ id, bindings, revision, allowedNames })),
+      switches: inventory.switches.filter(item => (!botId || item.id === botId) && (!id || item.bindings?.[id] || item.previousBindings?.[id])).map(({ id, phase, bindings, previousBindings, error, failures, registryCommitted, completedAt }) => ({ id, phase, bindings, previousBindings, error, failures, registryCommitted, completedAt })),
+    };
+    const totals = Object.fromEntries(Object.entries(groups).map(([key, items]) => [key, items.length]));
+    return { ...Object.fromEntries(Object.entries(groups).map(([key, items]) => [key, items.slice(offset, offset + limit)])), totals, offset, limit,
+      nextOffset: Object.values(totals).some(count => count > offset + limit) ? offset + limit : null, schemasOmitted: true };
   }
   save(botId, patch) { return this.store.save('switches', { id: botId, ...patch }); }
   begin(bot, proposal) {
@@ -263,7 +276,7 @@ export class CapabilityControl {
   }
   async call(name, args, context) {
     switch (name) {
-      case 'capabilities_list': return this.inventory();
+      case 'capabilities_list': return this.toolInventory(args);
       case 'capabilities_register': return this.registry.register(args);
       case 'capabilities_deploy': if (!this.deploy) fail('Capability publisher is not configured', 503); return this.deploy(args);
       case 'capabilities_activate': return this.activate(args.id, args.version);

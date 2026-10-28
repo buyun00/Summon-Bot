@@ -1,6 +1,6 @@
 'use strict';
 // Bump this version whenever the application shell changes.
-const CACHE = 'relay-shell-20261022-brand-and-replies-v1';
+const CACHE = 'relay-shell-20261022-little-crew-v2';
 const ICON_VERSION = '?v=relay-duo-20261022';
 const ASSETS = ['/', '/offline.html', '/style.css', '/mobile.css', '/cache.js', '/app.js', '/avatars.js', '/motion.js', '/pwa.js', `/manifest.webmanifest${ICON_VERSION}`, ...['icon-192', 'icon-512', 'icon-maskable-192', 'icon-maskable-512', 'apple-touch-icon'].map(name => `/icons/${name}.png${ICON_VERSION}`)];
 self.addEventListener('install', event => {

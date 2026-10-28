@@ -1,0 +1,33 @@
+{
+  "host": "127.0.0.1",
+  "port": 47831,
+  "callerThreadId": "REPLACE_WITH_AN_EXISTING_LOCAL_CODEX_THREAD_ID",
+  "requestTimeoutMs": 45000,
+  "pollIntervalMs": 5000,
+  "discoveryLimit": 50,
+  "maxSubscriptions": 128,
+  "eventRetention": 10000,
+  "auth": {
+    "enabled": false,
+    "localhostBypass": true
+  },
+  "requireAuth": false,
+  "webhook": {
+    "enabled": false,
+    "url": "",
+    "secret": "",
+    "events": [
+      "thread.status:idle",
+      "thread.status:completed",
+      "thread.status:failed",
+      "waiting_for_input",
+      "desktop.disconnected"
+    ],
+    "debounceMs": 300,
+    "minIntervalMs": 1000,
+    "timeoutMs": 5000,
+    "maxAttempts": 3,
+    "retryDelayMs": 1000,
+    "maxQueue": 256
+  }
+}

@@ -26,11 +26,21 @@ export function normalizeBotConfig(input, baseDirectory = process.cwd()) {
   config.tools = input.tools || [];
   config.peers = input.peers || [];
   config.contacts = input.contacts || [];
+  if (!Array.isArray(config.contacts) || !Array.isArray(config.peers)) throw new Error('contacts and peers must be arrays');
+  for (const contact of config.contacts) {
+    if (!contact.botId || contact.botId === config.botId || typeof contact.token !== 'string' || contact.token.length < 24) throw new Error('Contact requires a different botId and private token');
+    if (contact.dataDir !== undefined) { if (typeof contact.dataDir !== 'string' || !isAbsolute(contact.dataDir)) throw new Error('Local contact requires an absolute dataDir'); }
+    else { const url = new URL(contact.url); if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('Invalid contact URL'); }
+  }
+  if (new Set(config.contacts.map(contact => contact.botId)).size !== config.contacts.length) throw new Error('Contact IDs must be unique');
   for (const peer of config.peers) if (!peer.botId || typeof peer.token !== 'string' || peer.token.length < 24) throw new Error('Peer requires botId and private token');
   if (new Set(config.peers.map(peer => peer.token)).size !== config.peers.length) throw new Error('Peer authentication tokens must be unique');
+  if (new Set(config.peers.map(peer => peer.botId)).size !== config.peers.length || config.peers.some(peer => peer.botId === config.botId || peer.token === config.token)) throw new Error('Invalid peer identity or management token reuse');
   config.model = { provider: 'openai-compatible', contextWindow: 128000, maxTokens: 6000, ...input.model };
-  config.limits = { maxTurns: 16, maxTools: 32, timeoutMs: 600000, maxContextBytes: 384000, ...input.limits };
-  for (const [key, value] of Object.entries(config.limits)) if (['maxTurns', 'maxTools', 'timeoutMs', 'maxContextBytes'].includes(key) && (!Number.isSafeInteger(value) || value < 1)) throw new Error(`Invalid limits.${key}`);
+  config.limits = { maxContextBytes: 384000, ...input.limits };
+  // Discard legacy execution budgets when loading existing Bot configurations.
+  for (const key of ['maxTurns', 'maxTools', 'timeoutMs']) delete config.limits[key];
+  if (!Number.isSafeInteger(config.limits.maxContextBytes) || config.limits.maxContextBytes < 1) throw new Error('Invalid limits.maxContextBytes');
   if (config.app !== undefined || config.appFactory !== undefined) throw new Error('Bot always uses its Pi Agent; custom application factories are unsupported');
   return config;
 }

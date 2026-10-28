@@ -59,7 +59,7 @@ export async function inspectService(config, type) {
   } catch (error) { if (error.code === 'SERVICE_IDENTITY_MISMATCH') throw error; return { ...run, state: 'unreachable' }; }
 }
 
-export async function launchService(config, type, { foreground = false, timeoutMs = 180000 } = {}) {
+export async function launchService(config, type, { foreground = false, timeoutMs = 180000, onExit } = {}) {
   const current = await inspectService(config, type);
   if (current.state === 'ready') {
     if (resolve(current.releaseRoot) !== resolve(config.releaseRoot)) throw new Error(`${type} still runs another release; stop it before switching`);
@@ -76,7 +76,7 @@ export async function launchService(config, type, { foreground = false, timeoutM
     { cwd: config.defaultCwd, env: await deploymentEnvironment(config), detached: !foreground, windowsHide: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
   let failure;
   child.once('error', error => { failure = error; });
-  child.once('exit', (code, signal) => { failure ||= new Error(`${type} exited before readiness (${code ?? signal}); see ${logRoot}`); });
+  child.once('exit', (code, signal) => { failure ||= new Error(`${type} exited before readiness (${code ?? signal}); see ${logRoot}`); onExit?.(code, signal); });
   child.on('message', message => {
     if (message.type === 'error') failure = Object.assign(new Error(message.message), { code: message.code });
     if (['ready', 'error'].includes(message.type) && child.connected) child.disconnect();

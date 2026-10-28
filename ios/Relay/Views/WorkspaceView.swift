@@ -112,9 +112,9 @@ struct WorkspaceView: View {
         ForEach(bots) { bot in
             NavigationLink { BotDetailsView(botID: bot.id) } label: {
                 HStack(spacing: 12) {
-                    BotAvatar(shape: bot.value["avatar"]["shape"].string ?? "circle",
-                              color: bot.value["avatar"]["color"].string ?? "#8F59F9",
-                              image: bot.value["avatar"]["image"].string, size: 42)
+                    BotAvatar(shape: bot.value["avatar"]["shape"].string ?? "dev",
+                              color: bot.value["avatar"]["color"].string ?? "#FFC18E",
+                              image: bot.value["avatar"]["image"].string, size: 42, secondary: bot.value["avatar"]["secondary"].string, ink: bot.value["avatar"]["ink"].string, paper: bot.value["avatar"]["paper"].string)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(bot.value["name"].string ?? bot.id).font(.headline)
                         Text(bot.value["role"].stringValue).font(.subheadline).foregroundStyle(.secondary)

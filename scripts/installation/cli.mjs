@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import { parseArgs, readJson } from '../build/files.mjs';
 import { initializeDeployment, deploymentPath, startSystem, stopSystem, inspectService } from './system.mjs';
-import { superviseServices } from './supervise.mjs';
+import { watchSystem } from './watchdog.mjs';
 
 const installedRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 export async function main(args = process.argv.slice(2)) {
@@ -24,11 +24,9 @@ export async function main(args = process.argv.slice(2)) {
   else if (command === 'status') result = { web: await inspectService(config, 'web'), gateway: await inspectService(config, 'gateway') };
   else if (command === 'stop') result = await stopSystem(config);
   else if (command === 'start' || command === 'dev') {
+    if (options.foreground) return watchSystem(config, { respectIntent: Boolean(options['respect-intent']) });
     result = await startSystem(config, { foreground: Boolean(options.foreground), respectIntent: Boolean(options['respect-intent']) });
     console.log(JSON.stringify(result, null, 2));
-    if (options.foreground && result.state === 'ready') {
-      await superviseServices({ inspect: type => inspectService(config, type), shutdown: () => stopSystem(config) });
-    }
     return result;
   } else throw new Error(`Unknown command: ${command}`);
   console.log(JSON.stringify(result, null, 2)); return result;

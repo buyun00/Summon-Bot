@@ -8,14 +8,19 @@
 
 `config/deployment.json` 位于数据根，声明发行路径、工作目录、模型、Web 和能力网关地址。控制令牌和 Bot 凭据只存在本机数据目录，不提交 Git。`config/runtime.env` 是显式凭据来源，例如 `DEEPSEEK_API_KEY=...`；不会自动搜索其他项目。
 
-每个 Bot 的 `config.json` 可配置模型、提示词、skills、HTTP/module/MCP tools、contacts、peers、并发与预算。独立使用示例见 `bot/README.md` 与 `bot/examples/`。
+每个 Bot 的 `config.json` 可配置模型、提示词、skills、HTTP/module/MCP tools、contacts、peers 和上下文压缩。任务不设模型轮数、工具调用次数或总执行时长上限；旧配置中的 maxTurns、maxTools、timeoutMs 会被忽略。用户取消、服务关闭和实际调用错误仍正常生效。独立使用示例见 `bot/README.md` 与 `bot/examples/`。
 
 新建普通 Bot 使用 `default` 角色时，默认挂载 Pi 风格的四项基础工具：`read_file`（读文件）、`write_file`（写文件）、`edit_file`（修改文件）和 `run_command`（执行命令），并保留已有的协作与自身记忆能力。这四项工具由独立的 filesystem 能力服务提供，Bot 引擎负责调用。文件工具可访问该 Bot 的 workspace 和已配置的项目目录；命令以宿主用户身份运行，工作目录约定不等于操作系统沙箱。角色模板变更用于新建实例，已有 Bot 通过能力授权更新其工具配置。
 
 ## 日常启停
 
+Codex 桌面 API 已整合到 `connectors/codex-desktop-api` 并随正式发行打包。开机助手条目“Relay Bot · Codex 连接器”沿用 `Codex Desktop API` 任务，由本项目 `Run-Hidden.vbs` 无控制台启动，实际运行 current.json 选择的已安装代码。配置、事件与幂等数据库、日志在 `D:/Relay-Bot-data/connectors/codex-desktop-api`。手动启动双击该连接器的 `Start-Hidden.vbs`；停止用其 `Stop.ps1`。连接器更新后需单独重启该任务；不再使用原 `D:/Codex-Desktop-API` 服务入口。
+
 - `Start.ps1 -DataRoot <数据根>` 启动，已就绪实例不重复启动。
 - `Start.ps1 -Foreground -RespectIntent` 供 StartupHub 跟踪；尊重此前保存的停止意图。
+- 正式 `Start.ps1` 启动后会拉起已有的 `Relay Bot Foundation` 任务。前台任务持有独占身份锁，每 5 秒检查 Web/网关，仅在确认进程停止时自动恢复；连续失败按 5/10/20/40/60 秒退避，稳定运行 60 秒后清零。身份不明或暂时无响应时保留原进程，不启动副本。
+- 看门狗日志在 `web/watchdog/process.log`，沿用日志轮转，记录状态、重启尝试、恢复及其子进程退出码。`Stop.ps1` 保存停止意图后，看门狗退出，不会反复拉起；任务自身异常退出由 Windows 以 1 分钟间隔重试（最多 999 次）。
+- 2026-10-28 实测本机按需任务的 Windows 失败重试未触发，不能将该设置视为恢复保证。任务内的 PowerShell 启动器保持常驻；Node 看门狗退出后等待 60 秒重新拉起，重试前再次读取停止意图。此层事件记录在 `web/logs/startup.log`。结束整个计划任务不等同于结束 Node 看门狗。
 - `Stop.ps1 -DataRoot <数据根>` 正常停止所有 Bot、Web 和网关；身份无法确认时报告错误，不按陈旧 PID 杀进程。
 - `npm run relay:status -- --data-root <数据根>` 查询真实控制接口。
 
@@ -59,6 +64,10 @@ npm run relay:history -- --data-root D:/Relay-Bot-data
 任务重试按 `retryOf` 关联已有尝试，重复点击复用在途或已完成尝试；已经存在明确对应回复的旧中断记录不会再次执行。失败提示贴在对应触发消息处，不持续显示在无关新回复底部。
 
 ## 发行与升级
+
+Windows 正式发行使用 Node 24.21.0 LTS 构建并随包携带该运行时，启动脚本自动使用包内 `runtime/node.exe`，不需要替换系统 Node。不要使用 24.15.0 / 25.8.0 打包：这些版本存在 Windows TCP keepalive 原生栈越界，构建入口已拒绝它们。上游修复见 [nodejs/node#62561](https://github.com/nodejs/node/pull/62561)。在指定运行时下运行 `node.exe scripts/build/build.mjs --bundle-node`，其余安装流程不变。
+
+网页 Bot 详情中的“直连联系人”可建立或断开两个现有 Bot 的双向连接。连接使用独立、按方向区分的对端令牌，不共享管理令牌；重复提交可完成中途失败的配置。已有连接保存在各 Bot 配置中。本机联系人通过对端自己的身份管道解析当前地址，所以对端重启换端口后不需要经过网关刷新地址。`contacts_list`、`messages_send`、带 `botId` 的 `tasks_get` / `tasks_cancel` 都是 Bot 内核直连能力，已建立的连接不依赖聊天室或网关在线。暂停的 Bot 拒绝新的直连请求；断开连接撤销双方后续访问，不中断已开始的任务。当前网页建立的是同机直连，不代表跨机器公网连通。
 
 能力服务支持独立发布，操作见 [CAPABILITY_SERVICES.md](CAPABILITY_SERVICES.md)。`npm run relay:capabilities -- list` 可以查看版本、绑定和切换状态；`deploy` 从发行物或自包含服务包启动一个新版本，不重启 Web、网关或 Bot。注册、激活、授权和退役分别记录；卸载不删除数据。仍被旧 Bot 或长任务引用的发行目录是实际运行依赖，按当前任务需要处理。
 

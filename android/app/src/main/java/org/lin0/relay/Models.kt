@@ -1,52 +1,39 @@
 package org.lin0.relay
 
 data class RelayAvatar(
-    val shape: String = "circle",
-    val color: String = "#1E86FC",
+    val shape: String = "dev",
+    val color: String = "#FFC18E",
     val image: String? = null,
+    val secondary: String? = null,
+    val ink: String? = null,
+    val paper: String? = null,
 ) {
     fun toJson(): RelayJson = RelayJson.obj(
         "shape" to RelayJson.Str(shape),
         "color" to RelayJson.Str(color),
         "image" to (image?.let { RelayJson.Str(it) } ?: RelayJson.Null),
+        "secondary" to (secondary?.let { RelayJson.Str(it) } ?: RelayJson.Null),
+        "ink" to (ink?.let { RelayJson.Str(it) } ?: RelayJson.Null),
+        "paper" to (paper?.let { RelayJson.Str(it) } ?: RelayJson.Null),
     )
 
     companion object {
-        val shapes = listOf(
-            "circle" to "圆形", "cloud" to "云朵", "square" to "方块",
-            "star4" to "四角星", "clover" to "四叶草", "heart" to "爱心",
-            "flower" to "花朵", "drop" to "水滴", "pill" to "胶囊",
-            "triangle" to "三角形", "pentagon" to "小屋",
-            "star6" to "六角星", "hexagon" to "六边形",
-        )
-        val colors = listOf(
-            "#000000", "#A06B39", "#FB2B3E", "#FD690F", "#F59312", "#14C16F",
-            "#13B7A2", "#1E86FC", "#8F59F9", "#F93498", "#959595",
-        )
+        val shapes = CrewLibrary.ids.zip(CrewLibrary.names)
 
         fun parse(json: RelayJson): RelayAvatar = RelayAvatar(
-            shape = json["shape"].string ?: "circle",
-            color = json["color"].string ?: "#1E86FC",
+            shape = json["shape"].string ?: "dev",
+            color = json["color"].string ?: "#FFC18E",
             image = json["image"].string,
+            secondary = json["secondary"].string,
+            ink = json["ink"].string,
+            paper = json["paper"].string,
         )
 
-        fun defaultFor(id: String): RelayAvatar = when (id) {
-            "bot-engineer" -> RelayAvatar(shape = "circle", color = "#F93498")
-            "bot-components" -> RelayAvatar(shape = "star4", color = "#8F59F9")
-            "bot-qa" -> RelayAvatar(shape = "cloud", color = "#13B7A2")
-            else -> {
-                val shapes = listOf("circle", "cloud", "square", "star4", "clover", "heart", "flower", "drop", "pill", "triangle", "pentagon", "star6", "hexagon")
-                val colors = colors
-                var value = 5381L
-                for (character in id) {
-                    value = (value * 33) xor character.code.toLong()
-                    value = value and 0xFFFFFFFFL
-                }
-                RelayAvatar(
-                    shape = shapes[(value % shapes.size).toInt()],
-                    color = colors[((value shr 5) % colors.size).toInt()],
-                )
-            }
+        fun defaultFor(id: String): RelayAvatar {
+            var value = 5381L
+            for (character in id.codePoints().toArray()) value = ((value * 33) xor character.toLong()) and 0xFFFFFFFFL
+            val role = when(id) { "bot-engineer" -> "dev"; "bot-components" -> "plan"; "bot-qa" -> "qa"; else -> CrewLibrary.ids[(value % CrewLibrary.ids.size).toInt()] }
+            return RelayAvatar(shape=role, color=CrewLibrary.defaultColors[CrewLibrary.ids.indexOf(role)])
         }
     }
 }

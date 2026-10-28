@@ -25,7 +25,7 @@ struct BotDetailsView: View {
             Section {
                 HStack {
                     Spacer()
-                    BotAvatar(shape: avatar.shape, color: avatar.color, image: avatar.image, size: 112)
+                    BotAvatar(shape: avatar.shape, color: avatar.color, image: avatar.image, size: 112, secondary: avatar.secondary, ink: avatar.ink, paper: avatar.paper)
                     Spacer()
                 }
                 .listRowBackground(Color.clear)

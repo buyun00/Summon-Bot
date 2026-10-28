@@ -34,7 +34,7 @@ export async function startGateway(options={}) {
   const registry=new CapabilityRegistry({store:store('registry'),emit,reservedTools:[...botToolNames,...controlTools.map(tool=>tool.name)]});
   const supervisor=new CapabilityServiceSupervisor({dataRoot,releaseRoot});
   let control;
-  const manager=new BotManager({store:store('bot-management'),dataRoot,releaseRoot,defaultCwd,model:options.model,emit,botApi:options.botApi,gatewayUrl:()=>url,getTools:bot=>control.tools(bot)});
+  const manager=new BotManager({store:store('bot-management'),dataRoot,releaseRoot,defaultCwd,model:options.model,emit,botApi:options.botApi,cacheReadStores:true,gatewayUrl:()=>url,getTools:bot=>control.tools(bot)});
   const deploy=args=>deployCapability(args,{dataRoot,defaultCwd,model:options.model,codexPath:options.codexPath,gatewayUrl:url,gatewayToken:token,supervisor,registry,control});
   control=new CapabilityControl({registry,supervisor,manager,store:store('registry'),gatewayUrl:()=>url,emit,deploy});
   const rpc=(id,operation,args=[],version)=>{
@@ -43,7 +43,7 @@ export async function startGateway(options={}) {
     return registry.invokeVersion(id,selected,operation,args,{context:{actor:'controller'}});
   };
   const proxy=(target,id,names)=>{for(const name of names)target[name]=(...args)=>rpc(id,name,args);};
-  proxy(manager,'bot-management',['create','update','start','stop','send','clone','archive','saveRoutine','seed','restore','monitor','quiesce','shutdownAll']);
+  proxy(manager,'bot-management',['create','update','start','stop','send','clone','archive','saveRoutine','seed','restore','monitor','quiesce','shutdownAll','connect']);
   const attachments=new AttachmentStore(join(dataRoot,'capabilities','chatroom'));
   const chatroom=new ChatroomService({store:store('chatroom'),manager,attachments,emit});
   const knowledge=new KnowledgeService({store:store('knowledge'),emit}),memories=new MemoryManagement({store:store('memory-management'),manager,dataRoot,emit});
@@ -61,17 +61,27 @@ export async function startGateway(options={}) {
   const sync=new IncrementalSync(store('gateway'));
   async function ownRun(id) {
     for(const bot of manager.list()){
-      let tasks;try{tasks=await manager.tasks(bot.id);}catch{continue;}
-      const task=tasks.find(task=>task.id===id||task.taskId===id);if(task){let full=task;try{full=await manager.request(bot.id,`/tasks/${encodeURIComponent(id)}`);}catch{}return {id,...full,botId:bot.id,tools:full.tools||await manager.readState(bot.id,db=>db?.listTools(id)||[]),summary:full.result?.content||full.summary||'',sessionId:full.sessionId,roomId:full.sessionId?.replace(/^room:/,'')};}
+      const full=await manager.readState(bot.id,db=>{const task=db?.getTask(id);return task?{...task,tools:db.listTools(id)}:null;});
+      if(full)return {id,...full,botId:bot.id,summary:full.result?.content||full.summary||'',sessionId:full.sessionId,roomId:full.sessionId?.replace(/^room:/,'')};
       const historical=await manager.readState(bot.id,db=>db?.getRecord?.('agentRuns',id));if(historical)return {...historical,botId:bot.id,tools:await manager.readState(bot.id,db=>db?.listRecords?.('toolRuns').filter(tool=>tool.runId===id)||[])};
     }return null;
   }
   const downloads=new RunArtifactDownloads({getRun:ownRun,resolveRoot:run=>({dataRoot,artifactRoot:join(manager.directory(run.botId),'artifacts')}),tempRoot:join(dataRoot,'capabilities','gateway','tmp','downloads')});
   async function state() {
-    const agentRuns=[],providers=[];for(const bot of manager.list()){
-      try{for(const task of await manager.tasks(bot.id)){const tools=await manager.readState(bot.id,db=>db?.listTools(task.id||task.taskId)||[]);agentRuns.push({id:task.id||task.taskId,...task,botId:bot.id,summary:task.result?.content||task.summary||'',toolCount:task.result?.toolsCalled??tools.length,roomId:task.sessionId?.replace(/^room:/,'')});}const health=await manager.request(bot.id,'/health');if(health.engine?.provider)providers.push(health.engine.provider);}catch{}
-      for(const record of await manager.readState(bot.id,db=>db?.listRecords?.('agentRuns')||[]))if(!agentRuns.some(run=>run.id===record.id))agentRuns.push({...record,botId:bot.id});
-    }
+    const agentRuns=[],providers=[];
+    await Promise.all(manager.list().map(async bot=>{
+      // A single durable snapshot per Bot avoids reopening its database for every
+      // historical task and reading every full tool result on every UI refresh.
+      const snapshot=await manager.readState(bot.id,db=>{
+        if(!db)return {tasks:[],legacy:[],counts:{}};
+        return {tasks:db.listTasks().slice(-100),legacy:db.listRecords?.('agentRuns')||[],
+          counts:Object.fromEntries(db.db.prepare('SELECT task_id,COUNT(*) AS count FROM tools GROUP BY task_id').all().map(row=>[row.task_id,row.count]))};
+      });
+      for(const task of snapshot.tasks)agentRuns.push({id:task.id||task.taskId,...task,botId:bot.id,summary:task.result?.content||task.summary||'',toolCount:task.result?.toolsCalled??snapshot.counts[task.id||task.taskId]??0,roomId:task.sessionId?.replace(/^room:/,'')});
+      for(const record of snapshot.legacy)if(!agentRuns.some(run=>run.id===record.id))agentRuns.push({...record,botId:bot.id});
+      try{const health=await manager.request(bot.id,'/health',{signal:AbortSignal.timeout(2000)});if(health.engine?.provider)providers.push(health.engine.provider);}catch{}
+    }));
+    agentRuns.sort((a,b)=>String(a.createdAt||'').localeCompare(String(b.createdAt||'')));
     const messages=chatroom.store.list('messages'),jobs=chatroom.jobs(),runtime={started:true,fast:{running:jobs.filter(job=>['running','accepted'].includes(job.status)).length,queued:jobs.filter(job=>job.status==='queued').length},deep:{running:0,queued:0},jobs:jobs.slice(-80)};
     const latestProvider=providers.slice().sort((a,b)=>String(b.lastSuccessAt||'').localeCompare(String(a.lastSuccessAt||'')))[0]||{};
     return {historyEpoch,bots:manager.list(),rooms:chatroom.rooms(),routines:manager.store.list('routines'),knowledge:knowledge.graph(),runtime,activity:messages.filter(message=>message.returnTo||message.peerReplyId||['event','work'].includes(message.kind)).slice(-100),works:codex.list(),agentRuns:agentRuns.slice(-100),provider:{configured:Boolean(options.model?.apiKey||process.env[options.model?.apiKeyEnv||'DEEPSEEK_API_KEY']),model:options.model?.model||'deepseek-flash',...latestProvider},defaultCwd};
@@ -106,6 +116,7 @@ export async function startGateway(options={}) {
     if(method==='GET'&&path==='/api/state'){const value=await state();return params.get('sync')==='1'?{...sync.respond('workspace',value,params.get('since')),historyEpoch}:value;}
     if(method==='GET'&&path==='/api/bots')return {bots:manager.list()};
     if(method==='POST'&&path==='/api/bots')return manager.create(body);
+    if((match=path.match(/^\/api\/bots\/([^/]+)\/contacts$/))){const id=decodeURIComponent(match[1]);if(method==='GET')return manager.contacts(id);if(method==='POST')return manager.connect(id,body.botId,{enabled:body.enabled??true});}
     if((match=path.match(/^\/api\/bots\/([^/]+)$/))&&method==='PATCH')return manager.update(decodeURIComponent(match[1]),body);
     if((match=path.match(/^\/api\/bots\/([^/]+)\/memories$/))){const id=decodeURIComponent(match[1]);if(method==='GET')return {memories:(await memories.list(id)).map(memory=>({...memory,content:memory.text}))};if(method==='POST')return memories.write(id,body);}
     if((match=path.match(/^\/api\/memories\/([^/]+)$/))&&method==='PATCH'){for(const bot of manager.list()){const found=(await memories.list(bot.id)).find(memory=>memory.id===decodeURIComponent(match[1]));if(found)return memories.write(bot.id,{...body,id:found.id,expectedRevision:body.expectedRevision??found.revision});}fail('Memory not found',404);}
@@ -132,7 +143,11 @@ export async function startGateway(options={}) {
   }
   const authenticate=req=>{const supplied=req.headers.authorization?.replace(/^Bearer /,'');if(same(supplied,token))return 'controller';for(const bot of manager.store.list('bots'))if(same(supplied,bot.capabilityToken))return bot.id;fail('Unauthorized',401);};
   const json=(res,status,value)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(value));};
-  const server=createServer((req,res)=>{const work=(async()=>{
+  const server=createServer((req,res)=>{
+    // A disconnected streaming client must not terminate the shared gateway.
+    res.on('error',()=>{clients.delete(res);res.destroy();});
+    res.once('close',()=>clients.delete(res));
+    const work=(async()=>{
     try{const actor=authenticate(req),requestUrl=new URL(req.url,'http://localhost'),path=requestUrl.pathname;
       if(actor!=='controller'&&(path.startsWith('/api/')||path.startsWith('/internal/')))fail('User API requires controller authentication',403);
       if(closing&&!path.startsWith('/internal/service/'))fail('Gateway is stopping; new requests are unavailable',503);
@@ -159,7 +174,7 @@ export async function startGateway(options={}) {
       const artifact=path.match(/^\/api\/agent-runs\/([^/]+)\/tools\/([^/]+)\/artifacts\/([^/]+)$/);if(artifact&&['GET','HEAD'].includes(req.method)){if(requestUrl.search)fail('Artifact IDs only',404);const file=await downloads.read(...artifact.slice(1).map(decodeURIComponent));try{res.writeHead(200,file.headers);if(req.method==='HEAD'||file.size===0)res.end();else await pipeline(file.handle.createReadStream({autoClose:false,start:0,end:file.size-1}),res);}finally{await file.close();}return;}
       const result=await handleApi(req.method,path,body,requestUrl.searchParams);if(result===undefined)fail('Not found',404);json(res,200,result);
     }catch(error){if(!res.headersSent)json(res,error.status||400,{error:String(error.message).replace(/\bsk-[a-zA-Z0-9_-]+/g,'[redacted]')});else res.end();}
-  })();pending.add(work);work.finally(()=>pending.delete(work));});
+  })();pending.add(work);void work.catch(error=>console.error('Gateway request failed:',error.stack||error.message)).finally(()=>pending.delete(work));});
   async function stopIdleWorkers() {
     for(const service of await supervisor.list())if(service.state!=='stopped'&&!service.pendingWork&&!service.activeRequests){
       try{await supervisor.stop(service.id,service.version);}catch(error){if(error.code!=='CAPABILITY_BUSY')throw error;}
@@ -237,7 +252,7 @@ export async function startGateway(options={}) {
     control.pinExisting();await control.tick();
     if(options.restore!==false)await manager.restore();
   } catch(error) {
-    closing=true;await control.close();await stopIdleWorkers().catch(()=>{});for(const client of clients)client.end();server.closeAllConnections();if(server.listening)await new Promise(done=>server.close(done));await Promise.allSettled([...pending]);for(const value of stores.values())value.close();throw error;
+    closing=true;await control.close();await stopIdleWorkers().catch(()=>{});for(const client of clients)client.end();server.closeAllConnections();if(server.listening)await new Promise(done=>server.close(done));await Promise.allSettled([...pending]);manager.closeReadStores();for(const value of stores.values())value.close();throw error;
   }
   const monitor=setInterval(async()=>{if(monitoring||closing||quiescing)return;monitoring=true;try{await manager.monitor();}catch(error){emit('gateway-error',{error:error.message});}finally{monitoring=false;}},5000);monitor.unref();
   const serviceMonitor=setInterval(()=>{void monitorServices().catch(error=>emit('gateway-error',{error:error.message}));},2000);serviceMonitor.unref();
@@ -260,7 +275,7 @@ export async function startGateway(options={}) {
     while(pending.size)await Promise.allSettled([...pending]);
     await stopIdleWorkers();for(const client of clients)client.end();
     await new Promise(done=>{server.close(done);server.closeIdleConnections?.();});
-    await Promise.allSettled([...pending]);for(const value of stores.values())value.close();
+    await Promise.allSettled([...pending]);manager.closeReadStores();for(const value of stores.values())value.close();
   })();
   return {url,token,server,manager,chatroom,knowledge,codex,memories,attachments,registry,supervisor,control,state,handleApi,callTool,monitorServices,stopBots,close};
 }

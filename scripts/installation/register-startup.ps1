@@ -19,8 +19,13 @@ if (@($relayTask.Triggers | Where-Object { $null -ne $_ }).Count) { throw 'Revie
 $relayShell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $relayArguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -Foreground -RespectIntent -DataRoot "{1}"' -f $relayLauncher,$DataRoot
 $relayAction = New-ScheduledTaskAction -Execute $relayShell -Argument $relayArguments -WorkingDirectory $AppRoot
-Set-ScheduledTask -TaskName $relayEntry.taskName -TaskPath $relayEntry.taskPath -Action $relayAction | Out-Null
-$relayEntry.purpose = 'Independent Pi Bots and Web/PWA; http://127.0.0.1:8787'
+$relaySettings = $relayTask.Settings
+$relaySettings.ExecutionTimeLimit = 'PT0S'
+$relaySettings.MultipleInstances = 2 # IgnoreNew
+$relaySettings.RestartCount = 999
+$relaySettings.RestartInterval = 'PT1M'
+Set-ScheduledTask -TaskName $relayEntry.taskName -TaskPath $relayEntry.taskPath -Action $relayAction -Settings $relaySettings | Out-Null
+$relayEntry.purpose = 'Relay Bot Web and gateway watchdog; automatic recovery; http://127.0.0.1:8787'
 # The user explicitly requested no backup copies; preserve all unrelated items in place.
 $relaySerialized = $relayItems | ConvertTo-Json -Depth 20
 $relayRoundTrip = @($relaySerialized | ConvertFrom-Json)

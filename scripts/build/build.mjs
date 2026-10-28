@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { copyTree, walk, readJson, writeJson, digest, within, parseArgs } from './files.mjs';
 
 export const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const directories = ['bot', 'web', 'capabilities', 'roles', 'skills', 'scripts/build', 'scripts/installation', 'scripts/migration', 'scripts/maintenance'];
+const directories = ['bot', 'web', 'capabilities', 'connectors', 'roles', 'skills', 'scripts/build', 'scripts/installation', 'scripts/migration', 'scripts/maintenance'];
 const rootFiles = ['package.json', 'package-lock.json', 'README.md', 'AGENTS.md', 'Start.ps1', 'Stop.ps1', 'Run.cmd'];
 const include = name => !name.split('/').some(part => ['node_modules', '.git', '.relay', 'test', 'tests', 'coverage', 'dist'].includes(part)
   || /^\.env(?:\.|$)/.test(part) || /(?:\.sqlite(?:-\w+)?|\.log|\.tmp)$/.test(part));
@@ -34,6 +34,9 @@ async function materializeWorkspace(root, folder) {
 }
 
 export async function buildRelease({ sourceRoot = projectRoot, releaseRoot, bundleNode = true, integrity = false } = {}) {
+  // These Windows builds contain libuv's uninitialized OSVERSIONINFOW stack
+  // overwrite in TCP keepalive (nodejs/node#62561). Never ship them again.
+  if (process.platform === 'win32' && ['24.15.0','25.8.0'].includes(process.versions.node)) throw new Error('This Node build has a Windows TCP keepalive native crash. Build with the fixed Node 24.21.0 LTS runtime.');
   sourceRoot = resolve(sourceRoot);
   const buildId = `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`;
   releaseRoot = resolve(releaseRoot || join(sourceRoot, 'dist', 'releases', buildId));
@@ -44,6 +47,10 @@ export async function buildRelease({ sourceRoot = projectRoot, releaseRoot, bund
   await writeJson(join(stage, 'build-owner.json'), { sourceRoot, releaseRoot, buildId, pid: process.pid });
   const pkg = await readJson(join(sourceRoot, 'package.json')), lock = await readJson(join(sourceRoot, 'package-lock.json'));
   for (const folder of directories) await copyTree(join(sourceRoot, folder), join(stage, folder), include);
+  // Every published shell must be discoverable by existing cache-first PWAs.
+  const workerPath = join(stage, 'web', 'frontend', 'sw.js');
+  const worker = await readFile(workerPath, 'utf8');
+  await writeFile(workerPath, worker.replace(/^const CACHE = .*;$/m, `const CACHE = 'relay-shell-${buildId}';`));
   for (const name of rootFiles) await copyFile(join(sourceRoot, name), join(stage, name));
   await mkdir(join(stage, 'docs'), { recursive: true });
   for (const name of ['REFACTOR_PLAN.md', 'ARCHITECTURE.md', 'OPERATIONS.md', 'VERIFICATION.md', 'CAPABILITY_SERVICES.md', 'DEVELOPMENT.md']) if (existsSync(join(sourceRoot, 'docs', name))) await copyFile(join(sourceRoot, 'docs', name), join(stage, 'docs', name));

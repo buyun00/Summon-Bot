@@ -340,7 +340,7 @@ private fun SettingsSheet(store: RelayStore, onDismiss: () -> Unit) {
 fun CreateBotSheet(store: RelayStore, onOpenRoom: (String) -> Unit, onDismiss: () -> Unit) {
     val scope = rememberCoroutineScope()
     var name by remember { mutableStateOf("") }
-    var avatar by remember { mutableStateOf(RelayAvatar(shape = "clover", color = "#8F59F9")) }
+    var avatar by remember { mutableStateOf(RelayAvatar()) }
     var busy by remember { mutableStateOf(false) }
     var created by remember { mutableStateOf<RelayBot?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -348,7 +348,7 @@ fun CreateBotSheet(store: RelayStore, onOpenRoom: (String) -> Unit, onDismiss: (
         Column(Modifier.verticalScroll(rememberScrollState()).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Text("创建新 Bot", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(16.dp))
-            BotAvatar(avatar.shape, avatar.color, avatar.image, 148.dp)
+            BotAvatar(avatar.shape, avatar.color, avatar.image, 148.dp, secondary=avatar.secondary, ink=avatar.ink, paper=avatar.paper)
             OutlinedTextField(name, { name = it.take(100) }, placeholder = { Text("为 Bot 取个名字") }, modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp))
             AvatarPicker(avatar) { avatar = it }
             error?.let { Text(it, color = Color(0xFFFF9F0A)) }
@@ -373,18 +373,53 @@ fun CreateBotSheet(store: RelayStore, onOpenRoom: (String) -> Unit, onDismiss: (
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AvatarPicker(avatar: RelayAvatar, onChange: (RelayAvatar) -> Unit) {
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        RelayAvatar.shapes.forEach { (id, label) ->
-            val selected = avatar.image == null && avatar.shape == id
-            Box(Modifier.clickable { onChange(avatar.copy(shape = id, image = null)) }.padding(4.dp).then(if (selected) Modifier.background(Color.Transparent) else Modifier)) {
-                BotAvatar(id, avatar.color, size = 43.dp)
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val templates = remember { CrewLibrary.data(context).getJSONArray("templates") }
+    var custom by remember { mutableStateOf(false) }
+    FlowRow(horizontalArrangement=Arrangement.spacedBy(8.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+        RelayAvatar.shapes.forEach { (id,label) ->
+            val selected=avatar.image == null && CrewLibrary.role(avatar.shape)==id
+            Column(Modifier.width(68.dp).clip(RoundedCornerShape(10.dp)).background(if(selected) Color(0xFF454559) else Color.Transparent).clickable { onChange(avatar.copy(shape=id,image=null)) }.padding(5.dp),horizontalAlignment=Alignment.CenterHorizontally) {
+                BotAvatar(id,avatar.color,size=43.dp,secondary=avatar.secondary,ink=avatar.ink,paper=avatar.paper,animated=false)
+                Text(label,style=MaterialTheme.typography.labelSmall)
             }
         }
     }
-    Spacer(Modifier.height(12.dp))
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        RelayAvatar.colors.forEach { color ->
-            Box(Modifier.size(36.dp).clip(CircleShape).background(relayColor(color)).clickable { onChange(avatar.copy(color = color, image = null)) })
+    Text("配色模板",modifier=Modifier.padding(top=12.dp,bottom=8.dp))
+    FlowRow(horizontalArrangement=Arrangement.spacedBy(8.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+        for(i in 0 until templates.length()) {
+            val t=templates.getJSONObject(i)
+            val selected=avatar.color.equals(t.getString("color"),true) && avatar.secondary.equals(t.getString("secondary"),true)
+            Column(Modifier.width(68.dp).clip(RoundedCornerShape(8.dp)).background(if(selected) Color(0xFF454559) else Color.Transparent).clickable { onChange(avatar.copy(color=t.getString("color"),secondary=t.getString("secondary"),ink=t.getString("ink"),paper=t.getString("paper"),image=null)) }.padding(4.dp)) {
+                Row { Box(Modifier.weight(1f).height(24.dp).background(relayColor(t.getString("color"))));Box(Modifier.weight(1f).height(24.dp).background(relayColor(t.getString("secondary")))) }
+                Text(t.getString("name"),style=MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
+    TextButton(onClick={custom=!custom}) { Text(if(custom) "收起自定义颜色 ▴" else "展开自定义颜色 ▾") }
+    if(custom) {
+        val model=CrewLibrary.model(context,CrewLibrary.role(avatar.shape))
+        CrewColorField("主色块",avatar.color) { onChange(avatar.copy(color=it,image=null)) }
+        CrewColorField("辅助色",avatar.secondary ?: model.secondary) { onChange(avatar.copy(secondary=it,image=null)) }
+        CrewColorField("描边与眼睛",avatar.ink ?: "#142443") { onChange(avatar.copy(ink=it,image=null)) }
+        CrewColorField("底色",avatar.paper ?: "#FFFAF1") { onChange(avatar.copy(paper=it,image=null)) }
+    }
+}
+
+@Composable
+private fun CrewColorField(label:String,value:String,onChange:(String)->Unit) {
+    var text by remember(value) { mutableStateOf(value) }
+    val valid=Regex("#[0-9a-fA-F]{6}").matches(text)
+    OutlinedTextField(text,{ text=it; if(Regex("#[0-9a-fA-F]{6}").matches(it)) onChange(it.uppercase()) },label={Text(label)},supportingText={Text("HEX 颜色，如 #FFC18E")},isError=!valid,singleLine=true,leadingIcon={Box(Modifier.size(22.dp).background(relayColor(value)))},modifier=Modifier.fillMaxWidth())
+    val rgb=value.removePrefix("#").toLongOrNull(16) ?: 0L
+    listOf("R","G","B").forEachIndexed { i,name ->
+        val shift=(2-i)*8
+        Row(verticalAlignment=Alignment.CenterVertically) {
+            Text(name,modifier=Modifier.width(20.dp))
+            androidx.compose.material3.Slider(value=((rgb shr shift) and 255).toFloat(),onValueChange={ component ->
+                val next=(rgb and (255L shl shift).inv()) or (component.toLong() shl shift)
+                onChange("#%06X".format(next))
+            },valueRange=0f..255f,modifier=Modifier.weight(1f))
         }
     }
 }

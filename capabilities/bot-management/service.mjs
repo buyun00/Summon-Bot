@@ -1,5 +1,5 @@
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
-import { readFile, writeFile, mkdir, cp, realpath, lstat, rm, readdir } from 'node:fs/promises';
+import { readFile, writeFile, rename, mkdir, cp, realpath, lstat, rm, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join,resolve,relative } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -9,8 +9,8 @@ const core = () => import('@relay/bot');
 const sleep = ms => new Promise(done=>setTimeout(done,ms));
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 export class BotManager {
-  constructor({store,dataRoot,releaseRoot,model={},defaultCwd,emit=()=>{},getTools=()=>[],gatewayUrl=()=>'',botApi=core}) {
-    Object.assign(this,{store,dataRoot:resolve(dataRoot),releaseRoot:resolve(releaseRoot),model,defaultCwd,emit,getTools,gatewayUrl,botApi}); this.launching=new Map();this.creating=new Map();this.cloning=new Map();
+  constructor({store,dataRoot,releaseRoot,model={},defaultCwd,emit=()=>{},getTools=()=>[],gatewayUrl=()=>'',botApi=core,cacheReadStores=false}) {
+    Object.assign(this,{store,dataRoot:resolve(dataRoot),releaseRoot:resolve(releaseRoot),model,defaultCwd,emit,getTools,gatewayUrl,botApi,cacheReadStores}); this.launching=new Map();this.creating=new Map();this.cloning=new Map();this.readStores=new Map();
   }
   directory(id) { return join(this.dataRoot,'bots',safeId(id)); }
   public(record) { if (!record) return record; const {capabilityToken,token,...rest}=record; return rest; }
@@ -50,6 +50,11 @@ export class BotManager {
   async update(id,input) {
     const previous=this.get(id);
     if(input.status!==undefined&&!['active','paused'].includes(input.status)) fail('Invalid Bot status');
+    if(input.status!==undefined) {
+      const accepting=input.status==='active';
+      if(await this.identity(id))await this.request(id,'/availability',{method:'PATCH',body:JSON.stringify({accepting})});
+      else {const api=await this.botApi();await api.withBotDataLease(this.directory(id),async()=>{const config=await this.config(id);config.accepting=accepting;const path=join(this.directory(id),'config.json'),temp=`${path}.${randomUUID()}.tmp`;await writeFile(temp,JSON.stringify(config,null,2),{mode:0o600});await rename(temp,path);},{botId:id,purpose:'update-availability'});}
+    }
     if(input.prompt!==undefined) {
       if(typeof input.prompt!=='string')fail('Bot prompt must be a string');
       const identity=await this.identity(id);
@@ -63,6 +68,34 @@ export class BotManager {
     this.emit('bot',this.public(record)); return this.public(record);
   }
   async identity(id) { return (await this.botApi()).inspectBotIdentity(this.directory(id)); }
+  async contacts(id) { return {contacts:(await this.config(id)).contacts?.map(({botId,name})=>({botId,name,transport:'local-direct'}))||[]}; }
+  async connect(id,peerId,{enabled=true}={}) {
+    this.assertAccepting();
+    const owner=this.get(id),peer=this.get(peerId);
+    if(id===peerId||owner.archivedAt||peer.archivedAt)fail('Choose two retained, different Bots');
+    if(typeof enabled!=='boolean')fail('enabled must be boolean');
+    const ids=[id,peerId].sort(),key=ids.join(':');
+    // Persist private, directional peer credentials before either side changes.
+    // Repeating a partially completed pairing reconciles the same credentials.
+    let link=this.store.get('peer-links',key);
+    if(!link&&enabled)link=this.store.save('peer-links',{id:key,ids,tokens:[randomBytes(32).toString('hex'),randomBytes(32).toString('hex')]});
+    for(const [from,to] of [[owner,peer],[peer,owner]]) {
+      const index=ids.indexOf(from.id),body=enabled?{contact:{botId:to.id,name:to.name,dataDir:this.directory(to.id),token:link.tokens[index]},peer:{botId:to.id,token:link.tokens[1-index]}}:null;
+      if(await this.identity(from.id))await this.request(from.id,`/contacts/${encodeURIComponent(to.id)}`,{method:enabled?'PUT':'DELETE',body:JSON.stringify(body||{})});
+      else {
+        const api=await this.botApi();
+        await api.withBotDataLease(this.directory(from.id),async()=>{
+          const config=await this.config(from.id);
+          config.contacts=(config.contacts||[]).filter(value=>value.botId!==to.id);config.peers=(config.peers||[]).filter(value=>value.botId!==to.id);
+          if(body){config.contacts.push(body.contact);config.peers.push(body.peer);}
+          const path=join(this.directory(from.id),'config.json'),temp=`${path}.${randomUUID()}.tmp`;
+          await writeFile(temp,JSON.stringify(config,null,2),{mode:0o600});await rename(temp,path);
+        },{botId:from.id,purpose:'configure-peer'});
+      }
+    }
+    this.emit('bot-contacts',{botId:id,peerId,connected:enabled});
+    return {botId:id,peerId,connected:enabled};
+  }
   async request(id,path,options={}) {
     const identity=await this.identity(id);if(!identity) fail('Bot is not running',503);
     const config=await this.config(id), response=await fetch(`${identity.url}${path}`,{...options,headers:{Authorization:`Bearer ${config.token}`,'Content-Type':'application/json',...options.headers},signal:options.signal||AbortSignal.timeout(15000)});
@@ -85,6 +118,7 @@ export class BotManager {
     const bundledTools=await this.getTools(record);
     config.tools=[...bundledTools.map(tool=>({...tool,headers:{Authorization:`Bearer ${record.capabilityToken}`}})),...customTools];
     config.bundleRoot=this.releaseRoot;config.bundledSkills=profile.skills||[];config.bundledToolNames=bundledTools.map(tool=>tool.name);
+    config.accepting=record.status==='active';
     await writeFile(join(dir,'config.json'),JSON.stringify(config,null,2),{mode:0o600});await mkdir(join(dir,'logs'),{recursive:true});
     this.assertAccepting();let failure;
     const child=spawn(process.execPath,[join(this.releaseRoot,'bot','bin','relay-bot.mjs'),'--config',join(dir,'config.json')],{cwd:this.releaseRoot,detached:true,windowsHide:true,stdio:['ignore','ignore','ignore','ipc']});
@@ -120,7 +154,15 @@ export class BotManager {
   }
   async send(id,message) { this.assertAccepting();if(this.get(id).status!=='active')fail('Bot is paused',409);await this.start(id);this.assertAccepting();return this.request(id,'/messages',{method:'POST',body:JSON.stringify({...message,to:id})}); }
   async tasks(id) { try { const result=await this.request(id,'/tasks');return Array.isArray(result)?result:result.tasks||[]; }catch(error){if(error.status!==503)throw error; const api=await this.botApi(); if(!existsSync(join(this.directory(id),'state.sqlite')))return [];const db=new api.BotStore(join(this.directory(id),'state.sqlite'),{readOnly:true});try{return db.listTasks?.()||[];}finally{db.close();}} }
-  async readState(id,fn) { const api=await this.botApi(),path=join(this.directory(id),'state.sqlite'); if(!existsSync(path))return fn(null);const store=new api.BotStore(path,{readOnly:true});try{store.db.exec('BEGIN');const result=fn(store);store.db.exec('COMMIT');return result;}finally{store.close();} }
+  async readState(id,fn) {
+    const api=await this.botApi(),path=join(this.directory(id),'state.sqlite');if(!existsSync(path))return fn(null);
+    let store=this.readStores.get(id);
+    if(!store){store=new api.BotStore(path,{readOnly:true});if(this.cacheReadStores)this.readStores.set(id,store);}
+    try{store.db.exec('BEGIN');const result=fn(store);store.db.exec('COMMIT');return result;}
+    catch(error){try{store.db.exec('ROLLBACK');}catch{}throw error;}
+    finally{if(!this.cacheReadStores)store.close();}
+  }
+  closeReadStores(){for(const store of this.readStores.values())store.close();this.readStores.clear();}
   async clone(input) {
     this.assertAccepting();
     const id=required(input.requestId,'requestId',200);if(this.cloning.has(id))return this.cloning.get(id);const pending=this.cloneNow(input).finally(()=>this.cloning.delete(id));this.cloning.set(id,pending);return pending;
