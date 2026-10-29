@@ -138,7 +138,7 @@ export class ModelProvider {
     const requestMessages = [...messages];
     if (json && !requestMessages.some(message => /json/i.test(message.content || ''))) requestMessages.unshift({ role: 'system', content: 'Return valid JSON.' });
     const { result, value: content, latencyMs } = await this.request({ messages: requestMessages,
-      max_tokens: maxTokens || (deep ? 6000 : 2200), ...(json ? { response_format: { type: 'json_object' } } : {}),
+      max_tokens: maxTokens || this.config.maxTokens || 393216, ...(json ? { response_format: { type: 'json_object' } } : {}),
     }, { deep, signal, validate: result => {
       const choice = responseChoice(result);
       if (typeof choice.message.content !== 'string' || !choice.message.content.trim()) throw new Error(`Model 没有返回正文 (${choice.finish_reason})`);
@@ -159,7 +159,7 @@ export class ModelProvider {
         const body = deepSeekContext(context, deep);
         if (options.toolChoice) body.tool_choice = options.toolChoice;
         stream.push({ type: 'start', partial: message });
-        await this.request({ ...body, model: model.id, max_tokens: options.maxTokens || model.maxTokens || 6000 }, {
+        await this.request({ ...body, model: model.id, max_tokens: options.maxTokens || model.maxTokens || this.config.maxTokens || 393216 }, {
           deep, signal: options.signal, timeoutMs: options.timeoutMs,
           validate: result => {
             message.usage = usageFor(result, model);

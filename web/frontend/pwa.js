@@ -1,6 +1,7 @@
 (() => {
   'use strict';
   let registration, installPrompt, updateRequested = false, pendingReload = false;
+  let registrationReady = Promise.resolve(), refreshing = false;
   const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
   const getState = () => ({ installed: standalone(), canInstall: !!installPrompt, updateAvailable: !!registration?.waiting || pendingReload });
   const announce = () => window.dispatchEvent(new CustomEvent('relay:pwa-change', { detail: getState() }));
@@ -33,18 +34,34 @@
     location.reload();
   }
   async function update() {
-    if (!getState().updateAvailable) { await registration?.update(); return; }
-    if (!canReload()) return;
-    updateRequested = true;
-    if (pendingReload) reloadUpdated();
-    else registration.waiting?.postMessage({ type: 'RELAY_APPLY_UPDATE' });
+    if (refreshing || !canReload()) return;
+    refreshing = true;
+    try {
+      await registrationReady;
+      // A refresh works without a pending update, including when the update check is offline.
+      try { await registration?.update(); } catch { /* Reload the available shell. */ }
+      const worker = registration?.installing;
+      if (worker && !['installed', 'activated', 'redundant'].includes(worker.state)) {
+        await new Promise(resolve => {
+          const settled = () => {
+            if (!['installed', 'activated', 'redundant'].includes(worker.state)) return;
+            worker.removeEventListener('statechange', settled); resolve();
+          };
+          worker.addEventListener('statechange', settled); settled();
+        });
+      }
+      if (!canReload()) return;
+      updateRequested = true;
+      if (registration?.waiting) registration.waiting.postMessage({ type: 'RELAY_APPLY_UPDATE' });
+      else reloadUpdated();
+    } finally { refreshing = false; }
   }
   window.RelayPwa = Object.freeze({ install, update, getState });
   window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); installPrompt = event; announce(); });
   window.addEventListener('appinstalled', () => { installPrompt = null; announce(); notice('Relay Bot 已添加到设备。'); });
   if ('serviceWorker' in navigator && window.isSecureContext) {
     navigator.serviceWorker.addEventListener('controllerchange', () => { if (updateRequested) reloadUpdated(); });
-    navigator.serviceWorker.register('/sw.js', { scope: '/', updateViaCache: 'none' }).then(value => {
+    registrationReady = navigator.serviceWorker.register('/sw.js', { scope: '/', updateViaCache: 'none' }).then(value => {
       registration = value; announce();
       if (registration.waiting) notice('有新版本，可在连接应用中更新。');
       registration.addEventListener('updatefound', () => {

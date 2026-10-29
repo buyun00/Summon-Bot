@@ -1,8 +1,8 @@
 package org.lin0.relay
 
 data class RelayAvatar(
-    val shape: String = "dev",
-    val color: String = "#FFC18E",
+    val shape: String = "cercle",
+    val color: String = "#7D824B",
     val image: String? = null,
     val secondary: String? = null,
     val ink: String? = null,
@@ -18,11 +18,11 @@ data class RelayAvatar(
     )
 
     companion object {
-        val shapes = CrewLibrary.ids.zip(CrewLibrary.names)
+        val shapes = PaperLibrary.ids.zip(PaperLibrary.names)
 
         fun parse(json: RelayJson): RelayAvatar = RelayAvatar(
-            shape = json["shape"].string ?: "dev",
-            color = json["color"].string ?: "#FFC18E",
+            shape = json["shape"].string ?: "cercle",
+            color = json["color"].string ?: "#7D824B",
             image = json["image"].string,
             secondary = json["secondary"].string,
             ink = json["ink"].string,
@@ -32,8 +32,8 @@ data class RelayAvatar(
         fun defaultFor(id: String): RelayAvatar {
             var value = 5381L
             for (character in id.codePoints().toArray()) value = ((value * 33) xor character.toLong()) and 0xFFFFFFFFL
-            val role = when(id) { "bot-engineer" -> "dev"; "bot-components" -> "plan"; "bot-qa" -> "qa"; else -> CrewLibrary.ids[(value % CrewLibrary.ids.size).toInt()] }
-            return RelayAvatar(shape=role, color=CrewLibrary.defaultColors[CrewLibrary.ids.indexOf(role)])
+            val role = when(id) { "bot-engineer" -> "squircle"; "bot-components" -> "hexagone"; "bot-qa" -> "nuage"; else -> PaperLibrary.ids[(value % PaperLibrary.ids.size).toInt()] }
+            return RelayAvatar(shape=role, color=PaperLibrary.defaultColors[PaperLibrary.ids.indexOf(role)])
         }
     }
 }

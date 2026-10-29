@@ -27,11 +27,11 @@
     clone.inert = true; clone.setAttribute('aria-hidden', 'true'); clone.dataset.motionGhost = '';
     const clipIds = new Map();
     for (const item of [clone, ...all(clone, '*')]) {
-      if (item.tagName.toLowerCase() === 'clippath' && item.id) { const previous = item.id; item.id = `${previous}-ghost-${++ghostSerial}`; clipIds.set(previous, item.id); }
+      if (['clippath','mask','filter','lineargradient','radialgradient','pattern'].includes(item.tagName.toLowerCase()) && item.id) { const previous = item.id; item.id = `${previous}-ghost-${++ghostSerial}`; clipIds.set(previous, item.id); }
       else item.removeAttribute('id');
       item.removeAttribute('data-action'); item.removeAttribute('data-avatar-key');
     }
-    for (const item of all(clone, '[clip-path]')) { const value = item.getAttribute('clip-path'); for (const [from, to] of clipIds) if (value.includes(`#${from}`)) item.setAttribute('clip-path', value.replace(`#${from}`, `#${to}`)); }
+    for (const item of all(clone, '*')) for(const attribute of ['clip-path','mask','filter','fill','stroke']) { const value = item.getAttribute(attribute); if(value) for (const [from, to] of clipIds) if (value.includes(`#${from}`)) item.setAttribute(attribute, value.replace(`#${from}`, `#${to}`)); }
     return clone;
   }
   function capture(root) {

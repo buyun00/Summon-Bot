@@ -14,6 +14,8 @@ The package exports `startBot(config, options?)`, `loadBotConfig(path)`, `normal
 
 The required config fields are `botId`, `dataDir`, and `model:{provider,model,baseUrl,apiKey|apiKeyEnv,contextWindow?,maxTokens?,thinkingLevel?}`. Optional fields include `workspace`, `prompt`, `promptFile`, `skills:[absolutePath]`, `promptPaths:[absolutePath]`, `tools`, `peers:[{botId,token}]`, `contacts:[{botId,url,token}]`, `token`, `listen:{host:'127.0.0.1',port:0}`, and `limits:{maxContextBytes,compaction,reserveTokens,keepRecentTokens}`. The listener is restricted to IPv4/IPv6 loopback. The management token is generated if absent and preserved in private `dataDir/config.json`; protect access to that directory.
 
+Model budgets default to `contextWindow:1048576` (1M tokens) and `maxTokens:393216` (384K tokens), matching DeepSeek Flash. Explicit model budgets override these defaults. Context compaction settings are unchanged.
+
 Every HTTP endpoint requires `Authorization: Bearer TOKEN`. Management authentication identifies the sender as `controller`; an inbound peer token identifies its configured peer Bot. Supplied `from` must agree. Peers may submit messages and read/cancel only their own tasks; memories, history, state and global events require management authentication. Secrets are never included in health, events or task results.
 
 | Endpoint | Behavior |

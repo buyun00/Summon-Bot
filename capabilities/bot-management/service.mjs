@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { join,resolve,relative } from 'node:path';
 import { spawn } from 'node:child_process';
 import { safeId,required,fail,avatarOf,pick,within,now } from '../shared/validation.mjs';
+import { normalizePaperAvatar,defaultPaperAvatar } from '../shared/avatar-style.mjs';
 
 const core = () => import('@relay/bot');
 const sleep = ms => new Promise(done=>setTimeout(done,ms));
@@ -13,7 +14,7 @@ export class BotManager {
     Object.assign(this,{store,dataRoot:resolve(dataRoot),releaseRoot:resolve(releaseRoot),model,defaultCwd,emit,getTools,gatewayUrl,botApi,cacheReadStores}); this.launching=new Map();this.creating=new Map();this.cloning=new Map();this.readStores=new Map();
   }
   directory(id) { return join(this.dataRoot,'bots',safeId(id)); }
-  public(record) { if (!record) return record; const {capabilityToken,token,...rest}=record; return rest; }
+  public(record) { if (!record) return record; const {capabilityToken,token,...rest}=record; return {...rest,avatar:rest.avatar?normalizePaperAvatar(rest.avatar):defaultPaperAvatar(rest.id)}; }
   list() { return this.store.list('bots').map(value=>this.public(value)); }
   get(id) { const bot=this.store.get('bots',id); if(!bot) fail('Bot not found',404); return this.public(bot); }
   async config(id) { this.get(id); return JSON.parse(await readFile(join(this.directory(id),'config.json'),'utf8')); }

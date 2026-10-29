@@ -1,0 +1,21 @@
+{
+  "name": "@relay/avatar-showcase",
+  "version": "0.4.1-relay.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "build": "vite build"
+  },
+  "devDependencies": {
+    "@solidjs/vite-plugin": "3.0.0-next.30",
+    "@solidjs/web": "2.0.0-rc.0",
+    "@tailwindcss/vite": "4.3.3",
+    "mediabunny": "1.54.0",
+    "solid-js": "2.0.0-rc.0",
+    "svgpath": "2.6.0",
+    "tailwindcss": "4.3.3",
+    "typescript": "5.9.3",
+    "vite": "8.2.1"
+  }
+}

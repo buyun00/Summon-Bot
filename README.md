@@ -28,7 +28,7 @@ npm run relay:dev -- --data-root D:\Relay-Bot-dev-data
 ```powershell
 npm run relay:pack
 npm run relay:install -- --release-root <构建输出路径> --app-root D:\Relay-Bot-app --data-root D:\Relay-Bot-data --public-origin https://bot.lin0.org
-& D:\Relay-Bot-app\Start.ps1
+& "$env:SystemRoot\System32\wscript.exe" //B //NoLogo D:\Relay-Bot-app\Start-Hidden.vbs
 & D:\Relay-Bot-app\Stop.ps1
 ```
 

@@ -374,12 +374,12 @@ fun CreateBotSheet(store: RelayStore, onOpenRoom: (String) -> Unit, onDismiss: (
 @Composable
 fun AvatarPicker(avatar: RelayAvatar, onChange: (RelayAvatar) -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val templates = remember { CrewLibrary.data(context).getJSONArray("templates") }
+    val templates = remember { PaperLibrary.data(context).getJSONArray("templates") }
     var custom by remember { mutableStateOf(false) }
     FlowRow(horizontalArrangement=Arrangement.spacedBy(8.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
         RelayAvatar.shapes.forEach { (id,label) ->
-            val selected=avatar.image == null && CrewLibrary.role(avatar.shape)==id
-            Column(Modifier.width(68.dp).clip(RoundedCornerShape(10.dp)).background(if(selected) Color(0xFF454559) else Color.Transparent).clickable { onChange(avatar.copy(shape=id,image=null)) }.padding(5.dp),horizontalAlignment=Alignment.CenterHorizontally) {
+            val selected=avatar.image == null && PaperLibrary.role(avatar.shape)==id
+            Column(Modifier.width(68.dp).clip(RoundedCornerShape(10.dp)).background(if(selected) Color(0xFF454559) else Color.Transparent).clickable { onChange(avatar.copy(shape=id,color=PaperLibrary.paperColor(context,avatar.color,avatar.shape),secondary="#E6DDC8",ink="#414A3C",paper="#FFFBF0",image=null)) }.padding(5.dp),horizontalAlignment=Alignment.CenterHorizontally) {
                 BotAvatar(id,avatar.color,size=43.dp,secondary=avatar.secondary,ink=avatar.ink,paper=avatar.paper,animated=false)
                 Text(label,style=MaterialTheme.typography.labelSmall)
             }
@@ -398,11 +398,10 @@ fun AvatarPicker(avatar: RelayAvatar, onChange: (RelayAvatar) -> Unit) {
     }
     TextButton(onClick={custom=!custom}) { Text(if(custom) "收起自定义颜色 ▴" else "展开自定义颜色 ▾") }
     if(custom) {
-        val model=CrewLibrary.model(context,CrewLibrary.role(avatar.shape))
-        CrewColorField("主色块",avatar.color) { onChange(avatar.copy(color=it,image=null)) }
-        CrewColorField("辅助色",avatar.secondary ?: model.secondary) { onChange(avatar.copy(secondary=it,image=null)) }
-        CrewColorField("描边与眼睛",avatar.ink ?: "#142443") { onChange(avatar.copy(ink=it,image=null)) }
-        CrewColorField("底色",avatar.paper ?: "#FFFAF1") { onChange(avatar.copy(paper=it,image=null)) }
+        CrewColorField("纸片颜色",PaperLibrary.paperColor(context,avatar.color,avatar.shape)) { onChange(avatar.copy(shape=PaperLibrary.role(avatar.shape),color=it,image=null)) }
+        CrewColorField("衬纸颜色",avatar.secondary ?: "#E6DDC8") { onChange(avatar.copy(secondary=it,image=null)) }
+        CrewColorField("边线颜色",avatar.ink ?: "#414A3C") { onChange(avatar.copy(ink=it,image=null)) }
+        CrewColorField("眼睛留白",avatar.paper ?: "#FFFBF0") { onChange(avatar.copy(paper=it,image=null)) }
     }
 }
 

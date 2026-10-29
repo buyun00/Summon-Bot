@@ -6,8 +6,8 @@
     "model": "your-model-id",
     "baseUrl": "https://your-provider.example/v1",
     "apiKeyEnv": "BOT_MODEL_API_KEY",
-    "contextWindow": 128000,
-    "maxTokens": 6000
+    "contextWindow": 1048576,
+    "maxTokens": 393216
   },
   "prompt": "Work on the user's task and report confirmed results clearly.",
   "skills": [],

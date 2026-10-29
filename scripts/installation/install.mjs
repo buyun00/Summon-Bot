@@ -34,7 +34,7 @@ export async function installRelease({releaseRoot,appRoot,dataRoot,defaultCwd,pu
   const initialized=await initializeDeployment({dataRoot,releaseRoot:destination,defaultCwd,publicOrigin,port});
   await writeJson(deploymentPath(dataRoot),{...initialized.config,releaseRoot:destination});
   await mkdir(appRoot,{recursive:true});
-  for(const name of ['Start.ps1','Stop.ps1','Run.cmd'])await copyFile(join(destination,name),join(appRoot,name));
+  for(const name of ['Start.ps1','Start-Hidden.vbs','Stop.ps1','Run.cmd'])await copyFile(join(destination,name),join(appRoot,name));
   const selection={schemaVersion:1,releaseRoot:destination,buildId:verified.buildId,dataRoot,selectedAt:new Date().toISOString()};
   await writeJson(join(appRoot,'current.json'),selection);return selection;
 }

@@ -36,7 +36,7 @@ export function normalizeBotConfig(input, baseDirectory = process.cwd()) {
   for (const peer of config.peers) if (!peer.botId || typeof peer.token !== 'string' || peer.token.length < 24) throw new Error('Peer requires botId and private token');
   if (new Set(config.peers.map(peer => peer.token)).size !== config.peers.length) throw new Error('Peer authentication tokens must be unique');
   if (new Set(config.peers.map(peer => peer.botId)).size !== config.peers.length || config.peers.some(peer => peer.botId === config.botId || peer.token === config.token)) throw new Error('Invalid peer identity or management token reuse');
-  config.model = { provider: 'openai-compatible', contextWindow: 128000, maxTokens: 6000, ...input.model };
+  config.model = { provider: 'openai-compatible', contextWindow: 1048576, maxTokens: 393216, ...input.model };
   config.limits = { maxContextBytes: 384000, ...input.limits };
   // Discard legacy execution budgets when loading existing Bot configurations.
   for (const key of ['maxTurns', 'maxTools', 'timeoutMs']) delete config.limits[key];

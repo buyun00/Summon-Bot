@@ -23,7 +23,7 @@ export async function initializeDeployment({ dataRoot, releaseRoot, defaultCwd, 
     runIntent: 'running', publicOrigin, gatewayToken: token(), controlToken: token(),
     environmentFile: join(dataRoot, 'config', 'runtime.env'), web: { host: '127.0.0.1', port: Number(port) },
     gateway: { host: '127.0.0.1', port: 0 },
-    model: { provider: 'deepseek', model: 'deepseek-flash', baseUrl: 'https://api.deepseek.com/v1', apiKeyEnv: 'DEEPSEEK_API_KEY' } };
+    model: { provider: 'deepseek', model: 'deepseek-flash', baseUrl: 'https://api.deepseek.com/v1', apiKeyEnv: 'DEEPSEEK_API_KEY', contextWindow: 1048576, maxTokens: 393216 } };
   await mkdir(config.defaultCwd, { recursive: true });
   await writeJson(path, config);
   return { created: true, configPath: path, config };

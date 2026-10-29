@@ -22,6 +22,14 @@ const json = (res, status, value) => {
   res.end(JSON.stringify(value));
 };
 
+// This prefix also bypasses older installed chat service workers' navigation cache.
+const showcasePrefix = '/api/avatar-showcase/';
+const showcaseMime = new Map([
+  ['html', 'text/html'], ['js', 'text/javascript'], ['css', 'text/css'],
+  ['svg', 'image/svg+xml'], ['png', 'image/png'], ['ico', 'image/x-icon'],
+  ['wasm', 'application/wasm'], ['txt', 'text/plain'], ['woff2', 'font/woff2'],
+]);
+
 /** The Web process owns only HTTP/static assets. Business state and Agents stay outside. */
 export async function startWeb({ host = '127.0.0.1', port = 8787, publicOrigin = '', frontendRoot = defaultFrontend,
   gatewayUrl, gatewayToken, requestTimeoutMs = 120000 } = {}) {
@@ -36,6 +44,23 @@ export async function startWeb({ host = '127.0.0.1', port = 8787, publicOrigin =
     try {
       if (closing) return json(res, 503, { error: 'Web service is stopping' });
       const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+      if (url.pathname === showcasePrefix.slice(0, -1)) {
+        res.writeHead(302, { Location: showcasePrefix }); res.end(); return;
+      }
+      if (url.pathname.startsWith(showcasePrefix)) {
+        const name = url.pathname.slice(showcasePrefix.length) || 'index.html';
+        const mime = showcaseMime.get(name.split('.').at(-1));
+        if (!['GET', 'HEAD'].includes(req.method) || !mime || !/^(?:[A-Za-z0-9_-]+\.[A-Za-z0-9]+|assets\/[A-Za-z0-9_.-]+\.[A-Za-z0-9]+)$/.test(name)) {
+          res.writeHead(404); res.end('Not found'); return;
+        }
+        const content = await readFile(join(frontendRoot, 'avatar-showcase', name));
+        res.writeHead(200, {
+          'Content-Type': `${mime}${mime.startsWith('text/') ? '; charset=utf-8' : ''}`,
+          'Content-Length': content.length, 'Cache-Control': 'private, no-store',
+          'X-Content-Type-Options': 'nosniff', 'X-Robots-Tag': 'noindex',
+        });
+        res.end(req.method === 'HEAD' ? undefined : content); return;
+      }
       if (url.pathname.startsWith('/api/')) {
         if (!api.test(url.pathname)) return json(res, 404, { error: '找不到接口' });
         if (!['GET', 'HEAD', 'POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method)) return json(res, 405, { error: '不支持此方法' });

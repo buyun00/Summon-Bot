@@ -8,7 +8,7 @@ import { copyTree, walk, readJson, writeJson, digest, within, parseArgs } from '
 
 export const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const directories = ['bot', 'web', 'capabilities', 'connectors', 'roles', 'skills', 'scripts/build', 'scripts/installation', 'scripts/migration', 'scripts/maintenance'];
-const rootFiles = ['package.json', 'package-lock.json', 'README.md', 'AGENTS.md', 'Start.ps1', 'Stop.ps1', 'Run.cmd'];
+const rootFiles = ['package.json', 'package-lock.json', 'README.md', 'AGENTS.md', 'Start.ps1', 'Start-Hidden.vbs', 'Stop.ps1', 'Run.cmd'];
 const include = name => !name.split('/').some(part => ['node_modules', '.git', '.relay', 'test', 'tests', 'coverage', 'dist'].includes(part)
   || /^\.env(?:\.|$)/.test(part) || /(?:\.sqlite(?:-\w+)?|\.log|\.tmp)$/.test(part));
 

@@ -51,7 +51,7 @@ fun decodeDataImage(value: String?): Bitmap? {
 
 
 @Composable
-fun BotAvatar(shape:String,color:String,image:String?=null,size:Dp=48.dp,modifier:Modifier=Modifier,secondary:String?=null,ink:String?=null,paper:String?=null,motion:String="idle",animated:Boolean=true) {
+fun LegacyCrewBotAvatar(shape:String,color:String,image:String?=null,size:Dp=48.dp,modifier:Modifier=Modifier,secondary:String?=null,ink:String?=null,paper:String?=null,motion:String="idle",animated:Boolean=true) {
     val bitmap=remember(image){decodeDataImage(image)}
     if(bitmap!=null){Image(bitmap.asImageBitmap(),null,modifier.size(size).clip(RoundedCornerShape(size*.22f)),contentScale=ContentScale.Crop);return}
     val context=LocalContext.current

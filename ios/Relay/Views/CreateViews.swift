@@ -69,17 +69,17 @@ struct AvatarPicker: View {
         VStack(spacing: 20) {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 12) {
                 ForEach(AvatarPalette.shapes, id: \.id) { shape in
-                    Button { avatar.shape=shape.id; avatar.image=nil } label: {
+                    Button { avatar.color=PaperLibrary.paperColor(avatar.color,shape:avatar.shape);avatar.shape=shape.id;avatar.secondary="#E6DDC8";avatar.ink="#414A3C";avatar.paper="#FFFBF0";avatar.image=nil } label: {
                         VStack(spacing:4) {
                             BotAvatar(shape:shape.id,color:avatar.color,size:43,secondary:avatar.secondary,ink:avatar.ink,paper:avatar.paper,animated:false)
                             Text(shape.label).font(.caption2)
-                        }.padding(5).background(RoundedRectangle(cornerRadius:12).stroke(CrewLibrary.role(avatar.shape) == shape.id && avatar.image == nil ? Color.primary : .clear,lineWidth:2))
+                        }.padding(5).background(RoundedRectangle(cornerRadius:12).stroke(PaperLibrary.role(avatar.shape) == shape.id && avatar.image == nil ? Color.primary : .clear,lineWidth:2))
                     }.buttonStyle(.plain).accessibilityLabel(shape.label)
                 }
             }
             LazyVGrid(columns:Array(repeating:GridItem(.flexible()),count:4),spacing:10) {
-                ForEach(CrewLibrary.templates.indices, id: \.self) { index in
-                    let template = CrewLibrary.templates[index]
+                ForEach(PaperLibrary.templates.indices, id: \.self) { index in
+                    let template = PaperLibrary.templates[index]
                     Button {
                         avatar.color=template["color"]!;avatar.secondary=template["secondary"];avatar.ink=template["ink"];avatar.paper=template["paper"];avatar.image=nil
                     } label: {
@@ -91,22 +91,22 @@ struct AvatarPicker: View {
                 }
             }
             DisclosureGroup("自定义颜色",isExpanded:$custom) {
-                ColorPicker("主色块",selection:binding("color"),supportsOpacity:false)
-                ColorPicker("辅助色",selection:binding("secondary"),supportsOpacity:false)
-                ColorPicker("描边与眼睛",selection:binding("ink"),supportsOpacity:false)
-                ColorPicker("底色",selection:binding("paper"),supportsOpacity:false)
+                ColorPicker("纸片颜色",selection:binding("color"),supportsOpacity:false)
+                ColorPicker("衬纸颜色",selection:binding("secondary"),supportsOpacity:false)
+                ColorPicker("边线颜色",selection:binding("ink"),supportsOpacity:false)
+                ColorPicker("眼睛留白",selection:binding("paper"),supportsOpacity:false)
             }
         }
     }
     private func binding(_ field:String) -> Binding<Color> {
         Binding(get:{
-            let model=CrewLibrary.models[CrewLibrary.role(avatar.shape)]
-            let hex = field == "color" ? avatar.color : field == "secondary" ? avatar.secondary ?? model?["secondary"] as? String ?? "#FFE1BA" : field == "ink" ? avatar.ink ?? "#142443" : avatar.paper ?? "#FFFAF1"
+            let hex = field == "color" ? PaperLibrary.paperColor(avatar.color,shape:avatar.shape) : field == "secondary" ? avatar.secondary ?? "#E6DDC8" : field == "ink" ? avatar.ink ?? "#414A3C" : avatar.paper ?? "#FFFBF0"
             return Color(relayHex:hex)
         },set:{ value in
             var r:CGFloat=0,g:CGFloat=0,b:CGFloat=0,a:CGFloat=0
             UIColor(value).getRed(&r,green:&g,blue:&b,alpha:&a)
             let hex=String(format:"#%02X%02X%02X",Int(r*255),Int(g*255),Int(b*255))
+            avatar.color=PaperLibrary.paperColor(avatar.color,shape:avatar.shape);avatar.shape=PaperLibrary.role(avatar.shape)
             switch field {case "color":avatar.color=hex;case "secondary":avatar.secondary=hex;case "ink":avatar.ink=hex;default:avatar.paper=hex}
             avatar.image=nil
         })

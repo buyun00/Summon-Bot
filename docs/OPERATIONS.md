@@ -16,8 +16,8 @@
 
 Codex 桌面 API 已整合到 `connectors/codex-desktop-api` 并随正式发行打包。开机助手条目“Relay Bot · Codex 连接器”沿用 `Codex Desktop API` 任务，由本项目 `Run-Hidden.vbs` 无控制台启动，实际运行 current.json 选择的已安装代码。配置、事件与幂等数据库、日志在 `D:/Relay-Bot-data/connectors/codex-desktop-api`。手动启动双击该连接器的 `Start-Hidden.vbs`；停止用其 `Stop.ps1`。连接器更新后需单独重启该任务；不再使用原 `D:/Codex-Desktop-API` 服务入口。
 
-- `Start.ps1 -DataRoot <数据根>` 启动，已就绪实例不重复启动。
-- `Start.ps1 -Foreground -RespectIntent` 供 StartupHub 跟踪；尊重此前保存的停止意图。
+- 双击安装根的 `Start-Hidden.vbs` 无窗口启动；`Run.cmd` 也转交该入口，不保留终端窗口。命令行仍可使用 `Start.ps1 -DataRoot <数据根>`，已就绪实例不重复启动。
+- StartupHub 使用 `wscript.exe //B //NoLogo Start-Hidden.vbs -Foreground -RespectIntent -DataRoot <数据根>`；无窗口宿主等待 PowerShell 和看门狗退出，任务全程保持运行并尊重此前保存的停止意图。
 - 正式 `Start.ps1` 启动后会拉起已有的 `Relay Bot Foundation` 任务。前台任务持有独占身份锁，每 5 秒检查 Web/网关，仅在确认进程停止时自动恢复；连续失败按 5/10/20/40/60 秒退避，稳定运行 60 秒后清零。身份不明或暂时无响应时保留原进程，不启动副本。
 - 看门狗日志在 `web/watchdog/process.log`，沿用日志轮转，记录状态、重启尝试、恢复及其子进程退出码。`Stop.ps1` 保存停止意图后，看门狗退出，不会反复拉起；任务自身异常退出由 Windows 以 1 分钟间隔重试（最多 999 次）。
 - 2026-10-28 实测本机按需任务的 Windows 失败重试未触发，不能将该设置视为恢复保证。任务内的 PowerShell 启动器保持常驻；Node 看门狗退出后等待 60 秒重新拉起，重试前再次读取停止意图。此层事件记录在 `web/logs/startup.log`。结束整个计划任务不等同于结束 Node 看门狗。
@@ -43,7 +43,7 @@ Web 日志在 `web/logs/`，网关日志在 `capabilities/gateway/logs/`，各 B
 
 CLI 自动记录标准输出/错误；嵌入式 `startBot(config)` 默认保持宿主输出不变。需要由宿主独占管理进程日志时，可显式使用 `startBot(config, { captureProcessOutput: true })`；通用写入器公开为 `@relay/bot/process-log`。同一进程只能安装一个输出记录器，日志初始化失败会释放身份锁并报告启动错误。
 
-StartupHub 沿用已有 `relay-bot` 条目和 `Relay Bot Foundation` 任务标识，任务动作已改为安装根的新 Start.ps1。这个名称只是 Windows 任务标识；旧 Foundation 程序及目录已不参与启动。重新注册使用安装包内 `scripts/installation/register-startup.ps1`，保留其他 Hub 条目和自动启动设置。
+StartupHub 沿用已有 `relay-bot` 条目和 `Relay Bot Foundation` 任务标识，任务动作使用安装根的 `Start-Hidden.vbs`，内部运行同目录的 `Start.ps1`。这个名称只是 Windows 任务标识；旧 Foundation 程序及目录已不参与启动。重新注册使用安装包内 `scripts/installation/register-startup.ps1`，保留其他 Hub 条目和自动启动设置。
 
 当前配置 8 个 Bot：工程、组件、质量、lumi，以及入口、聊天室、管理、记忆。角色模板数量不等于运行进程数量；Bot 按需启动，每个已运行实例独占自己的 Pi Agent 和数据目录。暂停 Web 不会停止它们；完整 Stop 才会关闭所有受管 Bot。
 

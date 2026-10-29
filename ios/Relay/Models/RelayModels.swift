@@ -1,13 +1,13 @@
 import Foundation
 
 struct RelayAvatar: Codable, Equatable, Sendable {
-    var shape: String = "dev"
-    var color: String = "#FFC18E"
+    var shape: String = "cercle"
+    var color: String = "#7D824B"
     var image: String?
     var secondary: String?
     var ink: String?
     var paper: String?
-    init(shape: String = "dev", color: String = "#FFC18E", image: String? = nil, secondary: String? = nil, ink: String? = nil, paper: String? = nil) {
+    init(shape: String = "cercle", color: String = "#7D824B", image: String? = nil, secondary: String? = nil, ink: String? = nil, paper: String? = nil) {
         self.shape = shape; self.color = color; self.image = image
         self.secondary = secondary; self.ink = ink; self.paper = paper
     }
@@ -290,11 +290,11 @@ enum RelayJSONValue: Codable, Equatable, Sendable {
 
 extension RelayAvatar {
     static func defaultAvatar(for id: String) -> RelayAvatar {
-        let shapes = ["dev","art","music","plan","qa","write","ops","research","data","lead","translate","knowledge"]
-        let colors = ["#ffc18e","#ff9c9c","#c5aff1","#ffe39a","#afdcb7","#b6c9ff","#a6b9d6","#81d4cf","#ffc395","#ffaaaa","#b9bcff","#bfdca9"]
+        let shapes = ["cercle","galet","squircle","capsule","triangle","hexagone","nuage","goutte"]
+        let colors = ["#7D824B","#B2634F","#597C91","#A87932","#B2634F","#4D5C69","#867399","#648468"]
         var value: UInt32 = 5381
         for character in id.unicodeScalars { value = (value &* 33) ^ character.value }
-        let seeded = ["bot-engineer":"dev", "bot-components":"plan", "bot-qa":"qa"]
+        let seeded = ["bot-engineer":"squircle", "bot-components":"hexagone", "bot-qa":"nuage"]
         let role = seeded[id] ?? shapes[Int(value % UInt32(shapes.count))]
         return RelayAvatar(shape: role, color: colors[shapes.firstIndex(of: role) ?? 0])
     }
