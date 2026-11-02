@@ -9,8 +9,8 @@ export async function cleanTemporaryData(manager,botId,{externalTasks=[]}={}) {
   if(await manager.identity(botId))return {botId,cleaned:false,reason:'running'};
   const api=await manager.botApi();
   try{return await api.withBotDataLease(dir,async()=>{
-  const facts=await manager.readState(botId,db=>({tasks:db?.listUnfinishedTasks()||[],tools:db?.listTools()||[]}));
-  if(facts.tasks.length||facts.tools.some(tool=>['unknown','running','queued'].includes(tool.status)))return {botId,cleaned:false,reason:'unfinished-or-unknown-work'};
+  const facts=await manager.readState(botId,db=>({tasks:db?.listUnfinishedTasks()||[],tools:db?.listTools()||[],works:db?.listRecords('works')||[]}));
+  if(facts.tasks.length||facts.tools.some(tool=>['unknown','running','queued'].includes(tool.status))||facts.works.some(work=>!['completed','cancelled'].includes(work.status)))return {botId,cleaned:false,reason:'unfinished-or-unknown-work'};
   const currentExternal=typeof externalTasks==='function'?externalTasks():externalTasks;
   if(currentExternal.some(task=>task.botId===botId&&!['completed','failed','cancelled'].includes(task.status)))return {botId,cleaned:false,reason:'external-work'};
   const root=join(dir,'tmp');if(!existsSync(root))return {botId,cleaned:true,removed:[]};

@@ -41,3 +41,11 @@ retry settings replace the former byte gate and disabled retries. Original
 `agent-session.ts` and `settings-defaults.ts` are retained in `upstream/core/`.
 Unused session-format migration and JSONL parsing functions were removed from
 the selected runtime; original upstream references remain documentation only.
+
+2026-11-02: Replaced the Relay runtime lifecycle adapter with isolated Pi Agents
+and fresh temporary organize/assemble/compact dialogues. Markdown is the sole
+current summary body; no new SQLite summary checkpoints are written. Removed
+`src/pi/core/compaction/lifecycle.mjs`; the prior import description above is
+historical. Pi projection, recovery edits, original messages, tool execution and
+token estimates remain in use. No tests, source-hash checks or model probes were
+run for this change.

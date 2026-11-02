@@ -9,10 +9,10 @@ import { ChatroomService } from '../chatroom/service.mjs';
 import { AttachmentStore,MAX_ATTACHMENT_REQUEST_BYTES } from '../chatroom/attachments.mjs';
 import { KnowledgeService } from '../knowledge/service.mjs';
 import { MemoryManagement } from '../memory-management/service.mjs';
-import { CodexExecutor } from '../codex/executor.mjs';
+import { DesktopCodex } from '../codex/desktop.mjs';
 import { createFileTools } from '../filesystem/tools.mjs';
 import { toolDefinitions, FILE_TOOLS } from '../gateway/tools.mjs';
-import { fail, pick } from '../shared/validation.mjs';
+import { fail } from '../shared/validation.mjs';
 
 export const BUILTIN_CAPABILITIES = ['bot-management', 'chatroom', 'knowledge', 'memory-management', 'codex', 'filesystem'];
 export function capabilityForTool(name) {
@@ -20,7 +20,6 @@ export function capabilityForTool(name) {
   if (name.startsWith('chatroom_')) return 'chatroom';
   if (name.startsWith('knowledge_')) return 'knowledge';
   if (name.startsWith('codex_')) return 'codex';
-  if (['bots_deliver','bot_memory_read','memory_propose','memory_merge'].includes(name)) return 'memory-management';
   if (name.startsWith('bots_') || name === 'routines_create') return 'bot-management';
 }
 const unfinished = item => ['queued','accepted','running','waiting'].includes(item.status);
@@ -39,7 +38,7 @@ export async function createCapability(options) {
   const manager = new BotManager({store:store('bot-management'),dataRoot,releaseRoot,defaultCwd,model:options.model,emit,
     gatewayUrl:()=>options.gatewayUrl,getTools:bot=>bridge('tools',{botId:bot.id})});
   const remote = (capability,operation,args) => bridge('invoke',{capability,operation,args});
-  if (id !== 'bot-management') for (const method of ['create','update','start','stop','send','clone','archive','saveRoutine','restore','monitor','quiesce','shutdownAll']) manager[method] = (...args) => remote('bot-management',method,args);
+  if (id !== 'bot-management') for (const method of ['create','update','start','stop','send','saveRoutine','restore','monitor','quiesce','shutdownAll']) manager[method] = (...args) => remote('bot-management',method,args);
   const ownRoot = join(dataRoot,'capabilities',id); await mkdir(ownRoot,{recursive:true});
   const mutations = new WorkspaceExecutionLock(ownRoot);
   const locked = operation => mutations.withLock(`${id}@${version}`,operation);
@@ -51,17 +50,7 @@ export async function createCapability(options) {
   const lockFor = cwd => { const key=resolve(cwd);if(!workspaceLocks.has(key))workspaceLocks.set(key,new WorkspaceExecutionLock(key));return workspaceLocks.get(key); };
   let codex;
   if (id === 'codex') {
-    codex = new CodexExecutor({store:store(id),emit,defaultCwd,codexPath:options.codexPath,version,
-      executionLock:{acquire:(owner,signal)=>lockFor(codex.require(codex.active.id).cwd).acquire(owner,signal)},
-      consult:async(work,question,targetId)=>{
-        const botId=targetId||work.botId; if(!botId)fail('No consultation target');
-        const receipt=await manager.send(botId,{id:`consult:${work.id}:${work.question?.requestId||randomUUID()}`,kind:'request',sessionId:`consult:${work.id}`,metadata:{toolPolicy:{allowedEffects:['read']}},content:{text:`只读项目事实咨询，不得调用写入、命令或创建新 Codex 工作。\n${question}`,work:pick(work,['id','goal','cwd','constraints']),metadata:{readOnlyConsult:true}}});
-        for (;;) { if(codex.require(work.id).status!=='waiting')throw new Error('Consultation no longer pending');const task=await manager.request(botId,`/tasks/${receipt.taskId}`);if(task.status==='completed')return task.result?.content||'';if(['failed','cancelled','interrupted'].includes(task.status))throw new Error('Consultation failed');await new Promise(done=>setTimeout(done,400)); }
-      },
-      onResult:async work=>{if(work.roomId)await remote('chatroom','append',[work.roomId,{id:`work-result:${work.id}:${work.status}:${work.finishedAt||''}`,content:`工作「${work.goal}」：${work.status}\n${String(work.result?.content||work.summary||work.error||'').slice(0,15000)}`,kind:'work',workId:work.id,hop:4},work.botId||'system']);}
-    });
-    // Only the first service bootstrap adopts records from the pre-service layout.
-    store(id).transaction(()=>{for(const work of codex.list())if(!work.serviceVersion)store(id).save('works',{id:work.id,serviceVersion:version});});
+    codex = new DesktopCodex({store:store(id),dataRoot,manager,emit,version});
     if(!options.deferStart)await codex.start();
   }
   if (chatroom) {
@@ -69,7 +58,7 @@ export async function createCapability(options) {
     const tick=chatroom.tick.bind(chatroom);chatroom.tick=()=>locked(tick);
     if(options.deferStart)chatroom.closed=true;else chatroom.start();
   }
-  const assertOwner=(actor,botId)=>{if(actor!=='controller'&&actor!==botId&&!['manager','memory'].includes(manager.get(actor).roleId))fail('This Bot cannot access another Bot private data',403);};
+  const assertOwner=(actor,botId)=>{if(actor!=='controller'&&actor!==botId)fail('This Bot cannot access another Bot private data',403);};
   const tools=toolDefinitions.filter(tool=>capabilityForTool(tool.name)===id);
   async function invoke(name,args={},context={},signal) {
     const actor=context.actor;
@@ -84,7 +73,17 @@ export async function createCapability(options) {
     }
     switch(name) {
       case 'chatroom_list':return chatroom.rooms().filter(room=>actor==='controller'||room.members.includes(actor));
-      case 'chatroom_read':{const room=chatroom.need('rooms',args.roomId);if(actor!=='controller'&&!room.members.includes(actor))fail('Not a room member',403);return {room,messages:chatroom.messages(room.id),jobs:chatroom.jobs(room.id)};}
+      case 'chatroom_read':{
+        const room=chatroom.need('rooms',args.roomId);if(actor!=='controller'&&!room.members.includes(actor))fail('Not a room member',403);
+        const all=chatroom.messages(room.id),limit=Math.max(1,Math.min(200,Math.trunc(Number(args.limit)||50)));
+        if(args.messageId)return {room,messages:all.filter(message=>message.id===args.messageId)};
+        const after=args.afterMessageId?all.findIndex(message=>message.id===args.afterMessageId):-1;
+        const before=args.beforeMessageId?all.findIndex(message=>message.id===args.beforeMessageId):all.length;
+        if((args.afterMessageId&&after<0)||(args.beforeMessageId&&before<0))fail('Message cursor not found',404);
+        const candidates=all.slice(after+1,before),messages=args.afterMessageId?candidates.slice(0,limit):candidates.slice(-limit);
+        const ids=new Set(messages.map(message=>message.id));
+        return {room,messages,jobs:chatroom.jobs(room.id).filter(job=>ids.has(job.messageId)),hasMore:candidates.length>messages.length,firstMessageId:messages[0]?.id||null,lastMessageId:messages.at(-1)?.id||null};
+      }
       case 'chatroom_create':return chatroom.createRoom({...args,members:[...new Set([...(args.members||[]),...(actor==='controller'?[]:[actor])])]});
       case 'chatroom_send':return chatroom.post(args.roomId,args,actor==='controller'?'user':actor);
       case 'chatroom_dm':return chatroom.dm(actor,args);
@@ -92,43 +91,50 @@ export async function createCapability(options) {
       case 'knowledge_search':return knowledge.search(args.query);
       case 'knowledge_save_node':return knowledge.saveNode(args);
       case 'knowledge_save_edge':return knowledge.saveEdge(args);
-      case 'bots_list':return manager.list();
+      case 'bots_list':{
+        const sharedRooms=new Set(store('chatroom').list('rooms').filter(room=>actor==='controller'||room.members.includes(actor)).map(room=>room.id));
+        return Promise.all(manager.list().map(async bot=>{
+          const works=await manager.readState(bot.id,db=>db?.listRecords('works')||[]);
+          const responsibilities=works.filter(work=>!['completed','cancelled'].includes(work.status)).flatMap(work=>{
+            const shared=actor==='controller'||actor===bot.id||work.sources?.some(source=>sharedRooms.has(source.roomId));
+            if(!shared&&!work.responsibility)return [];
+            return [{workId:work.id,status:work.status,responsibility:work.responsibility||null,...(shared?{goal:work.goal}:{}),sourceCount:shared?work.sources?.length||0:undefined}];
+          });
+          return {...bot,responsibilities:responsibilities.slice(-20),responsibilityCount:responsibilities.length,resources:{skills:bot.skills||[],knowledge:'Owned Markdown is read by the responsible Bot; ask it for relevant sourced information.'}};
+        }));
+      }
       case 'bots_create':return manager.create(args);
       case 'bots_start':return manager.start(args.botId);
       case 'bots_stop':return manager.stop(args.botId);
-      case 'bots_clone':{const parentId=args.parentId||actor;assertOwner(actor,parentId);return manager.clone({...args,parentId});}
-      case 'bots_deliver':{assertOwner(actor,args.childId||actor);return memories.deliver({...args,childId:args.childId||actor});}
-      case 'bots_recycle':return manager.archive(args.botId);
       case 'bots_cleanup':return cleanTemporaryData(manager,args.botId,{externalTasks:()=>store('codex').list('works')});
-      case 'bot_memory_read':{const botId=args.botId||actor;assertOwner(actor,botId);return memories.list(botId);}
-      case 'memory_propose':return memories.propose(args.deliveryId);
-      case 'memory_merge':return memories.merge(args.deliveryId,args);
       case 'routines_create':{const previous=args.id&&manager.store.get('routines',args.id);if(previous)assertOwner(actor,previous.botId);const botId=args.botId||previous?.botId||actor;assertOwner(actor,botId);return manager.saveRoutine({...args,botId});}
-      case 'codex_submit':return codex.create({...args,botId:actor,sourceActionId:args.requestId||null});
-      case 'codex_status':{const work=codex.require(args.workId);assertOwner(actor,work.botId);return codex.get(args.workId);}
-      case 'codex_cancel':case 'codex_resume':{const work=codex.require(args.workId);assertOwner(actor,work.botId);return codex[name==='codex_cancel'?'cancel':'resume'](args.workId,args);}
+      case 'codex_projects':return codex.projects(signal);
+      case 'codex_threads':return codex.threads(signal);
+      case 'codex_create':case 'codex_attach':return codex[name==='codex_create'?'create':'attach']({...args,botId:actor});
+      case 'codex_status':{const id=codex.bindingId(actor,args.workId),work=codex.require(id);assertOwner(actor,work.botId);return codex.get(id);}
+      case 'codex_read':case 'codex_send':case 'codex_interrupt':{const id=codex.bindingId(actor,args.workId),work=codex.require(id);assertOwner(actor,work.botId);return codex[{codex_read:'read',codex_send:'send',codex_interrupt:'interrupt'}[name]](id,{...args,signal});}
       default:fail('Unknown capability tool',404);
     }
   }
   const operations={};
   const expose=(target,names)=>{for(const name of names)operations[name]=(...args)=>locked(()=>target[name](...args));};
-  if(id==='bot-management')expose(manager,['create','update','start','stop','send','clone','archive','saveRoutine','seed','restore','monitor','quiesce','shutdownAll','connect']);
+  if(id==='bot-management')expose(manager,['create','update','start','stop','send','saveRoutine','seed','restore','monitor','quiesce','shutdownAll','connect']);
   if(chatroom){
     expose(chatroom,['createRoom','updateRoom','post','append','dm','conclude','saveConclusion','retry','seed']);operations.upload=(...args)=>locked(()=>attachments.upload(...args));
-    operations.pause=async()=>{await chatroom.close();for(const job of chatroom.jobs())if(job.serviceVersion===version&&unfinished(job))store(id).save('deliveries',{id:job.id,status:'interrupted',error:'Platform stopped before delivery completion was confirmed',finishedAt:new Date().toISOString()});return {paused:true};};
+    operations.pause=async()=>{await chatroom.close();return {paused:true};};
     operations.resumeService=()=>{if(chatroom.closed)chatroom.start();return {ready:true};};
   }
   if(knowledge)expose(knowledge,['saveNode','saveEdge']);
-  if(memories)expose(memories,['write','deliver','propose','merge']);
+  if(memories)expose(memories,['write']);
   if(codex){
-    expose(codex,['create','cancel','resume','answer']);
-    operations.pause=async()=>{await codex.stop();for(const work of codex.list())if(work.serviceVersion===version&&unfinished(work))codex.save({...work,status:'interrupted',error:'Platform stopped before execution completion was confirmed'});return {paused:true};};
+    expose(codex,['create','attach','send','interrupt','read']);
+    operations.pause=async()=>{await codex.stop();return {paused:true};};
     operations.resumeService=async()=>{await codex.start();return {ready:true};};
   }
   if(id==='bot-management')operations.resumeService=()=>{manager.quiescing=false;return {ready:true};};
   return {tools,stateVersion:'1',operations,...(chatroom?{maxRequestBytes:MAX_ATTACHMENT_REQUEST_BYTES}:{}),
     callTool:(name,args,context,signal)=>id==='filesystem'?invoke(name,args,context,signal):locked(()=>invoke(name,args,context,signal)),
-    pendingWork:()=>chatroom?Math.max(Number(chatroom.busy),chatroom.jobs().filter(job=>job.serviceVersion===version&&unfinished(job)).length):codex?Math.max(Number(Boolean(codex.active)),codex.list().filter(work=>work.serviceVersion===version&&unfinished(work)).length):0,
+    pendingWork:()=>chatroom?Math.max(Number(chatroom.busy),chatroom.jobs().filter(job=>job.serviceVersion===version&&unfinished(job)).length):codex?Number(Boolean(codex.active)):0,
     close:async()=>{await chatroom?.close();await codex?.stop();for(const db of stores.values())db.close();}
   };
 }

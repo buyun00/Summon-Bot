@@ -14,9 +14,11 @@ export function normalizeBotConfig(input, baseDirectory = process.cwd()) {
   config.workspace = resolve(baseDirectory, input.workspace || resolve(config.dataDir, 'workspace'));
   config.listen = { host: '127.0.0.1', port: 0, ...input.listen };
   if (!['127.0.0.1', '::1'].includes(config.listen.host) || !Number.isInteger(config.listen.port) || config.listen.port < 0 || config.listen.port > 65535) throw new Error('Bot listener must use a valid loopback address');
-  config.concurrency ??= 1;
+  config.concurrency ??= 4;
   config.logs = normalizeLogConfig(input.logs);
-  if (config.concurrency !== 1) throw new Error('A Bot has one serial Pi Agent; concurrency must be 1');
+  if (!Number.isInteger(config.concurrency) || config.concurrency < 1 || config.concurrency > 32) throw new Error('Business concurrency must be 1..32');
+  config.context = { maxSummaryTokens: 8192, maxAssemblyTokens: 6144, maintenanceConcurrency: 1, maintenanceDelayMs: 3000, ...input.context };
+  for (const key of ['maxSummaryTokens', 'maxAssemblyTokens', 'maintenanceConcurrency', 'maintenanceDelayMs']) if (!Number.isSafeInteger(config.context[key]) || config.context[key] < 1) throw new Error(`Invalid context setting: ${key}`);
   config.shutdownGraceMs ??= 3000;
   if (!Number.isSafeInteger(config.shutdownGraceMs) || config.shutdownGraceMs < 0 || config.shutdownGraceMs > 60000) throw new Error('shutdownGraceMs must be 0..60000');
   if (config.token !== undefined && (typeof config.token !== 'string' || config.token.length < 24)) throw new Error('Bot management token must have at least 24 characters');
@@ -38,7 +40,7 @@ export function normalizeBotConfig(input, baseDirectory = process.cwd()) {
   if (new Set(config.peers.map(peer => peer.botId)).size !== config.peers.length || config.peers.some(peer => peer.botId === config.botId || peer.token === config.token)) throw new Error('Invalid peer identity or management token reuse');
   config.model = { provider: 'openai-compatible', contextWindow: 1048576, maxTokens: 393216, ...input.model };
   config.limits = { ...input.limits };
-  for (const key of Object.keys(config.limits)) if (!['compaction', 'reserveTokens', 'keepRecentTokens'].includes(key)) throw new Error(`Unsupported limits setting: ${key}`);
+  for (const key of Object.keys(config.limits)) if (!['reserveTokens', 'keepRecentTokens'].includes(key)) throw new Error(`Unsupported limits setting: ${key}`);
   if (config.app !== undefined || config.appFactory !== undefined) throw new Error('Bot always uses its Pi Agent; custom application factories are unsupported');
   return config;
 }

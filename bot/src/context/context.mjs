@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { getCurrentSystemMessage } from '@earendil-works/pi-ai';
 import { buildSessionProjection } from '../pi/core/session-manager.mjs';
 import { convertToLlm } from '../pi/core/messages.mjs';
 import { estimateProjectedContextTokens } from '../pi/core/compaction/compaction.mjs';
@@ -23,7 +22,7 @@ export function sessionEntries(session) {
   return entries;
 }
 
-export function projectSession(session, { useCheckpoints = true } = {}) {
+export function projectSession(session, { useCheckpoints = false } = {}) {
   const entries = sessionEntries(useCheckpoints ? session : { ...session, checkpoints: [] });
   const projection = buildSessionProjection(entries);
   const messages = convertToLlm(projection.messages);
@@ -33,12 +32,19 @@ export function projectSession(session, { useCheckpoints = true } = {}) {
 }
 
 export class SessionContext {
-  constructor({ sessions, clean = value => value, onCheckpoint = () => {} }) {
-    Object.assign(this, { sessions, clean, onCheckpoint }); this.entryIds = new WeakMap();
+  constructor({ sessions, clean = value => value }) {
+    Object.assign(this, { sessions, clean }); this.entryIds = new WeakMap();
   }
 
-  project(sessionId) {
-    const view = projectSession(this.sessions.getSession(sessionId));
+  project(sessionId, { fromIndex = 0, useCheckpoints = false } = {}) {
+    const view = projectSession(this.sessions.getSession(sessionId), { useCheckpoints });
+    if (fromIndex > 0) {
+      view.projection.entries = view.projection.entries.filter(entry => entry.sourceEntry.type === 'message' && Number(entry.sourceEntry.id.slice(2)) >= fromIndex);
+      view.projection.messages = view.projection.entries.flatMap(entry => entry.messages);
+      view.messages = convertToLlm(view.projection.messages);
+      view.tokens = estimateProjectedContextTokens(view.projection, view.entries).tokens;
+      view.bytes = byteSize(view.messages);
+    }
     for (const entry of view.projection.entries) for (const message of entry.messages) this.entryIds.set(message, entry.sourceEntry.id);
     return view;
   }
@@ -50,13 +56,12 @@ export class SessionContext {
       messages: [...current.messages, message], lastTaskId: runId }));
   }
 
-  sessionManager(sessionId, { runId, model, signal } = {}) {
+  sessionManager(sessionId, { runId, signal } = {}) {
     const owner = this;
-    let preparedRevision;
     const order = session => Math.max(0, ...(session.checkpoints || []).map(item => item.order || 0),
       ...(session.contextEdits || []).map(item => item.order || 0)) + 1;
     return {
-      getBranch() { const session = owner.sessions.getSession(sessionId); preparedRevision = session.revision; return sessionEntries(session); },
+      getBranch() { return sessionEntries(owner.sessions.getSession(sessionId)); },
       getEntries() { return sessionEntries(owner.sessions.getSession(sessionId)); },
       getEntry(id) { return this.getEntries().find(entry => entry.id === id); },
       buildSessionProjection() { return owner.project(sessionId).projection; },
@@ -71,32 +76,18 @@ export class SessionContext {
           contextEdits: [...(session.contextEdits || []), entry], expectedRevision: session.revision }));
         return entry.id;
       },
-      appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromHook, usage) {
-        signal?.throwIfAborted();
-        if (typeof summary !== 'string' || !summary.trim()) throw new Error('Compaction produced an empty summary');
-        const session = owner.sessions.getSession(sessionId);
-        if (preparedRevision !== session.revision) throw new Error('Session changed while summarizing; original history retained');
-        const before = owner.project(sessionId);
-        const checkpoint = owner.clean({ id: `compact:${randomUUID()}`, summary, firstKeptEntryId, tokensBefore, details, usage, fromHook,
-          timestamp: new Date().toISOString(), afterMessageCount: session.messages.length, order: order(session),
-          systemMessage: getCurrentSystemMessage(before.projection.messages), runId, model: model?.id,
-          estimateBefore: before.estimate, bytesBefore: before.bytes });
-        const candidate = { ...session, schemaVersion: 3, checkpoints: [...(session.checkpoints || []), checkpoint] };
-        const rebuilt = projectSession(candidate);
-        checkpoint.estimatedTokensAfter = rebuilt.tokens; checkpoint.bytesAfter = rebuilt.bytes;
-        owner.sessions.saveSession({ ...candidate, expectedRevision: session.revision });
-        owner.onCheckpoint(sessionId, checkpoint);
-        return checkpoint.id;
-      },
     };
   }
 
-  historyTool(sessionId) {
-    return { name: 'read_session_history', label: '读取会话原文', description: 'Read original messages and tool receipts from this Bot and session, including history covered by a lossy checkpoint. Read-only; never replays tools. Use query to locate evidence then start to paginate.',
-      parameters: { type: 'object', properties: { query: { type: 'string' }, start: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 20 }, offset: { type: 'integer', minimum: 0, description: 'Character offset in a large original message; use start=index and limit=1 to read successive fragments.' } }, additionalProperties: false },
+  historyTool(sessionId, allowedSessions = () => [sessionId]) {
+    return { name: 'read_session_history', label: '读取会话原文', description: 'Read original messages and tool receipts from this conversation or a source session explicitly linked to its work. Includes history covered by Markdown. Read-only; never replays tools. Use query to locate evidence then start to paginate.',
+      parameters: { type: 'object', properties: { sessionId: { type: 'string' }, query: { type: 'string' }, start: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 20 }, offset: { type: 'integer', minimum: 0, description: 'Character offset in a large original message; use start=index and limit=1 to read successive fragments.' } }, additionalProperties: false },
       execute: async (_id, args, signal) => {
         signal?.throwIfAborted();
-        const session = this.sessions.getSession(sessionId);
+        const target = args.sessionId || sessionId;
+        if (!allowedSessions().includes(target)) throw new Error('History session is not linked to the current work');
+        const session = this.sessions.getSession(target);
+        if (!session) throw new Error('Unknown source session');
         const start = args.start ?? 0, limit = args.limit ?? 5, offset = args.offset ?? 0;
         if (!Number.isInteger(start) || start < 0 || !Number.isInteger(limit) || limit < 1 || limit > 20 || !Number.isInteger(offset) || offset < 0) throw new Error('无效历史分页参数');
         const found = session.messages.map((message, index) => ({ index, message })).filter(item => item.index >= start &&
@@ -112,7 +103,7 @@ export class SessionContext {
           bytes += byteSize(value); if (bytes > 32000 && messages.length) break;
           messages.push(value);
         }
-        const details = { sessionId, total: session.messages.length, messages, next: messages.length ? messages.at(-1).index + 1 : null, hasMore: found.length > messages.length };
+        const details = { sessionId: target, availableSessions: allowedSessions(), total: session.messages.length, messages, next: messages.length ? messages.at(-1).index + 1 : null, hasMore: found.length > messages.length };
         return { content: [{ type: 'text', text: JSON.stringify(details) }], details };
       } };
   }

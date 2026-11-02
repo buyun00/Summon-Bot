@@ -14,11 +14,7 @@
     "chatroom_dm",
     "bots_list",
     "knowledge_search",
-    "bots_deliver",
-    "memory_propose",
-    "memory_merge",
     "knowledge_save_node",
-    "knowledge_save_edge",
-    "bot_memory_read"
+    "knowledge_save_edge"
   ]
 }

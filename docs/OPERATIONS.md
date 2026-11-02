@@ -8,9 +8,9 @@
 
 `config/deployment.json` 位于数据根，声明发行路径、工作目录、模型、Web 和能力网关地址。控制令牌和 Bot 凭据只存在本机数据目录，不提交 Git。`config/runtime.env` 是显式凭据来源，例如 `DEEPSEEK_API_KEY=...`；不会自动搜索其他项目。
 
-每个 Bot 的 `config.json` 可配置模型、提示词、skills、HTTP/module/MCP tools、contacts、peers 和上下文压缩。任务不设模型轮数、工具调用次数或总执行时长上限。`limits` 只接受当前的 compaction、reserveTokens、keepRecentTokens。用户取消、服务关闭和实际调用错误仍正常生效。独立使用示例见 `bot/README.md` 与 `bot/examples/`。
+每个 Bot 的 `config.json` 可配置模型、提示词、skills、HTTP/module/MCP tools、contacts、peers 和上下文压缩。任务不设模型轮数、工具调用次数或总执行时长上限。`limits` 只接受 reserveTokens、keepRecentTokens。`concurrency` 默认 4；`context.maintenanceConcurrency` 默认 1，`maxSummaryTokens` 默认 8192，`maxAssemblyTokens` 默认 6144。用户取消、服务关闭和实际调用错误仍正常生效。独立使用示例见 `bot/README.md` 与 `bot/examples/`。
 
-上下文采用 Pi 1.3.0 原生的压缩与恢复流程：默认预留 16384 token、保留近期约 20000 token，按模型窗口触发，不设字节门槛。模型及摘要的临时错误按 2/4/8 秒退避最多重试三次；实际超限或可恢复截断时，压缩后最多续跑一次。提前压缩失败会记录独立事件并继续使用现有上下文，不将已完成回复改为失败。SQLite 保留原始消息、压缩检查点及恢复用的上下文省略记录，恢复不重放已执行工具。持续的 API 故障或无法容纳的当前输入仍会明确报错。
+上下文继续使用 PiAgent 的消息、工具与历史投影。压缩、整理、组装分别在需要时创建新的短暂维护对话；常规压缩不再调用另一套 Pi 自动摘要。S1 原文保存在 SQLite；S2 唯一正文位于每个 Bot 的 knowledge/*.md；S3 的目标、来源、进度、等待、外部绑定和通知位于同一个 SQLite。整理游标只有在 MD/Skill 成功写入后才前移，重启继续待处理批次。当前输入与未整理尾部立即进入工作；失败保留原上下文与原始记录，不重发未知副作用。
 
 新建普通 Bot 使用 `default` 角色时，默认挂载 Pi 风格的四项基础工具：`read_file`（读文件）、`write_file`（写文件）、`edit_file`（修改文件）和 `run_command`（执行命令），并保留已有的协作与自身记忆能力。这四项工具由独立的 filesystem 能力服务提供，Bot 引擎负责调用。文件工具可访问该 Bot 的 workspace 和已配置的项目目录；命令以宿主用户身份运行，工作目录约定不等于操作系统沙箱。角色模板变更用于新建实例，已有 Bot 通过能力授权更新其工具配置。
 
@@ -47,7 +47,7 @@ CLI 自动记录标准输出/错误；嵌入式 `startBot(config)` 默认保持�
 
 StartupHub 沿用已有 `relay-bot` 条目和 `Relay Bot Foundation` 任务标识，任务动作使用安装根的 `Start-Hidden.vbs`，内部运行同目录的 `Start.ps1`。这个名称只是 Windows 任务标识；旧 Foundation 程序及目录已不参与启动。重新注册使用安装包内 `scripts/installation/register-startup.ps1`，保留其他 Hub 条目和自动启动设置。
 
-当前配置 8 个 Bot：工程、组件、质量、lumi，以及入口、聊天室、管理、记忆。角色模板数量不等于运行进程数量；Bot 按需启动，每个已运行实例独占自己的 Pi Agent 和数据目录。暂停 Web 不会停止它们；完整 Stop 才会关闭所有受管 Bot。
+Bot 按需启动，每个实例拥有自己的数据目录，同一 Bot 内的不同工作各自持有 Pi Agent。角色模板数量不等于运行进程数量。暂停 Web 不会停止它们；完整 Stop 才会关闭所有受管 Bot。
 
 主联系人列表只显示用户创建的 Bot。七个系统预置实例通过持久化 `presetId` 收到“系统 Bot”入口中，展开后仍可查看和对话。角色名、名称或加载的 Skill 不决定归属；用户创建和复制的实例使用同一 Bot 内核，默认不继承预设标记。
 
@@ -85,9 +85,15 @@ manifest 的 `sourceCommit` 是构建时 Git HEAD，`sourceDirty` 表示是否�
 
 清理范围遵循用户授权，不删除外部工作项目。故障时报告具体失败操作和实际原因，不补设报告或验收门禁。
 
-## 分身
+## 工作与持续职责
 
-通过管理能力的 bots_clone 创建，requestId 提供幂等性；通过 bots_deliver 持久交付，memory_propose / memory_merge 处理记忆增量，bots_recycle 回收。母体和子体始终独立。保留成果引用；临时目录清理只在任务终态且无活动工具时进行。
+普通任务由 work_create 建立，不再提供克隆、分身交付和记忆合并入口。work_wait 持久记录外部等待并释放执行位；外部事件、同伴终态或到期条件唤醒原工作。暂停/取消后迟到事件只保存，显式恢复才继续。重复相同观察停止该无进展链，保留工作，不对正常任务设置总轮数、时长或工具次数截止。
+
+新 Codex 工作只经已整合桌面连接器的 codex_create/attach/send/read/interrupt；稳定 operationId 在请求前持久化，结果未知查询原操作，不换键重发。SSE 游标和待投递事件持久化，成功、失败、取消、中断与待输入回到原工作。原桌面登录/审批仍按连接器实际能力处理，不引入旧 app-server 后端。
+
+既有 routines 调度可绑定工作与 watch 条件；同职责在途合并，前台优先，有明确观察源时无变化不调用模型。无 watch 的显式定时语义职责按约定时间执行。群聊未 @ 不全员唤醒；明确来源/工作直达，必要时由普通成员做一次只读语义路由。
+
+Markdown 目录和 Skill 描述可检索，正文按需读取；维护可修改 Bot 自己的 Skill。新介绍的私有工具入口会进入相关工作知识；长期授权单独按用户要求判定，凭据继续放既有私有配置。网页长期记忆编辑写同一份 Markdown。
 
 ## 运行结果说明
 

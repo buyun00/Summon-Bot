@@ -1,5 +1,5 @@
-import { randomUUID, randomBytes, createHash } from 'node:crypto';
-import { readFile, writeFile, rename, mkdir, cp, realpath, lstat, rm, readdir } from 'node:fs/promises';
+import { randomUUID, randomBytes } from 'node:crypto';
+import { readFile, writeFile, rename, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join,resolve,relative } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -8,14 +8,16 @@ import { normalizePaperAvatar,defaultPaperAvatar } from '../shared/avatar-style.
 
 const core = () => import('@relay/bot');
 const sleep = ms => new Promise(done=>setTimeout(done,ms));
-const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 export class BotManager {
   constructor({store,dataRoot,releaseRoot,model={},defaultCwd,emit=()=>{},getTools=()=>[],gatewayUrl=()=>'',botApi=core,cacheReadStores=false}) {
-    Object.assign(this,{store,dataRoot:resolve(dataRoot),releaseRoot:resolve(releaseRoot),model,defaultCwd,emit,getTools,gatewayUrl,botApi,cacheReadStores}); this.launching=new Map();this.creating=new Map();this.cloning=new Map();this.readStores=new Map();
+    Object.assign(this,{store,dataRoot:resolve(dataRoot),releaseRoot:resolve(releaseRoot),model,defaultCwd,emit,getTools,gatewayUrl,botApi,cacheReadStores}); this.launching=new Map();this.creating=new Map();this.readStores=new Map();
   }
   directory(id) { return join(this.dataRoot,'bots',safeId(id)); }
   public(record) { if (!record) return record; const {capabilityToken,token,...rest}=record; return {...rest,avatar:rest.avatar?normalizePaperAvatar(rest.avatar):defaultPaperAvatar(rest.id)}; }
-  list() { return this.store.list('bots').map(value=>this.public(value)); }
+  list() {
+    const routines=this.store.list('routines');
+    return this.store.list('bots').map(value=>({...this.public(value),responsibilities:routines.filter(item=>item.botId===value.id).map(item=>pick(item,['id','name','enabled','workId','lastStatus','nextRunAt'])),materials:value.materials||[]}));
+  }
   get(id) { const bot=this.store.get('bots',id); if(!bot) fail('Bot not found',404); return this.public(bot); }
   async config(id) { this.get(id); return JSON.parse(await readFile(join(this.directory(id),'config.json'),'utf8')); }
   async create(input={}) {
@@ -29,7 +31,7 @@ export class BotManager {
     const roleId=safeId(input.roleId || 'default'), profile=JSON.parse(await readFile(join(this.releaseRoot,'roles',roleId,'role.json'),'utf8'));
     const dir=this.directory(id), token=randomBytes(32).toString('hex'), capabilityToken=randomBytes(32).toString('hex');
     await mkdir(dir,{recursive:true}); await mkdir(join(dir,'workspace'),{recursive:true});
-    const config={schemaVersion:1,botId:id,dataDir:dir,workspace:input.cwd?resolve(input.cwd):join(dir,'workspace'),model:{...this.model,...input.modelConfig},prompt:input.prompt||await readFile(join(this.releaseRoot,'roles',roleId,'prompt.md'),'utf8'),skills:(profile.skills||[]).map(skill=>join(this.releaseRoot,'skills',skill)),bundleRoot:this.releaseRoot,bundledSkills:profile.skills||[],token,listen:{host:'127.0.0.1',port:0},concurrency:1,tools:[],limits:input.limits};
+    const config={schemaVersion:1,botId:id,dataDir:dir,workspace:input.cwd?resolve(input.cwd):join(dir,'workspace'),model:{...this.model,...input.modelConfig},prompt:input.prompt||await readFile(join(this.releaseRoot,'roles',roleId,'prompt.md'),'utf8'),skills:(profile.skills||[]).map(skill=>join(this.releaseRoot,'skills',skill)),bundleRoot:this.releaseRoot,bundledSkills:profile.skills||[],token,listen:{host:'127.0.0.1',port:0},concurrency:4,context:{maintenanceConcurrency:1},tools:[],limits:input.limits};
     const bot=this.store.save('bots',{id,name:required(input.name||profile.name,'name',100),role:input.role||profile.role,roleId,creationSource:'custom',expertise:input.expertise||profile.role,prompt:input.prompt||'',status:input.status==='paused'?'paused':'active',skills:profile.skills,model:config.model.model||'deepseek-flash',executor:'codex',capabilityToken,allowedTools:profile.tools,runIntent:'stopped',...(input.avatar?{avatar:avatarOf(input.avatar)}:{})});
     config.tools=(await this.getTools(bot)).map(tool=>({...tool,headers:{Authorization:`Bearer ${capabilityToken}`}}));
     config.bundledToolNames=config.tools.map(tool=>tool.name);
@@ -141,7 +143,7 @@ export class BotManager {
   }
   async shutdownAll(options={}) { return Promise.all(this.list().map(bot=>this.stop(bot.id,options))); }
   assertAccepting() { if(this.quiescing)fail('Bot management is stopping; new work is unavailable',503); }
-  async quiesce() { this.quiescing=true;await Promise.allSettled([...this.creating.values(),...this.cloning.values(),...this.launching.values()]); }
+  async quiesce() { this.quiescing=true;await Promise.allSettled([...this.creating.values(),...this.launching.values()]); }
   async restore() { for(const bot of this.store.list('bots')) if(bot.runIntent==='running'&&bot.status==='active') await this.start(bot.id); }
   async monitor() {
     if(this.quiescing)return [];
@@ -164,40 +166,22 @@ export class BotManager {
     finally{if(!this.cacheReadStores)store.close();}
   }
   closeReadStores(){for(const store of this.readStores.values())store.close();this.readStores.clear();}
-  async clone(input) {
-    this.assertAccepting();
-    const id=required(input.requestId,'requestId',200);if(this.cloning.has(id))return this.cloning.get(id);const pending=this.cloneNow(input).finally(()=>this.cloning.delete(id));this.cloning.set(id,pending);return pending;
+  async saveRoutine(input) {
+    let previous=input.id&&this.store.get('routines',input.id);
+    const botId=input.botId||previous?.botId;this.get(botId);
+    const name=required(input.name??previous?.name),roomId=input.roomId??previous?.roomId;
+    if(!previous&&!input.id)previous=this.store.list('routines').find(item=>item.botId===botId&&(input.eventKey?item.eventKey===input.eventKey:item.name===name&&item.roomId===roomId&&item.workId===(input.workId||undefined)));
+    const intervalSeconds=Number(input.intervalSeconds??previous?.intervalSeconds??3600);
+    if(!Number.isFinite(intervalSeconds)||intervalSeconds<60)fail('Routine interval must be >= 60 seconds');
+    const nextRunAt=input.nextRunAt||previous?.nextRunAt||now();if(!Number.isFinite(Date.parse(nextRunAt)))fail('Invalid routine nextRunAt');
+    const watch=input.watch===null?null:input.watch??previous?.watch;
+    if(watch){
+      if(!['work','task','room'].includes(watch.kind))fail('Routine watch kind must be work, task or room');
+      if(watch.kind==='work'&&!watch.workId||watch.kind==='task'&&!watch.taskId||watch.kind==='room'&&!watch.roomId)fail('Routine watch requires the actual source ID');
+      if(watch.botId&&watch.botId!==botId)fail('Watch another Bot through an authorized collaboration task');
+    }
+    const fields=pick(input,['eventKey','workId','lastRunAt','lastStatus','lastTaskId','lastDeliveryId','lastObservation','lastObservedAt','lastEventId','lastErrorNotified','error','pendingAt','pendingCount']);
+    return this.store.save('routines',{...previous,...fields,...(input.id?{id:input.id}:{}),botId,name,roomId,instruction:required(input.instruction??previous?.instruction),intervalSeconds,enabled:input.enabled??previous?.enabled??true,nextRunAt,watch});
   }
-  async cloneNow(input) {
-    const requestId=required(input.requestId,'requestId',200),existing=this.store.get('derivations',requestId);if(existing&&existing.parentId!==input.parentId)fail('Creation request belongs to another parent',409);if(existing&&existing.status!=='initializing')return existing;
-    const parent=this.get(input.parentId),parentConfig=await this.config(parent.id);
-    // SQLite is the sole authority. A read transaction gives one consistent logical view,
-    // without adding a fork/export protocol to Bot or copying live database files.
-    const snapshot=existing?.initialization||await this.readState(parent.id,db=>({sessions:input.inheritContext===false?[]:db?.listSessions()||[],memories:input.inheritMemory===false?[]:db?.listMemories()||[]}));
-    const childId=existing?.childId||input.childId||`bot-${randomUUID()}`;
-    this.store.save('derivations',{id:requestId,parentId:parent.id,childId,status:'initializing',initialization:snapshot});
-    const {apiKey:parentSecret,...inheritedModel}=parentConfig.model;
-    const child=await this.create({id:childId,name:input.name||`${parent.name} · 分身`,roleId:input.roleId||parent.roleId,prompt:parentConfig.prompt,modelConfig:inheritedModel,cwd:input.cwd});
-    const parentTools=new Set(parent.allowedTools||[]),requestedTools=new Set(input.allowedTools||parent.allowedTools||[]);
-    this.store.save('bots',{id:child.id,allowedTools:child.allowedTools.filter(name=>parentTools.has(name)&&requestedTools.has(name))});
-    const api=await this.botApi(), target=new api.BotStore(join(this.directory(child.id),'state.sqlite'));
-    try{for(const session of snapshot.sessions)target.saveSession({...session,botId:child.id});for(const memory of snapshot.memories)target.putMemory({...memory,id:memory.id,botId:child.id,expectedRevision:undefined});}finally{target.close();}
-    // Only declared per-Bot resources are copied; runtime, tasks/outbox and credentials are not.
-    const resources=join(this.directory(parent.id),'resources');if(existsSync(resources))await this.copyOwned(resources,join(this.directory(child.id),'resources'));
-    const childConfig=await this.config(child.id);childConfig.skills=[...new Set([...childConfig.skills,...(parentConfig.skills||[]).filter(path=>within(resources,path)).map(path=>join(this.directory(child.id),'resources',relative(resources,path)))])];
-    await writeFile(join(this.directory(child.id),'config.json'),JSON.stringify(childConfig,null,2),{mode:0o600});
-    const record=this.store.save('derivations',{id:requestId,parentId:parent.id,childId:child.id,baseline:snapshot.memories.map(memory=>({id:memory.id,revision:memory.revision,hash:hash(memory.text??memory.content)})),initialization:null,status:'created',task:input.task||'',createdAt:now()});
-    if(input.start!==false){await this.start(child.id);if(input.task)await this.send(child.id,{id:`derivation:${requestId}`,kind:'request',content:{text:input.task},sessionId:`assignment:${requestId}`});}
-    return record;
-  }
-  async copyOwned(source,target) { const root=await realpath(source); for(const entry of await readdir(source,{withFileTypes:true})){const path=join(source,entry.name);if((await lstat(path)).isSymbolicLink()||!within(root,await realpath(path)))fail('Managed data contains an external link');if(entry.isDirectory())await this.copyOwned(path,join(target,entry.name));else{await mkdir(target,{recursive:true});const destination=join(target,entry.name);if(existsSync(destination)){if((await lstat(destination)).isSymbolicLink()||hash(await readFile(destination))!==hash(await readFile(path)))fail('A retained delivery file conflicts with its source',409);}else await cp(path,destination,{errorOnExist:true,force:false});}} }
-  async archive(childId) {
-    const relation=this.store.list('derivations').find(item=>item.childId===childId);if(!relation)fail('Only managed temporary Bots can be archived');
-    const delivery=this.store.list('deliveries').find(item=>item.childId===childId&&item.status==='delivered');if(!delivery)fail('Deliver results durably before recycling',409);
-    if((await this.tasks(childId)).some(task=>['accepted','queued','running','waiting'].includes(task.status)))fail('Bot still has unfinished work',409);
-    await this.stop(childId);this.store.save('bots',{id:childId,status:'paused',runIntent:'stopped',archivedAt:now()});
-    // Preserve the directory while archives/results or other tasks may reference artifacts.
-    const record=this.store.save('derivations',{...relation,status:'archived',archivedAt:now()});const archiveDir=join(this.dataRoot,'archives',safeId(childId));await mkdir(archiveDir,{recursive:true});await writeFile(join(archiveDir,'record.json'),JSON.stringify({...record,dataDirectory:this.directory(childId),deliveryId:delivery.id,retention:'Data retained in place to preserve artifact references'},null,2));return record;
-  }
-  async saveRoutine(input) { const previous=input.id&&this.store.get('routines',input.id),botId=input.botId||previous?.botId;this.get(botId);const intervalSeconds=Number(input.intervalSeconds??previous?.intervalSeconds??3600);if(!Number.isFinite(intervalSeconds)||intervalSeconds<60)fail('Routine interval must be >= 60 seconds');return this.store.save('routines',{...previous,...input,botId,name:required(input.name??previous?.name),instruction:required(input.instruction??previous?.instruction),intervalSeconds,enabled:input.enabled??previous?.enabled??true,nextRunAt:input.nextRunAt||previous?.nextRunAt||now()}); }
 }
+

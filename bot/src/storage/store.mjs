@@ -9,7 +9,7 @@ const decode = row => row ? JSON.parse(row.data) : null;
 export const terminalTaskStates = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
 const historyTables = ['messages', 'tasks', 'sessions', 'tools', 'events', 'outbox'];
 const historyRecordKinds = new Set(['messages', 'tasks', 'sessions', 'tools', 'events', 'outbox', 'receipts', 'requests',
-  'agentSessions', 'agentRuns', 'toolRuns', 'jobs', 'imported-events', 'imported-requests', 'imported-sessions', 'imported-tool_runs', 'imported-kv_state']);
+  'agentSessions', 'agentRuns', 'toolRuns', 'jobs', 'works', 'work-events', 'conversations', 'imported-events', 'imported-requests', 'imported-sessions', 'imported-tool_runs', 'imported-kv_state']);
 const conflict = message => Object.assign(new Error(message), { code: 'REVISION_CONFLICT', status: 409 });
 
 /** SQLite is the sole authority for transcripts, task receipts and state. */
@@ -67,12 +67,15 @@ export class BotStore {
       const existing = decode(this.db.prepare('SELECT data FROM messages WHERE source=? AND source_id=?').get(source, message.id));
       if (existing) return { duplicate: true, message: existing, task: this.getTask(existing.taskId) };
       const id = randomUUID(), taskId = randomUUID(), at = now();
-      const requestedSessionId = message.sessionId || `peer:${source}`;
-      const aliases = this.getSession(requestedSessionId) ? [] : this.listSessions().filter(session => session.contextKey === requestedSessionId);
-      if (aliases.length > 1) throw conflict('Multiple sessions own this contextKey; resolve the ambiguity before execution');
-      const sessionId = aliases[0]?.id || requestedSessionId;
-      const stored = { ...message, id, sourceMessageId: message.id, from: source, taskId, sessionId, receivedAt: at };
-      const task = { id: taskId, taskId, runId: taskId, messageId: id, source, sessionId, status: 'accepted',
+      const work = message.workId ? this.getRecord('works', message.workId) : null;
+      if (message.workId && !work) throw Object.assign(new Error('Unknown work'), { status: 404 });
+      const conversationId = work?.conversationId || message.conversationId || message.sessionId || `peer:${source}`;
+      const sessionId = conversationId;
+      const conversation = this.getRecord('conversations', conversationId);
+      this.putRecord('conversations', { ...conversation, id: conversationId, kind: work ? 'work' : 'chat', workId: work?.id || null,
+        createdAt: conversation?.createdAt || at, updatedAt: at });
+      const stored = { ...message, id, sourceMessageId: message.id, from: source, taskId, sessionId, conversationId, workId: work?.id || null, receivedAt: at };
+      const task = { id: taskId, taskId, runId: randomUUID(), messageId: id, source, sessionId, conversationId, workId: work?.id || null, kind: work ? 'work' : 'chat', status: 'accepted',
         input: message.content, metadata: message.metadata || null, bootId, createdAt: at, updatedAt: at, cancelRequested: false };
       this.db.prepare('INSERT INTO messages(id,source,source_id,task_id,data) VALUES(?,?,?,?,?)').run(id, source, message.id, taskId, encode(stored));
       this.db.prepare('INSERT INTO tasks(id,session_id,status,data) VALUES(?,?,?,?)').run(taskId, sessionId, task.status, encode(task));
@@ -94,7 +97,7 @@ export class BotStore {
       const prior = this.getTask(id);
       if (!prior) throw new Error(`Unknown task ${id}`);
       if (terminalTaskStates.has(prior.status)) return prior;
-      const task = { ...prior, ...patch, id, taskId: id, runId: id, updatedAt: now() };
+      const task = { ...prior, ...patch, id, taskId: id, runId: prior.runId, updatedAt: now() };
       this.db.prepare('UPDATE tasks SET status=?,data=? WHERE id=?').run(task.status, encode(task), id);
       if (task.status !== prior.status) this.appendEvent(`task.${task.status}`, { task }, { taskId: id, sessionId: task.sessionId });
       else if (task.cancelRequested && !prior.cancelRequested) this.appendEvent('task.cancel_requested', { taskId: id }, { taskId: id });
@@ -179,15 +182,17 @@ export class BotStore {
     else { try { this.onEvent?.(saved); } catch {} }
     return saved;
   }
-  listEvents({ after = 0, limit = 200, taskId } = {}) {
+  listEvents({ after = 0, limit = 200, taskId, workId } = {}) {
     limit = Math.max(1, Math.min(1000, Number(limit) || 200));
+    if (workId) return this.db.prepare("SELECT seq,data FROM events WHERE seq>? AND json_extract(data,'$.workId')=? ORDER BY seq DESC LIMIT ?")
+      .all(after, workId, limit).reverse().map(row => ({ ...decode(row), seq: row.seq }));
     const rows = taskId ? this.db.prepare('SELECT seq,data FROM events WHERE seq>? AND task_id=? ORDER BY seq LIMIT ?').all(after, taskId, limit)
       : this.db.prepare('SELECT seq,data FROM events WHERE seq>? ORDER BY seq LIMIT ?').all(after, limit);
     return rows.map(row => ({ ...decode(row), seq: row.seq }));
   }
   recover(bootId) {
     return this.transaction(() => {
-      for (const task of this.list('tasks')) if (!terminalTaskStates.has(task.status)) this.updateTask(task.id, { status: 'interrupted',
+      for (const task of this.list('tasks')) if (!terminalTaskStates.has(task.status) && task.status !== 'accepted') this.updateTask(task.id, { status: 'interrupted',
         error: { code: 'PROCESS_RESTARTED', message: 'Previous execution is unconfirmed; automatic replay disabled', recoveredByBootId: bootId } });
       for (const tool of this.listTools()) if (['running', 'queued'].includes(tool.status)) this.saveTool({ ...tool, status: 'unknown', finishedAt: now(), error: { message: 'Process stopped before a durable tool result' } });
       for (const item of this.listOutbox()) if (item.status === 'sending') this.saveOutbox({ ...item, status: 'unknown' });

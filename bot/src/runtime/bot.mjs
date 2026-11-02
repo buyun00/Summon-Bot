@@ -11,6 +11,9 @@ import { BotEngine } from '../agent/engine.mjs';
 import { CapabilityUpdates } from './capability-updates.mjs';
 import { coreTools } from '../capabilities/core-tools.mjs';
 import { requestBot, sendMessage } from '../messaging/client.mjs';
+import { WorkService } from './works.mjs';
+import { ConversationScheduler } from './scheduler.mjs';
+import { writeKnowledgeDocument } from '../context/knowledge-api.mjs';
 
 const at = () => new Date().toISOString();
 const failure = (status, message, code) => Object.assign(new Error(message), { status, code });
@@ -69,13 +72,17 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       return { ...value, url: peer.url };
     };
     const taskDetails = id => { const value = store.getTask(id); return value && { ...value, tools: store.listTools(id) }; };
+    const scheduler = new ConversationScheduler(config.concurrency);
+    let wakeTimer;
     const services = {
       store,
       contacts: () => config.contacts.map(({botId,name,dataDir}) => ({botId,name,transport:dataDir?'local-direct':'http-direct'})),
       async send(to, envelope, { signal, taskId } = {}) {
         const id = envelope.id || randomUUID(), key = `${to}:${id}`;
         const previous = store.getOutbox(key);
-        const message = { ...envelope, id, to, from: config.botId, kind: envelope.kind || 'request' };
+        const originTask = taskId && store.getTask(taskId);
+        const message = { ...envelope, id, to, from: config.botId, kind: envelope.kind || 'request', metadata: {
+          ...(previous?.message?.metadata || (originTask ? { sourceWorkId: originTask.workId, sourceConversationId: originTask.conversationId, sourceTaskId: originTask.id } : {})), ...envelope.metadata } };
         if (previous && JSON.stringify(previous.message) !== JSON.stringify(clean(message))) throw failure(409, 'Message ID already belongs to another payload');
         if (previous?.receipt) return previous.receipt;
         store.saveOutbox({ id: key, message: clean(message), taskId, to, status: 'sending', createdAt: previous?.createdAt || at() });
@@ -97,23 +104,67 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       async cancelTask(id, botId, signal) { return botId && botId !== config.botId ? requestBot(await contactFor(botId), `/tasks/${encodeURIComponent(id)}/cancel`, { method:'POST', body:{}, signal }) : cancel(id); },
       coreTools(task) { return coreTools(services, task); },
       toolContext(task) { return { saveArtifact: async input => {
-        const artifact = await saveArtifact(join(config.dataDir, 'artifacts'), input, { botId: config.botId, taskId: task.id, runId: task.id, sessionId: task.sessionId, createdAt: at() });
+        const artifact = await saveArtifact(join(config.dataDir, 'artifacts'), input, { botId: config.botId, taskId: task.id, runId: task.runId, sessionId: task.sessionId, workId: task.workId, createdAt: at() });
         store.saveArtifact(artifact); emit('artifact.created', { artifact }, { taskId: task.id }); return artifact;
       } }; },
     };
     engine = new BotEngine({ config, store, emit, services, clean });
     updates = new CapabilityUpdates({ config, store, engine, emit, clean, persist: persistConfig });
-    let dispatch = Promise.resolve();
     const schedule = task => {
+      if (jobs.has(task.id) || task.status !== 'accepted') return;
+      const work = task.workId && services.works.get(task.workId);
+      if (work && ['paused', 'cancelled', 'blocked'].includes(work.status)) return;
       const controller = new AbortController();
-      const promise = dispatch.catch(() => {}).then(async () => {
+      const promise = scheduler.run(task.conversationId || task.sessionId, async () => {
         if (controller.signal.aborted) return;
+        task = store.getTask(task.id);
+        if (task.status !== 'accepted') return;
+        const currentWork = task.workId && services.works.get(task.workId);
+        if (currentWork && ['paused', 'cancelled', 'blocked'].includes(currentWork.status)) return;
+        if (currentWork?.status === 'waiting') services.works.update(currentWork.id, { status: 'active', waiting: null });
+        // All accepted raw messages remain S1; combine a burst before waking the model.
+        const batch = task.workId ? store.listTasks({ status: 'accepted', limit: 10000 }).filter(item => item.workId === task.workId && item.id !== task.id) : [];
+        if (batch.length) {
+          task = store.updateTask(task.id, { input: { current: task.input, accumulated: batch.map(item => ({ taskId: item.id, source: item.source, input: item.input, metadata: item.metadata })) } });
+          for (const item of batch) store.updateTask(item.id, { status: 'completed', result: { content: '', batchedInto: task.id }, finishedAt: at() });
+        }
+        if (currentWork) services.works.update(currentWork.id, { lastTaskId: task.id });
         try { const result = await engine.run(task, { signal: controller.signal,
-          onStart: () => store.updateTask(task.id, { status: 'running', startedAt: at() }) }); store.updateTask(task.id, { status: 'completed', result, finishedAt: at() }); }
+          onStart: () => store.updateTask(task.id, { status: 'running', startedAt: at() }) });
+          store.updateTask(task.id, { status: 'completed', result, finishedAt: at() });
+          for (const pending of store.listTasks({ status: 'accepted', limit: 10000 }).filter(item => item.steeredIntoTaskId === task.id)) {
+            if (result.steeredMessageIds?.includes(pending.messageId)) store.updateTask(pending.id, { status: 'completed', result: { content: '', consumedBy: task.id }, finishedAt: at() });
+            else store.updateTask(pending.id, { steeredIntoTaskId: null });
+          }
+          const latest = task.workId && services.works.get(task.workId);
+          if (latest?.status === 'active') {
+            const prior = store.getRecord('work-continuation', latest.id);
+            const observation = JSON.stringify({ progress: latest.progress, content: result.content, bindings: latest.bindings });
+            const repeated = prior?.observation === observation ? (prior.repeated || 0) + 1 : 0;
+            store.putRecord('work-continuation', { id: latest.id, observation, repeated });
+            if (repeated >= 2) services.works.update(latest.id, { status: 'blocked', lastError: { code: 'NO_PROGRESS', message: 'Repeated unchanged work outcome; chain stopped, work retained' } });
+            else await services.works.dispatch(latest.id, { id: `continue:${task.id}`, content: 'Continue the existing work from durable S3 and receipts. Advance the next concrete step; when waiting use work_wait, when finished work_update completed. If no actionable step remains, record the actual blocker. Do not repeat uncertain side effects.' });
+          }
+        }
         catch (error) { store.updateTask(task.id, { status: controller.signal.aborted ? (state === 'stopping' ? 'interrupted' : 'cancelled') : 'failed',
-          error: clean({ name: error.name, code: error.code, message: error.message }), finishedAt: at() }); }
+          error: clean({ name: error.name, code: error.code, message: error.message }), finishedAt: at() });
+          const corrections = store.listTasks({ status: 'accepted', limit: 10000 }).filter(item => item.steeredIntoTaskId === task.id);
+          for (const pending of corrections) store.updateTask(pending.id, { steeredIntoTaskId: null });
+          const current = task.workId && services.works.get(task.workId);
+          if (current?.status === 'active' && state !== 'stopping') services.works.update(current.id, { status: corrections.length ? 'active' : 'blocked', lastError: clean({ code: error.code, message: error.message }) });
+        }
+        const settled = task.workId && services.works.get(task.workId), settledTask = store.getTask(task.id);
+        if (settled && state !== 'stopping' && ['completed', 'cancelled', 'blocked'].includes(settled.status) && !store.listRecords('work-notifications').some(item => item.taskId === task.id)) {
+          const content = settledTask.result?.content || settledTask.error?.message || settled.progress || `工作状态：${settled.status}`;
+          for (const [index, source] of settled.sources.entries()) {
+            const target = source.roomId ? { roomId: source.roomId, replyTo: source.replyTo } : config.contacts.some(contact => contact.botId === source.source) ? { botId: source.source } : null;
+            if (target) await services.notify({ id: settled.id, notificationId: `settled:${task.id}:${index}`, content, ...target }, task, {}).catch(error => emit('work.notification_pending', { workId: settled.id, error: error.message }));
+          }
+        }
+      }, { signal: controller.signal, priority: task.metadata?.priority }).catch(error => {
+        if (state !== 'stopping' && store.getTask(task.id)?.status === 'accepted') store.updateTask(task.id, { status: 'cancelled', error: { message: error.message }, finishedAt: at() });
       }).finally(() => jobs.delete(task.id));
-      jobs.set(task.id, { controller, promise }); dispatch = promise;
+      jobs.set(task.id, { controller, promise });
     };
     const cancel = id => {
       const task = store.getTask(id); if (!task) throw failure(404, 'Unknown task');
@@ -122,12 +173,74 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       if (task.status === 'accepted') store.updateTask(id, { status: 'cancelled', finishedAt: at() });
       return store.getTask(id);
     };
+    const accept = (envelope, source) => {
+      const accepted = store.acceptMessage(clean(envelope), source, bootId);
+      if (accepted.duplicate) return accepted;
+      const task = accepted.task, work = task.workId && services.works.get(task.workId);
+      if (envelope.kind === 'event' && (envelope.metadata?.purpose === 'fyi' || work?.status === 'completed')) {
+        accepted.task = store.updateTask(task.id, { status: 'completed', result: { content: '', observed: true }, finishedAt: at() });
+        return accepted;
+      }
+      if (work && (['waiting', 'blocked'].includes(work.status) || (work.status === 'completed' && envelope.kind === 'request'))) services.works.update(work.id, { status: 'active', waiting: null, lastError: null });
+      if (work && envelope.kind === 'request' && source === 'controller' && engine.steer?.(work.conversationId, task.input, { source: envelope.metadata?.actor || source, messageId: task.messageId })) {
+        const active = [...engine.active.values()].find(item => item.conversationId === work.conversationId);
+        accepted.task = store.updateTask(task.id, { steeredIntoTaskId: active?.taskId || null });
+      } else schedule(task);
+      return accepted;
+    };
+    services.works = new WorkService({ store, botId: config.botId, accept, cancel, clean });
+    const deliverNotification = async (record, context = {}) => {
+      let receipt;
+      if (record.botId) receipt = await services.send(record.botId, { id: record.id, kind: 'event', content: record.content, workId: record.targetWorkId,
+        replyTo: record.replyTo, metadata: { purpose: record.targetWorkId ? 'result' : 'fyi', sourceWorkId: record.workId, authority: 'peer-observation' } }, context);
+      else {
+        const channel = engine.configured.tools.find(tool => tool.name === 'chatroom_send');
+        if (!channel) throw failure(409, 'This Bot has no chatroom_send capability');
+        receipt = await channel.execute({ roomId: record.roomId, content: record.content, replyTo: record.replyTo, clientId: record.id, workId: record.workId, purpose: 'fyi' }, { ...context, botId: config.botId, workId: record.workId });
+        if (receipt?.isError) throw new Error('Chatroom rejected notification');
+      }
+      const saved = { ...record, status: 'delivered', receipt: clean(receipt), deliveredAt: at() };
+      store.putRecord('work-notifications', saved); return saved;
+    };
+    services.notify = async (input, task, context) => {
+      const work = services.works.get(input.id); if (!work) throw failure(404, 'Unknown work');
+      if ((!input.botId && !input.roomId) || (input.botId && input.roomId)) throw failure(400, 'Choose one notification target');
+      const id = `${work.id}:${input.notificationId}`, prior = store.getRecord('work-notifications', id);
+      if (prior?.status === 'delivered') return prior;
+      const targetWorkId = input.targetWorkId || work.sources.find(source => source.source === input.botId)?.metadata?.sourceWorkId;
+      const record = prior || clean({ ...input, id, targetWorkId, workId: work.id, taskId: task.id, status: 'pending', createdAt: at() });
+      store.putRecord('work-notifications', record);
+      try { return await deliverNotification(record, context); }
+      catch (error) { store.putRecord('work-notifications', { ...record, status: 'unknown', error: clean(error.message), retryAt: Date.now() + 30000 }); throw error; }
+    };
+    // Durable waits consume no model or execution slot. Only a changed result wakes work.
+    let ticking = false;
+    const wake = async () => {
+      if (ticking || state !== 'ready' || config.accepting === false) return;
+      ticking = true;
+      try {
+        for (const notification of store.listRecords('work-notifications').filter(item => item.status !== 'delivered' && (!item.retryAt || item.retryAt <= Date.now()))) {
+          try { await deliverNotification(notification); }
+          catch (error) { store.putRecord('work-notifications', { ...notification, status: 'unknown', error: clean(error.message), retryAt: Date.now() + 60000 }); }
+        }
+        for (const work of services.works.list({ status: 'waiting', limit: 500 })) {
+          const wait = work.waiting; if (!wait) continue;
+          if (wait.until && Date.parse(wait.until) <= Date.now()) await services.works.dispatch(work.id, { id: `wait:${wait.id}`, content: { type: 'wait_due', wait } });
+          else if (wait.taskId) {
+            try { const task = await services.getTask(wait.taskId, wait.botId, undefined, 0);
+              if (task && terminalTaskStates.has(task.status)) await services.works.dispatch(work.id, { id: `wait:${wait.id}:${task.status}`, content: { type: 'peer_task_result', task } });
+            } catch (error) { store.putRecord('wait-errors', { id: work.id, message: clean(error.message), observedAt: at() }); }
+          }
+        }
+        for (const task of store.listTasks({ status: 'accepted', limit: 10000 })) schedule(task);
+      } finally { ticking = false; }
+    };
     const health = () => ({ ...identity(), engine: engine.health(), tasks: store.listTasks({ limit: 10000 }).length });
     const close = () => closing ||= (async () => {
       state = 'stopping'; emit('bot.stopping', identity()); await atomicJson(join(config.dataDir, 'run', 'current.json'), identity());
+      clearInterval(wakeTimer); scheduler.close();
       // Graceful shutdown stops only this Bot. Contacts remain independent.
-      for (const [id, job] of jobs) { job.controller.abort(new Error('Bot is stopping')); const task = store.getTask(id);
-        if (task?.status === 'accepted') store.updateTask(id, { status: 'interrupted', error: { code: 'BOT_STOPPED', message: 'Accepted task did not execute; no automatic replay' }, finishedAt: at() }); }
+      for (const job of jobs.values()) job.controller.abort(new Error('Bot is stopping'));
       await updates.close(); await engine.close(); await Promise.allSettled([...jobs.values()].map(job => job.promise)); await configWrites.catch(() => {});
       if (server?.listening) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
       state = 'stopped'; emit('bot.stopped', identity()); await atomicJson(join(config.dataDir, 'run', 'current.json'), identity()); store.close();
@@ -146,15 +259,16 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       const needAdmin = () => { if (!auth.admin) throw failure(403, 'Management access required'); };
       const ownTask = id => { const task = taskDetails(id); if (!task || (!auth.admin && task.source !== auth.source)) throw failure(404, 'Unknown task'); return task; };
       if (method === 'GET' && parts[0] === 'health') return health();
-      if (method === 'GET' && parts[0] === 'capabilities') return { botId: config.botId, protocol: 'relay-bot-v1', engine: engine.health(), messages: true, tasks: true, state: true, memories: true };
+      if (method === 'GET' && parts[0] === 'capabilities') return { botId: config.botId, protocol: 'relay-bot-v2', engine: engine.health(), messages: true, tasks: true, works: true, state: true, knowledge: true };
       if (method === 'POST' && parts[0] === 'messages') {
         if (state !== 'ready') throw failure(503, `Bot is ${state}`);
         if (config.accepting === false) throw failure(409, 'Bot is paused');
         if (!engine.health().configured) throw failure(503, 'Model credential is not configured', 'MODEL_UNCONFIGURED');
         const body = await readBody(request);
         if (typeof body.id !== 'string' || !body.id || body.id.length > 512 || body.to !== config.botId || !['request', 'event'].includes(body.kind || 'request') || body.content === undefined || (body.from && body.from !== auth.source) || (body.sessionId !== undefined && (typeof body.sessionId !== 'string' || !body.sessionId || body.sessionId.length > 512))) throw failure(400, 'Invalid message envelope or authenticated sender');
-        const accepted = store.acceptMessage(clean({ ...body, kind: body.kind || 'request' }), auth.source, bootId);
-        if (!accepted.duplicate) schedule(accepted.task);
+        if (!auth.admin && body.workId && !services.works.get(body.workId)?.sources.some(item => item.source === auth.source) &&
+          !store.listOutbox().some(item => item.to === auth.source && item.message?.metadata?.sourceWorkId === body.workId)) throw failure(403, 'Work is not shared with this peer');
+        const accepted = accept({ ...body, kind: body.kind || 'request' }, auth.source);
         response.statusCode = 202;
         return { accepted: true, duplicate: accepted.duplicate, messageId: accepted.message.id, taskId: accepted.task.id, status: accepted.task.status };
       }
@@ -164,6 +278,18 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       }
       if (method === 'GET' && parts[0] === 'messages') return store.listMessages().filter(message => auth.admin || message.from === auth.source);
       needAdmin();
+      if (parts[0] === 'works') {
+        const id = parts[1];
+        if (method === 'GET') return id ? services.works.get(id) : services.works.list({ status: parsed.searchParams.get('status'), query: parsed.searchParams.get('query') });
+        if (method === 'POST' && !id) return services.works.create(await readBody(request));
+        if (method === 'PATCH' && id) {
+          const body = await readBody(request);
+          const work = ['paused', 'cancelled'].includes(body.status) ? services.works.stop(id, body.status) : services.works.update(id, body);
+          if (work.status === 'active') await wake();
+          return work;
+        }
+        if (method === 'POST' && parts[2] === 'events') return services.works.dispatch(id, await readBody(request));
+      }
       if (parts[0] === 'availability' && parts.length === 1 && method === 'PATCH') {
         const body=await readBody(request);if(typeof body.accepting!=='boolean')throw failure(400,'accepting must be boolean');
         await persistConfig({accepting:body.accepting});return {accepting:config.accepting};
@@ -211,11 +337,9 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       if (parts[0] === 'sessions') {
         if (method === 'GET') return parts[1] ? store.getSession(parts[1]) : store.listSessions();
       }
-      if (parts[0] === 'memories') {
-        if (method === 'GET') return parts[1] ? store.getMemory(parts[1]) : store.listMemories();
-        if (method === 'POST' && !parts[1]) { const body = await readBody(request); if (body.id && store.getMemory(body.id)) throw failure(409, 'Memory already exists'); return store.putMemory(clean(body)); }
-        if (method === 'PATCH' && parts[1]) { const body = await readBody(request); if (!Number.isInteger(body.expectedRevision)) throw failure(400, 'expectedRevision required'); if (!store.getMemory(parts[1])) throw failure(404, 'Unknown memory'); return store.putMemory(clean({ ...body, id: parts[1] })); }
-        if (method === 'DELETE' && parts[1]) { const body = await readBody(request); return { deleted: store.deleteMemory(parts[1], body.expectedRevision) }; }
+      if (parts[0] === 'knowledge') {
+        if (method === 'GET') return parts[1] ? engine.maintenance.read(parts[1]) : engine.maintenance.directory();
+        if (method === 'POST' && !parts[1]) return writeKnowledgeDocument(engine.maintenance, store, clean(await readBody(request)));
       }
       if (method === 'GET' && parts[0] === 'tools') return parts[1] ? store.getTool(parts[1]) : store.listTools(parsed.searchParams.get('taskId') || undefined);
       if (method === 'GET' && parts[0] === 'artifacts') return parts[1] ? store.getArtifact(parts[1]) : store.listArtifacts();
@@ -233,6 +357,11 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
     url = `http://${config.listen.host === '::1' ? '[::1]' : config.listen.host}:${server.address().port}`;
     emit('bot.loading', identity()); await atomicJson(join(config.dataDir, 'run', 'current.json'), identity());
     await engine.initialize(); updates.recover(); state = 'ready'; readyAt = at(); emit('bot.ready', identity()); await atomicJson(join(config.dataDir, 'run', 'current.json'), identity());
+    for (const work of services.works.list({ status: 'active', limit: 500 })) {
+      const last = work.lastTaskId && store.getTask(work.lastTaskId);
+      if (last?.status === 'interrupted') await services.works.dispatch(work.id, { id: `recover:${last.id}`, content: { type: 'execution_interrupted', taskId: last.id, instruction: 'Resume responsibility. First inspect durable tool receipts and original external bindings; unknown effects must be queried, never replayed.', unknownTools: store.listTools(last.id).filter(tool => tool.status === 'unknown') } });
+    }
+    wakeTimer = setInterval(() => wake().catch(error => emit('work.scheduler_error', { message: error.message })), 5000); wakeTimer.unref?.(); await wake();
     return { config, store, url, bootId, engine, close, health, emit, subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); } };
   } catch (error) {
     await updates?.close().catch(() => {}); await engine?.close().catch(() => {});

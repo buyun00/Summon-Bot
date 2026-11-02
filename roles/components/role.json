@@ -14,18 +14,21 @@
     "chatroom_dm",
     "bots_list",
     "knowledge_search",
-    "bots_deliver",
     "list_files",
     "read_file",
     "search_files",
     "write_file",
     "edit_file",
     "run_command",
-    "codex_submit",
     "codex_status",
-    "codex_cancel",
-    "codex_resume",
     "knowledge_save_node",
-    "knowledge_save_edge"
+    "knowledge_save_edge",
+    "codex_projects",
+    "codex_threads",
+    "codex_create",
+    "codex_attach",
+    "codex_read",
+    "codex_send",
+    "codex_interrupt"
   ]
 }

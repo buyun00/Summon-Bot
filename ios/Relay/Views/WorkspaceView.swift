@@ -133,7 +133,7 @@ struct WorkspaceView: View {
             Picker("筛选", selection: $workFilter) {
                 Text("全部").tag("all")
                 Text("进行中").tag("active")
-                Text("待答复").tag("waiting")
+                Text("等待中").tag("waiting")
                 Text("已完成").tag("completed")
                 Text("待处理").tag("attention")
             }
@@ -141,8 +141,8 @@ struct WorkspaceView: View {
         let works = workspaceRecords(snapshot["works"]).filter { record in
             let status = record.value["status"].stringValue
             switch workFilter {
-            case "active": return ["queued", "running"].contains(status)
-            case "attention": return ["failed", "interrupted", "cancelled"].contains(status)
+            case "active": return ["active", "queued", "running"].contains(status)
+            case "attention": return ["paused", "blocked", "failed", "interrupted", "cancelled"].contains(status)
             case "all": return true
             default: return status == workFilter
             }
@@ -158,7 +158,7 @@ struct WorkspaceView: View {
                 VStack(alignment: .leading, spacing: 7) {
                     Text(record.value["goal"].stringValue).font(.headline).lineLimit(3)
                     HStack {
-                        Text(workspaceStatus(record.value["status"].stringValue))
+                        Text(record.value["status"].stringValue == "active" ? "进行中" : workspaceStatus(record.value["status"].stringValue))
                         Text("·")
                         Text(workspaceName(record.value["botId"].stringValue, in: snapshot["bots"]))
                         Spacer()
@@ -291,6 +291,7 @@ private struct WorkspaceWorkDetail: View {
     @State private var error: String?
     @State private var busy = false
     @State private var answer = ""
+    @State private var answerRequestID = UUID().uuidString
 
     private var value: RelayJSONValue { work.object == nil ? initial.value : work }
     private var status: String { value["status"].stringValue }
@@ -300,43 +301,49 @@ private struct WorkspaceWorkDetail: View {
             if let error { WorkspaceErrorRow(message: error) }
             Section {
                 Text(value["goal"].stringValue).font(.title3.bold()).textSelection(.enabled)
-                LabeledContent("状态", value: workspaceStatus(status))
+                LabeledContent("状态", value: status == "active" ? "进行中" : workspaceStatus(status))
                 LabeledContent("委托成员", value: workspaceName(value["botId"].stringValue, in: snapshot["bots"]))
                 LabeledContent("来源会话", value: workspaceName(value["roomId"].stringValue, in: snapshot["rooms"]))
                 WorkspaceTextFact(title: "工作目录", value: value["cwd"].stringValue)
                 if let model = value["model"].string { LabeledContent("执行模型", value: model) }
                 LabeledContent("创建时间", value: workspaceDate(value["createdAt"].string, full: true))
             }
-            if !value["constraints"].stringValue.isEmpty {
+            if !value["requirements"].stringValue.isEmpty {
+                Section("工作要求") { Text(value["requirements"].stringValue).textSelection(.enabled) }
+            } else if !value["constraints"].stringValue.isEmpty {
                 Section("约束与注意事项") { Text(value["constraints"].stringValue).textSelection(.enabled) }
             }
             if !(value["inputRefs"].array ?? []).isEmpty {
                 Section("输入资料") { Text(value["inputRefs"].stringValue).textSelection(.enabled) }
             }
             if !value["error"].stringValue.isEmpty { Section { WorkspaceErrorRow(message: value["error"].stringValue) } }
+            if !value["lastError"].stringValue.isEmpty {
+                Section { WorkspaceErrorRow(message: value["lastError"]["message"].string ?? value["lastError"].stringValue) }
+            }
+            if !value["waiting"]["event"].stringValue.isEmpty {
+                Section("等待事项") { Text(value["waiting"]["event"].stringValue).textSelection(.enabled) }
+            }
             if status == "interrupted" {
                 Section { Text("上次执行已中断。恢复会继续已有工作对话，已进行的操作仍然保留。")
                     .font(.footnote).foregroundStyle(.secondary) }
             }
-            if value["question"] != .null && value["question"]["status"].string != "answered"
-                && ["waiting", "interrupted"].contains(status) {
-                Section("执行中需要补充") {
-                    Text(value["question"]["text"].string ?? value["question"]["question"].string ?? value["question"].stringValue)
-                        .textSelection(.enabled)
-                    TextField("补充所需信息", text: $answer, axis: .vertical).lineLimit(3...12)
-                    Button(status == "interrupted" ? "保存答复，供恢复时使用" : "答复并继续") {
+            if value["historical"].bool != true && ["active", "waiting", "blocked"].contains(status) {
+                Section("补充要求") {
+                    TextField("补充信息或纠正当前要求", text: $answer, axis: .vertical).lineLimit(3...12)
+                    Button("发送给负责成员") {
                         Task {
-                            await perform("answer", body: .object(["answer": .string(answer.trimmingCharacters(in: .whitespacesAndNewlines))]))
+                            await perform("send", body: .object(["id": .string(answerRequestID), "message": .string(answer.trimmingCharacters(in: .whitespacesAndNewlines))]))
                         }
                     }.disabled(busy || answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
             if !value["summary"].stringValue.isEmpty {
-                Section("执行结果") { Text(value["summary"].stringValue).textSelection(.enabled) }
+                Section("当前进度与结果") { Text(value["summary"].stringValue).textSelection(.enabled) }
             }
-            if ["queued", "running", "waiting"].contains(status) {
+            if value["historical"].bool != true && ["active", "waiting"].contains(status) {
+                Section { Button("暂停工作", systemImage: "pause") { Task { await perform("pause") } }.disabled(busy) }
                 Section { Button("取消工作", role: .destructive) { Task { await perform("cancel") } }.disabled(busy) }
-            } else if ["failed", "interrupted", "cancelled"].contains(status) {
+            } else if value["historical"].bool != true && ["paused", "blocked", "cancelled"].contains(status) {
                 Section { Button("恢复工作", systemImage: "play") { Task { await perform("resume") } }.disabled(busy) }
             }
             Section("进度记录") {
@@ -362,6 +369,7 @@ private struct WorkspaceWorkDetail: View {
         }
         .refreshable { await load() }
         .task { await load() }
+        .onChange(of: answer) { _, _ in answerRequestID = UUID().uuidString }
     }
 
     private func load() async {
@@ -382,7 +390,7 @@ private struct WorkspaceWorkDetail: View {
         defer { busy = false }
         do {
             _ = try await store.request(path: "/api/works/\(workspaceEscaped(initial.id))/\(action)", method: "POST", body: body)
-            if action == "answer" { answer = "" }
+            if action == "send" { answer = "" }
             await load()
         } catch { self.error = error.localizedDescription }
     }
@@ -525,6 +533,7 @@ private struct WorkspaceEditor: View {
     @State private var initialized = false
     @State private var error: String?
     @State private var receipt: String?
+    @State private var workRequestID = UUID().uuidString
 
     var body: some View {
         Group {
@@ -550,7 +559,7 @@ private struct WorkspaceEditor: View {
             case .work:
                 Section("工作目标") { TextField("希望完成什么", text: $content, axis: .vertical).lineLimit(4...12) }
                 recipientFields
-                Section("执行环境") { TextField("工作目录（服务器上的绝对路径）", text: $cwd).textInputAutocapitalization(.never).autocorrectionDisabled() }
+                Section("执行环境") { TextField("工作目录（选填，服务器上的绝对路径）", text: $cwd).textInputAutocapitalization(.never).autocorrectionDisabled() }
                 Section("约束与注意事项") { TextField("操作边界、已有修改和需要保留的行为", text: $constraints, axis: .vertical).lineLimit(3...10) }
                 Section("输入资料") { TextField("每行一项：文件路径、资料说明或链接", text: $inputRefs, axis: .vertical).lineLimit(3...10) }
             case .node:
@@ -645,7 +654,7 @@ private struct WorkspaceEditor: View {
         let hasTitle = !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let hasContent = !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         switch kind {
-        case .work: return hasContent && !botID.isEmpty && !roomID.isEmpty && !cwd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .work: return hasContent && !botID.isEmpty && !roomID.isEmpty
         case .node: return hasTitle && hasContent
         case .edge: return hasTitle && !fromID.isEmpty && !toID.isEmpty && fromID != toID
         case .routine: return hasTitle && hasContent && !botID.isEmpty && !roomID.isEmpty && routineIntervalSeconds != nil
@@ -693,7 +702,7 @@ private struct WorkspaceEditor: View {
         switch kind {
         case .work:
             path = "/api/works"
-            payload = ["goal": .string(content.trimmingCharacters(in: .whitespacesAndNewlines)), "botId": .string(botID),
+            payload = ["id": .string(workRequestID), "goal": .string(content.trimmingCharacters(in: .whitespacesAndNewlines)), "botId": .string(botID),
                        "roomId": .string(roomID), "cwd": .string(cwd.trimmingCharacters(in: .whitespacesAndNewlines)),
                        "constraints": .string(constraints),
                        "inputRefs": .array(inputRefs.split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }.map { .string($0) })]
@@ -773,7 +782,7 @@ private func workspaceDate(_ value: String?, full: Bool = false) -> String {
 }
 
 private func workspaceStatus(_ value: String) -> String {
-    ["queued": "等待执行", "running": "进行中", "waiting": "待答复", "completed": "已完成", "failed": "失败",
+    ["queued": "等待执行", "running": "进行中", "waiting": "等待中", "paused": "已暂停", "blocked": "需处理", "completed": "已完成", "failed": "失败",
      "cancelled": "已取消", "interrupted": "已中断", "active": "有效", "expired": "已过期", "disputed": "有争议",
      "fact": "事实", "hypothesis": "假设", "opinion": "观点", "unverified": "待核查", "accepted": "已接收"][value] ?? value
 }
@@ -785,11 +794,15 @@ private func workspaceEventLabel(_ value: String) -> String {
      "interrupt_error": "停止请求异常", "resume_queued": "等待恢复", "steered": "补充要求已传递",
      "turn_completed": "本轮执行结束", "connection_lost": "执行端连接中断", "result_delivery_error": "结果回传异常",
      "queued": "进入队列", "started": "开始执行", "progress": "执行进度", "output": "执行输出", "question": "等待答复",
-     "error": "执行异常", "reasoning": "正在思考", "result": "执行结果"][value] ?? workspaceStatus(value)
+     "error": "执行异常", "reasoning": "正在思考", "result": "执行结果", "work.created": "工作已建立", "work.updated": "工作状态更新"][value] ?? workspaceStatus(value)
 }
 
 private func workspaceEventText(_ event: RelayJSONValue) -> String {
-    let data = event["data"]
+    let data = event["payload"] == .null ? event["data"] : event["payload"]
+    if data["work"] != .null {
+        let work = data["work"]
+        return [workspaceStatus(work["status"].stringValue), work["progress"].stringValue, work["lastError"]["message"].stringValue].filter { !$0.isEmpty }.joined(separator: "\n")
+    }
     if let text = data.string { return text }
     if data == .null { return event["content"].string ?? event["message"].stringValue }
     if data["item"].object != nil {

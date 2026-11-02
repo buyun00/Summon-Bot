@@ -1,6 +1,8 @@
 # Relay Bot
 
-每个 Bot 都是独立运行的 Pi Agent。Bot 本体在一级 `bot/` 中，包名为 `@relay/bot`；聊天室、文件操作、Codex、分身创建和记忆合并通过外部能力提供。Web 仅负责页面和 API 转发。
+每个 Bot 保留 PiAgent 内核，并拥有多个隔离的 chat/work 对话。默认 4 个业务执行位与 1 个维护位；同一逻辑对话串行，外部等待释放执行位。S1 原始记录与 S3 工作状态保存在 Bot SQLite，S2 总结只保存在按工作/对话隔离的 Markdown。压缩、整理、组装各自在需要时创建短暂维护对话，真实工作中的可复用经验可更新 Bot 自己的 Skill。
+
+聊天室、文件操作、桌面 Codex 与既有持续职责沿用当前能力网关。普通任务创建 work；独立长期职责才使用独立 Bot。工作、外部绑定、待通知和停止状态跨重启保留；网页展示真实工作状态。实现说明见 [3+3 设计](docs/BOT_3_PLUS_3_DESIGN.md)。
 
 ## 工程
 
@@ -32,4 +34,4 @@ npm run relay:install -- --release-root <构建输出路径> --app-root D:\Relay
 & D:\Relay-Bot-app\Stop.ps1
 ```
 
-发行物带 Node 运行时和生产依赖，可从不同 cwd 启动，无开发目录链接。完整基础程序安装前正常停止服务和 Bot；独立能力发布支持新旧版本并存，在 Bot 准备好后切换，见 [能力服务与热更新](docs/CAPABILITY_SERVICES.md)。操作说明见 [OPERATIONS](docs/OPERATIONS.md)，设计见 [ARCHITECTURE](docs/ARCHITECTURE.md)，完整重构依据见 [REFACTOR_PLAN](docs/REFACTOR_PLAN.md)。此前验证事实保留在 [VERIFICATION](docs/VERIFICATION.md)，不构成后续开发的测试或验收要求。
+发行物带 Node 运行时和生产依赖，可从不同 cwd 启动，无开发目录链接。完整基础程序安装前正常停止服务和 Bot；独立能力发布在所有活动对话到达安全边界后切换，随后清理被替代版本，见 [能力服务与热更新](docs/CAPABILITY_SERVICES.md)。操作说明见 [OPERATIONS](docs/OPERATIONS.md)，设计见 [ARCHITECTURE](docs/ARCHITECTURE.md)，完整重构依据见 [REFACTOR_PLAN](docs/REFACTOR_PLAN.md)。此前验证事实保留在 [VERIFICATION](docs/VERIFICATION.md)，不构成后续开发的测试或验收要求。

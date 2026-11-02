@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { randomBytes,timingSafeEqual } from 'node:crypto';
+import { randomBytes,timingSafeEqual,randomUUID } from 'node:crypto';
 import { mkdir,writeFile,readFile } from 'node:fs/promises';
 import { join,resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
@@ -7,6 +7,7 @@ import { RecordStore } from '../shared/store.mjs';
 import { IncrementalSync } from '../shared/sync.mjs';
 import { RunArtifactDownloads,projectRunArtifacts } from '../shared/run-artifacts.mjs';
 import { BotManager } from '../bot-management/service.mjs';
+import { tickRoutines } from '../bot-management/routines.mjs';
 import { ChatroomService } from '../chatroom/service.mjs';
 import { AttachmentStore,MAX_ATTACHMENT_REQUEST_BYTES } from '../chatroom/attachments.mjs';
 import { KnowledgeService } from '../knowledge/service.mjs';
@@ -25,7 +26,7 @@ function toolActivity(row) {
   const name=activityText(row.name,128),status=activityText(row.status,32);
   // Only expose display metadata, never command text, contents, results or raw arguments.
   return {name,status,path:['read_file','write_file','edit_file'].includes(name)?activityText(row.path):null,
-    targetBotId:['messages_send','tasks_get','tasks_cancel','chatroom_dm','chatroom_send','bots_deliver'].includes(name)?activityText(row.targetBotId,128):null,
+    targetBotId:['messages_send','tasks_get','tasks_cancel','chatroom_dm','chatroom_send'].includes(name)?activityText(row.targetBotId,128):null,
     startedAt:activityText(row.startedAt,64),finishedAt:activityText(row.finishedAt,64)};
 }
 export async function startGateway(options={}) {
@@ -38,7 +39,7 @@ export async function startGateway(options={}) {
   const clients=new Set(),stores=new Map(),pending=new Set();let url,closing=false,quiescing=false,ticking=false,monitoring=false,serviceMonitoring=false,stopBotsPromise;
   const store=name=>{if(!stores.has(name))stores.set(name,new RecordStore(join(dataRoot,'capabilities',name,'state.sqlite')));return stores.get(name);};
   const emit=(type,payload={})=>{const line=`data: ${JSON.stringify({type,...payload})}\n\n`;for(const client of clients)client.write(line);};
-  const botToolNames=[...coreTools({},{}).map(tool=>tool.name),'read_resource','read_session_history'];
+  const botToolNames=[...coreTools({},{}).map(tool=>tool.name),'read_resource','read_session_history','knowledge_list','knowledge_read','knowledge_write','skills_list','skill_write'];
   const registry=new CapabilityRegistry({store:store('registry'),emit,reservedTools:[...botToolNames,...controlTools.map(tool=>tool.name)]});
   const supervisor=new CapabilityServiceSupervisor({dataRoot,releaseRoot});
   let control;
@@ -51,21 +52,29 @@ export async function startGateway(options={}) {
     return registry.invokeVersion(id,selected,operation,args,{context:{actor:'controller'}});
   };
   const proxy=(target,id,names)=>{for(const name of names)target[name]=(...args)=>rpc(id,name,args);};
-  proxy(manager,'bot-management',['create','update','start','stop','send','clone','archive','saveRoutine','seed','restore','monitor','quiesce','shutdownAll','connect']);
+  proxy(manager,'bot-management',['create','update','start','stop','send','saveRoutine','seed','restore','monitor','quiesce','shutdownAll','connect']);
   const attachments=new AttachmentStore(join(dataRoot,'capabilities','chatroom'));
   const chatroom=new ChatroomService({store:store('chatroom'),manager,attachments,emit});
   const knowledge=new KnowledgeService({store:store('knowledge'),emit}),memories=new MemoryManagement({store:store('memory-management'),manager,dataRoot,emit});
   proxy(chatroom,'chatroom',['createRoom','updateRoom','post','append','dm','conclude','saveConclusion','retry','seed']);
   proxy(knowledge,'knowledge',['saveNode','saveEdge']);
-  proxy(memories,'memory-management',['write','deliver','propose','merge']);
+  proxy(memories,'memory-management',['write']);
   proxy(attachments,'chatroom',['upload']);
   const codex={store:store('codex'),list:()=>store('codex').list('works'),require:id=>{const work=store('codex').get('works',id);if(!work)fail('Work not found',404);return work;},
     get:id=>{const work=store('codex').get('works',id);return work?{...work,events:store('codex').list('workEvents').filter(event=>event.workId===id)}:null;},
     create:input=>rpc('codex','create',[input])};
-  for(const operation of ['cancel','resume','answer'])codex[operation]=(id,args)=>{
-    const work=codex.require(id),version=operation==='resume'&&!['queued','running','waiting'].includes(work.status)?undefined:work.serviceVersion;
-    return rpc('codex',operation,args===undefined?[id]:[id,args],version);
-  };
+  for(const operation of ['send','interrupt','read'])codex[operation]=(id,args)=>rpc('codex',operation,[id,args||{}]);
+  codex.attach=input=>rpc('codex','attach',[input]);
+  const publicWork=(botId,work)=>({...work,id:`${botId}~${work.id}`,workId:work.id,botId,summary:work.progress,roomId:work.sources?.find(source=>source.roomId)?.roomId});
+  async function localWorks() {
+    const groups=await Promise.all(manager.list().map(async bot=>manager.readState(bot.id,db=>(db?.listRecords('works')||[]).map(work=>publicWork(bot.id,work)))));
+    return groups.flat();
+  }
+  async function localWork(id) {
+    const split=id.indexOf('~');if(split<0)return null;
+    const botId=id.slice(0,split),workId=id.slice(split+1);manager.get(botId);
+    return manager.readState(botId,db=>{const work=db?.getRecord('works',workId);return work?{...publicWork(botId,work),events:db.listEvents({workId,limit:200})}:null;});
+  }
   const sync=new IncrementalSync(store('gateway'));
   async function ownRun(id) {
     for(const bot of manager.list()){
@@ -98,7 +107,7 @@ export async function startGateway(options={}) {
     agentRuns.sort((a,b)=>String(a.createdAt||'').localeCompare(String(b.createdAt||'')));
     const messages=chatroom.store.list('messages'),jobs=chatroom.jobs(),runtime={started:true,fast:{running:jobs.filter(job=>['running','accepted'].includes(job.status)).length,queued:jobs.filter(job=>job.status==='queued').length},deep:{running:0,queued:0},jobs:jobs.slice(-80)};
     const latestProvider=providers.slice().sort((a,b)=>String(b.lastSuccessAt||'').localeCompare(String(a.lastSuccessAt||'')))[0]||{};
-    return {historyEpoch,bots:manager.list(),rooms:chatroom.rooms(),routines:manager.store.list('routines'),knowledge:knowledge.graph(),runtime,activity:messages.filter(message=>message.returnTo||message.peerReplyId||['event','work'].includes(message.kind)).slice(-100),works:codex.list(),agentRuns:agentRuns.slice(-100),provider:{configured:Boolean(options.model?.apiKey||process.env[options.model?.apiKeyEnv||'DEEPSEEK_API_KEY']),model:options.model?.model||'deepseek-flash',...latestProvider},defaultCwd};
+    return {historyEpoch,bots:manager.list(),rooms:chatroom.rooms(),routines:manager.store.list('routines'),knowledge:knowledge.graph(),runtime,activity:messages.filter(message=>message.returnTo||message.peerReplyId||['event','work'].includes(message.kind)).slice(-100),works:[...await localWorks(),...codex.list().filter(work=>work.backend!=='desktop').map(work=>({...work,historical:true}))],agentRuns:agentRuns.slice(-100),provider:{configured:Boolean(options.model?.apiKey||process.env[options.model?.apiKeyEnv||'DEEPSEEK_API_KEY']),model:options.model?.model||'deepseek-flash',...latestProvider},defaultCwd};
   }
   function visibleTools(actor) {
     const allowed=actor==='controller'?null:manager.get(actor).allowedTools||[];
@@ -108,16 +117,8 @@ export async function startGateway(options={}) {
     const definition=visibleTools(actor).find(tool=>tool.name===name);
     if(quiescing&&definition?.effect!=='read')fail('Gateway is stopping; new work is unavailable',503);
     if(actor!=='controller'&&!(manager.store.get('bots',actor)?.allowedTools||[]).includes(name))fail('Tool not authorized for this Bot',403);
-    const activeConsultation=actor!=='controller'&&codex.list().find(work=>work.status==='waiting'&&(work.question?.targetBotId||work.botId)===actor);
-    if(activeConsultation&&!['list_files','read_file','search_files','chatroom_list','chatroom_read','knowledge_search','bots_list','bot_memory_read','codex_status'].includes(name))fail('Only read-only capabilities are available while answering an executor consultation',409);
     if(controlTools.some(tool=>tool.name===name))return control.call(name,args,{actor});
     if(pin&&!control.permittedVersion(actor,pin.id,pin.version))fail('This capability version is not bound to the Bot',403);
-    if(['codex_status','codex_cancel','codex_resume'].includes(name)){
-      const work=codex.require(args.workId);
-      if(name==='codex_status')return registry.callVersion('codex',registry.active('codex')?.version||work.serviceVersion||pin?.version,name,args,{signal,context:{actor}});
-      if(name==='codex_resume'&&!['queued','running','waiting'].includes(work.status))return registry.callVersion('codex',registry.active('codex')?.version,name,args,{signal,context:{actor}});
-      if(work.serviceVersion)return registry.callVersion('codex',work.serviceVersion,name,args,{signal,context:{actor}});
-    }
     if(pin)return registry.callVersion(pin.id,pin.version,name,args,{signal,context:{actor}});
     return registry.call(actor,name,args,{signal,context:{actor}});
   }
@@ -149,8 +150,32 @@ export async function startGateway(options={}) {
     if(method==='POST'&&path==='/api/events'){const event=await chatroom.post(body.roomId||'room-lobby',{...body,toBotId:body.botId,kind:'event',notify:true},'system');return {event,jobs:chatroom.jobs().filter(job=>job.messageId===event.id)};}
     if(method==='GET'&&path==='/api/jobs')return {jobs:chatroom.jobs()};
     if((match=path.match(/^\/api\/jobs\/([^/]+)\/retry$/))&&method==='POST')return chatroom.retry(decodeURIComponent(match[1]));
-    if(method==='POST'&&path==='/api/works'){manager.get(body.botId);chatroom.need('rooms',body.roomId);return codex.create(body);}
-    if((match=path.match(/^\/api\/works\/([^/]+)(?:\/(cancel|resume|answer))?$/))){if(method==='GET'&&!match[2])return codex.get(decodeURIComponent(match[1]));if(method==='POST'&&match[2])return codex[match[2]](decodeURIComponent(match[1]),body);}
+    if(method==='POST'&&path==='/api/works'){
+      manager.get(body.botId);await manager.start(body.botId);
+      const work=await manager.request(body.botId,'/works',{method:'POST',body:JSON.stringify({id:body.id||randomUUID(),goal:body.goal,requirements:[body.constraints,body.cwd?`工作目录：${body.cwd}`:'',...(body.inputRefs||[])].filter(Boolean).join('\n'),sources:[{source:'controller',roomId:body.roomId}]})});
+      await manager.request(body.botId,`/works/${encodeURIComponent(work.id)}/events`,{method:'POST',body:JSON.stringify({id:'initial',kind:'request',content:{goal:work.goal,requirements:work.requirements,authority:'user',instruction:'推进此工作，按当前要求记录进度、等待和完成状态。仅在需要时使用Codex等外部能力。'},metadata:{actor:'user',priority:'foreground'}})});
+      return publicWork(body.botId,work);
+    }
+    if((match=path.match(/^\/api\/works\/([^/]+)(?:\/(send|pause|cancel|resume))?$/))){
+      const id=decodeURIComponent(match[1]),work=await localWork(id);
+      if(method==='GET'&&!match[2])return work||codex.get(id);
+      if(method==='POST'&&match[2]){
+        if(!work)fail('Historical external work is read-only',409);await manager.start(work.botId);
+        const endpoint=`/works/${encodeURIComponent(work.workId)}`;
+        if(match[2]==='send')return manager.request(work.botId,`${endpoint}/events`,{method:'POST',body:JSON.stringify({id:body.id||randomUUID(),kind:'request',content:body.message,metadata:{actor:'user',priority:'foreground',correction:true}})});
+        const status={pause:'paused',cancel:'cancelled',resume:'active'}[match[2]];
+        const changed=await manager.request(work.botId,endpoint,{method:'PATCH',body:JSON.stringify({status})});
+        if(match[2]==='cancel'){
+          for(const binding of work.bindings||[])if(binding.type==='codex-desktop'&&binding.externalThreadId){
+            try { const observed=await codex.read(binding.id,{}),turn=observed.observed?.currentTurn;
+              if(turn?.id&&turn.status==='inProgress')await codex.interrupt(binding.id,{operationId:`cancel:${work.revision}`,expectedTurnId:turn.id});
+            }catch(error){changed.lastError={message:`本地工作已取消；外部停止尚未确认：${error.message}`};await manager.request(work.botId,endpoint,{method:'PATCH',body:JSON.stringify({lastError:changed.lastError})});}
+          }
+        }
+        if(match[2]==='resume')await manager.request(work.botId,`${endpoint}/events`,{method:'POST',body:JSON.stringify({id:body.id||randomUUID(),kind:'request',content:'用户要求继续此工作。先核对既有执行和未知结果，沿原绑定继续。',metadata:{actor:'user',priority:'foreground'}})});
+        return publicWork(work.botId,changed);
+      }
+    }
     if((match=path.match(/^\/api\/agent-runs\/([^/]+)(?:\/(cancel))?$/))){const run=await ownRun(decodeURIComponent(match[1]));if(!run)fail('Run not found',404);if(method==='GET')return projectRunArtifacts(run);if(method==='POST'&&match[2])return manager.request(run.botId,`/tasks/${encodeURIComponent(run.id)}/cancel`,{method:'POST',body:'{}'});}
     if(method==='POST'&&path==='/api/attachments')return attachments.upload(body);
     return undefined;
@@ -212,7 +237,7 @@ export async function startGateway(options={}) {
   function requiredManagedVersions() {
     const transitions=control.inventory().switches.filter(item=>item.phase!=='complete');
     return registry.inventory().versions.filter(entry=>{
-      const ownsJob=entry.capabilityId==='codex'?codex.list().some(work=>work.serviceVersion===entry.version&&['queued','running','waiting'].includes(work.status)):entry.capabilityId==='chatroom'&&chatroom.jobs().some(job=>job.serviceVersion===entry.version&&['queued','accepted','running','waiting'].includes(job.status));
+      const ownsJob=entry.capabilityId==='codex'?codex.list().some(work=>work.backend==='desktop'&&work.serviceVersion===entry.version&&!['completed','failed','cancelled','interrupted'].includes(work.status)):entry.capabilityId==='chatroom'&&chatroom.jobs().some(job=>job.serviceVersion===entry.version&&['queued','accepted','running','waiting'].includes(job.status));
       const switching=transitions.some(item=>item.bindings?.[entry.capabilityId]===entry.version||item.previousBindings?.[entry.capabilityId]===entry.version);
       return entry.accepting||entry.bindingCount||entry.unknownRequests.length||ownsJob||switching;
     });
@@ -265,7 +290,7 @@ export async function startGateway(options={}) {
   const monitor=setInterval(async()=>{if(monitoring||closing||quiescing)return;monitoring=true;try{await manager.monitor();}catch(error){emit('gateway-error',{error:error.message});}finally{monitoring=false;}},5000);monitor.unref();
   const serviceMonitor=setInterval(()=>{void monitorServices().catch(error=>emit('gateway-error',{error:error.message}));},2000);serviceMonitor.unref();
   let polling=false;const eventPoll=setInterval(async()=>{if(polling||closing)return;polling=true;try{for(const bot of manager.list()){const cursor=store('gateway').get('event-cursors',bot.id)?.after||0;const events=await manager.readState(bot.id,db=>db?.listEvents({after:cursor,limit:1000})||[]);if(events.length){store('gateway').save('event-cursors',{id:bot.id,after:events.at(-1).seq});emit('bot-event',{botId:bot.id,eventType:events.at(-1).type});}}}catch(error){emit('gateway-error',{error:error.message});}finally{polling=false;}},750);eventPoll.unref();
-  const scheduler=setInterval(async()=>{if(ticking||closing||quiescing)return;ticking=true;try{for(const routine of manager.store.list('routines'))if(routine.enabled&&new Date(routine.nextRunAt)<=new Date()){const due=routine.nextRunAt;try{await chatroom.post(routine.roomId||'room-lobby',{content:`定时职责「${routine.name}」：${routine.instruction}`,toBotId:routine.botId,clientId:`routine:${routine.id}:${due}`,kind:'event',notify:true},'system');await manager.saveRoutine({...routine,lastRunAt:now(),lastStatus:'queued',nextRunAt:new Date(Date.now()+routine.intervalSeconds*1000).toISOString()});}catch(error){await manager.saveRoutine({...routine,lastStatus:'failed',error:error.message,nextRunAt:new Date(Date.now()+routine.intervalSeconds*1000).toISOString()});}}}catch(error){emit('gateway-error',{error:error.message});}finally{ticking=false;}},1000);scheduler.unref();
+  const scheduler=setInterval(async()=>{if(ticking||closing||quiescing)return;ticking=true;try{await tickRoutines({manager,chatroom});}catch(error){emit('gateway-error',{error:error.message});}finally{ticking=false;}},1000);scheduler.unref();
   const switches=setInterval(()=>{if(!closing&&!quiescing)void control.tick().catch(error=>emit('gateway-error',{error:error.message}));},300);switches.unref();
   const heartbeat=setInterval(()=>{for(const client of clients)client.write(': keepalive\n\n');},20000);heartbeat.unref();
   function stopBots(stopOptions={}) {return stopBotsPromise||=(async()=>{
@@ -287,3 +312,4 @@ export async function startGateway(options={}) {
   })();
   return {url,token,server,manager,chatroom,knowledge,codex,memories,attachments,registry,supervisor,control,state,handleApi,callTool,monitorServices,stopBots,close};
 }
+

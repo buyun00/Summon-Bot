@@ -53,7 +53,7 @@ export async function buildRelease({ sourceRoot = projectRoot, releaseRoot, bund
   await writeFile(workerPath, worker.replace(/^const CACHE = .*;$/m, `const CACHE = 'relay-shell-${buildId}';`));
   for (const name of rootFiles) await copyFile(join(sourceRoot, name), join(stage, name));
   await mkdir(join(stage, 'docs'), { recursive: true });
-  for (const name of ['REFACTOR_PLAN.md', 'ARCHITECTURE.md', 'OPERATIONS.md', 'VERIFICATION.md', 'CAPABILITY_SERVICES.md', 'DEVELOPMENT.md']) if (existsSync(join(sourceRoot, 'docs', name))) await copyFile(join(sourceRoot, 'docs', name), join(stage, 'docs', name));
+  for (const name of ['REFACTOR_PLAN.md', 'ARCHITECTURE.md', 'OPERATIONS.md', 'VERIFICATION.md', 'CAPABILITY_SERVICES.md', 'DEVELOPMENT.md', 'BOT_3_PLUS_3_DESIGN.md', 'BOT_3_PLUS_3_IMPLEMENTATION.md', 'BOT_3_PLUS_3_ACCEPTANCE.md']) if (existsSync(join(sourceRoot, 'docs', name))) await copyFile(join(sourceRoot, 'docs', name), join(stage, 'docs', name));
   const dependencies = [];
   for (const [path, info] of Object.entries(lock.packages)) {
     if (!path.includes('node_modules/') || info.dev || info.link) continue;

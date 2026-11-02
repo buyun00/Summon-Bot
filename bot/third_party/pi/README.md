@@ -20,9 +20,12 @@ development check.
 Local boundaries: no Pi CLI/TUI, JSONL database, home-directory discovery, package
 manager, login flow or background model-catalog refresh is imported. Source
 session-manager contains current-format context projection only. Bot uses its SQLite
-state. Compaction/retry lifecycle methods selected from the same version's
-AgentSession are in `src/pi/core/compaction/lifecycle.mjs`; adapters supply
-SQLite entries, a fixed model, cancellation and durable lifecycle events.
+state. Relay uses Pi message projection, token estimates and tool execution.
+Context compaction now runs a fresh temporary dialogue in
+`src/context/maintenance.mjs`, writing the current work's Markdown; the previous
+SQLite-summary lifecycle adapter has been removed. Original raw messages and
+recovery edits remain durable, and transient model failures still retry without
+replaying completed tools.
 
 See `LOCAL_CHANGES.md` and `DEPENDENCIES.json` for adaptation and installed package
 license records. Public package behavior is documented in ../../README.md.

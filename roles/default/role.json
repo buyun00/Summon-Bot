@@ -16,7 +16,6 @@
     "chatroom_send",
     "chatroom_dm",
     "bots_list",
-    "knowledge_search",
-    "bots_deliver"
+    "knowledge_search"
   ]
 }

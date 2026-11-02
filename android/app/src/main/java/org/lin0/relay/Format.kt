@@ -55,7 +55,7 @@ fun relayStatus(value: String): String = mapOf(
 )[value] ?: value
 
 fun workspaceStatus(value: String): String = mapOf(
-    "queued" to "等待执行", "running" to "进行中", "waiting" to "待答复", "completed" to "已完成",
+    "queued" to "等待执行", "running" to "进行中", "waiting" to "等待中", "paused" to "已暂停", "blocked" to "需处理", "completed" to "已完成",
     "failed" to "失败", "cancelled" to "已取消", "interrupted" to "已中断", "active" to "有效",
     "expired" to "已过期", "disputed" to "有争议", "fact" to "事实", "hypothesis" to "假设",
     "opinion" to "观点", "unverified" to "待核查", "accepted" to "已接收",

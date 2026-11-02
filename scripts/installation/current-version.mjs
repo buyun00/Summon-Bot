@@ -36,7 +36,10 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
   }
   const { RecordStore } = await import(pathToFileURL(join(releaseRoot, 'capabilities/shared/store.mjs')));
   const { BotStore } = await import(pathToFileURL(join(releaseRoot, 'bot/src/storage/store.mjs')));
-  const { BUILTIN_CAPABILITIES } = await import(pathToFileURL(join(releaseRoot, 'capabilities/services/builtin.mjs')));
+  const { BUILTIN_CAPABILITIES, capabilityForTool } = await import(pathToFileURL(join(releaseRoot, 'capabilities/services/builtin.mjs')));
+  const { toolDefinitions } = await import(pathToFileURL(join(releaseRoot, 'capabilities/gateway/tools.mjs')));
+  const { controlTools } = await import(pathToFileURL(join(releaseRoot, 'capabilities/services/control.mjs')));
+  const deployment = await readJson(join(dataRoot, 'config/deployment.json'));
   const registryPath = join(dataRoot, 'capabilities/registry/state.sqlite');
   const retained = new Map(BUILTIN_CAPABILITIES.map(id => [id, buildId]));
   if (existsSync(registryPath)) {
@@ -61,19 +64,49 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
     return join(releaseRoot, ...part.split(/[\\/]/).slice(1));
   };
   let bots = 0;
+  const managementPath = join(dataRoot, 'capabilities/bot-management/state.sqlite');
+  const botRecords = new Map();
+  if (existsSync(managementPath)) {
+    const management = new RecordStore(managementPath);
+    try {
+      for (const record of management.list('bots')) {
+        const profile = await readJson(join(releaseRoot, 'roles', record.roleId || 'default', 'role.json'));
+        const allowedTools = [...new Set([...(record.allowedTools || []), ...(profile.tools || [])])];
+        const updated = management.save('bots', { ...record, allowedTools }); botRecords.set(record.id, updated);
+      }
+    } finally { management.close(); }
+  }
   for (const directory of await entries(join(dataRoot, 'bots'))) {
     if (!directory.isDirectory()) continue;
     const path = join(dataRoot, 'bots', directory.name, 'config.json'); if (!existsSync(path)) continue;
     const config = await readJson(path);
+    const record = botRecords.get(config.botId);
+    const profile = record && await readJson(join(releaseRoot, 'roles', record.roleId || 'default', 'role.json'));
+    if (record) {
+      config.prompt = [await readFile(join(releaseRoot, 'roles', record.roleId || 'default', 'prompt.md'), 'utf8'), record.prompt ? `\n用户设定的身份与职责：\n${record.prompt}` : ''].filter(Boolean).join('\n');
+      config.skills = [...(config.skills || []).filter(path => !inside(join(appRoot, 'releases'), resolve(path))), ...(profile.skills || []).map(skill => join(releaseRoot, 'skills', skill))];
+      config.bundledSkills = profile.skills || [];
+    }
     config.bundleRoot = releaseRoot;
     for (const name of ['promptFile', 'agentDir']) if (config[name]) config[name] = rebase(config[name]);
     for (const name of ['skills', 'promptPaths']) if (config[name]) config[name] = config[name].map(rebase);
-    config.limits = Object.fromEntries(Object.entries(config.limits || {}).filter(([key]) => ['compaction', 'reserveTokens', 'keepRecentTokens'].includes(key)));
+    config.limits = Object.fromEntries(Object.entries(config.limits || {}).filter(([key]) => ['reserveTokens', 'keepRecentTokens'].includes(key)));
     config.tools = (config.tools || []).map(tool => {
       const current = { ...tool }; if (current.module) current.module = rebase(current.module);
       if (typeof current.url === 'string') current.url = current.url.replace(/\/capabilities\/([^/]+)\/versions\/([^/]+)\/tools\//, (match, id) => retained.has(decodeURIComponent(id)) ? `/capabilities/${id}/versions/${encodeURIComponent(retained.get(decodeURIComponent(id)))}/tools/` : match);
       return current;
     });
+    if (record) {
+      const bundled = [...toolDefinitions, ...controlTools].filter(tool => record.allowedTools.includes(tool.name));
+      const names = new Set([...toolDefinitions, ...controlTools].map(tool => tool.name));
+      const gatewayUrl = `http://${deployment.gateway.host || '127.0.0.1'}:${deployment.gateway.port}`;
+      config.tools = [...bundled.map(tool => {
+        const owner = capabilityForTool(tool.name);
+        return { ...tool, type: 'http', method: 'POST', url: owner ? `${gatewayUrl}/capabilities/${owner}/versions/${buildId}/tools/${tool.name}` : `${gatewayUrl}/tools/${tool.name}`,
+          headers: { Authorization: `Bearer ${record.capabilityToken}` }, timeoutMs: tool.name === 'run_command' ? 130000 : 150000 };
+      }), ...config.tools.filter(tool => !names.has(tool.name))];
+      config.bundledToolNames = bundled.map(tool => tool.name);
+    }
     delete config.capabilityBindingRevision; delete config.capabilityUpdateId;
     await saveJson(path, config); bots++;
     const database = join(dataRoot, 'bots', directory.name, 'state.sqlite');
@@ -99,7 +132,7 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
   }
   for (const directory of await entries(join(dataRoot, 'capabilities/packages'))) if (!retained.has(directory.name)) await removeWithin(dataRoot, join(dataRoot, 'capabilities/packages', directory.name));
   for (const directory of await entries(join(appRoot, 'releases'))) if (resolve(join(appRoot, 'releases', directory.name)) !== releaseRoot) await removeWithin(appRoot, join(appRoot, 'releases', directory.name));
-  for (const name of ['archives', 'migration', 'verification', 'diagnostics']) await removeWithin(dataRoot, join(dataRoot, name));
+  // Business archives and historical user materials are not obsolete releases.
   if (sourceRoot) {
     const dist = join(sourceRoot, 'dist');
     for (const directory of await entries(dist)) if (directory.name !== 'releases') await removeWithin(sourceRoot, join(dist, directory.name));

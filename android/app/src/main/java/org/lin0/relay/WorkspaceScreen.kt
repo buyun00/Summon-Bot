@@ -139,15 +139,15 @@ fun WorkspaceScreen(store: RelayStore, section: WorkspaceSection, onBack: () -> 
                     }
                     WorkspaceSection.Works -> {
                         Row {
-                            listOf("all" to "全部", "active" to "进行中", "waiting" to "待答复", "completed" to "已完成", "attention" to "待处理").forEach { (id, label) ->
+                            listOf("all" to "全部", "active" to "进行中", "waiting" to "等待中", "completed" to "已完成", "attention" to "待处理").forEach { (id, label) ->
                                 TextButton(onClick = { workFilter = id }) { Text(if (workFilter == id) "$label ✓" else label) }
                             }
                         }
                         val works = records(snapshot["works"]).filter { record ->
                             val status = record.value["status"].stringValue
                             when (workFilter) {
-                                "active" -> status in setOf("queued", "running")
-                                "attention" -> status in setOf("failed", "interrupted", "cancelled")
+                                "active" -> status in setOf("active", "queued", "running")
+                                "attention" -> status in setOf("paused", "blocked", "failed", "interrupted", "cancelled")
                                 "all" -> true
                                 else -> status == workFilter
                             }
@@ -156,7 +156,7 @@ fun WorkspaceScreen(store: RelayStore, section: WorkspaceSection, onBack: () -> 
                         works.forEach { record ->
                             Column(Modifier.fillMaxWidth().clickable { page = WorkspacePage.Work(record) }.padding(vertical = 8.dp)) {
                                 Text(record.value["goal"].stringValue)
-                                Text("${workspaceStatus(record.value["status"].stringValue)} · ${workspaceName(record.value["botId"].stringValue, snapshot["bots"])}  ${formatRelayDate(record.value["createdAt"].string)}", color = Color(0xFF8E8E93))
+                                Text("${if (record.value["status"].stringValue == "active") "进行中" else workspaceStatus(record.value["status"].stringValue)} · ${workspaceName(record.value["botId"].stringValue, snapshot["bots"])}  ${formatRelayDate(record.value["createdAt"].string)}", color = Color(0xFF8E8E93))
                             }
                         }
                     }
@@ -245,6 +245,7 @@ private fun WorkDetail(store: RelayStore, initial: WorkspaceRecord, snapshot: Re
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var answer by remember { mutableStateOf("") }
+    val answerRequestID = remember(answer) { java.util.UUID.randomUUID().toString() }
     val value = if (work.obj == null) initial.value else work
     val status = value["status"].stringValue
     suspend fun load() {
@@ -262,7 +263,7 @@ private fun WorkDetail(store: RelayStore, initial: WorkspaceRecord, snapshot: Re
         busy = true
         try {
             store.request("/api/works/${RelayApiClient.component(initial.id)}/$action", "POST", body)
-            if (action == "answer") answer = ""
+            if (action == "send") answer = ""
             load()
         } catch (exception: Exception) { error = exception.message }
         finally { busy = false }
@@ -276,27 +277,31 @@ private fun WorkDetail(store: RelayStore, initial: WorkspaceRecord, snapshot: Re
         }
         error?.let { Text(it, color = Color(0xFFFF9F0A)) }
         Text(value["goal"].stringValue)
-        Text("状态  ${workspaceStatus(status)}")
+        Text("状态  ${if (status == "active") "进行中" else workspaceStatus(status)}")
         Text("委托成员  ${workspaceName(value["botId"].stringValue, snapshot["bots"])}")
         Text("来源会话  ${workspaceName(value["roomId"].stringValue, snapshot["rooms"])}")
         if (value["cwd"].stringValue.isNotEmpty()) Text("工作目录  ${value["cwd"].stringValue}")
         value["model"].string?.let { Text("执行模型  $it") }
         Text("创建时间  ${formatRelayDate(value["createdAt"].string, full = true)}")
-        if (value["constraints"].stringValue.isNotEmpty()) { Text("约束与注意事项"); Text(value["constraints"].stringValue) }
+        if (value["requirements"].stringValue.isNotEmpty()) { Text("工作要求"); Text(value["requirements"].stringValue) }
+        else if (value["constraints"].stringValue.isNotEmpty()) { Text("约束与注意事项"); Text(value["constraints"].stringValue) }
         if (!value["inputRefs"].array.isNullOrEmpty()) { Text("输入资料"); Text(value["inputRefs"].stringValue) }
         if (value["error"].stringValue.isNotEmpty()) Text(value["error"].stringValue, color = Color(0xFFFF9F0A))
+        if (value["lastError"].stringValue.isNotEmpty()) Text(value["lastError"]["message"].string ?: value["lastError"].stringValue, color = Color(0xFFFF9F0A))
+        if (value["waiting"]["event"].stringValue.isNotEmpty()) { Text("等待事项"); Text(value["waiting"]["event"].stringValue) }
         if (status == "interrupted") Text("上次执行已中断。恢复会继续已有工作对话，已进行的操作仍然保留。", color = Color(0xFF8E8E93))
-        if (value["question"] != RelayJson.Null && value["question"]["status"].string != "answered" && status in setOf("waiting", "interrupted")) {
-            Text("执行中需要补充")
-            Text(value["question"]["text"].string ?: value["question"]["question"].string ?: value["question"].stringValue)
-            OutlinedTextField(answer, { answer = it }, label = { Text("补充所需信息") }, minLines = 3, modifier = Modifier.fillMaxWidth())
+        if (value["historical"].bool != true && status in setOf("active", "waiting", "blocked")) {
+            Text("补充要求")
+            OutlinedTextField(answer, { answer = it }, label = { Text("补充信息或纠正当前要求") }, minLines = 3, modifier = Modifier.fillMaxWidth())
             Button(enabled = !busy && answer.isNotBlank(), onClick = {
-                scope.launch { perform("answer", RelayJson.obj("answer" to RelayJson.Str(answer.trim()))) }
-            }) { Text(if (status == "interrupted") "保存答复，供恢复时使用" else "答复并继续") }
+                scope.launch { perform("send", RelayJson.obj("id" to RelayJson.Str(answerRequestID), "message" to RelayJson.Str(answer.trim()))) }
+            }) { Text("发送给负责成员") }
         }
-        if (value["summary"].stringValue.isNotEmpty()) { Text("执行结果"); Text(value["summary"].stringValue) }
-        if (status in setOf("queued", "running", "waiting")) Button(enabled = !busy, onClick = { scope.launch { perform("cancel") } }) { Text("取消工作") }
-        else if (status in setOf("failed", "interrupted", "cancelled")) Button(enabled = !busy, onClick = { scope.launch { perform("resume") } }) { Text("恢复工作") }
+        if (value["summary"].stringValue.isNotEmpty()) { Text("当前进度与结果"); Text(value["summary"].stringValue) }
+        if (value["historical"].bool != true && status in setOf("active", "waiting")) {
+            Button(enabled = !busy, onClick = { scope.launch { perform("pause") } }) { Text("暂停工作") }
+            Button(enabled = !busy, onClick = { scope.launch { perform("cancel") } }) { Text("取消工作") }
+        } else if (value["historical"].bool != true && status in setOf("paused", "blocked", "cancelled")) Button(enabled = !busy, onClick = { scope.launch { perform("resume") } }) { Text("恢复工作") }
         Text("进度记录", modifier = Modifier.padding(top = 8.dp))
         val events = mergeWorkEvents(value["events"].array.orEmpty())
         if (events.isEmpty()) Text("暂无详细进度", color = Color(0xFF8E8E93))
@@ -392,12 +397,13 @@ private fun WorkspaceEditor(store: RelayStore, kind: EditorKind, snapshot: Relay
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var receipt by remember { mutableStateOf<String?>(null) }
+    val workRequestID = remember { java.util.UUID.randomUUID().toString() }
     val minutes = interval.toDoubleOrNull()
     val seconds = minutes?.takeIf { it.isFinite() && it >= 1 }?.times(60)
     val hasTitle = title.isNotBlank()
     val hasContent = content.isNotBlank()
     val canSave = when (kind) {
-        EditorKind.Work -> hasContent && botID.isNotEmpty() && roomID.isNotEmpty() && cwd.isNotBlank()
+        EditorKind.Work -> hasContent && botID.isNotEmpty() && roomID.isNotEmpty()
         is EditorKind.Node -> hasTitle && hasContent
         is EditorKind.Edge -> hasTitle && fromID.isNotEmpty() && toID.isNotEmpty() && fromID != toID
         is EditorKind.Routine -> hasTitle && hasContent && botID.isNotEmpty() && roomID.isNotEmpty() && seconds != null
@@ -417,7 +423,7 @@ private fun WorkspaceEditor(store: RelayStore, kind: EditorKind, snapshot: Relay
             EditorKind.Work -> {
                 OutlinedTextField(content, { content = it }, label = { Text("希望完成什么") }, minLines = 4, modifier = Modifier.fillMaxWidth())
                 RecipientFields(snapshot, botID, roomID, { botID = it }, { roomID = it })
-                OutlinedTextField(cwd, { cwd = it }, label = { Text("工作目录（服务器上的绝对路径）") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(cwd, { cwd = it }, label = { Text("工作目录（选填，服务器上的绝对路径）") }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(constraints, { constraints = it }, label = { Text("约束与注意事项") }, minLines = 3, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(inputRefs, { inputRefs = it }, label = { Text("每行一项：文件路径、资料说明或链接") }, minLines = 3, modifier = Modifier.fillMaxWidth())
             }
@@ -472,7 +478,7 @@ private fun WorkspaceEditor(store: RelayStore, kind: EditorKind, snapshot: Relay
                     EditorKind.Work -> {
                         path = "/api/works"
                         payload = mapOf(
-                            "goal" to RelayJson.Str(content.trim()), "botId" to RelayJson.Str(botID), "roomId" to RelayJson.Str(roomID),
+                            "id" to RelayJson.Str(workRequestID), "goal" to RelayJson.Str(content.trim()), "botId" to RelayJson.Str(botID), "roomId" to RelayJson.Str(roomID),
                             "cwd" to RelayJson.Str(cwd.trim()), "constraints" to RelayJson.Str(constraints),
                             "inputRefs" to RelayJson.Arr(inputRefs.split('\n').map { it.trim() }.filter { it.isNotEmpty() }.map(RelayJson::Str)),
                         )
@@ -564,11 +570,15 @@ private fun eventLabel(value: String) = mapOf(
     "interrupt_error" to "停止请求异常", "resume_queued" to "等待恢复", "steered" to "补充要求已传递",
     "turn_completed" to "本轮执行结束", "connection_lost" to "执行端连接中断", "result_delivery_error" to "结果回传异常",
     "queued" to "进入队列", "started" to "开始执行", "progress" to "执行进度", "output" to "执行输出", "question" to "等待答复",
-    "error" to "执行异常", "reasoning" to "正在思考", "result" to "执行结果",
+    "error" to "执行异常", "reasoning" to "正在思考", "result" to "执行结果", "work.created" to "工作已建立", "work.updated" to "工作状态更新",
 )[value] ?: workspaceStatus(value)
 
 private fun eventText(event: RelayJson): String {
-    val data = event["data"]
+    val data = if (event["payload"] == RelayJson.Null) event["data"] else event["payload"]
+    if (data["work"] != RelayJson.Null) {
+        val work = data["work"]
+        return listOf(workspaceStatus(work["status"].stringValue), work["progress"].stringValue, work["lastError"]["message"].stringValue).filter { it.isNotEmpty() }.joinToString("\n")
+    }
     if (data is RelayJson.Str) return data.value
     if (data is RelayJson.Null) return event["content"].string ?: event["message"].stringValue
     if (data["item"].obj != null) {

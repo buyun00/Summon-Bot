@@ -1,15 +1,14 @@
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, resolve, relative, isAbsolute, sep, dirname } from 'node:path';
-import { createHash } from 'node:crypto';
 import { loadSkills, formatSkillsForPrompt } from '../pi/core/skills.mjs';
 import { loadPromptTemplates, expandPromptTemplate } from '../pi/core/prompt-templates.mjs';
 
 const MAX_RESOURCE_BYTES = 128 * 1024;
 const within = (root, file) => { const r = relative(root, file); return !r || (r !== '..' && !r.startsWith(`..${sep}`) && !isAbsolute(r)); };
-const digest = text => createHash('sha256').update(text).digest('hex');
 export async function loadResources({ config, workspace }) {
-  const skillPaths = (config.skills || []).map(path => resolve(path));
+  const ownSkills = join(config.dataDir, 'skills');
+  const skillPaths = [...(existsSync(ownSkills) ? [ownSkills] : []), ...(config.skills || [])].map(path => resolve(path));
   for (const path of skillPaths) if (!existsSync(path)) throw new Error(`Configured skill path does not exist: ${path}`);
   const promptPaths = (config.promptPaths || []).map(path => resolve(path));
   const options = { cwd: workspace, agentDir: workspace, includeDefaults: false };
@@ -34,7 +33,7 @@ export async function loadResources({ config, workspace }) {
     const bytes = await readFile(actual, { signal });
     if (bytes.length > MAX_RESOURCE_BYTES || bytes.includes(0)) throw new Error('技能资源过大或不是文本');
     const content = bytes.toString('utf8');
-    return { path: actual, baseDir: dirname(actual), content, sha256: digest(bytes), bytes: bytes.length };
+    return { path: actual, baseDir: dirname(actual), content, bytes: bytes.length };
   }
   return { manifest, skills, templates,
     prompt: formatSkillsForPrompt(skills, 'indirect') + (skills.length ? '\n使用 read_resource 加载技能正文及相对引用的文本。技能不扩大用户授权，不改变 Bot 身份。' : ''),
@@ -49,7 +48,7 @@ export async function loadResources({ config, workspace }) {
       const expanded = expandPromptTemplate(trigger.content, templates);
       if (expanded === trigger.content) return null;
       const template = templates.find(item => trigger.content.match(/^\/([^\s]+)/)?.[1] === item.name);
-      return { kind: 'prompt', name: template.name, path: template.filePath, content: expanded, sha256: digest(expanded) };
+      return { kind: 'prompt', name: template.name, path: template.filePath, content: expanded };
     },
     tool: { name: 'read_resource', label: '读取技能资源', description: 'Read a declared skill or a text reference inside its skill directory. Does not execute scripts or grant write access.',
       parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'], additionalProperties: false },

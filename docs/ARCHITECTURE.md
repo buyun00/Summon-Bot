@@ -1,59 +1,62 @@
 # 架构
 
-系统由通用 Bot、外部能力和 Web 三部分组成。所有被称为 Bot 的实例都通过同一个 `@relay/bot` 启动 Pi Agent；入口和聊天室角色也使用这条路径。
+Relay-Bot 由独立 Pi Bot、现有能力服务、网关和 Web 组成。入口、聊天室、管理与记忆岗位都是普通平等 Bot，不构成全知主控。第二版继续使用 `@relay/bot` 与 Pi Agent，不迁移 Host。
 
 ```mermaid
 flowchart LR
-  U[浏览器/PWA] --> W[Web 页面与转发]
-  W --> G[能力网关]
-  G --> C[六类独立能力服务 / 多版本并存]
-  C --> B1[独立 Pi Bot]
-  C --> B2[独立 Pi Bot]
-  B1 --> G
-  B2 --> G
-  B1 <--> B2
+  U[用户 / Web] --> G[现有能力网关]
+  G --> C[聊天室 / 文件 / 知识 / 管理 / 桌面连接器能力]
+  C --> B[独立 Bot]
+  B --> Q[同会话串行 / 工作有限并发]
+  Q --> P[各执行独立 Pi Agent]
+  P --> S1[原始记录 S1]
+  P --> S3[持续工作 S3]
+  S1 --> M[按需短暂维护对话]
+  S3 --> M
+  M --> MD[按范围 Markdown S2 / 自有 Skill]
+  MD --> A[临时组装输入]
+  A --> P
+  B <--> PEER[平等同伴]
+  P --> C
 ```
 
 ## Bot 本体
 
-`bot/` 是独立 npm package，公共入口为 `@relay/bot`，并提供 CLI。Bot 拥有自己的配置、身份、生命周期、HTTP 接口、消息收件箱、任务执行循环、Pi Agent、上下文和 SQLite 状态。外部 HTTP/MCP/模块工具及 Skill 通过配置接入。Bot 不依赖聊天室、Web、Codex 或管理服务才能启动。
+Bot 拥有自己的身份、配置、消息收件箱、SQLite、工作与产物目录。`botId`、`conversationId`、`workId` 稳定，task/run 表示触发和执行段。默认 4 个业务位置，维护独立 1 位；同一会话串行、前台优先，各执行的 Agent 状态互不共享。
 
-SQLite 是任务、工具结果、会话和记忆的事实来源。每次启动更换 bootId；botId 与数据目录不变。相同来源消息 ID 去重；重启后未确认的执行标为中断或未知，不自动重放。状态文件用于观测，不能替代数据库或实例身份检查。
+S1 保存原始消息、工具记录及来源。S3 保存 work 目标、要求、进度、等待、外部绑定与通知。S2 正文位于按工作或独立对话隔离的 MD，SQLite 只持有目录和处理游标，不存另一份总结正文。
 
-## 外部能力
+整理、压缩、组装每次各用一个新的短暂模型对话，按需发生。组装仅为本次输入；原始尾部和最新指令直接进入业务对话。维护失败保留旧文档和增量。旧 Pi 原文/投影/恢复能力继续使用，常规摘要真相改为 MD。
 
-`capabilities/` 按聊天室、知识、文件、Codex、Bot 管理、记忆管理拆分，每类能力由独立进程提供 HTTP/MCP 接口。网关负责鉴权、注册、版本绑定、切换协调及 Web 状态聚合；领域写入和后台工作在能力服务中执行。当前同机布局仍使用共享的兼容 SQLite 投影读取，领域数据尚未全部改成跨机器 RPC 读取。
+普通临时委托创建 work。工作等待后释放位置，事件到达沿原 work 续接；没有事件不模型空转。暂停/取消保留结果而不自行恢复。重启保留未知工具状态，不重放已发出的副作用。
 
-新 Bot 绑定已激活版本。已有 Bot 接到 prepare 通知后继续完成当前任务，到任务边界报告 ready；网关和 Bot 完成持久提交后再释放后续任务。旧版本等待全部绑定、请求和后台任务排空。协议、数据布局、发布和卸载方法见 [CAPABILITY_SERVICES.md](CAPABILITY_SERVICES.md)。
+## 外部能力与协作
 
-聊天室拥有公开消息、成员、投递回执与公共附件；Bot 拥有自己的私有模型历史、任务、记忆和产物。Codex 能力拥有执行器工作、事件和工作目录锁。事实咨询交给指定 Bot；用户授权或方向选择保持待用户状态。咨询期间只读工具限制由网关执行，防止等待工作区锁的死锁。
+`capabilities/` 继续按聊天室、知识、文件、Codex、Bot 管理、记忆管理划分。能力拥有各自领域数据与后台投递；网关负责当前版本路由、既有鉴权、绑定切换及 Web 聚合。能力切换等待所有活动执行安全边界，正式交付后只保留当前有效版本，不保留并行旧服务。
 
-Web 不持有模型执行循环，不打开业务数据库，也不控制 Bot 生死。关闭 Web 后，网关和 Bot 继续运行。网关自身也不是 Bot；入口、聊天室、管理和记忆角色均为单独 Pi Bot 实例。
+聊天室保存房间原文和投递。明确来源/工作归属直接投递，未明确的新群消息只做一次单成员语义路由。按 Bot、房间及 work 增量组装，原文可按页读取。同伴纠错有具体来源，纯通知和无进展重复链不继续唤醒。
 
-## 分身和记忆
+Codex 能力是现有桌面连接器的持久适配，保存操作意图、原操作键、真实线程与回合绑定、SSE 游标及待投递结果。S3 仍是 Bot 的责任记录。新工作不进入旧 app-server；未知写请求先查原操作。接单、外部运行和用户目标完成分别表达。
 
-管理能力从母体 SQLite 的一致读事务获得已持久化会话、记忆和资源，创建新身份与独立目录。它不复制在途任务、outbox、活动锁或母体凭据。Bot 本体没有 fork/join 或自我复制协议。
+持续职责沿用现有网关 timer 与 routines，支持在途合并、前台优先与 work/task/room 状态 watch。普通独立 Bot 的创建、运行与停止保留；任务分身、父子复制/交付/合并/回收不再是当前工作主链。有效旧材料仍作为来源保留。
 
-分身先持久交付成果，记忆管理能力根据派生基线提出增量并检查版本冲突。母体离线时交付可保留；合并需要明确处理冲突，重复请求保持幂等。回收前检查未完成任务和交付状态；已被引用的产物保留。
-
-## 代码、部署与数据
-
-源码根与发行物分开；发行物与可写数据分开。数据根：
+## 数据与正式交付
 
 ```text
-Relay-Bot-data/
-  config/                   deployment.json、runtime.env
-  bots/<botId>/             config.json、state.sqlite
-    memory/ resources/ artifacts/ workspace/ logs/ cache/ run/ tmp/
-  capabilities/<能力>/      state.sqlite、能力自己的文件与日志
-  web/                      run/、logs/
-  archives/                 分身交付与回收元数据
-  migration/                迁移映射和校验报告
-  verification/             验证证据
+D:/Relay-Bot-data/
+  config/                         正式部署配置与私密 runtime.env
+  bots/<botId>/
+    config.json / state.sqlite    身份、S1、S3、目录与游标
+    knowledge/*.md                按范围的 S2 正文
+    skills/<name>/SKILL.md         本 Bot 可维护的方法
+    artifacts/ workspace/ logs/ run/ tmp/
+  capabilities/<能力>/            领域数据库、文件与日志
+  connectors/codex-desktop-api/    原连接器配置、幂等/事件数据与日志
+  web/                            运行状态与日志
 ```
 
-安装根：`Relay-Bot-app/releases/<buildId>/`、`current.json` 与启动脚本。发行物包含 bot/web/capabilities/roles/skills/scripts、生产依赖和 Node；没有数据库、用户数据、密钥或开发目录链接。
+源码 `D:/Relay-Bot`，安装 `D:/Relay-Bot-app`；`current.json` 与数据根 `deployment.json` 指向当前发行。正式入口为 `https://bot.lin0.org` / `http://127.0.0.1:8787`。沿原安装和启动链更新运行引用，不创建开发、测试或预览实例。
 
-## 启动链
+构建物不携带用户数据库和凭据。安装清理被替代发行、能力版本与构建中间目录，保留有效历史、MD、Skill、用户文件和业务归档，不生成备份或回退副本。关闭 Web 不停止后端责任；显式停止意图仍有效。
 
-StartupHub → 安装根 Start.ps1 → installation CLI → 能力网关 → 六类独立能力服务 → Web。管理服务按配置恢复或按需启动独立 Bot。网关地址和控制凭据持久化，恢复旧版本服务时继续使用稳定控制地址。停止全系统时先暂停后台调度、记录未确认工作的中断状态，再关闭 Bot 和空闲服务、Web、网关；普通网关关闭保留仍有后台工作的服务。单独关闭 Web 不停止这些进程。
+本文件描述源码结构，不替代本次构建、安装、启动的实际结果说明。未运行测试或哈希不是阻塞，也不自动补齐历史验收记录。
