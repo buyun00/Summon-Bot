@@ -7,7 +7,7 @@
 - `bot/`：可单独安装的 Bot 包，生命周期、任务/消息、上下文、持久化、工具/MCP/Skill 接入。
 - `capabilities/`：六类独立 MCP/API 服务，以及注册、版本绑定和协商热更网关。
 - `roles/`：角色配置与提示词；`skills/`：可加载流程说明。
-- `web/`：前端与轻量网关；`scripts/`：构建、安装、迁移。
+- `web/`：前端与轻量网关；`scripts/`：构建、安装、维护。
 - `ios/`：Swift / SwiftUI 原生 iPhone、iPad 客户端；Mac 直接打开 `ios/Relay.xcodeproj`，详见 [iOS 运行说明](ios/README.md)。
 
 ## 开发与运行
@@ -18,16 +18,16 @@
 
 ```powershell
 npm ci
-npm run relay:dev -- --data-root D:\Relay-Bot-dev-data
+& D:\Relay-Bot-app\Start.ps1 -DataRoot D:\Relay-Bot-data
 ```
 
-先在数据根的 `config/runtime.env` 中配置模型凭据。开发数据与真实部署数据分开。
+模型凭据位于正式数据根的 `config/runtime.env`。开发阶段也只使用这一套正式环境；每次更新替换为最新版并清理旧发行、旧能力配置和中间目录，不保留旧版兼容入口。
 
 ## 构建与安装
 
 ```powershell
 npm run relay:pack
-npm run relay:install -- --release-root <构建输出路径> --app-root D:\Relay-Bot-app --data-root D:\Relay-Bot-data --public-origin https://bot.lin0.org
+npm run relay:install -- --release-root <构建输出路径> --app-root D:\Relay-Bot-app --data-root D:\Relay-Bot-data --source-root D:\Relay-Bot --public-origin https://bot.lin0.org
 & "$env:SystemRoot\System32\wscript.exe" //B //NoLogo D:\Relay-Bot-app\Start-Hidden.vbs
 & D:\Relay-Bot-app\Stop.ps1
 ```

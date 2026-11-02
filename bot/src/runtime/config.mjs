@@ -37,10 +37,8 @@ export function normalizeBotConfig(input, baseDirectory = process.cwd()) {
   if (new Set(config.peers.map(peer => peer.token)).size !== config.peers.length) throw new Error('Peer authentication tokens must be unique');
   if (new Set(config.peers.map(peer => peer.botId)).size !== config.peers.length || config.peers.some(peer => peer.botId === config.botId || peer.token === config.token)) throw new Error('Invalid peer identity or management token reuse');
   config.model = { provider: 'openai-compatible', contextWindow: 1048576, maxTokens: 393216, ...input.model };
-  config.limits = { maxContextBytes: 384000, ...input.limits };
-  // Discard legacy execution budgets when loading existing Bot configurations.
-  for (const key of ['maxTurns', 'maxTools', 'timeoutMs']) delete config.limits[key];
-  if (!Number.isSafeInteger(config.limits.maxContextBytes) || config.limits.maxContextBytes < 1) throw new Error('Invalid limits.maxContextBytes');
+  config.limits = { ...input.limits };
+  for (const key of Object.keys(config.limits)) if (!['compaction', 'reserveTokens', 'keepRecentTokens'].includes(key)) throw new Error(`Unsupported limits setting: ${key}`);
   if (config.app !== undefined || config.appFactory !== undefined) throw new Error('Bot always uses its Pi Agent; custom application factories are unsupported');
   return config;
 }

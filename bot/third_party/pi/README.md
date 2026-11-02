@@ -19,8 +19,10 @@ development check.
 
 Local boundaries: no Pi CLI/TUI, JSONL database, home-directory discovery, package
 manager, login flow or background model-catalog refresh is imported. Source
-session-manager contains pure parsing/projection only. Bot uses its SQLite
-state and disables retry in the adapter, including summarization calls.
+session-manager contains current-format context projection only. Bot uses its SQLite
+state. Compaction/retry lifecycle methods selected from the same version's
+AgentSession are in `src/pi/core/compaction/lifecycle.mjs`; adapters supply
+SQLite entries, a fixed model, cancellation and durable lifecycle events.
 
 See `LOCAL_CHANGES.md` and `DEPENDENCIES.json` for adaptation and installed package
 license records. Public package behavior is documented in ../../README.md.

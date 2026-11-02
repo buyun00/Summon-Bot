@@ -14,11 +14,9 @@
   },
   "scripts": {
     "start": "node scripts/installation/cli.mjs start",
-    "relay:dev": "node scripts/installation/cli.mjs dev",
     "relay:build": "node scripts/build/build.mjs",
     "relay:pack": "node scripts/build/build.mjs --bundle-node",
     "relay:start": "node scripts/installation/cli.mjs start",
-    "relay:migrate": "node scripts/migration/migrate.mjs",
     "relay:init": "node scripts/installation/cli.mjs init",
     "relay:install": "node scripts/installation/install.mjs",
     "relay:status": "node scripts/installation/cli.mjs status",

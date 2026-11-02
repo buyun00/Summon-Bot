@@ -5,9 +5,10 @@ import { existsSync } from 'node:fs';
 import { copyTree,readJson,writeJson,within,parseArgs } from '../build/files.mjs';
 import { verifyRelease } from '../build/verify.mjs';
 import { initializeDeployment,inspectService,deploymentPath } from './system.mjs';
+import { selectCurrentVersion } from './current-version.mjs';
 
 /** Install a selected build; development packages use manifest metadata only. */
-export async function installRelease({releaseRoot,appRoot,dataRoot,defaultCwd,publicOrigin='',port=8787}={}) {
+export async function installRelease({releaseRoot,appRoot,dataRoot,sourceRoot,defaultCwd,publicOrigin='',port=8787}={}) {
   releaseRoot=resolve(releaseRoot);appRoot=resolve(appRoot);dataRoot=resolve(dataRoot);
   if(within(appRoot,dataRoot)||within(dataRoot,appRoot))throw new Error('Application and data roots must be disjoint');
   const verified=await verifyRelease(releaseRoot),destination=join(appRoot,'releases',verified.buildId);
@@ -32,13 +33,16 @@ export async function installRelease({releaseRoot,appRoot,dataRoot,defaultCwd,pu
   }
   else {await copyTree(releaseRoot,destination);await verifyRelease(destination);}
   const initialized=await initializeDeployment({dataRoot,releaseRoot:destination,defaultCwd,publicOrigin,port});
-  await writeJson(deploymentPath(dataRoot),{...initialized.config,releaseRoot:destination});
+  sourceRoot=sourceRoot||initialized.config.sourceRoot;
+  await writeJson(deploymentPath(dataRoot),{...initialized.config,releaseRoot:destination,...(sourceRoot?{sourceRoot:resolve(sourceRoot)}:{})});
   await mkdir(appRoot,{recursive:true});
   for(const name of ['Start.ps1','Start-Hidden.vbs','Stop.ps1','Run.cmd'])await copyFile(join(destination,name),join(appRoot,name));
   const selection={schemaVersion:1,releaseRoot:destination,buildId:verified.buildId,dataRoot,selectedAt:new Date().toISOString()};
-  await writeJson(join(appRoot,'current.json'),selection);return selection;
+  await writeJson(join(appRoot,'current.json'),selection);
+  const cleanup=await selectCurrentVersion({appRoot,dataRoot,sourceRoot,releaseRoot:destination,buildId:verified.buildId});
+  return {...selection,cleanup};
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
-  const {options}=parseArgs(process.argv.slice(2));installRelease({releaseRoot:options['release-root'],appRoot:options['app-root'],dataRoot:options['data-root'],defaultCwd:options.cwd,publicOrigin:options['public-origin'],port:options.port})
+  const {options}=parseArgs(process.argv.slice(2));installRelease({releaseRoot:options['release-root'],appRoot:options['app-root'],dataRoot:options['data-root'],sourceRoot:options['source-root'],defaultCwd:options.cwd,publicOrigin:options['public-origin'],port:options.port})
     .then(result=>console.log(JSON.stringify(result,null,2))).catch(error=>{console.error(error.message);process.exitCode=1;});
 }

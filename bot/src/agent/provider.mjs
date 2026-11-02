@@ -1,4 +1,5 @@
 import { AssistantMessageEventStream, calculateCost, collapseSystemMessages, getCurrentTools, getSystemMessageText, normalizeContext } from '@earendil-works/pi-ai';
+import { clampMaxTokensToContext } from '@earendil-works/pi-ai/api/simple-options';
 const safeError = (error, config) => config.redact({ message: error?.message || String(error) }).message;
 
 const tokenCount = value => Number.isFinite(value) && value > 0 ? value : 0;
@@ -51,11 +52,11 @@ function deepSeekContext(context, deep) {
   return { messages, ...(tools.length ? { tools, tool_choice: 'auto' } : {}) };
 }
 
-function responseChoice(result) {
+function responseChoice(result, allowLength = false) {
   const choice = result.choices?.[0];
-  if (choice?.finish_reason === 'length') throw new Error('Model 输出被长度上限截断，请缩小请求后重试');
+  if (choice?.finish_reason === 'length' && !allowLength) throw new Error('Model output reached its token limit');
   if (!choice?.message) throw new Error('Model 没有返回消息');
-  if (!['stop', 'tool_calls'].includes(choice.finish_reason)) throw new Error(`Model 未正常结束 (${choice.finish_reason || 'unknown'})`);
+  if (!['stop', 'tool_calls', ...(allowLength ? ['length'] : [])].includes(choice.finish_reason)) throw new Error(`Model 未正常结束 (${choice.finish_reason || 'unknown'})`);
   return choice;
 }
 
@@ -64,6 +65,9 @@ function assistantContent(choice) {
   const content = [];
   if (typeof source.reasoning_content === 'string' && source.reasoning_content) content.push({ type: 'thinking', thinking: source.reasoning_content, thinkingSignature: 'reasoning_content' });
   if (typeof source.content === 'string' && source.content.trim()) content.push({ type: 'text', text: source.content });
+  // A length stop may contain incomplete tool JSON. Keep its partial text and
+  // native stop reason for Pi recovery; never execute the truncated calls.
+  if (choice.finish_reason === 'length') return content;
   const ids = new Set();
   if (source.tool_calls != null && !Array.isArray(source.tool_calls)) throw new Error('Model 工具调用格式不正确');
   for (const call of source.tool_calls || []) {
@@ -95,7 +99,9 @@ export class ModelProvider {
     if (signal?.aborted) abort();
     else signal?.addEventListener('abort', abort, { once: true });
     this.controllers.add(controller);
-    const timer = setTimeout(abort, timeoutMs || (deep ? 180000 : 60000));
+    const requestTimeout = timeoutMs || (deep ? 180000 : 60000);
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, requestTimeout);
     const started = Date.now();
     try {
       const response = await fetch(`${this.config.baseUrl}/chat/completions`, {
@@ -106,7 +112,7 @@ export class ModelProvider {
       const raw = await response.text();
       let result;
       try { result = JSON.parse(raw); } catch { throw new Error(`Model 返回非 JSON (${response.status})`); }
-      if (!response.ok) throw new Error(`Model HTTP ${response.status}: ${result?.error?.message || '调用失败'}`);
+      if (!response.ok) throw new Error(`Model HTTP ${response.status}: ${result?.error?.code || result?.error?.type || ''} ${result?.error?.message || '调用失败'}`);
       if (!result || typeof result !== 'object') throw new Error('Model 返回无效响应');
       const usage = result.usage || {};
       // A rejected/truncated answer can still be billed; retain its reported usage.
@@ -122,10 +128,12 @@ export class ModelProvider {
     } catch (error) {
       this.status.failures += 1;
       const aborted = controller.signal.aborted;
-      this.status.lastError = aborted ? '模型调用已取消、超时或服务正在停止' : safeError(error, this.config);
+      this.status.lastError = timedOut && !signal?.aborted ? `Model request timed out (${requestTimeout} ms)`
+        : aborted ? '模型调用已取消或服务正在停止' : safeError(error, this.config);
       this.status.connected = false;
       const failure = new Error(this.status.lastError);
-      if (aborted) failure.name = 'AbortError';
+      if (timedOut && !signal?.aborted) failure.name = 'TimeoutError';
+      else if (aborted) failure.name = 'AbortError';
       throw failure;
     } finally {
       clearTimeout(timer);
@@ -157,15 +165,19 @@ export class ModelProvider {
     void (async () => {
       try {
         const body = deepSeekContext(context, deep);
+        const desiredMaxTokens = options.maxTokens || model.maxTokens || this.config.maxTokens || 393216;
+        const maxTokens = clampMaxTokensToContext(model, context, desiredMaxTokens);
+        message.desiredMaxTokens = desiredMaxTokens;
         if (options.toolChoice) body.tool_choice = options.toolChoice;
         stream.push({ type: 'start', partial: message });
-        await this.request({ ...body, model: model.id, max_tokens: options.maxTokens || model.maxTokens || this.config.maxTokens || 393216 }, {
+        await this.request({ ...body, model: model.id, max_tokens: maxTokens }, {
           deep, signal: options.signal, timeoutMs: options.timeoutMs,
           validate: result => {
             message.usage = usageFor(result, model);
-            const choice = responseChoice(result);
+            const choice = responseChoice(result, true);
             message.content = assistantContent(choice);
-            message.stopReason = message.content.some(block => block.type === 'toolCall') ? 'toolUse' : 'stop';
+            message.stopReason = choice.finish_reason === 'length' ? 'length'
+              : message.content.some(block => block.type === 'toolCall') ? 'toolUse' : 'stop';
             message.rawStopReason = choice.finish_reason;
             if (result.model) message.responseModel = result.model;
             if (result.id) message.responseId = result.id;

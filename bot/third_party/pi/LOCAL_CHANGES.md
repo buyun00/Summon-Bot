@@ -3,7 +3,7 @@
 2026-10-19 initial import. All modules: TypeScript erasure and `.mjs` imports;
 originals and MIT are preserved. The following adaptations are intentional:
 
-- `session-manager`: only pure entry migration/parsing/projection; no JSONL I/O,
+- `session-manager`: only current-format context projection; no JSONL I/O,
   SessionManager class or filesystem session discovery.
 - `skills`: explicit agentDir, deterministic directory order, no descendant
   symlink traversal, maximum discovery depth 20, 128 KiB source limit and robust
@@ -16,8 +16,8 @@ originals and MIT are preserved. The following adaptations are intentional:
   names in file-operation summaries; existing Pi names remain supported.
 - `compaction/index`: exports only compaction and utilities; branch summarization
   is not part of the selected runtime.
-- Bot adapters (not upstream code) keep identity, explicit provider credentials, disabled
-  retries, SQLite messages/checkpoints, cancellation and message deduplication.
+- Bot adapters (not upstream code) keep identity, explicit provider credentials,
+  SQLite messages/checkpoints, cancellation and message deduplication.
   Workspace execution coordination belongs to configured external capabilities. Original messages remain available after
   compaction; summaries are explicitly lossy.
 
@@ -29,3 +29,15 @@ application, social service or compatibility runtime is included.
 Dependency versions and licenses are recorded from installed package metadata
 and lock integrity. Missing license files are reported in the dependency record;
 metadata alone is not described as a copied license text.
+
+2026-10-29: Selected the native AgentSession compaction lifecycle methods from
+the pinned 1.3.0 source into `src/pi/core/compaction/lifecycle.mjs`. Native
+threshold/overflow/manual handling, retry classification and backoff are retained.
+Relay adapters supply fixed-model credentials through its provider, SQLite entry
+projection/checkpoints/context edits, and cancellation/events instead of CLI/TUI,
+JSONL or extension discovery. The summary stream uses the provider directly and
+keeps Relay's evidence-preservation instructions. Pi's default compaction and
+retry settings replace the former byte gate and disabled retries. Original
+`agent-session.ts` and `settings-defaults.ts` are retained in `upstream/core/`.
+Unused session-format migration and JSONL parsing functions were removed from
+the selected runtime; original upstream references remain documentation only.

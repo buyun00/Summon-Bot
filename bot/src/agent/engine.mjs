@@ -1,10 +1,12 @@
 import { Agent } from '@earendil-works/pi-agent-core';
-import { AssistantMessageEventStream, toToolDeclaration, getCurrentTools, getCurrentSystemMessage } from '@earendil-works/pi-ai';
+import { toToolDeclaration, getCurrentTools, getCurrentSystemMessage } from '@earendil-works/pi-ai';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { modelFor } from './model.mjs';
+import { modelFor, contextSettings, DEFAULT_RETRY } from './model.mjs';
 import { ModelProvider } from './provider.mjs';
 import { SessionContext } from '../context/context.mjs';
+import { PiCompactionLifecycle } from '../pi/core/compaction/lifecycle.mjs';
+import { convertToLlm } from '../pi/core/messages.mjs';
 import { repairTranscript } from '../context/recovery.mjs';
 import { loadResources } from '../context/resources.mjs';
 import { ToolRegistry } from '../capabilities/registry.mjs';
@@ -22,13 +24,10 @@ export class BotEngine {
     this.model = modelFor(config);
     this.provider = provider || new ModelProvider({ ...config.model, baseUrl: config.model.baseUrl.replace(/\/$/, ''),
       apiKey: config.model.apiKey || (config.model.apiKeyEnv ? process.env[config.model.apiKeyEnv] : ''), redact: clean });
-    this.agent = new Agent({ initialState: { model: this.model }, toolExecution: 'sequential', streamFn: this.provider.stream.bind(this.provider) });
-    this.context = new SessionContext({ sessions: store, clean, config: {
-      agentSessionMaxBytes: config.limits.maxContextBytes,
-      agentCompaction: config.limits.compaction !== false,
-      agentReserveTokens: config.limits.reserveTokens,
-      agentKeepRecentTokens: config.limits.keepRecentTokens,
-    }, onCheckpoint: (sessionId, checkpoint) => emit('engine.compaction', { checkpoint }, { sessionId, taskId: checkpoint.runId }) });
+    this.agent = new Agent({ initialState: { model: this.model }, convertToLlm,
+      toolExecution: 'sequential', streamFn: this.provider.stream.bind(this.provider) });
+    this.context = new SessionContext({ sessions: store, clean,
+      onCheckpoint: (sessionId, checkpoint) => emit('engine.compaction', { checkpoint }, { sessionId, taskId: checkpoint.runId }) });
     this.queue = Promise.resolve(); this.closed = false; this.active = null;
     this.taskGate = null; this.idleWaiters = new Set();
   }
@@ -71,18 +70,28 @@ export class BotEngine {
     return previous;
   }
   repairSession(session) {
-    const repaired = repairTranscript(session.messages || [], (call, assistant) => {
+    const resolveResult = (call, assistant) => {
       const candidates = this.store.listTools().filter(tool => tool.sessionId === session.id && tool.toolCallId === call.id &&
         tool.assistantDigest === digest(assistant) && ['completed', 'failed'].includes(tool.status));
       if (candidates.length !== 1) return null;
       const tool = candidates[0];
       return { role: 'toolResult', toolCallId: call.id, toolName: call.name,
         content: tool.output?.content || [{ type: 'text', text: JSON.stringify(tool.output) }], isError: tool.status !== 'completed', timestamp: Date.now(), recovery: true };
-    });
-    if (JSON.stringify(repaired.messages) !== JSON.stringify(session.messages)) return this.store.saveSession({ ...session,
-      messages: repaired.messages, checkpoints: (session.checkpoints || []).map(value => ({ ...value, invalidated: 'transcript_repaired' })),
-      recoveryRecords: [...(session.recoveryRecords || []), ...repaired.recoveryRecords] });
-    return session;
+    };
+    // Native recovery uses durable context edits. Never rewrite their indexed raw
+    // history or resurrect attempts that Pi has intentionally omitted.
+    const view = this.context.project(session.id), visible = view.projection.messages;
+    const repaired = repairTranscript(visible, resolveResult);
+    if (JSON.stringify(repaired.messages) === JSON.stringify(visible)) return session;
+    const manager = this.context.sessionManager(session.id);
+    for (const record of repaired.recoveryRecords) {
+      const id = manager.idForMessage(record.message);
+      if (id) manager.appendContextEdit(id, null);
+    }
+    const existing = new Set(visible.map(message => JSON.stringify(message)));
+    for (const message of repaired.messages) if (!existing.has(JSON.stringify(message))) this.context.recordMessage(session.id, message, session.lastTaskId);
+    const latest = this.store.getSession(session.id);
+    return this.store.saveSession({ ...latest, recoveryRecords: [...(latest.recoveryRecords || []), ...repaired.recoveryRecords] });
   }
   run(task, { signal, onStart } = {}) {
     if (this.closed) return Promise.reject(new Error('Bot engine is closed'));
@@ -103,7 +112,7 @@ export class BotEngine {
     const usage = emptyUsage();
     const addUsage = message => { for (const key of ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens']) usage[key] += message.usage?.[key] || 0; };
     const clean = this.clean;
-    let unsubscribe;
+    let unsubscribe, lifecycle;
     try {
       let session = this.store.getSession(task.sessionId) || this.store.saveSession({ id: task.sessionId, contextKey: task.sessionId, messages: [], checkpoints: [] });
       session = this.repairSession(session);
@@ -145,28 +154,31 @@ export class BotEngine {
       this.agent.clearAllQueues();
       this.agent.state.model = this.model;
       this.agent.state.thinkingLevel = this.config.model.thinkingLevel || 'off';
-      this.agent.state.messages = session.messages;
+      this.agent.state.messages = this.context.project(task.sessionId).projection.messages;
       this.agent.state.tools = tools;
       this.agent.sessionId = task.sessionId;
-      this.agent.streamFunction = async (model, transcript, options) => {
-        try {
-          combined.throwIfAborted();
-          this.active.waitingFor = { kind: 'model', model: model.id };
-          const view = await this.context.prepare(task.sessionId, { model, signal: combined, runId: task.id,
-            streamFn: async (...args) => { const stream = await this.provider.stream(...args); addUsage(await stream.result()); return stream; } });
-          this.emit('engine.request', { model: model.id, contextBytes: view.bytes, contextTokens: view.tokens }, refs);
-          // Historical prompts stay in the original transcript for audit, but
-          // only this Bot's current configured prompt/tools govern a new turn.
-          const messages = [{ role: 'system', content: '', sections: { bot: systemPrompt }, toolsAdded: declarations, timestamp: Date.now() },
-            ...view.messages.filter(message => message.role !== 'system')];
-          return this.provider.stream(model, { ...transcript, messages }, { ...options, signal: combined });
-        } catch (error) {
-          const stream = new AssistantMessageEventStream();
-          const message = { role: 'assistant', api: model.api, provider: model.provider, model: model.id, content: [], usage: emptyUsage(),
-            stopReason: combined.aborted ? 'aborted' : 'error', errorMessage: clean({ message: error.message }).message, timestamp: Date.now() };
-          stream.push({ type: 'error', reason: message.stopReason, error: message }); stream.end(message); return stream;
-        }
+      this.agent.streamFunction = this.provider.stream.bind(this.provider);
+      lifecycle = new PiCompactionLifecycle({ agent: this.agent, model: this.model, signal: combined,
+        sessionManager: this.context.sessionManager(task.sessionId, { runId: task.id, model: this.model, signal: combined }),
+        settings: contextSettings({ agentCompaction: this.config.limits.compaction !== false,
+          agentReserveTokens: this.config.limits.reserveTokens, agentKeepRecentTokens: this.config.limits.keepRecentTokens }, this.model),
+        retry: DEFAULT_RETRY,
+        summaryStream: async (...args) => { const stream = await this.provider.stream(...args); addUsage(await stream.result()); return stream; },
+        instructions: 'Preserve user decisions and permissions, exact paths, IDs and critical observed values. Distinguish confirmed tool receipts from failed, interrupted or resultKnown=false operations. Never infer completion or replay operations. Keep pending work and task and sender context. read_session_history can recover the original observations.',
+        emit: event => {
+          if (event.type === 'compaction_start') this.active.waitingFor = { kind: 'compaction', reason: event.reason };
+          if (event.type === 'auto_retry_start' || event.type === 'summarization_retry_scheduled') this.active.waitingFor = { kind: 'retry', attempt: event.attempt, delayMs: event.delayMs };
+          if (event.type === 'compaction_end' || event.type === 'auto_retry_end') this.active.waitingFor = null;
+          this.emit(`engine.${event.type}`, event, refs);
+        } });
+      this.agent.prepareRequest = request => {
+        combined.throwIfAborted();
+        const view = this.context.project(task.sessionId);
+        this.active.waitingFor = { kind: 'model', model: request.model.id };
+        this.emit('engine.request', { model: request.model.id, contextBytes: view.bytes, contextTokens: view.tokens }, refs);
+        return { context: { ...request.context, messages: view.projection.messages, tools: this.agent.state.tools.slice() } };
       };
+      this.agent.prepareNextTurnWithContext = turn => lifecycle.prepareNextTurn(turn.context);
       // Count work for reporting without imposing a per-task execution budget.
       this.agent.beforeToolCall = () => { toolsCalled++; };
       unsubscribe = this.agent.subscribe(event => {
@@ -174,8 +186,7 @@ export class BotEngine {
         if (event.type === 'message_end') {
           if (event.message.role === 'assistant' && this.active) this.active.waitingFor = null;
           if (event.message.role === 'assistant') addUsage(event.message);
-          const current = this.store.getSession(task.sessionId);
-          this.store.saveSession(clean({ ...current, messages: [...current.messages, event.message], lastTaskId: task.id }));
+          this.context.recordMessage(task.sessionId, event.message, task.id);
         }
         if (event.type === 'message_update' && event.assistantMessageEvent?.type === 'text_delta') this.emit('agent.text_delta', { text: event.assistantMessageEvent.delta }, refs);
         if (event.type === 'tool_execution_end') {
@@ -188,18 +199,28 @@ export class BotEngine {
       combined.addEventListener('abort', abort, { once: true });
       try {
         combined.throwIfAborted();
+        await lifecycle.beforePrompt();
         await this.agent.prompt(invocation ? `${input}\n\n${JSON.stringify(invocation)}` : input);
+        while (await lifecycle.afterRun()) await this.agent.continue();
         combined.throwIfAborted();
       } finally { combined.removeEventListener('abort', abort); }
-      const last = this.agent.state.messages.findLast(message => message.role === 'assistant');
-      if (!last || ['error', 'aborted'].includes(last.stopReason)) throw new Error(last?.errorMessage || 'Agent ended without a result');
+      const last = lifecycle.lastOutcome;
+      if (!last || ['error', 'aborted', 'length'].includes(last.stopReason)) {
+        const detail = lifecycle.lastCompactionFailureReason === 'overflow' ? lifecycle.lastCompactionError : undefined;
+        const message = last?.errorMessage || (last?.stopReason === 'length' ? 'Model output reached its limit after recovery' : 'Agent ended without a result');
+        throw Object.assign(new Error(detail ? `${message}; ${detail}` : message),
+          { code: detail ? 'CONTEXT_RECOVERY_FAILED' : last?.stopReason === 'length' ? 'MODEL_OUTPUT_LIMIT' : 'MODEL_ERROR' });
+      }
       return clean({ content: last.content.filter(value => value.type === 'text').map(value => value.text).join('\n'), model: this.model.id,
         usage: { prompt_tokens: usage.input + usage.cacheRead, completion_tokens: usage.output, total_tokens: usage.totalTokens }, turns, toolsCalled });
     } catch (error) {
       const session = this.store.getSession(task.sessionId);
       if (session && !this.store.closed) this.repairSession(session);
       throw error;
-    } finally { unsubscribe?.(); this.active = null; for (const resolve of this.idleWaiters) resolve(); this.idleWaiters.clear(); }
+    } finally {
+      unsubscribe?.(); lifecycle?.close(); this.agent.prepareRequest = undefined; this.agent.prepareNextTurnWithContext = undefined;
+      this.active = null; for (const resolve of this.idleWaiters) resolve(); this.idleWaiters.clear();
+    }
   }
   health() { return { engine: 'pi-agent-core', version: '1.3.0', initialized: Boolean(this.agent), activity: this.active ? (this.active.waitingFor ? 'waiting' : 'running') : 'idle', waitingFor: this.active?.waitingFor || null, configured: this.provider.status?.configured !== false,
     activeTaskId: this.active?.taskId || null, capabilitySwitchPending: Boolean(this.taskGate), capabilityBindingRevision: this.config.capabilityBindingRevision || null,

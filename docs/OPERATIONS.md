@@ -8,7 +8,9 @@
 
 `config/deployment.json` 位于数据根，声明发行路径、工作目录、模型、Web 和能力网关地址。控制令牌和 Bot 凭据只存在本机数据目录，不提交 Git。`config/runtime.env` 是显式凭据来源，例如 `DEEPSEEK_API_KEY=...`；不会自动搜索其他项目。
 
-每个 Bot 的 `config.json` 可配置模型、提示词、skills、HTTP/module/MCP tools、contacts、peers 和上下文压缩。任务不设模型轮数、工具调用次数或总执行时长上限；旧配置中的 maxTurns、maxTools、timeoutMs 会被忽略。用户取消、服务关闭和实际调用错误仍正常生效。独立使用示例见 `bot/README.md` 与 `bot/examples/`。
+每个 Bot 的 `config.json` 可配置模型、提示词、skills、HTTP/module/MCP tools、contacts、peers 和上下文压缩。任务不设模型轮数、工具调用次数或总执行时长上限。`limits` 只接受当前的 compaction、reserveTokens、keepRecentTokens。用户取消、服务关闭和实际调用错误仍正常生效。独立使用示例见 `bot/README.md` 与 `bot/examples/`。
+
+上下文采用 Pi 1.3.0 原生的压缩与恢复流程：默认预留 16384 token、保留近期约 20000 token，按模型窗口触发，不设字节门槛。模型及摘要的临时错误按 2/4/8 秒退避最多重试三次；实际超限或可恢复截断时，压缩后最多续跑一次。提前压缩失败会记录独立事件并继续使用现有上下文，不将已完成回复改为失败。SQLite 保留原始消息、压缩检查点及恢复用的上下文省略记录，恢复不重放已执行工具。持续的 API 故障或无法容纳的当前输入仍会明确报错。
 
 新建普通 Bot 使用 `default` 角色时，默认挂载 Pi 风格的四项基础工具：`read_file`（读文件）、`write_file`（写文件）、`edit_file`（修改文件）和 `run_command`（执行命令），并保留已有的协作与自身记忆能力。这四项工具由独立的 filesystem 能力服务提供，Bot 引擎负责调用。文件工具可访问该 Bot 的 workspace 和已配置的项目目录；命令以宿主用户身份运行，工作目录约定不等于操作系统沙箱。角色模板变更用于新建实例，已有 Bot 通过能力授权更新其工具配置。
 
@@ -69,21 +71,17 @@ Windows 正式发行使用 Node 24.21.0 LTS 构建并随包携带该运行时，
 
 网页 Bot 详情中的“直连联系人”可建立或断开两个现有 Bot 的双向连接。连接使用独立、按方向区分的对端令牌，不共享管理令牌；重复提交可完成中途失败的配置。已有连接保存在各 Bot 配置中。本机联系人通过对端自己的身份管道解析当前地址，所以对端重启换端口后不需要经过网关刷新地址。`contacts_list`、`messages_send`、带 `botId` 的 `tasks_get` / `tasks_cancel` 都是 Bot 内核直连能力，已建立的连接不依赖聊天室或网关在线。暂停的 Bot 拒绝新的直连请求；断开连接撤销双方后续访问，不中断已开始的任务。当前网页建立的是同机直连，不代表跨机器公网连通。
 
-能力服务支持独立发布，操作见 [CAPABILITY_SERVICES.md](CAPABILITY_SERVICES.md)。`npm run relay:capabilities -- list` 可以查看版本、绑定和切换状态；`deploy` 从发行物或自包含服务包启动一个新版本，不重启 Web、网关或 Bot。注册、激活、授权和退役分别记录；卸载不删除数据。仍被旧 Bot 或长任务引用的发行目录是实际运行依赖，按当前任务需要处理。
+能力服务支持独立发布，操作见 [CAPABILITY_SERVICES.md](CAPABILITY_SERVICES.md)。`npm run relay:capabilities -- list` 可以查看当前版本、绑定和切换状态。开发阶段每个服务只保留当前版本；更新时先完成任务边界切换，再删除被替代版本及其配置，业务数据继续保留。
 
 下面的完整安装流程用于替换 Bot 引擎、网关或 Web 基础程序，不能用于冒充能力热更新。网关端口和控制令牌必须稳定；不能在忙碌服务仍运行时随意重生成。
 
-需要更新安装时，构建发行物，正常停止当前系统后运行 `relay:install`，再按授权启动。这个流程不前置测试、哈希比对或额外验收。新发行使用独立目录；选择结果保存到安装根 current.json 和数据根 deployment.json。旧发行按用户要求和实际运行依赖处理，数据目录不随代码替换。
+需要更新安装时，构建发行物，正常停止当前系统和连接器后运行 `relay:install -- --release-root <构建目录> --app-root D:/Relay-Bot-app --data-root D:/Relay-Bot-data --source-root D:/Relay-Bot`，再启动。这个流程不前置测试、哈希比对或额外验收。安装结果写入 current.json 和 deployment.json，只保留选中的发行目录。
+
+完整安装会重建当前内置能力配置和 Bot 绑定，更新 Bot 内核、Skill、模块与工具路由引用，删除被替代的能力运行目录、旧配置和构建中间目录。历史请求、对话、记忆、工具事实及用户文件继续保留。
 
 manifest 的 `sourceCommit` 是构建时 Git HEAD，`sourceDirty` 表示是否包含当时未提交的工作区变更。旧发行物和历史报告中的 SHA-256、`contentHash` 只作为历史元数据保留，不要求开发过程计算、比对或补齐这些字段。
 
 用户已明确要求不制作备份或回退副本；迁移保留有效业务数据，按授权移除被替代目录，不额外生成目录备份。
-
-## 历史数据迁移说明
-
-此前的迁移使用 `scripts/migration/migrate.mjs`，默认只读预览，`--execute` 执行迁移。现场旧来源已清除，这不是日常开发或更新步骤，不应再运行旧迁移。
-
-当时按原 IDs 分配公共聊天室、知识、Codex、Bot 管理与各 Bot 私有数据；同 ID 执行记录以工作进程数据库为准。原会话 ID 保留，并用 contextKey 续接房间。附件、产物和记录的历史校验结果保存在 migration/layout-v2.json。上述内容说明已发生的迁移，不要求后续开发重复哈希、迁移或验收；迁移程序也不是持续同步或恢复工具。
 
 清理范围遵循用户授权，不删除外部工作项目。故障时报告具体失败操作和实际原因，不补设报告或验收门禁。
 

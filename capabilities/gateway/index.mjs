@@ -71,7 +71,6 @@ export async function startGateway(options={}) {
     for(const bot of manager.list()){
       const full=await manager.readState(bot.id,db=>{const task=db?.getTask(id);return task?{...task,tools:db.listTools(id)}:null;});
       if(full)return {id,...full,botId:bot.id,summary:full.result?.content||full.summary||'',sessionId:full.sessionId,roomId:full.sessionId?.replace(/^room:/,'')};
-      const historical=await manager.readState(bot.id,db=>db?.getRecord?.('agentRuns',id));if(historical)return {...historical,botId:bot.id,tools:await manager.readState(bot.id,db=>db?.listRecords?.('toolRuns').filter(tool=>tool.runId===id)||[])};
     }return null;
   }
   const downloads=new RunArtifactDownloads({getRun:ownRun,resolveRoot:run=>({dataRoot,artifactRoot:join(manager.directory(run.botId),'artifacts')}),tempRoot:join(dataRoot,'capabilities','gateway','tmp','downloads')});
@@ -81,8 +80,8 @@ export async function startGateway(options={}) {
       // A single durable snapshot per Bot avoids reopening its database for every
       // historical task and reading every full tool result on every UI refresh.
       const snapshot=await manager.readState(bot.id,db=>{
-        if(!db)return {tasks:[],legacy:[],counts:{},lastTools:{}};
-        return {tasks:db.listTasks().slice(-100),legacy:db.listRecords?.('agentRuns')||[],
+        if(!db)return {tasks:[],counts:{},lastTools:{}};
+        return {tasks:db.listTasks().slice(-100),
           counts:Object.fromEntries(db.db.prepare('SELECT task_id,COUNT(*) AS count FROM tools GROUP BY task_id').all().map(row=>[row.task_id,row.count])),
           lastTools:Object.fromEntries(db.db.prepare(`SELECT task_id,
             COALESCE(json_extract(data,'$.name'),json_extract(data,'$.toolName')) AS name,
@@ -94,7 +93,6 @@ export async function startGateway(options={}) {
             .all().map(row=>[row.task_id,toolActivity(row)]))};
       });
       for(const task of snapshot.tasks)agentRuns.push({id:task.id||task.taskId,...task,botId:bot.id,summary:task.result?.content||task.summary||'',toolCount:task.result?.toolsCalled??snapshot.counts[task.id||task.taskId]??0,lastTool:snapshot.lastTools[task.id||task.taskId]||null,roomId:task.sessionId?.replace(/^room:/,'')});
-      for(const record of snapshot.legacy)if(!agentRuns.some(run=>run.id===record.id))agentRuns.push({...record,botId:bot.id});
       try{const health=await manager.request(bot.id,'/health',{signal:AbortSignal.timeout(2000)});if(health.engine?.provider)providers.push(health.engine.provider);}catch{}
     }));
     agentRuns.sort((a,b)=>String(a.createdAt||'').localeCompare(String(b.createdAt||'')));
@@ -256,12 +254,6 @@ export async function startGateway(options={}) {
       const previouslyRegistered=registry.inventory().services.some(service=>service.id===id);
       await registerWorker({id,version,module:join(releaseRoot,'capabilities/services/builtin.mjs'),options:workerOptions});
       if(!previouslyRegistered)registry.activate(id,version);
-    }
-    // A stopped but still-bound version is resumed from its original immutable
-    // source. Registration of this release never overwrites a Bot's old binding.
-    for(const entry of requiredManagedVersions()){
-      const config=await managedConfig(entry.capabilityId,entry.version);if(!config)continue;
-      await registerWorker({id:entry.capabilityId,version:entry.version,stateVersion:config.stateVersion,module:config.module,options:{...config.options,gatewayUrl:url,gatewayToken:token,deferStart:true}});
     }
     for(const id of ['bot-management','chatroom','codex'])await invokeManagedVersions(id,'resumeService');
     if(options.seed!==false){await manager.seed();await chatroom.seed();}
