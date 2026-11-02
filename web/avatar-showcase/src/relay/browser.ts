@@ -8,9 +8,10 @@ let serial=0
 const node=(name:string,attrs:Record<string,unknown>={})=>{const element=document.createElementNS(ns,name);for(const [key,value]of Object.entries(attrs))element.setAttribute(key,String(value));return element}
 function eyesColor(color:string,paper:string){const channels=[1,3,5].map(i=>parseInt(color.slice(i,i+2),16)/255);return channels[0]!*0.2126+channels[1]!*0.7152+channels[2]!*0.0722>.69?'#485346':paper}
 class PaperAvatar {
-  svg:SVGElement;rig:PaperRig;appearance:Appearance;time=0;seen=0;requested='idle';completedUntil=0
+  svg:SVGElement;rig:PaperRig;appearance:Appearance;time=0;seen=0;requested='idle';completedUntil=0;preview=false;nextExpression=0
   private body:SVGElement;private backing:SVGElement;private edge:SVGElement;private maskBody:SVGElement;private eyes:SVGElement[]
   private backArcs:SVGElement;private frontArcs:SVGElement
+  private palette:Record<string,string>={};private paletteFrom:Record<string,string>={};private paletteTarget:Record<string,string>={};private paletteChanged=0
   constructor(appearance:Appearance,size:number,motion:string){
     this.appearance=appearance;this.rig=new PaperRig(appearance.shape,motion);this.requested=motion
     const id=`paper-avatar-${++serial}`
@@ -30,8 +31,21 @@ class PaperAvatar {
   }
   setAppearance(value:Appearance){
     if(value.shape!==this.appearance.shape)this.rig.setShape(value.shape,this.time)
-    this.appearance=value;this.backing.setAttribute('fill',value.secondary);this.body.setAttribute('fill',eyesColor(value.color,value.paper));this.edge.setAttribute('stroke',value.ink)
-    this.svg.querySelector('[data-paper-fill]')!.setAttribute('fill',value.color)
+    const target={paint:value.color,back:value.secondary,eyes:eyesColor(value.color,value.paper),edge:value.ink}
+    if(JSON.stringify(target)!==JSON.stringify(this.paletteTarget)){
+      this.paletteFrom={...this.palette};this.paletteTarget=target;this.paletteChanged=this.time
+      if(!this.palette.paint||reduced.matches)this.palette={...target}
+    }
+    this.appearance=value;this.paintPalette()
+  }
+  private paintPalette(){
+    const amount=reduced.matches?1:Math.min(1,(this.time-this.paletteChanged)/.42),ease=1-(1-amount)**3
+    for(const [key,to]of Object.entries(this.paletteTarget)){
+      const from=this.paletteFrom[key]||to
+      this.palette[key]='#'+[1,3,5].map(index=>Math.round(parseInt(from.slice(index,index+2),16)+(parseInt(to.slice(index,index+2),16)-parseInt(from.slice(index,index+2),16))*ease).toString(16).padStart(2,'0')).join('')
+    }
+    this.backing.setAttribute('fill',this.palette.back!);this.body.setAttribute('fill',this.palette.eyes!);this.edge.setAttribute('stroke',this.palette.edge!)
+    this.svg.querySelector('[data-paper-fill]')!.setAttribute('fill',this.palette.paint!)
   }
   private arcs(host:SVGElement,arcs:BotFrame['arcs'],half:'back'|'front'){
     while(host.children.length>arcs.length)host.lastElementChild!.remove()
@@ -43,16 +57,35 @@ class PaperAvatar {
     this.arcs(this.backArcs,frame.arcs,'back');this.arcs(this.frontArcs,frame.arcs,'front')
   }
   setMotion(next:string){if(next===this.requested)return;const celebrate=next==='idle'&&['work','think'].includes(this.requested);this.requested=next;this.completedUntil=celebrate?this.time+2.8:0;this.rig.setMotion(celebrate?'done':next,this.time)}
-  tick(delta:number){this.time+=delta;if(this.completedUntil&&this.time>=this.completedUntil){this.completedUntil=0;this.rig.setMotion('idle',this.time)}this.draw(this.rig.sample(this.time))}
+  greet(intro=false){
+    if(reduced.matches)return
+    this.rig.setMotion('expression:heureux',this.time);this.completedUntil=this.time+1.8;this.nextExpression=this.time+5
+    if(intro){
+      const animation=this.svg.animate([{opacity:0,transform:'translateY(18px) scale(.08)'},{opacity:1,transform:'translateY(-5px) scale(1.08)',offset:.65},{opacity:1,transform:'none'}],{duration:820,delay:120,easing:'cubic-bezier(.22,.8,.22,1)',fill:'both'})
+      animation.finished.then(()=>animation.cancel()).catch(()=>{})
+    }
+  }
+  tick(delta:number){
+    this.time+=delta
+    this.paintPalette()
+    if(this.completedUntil&&this.time>=this.completedUntil){this.completedUntil=0;this.rig.setMotion(this.requested,this.time)}
+    if(this.preview&&this.requested==='idle'&&!this.completedUntil&&this.time>=this.nextExpression){
+      const expressions=['curieux','heureux','attentif','timide']
+      this.rig.setMotion('expression:'+expressions[Math.floor(Math.random()*expressions.length)],this.time)
+      this.completedUntil=this.time+1.8;this.nextExpression=this.time+5+Math.random()*3
+    }
+    this.draw(this.rig.sample(this.time))
+  }
 }
 const instances=new Map<string,PaperAvatar>()
 const reduced=matchMedia('(prefers-reduced-motion: reduce)')
 let raf=0,last=0,drawn=0
-function render(value={},size=40,options:{key?:string;state?:string;static?:boolean}={}){
+function render(value={},size=40,options:{key?:string;state?:string;static?:boolean;preview?:boolean;intro?:boolean}={}){
   const appearance=normalizePaperAvatar(value),dimension=Math.max(8,Math.min(512,Number(size)||40))
   if(appearance.image)return `<img class="relay-bot-face" src="${appearance.image}" width="${dimension}" height="${dimension}" alt="" style="object-fit:cover;border-radius:22%;flex:none">`
   const item=new PaperAvatar(appearance,dimension,options.state||'idle')
   item.svg.dataset.paperAvatar=JSON.stringify(appearance);item.svg.dataset.avatarKey=options.key||'';item.svg.dataset.paperState=options.state||'idle';item.svg.dataset.paperStatic=String(Boolean(options.static||!options.key))
+  item.svg.dataset.paperPreview=String(Boolean(options.preview));item.svg.dataset.paperIntro=String(Boolean(options.intro))
   return item.svg.outerHTML
 }
 function hydrate(root:ParentNode&{matches?:(selector:string)=>boolean}=document){
@@ -62,10 +95,14 @@ function hydrate(root:ParentNode&{matches?:(selector:string)=>boolean}=document)
     const key=target.dataset.avatarKey;if(!key)continue
     let appearance:Appearance;try{appearance=normalizePaperAvatar(JSON.parse(target.dataset.paperAvatar!))}catch{continue}
     let item=instances.get(key)
+    const fresh=!item,preview=target.dataset.paperPreview==='true',intro=target.dataset.paperIntro==='true'
     if(!item){item=new PaperAvatar(appearance,Number(target.getAttribute('width')),target.dataset.paperState||'idle');instances.set(key,item)}
+    item.preview=preview
     item.setAppearance(appearance);item.setMotion(target.dataset.paperState||'idle')
     if(target!==item.svg){item.svg.dataset.paperAvatar=JSON.stringify(appearance);item.svg.dataset.avatarKey=key;item.svg.dataset.paperState=target.dataset.paperState||'idle';item.svg.dataset.paperStatic='false';item.svg.setAttribute('width',target.getAttribute('width')||'40');item.svg.setAttribute('height',target.getAttribute('height')||'40');target.replaceWith(item.svg)}
     item.seen=performance.now();if(reduced.matches)item.draw(item.rig.sample(item.time))
+    item.svg.dataset.paperPreview=String(preview);item.svg.dataset.paperIntro=String(intro)
+    if(fresh&&intro)item.greet(true)
   }
   wake()
 }
@@ -79,4 +116,6 @@ function tick(now:number){
 }
 function wake(){if(!raf&&!document.hidden&&!reduced.matches){last=0;drawn=0;raf=requestAnimationFrame(tick)}}
 document.addEventListener('visibilitychange',wake);document.addEventListener('scroll',wake,true);reduced.addEventListener('change',()=>{if(reduced.matches&&raf){cancelAnimationFrame(raf);raf=0}else wake()})
-Object.assign(window,{RelayAvatars:Object.freeze({shapes:paperShapes,colors:paperTemplates.map(item=>item.color),templates:paperTemplates,normalize:normalizePaperAvatar,defaults:defaultPaperAvatar,render,hydrate,capture(){},states:Object.keys(motions)})})
+function greet(root:ParentNode){for(const svg of root.querySelectorAll<SVGElement>('[data-avatar-key]'))instances.get(svg.dataset.avatarKey||'')?.greet();wake()}
+function release(key:string){instances.delete(key)}
+Object.assign(window,{RelayAvatars:Object.freeze({shapes:paperShapes,colors:paperTemplates.map(item=>item.color),templates:paperTemplates,normalize:normalizePaperAvatar,defaults:defaultPaperAvatar,render,hydrate,greet,release,capture(){},states:Object.keys(motions)})})

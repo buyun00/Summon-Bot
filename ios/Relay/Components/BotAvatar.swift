@@ -10,6 +10,7 @@ struct BotAvatar:View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var driver=PaperMotion()
+    @State private var look: PaperLook?
     let shape:String
     let color:String
     var image:String?=nil
@@ -29,6 +30,17 @@ struct BotAvatar:View {
             if let bitmap=decodedImage {Image(uiImage:bitmap).resizable().scaledToFill().frame(width:size,height:size).clipShape(RoundedRectangle(cornerRadius:size*0.22))}
             else {Canvas {context,bounds in draw(context,bounds)}}
         }.frame(width:size,height:size).accessibilityHidden(true)
+        .task(id: "\(shape)-\(color)-\(secondary ?? "")-\(ink ?? "")-\(paper ?? "")-\(reduceMotion)-\(animated)") {
+            let target = PaperLook.make(shape: shape, color: color, secondary: secondary, ink: ink, paper: paper)
+            guard let start = look, !reduceMotion else { look = target; return }
+            let began = Date.timeIntervalSinceReferenceDate
+            while !Task.isCancelled {
+                let t = min(1, (Date.timeIntervalSinceReferenceDate - began)/0.42)
+                look = target.blended(from: start, amount: 1-pow(1-t,3))
+                if t >= 1 { break }
+                do { try await Task.sleep(for: .milliseconds(16)) } catch { break }
+            }
+        }
         .onChange(of:motion,initial:true) {_,value in driver.requested=value}
         .task(id:"\(role)-\(scenePhase)-\(reduceMotion)-\(animated)-\(image == nil)") {
             guard scenePhase == .active,!reduceMotion,animated,decodedImage == nil else {return}
@@ -42,11 +54,8 @@ struct BotAvatar:View {
     }
     private func draw(_ input:GraphicsContext,_ bounds:CGSize) {
         let frame=animated && !reduceMotion ? driver.frame ?? PaperLibrary.frame(role:role,state:motion,time:0) : PaperLibrary.frame(role:role,state:motion,time:0)
-        let body=PaperLibrary.bodies[role] ?? Path(),legacy = !PaperLibrary.ids.contains(shape)
-        let pigment=PaperLibrary.paperColor(color,shape:shape),paint=Color(relayHex:pigment)
-        let backing=Color(relayHex:legacy ? "#E6DDC8" : secondary ?? "#E6DDC8")
-        let edge=Color(relayHex:legacy ? "#414A3C" : ink ?? "#414A3C")
-        let eyes=PaperLibrary.eyeColor(pigment,paper:legacy ? "#FFFBF0" : paper ?? "#FFFBF0")
+        let appearance = look ?? PaperLook.make(shape: shape, color: color, secondary: secondary, ink: ink, paper: paper)
+        let body=appearance.body,paint=appearance.color(0),backing=appearance.color(1),edge=appearance.color(2),eyes=appearance.color(3)
         var context=input;context.scaleBy(x:bounds.width/316,y:bounds.height/316);context.translateBy(x:158,y:158)
         let arcs=motion == "work" ? PaperLibrary.arcs(time:driver.age) : []
         for arc in arcs {var c=context;c.opacity=arc.opacity;c.stroke(arc.back,with:.color(paint),style:StrokeStyle(lineWidth:arc.width,lineCap:.round))}

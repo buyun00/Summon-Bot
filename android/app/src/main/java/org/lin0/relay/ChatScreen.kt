@@ -19,6 +19,12 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -94,6 +100,8 @@ fun ChatScreen(store: RelayStore, roomID: String, onBack: () -> Unit) {
     var targetMenu by remember { mutableStateOf(false) }
     var nearBottom by remember { mutableStateOf(true) }
     val listState = rememberLazyListState()
+    val dragging by listState.interactionSource.collectIsDraggedAsState()
+    var sentRevision by remember(roomID) { mutableStateOf(0) }
     val photos = rememberPhotoPicker { uri ->
         scope.launch { uploadUris(store, listOf(uri), attachments, { attachments = it }, { localError = it }, { uploading = it }) }
     }
@@ -118,16 +126,24 @@ fun ChatScreen(store: RelayStore, roomID: String, onBack: () -> Unit) {
     LaunchedEffect(attachments) { store.setDraftAttachments(attachments, roomID) }
     LaunchedEffect(target) { store.setDraftTarget(target.ifEmpty { null }, roomID) }
     LaunchedEffect(reply?.id) { store.setDraftReply(reply?.id, roomID) }
-    LaunchedEffect(messages.lastOrNull()?.id, working.map { it.id }) {
+    LaunchedEffect(messages.lastOrNull()?.id, working.map { it.id }, sentRevision) {
         if (nearBottom && (messages.isNotEmpty() || working.isNotEmpty())) {
             listState.animateScrollToItem((messages.size + working.size).coerceAtLeast(0))
         }
     }
-    LaunchedEffect(listState.isScrollInProgress, listState.canScrollForward) {
-        if (!listState.isScrollInProgress) nearBottom = !listState.canScrollForward
+    LaunchedEffect(dragging, listState.canScrollForward) {
+        if (dragging || !listState.canScrollForward) nearBottom = !listState.canScrollForward
+    }
+    LaunchedEffect(roomID) {
+        snapshotFlow { listState.layoutInfo.let { Triple(it.viewportEndOffset, it.totalItemsCount, it.visibleItemsInfo.lastOrNull()?.size) } }
+            .distinctUntilChanged().collect {
+                if (nearBottom && !listState.isScrollInProgress && listState.layoutInfo.totalItemsCount > 0) {
+                    listState.scrollToItem(listState.layoutInfo.totalItemsCount - 1)
+                }
+            }
     }
 
-    Column(Modifier.fillMaxSize().background(Color.Black)) {
+    Column(Modifier.fillMaxSize().background(Color.Black).statusBarsPadding().navigationBarsPadding().imePadding()) {
         Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", tint = Color.White) }
             Text(title, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
@@ -215,6 +231,7 @@ fun ChatScreen(store: RelayStore, roomID: String, onBack: () -> Unit) {
                         val filesNow = attachments
                         val replyID = reply?.id
                         val targetID = target.ifEmpty { null }
+                        nearBottom = true; sentRevision += 1
                         text = ""; attachments = emptyList(); reply = null; localError = null
                         scope.launch { store.sendMessage(roomID, content, filesNow, targetID, replyID) }
                     }) {

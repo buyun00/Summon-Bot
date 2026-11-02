@@ -14,6 +14,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
@@ -23,6 +26,28 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.currentStateAsState
 import kotlinx.coroutines.isActive
 import kotlin.math.*
+
+private data class PaperLook(val points: FloatArray, val colors: List<Color>) {
+    fun blend(from: PaperLook, amount: Float) = PaperLook(
+        FloatArray(points.size) { from.points[it] + (points[it]-from.points[it])*amount },
+        colors.mapIndexed { index, color -> lerp(from.colors[index], color, amount) })
+    fun path() = Path().apply {
+        moveTo(points[0],points[1])
+        var i=2
+        while(i+5<points.size){cubicTo(points[i],points[i+1],points[i+2],points[i+3],points[i+4],points[i+5]);i+=6}
+        close()
+    }
+    companion object {
+        fun make(context: Context, shape: String, color: String, secondary: String?, ink: String?, paper: String?): PaperLook {
+            val commands=PaperLibrary.data(context).getJSONObject("characters").getJSONObject(PaperLibrary.role(shape)).getJSONArray("body")
+            val values=mutableListOf<Float>()
+            for(i in 0 until commands.length()){val row=commands.getJSONArray(i);for(j in 1 until row.length())values.add(row.getDouble(j).toFloat())}
+            val pigment=relayColor(PaperLibrary.paperColor(context,color,shape));val legacy=shape !in PaperLibrary.ids
+            val light=pigment.red*.2126f+pigment.green*.7152f+pigment.blue*.0722f
+            return PaperLook(values.toFloatArray(),listOf(pigment,relayColor(if(legacy)"#E6DDC8" else secondary ?: "#E6DDC8"),relayColor(if(legacy)"#414A3C" else ink ?: "#414A3C"),relayColor(if(light>.69f)"#485346" else if(legacy)"#FFFBF0" else paper ?: "#FFFBF0")))
+        }
+    }
+}
 
 object PaperLibrary {
     val ids=listOf("cercle","galet","squircle","capsule","triangle","hexagone","nuage","goutte")
@@ -73,14 +98,22 @@ fun BotAvatar(shape:String,color:String,image:String?=null,size:Dp=48.dp,modifie
     if(bitmap!=null){Image(bitmap.asImageBitmap(),null,modifier.size(size).clip(RoundedCornerShape(size*.22f)),contentScale=ContentScale.Crop);return}
     val context=LocalContext.current;val role=PaperLibrary.role(shape)
     val model=remember(role){PaperLibrary.model(context,role)}
-    var frame by remember(role){mutableStateOf(PaperLibrary.frame(model,motion,0f))}
-    var age by remember(role){mutableFloatStateOf(0f)}
+    var frame by remember{mutableStateOf(PaperLibrary.frame(model,motion,0f))}
+    var age by remember{mutableFloatStateOf(0f)}
+    val targetLook=remember(shape,color,secondary,ink,paper){PaperLook.make(context,shape,color,secondary,ink,paper)}
+    var look by remember{mutableStateOf(targetLook)}
     val requested by rememberUpdatedState(motion)
     val lifecycle by LocalLifecycleOwner.current.lifecycle.currentStateAsState()
     val enabled=animated&&android.animation.ValueAnimator.areAnimatorsEnabled()
+    LaunchedEffect(targetLook){
+        if(look === targetLook)return@LaunchedEffect
+        if(!android.animation.ValueAnimator.areAnimatorsEnabled()){look=targetLook;return@LaunchedEffect}
+        val from=look;val start=withFrameNanos{it}
+        while(isActive){val t=withFrameNanos{((it-start)/420_000_000f).coerceIn(0f,1f)};look=targetLook.blend(from,1-(1-t).pow(3));if(t>=1f)break}
+    }
     LaunchedEffect(role,enabled,lifecycle){
         if(!enabled||!lifecycle.isAtLeast(Lifecycle.State.STARTED)){frame=PaperLibrary.frame(model,requested,0f);return@LaunchedEffect}
-        var last=0L;var current=requested;var previous:PaperLibrary.Frame?=null
+        var last=0L;var current=requested;var previous:PaperLibrary.Frame?=frame;age=0f
         while(isActive){withFrameNanos{now->
             if(last==0L)last=now
             val dt=(now-last)/1_000_000_000f
@@ -93,28 +126,25 @@ fun BotAvatar(shape:String,color:String,image:String?=null,size:Dp=48.dp,modifie
             }
         }}
     }
-    val pigment=PaperLibrary.paperColor(context,color,shape);val legacy=shape !in PaperLibrary.ids
     val displayed=if(enabled)frame else PaperLibrary.frame(model,motion,0f)
+    val outline=remember(look){look.path()}
     val fibers=remember{val rows=PaperLibrary.data(context).getJSONArray("fibers");(0 until rows.length()).map{PaperLibrary.floats(rows.getJSONArray(it))}}
     Canvas(modifier.size(size)){
         drawIntoCanvas{wrapper->
             val c=wrapper.nativeCanvas;val save=c.save();c.scale(this.size.width/316,this.size.height/316);c.translate(158f,158f)
             val paint=android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply{strokeCap=android.graphics.Paint.Cap.ROUND;strokeJoin=android.graphics.Paint.Join.ROUND}
-            fun rgb(hex:String)=runCatching{android.graphics.Color.parseColor(hex)}.getOrDefault(android.graphics.Color.DKGRAY)
-            fun fill(path:Path,hex:String){paint.style=android.graphics.Paint.Style.FILL;paint.color=rgb(hex);c.drawPath(path,paint)}
+            fun fill(path:Path,slot:Int){paint.style=android.graphics.Paint.Style.FILL;paint.color=look.colors[slot].toArgb();c.drawPath(path,paint)}
             fun matrix(a:FloatArray)=android.graphics.Matrix().apply{setValues(floatArrayOf(a[0],a[2],a[4],a[1],a[3],a[5],0f,0f,1f))}
             val arcs=if(motion=="work")PaperLibrary.arcs(context,age) else emptyList()
-            fun drawArcs(front:Boolean){for(a in arcs){paint.style=android.graphics.Paint.Style.STROKE;paint.color=rgb(pigment);paint.alpha=(a.alpha*255).toInt();paint.strokeWidth=a.width;c.drawPath(if(front)a.front else a.back,paint)};paint.alpha=255}
+            fun drawArcs(front:Boolean){for(a in arcs){paint.style=android.graphics.Paint.Style.STROKE;paint.color=look.colors[0].toArgb();paint.alpha=(a.alpha*255).toInt();paint.strokeWidth=a.width;c.drawPath(if(front)a.front else a.back,paint)};paint.alpha=255}
             drawArcs(false)
-            val back=c.save();c.translate(4.5f,5.5f);c.rotate(-3f);c.concat(matrix(displayed.body));fill(model.body,if(legacy)"#E6DDC8" else secondary ?: "#E6DDC8");c.restoreToCount(back)
-            val body=Path(model.body).apply{transform(matrix(displayed.body))}
-            fill(body,pigment);paint.style=android.graphics.Paint.Style.STROKE;paint.color=rgb(if(legacy)"#414A3C" else ink ?: "#414A3C");paint.alpha=40;paint.strokeWidth=.75f;c.drawPath(body,paint);paint.alpha=255
+            val back=c.save();c.translate(4.5f,5.5f);c.rotate(-3f);c.concat(matrix(displayed.body));fill(outline,1);c.restoreToCount(back)
+            val body=Path(outline).apply{transform(matrix(displayed.body))}
+            fill(body,0);paint.style=android.graphics.Paint.Style.STROKE;paint.color=look.colors[2].toArgb();paint.alpha=40;paint.strokeWidth=.75f;c.drawPath(body,paint);paint.alpha=255
             val face=c.save();c.clipPath(body)
             paint.color=android.graphics.Color.WHITE;paint.alpha=25;paint.style=android.graphics.Paint.Style.STROKE;paint.strokeWidth=.45f
             for(f in fibers){c.drawLine(f[0],f[1],f[0]+f[2],f[1]+f[3],paint)}
-            val rgbValue=rgb(pigment);val light=(android.graphics.Color.red(rgbValue)*.2126+android.graphics.Color.green(rgbValue)*.7152+android.graphics.Color.blue(rgbValue)*.0722)/255
-            val eyeColor=if(light>.69)"#485346" else if(legacy)"#FFFBF0" else paper ?: "#FFFBF0"
-            for(e in displayed.eyes){if(e.size<11)continue;val eye=c.save();c.concat(matrix(e.copyOfRange(4,10)));paint.style=android.graphics.Paint.Style.FILL;paint.color=rgb(eyeColor);paint.alpha=(e[10]*255).toInt();val r=min(e[2],e[3])/2;c.drawRoundRect(e[0],e[1],e[0]+e[2],e[1]+e[3],r,r,paint);c.restoreToCount(eye)}
+            for(e in displayed.eyes){if(e.size<11)continue;val eye=c.save();c.concat(matrix(e.copyOfRange(4,10)));paint.style=android.graphics.Paint.Style.FILL;paint.color=look.colors[3].toArgb();paint.alpha=(e[10]*255).toInt();val r=min(e[2],e[3])/2;c.drawRoundRect(e[0],e[1],e[0]+e[2],e[1]+e[3],r,r,paint);c.restoreToCount(eye)}
             paint.alpha=255;c.restoreToCount(face);drawArcs(true);c.restoreToCount(save)
         }
     }

@@ -348,7 +348,7 @@ fun CreateBotSheet(store: RelayStore, onOpenRoom: (String) -> Unit, onDismiss: (
         Column(Modifier.verticalScroll(rememberScrollState()).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Text("创建新 Bot", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(16.dp))
-            BotAvatar(avatar.shape, avatar.color, avatar.image, 148.dp, secondary=avatar.secondary, ink=avatar.ink, paper=avatar.paper)
+            GreetingAvatar(avatar)
             OutlinedTextField(name, { name = it.take(100) }, placeholder = { Text("为 Bot 取个名字") }, modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp))
             AvatarPicker(avatar) { avatar = it }
             error?.let { Text(it, color = Color(0xFFFF9F0A)) }
@@ -379,7 +379,7 @@ fun AvatarPicker(avatar: RelayAvatar, onChange: (RelayAvatar) -> Unit) {
     FlowRow(horizontalArrangement=Arrangement.spacedBy(8.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
         RelayAvatar.shapes.forEach { (id,label) ->
             val selected=avatar.image == null && PaperLibrary.role(avatar.shape)==id
-            Column(Modifier.width(68.dp).clip(RoundedCornerShape(10.dp)).background(if(selected) Color(0xFF454559) else Color.Transparent).clickable { onChange(avatar.copy(shape=id,color=PaperLibrary.paperColor(context,avatar.color,avatar.shape),secondary="#E6DDC8",ink="#414A3C",paper="#FFFBF0",image=null)) }.padding(5.dp),horizontalAlignment=Alignment.CenterHorizontally) {
+            Column(Modifier.width(68.dp).clip(RoundedCornerShape(10.dp)).background(if(selected) Color(0xFF454559) else Color.Transparent).relayPress { onChange(avatar.copy(shape=id,color=PaperLibrary.paperColor(context,avatar.color,avatar.shape),secondary="#E6DDC8",ink="#414A3C",paper="#FFFBF0",image=null)) }.padding(5.dp),horizontalAlignment=Alignment.CenterHorizontally) {
                 BotAvatar(id,avatar.color,size=43.dp,secondary=avatar.secondary,ink=avatar.ink,paper=avatar.paper,animated=false)
                 Text(label,style=MaterialTheme.typography.labelSmall)
             }
@@ -390,7 +390,7 @@ fun AvatarPicker(avatar: RelayAvatar, onChange: (RelayAvatar) -> Unit) {
         for(i in 0 until templates.length()) {
             val t=templates.getJSONObject(i)
             val selected=avatar.color.equals(t.getString("color"),true) && avatar.secondary.equals(t.getString("secondary"),true)
-            Column(Modifier.width(68.dp).clip(RoundedCornerShape(8.dp)).background(if(selected) Color(0xFF454559) else Color.Transparent).clickable { onChange(avatar.copy(color=t.getString("color"),secondary=t.getString("secondary"),ink=t.getString("ink"),paper=t.getString("paper"),image=null)) }.padding(4.dp)) {
+            Column(Modifier.width(68.dp).clip(RoundedCornerShape(8.dp)).background(if(selected) Color(0xFF454559) else Color.Transparent).relayPress { onChange(avatar.copy(color=t.getString("color"),secondary=t.getString("secondary"),ink=t.getString("ink"),paper=t.getString("paper"),image=null)) }.padding(4.dp)) {
                 Row { Box(Modifier.weight(1f).height(24.dp).background(relayColor(t.getString("color"))));Box(Modifier.weight(1f).height(24.dp).background(relayColor(t.getString("secondary")))) }
                 Text(t.getString("name"),style=MaterialTheme.typography.labelSmall)
             }

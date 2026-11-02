@@ -21,6 +21,9 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.core.tween
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -68,7 +71,11 @@ private fun RelayApp(model: RelayViewModel = viewModel()) {
     )) {
         Surface(Modifier.fillMaxSize(), color = Color.Black) {
             val nav = rememberNavController()
-            NavHost(nav, startDestination = "list") {
+            NavHost(nav, startDestination = "list",
+                enterTransition = { slideInHorizontally(tween(380)) { it } },
+                exitTransition = { slideOutHorizontally(tween(380)) { -it / 4 } },
+                popEnterTransition = { slideInHorizontally(tween(380)) { -it / 4 } },
+                popExitTransition = { slideOutHorizontally(tween(380)) { it } }) {
                 composable("list") {
                     ConversationListScreen(
                         store,

@@ -5,6 +5,7 @@ import QuickLook
 
 struct ChatView: View {
     @Environment(RelayStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let roomID: String
     @State private var text = ""
     @State private var attachments: [RelayAttachment] = []
@@ -17,6 +18,7 @@ struct ChatView: View {
     @State private var localError: String?
     @State private var nearBottom = true
     @State private var userScrolling = false
+    @State private var sentRevision = 0
     @FocusState private var composing: Bool
 
     private var room: RelayRoom? { store.rooms.first { $0.id == roomID } }
@@ -107,6 +109,7 @@ struct ChatView: View {
                             reply = message
                             composing = true
                         }.id(message.id)
+                            .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 12)), removal: .identity))
                     }
                     ForEach(workingBots) { bot in
                         TimelineView(.periodic(from: .now, by: 6)) { context in
@@ -114,9 +117,10 @@ struct ChatView: View {
                                                 status: workingStatus(for: bot, at: context.date))
                         }
                     }
-                    Color.clear.frame(height: 1).id("conversation-bottom")
+                    Color.clear.frame(height: 18).id("conversation-bottom")
                 }
                 .padding(.horizontal, 18).padding(.top, 18).padding(.bottom, 8)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.24), value: messages.last?.id)
             }
             .scrollDismissesKeyboard(.interactively)
             .defaultScrollAnchor(.bottom)
@@ -132,11 +136,23 @@ struct ChatView: View {
                 // A newly appended reply can move the end marker offscreen without a user scroll.
                 if userScrolling || atBottom { nearBottom = atBottom }
             }
+            .onScrollGeometryChange(for: CGSize.self) { geometry in
+                CGSize(width: geometry.containerSize.height, height: geometry.contentSize.height + geometry.contentInsets.bottom)
+            } action: { _, _ in
+                // The keyboard, composer, images and streaming text can all resize independently.
+                if nearBottom && !userScrolling { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+            }
+            .onChange(of: sentRevision) { _, _ in
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.3)) { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+            }
+            .onChange(of: composing) { _, _ in
+                if nearBottom { withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) { proxy.scrollTo("conversation-bottom", anchor: .bottom) } }
+            }
             .onChange(of: messages.last?.id) { _, _ in
-                if nearBottom { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("conversation-bottom", anchor: .bottom) } }
+                if nearBottom { withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) { proxy.scrollTo("conversation-bottom", anchor: .bottom) } }
             }
             .onChange(of: workingBots.map(\.id)) { _, _ in
-                if nearBottom { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("conversation-bottom", anchor: .bottom) } }
+                if nearBottom { withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) { proxy.scrollTo("conversation-bottom", anchor: .bottom) } }
             }
             .overlay(alignment: .bottomTrailing) {
                 if !nearBottom && !messages.isEmpty {
@@ -279,6 +295,7 @@ struct ChatView: View {
         let content = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !content.isEmpty || !attachments.isEmpty else { return }
         let files = attachments, replyID = reply?.id, targetID = target.isEmpty ? nil : target
+        nearBottom = true; userScrolling = false; sentRevision += 1
         text = ""; attachments = []; reply = nil; localError = nil
         Task {
             await store.sendMessage(roomID: roomID, content: content, attachments: files, toBotID: targetID, replyTo: replyID)
@@ -316,6 +333,7 @@ struct ChatView: View {
 }
 
 private struct ComposerActionButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let accent: Color
 
     func makeBody(configuration: Configuration) -> some View {
@@ -324,7 +342,8 @@ private struct ComposerActionButtonStyle: ButtonStyle {
             .frame(width: 44, height: 44)
             .background(accent, in: Circle())
             .contentShape(Circle())
-            .scaleEffect(configuration.isPressed ? 0.94 : 1)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.9 : 1)
+            .animation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.66), value: configuration.isPressed)
     }
 }
 

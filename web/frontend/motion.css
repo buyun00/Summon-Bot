@@ -1,0 +1,32 @@
+/* Shared timing for desktop, touch browsers and the installed PWA. */
+@property --accent { syntax: '<color>'; inherits: true; initial-value: #7d824b; }
+.app-shell { position: relative; isolation: isolate; }
+.chat-layout { transition: --accent 420ms ease; }
+.messages { overflow-anchor: none; scroll-padding-block: 18px; }
+.messages > :last-child { margin-bottom: 18px; }
+.composer-wrap { flex-shrink: 0; }
+button, summary { -webkit-tap-highlight-color: transparent; }
+button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent,#7d824b); outline-offset: 4px; }
+button:disabled { cursor: default; }
+.context-menu { backdrop-filter: blur(24px) saturate(1.2); -webkit-backdrop-filter: blur(24px) saturate(1.2); }
+.create-avatar-preview { width: 100%; border: 0; background: transparent; cursor: pointer; }
+.create-avatar-preview .relay-bot-face { transform-origin: center; }
+.crew-palettes button { transition: scale 180ms ease, border-color 240ms ease; }
+.crew-palettes button.motion-selection-target, .shape-choice.motion-selection-target { border-color: transparent; }
+.motion-selection-ring { border-width: 2px; border-color: var(--ink); }
+.modal-header { touch-action: none; }
+@media(max-width:820px) {
+  .app-shell { position: fixed; }
+  .modal { position: fixed; top: auto; bottom: calc(var(--ui-vh,100dvh) - var(--mobile-vh,var(--ui-vh,100dvh)) - var(--mobile-vtop,0px)); margin: 0 auto; width: calc(100% - 16px); max-width: 600px; max-height: calc(var(--mobile-vh,var(--ui-vh,100dvh)) - env(safe-area-inset-top,0px) - 12px); border-radius: 28px 28px 0 0; padding-bottom: env(safe-area-inset-bottom,0px); transform-origin: center bottom; }
+  .modal-header { position: relative; padding-top: 24px; }
+  .modal-header::before { content: ''; position: absolute; top: 8px; left: calc(50% - 18px); width: 36px; height: 4px; border-radius: 4px; background: currentColor; opacity: .2; }
+  .create-avatar-preview { min-height: 150px; }
+  .create-bot-modal #modal-content { max-height: calc(var(--mobile-vh,var(--ui-vh,100dvh)) - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px) - 12px); }
+  .keyboard-open .create-avatar-preview { min-height: 70px; height: 70px; }
+  .keyboard-open .create-avatar-preview .relay-bot-face { width: 65px!important; height: 65px!important; }
+}
+@media(prefers-reduced-motion:reduce) {
+  .chat-layout,.crew-palettes button { transition: none; }
+  .search-slot.open { animation: none; }
+  .relay-bot-face * { transition: none!important; }
+}

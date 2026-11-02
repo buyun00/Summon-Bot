@@ -52,7 +52,7 @@ struct ConversationListView: View {
                                         Text(room.name).foregroundStyle(.primary)
                                         Spacer()
                                     }.padding(.vertical, 12)
-                                }.buttonStyle(.plain)
+                                }.buttonStyle(RelayPressStyle())
                             }
                         }.foregroundStyle(.secondary).padding(22)
                     }
@@ -97,6 +97,8 @@ struct ConversationListView: View {
             .sheet(isPresented: $showSettings) { ConnectionSettingsView() }
             .sheet(isPresented: $showCreateBot) {
                 CreateBotView { room in openRoom(room.id) }
+                    .presentationDragIndicator(.visible)
+                    .presentationCornerRadius(28)
             }
             .sheet(isPresented: Binding(get: { newRoomKind != nil }, set: { if !$0 { newRoomKind = nil } })) {
                 CreateRoomView(initialKind: newRoomKind ?? "group") { room in openRoom(room.id) }
@@ -133,7 +135,7 @@ struct ConversationListView: View {
                             Text(room.status == "concluded" ? "已结束" : "深聊").font(.caption2).foregroundStyle(.tertiary)
                         }
                     }.frame(maxWidth: .infinity).padding(.vertical, 16)
-                }.buttonStyle(.plain)
+                }.buttonStyle(RelayPressStyle())
             }
         }.padding(.horizontal, 42).padding(.top, 32).padding(.bottom, 24)
     }
@@ -192,7 +194,7 @@ struct ConversationListView: View {
             }
             .padding(.horizontal, 22).padding(.vertical, 19)
             .contentShape(Rectangle())
-        }.buttonStyle(.plain)
+        }.buttonStyle(RelayPressStyle())
     }
 
     private func matches(_ text: String) -> Bool { query.isEmpty || text.localizedCaseInsensitiveContains(query) }

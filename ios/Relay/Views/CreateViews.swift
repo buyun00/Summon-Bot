@@ -15,7 +15,7 @@ struct CreateBotView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 28) {
-                    BotAvatar(shape: avatar.shape, color: avatar.color, image: avatar.image, size: 148, secondary: avatar.secondary, ink: avatar.ink, paper: avatar.paper)
+                    GreetingAvatar(avatar: avatar)
                         .padding(.top, 28).padding(.bottom, 10)
                     TextField("为 Bot 取个名字", text: $name)
                         .font(.title3.weight(.medium)).multilineTextAlignment(.center)
@@ -63,6 +63,8 @@ struct CreateBotView: View {
 }
 
 struct AvatarPicker: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var selection
     @Binding var avatar: RelayAvatar
     @State private var custom = false
     var body: some View {
@@ -73,8 +75,13 @@ struct AvatarPicker: View {
                         VStack(spacing:4) {
                             BotAvatar(shape:shape.id,color:avatar.color,size:43,secondary:avatar.secondary,ink:avatar.ink,paper:avatar.paper,animated:false)
                             Text(shape.label).font(.caption2)
-                        }.padding(5).background(RoundedRectangle(cornerRadius:12).stroke(PaperLibrary.role(avatar.shape) == shape.id && avatar.image == nil ? Color.primary : .clear,lineWidth:2))
-                    }.buttonStyle(.plain).accessibilityLabel(shape.label)
+                        }.padding(5).background {
+                            if PaperLibrary.role(avatar.shape) == shape.id && avatar.image == nil {
+                                RoundedRectangle(cornerRadius:12).stroke(Color.primary,lineWidth:2).matchedGeometryEffect(id:"shape",in:selection)
+                            }
+                        }
+                    }.buttonStyle(RelayPressStyle(compact:true)).accessibilityLabel(shape.label)
+                        .accessibilityAddTraits(PaperLibrary.role(avatar.shape) == shape.id ? .isSelected : [])
                 }
             }
             LazyVGrid(columns:Array(repeating:GridItem(.flexible()),count:4),spacing:10) {
@@ -86,8 +93,12 @@ struct AvatarPicker: View {
                         VStack(spacing:4) {
                             HStack(spacing:0) { Color(relayHex:template["color"]!);Color(relayHex:template["secondary"]!) }.frame(height:26).clipShape(RoundedRectangle(cornerRadius:7))
                             Text(template["name"]!).font(.system(size:10))
-                        }.padding(3).overlay(RoundedRectangle(cornerRadius:9).stroke(avatar.color.uppercased() == template["color"] && avatar.secondary?.uppercased() == template["secondary"] ? Color.primary : .clear,lineWidth:2))
-                    }.buttonStyle(.plain)
+                        }.padding(3).overlay {
+                            if avatar.color.uppercased() == template["color"] && avatar.secondary?.uppercased() == template["secondary"] {
+                                RoundedRectangle(cornerRadius:9).stroke(Color.primary,lineWidth:2).matchedGeometryEffect(id:"palette",in:selection)
+                            }
+                        }
+                    }.buttonStyle(RelayPressStyle(compact:true))
                 }
             }
             DisclosureGroup("自定义颜色",isExpanded:$custom) {
@@ -97,6 +108,8 @@ struct AvatarPicker: View {
                 ColorPicker("眼睛留白",selection:binding("paper"),supportsOpacity:false)
             }
         }
+        .animation(reduceMotion ? nil : .spring(response:0.34,dampingFraction:0.8),value:avatar.shape)
+        .animation(reduceMotion ? nil : .spring(response:0.34,dampingFraction:0.8),value:avatar.color)
     }
     private func binding(_ field:String) -> Binding<Color> {
         Binding(get:{

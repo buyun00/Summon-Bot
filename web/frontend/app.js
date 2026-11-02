@@ -1,10 +1,13 @@
 'use strict';
 
-const $ = (selector, root = document) => root.querySelector(selector);
-const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+const $ = (selector, root = document) => {
+  const first = root.querySelector(selector);
+  return first?.closest('[data-motion-ghost]') ? [...root.querySelectorAll(selector)].find(node => !node.closest('[data-motion-ghost]')) || null : first;
+};
+const $$ = (selector, root = document) => [...root.querySelectorAll(selector)].filter(node => !node.closest('[data-motion-ghost]'));
 
 // Display preferences are local to this browser and independent for each layout.
-const UI_BUILD = '2026.11.02.2';
+const UI_BUILD = '2026.11.02.3';
 let displayDiagnosticSnapshot = null;
 function isIosStandalone() {
   const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -262,8 +265,7 @@ async function sendLocalMessage(entry, scrollToEnd = false) {
   render();
   const messages = $('.messages');
   if (scrollToEnd && messages && ui.roomId === entry.roomId) {
-    messages.scrollTop = messages.scrollHeight;
-    if (messages._relayChatScroll) { messages._relayChatScroll.followBottom = true; messages._relayChatScroll.lastTop = messages.scrollTop; }
+    messages._relayChatScroll?.toBottom(true);
   }
   try {
     const message = await api(`/api/rooms/${encodeURIComponent(entry.roomId)}/messages`, 'POST', { ...entry.payload, clientId: entry.clientId });
@@ -330,7 +332,7 @@ function captureChatScroll(messages) {
   return {
     top: messages.scrollTop,
     visible,
-    atBottom: visible && (nearBottom || !!tracking?.followBottom && messages.scrollTop >= tracking.lastTop - 1),
+    atBottom: visible && (nearBottom || !!tracking?.followBottom),
     anchor: item && { attribute: item.hasAttribute('data-message-id') ? 'data-message-id' : 'data-agent-run-id', id: item.dataset.messageId || item.dataset.agentRunId, offset: item.getBoundingClientRect().top - top },
     outputs: [...messages.querySelectorAll('.agent-tool-body[id]')].map(body => ({ id: body.id, positions: [...body.querySelectorAll('pre')].map(pre => ({ top: pre.scrollTop, left: pre.scrollLeft })) })),
   };
@@ -361,35 +363,63 @@ function installChatScrollTracking(messages, followBottom) {
     messages._relayChatScroll.schedule();
     return;
   }
-  let frame = 0;
+  let frame = 0, scrollFrom = 0, scrollStarted = 0, pointerY = null, draggingScrollbar = false;
   const tracking = { followBottom, lastTop: messages.scrollTop, stopped: false };
   const schedule = () => {
     if (frame || tracking.stopped || !tracking.followBottom) return;
     frame = requestAnimationFrame(() => {
       frame = 0;
       if (tracking.stopped || !messages.isConnected || !messages.clientHeight || !tracking.followBottom) return;
-      // A user scroll may precede its scroll event; never undo that input.
-      if (messages.scrollTop < tracking.lastTop - 1 && messages.scrollHeight - messages.scrollTop - messages.clientHeight >= 40) { tracking.followBottom = false; return; }
-      messages.scrollTop = messages.scrollHeight; tracking.lastTop = messages.scrollTop;
+      const end = Math.max(0, messages.scrollHeight - messages.clientHeight);
+      const progress = scrollStarted ? Math.min(1, (performance.now() - scrollStarted) / 300) : 1;
+      messages.scrollTop = scrollFrom + (end - scrollFrom) * (1 - (1 - progress) ** 3);
+      tracking.lastTop = messages.scrollTop;
+      if (progress < 1) schedule(); else scrollStarted = 0;
     });
   };
   const onScroll = () => {
     const top = messages.scrollTop;
     if (messages.scrollHeight - top - messages.clientHeight < 40) tracking.followBottom = true;
-    else if (top < tracking.lastTop - 1) tracking.followBottom = false;
+    else if (draggingScrollbar) tracking.followBottom = false;
     tracking.lastTop = top;
   };
   messages.addEventListener('scroll', onScroll, { passive: true });
+  const pause = () => { tracking.followBottom = false; scrollStarted = 0; cancelAnimationFrame(frame); frame = 0; };
+  const onWheel = event => { if (event.deltaY < 0) pause(); };
+  const onPointerDown = event => { pointerY = event.clientY; draggingScrollbar = event.pointerType === 'mouse' && event.clientX >= messages.getBoundingClientRect().right - 18; if (draggingScrollbar) pause(); };
+  const onPointerMove = event => { if (pointerY !== null && event.clientY - pointerY > 5) pause(); };
+  const onPointerEnd = () => { pointerY = null; draggingScrollbar = false; };
+  const onKey = event => { if (['ArrowUp','PageUp','Home'].includes(event.key)) pause(); };
+  messages.addEventListener('wheel', onWheel, { passive: true });
+  messages.addEventListener('pointerdown', onPointerDown, { passive: true });
+  messages.addEventListener('pointermove', onPointerMove, { passive: true });
+  window.addEventListener('pointerup', onPointerEnd, { passive: true });
+  window.addEventListener('pointercancel', onPointerEnd, { passive: true });
+  messages.addEventListener('keydown', onKey);
   messages.addEventListener('load', schedule, true);
   messages.addEventListener('error', schedule, true);
   // Images, fonts and expanded content can change height after the first paint.
   const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(schedule) : null;
   observer?.observe(messages);
+  const composer = messages.parentElement.querySelector('.composer-wrap');
+  if (composer) observer?.observe(composer);
   for (const child of messages.children) observer?.observe(child);
   tracking.schedule = schedule;
+  tracking.toBottom = (smooth = false) => {
+    tracking.followBottom = true;
+    scrollFrom = messages.scrollTop;
+    scrollStarted = smooth && !matchMedia('(prefers-reduced-motion: reduce)').matches ? performance.now() : 0;
+    schedule();
+  };
   tracking.stop = () => {
     tracking.stopped = true; cancelAnimationFrame(frame); observer?.disconnect();
     messages.removeEventListener('scroll', onScroll);
+    messages.removeEventListener('wheel', onWheel);
+    messages.removeEventListener('pointerdown', onPointerDown);
+    messages.removeEventListener('pointermove', onPointerMove);
+    window.removeEventListener('pointerup', onPointerEnd);
+    window.removeEventListener('pointercancel', onPointerEnd);
+    messages.removeEventListener('keydown', onKey);
     messages.removeEventListener('load', schedule, true);
     messages.removeEventListener('error', schedule, true);
     delete messages._relayChatScroll;
@@ -413,13 +443,15 @@ function render() {
   persistClientSession();
   if (ui.composing && document.activeElement?.id === 'message-input' && document.activeElement.form?.dataset.roomId === ui.roomId) { ui.renderDeferred = true; return; }
   ui.renderDeferred = false;
-  const saved = preserveView(); markCurrentRoomRead(); renderTopbar();
+  const saved = preserveView();
+  const navigation = window.RelayMotion?.captureNavigation(ui.view === 'chat' ? (ui.mobileRoom ? `chat:${ui.roomId}` : 'list') : ui.view);
+  markCurrentRoomRead(); renderTopbar();
   const views = { chat: renderChat, members: renderMembers, catalog: renderCatalog, works: renderWorks, knowledge: renderKnowledge, routines: renderRoutines };
   const key = `${ui.view}:${ui.view === 'chat' ? ui.roomId : ui.view === 'members' ? ui.botId : ui.view === 'works' ? ui.workId : ''}`;
   const main = $('#main-content'), html = views[ui.view]();
   const signature = renderSignature(html);
   const restoreConversation = () => restoreConversationScroll($('.messages'), saved.chatScroll, { sameView: saved.key === key, ready: ui.messagesRoomId === ui.roomId, wasReady: saved.chatReady });
-  if (ui.lastMainHtml === signature && main.dataset.viewKey === key) { restoreFocus(saved); restoreConversation(); return; }
+  if (ui.lastMainHtml === signature && main.dataset.viewKey === key) { restoreFocus(saved); restoreConversation(); window.RelayMotion?.finishNavigation(navigation); return; }
   const motion = captureMotion(main);
   $('.messages')?._relayChatScroll?.stop();
   main.innerHTML = html; ui.lastMainHtml = signature;
@@ -433,6 +465,7 @@ function render() {
   const panel = $('.detail-panel:not([data-motion-ghost])'); if (panel && panel.dataset.section === saved.panelSection) panel.scrollTop = saved.panelTop || 0;
   restoreFocus(saved);
   restoreConversation();
+  window.RelayMotion?.finishNavigation(navigation);
 }
 function restoreFocus(saved) { if (!saved.focusId) return; const target = document.getElementById(saved.focusId); if (target) { target.focus({ preventScroll: true }); if (saved.start != null && target.setSelectionRange && !['number','email','file'].includes(target.type)) target.setSelectionRange(saved.start, saved.end); } }
 function updateComposerButton(input) {
@@ -719,7 +752,7 @@ async function restoreCachedWorkspace() {
   finally { ui.cacheReady = true; if (!ui.loading) render(); else renderTopbar(); }
 }
 function scheduleRefresh() { if (refreshTimer) return; refreshTimer = setTimeout(() => { refreshTimer = null; void refresh(); }, 230); }
-async function navigate(view) { ui.navigationSeq++; ui.menu = null; ui.view = view; location.hash = view; renderTopbar(); try { await loadCurrent(); render(); } catch (error) { toast(error.message, true); render(); } }
+async function navigate(view) { ui.navigationSeq++; ui.menu = null; ui.view = view; location.hash = view; render(); try { await loadCurrent(); render(); } catch (error) { toast(error.message, true); render(); } }
 
 function roomSection(title, kind, rooms) {
   const filtered = rooms.filter(room => room.kind === kind && (!ui.roomQuery || room.name?.toLowerCase().includes(ui.roomQuery.toLowerCase())));
@@ -985,6 +1018,7 @@ async function act(action, element) {
   if (action === 'save-message') return openNodeForm(null, mergedRoomMessages(ui.roomId, ui.messages).find(message => message.id === id && !message._delivery));
   if (action === 'conclude-room') { element.disabled = true; try { await api(`/api/rooms/${encodeURIComponent(ui.roomId)}/conclude`, 'POST', {}); toast('深聊结束请求已提交，结论将保留在会话中。'); await refresh(); } finally { element.disabled = false; } return; }
   if (action === 'new-bot') return openCreateBot();
+  if (action === 'avatar-greet') return window.RelayAvatars?.greet(element);
   if (action === 'edit-bot') return openBotForm(id);
   if (action === 'bot-contacts') return openBotContacts(id);
   if (action === 'select-bot' || action === 'open-profile') { ui.botId = id; ui.memories = []; return navigate('members'); }
@@ -1355,20 +1389,22 @@ function renderAvatarPicker(mode = 'create') {
   return `${saveStatus}<div class="avatar-picker ${mode === 'create' ? 'create-picker' : ''}">${mode === 'edit' ? `<div class="avatar-tabs">${[{ id: 'bot', label: 'Bot' }, { id: 'generate', label: '生成' }, { id: 'upload', label: '上传' }].map(item => `<button type="button" class="${tab === item.id ? 'active' : ''}" data-action="avatar-tab" data-tab="${item.id}">${item.label}</button>`).join('')}<button class="avatar-reset" type="button" data-action="avatar-reset">重置</button></div>` : ''}${mode === 'create' || tab === 'bot' ? picker : tab === 'generate' ? `<div class="avatar-tool"><p>随机组合造型与颜色</p><button class="secondary-button" data-action="avatar-random" type="button">${icon('spark', 18)}生成一个造型</button></div>` : `<div class="avatar-tool"><p>使用自己的图片</p><label class="upload-label" for="avatar-upload">${icon('upload', 23)}选择图片</label><input id="avatar-upload" type="file" accept="image/png,image/jpeg,image/webp" hidden><small>PNG、JPG 或 WebP，将缩放后保存在本机</small></div>`}</div>`;
 }
 function openCreateBot() {
+  window.RelayAvatars?.release('slot:create-preview');
   ui.avatarSelectionRevision++;
   ui.avatarEditing = false;
   ui.avatarCustomOpen = false;
   ui.avatarDraft = window.RelayAvatars.normalize({ shape: 'cercle',color:'#7D824B' });
   ui.menu = null; render();
   const modal = $('#modal'); captureMotion($('#modal-content')); modal.classList.add('create-bot-modal');
-  $('#modal-content').innerHTML = `<div class="modal-header"><h2>创建新 Bot</h2><button class="icon-button" data-action="close-modal" aria-label="关闭">${icon('close', 24)}</button></div><form id="modal-form" class="create-bot-form"><div class="create-bot-body"><div id="create-avatar-preview" class="create-avatar-preview">${face(ui.avatarDraft, 144, { key: 'slot:create-preview', identity: 'create-preview', preview: true, intro: true })}</div><input id="create-bot-name" name="name" placeholder="给你的 Bot 起个名字" aria-label="Bot 名字" required maxlength="100" autocomplete="off"><div class="create-picker-scroll"><div id="create-avatar-picker">${renderAvatarPicker('create')}</div><div class="form-error" role="alert"></div></div></div><div class="modal-footer"><button class="secondary-button" type="button" data-action="close-modal">取消</button><button id="create-bot-submit" class="primary-button" type="submit" disabled>创建</button></div></form>`;
+  $('#modal-content').innerHTML = `<div class="modal-header"><h2>创建新 Bot</h2><button class="icon-button" data-action="close-modal" aria-label="关闭">${icon('close', 24)}</button></div><form id="modal-form" class="create-bot-form"><div class="create-bot-body"><button type="button" id="create-avatar-preview" class="create-avatar-preview" data-action="avatar-greet" aria-label="和 Bot 打招呼">${face(ui.avatarDraft, 144, { key: 'slot:create-preview', identity: 'create-preview', preview: true, intro: true })}</button><input id="create-bot-name" name="name" placeholder="给你的 Bot 起个名字" aria-label="Bot 名字" required maxlength="100" autocomplete="off"><div class="create-picker-scroll"><div id="create-avatar-picker">${renderAvatarPicker('create')}</div><div class="form-error" role="alert"></div></div></div><div class="modal-footer"><button class="secondary-button" type="button" data-action="close-modal">取消</button><button id="create-bot-submit" class="primary-button" type="submit" disabled>创建</button></div></form>`;
   $('#modal-form').onsubmit = async event => {
     event.preventDefault(); const form = event.target, button = $('#create-bot-submit', form), name = $('#create-bot-name', form).value.trim(), avatar = { ...ui.avatarDraft }; if (!name) return;
     button.disabled = true; $('.form-error', event.target).textContent = '';
     try { const bot = await api('/api/bots', 'POST', { name, role: '项目协作', avatar }); const ownsDialog = modal.open && $('#modal-form') === form; if (ownsDialog) await closeModal(modal); const stillOwns = $('#modal-form') === form; if (ownsDialog && stillOwns) ui.avatarDraft = null; await refresh(); if (ownsDialog && stillOwns && $('#modal-form') === form) await act('dm-bot', { dataset: { id: bot.id } }); else toast(`${bot.name} 已创建`); }
     catch (error) { if (form.isConnected) $('.form-error', form).textContent = error.message; else toast(error.message, true); } finally { button.disabled = false; }
   };
-  showModal(modal); $('#create-bot-name').focus();
+  showModal(modal);
+  if (!matchMedia('(pointer:coarse)').matches) $('#create-bot-name').focus({ preventScroll: true });
 }
 async function persistAvatar() {
   const bot = profileBot(); if (!bot) return;
@@ -1459,7 +1495,7 @@ function syncMobileViewport() {
   if (!matchMedia('(max-width:820px)').matches) {
     root.style.removeProperty('--mobile-vh'); root.style.removeProperty('--mobile-vtop'); root.style.removeProperty('--mobile-page-top'); root.classList.remove('keyboard-open'); return;
   }
-  const messages = $('.messages'), atBottom = messages && messages.scrollHeight - messages.scrollTop - messages.clientHeight < 100;
+  const messages = $('.messages'), atBottom = messages && (messages._relayChatScroll?.followBottom || messages.scrollHeight - messages.scrollTop - messages.clientHeight < 40);
   const zoom = Number(getComputedStyle(root).zoom) || 1;
   const editing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '');
   const units = readViewportUnits();
@@ -1492,7 +1528,7 @@ function syncMobileViewport() {
     if ((!viewport || Math.abs(viewport.scale - 1) < .02) && window.scrollY) window.scrollTo(window.scrollX, 0);
   }
   root.classList.toggle('keyboard-open', keyboardOpen);
-  if (atBottom) requestAnimationFrame(() => { if (messages.isConnected) messages.scrollTop = messages.scrollHeight; });
+  if (atBottom) messages._relayChatScroll?.schedule();
 }
 let viewportFrame = 0;
 function queueViewportSync() { cancelAnimationFrame(viewportFrame); viewportFrame = requestAnimationFrame(syncMobileViewport); }

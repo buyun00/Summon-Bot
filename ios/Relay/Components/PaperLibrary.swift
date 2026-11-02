@@ -68,7 +68,7 @@ struct PaperFrame {
     private(set) var age=0.0
     private var current="idle",currentRole="",previous:PaperFrame?
     func step(role:String,state:String,dt:Double) {
-        if role != currentRole {currentRole=role;previous=nil;frame=nil;age=0}
+        if role != currentRole {currentRole=role;previous=frame;age=0}
         if state != current {previous=frame;current=state;age=0}
         age+=dt
         let target=PaperLibrary.frame(role:role,state:current,time:age)
