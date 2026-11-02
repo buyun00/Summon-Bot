@@ -1,7 +1,7 @@
 'use strict';
 // Bump this version whenever the application shell changes.
-const CACHE = 'relay-shell-20261028-owner-avatar';
-const ICON_VERSION = '?v=relay-duo-20261022';
+const CACHE = 'relay-shell-20261102-cloud-icon';
+const ICON_VERSION = '?v=relay-cloud-20261102';
 const ASSETS = ['/', '/offline.html', '/style.css', '/group-chat.css', '/cache.js', '/app.js', '/avatars.js', '/motion.js', '/pwa.js', '/icons/user-avatar.jpg?v=owner-20261028', `/manifest.webmanifest${ICON_VERSION}`, ...['icon-192', 'icon-512', 'icon-maskable-192', 'icon-maskable-512', 'apple-touch-icon'].map(name => `/icons/${name}.png${ICON_VERSION}`)];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS.map(path => new Request(path, { cache: 'reload' })))));

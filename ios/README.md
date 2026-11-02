@@ -33,6 +33,6 @@
 
 `Relay/` 是 Xcode 自动同步目录，新增 Swift 文件会自动进入 target；`Info.plist` 已从资源 membership 排除。未添加测试 target 或第三方包。
 
-`Assets.xcassets/AppIcon.appiconset` 已配置用户提供的蓝橙双角色图标，使用完整、不透明的 1024 像素 PNG；应用内 `RelayIcon.imageset` 与网页/PWA 共用同一原图。系统负责应用图标的圆角裁切。
+`Assets.xcassets/AppIcon.appiconset` 已配置用户提供的蓝色层叠云朵图标，使用完整、不透明的 1024 像素 PNG；应用内 `RelayIcon.imageset` 与网页/PWA 共用同一原图。系统负责应用图标的圆角裁切。
 
 本次在 Windows 上编写工程，未执行 Xcode 构建、模拟器运行或真机安装。
