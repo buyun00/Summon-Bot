@@ -112,9 +112,9 @@
   .composer-plus svg{width:26px;height:26px}
   .composer textarea{min-width:0;background:none;border:0;color:#f3f3f6;caret-color:#b5caff;font-size:max(calc(16px / var(--ui-zoom,1)),calc(17px * var(--ui-font-scale,1)))!important;line-height:1.45;min-height:29px;max-height:150px;padding:0 0 0 8px;margin:12px 0 11px;resize:none;align-self:center}
   .composer textarea::placeholder{color:#85858d}
-  .composer-send{min-width:44px;width:44px;height:44px;margin:4px 0;align-self:flex-end;background:#f4f4f6;color:#1a1a1d;position:relative}
+  .composer-send{min-width:44px;width:44px;height:44px;margin:4px 0;align-self:flex-end;background:var(--accent);color:#fff;position:relative}
   .composer-send:after{content:"";position:absolute;inset:-2px;border-radius:50%}
-  .composer-send svg{width:20px;height:20px}.composer-send:disabled{opacity:.4}
+  .composer-send svg{width:20px;height:20px}.composer-send:disabled{opacity:1}
   .message-target{width:44px;height:44px;min-height:44px;max-width:90px;margin:4px 0;background:#444448;border:0;color:#ccc;font-size:calc(12px * var(--ui-font-scale,1))!important;padding:0 3px;align-self:flex-end}
   .composer-menu{left:0;bottom:64px}
   .reply-preview{background:#252528;color:#b4b4bc;border-color:#414146;border-radius:14px;margin-bottom:8px;font-size:calc(12px * var(--ui-font-scale,1));min-height:44px}

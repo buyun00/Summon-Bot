@@ -241,10 +241,10 @@ button:focus-visible, a:focus-visible, select:focus-visible { outline-color: #00
 .mention-choice[aria-selected="true"] { background: #f0f3f6; }
 .message-target { width: 28px; height: 27px; min-height: 27px; min-width: 28px; max-width: 230px; border: 0; background: transparent; color: #72798e; padding: 0; border-radius: 4px; appearance: none; font-size: calc(22px * var(--ui-font-scale)); line-height: 1.2; cursor: pointer; text-overflow: ellipsis; }
 .message-target:focus, .message-target:has(option:checked:not([value=""])) { width: auto; font-size: calc(14px * var(--ui-font-scale)); }
-.composer-send { position: static; width: 40px; height: 40px; min-width: 40px; margin: 0; background: #648468; color: #fffdf4; border-radius: 50%; box-shadow: 0 2px 0 #4e6a51; }
-.composer-send:hover { background: #58775c; }
+.composer-send { position: static; width: 40px; height: 40px; min-width: 40px; margin: 0; background: var(--accent); color: #fff; border-radius: 50%; box-shadow: none; }
+.composer-send:hover { background: var(--accent); }
 .composer-send svg { width: 24px; height: 24px; }
-.composer-send:disabled { opacity: .4; }
+.composer-send:disabled { opacity: 1; }
 .composer-menu { bottom: 40px; }
 .reply-preview { background: #f4f2e9; border: 1px solid #e4e0d4; border-radius: 14px 12px 15px 11px; color: #7d8278; margin: 0 1px 9px; font-size: calc(14px * var(--ui-font-scale)); }
 .attachment-drafts { padding-bottom: 7px; max-height: 130px; }

@@ -435,7 +435,17 @@ function render() {
   restoreConversation();
 }
 function restoreFocus(saved) { if (!saved.focusId) return; const target = document.getElementById(saved.focusId); if (target) { target.focus({ preventScroll: true }); if (saved.start != null && target.setSelectionRange && !['number','email','file'].includes(target.type)) target.setSelectionRange(saved.start, saved.end); } }
-function resizeComposer(input) { if (!input) return; input.style.height = 'auto'; const height = input.scrollHeight, limit = parseFloat(getComputedStyle(input).maxHeight) || 150; input.style.height = `${Math.min(limit, height)}px`; input.style.overflowY = height > limit ? 'auto' : 'hidden'; }
+function updateComposerButton(input) {
+  const button = input?.form?.querySelector('.composer-send');
+  if (!button) return;
+  const hasContent = Boolean(input.value.trim() || attachmentDrafts(input.form.dataset.roomId).length);
+  const label = hasContent ? '发送消息' : '语音输入（暂未开放）';
+  button.innerHTML = icon(hasContent ? 'send' : 'microphone', 25);
+  button.title = label;
+  button.setAttribute('aria-label', label);
+  button.disabled = sendBusy(input.form.dataset.roomId) || !hasContent;
+}
+function resizeComposer(input) { if (!input) return; updateComposerButton(input); input.style.height = 'auto'; const height = input.scrollHeight, limit = parseFloat(getComputedStyle(input).maxHeight) || 150; input.style.height = `${Math.min(limit, height)}px`; input.style.overflowY = height > limit ? 'auto' : 'hidden'; }
 
 function unresolvedJobLeaves(jobs = ui.roomJobs, messages = ui.messages) {
   const parents = new Set(jobs.map(job => job.retryOf).filter(Boolean));
@@ -1067,7 +1077,7 @@ document.addEventListener('submit', async event => {
       }
     }
     else { ui.query = $('#knowledge-query').value.trim(); await loadCurrent(); render(); }
-  } catch (error) { toast(error.message, true); } finally { button.disabled = false; const currentSend = $('#message-form button[type=submit]'); if (currentSend) currentSend.disabled = sendBusy(); }
+  } catch (error) { toast(error.message, true); } finally { button.disabled = false; const currentSend = $('#message-form button[type=submit]'); if (currentSend) updateComposerButton($('#message-input')); }
 });
 $('#modal').addEventListener('click', event => { if (event.target === $('#modal')) { const box = $('#modal').getBoundingClientRect(); if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) closeModal(); } });
 $('#modal').addEventListener('cancel', event => { event.preventDefault(); closeModal(); });
@@ -1075,6 +1085,7 @@ window.addEventListener('hashchange', () => { const view = location.hash.slice(1
 // Conversation-first layout, matched to the supplied reference screens.
 Object.assign(icons, {
   send: '<path d="M12 21V3m-7 7 7-7 7 7"/>',
+  microphone: '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8"/>',
   attachment: '<path d="m8 13 7-7a3 3 0 0 1 4 4L9 20a5 5 0 0 1-7-7L12 3a2.5 2.5 0 0 1 4 3L6 16a1 1 0 0 1-2-2l8-8" transform="translate(1 0)"/>',
   settings: '<path d="m9 3-.5 2.2-2 .8-1.9-1.1-2 3.5L4.2 10v2l-1.6 1.6 2 3.5 2.2-.5 1.7 1.1L9 21h4l.5-2.3 1.7-1.1 2.2.5 2-3.5L17.8 13v-2l1.6-1.6-2-3.5L15.5 7l-2-.8L13 3Z"/><circle cx="11" cy="12" r="3"/>',
   more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
@@ -1112,7 +1123,7 @@ function currentBot() {
   return room?.kind === 'dm' && room.members?.includes('user') ? botById(room.members.find(id => id !== 'user')) : null;
 }
 function profileBot() { return ui.profileBotId ? botById(ui.profileBotId) : currentBot(); }
-function currentAccent() { return currentBot() ? botAvatar(currentBot()).color : '#222222'; }
+function currentAccent() { const bot = currentBot() || (roomById(ui.roomId)?.members || []).map(id => botById(id)).find(Boolean); return bot ? botAvatar(bot).color : '#222222'; }
 function providerLabel() {
   const provider = state.provider || {};
   if (provider.testDouble || /test.?double|regression double/i.test(provider.model || '')) return '界面验证替身';
