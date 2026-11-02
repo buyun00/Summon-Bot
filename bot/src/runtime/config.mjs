@@ -26,6 +26,10 @@ export function normalizeBotConfig(input, baseDirectory = process.cwd()) {
   config.promptPaths = (input.promptPaths || []).map(path => resolve(baseDirectory, path));
   if (config.promptFile) config.promptFile = resolve(baseDirectory, config.promptFile);
   config.tools = input.tools || [];
+  if (config.catalog) {
+    const catalogUrl = new URL(config.catalog.url);
+    if (!['http:', 'https:'].includes(catalogUrl.protocol) || catalogUrl.username || catalogUrl.password || typeof config.catalog.token !== 'string' || config.catalog.token.length < 24) throw new Error('Catalog requires an explicit gateway URL and Bot capability token');
+  }
   config.peers = input.peers || [];
   config.contacts = input.contacts || [];
   if (!Array.isArray(config.contacts) || !Array.isArray(config.peers)) throw new Error('contacts and peers must be arrays');

@@ -4,7 +4,8 @@ import { validateToolArguments } from '@earendil-works/pi-ai';
 const effects = new Set(['read', 'write', 'process', 'external']);
 const timestamp = () => new Date().toISOString();
 const errorRecord = error => ({ name: error?.name || 'Error', message: error?.message || String(error),
-  ...(error?.code === undefined ? {} : { code: error.code }) });
+  ...(error?.code === undefined ? {} : { code: error.code }),
+  ...(error?.outcomeUnknown ? { outcomeUnknown: true } : {}) });
 
 /** One registry handles native definitions and unchanged SDK tool projections.
  * An audit write must succeed before a side effect starts. A completed side
@@ -61,7 +62,7 @@ export class ToolRegistry {
       return output;
     } catch (error) {
       const interrupted = context.signal?.aborted || error?.name === 'AbortError';
-      const status = (interrupted || recordingOutcome) && executing && definition.effect !== 'read' ? 'unknown' : interrupted ? 'cancelled' : 'failed';
+      const status = (interrupted || recordingOutcome || error?.outcomeUnknown) && executing && definition.effect !== 'read' ? 'unknown' : interrupted ? 'cancelled' : 'failed';
       try { await this.record({ ...record, status, artifacts: createdArtifacts, error: errorRecord(error), finishedAt: timestamp() }); }
       catch { /* Preserve the original tool failure, including its code and type. */ }
       throw error;

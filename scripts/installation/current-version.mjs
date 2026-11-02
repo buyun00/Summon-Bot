@@ -39,6 +39,7 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
   const { BUILTIN_CAPABILITIES, capabilityForTool } = await import(pathToFileURL(join(releaseRoot, 'capabilities/services/builtin.mjs')));
   const { toolDefinitions } = await import(pathToFileURL(join(releaseRoot, 'capabilities/gateway/tools.mjs')));
   const { controlTools } = await import(pathToFileURL(join(releaseRoot, 'capabilities/services/control.mjs')));
+  const { catalogTools } = await import(pathToFileURL(join(releaseRoot, 'capabilities/services/catalog.mjs')));
   const deployment = await readJson(join(dataRoot, 'config/deployment.json'));
   const registryPath = join(dataRoot, 'capabilities/registry/state.sqlite');
   const retained = new Map(BUILTIN_CAPABILITIES.map(id => [id, buildId]));
@@ -71,7 +72,7 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
     try {
       for (const record of management.list('bots')) {
         const profile = await readJson(join(releaseRoot, 'roles', record.roleId || 'default', 'role.json'));
-        const allowedTools = [...new Set([...(record.allowedTools || []), ...(profile.tools || [])])];
+        const allowedTools = [...new Set([...(record.allowedTools || []), ...(profile.tools || []), ...catalogTools.map(tool => tool.name)])];
         const updated = management.save('bots', { ...record, allowedTools }); botRecords.set(record.id, updated);
       }
     } finally { management.close(); }
@@ -97,9 +98,10 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
       return current;
     });
     if (record) {
-      const bundled = [...toolDefinitions, ...controlTools].filter(tool => record.allowedTools.includes(tool.name));
-      const names = new Set([...toolDefinitions, ...controlTools].map(tool => tool.name));
+      const bundled = [...toolDefinitions, ...controlTools, ...catalogTools].filter(tool => record.allowedTools.includes(tool.name));
+      const names = new Set([...toolDefinitions, ...controlTools, ...catalogTools].map(tool => tool.name));
       const gatewayUrl = `http://${deployment.gateway.host || '127.0.0.1'}:${deployment.gateway.port}`;
+      config.catalog = { url: gatewayUrl, token: record.capabilityToken };
       config.tools = [...bundled.map(tool => {
         const owner = capabilityForTool(tool.name);
         return { ...tool, type: 'http', method: 'POST', url: owner ? `${gatewayUrl}/capabilities/${owner}/versions/${buildId}/tools/${tool.name}` : `${gatewayUrl}/tools/${tool.name}`,

@@ -13,6 +13,16 @@
     "chatroom_dm",
     "bots_list",
     "knowledge_search",
-    "routines_create"
+    "routines_create",
+    "catalog_search",
+    "catalog_get",
+    "catalog_register",
+    "catalog_update",
+    "catalog_call",
+    "catalog_delegate",
+    "catalog_skill_write",
+    "catalog_skill_propose",
+    "catalog_probe",
+    "catalog_reconcile"
   ]
 }

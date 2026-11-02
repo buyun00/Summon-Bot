@@ -87,6 +87,8 @@ manifest 的 `sourceCommit` 是构建时 Git HEAD，`sourceDirty` 表示是否�
 
 ## 工作与持续职责
 
+统一 MCP、HTTP API 与共享 Skill 的管理入口为网页“设置与应用 → 能力目录”，配置、责任关系、并发资源引用与方法维护说明见 [CAPABILITY_CATALOG.md](CAPABILITY_CATALOG.md)。连接凭据只引用正式 runtime.env。目录登记不扩大业务授权，失败与未知写入不会自动重放。
+
 普通任务由 work_create 建立，不再提供克隆、分身交付和记忆合并入口。work_wait 持久记录外部等待并释放执行位；外部事件、同伴终态或到期条件唤醒原工作。暂停/取消后迟到事件只保存，显式恢复才继续。重复相同观察停止该无进展链，保留工作，不对正常任务设置总轮数、时长或工具次数截止。
 
 新 Codex 工作只经已整合桌面连接器的 codex_create/attach/send/read/interrupt；稳定 operationId 在请求前持久化，结果未知查询原操作，不换键重发。SSE 游标和待投递事件持久化，成功、失败、取消、中断与待输入回到原工作。原桌面登录/审批仍按连接器实际能力处理，不引入旧 app-server 后端。

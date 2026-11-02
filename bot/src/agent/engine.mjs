@@ -41,7 +41,7 @@ export class BotEngine {
   async initialize() {
     this.promptFileContent = this.config.promptFile ? await readFile(this.config.promptFile, 'utf8') : '';
     await this.maintenance.initialize();
-    this.resources = await loadResources({ config: this.config, workspace: this.config.workspace });
+    this.resources = await loadResources({ config: this.config, workspace: this.config.workspace, store: this.store });
     this.configured = await loadConfiguredTools(this.config.tools, { botId: this.config.botId, dataDir: this.config.dataDir, workspace: this.config.workspace, redact: this.clean });
     this.toolNames = this.validateConfigured(this.configured);
     for (const session of this.store.listSessions()) this.repairSession(session);
@@ -123,7 +123,7 @@ export class BotEngine {
       let session = this.store.getSession(task.sessionId) || this.store.saveSession({ id: task.sessionId, conversationId: active.conversationId,
         workId: task.workId, kind: routeOnly ? 'routing' : task.workId ? 'work' : 'chat', contextKey: task.sessionId, messages: [], checkpoints: [] });
       session = this.repairSession(session);
-      const resources = await loadResources({ config: this.config, workspace: this.config.workspace });
+      const resources = await loadResources({ config: this.config, workspace: this.config.workspace, signal: combined, store: this.store });
       const registry = new ToolRegistry({
         context: ({ toolCallId }) => ({ ...this.services.toolContext(task), ...refs, botId: this.config.botId, instanceId: this.config.botId,
           requestId: task.id, allowedEffects: task.metadata?.toolPolicy?.allowedEffects, recordId: `${runId}:${turns}:${toolCallId}`, cwd: this.config.workspace }),
@@ -131,15 +131,32 @@ export class BotEngine {
           const assistant = agent.state.messages.findLast(message => message.role === 'assistant');
           return this.store.transaction(() => {
             const saved = this.store.saveTool(clean({ ...record, ...refs, assistantMessageId: assistant ? this.context.sessionManager(task.sessionId).idForMessage(assistant) : null }));
+            if (!routeOnly) this.maintenance.observeTool(task, record);
             for (const artifact of record.artifacts || []) if (typeof artifact?.id === 'string') this.store.saveArtifact(clean({ ...artifact, botId: this.config.botId, ...refs, toolRunId: record.id }));
             active.waitingFor = record.status === 'running' ? { kind: 'tool', name: record.name, toolRunId: record.id } : null; return saved;
           });
         },
       });
-      for (const tool of [...this.services.coreTools(task), ...this.maintenance.tools(task), ...this.configured.tools]) if (!routeOnly || tool.effect === 'read') registry.register(tool);
+      const configuredTools = this.configured.tools.map(tool => !tool.name.startsWith('catalog_') ? tool : {
+        ...tool, execute: (args, context) => {
+          const input = task.input?.current || task.input;
+          const work = task.workId && this.services.works?.get(task.workId);
+          const source = work?.sources?.findLast(item => item.roomId) || {};
+          const sourceRefs = [...new Set([...(input?.metadata?.sourceRefs || []), ...(input?.trigger?.sourceRefs || []),
+            `task:${task.id}`, `session:${task.sessionId}`])];
+          // Task provenance is supplied after model-argument validation. The
+          // gateway authenticates the Bot token and uses this context for the
+          // result route; model-authored target work arguments remain separate.
+          return tool.execute({ ...args, _context: { taskId: task.id, workId: task.workId,
+            conversationId: task.conversationId || task.sessionId,
+            originRoomId: input?.room?.id || input?.metadata?.roomId || source.roomId,
+            originMessageId: input?.trigger?.id || source.replyTo || source.messageId, sourceRefs } }, context);
+        },
+      });
+      for (const tool of [...this.services.coreTools(task), ...this.maintenance.tools(task), ...configuredTools]) if (!routeOnly || tool.effect === 'read') registry.register(tool);
       registerSdkTools(registry, [resources.tool, this.context.historyTool(task.sessionId, () => {
         const work = task.workId && this.services.works?.get(task.workId);
-        return [...new Set([task.sessionId, ...(work?.sources || []).map(source => this.store.getTask(source.taskId)?.sessionId).filter(Boolean)])];
+        return [...new Set([task.sessionId, ...(work?.sources || []).filter(source => typeof source.taskId === 'string').map(source => this.store.getTask(source.taskId)?.sessionId).filter(Boolean)])];
       })]);
       // A compaction must not turn the same run's omitted side effect into a new
       // submission. A new user event/run has a fresh boundary and is not banned

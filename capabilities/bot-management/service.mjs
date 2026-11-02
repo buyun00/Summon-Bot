@@ -34,6 +34,7 @@ export class BotManager {
     const config={schemaVersion:1,botId:id,dataDir:dir,workspace:input.cwd?resolve(input.cwd):join(dir,'workspace'),model:{...this.model,...input.modelConfig},prompt:input.prompt||await readFile(join(this.releaseRoot,'roles',roleId,'prompt.md'),'utf8'),skills:(profile.skills||[]).map(skill=>join(this.releaseRoot,'skills',skill)),bundleRoot:this.releaseRoot,bundledSkills:profile.skills||[],token,listen:{host:'127.0.0.1',port:0},concurrency:4,context:{maintenanceConcurrency:1},tools:[],limits:input.limits};
     const bot=this.store.save('bots',{id,name:required(input.name||profile.name,'name',100),role:input.role||profile.role,roleId,creationSource:'custom',expertise:input.expertise||profile.role,prompt:input.prompt||'',status:input.status==='paused'?'paused':'active',skills:profile.skills,model:config.model.model||'deepseek-flash',executor:'codex',capabilityToken,allowedTools:profile.tools,runIntent:'stopped',...(input.avatar?{avatar:avatarOf(input.avatar)}:{})});
     config.tools=(await this.getTools(bot)).map(tool=>({...tool,headers:{Authorization:`Bearer ${capabilityToken}`}}));
+    config.catalog={url:this.gatewayUrl(),token:capabilityToken};
     config.bundledToolNames=config.tools.map(tool=>tool.name);
     await writeFile(join(dir,'config.json'),JSON.stringify(config,null,2),{mode:0o600});
     this.emit('bot',this.public(bot)); return this.public(bot);
@@ -120,6 +121,7 @@ export class BotManager {
     const customTools=(config.tools||[]).filter(tool=>!previousTools.has(tool.name)).map(tool=>tool.type==='module'&&within(priorRoot,tool.module)?{...tool,module:join(this.releaseRoot,relative(priorRoot,tool.module))}:tool);
     const bundledTools=await this.getTools(record);
     config.tools=[...bundledTools.map(tool=>({...tool,headers:{Authorization:`Bearer ${record.capabilityToken}`}})),...customTools];
+    config.catalog={url:this.gatewayUrl(),token:record.capabilityToken};
     config.bundleRoot=this.releaseRoot;config.bundledSkills=profile.skills||[];config.bundledToolNames=bundledTools.map(tool=>tool.name);
     config.accepting=record.status==='active';
     await writeFile(join(dir,'config.json'),JSON.stringify(config,null,2),{mode:0o600});await mkdir(join(dir,'logs'),{recursive:true});

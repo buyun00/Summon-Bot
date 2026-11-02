@@ -6,6 +6,7 @@ import { WorkspaceExecutionLock } from '../shared/workspace-lock.mjs';
 import { fail } from '../shared/validation.mjs';
 import { loadConfiguredTools } from '../../bot/src/capabilities/remote-tools.mjs';
 import { coreTools } from '../../bot/src/capabilities/core-tools.mjs';
+import { catalogTools } from './catalog.mjs';
 
 const object = (properties = {}, required = []) => ({ type: 'object', properties, ...(required.length ? { required } : {}), additionalProperties: true });
 const text = { type: 'string' }, names = { type: 'array', items: text };
@@ -39,7 +40,7 @@ export class CapabilityControl {
   tools(bot, definitions = this.registry.toolsFor(bot.id, bot.allowedTools), bindings = this.registry.bindingsFor(bot.id), allowedNames) {
     const allowed = allowedNames ?? this.registry.registerActor(bot.id, bot.allowedTools).allowedNames ?? [];
     const owner = name => Object.entries(bindings).find(([id, version]) => this.registry.getVersion(id, version)?.tools.some(tool => tool.name === name));
-    return [...definitions, ...controlTools.filter(tool => allowed.includes(tool.name))].map(tool => {
+    return [...definitions, ...controlTools.filter(tool => allowed.includes(tool.name)), ...catalogTools.filter(tool => allowed.includes(tool.name))].map(tool => {
       const route = owner(tool.name);
       return { ...tool, type: 'http', method: 'POST', url: route ? `${this.gatewayUrl()}/capabilities/${encodeURIComponent(route[0])}/versions/${encodeURIComponent(route[1])}/tools/${encodeURIComponent(tool.name)}` : `${this.gatewayUrl()}/tools/${tool.name}`, timeoutMs: tool.name === 'run_command' ? 130000 : 150000 };
     });
@@ -78,7 +79,7 @@ export class CapabilityControl {
     if (!Array.isArray(allowed) || allowed.some(name => typeof name !== 'string')) fail('tools must be an explicit string array');
     const bot = this.manager.get(botId);
     this.registry.registerActor(botId, bot.allowedTools);
-    const known = new Set([...this.registry.inventory().versions.flatMap(version => version.tools.map(tool => tool.name)), ...controlTools.map(tool => tool.name)]);
+    const known = new Set([...this.registry.inventory().versions.flatMap(version => version.tools.map(tool => tool.name)), ...controlTools.map(tool => tool.name), ...catalogTools.map(tool => tool.name)]);
     if (allowed.some(name => !known.has(name))) fail('Cannot grant an unregistered tool');
     this.manager.store.save('bots', { id: botId, allowedTools: [...new Set(allowed)] });
     this.registry.propose(botId, allowed); void this.tick(); return { botId, tools: allowed };

@@ -1,8 +1,10 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 
 const sdkName = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
+const effects = new Set(['read', 'write', 'process', 'external']);
 
 /** Standard MCP initialize/listTools/callTool over SDK transports. A stdio
  * server is an explicitly configured external capability, not another Bot.
@@ -14,6 +16,8 @@ export async function connectMcpTools(definition, {
 }) {
   const timeout = definition.timeoutMs ?? 30000;
   if (!Number.isInteger(timeout) || timeout < 1 || timeout > 300000) throw new TypeError('MCP timeoutMs must be an integer from 1 to 300000');
+  if (definition.toolEffects !== undefined && (!definition.toolEffects || Array.isArray(definition.toolEffects) || typeof definition.toolEffects !== 'object' ||
+      Object.values(definition.toolEffects).some(effect => !effects.has(effect)))) throw new TypeError('MCP toolEffects must map remote tool names to effects');
   const options = requestSignal => ({ signal: requestSignal, timeout, maxTotalTimeout: timeout, resetTimeoutOnProgress: false });
   let transport;
   if (definition.transport === 'stdio') {
@@ -33,22 +37,27 @@ export async function connectMcpTools(definition, {
     }
     transport = new StreamableHTTPClientTransport(url, {
       requestInit: { headers, redirect: 'error' },
+      // Keep this policy at the actual fetch boundary as the SDK also supplies
+      // request init options for its standalone notification stream.
+      fetch: (input, init) => fetch(input, { ...init, redirect: 'error' }),
       reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 },
     });
   } else throw new TypeError('MCP transport must be stdio or http');
 
   const client = new Client({ name: `relay-bot-${botId}`, version: '1.0.0' }, { capabilities: {} });
   client.onerror = () => {}; // Individual protocol requests retain their errors.
-  let closed = false;
+  let closed = false, connected = false;
+  client.onclose = () => { connected = false; };
   const close = async () => {
     if (closed) return;
-    closed = true;
+    closed = true; connected = false;
     try { await client.close(); } finally { await transport.close(); }
   };
   try {
     signal?.throwIfAborted();
     await client.connect(transport, options(signal));
-    const tools = [], cursors = new Set(), names = new Set();
+    connected = true;
+    const tools = [], remoteTools = [], cursors = new Set(), names = new Set();
     let cursor;
     do {
       signal?.throwIfAborted();
@@ -60,15 +69,33 @@ export async function connectMcpTools(definition, {
         if (!sdkName.test(name) || names.has(name)) throw new Error('MCP tools have invalid or colliding model names');
         if (remote.inputSchema?.type !== 'object') throw new Error(`MCP tool ${name} requires an object input schema`);
         names.add(name);
+        remoteTools.push(remote);
+        const effect = definition.toolEffects?.[remote.name] || definition.effect || 'external';
         tools.push({ name, description: redact(remote.description || `MCP tool ${remote.name}`),
-          inputSchema: remote.inputSchema, effect: definition.effect || 'external',
+          inputSchema: remote.inputSchema, effect,
           classify: result => result?.isError ? 'failed' : 'completed',
           async execute(args, context = {}) {
-            if (closed) throw new Error('MCP capability is closed');
+            if (closed || !connected) throw Object.assign(new Error('MCP capability is disconnected; refresh the connection before use'), { code: 'CAPABILITY_UNAVAILABLE' });
             context.signal?.throwIfAborted();
+            if (remote.execution?.taskSupport === 'required') throw new Error('MCP tools requiring task-based execution are not supported');
             // The SDK validates actual CallToolResult content, structuredContent
             // and isError; image/resource blocks are not flattened to text.
-            return client.callTool({ name: remote.name, arguments: args }, undefined, options(context.signal));
+            try { return await client.callTool({ name: remote.name, arguments: args }, undefined, options(context.signal)); }
+            catch (error) {
+              // Explicit tool isError results remain ordinary failed receipts.
+              // A lost/invalid reply, timeout or disconnect after dispatch cannot
+              // establish whether a remote mutation happened. Do not reconnect
+              // and resend it. Only definite transport/protocol rejections are
+              // known failures here; malformed successful replies stay unknown.
+              const rejection = (Number.isInteger(error.code) && error.code >= 400 && error.code < 500) ||
+                (error instanceof McpError && ![ErrorCode.ConnectionClosed, ErrorCode.RequestTimeout].includes(error.code) &&
+                  !/output schema|structured content/i.test(error.message));
+              if (effect !== 'read' && !rejection) {
+                throw Object.assign(new Error(`${error?.message || String(error)}. The remote outcome is unknown; query the original operation or external state before another write. This request was not retried.`),
+                  { name: error?.name || 'Error', outcomeUnknown: true, code: 'REMOTE_OUTCOME_UNKNOWN' });
+              }
+              throw error;
+            }
           },
         });
       }
@@ -76,6 +103,9 @@ export async function connectMcpTools(definition, {
       if (cursor && cursors.has(cursor)) throw new Error('MCP tool pagination repeated a cursor');
       if (cursor) cursors.add(cursor);
     } while (cursor);
+    // The SDK refreshes its output-schema cache for each listTools page. Retain
+    // validation for every tool, including those returned before the last page.
+    client.cacheToolMetadata(remoteTools);
     return { tools, close };
   } catch (error) {
     await close().catch(() => {});

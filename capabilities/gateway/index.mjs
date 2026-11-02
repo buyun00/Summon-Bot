@@ -19,6 +19,7 @@ import { CapabilityServiceSupervisor } from '../services/supervisor.mjs';
 import { BUILTIN_CAPABILITIES } from '../services/builtin.mjs';
 import { deployCapability } from '../services/publish.mjs';
 import { coreTools } from '../../bot/src/capabilities/core-tools.mjs';
+import { CapabilityCatalog,catalogTools } from '../services/catalog.mjs';
 
 const same=(a,b)=>typeof a==='string'&&typeof b==='string'&&Buffer.byteLength(a)===Buffer.byteLength(b)&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
 const activityText=(value,max=512)=>typeof value==='string'?value.replace(/[\u0000-\u001f\u007f]/g,' ').slice(0,max):null;
@@ -40,7 +41,7 @@ export async function startGateway(options={}) {
   const store=name=>{if(!stores.has(name))stores.set(name,new RecordStore(join(dataRoot,'capabilities',name,'state.sqlite')));return stores.get(name);};
   const emit=(type,payload={})=>{const line=`data: ${JSON.stringify({type,...payload})}\n\n`;for(const client of clients)client.write(line);};
   const botToolNames=[...coreTools({},{}).map(tool=>tool.name),'read_resource','read_session_history','knowledge_list','knowledge_read','knowledge_write','skills_list','skill_write'];
-  const registry=new CapabilityRegistry({store:store('registry'),emit,reservedTools:[...botToolNames,...controlTools.map(tool=>tool.name)]});
+  const registry=new CapabilityRegistry({store:store('registry'),emit,reservedTools:[...botToolNames,...controlTools.map(tool=>tool.name),...catalogTools.map(tool=>tool.name)]});
   const supervisor=new CapabilityServiceSupervisor({dataRoot,releaseRoot});
   let control;
   const manager=new BotManager({store:store('bot-management'),dataRoot,releaseRoot,defaultCwd,model:options.model,emit,botApi:options.botApi,cacheReadStores:true,gatewayUrl:()=>url,getTools:bot=>control.tools(bot)});
@@ -57,6 +58,7 @@ export async function startGateway(options={}) {
   const chatroom=new ChatroomService({store:store('chatroom'),manager,attachments,emit});
   const knowledge=new KnowledgeService({store:store('knowledge'),emit}),memories=new MemoryManagement({store:store('memory-management'),manager,dataRoot,emit});
   proxy(chatroom,'chatroom',['createRoom','updateRoom','post','append','dm','conclude','saveConclusion','retry','seed']);
+  const catalog=new CapabilityCatalog({store:store('registry'),registry,manager,dataRoot,workspace:defaultCwd,emit,delegate:(actor,input)=>chatroom.dm(actor,input)});
   proxy(knowledge,'knowledge',['saveNode','saveEdge']);
   proxy(memories,'memory-management',['write']);
   proxy(attachments,'chatroom',['upload']);
@@ -111,12 +113,13 @@ export async function startGateway(options={}) {
   }
   function visibleTools(actor) {
     const allowed=actor==='controller'?null:manager.get(actor).allowedTools||[];
-    return [...registry.toolsFor(actor,allowed),...controlTools.filter(tool=>allowed===null||allowed.includes(tool.name))];
+    return [...registry.toolsFor(actor,allowed),...controlTools.filter(tool=>allowed===null||allowed.includes(tool.name)),...catalogTools.filter(tool=>allowed===null||allowed.includes(tool.name))];
   }
   async function callTool(name,args={},actor='controller',signal,pin) {
     const definition=visibleTools(actor).find(tool=>tool.name===name);
     if(quiescing&&definition?.effect!=='read')fail('Gateway is stopping; new work is unavailable',503);
     if(actor!=='controller'&&!(manager.store.get('bots',actor)?.allowedTools||[]).includes(name))fail('Tool not authorized for this Bot',403);
+    if(catalogTools.some(tool=>tool.name===name))return catalog.call(name,args,{actor,signal});
     if(controlTools.some(tool=>tool.name===name))return control.call(name,args,{actor});
     if(pin&&!control.permittedVersion(actor,pin.id,pin.version))fail('This capability version is not bound to the Bot',403);
     if(pin)return registry.callVersion(pin.id,pin.version,name,args,{signal,context:{actor}});
@@ -126,6 +129,22 @@ export async function startGateway(options={}) {
     if(quiescing&&!['GET','HEAD'].includes(method))fail('Gateway is stopping; new work is unavailable',503);
     let match;
     if(method==='GET'&&path==='/api/health')return {ok:true,service:'relay-capabilities'};
+    if(path==='/api/catalog'){
+      if(method==='GET')return catalog.search({query:params.get('query')||'',kind:params.get('kind')||undefined,scopeRefs:params.getAll('scopeRef'),offset:Number(params.get('offset')||0),limit:Number(params.get('limit')||40)},params.get('botId')||'controller');
+      if(method==='POST')return catalog.save(body);
+    }
+    if((match=path.match(/^\/api\/catalog\/([^/]+)(?:\/(probe|call|delegate|proposals|resource|requests))?$/))){
+      const id=decodeURIComponent(match[1]),action=match[2];
+      if(!action){if(method==='GET')return catalog.get(id);if(method==='PATCH')return catalog.save({...body,id});if(method==='DELETE')return catalog.remove(id,'controller',body.expectedRevision);}
+      if(method==='GET'&&action==='resource')return catalog.get(id,'controller',params.get('path')||'SKILL.md');
+      if(method==='GET'&&action==='requests')return {requests:catalog.requests(id)};
+      if(method==='GET'&&action==='proposals')return {proposals:store('registry').list('catalog-skill-proposals').filter(proposal=>proposal.entryId===id)};
+      if(method==='POST'&&action==='probe')return catalog.probe(id);
+      if(method==='POST'&&action==='call')return catalog.execute(id,body);
+      if(method==='POST'&&action==='delegate')return catalog.handoff(id,body);
+      if(method==='POST'&&action==='proposals')return catalog.propose({...body,id});
+    }
+    if(method==='POST'&&(match=path.match(/^\/api\/catalog\/([^/]+)\/requests\/([^/]+)\/reconcile$/)))return catalog.reconcile(decodeURIComponent(match[1]),decodeURIComponent(match[2]),body);
     if(method==='GET'&&path==='/api/capabilities')return control.inventory();
     if(method==='POST'&&(match=path.match(/^\/api\/capabilities\/(register|deploy|activate|unload|grant|retire|retry|reconcile)$/)))return control.call(`capabilities_${match[1]}`,body);
     if(method==='GET'&&path==='/api/state'){const value=await state();return params.get('sync')==='1'?{...sync.respond('workspace',value,params.get('since')),historyEpoch}:value;}
@@ -191,7 +210,7 @@ export async function startGateway(options={}) {
       if(actor!=='controller'&&(path.startsWith('/api/')||path.startsWith('/internal/')))fail('User API requires controller authentication',403);
       if(closing&&!path.startsWith('/internal/service/'))fail('Gateway is stopping; new requests are unavailable',503);
       if(req.method==='GET'&&path==='/api/stream'){res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-store',Connection:'keep-alive'});res.write('data: {"type":"connected"}\n\n');clients.add(res);req.on('close',()=>clients.delete(res));return;}
-      let body={};if(['POST','PATCH','PUT'].includes(req.method)){const chunks=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>(path==='/api/attachments'?MAX_ATTACHMENT_REQUEST_BYTES:2*1024*1024))fail('Request too large',413);chunks.push(chunk);}body=JSON.parse(Buffer.concat(chunks).toString()||'{}');}
+      let body={};if(['POST','PATCH','PUT','DELETE'].includes(req.method)){const chunks=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>(path==='/api/attachments'?MAX_ATTACHMENT_REQUEST_BYTES:2*1024*1024))fail('Request too large',413);chunks.push(chunk);}body=JSON.parse(Buffer.concat(chunks).toString()||'{}');}
       if(req.method==='POST'&&path==='/internal/bots/stop-all')return json(res,200,await stopBots(body));
       if(req.method==='POST'&&path==='/internal/service/tools')return json(res,200,control.tools(manager.get(body.botId)));
       if(req.method==='POST'&&path==='/internal/service/invoke')return json(res,200,await rpc(body.capability,body.operation,body.args||[]));
@@ -212,7 +231,7 @@ export async function startGateway(options={}) {
       const attachment=path.match(/^\/api\/attachments\/([^/]+)(\/preview)?$/);if(attachment&&['GET','HEAD'].includes(req.method)){const file=await attachments.read(attachment[1],Boolean(attachment[2]));res.writeHead(200,file.headers);res.end(req.method==='HEAD'?undefined:file.bytes);return;}
       const artifact=path.match(/^\/api\/agent-runs\/([^/]+)\/tools\/([^/]+)\/artifacts\/([^/]+)$/);if(artifact&&['GET','HEAD'].includes(req.method)){if(requestUrl.search)fail('Artifact IDs only',404);const file=await downloads.read(...artifact.slice(1).map(decodeURIComponent));try{res.writeHead(200,file.headers);if(req.method==='HEAD'||file.size===0)res.end();else await pipeline(file.handle.createReadStream({autoClose:false,start:0,end:file.size-1}),res);}finally{await file.close();}return;}
       const result=await handleApi(req.method,path,body,requestUrl.searchParams);if(result===undefined)fail('Not found',404);json(res,200,result);
-    }catch(error){if(!res.headersSent)json(res,error.status||400,{error:String(error.message).replace(/\bsk-[a-zA-Z0-9_-]+/g,'[redacted]')});else res.end();}
+    }catch(error){if(!res.headersSent)json(res,error.status||400,{error:catalog.clean(String(error.message)),...(error.code?{code:error.code}:{}),...(error.outcomeUnknown?{outcomeUnknown:true}:{})});else res.end();}
   })();pending.add(work);void work.catch(error=>console.error('Gateway request failed:',error.stack||error.message)).finally(()=>pending.delete(work));});
   async function stopIdleWorkers() {
     for(const service of await supervisor.list())if(service.state!=='stopped'&&!service.pendingWork&&!service.activeRequests){
@@ -285,11 +304,11 @@ export async function startGateway(options={}) {
     control.pinExisting();await control.tick();
     if(options.restore!==false)await manager.restore();
   } catch(error) {
-    closing=true;await control.close();await stopIdleWorkers().catch(()=>{});for(const client of clients)client.end();server.closeAllConnections();if(server.listening)await new Promise(done=>server.close(done));await Promise.allSettled([...pending]);manager.closeReadStores();for(const value of stores.values())value.close();throw error;
+    closing=true;await control.close();await catalog.close();await stopIdleWorkers().catch(()=>{});for(const client of clients)client.end();server.closeAllConnections();if(server.listening)await new Promise(done=>server.close(done));await Promise.allSettled([...pending]);manager.closeReadStores();for(const value of stores.values())value.close();throw error;
   }
   const monitor=setInterval(async()=>{if(monitoring||closing||quiescing)return;monitoring=true;try{await manager.monitor();}catch(error){emit('gateway-error',{error:error.message});}finally{monitoring=false;}},5000);monitor.unref();
   const serviceMonitor=setInterval(()=>{void monitorServices().catch(error=>emit('gateway-error',{error:error.message}));},2000);serviceMonitor.unref();
-  let polling=false;const eventPoll=setInterval(async()=>{if(polling||closing)return;polling=true;try{for(const bot of manager.list()){const cursor=store('gateway').get('event-cursors',bot.id)?.after||0;const events=await manager.readState(bot.id,db=>db?.listEvents({after:cursor,limit:1000})||[]);if(events.length){store('gateway').save('event-cursors',{id:bot.id,after:events.at(-1).seq});emit('bot-event',{botId:bot.id,eventType:events.at(-1).type});}}}catch(error){emit('gateway-error',{error:error.message});}finally{polling=false;}},750);eventPoll.unref();
+  let polling=false;const eventPoll=setInterval(async()=>{if(polling||closing)return;polling=true;try{for(const bot of manager.list()){const cursor=store('gateway').get('event-cursors',bot.id)?.after||0;const events=await manager.readState(bot.id,db=>db?.listEvents({after:cursor,limit:1000})||[]);if(events.length){store('gateway').save('event-cursors',{id:bot.id,after:events.at(-1).seq});emit('bot-event',{botId:bot.id,eventType:events.at(-1).type});}}if(!quiescing)await catalog.tick();}catch(error){emit('gateway-error',{error:error.message});}finally{polling=false;}},750);eventPoll.unref();
   const scheduler=setInterval(async()=>{if(ticking||closing||quiescing)return;ticking=true;try{await tickRoutines({manager,chatroom});}catch(error){emit('gateway-error',{error:error.message});}finally{ticking=false;}},1000);scheduler.unref();
   const switches=setInterval(()=>{if(!closing&&!quiescing)void control.tick().catch(error=>emit('gateway-error',{error:error.message}));},300);switches.unref();
   const heartbeat=setInterval(()=>{for(const client of clients)client.write(': keepalive\n\n');},20000);heartbeat.unref();
@@ -304,12 +323,12 @@ export async function startGateway(options={}) {
   })().catch(error=>{stopBotsPromise=null;throw error;});}
   let closePromise;const close=()=>closePromise||=(async()=>{
     closing=true;clearInterval(scheduler);clearInterval(heartbeat);clearInterval(monitor);clearInterval(serviceMonitor);clearInterval(eventPoll);clearInterval(switches);
-    await control.close();while(ticking||monitoring||serviceMonitoring||polling)await new Promise(done=>setTimeout(done,10));
+    await control.close();await catalog.close();while(ticking||monitoring||serviceMonitoring||polling)await new Promise(done=>setTimeout(done,10));
     while(pending.size)await Promise.allSettled([...pending]);
     await stopIdleWorkers();for(const client of clients)client.end();
     await new Promise(done=>{server.close(done);server.closeIdleConnections?.();});
     await Promise.allSettled([...pending]);manager.closeReadStores();for(const value of stores.values())value.close();
   })();
-  return {url,token,server,manager,chatroom,knowledge,codex,memories,attachments,registry,supervisor,control,state,handleApi,callTool,monitorServices,stopBots,close};
+  return {url,token,server,manager,chatroom,knowledge,codex,memories,attachments,registry,supervisor,control,catalog,state,handleApi,callTool,monitorServices,stopBots,close};
 }
 

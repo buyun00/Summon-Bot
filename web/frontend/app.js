@@ -4,7 +4,7 @@ const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
 // Display preferences are local to this browser and independent for each layout.
-const UI_BUILD = '2026.11.02.1';
+const UI_BUILD = '2026.11.02.2';
 let displayDiagnosticSnapshot = null;
 function isIosStandalone() {
   const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -129,12 +129,13 @@ const icons = {
 };
 const icon = (name, size = 18) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" aria-hidden="true">${icons[name] || icons.chat}</svg>`;
 const labels = { queued: '等待执行', running: '进行中', waiting: '等待答复', completed: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断', active: '活跃', paused: '已暂停', concluded: '已结束', fact: '事实', hypothesis: '假设', opinion: '意见', unverified: '待核查', disputed: '有争议', expired: '已过期', professional: '专业记忆', private: '私人记忆', group: '群聊', dm: '私聊', deep: '深聊' };
-const tabs = [{ id: 'chat', title: '消息', icon: 'chat' }, { id: 'members', title: '成员', icon: 'people' }, { id: 'works', title: '工作', icon: 'work' }, { id: 'knowledge', title: '知识', icon: 'knowledge' }, { id: 'routines', title: '定时职责', icon: 'clock' }];
+const tabs = [{ id: 'chat', title: '消息', icon: 'chat' }, { id: 'members', title: '成员', icon: 'people' }, { id: 'catalog', title: '能力目录', icon: 'link' }, { id: 'works', title: '工作', icon: 'work' }, { id: 'knowledge', title: '知识', icon: 'knowledge' }, { id: 'routines', title: '定时职责', icon: 'clock' }];
 const state = { bots: [], rooms: [], works: [], agentRuns: [], routines: [], knowledge: { nodes: [], edges: [] }, provider: {}, runtime: {} };
 const ui = { view: 'chat', roomId: 'room-lobby', botId: null, workId: null, nodeId: null, messages: [], roomJobs: [], memories: [], workDetail: null, graph: null, query: '', knowledgeResults: null, roomQuery: '', workFilter: 'all', mobileRoom: false, reply: null, drafts: {}, outbound: {}, loading: true, refreshing: false, refreshAgain: false, streamConnected: false };
 Object.assign(ui, { detailOpen: false, detailTab: 'details', profileBotId: null, avatarEditing: false, avatarDraft: null, avatarTab: 'bot', searchOpen: false, menu: null, avatarSaving: false, sendingRooms: new Set(), draftTargets: {}, navigationSeq: 0, messageCache: new Map() });
 Object.assign(ui, { agentRunsOpen: new Set(), agentToolsOpen: new Set(), agentRunDetails: new Map(), agentRunRequests: new Map(), agentRunsCancelling: new Set(), draftAttachments: {}, localMessages: {}, roomReadSeq: {} });
 Object.assign(ui, { historyEpoch: null, historyGeneration: 0, retiredHistoryEpochs: new Set(), systemBotsOpen: false, retryingJobs: new Set() });
+Object.assign(ui, { catalog: [], catalogId: null, catalogDetail: null, catalogQuery: '', catalogKind: '', catalogBusy: false });
 const attachmentLimit = 8, attachmentMaxBytes = 20 * 1024 * 1024;
 const attachmentDrafts = (roomId = ui.roomId) => ui.draftAttachments[roomId] || [];
 const attachmentBusy = (roomId = ui.roomId) => attachmentDrafts(roomId).some(item => item.status !== 'ready');
@@ -413,7 +414,7 @@ function render() {
   if (ui.composing && document.activeElement?.id === 'message-input' && document.activeElement.form?.dataset.roomId === ui.roomId) { ui.renderDeferred = true; return; }
   ui.renderDeferred = false;
   const saved = preserveView(); markCurrentRoomRead(); renderTopbar();
-  const views = { chat: renderChat, members: renderMembers, works: renderWorks, knowledge: renderKnowledge, routines: renderRoutines };
+  const views = { chat: renderChat, members: renderMembers, catalog: renderCatalog, works: renderWorks, knowledge: renderKnowledge, routines: renderRoutines };
   const key = `${ui.view}:${ui.view === 'chat' ? ui.roomId : ui.view === 'members' ? ui.botId : ui.view === 'works' ? ui.workId : ''}`;
   const main = $('#main-content'), html = views[ui.view]();
   const signature = renderSignature(html);
@@ -548,6 +549,15 @@ async function refresh(force = false) {
   finally { ui.refreshing = false; if (ui.refreshAgain) { ui.refreshAgain = false; scheduleRefresh(); } }
 }
 async function loadCurrent() {
+  if (ui.view === 'catalog') {
+    const query = new URLSearchParams({query:ui.catalogQuery,kind:ui.catalogKind});
+    const response = await api(`/api/catalog?${query}`);
+    ui.catalog = response.entries || [];
+    if (ui.catalogId) {
+      try { ui.catalogDetail = await api(`/api/catalog/${encodeURIComponent(ui.catalogId)}`); }
+      catch (error) { if (!ui.catalog.some(item=>item.id===ui.catalogId)) { ui.catalogId=null;ui.catalogDetail=null; } else throw error; }
+    }
+  }
   if (ui.view === 'chat' && ui.roomId) {
     const id = ui.roomId, sequence = ui.roomReadSeq[id] = (ui.roomReadSeq[id] || 0) + 1;
     const baseline = ui.messageCache.get(id);
@@ -764,6 +774,59 @@ function renderRoutines() {
   return `<div class="page">${pageHeader('Make room for the recurring', '该惦记的事，按时想起。', '为成员安排持续职责，也可以随时投递一次新的事件。', `<button class="secondary-button" data-action="new-event">${icon('event', 14)}投递事件</button><button class="primary-button" data-action="new-routine">${icon('plus', 15)}新增职责</button>`)}<div class="routine-summary">${icon('clock', 27)}<div><strong>${enabled} 项职责正在运行</strong><p>到期后投递给指定成员；服务重启后继续保留安排。</p></div></div>${state.routines.length ? `<div class="table-wrap"><table class="data-table"><thead><tr><th>职责</th><th>负责成员</th><th>执行频率</th><th>下一次</th><th>状态</th><th></th></tr></thead><tbody>${state.routines.map(routine => `<tr><td><strong>${esc(routine.name || '定时职责')}</strong><p>${esc(routine.instruction)}</p>${routine.lastStatus ? `<div class="item-meta">最近：${esc(labels[routine.lastStatus] || routine.lastStatus)}</div>` : ''}</td><td><span class="routine-owner">${avatar(routine.botId)}${esc(nameOf(routine.botId))}</span><p>${esc(roomById(routine.roomId)?.name || '未指定会话')}</p></td><td style="white-space:nowrap">${interval(Number(routine.intervalSeconds) || 60)}</td><td style="white-space:nowrap">${routine.enabled ? formatTime(routine.nextRunAt, true) : '已暂停'}${routine.lastRunAt ? `<p>上次 ${formatTime(routine.lastRunAt, true)}</p>` : ''}</td><td><button class="toggle ${routine.enabled ? 'on' : ''}" data-action="toggle-routine" data-id="${esc(routine.id)}" role="switch" aria-checked="${!!routine.enabled}" aria-label="${routine.enabled ? '暂停' : '开启'}${esc(routine.name)}"></button></td><td><button class="icon-button" data-action="edit-routine" data-id="${esc(routine.id)}" aria-label="编辑职责" title="编辑职责">${icon('edit', 14)}</button></td></tr>`).join('')}</tbody></table></div>` : emptyState('还没有定时职责', '例如每天整理项目待办，或定期回顾最近讨论。你可以随时暂停和修改。', '<button class="secondary-button" data-action="new-routine">创建第一项职责</button>', 'clock')}</div>`;
 }
 
+const catalogKindLabel = kind => ({mcp:'MCP',http:'HTTP API',skill:'Skill',service:'内置服务'})[kind] || kind;
+const catalogPath = id => `/api/catalog/${encodeURIComponent(id)}`;
+function catalogAvailability(entry) {
+  if (entry.enabled === false) return '已停用';
+  if (entry.status === 'ready' && entry.lastProbe?.scope === 'configuration') return '配置就绪（未调用）';
+  return ({ready:'可用',available:'可用',unavailable:'不可用',blocked:'依赖不可用',unknown:'待探测',unprobed:'待探测',error:'连接失败',disabled:'已停用'})[entry.status] || entry.status || (entry.kind==='skill'?'可用':'待探测');
+}
+function renderCatalog() {
+  const detail=ui.catalogDetail?.entry || ui.catalogDetail;
+  const tools=detail?.tools || detail?.config?.tools || [];
+  const readOnly=detail?.readOnly || detail?.kind==='service';
+  const header=pageHeader('', '能力目录', '', `<button class="secondary-button" data-action="catalog-new" data-kind="mcp">＋ MCP</button><button class="secondary-button" data-action="catalog-new" data-kind="http">＋ HTTP API</button><button class="primary-button" data-action="catalog-new" data-kind="skill">＋ Skill</button>`);
+  return `<div class="page catalog-page">${header}<p class="subtle">连接负责执行，Skill 保存方法。按需使用同一份当前正文，遇到业务判断再联系负责成员。</p><form id="catalog-search-form" class="catalog-search"><input id="catalog-query" aria-label="搜索能力目录" placeholder="搜索名称、用途或资源引用" value="${esc(ui.catalogQuery)}"><select id="catalog-kind" aria-label="能力类型">${[['','全部类型'],['mcp','MCP'],['http','HTTP API'],['skill','Skill'],['service','内置服务']].map(([value,label])=>`<option value="${value}" ${ui.catalogKind===value?'selected':''}>${label}</option>`).join('')}</select><button class="secondary-button" type="submit">搜索</button></form><div class="catalog-layout"><div class="catalog-list">${ui.catalog.map(entry=>`<button class="catalog-row ${entry.id===ui.catalogId?'selected':''}" data-action="catalog-open" data-id="${esc(entry.id)}"><span class="item-meta">${esc(catalogKindLabel(entry.kind))} · ${esc(catalogAvailability(entry))}</span><strong>${esc(entry.name || entry.id)}</strong><p>${esc(entry.description || '')}</p><span class="subtle">${entry.ownerBotId?`负责：${esc(nameOf(entry.ownerBotId))}`:'平台服务'}</span></button>`).join('') || '<p class="panel-empty">没有匹配的能力。可以添加 MCP、HTTP API 或 Skill。</p>'}</div><section class="catalog-detail">${detail?`<div class="profile-block"><div class="item-meta">${esc(catalogKindLabel(detail.kind))} · ${esc(catalogAvailability(detail))} · 修订 ${detail.revision||0}</div><h2>${esc(detail.name || detail.id)}</h2><p>${esc(detail.description)}</p>${detail.lastError?`<p class="error-text">${esc(detail.lastError)}</p>`:''}${detail.unavailableReason||detail.reason?`<p class="subtle">${esc(detail.unavailableReason||detail.reason)}</p>`:''}<div class="profile-actions">${readOnly?'':`<button class="primary-button" data-action="catalog-edit" data-id="${esc(detail.id)}">编辑</button>${detail.kind!=='skill'?`<button class="secondary-button" data-action="catalog-probe" data-id="${esc(detail.id)}">探测连接</button>`:''}<button class="secondary-button" data-action="catalog-toggle" data-id="${esc(detail.id)}">${detail.enabled===false?'启用':'停用'}</button><button class="text-button" data-action="catalog-remove" data-id="${esc(detail.id)}">移除</button>`}</div></div><div class="profile-block"><h3>责任与范围</h3><p>负责成员：${detail.ownerBotId?esc(nameOf(detail.ownerBotId)):'平台服务'}</p><p>允许使用：${(detail.allowedBotIds||[]).map(id=>id==='*'?'全部 Bot':esc(nameOf(id))).join('、')||'负责成员'}</p><p>适用引用：${esc((detail.scopeRefs||[]).join('、')||'未限定')}</p><p>依赖：${(detail.dependencies||[]).map(id=>esc(ui.catalog.find(e=>e.id===id)?.name||id)).join('、')||'无'}</p><small class="subtle">目录 ID：${esc(detail.id)}</small></div>${detail.kind==='skill'?`<div class="profile-block"><h3>当前方法</h3><div class="message-content">${richText(detail.content || '')}</div></div><div class="profile-block"><h3>附属资源</h3>${Object.entries(detail.files||{}).map(([path,content])=>`<details><summary>${esc(path)}</summary><pre class="catalog-code">${esc(content)}</pre></details>`).join('')||'<p class="subtle">无附属文件</p>'}</div>`:`<div class="profile-block"><h3>工具</h3>${tools.map(tool=>`<details><summary>${esc(tool.name)} · ${esc(tool.effect||'external')}</summary><p>${esc(tool.description)}</p><pre class="catalog-code">${esc(JSON.stringify(tool.inputSchema||{},null,2))}</pre></details>`).join('')||'<p class="subtle">探测连接后显示当前工具。</p>'}</div><div class="profile-block"><h3>执行配置</h3><pre class="catalog-code">${esc(JSON.stringify(detail.config||{},null,2))}</pre></div>`}`:'<div class="panel-empty">选择一项查看用途、负责人、工具与方法。</div>'}</section></div></div>`;
+}
+function catalogBotChoices(selected=[]) {
+  return `<div class="form-field"><label>允许使用的 Bot</label><label class="catalog-choice"><input type="checkbox" name="allowedBotIds" value="*" ${selected.includes('*')?'checked':''}> 全部 Bot</label>${state.bots.map(bot=>`<label class="catalog-choice"><input type="checkbox" name="allowedBotIds" value="${esc(bot.id)}" ${selected.includes(bot.id)?'checked':''}> ${esc(bot.name)}</label>`).join('')}<small>未选时仅负责人可用；目录登记不代表持续业务授权。</small></div>`;
+}
+function catalogEditor(entry, kind=entry?.kind||'mcp') {
+  const dependencies=[...ui.catalog];for(const id of entry?.dependencies||[])if(!dependencies.some(item=>item.id===id))dependencies.push({id,name:id});
+  const sample=kind==='mcp'?{transport:'http',url:'http://127.0.0.1:9000/mcp',headersEnv:{Authorization:'SERVICE_AUTH'}}:{tools:[{name:'get_item',description:'读取指定对象',url:'http://127.0.0.1:9000/items/{id}',method:'GET',effect:'read',inputSchema:{type:'object',properties:{id:{type:'string'}},required:['id']}}]};
+  const editing=Boolean(entry);
+  const common=`${editing?'':field('目录 ID','id','',{required:true,placeholder:'例如：inventory-api'})}${field('名称','name',entry?.name||'',{required:true,placeholder:kind==='skill'?'小写英文，用短横线分词':'连接名称'})}${field('用途与适用条件','description',entry?.description||'',{type:'textarea',required:true})}${selectField('负责 Bot','ownerBotId',botOptions(),entry?.ownerBotId||ui.botId||state.bots[0]?.id)}${catalogBotChoices(entry?.allowedBotIds||[])}${field('适用资源引用','scopeRefs',(entry?.scopeRefs||[]).join('\n'),{type:'textarea',rows:2,help:'每行一个实际连接、账号或对象的稳定引用；不填凭据。'})}<div class="form-field"><label for="field-dependencies">依赖能力</label><select id="field-dependencies" name="dependencies" multiple>${dependencies.filter(item=>item.id!==entry?.id&&item.kind!=='service').map(item=>`<option value="${esc(item.id)}" ${(entry?.dependencies||[]).includes(item.id)?'selected':''}>${esc(item.name||item.id)}</option>`).join('')}</select><small>依赖停用或不可用时，相关 Skill 会同步显示不可用。</small></div>`;
+  const body=kind==='skill'?`${!editing?'<div class="form-field"><label for="catalog-package">导入 Skill 文件夹（可选）</label><input id="catalog-package" type="file" multiple webkitdirectory><small>读取 SKILL.md 及 scripts、references、assets 中的文本文件。</small></div>':''}${field('Skill 正文','content',entry?.content||'',{type:'textarea',rows:10,required:true})}${field('附属文件（JSON）','files',JSON.stringify(entry?.files||{},null,2),{type:'textarea',rows:5,help:'相对路径映射到文本内容，例如 {"references/guide.md":"使用说明"}。'})}`:`${field('执行配置（JSON）','config',JSON.stringify(entry?.config||sample,null,2),{type:'textarea',rows:12,required:true,help:'HTTP 支持 method、路径参数、query 与 body 映射。凭据使用 headersEnv 或 env 引用已有环境变量。'})}`;
+  openModal(editing?'编辑能力':`添加 ${catalogKindLabel(kind)}`,'保存用途、责任关系和当前有效配置。',common+body,async data=>{
+    const payload={kind,name:String(data.get('name')).trim(),description:String(data.get('description')).trim(),ownerBotId:data.get('ownerBotId'),allowedBotIds:data.getAll('allowedBotIds'),dependencies:data.getAll('dependencies'),scopeRefs:String(data.get('scopeRefs')).split('\n').map(s=>s.trim()).filter(Boolean)};
+    if(editing)payload.expectedRevision=entry.revision;else payload.id=String(data.get('id')).trim();
+    if(kind==='skill'){payload.content=String(data.get('content'));payload.files=JSON.parse(String(data.get('files')||'{}'));}else payload.config=JSON.parse(String(data.get('config')));
+    const saved=await api(editing?catalogPath(entry.id):'/api/catalog',editing?'PATCH':'POST',payload);
+    ui.catalogId=saved.id||saved.entry?.id||entry?.id||payload.id;toast('能力已保存');
+  });
+  const picker=$('#catalog-package');
+  if(picker)picker.onchange=async()=>{try{
+    const files={};let total=0;
+    for(const file of picker.files){total+=file.size;if(total>512*1024)throw new Error('Skill 文本包不能超过 512 KiB');const parts=(file.webkitRelativePath||file.name).split('/');const path=parts.length>1?parts.slice(1).join('/'):parts[0];if(path!=='SKILL.md'&&!/^(scripts|references|assets)\//.test(path))continue;const content=await file.text();if(content.includes('\0'))throw new Error('请导入文本资源');files[path]=content;}
+    const source=files['SKILL.md'];if(!source)throw new Error('文件夹根目录需要 SKILL.md');delete files['SKILL.md'];
+    const header=source.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);let content=source;
+    if(header){content=source.slice(header[0].length);for(const key of ['name','description']){const match=header[1].match(new RegExp(`^${key}:\\s*(.+)$`,'m'));if(match){let value=match[1].trim();try{value=JSON.parse(value);}catch{value=value.replace(/^['"]|['"]$/g,'');}$(`#field-${key}`).value=value;}}}
+    $('#field-content').value=content.trim();$('#field-files').value=JSON.stringify(files,null,2);if(!$('#field-id').value)$('#field-id').value=$('#field-name').value;
+  }catch(error){$('#modal-form .form-error').textContent=error.message;}};
+}
+async function catalogAction(action,element) {
+  const id=element.dataset.id;
+  if(action==='catalog-new')return catalogEditor(null,element.dataset.kind);
+  if(action==='catalog-open'){ui.catalogId=id;await loadCurrent();return render();}
+  const response=await api(catalogPath(id)),entry=response.entry||response;
+  if(action==='catalog-edit')return catalogEditor(entry);
+  if(action==='catalog-probe'){await api(`${catalogPath(id)}/probe`,'POST',{});toast('连接探测已完成');}
+  if(action==='catalog-toggle')await api(catalogPath(id),'PATCH',{enabled:entry.enabled===false,expectedRevision:entry.revision});
+  if(action==='catalog-remove')return openModal('移除能力',`移除“${entry.name||entry.id}”及其目录关系。已有工作历史继续保留。`,'<p>依赖它的方法会显示依赖缺失。</p>',async()=>{await api(catalogPath(id),'DELETE',{});ui.catalogId=null;ui.catalogDetail=null;toast('能力已移除');},'移除');
+  await loadCurrent();render();
+}
+document.addEventListener('submit',event=>{if(event.target.id!=='catalog-search-form')return;event.preventDefault();ui.catalogQuery=$('#catalog-query').value.trim();ui.catalogKind=$('#catalog-kind').value;void loadCurrent().then(render).catch(error=>toast(error.message,true));});
+
 function field(label, name, value = '', options = {}) {
   const { type = 'text', placeholder = '', help = '', required = false, rows, min } = options;
   const control = type === 'textarea' ? `<textarea id="field-${name}" name="${name}" ${required ? 'required' : ''} ${rows ? `rows="${rows}"` : ''} placeholder="${esc(placeholder)}">${esc(value)}</textarea>` : `<input id="field-${name}" name="${name}" type="${type}" value="${esc(value)}" ${required ? 'required' : ''} ${min != null ? `min="${min}"` : ''} placeholder="${esc(placeholder)}">`;
@@ -797,7 +860,7 @@ function openRoomForm(kind = 'group') {
 }
 function openBotForm(id) {
   const bot = botById(id);
-  openModal(bot ? '编辑成员 Profile' : '认识一位新成员', '明确专业责任与工作方式，让成员拥有持续的身份。', `${field('成员名称', 'name', bot?.name || '', { required: true, placeholder: '例如：架构师' })}${field('主要职责', 'role', bot?.role || '', { required: true, placeholder: '这个成员长期负责什么？' })}${field('专业领域', 'expertise', listText(bot?.expertise), { placeholder: '用逗号分隔，例如：系统设计、代码审查' })}${field('技能说明', 'skills', (bot?.skills || []).join('\n'), { type: 'textarea', placeholder: '每行一项，例如：代码阅读与定位、回归测试设计', help: '作为成员协作时的能力说明，不自动安装外部技能。' })}${field('身份与工作方式', 'prompt', bot?.prompt || '', { type: 'textarea', rows: 5, placeholder: '专业背景、协作偏好、遇到问题时如何处理…' })}<div class="context-note">社交模型统一为 DeepSeek Flash。专业执行交给独立执行端。</div>`, async data => {
+  openModal(bot ? '编辑成员 Profile' : '认识一位新成员', '明确专业责任与工作方式，让成员拥有持续的身份。', `${field('成员名称', 'name', bot?.name || '', { required: true, placeholder: '例如：架构师' })}${field('主要职责', 'role', bot?.role || '', { required: true, placeholder: '这个成员长期负责什么？' })}${field('专业领域', 'expertise', listText(bot?.expertise), { placeholder: '用逗号分隔，例如：系统设计、代码审查' })}${field('能力描述（不安装 Skill）', 'skills', (bot?.skills || []).join('\n'), { type: 'textarea', placeholder: '每行一项，例如：代码阅读与定位、回归测试设计', help: '作为成员协作时的能力说明，不自动安装外部技能。' })}${field('身份与工作方式', 'prompt', bot?.prompt || '', { type: 'textarea', rows: 5, placeholder: '专业背景、协作偏好、遇到问题时如何处理…' })}<div class="context-note">社交模型统一为 DeepSeek Flash。专业执行交给独立执行端。</div>`, async data => {
     const payload = { name: data.get('name').trim(), role: data.get('role').trim(), expertise: data.get('expertise').trim(), skills: data.get('skills').split('\n').map(text => text.trim()).filter(Boolean), prompt: data.get('prompt').trim() };
     const result = await api(bot ? `/api/bots/${encodeURIComponent(bot.id)}` : '/api/bots', bot ? 'PATCH' : 'POST', payload);
     ui.botId = result.id || bot?.id; toast(bot ? 'Profile 已更新' : '新成员已加入');
@@ -848,6 +911,7 @@ function openEventForm() {
 }
 
 async function act(action, element) {
+  if (action.startsWith('catalog-')) return catalogAction(action, element);
   const id = element?.dataset.id;
   if (action === 'attach-file') return chooseAttachments();
   if (action === 'remove-attachment') return removeAttachment(id);
