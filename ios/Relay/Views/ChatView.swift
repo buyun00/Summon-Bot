@@ -25,6 +25,13 @@ struct ChatView: View {
         return store.bots.first { room.members.contains($0.id) }
     }
     private var title: String { directBot?.name ?? room?.name ?? "聊天" }
+    private var composerAccent: Color {
+        let bot = directBot ?? room?.members.compactMap { store.bot(id: $0) }.first
+        return Color(relayHex: bot?.resolvedAvatar.color ?? RelayAvatar().color)
+    }
+    private var hasMessageContent: Bool {
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
+    }
     private var messages: [RelayMessage] { store.messagesForRoom(roomID) }
     private var workingBots: [RelayBot] {
         let jobs = store.selectedRoomID == roomID ? store.jobs : []
@@ -254,11 +261,12 @@ struct ChatView: View {
                         .glassEffect(.regular, in: .rect(cornerRadius: 25))
 
                         Button { send() } label: {
-                            Image(systemName: "arrow.up").font(.title3.weight(.semibold)).frame(width: 24, height: 30)
+                            Image(systemName: hasMessageContent ? "arrow.up" : "mic.fill")
+                                .font(.title3.weight(.semibold))
                         }
-                        .buttonStyle(.glassProminent).buttonBorderShape(.circle)
-                        .disabled(uploading || !store.isConfigured || store.sendingRoomIDs.contains(roomID) || (text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && attachments.isEmpty))
-                        .accessibilityLabel("发送消息")
+                        .buttonStyle(ComposerActionButtonStyle(accent: composerAccent))
+                        .disabled(uploading || !store.isConfigured || store.sendingRoomIDs.contains(roomID) || !hasMessageContent)
+                        .accessibilityLabel(hasMessageContent ? "发送消息" : "语音输入（暂未开放）")
                     }
                 }.padding(.horizontal, 14).padding(.bottom, 8)
             }
@@ -304,6 +312,19 @@ struct ChatView: View {
             defer { try? FileManager.default.removeItem(at: url) }
             attachments.append(try await store.uploadAttachment(fileURL: url))
         } catch { localError = error.localizedDescription }
+    }
+}
+
+private struct ComposerActionButtonStyle: ButtonStyle {
+    let accent: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(.white)
+            .frame(width: 44, height: 44)
+            .background(accent, in: Circle())
+            .contentShape(Circle())
+            .scaleEffect(configuration.isPressed ? 0.94 : 1)
     }
 }
 
