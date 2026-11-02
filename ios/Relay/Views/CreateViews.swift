@@ -11,6 +11,27 @@ struct CreateBotView: View {
     @State private var createdBot: RelayBot?
     @State private var errorMessage: String?
 
+    private var canSubmit: Bool {
+        !busy && (createdBot != nil || !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    private var buttonColor: Color {
+        Color(relayHex: PaperLibrary.paperColor(avatar.color, shape: avatar.shape))
+    }
+
+    private var buttonForeground: Color {
+        guard canSubmit else { return Color(uiColor: .secondaryLabel) }
+        let hex = PaperLibrary.paperColor(avatar.color, shape: avatar.shape)
+        let rgb = UInt32(hex.dropFirst(), radix: 16) ?? 0
+        func linear(_ channel: UInt32) -> Double {
+            let value = Double(channel) / 255
+            return value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+        }
+        let luminance = 0.2126 * linear((rgb >> 16) & 255)
+            + 0.7152 * linear((rgb >> 8) & 255) + 0.0722 * linear(rgb & 255)
+        return luminance > 0.179 ? .black : .white
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -30,12 +51,16 @@ struct CreateBotView: View {
                     Task { await create() }
                 } label: {
                     HStack(spacing: 10) {
-                        if busy { ProgressView() }
+                        if busy { ProgressView().tint(buttonForeground) }
                         Text(createdBot == nil ? "创建" : "打开聊天").font(.headline)
-                    }.frame(maxWidth: .infinity).padding(.vertical, 10)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 54)
+                    .foregroundStyle(buttonForeground)
+                    .background(canSubmit ? buttonColor : Color(uiColor: .systemGray5), in: Capsule())
+                    .contentShape(Capsule())
                 }
-                .buttonStyle(.glassProminent)
-                .disabled(busy || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .buttonStyle(.plain)
+                .disabled(!canSubmit)
                 .padding(.horizontal, 28).padding(.bottom, 12)
             }
             .navigationTitle("创建新 Bot")
@@ -47,6 +72,7 @@ struct CreateBotView: View {
     }
 
     private func create() async {
+        guard canSubmit else { return }
         busy = true; errorMessage = nil
         defer { busy = false }
         do {

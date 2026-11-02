@@ -276,13 +276,11 @@ final class RelayStore {
     }
 
     func openDirectMessage(bot: RelayBot) async throws -> RelayRoom {
+        // ChatView loads messages after navigation; resolving a room must not wait for history.
         if let room = rooms.first(where: { $0.kind == "dm" && $0.members.contains("user") && $0.members.contains(bot.id) && $0.members.count == 2 }) {
-            await selectRoom(room.id)
             return room
         }
-        let room = try await createGroup(name: "与 \(bot.name) 的私聊", members: ["user", bot.id], kind: "dm")
-        await selectRoom(room.id)
-        return room
+        return try await createGroup(name: "与 \(bot.name) 的私聊", members: ["user", bot.id], kind: "dm")
     }
 
     func createBot(name: String, avatar: RelayAvatar, role: String = "项目协作",
