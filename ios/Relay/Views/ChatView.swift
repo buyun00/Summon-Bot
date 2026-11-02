@@ -48,13 +48,21 @@ struct ChatView: View {
                 ids.insert(botID)
             }
         }
-        // Start the waiting feedback as soon as the outgoing message is being sent.
+        // A group message without a target has not yet been assigned to a Bot.
         for pending in store.pendingMessages where pending.roomID == roomID && ["sending", "sent"].contains(pending.status) {
             if let target = pending.message.toBotId { ids.insert(target) }
-            else { ids.formUnion(room?.members ?? []) }
+            else if let directBot { ids.insert(directBot.id) }
         }
         return store.bots.filter { ids.contains($0.id) && !$0.isPaused }
     }
+
+    private var pendingStatus: String? {
+        let pending = store.pendingMessages.filter { $0.roomID == roomID && ["sending", "sent"].contains($0.status) }
+        guard !pending.isEmpty else { return nil }
+        return pending.contains { $0.status == "sending" } ? "正在发送…" : "正在安排回复…"
+    }
+
+    private var hasWorkingIndicator: Bool { !workingBots.isEmpty || pendingStatus != nil }
 
     private func workingStatus(for bot: RelayBot, at date: Date) -> String {
         let job = store.selectedRoomID == roomID ? store.jobs.last { $0.botId == bot.id && $0.isActive } : nil
@@ -111,16 +119,23 @@ struct ChatView: View {
                         }.id(message.id)
                             .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 12)), removal: .identity))
                     }
-                    ForEach(workingBots) { bot in
+                    if hasWorkingIndicator {
                         TimelineView(.periodic(from: .now, by: 6)) { context in
-                            BotWorkingIndicator(bot: bot, name: room?.kind == "dm" ? "" : bot.name,
-                                                status: workingStatus(for: bot, at: context.date))
+                            let bots = workingBots
+                            BotWorkingIndicator(
+                                bot: bots.first,
+                                name: room?.kind == "dm" ? "" : bots.map(\.name).joined(separator: "、"),
+                                status: bots.count > 1 ? "正在工作…" : bots.first.map { workingStatus(for: $0, at: context.date) } ?? pendingStatus ?? ""
+                            )
                         }
+                        .id("conversation-working")
+                        .transition(.opacity)
                     }
                     Color.clear.frame(height: 18).id("conversation-bottom")
                 }
                 .padding(.horizontal, 18).padding(.top, 18).padding(.bottom, 8)
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.24), value: messages.last?.id)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: hasWorkingIndicator)
             }
             .scrollDismissesKeyboard(.interactively)
             .defaultScrollAnchor(.bottom)
