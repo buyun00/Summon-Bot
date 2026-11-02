@@ -13,6 +13,10 @@ export const motions: Record<string,{duration:number;expression:string;pose:'idl
   failed:{duration:6.4,expression:'triste',pose:'idle'},
   asleep:{duration:6.4,expression:'somnolent',pose:'idle'},
 }
+// Explicit expression states keep the complete picker vocabulary available to branding.
+for (const expression of EXPRESSION_BY_ID.keys()) {
+  motions['expression:' + expression] = {duration:6.4,expression,pose:'idle'}
+}
 export class PaperRig {
   engine: BotEngine
   orbit=new BotEngine(100,'orbit')

@@ -1,4 +1,4 @@
-// src/bot/math.ts
+// web/avatar-showcase/src/bot/math.ts
 var e = Math.PI * 2, t = (e, t = 0, n = 1) => e < t ? t : e > n ? n : e, n = (e, t, n) => e + (t - e) * n, r = {
 	easeOutCubic: (e) => 1 - (1 - e) ** 3,
 	easeInOutCubic: (e) => e < .5 ? 4 * e ** 3 : 1 - (-2 * e + 2) ** 3 / 2,
@@ -17,7 +17,7 @@ function a(e) {
 	};
 }
 var o = (e) => Math.round(e * 100) / 100;
-// src/bot/decor.ts
+// web/avatar-showcase/src/bot/decor.ts
 function s(e, t = .55, n = .62) {
 	let r = (e % 360 + 360) % 360, i = (1 - Math.abs(2 * n - 1)) * t, a = i * (1 - Math.abs(r / 60 % 2 - 1)), o = n - i / 2, [s, c, l] = r < 60 ? [
 		i,
@@ -211,7 +211,7 @@ function ae(e, t = {}) {
 function oe(e) {
 	return .06 + .94 * t(e);
 }
-// src/bot/expressions.ts
+// web/avatar-showcase/src/bot/expressions.ts
 var j = (e, t, n = 0, r = 1) => ({
 	w: e,
 	h: t,
@@ -374,13 +374,13 @@ var j = (e, t, n = 0, r = 1) => ({
 		split: 16,
 		eyes: M(.2, .42, 0, .42)
 	}
-], ce = new Map(se.map((e) => [e.id, e])), le = (e, t, r) => ({
+], N = new Map(se.map((e) => [e.id, e])), ce = (e, t, r) => ({
 	w: n(e.w, t.w, r),
 	h: n(e.h, t.h, r),
 	tilt: n(e.tilt ?? 0, t.tilt ?? 0, r),
 	open: n(e.open, t.open, r)
 });
-function ue(e, t, r) {
+function le(e, t, r) {
 	return {
 		id: t.id,
 		gaze: {
@@ -389,11 +389,11 @@ function ue(e, t, r) {
 			roll: n(e.gaze.roll, t.gaze.roll, r)
 		},
 		split: n(e.split, t.split, r),
-		eyes: [le(e.eyes[0], t.eyes[0], r), le(e.eyes[1], t.eyes[1], r)]
+		eyes: [ce(e.eyes[0], t.eyes[0], r), ce(e.eyes[1], t.eyes[1], r)]
 	};
 }
-// src/bot/profiles.ts
-var de = {
+// web/avatar-showcase/src/bot/profiles.ts
+var ue = {
 	egg: [
 		.8369,
 		.8424,
@@ -592,10 +592,10 @@ var de = {
 		.733,
 		.7528
 	]
-}, N = Array.from({ length: 64 }, (t, n) => n / 64 * e), P = N.map(Math.cos), F = N.map(Math.sin);
-function I(e, t = {}) {
+}, P = Array.from({ length: 64 }, (t, n) => n / 64 * e), F = P.map(Math.cos), I = P.map(Math.sin);
+function L(e, t = {}) {
 	return {
-		radii: [...de[e]],
+		radii: [...ue[e]],
 		rot: 0,
 		cx: 0,
 		cy: 0,
@@ -604,7 +604,7 @@ function I(e, t = {}) {
 		...t
 	};
 }
-function L(e, t = {}) {
+function R(e, t = {}) {
 	return {
 		radii: Array(64).fill(e),
 		rot: 0,
@@ -615,7 +615,7 @@ function L(e, t = {}) {
 		...t
 	};
 }
-function fe(t, r, i, a) {
+function de(t, r, i, a) {
 	let o = a ?? {
 		radii: Array(64),
 		rot: 0,
@@ -630,10 +630,10 @@ function fe(t, r, i, a) {
 	for (; s < -Math.PI;) s += e;
 	return o.rot = t.rot + s * i, o.cx = n(t.cx, r.cx, i), o.cy = n(t.cy, r.cy, i), o.sx = n(t.sx, r.sx, i), o.sy = n(t.sy, r.sy, i), o;
 }
-function R(e, t, n = []) {
+function z(e, t, n = []) {
 	let r = Math.cos(e.rot), i = Math.sin(e.rot);
 	for (let a = 0; a < 64; a++) {
-		let o = e.radii[a] ?? 1, s = o * (P[a] ?? 0), c = o * (F[a] ?? 0), l = s * r - c * i, u = s * i + c * r, d = n[a] ?? {
+		let o = e.radii[a] ?? 1, s = o * (F[a] ?? 0), c = o * (I[a] ?? 0), l = s * r - c * i, u = s * i + c * r, d = n[a] ?? {
 			x: 0,
 			y: 0
 		};
@@ -641,7 +641,7 @@ function R(e, t, n = []) {
 	}
 	return n.length = 64, n;
 }
-function pe(e, t = 1 / 6) {
+function fe(e, t = 1 / 6) {
 	let n = e.length;
 	if (n < 3) return "";
 	let r = e[0], i = `M${o(r.x)} ${o(r.y)}`;
@@ -651,10 +651,10 @@ function pe(e, t = 1 / 6) {
 	}
 	return `${i}Z`;
 }
-function z(e, t, n) {
+function B(e, t, n) {
 	let r = Array(64).fill(0), i = e.length;
 	for (let a = 0; a < 64; a++) {
-		let o = P[a] ?? 0, s = F[a] ?? 0, c = 0;
+		let o = F[a] ?? 0, s = I[a] ?? 0, c = 0;
 		for (let r = 0; r < i; r++) {
 			let a = e[r], l = e[(r + 1) % i], u = l.x - a.x, d = l.y - a.y, f = o * d - s * u;
 			if (Math.abs(f) < 1e-9) continue;
@@ -665,7 +665,7 @@ function z(e, t, n) {
 	}
 	return r;
 }
-function B(t, n, r, i, a, o, s = 96) {
+function V(t, n, r, i, a, o, s = 96) {
 	let c = i - t, l = a - n, u = Math.hypot(c, l) || 1e-6, d = Math.atan2(l, c), f = Math.acos(Math.max(-1, Math.min(1, (r - o) / u))), p = [];
 	for (let i = 0; i <= s / 2; i++) {
 		let a = d + f + (e - 2 * f) * i / (s / 2);
@@ -683,17 +683,17 @@ function B(t, n, r, i, a, o, s = 96) {
 	}
 	return p;
 }
-function me(t, r) {
+function pe(t, r) {
 	let i = t.length, a = (r / e % 1 + 1) % 1 * i, o = Math.floor(a);
 	return n(t[o % i] ?? 1, t[(o + 1) % i] ?? 1, a - o);
 }
-function he(e, t = 1, n = 1) {
-	return N.map((r, i) => (Math.abs((P[i] ?? 0) / t) ** e + Math.abs((F[i] ?? 0) / n) ** e) ** (-1 / e));
+function me(e, t = 1, n = 1) {
+	return P.map((r, i) => (Math.abs((F[i] ?? 0) / t) ** e + Math.abs((I[i] ?? 0) / n) ** e) ** (-1 / e));
 }
-function ge(e) {
+function he(e) {
 	let t = Array(64).fill(0);
 	for (let n = 0; n < 64; n++) {
-		let r = P[n] ?? 0, i = F[n] ?? 0, a = 0;
+		let r = F[n] ?? 0, i = I[n] ?? 0, a = 0;
 		for (let t of e) {
 			let e = r * t.x + i * t.y, n = e * e - (t.x * t.x + t.y * t.y - t.r * t.r);
 			if (n < 0) continue;
@@ -704,7 +704,7 @@ function ge(e) {
 	}
 	return t;
 }
-function _e(t, n, r = 10) {
+function ge(t, n, r = 10) {
 	let i = t.length, a = [], o = (e, t) => {
 		let n = t.x - e.x, r = t.y - e.y, i = Math.hypot(n, r) || 1;
 		return Math.atan2(-n / i, r / i);
@@ -723,9 +723,9 @@ function _e(t, n, r = 10) {
 	}
 	return a;
 }
-function ve(t, n, r, i = 0) {
+function _e(t, n, r, i = 0) {
 	let a = i * Math.PI / 180;
-	return z(_e(Array.from({ length: t }, (i, o) => {
+	return B(ge(Array.from({ length: t }, (i, o) => {
 		let s = a + o / t * e;
 		return {
 			x: Math.cos(s) * (n - r),
@@ -733,7 +733,7 @@ function ve(t, n, r, i = 0) {
 		};
 	}), r), 0, 0);
 }
-function ye(e, t = 1) {
+function ve(e, t = 1) {
 	if (e.length < 3) return "";
 	let n = "";
 	for (let r = 0; r < e.length; r++) {
@@ -742,18 +742,18 @@ function ye(e, t = 1) {
 	}
 	return `${n}Z`;
 }
-function be(e, t) {
+function ye(e, t) {
 	let n = Math.max(e, .01) / 2, r = Math.max(t, .01) / 2, i = Math.min(n, r);
 	return `M${o(-n)} ${o(-r + i)}A${o(i)} ${o(i)} 0 0 1 ${o(-n + i)} ${o(-r)}L${o(n - i)} ${o(-r)}A${o(i)} ${o(i)} 0 0 1 ${o(n)} ${o(-r + i)}L${o(n)} ${o(r - i)}A${o(i)} ${o(i)} 0 0 1 ${o(n - i)} ${o(r)}L${o(-n + i)} ${o(r)}A${o(i)} ${o(i)} 0 0 1 ${o(-n)} ${o(r - i)}Z`;
 }
-// src/bot/skins.ts
-function V(e, t = 1) {
+// web/avatar-showcase/src/bot/skins.ts
+function H(e, t = 1) {
 	let n = Math.max(...e);
 	if (n <= 0) return e;
 	let r = t / n;
 	return e.map((e) => e * r);
 }
-var xe = V(Array.from({ length: 64 }, (e, t) => t / 64 * Math.PI * 2).map((e) => 1 + .075 * Math.cos(2 * e + .5) + .035 * Math.cos(3 * e + 2.1)), 1.02), Se = V(ge([
+var be = H(Array.from({ length: 64 }, (e, t) => t / 64 * Math.PI * 2).map((e) => 1 + .075 * Math.cos(2 * e + .5) + .035 * Math.cos(3 * e + 2.1)), 1.02), xe = H(he([
 	{
 		x: -.44,
 		y: .2,
@@ -779,40 +779,40 @@ var xe = V(Array.from({ length: 64 }, (e, t) => t / 64 * Math.PI * 2).map((e) =>
 		y: -.24,
 		r: .44
 	}
-]), 1.02), Ce = V(z(B(0, .28, .66, 0, -.96, .05), 0, 0), 1.04), we = z(B(-.42, 0, .62, .42, 0, .62), 0, 0), Te = [
+]), 1.02), Se = H(B(V(0, .28, .66, 0, -.96, .05), 0, 0), 1.04), Ce = B(V(-.42, 0, .62, .42, 0, .62), 0, 0), we = [
 	{
 		id: "cercle",
 		radii: Array(64).fill(1)
 	},
 	{
 		id: "galet",
-		radii: xe
+		radii: be
 	},
 	{
 		id: "squircle",
-		radii: V(he(4.2), 1.15)
+		radii: H(me(4.2), 1.15)
 	},
 	{
 		id: "capsule",
-		radii: we
+		radii: Ce
 	},
 	{
 		id: "triangle",
-		radii: ve(3, 1.12, .34, -90)
+		radii: _e(3, 1.12, .34, -90)
 	},
 	{
 		id: "hexagone",
-		radii: ve(6, 1.04, .26, 0)
+		radii: _e(6, 1.04, .26, 0)
 	},
 	{
 		id: "nuage",
-		radii: Se
+		radii: xe
 	},
 	{
 		id: "goutte",
-		radii: Ce
+		radii: Se
 	}
-], H = new Map(Te.map((e) => [e.id, e]));
+], U = new Map(we.map((e) => [e.id, e]));
 new Map([
 	{
 		id: "encre",
@@ -863,8 +863,8 @@ new Map([
 		hex: "#DED1B2"
 	}
 ].map((e) => [e.id, e]));
-// src/bot/states.ts
-var U = (e, t) => [{
+// web/avatar-showcase/src/bot/states.ts
+var W = (e, t) => [{
 	w: e,
 	h: t,
 	open: 1
@@ -873,14 +873,14 @@ var U = (e, t) => [{
 	h: t,
 	open: 1
 }];
-function W(e = {}) {
+function G(e = {}) {
 	return {
-		sil: L(1),
+		sil: R(1),
 		offX: 0,
 		offY: 0,
 		gaze: { ...D },
 		split: w,
-		eyes: U(T, E),
+		eyes: W(T, E),
 		eyeAlpha: 1,
 		bodyAlpha: 1,
 		dots: [],
@@ -890,35 +890,35 @@ function W(e = {}) {
 		...e
 	};
 }
-var Ee = -.1875, De = z(B(0, -.505, .132, 0, .13, .075), 0, Ee), Oe = z(B(0, -.2535, .1345, 0, .2535, .1345), 0, 0), ke = (e = {}) => ({
-	radii: [...De],
+var Te = -.1875, Ee = B(V(0, -.505, .132, 0, .13, .075), 0, Te), De = B(V(0, -.2535, .1345, 0, .2535, .1345), 0, 0), Oe = (e = {}) => ({
+	radii: [...Ee],
 	rot: 0,
 	cx: 0,
-	cy: Ee,
+	cy: Te,
 	sx: 1,
 	sy: 1,
 	...e
-}), Ae = (e = {}) => ({
-	radii: [...Oe],
+}), ke = (e = {}) => ({
+	radii: [...De],
 	rot: 0,
 	cx: 0,
 	cy: 0,
 	sx: 1,
 	sy: 1,
 	...e
-}), je = ye(B(0, 0, .118, 0, .172, .012)), Me = .213;
-function Ne(e) {
-	return I("triangle", {
+}), Ae = ve(V(0, 0, .118, 0, .172, .012)), je = .213;
+function Me(e) {
+	return L("triangle", {
 		rot: e,
 		cx: -.213 * Math.sin(e),
-		cy: Me * Math.cos(e)
+		cy: je * Math.cos(e)
 	});
 }
-function Pe(n, r) {
+function Ne(n, r) {
 	let i = ((n - r * .5) / 1.5 % 1 + 1) % 1;
 	return t((i < .5 ? .5 - .5 * Math.cos(i * e) : 0) * 2);
 }
-var Fe = [
+var Pe = [
 	{
 		id: "idle",
 		duration: 2.4,
@@ -926,7 +926,7 @@ var Fe = [
 		blinkIn: !1,
 		baseFace: !0,
 		baseBody: !0,
-		pose: () => W()
+		pose: () => G()
 	},
 	{
 		id: "thinking",
@@ -936,12 +936,12 @@ var Fe = [
 		baseBody: !1,
 		blinkIn: !0,
 		pose: (e) => {
-			let n = Pe(e, 1), i = .3 + .7 * r.easeOutCubic(t(e / .3));
-			return W({
-				sil: L(p * (1 + (m - 1) * n), { cx: f[1] }),
+			let n = Ne(e, 1), i = .3 + .7 * r.easeOutCubic(t(e / .3));
+			return G({
+				sil: R(p * (1 + (m - 1) * n), { cx: f[1] }),
 				eyeAlpha: 0,
 				dots: [0, 2].map((t) => {
-					let n = Pe(e, t);
+					let n = Ne(e, t);
 					return {
 						x: f[t] * i,
 						y: 0,
@@ -959,7 +959,7 @@ var Fe = [
 		blinkIn: !0,
 		baseFace: !1,
 		baseBody: !0,
-		pose: () => W({
+		pose: () => G({
 			gaze: {
 				yaw: -5.37,
 				pitch: 4.55,
@@ -984,14 +984,14 @@ var Fe = [
 		blinkIn: !0,
 		baseFace: !1,
 		baseBody: !0,
-		pose: () => W({
+		pose: () => G({
 			gaze: {
 				yaw: 6.92,
 				pitch: -21.96,
 				roll: 11.6
 			},
 			split: 18.43,
-			eyes: U(.356, .875)
+			eyes: W(.356, .875)
 		})
 	},
 	{
@@ -1004,8 +1004,8 @@ var Fe = [
 		blinkIn: !1,
 		pose: (n) => {
 			let i = t(n / 1.5), a = r.easeInOutCubic(i) * .82 - .087, o = n > 1.6 ? t((n - 1.6) / .4) : 0, s = a * (1 - o) + .1 * o, c = Math.sin(n * 2.5 * e) * .005, l = 17.7 * Math.PI / 180;
-			return W({
-				sil: Ae({
+			return G({
+				sil: ke({
 					rot: l,
 					cx: s,
 					cy: -.325 - c
@@ -1015,7 +1015,7 @@ var Fe = [
 					x: s - Math.sin(l) * .58,
 					y: -.325 + Math.cos(l) * .58 + c * 2.8,
 					r: .118,
-					d: je,
+					d: Ae,
 					rot: l * 180 / Math.PI,
 					opacity: 1
 				}]
@@ -1031,14 +1031,14 @@ var Fe = [
 		baseBody: !0,
 		pose: (e) => {
 			let n = t(e / .45), r = 1 + (ee - 1) * Math.sin(n * Math.PI) * (1 - n * .35), i = S * (n < 1 ? r : 1), a = -42 * Math.PI / 180;
-			return W({
+			return G({
 				gaze: {
 					yaw: -21.94,
 					pitch: -5.82,
 					roll: -12.2
 				},
 				split: 18.89,
-				eyes: U(.505, .498),
+				eyes: W(.505, .498),
 				notif: {
 					x: Math.cos(a) * x,
 					y: Math.sin(a) * x,
@@ -1055,8 +1055,8 @@ var Fe = [
 		baseFace: !1,
 		baseBody: !1,
 		blinkIn: !1,
-		pose: () => W({
-			sil: ke(),
+		pose: () => G({
+			sil: Oe(),
 			eyeAlpha: 0,
 			dots: [{
 				x: -.012,
@@ -1073,8 +1073,8 @@ var Fe = [
 		baseFace: !1,
 		baseBody: !1,
 		blinkIn: !1,
-		pose: (t) => W({
-			sil: L(.1585, { cy: .11 + Math.sin(e / .6 * t) * .19 }),
+		pose: (t) => G({
+			sil: R(.1585, { cy: .11 + Math.sin(e / .6 * t) * .19 }),
 			eyeAlpha: 0
 		})
 	},
@@ -1085,15 +1085,15 @@ var Fe = [
 		baseFace: !1,
 		baseBody: !1,
 		blinkIn: !0,
-		pose: () => W({
-			sil: I("egg"),
+		pose: () => G({
+			sil: L("egg"),
 			gaze: {
 				yaw: 19.97,
 				pitch: 26.01,
 				roll: -17.1
 			},
 			split: 11.07,
-			eyes: U(.164, .385)
+			eyes: W(.164, .385)
 		})
 	},
 	{
@@ -1103,15 +1103,15 @@ var Fe = [
 		baseFace: !1,
 		baseBody: !1,
 		blinkIn: !0,
-		pose: () => W({
-			sil: I("hexagon"),
+		pose: () => G({
+			sil: L("hexagon"),
 			gaze: {
 				yaw: 23.11,
 				pitch: 24.42,
 				roll: -13.3
 			},
 			split: 13.37,
-			eyes: U(.177, .411)
+			eyes: W(.177, .411)
 		})
 	},
 	{
@@ -1123,15 +1123,15 @@ var Fe = [
 		blinkIn: !0,
 		pose: (e) => {
 			let n = t(e / .35) * t((2.2 - e) / .5);
-			return W({
-				sil: Ne(0),
+			return G({
+				sil: Me(0),
 				gaze: {
 					yaw: 12,
 					pitch: -8,
 					roll: -6
 				},
 				split: 15,
-				eyes: U(.18, .34),
+				eyes: W(.18, .34),
 				arcs: d.map((t, r) => ({
 					id: `sw${r}`,
 					seed: {
@@ -1153,7 +1153,7 @@ var Fe = [
 		baseBody: !1,
 		blinkIn: !1,
 		pose: (n) => {
-			let i = r.easeInOutCubic(t(n / .35)), a = -e * 1.25 * n * i, o = r.easeInOutCubic(t((n - 1.6) / .9)), s = Ne(a), c = L(1, { rot: a }), l = {
+			let i = r.easeInOutCubic(t(n / .35)), a = -e * 1.25 * n * i, o = r.easeInOutCubic(t((n - 1.6) / .9)), s = Me(a), c = R(1, { rot: a }), l = {
 				radii: s.radii.map((e, t) => e + (c.radii[t] - e) * o),
 				rot: a,
 				cx: s.cx * (1 - o),
@@ -1161,14 +1161,14 @@ var Fe = [
 				sx: 1,
 				sy: 1
 			}, d = t(n / .8) * t((3.6 - n) / .9);
-			return W({
+			return G({
 				sil: l,
 				gaze: {
 					yaw: D.yaw + Math.sin(n * 6.5) * 65 * (1 - o),
 					pitch: -4 + o * 32,
 					roll: -13
 				},
-				eyes: U(.18, .34 + o * .07),
+				eyes: W(.18, .34 + o * .07),
 				arcs: u.map((e, r) => ({
 					id: `rg${r}`,
 					seed: e,
@@ -1186,7 +1186,7 @@ var Fe = [
 		baseFace: !0,
 		baseBody: !0,
 		blinkIn: !0,
-		pose: (e) => W({ arcs: u.slice(0, 3).map((n, r) => ({
+		pose: (e) => G({ arcs: u.slice(0, 3).map((n, r) => ({
 			id: `sw${r}`,
 			seed: n,
 			t: e,
@@ -1203,8 +1203,8 @@ var Fe = [
 		blinkIn: !1,
 		pose: (e) => {
 			let n = 1 - .834 * r.easeOutQuint(t(e / .7)), i = r.easeOutQuint(t((e - 1.7) / .7));
-			return W({
-				sil: L(n + (1 - n) * i),
+			return G({
+				sil: R(n + (1 - n) * i),
 				eyeAlpha: t((e - 1.85) / .4),
 				dots: _(e, 1),
 				dotsBehind: !0
@@ -1221,8 +1221,8 @@ var Fe = [
 		blinkIn: !1,
 		pose: (e) => {
 			let n = 1 - (1 - b) * r.easeOutQuint(t(e / .55)), i = r.easeOutQuint(t((e - 1.85) / .6)), a = t((e - .15) / .25) * t((1.95 - e) / .3);
-			return W({
-				sil: L(n + (1 - n) * i, { cy: Math.sin(t(e / 1.7) * Math.PI) * .035 }),
+			return G({
+				sil: R(n + (1 - n) * i, { cy: Math.sin(t(e / 1.7) * Math.PI) * .035 }),
 				eyeAlpha: t((e - 2) / .35),
 				arcs: y.map((t, n) => ({
 					id: `cm${n}`,
@@ -1233,13 +1233,13 @@ var Fe = [
 			});
 		}
 	}
-], G = new Map(Fe.map((e) => [e.id, e])), K = 100, Ie = 7.1, Le = 5.5, Re = .006, ze = .007;
-function Be(e, t, n) {
-	let r = [], i = te(e.gaze, K, e.split);
+], K = new Map(Pe.map((e) => [e.id, e])), q = 100, Fe = 7.1, Ie = 5.5, Le = .006, Re = .007;
+function ze(e, t, n) {
+	let r = [], i = te(e.gaze, q, e.split);
 	for (let a = 0; a < 2; a++) {
 		let o = i[a];
 		if (o.depth <= .02) continue;
-		let s = e.eyes[a], c = (s.tilt ?? 0) * Math.PI / 180, l = Math.cos(c), u = Math.sin(c), d = o.a * l + o.c * u, f = o.b * l + o.d * u, p = -o.a * u + o.c * l, m = -o.b * u + o.d * l, h = Math.max(s.w * K, .01) / 2, g = Math.max(s.h * K, .01) / 2, _ = Math.min(h, g), v = g > h, y = v ? g - _ : h - _, b = me(n, Math.atan2(o.y, o.x) - t.rot);
+		let s = e.eyes[a], c = (s.tilt ?? 0) * Math.PI / 180, l = Math.cos(c), u = Math.sin(c), d = o.a * l + o.c * u, f = o.b * l + o.d * u, p = -o.a * u + o.c * l, m = -o.b * u + o.d * l, h = Math.max(s.w * q, .01) / 2, g = Math.max(s.h * q, .01) / 2, _ = Math.min(h, g), v = g > h, y = v ? g - _ : h - _, b = pe(n, Math.atan2(o.y, o.x) - t.rot);
 		r.push({
 			x: o.x * b,
 			y: o.y * b,
@@ -1256,7 +1256,7 @@ function Be(e, t, n) {
 	}
 	return r;
 }
-function Ve(e, t, n, r, i) {
+function Be(e, t, n, r, i) {
 	let a = r - t, o = i - n, s = a * a + o * o, c = Infinity, l = 0, u = 0;
 	for (let r = 0; r < e.length; r++) {
 		let i = e[r], d = s > 0 ? ((i.x - t) * a + (i.y - n) * o) / s : 0;
@@ -1271,11 +1271,11 @@ function Ve(e, t, n, r, i) {
 		uy: d > 1e-9 ? u / d : 0
 	};
 }
-var He = Math.hypot(Re, ze) * K;
-function Ue(e, t, n, r) {
+var Ve = Math.hypot(Le, Re) * q;
+function He(e, t, n, r) {
 	let i = Infinity, a = 0, o = 0;
 	for (let s of t) {
-		let t = s.x + n, c = s.y + r, l = Ve(e, t - s.ax, c - s.ay, t + s.ax, c + s.ay), [u, d, f, p] = s.m, m = s.r * Math.hypot(u * l.ux + d * l.uy, f * l.ux + p * l.uy) + He;
+		let t = s.x + n, c = s.y + r, l = Be(e, t - s.ax, c - s.ay, t + s.ax, c + s.ay), [u, d, f, p] = s.m, m = s.r * Math.hypot(u * l.ux + d * l.uy, f * l.ux + p * l.uy) + Ve;
 		l.d - m < i && (i = l.d - m, a = l.ux, o = l.uy);
 	}
 	return {
@@ -1284,21 +1284,21 @@ function Ue(e, t, n, r) {
 		uy: o
 	};
 }
-var We = 12, Ge = 8;
-function Ke(e) {
+var Ue = 12, We = 8;
+function Ge(e) {
 	if (!e.length) return {
 		x: 0,
 		y: 0
 	};
 	let t = (t, n) => {
 		let r = Infinity;
-		for (let i of e) r = Math.min(r, Ue(i.contour, i.empreintes, t, n).marge);
+		for (let i of e) r = Math.min(r, He(i.contour, i.empreintes, t, n).marge);
 		return r;
 	}, n = Infinity;
-	for (let t of e) n = Math.min(n, Ue(t.calContour, t.reference, 0, 0).marge);
+	for (let t of e) n = Math.min(n, He(t.calContour, t.reference, 0, 0).marge);
 	let r = 0, i = 0, a = e[0].empreintes;
 	for (let e of a) r -= e.x / a.length, i -= e.y / a.length;
-	let o = Math.max(.35 * K, Math.hypot(r, i) * 1.25);
+	let o = Math.max(.35 * q, Math.hypot(r, i) * 1.25);
 	n = Math.min(n, t(r, i));
 	let s = t(0, 0);
 	if (s >= n && s >= 0) return {
@@ -1306,8 +1306,8 @@ function Ke(e) {
 		y: 0
 	};
 	let c = Math.max(n, 0), l = 0, u = 0, d = Infinity, f = 0, p = 0, m = s;
-	for (let e = 0; e < We; e++) {
-		let n = e / We * Math.PI * 2, r = Math.cos(n), i = Math.sin(n);
+	for (let e = 0; e < Ue; e++) {
+		let n = e / Ue * Math.PI * 2, r = Math.cos(n), i = Math.sin(n);
 		if (t(r * o, i * o) < c) {
 			for (let e of [
 				.3,
@@ -1320,7 +1320,7 @@ function Ke(e) {
 			continue;
 		}
 		let a = 0, s = o;
-		for (let e = 0; e < Ge; e++) {
+		for (let e = 0; e < We; e++) {
 			let e = (a + s) / 2;
 			t(r * e, i * e) >= c ? s = e : a = e;
 		}
@@ -1328,11 +1328,11 @@ function Ke(e) {
 	}
 	let h = d === Infinity ? f : l, g = d === Infinity ? p : u;
 	return {
-		x: +(h / K).toFixed(6),
-		y: +(g / K).toFixed(6)
+		x: +(h / q).toFixed(6),
+		y: +(g / q).toFixed(6)
 	};
 }
-function qe(e, t, n) {
+function Ke(e, t, n) {
 	return e.baseFace && n ? {
 		gaze: n.gaze,
 		split: n.split,
@@ -1343,7 +1343,7 @@ function qe(e, t, n) {
 		eyes: t.eyes
 	};
 }
-function Je(e) {
+function qe(e) {
 	let t = (e) => JSON.stringify([
 		e.gaze,
 		e.split,
@@ -1356,14 +1356,14 @@ function Je(e) {
 	]);
 	return t(e.pose(0)) === t(e.pose(e.duration)) ? [0] : Array.from({ length: 3 }, (t, n) => n / 2 * e.duration);
 }
-function Ye(e, t, n) {
+function Je(e, t, n) {
 	let r = [];
-	for (let i of Je(e)) {
-		let a = e.pose(i), o = R({
+	for (let i of qe(e)) {
+		let a = e.pose(i), o = z({
 			...a.sil,
 			radii: t
-		}, K), s = R(a.sil, K), c = qe(e, a, n), l = [];
-		for (let e of [-7.1, Ie]) for (let t of [-5.5, Le]) l.push({
+		}, q), s = z(a.sil, q), c = Ke(e, a, n), l = [];
+		for (let e of [-7.1, Fe]) for (let t of [-5.5, Ie]) l.push({
 			...c,
 			gaze: {
 				yaw: c.gaze.yaw + e,
@@ -1372,37 +1372,37 @@ function Ye(e, t, n) {
 			}
 		});
 		for (let e of l) r.push({
-			empreintes: Be(e, a.sil, t),
-			reference: Be(e, a.sil, a.sil.radii),
+			empreintes: ze(e, a.sil, t),
+			reference: ze(e, a.sil, a.sil.radii),
 			contour: o,
 			calContour: s
 		});
 	}
-	return Ke(r);
+	return Ge(r);
 }
-var q = {
+var J = {
 	x: 0,
 	y: 0
-}, J = (e, t) => `${e}|${t ?? ""}`;
-function Xe() {
-	return new Map(Te.map((e) => {
+}, Y = (e, t) => `${e}|${t ?? ""}`;
+function Ye() {
+	return new Map(we.map((e) => {
 		let t = /* @__PURE__ */ new Map();
-		for (let n of Fe) {
+		for (let n of Pe) {
 			if (!n.baseBody) continue;
 			let r = n.baseFace ? [null, ...se] : [null];
-			for (let i of r) t.set(J(n.id, i?.id ?? null), Ye(n, e.radii, i));
+			for (let i of r) t.set(Y(n.id, i?.id ?? null), Je(n, e.radii, i));
 		}
 		return [e.radii, t];
 	}));
 }
-var Ze = Xe();
-function Qe(e, t, n) {
-	if (!e) return q;
-	let r = Ze.get(e);
-	return r ? r.get(J(t, n)) ?? r.get(J(t, null)) ?? q : q;
+var Xe = Ye();
+function Ze(e, t, n) {
+	if (!e) return J;
+	let r = Xe.get(e);
+	return r ? r.get(Y(t, n)) ?? r.get(Y(t, null)) ?? J : J;
 }
-// src/bot/engine.ts
-var Y = {
+// web/avatar-showcase/src/bot/engine.ts
+var Qe = {
 	yaw: 0,
 	pitch: 0,
 	mix: 0,
@@ -1423,7 +1423,7 @@ var Y = {
 function tt(e, t, r) {
 	let i = 1 - r;
 	return {
-		sil: fe(e.sil, t.sil, r),
+		sil: de(e.sil, t.sil, r),
 		offX: n(e.offX, t.offX, r),
 		offY: n(e.offY, t.offY, r),
 		gaze: {
@@ -1472,8 +1472,8 @@ var nt = class e {
 	expr = null;
 	exprPrev = null;
 	exprAt = -10;
-	look = Y;
-	lookPrev = Y;
+	look = Qe;
+	lookPrev = Qe;
 	lookAt = -10;
 	lookMorph = .24;
 	static SHAPE_MORPH = .45;
@@ -1488,7 +1488,7 @@ var nt = class e {
 		let i = this.expr, a = this.exprPrev;
 		if (!i || !a) return i;
 		let o = (n - this.exprAt) / e.SHAPE_MORPH;
-		return o >= 1 ? i : ue(a, i, r.easeOutQuint(t(o)));
+		return o >= 1 ? i : le(a, i, r.easeOutQuint(t(o)));
 	}
 	setShape(e, t = 0) {
 		e !== this.shape && (this.shapePrev = this.shape, this.shape = e, this.shapeAt = t);
@@ -1502,7 +1502,7 @@ var nt = class e {
 		return a.map((e, t) => n(o[t] ?? e, e, c));
 	}
 	setLook(t, n, r = e.LOOK_MORPH) {
-		(!t || Number.isFinite(t.yaw + t.pitch + t.mix + t.spin + t.wander)) && (this.lookPrev = this.lookAtTime(n), this.look = t ?? Y, this.lookAt = n, this.lookMorph = r);
+		(!t || Number.isFinite(t.yaw + t.pitch + t.mix + t.spin + t.wander)) && (this.lookPrev = this.lookAtTime(n), this.look = t ?? Qe, this.lookAt = n, this.lookMorph = r);
 	}
 	lookAtTime(e) {
 		let n = (e - this.lookAt) / this.lookMorph;
@@ -1533,7 +1533,7 @@ var nt = class e {
 				x: n(o.x, s.x, l),
 				y: n(o.y, s.y, l)
 			};
-		}, s = (t) => o(this.exprAt, e.SHAPE_MORPH, Qe(t, a, this.exprPrev?.id ?? null), Qe(t, a, this.expr?.id ?? null));
+		}, s = (t) => o(this.exprAt, e.SHAPE_MORPH, Ze(t, a, this.exprPrev?.id ?? null), Ze(t, a, this.expr?.id ?? null));
 		return o(this.shapeAt, e.SHAPE_MORPH, s(this.shapePrev), s(this.shape));
 	}
 	get state() {
@@ -1545,22 +1545,22 @@ var nt = class e {
 	origine(e, t, n) {
 		if (this.departFige) return this.departFige;
 		if (!this.prev) return null;
-		let r = G.get(this.prev);
+		let r = K.get(this.prev);
 		return this.posed(r, Math.max(0, e - this.tPrev + this.previousPosePhase), t, n);
 	}
 	poseComposee(e) {
-		let n = G.get(this.cur), i = this.shapeAtTime(e), a = this.exprAtTime(e), o = this.posed(n, Math.max(0, e - this.tCur + this.posePhase), i, a), s = e - this.tCur;
+		let n = K.get(this.cur), i = this.shapeAtTime(e), a = this.exprAtTime(e), o = this.posed(n, Math.max(0, e - this.tCur + this.posePhase), i, a), s = e - this.tCur;
 		if (s >= n.morph) return o;
 		let c = this.origine(e, i, a);
 		return c ? tt(c, o, r.easeOutQuint(t(s / n.morph))) : o;
 	}
 	setState(e, t, n = 0) {
 		if (e === this.cur) return;
-		let r = G.get(this.cur).morph, i = this.prev !== null && t - this.tCur < r;
-		this.departFige = i ? this.poseComposee(t) : null, this.prev = this.cur, this.tPrev = this.tCur, this.previousPosePhase = this.posePhase, this.posePhase = n, this.cur = e, this.tCur = t, G.get(e)?.blinkIn && (this.blinkAt = t);
+		let r = K.get(this.cur).morph, i = this.prev !== null && t - this.tCur < r;
+		this.departFige = i ? this.poseComposee(t) : null, this.prev = this.cur, this.tPrev = this.tCur, this.previousPosePhase = this.posePhase, this.posePhase = n, this.cur = e, this.tCur = t, K.get(e)?.blinkIn && (this.blinkAt = t);
 	}
 	sample(e) {
-		let i = this.scale, a = G.get(this.cur), s = this.shapeAtTime(e), l = this.exprAtTime(e), u = this.posed(a, Math.max(0, e - this.tCur + this.posePhase), s, l), d = this.decalageAtTime(e, this.cur), f = e - this.tCur, p = f < a.morph ? this.origine(e, s, l) : null;
+		let i = this.scale, a = K.get(this.cur), s = this.shapeAtTime(e), l = this.exprAtTime(e), u = this.posed(a, Math.max(0, e - this.tCur + this.posePhase), s, l), d = this.decalageAtTime(e, this.cur), f = e - this.tCur, p = f < a.morph ? this.origine(e, s, l) : null;
 		if (p) {
 			let i = r.easeOutQuint(t(f / a.morph));
 			u = tt(p, u, i);
@@ -1580,12 +1580,12 @@ var nt = class e {
 			yaw: n(u.gaze.yaw, h.yaw, h.mix) + g.dYaw - h.spin,
 			pitch: n(u.gaze.pitch, h.pitch, h.mix) + g.dPitch,
 			roll: u.gaze.roll + g.dRoll
-		}, v = t((e - this.blinkAt) / .2), y = v < 1 ? Math.abs(v * 2 - 1) : 1, b = Math.min(g.lid, y), x = u.offX + g.driftX, S = u.offY + g.driftY, ee = pe(R({
+		}, v = t((e - this.blinkAt) / .2), y = v < 1 ? Math.abs(v * 2 - 1) : 1, b = Math.min(g.lid, y), x = u.offX + g.driftX, S = u.offY + g.driftY, ee = fe(z({
 			...u.sil,
 			cx: u.sil.cx + x,
 			cy: u.sil.cy + S,
 			sy: u.sil.sy * g.breath
-		}, i, this.pts)), C = (e, t) => me(u.sil.radii, Math.atan2(t, e) - u.sil.rot), w = [];
+		}, i, this.pts)), C = (e, t) => pe(u.sil.radii, Math.atan2(t, e) - u.sil.rot), w = [];
 		if (u.eyeAlpha > .01) {
 			let e = te(_, i, u.split);
 			for (let n = 0; n < 2; n++) {
@@ -1593,7 +1593,7 @@ var nt = class e {
 				if (r.depth <= .02) continue;
 				let a = u.eyes[n], s = C(r.x, r.y), c = (a.tilt ?? 0) * Math.PI / 180, l = Math.cos(c), f = Math.sin(c), p = r.a * l + r.c * f, m = r.b * l + r.d * f, h = -r.a * f + r.c * l, g = -r.b * f + r.d * l, _ = oe(Math.min(b, a.open));
 				w.push({
-					d: be(a.w * i, a.h * i),
+					d: ye(a.w * i, a.h * i),
 					matrix: `matrix(${o(p)},${o(m * _)},${o(h)},${o(g * _)},${o(r.x * s + (x + d.x) * i)},${o(r.y * s + (S + d.y) * i)})`,
 					alpha: u.eyeAlpha * t(r.depth / .12)
 				});
@@ -1798,7 +1798,7 @@ function st(e, t = 0) {
 		image: null
 	});
 }
-// src/relay/rig.ts
+// web/avatar-showcase/src/relay/rig.ts
 var $ = {
 	idle: {
 		duration: 6.4,
@@ -1840,7 +1840,13 @@ var $ = {
 		expression: "somnolent",
 		pose: "idle"
 	}
-}, ct = class {
+};
+for (let e of N.keys()) $["expression:" + e] = {
+	duration: 6.4,
+	expression: e,
+	pose: "idle"
+};
+var ct = class {
 	engine;
 	orbit = new nt(100, "orbit");
 	motion = "idle";
@@ -1848,17 +1854,17 @@ var $ = {
 	finished = !1;
 	constructor(e, t = "idle") {
 		let n = $[t] || $.idle;
-		this.motion = $[t] ? t : "idle", this.engine = new nt(100, n.pose, H.get(Q(e)).radii, ce.get(n.expression));
+		this.motion = $[t] ? t : "idle", this.engine = new nt(100, n.pose, U.get(Q(e)).radii, N.get(n.expression));
 	}
 	setShape(e, t) {
-		this.engine.setShape(H.get(Q(e)).radii, t);
+		this.engine.setShape(U.get(Q(e)).radii, t);
 	}
 	setMotion(e, t) {
 		let n = $[e] ? e : "idle";
 		if (n === this.motion) return;
 		this.motion = n, this.changed = t, this.finished = !1;
 		let r = $[n];
-		this.engine.setState(r.pose, t), this.engine.setExpression(ce.get(r.expression), t);
+		this.engine.setState(r.pose, t), this.engine.setExpression(N.get(r.expression), t);
 	}
 	sample(e) {
 		this.motion === "done" && !this.finished && e - this.changed >= 1.6 && (this.finished = !0, this.engine.setState("idle", e));
@@ -1866,4 +1872,4 @@ var $ = {
 		return this.motion === "work" && (t.arcs = this.orbit.sample((e - this.changed) % 4.3).arcs), t;
 	}
 };
-export { nt as BotEngine, ct as PaperRig, H as SHAPE_BY_ID, st as defaultPaperAvatar, $ as motions, ot as normalizePaperAvatar, at as paperLegacyColors, it as paperLegacyShapes, X as paperShapes, rt as paperTemplates };
+export { nt as BotEngine, ct as PaperRig, U as SHAPE_BY_ID, st as defaultPaperAvatar, $ as motions, ot as normalizePaperAvatar, at as paperLegacyColors, it as paperLegacyShapes, X as paperShapes, rt as paperTemplates };

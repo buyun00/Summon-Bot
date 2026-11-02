@@ -9,6 +9,26 @@
   let palette = pick(avatars.templates);
   let nextColor = Date.now() + (12 + Math.random() * 6) * 60000;
   const heads = new Set();
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  let expression = 'idle';
+  let remaining = [];
+  function nextExpression() {
+    if (!remaining.length) remaining = avatars.states.filter(state => state.startsWith('expression:') && state !== 'expression:neutre');
+    return remaining.splice(Math.floor(Math.random() * remaining.length), 1)[0];
+  }
+  function scheduleExpression() {
+    setTimeout(() => {
+      if (!document.hidden && !reduced.matches) {
+        expression = expression === 'idle' ? nextExpression() : 'idle';
+        heads.forEach(head => head.paint());
+      }
+      scheduleExpression();
+    }, expression === 'idle' ? 12000 + Math.random() * 10000 : 3000 + Math.random() * 2000);
+  }
+  scheduleExpression();
+  reduced.addEventListener('change', () => {
+    if (reduced.matches) { expression = 'idle'; heads.forEach(head => head.paint()); }
+  });
   let identity = 0;
   class SummonWordmark extends HTMLElement {
     connectedCallback() {
@@ -24,9 +44,9 @@
     disconnectedCallback() { heads.delete(this); }
     paint() {
       const holder = this.querySelector('.summon-o');
-      // The idle rig supplies the calm face, blinking, breathing and wandering gaze.
+      // Calm between expressions; the rig preserves blinking and wandering gaze.
       holder.innerHTML = avatars.render({ ...palette, shape }, 40, {
-        key: this.avatarKey, state: 'idle'
+        key: this.avatarKey, state: expression
       });
       avatars.hydrate(holder);
       holder.firstElementChild.setAttribute('viewBox', '-120 -120 240 240');
