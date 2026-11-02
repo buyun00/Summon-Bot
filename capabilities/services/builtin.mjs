@@ -38,7 +38,7 @@ export async function createCapability(options) {
   const manager = new BotManager({store:store('bot-management'),dataRoot,releaseRoot,defaultCwd,model:options.model,emit,
     gatewayUrl:()=>options.gatewayUrl,getTools:bot=>bridge('tools',{botId:bot.id})});
   const remote = (capability,operation,args) => bridge('invoke',{capability,operation,args});
-  if (id !== 'bot-management') for (const method of ['create','update','start','stop','send','saveRoutine','restore','monitor','quiesce','shutdownAll']) manager[method] = (...args) => remote('bot-management',method,args);
+  if (id !== 'bot-management') for (const method of ['create','update','start','stop','send','saveRoutine','restore','monitor','quiesce','shutdownAll','ensureCatalogMaintainer','setCatalogMaintainerState']) manager[method] = (...args) => remote('bot-management',method,args);
   const ownRoot = join(dataRoot,'capabilities',id); await mkdir(ownRoot,{recursive:true});
   const mutations = new WorkspaceExecutionLock(ownRoot);
   const locked = operation => mutations.withLock(`${id}@${version}`,operation);
@@ -118,7 +118,7 @@ export async function createCapability(options) {
   }
   const operations={};
   const expose=(target,names)=>{for(const name of names)operations[name]=(...args)=>locked(()=>target[name](...args));};
-  if(id==='bot-management')expose(manager,['create','update','start','stop','send','saveRoutine','seed','restore','monitor','quiesce','shutdownAll','connect']);
+  if(id==='bot-management')expose(manager,['create','update','start','stop','send','saveRoutine','seed','restore','monitor','quiesce','shutdownAll','connect','ensureCatalogMaintainer','setCatalogMaintainerState']);
   if(chatroom){
     expose(chatroom,['createRoom','updateRoom','post','append','dm','conclude','saveConclusion','retry','seed']);operations.upload=(...args)=>locked(()=>attachments.upload(...args));
     operations.pause=async()=>{await chatroom.close();return {paused:true};};

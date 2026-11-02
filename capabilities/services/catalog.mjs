@@ -9,17 +9,17 @@ const K = { entries: 'catalog-entries', requests: 'catalog-requests', proposals:
 const string = { type: 'string' }, strings = { type: 'array', items: string }, integer = { type: 'integer', minimum: 0 };
 const object = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const refFields = { workId: string, conversationId: string, originRoomId: string, originMessageId: string, sourceRefs: strings };
-const entryFields = { id: string, kind: { type: 'string', enum: ['mcp', 'http'] }, name: string, description: string, config: { type: 'object' }, ownerBotId: string, allowedBotIds: strings, scopeRefs: strings, dependencies: strings, enabled: { type: 'boolean' }, coordination: { type: 'object' }, source: {}, expectedRevision: integer };
+const entryFields = { id: string, kind: { type: 'string', enum: ['mcp', 'http'] }, name: string, description: string, config: { type: 'object' }, allowedBotIds: strings, scopeRefs: strings, dependencies: strings, enabled: { type: 'boolean' }, coordination: { type: 'object' }, source: {}, expectedRevision: integer };
 export const catalogTools = [
   ['catalog_search', 'Find permitted MCP connections, HTTP APIs and shared Skills by purpose or actual scope references. Read only relevant entries; availability is not business authorization.', 'read', object({ query: string, kind: string, scopeRefs: strings, offset: integer, limit: { type: 'integer', minimum: 1, maximum: 80 } })],
   ['catalog_get', 'Read a catalog entry, its tool schemas, owner and dependencies, or a Skill resource. Supply operationId to inspect your persisted call receipt without contacting the remote service. resource is SKILL.md or a relative scripts/references/assets path.', 'read', object({ id: string, resource: string, operationId: string }, ['id'])],
   ['catalog_probe', 'Discover an MCP connection’s current tool schemas or load an HTTP configuration. Does not call a business tool. HTTP configuration readiness alone is not a successful API request.', 'read', object({ id: string }, ['id'])],
-  ['catalog_register', 'Record an explicitly introduced MCP or HTTP entry once, with credential environment references only and yourself as responsible Bot. This creates a discoverable entry, not continuing business authorization. Defaults access to yourself.', 'write', object(entryFields, ['id', 'kind', 'name', 'description', 'config', 'source'])],
+  ['catalog_register', 'Record an explicitly introduced MCP or HTTP entry once, with credential environment references only. The platform creates its own dedicated maintenance Bot and retains your access. Registration does not authorize continuing business.', 'write', object(entryFields, ['id', 'kind', 'name', 'description', 'config', 'source'])],
   ['catalog_update', 'Update a connection you maintain after an observed change or user correction. Read its revision first. Never put secret values in config; use environment references.', 'write', object(entryFields, ['id', 'expectedRevision'])],
   ['catalog_call', 'Call an allowed catalog tool directly. Supply tool arguments exactly as its schema. Every mutation requires a stable operationId, supplied here or as arguments.operationId when that tool explicitly accepts it; the outer operationId takes precedence. Reuse it to inspect an uncertain receipt, never replace it to retry an unknown write.', 'external', object({ id: string, tool: string, arguments: { type: 'object' }, operationId: string, ...refFields }, ['id', 'tool', 'arguments'])],
   ['catalog_reconcile', 'The responsible Bot may resolve an unknown call only after obtaining concrete independent evidence of its actual outcome. Include that evidence; never infer failure from a timeout or use this to bypass an unresolved write.', 'write', object({ id: string, operationId: string, actor: string, outcome: { type: 'string', enum: ['completed', 'failed'] }, evidence: string }, ['id', 'operationId', 'outcome', 'evidence'])],
   ['catalog_delegate', 'Ask the responsible Bot for judgment or an explicit scoped task. Include original room/message and work IDs for isolated result return. This does not authorize ongoing business.', 'external', object({ id: string, message: string, operationId: string, ...refFields }, ['id', 'message', 'operationId'])],
-  ['catalog_skill_write', 'Create or revise one shared Skill from observed reusable evidence. Search and read existing Skills first. Only its maintainer can revise it; other Bots propose a correction. expectedRevision is mandatory for existing Skills. Credentials and live task state do not belong in Skills.', 'write', object({ id: string, name: string, description: string, content: string, files: { type: 'object', additionalProperties: string }, ownerBotId: string, allowedBotIds: strings, scopeRefs: strings, dependencies: strings, source: {}, expectedRevision: integer, proposalId: string }, ['name', 'description', 'content', 'source'])],
+  ['catalog_skill_write', 'Create or revise one shared Skill from observed reusable evidence. A new Skill gets its own dedicated maintenance Bot; its creator retains access. Search and read existing Skills first. Only its maintainer can revise it; other Bots propose a correction. expectedRevision is mandatory for existing Skills. Credentials and live task state do not belong in Skills.', 'write', object({ id: string, name: string, description: string, content: string, files: { type: 'object', additionalProperties: string }, allowedBotIds: strings, scopeRefs: strings, dependencies: strings, source: {}, expectedRevision: integer, proposalId: string }, ['name', 'description', 'content', 'source'])],
   ['catalog_skill_propose', 'Submit a concrete sourced correction to the shared Skill maintainer. Keeps one shared body; does not create a private copy or overwrite it. The maintainer receives this proposal.', 'external', object({ id: string, content: string, description: string, source: {}, expectedRevision: integer, ...refFields }, ['id', 'content', 'source', 'expectedRevision'])],
 ].map(([name, description, effect, inputSchema]) => ({ name, description, effect, inputSchema }));
 
@@ -38,7 +38,7 @@ export class CapabilityCatalog {
   constructor({ store, registry, manager, dataRoot, workspace, emit = () => {}, delegate }) {
     Object.assign(this, { store, registry, manager, dataRoot, workspace, emit, delegate });
     this.skillRoot = resolve(dataRoot, 'capabilities', 'skills');
-    this.connections = new Map(); this.locks = new Map(); this.controller = new AbortController();
+    this.connections = new Map(); this.locks = new Map(); this.executions = new Map(); this.controller = new AbortController();
     for (const request of store.list(K.requests)) if (request.status === 'running') store.save(K.requests, { ...request, status: 'unknown', error: 'Gateway restarted before the remote receipt was recorded' });
   }
   async serial(key, operation) {
@@ -47,9 +47,32 @@ export class CapabilityCatalog {
     try { return await task; } finally { if (this.locks.get(key) === task) this.locks.delete(key); }
   }
   entry(id) { const entry = this.store.get(K.entries, safeId(id)); if (!entry) fail('Catalog entry not found', 404); return entry; }
-  permitted(entry, actor) { return actor === 'controller' || entry.ownerBotId === actor || entry.allowedBotIds.includes('*') || entry.allowedBotIds.includes(actor); }
+  dependencyIds(entry, seen = new Set()) {
+    for (const id of entry.dependencies) {
+      if (seen.has(id)) continue; seen.add(id);
+      const dependency = this.store.get(K.entries, id); if (dependency) this.dependencyIds(dependency, seen);
+    }
+    return seen;
+  }
+  permitted(entry, actor) {
+    if (actor === 'controller') return true;
+    const bot = this.manager.store.get('bots', actor);
+    if (bot?.maintenanceFor?.kind === 'catalog') {
+      // Derived access follows this maintainer's current, enabled entry only.
+      // It neither grants the dependency's users access to the Skill nor
+      // admits a dedicated Bot to unrelated entries through a broad '*' ACL.
+      const owned = this.store.get(K.entries, bot.maintenanceFor.entryId);
+      if (bot.archivedAt || !owned || owned.ownerBotId !== actor) return false;
+      return owned.id === entry.id || (owned.enabled && (this.dependencyIds(owned).has(entry.id) || entry.creatorBotId === actor || entry.allowedBotIds.includes(actor)));
+    }
+    return entry.ownerBotId === actor || entry.allowedBotIds.includes('*') || entry.allowedBotIds.includes(actor);
+  }
   access(entry, actor) { if (!this.permitted(entry, actor)) fail('This Bot is not allowed to use this catalog entry', 403); }
-  owner(entry, actor) { if (actor !== 'controller' && actor !== entry.ownerBotId) fail('Only the responsible Bot can maintain this entry; submit a Skill proposal', 403); }
+  owner(entry, actor) {
+    if (actor === 'controller') return;
+    const bot = this.manager.get(actor);
+    if (actor !== entry.ownerBotId || bot.archivedAt || bot.maintenanceFor && bot.status !== 'active') fail('Only the active responsible Bot can maintain this entry; submit a Skill proposal', 403);
+  }
   clean(value) {
     let text = typeof value === 'string' ? value : JSON.stringify(value);
     const secrets = new Set();
@@ -131,11 +154,14 @@ export class CapabilityCatalog {
       if (definition.headers && Object.keys(definition.headers).length) fail('Use headersEnv credential references, not literal headers');
       if (definition.env && (!plain(definition.env) || Object.values(definition.env).some(value => !plain(value) || typeof value.env !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(value.env)))) fail('Stdio environment values must be {env: NAME} references');
       if (Object.keys(definition).some(key => /^(?:token|password|secret|authorization|api[_-]?key)$/i.test(key))) fail('Use credential environment references, not literal credentials');
+      if (definition.args !== undefined && (!Array.isArray(definition.args) || definition.args.some(value => typeof value !== 'string'))) fail('Connection args must be an array of strings');
       if ((definition.args || []).some(value => /^--?(?:token|password|secret|api[_-]?key)(?:=|$)/i.test(value))) fail('Pass stdio credentials through environment references, not command arguments');
       if (definition.headersEnv && (!plain(definition.headersEnv) || Object.values(definition.headersEnv).some(value => typeof value !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)))) fail('Invalid credential reference');
       if (definition.url) { const url = new URL(definition.url); if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || [...url.searchParams.keys()].some(key => /token|secret|password|api.?key/i.test(key))) fail('Connection URL cannot embed credentials'); }
       if (kind === 'http' && (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(definition.name || '') || definition.inputSchema?.type !== 'object' || typeof definition.description !== 'string')) fail('HTTP tools need name, description and object inputSchema');
       if (kind === 'mcp' && !['http', 'stdio'].includes(definition.transport)) fail('MCP transport must be http or stdio');
+      if ((kind === 'http' || definition.transport === 'http') && typeof definition.url !== 'string') fail('HTTP connections require a URL');
+      if (kind === 'mcp' && definition.transport === 'stdio' && (typeof definition.command !== 'string' || !definition.command.trim() || definition.args !== undefined && (!Array.isArray(definition.args) || definition.args.some(arg => typeof arg !== 'string')))) fail('MCP stdio requires a command and optional string args');
     }
     this.safeText(JSON.stringify(config), 512 * 1024);
     return structuredClone(config);
@@ -144,63 +170,110 @@ export class CapabilityCatalog {
     const kind = previous?.kind || input.kind; if (!['mcp', 'http', 'skill'].includes(kind)) fail('Catalog kind must be mcp, http or skill');
     if (input.kind && input.kind !== kind) fail('Catalog kind cannot change');
     const id = safeId(input.id || (kind === 'skill' ? input.name : `${kind}-${randomUUID()}`));
-    const ownerBotId = input.ownerBotId || previous?.ownerBotId || (actor !== 'controller' ? actor : null); if (!ownerBotId) fail('A responsible Bot is required'); this.manager.get(ownerBotId);
-    if (actor !== 'controller' && ownerBotId !== actor) fail('Cannot assign another Bot a new responsibility', 403);
+    if (Object.hasOwn(input, 'ownerBotId')) fail('The platform assigns one dedicated maintenance Bot automatically; ownerBotId is read-only');
+    const ownerBotId = previous?.ownerBotId || null, createdBy = previous ? previous.createdBy : actor;
+    const creatorBotId = previous ? previous.creatorBotId : actor === 'controller' ? null : actor;
+    if (creatorBotId) this.manager.get(creatorBotId);
     const list = (field, fallback = []) => { const values = input[field] ?? previous?.[field] ?? fallback; if (!Array.isArray(values) || values.some(value => typeof value !== 'string' || value.length > 256) || values.length > 128) fail(`Invalid ${field}`); return [...new Set(values)]; };
-    const allowedBotIds = list('allowedBotIds', [ownerBotId]); for (const botId of allowedBotIds) if (botId !== '*') this.manager.get(botId);
+    const allowedBotIds = [...new Set([...list('allowedBotIds'), ...(creatorBotId ? [creatorBotId] : [])])];
+    for (const botId of allowedBotIds) if (botId !== '*') this.manager.get(botId);
     const dependencies = list('dependencies'); if (dependencies.includes(id)) fail('A capability cannot depend on itself');
-    for (const dependency of dependencies) this.entry(dependency);
+    for (const dependency of dependencies) {
+      const target = this.entry(dependency);
+      if (!previous?.dependencies.includes(dependency)) {
+        this.access(target, actor);
+        for (const nestedId of this.dependencyIds(target)) this.access(this.entry(nestedId), actor);
+      }
+      if (this.dependencyIds(target).has(id)) fail('Catalog dependencies cannot form a cycle');
+    }
     const name = required(input.name ?? previous?.name, 'name', 128), description = this.safeText(required(input.description ?? previous?.description, 'description', 4096), 16000);
     if (kind === 'skill' && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)) fail('Skill name must use lowercase words separated by hyphens');
     if (kind === 'skill' && this.store.list(K.entries).some(entry => entry.kind === 'skill' && entry.name === name && entry.id !== id)) fail('This Skill name already exists; revise or propose a correction to it', 409);
     if (input.enabled !== undefined && typeof input.enabled !== 'boolean') fail('enabled must be boolean');
     const coordination = input.coordination ?? previous?.coordination ?? input.config?.coordination;
     if (coordination && (!plain(coordination) || typeof coordination.scope !== 'string' || typeof coordination.argument !== 'string' || !/^[A-Za-z0-9_.]+$/.test(coordination.argument))) fail('coordination requires a stable scope and an argument path');
-    return { ...previous, id, kind, name, description, ownerBotId, allowedBotIds, dependencies, scopeRefs: list('scopeRefs'), enabled: input.enabled ?? previous?.enabled ?? true, revision: (previous?.revision || 0) + 1, ...(coordination ? { coordination } : {}) };
+    return { ...previous, id, kind, name, description, ownerBotId, createdBy, creatorBotId, allowedBotIds, dependencies, scopeRefs: list('scopeRefs'), enabled: input.enabled ?? previous?.enabled ?? true, revision: (previous?.revision || 0) + 1, ...(coordination ? { coordination } : {}) };
   }
   async save(input, actor = 'controller') {
     // The public Skill name and catalog identity need not be the same. A
     // maintainer may use the unique name it just read instead of repeating id.
     const namedSkill = !input.id && input.kind === 'skill' && this.store.list(K.entries).find(entry => entry.kind === 'skill' && entry.name === input.name);
-    const requestedId = input.id || namedSkill?.id || (input.kind === 'skill' ? input.name : `${input.kind}-${randomUUID()}`); safeId(requestedId);
+    const requestedId = input.id || namedSkill?.id || (input.kind === 'skill' ? input.name : required(input.id, 'id')); safeId(requestedId);
     return this.serial('catalog-edit', async () => {
       const previous = this.store.get(K.entries, requestedId);
+      if (!previous && actor !== 'controller' && this.manager.get(actor).maintenanceFor?.kind === 'catalog') fail('A dedicated maintainer revises its assigned entry; it cannot create unrelated catalog entries', 403);
       if (previous) { this.owner(previous, actor); if (input.expectedRevision !== previous.revision) fail('Catalog entry changed; reread its current revision', 409); }
       else if (input.expectedRevision !== undefined && input.expectedRevision !== 0) fail('Catalog entry does not exist at that revision', 409);
       const entry = this.metadata({ ...input, id: requestedId }, previous, actor);
       if (input.source !== undefined) this.safeText(JSON.stringify(input.source), 64000);
       if (input.proposalId) { const proposal = this.store.get(K.proposals, input.proposalId); if (!proposal || proposal.entryId !== entry.id || proposal.status !== 'pending') fail('Pending Skill proposal does not match'); }
+      // Finish all input/resource validation before provisioning the Bot. A
+      // failed filesystem write can safely reuse the same maintenanceFor
+      // identity on retry; no random replacement Bot is created here.
+      let skill;
       if (entry.kind === 'skill') {
         const content = input.content ?? (previous ? (await this.readResource(previous, 'SKILL.md')).replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n\s*/, '') : null); this.safeText(content);
         const files = input.files; if (files !== undefined && !plain(files)) fail('Skill files must map relative resource paths to text');
         const currentFiles = previous?.resources || []; const nextFiles = files === undefined ? currentFiles.filter(name => name !== 'SKILL.md') : Object.keys(files);
         let bytes = Buffer.byteLength(content); for (const name of nextFiles) { resourceName(name); if (name === 'SKILL.md') fail('Use content for the Skill body'); if (files) bytes += Buffer.byteLength(this.safeText(files[name])); }
         if (bytes > 1024 * 1024) fail('Skill package exceeds 1 MiB');
-        const root = join(this.skillRoot, entry.id); await mkdir(root, { recursive: true });
-        const write = async (name, value) => { const path = join(root, name); await mkdir(dirname(path), { recursive: true }); const temp = `${path}.${randomUUID()}.tmp`; try { await writeFile(temp, value, { mode: 0o600 }); await rename(temp, path); } finally { await rm(temp, { force: true }); } };
-        if (files) for (const name of nextFiles) await write(name, files[name]);
-        await write('SKILL.md', `---\nname: ${entry.name}\ndescription: ${JSON.stringify(entry.description)}\n---\n\n${content}\n`);
-        if (files) for (const name of currentFiles) if (name !== 'SKILL.md' && !nextFiles.includes(name)) await rm(join(root, resourceName(name)), { force: true });
+        skill = { content, files, currentFiles, nextFiles };
         entry.resources = ['SKILL.md', ...nextFiles]; entry.source = this.clean(input.source ?? previous?.source ?? null);
         if (input.proposalId) { const proposal = this.store.get(K.proposals, input.proposalId); if (!proposal || proposal.entryId !== entry.id) fail('Skill proposal does not match'); entry.lastProposalId = proposal.id; }
       } else {
         entry.config = this.checkedConfig(entry.kind, input.config ?? previous?.config); entry.tools = input.config ? [] : previous?.tools || []; entry.lastProbe = input.config ? null : previous?.lastProbe || null;
         entry.source = this.clean(input.source ?? previous?.source ?? null);
       }
-      this.store.save(K.entries, entry);
-      if (input.proposalId) this.store.save(K.proposals, { id: input.proposalId, status: 'merged', mergedRevision: entry.revision, mergedAt: stamp() });
-      await this.disconnect(entry.id); this.emit('catalog.updated', { id: entry.id, revision: entry.revision, ownerBotId: entry.ownerBotId });
-      return this.get(entry.id, actor);
+      if (previous) {
+        const owner = this.manager.get(previous.ownerBotId);
+        if (owner.maintenanceFor?.kind !== 'catalog' || owner.maintenanceFor.entryId !== entry.id) fail('Catalog maintainer binding is invalid; finish the installation migration before editing', 409);
+      }
+      const maintainer = await this.manager.ensureCatalogMaintainer({ entryId: entry.id, entryKind: entry.kind, name: entry.name, description: entry.description,
+        enabled: previous?.enabled ?? entry.enabled, createdBy: entry.createdBy });
+      if (previous && maintainer.id !== previous.ownerBotId) fail('Catalog updates cannot replace the dedicated maintenance Bot', 409);
+      entry.ownerBotId = maintainer.id;
+      let committed = false;
+      try {
+        if (skill) {
+          const { content, files, currentFiles, nextFiles } = skill, root = join(this.skillRoot, entry.id); await mkdir(root, { recursive: true });
+          const write = async (name, value) => { const path = join(root, name); await mkdir(dirname(path), { recursive: true }); const temp = `${path}.${randomUUID()}.tmp`; try { await writeFile(temp, value, { mode: 0o600 }); await rename(temp, path); } finally { await rm(temp, { force: true }); } };
+          if (files) for (const name of nextFiles) await write(name, files[name]);
+          await write('SKILL.md', `---\nname: ${entry.name}\ndescription: ${JSON.stringify(entry.description)}\n---\n\n${content}\n`);
+          if (files) for (const name of currentFiles) if (name !== 'SKILL.md' && !nextFiles.includes(name)) await rm(join(root, resourceName(name)), { force: true });
+        }
+        this.store.save(K.entries, entry); committed = true;
+        if (input.proposalId) this.store.save(K.proposals, { id: input.proposalId, status: 'merged', mergedRevision: entry.revision, mergedAt: stamp() });
+        await this.disconnect(entry.id);
+        if (!entry.enabled) this.cancelDelegations(entry.id, 'Catalog entry was disabled');
+        await this.manager.setCatalogMaintainerState(entry.id, { enabled: entry.enabled, archived: false });
+        this.emit('catalog.updated', { id: entry.id, revision: entry.revision, ownerBotId: entry.ownerBotId });
+        return this.get(entry.id, actor);
+      } catch (error) {
+        if (!previous && !committed) await this.manager.setCatalogMaintainerState(entry.id, { enabled: false, archived: true }).catch(() => {});
+        throw error;
+      }
     });
   }
   async remove(id, actor = 'controller', expectedRevision) {
     return this.serial('catalog-edit', async () => {
       const entry = this.entry(id); this.owner(entry, actor); if (expectedRevision !== undefined && entry.revision !== expectedRevision) fail('Catalog entry changed', 409);
-      if (this.store.list(K.requests).some(request => request.entryId === id && request.status === 'running')) fail('Catalog entry has a call in flight', 409);
-      await this.disconnect(id); this.store.remove(K.entries, id);
-      for (const kind of [K.requests, K.proposals, K.delegations]) for (const record of this.store.list(kind)) if (record.entryId === id) this.store.remove(kind, record.id);
+      const owner = this.manager.get(entry.ownerBotId);
+      if (owner.maintenanceFor?.kind !== 'catalog' || owner.maintenanceFor.entryId !== id) fail('Cannot archive a Bot that is not this entry’s dedicated maintainer', 409);
+      const unresolved = () => this.store.list(K.requests).some(request => request.entryId === id && request.status === 'unknown');
+      if (unresolved()) fail('Reconcile the unknown call outcome before removing this entry; its receipt must remain accessible', 409);
+      this.store.save(K.entries, { id, enabled: false });
+      this.cancelDelegations(id, 'Catalog entry was removed');
+      await this.manager.setCatalogMaintainerState(id, { enabled: false, archived: false });
+      await this.disconnect(id);
+      await Promise.allSettled([...(this.executions.get(id) || [])]);
+      if (unresolved()) fail('The entry is disabled, but an interrupted call has an unknown outcome. Reconcile its receipt before removing the entry', 409);
+      await this.manager.setCatalogMaintainerState(id, { enabled: false, archived: true });
+      this.store.remove(K.entries, id);
+      // Receipts (including unknown effects), proposals and owner conversations
+      // remain historical facts. Removing configuration must not erase them or
+      // permit an unresolved mutation to be blindly replayed after re-register.
       if (entry.kind === 'skill') { const root = resolve(this.skillRoot, safeId(id)); if (!within(this.skillRoot, root) || root === this.skillRoot) fail('Invalid Skill directory'); await rm(root, { recursive: true, force: true }); }
-      this.emit('catalog.removed', { id }); return { id, removed: true };
+      this.emit('catalog.removed', { id, ownerBotId: owner.id }); return { id, removed: true, ownerBotId: owner.id, maintainerArchived: true };
     });
   }
   definitions(entry) { return (entry.kind === 'http' ? entry.config.tools || [entry.config] : [entry.config]).map(definition => ({ ...definition, type: entry.kind })); }
@@ -213,13 +286,21 @@ export class CapabilityCatalog {
     signal?.throwIfAborted(); const connection = await pending; signal?.throwIfAborted(); return connection;
   }
   async disconnect(id) { const pending = this.connections.get(id); this.connections.delete(id); if (pending) await pending.then(connection => connection.close()).catch(() => {}); }
+  recordObservation(entry, patch) {
+    const current = this.store.get(K.entries, entry.id);
+    if (current?.revision === entry.revision) this.store.save(K.entries, { id: entry.id, ...patch });
+  }
+  cancelDelegations(id, reason) {
+    for (const record of this.store.list(K.delegations)) if (record.entryId === id && !record.returnedAt) this.store.save(K.delegations, { id: record.id, cancelReason: reason, cancelledAt: stamp() });
+    for (const proposal of this.store.list(K.proposals)) if (proposal.entryId === id && proposal.status === 'pending') this.store.save(K.proposals, { id: proposal.id, status: 'cancelled', reviewStatus: 'cancelled', reviewResult: reason, reviewedAt: stamp() });
+  }
   async probe(id, actor = 'controller', signal) {
     const entry = this.entry(id); this.access(entry, actor); if (!entry.enabled) fail('Catalog entry is disabled', 409);
     if (entry.kind === 'skill') return this.get(id, actor);
     try {
       const connection = await this.connection(entry, signal); const tools = connection.tools.map(({ name, description, inputSchema, effect }) => ({ name, description, inputSchema, effect }));
-      this.store.save(K.entries, { id, tools, lastProbe: { status: 'ready', scope: entry.kind === 'http' ? 'configuration' : 'transport', at: stamp() } }); return this.get(id, actor);
-    } catch (error) { this.store.save(K.entries, { id, lastProbe: { status: 'unavailable', at: stamp(), error: this.clean(error.message) } }); await this.disconnect(id); throw error; }
+      this.recordObservation(entry, { tools, lastProbe: { status: 'ready', scope: entry.kind === 'http' ? 'configuration' : 'transport', at: stamp() } }); return this.get(id, actor);
+    } catch (error) { this.recordObservation(entry, { lastProbe: { status: 'unavailable', at: stamp(), error: this.clean(error.message) } }); await this.disconnect(id); throw error; }
   }
   async execute(id, input, actor = 'controller', signal) {
     const entry = this.entry(id); this.access(entry, actor); if (entry.kind === 'skill') fail('Skills are methods, not a callable connector');
@@ -235,7 +316,7 @@ export class CapabilityCatalog {
     const hasResource = entry.coordination && value !== undefined && value !== null && typeof value !== 'object';
     if (entry.coordination && mutation && !hasResource) fail('The configured coordination argument must resolve to one resource identity');
     const resource = hasResource ? JSON.stringify([entry.coordination.scope, value]) : `connection:${id}`;
-    return this.serial(`operation:${requestId}`, async () => {
+    const execution = this.serial(`operation:${requestId}`, async () => {
       const prior = this.store.get(K.requests, requestId);
       if (prior) {
         if (prior.tool !== tool.name || JSON.stringify(prior.arguments) !== JSON.stringify(this.clean(args))) fail('operationId already belongs to different arguments', 409);
@@ -259,18 +340,22 @@ export class CapabilityCatalog {
           const result = await tool.execute(args, { signal, botId: actor, workId: input.workId }); received = true;
           const status = result?.isError ? 'failed' : 'completed'; const cleaned = this.clean(result);
           this.store.save(K.requests, { ...base, status, result: cleaned, finishedAt: stamp() });
-          this.store.save(K.entries, { id, lastProbe: { status: 'ready', scope: 'business-call', at: stamp() }, tools: connection.tools.map(({ name, description, inputSchema, effect }) => ({ name, description, inputSchema, effect })) });
+          this.recordObservation(entry, { lastProbe: { status: 'ready', scope: 'business-call', at: stamp() }, tools: connection.tools.map(({ name, description, inputSchema, effect }) => ({ name, description, inputSchema, effect })) });
           return { ...cleaned, catalog: { id, operationId, status, replayed: false } };
         } catch (error) {
           const unknown = mutation && executing && (error.outcomeUnknown || error.name === 'AbortError' || signal?.aborted || received);
           const status = unknown ? 'unknown' : 'failed', message = this.clean(error.message);
           this.store.save(K.requests, { ...base, status, error: message, finishedAt: stamp() });
-          if (error.outcomeUnknown || error.name === 'AbortError' || /fetch failed|connect|closed|transport/i.test(message)) { this.store.save(K.entries, { id, lastProbe: { status: 'unavailable', at: stamp(), error: message } }); await this.disconnect(id); }
+          if (error.outcomeUnknown || error.name === 'AbortError' || /fetch failed|connect|closed|transport/i.test(message)) { this.recordObservation(entry, { lastProbe: { status: 'unavailable', at: stamp(), error: message } }); await this.disconnect(id); }
           throw Object.assign(new Error(message), { status: error.status || 502, code: unknown ? 'REMOTE_OUTCOME_UNKNOWN' : error.code, outcomeUnknown: unknown });
         }
       };
       return hasResource ? this.serial(`resource:${resource}`, run) : run();
     });
+    if (!this.executions.has(id)) this.executions.set(id, new Set());
+    this.executions.get(id).add(execution);
+    try { return await execution; }
+    finally { const calls = this.executions.get(id); calls?.delete(execution); if (!calls?.size) this.executions.delete(id); }
   }
   requests(id, actor = 'controller') { const entry = this.entry(id); this.owner(entry, actor); return this.clean(this.store.list(K.requests).filter(request => request.entryId === id)); }
   receipt(id, operationId, actor = 'controller') {
@@ -299,7 +384,10 @@ export class CapabilityCatalog {
     }
     // A Skill correction is maintenance, not another business task result.
     // Keep its owner work separate from chatroom's business reply routing.
-    if (!correctionOnly && actor !== 'controller' && input.originRoomId && input.originMessageId) return this.delegate(actor, { ...input, message, targetBotId: entry.ownerBotId, clientId: `catalog:${input.operationId}`, purpose: 'request' });
+    if (!correctionOnly && actor !== 'controller' && input.originRoomId && input.originMessageId) {
+      await this.manager.start(entry.ownerBotId);
+      return this.delegate(actor, { ...input, message, targetBotId: entry.ownerBotId, clientId: `catalog:${input.operationId}`, purpose: 'request' });
+    }
     if (actor !== 'controller' && !correctionOnly && (!input.workId || !await this.manager.readState(actor, db => db?.getRecord('works', input.workId)))) fail('A real source work is required for a delegation without a chatroom origin');
     const operationId = required(input.operationId, 'operationId', 256), key = JSON.stringify([actor, id, operationId]);
     return this.serial(`delegation:${key}`, async () => {
@@ -312,6 +400,8 @@ export class CapabilityCatalog {
     });
   }
   async dispatchDelegation(record) {
+    const entry = this.store.get(K.entries, record.entryId);
+    if (!entry?.enabled || record.cancelReason) fail('Catalog entry no longer accepts maintenance or delegation work', 409);
     if (record.taskId) return record;
     await this.manager.start(record.ownerBotId);
     await this.manager.request(record.ownerBotId, '/works', { method: 'POST', body: JSON.stringify({ id: record.ownerWorkId, goal: record.message,
@@ -329,6 +419,11 @@ export class CapabilityCatalog {
         await this.serial(`delegation:${listed.id}`, async () => {
           let record = this.store.get(K.delegations, listed.id); if (!record || record.returnedAt) return;
           try {
+            const entry = this.store.get(K.entries, record.entryId);
+            if (!entry?.enabled || record.cancelReason) {
+              await this.finishDelegation(record, 'cancelled', record.cancelReason || 'Catalog entry is disabled or removed');
+              return;
+            }
             record = await this.dispatchDelegation(record);
             const observation = await this.manager.readState(record.ownerBotId, db => {
               const work = db?.getRecord('works', record.ownerWorkId), task = db?.getTask(work?.lastTaskId || record.taskId);
@@ -339,21 +434,27 @@ export class CapabilityCatalog {
             if (!finalWork && !finalTask) return;
             const status = finalWork ? observation.work.status : observation.task.status;
             const content = this.clean(observation.task?.result?.content || observation.task?.error?.message || observation.work?.progress || `Owner work ended: ${status}`);
-            if (!record.proposalId && record.actor !== 'controller' && record.sourceWorkId) {
-              await this.manager.start(record.actor);
-              await this.manager.request(record.actor, `/works/${encodeURIComponent(record.sourceWorkId)}/events`, { method: 'POST', body: JSON.stringify({
-                id: `catalog-return:${record.ownerWorkId}`, kind: 'event', content: { instruction: '这是负责 Bot 的实际终态，沿原工作处理。不要为致谢再次委托，不重放结果未知的写入。', entryId: record.entryId, ownerBotId: record.ownerBotId, ownerWorkId: record.ownerWorkId, status, content },
-                metadata: { authority: 'peer-observation', sourceType: 'catalog', actor: record.ownerBotId, purpose: 'result', sourceWorkId: record.ownerWorkId, priority: 'background' } }) });
-            }
-            if (record.proposalId) this.store.save(K.proposals, { id: record.proposalId, reviewStatus: status, reviewedAt: stamp(), reviewResult: content });
-            this.store.save(K.delegations, { ...record, status, result: content, returnedAt: stamp(), lastError: null });
+            await this.finishDelegation(record, status, content);
           } catch (error) { this.store.save(K.delegations, { id: record.id, lastError: this.clean(error.message), lastAttemptAt: stamp() }); }
         });
       }
     } finally { this.ticking = false; }
   }
+  async finishDelegation(record, status, content) {
+    const source = record.actor !== 'controller' && this.manager.store.get('bots', record.actor);
+    const stoppedMaintainer = source?.maintenanceFor?.kind === 'catalog' && source.status !== 'active';
+    if (!record.proposalId && source && !source.archivedAt && !stoppedMaintainer && record.sourceWorkId) {
+      await this.manager.start(record.actor);
+      await this.manager.request(record.actor, `/works/${encodeURIComponent(record.sourceWorkId)}/events`, { method: 'POST', body: JSON.stringify({
+        id: `catalog-return:${record.ownerWorkId}`, kind: 'event', content: { instruction: '这是负责 Bot 的实际终态，沿原工作处理。不要为致谢再次委托，不重放结果未知的写入。', entryId: record.entryId, ownerBotId: record.ownerBotId, ownerWorkId: record.ownerWorkId, status, content },
+        metadata: { authority: 'peer-observation', sourceType: 'catalog', actor: record.ownerBotId, purpose: 'result', sourceWorkId: record.ownerWorkId, priority: 'background' } }) });
+    }
+    if (record.proposalId) this.store.save(K.proposals, { id: record.proposalId, reviewStatus: status, reviewedAt: stamp(), reviewResult: content });
+    this.store.save(K.delegations, { ...record, status, result: content, returnedAt: stamp(), lastError: null, ...(source?.archivedAt || stoppedMaintainer ? { deliverySkipped: 'source-maintainer-inactive' } : {}) });
+  }
   async propose(input, actor = 'controller') {
     const entry = this.entry(input.id); this.access(entry, actor); if (entry.kind !== 'skill') fail('Only Skills accept method corrections');
+    if (!entry.enabled) fail('Catalog entry is disabled', 409);
     if (entry.revision !== input.expectedRevision) fail('Skill changed; reread before proposing', 409);
     const content = this.safeText(input.content), source = this.clean(input.source);
     if (!source) fail('A sourced observation is required');

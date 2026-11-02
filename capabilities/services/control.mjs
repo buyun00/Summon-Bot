@@ -7,6 +7,7 @@ import { fail } from '../shared/validation.mjs';
 import { loadConfiguredTools } from '../../bot/src/capabilities/remote-tools.mjs';
 import { coreTools } from '../../bot/src/capabilities/core-tools.mjs';
 import { catalogTools } from './catalog.mjs';
+import { CATALOG_MAINTAINER_TOOLS } from '../bot-management/service.mjs';
 
 const object = (properties = {}, required = []) => ({ type: 'object', properties, ...(required.length ? { required } : {}), additionalProperties: true });
 const text = { type: 'string' }, names = { type: 'array', items: text };
@@ -78,6 +79,7 @@ export class CapabilityControl {
   async grant(botId, allowed) {
     if (!Array.isArray(allowed) || allowed.some(name => typeof name !== 'string')) fail('tools must be an explicit string array');
     const bot = this.manager.get(botId);
+    if (bot.maintenanceFor && allowed.some(name => !CATALOG_MAINTAINER_TOOLS.includes(name))) fail('Dedicated catalog maintainers only receive catalog maintenance tools', 403);
     this.registry.registerActor(botId, bot.allowedTools);
     const known = new Set([...this.registry.inventory().versions.flatMap(version => version.tools.map(tool => tool.name)), ...controlTools.map(tool => tool.name), ...catalogTools.map(tool => tool.name)]);
     if (allowed.some(name => !known.has(name))) fail('Cannot grant an unregistered tool');

@@ -53,7 +53,7 @@ export async function startGateway(options={}) {
     return registry.invokeVersion(id,selected,operation,args,{context:{actor:'controller'}});
   };
   const proxy=(target,id,names)=>{for(const name of names)target[name]=(...args)=>rpc(id,name,args);};
-  proxy(manager,'bot-management',['create','update','start','stop','send','saveRoutine','seed','restore','monitor','quiesce','shutdownAll','connect']);
+  proxy(manager,'bot-management',['create','update','start','stop','send','saveRoutine','seed','restore','monitor','quiesce','shutdownAll','connect','ensureCatalogMaintainer','setCatalogMaintainerState']);
   const attachments=new AttachmentStore(join(dataRoot,'capabilities','chatroom'));
   const chatroom=new ChatroomService({store:store('chatroom'),manager,attachments,emit});
   const knowledge=new KnowledgeService({store:store('knowledge'),emit}),memories=new MemoryManagement({store:store('memory-management'),manager,dataRoot,emit});

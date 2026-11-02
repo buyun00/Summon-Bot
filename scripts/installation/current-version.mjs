@@ -40,6 +40,7 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
   const { toolDefinitions } = await import(pathToFileURL(join(releaseRoot, 'capabilities/gateway/tools.mjs')));
   const { controlTools } = await import(pathToFileURL(join(releaseRoot, 'capabilities/services/control.mjs')));
   const { catalogTools } = await import(pathToFileURL(join(releaseRoot, 'capabilities/services/catalog.mjs')));
+  const { CATALOG_MAINTAINER_TOOLS } = await import(pathToFileURL(join(releaseRoot, 'capabilities/bot-management/service.mjs')));
   const deployment = await readJson(join(dataRoot, 'config/deployment.json'));
   const registryPath = join(dataRoot, 'capabilities/registry/state.sqlite');
   const retained = new Map(BUILTIN_CAPABILITIES.map(id => [id, buildId]));
@@ -72,7 +73,7 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
     try {
       for (const record of management.list('bots')) {
         const profile = await readJson(join(releaseRoot, 'roles', record.roleId || 'default', 'role.json'));
-        const allowedTools = [...new Set([...(record.allowedTools || []), ...(profile.tools || []), ...catalogTools.map(tool => tool.name)])];
+        const allowedTools = record.maintenanceFor ? [...CATALOG_MAINTAINER_TOOLS] : [...new Set([...(record.allowedTools || []), ...(profile.tools || []), ...catalogTools.map(tool => tool.name)])];
         const updated = management.save('bots', { ...record, allowedTools }); botRecords.set(record.id, updated);
       }
     } finally { management.close(); }
@@ -85,8 +86,9 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
     const profile = record && await readJson(join(releaseRoot, 'roles', record.roleId || 'default', 'role.json'));
     if (record) {
       config.prompt = [await readFile(join(releaseRoot, 'roles', record.roleId || 'default', 'prompt.md'), 'utf8'), record.prompt ? `\n用户设定的身份与职责：\n${record.prompt}` : ''].filter(Boolean).join('\n');
-      config.skills = [...(config.skills || []).filter(path => !inside(join(appRoot, 'releases'), resolve(path))), ...(profile.skills || []).map(skill => join(releaseRoot, 'skills', skill))];
-      config.bundledSkills = profile.skills || [];
+      config.skills = record.maintenanceFor ? [] : [...(config.skills || []).filter(path => !inside(join(appRoot, 'releases'), resolve(path))), ...(profile.skills || []).map(skill => join(releaseRoot, 'skills', skill))];
+      config.bundledSkills = record.maintenanceFor ? [] : profile.skills || [];
+      if (record.maintenanceFor) config.maintenanceFor = record.maintenanceFor;
     }
     config.bundleRoot = releaseRoot;
     for (const name of ['promptFile', 'agentDir']) if (config[name]) config[name] = rebase(config[name]);
@@ -106,7 +108,7 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
         const owner = capabilityForTool(tool.name);
         return { ...tool, type: 'http', method: 'POST', url: owner ? `${gatewayUrl}/capabilities/${owner}/versions/${buildId}/tools/${tool.name}` : `${gatewayUrl}/tools/${tool.name}`,
           headers: { Authorization: `Bearer ${record.capabilityToken}` }, timeoutMs: tool.name === 'run_command' ? 130000 : 150000 };
-      }), ...config.tools.filter(tool => !names.has(tool.name))];
+      }), ...(record.maintenanceFor ? [] : config.tools.filter(tool => !names.has(tool.name)))];
       config.bundledToolNames = bundled.map(tool => tool.name);
     }
     delete config.capabilityBindingRevision; delete config.capabilityUpdateId;

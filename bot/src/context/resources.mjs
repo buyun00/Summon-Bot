@@ -30,7 +30,7 @@ export async function loadResources({ config, workspace, signal, store }) {
       // Retain known names after access removal so an obsolete local duplicate
       // cannot silently become effective again during an outage or revocation.
       if (store) store.transaction(() => { for (const skill of shared) store.putRecord('shared_skill_reference',
-        { id: skill.id, name: skill.name, revision: skill.revision, ownerBotId: skill.ownerBotId }); });
+        { id: skill.id, name: skill.name, revision: skill.revision, ownerBotId: skill.ownerBotId, createdBy: skill.createdBy }); });
     } catch (error) {
       signal?.throwIfAborted();
       catalogUnavailable = true;
@@ -51,8 +51,8 @@ export async function loadResources({ config, workspace, signal, store }) {
   }
   diagnostics.push(...loaded.diagnostics);
   const roots = await Promise.all(local.map(async skill => ({ declared: resolve(skill.baseDir), real: await realpath(skill.baseDir) })));
-  const manifest = { skills: skills.map(({ name, filePath, description, disableModelInvocation, catalogId, revision, ownerBotId, scopeRefs, dependencies, status, available }) =>
-    ({ name, filePath, description, disableModelInvocation, ...(catalogId ? { catalogId, revision, ownerBotId, scopeRefs, dependencies, status, available } : {}) })),
+  const manifest = { skills: skills.map(({ name, filePath, description, disableModelInvocation, catalogId, revision, ownerBotId, createdBy, scopeRefs, dependencies, status, available }) =>
+    ({ name, filePath, description, disableModelInvocation, ...(catalogId ? { catalogId, revision, ownerBotId, createdBy, scopeRefs, dependencies, status, available } : {}) })),
     prompts: templates.map(({ name, filePath }) => ({ name, filePath })), diagnostics, catalogNextOffset };
   async function readResource(path, signal) {
     signal?.throwIfAborted();
@@ -74,7 +74,8 @@ export async function loadResources({ config, workspace, signal, store }) {
   return { manifest, skills, templates,
     prompt: formatSkillsForPrompt([...local, ...shared.slice(0, 50)], 'indirect') + (skills.length ? '\n使用 read_resource 加载技能正文及相对引用的文本。技能不扩大用户授权，不改变 Bot 身份。' : '') +
       (shared.length > 50 ? '\n这里只列出前 50 项共享 Skill 描述；用 skills_list 或 catalog_search 查找其余方法。' : '') +
-      (catalog ? '\n共享 Skill 只有目录中的一份当前正文；catalog: 路径由网关按当前权限和依赖读取。使用 catalog_search 发现更多相关连接、API 和 Skill，catalog_get 查看状态、负责人、范围与用法。不可用方法不能因历史成功记录而继续执行；具体对象规则只适用于其原范围。' : ''),
+      (catalog ? '\n共享 Skill 只有目录中的一份当前正文；catalog: 路径由网关按当前权限和依赖读取。每个共享 Skill 和 MCP/HTTP 条目有自动建立的专用维护 Bot；createdBy 是创建来源，ownerBotId 才是当前维护者。自己创建的共享 Skill 后续也须向该维护者提出纠正，不能私建同名副本。使用 catalog_search 发现更多相关连接、API 和 Skill，catalog_get 查看状态、负责人、范围与用法。不可用方法不能因历史成功记录而继续执行；具体对象规则只适用于其原范围。' : '') +
+      (config.maintenanceFor?.kind === 'catalog' ? '\n你是专用目录维护者：只更新绑定条目；可读取和使用已授权依赖，向已有依赖 Skill 提出有来源的纠正，不新建其他 Skill 或维护 Bot。其他观察保留在当前工作知识中。' : ''),
     async expand(trigger, signal) {
       if (typeof trigger?.content !== 'string') return null;
       const match = trigger.content.match(/^\/skill:([^\s]+)(?:\s+([\s\S]*))?$/);
