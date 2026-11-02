@@ -6,7 +6,10 @@
   try { previousShape = sessionStorage.getItem('summon-brand-shape'); } catch {}
   const shape = pick(avatars.shapes.filter(item => item.id !== previousShape)).id;
   try { sessionStorage.setItem('summon-brand-shape', shape); } catch {}
-  let palette = pick(avatars.templates);
+  const brandPalettes = avatars.templates
+    .filter(item => ['mist', 'graphite', 'violet', 'sage', 'stone'].includes(item.id))
+    .map(item => ({ ...item, secondary: '#E1E5E9', ink: '#414955', paper: '#F7F8FA' }));
+  let palette = pick(brandPalettes);
   let nextColor = Date.now() + (12 + Math.random() * 6) * 60000;
   const heads = new Set();
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
@@ -55,7 +58,7 @@
   customElements.define('summon-wordmark', SummonWordmark);
   function refreshColor() {
     if (document.hidden || Date.now() < nextColor) return;
-    palette = pick(avatars.templates.filter(item => item.id !== palette.id));
+    palette = pick(brandPalettes.filter(item => item.id !== palette.id));
     nextColor = Date.now() + (12 + Math.random() * 6) * 60000;
     heads.forEach(head => head.paint());
   }
