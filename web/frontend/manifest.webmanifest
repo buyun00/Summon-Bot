@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "Relay Bot",
-  "short_name": "Relay Bot",
+  "name": "Summon",
+  "short_name": "Summon",
   "description": "你的 Bot 协作空间",
   "lang": "zh-CN",
   "start_url": "/#chat",

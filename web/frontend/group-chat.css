@@ -31,8 +31,6 @@ button:focus-visible, a:focus-visible, select:focus-visible { outline-color: #00
 .app-shell { height: var(--ui-vh); min-height: 0; }
 .contact-sidebar { width: clamp(300px, 24.84vw, 420px); background: #f5f5f3; border-right: 1px solid #e8e8e4; }
 .sidebar-toolbar { height: 88px; padding: 20px 25px 16px 28px; gap: 15px; align-items: center; }
-.relay-wordmark { margin-right: auto; flex: none; color: #090a0d; font-family: "Arial Black", Impact, "Segoe UI", sans-serif; font-size: 38px; font-weight: 950; line-height: 1; letter-spacing: -2.7px; }
-.relay-wordmark span { color: #ff4949; }
 .round-button { width: 42px; height: 42px; min-width: 42px; color: #343848; border: 1px solid #d8d9e0; background: #e9e9eb; box-shadow: inset 0 1px 2px #ffffff80; }
 .round-button:hover { background: #e1e1e6; }
 .search-slot:not(.open) .round-button { width: 34px; min-width: 34px; border: 0; box-shadow: none; background: transparent; }
@@ -295,7 +293,6 @@ button:focus-visible, a:focus-visible, select:focus-visible { outline-color: #00
 
 @media (max-width: 1200px) and (min-width: 821px) {
   .sidebar-toolbar { padding-left: 21px; padding-right: 19px; gap: 9px; }
-  .relay-wordmark { font-size: 33px; }
   .sidebar-section { padding-left: 12px; padding-right: 12px; }
   .group-tile, .contact-row { gap: 13px; }
   .group-copy strong { font-size: calc(16px * var(--ui-font-scale)); }
@@ -328,7 +325,6 @@ button:focus-visible, a:focus-visible, select:focus-visible { outline-color: #00
   .app-shell.mobile-room .workspace, .app-shell.management-open .workspace { display: flex; }
   .main-content { overscroll-behavior: contain; min-height: 0; }
   .sidebar-toolbar { height: 83px; padding: 18px 24px; }
-  .relay-wordmark { font-size: 35px; }
   .sidebar-section-title { font-size: calc(16px * var(--ui-font-scale)); }
   .group-tile { min-height: 136px; }
   .group-copy strong { font-size: calc(16px * var(--ui-font-scale)); }
