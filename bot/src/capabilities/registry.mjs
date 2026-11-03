@@ -12,10 +12,11 @@ const errorRecord = error => ({ name: error?.name || 'Error', message: error?.me
  * effect is never retried if recording its receipt fails.
  */
 export class ToolRegistry {
-  constructor({ record = async () => {}, context = () => ({}) } = {}) {
+  constructor({ record = async () => {}, context = () => ({}), authorize = () => {} } = {}) {
     this.definitions = new Map();
     this.record = record;
     this.context = context;
+    this.authorize = authorize;
   }
 
   register(definition) {
@@ -48,6 +49,7 @@ export class ToolRegistry {
     let executing = false, recordingOutcome = false;
     try {
       const args = validateToolArguments({ name, parameters: definition.inputSchema }, { name, id: context.toolCallId, arguments: input });
+      this.authorize(definition, args);
       context.signal?.throwIfAborted();
       if (context.allowedEffects !== undefined && (!Array.isArray(context.allowedEffects) || !context.allowedEffects.includes(definition.effect))) {
         throw Object.assign(new Error(`Task tool policy denies ${definition.effect} capability ${name}`), { code: 'TOOL_POLICY_DENIED' });

@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile, rename, rm, realpath } from 'node:fs/promis
 import { join, resolve, dirname } from 'node:path';
 import { validateToolArguments } from '@earendil-works/pi-ai';
 import { loadConfiguredTools } from '../../bot/src/capabilities/remote-tools.mjs';
+import { taskMode } from '../../bot/src/capabilities/task-policy.mjs';
 import { fail, safeId, required, within } from '../shared/validation.mjs';
 
 const K = { entries: 'catalog-entries', requests: 'catalog-requests', proposals: 'catalog-skill-proposals', delegations: 'catalog-delegations' };
@@ -302,10 +303,11 @@ export class CapabilityCatalog {
       this.recordObservation(entry, { tools, lastProbe: { status: 'ready', scope: entry.kind === 'http' ? 'configuration' : 'transport', at: stamp() } }); return this.get(id, actor);
     } catch (error) { this.recordObservation(entry, { lastProbe: { status: 'unavailable', at: stamp(), error: this.clean(error.message) } }); await this.disconnect(id); throw error; }
   }
-  async execute(id, input, actor = 'controller', signal) {
+  async execute(id, input, actor = 'controller', signal, task) {
     const entry = this.entry(id); this.access(entry, actor); if (entry.kind === 'skill') fail('Skills are methods, not a callable connector');
     if (!entry.enabled || entry.dependencies.some(dependency => !this.state(this.entry(dependency)).available)) fail('Connection or dependency is disabled or unavailable', 409);
     const connection = await this.connection(entry, signal); const tool = connection.tools.find(item => item.name === input.tool); if (!tool) fail('Catalog tool not found', 404);
+    if(actor!=='controller'&&taskMode(task)!=='work'&&tool.effect!=='read')fail('Frontend catalog calls only allow read-only tools; delegate execution to work',403);
     const args = validateToolArguments({ name: tool.name, parameters: tool.inputSchema }, { id: input.operationId || randomUUID(), name: tool.name, arguments: input.arguments || {} });
     const suppliedOperationId = typeof input.operationId === 'string' && input.operationId.trim() ? input.operationId
       : typeof args.operationId === 'string' && args.operationId.trim() ? args.operationId : null;
@@ -378,16 +380,8 @@ export class CapabilityCatalog {
     const proposal = input.proposalId && this.store.get(K.proposals, input.proposalId);
     const correctionOnly = proposal?.entryId === id && proposal.actor === actor && proposal.status === 'pending';
     const message = `能力 ${entry.name} (${entry.id}) 的有界委托；仅处理下述请求，不扩大持续授权。\n${required(input.message, 'message')}`;
-    if (actor !== 'controller' && input.workId && (!input.originRoomId || !input.originMessageId)) {
-      const source = await this.manager.readState(actor, db => db?.getRecord('works', input.workId)?.sources?.find(item => item.roomId && item.replyTo));
-      if (source) input = { ...input, originRoomId: source.roomId, originMessageId: source.replyTo };
-    }
-    // A Skill correction is maintenance, not another business task result.
-    // Keep its owner work separate from chatroom's business reply routing.
-    if (!correctionOnly && actor !== 'controller' && input.originRoomId && input.originMessageId) {
-      await this.manager.start(entry.ownerBotId);
-      return this.delegate(actor, { ...input, message, targetBotId: entry.ownerBotId, clientId: `catalog:${input.operationId}`, purpose: 'request' });
-    }
+    // Business delegation always creates an isolated owner work, including
+    // requests originating in a room. The worker never enters a chat DM.
     if (actor !== 'controller' && !correctionOnly && (!input.workId || !await this.manager.readState(actor, db => db?.getRecord('works', input.workId)))) fail('A real source work is required for a delegation without a chatroom origin');
     const operationId = required(input.operationId, 'operationId', 256), key = JSON.stringify([actor, id, operationId]);
     return this.serial(`delegation:${key}`, async () => {
@@ -467,7 +461,7 @@ export class CapabilityCatalog {
     try { const delivery = await this.handoff(entry.id, { ...input, proposalId: proposal.id, message, operationId: `proposal:${proposal.id}` }, actor); return this.store.save(K.proposals, { ...proposal, delivery, deliveredAt: stamp(), deliveryError: null }); }
     catch (error) { this.store.save(K.proposals, { ...proposal, deliveryError: this.clean(error.message) }); throw error; }
   }
-  async call(name, args, { actor = 'controller', signal } = {}) {
+  async call(name, args, { actor = 'controller', signal, task } = {}) {
     const { _context, ...supplied } = args;
     args = { ...supplied, ...(plain(_context) ? Object.fromEntries(['workId','conversationId','originRoomId','originMessageId','sourceRefs'].filter(key => _context[key] !== undefined).map(key => [key, _context[key]])) : {}) };
     switch (name) {
@@ -476,7 +470,7 @@ export class CapabilityCatalog {
       case 'catalog_probe': return this.probe(args.id, actor, signal);
       case 'catalog_register': if (this.store.get(K.entries, args.id)) fail('Catalog entry already exists; read and update it', 409); return this.save(args, actor);
       case 'catalog_update': this.entry(args.id); return this.save(args, actor);
-      case 'catalog_call': return this.execute(args.id, args, actor, signal);
+      case 'catalog_call': return this.execute(args.id, args, actor, signal, task);
       case 'catalog_reconcile': return this.reconcile(args.id, args.operationId, args, actor);
       case 'catalog_delegate': return this.handoff(args.id, args, actor);
       case 'catalog_skill_write': return this.save({ ...args, kind: 'skill' }, actor);

@@ -6,7 +6,7 @@ const fail = (message, status = 400) => { throw Object.assign(new Error(message)
 
 /** S3 is state and pointers only. Knowledge正文 lives in Markdown, never here. */
 export class WorkService {
-  constructor({ store, botId, accept, cancel, clean = value => value }) { Object.assign(this, { store, botId, accept, cancel, clean }); }
+  constructor({ store, botId, accept, cancel, clean = value => value }) { Object.assign(this, { store, botId, accept, cancel, clean }); this.dispatches = new Map(); }
   get(id) { return this.store.getRecord('works', id); }
   list({ status, query, limit = 100 } = {}) {
     return this.store.listRecords('works').filter(work => (!status || work.status === status) &&
@@ -15,15 +15,20 @@ export class WorkService {
   }
   create(input, task = {}) {
     if (typeof input.goal !== 'string' || !input.goal.trim()) fail('Work requires a goal');
+    const sourceKey = task.id && !task.workId ? `task:${task.id}` : null;
+    const handedOff = sourceKey && this.store.getRecord('work-handoffs', sourceKey);
+    if (handedOff) return this.get(handedOff.workId);
     const id = input.id || randomUUID();
     if (!/^[\w.-]{1,160}$/.test(id)) fail('Invalid work id');
     const previous = this.get(id); if (previous) return previous;
+    const current = task.input?.current || task.input;
     const record = this.clean({ id, botId: this.botId, conversationId: `work:${id}`, goal: input.goal,
       requirements: input.requirements || '', progress: '', status: 'active', waiting: null, bindings: [], notifications: [],
       sources: input.sources || (task.id ? [{ taskId: task.id, messageId: task.messageId, conversationId: task.conversationId, source: task.source,
-        roomId: task.input?.room?.id, replyTo: task.input?.trigger?.id, metadata: task.metadata }] : []),
+        roomId: current?.room?.id || task.metadata?.roomId, replyTo: current?.trigger?.id || task.metadata?.originMessageId, metadata: task.metadata }] : []),
       responsibility: input.responsibility || null, revision: 1, createdAt: now(), updatedAt: now() });
     this.store.putRecord('works', record);
+    if (sourceKey) this.store.putRecord('work-handoffs', { id: sourceKey, workId: id, createdAt: now() });
     this.store.appendEvent('work.created', { work: record }, { workId: id, conversationId: record.conversationId });
     return record;
   }
@@ -42,6 +47,13 @@ export class WorkService {
     });
   }
   async dispatch(id, input, task = {}) {
+    const eventId = input.id || randomUUID(), key = `${id}:${eventId}`;
+    if (this.dispatches.has(key)) return this.dispatches.get(key);
+    const operation = this.dispatchEvent(id, { ...input, id: eventId }, task);
+    this.dispatches.set(key, operation);
+    try { return await operation; } finally { if (this.dispatches.get(key) === operation) this.dispatches.delete(key); }
+  }
+  async dispatchEvent(id, input, task = {}) {
     const work = this.get(id); if (!work) fail('Unknown work', 404);
     const eventId = input.id || randomUUID(), prior = this.store.getRecord('work-events', `${id}:${eventId}`);
     if (prior?.receipt) return prior.receipt;

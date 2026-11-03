@@ -70,7 +70,7 @@ export async function connectMcpTools(definition, {
         if (remote.inputSchema?.type !== 'object') throw new Error(`MCP tool ${name} requires an object input schema`);
         names.add(name);
         remoteTools.push(remote);
-        const effect = definition.toolEffects?.[remote.name] || definition.effect || 'external';
+        const effect = definition.toolEffects?.[remote.name] || definition.effect || (remote.annotations?.readOnlyHint === true ? 'read' : 'external');
         tools.push({ name, description: redact(remote.description || `MCP tool ${remote.name}`),
           inputSchema: remote.inputSchema, effect,
           classify: result => result?.isError ? 'failed' : 'completed',

@@ -79,8 +79,8 @@ export class SessionContext {
     };
   }
 
-  historyTool(sessionId, allowedSessions = () => [sessionId]) {
-    return { name: 'read_session_history', label: '读取会话原文', description: 'Read original messages and tool receipts from this conversation or a source session explicitly linked to its work. Includes history covered by Markdown. Read-only; never replays tools. Use query to locate evidence then start to paginate.',
+  historyTool(sessionId, allowedSessions = () => [sessionId], projectMessage = message => message) {
+    return { name: 'read_session_history', label: '读取会话原文', description: 'Read bounded evidence from this conversation only. Frontend history excludes execution tools. Work cannot read its source chat. Never replays tools; use query and pagination.',
       parameters: { type: 'object', properties: { sessionId: { type: 'string' }, query: { type: 'string' }, start: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 20 }, offset: { type: 'integer', minimum: 0, description: 'Character offset in a large original message; use start=index and limit=1 to read successive fragments.' } }, additionalProperties: false },
       execute: async (_id, args, signal) => {
         signal?.throwIfAborted();
@@ -90,7 +90,7 @@ export class SessionContext {
         if (!session) throw new Error('Unknown source session');
         const start = args.start ?? 0, limit = args.limit ?? 5, offset = args.offset ?? 0;
         if (!Number.isInteger(start) || start < 0 || !Number.isInteger(limit) || limit < 1 || limit > 20 || !Number.isInteger(offset) || offset < 0) throw new Error('无效历史分页参数');
-        const found = session.messages.map((message, index) => ({ index, message })).filter(item => item.index >= start &&
+        const found = session.messages.map((message, index) => ({ index, message: projectMessage(message) })).filter(item => item.message && item.index >= start &&
           (!args.query || (!(item.message.role === 'toolResult' && item.message.toolName === 'read_session_history') && JSON.stringify(item.message).includes(args.query))));
         const messages = []; let bytes = 0;
         for (const item of found.slice(0, limit)) {

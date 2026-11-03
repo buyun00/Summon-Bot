@@ -24,7 +24,9 @@ flowchart LR
 
 ## Bot 本体
 
-Bot 拥有自己的身份、配置、消息收件箱、SQLite、工作与产物目录。`botId`、`conversationId`、`workId` 稳定，task/run 表示触发和执行段。默认 4 个业务位置，维护独立 1 位；同一会话串行、前台优先，各执行的 Agent 状态互不共享。
+前台 chat 只聊天、查询资料与协调，实际制作交给隔离的 work 或 Codex。工具权限由引擎和网关按真实 task 共同执行；工作过程不进入聊天，worker 不直接参与用户聊天。上下文、能力目录与结果回流的边界见 [前台聊天与独立工作](CHAT_WORK_ISOLATION.md)。
+
+Bot 拥有自己的身份、配置、消息收件箱、SQLite、工作与产物目录。`botId`、`conversationId`、`workId` 稳定，task/run 表示触发和执行段。前台聊天独立 1 位，后台工作默认 4 位，维护独立 1 位；同一会话串行，各执行的 Agent 状态互不共享。
 
 S1 保存原始消息、工具记录及来源。S3 保存 work 目标、要求、进度、等待、外部绑定与通知。S2 正文位于按工作或独立对话隔离的 MD，SQLite 只持有目录和处理游标，不存另一份总结正文。
 

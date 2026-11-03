@@ -73,6 +73,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
     };
     const taskDetails = id => { const value = store.getTask(id); return value && { ...value, tools: store.listTools(id) }; };
     const scheduler = new ConversationScheduler(config.concurrency);
+    const frontendScheduler = new ConversationScheduler(1);
     let wakeTimer;
     const services = {
       store,
@@ -82,7 +83,8 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         const previous = store.getOutbox(key);
         const originTask = taskId && store.getTask(taskId);
         const message = { ...envelope, id, to, from: config.botId, kind: envelope.kind || 'request', metadata: {
-          ...(previous?.message?.metadata || (originTask ? { sourceWorkId: originTask.workId, sourceConversationId: originTask.conversationId, sourceTaskId: originTask.id } : {})), ...envelope.metadata } };
+          ...envelope.metadata, ...(previous?.message?.metadata || (originTask ? { sourceWorkId: originTask.workId,
+            sourceConversationId: originTask.conversationId, sourceTaskId: originTask.id, executionMode: originTask.workId ? 'work' : 'chat' } : {})) } };
         if (previous && JSON.stringify(previous.message) !== JSON.stringify(clean(message))) throw failure(409, 'Message ID already belongs to another payload');
         if (previous?.receipt) return previous.receipt;
         store.saveOutbox({ id: key, message: clean(message), taskId, to, status: 'sending', createdAt: previous?.createdAt || at() });
@@ -115,7 +117,8 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       const work = task.workId && services.works.get(task.workId);
       if (work && ['paused', 'cancelled', 'blocked'].includes(work.status)) return;
       const controller = new AbortController();
-      const promise = scheduler.run(task.conversationId || task.sessionId, async () => {
+      const conversationScheduler = task.workId ? scheduler : frontendScheduler;
+      const promise = conversationScheduler.run(task.conversationId || task.sessionId, async () => {
         if (controller.signal.aborted) return;
         task = store.getTask(task.id);
         if (task.status !== 'accepted') return;
@@ -131,6 +134,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         if (currentWork) services.works.update(currentWork.id, { lastTaskId: task.id });
         try { const result = await engine.run(task, { signal: controller.signal,
           onStart: () => store.updateTask(task.id, { status: 'running', startedAt: at() }) });
+          if (task.metadata?.notificationId) await services.publishFrontendResult(task, result);
           store.updateTask(task.id, { status: 'completed', result, finishedAt: at() });
           for (const pending of store.listTasks({ status: 'accepted', limit: 10000 }).filter(item => item.steeredIntoTaskId === task.id)) {
             if (result.steeredMessageIds?.includes(pending.messageId)) store.updateTask(pending.id, { status: 'completed', result: { content: '', consumedBy: task.id }, finishedAt: at() });
@@ -154,7 +158,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
           if (current?.status === 'active' && state !== 'stopping') services.works.update(current.id, { status: corrections.length ? 'active' : 'blocked', lastError: clean({ code: error.code, message: error.message }) });
         }
         const settled = task.workId && services.works.get(task.workId), settledTask = store.getTask(task.id);
-        if (settled && state !== 'stopping' && ['completed', 'cancelled', 'blocked'].includes(settled.status) && !store.listRecords('work-notifications').some(item => item.taskId === task.id)) {
+        if (settled && state !== 'stopping' && ['completed', 'cancelled', 'blocked'].includes(settled.status) && !store.listRecords('work-notifications').some(item => item.taskId === task.id && item.workStatus === settled.status)) {
           const content = settledTask.result?.content || settledTask.error?.message || settled.progress || `工作状态：${settled.status}`;
           for (const [index, source] of settled.sources.entries()) {
             const target = source.roomId ? { roomId: source.roomId, replyTo: source.replyTo } : config.contacts.some(contact => contact.botId === source.source) ? { botId: source.source } : null;
@@ -174,6 +178,17 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       return store.getTask(id);
     };
     const accept = (envelope, source) => {
+      if (source !== 'controller' && envelope.kind === 'request' && !envelope.workId && envelope.metadata?.executionMode === 'work') {
+        const key = JSON.stringify([source, envelope.id]);
+        let binding = store.getRecord('peer-work', key);
+        if (!binding) {
+          const content = envelope.content, goal = typeof content === 'string' ? content : content?.goal || JSON.stringify(content);
+          const work = services.works.create({ goal, requirements: typeof content === 'string' ? content : JSON.stringify(content),
+            sources: [{ source, messageId: envelope.id, metadata: envelope.metadata }] });
+          binding = store.putRecord('peer-work', { id: key, workId: work.id });
+        }
+        envelope = { ...envelope, workId: binding.workId };
+      }
       const accepted = store.acceptMessage(clean(envelope), source, bootId);
       if (accepted.duplicate) return accepted;
       const task = accepted.task, work = task.workId && services.works.get(task.workId);
@@ -191,24 +206,49 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
     services.works = new WorkService({ store, botId: config.botId, accept, cancel, clean });
     const deliverNotification = async (record, context = {}) => {
       let receipt;
-      if (record.botId) receipt = await services.send(record.botId, { id: record.id, kind: 'event', content: record.content, workId: record.targetWorkId,
+      if (record.botId) receipt = await services.send(record.botId, { id: record.id, kind: 'event', content: String(record.content).slice(0, 1600), workId: record.targetWorkId,
         replyTo: record.replyTo, metadata: { purpose: record.targetWorkId ? 'result' : 'fyi', sourceWorkId: record.workId, authority: 'peer-observation' } }, context);
       else {
-        const channel = engine.configured.tools.find(tool => tool.name === 'chatroom_send');
-        if (!channel) throw failure(409, 'This Bot has no chatroom_send capability');
-        receipt = await channel.execute({ roomId: record.roomId, content: record.content, replyTo: record.replyTo, clientId: record.id, workId: record.workId, purpose: 'fyi' }, { ...context, botId: config.botId, workId: record.workId });
-        if (receipt?.isError) throw new Error('Chatroom rejected notification');
+        if (record.frontendTaskId) {
+          const frontend = store.getTask(record.frontendTaskId);
+          if (frontend && terminalTaskStates.has(frontend.status)) return services.publishFrontendResult(frontend,
+            frontend.result || { content: `工作结果：${record.content}\n前台转达发生错误：${frontend.error?.message || frontend.status}` });
+          return record;
+        }
+        const work = services.works.get(record.workId), source = work.sources.find(item => item.roomId === record.roomId);
+        const original = source?.taskId && store.getTask(source.taskId);
+        const accepted = accept({ id: `work-result:${record.id}`, kind: 'event',
+          conversationId: [source?.conversationId, original?.conversationId].find(id => id && !id.startsWith('work:')) || `room:${record.roomId}`,
+          metadata: { actor: 'system', sourceType: 'work-result', notificationId: record.id, roomId: record.roomId, priority: 'background' },
+          content: { type: 'work_result', workId: record.workId, taskId: record.taskId, status: work.status, summary: String(record.content).slice(0, 1600),
+            instruction: 'Briefly explain this actual work result to the user. This is a coordination notification, not a new assignment. Do not resume or repeat the work. Full execution remains in the work context.' } }, 'controller');
+        const queued = { ...record, status: 'frontend', frontendTaskId: accepted.task.id, queuedAt: at() };
+        store.putRecord('work-notifications', queued); return queued;
       }
       const saved = { ...record, status: 'delivered', receipt: clean(receipt), deliveredAt: at() };
+      store.putRecord('work-notifications', saved); return saved;
+    };
+    services.publishFrontendResult = async (task, result) => {
+      const record = store.getRecord('work-notifications', task.metadata.notificationId);
+      if (!record || record.status === 'delivered') return record;
+      const content = record.frontendContent || String(result.content || record.content).slice(0, 2400);
+      store.putRecord('work-notifications', { ...record, frontendContent: content });
+      const channel = engine.configured.tools.find(tool => tool.name === 'chatroom_send');
+      if (!channel) throw failure(409, 'This Bot has no chatroom_send capability');
+      const receipt = await channel.execute({ roomId: record.roomId, content, replyTo: record.replyTo, clientId: record.id,
+        workId: record.workId, purpose: 'fyi' }, { botId: config.botId, taskId: task.id });
+      if (receipt?.isError) throw new Error('Chatroom rejected frontend result');
+      const saved = { ...record, frontendContent: content, status: 'delivered', receipt: clean(receipt), deliveredAt: at() };
       store.putRecord('work-notifications', saved); return saved;
     };
     services.notify = async (input, task, context) => {
       const work = services.works.get(input.id); if (!work) throw failure(404, 'Unknown work');
       if ((!input.botId && !input.roomId) || (input.botId && input.roomId)) throw failure(400, 'Choose one notification target');
+      if (!work.sources.some(source => input.roomId ? source.roomId === input.roomId : source.source === input.botId)) throw failure(403, 'Work results only return to an original authorized source');
       const id = `${work.id}:${input.notificationId}`, prior = store.getRecord('work-notifications', id);
       if (prior?.status === 'delivered') return prior;
       const targetWorkId = input.targetWorkId || work.sources.find(source => source.source === input.botId)?.metadata?.sourceWorkId;
-      const record = prior || clean({ ...input, id, targetWorkId, workId: work.id, taskId: task.id, status: 'pending', createdAt: at() });
+      const record = prior || clean({ ...input, content: String(input.content).slice(0, 1600), id, targetWorkId, workId: work.id, workStatus: work.status, taskId: task.id, status: 'pending', createdAt: at() });
       store.putRecord('work-notifications', record);
       try { return await deliverNotification(record, context); }
       catch (error) { store.putRecord('work-notifications', { ...record, status: 'unknown', error: clean(error.message), retryAt: Date.now() + 30000 }); throw error; }
@@ -238,7 +278,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
     const health = () => ({ ...identity(), engine: engine.health(), tasks: store.listTasks({ limit: 10000 }).length });
     const close = () => closing ||= (async () => {
       state = 'stopping'; emit('bot.stopping', identity()); await atomicJson(join(config.dataDir, 'run', 'current.json'), identity());
-      clearInterval(wakeTimer); scheduler.close();
+      clearInterval(wakeTimer); scheduler.close(); frontendScheduler.close();
       // Graceful shutdown stops only this Bot. Contacts remain independent.
       for (const job of jobs.values()) job.controller.abort(new Error('Bot is stopping'));
       await updates.close(); await engine.close(); await Promise.allSettled([...jobs.values()].map(job => job.promise)); await configWrites.catch(() => {});

@@ -34,6 +34,22 @@
     "catalog_skill_write",
     "catalog_skill_propose",
     "catalog_probe",
-    "catalog_reconcile"
+    "catalog_reconcile",
+    "list_files",
+    "read_file",
+    "search_files",
+    "web_search",
+    "web_read",
+    "write_file",
+    "edit_file",
+    "run_command",
+    "codex_projects",
+    "codex_threads",
+    "codex_create",
+    "codex_attach",
+    "codex_status",
+    "codex_read",
+    "codex_send",
+    "codex_interrupt"
   ]
 }

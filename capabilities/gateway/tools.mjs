@@ -16,6 +16,8 @@ const definitions=[
  ['list_files','List files inside the configured workspace/project',{path:string,recursive:boolean,maxEntries:number,maxDepth:number},'read'],
  ['read_file','Read UTF-8 file with output limits',{path:string,startLine:number,maxLines:number},'read'],
  ['search_files','Search literal text in allowed files',{path:string,query:string,caseSensitive:boolean,maxResults:number},'read'],
+ ['web_search','Search the public web; return titles, URLs and short snippets without commands',{query:string,limit:number},'read'],
+ ['web_read','Read a public webpage with bounded output; GET only, no scripts or form submission',{url:string,offset:number,length:number},'read'],
  ['write_file','Write an allowed workspace/project file',{path:string,content:string,overwrite:boolean},'write'],
  ['edit_file','Replace exact text in an allowed file',{path:string,oldText:string,newText:string,replaceAll:boolean},'write'],
  ['run_command','Execute a bounded noninteractive shell command; host privileges apply',{command:string,cwd:string,timeoutMs:number},'process'],
@@ -35,4 +37,4 @@ const definitions=[
  ['routines_create','Maintain an authorized ongoing responsibility; merge in-flight events, optional watch wakes only on changed state. Reuse id; enabled:false stops.',{id:string,botId:string,roomId:string,name:string,instruction:string,intervalSeconds:number,enabled:boolean,nextRunAt:string,workId:string,eventKey:string,watch:{type:'object'}},'external'],
 ];
 export const toolDefinitions=definitions.map(([name,description,properties,effect])=>({name,description,inputSchema:object(properties),effect}));
-export const FILE_TOOLS=new Set(['list_files','read_file','search_files','write_file','edit_file','run_command']);
+export const FILE_TOOLS=new Set(['list_files','read_file','search_files','write_file','edit_file','run_command','web_search','web_read']);

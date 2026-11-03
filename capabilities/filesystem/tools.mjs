@@ -3,6 +3,7 @@ import { constants, existsSync, createWriteStream } from 'node:fs';
 import { resolve, relative, isAbsolute, dirname, basename, join, parse, delimiter } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { createWebTools } from './web-tools.mjs';
 import { StringDecoder } from 'node:string_decoder';
 import { tmpdir } from 'node:os';
 import { finished } from 'node:stream/promises';
@@ -277,6 +278,7 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
   }
 
   return [
+    ...createWebTools(),
     tool('list_files', 'List allowed files and directories. Relative paths start in your workspace. Protected files and dependency folders are excluded.', objectSchema({ path: stringSchema('Directory; defaults to workspace'), recursive: { type: 'boolean' }, maxEntries: integerSchema('Maximum entries, default 200', 1, 500), maxDepth: integerSchema('Recursion depth, default 4', 0, 12) }), async (args, signal) => {
       const path = await checkedPath(args.path, { directory: true });
       const maxEntries = boundedInteger(args.maxEntries, 200, 1, 500, 'maxEntries');

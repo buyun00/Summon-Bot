@@ -19,6 +19,7 @@ import { CapabilityServiceSupervisor } from '../services/supervisor.mjs';
 import { BUILTIN_CAPABILITIES } from '../services/builtin.mjs';
 import { deployCapability } from '../services/publish.mjs';
 import { coreTools } from '../../bot/src/capabilities/core-tools.mjs';
+import { assertToolPolicy, permitsTool, permitsMaintenanceTool, taskMode } from '../../bot/src/capabilities/task-policy.mjs';
 import { CapabilityCatalog,catalogTools } from '../services/catalog.mjs';
 import { UsageLedger,readUsage,usageRange,finishUsageTotals,emptyUsageTotals,USAGE_PRICING } from '../../bot/src/agent/usage.mjs';
 import { ModelConnections } from '../models/service.mjs';
@@ -121,15 +122,34 @@ export async function startGateway(options={}) {
     const allowed=actor==='controller'?null:manager.get(actor).allowedTools||[];
     return [...registry.toolsFor(actor,allowed),...controlTools.filter(tool=>allowed===null||allowed.includes(tool.name)),...catalogTools.filter(tool=>allowed===null||allowed.includes(tool.name))];
   }
-  async function callTool(name,args={},actor='controller',signal,pin) {
+  async function callTool(name,args={},actor='controller',signal,pin,taskId) {
     const definition=visibleTools(actor).find(tool=>tool.name===name);
     if(quiescing&&definition?.effect!=='read')fail('Gateway is stopping; new work is unavailable',503);
     if(actor!=='controller'&&!(manager.store.get('bots',actor)?.allowedTools||[]).includes(name))fail('Tool not authorized for this Bot',403);
-    if(catalogTools.some(tool=>tool.name===name))return catalog.call(name,args,{actor,signal});
+    const {_context,...input}=args;args=input;
+    let task;
+    if(actor!=='controller'){
+      if(taskId){
+        task=await manager.readState(actor,db=>db?.getTask(taskId));
+        const notification=task?.metadata?.notificationId&&name==='chatroom_send'
+          ?await manager.readState(actor,db=>db?.getRecord('work-notifications',task.metadata.notificationId)):null;
+        const publishing=notification&&notification.frontendContent===args.content&&notification.id===args.clientId&&notification.roomId===args.roomId;
+        if(!task||(task.status!=='running'&&!publishing))fail('An active task owned by this Bot is required',403);
+        assertToolPolicy(task,definition,args);
+      }else if(!permitsMaintenanceTool(name))fail('A runtime task context is required',403);
+    }
+    if(catalogTools.some(tool=>tool.name===name)){
+      const current=task?.input?.current||task?.input,work=task?.workId&&await manager.readState(actor,db=>db?.getRecord('works',task.workId));
+      const source=work?.sources?.findLast(item=>item.roomId)||{};
+      const provenance=task?{workId:task.workId,conversationId:task.conversationId,originRoomId:current?.room?.id||source.roomId,
+        originMessageId:current?.trigger?.id||source.replyTo,sourceRefs:[`task:${task.id}`]}:undefined;
+      return catalog.call(name,{...args,...(provenance?{_context:provenance}:{})},{actor,signal,task});
+    }
     if(controlTools.some(tool=>tool.name===name))return control.call(name,args,{actor});
     if(pin&&!control.permittedVersion(actor,pin.id,pin.version))fail('This capability version is not bound to the Bot',403);
-    if(pin)return registry.callVersion(pin.id,pin.version,name,args,{signal,context:{actor}});
-    return registry.call(actor,name,args,{signal,context:{actor}});
+    const context={actor,...(task?{taskId:task.id,workId:task.workId,mode:taskMode(task)}:{})};
+    if(pin)return registry.callVersion(pin.id,pin.version,name,args,{signal,context});
+    return registry.call(actor,name,args,{signal,context});
   }
   async function tokenUsage(params) {
     const range=usageRange(params.get('period')||'today'),botId=params.get('botId')||null;
@@ -251,6 +271,8 @@ export async function startGateway(options={}) {
     res.once('close',()=>clients.delete(res));
     const work=(async()=>{
     try{const actor=authenticate(req),requestUrl=new URL(req.url,'http://localhost'),path=requestUrl.pathname;
+      const runtimeTaskId=req.headers['x-summon-task-id'];
+      if(actor!=='controller'&&path!=='/tools'&&!path.startsWith('/tools/')&&!/^\/capabilities\/[^/]+\/versions\/[^/]+\/tools\/[^/]+$/.test(path)&&path!=='/mcp')fail('Bot credentials only access authorized capability tools',403);
       if(actor!=='controller'&&(path.startsWith('/api/')||path.startsWith('/internal/')))fail('User API requires controller authentication',403);
       if(closing&&!path.startsWith('/internal/service/'))fail('Gateway is stopping; new requests are unavailable',503);
       if(req.method==='GET'&&path==='/api/stream'){res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-store',Connection:'keep-alive'});res.write('data: {"type":"connected"}\n\n');clients.add(res);req.on('close',()=>clients.delete(res));return;}
@@ -259,16 +281,19 @@ export async function startGateway(options={}) {
       if(req.method==='POST'&&path==='/internal/service/tools')return json(res,200,control.tools(manager.get(body.botId)));
       if(req.method==='POST'&&path==='/internal/service/invoke')return json(res,200,await rpc(body.capability,body.operation,body.args||[]));
       if(req.method==='POST'&&path==='/internal/service/event'){emit(required(body.type,'type',128),body.payload||{});return json(res,200,{accepted:true});}
-      if(req.method==='GET'&&path==='/tools')return json(res,200,{tools:visibleTools(actor)});
+      if(req.method==='GET'&&path==='/tools'){
+        const current=actor!=='controller'&&runtimeTaskId?await manager.readState(actor,db=>db?.getTask(runtimeTaskId)):{};
+        return json(res,200,{tools:visibleTools(actor).filter(tool=>actor==='controller'||permitsTool(current||{},tool))});
+      }
       const pinnedTool=path.match(/^\/capabilities\/([^/]+)\/versions\/([^/]+)\/tools\/([^/]+)$/);
-      if(req.method==='POST'&&pinnedTool){const abort=new AbortController();res.on('close',()=>{if(!res.writableEnded)abort.abort();});return json(res,200,await callTool(decodeURIComponent(pinnedTool[3]),body.arguments||body,actor,abort.signal,{id:decodeURIComponent(pinnedTool[1]),version:decodeURIComponent(pinnedTool[2])}));}
-      if(req.method==='POST'&&path.startsWith('/tools/')){const abort=new AbortController();res.on('close',()=>{if(!res.writableEnded)abort.abort();});return json(res,200,await callTool(decodeURIComponent(path.slice(7)),body.arguments||body,actor,abort.signal));}
+      if(req.method==='POST'&&pinnedTool){const abort=new AbortController();res.on('close',()=>{if(!res.writableEnded)abort.abort();});return json(res,200,await callTool(decodeURIComponent(pinnedTool[3]),body.arguments||body,actor,abort.signal,{id:decodeURIComponent(pinnedTool[1]),version:decodeURIComponent(pinnedTool[2])},runtimeTaskId));}
+      if(req.method==='POST'&&path.startsWith('/tools/')){const abort=new AbortController();res.on('close',()=>{if(!res.writableEnded)abort.abort();});return json(res,200,await callTool(decodeURIComponent(path.slice(7)),body.arguments||body,actor,abort.signal,undefined,runtimeTaskId));}
       if(req.method==='POST'&&path==='/mcp'){
         if(body.jsonrpc!=='2.0'||typeof body.method!=='string')return json(res,400,{jsonrpc:'2.0',id:body.id??null,error:{code:-32600,message:'Invalid JSON-RPC request'}});
         if(body.id===undefined){res.writeHead(202);res.end();return;}
         try{let result;if(body.method==='initialize')result={protocolVersion:['2025-03-26','2024-11-05','2025-06-18'].includes(body.params?.protocolVersion)?body.params.protocolVersion:'2025-03-26',capabilities:{tools:{}},serverInfo:{name:'summon-capabilities',version:'0.2.0'}};
           else if(body.method==='ping')result={};else if(body.method==='tools/list')result={tools:visibleTools(actor).map(({name,description,inputSchema})=>({name,description,inputSchema}))};
-          else if(body.method==='tools/call'){try{const value=await callTool(body.params?.name,body.params?.arguments||{},actor);result={content:[{type:'text',text:JSON.stringify(value)}],isError:false};}catch(error){result={content:[{type:'text',text:error.message}],isError:true};}}
+          else if(body.method==='tools/call'){try{const value=await callTool(body.params?.name,body.params?.arguments||{},actor,undefined,undefined,runtimeTaskId);result={content:[{type:'text',text:JSON.stringify(value)}],isError:false};}catch(error){result={content:[{type:'text',text:error.message}],isError:true};}}
           else return json(res,200,{jsonrpc:'2.0',id:body.id,error:{code:-32601,message:'Method not found'}});return json(res,200,{jsonrpc:'2.0',id:body.id,result});
         }catch(error){return json(res,200,{jsonrpc:'2.0',id:body.id,error:{code:-32603,message:error.message}});}
       }

@@ -43,7 +43,7 @@ export class CapabilityControl {
     const owner = name => Object.entries(bindings).find(([id, version]) => this.registry.getVersion(id, version)?.tools.some(tool => tool.name === name));
     return [...definitions, ...controlTools.filter(tool => allowed.includes(tool.name)), ...catalogTools.filter(tool => allowed.includes(tool.name))].map(tool => {
       const route = owner(tool.name);
-      return { ...tool, type: 'http', method: 'POST', url: route ? `${this.gatewayUrl()}/capabilities/${encodeURIComponent(route[0])}/versions/${encodeURIComponent(route[1])}/tools/${encodeURIComponent(tool.name)}` : `${this.gatewayUrl()}/tools/${tool.name}`, timeoutMs: tool.name === 'run_command' ? 130000 : 150000 };
+      return { ...tool, taskContext: true, type: 'http', method: 'POST', url: route ? `${this.gatewayUrl()}/capabilities/${encodeURIComponent(route[0])}/versions/${encodeURIComponent(route[1])}/tools/${encodeURIComponent(tool.name)}` : `${this.gatewayUrl()}/tools/${tool.name}`, timeoutMs: tool.name === 'run_command' ? 130000 : 150000 };
     });
   }
   pinExisting() { for (const bot of this.manager.list()) this.registry.registerActor(bot.id, bot.allowedTools); }

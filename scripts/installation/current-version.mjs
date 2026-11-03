@@ -113,7 +113,7 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
       config.catalog = { url: gatewayUrl, token: record.capabilityToken };
       config.tools = [...bundled.map(tool => {
         const owner = capabilityForTool(tool.name);
-        return { ...tool, type: 'http', method: 'POST', url: owner ? `${gatewayUrl}/capabilities/${owner}/versions/${buildId}/tools/${tool.name}` : `${gatewayUrl}/tools/${tool.name}`,
+        return { ...tool, taskContext: true, type: 'http', method: 'POST', url: owner ? `${gatewayUrl}/capabilities/${owner}/versions/${buildId}/tools/${tool.name}` : `${gatewayUrl}/tools/${tool.name}`,
           headers: { Authorization: `Bearer ${record.capabilityToken}` }, timeoutMs: tool.name === 'run_command' ? 130000 : 150000 };
       }), ...(record.maintenanceFor ? [] : config.tools.filter(tool => !names.has(tool.name)))];
       config.bundledToolNames = bundled.map(tool => tool.name);

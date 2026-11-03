@@ -70,6 +70,7 @@ export class BotStore {
       const work = message.workId ? this.getRecord('works', message.workId) : null;
       if (message.workId && !work) throw Object.assign(new Error('Unknown work'), { status: 404 });
       const conversationId = work?.conversationId || message.conversationId || message.sessionId || `peer:${source}`;
+      if (!work && conversationId.startsWith('work:')) throw Object.assign(new Error('Work conversations require their durable workId'), { status: 403 });
       const sessionId = conversationId;
       const conversation = this.getRecord('conversations', conversationId);
       this.putRecord('conversations', { ...conversation, id: conversationId, kind: work ? 'work' : 'chat', workId: work?.id || null,

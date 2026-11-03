@@ -117,6 +117,7 @@ function httpTool(definition, headers) {
   return { ...definition, effect,
     async execute(args, context) {
       const url = new URL(baseUrl), requestHeaders = new Headers(headers);
+      if (definition.taskContext && context.taskId) requestHeaders.set('X-Summon-Task-Id', context.taskId);
       url.pathname = baseUrl.pathname.replace(/(?:\{|%7B)([a-zA-Z0-9_-]+)(?:\}|%7D)/gi, (_match, name) => {
         const value = inputField(args, pathMapping[name] || name);
         if (!['string', 'number', 'boolean'].includes(typeof value) || value === '' || value === '.' || value === '..') throw new TypeError(`Missing or invalid HTTP path parameter: ${name}`);

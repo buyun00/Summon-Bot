@@ -75,7 +75,8 @@ export class ChatroomService {
     }else for(const botId of selected){
       const repeats=peer&&this.messages(roomId).some(old=>old.id!==message.id&&old.rootId===message.rootId&&old.senderId===senderId&&old.toBotId===message.toBotId&&normalized(old.content)===normalized(message.content)&&JSON.stringify(old.sourceRefs||[])===JSON.stringify(message.sourceRefs||[]));
       if(repeats){this.store.save('suppressed-chains',{id:`${message.id}:${botId}`,messageId:message.id,botId,rootId:message.rootId,reason:'repeated-without-new-information'});continue;}
-      this.enqueue(message,botId,{workId:message.targetWorkId||message.workId||(owner?.botId===botId?owner.workId:null)});
+      const relatedWorkId=message.targetWorkId||message.workId||(owner?.botId===botId?owner.workId:null);
+      this.enqueue(message,botId,senderId==='user'?{workId:null,referencedWorkId:relatedWorkId}:{workId:relatedWorkId});
     }
     if(senderId==='user'&&room.team&&!room.team.introducedAt){
       this.store.save('rooms',{id:room.id,team:{...room.team,introducedAt:now()}});
@@ -112,6 +113,13 @@ export class ChatroomService {
   async inputFor(item) {
     if(item.input)return item.input;
     const room=this.need('rooms',item.roomId),trigger=this.need('messages',item.messageId),config=await this.manager.config(item.botId);
+    if(item.workId&&!item.routeOnly){
+      const attachments=await this.attachments.stageContext({messages:[trigger],trigger},config.workspace);
+      return this.store.save('deliveries',{...item,input:{id:item.id,kind:trigger.senderId==='user'?'request':'event',
+        workId:item.workId,conversationId:`work:${item.workId}`,metadata:{actor:trigger.senderId,sourceType:'work-event',roomId:room.id,originMessageId:trigger.id,priority:'background'},
+        content:{type:'work_event',message:trigger.content,attachments,peerAnswer:item.peerAnswer,
+          instruction:'This is a sourced input for the existing work, not a chat turn. Execute only that work. Do not answer the room; return concise results through work_notify.'}}}).input;
+    }
     const all=this.messages(room.id),cursor=this.store.get('delivery-cursors',`${item.botId}:${room.id}:${item.workId||'chat'}`),after=cursor?all.findIndex(message=>message.id===cursor.messageId):-1,end=all.findIndex(message=>message.id===trigger.id);
     const unread=after<end?all.slice(after+1,end+1):[trigger];
     const delta=item.workId?unread.filter(message=>message.id===trigger.id||message.id===trigger.replyTo||message.workId===item.workId||message.targetWorkId===item.workId||message.rootId===trigger.rootId):unread;
@@ -148,11 +156,11 @@ export class ChatroomService {
           const room=this.need('rooms',item.roomId),directory=await this.directory(room),recipient=directory.find(bot=>bot.id===parsed.recipientBotId);
           if(!recipient)throw Object.assign(new Error('Routing did not return an available room member; original message retained'),{routing:true});
           if(parsed.workId&&!recipient.responsibilities.some(work=>work.workId===parsed.workId))throw Object.assign(new Error('Routing referenced an unknown work; original message retained'),{routing:true});
-          this.enqueue(this.need('messages',item.messageId),recipient.id,{workId:parsed.workId||null,routedBy:item.botId,routeReason:String(parsed.reason||'').slice(0,1000)});
-        }else{
+          this.enqueue(this.need('messages',item.messageId),recipient.id,{workId:null,referencedWorkId:parsed.workId||null,routedBy:item.botId,routeReason:String(parsed.reason||'').slice(0,1000)});
+        }else if(!task.workId){
           try{const parsed=JSON.parse(text);if(typeof parsed.reply==='string'){text=parsed.reply;passed=parsed.pass||!text;}}catch{}
           if(this.messages(item.roomId).some(message=>message.senderId===item.botId&&message.replyTo===item.messageId&&!message.jobId))passed=true;
-          if(text&&!passed){const reply=this.append(item.roomId,{id:`reply:${item.id}`,content:text.slice(0,16000),replyTo:item.messageId,rootId:item.rootId,hop:item.hop+1,jobId:item.id,workId:item.workId,usage:task.result?.usage,model:task.result?.model},item.botId);this.returnReply(reply);}
+          if(text&&!passed){const reply=this.append(item.roomId,{id:`reply:${item.id}`,content:text.slice(0,16000),replyTo:item.messageId,rootId:item.rootId,hop:item.hop+1,jobId:item.id,workId:item.workId,usage:task.result?.usage,model:task.result?.model},item.botId);if(!task.result?.handoff)this.returnReply(reply);}
         }
       }else {
         const reply=this.append(item.roomId,{id:`error:${item.id}`,content:`任务${status}：${task.error?.message||task.error||'执行未完成'}`,kind:'error',jobId:item.id,replyTo:item.messageId,workId:item.workId},'system');

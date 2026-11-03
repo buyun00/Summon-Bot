@@ -37,6 +37,10 @@
     "catalog_reconcile",
     "chatroom_team_read",
     "chatroom_team_raise",
-    "chatroom_team_manage"
+    "chatroom_team_manage",
+    "list_files",
+    "search_files",
+    "web_search",
+    "web_read"
   ]
 }
