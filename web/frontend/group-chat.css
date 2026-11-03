@@ -366,6 +366,19 @@ button:focus-visible, a:focus-visible, select:focus-visible { outline-color: #65
 .desktop-overlay .page-header, .desktop-overlay .usage-header { padding-right: var(--window-controls-right-inset); }
 .desktop-overlay .connection-banner { padding-right: calc(22px + var(--window-controls-right-inset)); }
 
+/* macOS window buttons keep their own top row; the logo and actions sit below. */
+.desktop-overlay[data-desktop-platform="darwin"] .sidebar-toolbar {
+  --mac-titlebar-clearance: calc(44px / var(--ui-zoom));
+  height: calc(var(--mac-titlebar-clearance) + 60px);
+  min-height: calc(var(--mac-titlebar-clearance) + 60px);
+  padding: var(--mac-titlebar-clearance) 18px 16px 22px;
+  justify-content: flex-start;
+  align-items: center;
+}
+.desktop-overlay[data-desktop-platform="darwin"] .search-slot.open {
+  inset: var(--mac-titlebar-clearance) 62px 16px 22px;
+}
+
 @media (max-width: 1200px) and (min-width: 821px) {
   .contact-sidebar { width: 280px; }
   .sidebar-toolbar { padding-left: 20px; padding-right: 16px; }

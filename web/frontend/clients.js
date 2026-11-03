@@ -6,6 +6,7 @@
     const root = document.documentElement;
     if (!desktop?.windowControlsOverlay) return;
     root.classList.add('desktop-overlay');
+    root.dataset.desktopPlatform = desktop.platform;
     const overlay = navigator.windowControlsOverlay;
     const area = overlay?.getTitlebarAreaRect();
     const left = area?.width > 0 ? area.x : desktop.platform === 'darwin' ? 80 : 0;
