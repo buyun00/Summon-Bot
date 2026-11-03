@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -72,6 +73,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -99,6 +101,7 @@ fun ConversationListScreen(
     val scope = rememberCoroutineScope()
     var query by remember { mutableStateOf("") }
     var showSettings by remember { mutableStateOf(false) }
+    var showDisplay by remember { mutableStateOf(false) }
     var showCreateBot by remember { mutableStateOf(false) }
     var roomKind by remember { mutableStateOf<String?>(null) }
     var showSystem by remember { mutableStateOf(false) }
@@ -112,6 +115,7 @@ fun ConversationListScreen(
         .sortedByDescending { directRoom(store, it)?.lastMessage?.createdAt.orEmpty() }
     val systemBots = store.bots.filter { !it.presetId.isNullOrEmpty() && matches("${it.name} ${it.role}") }
     val peers = store.rooms.filter { it.kind == "dm" && !it.members.contains("user") && matches(it.name) }
+    val menuHeight = (LocalConfiguration.current.screenHeightDp * 100f / LocalRelayDisplay.current.zoom * .7f).dp
 
     Scaffold(
         containerColor = Color.Black,
@@ -120,7 +124,7 @@ fun ConversationListScreen(
                 IconButton(onClick = { showSettings = true }) { Icon(Icons.Filled.Person, "设置", tint = Color.White) }
                 Box {
                     IconButton(onClick = { plus = true }) { Icon(Icons.Filled.Add, "新建", tint = Color.White) }
-                    DropdownMenu(expanded = plus, onDismissRequest = { plus = false }) {
+                    DropdownMenu(expanded = plus, onDismissRequest = { plus = false }, modifier = Modifier.heightIn(max = menuHeight)) {
                         DropdownMenuItem(text = { Text("创建新 Bot") }, onClick = { plus = false; showCreateBot = true })
                         DropdownMenuItem(text = { Text("创建群聊") }, onClick = { plus = false; roomKind = "group" })
                         DropdownMenuItem(text = { Text("发起深聊") }, onClick = { plus = false; roomKind = "deep" })
@@ -134,11 +138,12 @@ fun ConversationListScreen(
                     Surface(shape = CircleShape, color = Color(0xFF2C2C2E), modifier = Modifier.size(48.dp).clickable { menu = true }) {
                         Box(contentAlignment = Alignment.Center) { Icon(Icons.Filled.GridView, "连接应用与工作台", tint = Color.White) }
                     }
-                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, modifier = Modifier.heightIn(max = menuHeight)) {
                         WorkspaceSection.entries.forEach { section ->
                             DropdownMenuItem(text = { Text(section.title) }, leadingIcon = { Icon(section.icon, null) }, onClick = { menu = false; onOpenWorkspace(section) })
                         }
                         DropdownMenuItem(text = { Text("Token 统计") }, onClick = { menu = false; onOpenUsage() })
+                        DropdownMenuItem(text = { Text("显示设置") }, onClick = { menu = false; showDisplay = true })
                         DropdownMenuItem(text = { Text("连接设置") }, onClick = { menu = false; showSettings = true })
                     }
                 }
@@ -242,6 +247,7 @@ fun ConversationListScreen(
         }
     }
     if (showSettings) SettingsSheet(store, updater) { showSettings = false }
+    if (showDisplay) DisplaySettingsSheet { showDisplay = false }
     if (showCreateBot) CreateBotSheet(store, onOpenRoom) { showCreateBot = false }
     roomKind?.let { kind -> CreateRoomSheet(store, kind, onOpenRoom) { roomKind = null } }
 }
@@ -294,6 +300,7 @@ private fun preview(room: RelayRoom?, bot: RelayBot): String {
 @Composable
 private fun SettingsSheet(store: RelayStore, updater: RelayAppUpdater, onDismiss: () -> Unit) {
     val scope = rememberCoroutineScope()
+    val display = LocalRelayDisplay.current
     var baseURL by remember { mutableStateOf(store.settings.baseURL) }
     var token by remember { mutableStateOf(store.savedToken) }
     var userName by remember { mutableStateOf(store.settings.userName) }
@@ -332,6 +339,10 @@ private fun SettingsSheet(store: RelayStore, updater: RelayAppUpdater, onDismiss
                 if (saving) CircularProgressIndicator(Modifier.size(18.dp)) else Text("保存并连接")
             }
             Text("已读取的会话和草稿保存在这台设备，失败消息需要手动重试。切换服务时会清除这台设备上的会话缓存。", color = Color(0xFF8E8E93), style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(20.dp))
+            Text("显示设置", style = MaterialTheme.typography.titleMedium)
+            DisplaySettingsControls()
+            TextButton(onClick = { display.reset() }) { Text("恢复默认显示") }
             ClientUpdateSettings(updater)
             TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text("完成") }
             Spacer(Modifier.height(24.dp))

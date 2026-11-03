@@ -7,7 +7,7 @@ struct RelayApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ConversationListView()
+            RelayDisplayContainer { ConversationListView() }
                 .environment(store)
                 .preferredColorScheme(.dark)
                 .tint(.white)

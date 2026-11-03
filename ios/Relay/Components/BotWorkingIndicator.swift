@@ -77,7 +77,7 @@ struct BotWorkingIndicator: View {
 
     private var statusText: some View {
         Text(label)
-            .font(.subheadline)
+            .relayFont(.subheadline)
             .lineLimit(1)
             .truncationMode(.tail)
             .frame(maxWidth: .infinity, alignment: .leading)

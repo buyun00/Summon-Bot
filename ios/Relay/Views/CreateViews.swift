@@ -39,7 +39,7 @@ struct CreateBotView: View {
                     GreetingAvatar(avatar: avatar)
                         .padding(.top, 28).padding(.bottom, 10)
                     TextField("为 Bot 取个名字", text: $name)
-                        .font(.title3.weight(.medium)).multilineTextAlignment(.center)
+                        .relayFont(.title3, weight: .medium).multilineTextAlignment(.center)
                         .padding(18).background(RelayTheme.surface, in: RoundedRectangle(cornerRadius: 22))
                         .onChange(of: name) { _, value in name = String(value.prefix(100)) }
                     AvatarPicker(avatar: $avatar)
@@ -52,7 +52,7 @@ struct CreateBotView: View {
                 } label: {
                     HStack(spacing: 10) {
                         if busy { ProgressView().tint(buttonForeground) }
-                        Text(createdBot == nil ? "创建" : "打开聊天").font(.headline)
+                        Text(createdBot == nil ? "创建" : "打开聊天").relayFont(.headline)
                     }
                     .frame(maxWidth: .infinity, minHeight: 54)
                     .foregroundStyle(buttonForeground)
@@ -100,7 +100,7 @@ struct AvatarPicker: View {
                     Button { avatar.color=PaperLibrary.paperColor(avatar.color,shape:avatar.shape);avatar.shape=shape.id;avatar.secondary="#E6DDC8";avatar.ink="#414A3C";avatar.paper="#FFFBF0";avatar.image=nil } label: {
                         VStack(spacing:4) {
                             BotAvatar(shape:shape.id,color:avatar.color,size:43,secondary:avatar.secondary,ink:avatar.ink,paper:avatar.paper,animated:false)
-                            Text(shape.label).font(.caption2)
+                            Text(shape.label).relayFont(.caption2)
                         }.padding(5).background {
                             if PaperLibrary.role(avatar.shape) == shape.id && avatar.image == nil {
                                 RoundedRectangle(cornerRadius:12).stroke(Color.primary,lineWidth:2).matchedGeometryEffect(id:"shape",in:selection)

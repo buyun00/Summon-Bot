@@ -1,9 +1,9 @@
 /* Conversation layout. Shared by the browser and the Electron client. */
 :root {
-  --ui-zoom: 0.8;
+  --ui-zoom: 0.92;
   --ui-font-scale: 1;
-  --ui-vh: 125dvh;
-  --ui-vw: 125vw;
+  --ui-vh: calc(100dvh / var(--ui-zoom));
+  --ui-vw: calc(100vw / var(--ui-zoom));
   --canvas: #fdfdfc;
   --surface: #fff;
   --white: #fff;
@@ -130,10 +130,10 @@ button:focus-visible, a:focus-visible, select:focus-visible { outline-color: #65
 .owner-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .owner-copy strong { color: var(--ink); font-size:var(--text-meta); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .owner-copy small { font-size:var(--text-caption); color: #8a8d81; }
-.sidebar-footer .apps-anchor { flex: none; }
+.sidebar-footer .apps-anchor { flex: none; position: static; }
 .sidebar-settings { width: 34px; height: 36px; display: flex; align-items: center; justify-content: center; color: #74786c; background: transparent; border-radius: 9px; }
 .sidebar-settings:hover { background: #e7e9e0; }
-.apps-menu { left: auto; right: -4px; width: 280px; bottom: 48px; }
+.apps-menu { left: 16px; right: 16px; width: auto; min-width: 0; bottom: calc(100% + 8px); max-height: calc(var(--ui-vh) - 96px); overscroll-behavior: contain; }
 .context-menu { border-color: var(--line); background: #fff; color: var(--ink); box-shadow: 0 8px 35px #252b4012; border-radius: 13px; font-size:var(--text-meta); }
 .context-menu > button { font-size:var(--text-meta); min-height: 38px; padding: 8px 10px; border-radius: 8px; }
 .context-menu > button:hover { background: #f2f3ee; }
@@ -394,8 +394,8 @@ button:focus-visible, a:focus-visible, select:focus-visible { outline-color: #65
   .group-copy strong, .contact-copy strong { font-size:var(--text-body); }
   .group-preview, .contact-copy > .contact-preview { font-size:var(--text-meta); }
   .sidebar-footer { height: calc(72px + env(safe-area-inset-bottom, 0px)); min-height: calc(72px + env(safe-area-inset-bottom, 0px)); padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px)); }
-  .apps-menu { min-width: min(300px, calc(100vw - 40px)); }
   .context-menu { max-width: calc(var(--ui-vw) - 28px); max-height: calc(var(--mobile-vh, var(--ui-vh)) - 120px); overflow: auto; }
+  .apps-menu { max-height: calc(var(--mobile-vh, var(--ui-vh)) - 96px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)); }
   .context-menu > button { min-height: 44px; }
   .floating-header { margin: 0; height: var(--chat-header-height); min-height: var(--chat-header-height); padding: calc(10px + env(safe-area-inset-top, 0px)) max(12px, env(safe-area-inset-right, 0px)) 10px max(8px, env(safe-area-inset-left, 0px)); gap: 6px; }
   .mobile-back { display: flex; position: static; inset: auto; width: 34px; min-width: 34px; height: 44px; min-height: 44px; padding: 0; align-items: center; justify-content: center; background: transparent; border: 0; color: #647084; border-radius: 8px; }

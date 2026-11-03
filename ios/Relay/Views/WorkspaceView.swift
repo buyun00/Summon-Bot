@@ -92,7 +92,7 @@ struct WorkspaceView: View {
                         .disabled(loading)
                 }
             }
-            .sheet(item: $editor, onDismiss: { Task { await reload() } }) { kind in
+            .relaySheet(item: $editor, onDismiss: { Task { await reload() } }) { kind in
                 WorkspaceEditor(kind: kind, snapshot: snapshot)
             }
             .task { await reload() }
@@ -116,12 +116,12 @@ struct WorkspaceView: View {
                               color: bot.value["avatar"]["color"].string ?? "#FFC18E",
                               image: bot.value["avatar"]["image"].string, size: 42, secondary: bot.value["avatar"]["secondary"].string, ink: bot.value["avatar"]["ink"].string, paper: bot.value["avatar"]["paper"].string)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(bot.value["name"].string ?? bot.id).font(.headline)
-                        Text(bot.value["role"].stringValue).font(.subheadline).foregroundStyle(.secondary)
+                        Text(bot.value["name"].string ?? bot.id).relayFont(.headline)
+                        Text(bot.value["role"].stringValue).relayFont(.subheadline).foregroundStyle(.secondary)
                     }
                     Spacer()
                     if bot.value["status"].string == "paused" {
-                        Text("已暂停").font(.caption).foregroundStyle(.secondary)
+                        Text("已暂停").relayFont(.caption).foregroundStyle(.secondary)
                     }
                 }.padding(.vertical, 4)
             }
@@ -156,14 +156,14 @@ struct WorkspaceView: View {
                 WorkspaceWorkDetail(initial: record, snapshot: snapshot)
             } label: {
                 VStack(alignment: .leading, spacing: 7) {
-                    Text(record.value["goal"].stringValue).font(.headline).lineLimit(3)
+                    Text(record.value["goal"].stringValue).relayFont(.headline).lineLimit(3)
                     HStack {
                         Text(record.value["status"].stringValue == "active" ? "进行中" : workspaceStatus(record.value["status"].stringValue))
                         Text("·")
                         Text(workspaceName(record.value["botId"].stringValue, in: snapshot["bots"]))
                         Spacer()
                         Text(workspaceDate(record.value["createdAt"].string))
-                    }.font(.caption).foregroundStyle(.secondary)
+                    }.relayFont(.caption).foregroundStyle(.secondary)
                 }.padding(.vertical, 4)
             }
         }
@@ -197,9 +197,9 @@ struct WorkspaceView: View {
                         Text(workspaceStatus(node.value["type"].stringValue))
                         Text("·")
                         Text(workspaceStatus(node.value["status"].stringValue))
-                    }.font(.caption).foregroundStyle(.secondary)
-                    Text(node.value["title"].stringValue).font(.headline)
-                    Text(node.value["content"].stringValue).font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
+                    }.relayFont(.caption).foregroundStyle(.secondary)
+                    Text(node.value["title"].stringValue).relayFont(.headline)
+                    Text(node.value["content"].stringValue).relayFont(.subheadline).foregroundStyle(.secondary).lineLimit(3)
                 }.padding(.vertical, 4)
             }
         }
@@ -208,7 +208,7 @@ struct WorkspaceView: View {
                 ForEach(Array(memories.enumerated()), id: \.offset) { _, memory in
                     VStack(alignment: .leading, spacing: 5) {
                         Text(workspaceName(memory["botId"].stringValue, in: snapshot["bots"]))
-                            .font(.caption).foregroundStyle(.secondary)
+                            .relayFont(.caption).foregroundStyle(.secondary)
                         Text(memory["content"].stringValue).textSelection(.enabled)
                     }
                 }
@@ -226,11 +226,11 @@ struct WorkspaceView: View {
             Section {
                 Button { editor = .routine(record) } label: {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(record.value["name"].stringValue).font(.headline).foregroundStyle(.primary)
+                        Text(record.value["name"].stringValue).relayFont(.headline).foregroundStyle(.primary)
                         Text(record.value["instruction"].stringValue)
-                            .font(.subheadline).foregroundStyle(.secondary).lineLimit(4)
+                            .relayFont(.subheadline).foregroundStyle(.secondary).lineLimit(4)
                         Text(workspaceName(record.value["botId"].stringValue, in: snapshot["bots"]))
-                            .font(.caption).foregroundStyle(.secondary)
+                            .relayFont(.caption).foregroundStyle(.secondary)
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }
                 Toggle("启用", isOn: Binding(
@@ -300,7 +300,7 @@ private struct WorkspaceWorkDetail: View {
         List {
             if let error { WorkspaceErrorRow(message: error) }
             Section {
-                Text(value["goal"].stringValue).font(.title3.bold()).textSelection(.enabled)
+                Text(value["goal"].stringValue).relayFont(.title3, weight: .bold).textSelection(.enabled)
                 LabeledContent("状态", value: status == "active" ? "进行中" : workspaceStatus(status))
                 LabeledContent("委托成员", value: workspaceName(value["botId"].stringValue, in: snapshot["bots"]))
                 LabeledContent("来源会话", value: workspaceName(value["roomId"].stringValue, in: snapshot["rooms"]))
@@ -325,7 +325,7 @@ private struct WorkspaceWorkDetail: View {
             }
             if status == "interrupted" {
                 Section { Text("上次执行已中断。恢复会继续已有工作对话，已进行的操作仍然保留。")
-                    .font(.footnote).foregroundStyle(.secondary) }
+                    .relayFont(.footnote).foregroundStyle(.secondary) }
             }
             if value["historical"].bool != true && ["active", "waiting", "blocked"].contains(status) {
                 Section("补充要求") {
@@ -352,12 +352,12 @@ private struct WorkspaceWorkDetail: View {
                 ForEach(Array(events.enumerated()), id: \.offset) { _, event in
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(alignment: .firstTextBaseline) {
-                            Text(workspaceEventLabel(event["type"].stringValue)).font(.subheadline.bold())
+                            Text(workspaceEventLabel(event["type"].stringValue)).relayFont(.subheadline, weight: .bold)
                             Spacer()
                             Text(workspaceDate(event["createdAt"].string ?? event["timestamp"].string))
-                                .font(.caption).foregroundStyle(.secondary)
+                                .relayFont(.caption).foregroundStyle(.secondary)
                         }
-                        Text(workspaceEventText(event)).font(.subheadline).textSelection(.enabled)
+                        Text(workspaceEventText(event)).relayFont(.subheadline).textSelection(.enabled)
                     }.padding(.vertical, 4)
                 }
             }
@@ -412,7 +412,7 @@ private struct WorkspaceKnowledgeDetail: View {
         List {
             if let error { WorkspaceErrorRow(message: error) }
             Section {
-                Text(node.value["title"].stringValue).font(.title3.bold()).textSelection(.enabled)
+                Text(node.value["title"].stringValue).relayFont(.title3, weight: .bold).textSelection(.enabled)
                 LabeledContent("性质", value: workspaceStatus(node.value["type"].stringValue))
                 LabeledContent("状态", value: workspaceStatus(node.value["status"].stringValue))
                 Text(node.value["content"].stringValue).textSelection(.enabled)
@@ -434,9 +434,9 @@ private struct WorkspaceKnowledgeDetail: View {
                         }
                         Button { editor = .edge(edge) } label: {
                             Label("\(workspaceName(edge.value["from"].stringValue, in: graph["nodes"], field: "title")) → \(edge.value["relation"].stringValue) → \(workspaceName(edge.value["to"].stringValue, in: graph["nodes"], field: "title"))", systemImage: "pencil")
-                                .font(.caption).multilineTextAlignment(.leading)
+                                .relayFont(.caption).multilineTextAlignment(.leading)
                         }
-                        if edge.value["status"].string == "expired" { Text("已过期").font(.caption).foregroundStyle(.secondary) }
+                        if edge.value["status"].string == "expired" { Text("已过期").relayFont(.caption).foregroundStyle(.secondary) }
                     }.padding(.vertical, 3)
                 }
                 Button("建立关联", systemImage: "link") { editor = .edge(nil) }
@@ -458,7 +458,7 @@ private struct WorkspaceKnowledgeDetail: View {
         .toolbar { Button("修订", systemImage: "pencil") { editor = .node(node) } }
         .refreshable { await load() }
         .task { await load() }
-        .sheet(item: $editor, onDismiss: { Task { await load() } }) { kind in
+        .relaySheet(item: $editor, onDismiss: { Task { await load() } }) { kind in
             WorkspaceEditor(kind: kind, snapshot: snapshot)
         }
     }
@@ -739,7 +739,7 @@ private struct WorkspaceErrorRow: View {
     let message: String
     var body: some View {
         Label(message, systemImage: "exclamationmark.circle")
-            .font(.footnote).foregroundStyle(.orange).textSelection(.enabled)
+            .relayFont(.footnote).foregroundStyle(.orange).textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -749,7 +749,7 @@ private struct WorkspaceTextFact: View {
     let value: String
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(title).relayFont(.caption).foregroundStyle(.secondary)
             Text(value).textSelection(.enabled)
         }
     }

@@ -34,6 +34,7 @@ import java.net.URLEncoder
 class RelayViewModel(app: Application) : AndroidViewModel(app) {
     val store = RelayStore(app)
     val updater = RelayAppUpdater(app, viewModelScope)
+    val display = RelayDisplayPreferences(app)
     override fun onCleared() {
         store.dispose()
     }
@@ -66,38 +67,40 @@ private fun RelayApp(model: RelayViewModel = viewModel()) {
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer) }
     }
-    MaterialTheme(colorScheme = darkColorScheme(
-        background = Color.Black,
-        surface = Color(0xFF1C1C1E),
-        primary = Color.White,
-        onPrimary = Color.Black,
-        onBackground = Color.White,
-        onSurface = Color.White,
-    )) {
-        Surface(Modifier.fillMaxSize(), color = Color.Black) {
-            val nav = rememberNavController()
-            NavHost(nav, startDestination = "list",
-                enterTransition = { slideInHorizontally(tween(380)) { it } },
-                exitTransition = { slideOutHorizontally(tween(380)) { -it / 4 } },
-                popEnterTransition = { slideInHorizontally(tween(380)) { -it / 4 } },
-                popExitTransition = { slideOutHorizontally(tween(380)) { it } }) {
-                composable("list") {
-                    ConversationListScreen(
-                        store,
-                        updater = model.updater,
-                        onOpenUsage = { nav.navigate("usage") },
-                        onOpenRoom = { id -> nav.navigate("chat/${URLEncoder.encode(id, "UTF-8")}") },
-                        onOpenWorkspace = { section -> nav.navigate("workspace/${section.name}") },
-                    )
-                }
-                composable("chat/{roomId}", arguments = listOf(navArgument("roomId") { type = NavType.StringType })) { entry ->
-                    val id = URLDecoder.decode(entry.arguments?.getString("roomId").orEmpty(), "UTF-8")
-                    ChatScreen(store, id) { nav.popBackStack() }
-                }
-                composable("usage") { TokenUsageScreen(store) { nav.popBackStack() } }
-                composable("workspace/{section}") { entry ->
-                    val section = runCatching { WorkspaceSection.valueOf(entry.arguments?.getString("section").orEmpty()) }.getOrDefault(WorkspaceSection.Bots)
-                    WorkspaceScreen(store, section) { nav.popBackStack() }
+    RelayDisplay(model.display) {
+        MaterialTheme(typography = relayTypography, colorScheme = darkColorScheme(
+            background = Color.Black,
+            surface = Color(0xFF1C1C1E),
+            primary = Color.White,
+            onPrimary = Color.Black,
+            onBackground = Color.White,
+            onSurface = Color.White,
+        )) {
+            Surface(Modifier.fillMaxSize(), color = Color.Black) {
+                val nav = rememberNavController()
+                NavHost(nav, startDestination = "list",
+                    enterTransition = { slideInHorizontally(tween(380)) { it } },
+                    exitTransition = { slideOutHorizontally(tween(380)) { -it / 4 } },
+                    popEnterTransition = { slideInHorizontally(tween(380)) { -it / 4 } },
+                    popExitTransition = { slideOutHorizontally(tween(380)) { it } }) {
+                    composable("list") {
+                        ConversationListScreen(
+                            store,
+                            updater = model.updater,
+                            onOpenUsage = { nav.navigate("usage") },
+                            onOpenRoom = { id -> nav.navigate("chat/${URLEncoder.encode(id, "UTF-8")}") },
+                            onOpenWorkspace = { section -> nav.navigate("workspace/${section.name}") },
+                        )
+                    }
+                    composable("chat/{roomId}", arguments = listOf(navArgument("roomId") { type = NavType.StringType })) { entry ->
+                        val id = URLDecoder.decode(entry.arguments?.getString("roomId").orEmpty(), "UTF-8")
+                        ChatScreen(store, id) { nav.popBackStack() }
+                    }
+                    composable("usage") { TokenUsageScreen(store) { nav.popBackStack() } }
+                    composable("workspace/{section}") { entry ->
+                        val section = runCatching { WorkspaceSection.valueOf(entry.arguments?.getString("section").orEmpty()) }.getOrDefault(WorkspaceSection.Bots)
+                        WorkspaceScreen(store, section) { nav.popBackStack() }
+                    }
                 }
             }
         }

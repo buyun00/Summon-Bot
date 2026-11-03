@@ -54,7 +54,7 @@ struct TokenUsageView: View {
                 billingSections
                 if overview["coverage"]["includesUntrackedHistory"].bool == true {
                     Text("采集启用前只回填仍保留的调用，历史已清理部分无法追溯。")
-                        .font(.footnote).foregroundStyle(.secondary)
+                        .relayFont(.footnote).foregroundStyle(.secondary)
                 }
                 Section("本机已记录用量") { totalsRows(overview["totals"]) }
                 rankingSection
@@ -65,7 +65,7 @@ struct TokenUsageView: View {
                 requestSection
                 Section {
                     Text("命中率只代表留存明细。输入缓存与输出分别统计，推理 Token 包含在输出内。USD 参考费与截图 CNY 消费不直接比较。")
-                        .font(.footnote).foregroundStyle(.secondary)
+                        .relayFont(.footnote).foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("Token 统计")
@@ -128,7 +128,7 @@ struct TokenUsageView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack { Text(row["name"].stringValue); Spacer(); Text("\(usageInteger(row["totalTokens"])) Token") }
                         Text("输入 \(usageInteger(row["inputTokens"])) / 输出 \(usageInteger(row["outputTokens"])) · 命中 \(usagePercent(row["cacheHitRate"])) · \(usageInteger(row["calls"])) 次")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .relayFont(.caption).foregroundStyle(.secondary)
                     }
                 }.buttonStyle(.plain)
             }
@@ -143,7 +143,7 @@ struct TokenUsageView: View {
             }
             if (detail["totals"]["unreportedCalls"].int ?? 0) > 0 {
                 Text("部分调用没有完整 Token 回执，缺失部分不按零消耗计算。")
-                    .font(.footnote).foregroundStyle(.secondary)
+                    .relayFont(.footnote).foregroundStyle(.secondary)
             }
         } header: { Text(selectedKind == nil ? "全部调用明细" : selectedName) }
     }
@@ -169,12 +169,12 @@ struct TokenUsageView: View {
                     LabeledContent("输入 / 输出", value: "\(usageInteger(request["inputTokens"])) / \(usageInteger(request["outputTokens"]))")
                     LabeledContent("缓存命中 / 未命中", value: "\(usageInteger(request["cacheHitTokens"])) / \(usageInteger(request["cacheMissTokens"]))")
                     LabeledContent("推理 Token（包含在输出内）", value: usageInteger(request["reasoningTokens"]))
-                    if !request["error"].stringValue.isEmpty { Text(request["error"].stringValue).font(.footnote).foregroundStyle(.secondary) }
+                    if !request["error"].stringValue.isEmpty { Text(request["error"].stringValue).relayFont(.footnote).foregroundStyle(.secondary) }
                 } label: {
                     VStack(alignment: .leading, spacing: 5) {
                         HStack { Text(request["botName"].stringValue); Spacer(); Text(usageInteger(request["totalTokens"])) }
                         Text("\(usageDate(request["startedAt"])) · \(purposes[request["purpose"].stringValue] ?? request["purpose"].stringValue) · \(statuses[request["status"].stringValue] ?? request["status"].stringValue)")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .relayFont(.caption).foregroundStyle(.secondary)
                     }
                 }
             }

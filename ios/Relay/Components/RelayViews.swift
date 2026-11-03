@@ -76,7 +76,7 @@ struct InlineError: View {
 
     var body: some View {
         Label(message, systemImage: "exclamationmark.circle")
-            .font(.footnote)
+            .relayFont(.footnote)
             .foregroundStyle(.orange)
             .frame(maxWidth: .infinity, alignment: .leading)
             .textSelection(.enabled)

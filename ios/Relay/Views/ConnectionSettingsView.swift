@@ -8,6 +8,7 @@ struct ConnectionSettingsView: View {
     @State private var userName = ""
     @State private var saving = false
     @State private var errorMessage: String?
+    @State private var showDisplay = false
 
     var body: some View {
         NavigationStack {
@@ -16,15 +17,18 @@ struct ConnectionSettingsView: View {
                     HStack(spacing: 16) {
                         Image("RelayIcon").resizable().frame(width: 52, height: 52).clipShape(RoundedRectangle(cornerRadius: 14))
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Relay Bot").font(.headline)
-                            Text("iOS 原生客户端").font(.subheadline).foregroundStyle(.secondary)
+                            Text("Relay Bot").relayFont(.headline)
+                            Text("iOS 原生客户端").relayFont(.subheadline).foregroundStyle(.secondary)
                             Text("版本 \(appVersion)")
-                                .font(.caption).foregroundStyle(.secondary)
+                                .relayFont(.caption).foregroundStyle(.secondary)
                         }
                     }.padding(.vertical, 8)
                 }
                 Section("个人信息") {
                     TextField("显示名称", text: $userName)
+                }
+                Section {
+                    Button("显示设置", systemImage: "textformat.size") { showDisplay = true }
                 }
                 Section {
                     TextField("https://bot.lin0.org", text: $baseURL)
@@ -52,12 +56,13 @@ struct ConnectionSettingsView: View {
                 }
                 Section {
                     Text("已读取的会话和草稿保存在这台设备，失败消息需要手动重试。切换服务时会清除这台设备上的会话缓存。")
-                        .font(.footnote).foregroundStyle(.secondary)
+                        .relayFont(.footnote).foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("设置")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
+            .relaySheet(isPresented: $showDisplay) { RelayDisplaySettingsView() }
             .onAppear {
                 baseURL = store.settings.baseURL
                 userName = store.settings.userName

@@ -215,7 +215,7 @@ struct ChatView: View {
             guard let item else { return }
             Task { await uploadPhoto(item) }
         }
-        .sheet(isPresented: $showDetails) {
+        .relaySheet(isPresented: $showDetails) {
             NavigationStack {
                 if let bot = directBot { BotDetailsView(botID: bot.id) }
                 else { RoomDetailsView(roomID: roomID) }
@@ -229,7 +229,7 @@ struct ChatView: View {
             if let reply {
                 HStack {
                     Label(String(reply.content.prefix(90)), systemImage: "arrowshape.turn.up.left")
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        .relayFont(.caption).foregroundStyle(.secondary).lineLimit(2)
                     Spacer()
                     Button { self.reply = nil } label: { Image(systemName: "xmark.circle.fill") }
                         .accessibilityLabel("取消回复")
@@ -241,7 +241,7 @@ struct ChatView: View {
                         ForEach(attachments) { item in
                             HStack(spacing: 8) {
                                 Image(systemName: "doc")
-                                Text(item.name).font(.caption).lineLimit(1)
+                                Text(item.name).relayFont(.caption).lineLimit(1)
                                 Button { attachments.removeAll { $0.id == item.id } } label: { Image(systemName: "xmark.circle.fill") }
                                     .accessibilityLabel("移除 \(item.name)")
                             }.padding(10).background(RelayTheme.surface, in: Capsule())
@@ -251,10 +251,10 @@ struct ChatView: View {
             }
             if room?.isConcluded == true {
                 Label("深聊已结束，结论已保留", systemImage: "checkmark.bubble")
-                    .font(.footnote).foregroundStyle(.secondary).padding()
+                    .relayFont(.footnote).foregroundStyle(.secondary).padding()
             } else if let room, !room.members.contains("user") {
                 Label("正在查看 Bot 之间的对话", systemImage: "eye")
-                    .font(.footnote).foregroundStyle(.secondary).padding()
+                    .relayFont(.footnote).foregroundStyle(.secondary).padding()
             } else {
                 GlassEffectContainer(spacing: 12) {
                     HStack(alignment: .bottom, spacing: 10) {
@@ -265,7 +265,7 @@ struct ChatView: View {
                             }
                         } label: {
                             if uploading { ProgressView().frame(width: 24, height: 30) }
-                            else { Image(systemName: "plus").font(.title2).frame(width: 24, height: 30) }
+                            else { Image(systemName: "plus").relayFont(.title2).frame(width: 24, height: 30) }
                         }
                         .buttonStyle(.glass).buttonBorderShape(.circle)
                         .disabled(uploading || attachments.count >= 8)
@@ -293,7 +293,7 @@ struct ChatView: View {
 
                         Button { send() } label: {
                             Image(systemName: hasMessageContent ? "arrow.up" : "mic.fill")
-                                .font(.title3.weight(.semibold))
+                                .relayFont(.title3, weight: .semibold)
                         }
                         .buttonStyle(ComposerActionButtonStyle(accent: composerAccent))
                         .disabled(uploading || !store.isConfigured || store.sendingRoomIDs.contains(roomID) || !hasMessageContent)
@@ -380,14 +380,14 @@ private struct MessageRow: View {
             }
             VStack(alignment: message.isOwn ? .trailing : .leading, spacing: 7) {
                 HStack(spacing: 8) {
-                    Text(message.isOwn ? store.settings.userName : bot?.name ?? "系统").font(.caption.weight(.medium))
-                    Text(RelayFormat.time(message.createdAt)).font(.caption2).foregroundStyle(.tertiary)
+                    Text(message.isOwn ? store.settings.userName : bot?.name ?? "系统").relayFont(.caption, weight: .medium)
+                    Text(RelayFormat.time(message.createdAt)).relayFont(.caption2).foregroundStyle(.tertiary)
                 }.foregroundStyle(.secondary)
                 if let replyID = message.replyTo,
                    let quoted = store.messagesForRoom(roomID).first(where: { $0.id == replyID }),
                    quoted.senderId != message.senderId,
                    store.bot(id: quoted.senderId) != nil {
-                    Text("\(store.name(for: quoted.senderId))：\(quoted.content)").font(.caption).lineLimit(3)
+                    Text("\(store.name(for: quoted.senderId))：\(quoted.content)").relayFont(.caption).lineLimit(3)
                         .foregroundStyle(.secondary).padding(10)
                         .background(RelayTheme.surface, in: RoundedRectangle(cornerRadius: 12))
                 }
@@ -405,12 +405,12 @@ private struct MessageRow: View {
                 ForEach(message.attachments) { attachment in AttachmentRow(attachment: attachment) }
                 if let pending, pending.status != "sent" {
                     if pending.status == "sending" {
-                        Label("正在发送…", systemImage: "clock").font(.caption2).foregroundStyle(.secondary)
+                        Label("正在发送…", systemImage: "clock").relayFont(.caption2).foregroundStyle(.secondary)
                     } else {
                         VStack(alignment: .trailing, spacing: 6) {
-                            Text(pending.error ?? "尚未确认送达").font(.caption2).foregroundStyle(.orange)
+                            Text(pending.error ?? "尚未确认送达").relayFont(.caption2).foregroundStyle(.orange)
                             Button("重试发送") { Task { await store.retryMessage(clientID: pending.clientID) } }
-                                .font(.caption).buttonStyle(.glass)
+                                .relayFont(.caption).buttonStyle(.glass)
                         }
                     }
                 }
@@ -452,14 +452,14 @@ struct AttachmentRow: View {
                     if downloading { ProgressView() }
                     else { Image(systemName: attachment.mimeType.hasPrefix("image/") ? "photo" : "doc") }
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(attachment.name).font(.subheadline).lineLimit(2)
-                        Text(attachment.formattedSize).font(.caption2).foregroundStyle(.secondary)
+                        Text(attachment.name).relayFont(.subheadline).lineLimit(2)
+                        Text(attachment.formattedSize).relayFont(.caption2).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 4)
                     Image(systemName: "arrow.down.circle").foregroundStyle(.secondary)
                 }.padding(12).background(RelayTheme.surface, in: RoundedRectangle(cornerRadius: 16))
             }.buttonStyle(.plain).disabled(downloading)
-            if let fileURL { ShareLink(item: fileURL) { Label("分享文件", systemImage: "square.and.arrow.up") }.font(.caption) }
+            if let fileURL { ShareLink(item: fileURL) { Label("分享文件", systemImage: "square.and.arrow.up") }.relayFont(.caption) }
             if let errorMessage { InlineError(message: errorMessage) }
         }
         .quickLookPreview($previewURL)

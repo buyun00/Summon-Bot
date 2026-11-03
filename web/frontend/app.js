@@ -7,7 +7,7 @@ const $ = (selector, root = document) => {
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)].filter(node => !node.closest('[data-motion-ghost]'));
 
 // Display preferences are local to this browser and independent for each layout.
-const UI_BUILD = '2026.11.03.3';
+const UI_BUILD = '2026.11.03.4';
 let displayDiagnosticSnapshot = null;
 function readViewportUnits() {
   const probe = document.createElement('div');
@@ -35,9 +35,9 @@ function captureDisplayDiagnostics() {
     zoom: getComputedStyle(root).zoom, keyboard: root.classList.contains('keyboard-open'), units,
     shell: measure('.app-shell'), composer: measure('.composer'), composerWrap: measure('.composer-wrap') };
 }
-const displayPreferenceKey = 'relay:display-preferences:v3';
+const displayPreferenceKey = 'relay:display-preferences:v4';
 const displayDefaults = { desktop: { zoom: 100, font: 100 }, mobile: { zoom: 100, font: 100 } };
-const displayBaseZoom = { desktop: 0.8, mobile: 1 };
+const displayBaseZoom = { desktop: 0.92, mobile: 1 };
 function normalizeDisplayPreferences(value) {
   const limit = (number, fallback, min, max) => typeof number === 'number' && Number.isFinite(number) ? Math.min(max, Math.max(min, Math.round(number))) : fallback;
   return Object.fromEntries(Object.entries(displayDefaults).map(([mode, fallback]) => [mode, {
@@ -49,14 +49,15 @@ function readDisplayPreferences() {
   try {
     const saved = localStorage.getItem(displayPreferenceKey);
     if (saved) return normalizeDisplayPreferences(JSON.parse(saved));
-    const previous = JSON.parse(localStorage.getItem('relay:display-preferences:v2'));
-    // Rebase the saved desktop preference once: the former 80% is now 100%.
-    // A stored former default also adopts the new default; other custom sizes keep their physical size.
-    if (previous?.desktop && typeof previous.desktop.zoom === 'number') previous.desktop.zoom = previous.desktop.zoom === 100 ? 100 : Math.round(previous.desktop.zoom / displayBaseZoom.desktop);
+    const previous = JSON.parse(localStorage.getItem('relay:display-preferences:v3'));
+    // Rebase saved preferences once: the former 115% is now the desktop default.
+    // Keep custom sizes, font choices and mobile settings; the former default adopts the new size.
+    if (previous?.desktop && typeof previous.desktop.zoom === 'number') previous.desktop.zoom = previous.desktop.zoom === 100 ? 100 : Math.round(previous.desktop.zoom / 1.15);
     const migrated = normalizeDisplayPreferences(previous);
     localStorage.setItem(displayPreferenceKey, JSON.stringify(migrated));
     localStorage.removeItem('relay:display-preferences:v1');
     localStorage.removeItem('relay:display-preferences:v2');
+    localStorage.removeItem('relay:display-preferences:v3');
     return migrated;
   }
   catch { return normalizeDisplayPreferences(null); }

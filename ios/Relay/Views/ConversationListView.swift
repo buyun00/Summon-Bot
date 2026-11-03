@@ -6,6 +6,7 @@ struct ConversationListView: View {
     @State private var query = ""
     @State private var showSettings = false
     @State private var showUsage = false
+    @State private var showDisplay = false
     @State private var showCreateBot = false
     @State private var newRoomKind: String?
     @State private var showSystemBots = false
@@ -80,7 +81,7 @@ struct ConversationListView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button { showSettings = true } label: {
-                        Image(systemName: "person.crop.circle.fill").font(.title2)
+                        Image(systemName: "person.crop.circle.fill").relayFont(.title2)
                     }.accessibilityLabel("设置")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
@@ -89,23 +90,24 @@ struct ConversationListView: View {
                         Button("创建群聊", systemImage: "person.2.badge.plus") { newRoomKind = "group" }
                         Button("发起深聊", systemImage: "square.stack.3d.up") { newRoomKind = "deep" }
                     } label: {
-                        Image(systemName: "plus").font(.title2)
+                        Image(systemName: "plus").relayFont(.title2)
                     }.accessibilityLabel("新建")
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) { searchBar }
             .navigationDestination(for: String.self) { id in ChatView(roomID: id) }
-            .sheet(isPresented: $showSettings) { ConnectionSettingsView() }
-            .sheet(isPresented: $showUsage) { TokenUsageView() }
-            .sheet(isPresented: $showCreateBot) {
+            .relaySheet(isPresented: $showSettings) { ConnectionSettingsView() }
+            .relaySheet(isPresented: $showUsage) { TokenUsageView() }
+            .relaySheet(isPresented: $showDisplay) { RelayDisplaySettingsView() }
+            .relaySheet(isPresented: $showCreateBot) {
                 CreateBotView { room in openRoom(room.id) }
                     .presentationDragIndicator(.visible)
                     .presentationCornerRadius(28)
             }
-            .sheet(isPresented: Binding(get: { newRoomKind != nil }, set: { if !$0 { newRoomKind = nil } })) {
+            .relaySheet(isPresented: Binding(get: { newRoomKind != nil }, set: { if !$0 { newRoomKind = nil } })) {
                 CreateRoomView(initialKind: newRoomKind ?? "group") { room in openRoom(room.id) }
             }
-            .sheet(item: $workspaceSection) { section in WorkspaceView(section: section) }
+            .relaySheet(item: $workspaceSection) { section in WorkspaceView(section: section) }
         }
     }
 
@@ -121,7 +123,7 @@ struct ConversationListView: View {
                 }.padding(.horizontal, 20)
             } else if !store.isConnected && !store.bots.isEmpty {
                 Label("已显示本机记录，正在连接…", systemImage: "wifi.slash")
-                    .font(.footnote).foregroundStyle(.secondary).padding(.top, 10)
+                    .relayFont(.footnote).foregroundStyle(.secondary).padding(.top, 10)
             }
         }
     }
@@ -132,9 +134,9 @@ struct ConversationListView: View {
                 Button { openRoom(room.id) } label: {
                     VStack(spacing: 12) {
                         RoomAvatar(room: room, size: 96)
-                        Text(room.name).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                        Text(room.name).relayFont(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                         if room.kind == "deep" {
-                            Text(room.status == "concluded" ? "已结束" : "深聊").font(.caption2).foregroundStyle(.tertiary)
+                            Text(room.status == "concluded" ? "已结束" : "深聊").relayFont(.caption2).foregroundStyle(.tertiary)
                         }
                     }.frame(maxWidth: .infinity).padding(.vertical, 16)
                 }.buttonStyle(RelayPressStyle())
@@ -151,9 +153,10 @@ struct ConversationListView: View {
                     }
                     Divider()
                     Button("Token 统计", systemImage: "chart.bar") { showUsage = true }
+                    Button("显示设置", systemImage: "textformat.size") { showDisplay = true }
                     Button("连接设置", systemImage: "network") { showSettings = true }
                 } label: {
-                    Image(systemName: "square.grid.2x2").font(.title3).frame(width: 27, height: 34)
+                    Image(systemName: "square.grid.2x2").relayFont(.title3).frame(minWidth: 44, minHeight: 44)
                 }
                 .buttonStyle(.glass).buttonBorderShape(.circle)
                 .accessibilityLabel("连接应用与工作台")
@@ -187,12 +190,12 @@ struct ConversationListView: View {
                 MemberAvatar(bot: bot, size: 50)
                 VStack(alignment: .leading, spacing: 7) {
                     HStack {
-                        Text(bot.name).font(.title3.weight(.medium)).foregroundStyle(.primary).lineLimit(1)
+                        Text(bot.name).relayFont(.title3, weight: .medium).foregroundStyle(.primary).lineLimit(1)
                         Spacer(minLength: 12)
-                        Text(RelayFormat.time(room?.lastMessage?.createdAt)).font(.caption).foregroundStyle(.tertiary)
+                        Text(RelayFormat.time(room?.lastMessage?.createdAt)).relayFont(.caption).foregroundStyle(.tertiary)
                     }
                     Text(bot.status == "paused" ? "已暂停" : preview(room, bot: bot))
-                        .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                        .relayFont(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
             .padding(.horizontal, 22).padding(.vertical, 19)

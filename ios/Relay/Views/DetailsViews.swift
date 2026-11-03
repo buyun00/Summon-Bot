@@ -57,7 +57,7 @@ struct BotDetailsView: View {
                     } label: {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(memory["content"].string ?? memory["text"].string ?? "").foregroundStyle(.primary)
-                            Text(memory["status"].string == "expired" ? "已过期" : "有效").font(.caption).foregroundStyle(.secondary)
+                            Text(memory["status"].string == "expired" ? "已过期" : "有效").relayFont(.caption).foregroundStyle(.secondary)
                         }.padding(.vertical, 5)
                     }.buttonStyle(.plain)
                 }
@@ -84,7 +84,7 @@ struct BotDetailsView: View {
         .onChange(of: role) { _, _ in saved = false }
         .onChange(of: expertise) { _, _ in saved = false }
         .onChange(of: prompt) { _, _ in saved = false }
-        .sheet(isPresented: $showMemoryEditor, onDismiss: { Task { await loadMemories() } }) {
+        .relaySheet(isPresented: $showMemoryEditor, onDismiss: { Task { await loadMemories() } }) {
             MemoryEditor(botID: botID, memory: editingMemory)
         }
     }
