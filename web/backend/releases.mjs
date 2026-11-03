@@ -12,11 +12,12 @@ const sendJson = (res, status, value) => {
   res.end(JSON.stringify(value));
 };
 
-export async function readCurrentRelease(root, platform, arch) {
+export async function readCurrentRelease(root, platform, arch, minimumBuildNumber) {
   if (!root || !validTarget(platform, arch)) return null;
   let record;
   try { record = JSON.parse(await readFile(join(root, platform, arch, 'current.json'), 'utf8')); }
   catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  if (record.buildNumber < minimumBuildNumber) return null;
   if (record.platform !== platform || record.arch !== arch || !/^release-[A-Za-z0-9._-]+$/.test(record.directory)
     || !Array.isArray(record.files) || record.files.some(file => !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(file.name))) {
     throw new Error('Invalid client release metadata');
@@ -73,7 +74,7 @@ export async function serveClientReleases(req, res, url, root, webRelease) {
   const localOnly = url.searchParams.get('local') === '1';
   if (localOnly && !local) { sendJson(res, 404, { error: '仅本机可查询本机发行物' }); return true; }
   if ([prefix, `${prefix}/`].includes(url.pathname)) {
-    const records = local ? (await Promise.all(releaseTargets.map(([platform, arch]) => readCurrentRelease(root, platform, arch)))).filter(Boolean).map(publicRelease) : [];
+    const records = local ? (await Promise.all(releaseTargets.map(([platform, arch]) => readCurrentRelease(root, platform, arch, webRelease.buildNumber)))).filter(Boolean).map(publicRelease) : [];
     let remote = [], githubError = '';
     if (!localOnly) {
       try { remote = await githubReleases(webRelease.githubRepository); }
@@ -95,7 +96,7 @@ export async function serveClientReleases(req, res, url, root, webRelease) {
       res.writeHead(302, { Location: file.url, 'Cache-Control': 'no-store' }); res.end(); return true;
     } catch (error) { sendJson(res, 502, { error: error.message }); return true; }
   }
-  const record = await readCurrentRelease(root, platform, arch);
+  const record = await readCurrentRelease(root, platform, arch, webRelease.buildNumber);
   if (!record) { sendJson(res, 404, { error: '此平台尚未发布' }); return true; }
   if (name === 'latest.json') { sendJson(res, 200, publicRelease(record)); return true; }
   if (!record.files.some(file => file.name === name)) { sendJson(res, 404, { error: '发行文件不存在，请重新检查更新' }); return true; }

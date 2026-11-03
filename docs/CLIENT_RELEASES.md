@@ -9,7 +9,7 @@ Summon Bot 使用普通网页、Windows/macOS Electron、Android Compose 和 iOS
 1. 先查询设备自己的 `http://127.0.0.1:8787`。本机包在 `D:/Relay-Bot-data/client-releases/<platform>/<arch>`；已有有效发行物时优先使用，不再请求该目标的远端版本。
 2. 本机不可用、没有对应发行物，或 Windows/Android 本机包下载失败时，使用公开仓库 [buyun00/Summon-Bot 的 Releases](https://github.com/buyun00/Summon-Bot/releases)。安装包从 GitHub 直接下载，不经过正式主机转发，也不依赖源码目录。
 
-网页“客户端下载与更新”使用相同来源顺序。远程 `GET /api/releases` 仅返回 GitHub 版本目录和直接下载链接；本机入口可读取本机发行物，`?local=1` 仅查询本机且不访问 GitHub。浏览器不允许本机网络访问时继续使用 GitHub。
+网页“客户端下载与更新”使用相同来源顺序。本机包的构建号至少应达到当前正式版本，过时文件不参与下载选择。远程 `GET /api/releases` 仅返回 GitHub 版本目录和直接下载链接；本机入口可读取本机发行物，`?local=1` 仅查询本机且不访问 GitHub。浏览器不允许本机网络访问时继续使用 GitHub。
 
 每个目标使用固定的 GitHub Release 标签：`client-windows-x64`、`client-windows-arm64`、`client-macos-universal`、`client-android-universal`。每个标签仅保留最新版安装包和元数据。发行描述包含当前 JSON 版本目录，`latest.json` 供原生端查询，Windows 的 `latest.yml` 供 Electron 更新器读取。发布先上传安装包，再切换元数据，最后删除被替代的资产。
 
