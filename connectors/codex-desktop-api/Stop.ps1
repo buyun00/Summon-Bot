@@ -18,6 +18,8 @@ if (Test-Path -LiteralPath $pidPath) {
             } finally { $bridgeManagedProcess.Dispose() }
         }
     }
-    Remove-Item -LiteralPath $pidPath
+    # The exiting process or another stop may already have removed its PID file.
+    try { Remove-Item -LiteralPath $pidPath -ErrorAction Stop }
+    catch [System.Management.Automation.ItemNotFoundException] { }
 }
 Write-Output 'Relay Codex connector stopped. Codex desktop was not stopped.'
