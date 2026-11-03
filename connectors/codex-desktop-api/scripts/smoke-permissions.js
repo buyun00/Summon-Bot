@@ -41,7 +41,7 @@ try {
     if (scenario === 'project') {
       const { data } = await api('/v1/projects');
       const projects = Array.isArray(data.projects) ? data.projects : Object.values(data).flatMap(value => Array.isArray(value) ? value : []);
-      const project = projects.find(entry => (entry.rootPaths || []).some(root => path.resolve(root).toLowerCase() === 'd:\\codex-desktop-api'));
+      const project = projects.find(entry => (entry.rootPaths || (entry.path ? [entry.path] : [])).some(root => path.resolve(root).toLowerCase() === 'd:\\codex-desktop-api'));
       assert.ok(project, 'The existing Codex-Desktop-API saved project is required; no project will be created.');
       target = { type: 'project', projectId: project.projectId ?? project.id, environment: { type: 'local' } };
     }

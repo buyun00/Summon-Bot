@@ -104,6 +104,12 @@ export class AppTools {
   }
   async createWithDesktopDefaults(args) {
     await this.connect();
+    if (args.target?.type === 'project') {
+      const projects = await this.callDesktopTool('list_projects');
+      const project = projects.projects?.find(project => project.projectId === args.target.projectId);
+      if (!project) throw new ApiError(400, 'unknown_project', 'Use a projectId returned by list_projects. No message was sent.');
+      if (project.hostId !== 'local' || project.projectKind !== 'local') throw new ApiError(501, 'unsupported_permission_host', 'Default permission inheritance is verified for local Codex projects only. No message was sent.');
+    }
     const expected = this.readPermissionDefault();
     const context = await this.permissionContext(expected);
     // These checks precede the one native creation request. Never send the
