@@ -2,7 +2,7 @@
 @property --accent { syntax: '<color>'; inherits: true; initial-value: #7d824b; }
 .app-shell { position: relative; isolation: isolate; }
 .chat-layout { transition: --accent 420ms ease; }
-.messages { overflow-anchor: none; scroll-padding-block: 18px; }
+.messages { overflow-anchor: none; scroll-padding-block: calc(var(--chat-header-height,76px) + 24px) 18px; }
 .messages > :last-child { margin-bottom: 18px; }
 .composer-wrap { flex-shrink: 0; }
 button, summary { -webkit-tap-highlight-color: transparent; }

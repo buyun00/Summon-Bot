@@ -53,7 +53,10 @@ function requestInstall() {
 function createWindow() {
   window = new BrowserWindow({
     title: 'Relay', width: 1280, height: 900, minWidth: 680, minHeight: 560,
-    backgroundColor: '#f9f9fa', show: false, autoHideMenuBar: process.platform !== 'darwin',
+    backgroundColor: '#fdfdfc', show: false, autoHideMenuBar: process.platform !== 'darwin',
+    titleBarStyle: 'hidden',
+    titleBarOverlay: { color: '#00000000', symbolColor: '#4b5045', height: 44 },
+    ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 16, y: 16 } } : {}),
     webPreferences: { preload: join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true },
   });
   window.once('ready-to-show', () => window.show());
@@ -84,7 +87,7 @@ autoUpdater.on('update-downloaded', info => setUpdate({ status: 'downloaded', ve
 autoUpdater.on('error', error => {
   if (!checking) setUpdate({ status: 'error', message: error.message });
 });
-ipcMain.handle('relay:desktop-info', event => { trusted(event); return { version: app.getVersion(), platform: process.platform, arch: process.arch, update }; });
+ipcMain.handle('relay:desktop-info', event => { trusted(event); return { version: app.getVersion(), platform: process.platform, arch: process.arch, windowControlsOverlay: true, update }; });
 ipcMain.handle('relay:check-update', event => { trusted(event); return checkForUpdates(); });
 ipcMain.handle('relay:install-update', event => { trusted(event); if (update.status !== 'downloaded') return false; setImmediate(() => autoUpdater.quitAndInstall(true, true)); return true; });
 if (!app.requestSingleInstanceLock()) app.quit();

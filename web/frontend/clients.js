@@ -2,6 +2,18 @@
   'use strict';
   const platformNames = { windows: 'Windows', macos: 'macOS', android: 'Android' };
   let catalog = null, desktop = null, desktopUpdate = null, failure = '', requestId = 0;
+  function syncWindowChrome() {
+    const root = document.documentElement;
+    if (!desktop?.windowControlsOverlay) return;
+    root.classList.add('desktop-overlay');
+    const overlay = navigator.windowControlsOverlay;
+    const area = overlay?.getTitlebarAreaRect();
+    const left = area?.width > 0 ? area.x : desktop.platform === 'darwin' ? 80 : 0;
+    const right = area?.width > 0 ? Math.max(0, innerWidth - area.right) : desktop.platform === 'win32' ? 150 : 0;
+    root.style.setProperty('--window-controls-left', `${overlay && !overlay.visible ? 0 : left}px`);
+    root.style.setProperty('--window-controls-right', `${overlay && !overlay.visible ? 0 : right}px`);
+  }
+  function setDesktopInfo(value) { desktop = value; desktopUpdate = value.update; syncWindowChrome(); }
   const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
   const size = bytes => bytes ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : '';
   function statusText() {
@@ -60,7 +72,7 @@
     document.querySelector('#modal-content').innerHTML = `<div class="modal-header"><div><h2>客户端下载与更新</h2><p>选择设备，下载最新客户端。</p></div><button class="icon-button" data-action="close-modal" aria-label="关闭">${icon('close', 17)}</button></div><div class="client-release-content" id="client-release-content"></div>`;
     render(); showModal(modal); load();
     if (window.RelayDesktop) {
-      try { desktop = await window.RelayDesktop.getInfo(); desktopUpdate = desktop.update; render(); await check(); }
+      try { setDesktopInfo(await window.RelayDesktop.getInfo()); render(); await check(); }
       catch { failure = '无法读取桌面更新状态，请重新打开客户端。'; render(); }
     }
   }
@@ -72,7 +84,9 @@
     if (action === 'install') install();
   });
   if (window.RelayDesktop) {
-    window.RelayDesktop.getInfo().then(value => { desktop = value; desktopUpdate = value.update; render(); }).catch(() => {});
+    window.RelayDesktop.getInfo().then(value => { setDesktopInfo(value); render(); }).catch(() => {});
+    window.addEventListener('resize', syncWindowChrome);
+    navigator.windowControlsOverlay?.addEventListener('geometrychange', syncWindowChrome);
     window.RelayDesktop.onUpdate(value => { desktopUpdate = value; render(); });
     window.RelayDesktop.onOpenUpdates(open);
     window.RelayDesktop.onInstallRequested(install);

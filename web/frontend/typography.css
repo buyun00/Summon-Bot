@@ -1,0 +1,58 @@
+/* One type scale for every page. Display settings change only --ui-font-scale. */
+:root {
+  --text-body: calc(17px * var(--ui-font-scale, 1));
+  --text-ui: calc(16px * var(--ui-font-scale, 1));
+  --text-meta: calc(14px * var(--ui-font-scale, 1));
+  --text-caption: calc(13px * var(--ui-font-scale, 1));
+  --text-code: calc(15px * var(--ui-font-scale, 1));
+  --text-section: calc(20px * var(--ui-font-scale, 1));
+  --text-heading: calc(26px * var(--ui-font-scale, 1));
+  --text-display: calc(32px * var(--ui-font-scale, 1));
+}
+
+body, .page, .usage-page, .profile-detail, .work-detail, .catalog-detail,
+.message-content, .knowledge-content, .profile-block p, .memory-item p,
+.work-description, .timeline-body, .consultation p, .routine-summary,
+.knowledge-node p, .catalog-row p, .profile-record p, .data-table td,
+.data-table td p, .usage-table, .usage-breakdown-row, .usage-request dl {
+  font-size: var(--text-body);
+  line-height: 1.65;
+}
+
+.page-header h1, .usage-header h1, .profile-top h2, .work-detail h2,
+.modal-header h2 { font-size: var(--text-heading); }
+.page-header p, .usage-header p, .modal-header p,
+.empty-state p, .error-state { font-size: var(--text-meta); }
+.profile-block h3, .consultation h3, .usage-section-heading h2,
+.usage-billing h2, .usage-page > .usage-section-heading h2 { font-size: var(--text-section); }
+.bot-row-copy strong, .work-row h3, .knowledge-node h3,
+.usage-section-heading h3, .usage-breakdown h3 { font-size: var(--text-body); }
+
+.primary-button, .secondary-button, .small-button, .danger-button,
+.form-field > label, .form-field input:not([type=checkbox]), .form-field textarea,
+.form-field select, .search-input, .filter-tab, .checkbox-line,
+.data-table th { font-size: var(--text-ui); }
+.item-meta, .item-meta button, .form-field small, .knowledge-meta,
+.routine-summary p, .work-row .item-meta, .timeline-meta,
+.bot-row-copy p, .profile-top p, .directory-list-head { font-size: var(--text-meta); }
+
+.message-content pre, .agent-tool-body pre, .catalog-code,
+.display-text-preview code { font-size: var(--text-code); }
+
+.usage-controls, .usage-periods button, .usage-dimensions button,
+.usage-sorts button { font-size: var(--text-ui); }
+.usage-metric > span, .usage-table thead th { font-size: var(--text-ui); }
+.usage-metric > strong { font-size: var(--text-display); }
+.usage-metrics.compact .usage-metric > strong { font-size: var(--text-heading); }
+.usage-metric > small, .usage-section-heading p, .usage-section-heading > span,
+.usage-request summary small, .usage-unassigned, .usage-notice,
+.usage-footnote, .usage-billing-note, .usage-breakdown-row small {
+  font-size: var(--text-meta);
+}
+.usage-request summary strong { font-size: var(--text-body); }
+
+@media (max-width: 820px) {
+  /* Keep the same text roles on narrow screens; only the layout changes. */
+  .usage-header h1 { font-size: var(--text-heading); }
+  .usage-metric > strong { font-size: var(--text-heading); }
+}
