@@ -1,7 +1,7 @@
 import { copyFile, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { validTarget } from '../../web/backend/releases.mjs';
+import { validTarget } from './targets.mjs';
 
 export const inside = (root, path) => { const part = relative(resolve(root), resolve(path)); return part && !part.startsWith('..') && !isAbsolute(part); };
 export async function removeInside(root, path) {
@@ -22,9 +22,10 @@ export function validateRelease(value) {
     || !value.files.some(file => file.name === value.mainFile)) throw new Error('Invalid client release');
   const extension = value.platform === 'windows' ? '.exe' : value.platform === 'macos' ? '.dmg' : '.apk';
   if (!value.mainFile.endsWith(extension)) throw new Error('Incorrect primary package for platform');
-  if (value.platform !== 'android' && !value.files.some(file => file.name === (value.platform === 'windows' ? 'latest.yml' : 'latest-mac.yml'))) throw new Error('Desktop update metadata missing');
+  if (value.platform === 'windows' && !value.files.some(file => file.name === 'latest.yml')) throw new Error('Windows update metadata missing');
   if (value.platform === 'macos' && !value.files.some(file => file.name.endsWith('.zip'))) throw new Error('macOS update ZIP missing');
   return { platform: value.platform, arch: value.arch, version: value.version, buildNumber: value.buildNumber,
+    updateMode: value.platform === 'macos' ? 'manual' : 'automatic',
     sourceCommit: typeof value.sourceCommit === 'string' ? value.sourceCommit.slice(0, 80) : null,
     notes: typeof value.notes === 'string' ? value.notes.slice(0, 8000) : '', mainFile: value.mainFile,
     files: value.files.map(file => ({ name: file.name, size: file.size })) };

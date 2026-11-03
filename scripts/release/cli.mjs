@@ -1,11 +1,12 @@
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { createReadStream, existsSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { parseArgs, readJson, writeJson } from '../build/files.mjs';
 import { describeArtifacts, inside, publishRelease, removeInside, validateRelease } from './repository.mjs';
+import { publishGithub } from './github.mjs';
 
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const buildRoot = join(sourceRoot, '.relay/client-builds');
@@ -33,11 +34,6 @@ async function outputDirectory(name) {
   await mkdir(path, { recursive: true });
   return path;
 }
-async function ensurePublishToken() {
-  const path = join(dataRoot, 'config/client-releases-publish-token');
-  await mkdir(dirname(path), { recursive: true });
-  if (!existsSync(path)) await writeFile(path, randomBytes(36).toString('base64url'), { flag: 'wx', mode: 0o600 });
-}
 async function describeBuild(input, platform, arch) {
   const release = await readJson(join(sourceRoot, 'release.json'));
   const files = await describeArtifacts(input);
@@ -49,53 +45,25 @@ async function describeBuild(input, platform, arch) {
 }
 async function publish(input) {
   const metadata = validateRelease(await readJson(join(input, 'artifact.json')));
-  if (options.server) {
-    const server = new URL(options.server);
-    if (server.protocol !== 'https:' || server.username || server.password || server.pathname !== '/') throw new Error('--server must be an HTTPS origin');
-    if (!options['token-file']) throw new Error('Remote publication requires --token-file pointing to the private publishing credential');
-    const token = (await readFile(resolve(options['token-file']), 'utf8')).trim();
-    const request = async (path, init) => {
-      const response = await fetch(new URL(path, server), { ...init, headers: { Authorization: `Bearer ${token}`, ...init.headers }, redirect: 'error' });
-      if (!response.ok) throw new Error(`Publication failed (HTTP ${response.status}): ${(await response.text()).slice(0, 300)}`);
-      return response.json();
-    };
-    const { uploadId } = await request(`/api/releases/publish/${metadata.platform}/${metadata.arch}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(metadata),
-    });
-    try {
-      for (const file of metadata.files) for (let start = 0; start < file.size; start += 8 * 1024 * 1024) {
-        const end = Math.min(start + 8 * 1024 * 1024, file.size) - 1;
-        await request(`/api/releases/publish/${uploadId}/${file.name}`, {
-          method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(end - start + 1),
-            'Content-Range': `bytes ${start}-${end}/${file.size}` },
-          body: createReadStream(join(input, file.name), { start, end }), duplex: 'half',
-        });
-      }
-      const result = await request(`/api/releases/publish/${uploadId}/commit`, { method: 'POST' });
-      console.log(JSON.stringify({ published: true, platform: metadata.platform, arch: metadata.arch, version: metadata.version, ...result }));
-    } catch (error) {
-      await request(`/api/releases/publish/${uploadId}/cancel`, { method: 'POST' }).catch(() => {});
-      throw error;
-    }
-  } else {
-    if (process.platform !== 'win32' && !options['data-root']) throw new Error('Mac builds publish to the running host using --server and --token-file');
-    await ensurePublishToken();
+  if (metadata.platform === 'windows' && process.platform === 'win32' && !options.github) {
     const record = await publishRelease(repositoryRoot, input, metadata);
     console.log(JSON.stringify({ published: true, platform: record.platform, arch: record.arch, version: record.version,
       directory: join(repositoryRoot, record.platform, record.arch, record.directory) }));
   }
+  const release = await readJson(join(sourceRoot, 'release.json'));
+  await publishGithub(input, release.githubRepository);
   if (inside(buildRoot, input)) await removeInside(buildRoot, input);
 }
 async function buildDesktop() {
   if (!['win32', 'darwin'].includes(process.platform)) throw new Error('Desktop builds run on Windows or macOS');
   const platform = process.platform === 'win32' ? 'windows' : 'macos';
   const arch = options.arch || (platform === 'macos' ? 'universal' : process.arch);
-  if (!['x64', 'arm64', ...(platform === 'macos' ? ['universal'] : [])].includes(arch)) throw new Error('Unsupported desktop architecture');
+  if (!(platform === 'macos' ? ['universal'] : ['x64', 'arm64']).includes(arch)) throw new Error('Unsupported desktop architecture');
   const output = await outputDirectory(`${platform}-${arch}`);
   const { buildDesktop } = await import(pathToFileURL(join(sourceRoot, 'desktop/build.mjs')));
   await buildDesktop({ platform, arch, output });
   await describeBuild(output, platform, arch);
-  if (options.publish || (command === 'all' && (process.platform === 'win32' || options.server))) await publish(output);
+  if (options.publish || options.github || command === 'all') await publish(output);
   else console.log(JSON.stringify({ built: true, platform, arch, output }));
 }
 
@@ -103,6 +71,11 @@ async function androidEnvironment() {
   const javaHome = process.env.JAVA_HOME || (process.platform === 'win32' ? 'C:/Program Files/Android/Android Studio/jbr' : '');
   const java = javaHome ? join(javaHome, 'bin', process.platform === 'win32' ? 'java.exe' : 'java') : 'java';
   const keytool = javaHome ? join(javaHome, 'bin', process.platform === 'win32' ? 'keytool.exe' : 'keytool') : 'keytool';
+  const signingVariables = ['SUMMON_ANDROID_KEYSTORE', 'SUMMON_ANDROID_KEY_ALIAS', 'SUMMON_ANDROID_STORE_PASSWORD', 'SUMMON_ANDROID_KEY_PASSWORD'];
+  if (signingVariables.some(name => process.env[name]) || process.env.CI) {
+    if (!signingVariables.every(name => process.env[name])) throw new Error('Provide all four existing Android signing credentials; CI never generates a new signing identity');
+    return { java, env: { ...process.env } };
+  }
   const signingPath = join(dataRoot, 'config/signing/android.json');
   await mkdir(dirname(signingPath), { recursive: true });
   if (!existsSync(signingPath)) {
@@ -131,7 +104,7 @@ async function buildAndroid() {
   const release = await readJson(join(sourceRoot, 'release.json'));
   await copyFile(join(sourceRoot, 'android/app/build/outputs/apk/release/app-release.apk'), join(output, `Summon-Bot-${release.version}-android.apk`));
   await describeBuild(output, 'android', 'universal');
-  if (options.publish || command === 'all') {
+  if (options.publish || options.github) {
     await publish(output);
     if (!options['keep-build-cache']) for (const path of ['android/app/build', 'android/build', 'android/.kotlin']) await removeInside(sourceRoot, join(sourceRoot, path));
     await removeInside(appRoot, join(appRoot, 'Summon-Bot-Android.apk'));
@@ -153,7 +126,6 @@ async function buildIos() {
 }
 async function deployWeb() {
   if (process.platform !== 'win32') throw new Error('The existing production installation runs on Windows');
-  await ensurePublishToken();
   const { buildRelease } = await import('../build/build.mjs');
   const built = await buildRelease({ sourceRoot, bundleNode: true, committedOnly: Boolean(options['committed-only'] || command === 'all') });
   await run('pwsh.exe', ['-NoProfile', '-File', join(appRoot, 'Stop.ps1'), '-DataRoot', dataRoot]);
@@ -187,7 +159,7 @@ async function setVersion() {
   console.log(JSON.stringify(release));
 }
 async function main() {
-  if (command === 'help') { console.log('Summon Bot release: version | web | desktop | android | ios | publish --input DIR | all; --publish; --server HTTPS_ORIGIN --token-file PATH'); return; }
+  if (command === 'help') { console.log('Summon Bot release: version | web | desktop | android | ios | publish --input DIR | all; --publish (Windows local + GitHub) | --github (GitHub only)'); return; }
   if (command === 'version') return setVersion();
   if (command === 'web') return deployWeb();
   if (command === 'desktop') return buildDesktop();
@@ -195,8 +167,8 @@ async function main() {
   if (command === 'ios') return buildIos();
   if (command === 'publish') { if (!options.input) throw new Error('Provide --input with the completed build directory'); return publish(resolve(options.input)); }
   if (command === 'all') {
-    if (process.platform === 'win32') { await deployWeb(); await buildDesktop(); await buildAndroid(); }
-    else if (process.platform === 'darwin') { await buildDesktop(); await buildIos(); }
+    if (process.platform === 'win32') { await deployWeb(); await buildDesktop(); }
+    else if (process.platform === 'darwin') await buildDesktop();
     else throw new Error('Run platform builds on Windows or Mac');
     return;
   }

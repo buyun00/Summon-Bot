@@ -35,7 +35,7 @@ import java.io.File
 import java.net.URI
 import java.util.concurrent.TimeUnit
 
-data class SummonClientRelease(val version: String, val buildNumber: Int, val downloadUrl: String, val size: Long)
+data class SummonClientRelease(val version: String, val buildNumber: Int, val downloadUrl: String, val size: Long, val local: Boolean)
 data class SummonUpdateState(
     val checking: Boolean = false,
     val downloading: Boolean = false,
@@ -51,9 +51,32 @@ class SummonAppUpdater(private val app: Context, private val scope: CoroutineSco
         private set
     private val http = OkHttpClient.Builder().connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS).callTimeout(20, TimeUnit.MINUTES).build()
-    private val endpoint = URI(BuildConfig.SUMMON_UPDATE_URL)
+    private val localEndpoint = URI("http://localhost:8787/api/releases/android/universal/latest.json")
+    private val githubBase = "https://github.com/${BuildConfig.SUMMON_GITHUB_REPOSITORY}/releases/download/client-android-universal/"
+    private val githubEndpoint = URI("${githubBase}latest.json")
+    private val localHttp = http.newBuilder().connectTimeout(1200, TimeUnit.MILLISECONDS)
+        .readTimeout(1200, TimeUnit.MILLISECONDS).callTimeout(1200, TimeUnit.MILLISECONDS).build()
     private var lastCheck = 0L
     private var awaitingPermission = false
+
+    private fun readRelease(local: Boolean): SummonClientRelease? {
+        val endpoint = if (local) localEndpoint else githubEndpoint
+        val client = if (local) localHttp else http
+        return client.newCall(Request.Builder().url(endpoint.toString()).header("Cache-Control", "no-cache").build()).execute().use { response ->
+            if (response.code == 404) return null
+            if (!response.isSuccessful) error("暂时无法检查更新，请稍后重试。")
+            val value = JSONObject(response.body?.string() ?: error("无法读取版本信息。"))
+            require(value.getString("platform") == "android" && value.getString("arch") == "universal") { "版本信息无效。" }
+            val path = value.getString("downloadUrl")
+            val url = endpoint.resolve(path)
+            require(if (local) url.scheme == endpoint.scheme && url.authority == endpoint.authority && url.path.startsWith("/api/releases/android/universal/")
+                else url.toString().startsWith(githubBase)) { "下载地址无效。" }
+            val files = value.getJSONArray("files")
+            var size = 0L
+            for (index in 0 until files.length()) if (files.getJSONObject(index).getString("url") == path) size = files.getJSONObject(index).getLong("size")
+            SummonClientRelease(value.getString("version"), value.getInt("buildNumber"), url.toString(), size, local)
+        }
+    }
 
     fun check(manual: Boolean = false) {
         if (state.checking || state.downloading || (!manual && System.currentTimeMillis() - lastCheck < 4 * 60 * 60 * 1000L)) return
@@ -62,18 +85,8 @@ class SummonAppUpdater(private val app: Context, private val scope: CoroutineSco
         scope.launch {
             try {
                 val latest = withContext(Dispatchers.IO) {
-                    http.newCall(Request.Builder().url(endpoint.toString()).header("Cache-Control", "no-cache").build()).execute().use { response ->
-                        if (response.code == 404) return@withContext null
-                        if (!response.isSuccessful) error("暂时无法检查更新，请稍后重试。")
-                        val value = JSONObject(response.body?.string() ?: error("无法读取版本信息。"))
-                        val path = value.getString("downloadUrl")
-                        val url = endpoint.resolve(path)
-                        require(url.scheme == endpoint.scheme && url.authority == endpoint.authority && url.path.startsWith("/api/releases/android/universal/")) { "下载地址无效。" }
-                        val files = value.getJSONArray("files")
-                        var size = 0L
-                        for (index in 0 until files.length()) if (files.getJSONObject(index).getString("url") == path) size = files.getJSONObject(index).getLong("size")
-                        SummonClientRelease(value.getString("version"), value.getInt("buildNumber"), url.toString(), size)
-                    }
+                    val local = try { readRelease(local = true) } catch (error: Exception) { if (error is CancellationException) throw error; null }
+                    local ?: readRelease(local = false)
                 }
                 val available = latest?.takeIf { it.buildNumber > BuildConfig.VERSION_CODE }
                 val cached = available?.let { release -> apkFile(release).takeIf { it.isFile && it.length() == release.size } }
@@ -96,36 +109,13 @@ class SummonAppUpdater(private val app: Context, private val scope: CoroutineSco
         scope.launch {
             try {
                 val file = withContext(Dispatchers.IO) {
-                    val destination = apkFile(release)
-                    val partial = File(destination.path + ".part")
-                    updateDirectory().listFiles()?.filter { it != destination }?.forEach { it.delete() }
-                    try {
-                        http.newCall(Request.Builder().url(release.downloadUrl).build()).execute().use { response ->
-                            if (!response.isSuccessful) error("下载未完成，请重新检查更新。")
-                            val body = response.body ?: error("无法读取更新包。")
-                            body.byteStream().use { input ->
-                                partial.outputStream().use { output ->
-                                    val buffer = ByteArray(64 * 1024)
-                                    var downloaded = 0L
-                                    var previousPercent = -1
-                                    while (true) {
-                                        val count = input.read(buffer)
-                                        if (count < 0) break
-                                        output.write(buffer, 0, count); downloaded += count
-                                        val percent = if (release.size > 0) (downloaded * 100 / release.size).toInt().coerceIn(0, 100) else 0
-                                        if (percent != previousPercent) {
-                                            previousPercent = percent
-                                            withContext(Dispatchers.Main) { state = state.copy(progress = percent) }
-                                        }
-                                    }
-                                    if (release.size > 0 && downloaded != release.size) error("下载未完成，请重试。")
-                                }
-                            }
-                        }
-                        if (destination.exists()) destination.delete()
-                        check(partial.renameTo(destination)) { "无法保存更新包，请重试。" }
-                        destination
-                    } finally { partial.delete() }
+                    try { saveApk(release) }
+                    catch (error: Exception) {
+                        if (error is CancellationException || !release.local) throw error
+                        val remote = readRelease(local = false)?.takeIf { it.buildNumber > BuildConfig.VERSION_CODE } ?: throw error
+                        withContext(Dispatchers.Main) { state = state.copy(latest = remote, progress = 0) }
+                        saveApk(remote)
+                    }
                 }
                 state = state.copy(downloading = false, downloaded = file, progress = 100)
             } catch (error: Exception) {
@@ -133,6 +123,39 @@ class SummonAppUpdater(private val app: Context, private val scope: CoroutineSco
                 state = state.copy(downloading = false, error = error.message ?: "下载失败，请重试。")
             }
         }
+    }
+
+    private suspend fun saveApk(release: SummonClientRelease): File {
+        val destination = apkFile(release)
+        val partial = File(destination.path + ".part")
+        updateDirectory().listFiles()?.filter { it != destination }?.forEach { it.delete() }
+        try {
+            http.newCall(Request.Builder().url(release.downloadUrl).build()).execute().use { response ->
+                if (!response.isSuccessful) error("下载未完成，请重新检查更新。")
+                val body = response.body ?: error("无法读取更新包。")
+                body.byteStream().use { input ->
+                    partial.outputStream().use { output ->
+                        val buffer = ByteArray(64 * 1024)
+                        var downloaded = 0L
+                        var previousPercent = -1
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            output.write(buffer, 0, count); downloaded += count
+                            val percent = if (release.size > 0) (downloaded * 100 / release.size).toInt().coerceIn(0, 100) else 0
+                            if (percent != previousPercent) {
+                                previousPercent = percent
+                                withContext(Dispatchers.Main) { state = state.copy(progress = percent) }
+                            }
+                        }
+                        if (release.size > 0 && downloaded != release.size) error("下载未完成，请重试。")
+                    }
+                }
+            }
+            if (destination.exists()) destination.delete()
+            check(partial.renameTo(destination)) { "无法保存更新包，请重试。" }
+            return destination
+        } finally { partial.delete() }
     }
 
     fun install(context: Context) {

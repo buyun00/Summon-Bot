@@ -2,13 +2,9 @@ import { createReadStream } from 'node:fs';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
+import { githubBase, releaseTag, releaseTargets, validTarget } from '../../scripts/release/targets.mjs';
+import { validateRelease } from '../../scripts/release/repository.mjs';
 
-export const releaseTargets = [
-  ['windows', 'x64'], ['windows', 'arm64'],
-  ['macos', 'x64'], ['macos', 'arm64'], ['macos', 'universal'],
-  ['android', 'universal'],
-];
-export const validTarget = (platform, arch) => releaseTargets.some(target => target[0] === platform && target[1] === arch);
 const inside = (root, path) => { const part = relative(root, path); return part && !part.startsWith('..') && !isAbsolute(part); };
 const prefix = '/api/releases';
 const sendJson = (res, status, value) => {
@@ -31,20 +27,74 @@ export async function readCurrentRelease(root, platform, arch) {
 const publicRelease = record => {
   const { directory, ...value } = record;
   const base = `${prefix}/${record.platform}/${record.arch}/`;
-  return { ...value, downloadUrl: `${base}${encodeURIComponent(record.mainFile)}`,
+  return { ...value, source: 'local', downloadUrl: `${base}${encodeURIComponent(record.mainFile)}`,
     files: record.files.map(file => ({ ...file, url: `${base}${encodeURIComponent(file.name)}` })) };
 };
 
+const githubCache = new Map();
+async function githubReleases(repository) {
+  const cached = githubCache.get(repository);
+  if (cached && cached.expires > Date.now()) return cached.promise;
+  const promise = (async () => {
+    // One cached public API request serves the whole catalog; assets download directly from GitHub.
+    const response = await fetch(`https://api.github.com/repos/${repository}/releases?per_page=100`, {
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Summon-Bot' }, signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) throw new Error(`GitHub 版本信息暂时不可用（HTTP ${response.status}）`);
+    const releases = await response.json();
+    return releaseTargets.flatMap(([platform, arch]) => {
+      const release = releases.find(item => !item.draft && item.tag_name === releaseTag(platform, arch));
+      if (!release) return [];
+      const metadata = validateRelease(JSON.parse(release.body));
+      if (metadata.platform !== platform || metadata.arch !== arch) throw new Error('GitHub client release target mismatch');
+      const base = githubBase(repository, platform, arch);
+      return [{ ...metadata, source: 'github', publishedAt: release.published_at,
+        downloadUrl: `${base}${encodeURIComponent(metadata.mainFile)}`,
+        files: metadata.files.map(file => ({ ...file, url: `${base}${encodeURIComponent(file.name)}` })) }];
+    });
+  })();
+  githubCache.set(repository, { promise, expires: Date.now() + 120000 });
+  try { return await promise; }
+  catch (error) { githubCache.delete(repository); throw error; }
+}
+
 export async function serveClientReleases(req, res, url, root, webRelease) {
   if (url.pathname !== prefix && !url.pathname.startsWith(`${prefix}/`)) return false;
+  const local = ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
+    && !req.headers['x-forwarded-host'] && !req.headers.forwarded;
+  if (local && req.headers.origin === new URL(webRelease.appUrl).origin) {
+    res.setHeader('Access-Control-Allow-Origin', req.headers.origin);
+    res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+    res.setHeader('Access-Control-Allow-Private-Network', 'true');
+    res.setHeader('Vary', 'Origin');
+    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return true; }
+  }
   if (!['GET', 'HEAD'].includes(req.method)) { sendJson(res, 405, { error: '只支持查询和下载' }); return true; }
+  const localOnly = url.searchParams.get('local') === '1';
+  if (localOnly && !local) { sendJson(res, 404, { error: '仅本机可查询本机发行物' }); return true; }
   if ([prefix, `${prefix}/`].includes(url.pathname)) {
-    const records = await Promise.all(releaseTargets.map(([platform, arch]) => readCurrentRelease(root, platform, arch)));
-    sendJson(res, 200, { web: webRelease, releases: records.filter(Boolean).map(publicRelease) }); return true;
+    const records = local ? (await Promise.all(releaseTargets.map(([platform, arch]) => readCurrentRelease(root, platform, arch)))).filter(Boolean).map(publicRelease) : [];
+    let remote = [], githubError = '';
+    if (!localOnly) {
+      try { remote = await githubReleases(webRelease.githubRepository); }
+      catch (error) { githubError = error.message; }
+    }
+    sendJson(res, 200, { web: webRelease, githubRepository: webRelease.githubRepository, githubError,
+      releases: [...records, ...remote.filter(item => !records.some(record => record.platform === item.platform && record.arch === item.arch))] }); return true;
   }
   const match = url.pathname.match(/^\/api\/releases\/([a-z]+)\/([a-z0-9]+)\/([A-Za-z0-9][A-Za-z0-9._-]*)$/);
   if (!match || !validTarget(match[1], match[2])) { sendJson(res, 404, { error: '没有此平台的发行包' }); return true; }
   const [, platform, arch, name] = match;
+  if (!local) {
+    try {
+      const record = (await githubReleases(webRelease.githubRepository)).find(item => item.platform === platform && item.arch === arch);
+      if (!record) { sendJson(res, 404, { error: '此平台尚未发布' }); return true; }
+      if (name === 'latest.json') { sendJson(res, 200, record); return true; }
+      const file = record.files.find(file => file.name === name);
+      if (!file) { sendJson(res, 404, { error: '发行文件不存在，请重新检查更新' }); return true; }
+      res.writeHead(302, { Location: file.url, 'Cache-Control': 'no-store' }); res.end(); return true;
+    } catch (error) { sendJson(res, 502, { error: error.message }); return true; }
+  }
   const record = await readCurrentRelease(root, platform, arch);
   if (!record) { sendJson(res, 404, { error: '此平台尚未发布' }); return true; }
   if (name === 'latest.json') { sendJson(res, 200, publicRelease(record)); return true; }

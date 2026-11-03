@@ -1,92 +1,71 @@
 # 客户端发行与更新
 
-Summon Bot 使用普通网页、Windows/macOS Electron 桌面端、Android Compose 和 iOS SwiftUI。网页及桌面共用 `https://bot.lin0.org` 页面，手机端使用原生组件。开发顺序遵循 [DEVELOPMENT.md](DEVELOPMENT.md)：网页制作、定稿、同步原生实现、提交推送，再打包发布。
+Summon Bot 使用普通网页、Windows/macOS Electron、Android Compose 和 iOS SwiftUI。网页及桌面共用正式页面。网页定稿、同步原生实现并提交推送后，Windows 默认本地打包，macOS 和 Android 默认由 GitHub Actions 构建。iOS 暂不打包发布。
 
-## 目录和入口
+## 下载来源
 
-源码位于 `D:/Relay-Bot`，正式服务安装在 `D:/Relay-Bot-app`。客户端发行包存入 `D:/Relay-Bot-data/client-releases/<platform>/<arch>`，复用正式 Web 服务，下载不依赖另一个监听端口。源码 `dist` 仅供后端构建，不能作为客户端正式下载目录。
+客户端下载与更新按设备本机、GitHub 的顺序查找：
 
-网页“连接应用 → 客户端下载与更新”显示实际已发布的 Windows、macOS 和 Android 版本。`GET /api/releases` 提供同一份版本目录；`GET /api/releases/<platform>/<arch>/latest.json` 提供单个平台的最新版本和下载地址。只分发专用发行目录中已发布的文件，不公开其他业务数据。
+1. 先查询设备自己的 `http://127.0.0.1:8787`。本机包在 `D:/Relay-Bot-data/client-releases/<platform>/<arch>`；已有有效发行物时优先使用，不再请求该目标的远端版本。
+2. 本机不可用、没有对应发行物，或 Windows/Android 本机包下载失败时，使用公开仓库 [buyun00/Summon-Bot 的 Releases](https://github.com/buyun00/Summon-Bot/releases)。安装包从 GitHub 直接下载，不经过正式主机转发，也不依赖源码目录。
 
-每个目标仅保留当前发行物。发布先复制完整产物，再替换 `current.json` 指向的新发行目录，然后删除旧目录。`latest.yml` 和 `latest-mac.yml` 由桌面打包工具生成，供标准更新器读取。桌面下载完整最新版，不依赖服务器保留旧版差分包。
+网页“客户端下载与更新”使用相同来源顺序。远程 `GET /api/releases` 仅返回 GitHub 版本目录和直接下载链接；本机入口可读取本机发行物，`?local=1` 仅查询本机且不访问 GitHub。浏览器不允许本机网络访问时继续使用 GitHub。
+
+每个目标使用固定的 GitHub Release 标签：`client-windows-x64`、`client-windows-arm64`、`client-macos-universal`、`client-android-universal`。每个标签仅保留最新版安装包和元数据。发行描述包含当前 JSON 版本目录，`latest.json` 供原生端查询，Windows 的 `latest.yml` 供 Electron 更新器读取。发布先上传安装包，再切换元数据，最后删除被替代的资产。
 
 ## 版本和 Windows 发布
 
-各端使用根目录 `release.json` 的 `version`、递增的 `buildNumber` 和正式地址。修改版本时运行：
+各端读取根目录 `release.json` 的 `version`、递增 `buildNumber`、正式地址和 GitHub 仓库。每次发布先递增版本：
 
 ```powershell
-npm run release:version -- --version 0.3.1
+npm run release:version
 ```
 
-此命令同时更新包版本、锁文件和 Xcode 工程版本；Android 从同一 JSON 读取版本号。完成代码制作后提交并推送，再执行发布。
-
-首次为桌面构建准备依赖：
-
-```powershell
-npm install --prefix desktop --no-audit --no-fund
-```
-
-Windows 发布当前平台产物并更新正式服务：
+此命令同步包、锁文件和 Xcode 工程版本，Android 读取同一 JSON。提交并推送本次代码后运行：
 
 ```powershell
 npm run release:all
 ```
 
-该命令构建并安装正式 Web/后端，正常停止、更新、恢复现有服务与 Codex 连接器，然后构建和发布 Windows 桌面端、Android APK。完整后端发布从 Git 当前提交导出源码，保留工作区中的其他未提交和未跟踪改动。只有必要的依赖安装、构建及启停，不追加测试或验收流程。此命令不负责提交代码，不会创建预览服务器。
-
-替换程序前先停止 Bot、网关和 Web 等写入者，再停止 Codex 连接器并等待进程退出，避免 Bot 在安装间隙重新拉起连接器、占用待删除的旧发行目录。
+该命令从 Git 当前提交构建并安装正式 Web/后端，正常停止和恢复既有服务与 Codex 连接器，然后只在本地构建 Windows 桌面端。Windows 包先发布本机发行目录，再用当前 `gh` 登录身份同步 GitHub Releases；不再本地构建 Android。首次需要桌面依赖时执行 `npm ci --prefix desktop --no-audit --no-fund`。
 
 也可分别执行：
 
 ```powershell
-npm run release:web
+npm run release:web -- --committed-only
 npm run release:desktop -- --publish
-npm run release:android -- --publish
 ```
 
-不带 `--publish` 的客户端构建输出到 `.relay/client-builds`。发布成功后清理对应中间目录。每次发布必须使用更大的 `buildNumber`，避免原生客户端无法识别新版本。各目标独立记录实际发布状态，不把缺少的 Mac 产物标记成已发布。
+制作阶段 `npm run release:web` 仍可安装工作区网页效果，不会发布客户端。客户端不带发布参数时输出到 `.relay/client-builds`；`--publish` 在 Windows 同步本机和 GitHub，`--github` 只发布 GitHub。发布成功清理对应中间目录。若 GitHub 上传中断，保留的输入目录可用 `npm run release:publish -- --input <目录> --github` 继续上传。
 
-若当前环境禁止清理 Android 编译缓存，可加 `--keep-build-cache` 明确保留这些缓存；该选项不保留旧的已发布安装包，也不改变最新版切换流程。
+若运行时下载受网络影响，可将同版本 Electron ZIP 的绝对路径放入 `SUMMON_ELECTRON_DIST`。
 
-若运行时下载受当前网络影响，可将同版本 Electron ZIP 的绝对路径放入 `SUMMON_ELECTRON_DIST`，打包器会直接使用该运行时归档；无需启动额外服务。
+## GitHub Actions
 
-## 桌面更新
+[Client releases 工作流](../.github/workflows/client-releases.yml) 在主分支的版本、桌面、Android、发行脚本或工作流变更时运行；也可手动选择 `cloud`、`macos`、`android` 或 `windows`。默认云端目标只有 macOS 和 Android，Windows 保留可手动触发的云端构建入口。工作流只安装依赖、构建和发布，不运行测试，不创建后端或预览服务。
 
-Electron 仅承载正式网页，不运行另一份 Summon Bot 后端。页面不具有 Node 权限，桌面版本、检查更新、重启更新通过限定的桥接接口提供。外部链接交给系统浏览器。
+macOS 使用 GitHub 的 Mac runner 构建 Intel + Apple Silicon universal DMG/ZIP。无需本地 Mac、Apple Developer 账户或证书，仅做 ad-hoc 签名，不进行 Developer ID 签名或公证。首次打开可能需要在系统“隐私与安全性”手动允许。客户端提示新版本并打开 DMG 下载，用户覆盖安装；不使用依赖开发者签名的自动安装更新。
 
-Windows 首次使用下载的 EXE 安装到当前用户目录。后续应用启动后及运行期间检查更新，后台下载完成后，在“客户端下载与更新”点击“重启并更新”；草稿先保存，再由标准更新器替换程序并重新打开。无需再次手动走安装向导。网页部署的界面变化刷新后直接生效。
+Android 使用 Linux runner、Java 17 和仓库的 Gradle wrapper 构建正式 APK。必须沿用现有签名身份，在 GitHub Actions Secrets 中配置：
 
-桌面更新优先使用本机正式服务 `http://127.0.0.1:8787`，版本信息和安装包都从该入口获取，直接读取本机发行仓库，不经过公网域名。先用最长 1.2 秒的请求探测本机更新入口；本机无法连接、没有对应发行物，或检查、下载失败时，自动改用 `https://bot.lin0.org`。本机已返回有效的当前版本时无需再请求远端。没有本机服务的其他电脑仍可从域名更新。打包时记录目标平台与架构，Mac universal 包继续使用 universal 发行目录。
+- `SUMMON_ANDROID_KEYSTORE_BASE64`：现有 keystore 的 Base64 内容。
+- `SUMMON_ANDROID_KEY_ALIAS`：现有别名。
+- `SUMMON_ANDROID_STORE_PASSWORD`、`SUMMON_ANDROID_KEY_PASSWORD`：现有密码。
 
-macOS 自动更新使用签名的 DMG 和 ZIP，须在 Mac 上完成签名构建，不能用 Windows 构建的文件代替。
+正式签名原件继续留在正式数据根的私有签名配置中，GitHub 仅持有加密 Secrets；密钥和密码不进入源码、日志或发行物。CI 缺少签名配置时直接报告错误，不生成新身份。构建完成后 APK 直接发布 GitHub，不回传正式主机。
 
-## Android 更新和签名
+## 客户端更新
 
-Android 进入前台后检查更新，设置中提供版本、下载进度和安装入口。点击下载安装到本机后，由系统安装程序确认覆盖；首次使用时可能需要允许此应用安装未知来源应用。
+Windows：首次下载 EXE 安装到当前用户目录。之后应用启动及运行期间自动检查更新，下载完成后在“客户端下载与更新”选择“重启并更新”。本机探测最长 1.2 秒，本机查询或下载失败则直接转 GitHub。
 
-Windows 构建默认使用 Android Studio 的 JBR 及当前用户的 Android SDK；也可设置 `JAVA_HOME`、`ANDROID_HOME`。正式签名在首次构建时写入正式数据根的私有签名配置，后续重复使用同一个密钥。密钥和密码不提交源码，也不写入发行包目录。
+macOS：网页内容刷新即可更新；外壳通过 DMG 手动覆盖安装。检查版本同样先本机、再 GitHub。
 
-本机首次接入发行仓库时，沿用此前 Android 构建所用的签名身份并转入正式私有签名配置，避免更换签名导致已安装应用不能覆盖更新。后续只使用当前签名配置，不自动卸载应用或清除设备数据。
+Android：进入前台后检查版本，优先使用已经下载到应用缓存的对应 APK。下载时由系统确认覆盖安装；首次可能需要允许此应用安装未知来源应用。本机发行服务缺失时使用 GitHub，与手机设置的业务服务地址无关。
 
-## Mac 构建和上传
+iOS：保留 SwiftUI 源码和手动 `release:ios` 命令，当前不配置云端构建、签名、IPA 分发或应用内下载安装更新。
 
-在 Mac 拉取已发布的同一提交并准备桌面依赖后运行：
+## 正式环境和清理
 
-```sh
-npm run release:desktop
-npm run release:ios
-```
+后端仍只运行 `D:/Relay-Bot-app` 的正式安装，使用 `D:/Relay-Bot-data` 数据，入口和端口不变。源码 `dist` 仅供后端构建。Windows 本机发行目录不作为后端中间目录清理，各目标仅保留当前发行物。旧的远程包上传接口和发布令牌不再使用。
 
-桌面默认生成包含 Intel 和 Apple Silicon 的 universal DMG/ZIP，需要本机可用的 Apple 签名身份。iOS 使用 Xcode 归档；签名 Team 可通过 `SUMMON_APPLE_TEAM_ID` 指定，或使用工程的本机签名设置。需要导出 IPA 时，将本机的导出设置传入 `--export-options <ExportOptions.plist>`。iOS 暂不接入应用内下载安装。
-
-Mac 桌面构建完成后上传到同一 Windows 发行仓库：
-
-```sh
-npm run release:publish -- --input .relay/client-builds/macos-universal --server https://bot.lin0.org --token-file /absolute/path/to/private-publishing-token
-```
-
-上传凭据由正式主机首次部署时生成，仅保存在正式数据根的私有配置中；通过私下方式交给 Mac，不提交仓库或放入客户端。上传按块执行，产物全部到达后才切换最新版。手机和桌面只具有读取发行包的能力，不携带发布凭据。
-
-## 网页退出 PWA
-
-网页不再注册 Service Worker，不提供离线页面或 PWA 安装入口。`/sw.js` 只用于让已安装的旧离线组件退出：删除 Summon Bot 离线页面缓存并注销自身，不创建新的缓存，也不主动跳转或刷新正在编辑的页面。普通网页再次打开时也会注销遗留组件；聊天缓存、草稿及用户文件继续保留。
+网页不再注册 Service Worker 或提供 PWA 离线页面。`/sw.js` 只清理原离线页面缓存并注销自身；聊天缓存、草稿和用户文件继续保留。

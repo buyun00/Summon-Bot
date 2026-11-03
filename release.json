@@ -1,5 +1,6 @@
 {
-  "version": "0.3.9",
-  "buildNumber": 12,
-  "appUrl": "https://bot.lin0.org"
+  "version": "0.3.10",
+  "buildNumber": 13,
+  "appUrl": "https://bot.lin0.org",
+  "githubRepository": "buyun00/Summon-Bot"
 }

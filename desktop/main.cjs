@@ -7,7 +7,8 @@ app.setPath('userData', join(app.getPath('appData'), 'Relay'));
 app.setName('Summon Bot');
 const origin = new URL(release.appUrl).origin;
 const localUpdateFeed = new URL(release.updatePath, 'http://127.0.0.1:8787').href;
-const remoteUpdateFeed = new URL(release.updatePath, release.appUrl).href;
+const [releasePlatform, releaseArch] = release.updatePath.split('/').filter(Boolean).slice(-2);
+const remoteUpdateFeed = `https://github.com/${release.githubRepository}/releases/download/client-${releasePlatform}-${releaseArch}/`;
 let window, timer, checking;
 let update = { status: 'idle', currentVersion: app.getVersion() };
 
@@ -25,6 +26,20 @@ async function checkForUpdates() {
   checking = true;
   setUpdate({ status: 'checking', message: '', percent: 0 });
   try {
+    if (release.updateMode === 'manual') {
+      for (const feed of [localUpdateFeed, remoteUpdateFeed]) {
+        try {
+          const response = await fetch(new URL('latest.json', feed), { cache: 'no-store', signal: AbortSignal.timeout(feed === localUpdateFeed ? 1200 : 15000) });
+          if (response.status === 404 && feed === remoteUpdateFeed) { setUpdate({ status: 'unpublished' }); return update; }
+          if (!response.ok) throw new Error(`Update unavailable (HTTP ${response.status})`);
+          const latest = await response.json();
+          const downloadUrl = new URL(latest.downloadUrl, feed).href;
+          if (!downloadUrl.startsWith(feed)) throw new Error('Invalid client download URL');
+          setUpdate({ status: latest.buildNumber > release.buildNumber ? 'manual' : 'current', version: latest.version, downloadUrl });
+          return update;
+        } catch (error) { if (feed === remoteUpdateFeed) throw error; }
+      }
+    }
     for (const feed of [localUpdateFeed, remoteUpdateFeed]) {
       try {
         if (feed === localUpdateFeed) {
@@ -92,7 +107,12 @@ autoUpdater.on('error', error => {
 });
 ipcMain.handle('summon:desktop-info', event => { trusted(event); return { version: app.getVersion(), platform: process.platform, arch: process.arch, windowControlsOverlay: true, update }; });
 ipcMain.handle('summon:check-update', event => { trusted(event); return checkForUpdates(); });
-ipcMain.handle('summon:install-update', event => { trusted(event); if (update.status !== 'downloaded') return false; setImmediate(() => autoUpdater.quitAndInstall(true, true)); return true; });
+ipcMain.handle('summon:install-update', event => {
+  trusted(event);
+  if (update.status === 'manual' && [localUpdateFeed, remoteUpdateFeed].some(feed => update.downloadUrl?.startsWith(feed))) { shell.openExternal(update.downloadUrl); return true; }
+  if (update.status !== 'downloaded') return false;
+  setImmediate(() => autoUpdater.quitAndInstall(true, true)); return true;
+});
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => { if (window) { if (window.isMinimized()) window.restore(); window.show(); window.focus(); } });

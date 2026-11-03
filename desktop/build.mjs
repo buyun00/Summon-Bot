@@ -9,7 +9,8 @@ export async function buildDesktop({ platform, arch, output }) {
   const release = JSON.parse(await readFile(join(root, 'release.json'), 'utf8'));
   const electronChecksums = JSON.parse(await readFile(join(root, 'desktop/node_modules/electron/checksums.json'), 'utf8'));
   const updatePath = `/api/releases/${platform}/${arch}/`;
-  await writeFile(join(root, 'desktop/release.json'), JSON.stringify({ ...release, updatePath }, null, 2) + '\n');
+  const updateMode = platform === 'macos' ? 'manual' : 'automatic';
+  await writeFile(join(root, 'desktop/release.json'), JSON.stringify({ ...release, updatePath, updateMode }, null, 2) + '\n');
   await mkdir(output, { recursive: true });
   const target = platform === 'macos' ? builder.Platform.MAC : builder.Platform.WINDOWS;
   return builder.build({ projectDir: join(root, 'desktop'), targets: target.createTarget(undefined, builder.Arch[arch]), publish: 'never',
@@ -27,7 +28,7 @@ export async function buildDesktop({ platform, arch, output }) {
         shortcutName: 'Summon Bot',
         createDesktopShortcut: true, deleteAppDataOnUninstall: false },
       mac: { target: ['dmg', 'zip'], icon: join(root, 'ios/Relay/Assets.xcassets/RelayIcon.imageset/summon-icon.png'),
-        category: 'public.app-category.productivity', forceCodeSigning: true, hardenedRuntime: true },
+        category: 'public.app-category.productivity', identity: '-', notarize: false, hardenedRuntime: false },
     },
   });
 }

@@ -18,7 +18,7 @@ android {
         targetSdk = 35
         versionCode = (summonRelease["buildNumber"] as Number).toInt()
         versionName = summonRelease["version"] as String
-        buildConfigField("String", "SUMMON_UPDATE_URL", "\"${summonRelease["appUrl"]}/api/releases/android/universal/latest.json\"")
+        buildConfigField("String", "SUMMON_GITHUB_REPOSITORY", "\"${summonRelease["githubRepository"]}\"")
     }
 
     signingConfigs {

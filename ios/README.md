@@ -32,7 +32,7 @@
 
 ## 工程说明
 
-版本统一由根目录 `release.json` 管理。Mac 命令行归档使用 `npm run release:ios`，需要导出 IPA 时传入本机 `--export-options` 文件；iOS 暂不接入应用内下载安装更新。各端打包与桌面上传见 [客户端发行与更新](../docs/CLIENT_RELEASES.md)。
+版本统一由根目录 `release.json` 管理。当前暂无 Apple Developer 账户，iOS 暂不打包发布，也不接入应用内下载安装更新。手动归档命令 `npm run release:ios` 继续保留，需要导出 IPA 时传入本机 `--export-options` 文件。各端云端发布见 [客户端发行与更新](../docs/CLIENT_RELEASES.md)。
 
 `Relay/` 是 Xcode 自动同步目录，新增 Swift 文件会自动进入 target；`Info.plist` 已从资源 membership 排除。未添加测试 target 或第三方包。
 

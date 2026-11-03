@@ -4,7 +4,6 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { serveClientReleases } from './releases.mjs';
-import { createReleasePublisher } from './release-publisher.mjs';
 
 const defaultFrontend = fileURLToPath(new URL('../frontend/', import.meta.url));
 const assets = new Map([
@@ -34,13 +33,12 @@ const showcaseMime = new Map([
 
 /** The Web process owns only HTTP/static assets. Business state and Agents stay outside. */
 export async function startWeb({ host = '127.0.0.1', port = 8787, publicOrigin = '', frontendRoot = defaultFrontend,
-  gatewayUrl, gatewayToken, clientReleaseRoot, clientPublishToken, webRelease, requestTimeoutMs = 120000 } = {}) {
+  gatewayUrl, gatewayToken, clientReleaseRoot, webRelease, requestTimeoutMs = 120000 } = {}) {
   const upstream = new URL(gatewayUrl);
   if (!['http:', 'https:'].includes(upstream.protocol) || upstream.username || upstream.password) throw new Error('Invalid gateway URL');
   if (!gatewayToken) throw new Error('gatewayToken is required');
   if (publicOrigin && new URL(publicOrigin).origin !== publicOrigin) throw new Error('publicOrigin must be an origin without a path');
   const publicHost = publicOrigin ? new URL(publicOrigin).host.toLowerCase() : null;
-  const publishRelease = clientReleaseRoot ? await createReleasePublisher(clientReleaseRoot, clientPublishToken) : null;
   const active = new Set();
   let closing = false;
   const server = createServer(async (req, res) => {
@@ -53,7 +51,6 @@ export async function startWeb({ host = '127.0.0.1', port = 8787, publicOrigin =
         res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store', 'Service-Worker-Allowed': '/' });
         res.end(req.method === 'HEAD' ? undefined : script); return;
       }
-      if (publishRelease && await publishRelease(req, res, url)) return;
       if (await serveClientReleases(req, res, url, clientReleaseRoot, webRelease)) return;
       if (url.pathname === showcasePrefix.slice(0, -1)) {
         res.writeHead(302, { Location: showcasePrefix }); res.end(); return;
