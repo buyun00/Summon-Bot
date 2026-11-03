@@ -3,7 +3,7 @@ name: codex-desktop-api
 description: 将当前持续工作绑定到现有 Codex 桌面聊天，通过持久操作与事件自动恢复、续发和回传结果
 ---
 
-沿用 Relay-Bot 已安装的 `connectors/codex-desktop-api`，不启动其他执行器或服务。任何有相应能力授权的 Bot 都可使用；岗位名称不决定访问权。连接器凭据由能力服务读取既有安全配置，不读出、复制到 Markdown 或打印凭据。
+沿用 Summon Bot 已安装的 `connectors/codex-desktop-api`，不启动其他执行器或服务。任何有相应能力授权的 Bot 都可使用；岗位名称不决定访问权。连接器凭据由能力服务读取既有安全配置，不读出、复制到 Markdown 或打印凭据。
 
 ## 提交与继续
 

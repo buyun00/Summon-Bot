@@ -175,7 +175,7 @@ test('stopping tracking disconnects old content observers and cancels scheduled 
   f.flush();
   f.messages.scrollHeight += 300; f.fire('load');
   const oldTop = f.messages.scrollTop;
-  f.messages._relayChatScroll.stop();
+  f.messages._summonChatScroll.stop();
   f.resize(); f.flush();
   assert.ok(f.observers.every(observer => !observer.connected));
   assert.equal(f.messages.scrollTop, oldTop);

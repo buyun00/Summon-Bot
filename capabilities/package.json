@@ -1,6 +1,6 @@
 {
-  "name": "@relay/capabilities",
-  "version": "0.3.7",
+  "name": "@summon/capabilities",
+  "version": "0.3.8",
   "private": true,
   "type": "module",
   "exports": {
@@ -11,6 +11,6 @@
     "./registry": "./services/registry.mjs"
   },
   "dependencies": {
-    "@relay/bot": "0.2.0"
+    "@summon/bot": "0.3.8"
   }
 }

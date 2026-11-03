@@ -7,24 +7,24 @@
 	objects = {
 
 /* Begin PBXFileReference section */
-		A10000000000000000000001 /* Relay.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Relay.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000001 /* Summon Bot.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Summon Bot.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		A10000000000000000000002 /* Exceptions for Relay folder in Relay target */ = {
+		A10000000000000000000002 /* Exceptions for Summon Bot folder in Summon Bot target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
 			);
-			target = A10000000000000000000003 /* Relay */;
+			target = A10000000000000000000003 /* Summon Bot */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		A10000000000000000000004 /* Relay */ = {
+		A10000000000000000000004 /* Summon Bot */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				A10000000000000000000002 /* Exceptions for Relay folder in Relay target */,
+				A10000000000000000000002 /* Exceptions for Summon Bot folder in Summon Bot target */,
 			);
 			path = Relay;
 			sourceTree = "<group>";
@@ -45,7 +45,7 @@
 		A10000000000000000000006 = {
 			isa = PBXGroup;
 			children = (
-				A10000000000000000000004 /* Relay */,
+				A10000000000000000000004 /* Summon Bot */,
 				A10000000000000000000007 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -53,7 +53,7 @@
 		A10000000000000000000007 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				A10000000000000000000001 /* Relay.app */,
+				A10000000000000000000001 /* Summon Bot.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -61,9 +61,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		A10000000000000000000003 /* Relay */ = {
+		A10000000000000000000003 /* Summon Bot */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = A10000000000000000000008 /* Build configuration list for PBXNativeTarget Relay */;
+			buildConfigurationList = A10000000000000000000008 /* Build configuration list for PBXNativeTarget Summon Bot */;
 			buildPhases = (
 				A10000000000000000000009 /* Sources */,
 				A10000000000000000000005 /* Frameworks */,
@@ -74,13 +74,13 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				A10000000000000000000004 /* Relay */,
+				A10000000000000000000004 /* Summon Bot */,
 			);
-			name = Relay;
+			name = SummonBot;
 			packageProductDependencies = (
 			);
-			productName = Relay;
-			productReference = A10000000000000000000001 /* Relay.app */;
+			productName = "Summon Bot";
+			productReference = A10000000000000000000001 /* Summon Bot.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -99,7 +99,7 @@
 					};
 				};
 			};
-			buildConfigurationList = A1000000000000000000000C /* Build configuration list for PBXProject Relay */;
+			buildConfigurationList = A1000000000000000000000C /* Build configuration list for PBXProject Summon Bot */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -114,7 +114,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				A10000000000000000000003 /* Relay */,
+				A10000000000000000000003 /* Summon Bot */,
 			);
 		};
 /* End PBXProject section */
@@ -188,7 +188,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 11;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -197,9 +197,9 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.3.7;
+				MARKETING_VERSION = 0.3.8;
 				PRODUCT_BUNDLE_IDENTIFIER = org.lin0.relay;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = "Summon Bot";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
@@ -217,7 +217,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 11;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -226,9 +226,9 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.3.7;
+				MARKETING_VERSION = 0.3.8;
 				PRODUCT_BUNDLE_IDENTIFIER = org.lin0.relay;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = "Summon Bot";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
@@ -243,7 +243,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		A10000000000000000000008 /* Build configuration list for PBXNativeTarget Relay */ = {
+		A10000000000000000000008 /* Build configuration list for PBXNativeTarget Summon Bot */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				A1000000000000000000000F /* Debug */,
@@ -252,7 +252,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		A1000000000000000000000C /* Build configuration list for PBXProject Relay */ = {
+		A1000000000000000000000C /* Build configuration list for PBXProject Summon Bot */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				A1000000000000000000000D /* Debug */,

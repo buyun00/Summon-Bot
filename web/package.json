@@ -1,9 +1,9 @@
 {
-  "name": "@relay/web",
-  "version": "0.3.7",
+  "name": "@summon/web",
+  "version": "0.3.8",
   "private": true,
   "type": "module",
-  "description": "Relay user interface and transport facade; no Agent or business storage",
+  "description": "Summon Bot user interface and transport facade; no Agent or business storage",
   "exports": "./backend/server.mjs",
   "engines": {
     "node": ">=24.0.0"

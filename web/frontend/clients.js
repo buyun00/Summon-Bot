@@ -56,13 +56,13 @@
     if (id === requestId) render();
   }
   async function check() {
-    try { desktopUpdate = await window.RelayDesktop.checkForUpdates(); }
+    try { desktopUpdate = await window.SummonDesktop.checkForUpdates(); }
     catch { desktopUpdate = { status: 'error' }; }
     render();
   }
   async function install() {
     if (!preserveUpdateDrafts(true)) return;
-    try { if (!await window.RelayDesktop.installUpdate()) toast('请先完成更新包下载。'); }
+    try { if (!await window.SummonDesktop.installUpdate()) toast('请先完成更新包下载。'); }
     catch { toast('更新未能启动，请稍后重试。', true); }
   }
   async function open() {
@@ -71,25 +71,25 @@
     modal.classList.remove('create-bot-modal');
     document.querySelector('#modal-content').innerHTML = `<div class="modal-header"><div><h2>客户端下载与更新</h2><p>选择设备，下载最新客户端。</p></div><button class="icon-button" data-action="close-modal" aria-label="关闭">${icon('close', 17)}</button></div><div class="client-release-content" id="client-release-content"></div>`;
     render(); showModal(modal); load();
-    if (window.RelayDesktop) {
-      try { setDesktopInfo(await window.RelayDesktop.getInfo()); render(); await check(); }
+    if (window.SummonDesktop) {
+      try { setDesktopInfo(await window.SummonDesktop.getInfo()); render(); await check(); }
       catch { failure = '无法读取桌面更新状态，请重新打开客户端。'; render(); }
     }
   }
-  window.RelayClients = Object.freeze({ open });
+  window.SummonClients = Object.freeze({ open });
   document.addEventListener('click', event => {
     const action = event.target.closest('[data-client-action]')?.dataset.clientAction;
     if (action === 'reload') load();
     if (action === 'check') check();
     if (action === 'install') install();
   });
-  if (window.RelayDesktop) {
-    window.RelayDesktop.getInfo().then(value => { setDesktopInfo(value); render(); }).catch(() => {});
+  if (window.SummonDesktop) {
+    window.SummonDesktop.getInfo().then(value => { setDesktopInfo(value); render(); }).catch(() => {});
     window.addEventListener('resize', syncWindowChrome);
     navigator.windowControlsOverlay?.addEventListener('geometrychange', syncWindowChrome);
-    window.RelayDesktop.onUpdate(value => { desktopUpdate = value; render(); });
-    window.RelayDesktop.onOpenUpdates(open);
-    window.RelayDesktop.onInstallRequested(install);
+    window.SummonDesktop.onUpdate(value => { desktopUpdate = value; render(); });
+    window.SummonDesktop.onOpenUpdates(open);
+    window.SummonDesktop.onInstallRequested(install);
   }
   // Remove the former offline shell without deleting chat records or drafts.
   if ('serviceWorker' in navigator) navigator.serviceWorker.getRegistrations().then(registrations => Promise.all(registrations.map(registration => {

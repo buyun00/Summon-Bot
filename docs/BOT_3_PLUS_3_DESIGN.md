@@ -4,7 +4,7 @@
 
 ## 本体、身份与工作
 
-继续使用 `@relay/bot` 和 Pi Agent。chat、work、maintenance 是同一 Bot 的内部对话类型，不是三个 Bot 身份。普通临时任务创建 work；只有独立长期责任、明确岗位委派或真实协作需要，才在查询已有同伴后创建普通独立 Bot。
+继续使用 `@summon/bot` 和 Pi Agent。chat、work、maintenance 是同一 Bot 的内部对话类型，不是三个 Bot 身份。普通临时任务创建 work；只有独立长期责任、明确岗位委派或真实协作需要，才在查询已有同伴后创建普通独立 Bot。
 
 `botId`、`conversationId`、`workId` 保持稳定；每次执行有独立 `runId`，上下文重组可以改变代次。每个活动执行拥有独立 Pi Agent 状态。同一逻辑对话串行，不同工作默认 4 个业务位置；维护默认 1 个独立位置。前台优先。等待外部结果使用持久 work_wait，结束本段并释放位置，不靠模型循环轮询。
 

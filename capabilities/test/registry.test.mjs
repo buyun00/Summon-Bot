@@ -114,7 +114,7 @@ test('stale proposals cannot commit after newer activation or authorization chan
 });
 
 test('SQLite restart retains versions, bindings and pending proposals', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'relay-capability-registry-'));
+  const directory = await mkdtemp(join(tmpdir(), 'summon-capability-registry-'));
   const path = join(directory, 'state.sqlite'), v1 = await service(t), v2 = await service(t, { version: '2' });
   let store = new RecordStore(path), registry = new CapabilityRegistry({ store });
   t.after(async () => { store.close(); await rm(directory, { recursive: true, force: true }); });
@@ -188,7 +188,7 @@ test('a real gateway process death preserves unresolved requests instead of decl
   let entered, finish;
   const started = new Promise(resolve => { entered = resolve; }), continuation = new Promise(resolve => { finish = resolve; });
   const v1 = await service(t, { handler: async () => { entered(); await continuation; return { done: true }; } });
-  const directory = await mkdtemp(join(tmpdir(), 'relay-capability-crash-')), path = join(directory, 'state.sqlite');
+  const directory = await mkdtemp(join(tmpdir(), 'summon-capability-crash-')), path = join(directory, 'state.sqlite');
   let store = new RecordStore(path), registry = new CapabilityRegistry({ store });
   await register(registry, v1); registry.activate('example', '1'); store.close(); store = null;
   const code = `import { RecordStore } from ${JSON.stringify(new URL('../shared/store.mjs', import.meta.url).href)}; import { CapabilityRegistry } from ${JSON.stringify(new URL('../services/registry.mjs', import.meta.url).href)}; const store = new RecordStore(process.argv[1]); await new CapabilityRegistry({store}).call('controller','example_read',{});`;

@@ -12,7 +12,7 @@ import { inspectBotIdentity } from '../../bot/src/index.mjs';
 import { startCapabilityService } from '../services/host.mjs';
 
 async function fixture(t,options={}) {
- const root=await mkdtemp(join(tmpdir(),'relay-gateway-')),dataRoot=join(root,'data'),project=join(root,'project');await mkdir(project);
+ const root=await mkdtemp(join(tmpdir(),'summon-gateway-')),dataRoot=join(root,'data'),project=join(root,'project');await mkdir(project);
  if(options.historyEpoch){await mkdir(dataRoot);await writeFile(join(dataRoot,'history.json'),JSON.stringify({historyEpoch:options.historyEpoch}));}
  const gateway=await startGateway({dataRoot,releaseRoot:resolve(import.meta.dirname,'../..'),defaultCwd:project,model:{provider:'openai-compatible',model:'test',baseUrl:'http://127.0.0.1:1/v1'},botApi:async()=>({BotStore,saveArtifact,inspectBotIdentity:async()=>null}),...options});
  t.after(async()=>{await gateway.stopBots();await gateway.close();await rm(root,{recursive:true,force:true});});
@@ -46,7 +46,7 @@ test('workspace and room snapshots expose one persisted history epoch on full, r
 });
 
 test('an incomplete history clear blocks gateway startup before any worker is started',async t=>{
- const dataRoot=await mkdtemp(join(tmpdir(),'relay-gateway-incomplete-history-'));
+ const dataRoot=await mkdtemp(join(tmpdir(),'summon-gateway-incomplete-history-'));
  t.after(()=>rm(dataRoot,{recursive:true,force:true}));
  for(const status of ['clearing','failed']){
   await writeFile(join(dataRoot,'history.json'),JSON.stringify({historyEpoch:'incomplete-fixture',status}));
@@ -55,7 +55,7 @@ test('an incomplete history clear blocks gateway startup before any worker is st
 });
 test('a real MCP SDK client initializes, discovers and calls the capability gateway',async t=>{
  const {gateway}=await fixture(t),token=gateway.manager.store.get('bots','bot-components').capabilityToken;
- const client=new Client({name:'relay-gateway-test',version:'1.0.0'});
+ const client=new Client({name:'summon-gateway-test',version:'1.0.0'});
  await client.connect(new StreamableHTTPClientTransport(new URL(gateway.url+'/mcp'),{requestInit:{headers:{Authorization:`Bearer ${token}`}}}));
  t.after(()=>client.close());
  const listed=await client.listTools();assert.ok(listed.tools.some(tool=>tool.name==='knowledge_search'));assert.ok(!listed.tools.some(tool=>tool.name==='bots_stop'));
@@ -102,7 +102,7 @@ test('system stop quiesces real service deliveries before stopping Bots and reje
 });
 
 test('unloaded builtin stays unloaded across a gateway restart with stable endpoint and credential',async t=>{
- const dataRoot=await mkdtemp(join(tmpdir(),'relay-gateway-unload-')),releaseRoot=resolve(import.meta.dirname,'../..');
+ const dataRoot=await mkdtemp(join(tmpdir(),'summon-gateway-unload-')),releaseRoot=resolve(import.meta.dirname,'../..');
  let gateway;
  t.after(async()=>{if(gateway){await gateway.stopBots();await gateway.close();}await rm(dataRoot,{recursive:true,force:true});});
  gateway=await startGateway({dataRoot,releaseRoot,defaultCwd:dataRoot,model:{provider:'openai-compatible',model:'test',baseUrl:'http://127.0.0.1:1/v1'}});

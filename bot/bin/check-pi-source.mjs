@@ -14,7 +14,7 @@ for (const entry of manifest.modules) {
 for (const entry of manifest.tests) {
   if (hash(entry.original) !== entry.sha256 || hash(entry.local) !== entry.localSha256) throw new Error(`Unrecorded test source change: ${entry.local}`);
 }
-for (const entry of [...manifest.relayWrappers, ...manifest.fixtures]) if (hash(entry.local) !== entry.localSha256) throw new Error(`Unrecorded support file change: ${entry.local}`);
+for (const entry of [...manifest.summonWrappers, ...manifest.fixtures]) if (hash(entry.local) !== entry.localSha256) throw new Error(`Unrecorded support file change: ${entry.local}`);
 const pkg = JSON.parse(read('package.json'));
 for (const name of ['@earendil-works/pi-ai', '@earendil-works/pi-agent-core']) if (pkg.dependencies[name] !== manifest.version) throw new Error(`Unreviewed Pi version: ${name}`);
 console.log(`${manifest.modules.length} Pi source files verified at ${manifest.commit}`);

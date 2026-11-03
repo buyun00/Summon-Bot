@@ -4,12 +4,12 @@ import UniformTypeIdentifiers
 import QuickLook
 
 struct ChatView: View {
-    @Environment(RelayStore.self) private var store
+    @Environment(SummonStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let roomID: String
     @State private var text = ""
-    @State private var attachments: [RelayAttachment] = []
-    @State private var reply: RelayMessage?
+    @State private var attachments: [SummonAttachment] = []
+    @State private var reply: SummonMessage?
     @State private var target = ""
     @State private var showFiles = false
     @State private var photo: PhotosPickerItem?
@@ -21,21 +21,21 @@ struct ChatView: View {
     @State private var sentRevision = 0
     @FocusState private var composing: Bool
 
-    private var room: RelayRoom? { store.rooms.first { $0.id == roomID } }
-    private var directBot: RelayBot? {
+    private var room: SummonRoom? { store.rooms.first { $0.id == roomID } }
+    private var directBot: SummonBot? {
         guard let room, room.kind == "dm", room.members.contains("user") else { return nil }
         return store.bots.first { room.members.contains($0.id) }
     }
     private var title: String { directBot?.name ?? room?.name ?? "聊天" }
     private var composerAccent: Color {
         let bot = directBot ?? room?.members.compactMap { store.bot(id: $0) }.first
-        return Color(relayHex: bot?.resolvedAvatar.color ?? RelayAvatar().color)
+        return Color(summonHex: bot?.resolvedAvatar.color ?? SummonAvatar().color)
     }
     private var hasMessageContent: Bool {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
     }
-    private var messages: [RelayMessage] { store.messagesForRoom(roomID) }
-    private var workingBots: [RelayBot] {
+    private var messages: [SummonMessage] { store.messagesForRoom(roomID) }
+    private var workingBots: [SummonBot] {
         let jobs = store.selectedRoomID == roomID ? store.jobs : []
         let repliedJobs = Set(messages.filter { !$0.isOwn && $0.kind != "error" }.compactMap(\.jobId))
         var ids = Set(jobs.filter { $0.isActive && !repliedJobs.contains($0.id) }.map(\.botId))
@@ -64,7 +64,7 @@ struct ChatView: View {
 
     private var hasWorkingIndicator: Bool { !workingBots.isEmpty || pendingStatus != nil }
 
-    private func workingStatus(for bot: RelayBot, at date: Date) -> String {
+    private func workingStatus(for bot: SummonBot, at date: Date) -> String {
         let job = store.selectedRoomID == roomID ? store.jobs.last { $0.botId == bot.id && $0.isActive } : nil
         let run = store.agentRuns.last {
             $0.roomId == roomID && $0.botId == bot.id && $0.isActive
@@ -94,12 +94,12 @@ struct ChatView: View {
             if ["read", "list_files", "resource"].contains(where: { name.contains($0) }) {
                 return "正在认真翻笔记"
             }
-            if ["relay", "chat", "consult", "send_message"].contains(where: { name.contains($0) }) {
+            if ["summon", "chat", "consult", "send_message"].contains(where: { name.contains($0) }) {
                 return "正在和小伙伴商量"
             }
         }
         let phrases = ["正在仔细分析", "正在认真琢磨", "正在组织语言", "正在纠结措辞"]
-        let start = RelayDate.parse(run?.startedAt ?? run?.createdAt ?? job?.createdAt)
+        let start = SummonDate.parse(run?.startedAt ?? run?.createdAt ?? job?.createdAt)
         let elapsed = max(0, date.timeIntervalSince(start ?? Date(timeIntervalSince1970: 0)))
         return phrases[Int(elapsed / 6) % phrases.count]
     }
@@ -178,7 +178,7 @@ struct ChatView: View {
                 }
             }
         }
-        .background(RelayTheme.background)
+        .background(SummonTheme.background)
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -215,7 +215,7 @@ struct ChatView: View {
             guard let item else { return }
             Task { await uploadPhoto(item) }
         }
-        .relaySheet(isPresented: $showDetails) {
+        .summonSheet(isPresented: $showDetails) {
             NavigationStack {
                 if let bot = directBot { BotDetailsView(botID: bot.id) }
                 else { RoomDetailsView(roomID: roomID) }
@@ -229,7 +229,7 @@ struct ChatView: View {
             if let reply {
                 HStack {
                     Label(String(reply.content.prefix(90)), systemImage: "arrowshape.turn.up.left")
-                        .relayFont(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        .summonFont(.caption).foregroundStyle(.secondary).lineLimit(2)
                     Spacer()
                     Button { self.reply = nil } label: { Image(systemName: "xmark.circle.fill") }
                         .accessibilityLabel("取消回复")
@@ -241,20 +241,20 @@ struct ChatView: View {
                         ForEach(attachments) { item in
                             HStack(spacing: 8) {
                                 Image(systemName: "doc")
-                                Text(item.name).relayFont(.caption).lineLimit(1)
+                                Text(item.name).summonFont(.caption).lineLimit(1)
                                 Button { attachments.removeAll { $0.id == item.id } } label: { Image(systemName: "xmark.circle.fill") }
                                     .accessibilityLabel("移除 \(item.name)")
-                            }.padding(10).background(RelayTheme.surface, in: Capsule())
+                            }.padding(10).background(SummonTheme.surface, in: Capsule())
                         }
                     }.padding(.horizontal, 18)
                 }
             }
             if room?.isConcluded == true {
                 Label("深聊已结束，结论已保留", systemImage: "checkmark.bubble")
-                    .relayFont(.footnote).foregroundStyle(.secondary).padding()
+                    .summonFont(.footnote).foregroundStyle(.secondary).padding()
             } else if let room, !room.members.contains("user") {
                 Label("正在查看 Bot 之间的对话", systemImage: "eye")
-                    .relayFont(.footnote).foregroundStyle(.secondary).padding()
+                    .summonFont(.footnote).foregroundStyle(.secondary).padding()
             } else {
                 GlassEffectContainer(spacing: 12) {
                     HStack(alignment: .bottom, spacing: 10) {
@@ -265,7 +265,7 @@ struct ChatView: View {
                             }
                         } label: {
                             if uploading { ProgressView().frame(width: 24, height: 30) }
-                            else { Image(systemName: "plus").relayFont(.title2).frame(width: 24, height: 30) }
+                            else { Image(systemName: "plus").summonFont(.title2).frame(width: 24, height: 30) }
                         }
                         .buttonStyle(.glass).buttonBorderShape(.circle)
                         .disabled(uploading || attachments.count >= 8)
@@ -293,7 +293,7 @@ struct ChatView: View {
 
                         Button { send() } label: {
                             Image(systemName: hasMessageContent ? "arrow.up" : "mic.fill")
-                                .relayFont(.title3, weight: .semibold)
+                                .summonFont(.title3, weight: .semibold)
                         }
                         .buttonStyle(ComposerActionButtonStyle(accent: composerAccent))
                         .disabled(uploading || !store.isConfigured || store.sendingRoomIDs.contains(roomID) || !hasMessageContent)
@@ -363,13 +363,13 @@ private struct ComposerActionButtonStyle: ButtonStyle {
 }
 
 private struct MessageRow: View {
-    @Environment(RelayStore.self) private var store
-    let message: RelayMessage
+    @Environment(SummonStore.self) private var store
+    let message: SummonMessage
     let roomID: String
     let onReply: () -> Void
 
-    private var bot: RelayBot? { store.bots.first { $0.id == message.senderId } }
-    private var pending: RelayPendingMessage? { store.pendingMessages.first { $0.clientID == message.clientId } }
+    private var bot: SummonBot? { store.bots.first { $0.id == message.senderId } }
+    private var pending: SummonPendingMessage? { store.pendingMessages.first { $0.clientID == message.clientId } }
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -380,16 +380,16 @@ private struct MessageRow: View {
             }
             VStack(alignment: message.isOwn ? .trailing : .leading, spacing: 7) {
                 HStack(spacing: 8) {
-                    Text(message.isOwn ? store.settings.userName : bot?.name ?? "系统").relayFont(.caption, weight: .medium)
-                    Text(RelayFormat.time(message.createdAt)).relayFont(.caption2).foregroundStyle(.tertiary)
+                    Text(message.isOwn ? store.settings.userName : bot?.name ?? "系统").summonFont(.caption, weight: .medium)
+                    Text(SummonFormat.time(message.createdAt)).summonFont(.caption2).foregroundStyle(.tertiary)
                 }.foregroundStyle(.secondary)
                 if let replyID = message.replyTo,
                    let quoted = store.messagesForRoom(roomID).first(where: { $0.id == replyID }),
                    quoted.senderId != message.senderId,
                    store.bot(id: quoted.senderId) != nil {
-                    Text("\(store.name(for: quoted.senderId))：\(quoted.content)").relayFont(.caption).lineLimit(3)
+                    Text("\(store.name(for: quoted.senderId))：\(quoted.content)").summonFont(.caption).lineLimit(3)
                         .foregroundStyle(.secondary).padding(10)
-                        .background(RelayTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                        .background(SummonTheme.surface, in: RoundedRectangle(cornerRadius: 12))
                 }
                 if !message.content.isEmpty {
                     Text(.init(message.content))
@@ -398,19 +398,19 @@ private struct MessageRow: View {
                         .padding(.vertical, message.isOwn ? 14 : 12)
                         .background {
                             // Grow the bot bubble around the existing text area, preserving its line width.
-                            RoundedRectangle(cornerRadius: 21).fill(RelayTheme.surface)
+                            RoundedRectangle(cornerRadius: 21).fill(SummonTheme.surface)
                                 .padding(.horizontal, message.isOwn ? 0 : -10)
                         }
                 }
                 ForEach(message.attachments) { attachment in AttachmentRow(attachment: attachment) }
                 if let pending, pending.status != "sent" {
                     if pending.status == "sending" {
-                        Label("正在发送…", systemImage: "clock").relayFont(.caption2).foregroundStyle(.secondary)
+                        Label("正在发送…", systemImage: "clock").summonFont(.caption2).foregroundStyle(.secondary)
                     } else {
                         VStack(alignment: .trailing, spacing: 6) {
-                            Text(pending.error ?? "尚未确认送达").relayFont(.caption2).foregroundStyle(.orange)
+                            Text(pending.error ?? "尚未确认送达").summonFont(.caption2).foregroundStyle(.orange)
                             Button("重试发送") { Task { await store.retryMessage(clientID: pending.clientID) } }
-                                .relayFont(.caption).buttonStyle(.glass)
+                                .summonFont(.caption).buttonStyle(.glass)
                         }
                     }
                 }
@@ -426,8 +426,8 @@ private struct MessageRow: View {
 }
 
 struct AttachmentRow: View {
-    @Environment(RelayStore.self) private var store
-    let attachment: RelayAttachment
+    @Environment(SummonStore.self) private var store
+    let attachment: SummonAttachment
     @State private var fileURL: URL?
     @State private var previewURL: URL?
     @State private var errorMessage: String?
@@ -452,14 +452,14 @@ struct AttachmentRow: View {
                     if downloading { ProgressView() }
                     else { Image(systemName: attachment.mimeType.hasPrefix("image/") ? "photo" : "doc") }
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(attachment.name).relayFont(.subheadline).lineLimit(2)
-                        Text(attachment.formattedSize).relayFont(.caption2).foregroundStyle(.secondary)
+                        Text(attachment.name).summonFont(.subheadline).lineLimit(2)
+                        Text(attachment.formattedSize).summonFont(.caption2).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 4)
                     Image(systemName: "arrow.down.circle").foregroundStyle(.secondary)
-                }.padding(12).background(RelayTheme.surface, in: RoundedRectangle(cornerRadius: 16))
+                }.padding(12).background(SummonTheme.surface, in: RoundedRectangle(cornerRadius: 16))
             }.buttonStyle(.plain).disabled(downloading)
-            if let fileURL { ShareLink(item: fileURL) { Label("分享文件", systemImage: "square.and.arrow.up") }.relayFont(.caption) }
+            if let fileURL { ShareLink(item: fileURL) { Label("分享文件", systemImage: "square.and.arrow.up") }.summonFont(.caption) }
             if let errorMessage { InlineError(message: errorMessage) }
         }
         .quickLookPreview($previewURL)

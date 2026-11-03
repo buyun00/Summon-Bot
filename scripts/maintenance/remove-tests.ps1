@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $prefix = $repoRoot.TrimEnd('\') + '\'
 $targets = @('bot/test', 'web/test', 'capabilities/test', 'tests', 'bot/third_party/pi/upstream-tests', 'scripts/build/test.mjs', 'bot/vitest.config.mjs')
-Write-Host 'Relay Bot - remove development tests'
+Write-Host 'Summon Bot - remove development tests'
 try {
     foreach ($name in $targets) {
         $path = [IO.Path]::GetFullPath((Join-Path $repoRoot $name))

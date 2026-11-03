@@ -27,7 +27,7 @@ for await (const line of createInterface({ input: process.stdin })) {
       send({ id: 900, method: 'item/tool/requestUserInput', params: { threadId, turnId, questions: [{ id: 'color', question: 'Which color?', options: [{ label: 'Blue' }] }] } });
     } else if (text.includes('CONSULT')) {
       pending = true;
-      send({ id: 900, method: 'item/tool/call', params: { threadId, turnId, callId: 'test-call', tool: 'relay_consult', arguments: { question: 'What is the project fact?', targetBotId: 'expert' } } });
+      send({ id: 900, method: 'item/tool/call', params: { threadId, turnId, callId: 'test-call', tool: 'summon_consult', arguments: { question: 'What is the project fact?', targetBotId: 'expert' } } });
     } else if (!text.includes('HOLD')) {
       notify('item/agentMessage/delta', { threadId, turnId, itemId: 'answer', delta: 'Protocol fixture' });
       setTimeout(() => finish(), 10);

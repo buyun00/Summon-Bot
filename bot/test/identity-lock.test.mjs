@@ -10,9 +10,9 @@ import { acquireIdentityLock, inspectInstanceIdentity } from '../src/runtime/ide
 import { requestBot } from '../src/messaging/client.mjs';
 
 const pause = ms => new Promise(done => setTimeout(done, ms));
-const identity = bootId => ({ protocol: 'relay-instance-lock-v1', botId: 'identity-test', pid: process.pid, bootId, state: 'ready' });
+const identity = bootId => ({ protocol: 'summon-instance-lock-v1', botId: 'identity-test', pid: process.pid, bootId, state: 'ready' });
 async function directory(t) {
-  const dir = await mkdtemp(join(tmpdir(), 'relay-identity-test-'));
+  const dir = await mkdtemp(join(tmpdir(), 'summon-identity-test-'));
   t.after(async () => {
     assert.equal(dirname(resolve(dir)), resolve(tmpdir()));
     await rm(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
@@ -115,7 +115,7 @@ test('the actual CLI waits for final identity cleanup after the stopped event be
       }
       return originalRename(source, target);
     }; syncBuiltinESMExports();`;
-  const child = fork(new URL('../bin/relay-bot.mjs', import.meta.url), ['--config', configPath], {
+  const child = fork(new URL('../bin/summon-bot.mjs', import.meta.url), ['--config', configPath], {
     windowsHide: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'], env: { ...process.env, BOT_TEST_FINAL_WRITE_DIR: dir },
     execArgv: ['--import', `data:text/javascript;base64,${Buffer.from(preload).toString('base64')}`],
   });

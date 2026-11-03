@@ -10,9 +10,9 @@ import { WorkspaceExecutionLock } from '../capabilities/shared/workspace-lock.mj
 const option=name=>{const index=process.argv.indexOf(name);return index<0?undefined:process.argv[index+1];};
 const evidence=resolve(option('--output')||join('D:/Relay-Bot-data/verification/refactor-20261021',`codex-live-${new Date().toISOString().replace(/[:.]/g,'-')}`));
 const cwd=join(evidence,'workspace');await mkdir(cwd,{recursive:true});
-const expected=`relay-capability-codex-${randomUUID()}`;
+const expected=`summon-capability-codex-${randomUUID()}`;
 const store=new RecordStore(join(evidence,'codex.sqlite'));
-const configured=option('--codex')||process.env.RELAY_CODEX_PATH;
+const configured=option('--codex')||process.env.SUMMON_CODEX_PATH;
 const executor=new CodexExecutor({store,defaultCwd:cwd,codexPath:configured,executionLock:new WorkspaceExecutionLock(cwd)});
 const report={kind:'real-codex-app-server',fixture:false,startedAt:new Date().toISOString(),cwd,checks:[]};
 let work;

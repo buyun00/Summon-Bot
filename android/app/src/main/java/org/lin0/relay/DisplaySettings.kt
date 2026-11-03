@@ -35,8 +35,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
 
-class RelayDisplayPreferences(context: Context) {
-    private val prefs = context.getSharedPreferences("RelayNative.display", Context.MODE_PRIVATE)
+class SummonDisplayPreferences(context: Context) {
+    private val prefs = context.getSharedPreferences("SummonNative.display", Context.MODE_PRIVATE)
     var zoom by mutableStateOf(prefs.getInt("zoom", 100).coerceIn(50, 160))
         private set
     var font by mutableStateOf(prefs.getInt("font", 100).coerceIn(90, 160))
@@ -55,9 +55,9 @@ class RelayDisplayPreferences(context: Context) {
     fun reset() { updateZoom(100); updateFont(100) }
 }
 
-val LocalRelayDisplay = staticCompositionLocalOf<RelayDisplayPreferences> { error("Display preferences unavailable") }
+val LocalSummonDisplay = staticCompositionLocalOf<SummonDisplayPreferences> { error("Display preferences unavailable") }
 
-val relayTypography = Typography().let { base ->
+val summonTypography = Typography().let { base ->
     base.copy(
         bodyLarge = base.bodyLarge.copy(fontSize = 17.sp, lineHeight = 28.sp),
         bodyMedium = base.bodyMedium.copy(fontSize = 16.sp, lineHeight = 26.sp),
@@ -72,10 +72,10 @@ val relayTypography = Typography().let { base ->
 }
 
 @Composable
-fun RelayDisplay(preferences: RelayDisplayPreferences, content: @Composable () -> Unit) {
+fun SummonDisplay(preferences: SummonDisplayPreferences, content: @Composable () -> Unit) {
     val density = LocalDensity.current
     CompositionLocalProvider(
-        LocalRelayDisplay provides preferences,
+        LocalSummonDisplay provides preferences,
         LocalDensity provides Density(density.density * preferences.zoom / 100f, density.fontScale * preferences.font / 100f),
         content = content,
     )
@@ -84,7 +84,7 @@ fun RelayDisplay(preferences: RelayDisplayPreferences, content: @Composable () -
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DisplaySettingsControls() {
-    val display = LocalRelayDisplay.current
+    val display = LocalSummonDisplay.current
     Text("界面缩放  ${display.zoom}%", style = MaterialTheme.typography.titleSmall)
     Text("一起调整头像、控件、间距与文字的大小。", style = MaterialTheme.typography.bodySmall)
     Slider(value = display.zoom.toFloat(), onValueChange = { display.updateZoom(it.roundToInt()) },
@@ -109,7 +109,7 @@ fun DisplaySettingsControls() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DisplaySettingsSheet(onDismiss: () -> Unit) {
-    val display = LocalRelayDisplay.current
+    val display = LocalSummonDisplay.current
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("显示设置", style = MaterialTheme.typography.titleLarge)

@@ -27,7 +27,7 @@
       "initialLocalSha256": "be4e7650dae2020c8aaeff2e89ee615e418460e021d876e86cc6089c10d6414e",
       "changes": [
         "TypeScript erased to ESM using Node 24; relative imports use .mjs.",
-        "Recognize Relay read_file/read_resource/write_file/edit_file in file-operation summaries."
+        "Recognize Summon Bot read_file/read_resource/write_file/edit_file in file-operation summaries."
       ],
       "localSha256": "d1aaa03d86045c7278f79860ee0f4ccabbcb75deedcb7bc4c7ced1b7796a34ba"
     },
@@ -77,7 +77,7 @@
       "initialLocalSha256": "544cb460e0df0b1adbc6cb8786875042b9ce415e861019d9d1fe7addcba0d95a",
       "changes": [
         "TypeScript erased to ESM using Node 24; relative imports use .mjs.",
-        "No implicit home-directory configuration: callers must provide agentDir. Relay always sets includeDefaults:false.",
+        "No implicit home-directory configuration: callers must provide agentDir. Summon Bot always sets includeDefaults:false.",
         "Stable directory order, no descendant symlink traversal, maximum depth 20, 128 KiB source limit, robust null/scalar frontmatter."
       ],
       "localSha256": "91f387774c5be5ebe5307d1335d0277cd45b4234c061fa8fef7c43a568e7118c"
@@ -91,7 +91,7 @@
       "initialLocalSha256": "127a9d4ae1ae49ac852ef31deac7554f82ea2482112af39a11ed663972336e47",
       "changes": [
         "TypeScript erased to ESM using Node 24; relative imports use .mjs.",
-        "Removed host config import; Relay always sets explicit paths and includeDefaults:false.",
+        "Removed host config import; Summon Bot always sets explicit paths and includeDefaults:false.",
         "Stable directory order, no descendant symlinks, 128 KiB source limit, robust null/scalar frontmatter."
       ],
       "localSha256": "40aa8159fc9aeda45e2bf508e965da3b856365527433b14fd0b559606467f265"
@@ -242,11 +242,11 @@
       "localSha256": "8862ae28ecea49f23bbd5b7978f8d12c3e445eeb4ba8935fc47eaad5d53e4cca"
     }
   ],
-  "relayWrappers": [
+  "summonWrappers": [
     {
       "local": "src/pi/core/compaction/index.mjs",
       "localSha256": "03396764c253cfb8ccb67e3000c4c1b8ea6669cf366edb569920f603cae95449",
-      "note": "Relay export-only entry for selected modules; not a copy of the upstream branch-summary barrel."
+      "note": "Summon Bot export-only entry for selected modules; not a copy of the upstream branch-summary barrel."
     }
   ],
   "fixtures": [

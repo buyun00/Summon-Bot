@@ -71,7 +71,7 @@
     if (incoming) incoming.finished.then(cleanup).catch(cleanup); else cleanup();
   }
   function capture(root) {
-    window.RelayAvatars?.capture?.(root);
+    window.SummonAvatars?.capture?.(root);
     const layout = root.querySelector('.chat-layout'), panel = root.querySelector('.detail-panel');
     const snapshot = { rootKey: root.id || 'document', view: root.dataset?.viewKey, room: layout?.dataset.roomId, ready: layout?.dataset.ready, detailSection: panel?.dataset.section, accent: layout ? getComputedStyle(layout).getPropertyValue('--accent').trim() : null, panel: panel ? { rect: rect(panel), clone: ghostOf(panel), moving: panel.dataset.motionAnimating === 'true', closing: panel.hasAttribute('data-motion-ghost'), overlay: getComputedStyle(panel).position === 'absolute' } : null, menus: new Map(), items: new Map(), selection: new Map() };
     snapshot.searchOpen = !!root.querySelector('.search-slot.open');
@@ -141,7 +141,7 @@
     }
   }
   function hydrate(root, before = { menus: new Map(), items: new Map(), selection: new Map() }) {
-    window.RelayAvatars?.hydrate?.(root);
+    window.SummonAvatars?.hydrate?.(root);
     if (reduced.matches) return;
     if (!before.searchOpen) animate(root.querySelector('.search-slot.open'), [{ opacity: 0, transform: 'translateY(4px) scale(.94)' }, { opacity: 1, transform: 'none' }], 280);
     const currentMenus = new Set();
@@ -180,7 +180,7 @@
     const old = dialogRuns.get(dialog); old?.animation?.cancel();
     dialog.classList.remove('motion-closing');
     if (!dialog.open) dialog.showModal();
-    window.RelayAvatars?.hydrate?.(dialog);
+    window.SummonAvatars?.hydrate?.(dialog);
     dialog.classList.add('motion-opening');
     const animation = animate(dialog, [{ opacity: phone.matches ? 1 : 0, transform: phone.matches ? 'translateY(105%)' : 'translateY(32px) scale(.96)' }, { opacity: 1, transform: 'translateY(-3px) scale(1.003)', offset: .84 }, { opacity: 1, transform: 'none' }], phone.matches ? 480 : 390);
     const entry = { animation }; dialogRuns.set(dialog, entry);
@@ -243,5 +243,5 @@
     for (const entry of rings.values()) entry.node.remove();
     rings.clear();
   });
-  window.RelayMotion = { capture, hydrate, openDialog, closeDialog, captureNavigation, finishNavigation };
+  window.SummonMotion = { capture, hydrate, openDialog, closeDialog, captureNavigation, finishNavigation };
 })();

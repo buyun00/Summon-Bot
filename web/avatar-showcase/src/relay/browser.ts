@@ -16,7 +16,7 @@ class PaperAvatar {
   constructor(appearance:Appearance,size:number,motion:string){
     this.appearance=appearance;this.rig=new PaperRig(appearance.shape,motion);this.requested=motion
     const id=`paper-avatar-${++serial}`
-    this.svg=node('svg',{xmlns:ns,viewBox:'-105.333 -105.333 210.666 210.666',width:size,height:size,'aria-hidden':'true',class:'relay-bot-face',style:'display:block;flex:none;overflow:visible'})
+    this.svg=node('svg',{xmlns:ns,viewBox:'-105.333 -105.333 210.666 210.666',width:size,height:size,'aria-hidden':'true',class:'summon-bot-face',style:'display:block;flex:none;overflow:visible'})
     const defs=node('defs'),mask=node('mask',{id:`${id}-mask`,maskUnits:'userSpaceOnUse',x:-158,y:-158,width:316,height:316})
     this.maskBody=node('path',{fill:'#fff'});mask.append(this.maskBody)
     this.eyes=[node('path',{fill:'#000'}),node('path',{fill:'#000'})];mask.append(...this.eyes);defs.append(mask)
@@ -85,7 +85,7 @@ const reduced=matchMedia('(prefers-reduced-motion: reduce)')
 let raf=0,last=0,drawn=0
 function render(value={},size=40,options:{key?:string;state?:string;static?:boolean;preview?:boolean;intro?:boolean}={}){
   const appearance=normalizePaperAvatar(value),dimension=Math.max(8,Math.min(512,Number(size)||40))
-  if(appearance.image)return `<img class="relay-bot-face" src="${appearance.image}" width="${dimension}" height="${dimension}" alt="" style="object-fit:cover;border-radius:22%;flex:none">`
+  if(appearance.image)return `<img class="summon-bot-face" src="${appearance.image}" width="${dimension}" height="${dimension}" alt="" style="object-fit:cover;border-radius:22%;flex:none">`
   const item=new PaperAvatar(appearance,dimension,options.state||'idle')
   item.svg.dataset.paperAvatar=JSON.stringify(appearance);item.svg.dataset.avatarKey=options.key||'';item.svg.dataset.paperState=options.state||'idle';item.svg.dataset.paperStatic=String(Boolean(options.static||!options.key))
   item.svg.dataset.paperPreview=String(Boolean(options.preview));item.svg.dataset.paperIntro=String(Boolean(options.intro))
@@ -121,4 +121,4 @@ function wake(){if(!raf&&!document.hidden&&!reduced.matches){last=0;drawn=0;raf=
 document.addEventListener('visibilitychange',wake);document.addEventListener('scroll',wake,true);reduced.addEventListener('change',()=>{if(reduced.matches&&raf){cancelAnimationFrame(raf);raf=0}else wake()})
 function greet(root:ParentNode){for(const svg of root.querySelectorAll<SVGElement>('[data-avatar-key]'))instances.get(svg.dataset.avatarKey||'')?.greet();wake()}
 function release(key:string){instances.delete(key)}
-Object.assign(window,{RelayAvatars:Object.freeze({shapes:paperShapes,colors:paperTemplates.map(item=>item.color),templates:paperTemplates,normalize:normalizePaperAvatar,defaults:defaultPaperAvatar,render,hydrate,greet,release,capture(){},states:Object.keys(motions)})})
+Object.assign(window,{SummonAvatars:Object.freeze({shapes:paperShapes,colors:paperTemplates.map(item=>item.color),templates:paperTemplates,normalize:normalizePaperAvatar,defaults:defaultPaperAvatar,render,hydrate,greet,release,capture(){},states:Object.keys(motions)})})

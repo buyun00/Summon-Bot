@@ -44,19 +44,19 @@ import java.io.ByteArrayOutputStream
 import kotlin.math.max
 
 @Composable
-fun BotDetailsScreen(store: RelayStore, botID: String, onBack: () -> Unit) {
+fun BotDetailsScreen(store: SummonStore, botID: String, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     val bot = store.bots.firstOrNull { it.id == botID }
     var name by remember { mutableStateOf(bot?.name.orEmpty()) }
     var role by remember { mutableStateOf(bot?.role.orEmpty()) }
     var expertise by remember { mutableStateOf(bot?.expertise.orEmpty()) }
     var prompt by remember { mutableStateOf(bot?.prompt.orEmpty()) }
-    var avatar by remember { mutableStateOf(bot?.avatar ?: RelayAvatar.defaultFor(botID)) }
+    var avatar by remember { mutableStateOf(bot?.avatar ?: SummonAvatar.defaultFor(botID)) }
     var busy by remember { mutableStateOf(false) }
     var saved by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    var memories by remember { mutableStateOf<List<RelayJson>>(emptyList()) }
-    var editing by remember { mutableStateOf<RelayJson?>(null) }
+    var memories by remember { mutableStateOf<List<SummonJson>>(emptyList()) }
+    var editing by remember { mutableStateOf<SummonJson?>(null) }
     var showEditor by remember { mutableStateOf(false) }
     var showAvatar by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -68,9 +68,9 @@ fun BotDetailsScreen(store: RelayStore, botID: String, onBack: () -> Unit) {
     LaunchedEffect(botID) {
         bot?.let {
             name = it.name; role = it.role; expertise = it.expertise; prompt = it.prompt
-            avatar = it.avatar ?: RelayAvatar.defaultFor(it.id)
+            avatar = it.avatar ?: SummonAvatar.defaultFor(it.id)
         }
-        try { memories = store.request("/api/bots/${RelayApiClient.component(botID)}/memories")["memories"].array.orEmpty() }
+        try { memories = store.request("/api/bots/${SummonApiClient.component(botID)}/memories")["memories"].array.orEmpty() }
         catch (exception: Exception) { error = exception.message }
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -122,15 +122,15 @@ fun BotDetailsScreen(store: RelayStore, botID: String, onBack: () -> Unit) {
     if (showEditor) MemoryEditor(store, botID, editing) {
         showEditor = false
         scope.launch {
-            try { memories = store.request("/api/bots/${RelayApiClient.component(botID)}/memories")["memories"].array.orEmpty() }
+            try { memories = store.request("/api/bots/${SummonApiClient.component(botID)}/memories")["memories"].array.orEmpty() }
             catch (exception: Exception) { error = exception.message }
         }
     }
 }
 
-private fun avatarFromUri(context: android.content.Context, uri: Uri): RelayAvatar {
-    val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: throw RelayApiException.invalidResponse
-    val source = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: throw RelayApiException.invalidResponse
+private fun avatarFromUri(context: android.content.Context, uri: Uri): SummonAvatar {
+    val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: throw SummonApiException.invalidResponse
+    val source = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: throw SummonApiException.invalidResponse
     val ratio = minOf(1f, 256f / max(source.width, source.height))
     val width = max(1, (source.width * ratio).toInt())
     val height = max(1, (source.height * ratio).toInt())
@@ -138,12 +138,12 @@ private fun avatarFromUri(context: android.content.Context, uri: Uri): RelayAvat
     val stream = ByteArrayOutputStream()
     scaled.compress(Bitmap.CompressFormat.PNG, 100, stream)
     val encoded = android.util.Base64.encodeToString(stream.toByteArray(), android.util.Base64.NO_WRAP)
-    if (encoded.length > 390_000) throw RelayApiException("图片缩放后仍然过大，请选择较小的图片。")
-    return RelayAvatar(image = "data:image/png;base64,$encoded")
+    if (encoded.length > 390_000) throw SummonApiException("图片缩放后仍然过大，请选择较小的图片。")
+    return SummonAvatar(image = "data:image/png;base64,$encoded")
 }
 
 @Composable
-private fun MemoryEditor(store: RelayStore, botID: String, memory: RelayJson?, onDismiss: () -> Unit) {
+private fun MemoryEditor(store: SummonStore, botID: String, memory: SummonJson?, onDismiss: () -> Unit) {
     val scope = rememberCoroutineScope()
     var content by remember { mutableStateOf(memory?.get("content")?.string ?: memory?.get("text")?.string.orEmpty()) }
     var status by remember { mutableStateOf(memory?.get("status")?.string ?: "active") }
@@ -170,15 +170,15 @@ private fun MemoryEditor(store: RelayStore, botID: String, memory: RelayJson?, o
                 scope.launch {
                     busy = true
                     val id = memory?.get("id")?.string
-                    val body = buildMap<String, RelayJson> {
-                        put("content", RelayJson.Str(content))
-                        put("status", RelayJson.Str(status))
-                        put("category", RelayJson.Str(category))
-                        memory?.get("revision")?.int?.let { put("expectedRevision", RelayJson.Num(it.toDouble())) }
+                    val body = buildMap<String, SummonJson> {
+                        put("content", SummonJson.Str(content))
+                        put("status", SummonJson.Str(status))
+                        put("category", SummonJson.Str(category))
+                        memory?.get("revision")?.int?.let { put("expectedRevision", SummonJson.Num(it.toDouble())) }
                     }
-                    val path = id?.let { "/api/memories/${RelayApiClient.component(it)}" } ?: "/api/bots/${RelayApiClient.component(botID)}/memories"
+                    val path = id?.let { "/api/memories/${SummonApiClient.component(it)}" } ?: "/api/bots/${SummonApiClient.component(botID)}/memories"
                     try {
-                        store.request(path, if (id == null) "POST" else "PATCH", RelayJson.Obj(body))
+                        store.request(path, if (id == null) "POST" else "PATCH", SummonJson.Obj(body))
                         onDismiss()
                     } catch (exception: Exception) { error = exception.message }
                     finally { busy = false }
@@ -190,7 +190,7 @@ private fun MemoryEditor(store: RelayStore, botID: String, memory: RelayJson?, o
 }
 
 @Composable
-fun RoomDetailsScreen(store: RelayStore, roomID: String, onBack: () -> Unit) {
+fun RoomDetailsScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val room = store.rooms.firstOrNull { it.id == roomID }
@@ -255,7 +255,7 @@ fun RoomDetailsScreen(store: RelayStore, roomID: String, onBack: () -> Unit) {
                 scope.launch {
                     busy = true
                     try {
-                        store.request("/api/rooms/${RelayApiClient.component(roomID)}/conclude", "POST", RelayJson.Obj(emptyMap()))
+                        store.request("/api/rooms/${SummonApiClient.component(roomID)}/conclude", "POST", SummonJson.Obj(emptyMap()))
                         store.refresh(); onBack()
                     } catch (exception: Exception) { error = exception.message }
                     finally { busy = false }

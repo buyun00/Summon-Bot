@@ -13,49 +13,49 @@ import java.net.URI
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
-class RelayApiException(message: String) : Exception(message) {
+class SummonApiException(message: String) : Exception(message) {
     companion object {
-        val invalidURL = RelayApiException("请输入完整的 Relay 服务地址，例如 https://relay.example.com。")
-        val noConnection = RelayApiException("请先在设置中连接 Relay 服务。")
-        val invalidResponse = RelayApiException("服务返回了无法读取的内容，请确认地址指向 Relay 服务。")
-        val invalidReceipt = RelayApiException("消息尚未确认送达，请手动重试确认。")
-        val attachmentTooLarge = RelayApiException("附件不能超过 20 MB。")
-        val tooManyAttachments = RelayApiException("每条消息最多附加 8 个文件。")
-        val emptyMessage = RelayApiException("请输入消息或添加附件。")
+        val invalidURL = SummonApiException("请输入完整的 Summon Bot 服务地址，例如 https://summon.example.com。")
+        val noConnection = SummonApiException("请先在设置中连接 Summon Bot 服务。")
+        val invalidResponse = SummonApiException("服务返回了无法读取的内容，请确认地址指向 Summon Bot 服务。")
+        val invalidReceipt = SummonApiException("消息尚未确认送达，请手动重试确认。")
+        val attachmentTooLarge = SummonApiException("附件不能超过 20 MB。")
+        val tooManyAttachments = SummonApiException("每条消息最多附加 8 个文件。")
+        val emptyMessage = SummonApiException("请输入消息或添加附件。")
 
-        fun http(status: Int, message: String): RelayApiException =
-            RelayApiException(if (message.isEmpty()) "请求失败（$status）" else message)
+        fun http(status: Int, message: String): SummonApiException =
+            SummonApiException(if (message.isEmpty()) "请求失败（$status）" else message)
     }
 }
 
-class RelayApiClient(val baseURL: URI, private val token: String) {
+class SummonApiClient(val baseURL: URI, private val token: String) {
     private val http = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
         .callTimeout(180, TimeUnit.SECONDS)
         .build()
 
-    fun requestJson(path: String, method: String = "GET", body: RelayJson? = null): RelayJson {
+    fun requestJson(path: String, method: String = "GET", body: SummonJson? = null): SummonJson {
         val (responseBody, code) = execute(path, method, body, "application/json")
         if (code !in 200..299) {
-            val error = runCatching { RelayJson.parse(responseBody) }.getOrNull()
-            throw RelayApiException.http(code, error?.get("error")?.stringValue.orEmpty())
+            val error = runCatching { SummonJson.parse(responseBody) }.getOrNull()
+            throw SummonApiException.http(code, error?.get("error")?.stringValue.orEmpty())
         }
         return try {
-            RelayJson.parse(responseBody)
+            SummonJson.parse(responseBody)
         } catch (_: Exception) {
-            throw RelayApiException.invalidResponse
+            throw SummonApiException.invalidResponse
         }
     }
 
-    fun upload(data: ByteArray, name: String, mimeType: String): RelayAttachment {
-        if (data.size > 20 * 1024 * 1024) throw RelayApiException.attachmentTooLarge
-        val body = RelayJson.obj(
-            "name" to RelayJson.Str(name),
-            "mimeType" to RelayJson.Str(mimeType),
-            "data" to RelayJson.Str(android.util.Base64.encodeToString(data, android.util.Base64.NO_WRAP)),
+    fun upload(data: ByteArray, name: String, mimeType: String): SummonAttachment {
+        if (data.size > 20 * 1024 * 1024) throw SummonApiException.attachmentTooLarge
+        val body = SummonJson.obj(
+            "name" to SummonJson.Str(name),
+            "mimeType" to SummonJson.Str(mimeType),
+            "data" to SummonJson.Str(android.util.Base64.encodeToString(data, android.util.Base64.NO_WRAP)),
         )
-        return RelayAttachment.parse(requestJson("/api/attachments", "POST", body))
+        return SummonAttachment.parse(requestJson("/api/attachments", "POST", body))
     }
 
     fun bytes(path: String): ByteArray {
@@ -63,8 +63,8 @@ class RelayApiClient(val baseURL: URI, private val token: String) {
         http.newCall(request).execute().use { response ->
             val payload = response.body?.bytes() ?: ByteArray(0)
             if (!response.isSuccessful) {
-                val error = runCatching { RelayJson.parse(payload.toString(Charsets.UTF_8)) }.getOrNull()
-                throw RelayApiException.http(response.code, error?.get("error")?.stringValue.orEmpty())
+                val error = runCatching { SummonJson.parse(payload.toString(Charsets.UTF_8)) }.getOrNull()
+                throw SummonApiException.http(response.code, error?.get("error")?.stringValue.orEmpty())
             }
             return payload
         }
@@ -75,15 +75,15 @@ class RelayApiClient(val baseURL: URI, private val token: String) {
         http.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
                 val payload = response.body?.string().orEmpty()
-                val error = runCatching { RelayJson.parse(payload) }.getOrNull()
-                throw RelayApiException.http(response.code, error?.get("error")?.stringValue.orEmpty())
+                val error = runCatching { SummonJson.parse(payload) }.getOrNull()
+                throw SummonApiException.http(response.code, error?.get("error")?.stringValue.orEmpty())
             }
-            val root = File(context.cacheDir, "RelayDownloads/${UUID.randomUUID()}").apply { mkdirs() }
+            val root = File(context.cacheDir, "SummonDownloads/${UUID.randomUUID()}").apply { mkdirs() }
             val safe = name.replace(Regex("""[/\\]"""), "_").replace(Regex("""[\u0000-\u001F]"""), "")
             val fileName = if (safe.isEmpty() || safe == "." || safe == "..") "附件" else safe
             val file = File(root, fileName)
             response.body?.byteStream()?.use { input -> file.outputStream().use { input.copyTo(it) } }
-                ?: throw RelayApiException.invalidResponse
+                ?: throw SummonApiException.invalidResponse
             return file
         }
     }
@@ -99,15 +99,15 @@ class RelayApiClient(val baseURL: URI, private val token: String) {
         return client.newCall(request)
     }
 
-    private fun execute(path: String, method: String, body: RelayJson?, accept: String): Pair<String, Int> {
+    private fun execute(path: String, method: String, body: SummonJson?, accept: String): Pair<String, Int> {
         val request = build(path, method, body, accept)
         http.newCall(request).execute().use { response ->
             return (response.body?.string().orEmpty()) to response.code
         }
     }
 
-    private fun build(path: String, method: String, body: RelayJson?, accept: String): Request {
-        if (!path.startsWith("/api/") || path.contains("\\")) throw RelayApiException.invalidURL
+    private fun build(path: String, method: String, body: SummonJson?, accept: String): Request {
+        if (!path.startsWith("/api/") || path.contains("\\")) throw SummonApiException.invalidURL
         val url = baseURL.toString().trimEnd('/') + path
         val builder = Request.Builder().url(url).header("Accept", accept)
         if (token.isNotEmpty()) builder.header("Authorization", "Bearer $token")
@@ -122,14 +122,14 @@ class RelayApiClient(val baseURL: URI, private val token: String) {
             val uri = try {
                 URI(cleaned)
             } catch (_: Exception) {
-                throw RelayApiException.invalidURL
+                throw SummonApiException.invalidURL
             }
             val scheme = uri.scheme?.lowercase()
-            if (scheme != "https" && scheme != "http") throw RelayApiException.invalidURL
+            if (scheme != "https" && scheme != "http") throw SummonApiException.invalidURL
             if (uri.host.isNullOrEmpty() || uri.userInfo != null || uri.rawQuery != null || uri.rawFragment != null) {
-                throw RelayApiException.invalidURL
+                throw SummonApiException.invalidURL
             }
-            if (scheme == "http" && !allowsLocalHttp(uri.host)) throw RelayApiException.invalidURL
+            if (scheme == "http" && !allowsLocalHttp(uri.host)) throw SummonApiException.invalidURL
             var path = uri.rawPath ?: ""
             while (path.endsWith("/")) path = path.dropLast(1)
             return URI(scheme, uri.userInfo, uri.host, uri.port, path, null, null)
@@ -155,18 +155,18 @@ class RelayApiClient(val baseURL: URI, private val token: String) {
     }
 }
 
-class RelayEventStream(private val client: RelayApiClient) {
-    suspend fun consume(receive: suspend (RelayStreamEvent) -> Unit) {
+class SummonEventStream(private val client: SummonApiClient) {
+    suspend fun consume(receive: suspend (SummonStreamEvent) -> Unit) {
         val call = client.streamCall()
         try {
             val response = call.execute()
             response.use {
                 val type = it.header("Content-Type")?.lowercase().orEmpty()
                 if (!it.isSuccessful || !type.startsWith("text/event-stream")) {
-                    throw RelayApiException.http(it.code, "实时连接失败（${it.code}）")
+                    throw SummonApiException.http(it.code, "实时连接失败（${it.code}）")
                 }
-                val parser = RelaySseParser()
-                val stream = it.body?.byteStream() ?: throw RelayApiException.invalidResponse
+                val parser = SummonSseParser()
+                val stream = it.body?.byteStream() ?: throw SummonApiException.invalidResponse
                 val buffer = ByteArray(8192)
                 while (true) {
                     kotlinx.coroutines.yield()
@@ -184,13 +184,13 @@ class RelayEventStream(private val client: RelayApiClient) {
     }
 }
 
-sealed class RelayStreamEvent {
-    data object Connected : RelayStreamEvent()
-    data object KeepAlive : RelayStreamEvent()
-    data class Change(val type: String?, val roomID: String?, val botID: String?) : RelayStreamEvent()
+sealed class SummonStreamEvent {
+    data object Connected : SummonStreamEvent()
+    data object KeepAlive : SummonStreamEvent()
+    data class Change(val type: String?, val roomID: String?, val botID: String?) : SummonStreamEvent()
 }
 
-private class RelaySseParser {
+private class SummonSseParser {
     private val line = ArrayList<Byte>(256)
     private val dataLines = ArrayList<String>()
     private var dataBytes = 0
@@ -199,7 +199,7 @@ private class RelaySseParser {
     private var previousWasCR = false
     private var firstLine = true
 
-    fun append(byte: Int): RelayStreamEvent? {
+    fun append(byte: Int): SummonStreamEvent? {
         val value = byte and 0xFF
         if (previousWasCR) {
             previousWasCR = false
@@ -220,7 +220,7 @@ private class RelaySseParser {
         return null
     }
 
-    private fun consumeLine(value: String): RelayStreamEvent? {
+    private fun consumeLine(value: String): SummonStreamEvent? {
         if (value.isEmpty()) {
             val lines = dataLines.toList()
             val comment = hasComment
@@ -229,12 +229,12 @@ private class RelaySseParser {
             dataBytes = 0
             eventName = null
             hasComment = false
-            if (lines.isEmpty()) return if (comment) RelayStreamEvent.KeepAlive else null
-            val payload = runCatching { RelayJson.parse(lines.joinToString("\n")) }.getOrNull()
+            if (lines.isEmpty()) return if (comment) SummonStreamEvent.KeepAlive else null
+            val payload = runCatching { SummonJson.parse(lines.joinToString("\n")) }.getOrNull()
             val type = payload?.get("type")?.string ?: name
-            if (type == "connected") return RelayStreamEvent.Connected
+            if (type == "connected") return SummonStreamEvent.Connected
             val roomID = payload?.get("roomId")?.string ?: if (type == "room") payload?.get("id")?.string else null
-            return RelayStreamEvent.Change(type, roomID, payload?.get("botId")?.string)
+            return SummonStreamEvent.Change(type, roomID, payload?.get("botId")?.string)
         }
         if (value.startsWith(":")) {
             hasComment = true
@@ -262,8 +262,8 @@ private class RelaySseParser {
     }
 }
 
-object RelayKeystore {
-    private const val fileName = "relay_connection_tokens"
+object SummonKeystore {
+    private const val fileName = "summon_connection_tokens"
 
     fun token(context: Context, endpoint: String): String =
         runCatching { prefs(context).getString(endpoint, "").orEmpty() }.getOrDefault("")
@@ -271,7 +271,7 @@ object RelayKeystore {
     fun save(context: Context, token: String, endpoint: String) {
         val editor = prefs(context).edit()
         if (token.isEmpty()) editor.remove(endpoint) else editor.putString(endpoint, token)
-        if (!editor.commit()) throw RelayApiException("无法保存连接凭据，请在设备解锁后重试。")
+        if (!editor.commit()) throw SummonApiException("无法保存连接凭据，请在设备解锁后重试。")
     }
 
     private fun prefs(context: Context) = EncryptedSharedPreferences.create(

@@ -13,7 +13,7 @@ import type fr from './fr'
 const zh: typeof fr = {
   app: {
     name: 'bloub',
-    title: 'Relay · 纸片头像 · Bloub',
+    title: 'Summon Bot · 纸片头像 · Bloub',
     botAria: 'bloub 动画头像'
   },
 

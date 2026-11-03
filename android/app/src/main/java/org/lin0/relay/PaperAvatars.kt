@@ -43,9 +43,9 @@ private data class PaperLook(val points: FloatArray, val colors: List<Color>) {
             val commands=PaperLibrary.data(context).getJSONObject("characters").getJSONObject(PaperLibrary.role(shape)).getJSONArray("body")
             val values=mutableListOf<Float>()
             for(i in 0 until commands.length()){val row=commands.getJSONArray(i);for(j in 1 until row.length())values.add(row.getDouble(j).toFloat())}
-            val pigment=relayColor(PaperLibrary.paperColor(context,color,shape));val legacy=shape !in PaperLibrary.ids
+            val pigment=summonColor(PaperLibrary.paperColor(context,color,shape));val legacy=shape !in PaperLibrary.ids
             val light=pigment.red*.2126f+pigment.green*.7152f+pigment.blue*.0722f
-            return PaperLook(values.toFloatArray(),listOf(pigment,relayColor(if(legacy)"#E6DDC8" else secondary ?: "#E6DDC8"),relayColor(if(legacy)"#414A3C" else ink ?: "#414A3C"),relayColor(if(light>.69f)"#485346" else if(legacy)"#FFFBF0" else paper ?: "#FFFBF0")))
+            return PaperLook(values.toFloatArray(),listOf(pigment,summonColor(if(legacy)"#E6DDC8" else secondary ?: "#E6DDC8"),summonColor(if(legacy)"#414A3C" else ink ?: "#414A3C"),summonColor(if(light>.69f)"#485346" else if(legacy)"#FFFBF0" else paper ?: "#FFFBF0")))
         }
     }
 }

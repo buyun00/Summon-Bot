@@ -10,7 +10,7 @@ import { readJson } from '../scripts/build/files.mjs';
 // A real child owns the same OS identity protocol as a service. Its identity
 // listener can become temporarily busy without fabricating a stopped result.
 async function startupFixture(t, mode) {
-  const root = await mkdtemp(join(tmpdir(), 'relay-startup-handshake-'));
+  const root = await mkdtemp(join(tmpdir(), 'summon-startup-handshake-'));
   const dataRoot = join(root, 'data'), releaseRoot = join(root, 'release');
   await mkdir(join(releaseRoot, 'scripts', 'installation'), { recursive: true });
   const { config } = await initializeDeployment({ dataRoot, releaseRoot, port: 0 });
@@ -25,8 +25,8 @@ async function startupFixture(t, mode) {
     const mode = ${JSON.stringify(mode)}, sockets = new Set(); let requests = 0;
     appendFileSync(join(config.dataRoot, 'spawn-count.txt'), process.pid + '\\n');
     const root = await realpath(config.dataRoot), key = createHash('sha256').update((process.platform === 'win32' ? root.toLowerCase() : root) + ':gateway').digest('hex').slice(0, 40);
-    const endpoint = process.platform === 'win32' ? '\\\\\\\\.\\\\pipe\\\\relay-service-' + key : process.platform === 'linux' ? '\\0relay-service-' + key : {host:'127.0.0.1',port:30000+parseInt(key.slice(0,8),16)%25000};
-    const record = {protocol:'relay-service-v1',type:'gateway',pid:process.pid,bootId:randomUUID(),state:'ready',releaseRoot:config.releaseRoot};
+    const endpoint = process.platform === 'win32' ? '\\\\\\\\.\\\\pipe\\\\summon-service-' + key : process.platform === 'linux' ? '\\0summon-service-' + key : {host:'127.0.0.1',port:30000+parseInt(key.slice(0,8),16)%25000};
+    const record = {protocol:'summon-service-v1',type:'gateway',pid:process.pid,bootId:randomUUID(),state:'ready',releaseRoot:config.releaseRoot};
     const control = http.createServer((request, response) => {
       response.setHeader('Content-Type', 'application/json');
       if (request.url === '/shutdown') {
@@ -66,13 +66,13 @@ async function startupFixture(t, mode) {
 }
 
 test('service OS lock excludes a second owner and vanishes on close',async t=>{
-  const root=await mkdtemp(join(tmpdir(),'relay-service-lock-'));t.after(()=>rm(root,{recursive:true,force:true}));
+  const root=await mkdtemp(join(tmpdir(),'summon-service-lock-'));t.after(()=>rm(root,{recursive:true,force:true}));
   const lock=await acquireServiceLock(root,'gateway',()=>({pid:process.pid,bootId:'test',state:'starting'}));
   try{assert.equal((await inspectServiceLock(root,'gateway')).bootId,'test');await assert.rejects(acquireServiceLock(root,'gateway',()=>({})));}finally{await lock.close();}
   assert.equal(await inspectServiceLock(root,'gateway'),null);
 });
 test('installed service chain runs in other cwd, persists gateway address, and Web stop leaves gateway alive', {timeout:60000},async t=>{
-  const root=await mkdtemp(join(tmpdir(),'relay-service-chain-'));let config;
+  const root=await mkdtemp(join(tmpdir(),'summon-service-chain-'));let config;
   t.after(async()=>{if(config)await stopSystem(config);await rm(root,{recursive:true,force:true});});
   ({config}=await initializeDeployment({dataRoot:root,releaseRoot:resolve('.'),port:0}));
   const foregroundConfig = config;

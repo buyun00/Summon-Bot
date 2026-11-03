@@ -11,7 +11,7 @@ const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const buildRoot = join(sourceRoot, '.relay/client-builds');
 const { options, positional } = parseArgs(process.argv.slice(2));
 const command = positional[0] || 'help';
-const dataRoot = resolve(options['data-root'] || process.env.RELAY_DATA_ROOT || (process.platform === 'win32' ? 'D:/Relay-Bot-data' : join(sourceRoot, '../Relay-Bot-data')));
+const dataRoot = resolve(options['data-root'] || process.env.SUMMON_DATA_ROOT || (process.platform === 'win32' ? 'D:/Relay-Bot-data' : join(sourceRoot, '../Relay-Bot-data')));
 const appRoot = resolve(options['app-root'] || (process.platform === 'win32' ? 'D:/Relay-Bot-app' : join(sourceRoot, '../Relay-Bot-app')));
 const repositoryRoot = join(dataRoot, 'client-releases');
 
@@ -111,17 +111,17 @@ async function androidEnvironment() {
     signing.keyPassword = signing.storePassword;
     if (existsSync(signing.keystore)) throw new Error('Android signing credential missing beside the existing keystore');
     await run(keytool, ['-genkeypair', '-keystore', signing.keystore, '-storetype', 'PKCS12', '-alias', signing.alias,
-      '-storepass:env', 'RELAY_ANDROID_STORE_PASSWORD', '-keypass:env', 'RELAY_ANDROID_KEY_PASSWORD',
+      '-storepass:env', 'SUMMON_ANDROID_STORE_PASSWORD', '-keypass:env', 'SUMMON_ANDROID_KEY_PASSWORD',
       '-keyalg', 'RSA', '-keysize', '3072', '-validity', '10000', '-dname', 'CN=Relay, O=Relay'],
-      { env: { ...process.env, RELAY_ANDROID_STORE_PASSWORD: signing.storePassword, RELAY_ANDROID_KEY_PASSWORD: signing.keyPassword } });
+      { env: { ...process.env, SUMMON_ANDROID_STORE_PASSWORD: signing.storePassword, SUMMON_ANDROID_KEY_PASSWORD: signing.keyPassword } });
     await writeJson(signingPath, signing);
   }
   const signing = await readJson(signingPath);
   const sdk = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT
     || (process.platform === 'win32' ? join(process.env.LOCALAPPDATA, 'Android/Sdk') : '');
   return { java, env: { ...process.env, ...(javaHome ? { JAVA_HOME: javaHome } : {}), ...(sdk ? { ANDROID_HOME: sdk, ANDROID_SDK_ROOT: sdk } : {}),
-    RELAY_ANDROID_KEYSTORE: signing.keystore, RELAY_ANDROID_KEY_ALIAS: signing.alias,
-    RELAY_ANDROID_STORE_PASSWORD: signing.storePassword, RELAY_ANDROID_KEY_PASSWORD: signing.keyPassword } };
+    SUMMON_ANDROID_KEYSTORE: signing.keystore, SUMMON_ANDROID_KEY_ALIAS: signing.alias,
+    SUMMON_ANDROID_STORE_PASSWORD: signing.storePassword, SUMMON_ANDROID_KEY_PASSWORD: signing.keyPassword } };
 }
 async function buildAndroid() {
   const { java, env } = await androidEnvironment();
@@ -129,23 +129,23 @@ async function buildAndroid() {
     '--no-daemon', '--console=plain', 'assembleRelease'], { cwd: join(sourceRoot, 'android'), env });
   const output = await outputDirectory('android-universal');
   const release = await readJson(join(sourceRoot, 'release.json'));
-  await copyFile(join(sourceRoot, 'android/app/build/outputs/apk/release/app-release.apk'), join(output, `Relay-${release.version}-android.apk`));
+  await copyFile(join(sourceRoot, 'android/app/build/outputs/apk/release/app-release.apk'), join(output, `Summon-Bot-${release.version}-android.apk`));
   await describeBuild(output, 'android', 'universal');
   if (options.publish || command === 'all') {
     await publish(output);
     if (!options['keep-build-cache']) for (const path of ['android/app/build', 'android/build', 'android/.kotlin']) await removeInside(sourceRoot, join(sourceRoot, path));
-    await removeInside(appRoot, join(appRoot, 'Relay-Android.apk'));
+    await removeInside(appRoot, join(appRoot, 'Summon-Bot-Android.apk'));
   } else console.log(JSON.stringify({ built: true, platform: 'android', output }));
 }
 async function buildIos() {
   if (process.platform !== 'darwin') throw new Error('iOS archives must be built on Mac with Xcode');
   const release = await readJson(join(sourceRoot, 'release.json'));
   const output = await outputDirectory('ios');
-  const archive = join(output, 'Relay.xcarchive');
-  await run('xcodebuild', ['-project', join(sourceRoot, 'ios/Relay.xcodeproj'), '-scheme', 'Relay', '-configuration', 'Release',
+  const archive = join(output, 'Summon Bot.xcarchive');
+  await run('xcodebuild', ['-project', join(sourceRoot, 'ios/Relay.xcodeproj'), '-scheme', 'SummonBot', '-configuration', 'Release',
     '-destination', 'generic/platform=iOS', '-archivePath', archive, '-derivedDataPath', join(output, 'DerivedData'),
     '-allowProvisioningUpdates', `MARKETING_VERSION=${release.version}`, `CURRENT_PROJECT_VERSION=${release.buildNumber}`,
-    ...(process.env.RELAY_APPLE_TEAM_ID ? [`DEVELOPMENT_TEAM=${process.env.RELAY_APPLE_TEAM_ID}`] : []), 'archive']);
+    ...(process.env.SUMMON_APPLE_TEAM_ID ? [`DEVELOPMENT_TEAM=${process.env.SUMMON_APPLE_TEAM_ID}`] : []), 'archive']);
   await removeInside(output, join(output, 'DerivedData'));
   if (options['export-options']) await run('xcodebuild', ['-exportArchive', '-archivePath', archive,
     '-exportPath', join(output, 'export'), '-exportOptionsPlist', resolve(options['export-options']), '-allowProvisioningUpdates']);
@@ -187,7 +187,7 @@ async function setVersion() {
   console.log(JSON.stringify(release));
 }
 async function main() {
-  if (command === 'help') { console.log('Relay release: version | web | desktop | android | ios | publish --input DIR | all; --publish; --server HTTPS_ORIGIN --token-file PATH'); return; }
+  if (command === 'help') { console.log('Summon Bot release: version | web | desktop | android | ios | publish --input DIR | all; --publish; --server HTTPS_ORIGIN --token-file PATH'); return; }
   if (command === 'version') return setVersion();
   if (command === 'web') return deployWeb();
   if (command === 'desktop') return buildDesktop();
@@ -205,14 +205,14 @@ async function main() {
 
 // npm may run on the old global Node. The installer must not keep a removed
 // release's node.exe open, so execute on a temporary copy of the current runtime.
-if (process.platform === 'win32' && ['24.15.0', '25.8.0'].includes(process.versions.node) && !process.env.RELAY_RELEASE_RUNNER) {
+if (process.platform === 'win32' && ['24.15.0', '25.8.0'].includes(process.versions.node) && !process.env.SUMMON_RELEASE_RUNNER) {
   try {
     const current = await readJson(join(appRoot, 'current.json'));
     const runnerRoot = join(sourceRoot, `.relay/release-runner-${process.pid}`);
     await mkdir(runnerRoot, { recursive: true });
     const runner = join(runnerRoot, 'node.exe');
     await copyFile(join(current.releaseRoot, 'runtime/node.exe'), runner);
-    try { await run(runner, [fileURLToPath(import.meta.url), ...process.argv.slice(2)], { env: { ...process.env, RELAY_RELEASE_RUNNER: '1' } }); }
+    try { await run(runner, [fileURLToPath(import.meta.url), ...process.argv.slice(2)], { env: { ...process.env, SUMMON_RELEASE_RUNNER: '1' } }); }
     finally { await removeInside(join(sourceRoot, '.relay'), runnerRoot); }
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 } else main().catch(error => { console.error(error.message); process.exitCode = 1; });

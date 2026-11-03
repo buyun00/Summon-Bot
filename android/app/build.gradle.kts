@@ -6,7 +6,7 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-val relayRelease = JsonSlurper().parse(rootProject.file("../release.json")) as Map<*, *>
+val summonRelease = JsonSlurper().parse(rootProject.file("../release.json")) as Map<*, *>
 
 android {
     namespace = "org.lin0.relay"
@@ -16,18 +16,18 @@ android {
         applicationId = "org.lin0.relay"
         minSdk = 26
         targetSdk = 35
-        versionCode = (relayRelease["buildNumber"] as Number).toInt()
-        versionName = relayRelease["version"] as String
-        buildConfigField("String", "RELAY_UPDATE_URL", "\"${relayRelease["appUrl"]}/api/releases/android/universal/latest.json\"")
+        versionCode = (summonRelease["buildNumber"] as Number).toInt()
+        versionName = summonRelease["version"] as String
+        buildConfigField("String", "SUMMON_UPDATE_URL", "\"${summonRelease["appUrl"]}/api/releases/android/universal/latest.json\"")
     }
 
     signingConfigs {
-        if (!System.getenv("RELAY_ANDROID_KEYSTORE").isNullOrBlank()) {
+        if (!System.getenv("SUMMON_ANDROID_KEYSTORE").isNullOrBlank()) {
             create("release") {
-                storeFile = file(System.getenv("RELAY_ANDROID_KEYSTORE"))
-                storePassword = System.getenv("RELAY_ANDROID_STORE_PASSWORD")
-                keyAlias = System.getenv("RELAY_ANDROID_KEY_ALIAS")
-                keyPassword = System.getenv("RELAY_ANDROID_KEY_PASSWORD")
+                storeFile = file(System.getenv("SUMMON_ANDROID_KEYSTORE"))
+                storePassword = System.getenv("SUMMON_ANDROID_STORE_PASSWORD")
+                keyAlias = System.getenv("SUMMON_ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("SUMMON_ANDROID_KEY_PASSWORD")
             }
         }
     }

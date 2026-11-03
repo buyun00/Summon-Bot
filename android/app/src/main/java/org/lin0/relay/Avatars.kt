@@ -28,7 +28,7 @@ import kotlin.math.*
 import androidx.compose.animation.core.*
 import androidx.compose.ui.graphics.graphicsLayer
 
-fun relayColor(hex: String): Color {
+fun summonColor(hex: String): Color {
     val digits = hex.trim().removePrefix("#")
     val rgb = digits.toLongOrNull(16)?.takeIf { digits.length == 6 } ?: 0x8F59F9
     return Color(
@@ -89,15 +89,15 @@ fun LegacyCrewBotAvatar(shape:String,color:String,image:String?=null,size:Dp=48.
 }
 
 @Composable
-fun MemberAvatar(bot:RelayBot?,size:Dp=48.dp,modifier:Modifier=Modifier,motion:String="idle",groupOutline:Boolean=false) {
-    val a=bot?.resolvedAvatar ?: RelayAvatar()
+fun MemberAvatar(bot:SummonBot?,size:Dp=48.dp,modifier:Modifier=Modifier,motion:String="idle",groupOutline:Boolean=false) {
+    val a=bot?.resolvedAvatar ?: SummonAvatar()
     BotAvatar(a.shape,a.color,a.image,size,modifier,a.secondary,a.ink,a.paper,motion,groupOutline=groupOutline)
 }
 
 
 
 @Composable
-fun RoomAvatar(room: RelayRoom, bots: List<RelayBot>, size: Dp = 86.dp) {
+fun RoomAvatar(room: SummonRoom, bots: List<SummonBot>, size: Dp = 86.dp) {
     val members = room.members.filter { id -> id == "user" || bots.any { it.id == id } }.take(4)
     Box(Modifier.size(size), contentAlignment = androidx.compose.ui.Alignment.Center) {
         if (members.isEmpty()) {
@@ -129,7 +129,7 @@ fun RoomAvatar(room: RelayRoom, bots: List<RelayBot>, size: Dp = 86.dp) {
 }
 
 @Composable
-fun BotWorkingIndicator(bot: RelayBot?, name: String?, status: String) {
+fun BotWorkingIndicator(bot: SummonBot?, name: String?, status: String) {
     androidx.compose.foundation.layout.Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
         MemberAvatar(bot,28.dp,motion="work")
         androidx.compose.foundation.layout.Spacer(Modifier.size(9.dp))

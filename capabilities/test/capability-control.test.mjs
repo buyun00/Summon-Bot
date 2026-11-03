@@ -17,7 +17,7 @@ const missing = () => Object.assign(new Error('Not found'), { status: 404 });
 const transient = () => Object.assign(new Error('Connection interrupted'), { status: 503, code: 'CONNECTION_RESET' });
 const custom = name => ({ type: 'http', name, description: name, effect: 'read', inputSchema: { type: 'object' }, url: `http://127.0.0.1:1/${name}`, headers: { Authorization: 'private-custom-secret' } });
 async function fixture(t, options = {}) {
-  const dir = await mkdtemp(join(tmpdir(), 'relay-capability-control-')); directories.push(dir);
+  const dir = await mkdtemp(join(tmpdir(), 'summon-capability-control-')); directories.push(dir);
   const directory = join(dir, 'bots', 'bot-one'); await mkdir(directory, { recursive: true });
   const configPath = join(directory, 'config.json');
   await writeFile(configPath, JSON.stringify({ botId: 'bot-one', dataDir: directory, prompt: 'original', tools: [custom('custom_read')], bundledToolNames: [] }));

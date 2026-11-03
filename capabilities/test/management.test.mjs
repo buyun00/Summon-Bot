@@ -9,7 +9,7 @@ import { MemoryManagement } from '../memory-management/service.mjs';
 import { BotStore } from '../../bot/src/storage/store.mjs';
 
 async function fixture(t) {
- const dataRoot=await mkdtemp(join(tmpdir(),'relay-capability-management-'));
+ const dataRoot=await mkdtemp(join(tmpdir(),'summon-capability-management-'));
  const store=new RecordStore(join(dataRoot,'management.sqlite')), mergeStore=new RecordStore(join(dataRoot,'merge.sqlite'));
  const manager=new BotManager({dataRoot,releaseRoot:resolve(import.meta.dirname,'../..'),store,defaultCwd:dataRoot,model:{provider:'openai-compatible',model:'test',baseUrl:'http://127.0.0.1:1/v1'},botApi:async()=>({BotStore,inspectBotIdentity:async()=>null})});
  const memory=new MemoryManagement({store:mergeStore,manager,dataRoot});

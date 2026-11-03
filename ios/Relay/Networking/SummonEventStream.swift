@@ -1,16 +1,16 @@
 import Foundation
 
-enum RelayStreamEvent: Sendable {
+enum SummonStreamEvent: Sendable {
     case connected
     case keepAlive
     case change(type: String?, roomID: String?, botID: String?)
 }
 
 /// SSE is a change notification. The server remains authoritative for the next full snapshot.
-struct RelayEventStream: Sendable {
-    let client: RelayAPIClient
+struct SummonEventStream: Sendable {
+    let client: SummonAPIClient
 
-    func consume(_ receive: @escaping @Sendable (RelayStreamEvent) async -> Void) async throws {
+    func consume(_ receive: @escaping @Sendable (SummonStreamEvent) async -> Void) async throws {
         var request = try client.makeRequest(path: "/api/stream")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
@@ -28,12 +28,12 @@ struct RelayEventStream: Sendable {
               (200..<300).contains(http.statusCode),
               http.value(forHTTPHeaderField: "Content-Type")?.lowercased().hasPrefix("text/event-stream") == true else {
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            throw RelayAPIError.http(status, "实时连接失败（\(status)）")
+            throw SummonAPIError.http(status, "实时连接失败（\(status)）")
         }
         // SSE uses blank lines as frame delimiters. Parse the bytes explicitly so
         // line adaptation cannot remove those delimiters or join separate events.
         // Receiving HTTP headers alone does not prove that the proxy is streaming.
-        var parser = RelaySSEParser()
+        var parser = SummonSSEParser()
         for try await byte in bytes {
             try Task.checkCancellation()
             if let event = try parser.append(byte) { await receive(event) }
@@ -43,7 +43,7 @@ struct RelayEventStream: Sendable {
     }
 }
 
-private struct RelaySSEParser {
+private struct SummonSSEParser {
     private var line: [UInt8] = []
     private var dataLines: [String] = []
     private var dataBytes = 0
@@ -52,7 +52,7 @@ private struct RelaySSEParser {
     private var previousWasCR = false
     private var firstLine = true
 
-    mutating func append(_ byte: UInt8) throws -> RelayStreamEvent? {
+    mutating func append(_ byte: UInt8) throws -> SummonStreamEvent? {
         if previousWasCR {
             previousWasCR = false
             if byte == 0x0A { return nil }
@@ -69,12 +69,12 @@ private struct RelaySSEParser {
         return nil
     }
 
-    private mutating func consumeLine(_ value: String) throws -> RelayStreamEvent? {
+    private mutating func consumeLine(_ value: String) throws -> SummonStreamEvent? {
         if value.isEmpty {
             defer { dataLines.removeAll(keepingCapacity: true); dataBytes = 0; eventName = nil; hasComment = false }
             guard !dataLines.isEmpty else { return hasComment ? .keepAlive : nil }
             let data = Data(dataLines.joined(separator: "\n").utf8)
-            let payload = try? JSONDecoder().decode(RelayJSONValue.self, from: data)
+            let payload = try? JSONDecoder().decode(SummonJSONValue.self, from: data)
             let type = payload?["type"].string ?? eventName
             if type == "connected" { return .connected }
             let roomID = payload?["roomId"].string ?? (type == "room" ? payload?["id"].string : nil)

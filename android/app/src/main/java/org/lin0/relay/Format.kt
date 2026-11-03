@@ -6,15 +6,15 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-fun parseRelayDate(value: String?): Instant? {
+fun parseSummonDate(value: String?): Instant? {
     if (value.isNullOrBlank()) return null
     return runCatching { java.time.OffsetDateTime.parse(value).toInstant() }
         .recoverCatching { Instant.parse(value) }
         .getOrNull()
 }
 
-fun formatRelayTime(value: String?): String {
-    val instant = parseRelayDate(value) ?: return ""
+fun formatSummonTime(value: String?): String {
+    val instant = parseSummonDate(value) ?: return ""
     val zoned = instant.atZone(ZoneId.systemDefault())
     val date = zoned.toLocalDate()
     val today = LocalDate.now()
@@ -25,8 +25,8 @@ fun formatRelayTime(value: String?): String {
     }
 }
 
-fun formatRelayDate(value: String?, full: Boolean = false): String {
-    val instant = parseRelayDate(value) ?: return value ?: "—"
+fun formatSummonDate(value: String?, full: Boolean = false): String {
+    val instant = parseSummonDate(value) ?: return value ?: "—"
     val zoned = instant.atZone(ZoneId.systemDefault())
     return if (full) {
         DateTimeFormatter.ofPattern("M月d日 HH:mm").format(zoned)
@@ -47,7 +47,7 @@ fun formatBytes(size: Int): String {
     return "$shown ${units[index]}"
 }
 
-fun relayStatus(value: String): String = mapOf(
+fun summonStatus(value: String): String = mapOf(
     "queued" to "等待执行", "running" to "进行中", "waiting" to "等待答复",
     "completed" to "已完成", "failed" to "失败", "cancelled" to "已取消",
     "interrupted" to "已中断", "active" to "活跃", "paused" to "已暂停",

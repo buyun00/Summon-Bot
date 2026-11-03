@@ -1,4 +1,4 @@
-import { startBot, loadBotConfig, sendMessage, waitForTask } from '@relay/bot';
+import { startBot, loadBotConfig, sendMessage, waitForTask } from '@summon/bot';
 
 const bot = await startBot(loadBotConfig(process.argv[2]));
 try {

@@ -99,7 +99,7 @@ export function createProcessLog(directory, input = {}) {
   };
 }
 
-const captureKey = Symbol.for('relay.process-log.capture');
+const captureKey = Symbol.for('summon.process-log.capture');
 /** Explicit process-wide output capture for CLI/service hosts, not embedded Bots. */
 export function installProcessLog(directory, config, { tee = true } = {}) {
   if (process[captureKey]) throw new Error('Process output already has a log owner');

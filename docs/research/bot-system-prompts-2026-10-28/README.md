@@ -1,12 +1,12 @@
-# OpenBot、Rakazo 的 Bot 提示词研究与 Relay 推荐
+# OpenBot、Rakazo 的 Bot 提示词研究与 Summon Bot 推荐
 
 日期：2026-10-28。交付范围：源码调查、中文译文、对比和推荐提示词。没有更改在线 Bot 配置、应用代码或服务，没有启动测试或模型任务。
 
 ## 1. 结论
 
-Relay 当前源码中的角色提示词已经有正确的底线：平等协作、真实工具执行、交付回执不等于完成、防止副作用重放、按来源会话返回。但有关“开始工作读什么、何时维护记忆、怎样更新方法、怎样演进职责、怎样停止无价值的协作循环”的通用工作约定还比较薄。
+Summon Bot 当前源码中的角色提示词已经有正确的底线：平等协作、真实工具执行、交付回执不等于完成、防止副作用重放、按来源会话返回。但有关“开始工作读什么、何时维护记忆、怎样更新方法、怎样演进职责、怎样停止无价值的协作循环”的通用工作约定还比较薄。
 
-建议采用：**OpenBot 的协作交接与记忆取舍，Rakazo 的公开档案/内部指令分离与持久待办，Relay 自己的 P2P 和每 Bot 自有积累设计。** 提示词采用分层拼接，通用主干保持稳定，岗位身份简短，具体工具说明按实际能力加入，资料按任务检索。
+建议采用：**OpenBot 的协作交接与记忆取舍，Rakazo 的公开档案/内部指令分离与持久待办，Summon Bot 自己的 P2P 和每 Bot 自有积累设计。** 提示词采用分层拼接，通用主干保持稳定，岗位身份简短，具体工具说明按实际能力加入，资料按任务检索。
 
 公开源码证明它们有维护工具和行为提示；这不等于每次任务都自动反思、自动修订职责和 Skill，更不代表提示词本身能提供可靠的版本、权限、调度和恢复。
 
@@ -14,7 +14,7 @@ Relay 当前源码中的角色提示词已经有正确的底线：平等协作�
 
 - [OpenBot 中文译文](OPENBOT.zh-CN.md)：主干、条件注入、相关协作和 Skill 工具说明。
 - [Rakazo 中文译文](RAKAZO.zh-CN.md)：真实组合提示、记忆/待办、群聊、指令修订、Skill 和 subagent。
-- [Relay 推荐稿](RELAY-RECOMMENDED.md)：完整公共系统提示词、个体档案模板、当前工具适配与尚需实现的机制。
+- [Summon Bot 推荐稿](SUMMON-RECOMMENDED.md)：完整公共系统提示词、个体档案模板、当前工具适配与尚需实现的机制。
 - [英文源码摘录](SOURCE-EXCERPTS.md)：保留英文和条件拼接代码，便于与译文核对。
 
 ## 2. 研究对象和版本边界
@@ -23,7 +23,7 @@ Relay 当前源码中的角色提示词已经有正确的底线：平等协作�
 | --- | --- | --- |
 | [OpenBot](https://github.com/nightly-labs/openbot) | `D:/OpenBot/src/backend/agent` 的指令生成、工具指导、消息封装、记忆和 Skill 路径 | 本地检出的源码；未将安装版行为或提供方内部提示当成源码已证明的内容 |
 | [Rakazo](https://github.com/elie222/rakazo) | `D:/rakazo-main/packages/adapters`、`packages/core` 中执行器、Pi runtime、记忆、待办、消息和 Skill | 来自本地 ZIP，未绑定可验证的提交版本；不声称就是今日上游 main 或 H3 运行镜像 |
-| Relay | 当前 `bot/src`、`roles`、`capabilities` 与 `docs/BOT_FOUNDATION_DESIGN.md` | 区分代码现状、角色模板、持久 Bot 配置与设计稿；本次未读取各 Bot 的私有生产数据 |
+| Summon Bot | 当前 `bot/src`、`roles`、`capabilities` 与 `docs/BOT_FOUNDATION_DESIGN.md` | 区分代码现状、角色模板、持久 Bot 配置与设计稿；本次未读取各 Bot 的私有生产数据 |
 
 GitHub 页面用于确认项目身份与公开仓库入口。细节结论依据本地源码，引用以本机路径和函数为准，上游链接可能随更新改变。没有用 AGENTS.md、README 中面向开发者的说明冒充 Bot 的运行提示词。
 
@@ -53,10 +53,10 @@ GitHub 页面用于确认项目身份与公开仓库入口。细节结论依据�
 
 ### 3.4 不宜直接照搬
 
-- OpenBot 的 await_event、expectsReply 和自动唤醒必须有宿主支持；Relay 不能只抄“发完就结束”等待规则。
-- 同伴一报告阻塞就不再联系的规定较硬；Relay 可以在新信息或新方法出现后继续推进，避免无效重复即可。
+- OpenBot 的 await_event、expectsReply 和自动唤醒必须有宿主支持；Summon Bot 不能只抄“发完就结束”等待规则。
+- 同伴一报告阻塞就不再联系的规定较硬；Summon Bot 可以在新信息或新方法出现后继续推进，避免无效重复即可。
 - OpenBot 对“help me”的未发送默认、严格的发送确认、情绪 reaction、比较表只能用 ✓/— 等是产品选择，不适合原样进入我们的通用主干。
-- 它的文件/浏览器/秘密工具和权限模式有专用实现，不能改名后当成 Relay 已有能力。
+- 它的文件/浏览器/秘密工具和权限模式有专用实现，不能改名后当成 Summon Bot 已有能力。
 
 主要位置：[developer-instructions.ts](D:/OpenBot/src/backend/agent/developer-instructions.ts:207)、[delivery-content.ts](D:/OpenBot/src/backend/agent/delivery-content.ts:193)、[tool-guidance.ts](D:/OpenBot/src/backend/agent/tool-guidance.ts:16)、[skill-tools.ts](D:/OpenBot/src/backend/agent/skill-tools.ts:53)。
 
@@ -70,11 +70,11 @@ Pi runtime 那句“你是拥有持久沙箱和 shell 的 Bot，保持简洁”�
 
 ### 4.2 最有价值的五组设计
 
-**公开简介与内部指令分离。** name/title/description 用于其他 Bot 选择合作对象；instructions 是自己遵守的工作约定。改简介并不改内部指令。Relay 适合采用这一分离，避免把详细行为协议塞入所有同伴都看到的岗位简介。
+**公开简介与内部指令分离。** name/title/description 用于其他 Bot 选择合作对象；instructions 是自己遵守的工作约定。改简介并不改内部指令。Summon Bot 适合采用这一分离，避免把详细行为协议塞入所有同伴都看到的岗位简介。
 
-**明确区分持久 Bot 和本轮助手。** spawn_bot 建立有独立聊天和记忆的普通 Bot；run_subagent 是本轮内部短助手。群聊每阶段一名负责人，handoff 是转移阶段责任，不能把同一工作来回踢。Relay 的临时 Bot 设计更完整，不能直接套用“临时助手没有自有积累”的边界。
+**明确区分持久 Bot 和本轮助手。** spawn_bot 建立有独立聊天和记忆的普通 Bot；run_subagent 是本轮内部短助手。群聊每阶段一名负责人，handoff 是转移阶段责任，不能把同一工作来回踢。Summon Bot 的临时 Bot 设计更完整，不能直接套用“临时助手没有自有积累”的边界。
 
-**scratchpad 是持久未完成事项。** 记忆回答“哪些事实值得记住”，scratchpad 回答“还有什么没做完”。其提示特别声明 scratchpad 不会自动唤醒 Bot。这个区分应进入 Relay，防止保存一条待办就承诺以后自动做。
+**scratchpad 是持久未完成事项。** 记忆回答“哪些事实值得记住”，scratchpad 回答“还有什么没做完”。其提示特别声明 scratchpad 不会自动唤醒 Bot。这个区分应进入 Summon Bot，防止保存一条待办就承诺以后自动做。
 
 **历史检索有明确质量标准。** 查原消息、前后结果、之后的纠正；已有可靠上下文时不重复检索；分页未结束不能宣布没有证据。它处理了模型容易“记得大概却把细节补错”的问题。
 
@@ -84,22 +84,22 @@ Pi runtime 那句“你是拥有持久沙箱和 shell 的 Bot，保持简洁”�
 
 Agent Skill 目录明确鼓励：可重复的多步骤任务可创建 Skill；匹配时读正文；用户创建的 Skill 可更新，builtin/plugin 不可改。另外还有用户教操作的 taught Skill/playbook。
 
-这里有一个对 Relay 很重要的区别：`skill-tools.ts` 的 owner 是 spaceId + userId，不是 botId。这条 Agent Skill 库是该用户在该 space 的共享能力，不等于每个 Bot 各有版本分支、自行维护再贡献上游。
+这里有一个对 Summon Bot 很重要的区别：`skill-tools.ts` 的 owner 是 spaceId + userId，不是 botId。这条 Agent Skill 库是该用户在该 space 的共享能力，不等于每个 Bot 各有版本分支、自行维护再贡献上游。
 
 长期记忆上下文读取 bot/user scope 的持久文档，默认 32 KiB；scratchpad 默认 4 KiB。它们会在运行时重新进入上下文，但不是全部历史；截断、可见范围、排序都影响实际载入。所查指令提供了“记忆保存 + Skill 创建更新 + 自身指令提议”的部件，仍不能据此称为我们设计的全套自动维护机制。
 
 ### 4.4 不宜直接照搬
 
-- 每次自身指令修改都必须人工批准，是它的产品政策。Relay 应先判断修改是否已经在用户授权范围内；普通知识/方法整理不应逐条问用户。
+- 每次自身指令修改都必须人工批准，是它的产品政策。Summon Bot 应先判断修改是否已经在用户授权范围内；普通知识/方法整理不应逐条问用户。
 - “同一请求不能同时用 Bot 和 subagent”“错误参数只改一次”等规则过于固定。我们应针对任务和副作用风险处理，避免人为限制合理进展。
-- result/status 每次都必须对用户立即转述，会让复杂群聊变吵；Relay 应保留实际结果，但可合并常规中间状态，突出重要增量。
+- result/status 每次都必须对用户立即转述，会让复杂群聊变吵；Summon Bot 应保留实际结果，但可合并常规中间状态，突出重要增量。
 - shared skill 的拥有范围和用户记忆隔离不能仅靠文字约定，必须由存储和工具权限落实。
 
 主要位置：[executor 主调用](D:/rakazo-main/packages/adapters/src/executor.ts:7245)、[userTurnInstructions](D:/rakazo-main/packages/adapters/src/executor.ts:8663)、[身份](D:/rakazo-main/packages/adapters/src/executor.ts:8793)、[群聊与消息](D:/rakazo-main/packages/core/src/bot-messages.ts:109)、[记忆](D:/rakazo-main/packages/adapters/src/memory-context.ts:11)、[scratchpad](D:/rakazo-main/packages/adapters/src/scratchpad-context.ts:10)、[Skill 目录](D:/rakazo-main/packages/core/src/agent-skill.ts:124)、[自身指令工具](D:/rakazo-main/packages/adapters/src/builtin-tools.ts:1131)。
 
 ## 5. 三家的取舍表
 
-| 维度 | OpenBot | Rakazo | Relay 推荐 |
+| 维度 | OpenBot | Rakazo | Summon Bot 推荐 |
 | --- | --- | --- | --- |
 | 身份 | title/description 作为长期职责 | 公开档案与私有 instructions 分开 | 简短公开档案 + 内部工作约定 + 版本/来源 |
 | 工作主动性 | 可逆且授权内直接做，细致确认政策 | 工具驱动，部分动作由卡片批准 | 已授权必要工作自主推进，不重复询问，不擅自扩范围 |
@@ -113,7 +113,7 @@ Agent Skill 目录明确鼓励：可重复的多步骤任务可创建 Skill；�
 | 群聊体验 | 有用才说、防重复 | 每阶段负责人、防 handoff 弹回 | 专业同伴感来自独立身份、真实分工和结果，而非刷屏 |
 | 暂停/失败 | interrupt、wait 生命周期 | run 状态、批准与 effect 记录 | 停止相关执行，保留不明副作用，维护也尊重停止 |
 
-## 6. Relay 当前具体需要补什么
+## 6. Summon Bot 当前具体需要补什么
 
 ### 6.1 提示词现在怎样组合
 
@@ -143,7 +143,7 @@ Bot 创建时可能把角色文件内容复制到 config.prompt，现存 Bot 还
 
 ## 7. 推荐稿怎样体现这些取舍
 
-[完整推荐稿](RELAY-RECOMMENDED.md) 的公共主干包括九块：
+[完整推荐稿](SUMMON-RECOMMENDED.md) 的公共主干包括九块：
 
 1. 身份与目标：保持自己的专业方向，理解当前授权。
 2. 上下文与积累：必要时查历史、记忆、知识、Skill，不机械全量加载。

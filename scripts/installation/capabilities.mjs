@@ -13,5 +13,5 @@ if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
   const {options,positional}=parseArgs(process.argv.slice(2));
   const operation=positional[0]||'list';
   const input=options.file?await readJson(resolve(options.file)):{id:options.id,version:options.version,botId:options.bot,'releaseRoot':options['release-root'],packageRoot:options['package-root']};
-  capabilityCommand({dataRoot:options['data-root']||process.env.RELAY_DATA_ROOT||'D:/Relay-Bot-data',operation,input}).then(value=>console.log(JSON.stringify(value,null,2))).catch(error=>{console.error(error.message);process.exitCode=1;});
+  capabilityCommand({dataRoot:options['data-root']||process.env.SUMMON_DATA_ROOT||'D:/Relay-Bot-data',operation,input}).then(value=>console.log(JSON.stringify(value,null,2))).catch(error=>{console.error(error.message);process.exitCode=1;});
 }

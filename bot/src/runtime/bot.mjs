@@ -259,7 +259,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       const needAdmin = () => { if (!auth.admin) throw failure(403, 'Management access required'); };
       const ownTask = id => { const task = taskDetails(id); if (!task || (!auth.admin && task.source !== auth.source)) throw failure(404, 'Unknown task'); return task; };
       if (method === 'GET' && parts[0] === 'health') return health();
-      if (method === 'GET' && parts[0] === 'capabilities') return { botId: config.botId, protocol: 'relay-bot-v2', engine: engine.health(), messages: true, tasks: true, works: true, state: true, knowledge: true };
+      if (method === 'GET' && parts[0] === 'capabilities') return { botId: config.botId, protocol: 'summon-bot-v2', engine: engine.health(), messages: true, tasks: true, works: true, state: true, knowledge: true };
       if (method === 'POST' && parts[0] === 'messages') {
         if (state !== 'ready') throw failure(503, `Bot is ${state}`);
         if (config.accepting === false) throw failure(409, 'Bot is paused');

@@ -5,10 +5,9 @@
  * chaine recopiee a chaque appel, sinon le prochain renommage en oubliera une et
  * l'utilisateur perdra ses reglages sans que rien ne le signale.
  *
- * Aucune migration depuis l'ancien prefixe : le renommage a ete fait avant toute
- * mise en ligne, il n'y a pas d'installation a rattraper.
+ * La page charge branding-migration.js avant ce module pour convertir les reglages existants.
  */
-const PREFIXE = 'relay:avatar-showcase:'
+const PREFIXE = 'summon:avatar-showcase:'
 
 /** Tout ce que l'application persiste. */
 const NOMS = ['cycles', 'cycle', 'forme', 'couleur', 'expression', 'langue', 'papier', 'papier-dos', 'papier-grain'] as const

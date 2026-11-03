@@ -9,7 +9,7 @@ import { createReleasePublisher } from './release-publisher.mjs';
 const defaultFrontend = fileURLToPath(new URL('../frontend/', import.meta.url));
 const assets = new Map([
   ['/', ['index.html', 'text/html']],
-  ...['app', 'cache', 'avatars', 'motion', 'clients', 'usage', 'summon-brand'].map(name => [`/${name}.js`, [`${name}.js`, 'text/javascript']]),
+  ...['app', 'cache', 'avatars', 'motion', 'clients', 'usage', 'summon-brand', 'branding-migration'].map(name => [`/${name}.js`, [`${name}.js`, 'text/javascript']]),
   ...['style', 'mobile', 'group-chat', 'typography', 'summon-brand', 'motion', 'clients', 'usage'].map(name => [`/${name}.css`, [`${name}.css`, 'text/css']]),
   ['/icons/user-avatar.jpg', ['icons/user-avatar.jpg', 'image/jpeg']],
   ...['icon-192', 'icon-512', 'icon-maskable-192', 'icon-maskable-512', 'apple-touch-icon']

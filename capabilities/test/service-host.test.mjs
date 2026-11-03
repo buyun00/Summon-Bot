@@ -68,7 +68,7 @@ test('caller disconnect aborts its request and oversize bodies never reach the h
 });
 
 test('supervisor owns real independent versions and reuses their process after gateway replacement', async t => {
-  const dataRoot = await mkdtemp(join(tmpdir(), 'relay-service-host-'));
+  const dataRoot = await mkdtemp(join(tmpdir(), 'summon-service-host-'));
   const releaseRoot = resolve(import.meta.dirname, '../..');
   const first = new CapabilityServiceSupervisor({ dataRoot, releaseRoot });
   const second = new CapabilityServiceSupervisor({ dataRoot, releaseRoot });

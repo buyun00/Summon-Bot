@@ -1,15 +1,15 @@
-# Relay iOS
+# Summon Bot iOS
 
-主仓库根目录的原生 iOS 客户端，使用 Swift 6、SwiftUI 和 iOS 26 的系统 Liquid Glass 控件。工程不依赖跨平台框架、CocoaPods 或 XcodeGen；iPhone 与 iPad 共用 `Relay` target。
+主仓库根目录的原生 iOS 客户端，使用 Swift 6、SwiftUI 和 iOS 26 的系统 Liquid Glass 控件。工程不依赖跨平台框架、CocoaPods 或 XcodeGen；iPhone 与 iPad 共用 `SummonBot` target。
 
 ## 在 Mac 上运行
 
 1. 安装 Xcode 26 或更新版本及 iOS 26 SDK，clone 本仓库。
-2. 打开 `ios/Relay.xcodeproj`，选择 `Relay` scheme 和 iOS 26 模拟器或 iPhone。
-3. 真机运行时，在 target 的 **Signing & Capabilities** 中选择自己的 Team；如签名账户无法使用 `org.lin0.relay`，改成自己的唯一 Bundle Identifier，并在 iPhone 开启开发者模式。
+2. 打开 `ios/Relay.xcodeproj`，选择 `SummonBot` scheme 和 iOS 26 模拟器或 iPhone。
+3. 真机运行时，在 target 的 **Signing & Capabilities** 中选择自己的 Team；沿用现有 `org.lin0.relay` Bundle Identifier 和签名身份，并在 iPhone 开启开发者模式。
 4. 点击 Run。首次启动连接设置默认使用 `https://bot.lin0.org`，可在应用中修改服务地址并填写部署所用访问令牌。
 
-应用连接既有 Relay API，Bot、模型凭据和服务端能力仍在服务器上运行，手机只负责原生交互。无需在 Mac 上启动 Node 服务即可连接已部署的服务器；需要自行部署时参考仓库根目录说明。
+应用连接既有 Summon Bot API，Bot、模型凭据和服务端能力仍在服务器上运行，手机只负责原生交互。无需在 Mac 上启动 Node 服务即可连接已部署的服务器；需要自行部署时参考仓库根目录说明。
 
 ## 原生界面
 

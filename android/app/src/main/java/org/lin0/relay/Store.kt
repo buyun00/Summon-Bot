@@ -22,26 +22,26 @@ import java.time.Instant
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 
-class RelayStore(private val app: Context) {
-    var settings by mutableStateOf(RelayConnectionSettings(baseURL = DEFAULT_URL))
+class SummonStore(private val app: Context) {
+    var settings by mutableStateOf(SummonConnectionSettings(baseURL = DEFAULT_URL))
         private set
-    var bots by mutableStateOf<List<RelayBot>>(emptyList())
+    var bots by mutableStateOf<List<SummonBot>>(emptyList())
         private set
-    var rooms by mutableStateOf<List<RelayRoom>>(emptyList())
+    var rooms by mutableStateOf<List<SummonRoom>>(emptyList())
         private set
-    var messages by mutableStateOf<List<RelayMessage>>(emptyList())
+    var messages by mutableStateOf<List<SummonMessage>>(emptyList())
         private set
-    var jobs by mutableStateOf<List<RelayJob>>(emptyList())
+    var jobs by mutableStateOf<List<SummonJob>>(emptyList())
         private set
-    var agentRuns by mutableStateOf<List<RelayAgentRun>>(emptyList())
+    var agentRuns by mutableStateOf<List<SummonAgentRun>>(emptyList())
         private set
-    var agentRunDetails by mutableStateOf<Map<String, RelayAgentRun>>(emptyMap())
+    var agentRunDetails by mutableStateOf<Map<String, SummonAgentRun>>(emptyMap())
         private set
-    var pendingMessages by mutableStateOf<List<RelayPendingMessage>>(emptyList())
+    var pendingMessages by mutableStateOf<List<SummonPendingMessage>>(emptyList())
         private set
     var drafts by mutableStateOf<Map<String, String>>(emptyMap())
         private set
-    var draftAttachments by mutableStateOf<Map<String, List<RelayAttachment>>>(emptyMap())
+    var draftAttachments by mutableStateOf<Map<String, List<SummonAttachment>>>(emptyMap())
         private set
     var draftTargets by mutableStateOf<Map<String, String>>(emptyMap())
         private set
@@ -61,9 +61,9 @@ class RelayStore(private val app: Context) {
         private set
     var errorMessage by mutableStateOf<String?>(null)
 
-    private var messageHistory by mutableStateOf<Map<String, List<RelayMessage>>>(emptyMap())
+    private var messageHistory by mutableStateOf<Map<String, List<SummonMessage>>>(emptyMap())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private var client: RelayApiClient? = null
+    private var client: SummonApiClient? = null
     private var streamJob: Job? = null
     private var refreshJob: Job? = null
     private var roomRefreshJob: Job? = null
@@ -94,15 +94,15 @@ class RelayStore(private val app: Context) {
     private val ioMutex = Mutex()
 
     val isConfigured: Boolean get() = client != null
-    val savedToken: String get() = RelayKeystore.token(app, settings.baseURL)
-    val selectedRoom: RelayRoom? get() = rooms.firstOrNull { it.id == selectedRoomID }
+    val savedToken: String get() = SummonKeystore.token(app, settings.baseURL)
+    val selectedRoom: SummonRoom? get() = rooms.firstOrNull { it.id == selectedRoomID }
 
     init {
         prefs.getString(SETTINGS_KEY, null)?.let { raw ->
-            runCatching { settings = RelayConnectionSettings.parse(RelayJson.parse(raw)) }
+            runCatching { settings = SummonConnectionSettings.parse(SummonJson.parse(raw)) }
         }
-        runCatching { RelayApiClient.normalized(settings.baseURL) }.getOrNull()?.let { url ->
-            client = RelayApiClient(url, RelayKeystore.token(app, settings.baseURL))
+        runCatching { SummonApiClient.normalized(settings.baseURL) }.getOrNull()?.let { url ->
+            client = SummonApiClient(url, SummonKeystore.token(app, settings.baseURL))
         }
         restoreSnapshot()
     }
@@ -129,8 +129,8 @@ class RelayStore(private val app: Context) {
     suspend fun reconnect() {
         if (startingConnection == connectionGeneration) return
         disconnect()
-        runCatching { RelayApiClient.normalized(settings.baseURL) }.getOrNull()?.let { url ->
-            client = RelayApiClient(url, savedToken)
+        runCatching { SummonApiClient.normalized(settings.baseURL) }.getOrNull()?.let { url ->
+            client = SummonApiClient(url, savedToken)
         }
         start()
     }
@@ -162,20 +162,20 @@ class RelayStore(private val app: Context) {
     }
 
     suspend fun saveConnection(baseURL: String, token: String, userName: String? = null) {
-        val url = RelayApiClient.normalized(baseURL)
+        val url = SummonApiClient.normalized(baseURL)
         val endpoint = url.toString()
-        RelayKeystore.save(app, token.trim(), endpoint)
+        SummonKeystore.save(app, token.trim(), endpoint)
         val changed = endpoint != settings.baseURL
         disconnect()
         val name = userName?.trim()?.ifBlank { null } ?: settings.userName
-        settings = RelayConnectionSettings(endpoint, name.ifBlank { "你" })
+        settings = SummonConnectionSettings(endpoint, name.ifBlank { "你" })
         if (changed) clearWorkspace()
-        client = RelayApiClient(url, RelayKeystore.token(app, endpoint))
+        client = SummonApiClient(url, SummonKeystore.token(app, endpoint))
         prefs.edit().putString(SETTINGS_KEY, settings.toJson().encode().toString()).apply()
         errorMessage = null
         persistNow()
         start()
-        errorMessage?.let { throw RelayApiException.http(0, it) }
+        errorMessage?.let { throw SummonApiException.http(0, it) }
     }
 
     fun setUserName(name: String) {
@@ -195,7 +195,7 @@ class RelayStore(private val app: Context) {
         isRefreshing = true
         isLoading = !hasSnapshot
         try {
-            val snapshot = withContext(Dispatchers.IO) { RelayWorkspace.parse(api.requestJson("/api/state")) }
+            val snapshot = withContext(Dispatchers.IO) { SummonWorkspace.parse(api.requestJson("/api/state")) }
             if (connection != connectionGeneration) return
             acceptEpoch(snapshot.historyEpoch)
             bots = snapshot.bots
@@ -276,21 +276,21 @@ class RelayStore(private val app: Context) {
         cancelRunDetailRefreshes()
     }
 
-    fun messagesForRoom(id: String): List<RelayMessage> {
+    fun messagesForRoom(id: String): List<SummonMessage> {
         val remote = messageHistory[id].orEmpty()
         val confirmed = remote.filter { it.senderId == "user" }.mapNotNull { it.clientId }.toSet()
         return remote + pendingMessages.filter { it.roomID == id && it.clientID !in confirmed }.map { it.message }
     }
 
-    fun bot(id: String): RelayBot? = bots.firstOrNull { it.id == id }
-    fun room(id: String): RelayRoom? = rooms.firstOrNull { it.id == id }
+    fun bot(id: String): SummonBot? = bots.firstOrNull { it.id == id }
+    fun room(id: String): SummonRoom? = rooms.firstOrNull { it.id == id }
     fun name(id: String): String = when (id) {
         "user" -> settings.userName
-        "system" -> bot(id)?.name ?: "Relay"
+        "system" -> bot(id)?.name ?: "Summon Bot"
         else -> bot(id)?.name ?: id
     }
 
-    suspend fun openDirectMessage(bot: RelayBot): RelayRoom {
+    suspend fun openDirectMessage(bot: SummonBot): SummonRoom {
         rooms.firstOrNull { it.kind == "dm" && it.members.contains("user") && it.members.contains(bot.id) && it.members.size == 2 }?.let { room ->
             selectRoom(room.id)
             return room
@@ -300,15 +300,15 @@ class RelayStore(private val app: Context) {
         return room
     }
 
-    suspend fun createBot(name: String, avatar: RelayAvatar, role: String = "项目协作", expertise: String = "", prompt: String = ""): RelayBot {
+    suspend fun createBot(name: String, avatar: SummonAvatar, role: String = "项目协作", expertise: String = "", prompt: String = ""): SummonBot {
         val connection = connectionGeneration
         val result = withContext(Dispatchers.IO) {
-            RelayBot.parse(apiClient().requestJson("/api/bots", "POST", RelayJson.obj(
-                "id" to RelayJson.Str("bot-${UUID.randomUUID().toString().lowercase()}"),
-                "name" to RelayJson.Str(name),
-                "role" to RelayJson.Str(role),
-                "expertise" to RelayJson.Str(expertise),
-                "prompt" to RelayJson.Str(prompt),
+            SummonBot.parse(apiClient().requestJson("/api/bots", "POST", SummonJson.obj(
+                "id" to SummonJson.Str("bot-${UUID.randomUUID().toString().lowercase()}"),
+                "name" to SummonJson.Str(name),
+                "role" to SummonJson.Str(role),
+                "expertise" to SummonJson.Str(expertise),
+                "prompt" to SummonJson.Str(prompt),
                 "avatar" to avatar.toJson(),
             )))
         }
@@ -319,16 +319,16 @@ class RelayStore(private val app: Context) {
         return result
     }
 
-    suspend fun updateBot(id: String, name: String? = null, role: String? = null, expertise: String? = null, prompt: String? = null, status: String? = null, avatar: RelayAvatar? = null): RelayBot {
+    suspend fun updateBot(id: String, name: String? = null, role: String? = null, expertise: String? = null, prompt: String? = null, status: String? = null, avatar: SummonAvatar? = null): SummonBot {
         val connection = connectionGeneration
-        val body = buildMap<String, RelayJson> {
+        val body = buildMap<String, SummonJson> {
             listOf("name" to name, "role" to role, "expertise" to expertise, "prompt" to prompt, "status" to status).forEach { (key, value) ->
-                if (value != null) put(key, RelayJson.Str(value))
+                if (value != null) put(key, SummonJson.Str(value))
             }
             if (avatar != null) put("avatar", avatar.toJson())
         }
         val result = withContext(Dispatchers.IO) {
-            RelayBot.parse(apiClient().requestJson("/api/bots/${RelayApiClient.component(id)}", "PATCH", RelayJson.Obj(body)))
+            SummonBot.parse(apiClient().requestJson("/api/bots/${SummonApiClient.component(id)}", "PATCH", SummonJson.Obj(body)))
         }
         if (connection == connectionGeneration) {
             upsertBot(result)
@@ -337,14 +337,14 @@ class RelayStore(private val app: Context) {
         return result
     }
 
-    suspend fun createGroup(name: String, members: List<String>, goal: String = "", kind: String = "group"): RelayRoom {
+    suspend fun createGroup(name: String, members: List<String>, goal: String = "", kind: String = "group"): SummonRoom {
         val connection = connectionGeneration
         val result = withContext(Dispatchers.IO) {
-            RelayRoom.parse(apiClient().requestJson("/api/rooms", "POST", RelayJson.obj(
-                "name" to RelayJson.Str(name),
-                "kind" to RelayJson.Str(kind),
-                "goal" to RelayJson.Str(goal),
-                "members" to RelayJson.Arr(members.map(RelayJson::Str)),
+            SummonRoom.parse(apiClient().requestJson("/api/rooms", "POST", SummonJson.obj(
+                "name" to SummonJson.Str(name),
+                "kind" to SummonJson.Str(kind),
+                "goal" to SummonJson.Str(goal),
+                "members" to SummonJson.Arr(members.map(SummonJson::Str)),
             )))
         }
         if (connection == connectionGeneration) {
@@ -354,13 +354,13 @@ class RelayStore(private val app: Context) {
         return result
     }
 
-    suspend fun updateRoom(id: String, name: String, members: List<String>, goal: String = ""): RelayRoom {
+    suspend fun updateRoom(id: String, name: String, members: List<String>, goal: String = ""): SummonRoom {
         val connection = connectionGeneration
         val result = withContext(Dispatchers.IO) {
-            RelayRoom.parse(apiClient().requestJson("/api/rooms/${RelayApiClient.component(id)}", "PATCH", RelayJson.obj(
-                "name" to RelayJson.Str(name),
-                "members" to RelayJson.Arr(members.map(RelayJson::Str)),
-                "goal" to RelayJson.Str(goal),
+            SummonRoom.parse(apiClient().requestJson("/api/rooms/${SummonApiClient.component(id)}", "PATCH", SummonJson.obj(
+                "name" to SummonJson.Str(name),
+                "members" to SummonJson.Arr(members.map(SummonJson::Str)),
+                "goal" to SummonJson.Str(goal),
             )))
         }
         if (connection == connectionGeneration) {
@@ -372,7 +372,7 @@ class RelayStore(private val app: Context) {
 
     fun draft(id: String): String = drafts[id].orEmpty()
     fun setDraft(value: String, id: String) { drafts = drafts + (id to value); schedulePersistence() }
-    fun setDraftAttachments(value: List<RelayAttachment>, id: String) { draftAttachments = draftAttachments + (id to value.take(8)); schedulePersistence() }
+    fun setDraftAttachments(value: List<SummonAttachment>, id: String) { draftAttachments = draftAttachments + (id to value.take(8)); schedulePersistence() }
     fun setDraftTarget(value: String?, id: String) {
         draftTargets = if (value == null) draftTargets - id else draftTargets + (id to value)
         schedulePersistence()
@@ -382,19 +382,19 @@ class RelayStore(private val app: Context) {
         schedulePersistence()
     }
 
-    suspend fun sendMessage(roomID: String, content: String, attachments: List<RelayAttachment> = emptyList(), toBotID: String? = null, replyTo: String? = null) {
+    suspend fun sendMessage(roomID: String, content: String, attachments: List<SummonAttachment> = emptyList(), toBotID: String? = null, replyTo: String? = null) {
         if (roomID in sendingRoomIDs) return
         val text = content.trim()
-        if (text.isEmpty() && attachments.isEmpty()) { errorMessage = RelayApiException.emptyMessage.message; return }
-        if (attachments.size > 8) { errorMessage = RelayApiException.tooManyAttachments.message; return }
-        if (client == null) { errorMessage = RelayApiException.noConnection.message; return }
+        if (text.isEmpty() && attachments.isEmpty()) { errorMessage = SummonApiException.emptyMessage.message; return }
+        if (attachments.size > 8) { errorMessage = SummonApiException.tooManyAttachments.message; return }
+        if (client == null) { errorMessage = SummonApiException.noConnection.message; return }
         val id = UUID.randomUUID().toString().lowercase()
-        val message = RelayMessage(
+        val message = SummonMessage(
             id = "local-$id", roomId = roomID, senderId = "user", content = text, attachments = attachments,
             replyTo = replyTo, toBotId = toBotID, clientId = id,
             createdAt = DateTimeFormatter.ISO_INSTANT.format(Instant.now()),
         )
-        pendingMessages = pendingMessages + RelayPendingMessage(id, message, "sending")
+        pendingMessages = pendingMessages + SummonPendingMessage(id, message, "sending")
         drafts = drafts + (roomID to "")
         draftAttachments = draftAttachments + (roomID to emptyList())
         draftTargets = draftTargets - roomID
@@ -411,39 +411,39 @@ class RelayStore(private val app: Context) {
     }
 
     suspend fun cancelRun(id: String) {
-        withContext(Dispatchers.IO) { apiClient().requestJson("/api/agent-runs/${RelayApiClient.component(id)}/cancel", "POST", RelayJson.Obj(emptyMap())) }
+        withContext(Dispatchers.IO) { apiClient().requestJson("/api/agent-runs/${SummonApiClient.component(id)}/cancel", "POST", SummonJson.Obj(emptyMap())) }
         refresh()
     }
 
-    suspend fun uploadAttachment(uri: Uri): RelayAttachment = withContext(Dispatchers.IO) {
+    suspend fun uploadAttachment(uri: Uri): SummonAttachment = withContext(Dispatchers.IO) {
         val resolver = app.contentResolver
         val length = resolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1
-        if (length > 20L * 1024 * 1024) throw RelayApiException.attachmentTooLarge
-        val bytes = resolver.openInputStream(uri)?.use { it.readBytes() } ?: throw RelayApiException.invalidResponse
-        if (bytes.size > 20 * 1024 * 1024) throw RelayApiException.attachmentTooLarge
+        if (length > 20L * 1024 * 1024) throw SummonApiException.attachmentTooLarge
+        val bytes = resolver.openInputStream(uri)?.use { it.readBytes() } ?: throw SummonApiException.invalidResponse
+        if (bytes.size > 20 * 1024 * 1024) throw SummonApiException.attachmentTooLarge
         apiClient().upload(bytes, displayName(app, uri), mimeFor(app, uri))
     }
 
-    suspend fun uploadAttachment(data: ByteArray, name: String, mimeType: String): RelayAttachment =
+    suspend fun uploadAttachment(data: ByteArray, name: String, mimeType: String): SummonAttachment =
         withContext(Dispatchers.IO) { apiClient().upload(data, name, mimeType) }
 
-    suspend fun attachmentFile(attachment: RelayAttachment): File = withContext(Dispatchers.IO) {
-        apiClient().download(app, "/api/attachments/${RelayApiClient.component(attachment.id)}", attachment.name)
+    suspend fun attachmentFile(attachment: SummonAttachment): File = withContext(Dispatchers.IO) {
+        apiClient().download(app, "/api/attachments/${SummonApiClient.component(attachment.id)}", attachment.name)
     }
 
-    suspend fun attachmentPreview(attachment: RelayAttachment): ByteArray = withContext(Dispatchers.IO) {
-        apiClient().bytes("/api/attachments/${RelayApiClient.component(attachment.id)}/preview")
+    suspend fun attachmentPreview(attachment: SummonAttachment): ByteArray = withContext(Dispatchers.IO) {
+        apiClient().bytes("/api/attachments/${SummonApiClient.component(attachment.id)}/preview")
     }
 
-    suspend fun artifactFile(artifact: RelayArtifact, runID: String, toolID: String): File = withContext(Dispatchers.IO) {
-        val component = RelayApiClient::component
+    suspend fun artifactFile(artifact: SummonArtifact, runID: String, toolID: String): File = withContext(Dispatchers.IO) {
+        val component = SummonApiClient::component
         apiClient().download(app, "/api/agent-runs/${component(runID)}/tools/${component(toolID)}/artifacts/${component(artifact.id)}", artifact.name ?: "产物")
     }
 
-    suspend fun request(path: String, method: String = "GET", body: RelayJson? = null): RelayJson =
+    suspend fun request(path: String, method: String = "GET", body: SummonJson? = null): SummonJson =
         withContext(Dispatchers.IO) { apiClient().requestJson(path, method, body) }
 
-    private fun apiClient(): RelayApiClient = client ?: throw RelayApiException.noConnection
+    private fun apiClient(): SummonApiClient = client ?: throw SummonApiException.noConnection
 
     private suspend fun deliver(clientID: String) {
         val api = client ?: return
@@ -457,17 +457,17 @@ class RelayStore(private val app: Context) {
         try {
             val message = item.message
             val body = buildMap {
-                put("content", RelayJson.Str(message.content))
-                put("clientId", RelayJson.Str(clientID))
-                put("attachments", RelayJson.Arr(message.attachments.map { RelayJson.obj("id" to RelayJson.Str(it.id)) }))
-                message.toBotId?.let { put("toBotId", RelayJson.Str(it)) }
-                message.replyTo?.let { put("replyTo", RelayJson.Str(it)) }
+                put("content", SummonJson.Str(message.content))
+                put("clientId", SummonJson.Str(clientID))
+                put("attachments", SummonJson.Arr(message.attachments.map { SummonJson.obj("id" to SummonJson.Str(it.id)) }))
+                message.toBotId?.let { put("toBotId", SummonJson.Str(it)) }
+                message.replyTo?.let { put("replyTo", SummonJson.Str(it)) }
             }
             val sent = withContext(Dispatchers.IO) {
-                RelayMessage.parse(api.requestJson("/api/rooms/${RelayApiClient.component(item.roomID)}/messages", "POST", RelayJson.Obj(body)))
+                SummonMessage.parse(api.requestJson("/api/rooms/${SummonApiClient.component(item.roomID)}/messages", "POST", SummonJson.Obj(body)))
             }
             if (connection != connectionGeneration || history != historyGeneration) return
-            if (sent.clientId != clientID || sent.roomId != item.roomID || sent.id.isEmpty()) throw RelayApiException.invalidReceipt
+            if (sent.clientId != clientID || sent.roomId != item.roomID || sent.id.isEmpty()) throw SummonApiException.invalidReceipt
             updatePending(clientID) { it.copy(message = sent, status = "sent", error = null) }
             rooms = rooms.map { room -> if (room.id == item.roomID) room.copy(lastMessage = sent) else room }
         } catch (error: CancellationException) {
@@ -488,7 +488,7 @@ class RelayStore(private val app: Context) {
         }
     }
 
-    private suspend fun loadRoom(id: String, api: RelayApiClient, connection: Int) {
+    private suspend fun loadRoom(id: String, api: SummonApiClient, connection: Int) {
         if (!isForeground || connection != connectionGeneration) return
         if (id in roomLoadsInFlight) {
             roomsNeedingReload.add(id)
@@ -502,7 +502,7 @@ class RelayStore(private val app: Context) {
         roomJobs[id] = job
         try {
             val snapshot = withContext(Dispatchers.IO) {
-                RelayRoomSnapshot.parse(api.requestJson("/api/rooms/${RelayApiClient.component(id)}/messages"))
+                SummonRoomSnapshot.parse(api.requestJson("/api/rooms/${SummonApiClient.component(id)}/messages"))
             }
             if (connection != connectionGeneration || history != historyGeneration || roomReadGeneration[id] != read) return
             if (hasSnapshot && snapshot.historyEpoch != historyEpoch) {
@@ -546,7 +546,7 @@ class RelayStore(private val app: Context) {
             while (isActive) {
                 val started = SystemClock.elapsedRealtime()
                 try {
-                    RelayEventStream(api).consume { event ->
+                    SummonEventStream(api).consume { event ->
                         withContext(Dispatchers.Main.immediate) { receiveStream(event, connection) }
                     }
                     delaySec = 1
@@ -564,16 +564,16 @@ class RelayStore(private val app: Context) {
         }
     }
 
-    private fun receiveStream(event: RelayStreamEvent, connection: Int) {
+    private fun receiveStream(event: SummonStreamEvent, connection: Int) {
         if (!isForeground || connection != connectionGeneration) return
         isConnected = true
         when (event) {
-            RelayStreamEvent.Connected -> {
+            SummonStreamEvent.Connected -> {
                 scheduleRoomRefresh()
                 scheduleRefresh()
             }
-            RelayStreamEvent.KeepAlive -> Unit
-            is RelayStreamEvent.Change -> {
+            SummonStreamEvent.KeepAlive -> Unit
+            is SummonStreamEvent.Change -> {
                 val active = activeRoomID?.let { id -> rooms.firstOrNull { it.id == id } }
                 val concerns = when {
                     event.roomID != null -> event.roomID == activeRoomID
@@ -644,7 +644,7 @@ class RelayStore(private val app: Context) {
         }
     }
 
-    private fun scheduleActiveRunDetails(roomID: String, roomJobs: List<RelayJob>, repliedJobIDs: Set<String>) {
+    private fun scheduleActiveRunDetails(roomID: String, roomJobs: List<SummonJob>, repliedJobIDs: Set<String>) {
         if (!isForeground || activeRoomID != roomID || client == null) return
         val api = client ?: return
         val settled = roomJobs.filter { !it.isActive || it.id in repliedJobIDs }
@@ -668,7 +668,7 @@ class RelayStore(private val app: Context) {
             runDetailJobs[id] = scope.launch {
                 try {
                     val detail = withContext(Dispatchers.IO) {
-                        RelayAgentRun.parse(api.requestJson("/api/agent-runs/${RelayApiClient.component(id)}"))
+                        SummonAgentRun.parse(api.requestJson("/api/agent-runs/${SummonApiClient.component(id)}"))
                     }
                     if (!isForeground || activeRoomID != roomID || connection != connectionGeneration || generation != runDetailGeneration || runDetailTokens[id] != token) return@launch
                     agentRunDetails = agentRunDetails + (id to detail)
@@ -723,11 +723,11 @@ class RelayStore(private val app: Context) {
         roomLastRead.clear(); runDetailLastRequested.clear()
     }
 
-    private fun upsertBot(bot: RelayBot) {
+    private fun upsertBot(bot: SummonBot) {
         bots = if (bots.any { it.id == bot.id }) bots.map { if (it.id == bot.id) bot else it } else bots + bot
     }
 
-    private fun upsertRoom(room: RelayRoom) {
+    private fun upsertRoom(room: SummonRoom) {
         rooms = if (rooms.any { it.id == room.id }) {
             rooms.map { current ->
                 if (current.id != room.id) current
@@ -736,7 +736,7 @@ class RelayStore(private val app: Context) {
         } else rooms + room
     }
 
-    private fun updatePending(id: String, mutate: (RelayPendingMessage) -> RelayPendingMessage) {
+    private fun updatePending(id: String, mutate: (SummonPendingMessage) -> SummonPendingMessage) {
         pendingMessages = pendingMessages.map { if (it.clientID == id) mutate(it) else it }
     }
 
@@ -746,18 +746,18 @@ class RelayStore(private val app: Context) {
 
     private fun restoreSnapshot() {
         val raw = runCatching { cacheFile.readText() }.getOrNull() ?: return
-        val json = runCatching { RelayJson.parse(raw) }.getOrNull() ?: return
+        val json = runCatching { SummonJson.parse(raw) }.getOrNull() ?: return
         if (json["endpoint"].string != settings.baseURL) return
         historyEpoch = json["historyEpoch"].string
-        bots = json["bots"].array.orEmpty().map(RelayBot::parse)
-        rooms = json["rooms"].array.orEmpty().map(RelayRoom::parse)
-        agentRuns = json["agentRuns"].array.orEmpty().map(RelayAgentRun::parse)
-        messageHistory = json["messageHistory"].obj.orEmpty().mapValues { (_, value) -> value.array.orEmpty().map(RelayMessage::parse) }
-        pendingMessages = json["pendingMessages"].array.orEmpty().map(RelayPendingMessage::parse).map { entry ->
+        bots = json["bots"].array.orEmpty().map(SummonBot::parse)
+        rooms = json["rooms"].array.orEmpty().map(SummonRoom::parse)
+        agentRuns = json["agentRuns"].array.orEmpty().map(SummonAgentRun::parse)
+        messageHistory = json["messageHistory"].obj.orEmpty().mapValues { (_, value) -> value.array.orEmpty().map(SummonMessage::parse) }
+        pendingMessages = json["pendingMessages"].array.orEmpty().map(SummonPendingMessage::parse).map { entry ->
             if (entry.status == "sending") entry.copy(status = "failed", error = "上次发送尚未确认，请手动重试。") else entry
         }
         drafts = json["drafts"].obj.orEmpty().mapValues { it.value.stringValue }
-        draftAttachments = json["draftAttachments"].obj.orEmpty().mapValues { it.value.array.orEmpty().map(RelayAttachment::parse) }
+        draftAttachments = json["draftAttachments"].obj.orEmpty().mapValues { it.value.array.orEmpty().map(SummonAttachment::parse) }
         draftTargets = json["draftTargets"].obj.orEmpty().mapValues { it.value.stringValue }
         draftReplies = json["draftReplies"].obj.orEmpty().mapValues { it.value.stringValue }
         selectedRoomID = json["selectedRoomID"].string
@@ -777,20 +777,20 @@ class RelayStore(private val app: Context) {
     private fun persistNow() {
         persistenceJob?.cancel()
         persistenceJob = null
-        val snapshot = RelayJson.obj(
-            "endpoint" to RelayJson.Str(settings.baseURL),
-            "historyEpoch" to (historyEpoch?.let(RelayJson::Str) ?: RelayJson.Null),
-            "bots" to RelayJson.Arr(bots.map { it.toJson() }),
-            "rooms" to RelayJson.Arr(rooms.map { it.toJson() }),
-            "agentRuns" to RelayJson.Arr(agentRuns.map { it.toJson() }),
-            "messageHistory" to RelayJson.Obj(messageHistory.mapValues { RelayJson.Arr(it.value.map { message -> message.toJson() }) }),
-            "pendingMessages" to RelayJson.Arr(pendingMessages.map { it.toJson() }),
-            "drafts" to RelayJson.Obj(drafts.mapValues { RelayJson.Str(it.value) }),
-            "draftAttachments" to RelayJson.Obj(draftAttachments.mapValues { RelayJson.Arr(it.value.map { item -> item.toJson() }) }),
-            "draftTargets" to RelayJson.Obj(draftTargets.mapValues { RelayJson.Str(it.value) }),
-            "draftReplies" to RelayJson.Obj(draftReplies.mapValues { RelayJson.Str(it.value) }),
-            "selectedRoomID" to (selectedRoomID?.let(RelayJson::Str) ?: RelayJson.Null),
-            "savedAt" to RelayJson.Str(Instant.ofEpochMilli(lastSyncAt ?: System.currentTimeMillis()).toString()),
+        val snapshot = SummonJson.obj(
+            "endpoint" to SummonJson.Str(settings.baseURL),
+            "historyEpoch" to (historyEpoch?.let(SummonJson::Str) ?: SummonJson.Null),
+            "bots" to SummonJson.Arr(bots.map { it.toJson() }),
+            "rooms" to SummonJson.Arr(rooms.map { it.toJson() }),
+            "agentRuns" to SummonJson.Arr(agentRuns.map { it.toJson() }),
+            "messageHistory" to SummonJson.Obj(messageHistory.mapValues { SummonJson.Arr(it.value.map { message -> message.toJson() }) }),
+            "pendingMessages" to SummonJson.Arr(pendingMessages.map { it.toJson() }),
+            "drafts" to SummonJson.Obj(drafts.mapValues { SummonJson.Str(it.value) }),
+            "draftAttachments" to SummonJson.Obj(draftAttachments.mapValues { SummonJson.Arr(it.value.map { item -> item.toJson() }) }),
+            "draftTargets" to SummonJson.Obj(draftTargets.mapValues { SummonJson.Str(it.value) }),
+            "draftReplies" to SummonJson.Obj(draftReplies.mapValues { SummonJson.Str(it.value) }),
+            "selectedRoomID" to (selectedRoomID?.let(SummonJson::Str) ?: SummonJson.Null),
+            "savedAt" to SummonJson.Str(Instant.ofEpochMilli(lastSyncAt ?: System.currentTimeMillis()).toString()),
         )
         runCatching { cacheFile.writeText(snapshot.encode().toString()) }.onFailure { error ->
             errorMessage = "本机草稿暂时无法保存：${error.message}"
@@ -799,6 +799,6 @@ class RelayStore(private val app: Context) {
 
     companion object {
         const val DEFAULT_URL = "https://bot.lin0.org"
-        private const val SETTINGS_KEY = "RelayNative.connection.v1"
+        private const val SETTINGS_KEY = "SummonNative.connection.v1"
     }
 }

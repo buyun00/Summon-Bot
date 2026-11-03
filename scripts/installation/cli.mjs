@@ -9,9 +9,9 @@ import { watchSystem } from './watchdog.mjs';
 const installedRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 export async function main(args = process.argv.slice(2)) {
   const { options, positional } = parseArgs(args), command = positional[0] || 'help';
-  if (command === 'help') { console.log('Relay: init | start [--foreground] [--respect-intent] | status | stop; --data-root PATH --release-root PATH --cwd PATH'); return; }
-  const dataRoot = resolve(options['data-root'] || process.env.RELAY_DATA_ROOT || join(installedRoot, '../Relay-Bot-data'));
-  let releaseRoot = options['release-root'] || process.env.RELAY_RELEASE_ROOT;
+  if (command === 'help') { console.log('Summon Bot: init | start [--foreground] [--respect-intent] | status | stop; --data-root PATH --release-root PATH --cwd PATH'); return; }
+  const dataRoot = resolve(options['data-root'] || process.env.SUMMON_DATA_ROOT || join(installedRoot, '../Relay-Bot-data'));
+  let releaseRoot = options['release-root'] || process.env.SUMMON_RELEASE_ROOT;
   if (!releaseRoot) {
     if (existsSync(join(installedRoot, 'release-manifest.json'))) releaseRoot = installedRoot;
     else if (existsSync(deploymentPath(dataRoot))) releaseRoot = (await readJson(deploymentPath(dataRoot))).releaseRoot;

@@ -3,7 +3,7 @@ import SwiftUI
 /// A compact chat presence indicator. The caller supplies a status grounded in
 /// the current job; this view never infers or invents an activity.
 struct BotWorkingIndicator: View {
-    let bot: RelayBot?
+    let bot: SummonBot?
     var name: String? = nil
     var status: String = "正在仔细分析"
 
@@ -77,7 +77,7 @@ struct BotWorkingIndicator: View {
 
     private var statusText: some View {
         Text(label)
-            .relayFont(.subheadline)
+            .summonFont(.subheadline)
             .lineLimit(1)
             .truncationMode(.tail)
             .frame(maxWidth: .infinity, alignment: .leading)

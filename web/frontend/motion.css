@@ -10,7 +10,7 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent,#7
 button:disabled { cursor: default; }
 .context-menu { backdrop-filter: blur(24px) saturate(1.2); -webkit-backdrop-filter: blur(24px) saturate(1.2); }
 .create-avatar-preview { width: 100%; border: 0; background: transparent; cursor: pointer; }
-.create-avatar-preview .relay-bot-face { transform-origin: center; }
+.create-avatar-preview .summon-bot-face { transform-origin: center; }
 .crew-palettes button { transition: scale 180ms ease, border-color 240ms ease; }
 .crew-palettes button.motion-selection-target, .shape-choice.motion-selection-target { border-color: transparent; }
 .motion-selection-ring { border-width: 2px; border-color: var(--ink); }
@@ -23,10 +23,10 @@ button:disabled { cursor: default; }
   .create-avatar-preview { min-height: 150px; }
   .create-bot-modal #modal-content { max-height: calc(var(--mobile-vh,var(--ui-vh,100dvh)) - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px) - 12px); }
   .keyboard-open .create-avatar-preview { min-height: 70px; height: 70px; }
-  .keyboard-open .create-avatar-preview .relay-bot-face { width: 65px!important; height: 65px!important; }
+  .keyboard-open .create-avatar-preview .summon-bot-face { width: 65px!important; height: 65px!important; }
 }
 @media(prefers-reduced-motion:reduce) {
   .chat-layout,.crew-palettes button { transition: none; }
   .search-slot.open { animation: none; }
-  .relay-bot-face * { transition: none!important; }
+  .summon-bot-face * { transition: none!important; }
 }

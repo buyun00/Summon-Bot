@@ -9,7 +9,7 @@ import { CapabilityServiceSupervisor } from '../capabilities/services/supervisor
 import { inspectBotIdentity } from '../bot/src/index.mjs';
 
 test('full stop without a gateway stops independent producers and Bots, and refuses a busy custom service', {timeout:60000}, async t=>{
-  const root=await mkdtemp(join(tmpdir(),'relay-cap-stop-')),dataRoot=join(root,'data'),releaseRoot=resolve(import.meta.dirname,'..');
+  const root=await mkdtemp(join(tmpdir(),'summon-cap-stop-')),dataRoot=join(root,'data'),releaseRoot=resolve(import.meta.dirname,'..');
   const bridge=createServer(async(req,res)=>{for await(const _chunk of req){}res.setHeader('Content-Type','application/json');res.end(req.url==='/internal/service/tools'?'[]':'{}');});
   await new Promise(done=>bridge.listen(0,'127.0.0.1',done));
   const {config}=await initializeDeployment({dataRoot,releaseRoot,defaultCwd:root,port:0});

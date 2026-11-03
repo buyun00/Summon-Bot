@@ -80,7 +80,7 @@ import kotlinx.coroutines.launch
 import java.time.Instant
 
 @Composable
-fun ChatScreen(store: RelayStore, roomID: String, onBack: () -> Unit) {
+fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val room = store.rooms.firstOrNull { it.id == roomID }
@@ -91,7 +91,7 @@ fun ChatScreen(store: RelayStore, roomID: String, onBack: () -> Unit) {
     val messages = store.messagesForRoom(roomID)
     var text by remember(roomID) { mutableStateOf(store.draft(roomID)) }
     var attachments by remember(roomID) { mutableStateOf(store.draftAttachments[roomID].orEmpty()) }
-    var reply by remember(roomID) { mutableStateOf<RelayMessage?>(null) }
+    var reply by remember(roomID) { mutableStateOf<SummonMessage?>(null) }
     var target by remember(roomID) { mutableStateOf(store.draftTargets[roomID].orEmpty()) }
     var uploading by remember { mutableStateOf(false) }
     var localError by remember { mutableStateOf<String?>(null) }
@@ -250,7 +250,7 @@ fun ChatScreen(store: RelayStore, roomID: String, onBack: () -> Unit) {
     }
 }
 
-private fun workingBots(store: RelayStore, roomID: String, room: RelayRoom?, messages: List<RelayMessage>): List<RelayBot> {
+private fun workingBots(store: SummonStore, roomID: String, room: SummonRoom?, messages: List<SummonMessage>): List<SummonBot> {
     val jobs = if (store.selectedRoomID == roomID) store.jobs else emptyList()
     val replied = messages.filter { !it.isOwn && it.kind != "error" }.mapNotNull { it.jobId }.toSet()
     val ids = jobs.filter { it.isActive && it.id !in replied }.map { it.botId }.toMutableSet()
@@ -272,7 +272,7 @@ private fun workingBots(store: RelayStore, roomID: String, room: RelayRoom?, mes
     return store.bots.filter { it.id in ids && !it.isPaused }
 }
 
-private fun workingStatus(store: RelayStore, roomID: String, bot: RelayBot, now: Instant): String {
+private fun workingStatus(store: SummonStore, roomID: String, bot: SummonBot, now: Instant): String {
     val job = if (store.selectedRoomID == roomID) store.jobs.lastOrNull { it.botId == bot.id && it.isActive } else null
     val run = store.agentRuns.lastOrNull {
         it.roomId == roomID && it.botId == bot.id && it.isActive && (job?.taskId == null || job.taskId == it.id || job.agentRunId == it.id)
@@ -292,10 +292,10 @@ private fun workingStatus(store: RelayStore, roomID: String, bot: RelayBot, now:
         if (listOf("write_file", "edit_file", "apply_patch", "create_file").any { name.contains(it) }) return "正在敲敲打打"
         if (listOf("search", "browse", "fetch", "knowledge").any { name.contains(it) }) return "正在翻箱倒柜找资料"
         if (listOf("read", "list_files", "resource").any { name.contains(it) }) return "正在认真翻笔记"
-        if (listOf("relay", "chat", "consult", "send_message").any { name.contains(it) }) return "正在和小伙伴商量"
+        if (listOf("summon", "chat", "consult", "send_message").any { name.contains(it) }) return "正在和小伙伴商量"
     }
     val phrases = listOf("正在仔细分析", "正在认真琢磨", "正在组织语言", "正在纠结措辞")
-    val start = parseRelayDate(run?.startedAt ?: run?.createdAt ?: job?.createdAt)
+    val start = parseSummonDate(run?.startedAt ?: run?.createdAt ?: job?.createdAt)
     val elapsed = if (start == null) 0 else kotlin.math.max(0, now.epochSecond - start.epochSecond)
     return phrases[((elapsed / 6) % phrases.size).toInt()]
 }
@@ -313,7 +313,7 @@ private fun rememberNow(): androidx.compose.runtime.State<Instant> {
 }
 
 @Composable
-private fun MessageRow(store: RelayStore, roomID: String, message: RelayMessage, onReply: () -> Unit) {
+private fun MessageRow(store: SummonStore, roomID: String, message: SummonMessage, onReply: () -> Unit) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val bot = store.bots.firstOrNull { it.id == message.senderId }
@@ -329,7 +329,7 @@ private fun MessageRow(store: RelayStore, roomID: String, message: RelayMessage,
                 Row {
                     Text(if (message.isOwn) store.settings.userName else bot?.name ?: "系统", style = MaterialTheme.typography.labelMedium, color = Color(0xFF8E8E93))
                     Spacer(Modifier.width(8.dp))
-                    Text(formatRelayTime(message.createdAt), style = MaterialTheme.typography.labelSmall, color = Color(0xFF636366))
+                    Text(formatSummonTime(message.createdAt), style = MaterialTheme.typography.labelSmall, color = Color(0xFF636366))
                 }
                 message.replyTo?.let { replyID ->
                     val quoted = store.messagesForRoom(roomID).firstOrNull { it.id == replyID }
@@ -367,7 +367,7 @@ private fun MessageRow(store: RelayStore, roomID: String, message: RelayMessage,
 }
 
 @Composable
-private fun AttachmentRow(store: RelayStore, attachment: RelayAttachment) {
+private fun AttachmentRow(store: SummonStore, attachment: SummonAttachment) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var preview by remember(attachment.id) { mutableStateOf<android.graphics.Bitmap?>(null) }
@@ -409,10 +409,10 @@ private fun AttachmentRow(store: RelayStore, attachment: RelayAttachment) {
 }
 
 private suspend fun uploadUris(
-    store: RelayStore,
+    store: SummonStore,
     uris: List<Uri>,
-    current: List<RelayAttachment>,
-    update: (List<RelayAttachment>) -> Unit,
+    current: List<SummonAttachment>,
+    update: (List<SummonAttachment>) -> Unit,
     error: (String) -> Unit,
     busy: (Boolean) -> Unit,
 ) {

@@ -151,7 +151,7 @@ export async function startGateway(options={}) {
   async function handleApi(method,path,body={},params=new URLSearchParams()) {
     if(quiescing&&!['GET','HEAD'].includes(method))fail('Gateway is stopping; new work is unavailable',503);
     let match;
-    if(method==='GET'&&path==='/api/health')return {ok:true,service:'relay-capabilities'};
+    if(method==='GET'&&path==='/api/health')return {ok:true,service:'summon-capabilities'};
     if(method==='GET'&&path==='/api/usage')return tokenUsage(params);
     if(path==='/api/catalog'){
       if(method==='GET')return catalog.search({query:params.get('query')||'',kind:params.get('kind')||undefined,scopeRefs:params.getAll('scopeRef'),offset:Number(params.get('offset')||0),limit:Number(params.get('limit')||40)},params.get('botId')||'controller');
@@ -247,7 +247,7 @@ export async function startGateway(options={}) {
       if(req.method==='POST'&&path==='/mcp'){
         if(body.jsonrpc!=='2.0'||typeof body.method!=='string')return json(res,400,{jsonrpc:'2.0',id:body.id??null,error:{code:-32600,message:'Invalid JSON-RPC request'}});
         if(body.id===undefined){res.writeHead(202);res.end();return;}
-        try{let result;if(body.method==='initialize')result={protocolVersion:['2025-03-26','2024-11-05','2025-06-18'].includes(body.params?.protocolVersion)?body.params.protocolVersion:'2025-03-26',capabilities:{tools:{}},serverInfo:{name:'relay-capabilities',version:'0.2.0'}};
+        try{let result;if(body.method==='initialize')result={protocolVersion:['2025-03-26','2024-11-05','2025-06-18'].includes(body.params?.protocolVersion)?body.params.protocolVersion:'2025-03-26',capabilities:{tools:{}},serverInfo:{name:'summon-capabilities',version:'0.2.0'}};
           else if(body.method==='ping')result={};else if(body.method==='tools/list')result={tools:visibleTools(actor).map(({name,description,inputSchema})=>({name,description,inputSchema}))};
           else if(body.method==='tools/call'){try{const value=await callTool(body.params?.name,body.params?.arguments||{},actor);result={content:[{type:'text',text:JSON.stringify(value)}],isError:false};}catch(error){result={content:[{type:'text',text:error.message}],isError:true};}}
           else return json(res,200,{jsonrpc:'2.0',id:body.id,error:{code:-32601,message:'Method not found'}});return json(res,200,{jsonrpc:'2.0',id:body.id,result});

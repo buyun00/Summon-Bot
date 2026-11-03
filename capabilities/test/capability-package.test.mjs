@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { stageCapabilityPackage,verifyCapabilityPackage } from '../services/publish.mjs';
 
 test('capability package preserves imported files and rejects mutation under a published version',async t=>{
-  const root=await mkdtemp(join(tmpdir(),'relay-cap-package-'));t.after(()=>rm(root,{recursive:true,force:true}));
+  const root=await mkdtemp(join(tmpdir(),'summon-cap-package-'));t.after(()=>rm(root,{recursive:true,force:true}));
   const source=join(root,'source'),dataRoot=join(root,'data');await mkdir(source);
   await writeFile(join(source,'capability.json'),JSON.stringify({id:'sample',version:'v1',entry:'index.mjs',stateVersion:'1'}));
   await writeFile(join(source,'index.mjs'),"export { createCapability } from './implementation.mjs';\n");
@@ -22,7 +22,7 @@ test('capability package preserves imported files and rejects mutation under a p
 });
 
 test('capability package rejects runtime credentials, traversal and identity mismatch',async t=>{
-  const root=await mkdtemp(join(tmpdir(),'relay-cap-package-invalid-'));t.after(()=>rm(root,{recursive:true,force:true}));
+  const root=await mkdtemp(join(tmpdir(),'summon-cap-package-invalid-'));t.after(()=>rm(root,{recursive:true,force:true}));
   const source=join(root,'source'),dataRoot=join(root,'data');await mkdir(source);
   const spec={id:'sample',version:'v1',entry:'../outside.mjs'};await writeFile(join(source,'capability.json'),JSON.stringify(spec));
   await assert.rejects(stageCapabilityPackage({packageRoot:source,dataRoot,id:'sample',version:'v1'}),/contained/);

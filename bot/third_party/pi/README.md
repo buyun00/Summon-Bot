@@ -1,4 +1,4 @@
-# Pi sources used by @relay/bot
+# Pi sources used by @summon/bot
 
 The original files in `upstream/` come from earendil-works/pi v1.3.0, commit
 `71023aec1546d6d677a65669c5665c0927ce0dd0`. Every selected file was compared byte for
@@ -20,7 +20,7 @@ development check.
 Local boundaries: no Pi CLI/TUI, JSONL database, home-directory discovery, package
 manager, login flow or background model-catalog refresh is imported. Source
 session-manager contains current-format context projection only. Bot uses its SQLite
-state. Relay uses Pi message projection, token estimates and tool execution.
+state. Summon Bot uses Pi message projection, token estimates and tool execution.
 Context compaction now runs a fresh temporary dialogue in
 `src/context/maintenance.mjs`, writing the current work's Markdown; the previous
 SQLite-summary lifecycle adapter has been removed. Original raw messages and

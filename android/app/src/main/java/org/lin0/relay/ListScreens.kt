@@ -92,8 +92,8 @@ enum class WorkspaceSection(val title: String, val icon: ImageVector) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConversationListScreen(
-    store: RelayStore,
-    updater: RelayAppUpdater,
+    store: SummonStore,
+    updater: SummonAppUpdater,
     onOpenUsage: () -> Unit,
     onOpenRoom: (String) -> Unit,
     onOpenWorkspace: (WorkspaceSection) -> Unit,
@@ -115,7 +115,7 @@ fun ConversationListScreen(
         .sortedByDescending { directRoom(store, it)?.lastMessage?.createdAt.orEmpty() }
     val systemBots = store.bots.filter { !it.presetId.isNullOrEmpty() && matches("${it.name} ${it.role}") }
     val peers = store.rooms.filter { it.kind == "dm" && !it.members.contains("user") && matches(it.name) }
-    val menuHeight = (LocalConfiguration.current.screenHeightDp * 100f / LocalRelayDisplay.current.zoom * .7f).dp
+    val menuHeight = (LocalConfiguration.current.screenHeightDp * 100f / LocalSummonDisplay.current.zoom * .7f).dp
 
     Scaffold(
         containerColor = Color.Black,
@@ -253,7 +253,7 @@ fun ConversationListScreen(
 }
 
 @Composable
-private fun GroupGrid(groups: List<RelayRoom>, bots: List<RelayBot>, onOpen: (String) -> Unit) {
+private fun GroupGrid(groups: List<SummonRoom>, bots: List<SummonBot>, onOpen: (String) -> Unit) {
     Column(Modifier.padding(horizontal = 28.dp, vertical = 16.dp)) {
         groups.chunked(2).forEach { row ->
             Row(Modifier.fillMaxWidth()) {
@@ -271,7 +271,7 @@ private fun GroupGrid(groups: List<RelayRoom>, bots: List<RelayBot>, onOpen: (St
 }
 
 @Composable
-private fun ContactRow(store: RelayStore, bot: RelayBot, onClick: () -> Unit) {
+private fun ContactRow(store: SummonStore, bot: SummonBot, onClick: () -> Unit) {
     val room = directRoom(store, bot)
     Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 22.dp, vertical = 19.dp), verticalAlignment = Alignment.CenterVertically) {
         MemberAvatar(bot, 50.dp)
@@ -279,7 +279,7 @@ private fun ContactRow(store: RelayStore, bot: RelayBot, onClick: () -> Unit) {
         Column(Modifier.weight(1f)) {
             Row {
                 Text(bot.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f), maxLines = 1)
-                Text(formatRelayTime(room?.lastMessage?.createdAt), color = Color(0xFF636366), style = MaterialTheme.typography.labelSmall)
+                Text(formatSummonTime(room?.lastMessage?.createdAt), color = Color(0xFF636366), style = MaterialTheme.typography.labelSmall)
             }
             val preview = if (bot.status == "paused") "已暂停" else preview(room, bot)
             Text(preview, color = Color(0xFF8E8E93), maxLines = 1)
@@ -287,10 +287,10 @@ private fun ContactRow(store: RelayStore, bot: RelayBot, onClick: () -> Unit) {
     }
 }
 
-private fun directRoom(store: RelayStore, bot: RelayBot) =
+private fun directRoom(store: SummonStore, bot: SummonBot) =
     store.rooms.firstOrNull { it.kind == "dm" && it.members.contains("user") && it.members.contains(bot.id) }
 
-private fun preview(room: RelayRoom?, bot: RelayBot): String {
+private fun preview(room: SummonRoom?, bot: SummonBot): String {
     val last = room?.lastMessage
     if (last != null) return last.content.ifEmpty { last.attachments.joinToString("、") { "[附件] ${it.name}" } }
     return bot.role.ifEmpty { "开始聊天" }
@@ -298,9 +298,9 @@ private fun preview(room: RelayRoom?, bot: RelayBot): String {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SettingsSheet(store: RelayStore, updater: RelayAppUpdater, onDismiss: () -> Unit) {
+private fun SettingsSheet(store: SummonStore, updater: SummonAppUpdater, onDismiss: () -> Unit) {
     val scope = rememberCoroutineScope()
-    val display = LocalRelayDisplay.current
+    val display = LocalSummonDisplay.current
     var baseURL by remember { mutableStateOf(store.settings.baseURL) }
     var token by remember { mutableStateOf(store.savedToken) }
     var userName by remember { mutableStateOf(store.settings.userName) }
@@ -309,10 +309,10 @@ private fun SettingsSheet(store: RelayStore, updater: RelayAppUpdater, onDismiss
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Color(0xFF1C1C1E)) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Image(painterResource(R.drawable.relay_icon), null, Modifier.size(52.dp).clip(RoundedCornerShape(14.dp)))
+                Image(painterResource(R.drawable.summon_icon), null, Modifier.size(52.dp).clip(RoundedCornerShape(14.dp)))
                 Spacer(Modifier.width(16.dp))
                 Column {
-                    Text("Relay Bot", style = MaterialTheme.typography.titleMedium)
+                    Text("Summon Bot", style = MaterialTheme.typography.titleMedium)
                     Text("Android 原生客户端", color = Color(0xFF8E8E93))
                 }
             }
@@ -323,7 +323,7 @@ private fun SettingsSheet(store: RelayStore, updater: RelayAppUpdater, onDismiss
             Text("服务连接", color = Color(0xFF8E8E93))
             OutlinedTextField(baseURL, { baseURL = it }, label = { Text("https://bot.lin0.org") }, modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), singleLine = true)
             OutlinedTextField(token, { token = it }, label = { Text("访问令牌（如服务需要）") }, modifier = Modifier.fillMaxWidth(), visualTransformation = PasswordVisualTransformation(), singleLine = true)
-            Text("填写现有 Relay Web 服务地址。直接连接网关时填写访问令牌，令牌保存在系统加密存储中。", color = Color(0xFF8E8E93), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 8.dp))
+            Text("填写现有 Summon Bot Web 服务地址。直接连接网关时填写访问令牌，令牌保存在系统加密存储中。", color = Color(0xFF8E8E93), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 8.dp))
             Text("实时消息  ${if (store.isConnected) "已连接" else "未连接"}")
             Text("Bot  ${store.bots.size}")
             Text("会话  ${store.rooms.size}")
@@ -352,12 +352,12 @@ private fun SettingsSheet(store: RelayStore, updater: RelayAppUpdater, onDismiss
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-fun CreateBotSheet(store: RelayStore, onOpenRoom: (String) -> Unit, onDismiss: () -> Unit) {
+fun CreateBotSheet(store: SummonStore, onOpenRoom: (String) -> Unit, onDismiss: () -> Unit) {
     val scope = rememberCoroutineScope()
     var name by remember { mutableStateOf("") }
-    var avatar by remember { mutableStateOf(RelayAvatar()) }
+    var avatar by remember { mutableStateOf(SummonAvatar()) }
     var busy by remember { mutableStateOf(false) }
-    var created by remember { mutableStateOf<RelayBot?>(null) }
+    var created by remember { mutableStateOf<SummonBot?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Color.Black) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -387,14 +387,14 @@ fun CreateBotSheet(store: RelayStore, onOpenRoom: (String) -> Unit, onDismiss: (
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun AvatarPicker(avatar: RelayAvatar, onChange: (RelayAvatar) -> Unit) {
+fun AvatarPicker(avatar: SummonAvatar, onChange: (SummonAvatar) -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val templates = remember { PaperLibrary.data(context).getJSONArray("templates") }
     var custom by remember { mutableStateOf(false) }
     FlowRow(horizontalArrangement=Arrangement.spacedBy(8.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
-        RelayAvatar.shapes.forEach { (id,label) ->
+        SummonAvatar.shapes.forEach { (id,label) ->
             val selected=avatar.image == null && PaperLibrary.role(avatar.shape)==id
-            Column(Modifier.width(68.dp).clip(RoundedCornerShape(10.dp)).background(if(selected) Color(0xFF454559) else Color.Transparent).relayPress { onChange(avatar.copy(shape=id,color=PaperLibrary.paperColor(context,avatar.color,avatar.shape),secondary="#E6DDC8",ink="#414A3C",paper="#FFFBF0",image=null)) }.padding(5.dp),horizontalAlignment=Alignment.CenterHorizontally) {
+            Column(Modifier.width(68.dp).clip(RoundedCornerShape(10.dp)).background(if(selected) Color(0xFF454559) else Color.Transparent).summonPress { onChange(avatar.copy(shape=id,color=PaperLibrary.paperColor(context,avatar.color,avatar.shape),secondary="#E6DDC8",ink="#414A3C",paper="#FFFBF0",image=null)) }.padding(5.dp),horizontalAlignment=Alignment.CenterHorizontally) {
                 BotAvatar(id,avatar.color,size=43.dp,secondary=avatar.secondary,ink=avatar.ink,paper=avatar.paper,animated=false)
                 Text(label,style=MaterialTheme.typography.labelSmall)
             }
@@ -405,8 +405,8 @@ fun AvatarPicker(avatar: RelayAvatar, onChange: (RelayAvatar) -> Unit) {
         for(i in 0 until templates.length()) {
             val t=templates.getJSONObject(i)
             val selected=avatar.color.equals(t.getString("color"),true) && avatar.secondary.equals(t.getString("secondary"),true)
-            Column(Modifier.width(68.dp).clip(RoundedCornerShape(8.dp)).background(if(selected) Color(0xFF454559) else Color.Transparent).relayPress { onChange(avatar.copy(color=t.getString("color"),secondary=t.getString("secondary"),ink=t.getString("ink"),paper=t.getString("paper"),image=null)) }.padding(4.dp)) {
-                Row { Box(Modifier.weight(1f).height(24.dp).background(relayColor(t.getString("color"))));Box(Modifier.weight(1f).height(24.dp).background(relayColor(t.getString("secondary")))) }
+            Column(Modifier.width(68.dp).clip(RoundedCornerShape(8.dp)).background(if(selected) Color(0xFF454559) else Color.Transparent).summonPress { onChange(avatar.copy(color=t.getString("color"),secondary=t.getString("secondary"),ink=t.getString("ink"),paper=t.getString("paper"),image=null)) }.padding(4.dp)) {
+                Row { Box(Modifier.weight(1f).height(24.dp).background(summonColor(t.getString("color"))));Box(Modifier.weight(1f).height(24.dp).background(summonColor(t.getString("secondary")))) }
                 Text(t.getString("name"),style=MaterialTheme.typography.labelSmall)
             }
         }
@@ -424,7 +424,7 @@ fun AvatarPicker(avatar: RelayAvatar, onChange: (RelayAvatar) -> Unit) {
 private fun CrewColorField(label:String,value:String,onChange:(String)->Unit) {
     var text by remember(value) { mutableStateOf(value) }
     val valid=Regex("#[0-9a-fA-F]{6}").matches(text)
-    OutlinedTextField(text,{ text=it; if(Regex("#[0-9a-fA-F]{6}").matches(it)) onChange(it.uppercase()) },label={Text(label)},supportingText={Text("HEX 颜色，如 #FFC18E")},isError=!valid,singleLine=true,leadingIcon={Box(Modifier.size(22.dp).background(relayColor(value)))},modifier=Modifier.fillMaxWidth())
+    OutlinedTextField(text,{ text=it; if(Regex("#[0-9a-fA-F]{6}").matches(it)) onChange(it.uppercase()) },label={Text(label)},supportingText={Text("HEX 颜色，如 #FFC18E")},isError=!valid,singleLine=true,leadingIcon={Box(Modifier.size(22.dp).background(summonColor(value)))},modifier=Modifier.fillMaxWidth())
     val rgb=value.removePrefix("#").toLongOrNull(16) ?: 0L
     listOf("R","G","B").forEachIndexed { i,name ->
         val shift=(2-i)*8
@@ -440,7 +440,7 @@ private fun CrewColorField(label:String,value:String,onChange:(String)->Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CreateRoomSheet(store: RelayStore, initialKind: String, onOpenRoom: (String) -> Unit, onDismiss: () -> Unit) {
+fun CreateRoomSheet(store: SummonStore, initialKind: String, onOpenRoom: (String) -> Unit, onDismiss: () -> Unit) {
     val scope = rememberCoroutineScope()
     var name by remember { mutableStateOf("") }
     var goal by remember { mutableStateOf("") }

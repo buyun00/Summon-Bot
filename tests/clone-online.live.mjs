@@ -5,8 +5,8 @@ import { randomUUID, randomBytes } from 'node:crypto';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, resolve, dirname, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startGateway } from '@relay/capabilities';
-import { BotStore, inspectBotIdentity } from '@relay/bot';
+import { startGateway } from '@summon/capabilities';
+import { BotStore, inspectBotIdentity } from '@summon/bot';
 
 const option = name => { const at = process.argv.indexOf(`--${name}`); return at < 0 ? undefined : process.argv[at + 1]; };
 const envFile = option('env-file');
@@ -19,8 +19,8 @@ for (const line of (await readFile(envFile, 'utf8')).split(/\r?\n/)) {
 }
 const apiKey = supplied.DEEPSEEK_API_KEY;
 if (!apiKey) throw new Error('Explicit env file does not configure DEEPSEEK_API_KEY');
-const previousModelKey = process.env.RELAY_CLONE_ONLINE_MODEL_KEY;
-process.env.RELAY_CLONE_ONLINE_MODEL_KEY = apiKey;
+const previousModelKey = process.env.SUMMON_CLONE_ONLINE_MODEL_KEY;
+process.env.SUMMON_CLONE_ONLINE_MODEL_KEY = apiKey;
 const releaseRoot = resolve(option('release-root') || join(dirname(fileURLToPath(import.meta.url)), '..'));
 const evidenceRoot = resolve(option('evidence-root') || 'D:/Relay-Bot-data/verification/refactor-20261021');
 const runId = `clone-online-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`;
@@ -71,7 +71,7 @@ async function externalClone(input) {
 try {
   await new Promise((done, reject) => { gate.once('error', reject); gate.listen(0, '127.0.0.1', done); });
   gateway = await startGateway({ dataRoot, releaseRoot, defaultCwd: join(dataRoot, 'workspace'), seed: false, restore: false,
-    model: { provider: 'deepseek', model: report.model, baseUrl: report.baseUrl, apiKeyEnv: 'RELAY_CLONE_ONLINE_MODEL_KEY', contextWindow: 128000, maxTokens: 2500 } });
+    model: { provider: 'deepseek', model: report.model, baseUrl: report.baseUrl, apiKeyEnv: 'SUMMON_CLONE_ONLINE_MODEL_KEY', contextWindow: 128000, maxTokens: 2500 } });
   const parentId = 'online-parent', childId = 'online-child';
   await gateway.manager.create({ id: parentId, roleId: 'engineer', name: '在线母体验收', prompt: '你是隔离验收中的工程 Bot。用户已授权以下精确操作。必须实际调用指定工具，按实际结果回复。不要联系同伴或创建其他任务。' });
   const baselineText = `继承基准 ${nonce}`;
@@ -147,7 +147,7 @@ try {
     catch (error) { report.cleanup.gatewayError = clean(error.message); report.passed = false; process.exitCode = 1; }
   }
   gate.closeAllConnections(); if (gate.listening) await new Promise(done => gate.close(done)); report.cleanup.fixtureClosed = true;
-  if (previousModelKey === undefined) delete process.env.RELAY_CLONE_ONLINE_MODEL_KEY; else process.env.RELAY_CLONE_ONLINE_MODEL_KEY = previousModelKey;
+  if (previousModelKey === undefined) delete process.env.SUMMON_CLONE_ONLINE_MODEL_KEY; else process.env.SUMMON_CLONE_ONLINE_MODEL_KEY = previousModelKey;
   report.finishedAt = at(); await save();
   process.stdout.write(JSON.stringify({ passed: report.passed, reportPath, dataRoot, realTasks: report.tasks.filter(task => task.status === 'completed').length }) + '\n');
 }

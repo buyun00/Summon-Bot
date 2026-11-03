@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ConversationListView: View {
-    @Environment(RelayStore.self) private var store
+    @Environment(SummonStore.self) private var store
     @State private var path: [String] = []
     @State private var query = ""
     @State private var showSettings = false
@@ -14,16 +14,16 @@ struct ConversationListView: View {
     @State private var workspaceSection: WorkspaceSection?
     @State private var openingBot = false
 
-    private var groups: [RelayRoom] {
+    private var groups: [SummonRoom] {
         store.rooms.filter { $0.kind != "dm" && matches("\($0.name) \($0.goal)") }
     }
 
-    private var contacts: [RelayBot] {
+    private var contacts: [SummonBot] {
         store.bots.filter { ($0.presetId ?? "").isEmpty && matches("\($0.name) \($0.role)") }
             .sorted { activityDate($0) > activityDate($1) }
     }
 
-    private var systemBots: [RelayBot] {
+    private var systemBots: [SummonBot] {
         store.bots.filter { !($0.presetId ?? "").isEmpty && matches("\($0.name) \($0.role)") }
     }
 
@@ -54,7 +54,7 @@ struct ConversationListView: View {
                                         Text(room.name).foregroundStyle(.primary)
                                         Spacer()
                                     }.padding(.vertical, 12)
-                                }.buttonStyle(RelayPressStyle())
+                                }.buttonStyle(SummonPressStyle())
                             }
                         }.foregroundStyle(.secondary).padding(22)
                     }
@@ -73,7 +73,7 @@ struct ConversationListView: View {
                 }
                 .padding(.bottom, 24)
             }
-            .background(RelayTheme.background)
+            .background(SummonTheme.background)
             .scrollDismissesKeyboard(.interactively)
             .refreshable { await store.refresh() }
             .navigationTitle("")
@@ -81,7 +81,7 @@ struct ConversationListView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button { showSettings = true } label: {
-                        Image(systemName: "person.crop.circle.fill").relayFont(.title2)
+                        Image(systemName: "person.crop.circle.fill").summonFont(.title2)
                     }.accessibilityLabel("设置")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
@@ -90,24 +90,24 @@ struct ConversationListView: View {
                         Button("创建群聊", systemImage: "person.2.badge.plus") { newRoomKind = "group" }
                         Button("发起深聊", systemImage: "square.stack.3d.up") { newRoomKind = "deep" }
                     } label: {
-                        Image(systemName: "plus").relayFont(.title2)
+                        Image(systemName: "plus").summonFont(.title2)
                     }.accessibilityLabel("新建")
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) { searchBar }
             .navigationDestination(for: String.self) { id in ChatView(roomID: id) }
-            .relaySheet(isPresented: $showSettings) { ConnectionSettingsView() }
-            .relaySheet(isPresented: $showUsage) { TokenUsageView() }
-            .relaySheet(isPresented: $showDisplay) { RelayDisplaySettingsView() }
-            .relaySheet(isPresented: $showCreateBot) {
+            .summonSheet(isPresented: $showSettings) { ConnectionSettingsView() }
+            .summonSheet(isPresented: $showUsage) { TokenUsageView() }
+            .summonSheet(isPresented: $showDisplay) { SummonDisplaySettingsView() }
+            .summonSheet(isPresented: $showCreateBot) {
                 CreateBotView { room in openRoom(room.id) }
                     .presentationDragIndicator(.visible)
                     .presentationCornerRadius(28)
             }
-            .relaySheet(isPresented: Binding(get: { newRoomKind != nil }, set: { if !$0 { newRoomKind = nil } })) {
+            .summonSheet(isPresented: Binding(get: { newRoomKind != nil }, set: { if !$0 { newRoomKind = nil } })) {
                 CreateRoomView(initialKind: newRoomKind ?? "group") { room in openRoom(room.id) }
             }
-            .relaySheet(item: $workspaceSection) { section in WorkspaceView(section: section) }
+            .summonSheet(item: $workspaceSection) { section in WorkspaceView(section: section) }
         }
     }
 
@@ -123,7 +123,7 @@ struct ConversationListView: View {
                 }.padding(.horizontal, 20)
             } else if !store.isConnected && !store.bots.isEmpty {
                 Label("已显示本机记录，正在连接…", systemImage: "wifi.slash")
-                    .relayFont(.footnote).foregroundStyle(.secondary).padding(.top, 10)
+                    .summonFont(.footnote).foregroundStyle(.secondary).padding(.top, 10)
             }
         }
     }
@@ -134,12 +134,12 @@ struct ConversationListView: View {
                 Button { openRoom(room.id) } label: {
                     VStack(spacing: 12) {
                         RoomAvatar(room: room, size: 96)
-                        Text(room.name).relayFont(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                        Text(room.name).summonFont(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                         if room.kind == "deep" {
-                            Text(room.status == "concluded" ? "已结束" : "深聊").relayFont(.caption2).foregroundStyle(.tertiary)
+                            Text(room.status == "concluded" ? "已结束" : "深聊").summonFont(.caption2).foregroundStyle(.tertiary)
                         }
                     }.frame(maxWidth: .infinity).padding(.vertical, 16)
-                }.buttonStyle(RelayPressStyle())
+                }.buttonStyle(SummonPressStyle())
             }
         }.padding(.horizontal, 42).padding(.top, 32).padding(.bottom, 24)
     }
@@ -156,7 +156,7 @@ struct ConversationListView: View {
                     Button("显示设置", systemImage: "textformat.size") { showDisplay = true }
                     Button("连接设置", systemImage: "network") { showSettings = true }
                 } label: {
-                    Image(systemName: "square.grid.2x2").relayFont(.title3).frame(minWidth: 44, minHeight: 44)
+                    Image(systemName: "square.grid.2x2").summonFont(.title3).frame(minWidth: 44, minHeight: 44)
                 }
                 .buttonStyle(.glass).buttonBorderShape(.circle)
                 .accessibilityLabel("连接应用与工作台")
@@ -175,7 +175,7 @@ struct ConversationListView: View {
         .padding(.horizontal, 20).padding(.bottom, 8)
     }
 
-    private func contact(_ bot: RelayBot) -> some View {
+    private func contact(_ bot: SummonBot) -> some View {
         let room = directRoom(bot)
         return Button {
             guard !openingBot else { return }
@@ -190,25 +190,25 @@ struct ConversationListView: View {
                 MemberAvatar(bot: bot, size: 50)
                 VStack(alignment: .leading, spacing: 7) {
                     HStack {
-                        Text(bot.name).relayFont(.title3, weight: .medium).foregroundStyle(.primary).lineLimit(1)
+                        Text(bot.name).summonFont(.title3, weight: .medium).foregroundStyle(.primary).lineLimit(1)
                         Spacer(minLength: 12)
-                        Text(RelayFormat.time(room?.lastMessage?.createdAt)).relayFont(.caption).foregroundStyle(.tertiary)
+                        Text(SummonFormat.time(room?.lastMessage?.createdAt)).summonFont(.caption).foregroundStyle(.tertiary)
                     }
                     Text(bot.status == "paused" ? "已暂停" : preview(room, bot: bot))
-                        .relayFont(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                        .summonFont(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
             .padding(.horizontal, 22).padding(.vertical, 19)
             .contentShape(Rectangle())
-        }.buttonStyle(RelayPressStyle())
+        }.buttonStyle(SummonPressStyle())
     }
 
     private func matches(_ text: String) -> Bool { query.isEmpty || text.localizedCaseInsensitiveContains(query) }
-    private func directRoom(_ bot: RelayBot) -> RelayRoom? {
+    private func directRoom(_ bot: SummonBot) -> SummonRoom? {
         store.rooms.first { $0.kind == "dm" && $0.members.contains("user") && $0.members.contains(bot.id) }
     }
-    private func activityDate(_ bot: RelayBot) -> String { directRoom(bot)?.lastMessage?.createdAt ?? "" }
-    private func preview(_ room: RelayRoom?, bot: RelayBot) -> String {
+    private func activityDate(_ bot: SummonBot) -> String { directRoom(bot)?.lastMessage?.createdAt ?? "" }
+    private func preview(_ room: SummonRoom?, bot: SummonBot) -> String {
         if let last = room?.lastMessage {
             return last.content.isEmpty ? last.attachments.map { "[附件] \($0.name)" }.joined(separator: "、") : last.content
         }

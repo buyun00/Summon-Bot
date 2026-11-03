@@ -7,7 +7,7 @@ const $ = (selector, root = document) => {
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)].filter(node => !node.closest('[data-motion-ghost]'));
 
 // Display preferences are local to this browser and independent for each layout.
-const UI_BUILD = '2026.11.03.4';
+const UI_BUILD = '2026.11.03.5';
 let displayDiagnosticSnapshot = null;
 function readViewportUnits() {
   const probe = document.createElement('div');
@@ -35,7 +35,7 @@ function captureDisplayDiagnostics() {
     zoom: getComputedStyle(root).zoom, keyboard: root.classList.contains('keyboard-open'), units,
     shell: measure('.app-shell'), composer: measure('.composer'), composerWrap: measure('.composer-wrap') };
 }
-const displayPreferenceKey = 'relay:display-preferences:v4';
+const displayPreferenceKey = 'summon:display-preferences:v4';
 const displayDefaults = { desktop: { zoom: 100, font: 100 }, mobile: { zoom: 100, font: 100 } };
 const displayBaseZoom = { desktop: 0.92, mobile: 1 };
 function normalizeDisplayPreferences(value) {
@@ -49,15 +49,15 @@ function readDisplayPreferences() {
   try {
     const saved = localStorage.getItem(displayPreferenceKey);
     if (saved) return normalizeDisplayPreferences(JSON.parse(saved));
-    const previous = JSON.parse(localStorage.getItem('relay:display-preferences:v3'));
+    const previous = JSON.parse(localStorage.getItem('summon:display-preferences:v3'));
     // Rebase saved preferences once: the former 115% is now the desktop default.
     // Keep custom sizes, font choices and mobile settings; the former default adopts the new size.
     if (previous?.desktop && typeof previous.desktop.zoom === 'number') previous.desktop.zoom = previous.desktop.zoom === 100 ? 100 : Math.round(previous.desktop.zoom / 1.15);
     const migrated = normalizeDisplayPreferences(previous);
     localStorage.setItem(displayPreferenceKey, JSON.stringify(migrated));
-    localStorage.removeItem('relay:display-preferences:v1');
-    localStorage.removeItem('relay:display-preferences:v2');
-    localStorage.removeItem('relay:display-preferences:v3');
+    localStorage.removeItem('summon:display-preferences:v1');
+    localStorage.removeItem('summon:display-preferences:v2');
+    localStorage.removeItem('summon:display-preferences:v3');
     return migrated;
   }
   catch { return normalizeDisplayPreferences(null); }
@@ -65,7 +65,7 @@ function readDisplayPreferences() {
 const displayMedia = matchMedia('(max-width:820px)');
 let displayPreferences = readDisplayPreferences();
 let displaySaved = true;
-const displayMode = () => window.RelayDesktop || !displayMedia.matches ? 'desktop' : 'mobile';
+const displayMode = () => window.SummonDesktop || !displayMedia.matches ? 'desktop' : 'mobile';
 function applyDisplayPreferences() {
   const mode = displayMode(), root = document.documentElement, settings = displayPreferences[mode];
   const zoom = displayBaseZoom[mode] * settings.zoom / 100;
@@ -202,7 +202,7 @@ function removeAttachment(key) {
   if (item?.preview) URL.revokeObjectURL(item.preview);
   ui.draftAttachments[ui.roomId] = items.filter(item => item.key !== key); render();
 }
-const updateDraftKey = 'relay:update-drafts';
+const updateDraftKey = 'summon:update-drafts';
 let updateDraftArmed = false;
 function preserveUpdateDrafts(persistent = false) {
   if (ui.sendingRooms.size) { toast('消息正在发送，请完成后再更新。'); return false; }
@@ -269,7 +269,7 @@ async function sendLocalMessage(entry, scrollToEnd = false) {
   render();
   const messages = $('.messages');
   if (scrollToEnd && messages && ui.roomId === entry.roomId) {
-    messages._relayChatScroll?.toBottom(true);
+    messages._summonChatScroll?.toBottom(true);
   }
   try {
     const message = await api(`/api/rooms/${encodeURIComponent(entry.roomId)}/messages`, 'POST', { ...entry.payload, clientId: entry.clientId });
@@ -288,11 +288,11 @@ let refreshTimer;
 const avatarSaves = new Map();
 let avatarSaveEpoch = 0;
 ui.avatarSelectionRevision = 0;
-function captureMotion(root) { return window.RelayMotion?.capture(root) || (window.RelayAvatars?.capture?.(root), null); }
-function hydrateMotion(root, before) { if (window.RelayMotion) window.RelayMotion.hydrate(root, before || undefined); else window.RelayAvatars?.hydrate?.(root); }
-function showModal(modal) { if (window.RelayMotion) window.RelayMotion.openDialog(modal); else { if (!modal.open) modal.showModal(); window.RelayAvatars?.hydrate?.(modal); } }
-async function closeModal(modal = $('#modal')) { if (window.RelayMotion) await window.RelayMotion.closeDialog(modal); else modal.close(); }
-const renderSignature = html => html.replace(/relay-avatar-clip-\d+/g, 'relay-avatar-clip').replace(/crew-\d+/g, 'crew-id').replace(/paper-avatar-\d+/g,'paper-avatar-id');
+function captureMotion(root) { return window.SummonMotion?.capture(root) || (window.SummonAvatars?.capture?.(root), null); }
+function hydrateMotion(root, before) { if (window.SummonMotion) window.SummonMotion.hydrate(root, before || undefined); else window.SummonAvatars?.hydrate?.(root); }
+function showModal(modal) { if (window.SummonMotion) window.SummonMotion.openDialog(modal); else { if (!modal.open) modal.showModal(); window.SummonAvatars?.hydrate?.(modal); } }
+async function closeModal(modal = $('#modal')) { if (window.SummonMotion) await window.SummonMotion.closeDialog(modal); else modal.close(); }
+const renderSignature = html => html.replace(/summon-avatar-clip-\d+/g, 'summon-avatar-clip').replace(/crew-\d+/g, 'crew-id').replace(/paper-avatar-\d+/g,'paper-avatar-id');
 
 
 function formatTime(value, date = false) {
@@ -310,7 +310,7 @@ function contactTime(value) {
 function formatDay(value) { const time = new Date(value); return Number.isNaN(time.getTime()) ? '' : new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(time); }
 function botById(id) { return state.bots.find(bot => bot.id === id); }
 function roomById(id) { return state.rooms.find(room => room.id === id); }
-function nameOf(id) { return id === 'user' ? ownerName() : (String(id || '').startsWith('executor:') ? '专业执行端' : botById(id)?.name || (id === 'system' ? 'Relay' : id || 'Relay')); }
+function nameOf(id) { return id === 'user' ? ownerName() : (String(id || '').startsWith('executor:') ? '专业执行端' : botById(id)?.name || (id === 'system' ? 'Summon Bot' : id || 'Summon Bot')); }
 function statusPill(value) { return `<span class="status ${esc(value)}">${esc(labels[value] || value || '未知')}</span>`; }
 function listText(value) { return Array.isArray(value) ? value.join('、') : String(value || ''); }
 function emptyState(title, description, button = '', iconName = 'spark') { return `<div class="empty-state">${icon(iconName, 32)}<h3>${esc(title)}</h3><p>${esc(description)}</p>${button}</div>`; }
@@ -339,7 +339,7 @@ function captureChatScroll(messages) {
   if (!messages) return null;
   const top = messages.getBoundingClientRect().top;
   const item = [...messages.querySelectorAll('[data-message-id],[data-agent-run-id]')].find(node => node.getBoundingClientRect().bottom > top);
-  const visible = messages.clientHeight > 0, tracking = messages._relayChatScroll;
+  const visible = messages.clientHeight > 0, tracking = messages._summonChatScroll;
   const nearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 40;
   return {
     top: messages.scrollTop,
@@ -369,10 +369,10 @@ function restoreChatScroll(messages, saved) {
   }
 }
 function installChatScrollTracking(messages, followBottom) {
-  if (messages._relayChatScroll) {
-    messages._relayChatScroll.followBottom = followBottom;
-    messages._relayChatScroll.lastTop = messages.scrollTop;
-    messages._relayChatScroll.schedule();
+  if (messages._summonChatScroll) {
+    messages._summonChatScroll.followBottom = followBottom;
+    messages._summonChatScroll.lastTop = messages.scrollTop;
+    messages._summonChatScroll.schedule();
     return;
   }
   let frame = 0, scrollFrom = 0, scrollStarted = 0, pointerY = null, draggingScrollbar = false;
@@ -434,9 +434,9 @@ function installChatScrollTracking(messages, followBottom) {
     messages.removeEventListener('keydown', onKey);
     messages.removeEventListener('load', schedule, true);
     messages.removeEventListener('error', schedule, true);
-    delete messages._relayChatScroll;
+    delete messages._summonChatScroll;
   };
-  messages._relayChatScroll = tracking;
+  messages._summonChatScroll = tracking;
   schedule();
 }
 function restoreConversationScroll(messages, saved, { sameView, ready, wasReady }) {
@@ -456,16 +456,16 @@ function render() {
   if (ui.composing && document.activeElement?.id === 'message-input' && document.activeElement.form?.dataset.roomId === ui.roomId) { ui.renderDeferred = true; return; }
   ui.renderDeferred = false;
   const saved = preserveView();
-  const navigation = window.RelayMotion?.captureNavigation(ui.view === 'chat' ? (ui.mobileRoom ? `chat:${ui.roomId}` : 'list') : ui.view);
+  const navigation = window.SummonMotion?.captureNavigation(ui.view === 'chat' ? (ui.mobileRoom ? `chat:${ui.roomId}` : 'list') : ui.view);
   markCurrentRoomRead(); renderTopbar();
-  const views = { chat: renderChat, members: renderMembers, catalog: renderCatalog, works: renderWorks, knowledge: renderKnowledge, routines: renderRoutines, usage: () => globalThis.RelayUsage.render({ esc, icon }) };
+  const views = { chat: renderChat, members: renderMembers, catalog: renderCatalog, works: renderWorks, knowledge: renderKnowledge, routines: renderRoutines, usage: () => globalThis.SummonUsage.render({ esc, icon }) };
   const key = `${ui.view}:${ui.view === 'chat' ? ui.roomId : ui.view === 'members' ? ui.botId : ui.view === 'works' ? ui.workId : ''}`;
   const main = $('#main-content'), html = views[ui.view]();
   const signature = renderSignature(html);
   const restoreConversation = () => restoreConversationScroll($('.messages'), saved.chatScroll, { sameView: saved.key === key, ready: ui.messagesRoomId === ui.roomId, wasReady: saved.chatReady });
-  if (ui.lastMainHtml === signature && main.dataset.viewKey === key) { restoreFocus(saved); restoreConversation(); window.RelayMotion?.finishNavigation(navigation); return; }
+  if (ui.lastMainHtml === signature && main.dataset.viewKey === key) { restoreFocus(saved); restoreConversation(); window.SummonMotion?.finishNavigation(navigation); return; }
   const motion = captureMotion(main);
-  $('.messages')?._relayChatScroll?.stop();
+  $('.messages')?._summonChatScroll?.stop();
   main.innerHTML = html; ui.lastMainHtml = signature;
   main.dataset.viewKey = key;
   if (saved.key === key) for (const field of saved.fields) { const target = document.getElementById(field.id); if (target) target.value = field.value; }
@@ -477,7 +477,7 @@ function render() {
   const panel = $('.detail-panel:not([data-motion-ghost])'); if (panel && panel.dataset.section === saved.panelSection) panel.scrollTop = saved.panelTop || 0;
   restoreFocus(saved);
   restoreConversation();
-  window.RelayMotion?.finishNavigation(navigation);
+  window.SummonMotion?.finishNavigation(navigation);
 }
 function restoreFocus(saved) { if (!saved.focusId) return; const target = document.getElementById(saved.focusId); if (target) { target.focus({ preventScroll: true }); if (saved.start != null && target.setSelectionRange && !['number','email','file'].includes(target.type)) target.setSelectionRange(saved.start, saved.end); } }
 function updateComposerButton(input) {
@@ -568,7 +568,7 @@ function renderAgentContext(run) {
 }
 function renderAgentRun(run, { showBot = false } = {}) {
   const open = ui.agentRunsOpen.has(run.id), entry = ui.agentRunDetails.get(run.id), detail = entry?.detail, cancelling = ui.agentRunsCancelling.has(run.id);
-  const toolNames = { read_file: '读取文件', write_file: '写入文件', edit_file: '修改文件', list_files: '查看目录', search_files: '搜索文件', search_text: '搜索内容', execute_command: '执行命令', run_command: '执行命令', relay_action: '成员协作', search_knowledge: '搜索知识', read_resource: '读取技能资源', read_session_history: '读取会话原文' };
+  const toolNames = { read_file: '读取文件', write_file: '写入文件', edit_file: '修改文件', list_files: '查看目录', search_files: '搜索文件', search_text: '搜索内容', execute_command: '执行命令', run_command: '执行命令', summon_action: '成员协作', search_knowledge: '搜索知识', read_resource: '读取技能资源', read_session_history: '读取会话原文' };
   const tools = Array.isArray(detail?.tools) ? detail.tools : [];
   const content = open ? `<div class="agent-run-body" id="agent-run-${esc(run.id)}">${run.workspace ? `<p class="agent-workspace">工作目录 <code>${esc(run.workspace)}</code></p>` : ''}${entry?.loading ? '<p class="agent-run-note" role="status">正在读取执行记录…</p>' : ''}${entry?.error ? `<div class="agent-run-error">无法读取执行记录：${esc(entry.error)} <button class="text-button" data-action="refresh-agent-run" data-id="${esc(run.id)}">重试</button></div>` : ''}${renderAgentContext(detail || run)}${tools.map(tool => {
     const key = `${run.id}:${tool.id || tool.toolCallId}`, toolOpen = ui.agentToolsOpen.has(key), input = toolOpen ? agentToolText(tool.args) : '', result = toolOpen ? agentToolText(tool.result) : '';
@@ -589,7 +589,7 @@ async function refresh(force = false) {
     if (!synced) return;
     const next = synced.snapshot;
     ui.workspaceSnapshot = next; ui.workspaceCursor = synced.cursor;
-    void globalThis.RelayCache?.writeWorkspace(synced);
+    void globalThis.SummonCache?.writeWorkspace(synced);
     Object.assign(state, structuredClone(next)); for (const [id, pending] of avatarSaves) { const bot = state.bots?.find(item => item.id === id); if (bot && (pending.running || pending.error || pending.savedVersion !== pending.version || avatarReadEpoch < pending.confirmedEpoch)) bot.avatar = { ...pending.target }; else if (!pending.running && !pending.error) avatarSaves.delete(id); } state.bots ||= []; state.rooms ||= []; state.works ||= []; state.agentRuns ||= []; state.routines ||= []; state.knowledge ||= { nodes: [], edges: [] };
     const preferred = defaultConversationId();
     if (!roomById(ui.roomId) || !ui.roomChosenByUser && preferred !== ui.roomId) { ui.roomId = preferred; ui.reply = null; await restoreRoomMessages(ui.roomId); }
@@ -604,7 +604,7 @@ async function refresh(force = false) {
   finally { ui.refreshing = false; if (ui.refreshAgain) { ui.refreshAgain = false; scheduleRefresh(); } }
 }
 async function loadCurrent() {
-  if (ui.view === 'usage') { await globalThis.RelayUsage.load(api); return; }
+  if (ui.view === 'usage') { await globalThis.SummonUsage.load(api); return; }
   if (ui.view === 'catalog') {
     const query = new URLSearchParams({query:ui.catalogQuery,kind:ui.catalogKind});
     const response = await api(`/api/catalog?${query}`);
@@ -622,7 +622,7 @@ async function loadCurrent() {
     const response = synced.snapshot;
     if (sequence !== ui.roomReadSeq[id]) return;
     const cached = { snapshot: response, cursor: synced.cursor, messages: Array.isArray(response) ? response : response.messages || [], jobs: response.jobs || [] }; ui.messageCache.set(id, cached);
-    void globalThis.RelayCache?.writeRoom(id, synced);
+    void globalThis.SummonCache?.writeRoom(id, synced);
     mergedRoomMessages(id, cached.messages);
     if (id === ui.roomId) { ui.messagesRoomId = id; ui.messages = cached.messages; ui.roomJobs = cached.jobs; refreshOpenAgentRuns(); }
     const bot = profileBot();
@@ -648,8 +648,8 @@ function defaultConversationId() {
 async function restoreRoomMessages(id) {
   const generation = ui.historyGeneration || 0;
   let cached = ui.messageCache.get(id);
-  if (!cached && id && globalThis.RelayCache) {
-    const stored = await globalThis.RelayCache.readRoom(id);
+  if (!cached && id && globalThis.SummonCache) {
+    const stored = await globalThis.SummonCache.readRoom(id);
     if (generation !== (ui.historyGeneration || 0)) return;
     if (stored && (stored.snapshot.historyEpoch ?? null) === (ui.historyEpoch ?? null)) {
       cached = { ...stored, messages: stored.snapshot.messages, jobs: stored.snapshot.jobs };
@@ -685,18 +685,18 @@ async function acceptHistoryEpoch(response, requestedGeneration) {
     if (state.runtime) state.runtime.jobs = [];
     for (const room of state.rooms || []) delete room.lastMessage;
   }
-  try { sessionStorage.removeItem('relay:update-drafts'); } catch { /* Storage may be blocked. */ }
+  try { sessionStorage.removeItem('summon:update-drafts'); } catch { /* Storage may be blocked. */ }
   const session = clientSessionSnapshot();
   ui.lastSessionSignature = JSON.stringify(session);
   // UI updates immediately; durable cache clearing is a barrier for the new
   // epoch's subsequent snapshot/session writes. Unsent drafts are retained.
-  const reset = globalThis.RelayCache?.resetHistory?.(epoch, session);
+  const reset = globalThis.SummonCache?.resetHistory?.(epoch, session);
   render();
   await reset;
   return true;
 }
 async function requestSyncedSnapshot(path, previous) {
-  const cache = globalThis.RelayCache;
+  const cache = globalThis.SummonCache;
   const read = async cursor => {
     const generation = ui.historyGeneration || 0;
     const response = await api(cache ? `${path}?sync=1${cursor ? `&since=${encodeURIComponent(cursor)}` : ''}` : path);
@@ -716,7 +716,7 @@ async function requestSyncedSnapshot(path, previous) {
   }
 }
 function persistClientSession() {
-  const cache = globalThis.RelayCache;
+  const cache = globalThis.SummonCache;
   if (!cache || !ui.cacheReady) return;
   const session = clientSessionSnapshot();
   const signature = JSON.stringify(session);
@@ -745,7 +745,7 @@ function restoreClientSession(saved) {
 }
 async function restoreCachedWorkspace() {
   try {
-    const cache = globalThis.RelayCache;
+    const cache = globalThis.SummonCache;
     if (!cache) return;
     await cache.ready();
     const [workspace, session] = await Promise.all([cache.readWorkspace(), cache.readSession()]);
@@ -967,7 +967,7 @@ function openEventForm() {
 }
 
 async function act(action, element) {
-  if (action.startsWith('usage-')) return globalThis.RelayUsage.act(action, element, api, render);
+  if (action.startsWith('usage-')) return globalThis.SummonUsage.act(action, element, api, render);
   if (action.startsWith('catalog-')) return catalogAction(action, element);
   const id = element?.dataset.id;
   if (action === 'attach-file') return chooseAttachments();
@@ -1002,14 +1002,14 @@ async function act(action, element) {
   if (['avatar-shape', 'avatar-color', 'avatar-template', 'avatar-random', 'avatar-reset'].includes(action)) {
     ui.avatarSelectionRevision++;
     if (action === 'avatar-shape') ui.avatarDraft = { ...ui.avatarDraft, shape: element.dataset.shape, image: null };
-    if (action === 'avatar-template') { const template = window.RelayAvatars.templates.find(p => p.id === element.dataset.template); if (template) { const {id, name, ...palette} = template; ui.avatarDraft = { ...ui.avatarDraft, ...palette, image: null }; } }
+    if (action === 'avatar-template') { const template = window.SummonAvatars.templates.find(p => p.id === element.dataset.template); if (template) { const {id, name, ...palette} = template; ui.avatarDraft = { ...ui.avatarDraft, ...palette, image: null }; } }
     if (action === 'avatar-color') ui.avatarDraft = { ...ui.avatarDraft, color: element.dataset.color, image: null };
-    if (action === 'avatar-random') { const shapes = window.RelayAvatars.shapes, colors = window.RelayAvatars.colors; ui.avatarDraft = { shape: shapes[Math.floor(Math.random() * shapes.length)].id, color: colors[Math.floor(Math.random() * colors.length)], image: null }; }
-    if (action === 'avatar-reset') ui.avatarDraft = { ...window.RelayAvatars.defaults(profileBot()?.id, state.bots.findIndex(bot => bot.id === profileBot()?.id)), image: null };
+    if (action === 'avatar-random') { const shapes = window.SummonAvatars.shapes, colors = window.SummonAvatars.colors; ui.avatarDraft = { shape: shapes[Math.floor(Math.random() * shapes.length)].id, color: colors[Math.floor(Math.random() * colors.length)], image: null }; }
+    if (action === 'avatar-reset') ui.avatarDraft = { ...window.SummonAvatars.defaults(profileBot()?.id, state.bots.findIndex(bot => bot.id === profileBot()?.id)), image: null };
     return updateAvatarPicker(element.dataset.mode || 'edit');
   }
   if (action === 'copy-conversation') { await navigator.clipboard.writeText(mergedRoomMessages(ui.roomId, ui.messages).map(message => `${nameOf(message.senderId)} · ${formatTime(message.createdAt, true)}\n${message.content}`).join('\n\n')); return toast('会话文字已复制'); }
-  if (action === 'client-downloads') return window.RelayClients?.open();
+  if (action === 'client-downloads') return window.SummonClients?.open();
   if (action === 'update-app') { if (!preserveUpdateDrafts()) return; location.reload(); return; }
   if (action === 'show-owner' || action === 'display-settings') return openDisplaySettings();
   if (action === 'copy-display-diagnostics') {
@@ -1032,7 +1032,7 @@ async function act(action, element) {
   if (action === 'save-message') return openNodeForm(null, mergedRoomMessages(ui.roomId, ui.messages).find(message => message.id === id && !message._delivery));
   if (action === 'conclude-room') { element.disabled = true; try { await api(`/api/rooms/${encodeURIComponent(ui.roomId)}/conclude`, 'POST', {}); toast('深聊结束请求已提交，结论将保留在会话中。'); await refresh(); } finally { element.disabled = false; } return; }
   if (action === 'new-bot') return openCreateBot();
-  if (action === 'avatar-greet') return window.RelayAvatars?.greet(element);
+  if (action === 'avatar-greet') return window.SummonAvatars?.greet(element);
   if (action === 'edit-bot') return openBotForm(id);
   if (action === 'bot-contacts') return openBotContacts(id);
   if (action === 'select-bot' || action === 'open-profile') { ui.botId = id; ui.memories = []; return navigate('members'); }
@@ -1148,9 +1148,9 @@ Object.assign(icons, {
 function botAvatar(botOrId) {
   const bot = typeof botOrId === 'string' ? botById(botOrId) : botOrId;
   const index = Math.max(0, state.bots.findIndex(item => item.id === bot?.id));
-  return window.RelayAvatars.normalize({ ...window.RelayAvatars.defaults(bot?.id || '', index), ...(bot?.avatar || {}) });
+  return window.SummonAvatars.normalize({ ...window.SummonAvatars.defaults(bot?.id || '', index), ...(bot?.avatar || {}) });
 }
-function face(config, size = 60, options = {}) { return window.RelayAvatars ? window.RelayAvatars.render(config, size, options) : `<span class="face-fallback" style="width:${size}px;height:${size}px;background:${esc(config?.color || '#959595')}"></span>`; }
+function face(config, size = 60, options = {}) { return window.SummonAvatars ? window.SummonAvatars.render(config, size, options) : `<span class="face-fallback" style="width:${size}px;height:${size}px;background:${esc(config?.color || '#959595')}"></span>`; }
 function avatar(id, large = false, key = `bot:${id}`) {
   const size = typeof large === 'number' ? large : large ? 104 : 60;
   if (id === 'user') return `<img class="user-avatar" src="/icons/user-avatar.jpg?v=owner-20261028" width="${size}" height="${size}" style="width:${size}px;height:${size}px" alt="" aria-hidden="true">`;
@@ -1208,12 +1208,12 @@ function roomPreview(room) {
 function roomReadMarkers() {
   if (ui.readMarkersEpoch !== ui.historyEpoch || !ui.readMarkers) {
     ui.readMarkersEpoch = ui.historyEpoch;
-    try { const saved = JSON.parse(localStorage.getItem('relay:room-read-markers:v1')); ui.readMarkers = saved?.historyEpoch === (ui.historyEpoch ?? null) ? saved.rooms || {} : {}; }
+    try { const saved = JSON.parse(localStorage.getItem('summon:room-read-markers:v1')); ui.readMarkers = saved?.historyEpoch === (ui.historyEpoch ?? null) ? saved.rooms || {} : {}; }
     catch { ui.readMarkers = {}; }
   }
   return ui.readMarkers;
 }
-function saveRoomReadMarkers() { try { localStorage.setItem('relay:room-read-markers:v1', JSON.stringify({ historyEpoch: ui.historyEpoch ?? null, rooms: ui.readMarkers })); } catch {} }
+function saveRoomReadMarkers() { try { localStorage.setItem('summon:room-read-markers:v1', JSON.stringify({ historyEpoch: ui.historyEpoch ?? null, rooms: ui.readMarkers })); } catch {} }
 function markCurrentRoomRead() {
   if (ui.view !== 'chat' || document.hidden || displayMedia.matches && !ui.mobileRoom || ui.messagesRoomId !== ui.roomId) return;
   const last = mergedRoomMessages(ui.roomId, ui.messages).filter(message => !message._delivery).at(-1);
@@ -1405,7 +1405,7 @@ function renderChatMessage(message, { isGroup, previousMessage, grouped, convers
 function renderChat() {
   const room = roomById(ui.roomId), bot = currentBot(), isGroup = room?.kind !== 'dm' || !room?.members?.includes('user');
   const members = (room?.members || []).filter(id => id !== 'user').map(botById).filter(Boolean);
-  const title = bot?.name || room?.name || 'Summon';
+  const title = bot?.name || room?.name || 'Summon Bot';
   const accent = currentAccent();
   const activities = (state.activity || []).filter(message => message.returnTo?.roomId === ui.roomId && message.roomId !== ui.roomId && message.toBotId).map(message => ({ ...message, _activity: 'sent' }));
   const conversationMessages = mergedRoomMessages(ui.roomId, ui.messages);
@@ -1454,19 +1454,19 @@ function renderDetailPanel(room, bot) {
   return `<aside class="detail-panel" data-section="${ui.avatarEditing ? `avatar:${ui.avatarTab}` : tab}:${bot?.id || room?.id}"><div class="detail-panel-inner"><div class="detail-panel-toolbar"><button class="round-button" data-action="copy-conversation" title="复制会话文字" aria-label="复制会话文字">${icon('copy', 21)}</button><button class="round-button" data-action="close-details" title="关闭详情" aria-label="关闭详情">${icon('close', 26)}</button></div><div class="profile-identity ${ui.avatarEditing ? 'editing-avatar' : ''}">${isBot ? `<button class="profile-avatar" data-action="edit-avatar" data-id="${esc(bot.id)}" aria-label="编辑头像" title="编辑头像">${face(selectedAvatar, 104, { key: 'slot:profile', identity: `bot:${bot.id}`, preview: true, intro: true })}<span class="avatar-pencil">${icon('edit', 23)}</span></button>` : groupAvatar(room, 104)}${!ui.avatarEditing ? `<h2>${esc(bot?.name || room?.name)}</h2>${isBot ? `<button class="profile-subtitle" data-action="edit-bot" data-id="${esc(bot.id)}">${esc(listText(bot.expertise) || '添加专业标签')}</button>` : ''}` : ''}</div>${!ui.avatarEditing ? `<nav class="profile-tabs" aria-label="详情分类">${[{ id: 'details', label: '详情' }, { id: 'library', label: '资料库' }, { id: isBot ? 'computer' : 'members', label: isBot ? '电脑' : '成员' }].map(item => `<button class="${tab === item.id ? 'active' : ''}" data-action="detail-tab" data-tab="${item.id}">${item.label}</button>`).join('')}</nav>` : ''}<div class="detail-panel-body" data-motion-key="detail-content">${body}</div></div></aside>`;
 }
 function renderAvatarPicker(mode = 'create') {
-  const selected = window.RelayAvatars.normalize(ui.avatarDraft || botAvatar(profileBot())), tab = ui.avatarTab || 'bot';
+  const selected = window.SummonAvatars.normalize(ui.avatarDraft || botAvatar(profileBot())), tab = ui.avatarTab || 'bot';
   const save = mode === 'edit' ? avatarSaves.get(profileBot()?.id) : null;
   const saveStatus = save?.error ? `<div class="avatar-save-status error" role="status">头像尚未保存<button type="button" data-action="avatar-save-retry">重试</button><small>${esc(save.error)}</small></div>` : save && (save.running || save.savedVersion !== save.version) ? '<div class="avatar-save-status" role="status">正在保存…</div>' : mode === 'edit' ? '<div class="avatar-save-status" aria-hidden="true"></div>' : ''; 
-  const picker = `<div class="shape-grid">${window.RelayAvatars.shapes.map(shape => `<button type="button" class="shape-choice ${selected.shape === shape.id && !selected.image ? 'selected' : ''}" data-action="avatar-shape" data-shape="${shape.id}" data-mode="${mode}" aria-label="${shape.label}" aria-pressed="${selected.shape === shape.id}">${face({ ...selected, shape: shape.id, image: null }, 52, { static: true })}<small>${shape.label}</small></button>`).join('')}</div><div class="crew-palettes">${window.RelayAvatars.templates.map(p => `<button type="button" data-action="avatar-template" data-template="${p.id}" data-mode="${mode}" title="${p.name}" aria-label="${p.name}" aria-pressed="${selected.color === p.color && selected.secondary === p.secondary}" style="background:linear-gradient(135deg,${p.color} 82%,${p.secondary} 82%)">${p.name}</button>`).join('')}</div><details class="crew-custom" ${ui.avatarCustomOpen ? 'open' : ''}><summary>自定义颜色</summary>${[['color','纸片颜色'],['secondary','衬纸颜色'],['ink','边线颜色'],['paper','眼睛留白']].map(([key,label])=>`<label>${label}<input type="color" data-avatar-custom="${key}" data-mode="${mode}" value="${selected[key]}"></label>`).join('')}</details>`;
+  const picker = `<div class="shape-grid">${window.SummonAvatars.shapes.map(shape => `<button type="button" class="shape-choice ${selected.shape === shape.id && !selected.image ? 'selected' : ''}" data-action="avatar-shape" data-shape="${shape.id}" data-mode="${mode}" aria-label="${shape.label}" aria-pressed="${selected.shape === shape.id}">${face({ ...selected, shape: shape.id, image: null }, 52, { static: true })}<small>${shape.label}</small></button>`).join('')}</div><div class="crew-palettes">${window.SummonAvatars.templates.map(p => `<button type="button" data-action="avatar-template" data-template="${p.id}" data-mode="${mode}" title="${p.name}" aria-label="${p.name}" aria-pressed="${selected.color === p.color && selected.secondary === p.secondary}" style="background:linear-gradient(135deg,${p.color} 82%,${p.secondary} 82%)">${p.name}</button>`).join('')}</div><details class="crew-custom" ${ui.avatarCustomOpen ? 'open' : ''}><summary>自定义颜色</summary>${[['color','纸片颜色'],['secondary','衬纸颜色'],['ink','边线颜色'],['paper','眼睛留白']].map(([key,label])=>`<label>${label}<input type="color" data-avatar-custom="${key}" data-mode="${mode}" value="${selected[key]}"></label>`).join('')}</details>`;
 
   return `${saveStatus}<div class="avatar-picker ${mode === 'create' ? 'create-picker' : ''}">${mode === 'edit' ? `<div class="avatar-tabs">${[{ id: 'bot', label: 'Bot' }, { id: 'generate', label: '生成' }, { id: 'upload', label: '上传' }].map(item => `<button type="button" class="${tab === item.id ? 'active' : ''}" data-action="avatar-tab" data-tab="${item.id}">${item.label}</button>`).join('')}<button class="avatar-reset" type="button" data-action="avatar-reset">重置</button></div>` : ''}${mode === 'create' || tab === 'bot' ? picker : tab === 'generate' ? `<div class="avatar-tool"><p>随机组合造型与颜色</p><button class="secondary-button" data-action="avatar-random" type="button">${icon('spark', 18)}生成一个造型</button></div>` : `<div class="avatar-tool"><p>使用自己的图片</p><label class="upload-label" for="avatar-upload">${icon('upload', 23)}选择图片</label><input id="avatar-upload" type="file" accept="image/png,image/jpeg,image/webp" hidden><small>PNG、JPG 或 WebP，将缩放后保存在本机</small></div>`}</div>`;
 }
 function openCreateBot() {
-  window.RelayAvatars?.release('slot:create-preview');
+  window.SummonAvatars?.release('slot:create-preview');
   ui.avatarSelectionRevision++;
   ui.avatarEditing = false;
   ui.avatarCustomOpen = false;
-  ui.avatarDraft = window.RelayAvatars.normalize({ shape: 'cercle',color:'#7D824B' });
+  ui.avatarDraft = window.SummonAvatars.normalize({ shape: 'cercle',color:'#7D824B' });
   ui.menu = null; render();
   const modal = $('#modal'); captureMotion($('#modal-content')); modal.classList.add('create-bot-modal');
   $('#modal-content').innerHTML = `<div class="modal-header"><h2>创建新 Bot</h2><button class="icon-button" data-action="close-modal" aria-label="关闭">${icon('close', 24)}</button></div><form id="modal-form" class="create-bot-form"><div class="create-bot-body"><button type="button" id="create-avatar-preview" class="create-avatar-preview" data-action="avatar-greet" aria-label="和 Bot 打招呼">${face(ui.avatarDraft, 144, { key: 'slot:create-preview', identity: 'create-preview', preview: true, intro: true })}</button><input id="create-bot-name" name="name" placeholder="给你的 Bot 起个名字" aria-label="Bot 名字" required maxlength="100" autocomplete="off"><div class="create-picker-scroll"><div id="create-avatar-picker">${renderAvatarPicker('create')}</div><div class="form-error" role="alert"></div></div></div><div class="modal-footer"><button class="secondary-button" type="button" data-action="close-modal">取消</button><button id="create-bot-submit" class="primary-button" type="submit" disabled>创建</button></div></form>`;
@@ -1565,7 +1565,7 @@ function syncMobileViewport() {
   if (!matchMedia('(max-width:820px)').matches) {
     root.style.removeProperty('--mobile-vh'); root.style.removeProperty('--mobile-vtop'); root.style.removeProperty('--mobile-page-top'); root.classList.remove('keyboard-open'); return;
   }
-  const messages = $('.messages'), atBottom = messages && (messages._relayChatScroll?.followBottom || messages.scrollHeight - messages.scrollTop - messages.clientHeight < 40);
+  const messages = $('.messages'), atBottom = messages && (messages._summonChatScroll?.followBottom || messages.scrollHeight - messages.scrollTop - messages.clientHeight < 40);
   const zoom = Number(getComputedStyle(root).zoom) || 1;
   const editing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '');
   const units = readViewportUnits();
@@ -1588,7 +1588,7 @@ function syncMobileViewport() {
     if ((!viewport || Math.abs(viewport.scale - 1) < .02) && window.scrollY) window.scrollTo(window.scrollX, 0);
   }
   root.classList.toggle('keyboard-open', keyboardOpen);
-  if (atBottom) messages._relayChatScroll?.schedule();
+  if (atBottom) messages._summonChatScroll?.schedule();
 }
 let viewportFrame = 0;
 function queueViewportSync() { cancelAnimationFrame(viewportFrame); viewportFrame = requestAnimationFrame(syncMobileViewport); }

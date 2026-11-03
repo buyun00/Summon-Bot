@@ -1,13 +1,13 @@
 import SwiftUI
 
 @main
-struct RelayApp: App {
-    @State private var store = RelayStore()
+struct SummonApp: App {
+    @State private var store = SummonStore()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
-            RelayDisplayContainer { ConversationListView() }
+            SummonDisplayContainer { ConversationListView() }
                 .environment(store)
                 .preferredColorScheme(.dark)
                 .tint(.white)

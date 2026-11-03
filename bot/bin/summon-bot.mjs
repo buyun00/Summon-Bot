@@ -4,7 +4,7 @@ import { startBot, loadBotConfig } from '../src/index.mjs';
 const args = process.argv.slice(2), configAt = args.indexOf('--config');
 const notify = value => { process.stdout.write(`${JSON.stringify(value)}\n`); if (process.connected) process.send(value, () => {}); };
 try {
-  if (configAt < 0 || !args[configAt + 1]) throw new Error('Usage: relay-bot --config /absolute/path/config.json');
+  if (configAt < 0 || !args[configAt + 1]) throw new Error('Usage: summon-bot --config /absolute/path/config.json');
   const bot = await startBot(loadBotConfig(args[configAt + 1]), { captureProcessOutput: true });
   let closing;
   const stop = () => closing ||= bot.close().then(() => process.exit(0));

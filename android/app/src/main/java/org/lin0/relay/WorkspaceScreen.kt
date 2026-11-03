@@ -58,16 +58,16 @@ private sealed interface EditorKind {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun WorkspaceScreen(store: RelayStore, section: WorkspaceSection, onBack: () -> Unit) {
+fun WorkspaceScreen(store: SummonStore, section: WorkspaceSection, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
-    var snapshot by remember { mutableStateOf<RelayJson>(RelayJson.Null) }
+    var snapshot by remember { mutableStateOf<SummonJson>(SummonJson.Null) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var page by remember { mutableStateOf<WorkspacePage>(WorkspacePage.Root) }
     var editor by remember { mutableStateOf<EditorKind?>(null) }
     var workFilter by remember { mutableStateOf("all") }
     var query by remember { mutableStateOf("") }
-    var results by remember { mutableStateOf<RelayJson?>(null) }
+    var results by remember { mutableStateOf<SummonJson?>(null) }
     var overrides by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
     var mutating by remember { mutableStateOf<Set<String>>(emptySet()) }
     var plus by remember { mutableStateOf(false) }
@@ -79,7 +79,7 @@ fun WorkspaceScreen(store: RelayStore, section: WorkspaceSection, onBack: () -> 
             error = null
             if (results != null) {
                 val text = query.trim()
-                results = if (text.isEmpty()) null else store.request("/api/knowledge/search?q=${RelayApiClient.component(text)}")
+                results = if (text.isEmpty()) null else store.request("/api/knowledge/search?q=${SummonApiClient.component(text)}")
             }
         } catch (exception: Exception) { error = exception.message }
         finally { loading = false }
@@ -156,7 +156,7 @@ fun WorkspaceScreen(store: RelayStore, section: WorkspaceSection, onBack: () -> 
                         works.forEach { record ->
                             Column(Modifier.fillMaxWidth().clickable { page = WorkspacePage.Work(record) }.padding(vertical = 8.dp)) {
                                 Text(record.value["goal"].stringValue)
-                                Text("${if (record.value["status"].stringValue == "active") "进行中" else workspaceStatus(record.value["status"].stringValue)} · ${workspaceName(record.value["botId"].stringValue, snapshot["bots"])}  ${formatRelayDate(record.value["createdAt"].string)}", color = Color(0xFF8E8E93))
+                                Text("${if (record.value["status"].stringValue == "active") "进行中" else workspaceStatus(record.value["status"].stringValue)} · ${workspaceName(record.value["botId"].stringValue, snapshot["bots"])}  ${formatSummonDate(record.value["createdAt"].string)}", color = Color(0xFF8E8E93))
                             }
                         }
                     }
@@ -167,7 +167,7 @@ fun WorkspaceScreen(store: RelayStore, section: WorkspaceSection, onBack: () -> 
                                 scope.launch {
                                     val text = query.trim()
                                     if (text.isEmpty()) { results = null; return@launch }
-                                    try { results = store.request("/api/knowledge/search?q=${RelayApiClient.component(text)}"); error = null }
+                                    try { results = store.request("/api/knowledge/search?q=${SummonApiClient.component(text)}"); error = null }
                                     catch (exception: Exception) { error = exception.message }
                                 }
                             }) { Text("搜索") }
@@ -208,7 +208,7 @@ fun WorkspaceScreen(store: RelayStore, section: WorkspaceSection, onBack: () -> 
                                             mutating = mutating + record.id
                                             overrides = overrides + (record.id to enabled)
                                             try {
-                                                store.request("/api/routines/${RelayApiClient.component(record.id)}", "PATCH", RelayJson.obj("enabled" to RelayJson.Bool(enabled)))
+                                                store.request("/api/routines/${SummonApiClient.component(record.id)}", "PATCH", SummonJson.obj("enabled" to SummonJson.Bool(enabled)))
                                                 reload()
                                             } catch (exception: Exception) { error = exception.message }
                                             finally { mutating = mutating - record.id; overrides = overrides - record.id }
@@ -216,7 +216,7 @@ fun WorkspaceScreen(store: RelayStore, section: WorkspaceSection, onBack: () -> 
                                     }, enabled = record.id !in mutating)
                                 }
                                 Text("间隔  ${(record.value["intervalSeconds"].int ?: 3600) / 60} 分钟")
-                                if (record.value["enabled"].bool == true) Text("下一次  ${formatRelayDate(record.value["nextRunAt"].string, full = true)}")
+                                if (record.value["enabled"].bool == true) Text("下一次  ${formatSummonDate(record.value["nextRunAt"].string, full = true)}")
                                 record.value["lastStatus"].string?.takeIf { it.isNotEmpty() }?.let { Text("最近状态  ${workspaceStatus(it)}") }
                                 record.value["error"].string?.takeIf { it.isNotEmpty() }?.let { Text(it, color = Color(0xFFFF9F0A)) }
                             }
@@ -239,9 +239,9 @@ fun WorkspaceScreen(store: RelayStore, section: WorkspaceSection, onBack: () -> 
 }
 
 @Composable
-private fun WorkDetail(store: RelayStore, initial: WorkspaceRecord, snapshot: RelayJson, onBack: () -> Unit) {
+private fun WorkDetail(store: SummonStore, initial: WorkspaceRecord, snapshot: SummonJson, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
-    var work by remember { mutableStateOf<RelayJson>(RelayJson.Null) }
+    var work by remember { mutableStateOf<SummonJson>(SummonJson.Null) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var answer by remember { mutableStateOf("") }
@@ -250,19 +250,19 @@ private fun WorkDetail(store: RelayStore, initial: WorkspaceRecord, snapshot: Re
     val status = value["status"].stringValue
     suspend fun load() {
         try {
-            val response = store.request("/api/works/${RelayApiClient.component(initial.id)}")
+            val response = store.request("/api/works/${SummonApiClient.component(initial.id)}")
             val fields = response["work"].obj?.toMutableMap()
             work = if (fields != null) {
-                RelayJson.Obj(fields + ("events" to response["events"]))
-            } else if (response.obj != null) response else throw RelayApiException("Work not found")
+                SummonJson.Obj(fields + ("events" to response["events"]))
+            } else if (response.obj != null) response else throw SummonApiException("Work not found")
             error = null
         } catch (exception: Exception) { error = exception.message }
     }
-    suspend fun perform(action: String, body: RelayJson = RelayJson.Obj(emptyMap())) {
+    suspend fun perform(action: String, body: SummonJson = SummonJson.Obj(emptyMap())) {
         if (busy) return
         busy = true
         try {
-            store.request("/api/works/${RelayApiClient.component(initial.id)}/$action", "POST", body)
+            store.request("/api/works/${SummonApiClient.component(initial.id)}/$action", "POST", body)
             if (action == "send") answer = ""
             load()
         } catch (exception: Exception) { error = exception.message }
@@ -282,7 +282,7 @@ private fun WorkDetail(store: RelayStore, initial: WorkspaceRecord, snapshot: Re
         Text("来源会话  ${workspaceName(value["roomId"].stringValue, snapshot["rooms"])}")
         if (value["cwd"].stringValue.isNotEmpty()) Text("工作目录  ${value["cwd"].stringValue}")
         value["model"].string?.let { Text("执行模型  $it") }
-        Text("创建时间  ${formatRelayDate(value["createdAt"].string, full = true)}")
+        Text("创建时间  ${formatSummonDate(value["createdAt"].string, full = true)}")
         if (value["requirements"].stringValue.isNotEmpty()) { Text("工作要求"); Text(value["requirements"].stringValue) }
         else if (value["constraints"].stringValue.isNotEmpty()) { Text("约束与注意事项"); Text(value["constraints"].stringValue) }
         if (!value["inputRefs"].array.isNullOrEmpty()) { Text("输入资料"); Text(value["inputRefs"].stringValue) }
@@ -294,7 +294,7 @@ private fun WorkDetail(store: RelayStore, initial: WorkspaceRecord, snapshot: Re
             Text("补充要求")
             OutlinedTextField(answer, { answer = it }, label = { Text("补充信息或纠正当前要求") }, minLines = 3, modifier = Modifier.fillMaxWidth())
             Button(enabled = !busy && answer.isNotBlank(), onClick = {
-                scope.launch { perform("send", RelayJson.obj("id" to RelayJson.Str(answerRequestID), "message" to RelayJson.Str(answer.trim()))) }
+                scope.launch { perform("send", SummonJson.obj("id" to SummonJson.Str(answerRequestID), "message" to SummonJson.Str(answer.trim()))) }
             }) { Text("发送给负责成员") }
         }
         if (value["summary"].stringValue.isNotEmpty()) { Text("当前进度与结果"); Text(value["summary"].stringValue) }
@@ -308,7 +308,7 @@ private fun WorkDetail(store: RelayStore, initial: WorkspaceRecord, snapshot: Re
         events.forEach { event ->
             Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                 Text(eventLabel(event["type"].stringValue), modifier = Modifier.weight(1f))
-                Text(formatRelayDate(event["createdAt"].string ?: event["timestamp"].string), color = Color(0xFF8E8E93))
+                Text(formatSummonDate(event["createdAt"].string ?: event["timestamp"].string), color = Color(0xFF8E8E93))
             }
             Text(eventText(event))
         }
@@ -316,14 +316,14 @@ private fun WorkDetail(store: RelayStore, initial: WorkspaceRecord, snapshot: Re
 }
 
 @Composable
-private fun KnowledgeDetail(store: RelayStore, initial: WorkspaceRecord, snapshot: RelayJson, onBack: () -> Unit) {
+private fun KnowledgeDetail(store: SummonStore, initial: WorkspaceRecord, snapshot: SummonJson, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
-    var graph by remember { mutableStateOf<RelayJson>(RelayJson.Null) }
+    var graph by remember { mutableStateOf<SummonJson>(SummonJson.Null) }
     var error by remember { mutableStateOf<String?>(null) }
     var editor by remember { mutableStateOf<EditorKind?>(null) }
     val node = records(graph["nodes"]).firstOrNull { it.id == initial.id } ?: initial
     suspend fun load() {
-        try { graph = store.request("/api/knowledge/graph?id=${RelayApiClient.component(initial.id)}&depth=1"); error = null }
+        try { graph = store.request("/api/knowledge/graph?id=${SummonApiClient.component(initial.id)}&depth=1"); error = null }
         catch (exception: Exception) { error = exception.message }
     }
     LaunchedEffect(initial.id) { load() }
@@ -358,7 +358,7 @@ private fun KnowledgeDetail(store: RelayStore, initial: WorkspaceRecord, snapsho
         if (history.isNotEmpty()) {
             Text("修订历史")
             history.forEach { entry ->
-                Text(formatRelayDate(entry["updatedAt"].string ?: entry["createdAt"].string ?: entry["at"].string, full = true), color = Color(0xFF8E8E93))
+                Text(formatSummonDate(entry["updatedAt"].string ?: entry["createdAt"].string ?: entry["at"].string, full = true), color = Color(0xFF8E8E93))
                 Text(entry["content"].string ?: entry["snapshot"]["content"].string ?: entry.stringValue)
             }
         }
@@ -371,14 +371,14 @@ private fun KnowledgeDetail(store: RelayStore, initial: WorkspaceRecord, snapsho
 }
 
 @Composable
-private fun WorkspaceEditor(store: RelayStore, kind: EditorKind, snapshot: RelayJson, embedded: Boolean = false, onDone: () -> Unit = {}) {
+private fun WorkspaceEditor(store: SummonStore, kind: EditorKind, snapshot: SummonJson, embedded: Boolean = false, onDone: () -> Unit = {}) {
     val scope = rememberCoroutineScope()
     val record = when (kind) {
         is EditorKind.Node -> kind.record
         is EditorKind.Edge -> kind.record
         is EditorKind.Routine -> kind.record
         else -> null
-    }?.value ?: RelayJson.Null
+    }?.value ?: SummonJson.Null
     var title by remember { mutableStateOf(record["title"].string ?: record["name"].string ?: record["relation"].string ?: if (kind is EditorKind.Event) "人工提醒" else "") }
     var content by remember { mutableStateOf(record["content"].string ?: record["instruction"].string.orEmpty()) }
     var botID by remember { mutableStateOf(record["botId"].string ?: records(snapshot["bots"]).firstOrNull()?.id.orEmpty()) }
@@ -473,46 +473,46 @@ private fun WorkspaceEditor(store: RelayStore, kind: EditorKind, snapshot: Relay
                 }
                 var method = if (existing == null) "POST" else "PATCH"
                 val path: String
-                val payload: Map<String, RelayJson>
+                val payload: Map<String, SummonJson>
                 when (kind) {
                     EditorKind.Work -> {
                         path = "/api/works"
                         payload = mapOf(
-                            "id" to RelayJson.Str(workRequestID), "goal" to RelayJson.Str(content.trim()), "botId" to RelayJson.Str(botID), "roomId" to RelayJson.Str(roomID),
-                            "cwd" to RelayJson.Str(cwd.trim()), "constraints" to RelayJson.Str(constraints),
-                            "inputRefs" to RelayJson.Arr(inputRefs.split('\n').map { it.trim() }.filter { it.isNotEmpty() }.map(RelayJson::Str)),
+                            "id" to SummonJson.Str(workRequestID), "goal" to SummonJson.Str(content.trim()), "botId" to SummonJson.Str(botID), "roomId" to SummonJson.Str(roomID),
+                            "cwd" to SummonJson.Str(cwd.trim()), "constraints" to SummonJson.Str(constraints),
+                            "inputRefs" to SummonJson.Arr(inputRefs.split('\n').map { it.trim() }.filter { it.isNotEmpty() }.map(SummonJson::Str)),
                         )
                     }
                     is EditorKind.Node -> {
-                        path = existing?.let { "/api/knowledge/nodes/${RelayApiClient.component(it.id)}" } ?: "/api/knowledge/nodes"
+                        path = existing?.let { "/api/knowledge/nodes/${SummonApiClient.component(it.id)}" } ?: "/api/knowledge/nodes"
                         payload = buildMap {
-                            put("title", RelayJson.Str(title)); put("content", RelayJson.Str(content)); put("type", RelayJson.Str(type))
-                            put("status", RelayJson.Str(status)); put("source", RelayJson.Str(source)); put("version", RelayJson.Str(version))
-                            existing?.value?.get("revision")?.int?.let { put("expectedRevision", RelayJson.Num(it.toDouble())) }
+                            put("title", SummonJson.Str(title)); put("content", SummonJson.Str(content)); put("type", SummonJson.Str(type))
+                            put("status", SummonJson.Str(status)); put("source", SummonJson.Str(source)); put("version", SummonJson.Str(version))
+                            existing?.value?.get("revision")?.int?.let { put("expectedRevision", SummonJson.Num(it.toDouble())) }
                         }
                     }
                     is EditorKind.Edge -> {
                         path = "/api/knowledge/edges"; method = "POST"
                         payload = buildMap {
-                            put("from", RelayJson.Str(fromID)); put("to", RelayJson.Str(toID)); put("relation", RelayJson.Str(title))
-                            put("source", RelayJson.Str(source)); put("status", RelayJson.Str(status))
-                            existing?.let { put("id", RelayJson.Str(it.id)) }
+                            put("from", SummonJson.Str(fromID)); put("to", SummonJson.Str(toID)); put("relation", SummonJson.Str(title))
+                            put("source", SummonJson.Str(source)); put("status", SummonJson.Str(status))
+                            existing?.let { put("id", SummonJson.Str(it.id)) }
                         }
                     }
                     is EditorKind.Routine -> {
-                        path = existing?.let { "/api/routines/${RelayApiClient.component(it.id)}" } ?: "/api/routines"
+                        path = existing?.let { "/api/routines/${SummonApiClient.component(it.id)}" } ?: "/api/routines"
                         payload = mapOf(
-                            "name" to RelayJson.Str(title), "instruction" to RelayJson.Str(content), "botId" to RelayJson.Str(botID),
-                            "roomId" to RelayJson.Str(roomID), "intervalSeconds" to RelayJson.Num(seconds ?: 3600.0), "enabled" to RelayJson.Bool(enabled),
+                            "name" to SummonJson.Str(title), "instruction" to SummonJson.Str(content), "botId" to SummonJson.Str(botID),
+                            "roomId" to SummonJson.Str(roomID), "intervalSeconds" to SummonJson.Num(seconds ?: 3600.0), "enabled" to SummonJson.Bool(enabled),
                         )
                     }
                     EditorKind.Event -> {
                         path = "/api/events"
-                        payload = mapOf("type" to RelayJson.Str(title), "content" to RelayJson.Str(content), "botId" to RelayJson.Str(botID), "roomId" to RelayJson.Str(roomID))
+                        payload = mapOf("type" to SummonJson.Str(title), "content" to SummonJson.Str(content), "botId" to SummonJson.Str(botID), "roomId" to SummonJson.Str(roomID))
                     }
                 }
                 try {
-                    val response = store.request(path, method, RelayJson.Obj(payload))
+                    val response = store.request(path, method, SummonJson.Obj(payload))
                     if (embedded) {
                         content = ""
                         val eventID = response["event"]["id"].string ?: response["id"].string
@@ -529,7 +529,7 @@ private fun WorkspaceEditor(store: RelayStore, kind: EditorKind, snapshot: Relay
 }
 
 @Composable
-private fun RecipientFields(snapshot: RelayJson, botID: String, roomID: String, onBot: (String) -> Unit, onRoom: (String) -> Unit) {
+private fun RecipientFields(snapshot: SummonJson, botID: String, roomID: String, onBot: (String) -> Unit, onRoom: (String) -> Unit) {
     var botsOpen by remember { mutableStateOf(false) }
     var roomsOpen by remember { mutableStateOf(false) }
     TextButton(onClick = { botsOpen = true }) { Text("负责成员  ${workspaceName(botID, snapshot["bots"])}") }
@@ -543,7 +543,7 @@ private fun RecipientFields(snapshot: RelayJson, botID: String, roomID: String, 
 }
 
 @Composable
-private fun NodePicker(label: String, snapshot: RelayJson, selected: String, onSelect: (String) -> Unit) {
+private fun NodePicker(label: String, snapshot: SummonJson, selected: String, onSelect: (String) -> Unit) {
     var open by remember { mutableStateOf(false) }
     TextButton(onClick = { open = true }) { Text("$label  ${workspaceName(selected, snapshot["knowledge"]["nodes"], "title")}") }
     DropdownMenu(open, { open = false }) {
@@ -553,12 +553,12 @@ private fun NodePicker(label: String, snapshot: RelayJson, selected: String, onS
     }
 }
 
-private fun records(value: RelayJson): List<WorkspaceRecord> = value.array.orEmpty().mapNotNull { item ->
+private fun records(value: SummonJson): List<WorkspaceRecord> = value.array.orEmpty().mapNotNull { item ->
     val id = item["id"].string?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
     WorkspaceRecord(id, item)
 }
 
-private fun workspaceName(id: String, values: RelayJson, field: String = "name"): String {
+private fun workspaceName(id: String, values: SummonJson, field: String = "name"): String {
     if (id.isEmpty()) return "未指定"
     return records(values).firstOrNull { it.id == id }?.value?.get(field)?.string ?: id
 }
@@ -573,14 +573,14 @@ private fun eventLabel(value: String) = mapOf(
     "error" to "执行异常", "reasoning" to "正在思考", "result" to "执行结果", "work.created" to "工作已建立", "work.updated" to "工作状态更新",
 )[value] ?: workspaceStatus(value)
 
-private fun eventText(event: RelayJson): String {
-    val data = if (event["payload"] == RelayJson.Null) event["data"] else event["payload"]
-    if (data["work"] != RelayJson.Null) {
+private fun eventText(event: SummonJson): String {
+    val data = if (event["payload"] == SummonJson.Null) event["data"] else event["payload"]
+    if (data["work"] != SummonJson.Null) {
         val work = data["work"]
         return listOf(workspaceStatus(work["status"].stringValue), work["progress"].stringValue, work["lastError"]["message"].stringValue).filter { it.isNotEmpty() }.joinToString("\n")
     }
-    if (data is RelayJson.Str) return data.value
-    if (data is RelayJson.Null) return event["content"].string ?: event["message"].stringValue
+    if (data is SummonJson.Str) return data.value
+    if (data is SummonJson.Null) return event["content"].string ?: event["message"].stringValue
     if (data["item"].obj != null) {
         val item = data["item"]
         val parts = listOf("text", "command", "aggregatedOutput").mapNotNull { item[it].string?.takeIf { text -> text.isNotEmpty() } }.toMutableList()
@@ -595,16 +595,16 @@ private fun eventText(event: RelayJson): String {
     return data.stringValue
 }
 
-private fun mergeWorkEvents(events: List<RelayJson>): List<RelayJson> {
-    val result = mutableListOf<RelayJson>()
+private fun mergeWorkEvents(events: List<SummonJson>): List<SummonJson> {
+    val result = mutableListOf<SummonJson>()
     for (event in events) {
         val last = result.lastOrNull()
         if (last != null && event["type"].stringValue in setOf("message_delta", "command_output") && last["type"] == event["type"] && last["data"]["itemId"] == event["data"]["itemId"]) {
             val fields = last.obj?.toMutableMap() ?: continue
             val data = last["data"].obj?.toMutableMap() ?: continue
-            data["text"] = RelayJson.Str(last["data"]["text"].stringValue + event["data"]["text"].stringValue)
-            fields["data"] = RelayJson.Obj(data)
-            result[result.lastIndex] = RelayJson.Obj(fields)
+            data["text"] = SummonJson.Str(last["data"]["text"].stringValue + event["data"]["text"].stringValue)
+            fields["data"] = SummonJson.Obj(data)
+            result[result.lastIndex] = SummonJson.Obj(fields)
         } else result += event
     }
     return result

@@ -1,6 +1,6 @@
-# Relay Android
+# Summon Bot Android
 
-与 `ios/` 同层的原生 Android 客户端。界面、接口和交互与 iOS 客户端一致：会话、聊天、附件、Bot 资料、长期记忆、工作委托、知识、定时职责和事件投递。服务端仍是现有 Relay API，默认地址 `https://bot.lin0.org`。
+与 `ios/` 同层的原生 Android 客户端。界面、接口和交互与 iOS 客户端一致：会话、聊天、附件、Bot 资料、长期记忆、工作委托、知识、定时职责和事件投递。服务端仍是现有 Summon Bot API，默认地址 `https://bot.lin0.org`。
 
 正式 APK 在仓库根目录打包和发布：
 

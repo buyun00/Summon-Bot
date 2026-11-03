@@ -156,7 +156,7 @@ test('PWA update preserves uploaded attachment references and excludes transient
   f.ui.drafts['room-a'] = 'unsent';
   f.ui.draftAttachments['room-a'] = [{ ...ready(), file: file(), preview: 'blob:temporary' }];
   assert.equal(f.context.preserveUpdateDrafts(), true);
-  const saved = JSON.parse(f.values.get('relay:update-drafts'));
+  const saved = JSON.parse(f.values.get('summon:update-drafts'));
   assert.equal(saved.attachments['room-a'][0].file, undefined);
   assert.equal(saved.attachments['room-a'][0].preview, undefined);
   const restored = fixture({ storage: f.values });
@@ -194,7 +194,7 @@ test('PWA update blocks pending or failed uploads instead of losing native File 
   for (const status of ['uploading', 'error']) {
     f.ui.draftAttachments['room-a'] = [{ ...ready(), status }];
     assert.equal(f.context.preserveUpdateDrafts(), false);
-    assert.equal(f.values.has('relay:update-drafts'), false);
+    assert.equal(f.values.has('summon:update-drafts'), false);
   }
 });
 

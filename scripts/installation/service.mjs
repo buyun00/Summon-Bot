@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs, readJson, writeJson } from '../build/files.mjs';
 import { acquireServiceLock } from './service-lock.mjs';
-import { installProcessLog } from '@relay/bot/process-log';
+import { installProcessLog } from '@summon/bot/process-log';
 
 const bootId = randomUUID();
 const notify = value => { if (process.connected) process.send(value, () => {}); };

@@ -63,10 +63,10 @@ data/
 ## 使用方式
 
 ```powershell
-npm run relay:capabilities -- list --data-root D:/Relay-Bot-data
-npm run relay:capabilities -- deploy --file capability-deployment.json --data-root D:/Relay-Bot-data
-npm run relay:capabilities -- activate --id knowledge --version v2 --data-root D:/Relay-Bot-data
-npm run relay:capabilities -- retire --id knowledge --version v1 --data-root D:/Relay-Bot-data
+npm run summon:capabilities -- list --data-root D:/Relay-Bot-data
+npm run summon:capabilities -- deploy --file capability-deployment.json --data-root D:/Relay-Bot-data
+npm run summon:capabilities -- activate --id knowledge --version v2 --data-root D:/Relay-Bot-data
+npm run summon:capabilities -- retire --id knowledge --version v1 --data-root D:/Relay-Bot-data
 ```
 
 内置能力的部署文件示例：

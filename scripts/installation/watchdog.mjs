@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { join, resolve } from 'node:path';
-import { installProcessLog } from '@relay/bot/process-log';
+import { installProcessLog } from '@summon/bot/process-log';
 import { readJson, writeJson } from '../build/files.mjs';
 import { acquireServiceLock } from './service-lock.mjs';
 import { deploymentPath, inspectService, launchService, stopSystem } from './system.mjs';

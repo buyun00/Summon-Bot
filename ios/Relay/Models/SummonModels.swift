@@ -1,6 +1,6 @@
 import Foundation
 
-struct RelayAvatar: Codable, Equatable, Sendable {
+struct SummonAvatar: Codable, Equatable, Sendable {
     var shape: String = "cercle"
     var color: String = "#7D824B"
     var image: String?
@@ -13,7 +13,7 @@ struct RelayAvatar: Codable, Equatable, Sendable {
     }
 }
 
-struct RelayBot: Codable, Identifiable, Equatable, Sendable {
+struct SummonBot: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var name: String
     var role: String
@@ -22,30 +22,30 @@ struct RelayBot: Codable, Identifiable, Equatable, Sendable {
     var status: String
     var presetId: String?
     var roleId: String?
-    var avatar: RelayAvatar?
+    var avatar: SummonAvatar?
     var createdAt: String?
 
     var isSystem: Bool { presetId != nil }
     var isPaused: Bool { status == "paused" }
-    var resolvedAvatar: RelayAvatar { avatar ?? RelayAvatar.defaultAvatar(for: id) }
+    var resolvedAvatar: SummonAvatar { avatar ?? SummonAvatar.defaultAvatar(for: id) }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? id
         role = try c.decodeIfPresent(String.self, forKey: .role) ?? ""
-        let value = try c.decodeIfPresent(RelayJSONValue.self, forKey: .expertise)
+        let value = try c.decodeIfPresent(SummonJSONValue.self, forKey: .expertise)
         expertise = value?.stringValue ?? ""
         prompt = try c.decodeIfPresent(String.self, forKey: .prompt) ?? ""
         status = try c.decodeIfPresent(String.self, forKey: .status) ?? "active"
         presetId = try c.decodeIfPresent(String.self, forKey: .presetId)
         roleId = try c.decodeIfPresent(String.self, forKey: .roleId)
-        avatar = try c.decodeIfPresent(RelayAvatar.self, forKey: .avatar)
+        avatar = try c.decodeIfPresent(SummonAvatar.self, forKey: .avatar)
         createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt)
     }
 }
 
-struct RelayAttachment: Codable, Identifiable, Equatable, Sendable {
+struct SummonAttachment: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var name: String
     var mimeType: String
@@ -58,12 +58,12 @@ struct RelayAttachment: Codable, Identifiable, Equatable, Sendable {
     var formattedSize: String { ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file) }
 }
 
-struct RelayMessage: Codable, Identifiable, Equatable, Sendable {
+struct SummonMessage: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var roomId: String
     var senderId: String
     var content: String
-    var attachments: [RelayAttachment]
+    var attachments: [SummonAttachment]
     var kind: String
     var replyTo: String?
     var toBotId: String?
@@ -74,7 +74,7 @@ struct RelayMessage: Codable, Identifiable, Equatable, Sendable {
     var isOwn: Bool { senderId == "user" }
 
     init(id: String, roomId: String, senderId: String, content: String,
-         attachments: [RelayAttachment] = [], kind: String = "message", replyTo: String? = nil,
+         attachments: [SummonAttachment] = [], kind: String = "message", replyTo: String? = nil,
          toBotId: String? = nil, clientId: String? = nil, jobId: String? = nil, createdAt: String? = nil) {
         self.id = id
         self.roomId = roomId
@@ -95,7 +95,7 @@ struct RelayMessage: Codable, Identifiable, Equatable, Sendable {
         roomId = try c.decode(String.self, forKey: .roomId)
         senderId = try c.decodeIfPresent(String.self, forKey: .senderId) ?? "system"
         content = try c.decodeIfPresent(String.self, forKey: .content) ?? ""
-        attachments = try c.decodeIfPresent([RelayAttachment].self, forKey: .attachments) ?? []
+        attachments = try c.decodeIfPresent([SummonAttachment].self, forKey: .attachments) ?? []
         kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? "message"
         replyTo = try c.decodeIfPresent(String.self, forKey: .replyTo)
         toBotId = try c.decodeIfPresent(String.self, forKey: .toBotId)
@@ -105,7 +105,7 @@ struct RelayMessage: Codable, Identifiable, Equatable, Sendable {
     }
 }
 
-struct RelayRoom: Codable, Identifiable, Equatable, Sendable {
+struct SummonRoom: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var name: String
     var kind: String
@@ -113,7 +113,7 @@ struct RelayRoom: Codable, Identifiable, Equatable, Sendable {
     var status: String
     var goal: String
     var summary: String
-    var lastMessage: RelayMessage?
+    var lastMessage: SummonMessage?
     var createdAt: String?
 
     var isGroup: Bool { kind != "dm" }
@@ -128,12 +128,12 @@ struct RelayRoom: Codable, Identifiable, Equatable, Sendable {
         status = try c.decodeIfPresent(String.self, forKey: .status) ?? "active"
         goal = try c.decodeIfPresent(String.self, forKey: .goal) ?? ""
         summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
-        lastMessage = try c.decodeIfPresent(RelayMessage.self, forKey: .lastMessage)
+        lastMessage = try c.decodeIfPresent(SummonMessage.self, forKey: .lastMessage)
         createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt)
     }
 }
 
-struct RelayJob: Codable, Identifiable, Equatable, Sendable {
+struct SummonJob: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var botId: String
     var roomId: String
@@ -141,24 +141,24 @@ struct RelayJob: Codable, Identifiable, Equatable, Sendable {
     var status: String
     var taskId: String?
     var agentRunId: String?
-    var error: RelayJSONValue?
+    var error: SummonJSONValue?
     var createdAt: String?
 
     var isActive: Bool { ["queued", "accepted", "running", "waiting"].contains(status) }
     var errorText: String? { error?.stringValue }
 }
 
-struct RelayAgentRun: Codable, Identifiable, Equatable, Sendable {
+struct SummonAgentRun: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var botId: String?
     var roomId: String?
     var status: String?
     var summary: String?
-    var content: RelayJSONValue?
-    var result: RelayJSONValue?
-    var error: RelayJSONValue?
+    var content: SummonJSONValue?
+    var result: SummonJSONValue?
+    var error: SummonJSONValue?
     var toolCount: Int?
-    var tools: [RelayToolRun]?
+    var tools: [SummonToolRun]?
     var createdAt: String?
     var startedAt: String?
     var finishedAt: String?
@@ -167,24 +167,24 @@ struct RelayAgentRun: Codable, Identifiable, Equatable, Sendable {
     var outputText: String { summary?.isEmpty == false ? summary! : result?.stringValue ?? content?.stringValue ?? "" }
 }
 
-struct RelayToolRun: Codable, Identifiable, Equatable, Sendable {
+struct SummonToolRun: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var name: String?
     var toolName: String?
     var status: String?
-    var arguments: RelayJSONValue?
-    var input: RelayJSONValue?
-    var output: RelayJSONValue?
-    var result: RelayJSONValue?
-    var error: RelayJSONValue?
-    var artifacts: [RelayArtifact]?
+    var arguments: SummonJSONValue?
+    var input: SummonJSONValue?
+    var output: SummonJSONValue?
+    var result: SummonJSONValue?
+    var error: SummonJSONValue?
+    var artifacts: [SummonArtifact]?
     var createdAt: String?
 
     var displayName: String { name ?? toolName ?? "工具调用" }
     var outputText: String { output?.stringValue ?? result?.stringValue ?? error?.stringValue ?? "" }
 }
 
-struct RelayArtifact: Codable, Identifiable, Equatable, Sendable {
+struct SummonArtifact: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var name: String?
     var mimeType: String?
@@ -192,40 +192,40 @@ struct RelayArtifact: Codable, Identifiable, Equatable, Sendable {
     var path: String?
 }
 
-struct RelayWorkspace: Codable, Sendable {
+struct SummonWorkspace: Codable, Sendable {
     var historyEpoch: String?
-    var bots: [RelayBot]
-    var rooms: [RelayRoom]
-    var agentRuns: [RelayAgentRun]?
+    var bots: [SummonBot]
+    var rooms: [SummonRoom]
+    var agentRuns: [SummonAgentRun]?
     var defaultCwd: String?
 }
 
-struct RelayRoomSnapshot: Codable, Sendable {
+struct SummonRoomSnapshot: Codable, Sendable {
     var historyEpoch: String?
-    var room: RelayRoom
-    var messages: [RelayMessage]
-    var jobs: [RelayJob]
+    var room: SummonRoom
+    var messages: [SummonMessage]
+    var jobs: [SummonJob]
 }
 
-struct RelayPendingMessage: Codable, Identifiable, Equatable, Sendable {
+struct SummonPendingMessage: Codable, Identifiable, Equatable, Sendable {
     var clientID: String
-    var message: RelayMessage
+    var message: SummonMessage
     var status: String
     var error: String?
 
     var id: String { clientID }
     var roomID: String { message.roomId }
     var content: String { message.content }
-    var attachments: [RelayAttachment] { message.attachments }
+    var attachments: [SummonAttachment] { message.attachments }
 }
 
-struct RelayConnectionSettings: Codable, Equatable, Sendable {
+struct SummonConnectionSettings: Codable, Equatable, Sendable {
     var baseURL: String = ""
     var userName: String = "你"
 }
 
-enum RelayJSONValue: Codable, Equatable, Sendable {
-    case string(String), number(Double), bool(Bool), object([String: RelayJSONValue]), array([RelayJSONValue]), null
+enum SummonJSONValue: Codable, Equatable, Sendable {
+    case string(String), number(Double), bool(Bool), object([String: SummonJSONValue]), array([SummonJSONValue]), null
 
     init(from decoder: Decoder) throws {
         let c = try decoder.singleValueContainer()
@@ -233,8 +233,8 @@ enum RelayJSONValue: Codable, Equatable, Sendable {
         else if let value = try? c.decode(String.self) { self = .string(value) }
         else if let value = try? c.decode(Bool.self) { self = .bool(value) }
         else if let value = try? c.decode(Double.self) { self = .number(value) }
-        else if let value = try? c.decode([String: RelayJSONValue].self) { self = .object(value) }
-        else { self = .array(try c.decode([RelayJSONValue].self)) }
+        else if let value = try? c.decode([String: SummonJSONValue].self) { self = .object(value) }
+        else { self = .array(try c.decode([SummonJSONValue].self)) }
     }
 
     func encode(to encoder: Encoder) throws {
@@ -265,14 +265,14 @@ enum RelayJSONValue: Codable, Equatable, Sendable {
         }
     }
 
-    subscript(_ key: String) -> RelayJSONValue {
+    subscript(_ key: String) -> SummonJSONValue {
         guard case .object(let value) = self else { return .null }
         return value[key] ?? .null
     }
 
     var string: String? { if case .string(let value) = self { return value }; return nil }
-    var array: [RelayJSONValue]? { if case .array(let value) = self { return value }; return nil }
-    var object: [String: RelayJSONValue]? { if case .object(let value) = self { return value }; return nil }
+    var array: [SummonJSONValue]? { if case .array(let value) = self { return value }; return nil }
+    var object: [String: SummonJSONValue]? { if case .object(let value) = self { return value }; return nil }
     var bool: Bool? { if case .bool(let value) = self { return value }; return nil }
     var int: Int? {
         guard case .number(let value) = self, value.isFinite,
@@ -288,19 +288,19 @@ enum RelayJSONValue: Codable, Equatable, Sendable {
     }
 }
 
-extension RelayAvatar {
-    static func defaultAvatar(for id: String) -> RelayAvatar {
+extension SummonAvatar {
+    static func defaultAvatar(for id: String) -> SummonAvatar {
         let shapes = ["cercle","galet","squircle","capsule","triangle","hexagone","nuage","goutte"]
         let colors = ["#7D824B","#B2634F","#597C91","#A87932","#B2634F","#4D5C69","#867399","#648468"]
         var value: UInt32 = 5381
         for character in id.unicodeScalars { value = (value &* 33) ^ character.value }
         let seeded = ["bot-engineer":"squircle", "bot-components":"hexagone", "bot-qa":"nuage"]
         let role = seeded[id] ?? shapes[Int(value % UInt32(shapes.count))]
-        return RelayAvatar(shape: role, color: colors[shapes.firstIndex(of: role) ?? 0])
+        return SummonAvatar(shape: role, color: colors[shapes.firstIndex(of: role) ?? 0])
     }
 }
 
-enum RelayDate {
+enum SummonDate {
     static func parse(_ value: String?) -> Date? {
         guard let value else { return nil }
         let format = ISO8601DateFormatter()

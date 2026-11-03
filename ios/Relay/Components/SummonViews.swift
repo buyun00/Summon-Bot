@@ -1,26 +1,26 @@
 import SwiftUI
 
-enum RelayTheme {
+enum SummonTheme {
     static let background = Color(uiColor: .systemBackground)
     static let surface = Color(uiColor: .secondarySystemBackground)
 }
 
 struct MemberAvatar: View {
-    let bot: RelayBot?
+    let bot: SummonBot?
     var size: CGFloat = 48
     var motion: String = "idle"
     var groupOutline: Bool = false
 
     var body: some View {
-        let avatar = bot?.resolvedAvatar ?? RelayAvatar()
+        let avatar = bot?.resolvedAvatar ?? SummonAvatar()
         BotAvatar(shape: avatar.shape, color: avatar.color,
                   image: avatar.image, size: size, secondary: avatar.secondary, ink: avatar.ink, paper: avatar.paper, motion: motion, groupOutline: groupOutline)
     }
 }
 
 struct RoomAvatar: View {
-    @Environment(RelayStore.self) private var store
-    let room: RelayRoom
+    @Environment(SummonStore.self) private var store
+    let room: SummonRoom
     var size: CGFloat = 86
 
     private var members: [String] {
@@ -76,7 +76,7 @@ struct InlineError: View {
 
     var body: some View {
         Label(message, systemImage: "exclamationmark.circle")
-            .relayFont(.footnote)
+            .summonFont(.footnote)
             .foregroundStyle(.orange)
             .frame(maxWidth: .infinity, alignment: .leading)
             .textSelection(.enabled)
@@ -85,9 +85,9 @@ struct InlineError: View {
     }
 }
 
-enum RelayFormat {
+enum SummonFormat {
     static func time(_ value: String?) -> String {
-        guard let date = RelayDate.parse(value) else { return "" }
+        guard let date = SummonDate.parse(value) else { return "" }
         if Calendar.current.isDateInToday(date) { return date.formatted(date: .omitted, time: .shortened) }
         if Calendar.current.isDateInYesterday(date) { return "昨天" }
         return date.formatted(.dateTime.month().day())

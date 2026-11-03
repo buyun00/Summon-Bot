@@ -4,18 +4,18 @@ import UniformTypeIdentifiers
 
 @MainActor
 @Observable
-final class RelayStore {
-    private(set) var settings = RelayConnectionSettings()
-    private(set) var bots: [RelayBot] = []
-    private(set) var rooms: [RelayRoom] = []
-    private(set) var messages: [RelayMessage] = []
-    private(set) var jobs: [RelayJob] = []
-    private(set) var agentRuns: [RelayAgentRun] = []
-    private(set) var agentRunDetails: [String: RelayAgentRun] = [:]
-    private(set) var messageHistory: [String: [RelayMessage]] = [:]
-    private(set) var pendingMessages: [RelayPendingMessage] = []
+final class SummonStore {
+    private(set) var settings = SummonConnectionSettings()
+    private(set) var bots: [SummonBot] = []
+    private(set) var rooms: [SummonRoom] = []
+    private(set) var messages: [SummonMessage] = []
+    private(set) var jobs: [SummonJob] = []
+    private(set) var agentRuns: [SummonAgentRun] = []
+    private(set) var agentRunDetails: [String: SummonAgentRun] = [:]
+    private(set) var messageHistory: [String: [SummonMessage]] = [:]
+    private(set) var pendingMessages: [SummonPendingMessage] = []
     private(set) var drafts: [String: String] = [:]
-    private(set) var draftAttachments: [String: [RelayAttachment]] = [:]
+    private(set) var draftAttachments: [String: [SummonAttachment]] = [:]
     private(set) var draftTargets: [String: String] = [:]
     private(set) var draftReplies: [String: String] = [:]
     private(set) var selectedRoomID: String?
@@ -26,13 +26,13 @@ final class RelayStore {
     private(set) var lastSyncAt: Date?
     var errorMessage: String?
 
-    @ObservationIgnored private var client: RelayAPIClient?
+    @ObservationIgnored private var client: SummonAPIClient?
     @ObservationIgnored private var streamTask: Task<Void, Never>?
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
     @ObservationIgnored private var roomRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var roomRecoveryTask: Task<Void, Never>?
-    @ObservationIgnored private var workspaceRequest: Task<RelayWorkspace, Error>?
-    @ObservationIgnored private var roomRequests: [String: Task<RelayRoomSnapshot, Error>] = [:]
+    @ObservationIgnored private var workspaceRequest: Task<SummonWorkspace, Error>?
+    @ObservationIgnored private var roomRequests: [String: Task<SummonRoomSnapshot, Error>] = [:]
     @ObservationIgnored private var runDetailRequests: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var runDetailTokens: [String: UUID] = [:]
     @ObservationIgnored private var runDetailLastRequested: [String: ContinuousClock.Instant] = [:]
@@ -54,23 +54,25 @@ final class RelayStore {
     @ObservationIgnored private var roomRefreshGeneration = 0
     @ObservationIgnored private var startingConnection: Int?
     @ObservationIgnored private let defaults = UserDefaults.standard
-    @ObservationIgnored private let settingsKey = "RelayNative.connection.v1"
+    @ObservationIgnored private let settingsKey = "SummonNative.connection.v1"
     @ObservationIgnored private var cacheURL: URL?
 
     var isConfigured: Bool { client != nil }
-    var savedToken: String { RelayKeychain.token(for: settings.baseURL) }
-    var selectedRoom: RelayRoom? { rooms.first { $0.id == selectedRoomID } }
+    var savedToken: String { SummonKeychain.token(for: settings.baseURL) }
+    var selectedRoom: SummonRoom? { rooms.first { $0.id == selectedRoomID } }
     var currentDraft: String {
         get { selectedRoomID.map { drafts[$0] ?? "" } ?? "" }
         set { if let id = selectedRoomID { setDraft(newValue, for: id) } }
     }
 
     init() {
-        settings.baseURL = Bundle.main.object(forInfoDictionaryKey: "RelayDefaultServerURL") as? String ?? "https://bot.lin0.org"
+        do { try SummonBrandingMigration.run() }
+        catch { errorMessage = "无法迁移本机连接设置：\(error.localizedDescription)" }
+        settings.baseURL = Bundle.main.object(forInfoDictionaryKey: "SummonDefaultServerURL") as? String ?? "https://bot.lin0.org"
         if let data = defaults.data(forKey: settingsKey),
-           let saved = try? JSONDecoder().decode(RelayConnectionSettings.self, from: data) { settings = saved }
-        if let url = try? RelayAPIClient.normalizedURL(settings.baseURL) {
-            client = RelayAPIClient(baseURL: url, token: RelayKeychain.token(for: settings.baseURL))
+           let saved = try? JSONDecoder().decode(SummonConnectionSettings.self, from: data) { settings = saved }
+        if let url = try? SummonAPIClient.normalizedURL(settings.baseURL) {
+            client = SummonAPIClient(baseURL: url, token: SummonKeychain.token(for: settings.baseURL))
         }
         if let root = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                                    appropriateFor: nil, create: true) {
@@ -99,8 +101,8 @@ final class RelayStore {
     func reconnect() async {
         guard startingConnection != connectionGeneration else { return }
         disconnect()
-        if let url = try? RelayAPIClient.normalizedURL(settings.baseURL) {
-            client = RelayAPIClient(baseURL: url, token: savedToken)
+        if let url = try? SummonAPIClient.normalizedURL(settings.baseURL) {
+            client = SummonAPIClient(baseURL: url, token: savedToken)
         }
         await start()
     }
@@ -139,20 +141,20 @@ final class RelayStore {
     }
 
     func saveConnection(baseURL: String, token: String, userName: String? = nil) async throws {
-        let url = try RelayAPIClient.normalizedURL(baseURL)
+        let url = try SummonAPIClient.normalizedURL(baseURL)
         let endpoint = url.absoluteString
-        try RelayKeychain.save(token: token.trimmingCharacters(in: .whitespacesAndNewlines), for: endpoint)
+        try SummonKeychain.save(token: token.trimmingCharacters(in: .whitespacesAndNewlines), for: endpoint)
         let changedEndpoint = endpoint != settings.baseURL
         disconnect()
-        settings = RelayConnectionSettings(baseURL: endpoint,
+        settings = SummonConnectionSettings(baseURL: endpoint,
                                            userName: userName?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? settings.userName)
         if changedEndpoint { clearWorkspace() }
-        client = RelayAPIClient(baseURL: url, token: RelayKeychain.token(for: endpoint))
+        client = SummonAPIClient(baseURL: url, token: SummonKeychain.token(for: endpoint))
         if let data = try? JSONEncoder().encode(settings) { defaults.set(data, forKey: settingsKey) }
         errorMessage = nil
         persistNow()
         await start()
-        if let errorMessage { throw RelayAPIError.http(0, errorMessage) }
+        if let errorMessage { throw SummonAPIError.http(0, errorMessage) }
     }
 
     func setUserName(_ name: String) {
@@ -179,7 +181,7 @@ final class RelayStore {
             }
         }
         do {
-            let request = Task { try await client.request(RelayWorkspace.self, path: "/api/state") }
+            let request = Task { try await client.request(SummonWorkspace.self, path: "/api/state") }
             workspaceRequest = request
             let snapshot = try await withTaskCancellationHandler {
                 try await request.value
@@ -262,20 +264,20 @@ final class RelayStore {
         cancelRunDetailRefreshes()
     }
 
-    func messagesForRoom(_ id: String) -> [RelayMessage] {
+    func messagesForRoom(_ id: String) -> [SummonMessage] {
         let remote = messageHistory[id] ?? []
         let confirmed = Set(remote.filter { $0.senderId == "user" }.compactMap(\.clientId))
         return remote + pendingMessages.filter { $0.roomID == id && !confirmed.contains($0.clientID) }.map(\.message)
     }
 
-    func bot(id: String) -> RelayBot? { bots.first { $0.id == id } }
-    func room(id: String) -> RelayRoom? { rooms.first { $0.id == id } }
-    func name(for id: String) -> String { id == "user" ? settings.userName : bot(id: id)?.name ?? (id == "system" ? "Relay" : id) }
-    func pendingMessage(for message: RelayMessage) -> RelayPendingMessage? {
+    func bot(id: String) -> SummonBot? { bots.first { $0.id == id } }
+    func room(id: String) -> SummonRoom? { rooms.first { $0.id == id } }
+    func name(for id: String) -> String { id == "user" ? settings.userName : bot(id: id)?.name ?? (id == "system" ? "Summon Bot" : id) }
+    func pendingMessage(for message: SummonMessage) -> SummonPendingMessage? {
         pendingMessages.first { $0.clientID == message.clientId && $0.roomID == message.roomId }
     }
 
-    func openDirectMessage(bot: RelayBot) async throws -> RelayRoom {
+    func openDirectMessage(bot: SummonBot) async throws -> SummonRoom {
         // ChatView loads messages after navigation; resolving a room must not wait for history.
         if let room = rooms.first(where: { $0.kind == "dm" && $0.members.contains("user") && $0.members.contains(bot.id) && $0.members.count == 2 }) {
             return room
@@ -283,11 +285,11 @@ final class RelayStore {
         return try await createGroup(name: "与 \(bot.name) 的私聊", members: ["user", bot.id], kind: "dm")
     }
 
-    func createBot(name: String, avatar: RelayAvatar, role: String = "项目协作",
-                   expertise: String = "", prompt: String = "") async throws -> RelayBot {
+    func createBot(name: String, avatar: SummonAvatar, role: String = "项目协作",
+                   expertise: String = "", prompt: String = "") async throws -> SummonBot {
         let connection = connectionGeneration
         let value = try Self.json(avatar)
-        let result: RelayBot = try await apiClient().request(RelayBot.self, path: "/api/bots", method: "POST", body: .object([
+        let result: SummonBot = try await apiClient().request(SummonBot.self, path: "/api/bots", method: "POST", body: .object([
             "id": .string("bot-\(UUID().uuidString.lowercased())"), "name": .string(name), "role": .string(role),
             "expertise": .string(expertise), "prompt": .string(prompt), "avatar": value
         ]))
@@ -295,38 +297,38 @@ final class RelayStore {
         return result
     }
 
-    func updateBot(_ bot: RelayBot) async throws -> RelayBot {
+    func updateBot(_ bot: SummonBot) async throws -> SummonBot {
         try await updateBot(id: bot.id, name: bot.name, role: bot.role, expertise: bot.expertise,
                             prompt: bot.prompt, status: bot.status, avatar: bot.avatar)
     }
 
     func updateBot(id: String, name: String? = nil, role: String? = nil, expertise: String? = nil,
-                   prompt: String? = nil, status: String? = nil, avatar: RelayAvatar? = nil) async throws -> RelayBot {
+                   prompt: String? = nil, status: String? = nil, avatar: SummonAvatar? = nil) async throws -> SummonBot {
         let connection = connectionGeneration
-        var body: [String: RelayJSONValue] = [:]
+        var body: [String: SummonJSONValue] = [:]
         for (key, value) in [("name", name), ("role", role), ("expertise", expertise), ("prompt", prompt), ("status", status)] {
             if let value { body[key] = .string(value) }
         }
         if let avatar { body["avatar"] = try Self.json(avatar) }
-        let result = try await apiClient().request(RelayBot.self, path: "/api/bots/\(RelayAPIClient.component(id))",
+        let result = try await apiClient().request(SummonBot.self, path: "/api/bots/\(SummonAPIClient.component(id))",
                                                    method: "PATCH", body: .object(body))
         if connection == connectionGeneration { upsertBot(result); schedulePersistence() }
         return result
     }
 
-    func createGroup(name: String, members: [String], goal: String = "", kind: String = "group") async throws -> RelayRoom {
+    func createGroup(name: String, members: [String], goal: String = "", kind: String = "group") async throws -> SummonRoom {
         let connection = connectionGeneration
-        let result = try await apiClient().request(RelayRoom.self, path: "/api/rooms", method: "POST", body: .object([
-            "name": .string(name), "kind": .string(kind), "goal": .string(goal), "members": .array(members.map(RelayJSONValue.string))
+        let result = try await apiClient().request(SummonRoom.self, path: "/api/rooms", method: "POST", body: .object([
+            "name": .string(name), "kind": .string(kind), "goal": .string(goal), "members": .array(members.map(SummonJSONValue.string))
         ]))
         if connection == connectionGeneration { upsertRoom(result); schedulePersistence() }
         return result
     }
 
-    func updateRoom(id: String, name: String, members: [String], goal: String = "") async throws -> RelayRoom {
+    func updateRoom(id: String, name: String, members: [String], goal: String = "") async throws -> SummonRoom {
         let connection = connectionGeneration
-        let result = try await apiClient().request(RelayRoom.self, path: "/api/rooms/\(RelayAPIClient.component(id))", method: "PATCH", body: .object([
-            "name": .string(name), "members": .array(members.map(RelayJSONValue.string)), "goal": .string(goal)
+        let result = try await apiClient().request(SummonRoom.self, path: "/api/rooms/\(SummonAPIClient.component(id))", method: "PATCH", body: .object([
+            "name": .string(name), "members": .array(members.map(SummonJSONValue.string)), "goal": .string(goal)
         ]))
         if connection == connectionGeneration { upsertRoom(result); schedulePersistence() }
         return result
@@ -335,25 +337,25 @@ final class RelayStore {
     func draft(for id: String) -> String { drafts[id] ?? "" }
     func setDraft(_ value: String, for id: String) { drafts[id] = value; schedulePersistence() }
     func updateDraft(_ value: String) { currentDraft = value }
-    func setDraftAttachments(_ value: [RelayAttachment], for id: String) {
+    func setDraftAttachments(_ value: [SummonAttachment], for id: String) {
         draftAttachments[id] = Array(value.prefix(8)); schedulePersistence()
     }
     func setDraftTarget(_ value: String?, for id: String) { draftTargets[id] = value; schedulePersistence() }
     func setDraftReply(_ value: String?, for id: String) { draftReplies[id] = value; schedulePersistence() }
 
     /// Sends once. An uncertain receipt remains visible for an explicit retry with the same clientId.
-    func sendMessage(roomID: String, content: String, attachments: [RelayAttachment] = [],
+    func sendMessage(roomID: String, content: String, attachments: [SummonAttachment] = [],
                      toBotID: String? = nil, replyTo: String? = nil) async {
         guard !sendingRoomIDs.contains(roomID) else { return }
         let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || !attachments.isEmpty else { errorMessage = RelayAPIError.emptyMessage.localizedDescription; return }
-        guard attachments.count <= 8 else { errorMessage = RelayAPIError.tooManyAttachments.localizedDescription; return }
-        guard client != nil else { errorMessage = RelayAPIError.noConnection.localizedDescription; return }
+        guard !text.isEmpty || !attachments.isEmpty else { errorMessage = SummonAPIError.emptyMessage.localizedDescription; return }
+        guard attachments.count <= 8 else { errorMessage = SummonAPIError.tooManyAttachments.localizedDescription; return }
+        guard client != nil else { errorMessage = SummonAPIError.noConnection.localizedDescription; return }
         let id = UUID().uuidString.lowercased()
-        let message = RelayMessage(id: "local-\(id)", roomId: roomID, senderId: "user", content: text,
+        let message = SummonMessage(id: "local-\(id)", roomId: roomID, senderId: "user", content: text,
                                    attachments: attachments, replyTo: replyTo, toBotId: toBotID,
                                    clientId: id, createdAt: ISO8601DateFormatter().string(from: Date()))
-        pendingMessages.append(RelayPendingMessage(clientID: id, message: message, status: "sending"))
+        pendingMessages.append(SummonPendingMessage(clientID: id, message: message, status: "sending"))
         drafts[roomID] = ""
         draftAttachments[roomID] = []
         draftTargets[roomID] = nil
@@ -369,55 +371,55 @@ final class RelayStore {
     }
 
     func cancelRun(id: String) async throws {
-        _ = try await request(path: "/api/agent-runs/\(RelayAPIClient.component(id))/cancel", method: "POST", body: .object([:]))
+        _ = try await request(path: "/api/agent-runs/\(SummonAPIClient.component(id))/cancel", method: "POST", body: .object([:]))
         await refresh()
     }
 
-    func fetchAgentRun(id: String) async throws -> RelayAgentRun {
+    func fetchAgentRun(id: String) async throws -> SummonAgentRun {
         let connection = connectionGeneration
-        let result = try await apiClient().request(RelayAgentRun.self, path: "/api/agent-runs/\(RelayAPIClient.component(id))")
+        let result = try await apiClient().request(SummonAgentRun.self, path: "/api/agent-runs/\(SummonAPIClient.component(id))")
         if connection == connectionGeneration { agentRunDetails[id] = result }
         return result
     }
 
-    func uploadAttachment(fileURL: URL) async throws -> RelayAttachment {
+    func uploadAttachment(fileURL: URL) async throws -> SummonAttachment {
         let client = try apiClient()
         let accessing = fileURL.startAccessingSecurityScopedResource()
         defer { if accessing { fileURL.stopAccessingSecurityScopedResource() } }
         let data = try await Task.detached(priority: .userInitiated) {
             let attributes = try fileURL.resourceValues(forKeys: [.fileSizeKey, .contentTypeKey])
-            guard (attributes.fileSize ?? 0) <= 20 * 1024 * 1024 else { throw RelayAPIError.attachmentTooLarge }
+            guard (attributes.fileSize ?? 0) <= 20 * 1024 * 1024 else { throw SummonAPIError.attachmentTooLarge }
             let bytes = try Data(contentsOf: fileURL)
-            guard bytes.count <= 20 * 1024 * 1024 else { throw RelayAPIError.attachmentTooLarge }
+            guard bytes.count <= 20 * 1024 * 1024 else { throw SummonAPIError.attachmentTooLarge }
             return (bytes, attributes.contentType?.preferredMIMEType ?? "application/octet-stream")
         }.value
         return try await client.upload(data: data.0, name: fileURL.lastPathComponent, mimeType: data.1)
     }
 
-    func uploadAttachment(data: Data, name: String, mimeType: String) async throws -> RelayAttachment {
+    func uploadAttachment(data: Data, name: String, mimeType: String) async throws -> SummonAttachment {
         try await apiClient().upload(data: data, name: name, mimeType: mimeType)
     }
 
-    func attachmentFileURL(_ attachment: RelayAttachment) async throws -> URL {
-        try await apiClient().download(path: "/api/attachments/\(RelayAPIClient.component(attachment.id))", name: attachment.name)
+    func attachmentFileURL(_ attachment: SummonAttachment) async throws -> URL {
+        try await apiClient().download(path: "/api/attachments/\(SummonAPIClient.component(attachment.id))", name: attachment.name)
     }
 
-    func attachmentPreviewData(_ attachment: RelayAttachment) async throws -> Data {
+    func attachmentPreviewData(_ attachment: SummonAttachment) async throws -> Data {
         try await apiClient().attachmentData(attachment)
     }
 
-    func artifactFileURL(_ artifact: RelayArtifact, runID: String, toolID: String) async throws -> URL {
-        let component = RelayAPIClient.component
+    func artifactFileURL(_ artifact: SummonArtifact, runID: String, toolID: String) async throws -> URL {
+        let component = SummonAPIClient.component
         return try await apiClient().download(path: "/api/agent-runs/\(component(runID))/tools/\(component(toolID))/artifacts/\(component(artifact.id))",
                                                name: artifact.name ?? "产物")
     }
 
-    func request(path: String, method: String = "GET", body: RelayJSONValue? = nil) async throws -> RelayJSONValue {
-        try await apiClient().request(RelayJSONValue.self, path: path, method: method, body: body)
+    func request(path: String, method: String = "GET", body: SummonJSONValue? = nil) async throws -> SummonJSONValue {
+        try await apiClient().request(SummonJSONValue.self, path: path, method: method, body: body)
     }
 
-    private func apiClient() throws -> RelayAPIClient {
-        guard let client else { throw RelayAPIError.noConnection }
+    private func apiClient() throws -> SummonAPIClient {
+        guard let client else { throw SummonAPIError.noConnection }
         return client
     }
 
@@ -439,16 +441,16 @@ final class RelayStore {
         }
         do {
             let message = item.message
-            var body: [String: RelayJSONValue] = [
+            var body: [String: SummonJSONValue] = [
                 "content": .string(message.content), "clientId": .string(clientID),
                 "attachments": .array(message.attachments.map { .object(["id": .string($0.id)]) })
             ]
             if let id = message.toBotId { body["toBotId"] = .string(id) }
             if let id = message.replyTo { body["replyTo"] = .string(id) }
-            let sent = try await client.request(RelayMessage.self, path: "/api/rooms/\(RelayAPIClient.component(item.roomID))/messages",
+            let sent = try await client.request(SummonMessage.self, path: "/api/rooms/\(SummonAPIClient.component(item.roomID))/messages",
                                                method: "POST", body: .object(body))
             guard connection == connectionGeneration, history == historyGeneration else { return }
-            guard sent.clientId == clientID, sent.roomId == item.roomID, !sent.id.isEmpty else { throw RelayAPIError.invalidReceipt }
+            guard sent.clientId == clientID, sent.roomId == item.roomID, !sent.id.isEmpty else { throw SummonAPIError.invalidReceipt }
             updatePending(clientID) { $0.message = sent; $0.status = "sent"; $0.error = nil }
             if let index = rooms.firstIndex(where: { $0.id == item.roomID }) { rooms[index].lastMessage = sent }
         } catch {
@@ -460,7 +462,7 @@ final class RelayStore {
         }
     }
 
-    private func loadRoom(_ id: String, client: RelayAPIClient, connection: Int) async {
+    private func loadRoom(_ id: String, client: SummonAPIClient, connection: Int) async {
         guard isForeground, connection == connectionGeneration else { return }
         if roomLoadsInFlight.contains(id) { roomsNeedingReload.insert(id); return }
         roomLoadsInFlight.insert(id)
@@ -478,7 +480,7 @@ final class RelayStore {
             }
         }
         do {
-            let request = Task { try await client.request(RelayRoomSnapshot.self, path: "/api/rooms/\(RelayAPIClient.component(id))/messages") }
+            let request = Task { try await client.request(SummonRoomSnapshot.self, path: "/api/rooms/\(SummonAPIClient.component(id))/messages") }
             roomRequests[id] = request
             let snapshot = try await withTaskCancellationHandler {
                 try await request.value
@@ -521,7 +523,7 @@ final class RelayStore {
             while !Task.isCancelled {
                 let attemptStarted = ContinuousClock.now
                 do {
-                    try await RelayEventStream(client: client).consume { [weak self] event in
+                    try await SummonEventStream(client: client).consume { [weak self] event in
                         await self?.receiveStream(event, connection: connection)
                     }
                     delay = 1
@@ -537,7 +539,7 @@ final class RelayStore {
         }
     }
 
-    private func receiveStream(_ event: RelayStreamEvent, connection: Int) {
+    private func receiveStream(_ event: SummonStreamEvent, connection: Int) {
         guard isForeground, connection == connectionGeneration else { return }
         // A complete SSE frame or comment proves bytes are arriving, unlike HTTP headers alone.
         isConnected = true
@@ -618,7 +620,7 @@ final class RelayStore {
         }
     }
 
-    private func scheduleActiveRunDetails(roomID: String, roomJobs: [RelayJob], repliedJobIDs: Set<String>) {
+    private func scheduleActiveRunDetails(roomID: String, roomJobs: [SummonJob], repliedJobIDs: Set<String>) {
         guard isForeground, activeRoomID == roomID, let client else { return }
         let settled = roomJobs.filter { !$0.isActive || repliedJobIDs.contains($0.id) }
         let settledIDs = Set(settled.flatMap { [$0.taskId, $0.agentRunId].compactMap { $0 } })
@@ -648,7 +650,7 @@ final class RelayStore {
                     }
                 }
                 do {
-                    let detail = try await client.request(RelayAgentRun.self, path: "/api/agent-runs/\(RelayAPIClient.component(id))")
+                    let detail = try await client.request(SummonAgentRun.self, path: "/api/agent-runs/\(SummonAPIClient.component(id))")
                     guard let self, !Task.isCancelled, self.isForeground, self.activeRoomID == roomID,
                           connection == self.connectionGeneration, generation == self.runDetailGeneration,
                           self.runDetailTokens[id] == token else { return }
@@ -698,12 +700,12 @@ final class RelayStore {
         runDetailLastRequested = [:]
     }
 
-    private func upsertBot(_ bot: RelayBot) {
+    private func upsertBot(_ bot: SummonBot) {
         if let index = bots.firstIndex(where: { $0.id == bot.id }) { bots[index] = bot }
         else { bots.append(bot) }
     }
 
-    private func upsertRoom(_ room: RelayRoom) {
+    private func upsertRoom(_ room: SummonRoom) {
         if let index = rooms.firstIndex(where: { $0.id == room.id }) {
             var updated = room
             updated.lastMessage = room.lastMessage ?? rooms[index].lastMessage
@@ -711,7 +713,7 @@ final class RelayStore {
         } else { rooms.append(room) }
     }
 
-    private func updatePending(_ id: String, _ mutate: (inout RelayPendingMessage) -> Void) {
+    private func updatePending(_ id: String, _ mutate: (inout SummonPendingMessage) -> Void) {
         guard let index = pendingMessages.firstIndex(where: { $0.clientID == id }) else { return }
         mutate(&pendingMessages[index])
     }
@@ -720,20 +722,20 @@ final class RelayStore {
         if selectedRoomID == roomID { messages = messagesForRoom(roomID) }
     }
 
-    private static func json<T: Encodable>(_ value: T) throws -> RelayJSONValue {
-        try JSONDecoder().decode(RelayJSONValue.self, from: JSONEncoder().encode(value))
+    private static func json<T: Encodable>(_ value: T) throws -> SummonJSONValue {
+        try JSONDecoder().decode(SummonJSONValue.self, from: JSONEncoder().encode(value))
     }
 
     private struct LocalSnapshot: Codable {
         var endpoint: String
         var historyEpoch: String?
-        var bots: [RelayBot]
-        var rooms: [RelayRoom]
-        var agentRuns: [RelayAgentRun]
-        var messageHistory: [String: [RelayMessage]]
-        var pendingMessages: [RelayPendingMessage]
+        var bots: [SummonBot]
+        var rooms: [SummonRoom]
+        var agentRuns: [SummonAgentRun]
+        var messageHistory: [String: [SummonMessage]]
+        var pendingMessages: [SummonPendingMessage]
         var drafts: [String: String]
-        var draftAttachments: [String: [RelayAttachment]]
+        var draftAttachments: [String: [SummonAttachment]]
         var draftTargets: [String: String]
         var draftReplies: [String: String]
         var selectedRoomID: String?

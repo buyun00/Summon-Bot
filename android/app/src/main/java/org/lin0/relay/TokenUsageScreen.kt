@@ -43,15 +43,15 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
-private fun usageNumber(value: RelayJson): String = (value as? RelayJson.Num)?.value?.let { NumberFormat.getIntegerInstance(Locale.CHINA).format(it) } ?: "—"
-private fun usageRate(value: RelayJson): String = (value as? RelayJson.Num)?.value?.let { String.format(Locale.CHINA, "%.1f%%", it * 100) } ?: "—"
-private fun usageAmount(value: RelayJson): String = (value as? RelayJson.Num)?.value?.let { String.format(Locale.CHINA, "%.4f", it) } ?: "—"
-private fun usageTime(value: RelayJson): String = runCatching { Instant.parse(value.stringValue).atZone(ZoneId.of("Asia/Shanghai")).format(DateTimeFormatter.ofPattern("MM-dd HH:mm")) }.getOrDefault("—")
+private fun usageNumber(value: SummonJson): String = (value as? SummonJson.Num)?.value?.let { NumberFormat.getIntegerInstance(Locale.CHINA).format(it) } ?: "—"
+private fun usageRate(value: SummonJson): String = (value as? SummonJson.Num)?.value?.let { String.format(Locale.CHINA, "%.1f%%", it * 100) } ?: "—"
+private fun usageAmount(value: SummonJson): String = (value as? SummonJson.Num)?.value?.let { String.format(Locale.CHINA, "%.4f", it) } ?: "—"
+private fun usageTime(value: SummonJson): String = runCatching { Instant.parse(value.stringValue).atZone(ZoneId.of("Asia/Shanghai")).format(DateTimeFormatter.ofPattern("MM-dd HH:mm")) }.getOrDefault("—")
 private val usagePurposes = mapOf("chat" to "聊天", "work" to "工作执行", "routing" to "群聊路由", "compress" to "上下文压缩", "compact" to "上下文压缩", "organize" to "记忆整理", "assemble" to "上下文组装", "other" to "其他调用")
 private val usageStatuses = mapOf("succeeded" to "完成", "failed" to "失败", "cancelled" to "取消", "pending" to "调用中", "unknown" to "结果未知")
 
 @Composable
-fun TokenUsageScreen(store: RelayStore, onBack: () -> Unit) {
+fun TokenUsageScreen(store: SummonStore, onBack: () -> Unit) {
     var period by remember { mutableStateOf("today") }
     var dimension by remember { mutableStateOf("bots") }
     var sort by remember { mutableStateOf("totalTokens") }
@@ -61,15 +61,15 @@ fun TokenUsageScreen(store: RelayStore, onBack: () -> Unit) {
     var selectedName by remember { mutableStateOf("") }
     var offset by remember { mutableIntStateOf(0) }
     var revision by remember { mutableIntStateOf(0) }
-    var overview by remember { mutableStateOf<RelayJson>(RelayJson.Null) }
-    var detail by remember { mutableStateOf<RelayJson>(RelayJson.Null) }
+    var overview by remember { mutableStateOf<SummonJson>(SummonJson.Null) }
+    var detail by remember { mutableStateOf<SummonJson>(SummonJson.Null) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(period, selectedKind, selectedID, offset, revision, store.settings.baseURL) {
-        loading = true; error = null; detail = RelayJson.Null
+        loading = true; error = null; detail = SummonJson.Null
         try {
             val result = withContext(Dispatchers.IO) {
-                val client = RelayApiClient(RelayApiClient.normalized(store.settings.baseURL), store.savedToken)
+                val client = SummonApiClient(SummonApiClient.normalized(store.settings.baseURL), store.savedToken)
                 val all = client.requestJson("/api/usage?period=$period&limit=25")
                 val filter = selectedKind?.let { "&${if (it == "bot") "botId" else "roomId"}=${URLEncoder.encode(selectedID, "UTF-8")}" }.orEmpty()
                 val current = if (selectedKind == null && offset == 0) all else client.requestJson("/api/usage?period=$period&limit=25&offset=$offset$filter")
@@ -83,7 +83,7 @@ fun TokenUsageScreen(store: RelayStore, onBack: () -> Unit) {
     }
     val ranking = (if (dimension == "bots") overview["bots"].array.orEmpty() else overview["rooms"].array.orEmpty().filter {
         if (dimension == "dm") it["kind"].stringValue == "dm" else it["kind"].stringValue !in listOf("dm", "unassigned")
-    }).sortedByDescending { (it[sort] as? RelayJson.Num)?.value ?: 0.0 }
+    }).sortedByDescending { (it[sort] as? SummonJson.Num)?.value ?: 0.0 }
     Scaffold(containerColor = Color.Black, topBar = {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
@@ -95,7 +95,7 @@ fun TokenUsageScreen(store: RelayStore, onBack: () -> Unit) {
             item {
                 Row(Modifier.horizontalScroll(rememberScrollState())) {
                     listOf("today" to "今天", "yesterday" to "昨天", "7d" to "近 7 天", "all" to "累计").forEach { (id, title) ->
-                        TextButton(onClick = { period = id; selectedKind = null; offset = 0; overview = RelayJson.Null; detail = RelayJson.Null }) { Text(if (period == id) "● $title" else title) }
+                        TextButton(onClick = { period = id; selectedKind = null; offset = 0; overview = SummonJson.Null; detail = SummonJson.Null }) { Text(if (period == id) "● $title" else title) }
                     }
                 }
             }
@@ -106,7 +106,7 @@ fun TokenUsageScreen(store: RelayStore, onBack: () -> Unit) {
                     Text("${report["day"].stringValue} · 供应商用量对照", style = MaterialTheme.typography.titleMedium)
                     Text("DeepSeek · ${report["billingLabel"].stringValue} · 用户截图人工记录", color = Color(0xFF8E8E93), style = MaterialTheme.typography.bodySmall)
                     UsageLine("截图请求 / Token", "${usageNumber(report["calls"])} / ${usageNumber(report["totalTokens"])}")
-                    UsageLine("截图消费 · CNY", "¥${(report["amount"] as? RelayJson.Num)?.value?.let { String.format(Locale.CHINA, "%.2f", it) }.orEmpty()}")
+                    UsageLine("截图消费 · CNY", "¥${(report["amount"] as? SummonJson.Num)?.value?.let { String.format(Locale.CHINA, "%.2f", it) }.orEmpty()}")
                     UsageLine("本机请求 / Token", "${usageNumber(report["localCalls"])} / ${usageNumber(report["localTokens"])}")
                     UsageLine("差额 · 请求 / Token", "${usageNumber(report["differenceCalls"])} / ${usageNumber(report["differenceTokens"])}")
                     Text("本机明细覆盖 ${usageRate(report["tokenCoverage"])}。缺失部分未分摊到 Bot 或会话，不能据此计算全天缓存命中率。", style = MaterialTheme.typography.bodySmall, color = Color(0xFF8E8E93))
@@ -181,7 +181,7 @@ private fun UsageLine(title: String, value: String) {
 }
 
 @Composable
-private fun UsageTotals(totals: RelayJson) {
+private fun UsageTotals(totals: SummonJson) {
     Column(verticalArrangement = Arrangement.spacedBy(7.dp), modifier = Modifier.padding(vertical = 10.dp)) {
         UsageLine("输入 / 输出", "${usageNumber(totals["inputTokens"])} / ${usageNumber(totals["outputTokens"])}")
         UsageLine("输入缓存命中 / 未命中", "${usageNumber(totals["cacheHitTokens"])} / ${usageNumber(totals["cacheMissTokens"])}")

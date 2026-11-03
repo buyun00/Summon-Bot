@@ -2,23 +2,23 @@ import SwiftUI
 import PhotosUI
 
 struct BotDetailsView: View {
-    @Environment(RelayStore.self) private var store
+    @Environment(SummonStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     let botID: String
     @State private var name = ""
     @State private var role = ""
     @State private var expertise = ""
     @State private var prompt = ""
-    @State private var avatar = RelayAvatar()
+    @State private var avatar = SummonAvatar()
     @State private var photo: PhotosPickerItem?
     @State private var busy = false
     @State private var saved = false
     @State private var errorMessage: String?
-    @State private var memories: [RelayJSONValue] = []
-    @State private var editingMemory: RelayJSONValue?
+    @State private var memories: [SummonJSONValue] = []
+    @State private var editingMemory: SummonJSONValue?
     @State private var showMemoryEditor = false
 
-    private var bot: RelayBot? { store.bots.first { $0.id == botID } }
+    private var bot: SummonBot? { store.bots.first { $0.id == botID } }
 
     var body: some View {
         Form {
@@ -57,7 +57,7 @@ struct BotDetailsView: View {
                     } label: {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(memory["content"].string ?? memory["text"].string ?? "").foregroundStyle(.primary)
-                            Text(memory["status"].string == "expired" ? "已过期" : "有效").relayFont(.caption).foregroundStyle(.secondary)
+                            Text(memory["status"].string == "expired" ? "已过期" : "有效").summonFont(.caption).foregroundStyle(.secondary)
                         }.padding(.vertical, 5)
                     }.buttonStyle(.plain)
                 }
@@ -71,7 +71,7 @@ struct BotDetailsView: View {
         .task {
             if let bot {
                 name = bot.name; role = bot.role; expertise = bot.expertise; prompt = bot.prompt
-                avatar = bot.avatar ?? RelayAvatar.defaultAvatar(for: bot.id)
+                avatar = bot.avatar ?? SummonAvatar.defaultAvatar(for: bot.id)
             }
             await loadMemories()
         }
@@ -84,7 +84,7 @@ struct BotDetailsView: View {
         .onChange(of: role) { _, _ in saved = false }
         .onChange(of: expertise) { _, _ in saved = false }
         .onChange(of: prompt) { _, _ in saved = false }
-        .relaySheet(isPresented: $showMemoryEditor, onDismiss: { Task { await loadMemories() } }) {
+        .summonSheet(isPresented: $showMemoryEditor, onDismiss: { Task { await loadMemories() } }) {
             MemoryEditor(botID: botID, memory: editingMemory)
         }
     }
@@ -107,7 +107,7 @@ struct BotDetailsView: View {
     }
 
     private func loadMemories() async {
-        do { memories = try await store.request(path: "/api/bots/\(RelayAPIClient.component(botID))/memories")["memories"].array ?? [] }
+        do { memories = try await store.request(path: "/api/bots/\(SummonAPIClient.component(botID))/memories")["memories"].array ?? [] }
         catch { errorMessage = error.localizedDescription }
     }
 
@@ -130,10 +130,10 @@ struct BotDetailsView: View {
 }
 
 private struct MemoryEditor: View {
-    @Environment(RelayStore.self) private var store
+    @Environment(SummonStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     let botID: String
-    let memory: RelayJSONValue?
+    let memory: SummonJSONValue?
     @State private var content = ""
     @State private var status = "active"
     @State private var category = "professional"
@@ -168,17 +168,17 @@ private struct MemoryEditor: View {
 
     private func save() async {
         busy = true; defer { busy = false }
-        var body: [String: RelayJSONValue] = ["content": .string(content), "status": .string(status), "category": .string(category)]
+        var body: [String: SummonJSONValue] = ["content": .string(content), "status": .string(status), "category": .string(category)]
         let id = memory?["id"].string
         if let revision = memory?["revision"].int { body["expectedRevision"] = .number(Double(revision)) }
-        let path = id.map { "/api/memories/\(RelayAPIClient.component($0))" } ?? "/api/bots/\(RelayAPIClient.component(botID))/memories"
+        let path = id.map { "/api/memories/\(SummonAPIClient.component($0))" } ?? "/api/bots/\(SummonAPIClient.component(botID))/memories"
         do { _ = try await store.request(path: path, method: id == nil ? "POST" : "PATCH", body: .object(body)); dismiss() }
         catch { errorMessage = error.localizedDescription }
     }
 }
 
 struct RoomDetailsView: View {
-    @Environment(RelayStore.self) private var store
+    @Environment(SummonStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     let roomID: String
     @State private var name = ""
@@ -188,7 +188,7 @@ struct RoomDetailsView: View {
     @State private var errorMessage: String?
     @State private var confirmConclude = false
 
-    private var room: RelayRoom? { store.rooms.first { $0.id == roomID } }
+    private var room: SummonRoom? { store.rooms.first { $0.id == roomID } }
 
     var body: some View {
         Form {
@@ -253,7 +253,7 @@ struct RoomDetailsView: View {
     private func conclude() async {
         busy = true; defer { busy = false }
         do {
-            _ = try await store.request(path: "/api/rooms/\(RelayAPIClient.component(roomID))/conclude", method: "POST", body: .object([:]))
+            _ = try await store.request(path: "/api/rooms/\(SummonAPIClient.component(roomID))/conclude", method: "POST", body: .object([:]))
             await store.refresh(); dismiss()
         } catch { errorMessage = error.localizedDescription }
     }

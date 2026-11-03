@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Relay"
+rootProject.name = "Summon Bot"
 include(":app")

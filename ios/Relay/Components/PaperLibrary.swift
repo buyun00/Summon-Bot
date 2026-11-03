@@ -58,7 +58,7 @@ struct PaperFrame {
     static func eyeColor(_ color:String,paper:String)->Color {
         let value=UInt32(color.dropFirst(),radix:16) ?? 0
         let light=(Double((value>>16)&255)*0.2126+Double((value>>8)&255)*0.7152+Double(value&255)*0.0722)/255
-        return Color(relayHex:light>0.69 ? "#485346" : paper)
+        return Color(summonHex:light>0.69 ? "#485346" : paper)
     }
 }
 

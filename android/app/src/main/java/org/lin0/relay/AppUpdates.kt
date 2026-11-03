@@ -35,23 +35,23 @@ import java.io.File
 import java.net.URI
 import java.util.concurrent.TimeUnit
 
-data class RelayClientRelease(val version: String, val buildNumber: Int, val downloadUrl: String, val size: Long)
-data class RelayUpdateState(
+data class SummonClientRelease(val version: String, val buildNumber: Int, val downloadUrl: String, val size: Long)
+data class SummonUpdateState(
     val checking: Boolean = false,
     val downloading: Boolean = false,
     val checked: Boolean = false,
     val progress: Int = 0,
-    val latest: RelayClientRelease? = null,
+    val latest: SummonClientRelease? = null,
     val downloaded: File? = null,
     val error: String? = null,
 )
 
-class RelayAppUpdater(private val app: Context, private val scope: CoroutineScope) {
-    var state by mutableStateOf(RelayUpdateState())
+class SummonAppUpdater(private val app: Context, private val scope: CoroutineScope) {
+    var state by mutableStateOf(SummonUpdateState())
         private set
     private val http = OkHttpClient.Builder().connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS).callTimeout(20, TimeUnit.MINUTES).build()
-    private val endpoint = URI(BuildConfig.RELAY_UPDATE_URL)
+    private val endpoint = URI(BuildConfig.SUMMON_UPDATE_URL)
     private var lastCheck = 0L
     private var awaitingPermission = false
 
@@ -72,7 +72,7 @@ class RelayAppUpdater(private val app: Context, private val scope: CoroutineScop
                         val files = value.getJSONArray("files")
                         var size = 0L
                         for (index in 0 until files.length()) if (files.getJSONObject(index).getString("url") == path) size = files.getJSONObject(index).getLong("size")
-                        RelayClientRelease(value.getString("version"), value.getInt("buildNumber"), url.toString(), size)
+                        SummonClientRelease(value.getString("version"), value.getInt("buildNumber"), url.toString(), size)
                     }
                 }
                 val available = latest?.takeIf { it.buildNumber > BuildConfig.VERSION_CODE }
@@ -87,7 +87,7 @@ class RelayAppUpdater(private val app: Context, private val scope: CoroutineScop
     }
 
     private fun updateDirectory() = File(app.cacheDir, "RelayDownloads/updates").apply { mkdirs() }
-    private fun apkFile(release: RelayClientRelease) = File(updateDirectory(), "Relay-${release.buildNumber}.apk")
+    private fun apkFile(release: SummonClientRelease) = File(updateDirectory(), "Summon-Bot-${release.buildNumber}.apk")
 
     fun download() {
         val release = state.latest ?: return
@@ -156,7 +156,7 @@ class RelayAppUpdater(private val app: Context, private val scope: CoroutineScop
 }
 
 @Composable
-fun ClientUpdateSettings(updater: RelayAppUpdater) {
+fun ClientUpdateSettings(updater: SummonAppUpdater) {
     val context = LocalContext.current
     val state = updater.state
     Column(Modifier.fillMaxWidth().padding(vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {

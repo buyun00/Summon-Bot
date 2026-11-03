@@ -27,17 +27,17 @@ enum WorkspaceSection: String, CaseIterable, Identifiable {
 }
 
 struct WorkspaceView: View {
-    @Environment(RelayStore.self) private var store
+    @Environment(SummonStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     let section: WorkspaceSection
 
-    @State private var snapshot: RelayJSONValue = .null
+    @State private var snapshot: SummonJSONValue = .null
     @State private var loading = false
     @State private var error: String?
     @State private var editor: WorkspaceEditKind?
     @State private var workFilter = "all"
     @State private var query = ""
-    @State private var results: RelayJSONValue?
+    @State private var results: SummonJSONValue?
     @State private var routineOverrides: [String: Bool] = [:]
     @State private var mutatingIDs: Set<String> = []
 
@@ -92,7 +92,7 @@ struct WorkspaceView: View {
                         .disabled(loading)
                 }
             }
-            .relaySheet(item: $editor, onDismiss: { Task { await reload() } }) { kind in
+            .summonSheet(item: $editor, onDismiss: { Task { await reload() } }) { kind in
                 WorkspaceEditor(kind: kind, snapshot: snapshot)
             }
             .task { await reload() }
@@ -116,12 +116,12 @@ struct WorkspaceView: View {
                               color: bot.value["avatar"]["color"].string ?? "#FFC18E",
                               image: bot.value["avatar"]["image"].string, size: 42, secondary: bot.value["avatar"]["secondary"].string, ink: bot.value["avatar"]["ink"].string, paper: bot.value["avatar"]["paper"].string)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(bot.value["name"].string ?? bot.id).relayFont(.headline)
-                        Text(bot.value["role"].stringValue).relayFont(.subheadline).foregroundStyle(.secondary)
+                        Text(bot.value["name"].string ?? bot.id).summonFont(.headline)
+                        Text(bot.value["role"].stringValue).summonFont(.subheadline).foregroundStyle(.secondary)
                     }
                     Spacer()
                     if bot.value["status"].string == "paused" {
-                        Text("已暂停").relayFont(.caption).foregroundStyle(.secondary)
+                        Text("已暂停").summonFont(.caption).foregroundStyle(.secondary)
                     }
                 }.padding(.vertical, 4)
             }
@@ -156,14 +156,14 @@ struct WorkspaceView: View {
                 WorkspaceWorkDetail(initial: record, snapshot: snapshot)
             } label: {
                 VStack(alignment: .leading, spacing: 7) {
-                    Text(record.value["goal"].stringValue).relayFont(.headline).lineLimit(3)
+                    Text(record.value["goal"].stringValue).summonFont(.headline).lineLimit(3)
                     HStack {
                         Text(record.value["status"].stringValue == "active" ? "进行中" : workspaceStatus(record.value["status"].stringValue))
                         Text("·")
                         Text(workspaceName(record.value["botId"].stringValue, in: snapshot["bots"]))
                         Spacer()
                         Text(workspaceDate(record.value["createdAt"].string))
-                    }.relayFont(.caption).foregroundStyle(.secondary)
+                    }.summonFont(.caption).foregroundStyle(.secondary)
                 }.padding(.vertical, 4)
             }
         }
@@ -197,9 +197,9 @@ struct WorkspaceView: View {
                         Text(workspaceStatus(node.value["type"].stringValue))
                         Text("·")
                         Text(workspaceStatus(node.value["status"].stringValue))
-                    }.relayFont(.caption).foregroundStyle(.secondary)
-                    Text(node.value["title"].stringValue).relayFont(.headline)
-                    Text(node.value["content"].stringValue).relayFont(.subheadline).foregroundStyle(.secondary).lineLimit(3)
+                    }.summonFont(.caption).foregroundStyle(.secondary)
+                    Text(node.value["title"].stringValue).summonFont(.headline)
+                    Text(node.value["content"].stringValue).summonFont(.subheadline).foregroundStyle(.secondary).lineLimit(3)
                 }.padding(.vertical, 4)
             }
         }
@@ -208,7 +208,7 @@ struct WorkspaceView: View {
                 ForEach(Array(memories.enumerated()), id: \.offset) { _, memory in
                     VStack(alignment: .leading, spacing: 5) {
                         Text(workspaceName(memory["botId"].stringValue, in: snapshot["bots"]))
-                            .relayFont(.caption).foregroundStyle(.secondary)
+                            .summonFont(.caption).foregroundStyle(.secondary)
                         Text(memory["content"].stringValue).textSelection(.enabled)
                     }
                 }
@@ -226,11 +226,11 @@ struct WorkspaceView: View {
             Section {
                 Button { editor = .routine(record) } label: {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(record.value["name"].stringValue).relayFont(.headline).foregroundStyle(.primary)
+                        Text(record.value["name"].stringValue).summonFont(.headline).foregroundStyle(.primary)
                         Text(record.value["instruction"].stringValue)
-                            .relayFont(.subheadline).foregroundStyle(.secondary).lineLimit(4)
+                            .summonFont(.subheadline).foregroundStyle(.secondary).lineLimit(4)
                         Text(workspaceName(record.value["botId"].stringValue, in: snapshot["bots"]))
-                            .relayFont(.caption).foregroundStyle(.secondary)
+                            .summonFont(.caption).foregroundStyle(.secondary)
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }
                 Toggle("启用", isOn: Binding(
@@ -284,23 +284,23 @@ struct WorkspaceView: View {
 }
 
 private struct WorkspaceWorkDetail: View {
-    @Environment(RelayStore.self) private var store
+    @Environment(SummonStore.self) private var store
     let initial: WorkspaceRecord
-    let snapshot: RelayJSONValue
-    @State private var work: RelayJSONValue = .null
+    let snapshot: SummonJSONValue
+    @State private var work: SummonJSONValue = .null
     @State private var error: String?
     @State private var busy = false
     @State private var answer = ""
     @State private var answerRequestID = UUID().uuidString
 
-    private var value: RelayJSONValue { work.object == nil ? initial.value : work }
+    private var value: SummonJSONValue { work.object == nil ? initial.value : work }
     private var status: String { value["status"].stringValue }
 
     var body: some View {
         List {
             if let error { WorkspaceErrorRow(message: error) }
             Section {
-                Text(value["goal"].stringValue).relayFont(.title3, weight: .bold).textSelection(.enabled)
+                Text(value["goal"].stringValue).summonFont(.title3, weight: .bold).textSelection(.enabled)
                 LabeledContent("状态", value: status == "active" ? "进行中" : workspaceStatus(status))
                 LabeledContent("委托成员", value: workspaceName(value["botId"].stringValue, in: snapshot["bots"]))
                 LabeledContent("来源会话", value: workspaceName(value["roomId"].stringValue, in: snapshot["rooms"]))
@@ -325,7 +325,7 @@ private struct WorkspaceWorkDetail: View {
             }
             if status == "interrupted" {
                 Section { Text("上次执行已中断。恢复会继续已有工作对话，已进行的操作仍然保留。")
-                    .relayFont(.footnote).foregroundStyle(.secondary) }
+                    .summonFont(.footnote).foregroundStyle(.secondary) }
             }
             if value["historical"].bool != true && ["active", "waiting", "blocked"].contains(status) {
                 Section("补充要求") {
@@ -352,12 +352,12 @@ private struct WorkspaceWorkDetail: View {
                 ForEach(Array(events.enumerated()), id: \.offset) { _, event in
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(alignment: .firstTextBaseline) {
-                            Text(workspaceEventLabel(event["type"].stringValue)).relayFont(.subheadline, weight: .bold)
+                            Text(workspaceEventLabel(event["type"].stringValue)).summonFont(.subheadline, weight: .bold)
                             Spacer()
                             Text(workspaceDate(event["createdAt"].string ?? event["timestamp"].string))
-                                .relayFont(.caption).foregroundStyle(.secondary)
+                                .summonFont(.caption).foregroundStyle(.secondary)
                         }
-                        Text(workspaceEventText(event)).relayFont(.subheadline).textSelection(.enabled)
+                        Text(workspaceEventText(event)).summonFont(.subheadline).textSelection(.enabled)
                     }.padding(.vertical, 4)
                 }
             }
@@ -384,7 +384,7 @@ private struct WorkspaceWorkDetail: View {
         } catch { self.error = error.localizedDescription }
     }
 
-    private func perform(_ action: String, body: RelayJSONValue = .object([:])) async {
+    private func perform(_ action: String, body: SummonJSONValue = .object([:])) async {
         guard !busy else { return }
         busy = true
         defer { busy = false }
@@ -397,10 +397,10 @@ private struct WorkspaceWorkDetail: View {
 }
 
 private struct WorkspaceKnowledgeDetail: View {
-    @Environment(RelayStore.self) private var store
+    @Environment(SummonStore.self) private var store
     let initial: WorkspaceRecord
-    let snapshot: RelayJSONValue
-    @State private var graph: RelayJSONValue = .null
+    let snapshot: SummonJSONValue
+    @State private var graph: SummonJSONValue = .null
     @State private var error: String?
     @State private var editor: WorkspaceEditKind?
 
@@ -412,7 +412,7 @@ private struct WorkspaceKnowledgeDetail: View {
         List {
             if let error { WorkspaceErrorRow(message: error) }
             Section {
-                Text(node.value["title"].stringValue).relayFont(.title3, weight: .bold).textSelection(.enabled)
+                Text(node.value["title"].stringValue).summonFont(.title3, weight: .bold).textSelection(.enabled)
                 LabeledContent("性质", value: workspaceStatus(node.value["type"].stringValue))
                 LabeledContent("状态", value: workspaceStatus(node.value["status"].stringValue))
                 Text(node.value["content"].stringValue).textSelection(.enabled)
@@ -434,9 +434,9 @@ private struct WorkspaceKnowledgeDetail: View {
                         }
                         Button { editor = .edge(edge) } label: {
                             Label("\(workspaceName(edge.value["from"].stringValue, in: graph["nodes"], field: "title")) → \(edge.value["relation"].stringValue) → \(workspaceName(edge.value["to"].stringValue, in: graph["nodes"], field: "title"))", systemImage: "pencil")
-                                .relayFont(.caption).multilineTextAlignment(.leading)
+                                .summonFont(.caption).multilineTextAlignment(.leading)
                         }
-                        if edge.value["status"].string == "expired" { Text("已过期").relayFont(.caption).foregroundStyle(.secondary) }
+                        if edge.value["status"].string == "expired" { Text("已过期").summonFont(.caption).foregroundStyle(.secondary) }
                     }.padding(.vertical, 3)
                 }
                 Button("建立关联", systemImage: "link") { editor = .edge(nil) }
@@ -458,7 +458,7 @@ private struct WorkspaceKnowledgeDetail: View {
         .toolbar { Button("修订", systemImage: "pencil") { editor = .node(node) } }
         .refreshable { await load() }
         .task { await load() }
-        .relaySheet(item: $editor, onDismiss: { Task { await load() } }) { kind in
+        .summonSheet(item: $editor, onDismiss: { Task { await load() } }) { kind in
             WorkspaceEditor(kind: kind, snapshot: snapshot)
         }
     }
@@ -473,7 +473,7 @@ private struct WorkspaceKnowledgeDetail: View {
 
 private struct WorkspaceRecord: Identifiable {
     let id: String
-    let value: RelayJSONValue
+    let value: SummonJSONValue
 }
 
 private enum WorkspaceEditKind: Identifiable {
@@ -508,10 +508,10 @@ private enum WorkspaceEditKind: Identifiable {
 }
 
 private struct WorkspaceEditor: View {
-    @Environment(RelayStore.self) private var store
+    @Environment(SummonStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     let kind: WorkspaceEditKind
-    let snapshot: RelayJSONValue
+    let snapshot: SummonJSONValue
     var embedded = false
 
     @State private var title = ""
@@ -698,7 +698,7 @@ private struct WorkspaceEditor: View {
         let record = kind.record
         var path: String
         var method = record == nil ? "POST" : "PATCH"
-        var payload: [String: RelayJSONValue]
+        var payload: [String: SummonJSONValue]
         switch kind {
         case .work:
             path = "/api/works"
@@ -739,7 +739,7 @@ private struct WorkspaceErrorRow: View {
     let message: String
     var body: some View {
         Label(message, systemImage: "exclamationmark.circle")
-            .relayFont(.footnote).foregroundStyle(.orange).textSelection(.enabled)
+            .summonFont(.footnote).foregroundStyle(.orange).textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -749,7 +749,7 @@ private struct WorkspaceTextFact: View {
     let value: String
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(title).relayFont(.caption).foregroundStyle(.secondary)
+            Text(title).summonFont(.caption).foregroundStyle(.secondary)
             Text(value).textSelection(.enabled)
         }
     }
@@ -760,7 +760,7 @@ private struct WorkspaceFormError: LocalizedError {
     var errorDescription: String? { message }
 }
 
-private func workspaceRecords(_ value: RelayJSONValue) -> [WorkspaceRecord] {
+private func workspaceRecords(_ value: SummonJSONValue) -> [WorkspaceRecord] {
     (value.array ?? []).compactMap { item in
         guard let id = item["id"].string, !id.isEmpty else { return nil }
         return WorkspaceRecord(id: id, value: item)
@@ -771,13 +771,13 @@ private func workspaceEscaped(_ value: String) -> String {
     value.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-._~"))) ?? value
 }
 
-private func workspaceName(_ id: String, in values: RelayJSONValue, field: String = "name") -> String {
+private func workspaceName(_ id: String, in values: SummonJSONValue, field: String = "name") -> String {
     guard !id.isEmpty else { return "未指定" }
     return workspaceRecords(values).first { $0.id == id }?.value[field].string ?? id
 }
 
 private func workspaceDate(_ value: String?, full: Bool = false) -> String {
-    guard let date = RelayDate.parse(value) else { return value ?? "—" }
+    guard let date = SummonDate.parse(value) else { return value ?? "—" }
     return full ? date.formatted(date: .abbreviated, time: .shortened) : date.formatted(date: .omitted, time: .shortened)
 }
 
@@ -797,7 +797,7 @@ private func workspaceEventLabel(_ value: String) -> String {
      "error": "执行异常", "reasoning": "正在思考", "result": "执行结果", "work.created": "工作已建立", "work.updated": "工作状态更新"][value] ?? workspaceStatus(value)
 }
 
-private func workspaceEventText(_ event: RelayJSONValue) -> String {
+private func workspaceEventText(_ event: SummonJSONValue) -> String {
     let data = event["payload"] == .null ? event["data"] : event["payload"]
     if data["work"] != .null {
         let work = data["work"]
@@ -820,8 +820,8 @@ private func workspaceEventText(_ event: RelayJSONValue) -> String {
     return data.stringValue
 }
 
-private func workspaceWorkEvents(_ events: [RelayJSONValue]) -> [RelayJSONValue] {
-    var result: [RelayJSONValue] = []
+private func workspaceWorkEvents(_ events: [SummonJSONValue]) -> [SummonJSONValue] {
+    var result: [SummonJSONValue] = []
     for event in events {
         if let last = result.last,
            ["message_delta", "command_output"].contains(event["type"].stringValue),

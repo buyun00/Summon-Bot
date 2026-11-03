@@ -1,6 +1,6 @@
 # 客户端发行与更新
 
-Relay 使用普通网页、Windows/macOS Electron 桌面端、Android Compose 和 iOS SwiftUI。网页及桌面共用 `https://bot.lin0.org` 页面，手机端使用原生组件。开发顺序遵循 [DEVELOPMENT.md](DEVELOPMENT.md)：网页制作、定稿、同步原生实现、提交推送，再打包发布。
+Summon Bot 使用普通网页、Windows/macOS Electron 桌面端、Android Compose 和 iOS SwiftUI。网页及桌面共用 `https://bot.lin0.org` 页面，手机端使用原生组件。开发顺序遵循 [DEVELOPMENT.md](DEVELOPMENT.md)：网页制作、定稿、同步原生实现、提交推送，再打包发布。
 
 ## 目录和入口
 
@@ -48,11 +48,11 @@ npm run release:android -- --publish
 
 若当前环境禁止清理 Android 编译缓存，可加 `--keep-build-cache` 明确保留这些缓存；该选项不保留旧的已发布安装包，也不改变最新版切换流程。
 
-若运行时下载受当前网络影响，可将同版本 Electron ZIP 的绝对路径放入 `RELAY_ELECTRON_DIST`，打包器会直接使用该运行时归档；无需启动额外服务。
+若运行时下载受当前网络影响，可将同版本 Electron ZIP 的绝对路径放入 `SUMMON_ELECTRON_DIST`，打包器会直接使用该运行时归档；无需启动额外服务。
 
 ## 桌面更新
 
-Electron 仅承载正式网页，不运行另一份 Relay 后端。页面不具有 Node 权限，桌面版本、检查更新、重启更新通过限定的桥接接口提供。外部链接交给系统浏览器。
+Electron 仅承载正式网页，不运行另一份 Summon Bot 后端。页面不具有 Node 权限，桌面版本、检查更新、重启更新通过限定的桥接接口提供。外部链接交给系统浏览器。
 
 Windows 首次使用下载的 EXE 安装到当前用户目录。后续应用启动后及运行期间检查更新，后台下载完成后，在“客户端下载与更新”点击“重启并更新”；草稿先保存，再由标准更新器替换程序并重新打开。无需再次手动走安装向导。网页部署的界面变化刷新后直接生效。
 
@@ -77,7 +77,7 @@ npm run release:desktop
 npm run release:ios
 ```
 
-桌面默认生成包含 Intel 和 Apple Silicon 的 universal DMG/ZIP，需要本机可用的 Apple 签名身份。iOS 使用 Xcode 归档；签名 Team 可通过 `RELAY_APPLE_TEAM_ID` 指定，或使用工程的本机签名设置。需要导出 IPA 时，将本机的导出设置传入 `--export-options <ExportOptions.plist>`。iOS 暂不接入应用内下载安装。
+桌面默认生成包含 Intel 和 Apple Silicon 的 universal DMG/ZIP，需要本机可用的 Apple 签名身份。iOS 使用 Xcode 归档；签名 Team 可通过 `SUMMON_APPLE_TEAM_ID` 指定，或使用工程的本机签名设置。需要导出 IPA 时，将本机的导出设置传入 `--export-options <ExportOptions.plist>`。iOS 暂不接入应用内下载安装。
 
 Mac 桌面构建完成后上传到同一 Windows 发行仓库：
 
@@ -89,4 +89,4 @@ npm run release:publish -- --input .relay/client-builds/macos-universal --server
 
 ## 网页退出 PWA
 
-网页不再注册 Service Worker，不提供离线页面或 PWA 安装入口。`/sw.js` 只用于让已安装的旧离线组件退出：删除 Relay 离线页面缓存并注销自身，不创建新的缓存，也不主动跳转或刷新正在编辑的页面。普通网页再次打开时也会注销遗留组件；聊天缓存、草稿及用户文件继续保留。
+网页不再注册 Service Worker，不提供离线页面或 PWA 安装入口。`/sw.js` 只用于让已安装的旧离线组件退出：删除 Summon Bot 离线页面缓存并注销自身，不创建新的缓存，也不主动跳转或刷新正在编辑的页面。普通网页再次打开时也会注销遗留组件；聊天缓存、草稿及用户文件继续保留。

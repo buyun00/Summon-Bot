@@ -66,7 +66,7 @@ struct BotAvatar:View {
             backOutline.fill(body,with:.color(.white));backOutline.stroke(body,with:.color(.white),style:stroke)
             var outline=context;outline.concatenate(frame.transform);outline.fill(body,with:.color(.white));outline.stroke(body,with:.color(.white),style:stroke)
         }
-        var back=context;back.translateBy(x:4.5,y:5.5);back.rotate(by:.degrees(-3));back.concatenate(frame.transform);back.fill(body,with:.color(backing));back.stroke(body,with:.color(Color(relayHex:"#CFC4AB")),lineWidth:0.65)
+        var back=context;back.translateBy(x:4.5,y:5.5);back.rotate(by:.degrees(-3));back.concatenate(frame.transform);back.fill(body,with:.color(backing));back.stroke(body,with:.color(Color(summonHex:"#CFC4AB")),lineWidth:0.65)
         var material=context;material.concatenate(frame.transform);material.opacity=frame.alpha;material.fill(body,with:.color(paint));material.stroke(body,with:.color(edge.opacity(0.16)),lineWidth:0.75)
         var grain=material;grain.clip(to:body)
         for fiber in PaperLibrary.fibers {var p=Path();p.move(to:CGPoint(x:fiber[0],y:fiber[1]));p.addLine(to:CGPoint(x:fiber[0]+fiber[2],y:fiber[1]+fiber[3]));grain.stroke(p,with:.color(.white.opacity(0.10)),lineWidth:0.45)}
@@ -80,8 +80,8 @@ struct BotAvatar:View {
 }
 
 extension Color {
-    init(relayHex:String) {
-        let digits=relayHex.trimmingCharacters(in:.whitespacesAndNewlines).replacingOccurrences(of:"#",with:"")
+    init(summonHex:String) {
+        let digits=summonHex.trimmingCharacters(in:.whitespacesAndNewlines).replacingOccurrences(of:"#",with:"")
         let rgb=digits.count == 6 ? UInt32(digits,radix:16) ?? 0x7D824B : 0x7D824B
         self.init(.sRGB,red:Double((rgb>>16)&255)/255,green:Double((rgb>>8)&255)/255,blue:Double(rgb&255)/255,opacity:1)
     }

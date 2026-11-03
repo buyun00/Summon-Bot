@@ -1,4 +1,4 @@
-# Relay Bot 系统提示词
+# Summon Bot 系统提示词
 
 更新：2026-10-28。依据用户认可的 OpenBot/Rakazo 调查推荐稿编写。
 
@@ -43,8 +43,8 @@ node D:/Relay-Bot/scripts/prompts/render.mjs
 
 ## 另一个对话的讨论范围
 
-对话：**讨论 Relay Bot 提示词与运行时统一**，GPT-6.1-Sol，max，线程 `01a181e6-ce50-7962-8993-8df50e97dec0`。
+对话：**讨论 Summon Bot 提示词与运行时统一**，GPT-6.1-Sol，max，线程 `01a181e6-ce50-7962-8993-8df50e97dec0`。
 
 先讨论公共规则与个体职责的组合、P2P/聊天室交接与回流、记忆分层与按需加载、已有 Bot 配置迁移、资源刷新和持续维护的最小持久机制。讨论阶段不修改代码或生产配置，不部署。
 
-研究材料：[调查总结](research/bot-system-prompts-2026-10-28/README.md)、[完整推荐稿](research/bot-system-prompts-2026-10-28/RELAY-RECOMMENDED.md)、[基础 Bot 设计](BOT_FOUNDATION_DESIGN.md)。
+研究材料：[调查总结](research/bot-system-prompts-2026-10-28/README.md)、[完整推荐稿](research/bot-system-prompts-2026-10-28/SUMMON-RECOMMENDED.md)、[基础 Bot 设计](BOT_FOUNDATION_DESIGN.md)。

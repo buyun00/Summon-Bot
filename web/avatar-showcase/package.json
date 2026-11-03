@@ -1,6 +1,6 @@
 {
-  "name": "@relay/avatar-showcase",
-  "version": "0.4.1-relay.1",
+  "name": "@summon/avatar-showcase",
+  "version": "0.4.1-summon.1",
   "private": true,
   "type": "module",
   "license": "MIT",

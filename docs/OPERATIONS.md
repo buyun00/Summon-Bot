@@ -16,15 +16,15 @@
 
 ## 日常启停
 
-Codex 桌面 API 已整合到 `connectors/codex-desktop-api` 并随正式发行打包。开机助手条目“Relay Bot · Codex 连接器”沿用 `Codex Desktop API` 任务，由本项目 `Run-Hidden.vbs` 无控制台启动，实际运行 current.json 选择的已安装代码。配置、事件与幂等数据库、日志在 `D:/Relay-Bot-data/connectors/codex-desktop-api`。手动启动双击该连接器的 `Start-Hidden.vbs`；停止用其 `Stop.ps1`。连接器更新后需单独重启该任务；不再使用原 `D:/Codex-Desktop-API` 服务入口。
+Codex 桌面 API 已整合到 `connectors/codex-desktop-api` 并随正式发行打包。开机助手条目“Summon Bot · Codex 连接器”沿用 `Codex Desktop API` 任务，由本项目 `Run-Hidden.vbs` 无控制台启动，实际运行 current.json 选择的已安装代码。配置、事件与幂等数据库、日志在 `D:/Relay-Bot-data/connectors/codex-desktop-api`。手动启动双击该连接器的 `Start-Hidden.vbs`；停止用其 `Stop.ps1`。连接器更新后需单独重启该任务；不再使用原 `D:/Codex-Desktop-API` 服务入口。
 
 - 双击安装根的 `Start-Hidden.vbs` 无窗口启动；`Run.cmd` 也转交该入口，不保留终端窗口。命令行仍可使用 `Start.ps1 -DataRoot <数据根>`，已就绪实例不重复启动。
 - StartupHub 使用 `wscript.exe //B //NoLogo Start-Hidden.vbs -Foreground -RespectIntent -DataRoot <数据根>`；无窗口宿主等待 PowerShell 和看门狗退出，任务全程保持运行并尊重此前保存的停止意图。
-- 正式 `Start.ps1` 启动后会拉起已有的 `Relay Bot Foundation` 任务。前台任务持有独占身份锁，每 5 秒检查 Web/网关，仅在确认进程停止时自动恢复；连续失败按 5/10/20/40/60 秒退避，稳定运行 60 秒后清零。身份不明或暂时无响应时保留原进程，不启动副本。
+- 正式 `Start.ps1` 启动后会拉起已有的 `Summon Bot` 任务。前台任务持有独占身份锁，每 5 秒检查 Web/网关，仅在确认进程停止时自动恢复；连续失败按 5/10/20/40/60 秒退避，稳定运行 60 秒后清零。身份不明或暂时无响应时保留原进程，不启动副本。
 - 看门狗日志在 `web/watchdog/process.log`，沿用日志轮转，记录状态、重启尝试、恢复及其子进程退出码。`Stop.ps1` 保存停止意图后，看门狗退出，不会反复拉起；任务自身异常退出由 Windows 以 1 分钟间隔重试（最多 999 次）。
 - 2026-10-28 实测本机按需任务的 Windows 失败重试未触发，不能将该设置视为恢复保证。任务内的 PowerShell 启动器保持常驻；Node 看门狗退出后等待 60 秒重新拉起，重试前再次读取停止意图。此层事件记录在 `web/logs/startup.log`。结束整个计划任务不等同于结束 Node 看门狗。
 - `Stop.ps1 -DataRoot <数据根>` 正常停止所有 Bot、Web 和网关；身份无法确认时报告错误，不按陈旧 PID 杀进程。
-- `npm run relay:status -- --data-root <数据根>` 查询真实控制接口。
+- `npm run summon:status -- --data-root <数据根>` 查询真实控制接口。
 
 Web 日志在 `web/logs/`，网关日志在 `capabilities/gateway/logs/`，各 Bot 日志在 `bots/<botId>/logs/`。run/current.json 用于发现控制地址；控制端校验 bootId 与身份。
 
@@ -43,9 +43,9 @@ Web 日志在 `web/logs/`，网关日志在 `capabilities/gateway/logs/`，各 B
 
 默认每个文件不超过 10 MiB，最多 5 个文件（含当前文件），保留 7 天，每分钟检查闲置日志。大块输出按完整 UTF-8 字符切段，容量达到上限立即轮转，并至多每日轮转一次；仅清理本目录中符合约定名称的日志。迁入的旧超大 `process.log` 只保留容量以内的最新文本。任务、工具事实与完整产物仍保存在 SQLite/artifacts，日志轮转不删除这些内容。修改配置后正常重启对应进程生效。
 
-CLI 自动记录标准输出/错误；嵌入式 `startBot(config)` 默认保持宿主输出不变。需要由宿主独占管理进程日志时，可显式使用 `startBot(config, { captureProcessOutput: true })`；通用写入器公开为 `@relay/bot/process-log`。同一进程只能安装一个输出记录器，日志初始化失败会释放身份锁并报告启动错误。
+CLI 自动记录标准输出/错误；嵌入式 `startBot(config)` 默认保持宿主输出不变。需要由宿主独占管理进程日志时，可显式使用 `startBot(config, { captureProcessOutput: true })`；通用写入器公开为 `@summon/bot/process-log`。同一进程只能安装一个输出记录器，日志初始化失败会释放身份锁并报告启动错误。
 
-StartupHub 沿用已有 `relay-bot` 条目和 `Relay Bot Foundation` 任务标识，任务动作使用安装根的 `Start-Hidden.vbs`，内部运行同目录的 `Start.ps1`。这个名称只是 Windows 任务标识；旧 Foundation 程序及目录已不参与启动。重新注册使用安装包内 `scripts/installation/register-startup.ps1`，保留其他 Hub 条目和自动启动设置。
+StartupHub 沿用已有 `summon-bot` 条目和 `Summon Bot` 任务标识，任务动作使用安装根的 `Start-Hidden.vbs`，内部运行同目录的 `Start.ps1`。这个名称只是 Windows 任务标识；旧 Foundation 程序及目录已不参与启动。重新注册使用安装包内 `scripts/installation/register-startup.ps1`，保留其他 Hub 条目和自动启动设置。
 
 Bot 按需启动，每个实例拥有自己的数据目录，同一 Bot 内的不同工作各自持有 Pi Agent。角色模板数量不等于运行进程数量。暂停 Web 不会停止它们；完整 Stop 才会关闭所有受管 Bot。
 
@@ -66,7 +66,7 @@ Bot 按需启动，每个实例拥有自己的数据目录，同一 Bot 内的�
 用户明确要求清空历史时，先记录当前运行意图，再正常停止全部受管服务和 Bot，执行：
 
 ```powershell
-npm run relay:history -- --data-root D:/Relay-Bot-data
+npm run summon:history -- --data-root D:/Relay-Bot-data
 ```
 
 命令要求显式数据根，并在取得系统、Bot 和能力服务的排他身份锁后处理数据库。它清除对话、模型会话上下文、任务、工具调用、投递与相关执行历史，清空旧同步快照；保留 Bot 配置、长期记忆、用户持久状态、知识、房间成员及已有文件和产物。不生成历史备份。输出只记录清理计数和保留数据摘要，失败时不能宣称已完成。
@@ -83,11 +83,11 @@ Windows 正式发行使用 Node 24.21.0 LTS 构建并随包携带该运行时，
 
 网页 Bot 详情中的“直连联系人”可建立或断开两个现有 Bot 的双向连接。连接使用独立、按方向区分的对端令牌，不共享管理令牌；重复提交可完成中途失败的配置。已有连接保存在各 Bot 配置中。本机联系人通过对端自己的身份管道解析当前地址，所以对端重启换端口后不需要经过网关刷新地址。`contacts_list`、`messages_send`、带 `botId` 的 `tasks_get` / `tasks_cancel` 都是 Bot 内核直连能力，已建立的连接不依赖聊天室或网关在线。暂停的 Bot 拒绝新的直连请求；断开连接撤销双方后续访问，不中断已开始的任务。当前网页建立的是同机直连，不代表跨机器公网连通。
 
-能力服务支持独立发布，操作见 [CAPABILITY_SERVICES.md](CAPABILITY_SERVICES.md)。`npm run relay:capabilities -- list` 可以查看当前版本、绑定和切换状态。开发阶段每个服务只保留当前版本；更新时先完成任务边界切换，再删除被替代版本及其配置，业务数据继续保留。
+能力服务支持独立发布，操作见 [CAPABILITY_SERVICES.md](CAPABILITY_SERVICES.md)。`npm run summon:capabilities -- list` 可以查看当前版本、绑定和切换状态。开发阶段每个服务只保留当前版本；更新时先完成任务边界切换，再删除被替代版本及其配置，业务数据继续保留。
 
 下面的完整安装流程用于替换 Bot 引擎、网关或 Web 基础程序，不能用于冒充能力热更新。网关端口和控制令牌必须稳定；不能在忙碌服务仍运行时随意重生成。
 
-需要更新安装时，构建发行物，正常停止当前系统和连接器后运行 `relay:install -- --release-root <构建目录> --app-root D:/Relay-Bot-app --data-root D:/Relay-Bot-data --source-root D:/Relay-Bot`，再启动。这个流程不前置测试、哈希比对或额外验收。安装结果写入 current.json 和 deployment.json，只保留选中的发行目录。
+需要更新安装时，构建发行物，正常停止当前系统和连接器后运行 `summon:install -- --release-root <构建目录> --app-root D:/Relay-Bot-app --data-root D:/Relay-Bot-data --source-root D:/Relay-Bot`，再启动。这个流程不前置测试、哈希比对或额外验收。安装结果写入 current.json 和 deployment.json，只保留选中的发行目录。
 
 完整安装会重建当前内置能力配置和 Bot 绑定，更新 Bot 内核、Skill、模块与工具路由引用，删除被替代的能力运行目录、旧配置和构建中间目录。历史请求、对话、记忆、工具事实及用户文件继续保留。
 

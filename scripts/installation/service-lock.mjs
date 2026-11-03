@@ -8,7 +8,7 @@ const retryableHandshake = new Set(['SERVICE_HANDSHAKE_INCOMPLETE', 'ECONNRESET'
 
 async function address(dataRoot,type) {
   const root=await realpath(resolve(dataRoot)),key=createHash('sha256').update(`${process.platform==='win32'?root.toLowerCase():root}:${type}`).digest('hex').slice(0,40);
-  return process.platform==='win32'?`\\\\.\\pipe\\relay-service-${key}`:process.platform==='linux'?`\0relay-service-${key}`:{host:'127.0.0.1',port:30000+parseInt(key.slice(0,8),16)%25000};
+  return process.platform==='win32'?`\\\\.\\pipe\\summon-service-${key}`:process.platform==='linux'?`\0summon-service-${key}`:{host:'127.0.0.1',port:30000+parseInt(key.slice(0,8),16)%25000};
 }
 function queryIdentity(endpoint,type,timeoutMs) {
   return new Promise((accept,reject)=>{
@@ -28,7 +28,7 @@ function queryIdentity(endpoint,type,timeoutMs) {
       if(!text.includes('\n'))return;
       try {
         const value=JSON.parse(text.split('\n')[0]);
-        if(!value||typeof value!=='object'||Array.isArray(value)||value.protocol!=='relay-service-v1'||value.type!==type||!Number.isSafeInteger(value.pid)||value.pid<=0||typeof value.bootId!=='string'||!value.bootId||typeof value.state!=='string'||!value.state)
+        if(!value||typeof value!=='object'||Array.isArray(value)||value.protocol!=='summon-service-v1'||value.type!==type||!Number.isSafeInteger(value.pid)||value.pid<=0||typeof value.bootId!=='string'||!value.bootId||typeof value.state!=='string'||!value.state)
           throw new Error('Service identity mismatch or incomplete identity');
         done(value);
       } catch(error) {done(null,handshakeError(error.message,'SERVICE_IDENTITY_INVALID'));}
@@ -54,7 +54,7 @@ export async function acquireServiceLock(dataRoot,type,getState) {
   const sockets=new Set();let closing;
   const server=net.createServer(socket=>{
     sockets.add(socket);socket.on('error',()=>{});socket.on('close',()=>sockets.delete(socket));
-    socket.end(JSON.stringify({protocol:'relay-service-v1',type,...getState()})+'\n');
+    socket.end(JSON.stringify({protocol:'summon-service-v1',type,...getState()})+'\n');
   });
   const endpoint=await address(dataRoot,type);
   await new Promise((accept,reject)=>{server.once('error',reject);server.listen(endpoint,()=>{server.removeListener('error',reject);accept();});});

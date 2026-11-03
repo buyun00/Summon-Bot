@@ -7,9 +7,9 @@ const mountedAvatars=new Map();let raf=0,last=0;
 const reduce=matchMedia('(prefers-reduced-motion: reduce)');
 function render(appearance={},size=40,options={}){
  const a=normalize(appearance),dimension=Math.max(8,Math.min(512,Number(size)||40));
- if(a.image)return `<img class="relay-bot-face" src="${a.image}" alt="" width="${dimension}" height="${dimension}" style="object-fit:cover;border-radius:22%;flex:none">`;
+ if(a.image)return `<img class="summon-bot-face" src="${a.image}" alt="" width="${dimension}" height="${dimension}" style="object-fit:cover;border-radius:22%;flex:none">`;
  const holder=document.createElement('span'),avatar=new CrewAvatar(holder,a.shape,{size:dimension,palette:paletteOf(a)}),svg=avatar.svg;
- svg.classList.add('relay-bot-face');svg.dataset.crew=JSON.stringify(a);svg.dataset.avatarKey=options.key||'';svg.dataset.crewState=states[options.state]?options.state:'idle';svg.dataset.crewStatic=String(!!options.static||!options.key);svg.setAttribute('aria-hidden','true');svg.style.cssText+=';display:block;flex:none;overflow:visible';
+ svg.classList.add('summon-bot-face');svg.dataset.crew=JSON.stringify(a);svg.dataset.avatarKey=options.key||'';svg.dataset.crewState=states[options.state]?options.state:'idle';svg.dataset.crewStatic=String(!!options.static||!options.key);svg.setAttribute('aria-hidden','true');svg.style.cssText+=';display:block;flex:none;overflow:visible';
  return svg.outerHTML;
 }
 function hydrate(root=document){
@@ -19,7 +19,7 @@ function hydrate(root=document){
   let entry=mountedAvatars.get(key);const desired=node.dataset.crewState||'idle';
   if(!entry||entry.avatar.role!==a.shape){entry?.avatar.destroy();const holder=document.createElement('span');entry={avatar:new CrewAvatar(holder,a.shape,{size:Number(node.getAttribute('width')),palette:paletteOf(a)}),seen:performance.now()};mountedAvatars.set(key,entry);}
   entry.avatar.setPalette(paletteOf(a));if(entry.avatar.state!==desired)entry.avatar.setState(desired);
-  if(node!==entry.avatar.svg){for(const attribute of [...node.attributes])if(attribute.name!=='style')entry.avatar.svg.setAttribute(attribute.name,attribute.value);entry.avatar.svg.classList.add('relay-bot-face');node.replaceWith(entry.avatar.svg);}
+  if(node!==entry.avatar.svg){for(const attribute of [...node.attributes])if(attribute.name!=='style')entry.avatar.svg.setAttribute(attribute.name,attribute.value);entry.avatar.svg.classList.add('summon-bot-face');node.replaceWith(entry.avatar.svg);}
   entry.seen=performance.now();
  }
  wake();
@@ -30,4 +30,4 @@ function tick(now){raf=0;const dt=Math.min((now-last)/1000,.04);last=now;let vis
  if(visible&&!document.hidden&&!reduce.matches)raf=requestAnimationFrame(tick);
 }
 document.addEventListener('visibilitychange',wake);document.addEventListener('scroll',wake,true);reduce.addEventListener('change',wake);
-window.RelayAvatars=Object.freeze({shapes,colors,templates,render,defaults,normalize,capture(){},hydrate});
+window.SummonAvatars=Object.freeze({shapes,colors,templates,render,defaults,normalize,capture(){},hydrate});

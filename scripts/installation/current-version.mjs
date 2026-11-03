@@ -38,7 +38,7 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
   if (sourceRoot) {
     sourceRoot = resolve(sourceRoot);
     const pkg = await readJson(join(sourceRoot, 'package.json'));
-    if (pkg.name !== 'relay-bot' || !existsSync(join(sourceRoot, 'AGENTS.md'))) throw new Error('Invalid Relay source root for build cleanup');
+    if (pkg.name !== 'summon-bot' || !existsSync(join(sourceRoot, 'AGENTS.md'))) throw new Error('Invalid Summon Bot source root for build cleanup');
   }
   const { RecordStore } = await import(pathToFileURL(join(releaseRoot, 'capabilities/shared/store.mjs')));
   const { BotStore } = await import(pathToFileURL(join(releaseRoot, 'bot/src/storage/store.mjs')));

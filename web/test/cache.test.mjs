@@ -67,7 +67,7 @@ function fakeStorage() {
   };
   const indexedDB = {
     open(name, version) {
-      assert.equal(name, 'relay-workspace-v1'); assert.equal(version, 1); control.opens++;
+      assert.equal(name, 'summon-workspace-v1'); assert.equal(version, 1); control.opens++;
       const request = {};
       setTimeout(() => {
         request.result = database;
@@ -83,7 +83,7 @@ function load(indexedDB) {
   const window = { indexedDB };
   const context = vm.createContext({ window, structuredClone, setTimeout, clearTimeout, Date, console });
   vm.runInContext(source, context);
-  return window.RelayCache;
+  return window.SummonCache;
 }
 
 test('history reset drains old queued writes and atomically clears IndexedDB across a fresh page', async () => {

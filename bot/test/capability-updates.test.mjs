@@ -10,7 +10,7 @@ import { startBot, requestBot, sendMessage, waitForTask } from '../src/index.mjs
 
 const token = 'capability-update-fixture-management-token';
 const dirs = [];
-const fixture = async () => { const dir = await mkdtemp(join(tmpdir(), 'relay-capability-update-')); dirs.push(dir); return dir; };
+const fixture = async () => { const dir = await mkdtemp(join(tmpdir(), 'summon-capability-update-')); dirs.push(dir); return dir; };
 after(async () => { for (const dir of dirs) { assert.equal(dirname(resolve(dir)), resolve(tmpdir())); await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } });
 const deferred = () => { let resolve; const promise = new Promise(value => resolve = value); return { promise, resolve }; };
 const contact = bot => ({ botId: bot.config.botId, url: bot.url, token });
@@ -127,7 +127,7 @@ test('shutdown aborts a prepared update and releases queued work without a hang'
 });
 
 async function childBot(path) {
-  const child = fork(new URL('../bin/relay-bot.mjs', import.meta.url), ['--config', path], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+  const child = fork(new URL('../bin/summon-bot.mjs', import.meta.url), ['--config', path], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
   let stderr = ''; child.stderr.on('data', data => stderr += data);
   const ready = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`Bot child readiness timeout: ${stderr}`)), 20000);

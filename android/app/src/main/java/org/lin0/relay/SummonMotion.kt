@@ -15,7 +15,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 
 @Composable
-fun Modifier.relayPress(onClick: () -> Unit): Modifier {
+fun Modifier.summonPress(onClick: () -> Unit): Modifier {
     val source=remember{MutableInteractionSource()}
     val pressed by source.collectIsPressedAsState()
     val scale by animateFloatAsState(if(pressed) .94f else 1f,spring(dampingRatio=.65f,stiffness=650f),label="button press")
@@ -23,7 +23,7 @@ fun Modifier.relayPress(onClick: () -> Unit): Modifier {
 }
 
 @Composable
-fun GreetingAvatar(avatar: RelayAvatar) {
+fun GreetingAvatar(avatar: SummonAvatar) {
     val size=remember{Animatable(.08f)}
     var greeting by remember{mutableIntStateOf(0)}
     var expression by remember{mutableStateOf("expression:heureux")}
@@ -36,7 +36,7 @@ fun GreetingAvatar(avatar: RelayAvatar) {
         expression="expression:heureux"
         while(true){delay(1800);expression="idle";delay(4000);expression=listOf("expression:curieux","expression:heureux","expression:attentif").random()}
     }
-    Box(Modifier.relayPress { greeting++ }) {
+    Box(Modifier.summonPress { greeting++ }) {
         BotAvatar(avatar.shape,avatar.color,avatar.image,148.dp,
             modifier=Modifier.graphicsLayer{scaleX=size.value;scaleY=size.value;alpha=size.value.coerceIn(0f,1f)},
             secondary=avatar.secondary,ink=avatar.ink,paper=avatar.paper,motion=expression)

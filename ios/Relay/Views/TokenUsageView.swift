@@ -1,16 +1,16 @@
 import SwiftUI
 import Foundation
 
-private extension RelayJSONValue {
+private extension SummonJSONValue {
     var usageNumberValue: Double? { if case .number(let value) = self { return value }; return nil }
 }
-private func usageInteger(_ value: RelayJSONValue) -> String { value.usageNumberValue?.formatted(.number.precision(.fractionLength(0))) ?? "—" }
-private func usagePercent(_ value: RelayJSONValue) -> String { value.usageNumberValue.map { String(format: "%.1f%%", $0 * 100) } ?? "—" }
-private func usageCost(_ value: RelayJSONValue) -> String {
+private func usageInteger(_ value: SummonJSONValue) -> String { value.usageNumberValue?.formatted(.number.precision(.fractionLength(0))) ?? "—" }
+private func usagePercent(_ value: SummonJSONValue) -> String { value.usageNumberValue.map { String(format: "%.1f%%", $0 * 100) } ?? "—" }
+private func usageCost(_ value: SummonJSONValue) -> String {
     guard (value["pricedCalls"].int ?? 0) > 0 else { return "—" }
     return String(format: "%.4f–%.4f", value["costMin"].usageNumberValue ?? 0, value["costMax"].usageNumberValue ?? 0)
 }
-private func usageDate(_ value: RelayJSONValue) -> String {
+private func usageDate(_ value: SummonJSONValue) -> String {
     let parser = ISO8601DateFormatter(); parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     var parsed = parser.date(from: value.stringValue)
     if parsed == nil { parser.formatOptions = [.withInternetDateTime]; parsed = parser.date(from: value.stringValue) }
@@ -21,7 +21,7 @@ private func usageDate(_ value: RelayJSONValue) -> String {
 
 @MainActor
 struct TokenUsageView: View {
-    @Environment(RelayStore.self) private var store
+    @Environment(SummonStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var period = "today"
     @State private var dimension = "bots"
@@ -31,14 +31,14 @@ struct TokenUsageView: View {
     @State private var selectedName = ""
     @State private var offset = 0
     @State private var revision = 0
-    @State private var overview: RelayJSONValue = .null
-    @State private var detail: RelayJSONValue = .null
+    @State private var overview: SummonJSONValue = .null
+    @State private var detail: SummonJSONValue = .null
     @State private var loading = false
     @State private var errorMessage: String?
     private let purposes = ["chat": "聊天", "work": "工作执行", "routing": "群聊路由", "compress": "上下文压缩", "compact": "上下文压缩", "organize": "记忆整理", "assemble": "上下文组装", "other": "其他调用"]
     private let statuses = ["succeeded": "完成", "failed": "失败", "cancelled": "取消", "pending": "调用中", "unknown": "结果未知"]
     private var requestKey: String { "\(period):\(selectedKind ?? "all"):\(selectedID):\(offset):\(revision)" }
-    private var ranking: [RelayJSONValue] {
+    private var ranking: [SummonJSONValue] {
         let rows = dimension == "bots" ? overview["bots"].array ?? [] : (overview["rooms"].array ?? []).filter { row in
             dimension == "dm" ? row["kind"].stringValue == "dm" : !["dm", "unassigned"].contains(row["kind"].stringValue)
         }
@@ -54,7 +54,7 @@ struct TokenUsageView: View {
                 billingSections
                 if overview["coverage"]["includesUntrackedHistory"].bool == true {
                     Text("采集启用前只回填仍保留的调用，历史已清理部分无法追溯。")
-                        .relayFont(.footnote).foregroundStyle(.secondary)
+                        .summonFont(.footnote).foregroundStyle(.secondary)
                 }
                 Section("本机已记录用量") { totalsRows(overview["totals"]) }
                 rankingSection
@@ -65,7 +65,7 @@ struct TokenUsageView: View {
                 requestSection
                 Section {
                     Text("命中率只代表留存明细。输入缓存与输出分别统计，推理 Token 包含在输出内。USD 参考费与截图 CNY 消费不直接比较。")
-                        .relayFont(.footnote).foregroundStyle(.secondary)
+                        .summonFont(.footnote).foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("Token 统计")
@@ -105,7 +105,7 @@ struct TokenUsageView: View {
         }
     }
 
-    @ViewBuilder private func totalsRows(_ totals: RelayJSONValue) -> some View {
+    @ViewBuilder private func totalsRows(_ totals: SummonJSONValue) -> some View {
         LabeledContent("输入 / 输出", value: "\(usageInteger(totals["inputTokens"])) / \(usageInteger(totals["outputTokens"]))")
         LabeledContent("输入缓存命中 / 未命中", value: "\(usageInteger(totals["cacheHitTokens"])) / \(usageInteger(totals["cacheMissTokens"]))")
         LabeledContent("留存明细缓存命中率", value: usagePercent(totals["cacheHitRate"]))
@@ -128,7 +128,7 @@ struct TokenUsageView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack { Text(row["name"].stringValue); Spacer(); Text("\(usageInteger(row["totalTokens"])) Token") }
                         Text("输入 \(usageInteger(row["inputTokens"])) / 输出 \(usageInteger(row["outputTokens"])) · 命中 \(usagePercent(row["cacheHitRate"])) · \(usageInteger(row["calls"])) 次")
-                            .relayFont(.caption).foregroundStyle(.secondary)
+                            .summonFont(.caption).foregroundStyle(.secondary)
                     }
                 }.buttonStyle(.plain)
             }
@@ -143,7 +143,7 @@ struct TokenUsageView: View {
             }
             if (detail["totals"]["unreportedCalls"].int ?? 0) > 0 {
                 Text("部分调用没有完整 Token 回执，缺失部分不按零消耗计算。")
-                    .relayFont(.footnote).foregroundStyle(.secondary)
+                    .summonFont(.footnote).foregroundStyle(.secondary)
             }
         } header: { Text(selectedKind == nil ? "全部调用明细" : selectedName) }
     }
@@ -169,12 +169,12 @@ struct TokenUsageView: View {
                     LabeledContent("输入 / 输出", value: "\(usageInteger(request["inputTokens"])) / \(usageInteger(request["outputTokens"]))")
                     LabeledContent("缓存命中 / 未命中", value: "\(usageInteger(request["cacheHitTokens"])) / \(usageInteger(request["cacheMissTokens"]))")
                     LabeledContent("推理 Token（包含在输出内）", value: usageInteger(request["reasoningTokens"]))
-                    if !request["error"].stringValue.isEmpty { Text(request["error"].stringValue).relayFont(.footnote).foregroundStyle(.secondary) }
+                    if !request["error"].stringValue.isEmpty { Text(request["error"].stringValue).summonFont(.footnote).foregroundStyle(.secondary) }
                 } label: {
                     VStack(alignment: .leading, spacing: 5) {
                         HStack { Text(request["botName"].stringValue); Spacer(); Text(usageInteger(request["totalTokens"])) }
                         Text("\(usageDate(request["startedAt"])) · \(purposes[request["purpose"].stringValue] ?? request["purpose"].stringValue) · \(statuses[request["status"].stringValue] ?? request["status"].stringValue)")
-                            .relayFont(.caption).foregroundStyle(.secondary)
+                            .summonFont(.caption).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -191,15 +191,15 @@ struct TokenUsageView: View {
         loading = true; errorMessage = nil; detail = .null
         defer { if requestKey == key { loading = false } }
         do {
-            let client = RelayAPIClient(baseURL: try RelayAPIClient.normalizedURL(store.settings.baseURL), token: store.savedToken)
+            let client = SummonAPIClient(baseURL: try SummonAPIClient.normalizedURL(store.settings.baseURL), token: store.savedToken)
             var components = URLComponents(); components.path = "/api/usage"
             components.queryItems = [URLQueryItem(name: "period", value: currentPeriod), URLQueryItem(name: "limit", value: "25")]
-            let all = try await client.request(RelayJSONValue.self, path: components.string!)
+            let all = try await client.request(SummonJSONValue.self, path: components.string!)
             var current = all
             if scopeKind != nil || currentOffset > 0 {
                 components.queryItems?.append(URLQueryItem(name: "offset", value: String(currentOffset)))
                 if let scopeKind { components.queryItems?.append(URLQueryItem(name: scopeKind == "bot" ? "botId" : "roomId", value: scopeID)) }
-                current = try await client.request(RelayJSONValue.self, path: components.string!)
+                current = try await client.request(SummonJSONValue.self, path: components.string!)
             }
             guard !Task.isCancelled, requestKey == key else { return }
             overview = all; detail = current

@@ -57,7 +57,7 @@ summon-wordmark {
   transform-origin: 50% 80%;
   animation: summon-arrive 850ms cubic-bezier(.22,.7,.3,1) both;
 }
-.summon-o .relay-bot-face { width: 100%; height: 100%; filter: drop-shadow(0 2px 1.5px #25304420); }
+.summon-o .summon-bot-face { width: 100%; height: 100%; filter: drop-shadow(0 2px 1.5px #25304420); }
 .summon-o [data-paper-fill] { transition: fill 1.8s ease; }
 @keyframes summon-arrive {
   0% { opacity: 0; transform: translateY(.28em) scale(.65) rotate(-14deg); }

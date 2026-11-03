@@ -33,7 +33,7 @@ const workspace = () => ({
 function localCache() {
   const context = vm.createContext({ window: {}, structuredClone, setTimeout, clearTimeout });
   vm.runInContext(cacheSource, context);
-  return context.window.RelayCache;
+  return context.window.SummonCache;
 }
 
 function fixture(cache = localCache()) {
@@ -47,7 +47,7 @@ function fixture(cache = localCache()) {
   const state = { bots: [], rooms: [], works: [], agentRuns: [], routines: [], knowledge: { nodes: [], edges: [] } };
   const main = { innerHTML: '' };
   const context = vm.createContext({
-    RelayCache: cache, ui, state, attachmentLimit: 8, avatarSaveEpoch: 0, avatarSaves: new Map(),
+    SummonCache: cache, ui, state, attachmentLimit: 8, avatarSaveEpoch: 0, avatarSaves: new Map(),
     structuredClone, console, setTimeout, clearTimeout, location: { hash: 'chat' },
     api(path) { requests.push(path); events.push({ kind: 'request', path }); throw new Error('unexpected network'); },
     roomById: id => state.rooms.find(item => item.id === id),
@@ -72,7 +72,7 @@ async function seed(cache, selectedRoom = 'room-a') {
 test('actual startup restores the cached conversation before the first network request begins', async () => {
   const cache = localCache(); await seed(cache);
   const f = fixture(cache), network = deferred(), opening = deferred();
-  f.context.RelayCache = { ...cache, ready: () => opening.promise };
+  f.context.SummonCache = { ...cache, ready: () => opening.promise };
   f.context.api = path => { f.events.push({ kind: 'request', path }); return network.promise; };
   vm.runInContext(bootstrapCode, f.context);
   assert.ok(f.ui.cacheBootPromise, 'startup must hold network refresh until cache restoration completes');
@@ -102,7 +102,7 @@ test('cached conversation remains visible when the first network refresh fails',
 
 test('changing rooms while storage reads are pending never shows one room in another', async () => {
   const f = fixture(), a = deferred(), b = deferred();
-  f.context.RelayCache = { readRoom: id => id === 'room-a' ? a.promise : b.promise };
+  f.context.SummonCache = { readRoom: id => id === 'room-a' ? a.promise : b.promise };
   f.ui.roomId = 'room-a';
   const first = f.context.restoreRoomMessages('room-a');
   f.ui.roomId = 'room-b';
@@ -117,7 +117,7 @@ test('changing rooms while storage reads are pending never shows one room in ano
 test('a newer live room response wins over a slow cached storage response', async () => {
   const f = fixture(), reading = deferred();
   f.ui.roomId = 'room-a';
-  f.context.RelayCache = { readRoom: () => reading.promise };
+  f.context.SummonCache = { readRoom: () => reading.promise };
   const restore = f.context.restoreRoomMessages('room-a');
   const live = room('room-a', [message('live-message')]);
   f.ui.messageCache.set('room-a', { snapshot: live, messages: live.messages, jobs: [], cursor: 'live' });
@@ -144,7 +144,7 @@ test('actual room selection renders its saved messages before waiting on its GET
 test('a slow earlier room selection cannot reopen itself after a newer selection finishes', async () => {
   const f = fixture(), a = deferred(), b = deferred();
   Object.assign(f.state, workspace());
-  f.context.RelayCache = { readRoom: id => id === 'room-a' ? a.promise : b.promise };
+  f.context.SummonCache = { readRoom: id => id === 'room-a' ? a.promise : b.promise };
   const loaded = [];
   f.context.loadCurrent = async () => { loaded.push(f.ui.roomId); };
   vm.runInContext(actionCode, f.context);
@@ -311,7 +311,7 @@ test('PWA update snapshots preserve POST-confirmed messages until GET has acknow
     unconfirmed: { roomId: 'room-a', clientId: 'unconfirmed', status: 'failed', payload: { content: '未确认' }, message: message('local-unconfirmed') },
   };
   assert.equal(f.context.preserveUpdateDrafts(), true);
-  const snapshot = JSON.parse(storage.get('relay:update-drafts'));
+  const snapshot = JSON.parse(storage.get('summon:update-drafts'));
   assert.deepEqual(snapshot.localMessages['room-a'].map(entry => entry.clientId), ['postOnly', 'unconfirmed']);
   const updated = fixture();
   updated.context.sessionStorage = sessionStorage;
@@ -382,7 +382,7 @@ test('a pre-reset HTTP response and a slow cached read cannot resurrect cleared 
   pending.resolve({ ...room(), historyEpoch: null }); await oldGet;
   assert.equal(f.ui.messages.length, 0); assert.equal(f.ui.messageCache.size, 0);
   assert.equal(f.ui.historyEpoch, 'cleared-2');
-  const disk = deferred(); f.context.RelayCache = { ...cache, readRoom: () => disk.promise };
+  const disk = deferred(); f.context.SummonCache = { ...cache, readRoom: () => disk.promise };
   const oldDisk = f.context.restoreRoomMessages('room-a');
   await f.context.acceptHistoryEpoch({ historyEpoch: 'cleared-3' }, 1);
   disk.resolve({ snapshot: { ...room(), historyEpoch: 'cleared-2' }, cursor: 'old' }); await oldDisk;

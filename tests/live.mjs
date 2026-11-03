@@ -3,8 +3,8 @@ import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
 import { join, resolve, dirname, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID, createHash } from 'node:crypto';
-import { startGateway } from '@relay/capabilities';
-import { BotStore, inspectBotIdentity } from '@relay/bot';
+import { startGateway } from '@summon/capabilities';
+import { BotStore, inspectBotIdentity } from '@summon/bot';
 
 const args = process.argv.slice(2), option = name => { const index = args.indexOf(`--${name}`); return index < 0 ? undefined : args[index + 1]; };
 const envFile = option('env-file');
@@ -17,7 +17,7 @@ for (const line of (await readFile(envFile, 'utf8')).split(/\r?\n/)) {
 }
 const apiKey = supplied.DEEPSEEK_API_KEY;
 if (!apiKey) throw new Error('Explicit env file does not configure DEEPSEEK_API_KEY');
-process.env.RELAY_LIVE_MODEL_KEY = apiKey;
+process.env.SUMMON_LIVE_MODEL_KEY = apiKey;
 const releaseRoot = resolve(option('release-root') || join(dirname(fileURLToPath(import.meta.url)), '..'));
 const evidenceRoot = resolve(option('evidence-root') || 'D:/Relay-Bot-data/verification/refactor-20261021');
 const runId = `live-${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`;
@@ -53,7 +53,7 @@ async function external(name, argumentsValue) {
 }
 try {
   gateway = await startGateway({ dataRoot, releaseRoot, defaultCwd: workspace, seed: false, restore: false,
-    model: { provider: 'deepseek', model: report.model, baseUrl: report.baseUrl, apiKeyEnv: 'RELAY_LIVE_MODEL_KEY', contextWindow: 128000, maxTokens: 3000 } });
+    model: { provider: 'deepseek', model: report.model, baseUrl: report.baseUrl, apiKeyEnv: 'SUMMON_LIVE_MODEL_KEY', contextWindow: 128000, maxTokens: 3000 } });
   const entry = await gateway.manager.create({ id: 'live-entry', roleId: 'entry', name: '真实入口验收' });
   const host = await gateway.manager.create({ id: 'live-chatroom', roleId: 'chatroom', name: '真实聊天室验收' });
   const room = await gateway.chatroom.createRoom({ id: 'live-discussion', name: '隔离真实验收', kind: 'deep', members: ['user', entry.id, host.id], goal: '验证两个角色独立调用工具' });
@@ -110,6 +110,6 @@ try {
     catch (error) { report.cleanup.identityError = clean(error.message); report.passed = false; process.exitCode = 1; }
     await gateway.close(); report.cleanup.gatewayClosed = true;
   }
-  report.finishedAt ||= new Date().toISOString(); await save(); delete process.env.RELAY_LIVE_MODEL_KEY;
+  report.finishedAt ||= new Date().toISOString(); await save(); delete process.env.SUMMON_LIVE_MODEL_KEY;
   process.stdout.write(`${JSON.stringify({ passed: report.passed, reportPath, dataRoot, completedRealTasks: report.tasks.filter(task => task.status === 'completed').length })}\n`);
 }

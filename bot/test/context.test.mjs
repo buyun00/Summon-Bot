@@ -7,7 +7,7 @@ import { BotStore } from '../src/storage/store.mjs';
 import { SessionContext, projectSession } from '../src/context/context.mjs';
 
 // The summary provider is an explicit fixture. SQLite, Pi compaction/projection,
-// checkpoint persistence and the Relay history adapter all use real code.
+// checkpoint persistence and the Summon Bot history adapter all use real code.
 const model = { id: 'fixture-summary', api: 'openai-completions', provider: 'fixture',
   contextWindow: 32768, maxTokens: 1024, reasoning: false };
 const config = { agentSessionMaxBytes: 4096, agentReserveTokens: 2048, agentKeepRecentTokens: 128 };
@@ -26,7 +26,7 @@ function transcript() {
   ];
 }
 async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), 'relay-context-')), path = join(root, 'state.sqlite'), stores = [];
+  const root = await mkdtemp(join(tmpdir(), 'summon-context-')), path = join(root, 'state.sqlite'), stores = [];
   const open = () => { const store = new BotStore(path); stores.push(store); return store; };
   const store = open(), messages = transcript();
   store.saveSession({ id: 'room:one', messages, checkpoints: [] });
@@ -44,7 +44,7 @@ function providerFixture(response = assistant(summaryText), beforeResult = () =>
   } };
 }
 
-test('Relay compaction persists checkpoints, rebuilds after reopen and retains searchable original history', async t => {
+test('Summon Bot compaction persists checkpoints, rebuilds after reopen and retains searchable original history', async t => {
   const { store, open, context, messages, events } = await fixture(t), provider = providerFixture();
   const unrelated = store.getSession('peer:other'), before = projectSession(store.getSession('room:one'));
   assert.ok(before.bytes > config.agentSessionMaxBytes);

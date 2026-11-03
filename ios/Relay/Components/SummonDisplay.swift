@@ -1,12 +1,12 @@
 import SwiftUI
 
-private enum RelayDisplayKey {
-    static let zoom = "RelayNative.display.zoom"
-    static let font = "RelayNative.display.font"
+private enum SummonDisplayKey {
+    static let zoom = "SummonNative.display.zoom"
+    static let font = "SummonNative.display.font"
 }
 
-struct RelayDisplayContainer<Content: View>: View {
-    @AppStorage(RelayDisplayKey.zoom) private var zoom = 100.0
+struct SummonDisplayContainer<Content: View>: View {
+    @AppStorage(SummonDisplayKey.zoom) private var zoom = 100.0
     private let content: Content
 
     init(@ViewBuilder content: () -> Content) { self.content = content() }
@@ -15,7 +15,7 @@ struct RelayDisplayContainer<Content: View>: View {
         let scale = CGFloat(min(160, max(50, zoom)) / 100)
         GeometryReader { geometry in
             content
-                .relayFont(.body)
+                .summonFont(.body)
                 .frame(width: geometry.size.width / scale, height: geometry.size.height / scale)
                 .scaleEffect(scale, anchor: .topLeading)
                 .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
@@ -23,8 +23,8 @@ struct RelayDisplayContainer<Content: View>: View {
     }
 }
 
-private struct RelayFontModifier: ViewModifier {
-    @AppStorage(RelayDisplayKey.font) private var percentage = 100.0
+private struct SummonFontModifier: ViewModifier {
+    @AppStorage(SummonDisplayKey.font) private var percentage = 100.0
     @ScaledMetric private var pointSize: CGFloat
     private let weight: Font.Weight
 
@@ -49,26 +49,26 @@ private struct RelayFontModifier: ViewModifier {
 }
 
 extension View {
-    func relayFont(_ style: Font.TextStyle, weight: Font.Weight? = nil) -> some View {
-        modifier(RelayFontModifier(style: style, weight: weight))
+    func summonFont(_ style: Font.TextStyle, weight: Font.Weight? = nil) -> some View {
+        modifier(SummonFontModifier(style: style, weight: weight))
     }
 
     // Each native presentation needs its own layout bounds and the same saved display settings.
-    func relaySheet<Sheet: View>(isPresented: Binding<Bool>, onDismiss: (() -> Void)? = nil,
+    func summonSheet<Sheet: View>(isPresented: Binding<Bool>, onDismiss: (() -> Void)? = nil,
                                 @ViewBuilder content: @escaping () -> Sheet) -> some View {
-        sheet(isPresented: isPresented, onDismiss: onDismiss) { RelayDisplayContainer(content: content) }
+        sheet(isPresented: isPresented, onDismiss: onDismiss) { SummonDisplayContainer(content: content) }
     }
 
-    func relaySheet<Item: Identifiable, Sheet: View>(item: Binding<Item?>, onDismiss: (() -> Void)? = nil,
+    func summonSheet<Item: Identifiable, Sheet: View>(item: Binding<Item?>, onDismiss: (() -> Void)? = nil,
                                                     @ViewBuilder content: @escaping (Item) -> Sheet) -> some View {
-        sheet(item: item, onDismiss: onDismiss) { item in RelayDisplayContainer { content(item) } }
+        sheet(item: item, onDismiss: onDismiss) { item in SummonDisplayContainer { content(item) } }
     }
 }
 
-struct RelayDisplaySettingsView: View {
+struct SummonDisplaySettingsView: View {
     @Environment(\.dismiss) private var dismiss
-    @AppStorage(RelayDisplayKey.zoom) private var zoom = 100.0
-    @AppStorage(RelayDisplayKey.font) private var font = 100.0
+    @AppStorage(SummonDisplayKey.zoom) private var zoom = 100.0
+    @AppStorage(SummonDisplayKey.font) private var font = 100.0
 
     var body: some View {
         NavigationStack {
@@ -91,10 +91,10 @@ struct RelayDisplaySettingsView: View {
                     Text("统一调整聊天、统计、管理页面及操作记录的文字大小，同时保留系统文字大小设置。")
                 }
                 Section("显示效果预览") {
-                    Text("聊天内容、工具调用与操作结果").relayFont(.body)
-                    Text("Bot 正在读取文件…").relayFont(.subheadline).monospaced()
+                    Text("聊天内容、工具调用与操作结果").summonFont(.body)
+                    Text("Bot 正在读取文件…").summonFont(.subheadline).monospaced()
                     Text("即时生效并保存到当前设备，手机和电脑分别设置。")
-                        .relayFont(.footnote).foregroundStyle(.secondary)
+                        .summonFont(.footnote).foregroundStyle(.secondary)
                 }
                 Section {
                     Button("恢复默认") { zoom = 100; font = 100 }

@@ -1,6 +1,6 @@
 (() => {
   'use strict';
-  const avatars = window.RelayAvatars;
+  const avatars = window.SummonAvatars;
   const pick = items => items[Math.floor(Math.random() * items.length)];
   let previousShape;
   try { previousShape = sessionStorage.getItem('summon-brand-shape'); } catch {}
@@ -37,7 +37,7 @@
     connectedCallback() {
       if (!this.firstElementChild) {
         this.setAttribute('role', 'img');
-        this.setAttribute('aria-label', 'Summon');
+        this.setAttribute('aria-label', 'Summon Bot');
         this.innerHTML = '<span class="summon-letters" aria-hidden="true"><span class="summon-paper" data-letter="S">S</span><span class="summon-paper" data-letter="u">u</span><span class="summon-paper" data-letter="m">m</span><span class="summon-paper" data-letter="m">m</span><span class="summon-o"></span><span class="summon-paper" data-letter="n">n</span></span>';
       }
       this.avatarKey ||= 'summon-letter-o-' + (++identity);

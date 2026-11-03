@@ -43,6 +43,6 @@ description: 按项目需要发现与孵化成员，管理入群、临时转常�
 
 ## 需要交互入口时
 
-Bot 的按钮、页面或看板可以成为明确事件入口；先查已有应用/能力目录或请工程同伴实现，绑定到原项目/work。涉及 Relay 本项目必须复用唯一正式网页和安装流程，不能照搬外部示例另起 webhook 服务、端口或隧道。秘密沿既有安全配置，不进入群聊、Skill 或公开页面。
+Bot 的按钮、页面或看板可以成为明确事件入口；先查已有应用/能力目录或请工程同伴实现，绑定到原项目/work。涉及 Summon Bot 本项目必须复用唯一正式网页和安装流程，不能照搬外部示例另起 webhook 服务、端口或隧道。秘密沿既有安全配置，不进入群聊、Skill 或公开页面。
 
-参考了 Grok 官方 Dr. EggBot 的公开职责设计、对话复核与自动职责审视思路：https://x.ai/bot/marketplace/bots/dr-eggbot-v2 。本 Skill 为 Relay 的独立实现，临时/常驻与群聊交接是本项目的扩展。
+参考了 Grok 官方 Dr. EggBot 的公开职责设计、对话复核与自动职责审视思路：https://x.ai/bot/marketplace/bots/dr-eggbot-v2 。本 Skill 为 Summon Bot 的独立实现，临时/常驻与群聊交接是本项目的扩展。

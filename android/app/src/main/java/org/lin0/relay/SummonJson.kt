@@ -4,15 +4,15 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
 
-sealed class RelayJson {
-    data class Str(val value: String) : RelayJson()
-    data class Num(val value: Double) : RelayJson()
-    data class Bool(val value: Boolean) : RelayJson()
-    data class Obj(val value: Map<String, RelayJson>) : RelayJson()
-    data class Arr(val value: List<RelayJson>) : RelayJson()
-    data object Null : RelayJson()
+sealed class SummonJson {
+    data class Str(val value: String) : SummonJson()
+    data class Num(val value: Double) : SummonJson()
+    data class Bool(val value: Boolean) : SummonJson()
+    data class Obj(val value: Map<String, SummonJson>) : SummonJson()
+    data class Arr(val value: List<SummonJson>) : SummonJson()
+    data object Null : SummonJson()
 
-    operator fun get(key: String): RelayJson {
+    operator fun get(key: String): SummonJson {
         val map = (this as? Obj)?.value ?: return Null
         return map[key] ?: Null
     }
@@ -40,8 +40,8 @@ sealed class RelayJson {
         }
 
     val string: String? get() = (this as? Str)?.value
-    val array: List<RelayJson>? get() = (this as? Arr)?.value
-    val obj: Map<String, RelayJson>? get() = (this as? Obj)?.value
+    val array: List<SummonJson>? get() = (this as? Arr)?.value
+    val obj: Map<String, SummonJson>? get() = (this as? Obj)?.value
     val bool: Boolean? get() = (this as? Bool)?.value
     val int: Int?
         get() {
@@ -81,9 +81,9 @@ sealed class RelayJson {
     }
 
     companion object {
-        fun parse(text: String): RelayJson = from(JSONTokener(text).nextValue())
+        fun parse(text: String): SummonJson = from(JSONTokener(text).nextValue())
 
-        fun from(raw: Any?): RelayJson = when (raw) {
+        fun from(raw: Any?): SummonJson = when (raw) {
             null, JSONObject.NULL -> Null
             is String -> Str(raw)
             is Boolean -> Bool(raw)
@@ -99,6 +99,6 @@ sealed class RelayJson {
             else -> Str(raw.toString())
         }
 
-        fun obj(vararg pairs: Pair<String, RelayJson>): RelayJson = Obj(mapOf(*pairs))
+        fun obj(vararg pairs: Pair<String, SummonJson>): SummonJson = Obj(mapOf(*pairs))
     }
 }

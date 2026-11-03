@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const databaseName = 'relay-workspace-v1';
+  const databaseName = 'summon-workspace-v1';
   const collectionPaths = {
     workspace: ['bots', 'rooms', 'works', 'agentRuns', 'activity', 'routines', 'knowledge.nodes', 'knowledge.edges', 'runtime.jobs'],
     room: ['messages', 'jobs'],
@@ -143,7 +143,7 @@
 
   function ready() {
     if (opening) return opening;
-    opening = new Promise(resolve => {
+    opening = Promise.resolve(window.SummonStorageMigration).then(() => new Promise(resolve => {
       let request, settled = false;
       const finish = (db, error) => {
         if (settled) { try { db?.close(); } catch { /* Late open. */ } return; }
@@ -167,7 +167,7 @@
         request.onerror = () => finish(null, request.error || '无法打开本地存储');
         request.onblocked = () => finish(null, '本地存储正在被其他页面更新');
       } catch (error) { finish(null, error); }
-    });
+    }));
     return opening;
   }
 
@@ -252,7 +252,7 @@
 
   const snapshotRecord = value => ({ schema: 1, savedAt: Date.now(), snapshot: value?.snapshot, cursor: value?.cursor ?? null });
   const sessionValid = record => object(record) && record.schema === 1 && Number.isFinite(record.savedAt) && object(record.value);
-  window.RelayCache = Object.freeze({
+  window.SummonCache = Object.freeze({
     ready, applySync, resetHistory,
     get status() { return { ...storageStatus }; },
     readWorkspace: () => read('workspace', 'current', record => recordValid(record, 'workspace')),

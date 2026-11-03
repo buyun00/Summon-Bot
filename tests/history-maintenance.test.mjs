@@ -14,7 +14,7 @@ import { clearHistory } from '../scripts/maintenance/history.mjs';
 const identity = () => ({ pid: process.pid, bootId: randomUUID(), state: 'ready' });
 const secret = 'private-history-must-not-appear-in-report';
 async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), 'relay-history-test-'));
+  const root = await mkdtemp(join(tmpdir(), 'summon-history-test-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const bot = join(root, 'bots', 'bot-one');
   const run = join(root, 'capabilities', 'service-runtime', 'chatroom', '1', 'run'), launch = join(run, '..', 'launch');
@@ -123,7 +123,7 @@ test('unknown OS identity and unresolved execution outcomes cannot be interprete
 
 test('filesystem links and hard-linked databases cannot escape the explicitly selected data root', async t => {
   const { root, bot } = await fixture(t);
-  const outside = await mkdtemp(join(tmpdir(), 'relay-history-outside-'));
+  const outside = await mkdtemp(join(tmpdir(), 'summon-history-outside-'));
   t.after(() => rm(outside, { recursive: true, force: true }));
   await writeFile(join(outside, 'keep.txt'), 'outside');
   const linked = join(root, 'bots', 'outside-link');

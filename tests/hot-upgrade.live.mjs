@@ -20,7 +20,7 @@ const report = { schemaVersion: 1, runId, startedAt: at(), releaseRoot, dataRoot
   realModel: true, gateExplicitFixture: true, fixtureCapability: 'version-probe', fixtureBusinessLogic: true,
   model: option('model') || 'deepseek-flash', maxTokens: 1500, realTaskBudget: 3,
   checks: [], tasks: [], services: [], cleanup: {}, passed: false };
-const previousKey = process.env.RELAY_HOT_UPGRADE_LIVE_KEY;
+const previousKey = process.env.SUMMON_HOT_UPGRADE_LIVE_KEY;
 let apiKey = '', gateway, supervisor, botApi, submitted = 0;
 const credentials = new Set();
 const clean = value => {
@@ -115,7 +115,7 @@ try {
     supplied[match[1]] = value;
   }
   apiKey = supplied.DEEPSEEK_API_KEY; if (!apiKey) throw new Error('The explicit env file does not configure DEEPSEEK_API_KEY');
-  credentials.add(apiKey); process.env.RELAY_HOT_UPGRADE_LIVE_KEY = apiKey;
+  credentials.add(apiKey); process.env.SUMMON_HOT_UPGRADE_LIVE_KEY = apiKey;
   report.baseUrl = supplied.DEEPSEEK_BASE_URL || 'https://api.deepseek.com/v1';
   const endpoint = new URL(report.baseUrl); assert.ok(['http:','https:'].includes(endpoint.protocol) && !endpoint.username && !endpoint.password);
   const { startGateway } = await import(pathToFileURL(join(releaseRoot, 'capabilities/gateway/index.mjs')).href);
@@ -125,7 +125,7 @@ try {
   await mkdir(workspace, { recursive: true });
   await progress('Starting isolated gateway and independent capability workers from the selected release');
   gateway = await startGateway({ dataRoot, releaseRoot, defaultCwd: workspace, seed: false, restore: false,
-    model: { provider: 'deepseek', model: report.model, baseUrl: report.baseUrl, apiKeyEnv: 'RELAY_HOT_UPGRADE_LIVE_KEY', contextWindow: 128000, maxTokens: report.maxTokens } });
+    model: { provider: 'deepseek', model: report.model, baseUrl: report.baseUrl, apiKeyEnv: 'SUMMON_HOT_UPGRADE_LIVE_KEY', contextWindow: 128000, maxTokens: report.maxTokens } });
   credentials.add(gateway.token);
   const v1 = await api('deploy', { id: 'version-probe', version: 'v1', packageRoot: await pack('v1'), options: { gatePath, callLog, nonce } });
   report.services.push(v1); assert.notEqual(v1.pid, process.pid);
@@ -209,7 +209,7 @@ try {
   }
   report.passed = report.functionalPassed === true && report.cleanup.fixtureRemoved === true;
   report.finishedAt = at(); await save();
-  if (previousKey === undefined) delete process.env.RELAY_HOT_UPGRADE_LIVE_KEY; else process.env.RELAY_HOT_UPGRADE_LIVE_KEY = previousKey;
+  if (previousKey === undefined) delete process.env.SUMMON_HOT_UPGRADE_LIVE_KEY; else process.env.SUMMON_HOT_UPGRADE_LIVE_KEY = previousKey;
   if (!report.passed) process.exitCode = 1;
   await progress(report.passed ? 'PASS: owned Bots/services stopped and the sandbox directory was removed' : 'FAIL: inspect the retained report and cleanup status');
   process.stdout.write(JSON.stringify({ passed: report.passed, reportPath, logPath, completedRealTasks: report.tasks.filter(task => task.status === 'completed').length, fixtureRemoved: report.cleanup.fixtureRemoved === true }) + '\n');

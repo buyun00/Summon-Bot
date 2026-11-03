@@ -12,7 +12,7 @@ test('real independent Pi processes consume deterministic group deliveries and e
  const calls=[];
  const provider=createServer(async(req,res)=>{const chunks=[];for await(const chunk of req)chunks.push(chunk);const body=JSON.parse(Buffer.concat(chunks));calls.push(body);const hasTool=body.messages.some(message=>message.role==='tool');res.setHeader('Content-Type','application/json');res.end(JSON.stringify({model:'EXPLICIT_PROTOCOL_FIXTURE',choices:[{finish_reason:hasTool?'stop':'tool_calls',message:hasTool?{role:'assistant',content:'Protocol fixture observed the actual tool result.'}:{role:'assistant',content:null,tool_calls:[{id:'knowledge-call',type:'function',function:{name:'knowledge_search',arguments:'{"query":"fixture"}'}}]}}],usage:{prompt_tokens:20,completion_tokens:10,total_tokens:30}}));});
  await new Promise(done=>provider.listen(0,'127.0.0.1',done));
- const dataRoot=await mkdtemp(join(tmpdir(),'relay-real-process-'));
+ const dataRoot=await mkdtemp(join(tmpdir(),'summon-real-process-'));
  const gateway=await startGateway({dataRoot,releaseRoot:resolve(import.meta.dirname,'../..'),defaultCwd:dataRoot,model:{provider:'openai-compatible',model:'fixture',baseUrl:`http://127.0.0.1:${provider.address().port}/v1`,apiKey:'fixture-credential'}});
  t.after(async()=>{
   const failures=[];

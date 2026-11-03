@@ -9,7 +9,7 @@ import { startGateway } from '../gateway/index.mjs';
 async function until(check,timeout=30000){const deadline=Date.now()+timeout;while(Date.now()<deadline){const result=await check();if(result)return result;await new Promise(done=>setTimeout(done,50));}throw new Error('Hot upgrade verification timed out');}
 
 test('independent service deployment pins an active Pi task, switches at readiness, binds new Bots to v2 and drains unload', {timeout:120000}, async t=>{
-  const root=await mkdtemp(join(tmpdir(),'relay-hot-upgrade-')),dataRoot=join(root,'data');await mkdir(dataRoot);
+  const root=await mkdtemp(join(tmpdir(),'summon-hot-upgrade-')),dataRoot=join(root,'data');await mkdir(dataRoot);
   let gateway,releaseOld,oldEntered=false;
   const held=new Promise(done=>{releaseOld=done;});
   const provider=createServer(async(req,res)=>{

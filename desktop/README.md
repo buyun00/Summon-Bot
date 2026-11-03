@@ -1,4 +1,4 @@
-# Relay 桌面端
+# Summon Bot 桌面端
 
 Windows/macOS 的 Electron 客户端，加载正式网页 `https://bot.lin0.org`，共用同一后端和界面。网页页面不开放 Node.js 权限；桌面桥接只提供版本、检查更新和重启安装。
 

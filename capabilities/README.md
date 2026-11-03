@@ -1,6 +1,6 @@
 # External capabilities
 
-`startGateway({dataRoot,releaseRoot,defaultCwd,model,token,host,port})` starts an authenticated loopback service. It returns `url`, `token`, `manager`, `chatroom`, `knowledge`, `codex`, `memories`, `state`, `handleApi`, and `close`. It never creates an Agent inside the capability process. Bot processes use the independent `@relay/bot` package.
+`startGateway({dataRoot,releaseRoot,defaultCwd,model,token,host,port})` starts an authenticated loopback service. It returns `url`, `token`, `manager`, `chatroom`, `knowledge`, `codex`, `memories`, `state`, `handleApi`, and `close`. It never creates an Agent inside the capability process. Bot processes use the independent `@summon/bot` package.
 
 The Web backend forwards approved `/api/*` calls with its controller token. Stateful services each own `dataRoot/capabilities/<name>/state.sqlite`; the shared `RecordStore` supplies storage mechanics only. Public attachment content belongs to chatroom. Private transcripts, memory, tasks and tool artifacts belong to `dataRoot/bots/<botId>`. Capability tokens are not included in public Bot projections.
 
@@ -12,4 +12,4 @@ Temporary Bot cloning is an external logical SQLite read transaction. Only selec
 
 `RecordStore.import(kind, record)` preserves imported timestamps. Imports must choose authoritative execution records before writing; UI projections must not overwrite a Bot's own task facts. Historic jobs imported into the capability delivery collection must be terminal/interrupted unless their ownership and nonexecution are confirmed.
 
-Tests distinguish deterministic protocol fixtures from live execution. `npm test --workspace @relay/capabilities` covers filesystem behavior, real child-process cancellation, Codex RPC fixtures, user-only questions, MCP interoperability, consistent clones, offline delivery, conflicts, idempotence and artifact ownership. Real model and real Codex evidence is collected by the integration suite.
+Tests distinguish deterministic protocol fixtures from live execution. `npm test --workspace @summon/capabilities` covers filesystem behavior, real child-process cancellation, Codex RPC fixtures, user-only questions, MCP interoperability, consistent clones, offline delivery, conflicts, idempotence and artifact ownership. Real model and real Codex evidence is collected by the integration suite.

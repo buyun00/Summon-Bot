@@ -7,11 +7,11 @@ import { mkdtemp, writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
-import { inspectBotIdentity, requestBot, sendMessage, waitForTask } from '@relay/bot';
+import { inspectBotIdentity, requestBot, sendMessage, waitForTask } from '@summon/bot';
 
-const root = await mkdtemp(join(tmpdir(), 'relay-bot-installed-'));
-const installedEntry = fileURLToPath(import.meta.resolve('@relay/bot'));
-const cli = join(dirname(installedEntry), '..', 'bin', 'relay-bot.mjs');
+const root = await mkdtemp(join(tmpdir(), 'summon-bot-installed-'));
+const installedEntry = fileURLToPath(import.meta.resolve('@summon/bot'));
+const cli = join(dirname(installedEntry), '..', 'bin', 'summon-bot.mjs');
 const management = 'installed-management-token-24chars', peer = 'installed-peer-token-more-than-24';
 const children = [];
 let modelCalls = 0;

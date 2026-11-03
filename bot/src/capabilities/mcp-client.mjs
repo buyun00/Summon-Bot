@@ -44,7 +44,7 @@ export async function connectMcpTools(definition, {
     });
   } else throw new TypeError('MCP transport must be stdio or http');
 
-  const client = new Client({ name: `relay-bot-${botId}`, version: '1.0.0' }, { capabilities: {} });
+  const client = new Client({ name: `summon-bot-${botId}`, version: '1.0.0' }, { capabilities: {} });
   client.onerror = () => {}; // Individual protocol requests retain their errors.
   let closed = false, connected = false;
   client.onclose = () => { connected = false; };

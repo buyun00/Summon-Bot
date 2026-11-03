@@ -7,7 +7,7 @@ import { cleanTemporaryData } from '../bot-management/maintenance.mjs';
 import { withBotDataLease,inspectBotIdentity } from '../../bot/src/index.mjs';
 
 async function fixture(t) {
-  const root=await mkdtemp(join(tmpdir(),'relay-managed-cleanup-'));
+  const root=await mkdtemp(join(tmpdir(),'summon-managed-cleanup-'));
   const dir=join(root,'bots','temporary'),workspace=join(root,'project');
   await mkdir(join(dir,'tmp','commands'),{recursive:true});
   await mkdir(join(dir,'artifacts'),{recursive:true});await mkdir(workspace,{recursive:true});

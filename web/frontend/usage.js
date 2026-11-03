@@ -1,6 +1,6 @@
 'use strict';
 
-globalThis.RelayUsage = (() => {
+globalThis.SummonUsage = (() => {
   const view = { period: 'today', dimension: 'bots', sort: 'totalTokens', selected: null, offset: 0, data: new Map(), errors: new Map(), loading: new Map(), expanded: new Set() };
   document.addEventListener('toggle', event => {
     const row = event.target;

@@ -8,11 +8,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { acquireServiceLock, inspectServiceLock } from '../scripts/installation/service-lock.mjs';
 
-const identity = bootId => ({ protocol: 'relay-service-v1', type: 'web', pid: process.pid, bootId, state: 'ready' });
+const identity = bootId => ({ protocol: 'summon-service-v1', type: 'web', pid: process.pid, bootId, state: 'ready' });
 async function fixture(t, respond) {
-  const root = await mkdtemp(join(tmpdir(), 'relay-service-identity-test-'));
+  const root = await mkdtemp(join(tmpdir(), 'summon-service-identity-test-'));
   const physical = await realpath(root), key = createHash('sha256').update(`${process.platform === 'win32' ? physical.toLowerCase() : physical}:web`).digest('hex').slice(0, 40);
-  const endpoint = process.platform === 'win32' ? `\\\\.\\pipe\\relay-service-${key}` : process.platform === 'linux' ? `\0relay-service-${key}` : { host: '127.0.0.1', port: 30000 + parseInt(key.slice(0, 8), 16) % 25000 };
+  const endpoint = process.platform === 'win32' ? `\\\\.\\pipe\\summon-service-${key}` : process.platform === 'linux' ? `\0summon-service-${key}` : { host: '127.0.0.1', port: 30000 + parseInt(key.slice(0, 8), 16) % 25000 };
   const sockets = new Set(), cleanup = []; let connections = 0, server;
   t.after(async () => {
     for (const close of cleanup.reverse()) await close();

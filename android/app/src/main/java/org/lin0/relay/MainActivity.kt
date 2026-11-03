@@ -31,10 +31,10 @@ import kotlinx.coroutines.launch
 import java.net.URLDecoder
 import java.net.URLEncoder
 
-class RelayViewModel(app: Application) : AndroidViewModel(app) {
-    val store = RelayStore(app)
-    val updater = RelayAppUpdater(app, viewModelScope)
-    val display = RelayDisplayPreferences(app)
+class SummonViewModel(app: Application) : AndroidViewModel(app) {
+    val store = SummonStore(app)
+    val updater = SummonAppUpdater(app, viewModelScope)
+    val display = SummonDisplayPreferences(app)
     override fun onCleared() {
         store.dispose()
     }
@@ -43,13 +43,23 @@ class RelayViewModel(app: Application) : AndroidViewModel(app) {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        try { SummonBrandingMigration.run(this) }
+        catch (error: Exception) {
+            android.app.AlertDialog.Builder(this)
+                .setTitle("无法迁移本机设置")
+                .setMessage(error.localizedMessage ?: "请重新打开 Summon Bot 后重试。")
+                .setPositiveButton("关闭") { _, _ -> finish() }
+                .setOnCancelListener { finish() }
+                .show()
+            return
+        }
         enableEdgeToEdge()
-        setContent { RelayApp() }
+        setContent { SummonApp() }
     }
 }
 
 @Composable
-private fun RelayApp(model: RelayViewModel = viewModel()) {
+private fun SummonApp(model: SummonViewModel = viewModel()) {
     val store = model.store
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle, store) {
@@ -67,8 +77,8 @@ private fun RelayApp(model: RelayViewModel = viewModel()) {
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer) }
     }
-    RelayDisplay(model.display) {
-        MaterialTheme(typography = relayTypography, colorScheme = darkColorScheme(
+    SummonDisplay(model.display) {
+        MaterialTheme(typography = summonTypography, colorScheme = darkColorScheme(
             background = Color.Black,
             surface = Color(0xFF1C1C1E),
             primary = Color.White,

@@ -1,4 +1,4 @@
-# Relay Web
+# Summon Bot Web
 
 Web 只负责用户 HTTP 入口、普通网页与客户端发行包分发。`startWeb({ gatewayUrl, gatewayToken, ... })`
 把受支持的 `/api/` 请求转发给能力服务；它不加载 Pi、不创建 Bot、不打开业务数据库。

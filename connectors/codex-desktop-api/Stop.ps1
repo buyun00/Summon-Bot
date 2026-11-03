@@ -22,4 +22,4 @@ if (Test-Path -LiteralPath $pidPath) {
     try { Remove-Item -LiteralPath $pidPath -ErrorAction Stop }
     catch [System.Management.Automation.ItemNotFoundException] { }
 }
-Write-Output 'Relay Codex connector stopped. Codex desktop was not stopped.'
+Write-Output 'Summon Bot Codex connector stopped. Codex desktop was not stopped.'

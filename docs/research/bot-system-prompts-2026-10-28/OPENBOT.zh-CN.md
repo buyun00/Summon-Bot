@@ -4,7 +4,7 @@
 
 本文件第一部分按 `developerInstructions()` 的主干顺序翻译；第二部分翻译按条件加入的指令；第三部分翻译与身份、协作、记忆和 Skill 最相关的补充提示。保留工具名与协议字段，动态数据用 `{{变量}}` 表示。段落标题和编号为译者添加，不是上游原文。第三部分是明确选取的补充段落，不宣称翻译了整个工具库的全部说明。
 
-英文源码摘录见 [SOURCE-EXCERPTS.md](SOURCE-EXCERPTS.md)。译文是研究材料，不能直接作为 Relay 的运行指令。
+英文源码摘录见 [SOURCE-EXCERPTS.md](SOURCE-EXCERPTS.md)。译文是研究材料，不能直接作为 Summon Bot 的运行指令。
 
 ## 一、常驻主干：developerInstructions
 
@@ -194,6 +194,6 @@ messaging_remember、messaging_forget_memory、messaging_history 只在回复 Sl
 
 ## 四、读译文时必须保留的边界
 
-主干提供了行为约定；`expectsReply`、routine、记忆预算、Skill 修订、审批卡等是否可靠，还取决于应用程序的实际执行。本译文没有把这些提示词当成强制权限边界。OpenBot 关于“帮我”、每次对外发送、固定比较表格式、情绪 reaction 和专属工具的规定都是其自身产品选择，不是给 Relay 的建议。
+主干提供了行为约定；`expectsReply`、routine、记忆预算、Skill 修订、审批卡等是否可靠，还取决于应用程序的实际执行。本译文没有把这些提示词当成强制权限边界。OpenBot 关于“帮我”、每次对外发送、固定比较表格式、情绪 reaction 和专属工具的规定都是其自身产品选择，不是给 Summon Bot 的建议。
 
 源码版权：OpenBot，Copyright 2026 Synthetify Labs spółka z ograniczoną odpowiedzialnością。源码许可见 [LICENSE](D:/OpenBot/LICENSE)（PolyForm Noncommercial 1.0.0）及 [NOTICE](D:/OpenBot/NOTICE)。本文件是注明来源的中文研究译文。

@@ -10,9 +10,9 @@ function addressFor(instanceDir) {
   if (process.platform === 'win32') identity = identity.toLowerCase();
   const hash = createHash('sha256').update(identity).digest('hex');
   // Named pipes are held by the kernel and disappear even on a hard process crash.
-  if (process.platform === 'win32') return `\\\\.\\pipe\\relay-bot-instance-${hash.slice(0, 40)}`;
+  if (process.platform === 'win32') return `\\\\.\\pipe\\summon-bot-instance-${hash.slice(0, 40)}`;
   // The Linux abstract socket namespace also has no stale filesystem entry.
-  if (process.platform === 'linux') return `\0relay-bot-instance-${hash.slice(0, 40)}`;
+  if (process.platform === 'linux') return `\0summon-bot-instance-${hash.slice(0, 40)}`;
   // Other platforms use an exclusive loopback listener. A hash collision fails
   // closed; it can never allow two owners for the same instance.
   return { host: '127.0.0.1', port: 30000 + (parseInt(hash.slice(0, 8), 16) % 25000) };
@@ -44,7 +44,7 @@ function queryIdentity(address, timeoutMs = 1200, strict = false) {
       if (data.includes('\n')) {
         try {
           const identity = JSON.parse(data.split('\n')[0]);
-          if (!identity || typeof identity !== 'object' || Array.isArray(identity) || identity.protocol !== 'relay-instance-lock-v1') {
+          if (!identity || typeof identity !== 'object' || Array.isArray(identity) || identity.protocol !== 'summon-instance-lock-v1') {
             throw handshakeError('Instance lock is occupied by an unknown protocol; stopped state cannot be verified', 'IDENTITY_PROTOCOL_INVALID');
           }
           finish(identity);
@@ -82,7 +82,7 @@ export async function acquireIdentityLock(instanceDir, getIdentity) {
     sockets.add(socket);
     socket.on('error', () => {});
     socket.on('close', () => sockets.delete(socket));
-    socket.end(`${JSON.stringify({ protocol: 'relay-instance-lock-v1', ...getIdentity() })}\n`);
+    socket.end(`${JSON.stringify({ protocol: 'summon-instance-lock-v1', ...getIdentity() })}\n`);
   });
   try {
     await new Promise((resolve, reject) => {
@@ -92,10 +92,10 @@ export async function acquireIdentityLock(instanceDir, getIdentity) {
   } catch (cause) {
     if (!['EADDRINUSE', 'EACCES'].includes(cause.code)) throw cause;
     const existing = await queryIdentity(address);
-    const error = new Error(existing?.protocol === 'relay-instance-lock-v1'
+    const error = new Error(existing?.protocol === 'summon-instance-lock-v1'
       ? `Instance already running (PID ${existing.pid}, boot ${existing.bootId})`
       : 'Instance startup lock is occupied; identity handshake unavailable');
-    error.code = existing?.protocol === 'relay-instance-lock-v1' ? 'INSTANCE_ALREADY_RUNNING' : 'INSTANCE_LOCK_UNAVAILABLE';
+    error.code = existing?.protocol === 'summon-instance-lock-v1' ? 'INSTANCE_ALREADY_RUNNING' : 'INSTANCE_LOCK_UNAVAILABLE';
     error.existing = existing;
     error.cause = cause;
     throw error;

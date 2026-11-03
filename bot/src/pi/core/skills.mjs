@@ -4,7 +4,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "fs";
 import ignore from "ignore";
 import { basename, dirname, join, relative, resolve, sep } from "path";
 const CONFIG_DIR_NAME = ".pi";
-const getAgentDir = () => { throw new Error("Explicit Relay agentDir is required"); };
+const getAgentDir = () => { throw new Error("Explicit Summon Bot agentDir is required"); };
 import { parseFrontmatter } from "../utils/frontmatter.mjs";
 import { canonicalizePath, resolvePath } from "../utils/paths.mjs";
 import { createSyntheticSourceInfo } from "./source-info.mjs";

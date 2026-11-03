@@ -23,7 +23,7 @@ async function closeServer(server) { server.closeAllConnections(); await new Pro
 const contact = bot => ({ botId: bot.config.botId, url: bot.url, token: bot.config.token });
 
 async function fixture(t, { configured = true } = {}) {
-  const root = await mkdtemp(join(tmpdir(), 'relay-bot-lifecycle-'));
+  const root = await mkdtemp(join(tmpdir(), 'summon-bot-lifecycle-'));
   const started = deferred(), release = deferred(), requests = [], toolRequests = [], bots = [], streams = [];
   const toolServer = createServer(async (request, response) => {
     const body = await jsonBody(request);

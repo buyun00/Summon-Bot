@@ -18,14 +18,14 @@ async function until(check) {
   throw new Error('Service ownership fixture timed out');
 }
 async function codexFixture(t) {
-  const directory = await mkdtemp(join(tmpdir(), 'relay-service-ownership-'));
+  const directory = await mkdtemp(join(tmpdir(), 'summon-service-ownership-'));
   const stores = ['1','2'].map(() => new RecordStore(join(directory, 'state.sqlite')));
   const executors = stores.map((store, index) => new CodexExecutor({ store, version: String(index + 1), codexPath: [process.execPath, fake], defaultCwd: directory }));
   t.after(async () => { await Promise.all(executors.map(executor => executor.stop())); stores.forEach(store => store.close()); await rm(directory, { recursive: true, force: true }); });
   return { directory, stores, v1: executors[0], v2: executors[1] };
 }
 async function chatFixture(t) {
-  const directory = await mkdtemp(join(tmpdir(), 'relay-chat-ownership-'));
+  const directory = await mkdtemp(join(tmpdir(), 'summon-chat-ownership-'));
   const stores = ['1','2'].map(() => new RecordStore(join(directory, 'state.sqlite'))), bots = new RecordStore(':memory:');
   for (const id of ['a','b','bot-chatroom']) bots.save('bots', { id, name: id, status: 'active', roleId: id === 'bot-chatroom' ? 'chatroom' : 'default' });
   const sent = [], polled = [], tasks = new Map();
@@ -130,7 +130,7 @@ test('a discussion spanning two versions settles a completed batch once and crea
 });
 
 async function builtinFixture(t, seed) {
-  const directory = await mkdtemp(join(tmpdir(), 'relay-builtin-ownership-'));
+  const directory = await mkdtemp(join(tmpdir(), 'summon-builtin-ownership-'));
   const store = new RecordStore(join(directory, 'capabilities', 'codex', 'state.sqlite'));
   seed?.(store, directory);
   const bridge = createServer(async (request, response) => { for await (const _chunk of request) {} response.setHeader('Content-Type','application/json'); response.end('{}'); });
@@ -182,7 +182,7 @@ test('deferred Codex startup preserves queued work until the gateway explicitly 
 });
 
 test('deferred chatroom startup does not deliver legacy queued messages before explicit resume', async t => {
-  const directory=await mkdtemp(join(tmpdir(),'relay-deferred-chat-'));
+  const directory=await mkdtemp(join(tmpdir(),'summon-deferred-chat-'));
   const store=new RecordStore(join(directory,'capabilities/chatroom/state.sqlite'));
   const bots=new RecordStore(join(directory,'capabilities/bot-management/state.sqlite'));
   bots.save('bots',{id:'bot-fixture',name:'Protocol fixture',status:'active',roleId:'engineer'});

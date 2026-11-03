@@ -13,7 +13,7 @@ import { RecordStore } from '../capabilities/shared/store.mjs';
 const releaseRoot = resolve(import.meta.dirname, '..');
 const model = { provider: 'openai-compatible', model: 'test', baseUrl: 'http://127.0.0.1:1/v1' };
 const pause = ms => new Promise(done => setTimeout(done, ms));
-async function rootDirectory() { return mkdtemp(join(tmpdir(), 'relay-service-log-test-')); }
+async function rootDirectory() { return mkdtemp(join(tmpdir(), 'summon-service-log-test-')); }
 async function removeRoot(root) { assert.equal(dirname(root), resolve(tmpdir())); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
 async function stopFixture(config) {
   const deadline = Date.now() + 20000;

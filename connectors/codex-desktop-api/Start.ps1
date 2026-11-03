@@ -10,7 +10,7 @@ do {
     if (Test-Path -LiteralPath $pidPath) {
         $bridgePid = [int](Get-Content -LiteralPath $pidPath -Raw)
         $listener = Get-NetTCPConnection -LocalPort 47831 -State Listen -ErrorAction SilentlyContinue
-        if ($listener | Where-Object OwningProcess -eq $bridgePid) { Write-Output 'Relay Codex connector ready at http://127.0.0.1:47831'; exit 0 }
+        if ($listener | Where-Object OwningProcess -eq $bridgePid) { Write-Output 'Summon Bot Codex connector ready at http://127.0.0.1:47831'; exit 0 }
     }
     Start-Sleep -Milliseconds 500
 } while ((Get-Date) -lt $deadline)

@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct RelayPressStyle: ButtonStyle {
+struct SummonPressStyle: ButtonStyle {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var compact = false
     func makeBody(configuration: Configuration) -> some View {
@@ -14,7 +14,7 @@ struct RelayPressStyle: ButtonStyle {
 
 struct GreetingAvatar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let avatar: RelayAvatar
+    let avatar: SummonAvatar
     @State private var appeared = false
     @State private var expression = "expression:heureux"
     @State private var greeting = 0
@@ -26,7 +26,7 @@ struct GreetingAvatar: View {
                 .opacity(appeared || reduceMotion ? 1 : 0)
                 .animation(reduceMotion ? nil : .spring(response: 0.7, dampingFraction: 0.58), value: appeared)
         }
-        .buttonStyle(RelayPressStyle(compact: true))
+        .buttonStyle(SummonPressStyle(compact: true))
         .accessibilityLabel("和 Bot 打招呼")
         .task(id: "\(greeting)-\(reduceMotion)") {
             guard !reduceMotion else { appeared = true; expression = "idle"; return }

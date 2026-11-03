@@ -14,7 +14,7 @@ const moduleUrl = new URL('../src/runtime/process-log.mjs', import.meta.url).hre
 const pause = ms => new Promise(done => setTimeout(done, ms));
 const cleanups = new WeakMap();
 async function directory(t) {
-  const root = await mkdtemp(join(tmpdir(), 'relay-process-log-test-'));
+  const root = await mkdtemp(join(tmpdir(), 'summon-process-log-test-'));
   cleanups.set(t, []);
   t.after(async () => { for (const cleanup of cleanups.get(t).reverse()) await cleanup(); assert.equal(dirname(resolve(root)), resolve(tmpdir())); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
   return root;
@@ -128,7 +128,7 @@ test('a detached logger continues rotating after its spawning process exits', { 
 
 async function launch(t, root, config, name = 'input.json') {
   const path = join(root, name); await writeFile(path, JSON.stringify(config));
-  const child = fork(new URL('../bin/relay-bot.mjs', import.meta.url), ['--config', path], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'], execArgv: [] });
+  const child = fork(new URL('../bin/summon-bot.mjs', import.meta.url), ['--config', path], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'], execArgv: [] });
   let stderr = ''; child.stdout.resume(); child.stderr.on('data', data => stderr += data);
   const exited = once(child, 'exit'); let ready;
   cleanups.get(t).push(async () => {

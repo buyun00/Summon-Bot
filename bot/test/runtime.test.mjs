@@ -40,7 +40,7 @@ const call = (name, args, id = 'call-1') => ({ id, type: 'function', function: {
 const contact = bot => ({ botId: bot.config.botId, url: bot.url, token: bot.config.token });
 
 test('one actual Pi agent executes tools, persists transcripts/artifacts and deduplicates messages', async t => {
-  const dir = await fixtureDirectory('relay-core-pi-');
+  const dir = await fixtureDirectory('summon-core-pi-');
   const model = await modelServer(input => input.messages.at(-1).role === 'tool' ? { content: '完成，已记录状态。' } :
     { content: null, tool_calls: [call('state_set', { scope: 'test', key: 'count', value: 1 }), call('artifact_save', { name: '结果.txt', content: '中文证据' }, 'call-2')] });
   t.after(() => model.close());
@@ -63,7 +63,7 @@ test('one actual Pi agent executes tools, persists transcripts/artifacts and ded
 });
 
 test('external data lease excludes Bot startup and releases OS ownership even when maintenance fails', async () => {
-  const dir = await fixtureDirectory('relay-core-lease-');
+  const dir = await fixtureDirectory('summon-core-lease-');
   await assert.rejects(withBotDataLease(dir, async () => {
     assert.equal((await inspectBotIdentity(dir)).state, 'maintenance');
     await assert.rejects(startBot(configFor(dir, 'http://127.0.0.1:1/v1')), { code: 'INSTANCE_ALREADY_RUNNING' });
@@ -73,7 +73,7 @@ test('external data lease excludes Bot startup and releases OS ownership even wh
 });
 
 test('configured skills are loaded explicitly and both peers communicate with their own authenticated identity', async t => {
-  const dir = await fixtureDirectory('relay-core-peer-'), skill = join(dir, 'skill'); await mkdir(skill);
+  const dir = await fixtureDirectory('summon-core-peer-'), skill = join(dir, 'skill'); await mkdir(skill);
   await writeFile(join(skill, 'SKILL.md'), '---\nname: evidence\ndescription: Record clear observations\n---\nOBSERVATION_SENTINEL 中文技能');
   const model = await modelServer(() => ({ content: 'peer response' })); t.after(() => model.close());
   const peerToken = 'peer-shared-token-at-least-24';
@@ -88,7 +88,7 @@ test('configured skills are loaded explicitly and both peers communicate with th
 });
 
 test('imported contextKey resumes the original session and current task policy blocks builtin writes', async t => {
-  const dir = await fixtureDirectory('relay-core-history-');
+  const dir = await fixtureDirectory('summon-core-history-');
   const model = await modelServer(input => input.messages.at(-1).role === 'tool' ? { content: '只读策略阻止了写入。' } :
     { content: null, tool_calls: [call('memory_write', { text: 'MUST_NOT_WRITE' })] }); t.after(() => model.close());
   const bot = await startBot(configFor(dir, model.url)); t.after(() => bot.close());
@@ -108,7 +108,7 @@ test('imported contextKey resumes the original session and current task policy b
 });
 
 async function childBot(configPath) {
-  const child = fork(new URL('../bin/relay-bot.mjs', import.meta.url), ['--config', configPath], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+  const child = fork(new URL('../bin/summon-bot.mjs', import.meta.url), ['--config', configPath], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
   let stderr = ''; child.stderr.on('data', data => stderr += data);
   const ready = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`Child readiness timeout: ${stderr}`)), 20000);
@@ -121,7 +121,7 @@ async function childBot(configPath) {
 }
 
 test('real subprocess crash recovers uncertain task without replay and releases OS identity', async t => {
-  const dir = await fixtureDirectory('relay-core-crash-');
+  const dir = await fixtureDirectory('summon-core-crash-');
   let notify; const entered = new Promise(resolve => notify = resolve);
   const model = await modelServer(async () => { notify(); await new Promise(resolve => setTimeout(resolve, 700)); return { content: 'late result' }; }); t.after(() => model.close());
   const path = join(dir, 'input.json'); await writeFile(path, JSON.stringify(configFor(join(dir, 'data'), model.url)));

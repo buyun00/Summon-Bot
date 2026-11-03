@@ -47,7 +47,7 @@ function sensitivePath(path, workspace) {
     if (part === '.git' || part === '.ssh' || part === '.aws' || part === '.azure' || part === 'gcloud') return true;
     if (part === '.relay' && !within(workspace, path)) return true;
     if (/^\.env(?:[.-]|$)/.test(part) || /^\.(?:npmrc|pypirc|netrc|git-credentials)$/.test(part)) return true;
-    if (/^(?:id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|credentials?(?:[._-].*)?|secrets?(?:[._-].*)?|ds\.txt|relay\.sqlite(?:[.-].*)?)$/.test(part)) return true;
+    if (/^(?:id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|credentials?(?:[._-].*)?|secrets?(?:[._-].*)?|ds\.txt|summon\.sqlite(?:[.-].*)?)$/.test(part)) return true;
     if (/\.(?:pem|p12|pfx|key)$/.test(part) || part.includes(':')) return true;
   }
   return false;
@@ -92,7 +92,7 @@ async function terminateTree(child) {
 async function runCommand(command, cwd, timeoutMs, signal, redact, saveArtifact, onArtifacts, tempRoot) {
   cancelled(signal);
   if (saveArtifact && tempRoot) await mkdir(tempRoot, { recursive: true });
-  const outputDirectory = saveArtifact ? await mkdtemp(join(tempRoot || tmpdir(), 'relay-command-output-')) : null;
+  const outputDirectory = saveArtifact ? await mkdtemp(join(tempRoot || tmpdir(), 'summon-command-output-')) : null;
   try { cancelled(signal); }
   catch (error) { if (outputDirectory) await rm(outputDirectory, { recursive: true, force: true }); throw error; }
   const fullOutput = outputDirectory ? Object.fromEntries(['stdout', 'stderr'].map(name =>
@@ -112,10 +112,10 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $PSDefaultParameterValues = @{ 'Get-Content:Encoding' = 'utf8'; 'Set-Content:Encoding' = 'utf8'; 'Add-Content:Encoding' = 'utf8'; 'Out-File:Encoding' = 'utf8'; 'Select-String:Encoding' = 'utf8' }
 ${command}
-$relayCommandSucceeded = $?
-$relayNativeExit = $LASTEXITCODE
-if ($null -ne $relayNativeExit -and $relayNativeExit -ne 0) { exit $relayNativeExit }
-if (-not $relayCommandSucceeded) { exit 1 }
+$summonCommandSucceeded = $?
+$summonNativeExit = $LASTEXITCODE
+if ($null -ne $summonNativeExit -and $summonNativeExit -ne 0) { exit $summonNativeExit }
+if (-not $summonCommandSucceeded) { exit 1 }
 `;
   const args = WINDOWS ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')] : ['-c', command];
   const start = Date.now();
@@ -213,7 +213,7 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
   }
 
   async function saveVerified(path, bytes, signal, { overwrite = false, expected } = {}) {
-    const temporary = join(dirname(path), `.relay-write-${randomUUID()}.tmp`);
+    const temporary = join(dirname(path), `.summon-write-${randomUUID()}.tmp`);
     let mode;
     try { mode = (await stat(path)).mode; } catch (error) { if (error.code !== 'ENOENT') throw error; }
     try {

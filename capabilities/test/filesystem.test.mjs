@@ -9,7 +9,7 @@ import { ExecutionLock } from '../shared/execution-lock.mjs';
 const WINDOWS = process.platform === 'win32';
 const pause = ms => new Promise(resolveDone => setTimeout(resolveDone, ms));
 async function fixture(t, options = {}) {
-  const root = await mkdtemp(join(tmpdir(), 'relay-agent-tools-'));
+  const root = await mkdtemp(join(tmpdir(), 'summon-agent-tools-'));
   const projectRoot = join(root, 'project');
   const workspace = join(projectRoot, '.relay', 'workspaces', 'bot-a');
   await mkdir(workspace, { recursive: true });
@@ -58,7 +58,7 @@ test('filesystem tools reject traversal, credentials, runtime state and other Bo
   const { root, projectRoot, execute } = await fixture(t);
   const outside = join(root, 'outside.txt');
   await writeFile(outside, 'outside');
-  const protectedPaths = [outside, join(projectRoot, '.env'), join(projectRoot, '.env.local'), join(projectRoot, '.git', 'config'), join(projectRoot, '.relay', 'relay.sqlite'), join(projectRoot, '.relay', 'workspaces', 'bot-b', 'report.md'), join(projectRoot, 'credentials.json')];
+  const protectedPaths = [outside, join(projectRoot, '.env'), join(projectRoot, '.env.local'), join(projectRoot, '.git', 'config'), join(projectRoot, '.relay', 'summon.sqlite'), join(projectRoot, '.relay', 'workspaces', 'bot-b', 'report.md'), join(projectRoot, 'credentials.json')];
   for (const path of protectedPaths) {
     await assert.rejects(execute('read_file', { path }), /protected|outside/);
     await assert.rejects(execute('write_file', { path, content: 'forbidden', overwrite: true }), /protected|outside/);
@@ -119,13 +119,13 @@ test('search skips binary and huge files; pagination and output limits are visib
 });
 
 test('command runs in the real workspace with UTF-8, filtered environment and redacted output', async t => {
-  const old = process.env.RELAY_TEST_SECRET;
-  process.env.RELAY_TEST_SECRET = 'test-secret-must-not-reach-child';
-  t.after(() => { if (old === undefined) delete process.env.RELAY_TEST_SECRET; else process.env.RELAY_TEST_SECRET = old; });
+  const old = process.env.SUMMON_TEST_SECRET;
+  process.env.SUMMON_TEST_SECRET = 'test-secret-must-not-reach-child';
+  t.after(() => { if (old === undefined) delete process.env.SUMMON_TEST_SECRET; else process.env.SUMMON_TEST_SECRET = old; });
   const { workspace, execute } = await fixture(t, { redact: value => value.replaceAll('private-marker', '[redacted]') });
   const command = WINDOWS
-    ? "[IO.File]::WriteAllText((Join-Path (Get-Location) 'command.txt'), '中文已写入', [Text.Encoding]::UTF8); Write-Output '中文输出 private-marker'; Write-Output ('secret=' + $env:RELAY_TEST_SECRET)"
-    : "printf '中文已写入' > command.txt; printf '中文输出 private-marker\\nsecret=%s\\n' \"$RELAY_TEST_SECRET\"";
+    ? "[IO.File]::WriteAllText((Join-Path (Get-Location) 'command.txt'), '中文已写入', [Text.Encoding]::UTF8); Write-Output '中文输出 private-marker'; Write-Output ('secret=' + $env:SUMMON_TEST_SECRET)"
+    : "printf '中文已写入' > command.txt; printf '中文输出 private-marker\\nsecret=%s\\n' \"$SUMMON_TEST_SECRET\"";
   const result = await execute('run_command', { command });
   assert.equal(result.cwd, workspace);
   assert.equal(result.exitCode, 0);

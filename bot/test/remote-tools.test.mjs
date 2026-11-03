@@ -13,7 +13,7 @@ const inputSchema = { type: 'object', properties: { value: { type: 'string' } },
 const imageData = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jM4sAAAAASUVORK5CYII=';
 const sleep = ms => new Promise(done => setTimeout(done, ms));
 async function temporary(t) {
-  const root = await mkdtemp(join(tmpdir(), 'relay-remote-tools-'));
+  const root = await mkdtemp(join(tmpdir(), 'summon-remote-tools-'));
   t.after(() => {
     assert.equal(dirname(resolve(root)), resolve(tmpdir()), 'cleanup remains inside the test temporary directory');
     return rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
@@ -38,7 +38,7 @@ const definition = (url, name, extra = {}) => ({ type: 'http', name, url, inputS
 test('configured HTTP tools send explicit credentials and body modes, preserve JSON/text/MCP content and redact real errors', async t => {
   const root = await temporary(t), received = [];
   const secret = 'fixture-header-secret-73482';
-  setEnvironment(t, 'RELAY_REMOTE_HTTP_SECRET', secret);
+  setEnvironment(t, 'SUMMON_REMOTE_HTTP_SECRET', secret);
   const server = createServer(async (request, response) => {
     const chunks = []; for await (const chunk of request) chunks.push(chunk);
     const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
@@ -51,10 +51,10 @@ test('configured HTTP tools send explicit credentials and body modes, preserve J
   });
   const base = await listen(server);
   const capabilities = await loadConfiguredTools([
-    definition(base + '/args', 'arguments_body', { headersEnv: { 'x-api-key': 'RELAY_REMOTE_HTTP_SECRET' } }),
+    definition(base + '/args', 'arguments_body', { headersEnv: { 'x-api-key': 'SUMMON_REMOTE_HTTP_SECRET' } }),
     definition(base + '/raw', 'raw_body', { bodyMode: 'raw', headers: { 'Content-Type': 'application/json' } }),
     definition(base + '/text', 'plain_text'), definition(base + '/content', 'content_result'),
-    definition(base + '/error', 'http_failure', { headersEnv: { 'x-api-key': 'RELAY_REMOTE_HTTP_SECRET' } }),
+    definition(base + '/error', 'http_failure', { headersEnv: { 'x-api-key': 'SUMMON_REMOTE_HTTP_SECRET' } }),
   ], context(root));
   t.after(async () => { await capabilities.close(); await closeHttp(server); });
   const tools = new Map(capabilities.tools.map(tool => [tool.name, tool]));
@@ -150,7 +150,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   if(request.params.name === 'protocol_error') throw new McpError(ErrorCode.InvalidParams, 'MCP rejected '+process.env.FIXTURE_SECRET);
   if(request.params.name === 'slow') await new Promise((done,reject) => { const timer=setTimeout(done,10000); extra.signal.addEventListener('abort',()=>{clearTimeout(timer);reject(new Error('cancelled'));},{once:true}); });
   return {content:[{type:'text',text:JSON.stringify({arguments:request.params.arguments,pid:process.pid,
-    inheritedSecret:process.env.RELAY_UNCONFIGURED_SECRET || null,explicitSecret:process.env.FIXTURE_SECRET})},
+    inheritedSecret:process.env.SUMMON_UNCONFIGURED_SECRET || null,explicitSecret:process.env.FIXTURE_SECRET})},
     {type:'image',mimeType:'image/png',data:${JSON.stringify(imageData)}}],structuredContent:{answer:'standard MCP'},isError:false};
 });
 await server.connect(new StdioServerTransport());
@@ -160,10 +160,10 @@ await server.connect(new StdioServerTransport());
 
 test('real MCP stdio subprocess initializes, paginates, preserves image/error results and closes its own process', async t => {
   const f = await mcpFixture(t), secret = 'fixture-mcp-secret-192837';
-  setEnvironment(t, 'RELAY_MCP_KEY', secret);
-  setEnvironment(t, 'RELAY_UNCONFIGURED_SECRET', 'ambient-secret-must-not-be-inherited');
+  setEnvironment(t, 'SUMMON_MCP_KEY', secret);
+  setEnvironment(t, 'SUMMON_UNCONFIGURED_SECRET', 'ambient-secret-must-not-be-inherited');
   const capabilities = await loadConfiguredTools([{ type: 'mcp', transport: 'stdio', command: process.execPath, args: [f.script],
-    env: { FIXTURE_SECRET: { env: 'RELAY_MCP_KEY' } }, namePrefix: 'mcp_', timeoutMs: 15000 }], context(f.root));
+    env: { FIXTURE_SECRET: { env: 'SUMMON_MCP_KEY' } }, namePrefix: 'mcp_', timeoutMs: 15000 }], context(f.root));
   t.after(() => capabilities.close());
   const tools = new Map(capabilities.tools.map(tool => [tool.name, tool]));
   assert.deepEqual([...tools.keys()], ['mcp_echo_tool', 'mcp_failure', 'mcp_protocol_error', 'mcp_slow']);
@@ -197,7 +197,7 @@ test('MCP tool aliases reject collisions instead of invoking an ambiguous remote
 
 test('MCP Streamable HTTP uses standard initialize and JSON-RPC tool requests with configured headers', async t => {
   const root = await temporary(t), methods = [], credentials = [], live = new Set();
-  setEnvironment(t, 'RELAY_MCP_HTTP_KEY', 'fixture-standard-http-secret');
+  setEnvironment(t, 'SUMMON_MCP_HTTP_KEY', 'fixture-standard-http-secret');
   const server = createServer(async (request, response) => {
     credentials.push(request.headers.authorization);
     if (request.method !== 'POST') { response.writeHead(405); return response.end(); }
@@ -216,7 +216,7 @@ test('MCP Streamable HTTP uses standard initialize and JSON-RPC tool requests wi
   let capabilities;
   t.after(async () => { await capabilities?.close(); await Promise.allSettled([...live].map(peer => peer.close())); await closeHttp(server); });
   capabilities = await loadConfiguredTools([{ type: 'mcp', transport: 'http', url: base + '/mcp',
-    headersEnv: { Authorization: 'RELAY_MCP_HTTP_KEY' } }], context(root));
+    headersEnv: { Authorization: 'SUMMON_MCP_HTTP_KEY' } }], context(root));
   assert.equal((await capabilities.tools[0].execute({ value: 'standard-http' })).content[0].text, '{"value":"standard-http"}');
   assert.ok(methods.includes('initialize')); assert.ok(methods.includes('notifications/initialized'));
   assert.ok(methods.includes('tools/list')); assert.ok(methods.includes('tools/call'));

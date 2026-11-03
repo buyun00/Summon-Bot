@@ -1,9 +1,9 @@
 {
-  "name": "relay-desktop",
-  "version": "0.3.7",
+  "name": "summon-desktop",
+  "version": "0.3.8",
   "private": true,
-  "description": "Relay desktop client",
-  "author": "Relay",
+  "description": "Summon Bot desktop client",
+  "author": "Summon Bot",
   "main": "main.cjs",
   "dependencies": {
     "electron-updater": "6.8.12"

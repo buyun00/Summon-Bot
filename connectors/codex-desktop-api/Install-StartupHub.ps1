@@ -16,8 +16,8 @@ if (!@($hub.Actions | Where-Object { $_.Arguments -and $_.Arguments.Contains((Jo
 $action = New-ScheduledTaskAction -Execute (Join-Path $env:SystemRoot 'System32\wscript.exe') -Argument ('//B //NoLogo "{0}"' -f $launcher) -WorkingDirectory $PSScriptRoot
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -Hidden
 Set-ScheduledTask -TaskPath $entry.taskPath -TaskName $entry.taskName -Action $action -Settings $settings | Out-Null
-$entry.name = 'Relay Bot · Codex 连接器'
-$entry.purpose = 'Relay-Bot 内置 Codex 桌面连接器，无控制台窗口；http://127.0.0.1:47831/'
+$entry.name = 'Summon Bot · Codex 连接器'
+$entry.purpose = 'Summon Bot 内置 Codex 桌面连接器，无控制台窗口；http://127.0.0.1:47831/'
 # Preserve autoStart and every unrelated entry. No backups or hash scans.
 [IO.File]::WriteAllText($itemsPath, (ConvertTo-Json -InputObject $items -Depth 20), [Text.UTF8Encoding]::new($false))
 & (Join-Path $PSScriptRoot 'Start.ps1')

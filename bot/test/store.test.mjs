@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { BotStore } from '../src/storage/store.mjs';
 
 async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), 'relay-bot-store-'));
+  const root = await mkdtemp(join(tmpdir(), 'summon-bot-store-'));
   const path = join(root, 'state.sqlite'), stores = [];
   const open = options => { const store = new BotStore(path, options); stores.push(store); return store; };
   t.after(async () => {

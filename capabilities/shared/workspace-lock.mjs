@@ -13,8 +13,8 @@ export class WorkspaceExecutionLock extends ExecutionLock {
     const physical = realpathSync(resolve(cwd));
     const canonical = process.platform === 'win32' ? physical.toLowerCase() : physical;
     const key = createHash('sha256').update(canonical).digest('hex').slice(0, 40);
-    this.endpoint = process.platform === 'win32' ? `\\\\.\\pipe\\relay-workspace-${key}` :
-      process.platform === 'linux' ? `\0relay-workspace-${key}` : join(tmpdir(), `relay-workspace-${key}.sock`);
+    this.endpoint = process.platform === 'win32' ? `\\\\.\\pipe\\summon-workspace-${key}` :
+      process.platform === 'linux' ? `\0summon-workspace-${key}` : join(tmpdir(), `summon-workspace-${key}.sock`);
   }
   async acquire(owner, signal) {
     const releaseLocal = await super.acquire(owner, signal);

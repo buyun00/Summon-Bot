@@ -2,6 +2,9 @@ const { app, BrowserWindow, ipcMain, Menu, shell, dialog } = require('electron')
 const { join } = require('node:path');
 const { autoUpdater } = require('electron-updater');
 const release = require('./release.json');
+// Keep the existing profile directory while changing the product's visible name.
+app.setPath('userData', join(app.getPath('appData'), 'Relay'));
+app.setName('Summon Bot');
 const origin = new URL(release.appUrl).origin;
 const localUpdateFeed = new URL(release.updatePath, 'http://127.0.0.1:8787').href;
 const remoteUpdateFeed = new URL(release.updatePath, release.appUrl).href;
@@ -10,7 +13,7 @@ let update = { status: 'idle', currentVersion: app.getVersion() };
 
 function setUpdate(value) {
   update = { ...update, ...value };
-  if (window && !window.isDestroyed()) window.webContents.send('relay:update-state', update);
+  if (window && !window.isDestroyed()) window.webContents.send('summon:update-state', update);
 }
 const trusted = event => {
   if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame
@@ -48,11 +51,11 @@ async function checkForUpdates() {
   return update;
 }
 function requestInstall() {
-  if (update.status === 'downloaded') window.webContents.send('relay:request-install');
+  if (update.status === 'downloaded') window.webContents.send('summon:request-install');
 }
 function createWindow() {
   window = new BrowserWindow({
-    title: 'Relay', width: 1280, height: 900, minWidth: 680, minHeight: 560,
+    title: 'Summon Bot', width: 1280, height: 900, minWidth: 680, minHeight: 560,
     backgroundColor: '#fdfdfc', show: false, autoHideMenuBar: process.platform !== 'darwin',
     titleBarStyle: 'hidden',
     titleBarOverlay: { color: '#00000000', symbolColor: '#4b5045', height: 44 },
@@ -71,7 +74,7 @@ function createWindow() {
   window.webContents.session.setPermissionRequestHandler((_contents, permission, callback) => callback(permission === 'clipboard-sanitized-write'));
   window.webContents.on('did-fail-load', (_event, code, _description, _url, isMainFrame) => {
     if (!isMainFrame || code === -3) return;
-    dialog.showMessageBox(window, { type: 'error', message: '暂时无法连接 Relay', detail: '请确认网络和 Relay 服务已启动。', buttons: ['重试', '退出'] })
+    dialog.showMessageBox(window, { type: 'error', message: '暂时无法连接 Summon Bot', detail: '请确认网络和 Summon Bot 服务已启动。', buttons: ['重试', '退出'] })
       .then(({ response }) => response === 0 ? window?.loadURL(release.appUrl) : app.quit());
   });
   window.loadURL(release.appUrl);
@@ -87,16 +90,16 @@ autoUpdater.on('update-downloaded', info => setUpdate({ status: 'downloaded', ve
 autoUpdater.on('error', error => {
   if (!checking) setUpdate({ status: 'error', message: error.message });
 });
-ipcMain.handle('relay:desktop-info', event => { trusted(event); return { version: app.getVersion(), platform: process.platform, arch: process.arch, windowControlsOverlay: true, update }; });
-ipcMain.handle('relay:check-update', event => { trusted(event); return checkForUpdates(); });
-ipcMain.handle('relay:install-update', event => { trusted(event); if (update.status !== 'downloaded') return false; setImmediate(() => autoUpdater.quitAndInstall(true, true)); return true; });
+ipcMain.handle('summon:desktop-info', event => { trusted(event); return { version: app.getVersion(), platform: process.platform, arch: process.arch, windowControlsOverlay: true, update }; });
+ipcMain.handle('summon:check-update', event => { trusted(event); return checkForUpdates(); });
+ipcMain.handle('summon:install-update', event => { trusted(event); if (update.status !== 'downloaded') return false; setImmediate(() => autoUpdater.quitAndInstall(true, true)); return true; });
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => { if (window) { if (window.isMinimized()) window.restore(); window.show(); window.focus(); } });
   app.whenReady().then(() => {
     createWindow();
-    const clientMenu = { label: 'Relay', submenu: [
-      { label: '检查更新', click: () => window?.webContents.send('relay:open-updates') },
+    const clientMenu = { label: 'Summon Bot', submenu: [
+      { label: '检查更新', click: () => window?.webContents.send('summon:open-updates') },
       { label: '重启并更新', click: requestInstall }, { type: 'separator' }, { role: 'quit' },
     ] };
     Menu.setApplicationMenu(Menu.buildFromTemplate([clientMenu, { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' }]));
