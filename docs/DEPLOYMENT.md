@@ -17,7 +17,7 @@ docs/OPERATIONS.md 和 docs/CLIENT_RELEASES.md，再检查当前代码与已有�
 
 先在网页制作效果。网页定稿后同步原生手机端与必要的桌面代码，
 提交并推送，再按现有流程部署和发布。制作阶段可以更新正式网页，
-客户端安装包在定稿后发布；macOS/iOS 从同一提交交给 Mac 打包。
+客户端安装包在定稿后发布；Windows 默认本地打包，macOS 和 Android 默认由 GitHub Actions 构建，iOS 暂不打包发布。
 
 只完成当前任务必要的构建、配置和启停，不另起开发或预览服务。
 遵守仓库关于不自动运行或补写测试、不计算或比对哈希的约定，
@@ -32,7 +32,8 @@ docs/OPERATIONS.md 和 docs/CLIENT_RELEASES.md，再检查当前代码与已有�
 | 源码 | D:/Relay-Bot |
 | 后端安装 | D:/Relay-Bot-app |
 | 业务数据 | D:/Relay-Bot-data |
-| 客户端发行物 | D:/Relay-Bot-data/client-releases |
+| Windows 本机发行物 | D:/Relay-Bot-data/client-releases |
+| 各平台远程发行物 | GitHub Releases：buyun00/Summon-Bot |
 | 正式入口 | https://bot.lin0.org |
 | 同一环境的本机入口 | http://127.0.0.1:8787 |
 

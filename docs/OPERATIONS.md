@@ -77,7 +77,7 @@ npm run summon:history -- --data-root D:/Relay-Bot-data
 
 ## 发行与升级
 
-客户端发行包目录、普通网页和 Electron/Android 更新方式，以及 Mac 构建上传命令，见 [客户端发行与更新](CLIENT_RELEASES.md)。常规完整发布在源码提交推送后运行 `npm run release:all`，沿用本节的正式安装和清理流程。
+客户端下载来源、Windows 本地发布、macOS/Android GitHub Actions 和各端更新方式，见 [客户端发行与更新](CLIENT_RELEASES.md)。常规完整发布在源码提交推送后运行 `npm run release:all`，仅本地打包 Windows，沿用本节的正式安装和清理流程；iOS 暂不打包发布。
 
 Windows 正式发行使用 Node 24.21.0 LTS 构建并随包携带该运行时，启动脚本自动使用包内 `runtime/node.exe`，不需要替换系统 Node。不要使用 24.15.0 / 25.8.0 打包：这些版本存在 Windows TCP keepalive 原生栈越界，构建入口已拒绝它们。上游修复见 [nodejs/node#62561](https://github.com/nodejs/node/pull/62561)。在指定运行时下运行 `node.exe scripts/build/build.mjs --bundle-node`，其余安装流程不变。
 

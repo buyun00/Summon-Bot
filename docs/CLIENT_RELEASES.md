@@ -42,7 +42,7 @@ npm run release:desktop -- --publish
 
 ## GitHub Actions
 
-[Client releases 工作流](../.github/workflows/client-releases.yml) 在主分支的版本、桌面、Android、发行脚本或工作流变更时运行；也可手动选择 `cloud`、`macos`、`android` 或 `windows`。默认云端目标只有 macOS 和 Android，Windows 保留可手动触发的云端构建入口。工作流只安装依赖、构建和发布，不运行测试，不创建后端或预览服务。
+[Client releases 工作流](../.github/workflows/client-releases.yml) 在主分支的 `release.json` 版本变更时运行，客户端改动在定稿时一并递增版本；也可手动选择 `cloud`、`macos`、`android` 或 `windows`。默认云端目标只有 macOS 和 Android，Windows 保留可手动触发的云端构建入口。工作流只安装依赖、构建和发布，不运行测试，不创建后端或预览服务。
 
 macOS 使用 GitHub 的 Mac runner 构建 Intel + Apple Silicon universal DMG/ZIP。无需本地 Mac、Apple Developer 账户或证书，仅做 ad-hoc 签名，不进行 Developer ID 签名或公证。首次打开可能需要在系统“隐私与安全性”手动允许。客户端提示新版本并打开 DMG 下载，用户覆盖安装；不使用依赖开发者签名的自动安装更新。
 

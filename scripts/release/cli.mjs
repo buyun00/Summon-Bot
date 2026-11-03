@@ -27,6 +27,8 @@ const sourceCommit = () => {
   const result = spawnSync('git', ['-C', sourceRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8', windowsHide: true });
   return result.status === 0 ? result.stdout.trim() : null;
 };
+// Other chats may commit in this shared checkout while a package is building.
+const buildSourceCommit = sourceCommit();
 async function outputDirectory(name) {
   const path = join(buildRoot, name);
   await mkdir(buildRoot, { recursive: true });
@@ -39,7 +41,7 @@ async function describeBuild(input, platform, arch) {
   const files = await describeArtifacts(input);
   const extension = platform === 'windows' ? '.exe' : platform === 'macos' ? '.dmg' : '.apk';
   const mainFile = files.find(file => file.name.endsWith(extension))?.name;
-  const metadata = validateRelease({ platform, arch, ...release, files, mainFile, sourceCommit: sourceCommit(), notes: options.notes || '' });
+  const metadata = validateRelease({ platform, arch, ...release, files, mainFile, sourceCommit: buildSourceCommit, notes: options.notes || '' });
   await writeJson(join(input, 'artifact.json'), metadata);
   return metadata;
 }
@@ -122,7 +124,7 @@ async function buildIos() {
   await removeInside(output, join(output, 'DerivedData'));
   if (options['export-options']) await run('xcodebuild', ['-exportArchive', '-archivePath', archive,
     '-exportPath', join(output, 'export'), '-exportOptionsPlist', resolve(options['export-options']), '-allowProvisioningUpdates']);
-  console.log(JSON.stringify({ built: true, platform: 'ios', version: release.version, output, sourceCommit: sourceCommit() }));
+  console.log(JSON.stringify({ built: true, platform: 'ios', version: release.version, output, sourceCommit: buildSourceCommit }));
 }
 async function deployWeb() {
   if (process.platform !== 'win32') throw new Error('The existing production installation runs on Windows');
