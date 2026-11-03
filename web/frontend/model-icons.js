@@ -1,5 +1,5 @@
 'use strict';
-// Brand artwork: Lobe Icons 1.102.0 (MIT); bundled locally in icons/ai-brands.svg.
+// Brand artwork: Lobe Icons 1.102.0 (MIT); icons/ai-brands.svg is embedded in the document by the Web server.
 globalThis.SummonModelIcons = (() => {
   const names = {
     ai: 'AI', deepseek: 'DeepSeek', openai: 'OpenAI', codex: 'Codex', claude: 'Claude', anthropic: 'Anthropic',
@@ -65,7 +65,7 @@ globalThis.SummonModelIcons = (() => {
     return 'ai';
   }
   function svg(item, size = 24) {
-    return `<svg class="model-brand-icon" width="${Number(size) || 24}" height="${Number(size) || 24}" viewBox="0 0 24 24" fill-rule="evenodd" aria-hidden="true" focusable="false"><use href="/icons/ai-brands.svg#ai-${brand(item)}"></use></svg>`;
+    return `<svg class="model-brand-icon" width="${Number(size) || 24}" height="${Number(size) || 24}" viewBox="0 0 24 24" fill-rule="evenodd" aria-hidden="true" focusable="false"><use href="#ai-${brand(item)}"></use></svg>`;
   }
   return { brand, svg, name: item => names[brand(item)], count: Object.keys(names).length - 1 };
 })();

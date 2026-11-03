@@ -38,6 +38,9 @@ export async function startWeb({ host = '127.0.0.1', port = 8787, publicOrigin =
   if (!['http:', 'https:'].includes(upstream.protocol) || upstream.username || upstream.password) throw new Error('Invalid gateway URL');
   if (!gatewayToken) throw new Error('gatewayToken is required');
   if (publicOrigin && new URL(publicOrigin).origin !== publicOrigin) throw new Error('publicOrigin must be an origin without a path');
+  // Keep symbol definitions in the document so rerendered icons never reload an external SVG.
+  const modelIconSprite = (await readFile(join(frontendRoot, 'icons/ai-brands.svg'), 'utf8'))
+    .replace('<svg ', '<svg aria-hidden="true" focusable="false" style="position:absolute;width:0;height:0;overflow:hidden;pointer-events:none;fill:currentColor;stroke:none" ');
   const publicHost = publicOrigin ? new URL(publicOrigin).host.toLowerCase() : null;
   const active = new Set();
   let closing = false;
@@ -114,7 +117,10 @@ export async function startWeb({ host = '127.0.0.1', port = 8787, publicOrigin =
       const entry = assets.get(url.pathname);
       if (!entry || !['GET', 'HEAD'].includes(req.method)) { res.writeHead(404); res.end('Not found'); return; }
       const [filename, mime] = entry;
-      const content = await readFile(join(frontendRoot, filename));
+      const asset = await readFile(join(frontendRoot, filename));
+      const content = filename === 'index.html'
+        ? Buffer.from(asset.toString('utf8').replace('<!-- MODEL_ICON_SPRITE -->', () => modelIconSprite))
+        : asset;
       res.writeHead(200, { 'Content-Type': mime.startsWith('image/') ? mime : `${mime}; charset=utf-8`, 'Content-Length': content.length,
         'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
       res.end(req.method === 'HEAD' ? undefined : content);
