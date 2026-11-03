@@ -10,7 +10,13 @@ if (Test-Path -LiteralPath $pidPath) {
     $process = Get-CimInstance Win32_Process -Filter "ProcessId = $bridgePid"
     if ($process) {
         if ($process.Name -ne 'node.exe' -or $process.CommandLine -notmatch 'D:\\Relay-Bot-app\\releases\\[^\\]+\\connectors\\codex-desktop-api\\src\\main\.js') { throw 'Recorded PID belongs to another process.' }
-        Stop-Process -Id $bridgePid
+        $bridgeManagedProcess = Get-Process -Id $bridgePid -ErrorAction SilentlyContinue
+        if ($bridgeManagedProcess) {
+            try {
+                Stop-Process -Id $bridgePid
+                if (!$bridgeManagedProcess.WaitForExit(10000)) { throw 'Connector process has not exited; leave its release directory in place.' }
+            } finally { $bridgeManagedProcess.Dispose() }
+        }
     }
     Remove-Item -LiteralPath $pidPath
 }

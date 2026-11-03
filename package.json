@@ -1,6 +1,6 @@
 {
   "name": "relay-bot",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "description": "Independent Pi Bots, external capabilities and a separate Web interface",
   "type": "module",

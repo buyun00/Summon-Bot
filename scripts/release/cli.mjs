@@ -133,7 +133,7 @@ async function buildAndroid() {
   await describeBuild(output, 'android', 'universal');
   if (options.publish || command === 'all') {
     await publish(output);
-    for (const path of ['android/app/build', 'android/build', 'android/.kotlin']) await removeInside(sourceRoot, join(sourceRoot, path));
+    if (!options['keep-build-cache']) for (const path of ['android/app/build', 'android/build', 'android/.kotlin']) await removeInside(sourceRoot, join(sourceRoot, path));
     await removeInside(appRoot, join(appRoot, 'Relay-Android.apk'));
   } else console.log(JSON.stringify({ built: true, platform: 'android', output }));
 }
@@ -156,8 +156,8 @@ async function deployWeb() {
   await ensurePublishToken();
   const { buildRelease } = await import('../build/build.mjs');
   const built = await buildRelease({ sourceRoot, bundleNode: true, committedOnly: Boolean(options['committed-only'] || command === 'all') });
-  await run('pwsh.exe', ['-NoProfile', '-File', join(sourceRoot, 'connectors/codex-desktop-api/Stop.ps1')]);
   await run('pwsh.exe', ['-NoProfile', '-File', join(appRoot, 'Stop.ps1'), '-DataRoot', dataRoot]);
+  await run('pwsh.exe', ['-NoProfile', '-File', join(sourceRoot, 'connectors/codex-desktop-api/Stop.ps1')]);
   const { installRelease } = await import('../installation/install.mjs');
   const installed = await installRelease({ releaseRoot: built.releaseRoot, appRoot, dataRoot, sourceRoot });
   await run('pwsh.exe', ['-NoProfile', '-File', join(appRoot, 'Start.ps1'), '-DataRoot', dataRoot]);
