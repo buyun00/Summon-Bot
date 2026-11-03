@@ -1,9 +1,41 @@
-import { readdirSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import os from 'node:os';
+import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { FramedPipe } from './framed-pipe.js';
 import { ApiError, unavailable } from './errors.js';
+import { DesktopIpc } from './desktop-ipc.js';
 
 export const ALLOWED_TOOLS = new Set(['get_usage_limits', 'list_threads', 'list_archived_threads', 'read_thread', 'wait_threads', 'list_projects', 'create_thread', 'send_message_to_thread', 'set_thread_title', 'set_thread_archived', 'set_thread_read_state']);
+
+// Protocol values verified against desktop 26.1027.3384.0. Do not treat an
+// absent/unrecognised UI selection as approval to choose a permission mode.
+const PERMISSION_MODES = {
+  'full-access': { profileId: ':danger-full-access', sandboxType: 'dangerFullAccess', approvalPolicy: 'never', approvalsReviewer: 'user' },
+  'read-only': { profileId: ':read-only', sandboxType: 'readOnly', approvalPolicy: 'on-request', approvalsReviewer: 'user' },
+  auto: { profileId: ':workspace', sandboxType: 'workspaceWrite', approvalPolicy: 'on-request', approvalsReviewer: 'user' },
+  granular: { profileId: ':workspace', sandboxType: 'workspaceWrite', approvalPolicy: { granular: { sandbox_approval: false, rules: false, skill_approval: false, request_permissions: true, mcp_elicitations: true } }, approvalsReviewer: 'user' },
+};
+
+export function readDesktopPermissionDefault(file = path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), '.codex-global-state.json')) {
+  let atoms;
+  try { atoms = JSON.parse(readFileSync(file, 'utf8'))['electron-persisted-atom-state']; }
+  catch { throw new ApiError(503, 'desktop_defaults_unavailable', 'Cannot read desktop permission defaults. No chat or message was created.'); }
+  const selection = atoms?.['permission-selection-by-host-id:local'];
+  const mode = selection == null ? atoms?.['agent-mode-by-host-id']?.local : selection.kind === 'agent-mode' ? selection.agentMode : null;
+  const permissions = Object.hasOwn(PERMISSION_MODES, mode ?? '') ? PERMISSION_MODES[mode] : null;
+  if (!permissions) throw new ApiError(501, 'unsupported_permission_default', 'The desktop default permission selection is not supported by this adapter. No chat or message was created.');
+  return { mode, ...structuredClone(permissions) };
+}
+
+export function matchesPermissionDefault(permissions, expected) {
+  const sandbox = permissions?.sandboxPolicy;
+  return permissions?.activePermissionProfile?.id === expected.profileId && permissions.activePermissionProfile.extends == null &&
+    sandbox?.type === expected.sandboxType && permissions.approvalsReviewer === expected.approvalsReviewer &&
+    isDeepStrictEqual(permissions.approvalPolicy, expected.approvalPolicy) &&
+    (expected.sandboxType === 'dangerFullAccess' || sandbox.networkAccess === false);
+}
 
 export function discoverToolsPipe(explicit) {
   if (explicit) return explicit;
@@ -14,7 +46,12 @@ export function discoverToolsPipe(explicit) {
 }
 
 export class AppTools {
-  constructor(config) { this.config = config; this.catalog = []; }
+  constructor(config, { ipc, readPermissionDefault = readDesktopPermissionDefault } = {}) {
+    this.config = config; this.catalog = [];
+    this.permissionIpc = ipc || new DesktopIpc(config);
+    this.readPermissionDefault = readPermissionDefault;
+    this.createQueue = Promise.resolve();
+  }
   async connect() {
     if (this.closed) throw unavailable('Bridge is shutting down.');
     if (this.pipe?.connected && this.catalog.length) return;
@@ -30,14 +67,77 @@ export class AppTools {
     return this.connecting;
   }
   async call(tool, args = {}) {
+    if (tool === 'create_thread') {
+      const operation = this.createQueue.then(() => this.createWithDesktopDefaults(args));
+      this.createQueue = operation.catch(() => {});
+      return operation;
+    }
+    return this.callDesktopTool(tool, args);
+  }
+  async permissionContext(expected) {
+    const checked = new Set();
+    const tryContext = async threadId => {
+      if (!threadId || checked.has(threadId)) return null;
+      checked.add(threadId);
+      let context;
+      try { context = await this.permissionIpc.permissionSnapshot(threadId); }
+      catch (error) { if (error.code === 'protocol_mismatch') throw error; return null; }
+      if (!matchesPermissionDefault(context.permissions, expected)) {
+        this.permissionIpc.unfollow(threadId, 'local', context.owner);
+        return null;
+      }
+      if (this.heldPermissionContext?.threadId !== threadId) this.releasePermissionContext();
+      this.heldPermissionContext = context;
+      return context;
+    };
+    for (const id of [this.heldPermissionContext?.threadId, this.config.callerThreadId]) {
+      const context = await tryContext(id); if (context) return context;
+    }
+    const catalog = await this.callDesktopTool('list_threads', { limit: this.config.discoveryLimit || 50 });
+    const threads = [...(catalog.threads || []), ...(catalog.pinnedThreads || [])]
+      .filter(thread => (thread.hostId ?? 'local') === 'local' && (thread.kind ?? 'codex') === 'codex')
+      .sort((a, b) => Number(b.status === 'active') - Number(a.status === 'active'));
+    for (const thread of threads.slice(0, 12)) {
+      const context = await tryContext(thread.id); if (context) return context;
+    }
+    throw new ApiError(503, 'permission_context_unavailable', 'No loaded desktop context matches the desktop default permissions. Open a local Codex chat using those defaults and try again. No chat or message was created.');
+  }
+  async createWithDesktopDefaults(args) {
+    await this.connect();
+    const expected = this.readPermissionDefault();
+    const context = await this.permissionContext(expected);
+    // These checks precede the one native creation request. Never send the
+    // user's prompt and then try to repair permissions on an active turn.
+    if (!isDeepStrictEqual(expected, this.readPermissionDefault())) throw new ApiError(409, 'desktop_defaults_changed', 'Desktop permission defaults changed during creation preflight. No message was sent.');
+    const fresh = await this.permissionIpc.permissionSnapshot(context.threadId);
+    if (!matchesPermissionDefault(fresh.permissions, expected)) {
+      this.permissionIpc.unfollow(fresh.threadId, 'local', fresh.owner); this.releasePermissionContext();
+      throw new ApiError(409, 'permission_context_changed', 'Desktop context permissions changed before creation. No message was sent.');
+    }
+    this.heldPermissionContext = fresh;
+    const result = await this.callDesktopTool('create_thread', args, context.threadId);
+    if (!result.threadId || (result.hostId ?? 'local') !== 'local') throw new ApiError(502, 'creation_unconfirmed', 'Desktop did not confirm a local chat id. Inspect the operation before any further write.', { outcome: 'unknown', desktopResult: result });
+    let observed;
+    try { observed = await this.permissionIpc.permissionSnapshot(result.threadId); }
+    catch { throw new ApiError(502, 'created_permissions_unconfirmed', 'Chat creation was accepted but permission verification is unavailable. Do not resubmit.', { outcome: 'unknown', threadId: result.threadId, firstMessageSubmitted: true }); }
+    finally { if (observed) this.permissionIpc.unfollow(result.threadId, 'local', observed.owner); }
+    if (!matchesPermissionDefault(observed.permissions, expected)) throw new ApiError(502, 'created_permissions_mismatch', 'Desktop did not inherit the verified context permissions. Do not resubmit or assume full access.', { outcome: 'unknown', threadId: result.threadId, firstMessageSubmitted: true });
+    return { ...result, permissionInheritance: { source: 'desktop_default', mode: expected.mode, profileId: expected.profileId, approvalPolicy: expected.approvalPolicy, approvalsReviewer: expected.approvalsReviewer, contextVerifiedBeforeFirstMessage: true, verifiedAfterCreation: true } };
+  }
+  releasePermissionContext() {
+    const context = this.heldPermissionContext;
+    if (context) this.permissionIpc.unfollow(context.threadId, 'local', context.owner);
+    this.heldPermissionContext = null;
+  }
+  async callDesktopTool(tool, args = {}, callerThreadId = this.config.callerThreadId) {
     if (!ALLOWED_TOOLS.has(tool)) throw new ApiError(403, 'tool_not_allowed', 'This tool is not exposed by the API.');
     await this.connect();
     if (!this.catalog.some(entry => entry.namespace === 'codex_app' && entry.name === tool)) throw new ApiError(501, 'unsupported_capability', `Desktop does not advertise ${tool}.`);
-    if (!this.config.callerThreadId) throw new ApiError(503, 'caller_thread_required', 'Set callerThreadId to an existing local Codex chat for desktop tool context.');
+    if (!callerThreadId) throw new ApiError(503, 'caller_thread_required', 'Set callerThreadId to an existing local Codex chat for desktop tool context.');
     const id = randomUUID();
     const response = await this.pipe.request({ jsonrpc: '2.0', id, method: 'tools/call', params: {
       namespace: 'codex_app', tool, arguments: args, callerSource: 'codex', hostId: 'local',
-      threadId: this.config.callerThreadId, turnId: `desktop-api-${id}`, callId: `desktop-api-${id}`,
+      threadId: callerThreadId, turnId: `desktop-api-${id}`, callId: `desktop-api-${id}`,
     } }, this.config.requestTimeoutMs);
     const result = response.result;
     if (!result || result.success !== true) {
@@ -49,7 +149,7 @@ export class AppTools {
     for (const text of texts) { try { return JSON.parse(text); } catch {} }
     return { content };
   }
-  close() { this.closed = true; this.pipe?.close(); }
+  close() { this.closed = true; this.releasePermissionContext(); this.permissionIpc.close(); this.pipe?.close(); }
 }
 
 // Keep desktop payload interpretation inside the protocol adapter.

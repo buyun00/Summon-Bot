@@ -13,3 +13,11 @@ Relay-Bot 内置的本机 HTTP/SSE API，连接已运行的 Codex 桌面，监�
 - 日志：数据目录内 `startup.log`、`server.log`、`server-error.log`。
 
 Codex 中继 Bot 的 Skill 是 `skills/codex-desktop-api`，通过普通命令工具调用这个 API。API 是独立连接器，不是 Codex 桌面的某个可开启选项。请求受理不等于工作完成；未知写请求按原幂等键查询，不换键重发。
+
+创建对话会先读取桌面已保存的本机默认权限，再用真实 IPC 快照选择、复核一个内置权限完全匹配的已加载调用上下文。桌面原生创建工具从该上下文继承权限，用户原始 prompt 一次提交即为首轮；没有额外准备消息，也不在首轮开始后补改权限。选中的上下文保持加载，每次创建重新读取默认值和权限。
+
+“完全访问”对应 `:danger-full-access` / `dangerFullAccess` / `never` / `user`。响应新增 `permissionInheritance`，含 `contextVerifiedBeforeFirstMessage` 和 `verifiedAfterCreation`。已有 API 请求不需要添加权限参数，续发现有对话仍保持该对话原权限。
+
+没有匹配的已加载本机上下文时返回 `503 permission_context_unavailable`，不创建对话或执行 prompt；在桌面打开一条使用默认权限的本机 Codex 对话即可。目前支持 full-access/read-only/auto/granular 内置选择；其他选择返回 501，不猜测或降权。真实首轮验证覆盖 Windows 桌面 26.1027.3384.0 的完全访问 + never；其他模式仅模拟验证，远程主机及其他版本未做该项验证。用户全局状态文件仅读取，不修改 Codex 安装、用户配置或私有数据库。
+
+已接受创建但后续权限回读失败时，操作为 unknown，并返回已有 threadId。先检查原操作，禁止换新幂等键重发。经明确授权后可用 `scripts/smoke-permissions.js --write` 验证专用新对话首轮的仓库外写入、.git 写入和联网；`--project` 覆盖现有 Codex-Desktop-API 项目。脚本保存尝试后不重复创建，后续只允许 `--resume` 接续已确认的同一测试对话。

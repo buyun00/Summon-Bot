@@ -213,6 +213,7 @@
       },
       "post": {
         "summary": "Create a desktop chat and submit its initial prompt",
+        "description": "Reads the saved local desktop permission selection and verifies a loaded local calling context with matching built-in profile, sandbox, approval policy and reviewer before submitting the original prompt once. No bootstrap turn or post-start permission repair. Returns permissionInheritance evidence. Missing defaults/context or unsupported custom/profile/server-default selection fails before creation. Creation accepted but subsequent verification unavailable/mismatched reports an unknown outcome with threadId; never retry with a new idempotency key. Tested permission inheritance: Windows desktop 26.1027.3384.0, agent modes full-access/read-only/auto/granular; real write verification covers full-access + never only.",
         "parameters": [
           {
             "name": "Idempotency-Key",
