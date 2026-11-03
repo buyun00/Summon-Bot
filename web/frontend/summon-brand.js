@@ -44,12 +44,12 @@
       heads.add(this);
       this.paint();
     }
-    disconnectedCallback() { heads.delete(this); }
+    disconnectedCallback() { heads.delete(this); avatars.release(this.avatarKey); }
     paint() {
       const holder = this.querySelector('.summon-o');
-      // Calm between expressions; the rig preserves blinking and wandering gaze.
+      // Keep expressions and blinking while the head follows the page's pointer.
       holder.innerHTML = avatars.render({ ...palette, shape }, 40, {
-        key: this.avatarKey, state: expression
+        key: this.avatarKey, state: expression, followPointer: true
       });
       avatars.hydrate(holder);
       holder.firstElementChild.setAttribute('viewBox', '-120 -120 240 240');
