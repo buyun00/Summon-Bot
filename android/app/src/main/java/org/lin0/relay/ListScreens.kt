@@ -46,6 +46,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material.icons.filled.Work
 import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -62,6 +63,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -78,8 +80,11 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.Image
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 enum class WorkspaceSection(val title: String, val icon: ImageVector) {
     Bots("管理 Bot", Icons.Filled.Groups),
@@ -95,6 +100,7 @@ fun ConversationListScreen(
     store: SummonStore,
     updater: SummonAppUpdater,
     onOpenUsage: () -> Unit,
+    onOpenModels: () -> Unit,
     onOpenRoom: (String) -> Unit,
     onOpenWorkspace: (WorkspaceSection) -> Unit,
 ) {
@@ -109,6 +115,10 @@ fun ConversationListScreen(
     var menu by remember { mutableStateOf(false) }
     var plus by remember { mutableStateOf(false) }
     var opening by remember { mutableStateOf(false) }
+    var quotaItem by remember { mutableStateOf<SummonJson?>(null) }
+    LaunchedEffect(store.settings.baseURL) {
+        while (isActive) { runCatching { store.refreshModelUsage() }; delay(60000) }
+    }
     fun matches(text: String) = query.isBlank() || text.contains(query, ignoreCase = true)
     val groups = store.rooms.filter { it.kind != "dm" && matches("${it.name} ${it.goal}") }
     val contacts = store.bots.filter { it.presetId.isNullOrEmpty() && matches("${it.name} ${it.role}") }
@@ -121,7 +131,8 @@ fun ConversationListScreen(
         containerColor = Color.Black,
         topBar = {
             Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                IconButton(onClick = { showSettings = true }) { Icon(Icons.Filled.Person, "设置", tint = Color.White) }
+                OutlinedTextField(value = query, onValueChange = { query = it }, placeholder = { Text("搜索") }, singleLine = true,
+                    leadingIcon = { Icon(Icons.Filled.Search, null) }, modifier = Modifier.weight(1f).padding(end = 8.dp), shape = RoundedCornerShape(24.dp))
                 Box {
                     IconButton(onClick = { plus = true }) { Icon(Icons.Filled.Add, "新建", tint = Color.White) }
                     DropdownMenu(expanded = plus, onDismissRequest = { plus = false }, modifier = Modifier.heightIn(max = menuHeight)) {
@@ -133,32 +144,38 @@ fun ConversationListScreen(
             }
         },
         bottomBar = {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Box {
-                    Surface(shape = CircleShape, color = Color(0xFF2C2C2E), modifier = Modifier.size(48.dp).clickable { menu = true }) {
-                        Box(contentAlignment = Alignment.Center) { Icon(Icons.Filled.GridView, "连接应用与工作台", tint = Color.White) }
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { onOpenWorkspace(WorkspaceSection.Works) }, modifier = Modifier.weight(1f)) { Icon(Icons.Filled.Work, null, Modifier.size(17.dp)); Spacer(Modifier.width(6.dp)); Text("工作") }
+                    OutlinedButton(onClick = { onOpenWorkspace(WorkspaceSection.Knowledge) }, modifier = Modifier.weight(1f)) { Icon(Icons.Filled.MenuBook, null, Modifier.size(17.dp)); Spacer(Modifier.width(6.dp)); Text("知识") }
+                }
+                Row(verticalAlignment = Alignment.Top) {
+                  Box(Modifier.weight(1f)) {
+                    Column(Modifier.fillMaxWidth().clickable { menu = true }.padding(vertical = 3.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Box(Modifier.size(64.dp, 59.dp), contentAlignment = Alignment.TopCenter) {
+                            Box(Modifier.padding(top = 4.dp).size(48.dp)) {
+                                Image(painterResource(R.drawable.owner_avatar), null, Modifier.fillMaxSize().clip(CircleShape), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                                Box(Modifier.align(Alignment.BottomEnd).size(9.dp).clip(CircleShape).background(if (store.isConnected) Color(0xFF93AD99) else Color.Gray))
+                            }
+                        }
+                        Text(store.settings.userName.ifBlank { "Lin" }, color = Color(0xFF93AD99), fontSize = 10.sp)
                     }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, modifier = Modifier.heightIn(max = menuHeight)) {
                         WorkspaceSection.entries.forEach { section ->
                             DropdownMenuItem(text = { Text(section.title) }, leadingIcon = { Icon(section.icon, null) }, onClick = { menu = false; onOpenWorkspace(section) })
                         }
                         DropdownMenuItem(text = { Text("Token 统计") }, onClick = { menu = false; onOpenUsage() })
+                        DropdownMenuItem(text = { Text("模型与引擎") }, onClick = { menu = false; onOpenModels() })
                         DropdownMenuItem(text = { Text("显示设置") }, onClick = { menu = false; showDisplay = true })
                         DropdownMenuItem(text = { Text("连接设置") }, onClick = { menu = false; showSettings = true })
                     }
                 }
-                Spacer(Modifier.width(12.dp))
-                Surface(shape = RoundedCornerShape(28.dp), color = Color(0xFF2C2C2E), modifier = Modifier.weight(1f)) {
-                    Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.Search, null, tint = Color(0xFF8E8E93))
-                        OutlinedTextField(
-                            value = query, onValueChange = { query = it }, modifier = Modifier.weight(1f),
-                            placeholder = { Text("搜索") }, singleLine = true,
-                        )
-                        if (query.isNotEmpty()) IconButton(onClick = { query = "" }) { Icon(Icons.Filled.Close, "清除搜索") }
-                    }
+                val chat = store.modelSummary["chat"].takeIf { it is SummonJson.Obj } ?: SummonJson.obj("role" to SummonJson.Str("chat"))
+                val work = store.modelSummary["executors"].array.orEmpty().firstOrNull() ?: SummonJson.obj("role" to SummonJson.Str("executor"), "kind" to SummonJson.Str("codex"))
+                ModelQuotaSignal(chat, "CHAT", Modifier.weight(1f)) { quotaItem = chat }
+                ModelQuotaSignal(work, "WORK", Modifier.weight(1f)) { quotaItem = work }
                 }
-            }
+                }
         },
     ) { padding ->
         PullToRefreshBox(isRefreshing = store.isRefreshing, onRefresh = { scope.launch { store.refresh() } }, modifier = Modifier.fillMaxSize().padding(padding)) {
@@ -243,6 +260,14 @@ fun ConversationListScreen(
                 } else if (contacts.isEmpty() && groups.isEmpty() && systemBots.isEmpty() && query.isNotEmpty()) {
                     item { Text("没有与“$query”匹配的结果", modifier = Modifier.padding(24.dp), color = Color(0xFF8E8E93)) }
                 }
+            }
+        }
+    }
+    quotaItem?.let { item ->
+        ModalBottomSheet(onDismissRequest = { quotaItem = null }, containerColor = Color(0xFF1C231E)) {
+            Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                ModelUsageDetails(item)
+                TextButton(onClick = { quotaItem = null; onOpenModels() }, modifier = Modifier.fillMaxWidth()) { Text("管理模型与引擎") }
             }
         }
     }

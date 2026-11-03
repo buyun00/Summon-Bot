@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { modelFor } from './model.mjs';
 import { ModelProvider } from './provider.mjs';
+import { modelConnection } from './connections.mjs';
 import { SessionContext } from '../context/context.mjs';
 import { ContextMaintenance, contextTokens, repeatsObservation } from '../context/maintenance.mjs';
 import { convertToLlm } from '../pi/core/messages.mjs';
@@ -35,7 +36,7 @@ export class BotEngine {
     Object.assign(this, { config, store, emit, services, clean });
     this.model = modelFor(config);
     this.usage = new UsageLedger(config.usage.ledgerPath);
-    this.provider = provider || new ModelProvider({ ...config.model, baseUrl: config.model.baseUrl.replace(/\/$/, ''),
+    this.provider = provider || new ModelProvider({ ...config.model, model: this.model.id, baseUrl: config.model.baseUrl?.replace(/\/$/, ''),
       apiKey: config.model.apiKey || (config.model.apiKeyEnv ? process.env[config.model.apiKeyEnv] : ''), redact: clean,
       botId: config.botId, recordUsage: record => this.usage.save(clean({ botName: config.usage.botName || config.botId, ...record })) });
     this.context = new SessionContext({ sessions: store, clean });
@@ -112,10 +113,13 @@ export class BotEngine {
     active.preRecorded.add(message); active.agent.steer(message); return true;
   }
   async execute(originalTask, signal) {
+    const model = modelFor(this.config);
+    this.model = model;
+    this.maintenance.model = model;
     const routeOnly = originalTask.metadata?.routeOnly === true;
     const task = routeOnly ? { ...originalTask, sessionId: `route:${originalTask.id}` } : originalTask;
     const controller = new AbortController(), combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
-    const agent = new Agent({ initialState: { model: this.model, thinkingLevel: this.config.model.thinkingLevel || 'off' }, convertToLlm,
+    const agent = new Agent({ initialState: { model, thinkingLevel: modelConnection(this.config.model).thinkingLevel || 'off' }, convertToLlm,
       toolExecution: 'sequential', streamFn: (model, context, options) => this.provider.stream(model, context, { ...options,
         usageContext: { taskId: task.id, runId: task.runId || task.id, sessionId: task.sessionId, conversationId: task.conversationId || task.sessionId,
           workId: task.workId, roomId: usageRoomId(task, this.store), roomName: (task.input?.current || task.input)?.room?.name,
@@ -204,8 +208,8 @@ export class BotEngine {
       const invocation = routeOnly ? null : await resources.expand({ content: input }, combined);
       if (invocation) this.emit('skill.loaded', { name: invocation.name, path: invocation.path }, refs);
       const system = { role: 'system', content: systemPrompt, toolsAdded: declarations, timestamp: Date.now() };
-      const reserve = Math.max(this.model.maxTokens, this.config.limits.reserveTokens ?? Math.min(16384, Math.floor(this.model.contextWindow / 4)));
-      const inputBudget = this.model.contextWindow - reserve;
+      const reserve = Math.max(model.maxTokens, this.config.limits.reserveTokens ?? Math.min(16384, Math.floor(model.contextWindow / 4)));
+      const inputBudget = model.contextWindow - reserve;
       const runStartIndex = this.store.getSession(task.sessionId).messages.length;
       let background = '', assembledRevision = 0;
       replayFloorIndex = runStartIndex;
@@ -320,7 +324,7 @@ export class BotEngine {
         this.emit('engine.no_progress', { reason: suspensionReason, workId: task.workId }, refs);
       }
       return clean({ content: suspended ? (suspensionReason === 'no-progress' ? '工作已保留：连续重复读取未获得新情况，等待新的事实或指令。' : '') : lastOutcome.content.filter(value => value.type === 'text').map(value => value.text).join('\n'),
-        model: this.model.id, steeredMessageIds: [...active.consumedSteering], ...(suspended ? { suspended: true, waiting: suspensionReason } : {}), usage: { prompt_tokens: usage.input + usage.cacheRead, completion_tokens: usage.output, total_tokens: usage.totalTokens }, turns, toolsCalled });
+        model: model.id, steeredMessageIds: [...active.consumedSteering], ...(suspended ? { suspended: true, waiting: suspensionReason } : {}), usage: { prompt_tokens: usage.input + usage.cacheRead, completion_tokens: usage.output, total_tokens: usage.totalTokens }, turns, toolsCalled });
     } catch (error) { const session = this.store.getSession(task.sessionId); if (session && !this.store.closed) this.repairSession(session); throw error; }
     finally {
       unsubscribe?.(); agent.abort(); if (!routeOnly && !this.store.closed) this.maintenance.enqueue(task); this.active.delete(task.id);

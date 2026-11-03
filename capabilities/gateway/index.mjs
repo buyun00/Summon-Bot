@@ -21,6 +21,7 @@ import { deployCapability } from '../services/publish.mjs';
 import { coreTools } from '../../bot/src/capabilities/core-tools.mjs';
 import { CapabilityCatalog,catalogTools } from '../services/catalog.mjs';
 import { UsageLedger,readUsage,usageRange,finishUsageTotals,emptyUsageTotals,USAGE_PRICING } from '../../bot/src/agent/usage.mjs';
+import { ModelConnections } from '../models/service.mjs';
 
 const same=(a,b)=>typeof a==='string'&&typeof b==='string'&&Buffer.byteLength(a)===Buffer.byteLength(b)&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
 const activityText=(value,max=512)=>typeof value==='string'?value.replace(/[\u0000-\u001f\u007f]/g,' ').slice(0,max):null;
@@ -42,6 +43,8 @@ export async function startGateway(options={}) {
   const store=name=>{if(!stores.has(name))stores.set(name,new RecordStore(join(dataRoot,'capabilities',name,'state.sqlite')));return stores.get(name);};
   const usageLedger=new UsageLedger(join(dataRoot,'usage.sqlite'));
   const emit=(type,payload={})=>{const line=`data: ${JSON.stringify({type,...payload})}\n\n`;for(const client of clients)client.write(line);};
+  const modelConnections=await new ModelConnections({dataRoot,model:options.model,emit}).initialize();
+  options.model={connectionStore:modelConnections.path};
   const botToolNames=[...coreTools({},{}).map(tool=>tool.name),'read_resource','read_session_history','knowledge_list','knowledge_read','knowledge_write','skills_list','skill_write'];
   const registry=new CapabilityRegistry({store:store('registry'),emit,reservedTools:[...botToolNames,...controlTools.map(tool=>tool.name),...catalogTools.map(tool=>tool.name)]});
   const supervisor=new CapabilityServiceSupervisor({dataRoot,releaseRoot});
@@ -110,8 +113,9 @@ export async function startGateway(options={}) {
     }));
     agentRuns.sort((a,b)=>String(a.createdAt||'').localeCompare(String(b.createdAt||'')));
     const messages=chatroom.store.list('messages'),jobs=chatroom.jobs(),runtime={started:true,fast:{running:jobs.filter(job=>['running','accepted'].includes(job.status)).length,queued:jobs.filter(job=>job.status==='queued').length},deep:{running:0,queued:0},jobs:jobs.slice(-80)};
-    const latestProvider=providers.slice().sort((a,b)=>String(b.lastSuccessAt||'').localeCompare(String(a.lastSuccessAt||'')))[0]||{};
-    return {historyEpoch,bots:manager.list(),rooms:chatroom.rooms(),routines:manager.store.list('routines'),knowledge:knowledge.graph(),runtime,activity:messages.filter(message=>message.returnTo||message.peerReplyId||['event','work'].includes(message.kind)).slice(-100),works:[...await localWorks(),...codex.list().filter(work=>work.backend!=='desktop').map(work=>({...work,historical:true}))],agentRuns:agentRuns.slice(-100),provider:{configured:Boolean(options.model?.apiKey||process.env[options.model?.apiKeyEnv||'DEEPSEEK_API_KEY']),model:options.model?.model||'deepseek-flash',...latestProvider},defaultCwd};
+    const selection=modelConnections.runtimeModel();
+    const latestProvider=providers.filter(provider=>provider.connectionId===selection.id).sort((a,b)=>String(b.lastSuccessAt||'').localeCompare(String(a.lastSuccessAt||'')))[0]||{};
+    return {historyEpoch,bots:manager.list(),rooms:chatroom.rooms(),routines:manager.store.list('routines'),knowledge:knowledge.graph(),runtime,activity:messages.filter(message=>message.returnTo||message.peerReplyId||['event','work'].includes(message.kind)).slice(-100),works:[...await localWorks(),...codex.list().filter(work=>work.backend!=='desktop').map(work=>({...work,historical:true}))],agentRuns:agentRuns.slice(-100),provider:{configured:Boolean((await modelConnections.credentials.read(selection.id).catch(()=>null))||selection.allowNoKey),model:selection.model,...latestProvider},defaultCwd};
   }
   function visibleTools(actor) {
     const allowed=actor==='controller'?null:manager.get(actor).allowedTools||[];
@@ -153,6 +157,21 @@ export async function startGateway(options={}) {
     let match;
     if(method==='GET'&&path==='/api/health')return {ok:true,service:'summon-capabilities'};
     if(method==='GET'&&path==='/api/usage')return tokenUsage(params);
+    if(path==='/api/model-settings'&&method==='GET')return modelConnections.snapshot();
+    if(path==='/api/model-settings/connections'&&method==='POST')return modelConnections.save(body);
+    if(path==='/api/model-settings/codex/import'&&method==='POST')return modelConnections.importCodex();
+    if(path==='/api/model-settings/active'&&method==='POST')return modelConnections.select(body.id);
+    if(path==='/api/model-settings/usage'&&method==='POST')return modelConnections.refreshUsage(body.force===true);
+    if((match=path.match(/^\/api\/model-settings\/connections\/([A-Za-z0-9_-]+)(?:\/(login|models))?$/))){
+      const id=match[1],action=match[2];
+      if(!action&&method==='DELETE')return modelConnections.remove(id);
+      if(action==='models'&&method==='GET')return modelConnections.choices(id,params.get('discover')==='1');
+      if(action==='login'){
+        if(method==='GET')return modelConnections.loginStatus(id);
+        if(method==='POST')return modelConnections.startLogin(id);
+        if(method==='DELETE'){modelConnections.cancelLogin(id);return modelConnections.loginStatus(id);}
+      }
+    }
     if(path==='/api/catalog'){
       if(method==='GET')return catalog.search({query:params.get('query')||'',kind:params.get('kind')||undefined,scopeRefs:params.getAll('scopeRef'),offset:Number(params.get('offset')||0),limit:Number(params.get('limit')||40)},params.get('botId')||'controller');
       if(method==='POST')return catalog.save(body);
@@ -348,7 +367,7 @@ export async function startGateway(options={}) {
   })().catch(error=>{stopBotsPromise=null;throw error;});}
   let closePromise;const close=()=>closePromise||=(async()=>{
     closing=true;clearInterval(scheduler);clearInterval(heartbeat);clearInterval(monitor);clearInterval(serviceMonitor);clearInterval(eventPoll);clearInterval(switches);
-    await control.close();await catalog.close();while(ticking||monitoring||serviceMonitoring||polling)await new Promise(done=>setTimeout(done,10));
+    await modelConnections.close();await control.close();await catalog.close();while(ticking||monitoring||serviceMonitoring||polling)await new Promise(done=>setTimeout(done,10));
     while(pending.size)await Promise.allSettled([...pending]);
     await stopIdleWorkers();for(const client of clients)client.end();
     await new Promise(done=>{server.close(done);server.closeIdleConnections?.();});

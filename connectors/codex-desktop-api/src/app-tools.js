@@ -166,22 +166,26 @@ export function normalizeUsage(payload, observedAt = new Date().toISOString()) {
   const byId = payload?.rateLimitsByLimitId;
   const buckets = byId && typeof byId === 'object' && !Array.isArray(byId) && Object.keys(byId).length
     ? Object.entries(byId) : payload?.rateLimits ? [[payload.rateLimits.limitId ?? 'legacy', payload.rateLimits]] : [];
-  const weekly = [];
+  const windows = [];
   for (const [limitId, bucket] of buckets) {
     for (const window of ['primary', 'secondary']) {
       const value = bucket?.[window];
-      if (value?.windowDurationMins !== 10080) continue;
+      if (!value) continue;
       const used = typeof value.usedPercent === 'number' && Number.isFinite(value.usedPercent) && value.usedPercent >= 0 ? value.usedPercent : null;
       const endMs = typeof value.resetsAt === 'number' && Number.isFinite(value.resetsAt) && value.resetsAt >= 0 ? value.resetsAt * 1000 : NaN;
       const validEnd = Number.isFinite(new Date(endMs).getTime());
       const missing = [];
       if (used === null) missing.push('Invalid or missing usedPercent; used and remaining are null.');
       if (!validEnd) missing.push('Invalid or missing resetsAt; period boundaries are null.');
-      weekly.push({ limitId, window, limit: 100, used, remaining: used === null ? null : Math.max(0, Math.min(100, 100 - used)),
-        unit: 'percent', windowDurationMins: 10080, periodStart: validEnd ? new Date(endMs - 10080 * 60000).toISOString() : null,
+      windows.push({ limitId, window, limit: 100, used, remaining: used === null ? null : Math.max(0, Math.min(100, 100 - used)),
+        unit: 'percent', windowDurationMins: value.windowDurationMins, periodStart: validEnd && Number.isFinite(value.windowDurationMins) ? new Date(endMs - value.windowDurationMins * 60000).toISOString() : null,
         periodEnd: validEnd ? new Date(endMs).toISOString() : null, periodStartDerived: validEnd, notes: missing });
     }
   }
+  const weekly = windows.filter(value => value.windowDurationMins === 10080);
   if (!weekly.length) notes.push('No identifiable weekly window (10080 minutes); weekly is null. Missing usage is not zero usage.');
-  return { source: 'desktop_get_usage_limits', hostId: 'local', observedAt, weekly: weekly.length ? weekly : null, notes };
+  const primary = buckets[0]?.[1];
+  const credit = primary?.credits;
+  return { source: 'desktop_get_usage_limits', hostId: 'local', observedAt, windows, weekly: weekly.length ? weekly : null,
+    planType: primary?.planType || null, credits: credit ? { hasCredits: credit.hasCredits, unlimited: credit.unlimited, balance: credit.balance } : null, notes };
 }

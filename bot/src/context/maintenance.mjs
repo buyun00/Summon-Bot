@@ -326,6 +326,10 @@ export class ContextMaintenance {
     ];
   }
   async shortDialogue(kind, scope, prompt, { signal, maxTokens = this.maxSummaryTokens, observedSkills = new Map(), task } = {}) {
+    if (this.config.model.connectionStore) {
+      const { modelFor } = await import('../agent/model.mjs');
+      this.model = modelFor(this.config);
+    }
     const combined = signal ? AbortSignal.any([signal, this.controller.signal]) : this.controller.signal;
     combined.throwIfAborted();
     const resources = await loadResources({ config: this.config, workspace: this.config.workspace, signal: combined, store: this.store });

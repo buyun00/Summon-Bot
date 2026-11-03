@@ -6,9 +6,12 @@ export function normalizeBotConfig(input, baseDirectory = process.cwd()) {
   if (!input || typeof input !== 'object') throw new TypeError('Bot configuration is required');
   if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(input.botId || '')) throw new Error('Invalid botId');
   if (typeof input.dataDir !== 'string' || !input.dataDir) throw new Error('dataDir is required');
-  if (!input.model || typeof input.model !== 'object' || !input.model.model || !input.model.baseUrl) throw new Error('Every Bot requires an explicit model {provider,model,baseUrl}');
-  const endpoint = new URL(input.model.baseUrl);
-  if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password) throw new Error('Invalid model baseUrl');
+  if (!input.model || typeof input.model !== 'object') throw new Error('Every Bot requires a model configuration');
+  if (!input.model.connectionStore) {
+    if (!input.model.model || !input.model.baseUrl) throw new Error('Every standalone Bot requires an explicit model {provider,model,baseUrl}');
+    const endpoint = new URL(input.model.baseUrl);
+    if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password) throw new Error('Invalid model baseUrl');
+  }
   const config = { schemaVersion: 1, ...input, dataDir: resolve(baseDirectory, input.dataDir) };
   config.instanceId = config.botId;
   config.workspace = resolve(baseDirectory, input.workspace || resolve(config.dataDir, 'workspace'));
@@ -43,7 +46,8 @@ export function normalizeBotConfig(input, baseDirectory = process.cwd()) {
   for (const peer of config.peers) if (!peer.botId || typeof peer.token !== 'string' || peer.token.length < 24) throw new Error('Peer requires botId and private token');
   if (new Set(config.peers.map(peer => peer.token)).size !== config.peers.length) throw new Error('Peer authentication tokens must be unique');
   if (new Set(config.peers.map(peer => peer.botId)).size !== config.peers.length || config.peers.some(peer => peer.botId === config.botId || peer.token === config.token)) throw new Error('Invalid peer identity or management token reuse');
-  config.model = { provider: 'openai-compatible', contextWindow: 1048576, maxTokens: 393216, ...input.model };
+  config.model = input.model.connectionStore ? { connectionStore: resolve(baseDirectory, input.model.connectionStore) }
+    : { provider: 'openai-compatible', contextWindow: 1048576, maxTokens: 393216, ...input.model };
   config.limits = { ...input.limits };
   for (const key of Object.keys(config.limits)) if (!['reserveTokens', 'keepRecentTokens'].includes(key)) throw new Error(`Unsupported limits setting: ${key}`);
   if (config.app !== undefined || config.appFactory !== undefined) throw new Error('Bot always uses its Pi Agent; custom application factories are unsupported');

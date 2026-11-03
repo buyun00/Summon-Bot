@@ -386,7 +386,7 @@ data class SummonPendingMessage(
 
 data class SummonConnectionSettings(
     val baseURL: String = "",
-    val userName: String = "你",
+    val userName: String = "Lin",
 ) {
     fun toJson(): SummonJson = SummonJson.obj(
         "baseURL" to SummonJson.Str(baseURL),
@@ -396,7 +396,7 @@ data class SummonConnectionSettings(
     companion object {
         fun parse(json: SummonJson): SummonConnectionSettings = SummonConnectionSettings(
             baseURL = json["baseURL"].string ?: "",
-            userName = json["userName"].string?.ifBlank { "你" } ?: "你",
+            userName = json["userName"].string?.ifBlank { "Lin" } ?: "Lin",
         )
     }
 }

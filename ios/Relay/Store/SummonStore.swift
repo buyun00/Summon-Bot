@@ -158,7 +158,7 @@ final class SummonStore {
     }
 
     func setUserName(_ name: String) {
-        settings.userName = name.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "你"
+        settings.userName = name.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "Lin"
         if let data = try? JSONEncoder().encode(settings) { defaults.set(data, forKey: settingsKey) }
     }
 
@@ -412,6 +412,16 @@ final class SummonStore {
         let component = SummonAPIClient.component
         return try await apiClient().download(path: "/api/agent-runs/\(component(runID))/tools/\(component(toolID))/artifacts/\(component(artifact.id))",
                                                name: artifact.name ?? "产物")
+    }
+
+    private(set) var modelSummary: SummonJSONValue = .null
+
+    @discardableResult
+    func refreshModelUsage(force: Bool = false) async throws -> SummonJSONValue {
+        let connection = connectionGeneration
+        let result = try await request(path: "/api/model-settings/usage", method: "POST", body: .object(["force": .bool(force)]))
+        if connection == connectionGeneration { modelSummary = result }
+        return result
     }
 
     func request(path: String, method: String = "GET", body: SummonJSONValue? = nil) async throws -> SummonJSONValue {

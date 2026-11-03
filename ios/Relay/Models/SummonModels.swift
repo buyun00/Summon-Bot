@@ -221,7 +221,7 @@ struct SummonPendingMessage: Codable, Identifiable, Equatable, Sendable {
 
 struct SummonConnectionSettings: Codable, Equatable, Sendable {
     var baseURL: String = ""
-    var userName: String = "你"
+    var userName: String = "Lin"
 }
 
 enum SummonJSONValue: Codable, Equatable, Sendable {

@@ -13,6 +13,8 @@ const catalogPrompt = ({entryId,entryKind,name,description}) => `你是目录条
 export class BotManager {
   constructor({store,dataRoot,releaseRoot,model={},defaultCwd,emit=()=>{},getTools=()=>[],gatewayUrl=()=>'',botApi=core,cacheReadStores=false}) {
     Object.assign(this,{store,dataRoot:resolve(dataRoot),releaseRoot:resolve(releaseRoot),model,defaultCwd,emit,getTools,gatewayUrl,botApi,cacheReadStores}); this.launching=new Map();this.creating=new Map();this.maintaining=new Map();this.readStores=new Map();
+    const connectionStore=join(this.dataRoot,'config','model-connections.json');
+    if(existsSync(connectionStore))this.model={connectionStore};
   }
   directory(id) { return join(this.dataRoot,'bots',safeId(id)); }
   public(record) { if (!record) return record; const {capabilityToken,token,...rest}=record; return {...rest,avatar:rest.avatar?normalizePaperAvatar(rest.avatar):defaultPaperAvatar(rest.id)}; }
@@ -175,6 +177,7 @@ export class BotManager {
     const present=await this.identity(id);if(present?.state==='ready') return present;
     if(present) { for(let i=0;i<600;i++){await sleep(100);const state=await this.identity(id);if(state?.state==='ready')return state;}fail('Bot startup timed out',504); }
     const dir=this.directory(id), config=await this.config(id), record=this.store.get('bots',id);this.assertAccepting();
+    if(this.model.connectionStore)config.model={connectionStore:this.model.connectionStore};
     const profile=JSON.parse(await readFile(join(this.releaseRoot,'roles',record.roleId||'default','role.json'),'utf8'));
     if(record.maintenanceFor){record.allowedTools=[...CATALOG_MAINTAINER_TOOLS];this.store.save('bots',{id,allowedTools:record.allowedTools});profile.skills=[];config.maintenanceFor=record.maintenanceFor;}
     const priorRoot=config.bundleRoot||this.releaseRoot,oldSkills=new Set((config.bundledSkills||profile.skills||[]).map(skill=>resolve(priorRoot,'skills',skill)));

@@ -179,7 +179,7 @@ class SummonStore(private val app: Context) {
     }
 
     fun setUserName(name: String) {
-        settings = settings.copy(userName = name.trim().ifBlank { "你" })
+        settings = settings.copy(userName = name.trim().ifBlank { "Lin" })
         prefs.edit().putString(SETTINGS_KEY, settings.toJson().encode().toString()).apply()
     }
 
@@ -438,6 +438,16 @@ class SummonStore(private val app: Context) {
     suspend fun artifactFile(artifact: SummonArtifact, runID: String, toolID: String): File = withContext(Dispatchers.IO) {
         val component = SummonApiClient::component
         apiClient().download(app, "/api/agent-runs/${component(runID)}/tools/${component(toolID)}/artifacts/${component(artifact.id)}", artifact.name ?: "产物")
+    }
+
+    var modelSummary by mutableStateOf<SummonJson>(SummonJson.Null)
+        private set
+
+    suspend fun refreshModelUsage(force: Boolean = false): SummonJson {
+        val endpoint = settings.baseURL
+        val result = request("/api/model-settings/usage", "POST", SummonJson.obj("force" to SummonJson.Bool(force)))
+        if (endpoint == settings.baseURL) modelSummary = result
+        return result
     }
 
     suspend fun request(path: String, method: String = "GET", body: SummonJson? = null): SummonJson =

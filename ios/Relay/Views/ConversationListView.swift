@@ -7,6 +7,8 @@ struct ConversationListView: View {
     @State private var showSettings = false
     @State private var showUsage = false
     @State private var showDisplay = false
+    @State private var showModels = false
+    @State private var quotaItem: SummonJSONValue?
     @State private var showCreateBot = false
     @State private var newRoomKind: String?
     @State private var showSystemBots = false
@@ -79,11 +81,6 @@ struct ConversationListView: View {
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button { showSettings = true } label: {
-                        Image(systemName: "person.crop.circle.fill").summonFont(.title2)
-                    }.accessibilityLabel("设置")
-                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("创建新 Bot", systemImage: "person.badge.plus") { showCreateBot = true }
@@ -95,10 +92,16 @@ struct ConversationListView: View {
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) { searchBar }
+            .searchable(text: $query, prompt: "搜索")
+            .task(id: store.settings.baseURL) {
+                while !Task.isCancelled { try? await store.refreshModelUsage(); try? await Task.sleep(for: .seconds(60)) }
+            }
             .navigationDestination(for: String.self) { id in ChatView(roomID: id) }
             .summonSheet(isPresented: $showSettings) { ConnectionSettingsView() }
             .summonSheet(isPresented: $showUsage) { TokenUsageView() }
             .summonSheet(isPresented: $showDisplay) { SummonDisplaySettingsView() }
+            .summonSheet(isPresented: $showModels) { ModelSettingsView() }
+            .summonSheet(isPresented: Binding(get: { quotaItem != nil }, set: { if !$0 { quotaItem = nil } })) { if let quotaItem { ModelQuotaDetailsView(item: quotaItem) } }
             .summonSheet(isPresented: $showCreateBot) {
                 CreateBotView { room in openRoom(room.id) }
                     .presentationDragIndicator(.visible)
@@ -145,34 +148,36 @@ struct ConversationListView: View {
     }
 
     private var searchBar: some View {
-        GlassEffectContainer(spacing: 16) {
-            HStack(spacing: 12) {
+        VStack(spacing: 4) {
+            HStack(spacing: 8) {
+                Button { workspaceSection = .works } label: { Label("工作", systemImage: "briefcase").frame(maxWidth: .infinity) }.buttonStyle(.glass)
+                Button { workspaceSection = .knowledge } label: { Label("知识", systemImage: "book").frame(maxWidth: .infinity) }.buttonStyle(.glass)
+            }
+            HStack(alignment: .top, spacing: 4) {
                 Menu {
                     ForEach(WorkspaceSection.allCases) { section in
                         Button(section.title, systemImage: section.symbol) { workspaceSection = section }
                     }
                     Divider()
                     Button("Token 统计", systemImage: "chart.bar") { showUsage = true }
+                    Button("模型与引擎", systemImage: "circle.dashed") { showModels = true }
                     Button("显示设置", systemImage: "textformat.size") { showDisplay = true }
                     Button("连接设置", systemImage: "network") { showSettings = true }
                 } label: {
-                    Image(systemName: "square.grid.2x2").summonFont(.title3).frame(minWidth: 44, minHeight: 44)
+                    VStack(spacing: 1) {
+                        ZStack(alignment: .top) {
+                            Image("OwnerAvatar").resizable().scaledToFill().frame(width: 48, height: 48).clipShape(.circle)
+                                .overlay(alignment: .bottomTrailing) { Circle().fill(store.isConnected ? Color(red: 0.58, green: 0.68, blue: 0.60) : .gray).frame(width: 9, height: 9).offset(x: 1, y: 1) }.padding(.top, 4)
+                        }.frame(width: 64, height: 59)
+                        Text(store.settings.userName).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                    }.padding(.vertical, 3).frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.glass).buttonBorderShape(.circle)
-                .accessibilityLabel("连接应用与工作台")
-                HStack(spacing: 10) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("搜索", text: $query).submitLabel(.search)
-                    if !query.isEmpty {
-                        Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
-                            .accessibilityLabel("清除搜索")
-                    }
-                }
-                .padding(.horizontal, 18).padding(.vertical, 14)
-                .glassEffect(.regular, in: .capsule)
+                .accessibilityLabel("\(store.settings.userName)，设置，\(store.isConnected ? "已连接" : "正在连接")")
+                ModelQuotaSignal(item: store.modelSummary["chat"], label: "CHAT") { quotaItem = store.modelSummary["chat"] }.frame(maxWidth: .infinity)
+                ModelQuotaSignal(item: store.modelSummary["executors"].array?.first ?? .object(["role": .string("executor"), "kind": .string("codex")] ), label: "WORK") { quotaItem = store.modelSummary["executors"].array?.first }.frame(maxWidth: .infinity)
             }
         }
-        .padding(.horizontal, 20).padding(.bottom, 8)
+        .padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 8).background(SummonTheme.background)
     }
 
     private func contact(_ bot: SummonBot) -> some View {
