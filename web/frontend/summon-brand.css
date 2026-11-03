@@ -6,10 +6,10 @@ summon-wordmark {
   margin-right: auto;
   color: #30343b;
   font-family: "Arial Black", Arial, Helvetica, sans-serif;
-  font-size: 34px;
+  font-size: 27px;
   font-weight: 900;
   line-height: 1;
-  letter-spacing: -2px;
+  letter-spacing: -1.6px;
   isolation: isolate;
   pointer-events: none;
 }
@@ -64,7 +64,7 @@ summon-wordmark {
   65% { opacity: 1; transform: translateY(-.025em) scale(1.045) rotate(3deg); }
   100% { opacity: 1; transform: translateY(.04em) scale(1) rotate(0); }
 }
-@media (max-width: 380px) { summon-wordmark { font-size: 29px; } }
+@media (max-width: 380px) { summon-wordmark { font-size: 26px; } }
 @media (prefers-reduced-motion: reduce) {
   .summon-o { animation: none; }
   .summon-o [data-paper-fill] { transition: none; }
