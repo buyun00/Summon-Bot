@@ -1,6 +1,6 @@
 # Summon Bot
 
-源码仓库：[buyun00/summon-bot](https://github.com/buyun00/summon-bot)。显示名使用 `Summon Bot`，代码与命令命名约定见 [开发说明](docs/DEVELOPMENT.md)。
+源码仓库：[buyun00/Summon-Bot](https://github.com/buyun00/Summon-Bot)。显示名使用 `Summon Bot`，代码与命令命名约定见 [开发说明](docs/DEVELOPMENT.md)。
 
 每个 Bot 保留 PiAgent 内核，并拥有多个隔离的 chat/work 对话。默认 4 个业务执行位与 1 个维护位；同一逻辑对话串行，外部等待释放执行位。S1 原始记录与 S3 工作状态保存在 Bot SQLite，S2 总结只保存在按工作/对话隔离的 Markdown。压缩、整理、组装各自在需要时创建短暂维护对话，真实工作中的可复用经验可更新 Bot 自己的 Skill。
 
