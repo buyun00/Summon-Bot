@@ -351,12 +351,29 @@ button:focus-visible, a:focus-visible, select:focus-visible { outline-color: #65
   --window-controls-right-inset: calc(var(--window-controls-right) / var(--ui-zoom));
   --chat-header-height: max(76px, calc(56px / var(--ui-zoom)));
 }
+/* Desktop chrome behaves like an app; only conversation content and editors select text. */
+.desktop-overlay, .desktop-overlay * { -webkit-user-select: none; user-select: none; }
+.desktop-overlay :is(input, textarea, [contenteditable="true"], [contenteditable="plaintext-only"]),
+.desktop-overlay :is(input, textarea, [contenteditable="true"], [contenteditable="plaintext-only"]) *,
+.desktop-overlay .messages :is(.message-content, .agent-tool-body pre, .agent-run-summary),
+.desktop-overlay .messages :is(.message-content, .agent-tool-body pre, .agent-run-summary) * {
+  -webkit-user-select: text;
+  user-select: text;
+}
 .desktop-overlay .floating-header,
+.desktop-overlay .chat-title-pill,
+.desktop-overlay .chat-header-actions,
 .desktop-overlay .sidebar-toolbar,
 .desktop-overlay .detail-panel-toolbar,
 .desktop-overlay .page-header,
-.desktop-overlay .usage-header { -webkit-app-region: drag; }
-.desktop-overlay :is(button, a, input, textarea, select, summary, .context-menu) { -webkit-app-region: no-drag; }
+.desktop-overlay .usage-header,
+.desktop-overlay .models-header { -webkit-app-region: drag; app-region: drag; }
+.desktop-overlay :is(button, a, input, textarea, select, summary, [contenteditable], .context-menu, .quota-popover),
+.desktop-overlay :is(button, a, input, textarea, select, summary, [contenteditable], .context-menu, .quota-popover) * {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+.desktop-overlay :is(.sidebar-toolbar, .floating-header, .detail-panel-toolbar) :is(img, svg) { -webkit-user-drag: none; }
 .desktop-overlay .floating-header { pointer-events: auto; }
 .desktop-overlay .sidebar-toolbar { min-height: calc(56px / var(--ui-zoom)); padding-left: calc(22px + var(--window-controls-left-inset)); }
 .desktop-overlay .chat-layout:not(.detail-open) .floating-header { padding-right: calc(18px + var(--window-controls-right-inset)); }
