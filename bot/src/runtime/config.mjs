@@ -16,6 +16,7 @@ export function normalizeBotConfig(input, baseDirectory = process.cwd()) {
   if (!['127.0.0.1', '::1'].includes(config.listen.host) || !Number.isInteger(config.listen.port) || config.listen.port < 0 || config.listen.port > 65535) throw new Error('Bot listener must use a valid loopback address');
   config.concurrency ??= 4;
   config.logs = normalizeLogConfig(input.logs);
+  config.usage = { ...input.usage, ledgerPath: resolve(baseDirectory, input.usage?.ledgerPath || resolve(config.dataDir, 'usage.sqlite')) };
   if (!Number.isInteger(config.concurrency) || config.concurrency < 1 || config.concurrency > 32) throw new Error('Business concurrency must be 1..32');
   config.context = { maxSummaryTokens: 8192, maxAssemblyTokens: 6144, maintenanceConcurrency: 1, maintenanceDelayMs: 3000, ...input.context };
   for (const key of ['maxSummaryTokens', 'maxAssemblyTokens', 'maintenanceConcurrency', 'maintenanceDelayMs']) if (!Number.isSafeInteger(config.context[key]) || config.context[key] < 1) throw new Error(`Invalid context setting: ${key}`);

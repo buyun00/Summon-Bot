@@ -92,6 +92,7 @@ enum class WorkspaceSection(val title: String, val icon: ImageVector) {
 fun ConversationListScreen(
     store: RelayStore,
     updater: RelayAppUpdater,
+    onOpenUsage: () -> Unit,
     onOpenRoom: (String) -> Unit,
     onOpenWorkspace: (WorkspaceSection) -> Unit,
 ) {
@@ -137,6 +138,7 @@ fun ConversationListScreen(
                         WorkspaceSection.entries.forEach { section ->
                             DropdownMenuItem(text = { Text(section.title) }, leadingIcon = { Icon(section.icon, null) }, onClick = { menu = false; onOpenWorkspace(section) })
                         }
+                        DropdownMenuItem(text = { Text("Token 统计") }, onClick = { menu = false; onOpenUsage() })
                         DropdownMenuItem(text = { Text("连接设置") }, onClick = { menu = false; showSettings = true })
                     }
                 }

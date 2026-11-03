@@ -20,6 +20,7 @@ import { BUILTIN_CAPABILITIES } from '../services/builtin.mjs';
 import { deployCapability } from '../services/publish.mjs';
 import { coreTools } from '../../bot/src/capabilities/core-tools.mjs';
 import { CapabilityCatalog,catalogTools } from '../services/catalog.mjs';
+import { UsageLedger,readUsage,usageRange,finishUsageTotals,emptyUsageTotals,USAGE_PRICING } from '../../bot/src/agent/usage.mjs';
 
 const same=(a,b)=>typeof a==='string'&&typeof b==='string'&&Buffer.byteLength(a)===Buffer.byteLength(b)&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
 const activityText=(value,max=512)=>typeof value==='string'?value.replace(/[\u0000-\u001f\u007f]/g,' ').slice(0,max):null;
@@ -39,6 +40,7 @@ export async function startGateway(options={}) {
   if(!['127.0.0.1','::1'].includes(options.host||'127.0.0.1'))throw new Error('Capability gateway must use loopback');
   const clients=new Set(),stores=new Map(),pending=new Set();let url,closing=false,quiescing=false,ticking=false,monitoring=false,serviceMonitoring=false,stopBotsPromise;
   const store=name=>{if(!stores.has(name))stores.set(name,new RecordStore(join(dataRoot,'capabilities',name,'state.sqlite')));return stores.get(name);};
+  const usageLedger=new UsageLedger(join(dataRoot,'usage.sqlite'));
   const emit=(type,payload={})=>{const line=`data: ${JSON.stringify({type,...payload})}\n\n`;for(const client of clients)client.write(line);};
   const botToolNames=[...coreTools({},{}).map(tool=>tool.name),'read_resource','read_session_history','knowledge_list','knowledge_read','knowledge_write','skills_list','skill_write'];
   const registry=new CapabilityRegistry({store:store('registry'),emit,reservedTools:[...botToolNames,...controlTools.map(tool=>tool.name),...catalogTools.map(tool=>tool.name)]});
@@ -57,7 +59,7 @@ export async function startGateway(options={}) {
   const attachments=new AttachmentStore(join(dataRoot,'capabilities','chatroom'));
   const chatroom=new ChatroomService({store:store('chatroom'),manager,attachments,emit});
   const knowledge=new KnowledgeService({store:store('knowledge'),emit}),memories=new MemoryManagement({store:store('memory-management'),manager,dataRoot,emit});
-  proxy(chatroom,'chatroom',['createRoom','updateRoom','post','append','dm','conclude','saveConclusion','retry','seed']);
+  proxy(chatroom,'chatroom',['createRoom','updateRoom','post','append','dm','conclude','saveConclusion','retry','seed','teamRead','teamRaise','teamManage']);
   const catalog=new CapabilityCatalog({store:store('registry'),registry,manager,dataRoot,workspace:defaultCwd,emit,delegate:(actor,input)=>chatroom.dm(actor,input)});
   proxy(knowledge,'knowledge',['saveNode','saveEdge']);
   proxy(memories,'memory-management',['write']);
@@ -125,10 +127,32 @@ export async function startGateway(options={}) {
     if(pin)return registry.callVersion(pin.id,pin.version,name,args,{signal,context:{actor}});
     return registry.call(actor,name,args,{signal,context:{actor}});
   }
+  async function tokenUsage(params) {
+    const range=usageRange(params.get('period')||'today'),botId=params.get('botId')||null;
+    const roomId=params.has('roomId')?(params.get('roomId')||null):undefined;
+    const offset=Number(params.get('offset')||0),limit=Number(params.get('limit')||25);
+    if(!Number.isSafeInteger(offset)||offset<0||offset>100000||!Number.isSafeInteger(limit)||limit<1||limit>100)fail('无效的用量分页',400);
+    return usageLedger.snapshot(()=>{
+    const snapshot=readUsage(usageLedger.db,range,{roomId,botId,offset,limit});
+    const profiles=manager.list(),botsById=new Map(profiles.map(bot=>[bot.id,bot])),roomsById=new Map(chatroom.rooms().map(room=>[room.id,room]));
+    const bots=snapshot.bots.map(row=>({...row,id:row.key,name:botsById.get(row.key)?.name||row.name||row.key,kind:'bot',removed:!botsById.has(row.key)}));
+    if(!botId&&roomId===undefined)for(const bot of profiles)if(!bots.some(row=>row.id===bot.id))bots.push({...finishUsageTotals(emptyUsageTotals()),id:bot.id,name:bot.name,kind:'bot'});
+    const rooms=snapshot.rooms.map(row=>({...row,id:row.key,name:roomsById.get(row.key)?.name||row.name||(row.key?'已移除的会话':'未归属会话'),kind:roomsById.get(row.key)?.kind||row.kind||'unassigned'}));
+    const providerReports=usageLedger.providerReports(range).map(report=>{
+      const from=new Date(`${report.day}T00:00:00+08:00`).toISOString(),to=new Date(Date.parse(from)+86400000).toISOString();
+      const local=readUsage(usageLedger.db,{from,to},{detail:false}).totals;
+      return {...report,localCalls:local.calls,localTokens:local.totalTokens,localCostMin:local.costMin,localCostMax:local.costMax,localPricedCalls:local.pricedCalls,
+        differenceCalls:report.calls-local.calls,differenceTokens:report.totalTokens-local.totalTokens,tokenCoverage:report.totalTokens?local.totalTokens/report.totalTokens:null};
+    });
+    return {...snapshot,range,botId,roomId,pricing:USAGE_PRICING,bots,rooms,providerReports,coverage:usageLedger.coverage(range),
+      requests:snapshot.requests.map(request=>({...request,botName:botsById.get(request.botId)?.name||request.botName||request.botId}))};
+    });
+  }
   async function handleApi(method,path,body={},params=new URLSearchParams()) {
     if(quiescing&&!['GET','HEAD'].includes(method))fail('Gateway is stopping; new work is unavailable',503);
     let match;
     if(method==='GET'&&path==='/api/health')return {ok:true,service:'relay-capabilities'};
+    if(method==='GET'&&path==='/api/usage')return tokenUsage(params);
     if(path==='/api/catalog'){
       if(method==='GET')return catalog.search({query:params.get('query')||'',kind:params.get('kind')||undefined,scopeRefs:params.getAll('scopeRef'),offset:Number(params.get('offset')||0),limit:Number(params.get('limit')||40)},params.get('botId')||'controller');
       if(method==='POST')return catalog.save(body);
@@ -156,6 +180,7 @@ export async function startGateway(options={}) {
     if((match=path.match(/^\/api\/memories\/([^/]+)$/))&&method==='PATCH'){for(const bot of manager.list()){const found=(await memories.list(bot.id)).find(memory=>memory.id===decodeURIComponent(match[1]));if(found)return memories.write(bot.id,{...body,id:found.id,expectedRevision:body.expectedRevision??found.revision});}fail('Memory not found',404);}
     if(method==='GET'&&path==='/api/rooms')return {rooms:chatroom.rooms()};
     if(method==='POST'&&path==='/api/rooms')return chatroom.createRoom(body);
+    if((match=path.match(/^\/api\/rooms\/([^/]+)\/team(?:\/(raise|manage))?$/))){const input={...body,roomId:decodeURIComponent(match[1])};if(method==='GET'&&!match[2])return chatroom.teamRead(input,'controller');if(method==='POST'&&match[2])return chatroom[match[2]==='raise'?'teamRaise':'teamManage'](input,'controller');}
     if((match=path.match(/^\/api\/rooms\/([^/]+)$/))&&method==='PATCH')return chatroom.updateRoom(decodeURIComponent(match[1]),body);
     if((match=path.match(/^\/api\/rooms\/([^/]+)\/messages$/))){const id=decodeURIComponent(match[1]);if(method==='GET'){const value={historyEpoch,room:chatroom.need('rooms',id),messages:chatroom.messages(id),jobs:chatroom.jobs(id)};return params.get('sync')==='1'?{...sync.respond(`room:${id}`,value,params.get('since')),historyEpoch}:value;}if(method==='POST')return chatroom.post(id,body);}
     if((match=path.match(/^\/api\/rooms\/([^/]+)\/conclude$/))&&method==='POST')return chatroom.conclude(decodeURIComponent(match[1]));
@@ -304,7 +329,7 @@ export async function startGateway(options={}) {
     control.pinExisting();await control.tick();
     if(options.restore!==false)await manager.restore();
   } catch(error) {
-    closing=true;await control.close();await catalog.close();await stopIdleWorkers().catch(()=>{});for(const client of clients)client.end();server.closeAllConnections();if(server.listening)await new Promise(done=>server.close(done));await Promise.allSettled([...pending]);manager.closeReadStores();for(const value of stores.values())value.close();throw error;
+    closing=true;await control.close();await catalog.close();await stopIdleWorkers().catch(()=>{});for(const client of clients)client.end();server.closeAllConnections();if(server.listening)await new Promise(done=>server.close(done));await Promise.allSettled([...pending]);manager.closeReadStores();for(const value of stores.values())value.close();usageLedger.close();throw error;
   }
   const monitor=setInterval(async()=>{if(monitoring||closing||quiescing)return;monitoring=true;try{await manager.monitor();}catch(error){emit('gateway-error',{error:error.message});}finally{monitoring=false;}},5000);monitor.unref();
   const serviceMonitor=setInterval(()=>{void monitorServices().catch(error=>emit('gateway-error',{error:error.message}));},2000);serviceMonitor.unref();
@@ -327,7 +352,7 @@ export async function startGateway(options={}) {
     while(pending.size)await Promise.allSettled([...pending]);
     await stopIdleWorkers();for(const client of clients)client.end();
     await new Promise(done=>{server.close(done);server.closeIdleConnections?.();});
-    await Promise.allSettled([...pending]);manager.closeReadStores();for(const value of stores.values())value.close();
+    await Promise.allSettled([...pending]);manager.closeReadStores();for(const value of stores.values())value.close();usageLedger.close();
   })();
   return {url,token,server,manager,chatroom,knowledge,codex,memories,attachments,registry,supervisor,control,catalog,state,handleApi,callTool,monitorServices,stopBots,close};
 }

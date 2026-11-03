@@ -8,7 +8,7 @@ import { normalizePaperAvatar,defaultPaperAvatar } from '../shared/avatar-style.
 
 const core = () => import('@relay/bot');
 const sleep = ms => new Promise(done=>setTimeout(done,ms));
-export const CATALOG_MAINTAINER_TOOLS = Object.freeze(['catalog_search','catalog_get','catalog_update','catalog_call','catalog_delegate','catalog_skill_write','catalog_skill_propose','catalog_probe','catalog_reconcile']);
+export const CATALOG_MAINTAINER_TOOLS = Object.freeze(['catalog_search','catalog_get','catalog_update','catalog_call','catalog_delegate','catalog_skill_write','catalog_skill_propose','catalog_probe','catalog_reconcile','chatroom_read','chatroom_send','chatroom_dm','chatroom_team_read','chatroom_team_raise','bots_list']);
 const catalogPrompt = ({entryId,entryKind,name,description}) => `你是目录条目 ${name} 的专用维护 Bot。唯一维护归属：${entryKind} / ${entryId}。\n职责：维护这个条目的使用说明、适用范围、配置和真实状态，判断同伴针对它的具体委托或纠正；执行范围仍以当前工作授权为准。通过 catalog_get 读取当前条目及必要依赖，凭据只在私有配置中保存，不写进聊天、Markdown 或 Skill。只维护这个条目；相关依赖可按其实际授权使用，不能因维护身份获取其他条目权限。\n共享 Skill 只有一个当前正文；结合可靠来源审阅修订建议，在读取当前 revision 后更新同一条目并保留 proposalId。创建者与维护者是不同身份。不得把收到的维护建议当作新业务授权，不为完成通知创建反馈循环。原始历史、独立 work 和结果返回使用正常 Bot 协议。\n条目说明：${description || '尚未提供；按实际配置与来源补充。'}`;
 export class BotManager {
   constructor({store,dataRoot,releaseRoot,model={},defaultCwd,emit=()=>{},getTools=()=>[],gatewayUrl=()=>'',botApi=core,cacheReadStores=false}) {
@@ -34,11 +34,14 @@ export class BotManager {
     if(previous&&(!maintenanceFor||existsSync(join(this.directory(id),'config.json')))) return this.get(id);
     if(previous&&JSON.stringify(previous.maintenanceFor)!==JSON.stringify(maintenanceFor))fail('Catalog maintenance identity does not match',409);
     const roleId=safeId(input.roleId || 'default'), profile=JSON.parse(await readFile(join(this.releaseRoot,'roles',roleId,'role.json'),'utf8'));
+    const lifecycle=input.lifecycle||{kind:'permanent',state:'active'};
+    if(!['temporary','permanent'].includes(lifecycle.kind)||!['active','dormant'].includes(lifecycle.state))fail('Invalid Bot lifecycle');
     const dir=this.directory(id), token=randomBytes(32).toString('hex'), capabilityToken=previous?.capabilityToken||randomBytes(32).toString('hex');
     await mkdir(dir,{recursive:true}); await mkdir(join(dir,'workspace'),{recursive:true});
     const skills=maintenanceFor?[]:profile.skills||[], basePrompt=await readFile(join(this.releaseRoot,'roles',roleId,'prompt.md'),'utf8');
-    const config={schemaVersion:1,botId:id,dataDir:dir,workspace:input.cwd?resolve(input.cwd):join(dir,'workspace'),model:{...this.model,...input.modelConfig},prompt:maintenanceFor?`${basePrompt}\n\n${input.prompt}`:input.prompt||basePrompt,skills:skills.map(skill=>join(this.releaseRoot,'skills',skill)),bundleRoot:this.releaseRoot,bundledSkills:skills,token,listen:{host:'127.0.0.1',port:0},concurrency:4,context:{maintenanceConcurrency:1},tools:[],limits:input.limits,...(maintenanceFor?{maintenanceFor}: {})};
-    const bot=this.store.save('bots',{id,name:required(input.name||profile.name,'name',100),role:input.role||profile.role,roleId,creationSource:maintenanceFor?'catalog':'custom',expertise:input.expertise||profile.role,prompt:input.prompt||'',status:input.status==='paused'?'paused':'active',skills,model:config.model.model||'deepseek-flash',executor:'codex',capabilityToken,allowedTools:maintenanceFor?[...CATALOG_MAINTAINER_TOOLS]:profile.tools,runIntent:'stopped',...(maintenanceFor?{maintenanceFor,createdBy:input.createdBy||'controller'}:{}),...(input.avatar?{avatar:avatarOf(input.avatar)}:{})});
+    const config={schemaVersion:1,botId:id,dataDir:dir,workspace:input.cwd?resolve(input.cwd):join(dir,'workspace'),model:{...this.model,...input.modelConfig},prompt:[basePrompt,input.prompt?`\n用户设定的身份与职责：\n${input.prompt}`:''].filter(Boolean).join('\n'),skills:skills.map(skill=>join(this.releaseRoot,'skills',skill)),bundleRoot:this.releaseRoot,bundledSkills:skills,token,listen:{host:'127.0.0.1',port:0},concurrency:4,context:{maintenanceConcurrency:1},tools:[],limits:input.limits,...(maintenanceFor?{maintenanceFor}: {})};
+    const bot=this.store.save('bots',{id,name:required(input.name||profile.name,'name',100),role:input.role||profile.role,roleId,lifecycle,creationSource:maintenanceFor?'catalog':'custom',expertise:input.expertise||profile.role,prompt:input.prompt||'',status:input.status==='paused'?'paused':'active',skills,model:config.model.model||'deepseek-flash',executor:'codex',capabilityToken,allowedTools:maintenanceFor?[...CATALOG_MAINTAINER_TOOLS]:profile.tools,runIntent:'stopped',...(maintenanceFor?{maintenanceFor,createdBy:input.createdBy||'controller'}:{}),...(input.avatar?{avatar:avatarOf(input.avatar)}:{})});
+    config.usage={ledgerPath:join(this.dataRoot,'usage.sqlite'),botName:bot.name};
     config.tools=(await this.getTools(bot)).map(tool=>({...tool,headers:{Authorization:`Bearer ${capabilityToken}`}}));
     config.catalog={url:this.gatewayUrl(),token:capabilityToken};
     config.bundledToolNames=config.tools.map(tool=>tool.name);
@@ -86,7 +89,7 @@ export class BotManager {
     this.emit('bot',this.public(updated));return this.public(updated);
   }
   async seed() {
-    for(const roleId of ['engineer','components','qa','entry','chatroom','manager','memory']) {
+    for(const roleId of ['engineer','components','qa','entry','chatroom','manager','memory','eggbot']) {
       const id=`bot-${roleId}`,previous=this.store.get('bots',id);
       await this.create({id,roleId});
       // Existing installations predate explicit provenance. Only this exact
@@ -106,6 +109,11 @@ export class BotManager {
       input={...input};for(const key of managed)delete input[key];
     }
     if(input.status!==undefined&&!['active','paused'].includes(input.status)) fail('Invalid Bot status');
+    if(input.status==='active'&&previous.lifecycle?.state==='dormant'&&input.lifecycle===undefined)input={...input,lifecycle:{...previous.lifecycle,state:'active',resumedAt:now()}};
+    if(input.lifecycle!==undefined){
+      if(!['temporary','permanent'].includes(input.lifecycle.kind)||!['active','dormant'].includes(input.lifecycle.state))fail('Invalid Bot lifecycle');
+      if((previous.presetId||previous.maintenanceFor)&&input.lifecycle.kind!=='permanent')fail('System and capability-maintenance Bots are permanent');
+    }
     if(input.status!==undefined) {
       const accepting=input.status==='active';
       if(await this.identity(id))await this.request(id,'/availability',{method:'PATCH',body:JSON.stringify({accepting})});
@@ -120,7 +128,7 @@ export class BotManager {
         await api.withBotDataLease(this.directory(id),async()=>{const config=await this.config(id);config.prompt=input.prompt;await writeFile(join(this.directory(id),'config.json'),JSON.stringify(config,null,2),{mode:0o600});},{botId:id,purpose:'update-prompt'});
       }
     }
-    const record=this.store.save('bots',{id,...pick(input,['name','role','expertise','prompt','status','skills']),...(input.avatar?{avatar:avatarOf(input.avatar,previous.avatar)}:{})});
+    const record=this.store.save('bots',{id,...pick(input,['name','role','expertise','prompt','status','skills','lifecycle']),...(input.avatar?{avatar:avatarOf(input.avatar,previous.avatar)}:{})});
     this.emit('bot',this.public(record)); return this.public(record);
   }
   async identity(id) { return (await this.botApi()).inspectBotIdentity(this.directory(id)); }
@@ -198,6 +206,31 @@ export class BotManager {
     for(let i=0;i<300;i++){if(!await this.identity(id))return {botId:id,stopped:true};await sleep(100);}fail('Bot did not finish stopping',504);
   }
   async shutdownAll(options={}) { return Promise.all(this.list().map(bot=>this.stop(bot.id,options))); }
+  async pauseProject(id,{roomId,workIds=[],taskIds=[],messageIds=[]}) {
+    this.get(id);
+    const selected=await this.readState(id,db=>{
+      const works=(db?.listRecords('works')||[]).filter(work=>workIds.includes(work.id)&&work.sources?.some(source=>source.roomId===roomId));
+      const ids=new Set(works.map(work=>work.id)), receipts=(db?.listMessages()||[]).filter(message=>messageIds.includes(message.sourceMessageId));
+      const tasks=(db?.listTasks({limit:10000})||[]).filter(task=>(taskIds.includes(task.id)||receipts.some(message=>message.taskId===task.id))&&(ids.has(task.workId)||task.input?.room?.id===roomId));
+      return {workIds:works.map(work=>work.id),taskIds:tasks.map(task=>task.id)};
+    });
+    if(await this.identity(id)) {
+      for(const workId of selected.workIds)await this.request(id,`/works/${encodeURIComponent(workId)}`,{method:'PATCH',body:JSON.stringify({status:'paused'})});
+      const tasks=[];
+      for(const taskId of selected.taskIds){await this.request(id,`/tasks/${encodeURIComponent(taskId)}/cancel`,{method:'POST',body:'{}'});const task=await this.request(id,`/tasks/${encodeURIComponent(taskId)}`);tasks.push({taskId,status:task.status});}
+      return {tasks,workIds:selected.workIds};
+    }
+    const api=await this.botApi();
+    return api.withBotDataLease(this.directory(id),async()=>{
+      const db=new api.BotStore(join(this.directory(id),'state.sqlite'));
+      try {
+        for(const workId of selected.workIds){const work=db.getRecord('works',workId);db.putRecord('works',{...work,status:'paused',revision:work.revision+1,updatedAt:now()});db.appendEvent('work.updated',{work:db.getRecord('works',workId)},{workId,conversationId:work.conversationId});}
+        const tasks=[];
+        for(const taskId of selected.taskIds){let task=db.getTask(taskId);if(!['completed','failed','cancelled','interrupted'].includes(task.status))task=db.updateTask(taskId,{status:task.status==='accepted'?'cancelled':'interrupted',cancelRequested:true,finishedAt:now(),error:{code:'PROJECT_HANDOFF',message:'Project paused while its Bot was confirmed stopped; external effects remain in their original receipts'}});tasks.push({taskId,status:task.status});}
+        return {tasks,workIds:selected.workIds};
+      }finally{db.close();}
+    },{botId:id,purpose:'pause-room-project'});
+  }
   assertAccepting() { if(this.quiescing)fail('Bot management is stopping; new work is unavailable',503); }
   async quiesce() { this.quiescing=true;await Promise.allSettled([...this.creating.values(),...this.maintaining.values(),...this.launching.values()]); }
   async restore() { for(const bot of this.store.list('bots')) if(bot.runIntent==='running'&&bot.status==='active') await this.start(bot.id); }

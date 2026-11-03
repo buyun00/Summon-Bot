@@ -5,6 +5,7 @@ struct ConversationListView: View {
     @State private var path: [String] = []
     @State private var query = ""
     @State private var showSettings = false
+    @State private var showUsage = false
     @State private var showCreateBot = false
     @State private var newRoomKind: String?
     @State private var showSystemBots = false
@@ -95,6 +96,7 @@ struct ConversationListView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) { searchBar }
             .navigationDestination(for: String.self) { id in ChatView(roomID: id) }
             .sheet(isPresented: $showSettings) { ConnectionSettingsView() }
+            .sheet(isPresented: $showUsage) { TokenUsageView() }
             .sheet(isPresented: $showCreateBot) {
                 CreateBotView { room in openRoom(room.id) }
                     .presentationDragIndicator(.visible)
@@ -148,6 +150,7 @@ struct ConversationListView: View {
                         Button(section.title, systemImage: section.symbol) { workspaceSection = section }
                     }
                     Divider()
+                    Button("Token 统计", systemImage: "chart.bar") { showUsage = true }
                     Button("连接设置", systemImage: "network") { showSettings = true }
                 } label: {
                     Image(systemName: "square.grid.2x2").font(.title3).frame(width: 27, height: 34)

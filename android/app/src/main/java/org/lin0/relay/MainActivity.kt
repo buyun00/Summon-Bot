@@ -85,6 +85,7 @@ private fun RelayApp(model: RelayViewModel = viewModel()) {
                     ConversationListScreen(
                         store,
                         updater = model.updater,
+                        onOpenUsage = { nav.navigate("usage") },
                         onOpenRoom = { id -> nav.navigate("chat/${URLEncoder.encode(id, "UTF-8")}") },
                         onOpenWorkspace = { section -> nav.navigate("workspace/${section.name}") },
                     )
@@ -93,6 +94,7 @@ private fun RelayApp(model: RelayViewModel = viewModel()) {
                     val id = URLDecoder.decode(entry.arguments?.getString("roomId").orEmpty(), "UTF-8")
                     ChatScreen(store, id) { nav.popBackStack() }
                 }
+                composable("usage") { TokenUsageScreen(store) { nav.popBackStack() } }
                 composable("workspace/{section}") { entry ->
                     val section = runCatching { WorkspaceSection.valueOf(entry.arguments?.getString("section").orEmpty()) }.getOrDefault(WorkspaceSection.Bots)
                     WorkspaceScreen(store, section) { nav.popBackStack() }

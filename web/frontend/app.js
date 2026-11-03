@@ -127,7 +127,7 @@ const icons = {
 };
 const icon = (name, size = 18) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" aria-hidden="true">${icons[name] || icons.chat}</svg>`;
 const labels = { queued: '等待执行', running: '进行中', waiting: '等待答复', completed: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断', active: '活跃', paused: '已暂停', concluded: '已结束', fact: '事实', hypothesis: '假设', opinion: '意见', unverified: '待核查', disputed: '有争议', expired: '已过期', professional: '专业记忆', private: '私人记忆', group: '群聊', dm: '私聊', deep: '深聊' };
-const tabs = [{ id: 'chat', title: '消息', icon: 'chat' }, { id: 'members', title: '成员', icon: 'people' }, { id: 'catalog', title: '能力目录', icon: 'link' }, { id: 'works', title: '工作', icon: 'work' }, { id: 'knowledge', title: '知识', icon: 'knowledge' }, { id: 'routines', title: '定时职责', icon: 'clock' }];
+const tabs = [{ id: 'chat', title: '消息', icon: 'chat' }, { id: 'members', title: '成员', icon: 'people' }, { id: 'catalog', title: '能力目录', icon: 'link' }, { id: 'works', title: '工作', icon: 'work' }, { id: 'knowledge', title: '知识', icon: 'knowledge' }, { id: 'routines', title: '定时职责', icon: 'clock' }, { id: 'usage', title: 'Token 统计', icon: 'layers' }];
 const state = { bots: [], rooms: [], works: [], agentRuns: [], routines: [], knowledge: { nodes: [], edges: [] }, provider: {}, runtime: {} };
 const ui = { view: 'chat', roomId: 'room-lobby', botId: null, workId: null, nodeId: null, messages: [], roomJobs: [], memories: [], workDetail: null, graph: null, query: '', knowledgeResults: null, roomQuery: '', workFilter: 'all', mobileRoom: false, reply: null, drafts: {}, outbound: {}, loading: true, refreshing: false, refreshAgain: false, streamConnected: false };
 Object.assign(ui, { detailOpen: false, detailTab: 'details', profileBotId: null, avatarEditing: false, avatarDraft: null, avatarTab: 'bot', searchOpen: false, menu: null, avatarSaving: false, sendingRooms: new Set(), draftTargets: {}, navigationSeq: 0, messageCache: new Map() });
@@ -442,7 +442,7 @@ function render() {
   const saved = preserveView();
   const navigation = window.RelayMotion?.captureNavigation(ui.view === 'chat' ? (ui.mobileRoom ? `chat:${ui.roomId}` : 'list') : ui.view);
   markCurrentRoomRead(); renderTopbar();
-  const views = { chat: renderChat, members: renderMembers, catalog: renderCatalog, works: renderWorks, knowledge: renderKnowledge, routines: renderRoutines };
+  const views = { chat: renderChat, members: renderMembers, catalog: renderCatalog, works: renderWorks, knowledge: renderKnowledge, routines: renderRoutines, usage: () => globalThis.RelayUsage.render({ esc, icon }) };
   const key = `${ui.view}:${ui.view === 'chat' ? ui.roomId : ui.view === 'members' ? ui.botId : ui.view === 'works' ? ui.workId : ''}`;
   const main = $('#main-content'), html = views[ui.view]();
   const signature = renderSignature(html);
@@ -588,6 +588,7 @@ async function refresh(force = false) {
   finally { ui.refreshing = false; if (ui.refreshAgain) { ui.refreshAgain = false; scheduleRefresh(); } }
 }
 async function loadCurrent() {
+  if (ui.view === 'usage') { await globalThis.RelayUsage.load(api); return; }
   if (ui.view === 'catalog') {
     const query = new URLSearchParams({query:ui.catalogQuery,kind:ui.catalogKind});
     const response = await api(`/api/catalog?${query}`);
@@ -950,6 +951,7 @@ function openEventForm() {
 }
 
 async function act(action, element) {
+  if (action.startsWith('usage-')) return globalThis.RelayUsage.act(action, element, api, render);
   if (action.startsWith('catalog-')) return catalogAction(action, element);
   const id = element?.dataset.id;
   if (action === 'attach-file') return chooseAttachments();

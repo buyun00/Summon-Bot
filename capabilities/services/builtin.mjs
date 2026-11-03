@@ -38,12 +38,12 @@ export async function createCapability(options) {
   const manager = new BotManager({store:store('bot-management'),dataRoot,releaseRoot,defaultCwd,model:options.model,emit,
     gatewayUrl:()=>options.gatewayUrl,getTools:bot=>bridge('tools',{botId:bot.id})});
   const remote = (capability,operation,args) => bridge('invoke',{capability,operation,args});
-  if (id !== 'bot-management') for (const method of ['create','update','start','stop','send','saveRoutine','restore','monitor','quiesce','shutdownAll','ensureCatalogMaintainer','setCatalogMaintainerState']) manager[method] = (...args) => remote('bot-management',method,args);
+  if (id !== 'bot-management') for (const method of ['create','update','start','stop','send','saveRoutine','restore','monitor','quiesce','shutdownAll','pauseProject','ensureCatalogMaintainer','setCatalogMaintainerState']) manager[method] = (...args) => remote('bot-management',method,args);
   const ownRoot = join(dataRoot,'capabilities',id); await mkdir(ownRoot,{recursive:true});
   const mutations = new WorkspaceExecutionLock(ownRoot);
   const locked = operation => mutations.withLock(`${id}@${version}`,operation);
   const attachments = id === 'chatroom' ? new AttachmentStore(ownRoot) : null;
-  const chatroom = id === 'chatroom' ? new ChatroomService({store:store(id),manager,attachments,emit,version}) : null;
+  const chatroom = id === 'chatroom' ? new ChatroomService({store:store(id),manager,attachments,emit,version,invoke:remote}) : null;
   const knowledge = id === 'knowledge' ? new KnowledgeService({store:store(id),emit}) : null;
   const memories = id === 'memory-management' ? new MemoryManagement({store:store(id),manager,dataRoot,emit}) : null;
   const workspaceLocks = new Map();
@@ -85,6 +85,9 @@ export async function createCapability(options) {
         return {room,messages,jobs:chatroom.jobs(room.id).filter(job=>ids.has(job.messageId)),hasMore:candidates.length>messages.length,firstMessageId:messages[0]?.id||null,lastMessageId:messages.at(-1)?.id||null};
       }
       case 'chatroom_create':return chatroom.createRoom({...args,members:[...new Set([...(args.members||[]),...(actor==='controller'?[]:[actor])])]});
+      case 'chatroom_team_read':return chatroom.teamRead(args,actor);
+      case 'chatroom_team_raise':return chatroom.teamRaise(args,actor);
+      case 'chatroom_team_manage':return chatroom.teamManage(args,actor);
       case 'chatroom_send':return chatroom.post(args.roomId,args,actor==='controller'?'user':actor);
       case 'chatroom_dm':return chatroom.dm(actor,args);
       case 'chatroom_conclude':{const room=chatroom.need('rooms',args.roomId);if(actor!=='controller'&&!room.members.includes(actor))fail('Not a room member',403);return chatroom.saveConclusion(args.roomId,args);}
@@ -118,9 +121,9 @@ export async function createCapability(options) {
   }
   const operations={};
   const expose=(target,names)=>{for(const name of names)operations[name]=(...args)=>locked(()=>target[name](...args));};
-  if(id==='bot-management')expose(manager,['create','update','start','stop','send','saveRoutine','seed','restore','monitor','quiesce','shutdownAll','connect','ensureCatalogMaintainer','setCatalogMaintainerState']);
+  if(id==='bot-management')expose(manager,['create','update','start','stop','send','saveRoutine','seed','restore','monitor','quiesce','shutdownAll','connect','pauseProject','ensureCatalogMaintainer','setCatalogMaintainerState']);
   if(chatroom){
-    expose(chatroom,['createRoom','updateRoom','post','append','dm','conclude','saveConclusion','retry','seed']);operations.upload=(...args)=>locked(()=>attachments.upload(...args));
+    expose(chatroom,['createRoom','updateRoom','post','append','dm','conclude','saveConclusion','retry','seed','teamRead','teamRaise','teamManage']);operations.upload=(...args)=>locked(()=>attachments.upload(...args));
     operations.pause=async()=>{await chatroom.close();return {paused:true};};
     operations.resumeService=()=>{if(chatroom.closed)chatroom.start();return {ready:true};};
   }

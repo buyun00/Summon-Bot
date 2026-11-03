@@ -34,6 +34,9 @@
     "catalog_skill_write",
     "catalog_skill_propose",
     "catalog_probe",
-    "catalog_reconcile"
+    "catalog_reconcile",
+    "chatroom_team_read",
+    "chatroom_team_raise",
+    "chatroom_team_manage"
   ]
 }

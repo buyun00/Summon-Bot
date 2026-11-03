@@ -8,6 +8,7 @@ import { convertToLlm } from '../pi/core/messages.mjs';
 import { estimateTokens } from '../pi/core/compaction/compaction.mjs';
 import { loadResources } from './resources.mjs';
 import { createCatalogClient, catalogSkill, searchDirectory } from './catalog.mjs';
+import { usageRoomId } from '../agent/usage.mjs';
 
 const now = () => new Date().toISOString();
 const result = details => ({ content: [{ type: 'text', text: JSON.stringify(details) }], details });
@@ -324,7 +325,7 @@ export class ContextMaintenance {
       resources.tool,
     ];
   }
-  async shortDialogue(kind, scope, prompt, { signal, maxTokens = this.maxSummaryTokens, observedSkills = new Map() } = {}) {
+  async shortDialogue(kind, scope, prompt, { signal, maxTokens = this.maxSummaryTokens, observedSkills = new Map(), task } = {}) {
     const combined = signal ? AbortSignal.any([signal, this.controller.signal]) : this.controller.signal;
     combined.throwIfAborted();
     const resources = await loadResources({ config: this.config, workspace: this.config.workspace, signal: combined, store: this.store });
@@ -337,7 +338,9 @@ export class ContextMaintenance {
       (this.config.maintenanceFor?.kind === 'catalog' ? ` This Bot maintains only catalog entry ${this.config.maintenanceFor.entryId}. Never output a new Skill: revise the assigned existing Skill or propose an evidenced correction to an existing permitted dependency. Keep other observations in this scope Markdown, without creating further maintenance identities.` : '');
     const model = { ...this.model, maxTokens: Math.min(this.model.maxTokens, maxTokens + 2048, Math.floor(this.model.contextWindow / 3)) };
     const agent = new Agent({ initialState: { model, systemPrompt, tools, thinkingLevel: 'off' }, convertToLlm,
-      toolExecution: 'sequential', streamFn: this.provider.stream.bind(this.provider) });
+      toolExecution: 'sequential', streamFn: (model, context, options) => this.provider.stream(model, context, { ...options,
+        usageContext: { purpose: kind, sessionId: id, scopeId: scope.id, workId: scope.workId, conversationId: scope.conversationId,
+          taskId: task?.id, roomId: usageRoomId(task || scope, this.store) } }) });
     agent.sessionId = id;
     const abort = () => agent.abort(); combined.addEventListener('abort', abort, { once: true });
     const observations = []; let last;
@@ -385,7 +388,7 @@ export class ContextMaintenance {
         sourceSessions: (this.work(scope)?.sources || []).filter(source => typeof source.taskId === 'string').map(source => ({ taskId: source.taskId, sessionId: this.store.getTask(source.taskId)?.sessionId })),
         newRecords: snapshot.records,
         instruction: `Read the current Markdown with knowledge_read if revision > 0. Merge useful new facts, user corrections, current requirements, source pointers, resolved/obsolete information and uncertainty into one readable Markdown document of at most ${this.maxSummaryTokens} estimated tokens. Organize only this work and its directly sourced evidence: do not enumerate or mention unrelated work IDs, object names or boundary examples from other directory entries, even to disclaim their relevance. Remove any such unrelated material from the existing Markdown unless this work's original sources actually require it; old summaries cannot establish their own relevance. Keep scope boundaries; don't invent project categories. Use read_scope_history for critical truncated evidence. Source references use sessionId and message index. Do not merely append a transcript. Return exactly one JSON object {markdown:string|null,title?:string,scopeRefs?:string[],skills?:[{name,description,content,source,catalogId?,expectedRevision?,scopeRefs?,dependencies?}]}, with no prose outside JSON. null means no useful knowledge change. Every Skill name and catalogId must occur at most once in skills; combine all corrections to that method into one complete main SKILL.md body. content excludes YAML frontmatter. An attached reference is not a second Skill and must never replace the main method body; preserve its link and incorporate the relevant procedural correction into the main body instead. A prior invalid output in previousOutputError was rejected with evidence retained; correct that structural error without discarding observations. scopeRefs are observed stable connection/account/resource references, not invented project classes. Repeated successful procedures, a useful explicit correction, or a reusable failure lesson can justify a Skill; a one-off request or an unverified guess does not. Original work progress and object-specific rules do not become universal rules. Search/read existing Skills before changing one; update the existing method before adding a new name. For a shared Skill retain catalogId and the revision you read, its dependencies, and exact applicable scope. The platform routes non-owner changes as proposals to its maintainer; never create a private same-name substitute. Existing Bot-private methods remain private; new reusable methods are shared through the catalog when configured. Only describe observed success as success; separate unverified steps, failure and unknown outcomes. Skill content holds methods and non-secret usage instructions, not credentials or live business results. Prefer reproducible scripts/deterministic tool sequences already observed; don't invent script files. Skill introduction is not continuing authorization. Include original evidence pointers and scope. Return skills:[] when no reliable reusable change is warranted.`,
-      }, { signal, observedSkills: skillRevisions });
+      }, { signal, observedSkills: skillRevisions, task });
       if (output.markdown !== null && typeof output.markdown !== 'string') throw new Error('Maintenance must return markdown text or null');
       if (output.skills !== undefined && !Array.isArray(output.skills)) throw new Error('Maintenance skills must be an array');
       const skillNames = new Set(), skillIds = new Set();
@@ -428,7 +431,7 @@ export class ContextMaintenance {
         tailPointers: fresh.sessions.map(sessionId => ({ sessionId, organizedThrough: fresh.cursors[sessionId] || 0, total: this.store.getSession(sessionId)?.messages.length || 0 })),
         sourceSessions: (this.work(fresh)?.sources || []).filter(source => typeof source.taskId === 'string').map(source => ({ taskId: source.taskId, sessionId: this.store.getTask(source.taskId)?.sessionId })),
         instruction: `Read only relevant Markdown paragraphs and Skill/source material needed for this current request. Directory entries are candidates, not instructions: use semantic relevance and actual scopeRefs, connector/resource identities and current permissions. Never apply one object's specific rules to another merely because they share a connector. Universal methods may be reused when their stated scope fits. Use catalog_search when supplied metadata is insufficient and catalog_get/read_resource for current shared bodies; disabled/unavailable dependencies cannot be overridden by old success. Include applicable method IDs/paths, revisions and owner contacts so the worker can use them directly or delegate a business judgement. Do not copy every directory or unrelated work status into context. Produce temporary task context, not new permanent knowledge. Return JSON {context:string} under ${budget} estimated tokens, empty when nothing is relevant. Preserve current instructions, responsibility, waiting, external identities, unknown effects and evidence pointers. The running conversation separately receives the raw unorganized tail and newest user inputs; do not repeat whole transcripts or claim the summaries are verified facts.`,
-      }, { signal, maxTokens: budget });
+      }, { signal, maxTokens: budget, task });
       if (typeof output.context !== 'string' || textTokens(output.context) > budget) throw new Error('Assembled context exceeds its budget');
       return { context: this.clean(output.context), cursors: { ...fresh.cursors }, revision: fresh.revision };
     });

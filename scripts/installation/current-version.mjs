@@ -83,6 +83,7 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
     const path = join(dataRoot, 'bots', directory.name, 'config.json'); if (!existsSync(path)) continue;
     const config = await readJson(path);
     const record = botRecords.get(config.botId);
+    config.usage = { ledgerPath: join(dataRoot, 'usage.sqlite'), botName: record?.name || config.botId };
     const profile = record && await readJson(join(releaseRoot, 'roles', record.roleId || 'default', 'role.json'));
     if (record) {
       config.prompt = [await readFile(join(releaseRoot, 'roles', record.roleId || 'default', 'prompt.md'), 'utf8'), record.prompt ? `\n用户设定的身份与职责：\n${record.prompt}` : ''].filter(Boolean).join('\n');

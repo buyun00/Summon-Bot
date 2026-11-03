@@ -1,5 +1,7 @@
 import { AssistantMessageEventStream, calculateCost, collapseSystemMessages, getCurrentTools, getSystemMessageText, normalizeContext } from '@earendil-works/pi-ai';
 import { clampMaxTokensToContext } from '@earendil-works/pi-ai/api/simple-options';
+import { randomUUID } from 'node:crypto';
+import { reportedUsage, referenceCost } from './usage.mjs';
 const safeError = (error, config) => config.redact({ message: error?.message || String(error) }).message;
 
 const tokenCount = value => Number.isFinite(value) && value > 0 ? value : 0;
@@ -92,7 +94,7 @@ export class ModelProvider {
     this.controllers = new Set();
   }
 
-  async request(body, { deep = false, signal, timeoutMs, validate = result => result } = {}) {
+  async request(body, { deep = false, signal, timeoutMs, usageContext = {}, validate = result => result } = {}) {
     if (!this.config.apiKey) throw new Error('Model credential is not configured; supply model.apiKey or explicit model.apiKeyEnv');
     const controller = new AbortController();
     const abort = () => controller.abort();
@@ -103,7 +105,15 @@ export class ModelProvider {
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; controller.abort(); }, requestTimeout);
     const started = Date.now();
+    const record = { id: randomUUID(), botId: this.config.botId, ...usageContext, purpose: usageContext.purpose || 'other',
+      model: body.model || this.config.model, requestedModel: body.model || this.config.model, provider: this.config.provider,
+      startedAt: new Date(started).toISOString(), status: 'pending', ...reportedUsage(null),
+      thinking: deep, messageCount: body.messages?.length || 0, toolCount: body.tools?.length || 0, maxOutputTokens: body.max_tokens,
+      systemChars: (body.messages || []).filter(message => message.role === 'system').reduce((sum, message) => sum + JSON.stringify(message.content).length, 0),
+      toolDefinitionChars: JSON.stringify(body.tools || []).length };
+    const persist = () => this.config.recordUsage?.(record);
     try {
+      signal?.throwIfAborted(); persist();
       const response = await fetch(`${this.config.baseUrl}/chat/completions`, {
         method: 'POST', signal: controller.signal,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.config.apiKey}` },
@@ -112,6 +122,14 @@ export class ModelProvider {
       const raw = await response.text();
       let result;
       try { result = JSON.parse(raw); } catch { throw new Error(`Model 返回非 JSON (${response.status})`); }
+      record.httpStatus = response.status;
+      if (result && typeof result === 'object') {
+        Object.assign(record, reportedUsage(result.usage), { model: result.model || record.model, responseId: result.id || null,
+          finishReason: result.choices?.[0]?.finish_reason || null });
+        record.cost = referenceCost(record, record.requestedModel, this.config.provider === 'deepseek' && new URL(this.config.baseUrl).hostname === 'api.deepseek.com');
+        // Save reported billing before rejecting malformed or truncated content.
+        persist();
+      }
       if (!response.ok) throw new Error(`Model HTTP ${response.status}: ${result?.error?.code || result?.error?.type || ''} ${result?.error?.message || '调用失败'}`);
       if (!result || typeof result !== 'object') throw new Error('Model 返回无效响应');
       const usage = result.usage || {};
@@ -122,6 +140,7 @@ export class ModelProvider {
       this.status.cacheHitTokens += cacheHit;
       this.status.cacheMissTokens += tokenCount(usage.prompt_tokens) - cacheHit;
       const value = validate(result);
+      Object.assign(record, { status: 'succeeded', finishedAt: new Date().toISOString(), latencyMs: Date.now() - started }); persist();
       this.status.calls += 1;
       Object.assign(this.status, { connected: true, lastError: null, lastSuccessAt: new Date().toISOString(), lastLatencyMs: Date.now() - started, actualModel: result.model });
       return { result, value, latencyMs: Date.now() - started };
@@ -131,6 +150,8 @@ export class ModelProvider {
       this.status.lastError = timedOut && !signal?.aborted ? `Model request timed out (${requestTimeout} ms)`
         : aborted ? '模型调用已取消或服务正在停止' : safeError(error, this.config);
       this.status.connected = false;
+      Object.assign(record, { status: aborted && !timedOut ? 'cancelled' : 'failed', error: this.status.lastError,
+        finishedAt: new Date().toISOString(), latencyMs: Date.now() - started }); persist();
       const failure = new Error(this.status.lastError);
       if (timedOut && !signal?.aborted) failure.name = 'TimeoutError';
       else if (aborted) failure.name = 'AbortError';
@@ -142,12 +163,12 @@ export class ModelProvider {
     }
   }
 
-  async complete({ messages, deep = false, json = false, maxTokens, signal } = {}) {
+  async complete({ messages, deep = false, json = false, maxTokens, signal, usageContext } = {}) {
     const requestMessages = [...messages];
     if (json && !requestMessages.some(message => /json/i.test(message.content || ''))) requestMessages.unshift({ role: 'system', content: 'Return valid JSON.' });
     const { result, value: content, latencyMs } = await this.request({ messages: requestMessages,
       max_tokens: maxTokens || this.config.maxTokens || 393216, ...(json ? { response_format: { type: 'json_object' } } : {}),
-    }, { deep, signal, validate: result => {
+    }, { deep, signal, usageContext, validate: result => {
       const choice = responseChoice(result);
       if (typeof choice.message.content !== 'string' || !choice.message.content.trim()) throw new Error(`Model 没有返回正文 (${choice.finish_reason})`);
       return choice.message.content;
@@ -171,7 +192,7 @@ export class ModelProvider {
         if (options.toolChoice) body.tool_choice = options.toolChoice;
         stream.push({ type: 'start', partial: message });
         await this.request({ ...body, model: model.id, max_tokens: maxTokens }, {
-          deep, signal: options.signal, timeoutMs: options.timeoutMs,
+          deep, signal: options.signal, timeoutMs: options.timeoutMs, usageContext: options.usageContext,
           validate: result => {
             message.usage = usageFor(result, model);
             const choice = responseChoice(result, true);

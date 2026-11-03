@@ -9,13 +9,13 @@ import { createReleasePublisher } from './release-publisher.mjs';
 const defaultFrontend = fileURLToPath(new URL('../frontend/', import.meta.url));
 const assets = new Map([
   ['/', ['index.html', 'text/html']],
-  ...['app', 'cache', 'avatars', 'motion', 'clients', 'summon-brand'].map(name => [`/${name}.js`, [`${name}.js`, 'text/javascript']]),
-  ...['style', 'mobile', 'group-chat', 'summon-brand', 'motion', 'clients'].map(name => [`/${name}.css`, [`${name}.css`, 'text/css']]),
+  ...['app', 'cache', 'avatars', 'motion', 'clients', 'usage', 'summon-brand'].map(name => [`/${name}.js`, [`${name}.js`, 'text/javascript']]),
+  ...['style', 'mobile', 'group-chat', 'summon-brand', 'motion', 'clients', 'usage'].map(name => [`/${name}.css`, [`${name}.css`, 'text/css']]),
   ['/icons/user-avatar.jpg', ['icons/user-avatar.jpg', 'image/jpeg']],
   ...['icon-192', 'icon-512', 'icon-maskable-192', 'icon-maskable-512', 'apple-touch-icon']
     .map(name => [`/icons/${name}.png`, [`icons/${name}.png`, 'image/png']]),
 ]);
-const api = /^\/api\/(?:health|state|stream|bots|rooms|messages|memories|knowledge|nodes|edges|routines|works|agent-runs|attachments|events|jobs|catalog|capabilities)(?:\/|$)/;
+const api = /^\/api\/(?:health|state|stream|usage|bots|rooms|messages|memories|knowledge|nodes|edges|routines|works|agent-runs|attachments|events|jobs|catalog|capabilities)(?:\/|$)/;
 const hopHeaders = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade']);
 const json = (res, status, value) => {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });

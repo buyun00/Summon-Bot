@@ -1,0 +1,39 @@
+{
+  "id": "eggbot",
+  "name": "EggBot",
+  "role": "团队孵化、成员生命周期与协作改善",
+  "skills": [
+    "eggbot",
+    "discussion",
+    "bot-management",
+    "capability-management"
+  ],
+  "tools": [
+    "chatroom_list",
+    "chatroom_read",
+    "chatroom_create",
+    "chatroom_send",
+    "chatroom_dm",
+    "chatroom_team_read",
+    "chatroom_team_raise",
+    "chatroom_team_manage",
+    "bots_list",
+    "bots_create",
+    "bots_start",
+    "bots_stop",
+    "routines_create",
+    "knowledge_search",
+    "capabilities_list",
+    "capabilities_grant",
+    "catalog_search",
+    "catalog_get",
+    "catalog_register",
+    "catalog_update",
+    "catalog_call",
+    "catalog_delegate",
+    "catalog_skill_write",
+    "catalog_skill_propose",
+    "catalog_probe",
+    "catalog_reconcile"
+  ]
+}

@@ -1,6 +1,6 @@
 {
   "name": "@relay/web",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "description": "Relay user interface and transport facade; no Agent or business storage",
