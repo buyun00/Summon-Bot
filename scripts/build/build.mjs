@@ -50,7 +50,10 @@ export async function buildRelease({ sourceRoot = projectRoot, releaseRoot, bund
   if (committedOnly) {
     const archive = join(stage, 'source.tar');
     if (git.status !== 0) throw new Error('Cannot determine release commit');
-    const exported = spawnSync('git', ['-C', sourceRoot, 'archive', '--format=tar', `--output=${archive}`, git.stdout.trim(), ...directories, ...rootFiles, ...docsFiles.filter(name => existsSync(join(sourceRoot, 'docs', name))).map(name => `docs/${name}`)], { encoding: 'utf8', windowsHide: true });
+    const docListing = spawnSync('git', ['-C', sourceRoot, 'ls-tree', '--name-only', `${git.stdout.trim()}:docs`], { encoding: 'utf8', windowsHide: true });
+    if (docListing.status !== 0) throw new Error('Cannot list committed release documents');
+    const committedDocs = new Set(docListing.stdout.trim().split(/\r?\n/));
+    const exported = spawnSync('git', ['-C', sourceRoot, 'archive', '--format=tar', `--output=${archive}`, git.stdout.trim(), ...directories, ...rootFiles, ...docsFiles.filter(name => committedDocs.has(name)).map(name => `docs/${name}`)], { encoding: 'utf8', windowsHide: true });
     if (exported.status !== 0) throw new Error(`Cannot export committed release source: ${exported.stderr}`);
     const extracted = spawnSync('tar', ['-xf', archive, '-C', stage,
       ...['*/test', '*/tests', '*/node_modules', '*/coverage', '*/dist', '*/.relay', '*/.env*', '*.sqlite*', '*.log', '*.tmp'].map(pattern => `--exclude=${pattern}`)], { encoding: 'utf8', windowsHide: true });
