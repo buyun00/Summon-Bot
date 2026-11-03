@@ -3,6 +3,8 @@ const { join } = require('node:path');
 const { autoUpdater } = require('electron-updater');
 const release = require('./release.json');
 const origin = new URL(release.appUrl).origin;
+const localUpdateFeed = new URL(release.updatePath, 'http://127.0.0.1:8787').href;
+const remoteUpdateFeed = new URL(release.updatePath, release.appUrl).href;
 let window, timer, checking;
 let update = { status: 'idle', currentVersion: app.getVersion() };
 
@@ -18,7 +20,29 @@ async function checkForUpdates() {
   if (checking || ['downloading', 'downloaded'].includes(update.status)) return update;
   if (!app.isPackaged) return update;
   checking = true;
-  try { await autoUpdater.checkForUpdates(); }
+  setUpdate({ status: 'checking', message: '', percent: 0 });
+  try {
+    for (const feed of [localUpdateFeed, remoteUpdateFeed]) {
+      try {
+        if (feed === localUpdateFeed) {
+          // A short probe avoids the updater's connection retries on other PCs.
+          const channel = process.platform === 'darwin' ? 'latest-mac.yml' : 'latest.yml';
+          const response = await fetch(new URL(channel, feed), {
+            method: 'HEAD', cache: 'no-store', redirect: 'error', signal: AbortSignal.timeout(1200),
+          });
+          if (!response.ok) throw new Error(`Local update unavailable (HTTP ${response.status})`);
+        }
+        autoUpdater.setFeedURL({ provider: 'generic', url: feed, useMultipleRangeRequest: false });
+        const result = await autoUpdater.checkForUpdates();
+        // Await the download too, so a missing local package also falls back.
+        if (result?.isUpdateAvailable) await autoUpdater.downloadUpdate(result.cancellationToken);
+        return update;
+      } catch (error) {
+        if (feed === remoteUpdateFeed) throw error;
+        setUpdate({ status: 'checking', message: '', percent: 0 });
+      }
+    }
+  }
   catch (error) { setUpdate({ status: 'error', message: error.message }); }
   finally { checking = false; }
   return update;
@@ -49,7 +73,7 @@ function createWindow() {
   });
   window.loadURL(release.appUrl);
 }
-autoUpdater.autoDownload = true;
+autoUpdater.autoDownload = false;
 autoUpdater.autoInstallOnAppQuit = false;
 autoUpdater.disableDifferentialDownload = true;
 autoUpdater.on('checking-for-update', () => setUpdate({ status: 'checking', message: '' }));
@@ -57,7 +81,9 @@ autoUpdater.on('update-available', info => setUpdate({ status: 'downloading', ve
 autoUpdater.on('update-not-available', () => setUpdate({ status: 'current', message: '' }));
 autoUpdater.on('download-progress', progress => setUpdate({ status: 'downloading', percent: Math.round(progress.percent) }));
 autoUpdater.on('update-downloaded', info => setUpdate({ status: 'downloaded', version: info.version, percent: 100 }));
-autoUpdater.on('error', error => setUpdate({ status: 'error', message: error.message }));
+autoUpdater.on('error', error => {
+  if (!checking) setUpdate({ status: 'error', message: error.message });
+});
 ipcMain.handle('relay:desktop-info', event => { trusted(event); return { version: app.getVersion(), platform: process.platform, arch: process.arch, update }; });
 ipcMain.handle('relay:check-update', event => { trusted(event); return checkForUpdates(); });
 ipcMain.handle('relay:install-update', event => { trusted(event); if (update.status !== 'downloaded') return false; setImmediate(() => autoUpdater.quitAndInstall(true, true)); return true; });

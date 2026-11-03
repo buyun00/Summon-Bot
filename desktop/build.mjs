@@ -8,7 +8,8 @@ export async function buildDesktop({ platform, arch, output }) {
   if (platform !== (process.platform === 'darwin' ? 'macos' : 'windows')) throw new Error('Build desktop packages on their target operating system');
   const release = JSON.parse(await readFile(join(root, 'release.json'), 'utf8'));
   const electronChecksums = JSON.parse(await readFile(join(root, 'desktop/node_modules/electron/checksums.json'), 'utf8'));
-  await writeFile(join(root, 'desktop/release.json'), JSON.stringify(release, null, 2) + '\n');
+  const updatePath = `/api/releases/${platform}/${arch}/`;
+  await writeFile(join(root, 'desktop/release.json'), JSON.stringify({ ...release, updatePath }, null, 2) + '\n');
   await mkdir(output, { recursive: true });
   const target = platform === 'macos' ? builder.Platform.MAC : builder.Platform.WINDOWS;
   return builder.build({ projectDir: join(root, 'desktop'), targets: target.createTarget(undefined, builder.Arch[arch]), publish: 'never',
@@ -20,7 +21,7 @@ export async function buildDesktop({ platform, arch, output }) {
       files: ['main.cjs', 'preload.cjs', 'release.json', 'package.json'],
       extraMetadata: { version: release.version },
       artifactName: 'Relay-${version}-${os}-${arch}.${ext}',
-      publish: [{ provider: 'generic', url: `${release.appUrl}/api/releases/${platform}/${arch}/`, useMultipleRangeRequest: false }],
+      publish: [{ provider: 'generic', url: new URL(updatePath, release.appUrl).href, useMultipleRangeRequest: false }],
       win: { target: ['nsis'], icon: join(root, 'web/frontend/icons/icon-512.png') },
       nsis: { oneClick: true, perMachine: false, differentialPackage: false, runAfterFinish: false,
         createDesktopShortcut: true, deleteAppDataOnUninstall: false },
