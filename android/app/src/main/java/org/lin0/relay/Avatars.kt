@@ -6,6 +6,7 @@ import android.util.Base64
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.*
@@ -88,34 +89,43 @@ fun LegacyCrewBotAvatar(shape:String,color:String,image:String?=null,size:Dp=48.
 }
 
 @Composable
-fun MemberAvatar(bot:RelayBot?,size:Dp=48.dp,modifier:Modifier=Modifier,motion:String="idle") {
+fun MemberAvatar(bot:RelayBot?,size:Dp=48.dp,modifier:Modifier=Modifier,motion:String="idle",groupOutline:Boolean=false) {
     val a=bot?.resolvedAvatar ?: RelayAvatar()
-    BotAvatar(a.shape,a.color,a.image,size,modifier,a.secondary,a.ink,a.paper,motion)
+    BotAvatar(a.shape,a.color,a.image,size,modifier,a.secondary,a.ink,a.paper,motion,groupOutline=groupOutline)
 }
 
 
 
 @Composable
 fun RoomAvatar(room: RelayRoom, bots: List<RelayBot>, size: Dp = 86.dp) {
-    val members = room.members.mapNotNull { id -> bots.firstOrNull { it.id == id } }.take(3)
-    Box(Modifier.size(size)) {
+    val members = room.members.filter { id -> id == "user" || bots.any { it.id == id } }.take(4)
+    Box(Modifier.size(size), contentAlignment = androidx.compose.ui.Alignment.Center) {
         if (members.isEmpty()) {
-            Box(
-                Modifier
-                    .size(size * 0.55f)
-                    .align(androidx.compose.ui.Alignment.Center)
-                    .clip(androidx.compose.foundation.shape.CircleShape)
-                    .background(Color(0xFF3A3A3C)),
-            )
+            Box(Modifier.size(size * 0.55f).clip(androidx.compose.foundation.shape.CircleShape).background(Color(0xFF3A3A3C)))
         } else {
-            members.forEachIndexed { index, bot ->
-                val child = if (members.size == 1) size else size * 0.62f
-                val x = if (members.size == 1) 0.dp else if (index == 0) 0.dp else if (index == 1) -size * 0.22f else size * 0.22f
-                val y = if (members.size == 1) 0.dp else if (index == 0) -size * 0.21f else size * 0.23f
-                MemberAvatar(bot, child, Modifier.offset(x, y))
+            members.forEachIndexed { index, id ->
+                val child = if (members.size == 1) size else size * (if (members.size == 2) 0.66f else 0.58f)
+                val x = when {
+                    members.size == 1 || (members.size == 3 && index == 0) -> 0.dp
+                    members.size == 2 -> size * (if (index == 0) -0.17f else 0.17f)
+                    else -> size * (if (index % 2 == 0) -0.21f else 0.21f)
+                }
+                val y = when (members.size) {
+                    1 -> 0.dp
+                    2 -> size * (if (index == 0) -0.17f else 0.17f)
+                    else -> size * (if (index < (if (members.size == 4) 2 else 1)) -0.21f else 0.21f)
+                }
+                Box(Modifier.offset(x, y).size(child), contentAlignment = androidx.compose.ui.Alignment.Center) {
+                    if (id == "user") {
+                        androidx.compose.material3.Text("我", modifier = Modifier.size(child * 0.86f).clip(androidx.compose.foundation.shape.CircleShape).background(Color(0xFFE8E8E8)).border(4.dp,Color.White,androidx.compose.foundation.shape.CircleShape).wrapContentSize(), color = Color(0xFF555555))
+                    } else {
+                        MemberAvatar(bots.first { it.id == id }, child, groupOutline=true)
+                    }
+                }
             }
         }
     }
+
 }
 
 @Composable

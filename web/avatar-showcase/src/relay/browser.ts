@@ -10,23 +10,26 @@ function eyesColor(color:string,paper:string){const channels=[1,3,5].map(i=>pars
 class PaperAvatar {
   svg:SVGElement;rig:PaperRig;appearance:Appearance;time=0;seen=0;requested='idle';completedUntil=0;preview=false;nextExpression=0
   private body:SVGElement;private backing:SVGElement;private edge:SVGElement;private maskBody:SVGElement;private eyes:SVGElement[]
+  private groupOutline:SVGElement;private groupBackingOutline:SVGElement
   private backArcs:SVGElement;private frontArcs:SVGElement
   private palette:Record<string,string>={};private paletteFrom:Record<string,string>={};private paletteTarget:Record<string,string>={};private paletteChanged=0
   constructor(appearance:Appearance,size:number,motion:string){
     this.appearance=appearance;this.rig=new PaperRig(appearance.shape,motion);this.requested=motion
     const id=`paper-avatar-${++serial}`
-    this.svg=node('svg',{xmlns:ns,viewBox:'-158 -158 316 316',width:size,height:size,'aria-hidden':'true',class:'relay-bot-face',style:'display:block;flex:none;overflow:visible'})
+    this.svg=node('svg',{xmlns:ns,viewBox:'-105.333 -105.333 210.666 210.666',width:size,height:size,'aria-hidden':'true',class:'relay-bot-face',style:'display:block;flex:none;overflow:visible'})
     const defs=node('defs'),mask=node('mask',{id:`${id}-mask`,maskUnits:'userSpaceOnUse',x:-158,y:-158,width:316,height:316})
     this.maskBody=node('path',{fill:'#fff'});mask.append(this.maskBody)
     this.eyes=[node('path',{fill:'#000'}),node('path',{fill:'#000'})];mask.append(...this.eyes);defs.append(mask)
     const filter=node('filter',{id:`${id}-grain`,x:'0%',y:'0%',width:'100%',height:'100%','color-interpolation-filters':'sRGB'})
     filter.append(node('feTurbulence',{type:'fractalNoise',baseFrequency:'0.76 0.59',numOctaves:3,seed:12,stitchTiles:'stitch'}),node('feColorMatrix',{type:'saturate',values:0}));defs.append(filter)
     this.backArcs=node('g');this.frontArcs=node('g')
+    this.groupOutline=node('path',{class:'paper-avatar-outline',display:'none'})
+    this.groupBackingOutline=node('path',{class:'paper-avatar-outline',display:'none',transform:'translate(4.5 5.5) rotate(-3)'})
     this.backing=node('path',{transform:'translate(4.5 5.5) rotate(-3)',stroke:'#CFC4AB','stroke-width':.65})
     this.body=node('path');this.edge=node('path',{fill:'none','stroke-opacity':.16,'stroke-width':.75})
     const ink=node('g',{mask:`url(#${id}-mask)`}),paint=node('rect',{x:-158,y:-158,width:316,height:316,'data-paper-fill':''})
     ink.append(paint,node('rect',{x:-158,y:-158,width:316,height:316,filter:`url(#${id}-grain)`,opacity:.15,style:'mix-blend-mode:soft-light'}))
-    this.svg.append(defs,this.backArcs,this.backing,this.body,ink,this.edge,this.frontArcs)
+    this.svg.append(defs,this.backArcs,this.groupBackingOutline,this.groupOutline,this.backing,this.body,ink,this.edge,this.frontArcs)
     this.setAppearance(appearance);this.draw(this.rig.sample(0))
   }
   setAppearance(value:Appearance){
@@ -52,7 +55,7 @@ class PaperAvatar {
     arcs.forEach((arc,index)=>{let path=host.children[index];if(!path){path=node('path',{fill:'none','stroke-linecap':'round'});host.append(path)}path.setAttribute('d',arc[half]);path.setAttribute('stroke',this.appearance.color);path.setAttribute('stroke-width',String(arc.width));path.setAttribute('opacity',String(arc.opacity*.8))})
   }
   draw(frame:BotFrame){
-    for(const part of [this.body,this.backing,this.edge,this.maskBody])part.setAttribute('d',frame.bodyPath)
+    for(const part of [this.body,this.backing,this.edge,this.maskBody,this.groupOutline,this.groupBackingOutline])part.setAttribute('d',frame.bodyPath)
     frame.eyes.forEach((eye,index)=>{const path=this.eyes[index]!;path.setAttribute('d',eye.d);path.setAttribute('transform',eye.matrix);path.setAttribute('opacity',String(eye.alpha))})
     this.arcs(this.backArcs,frame.arcs,'back');this.arcs(this.frontArcs,frame.arcs,'front')
   }

@@ -20,6 +20,7 @@ struct BotAvatar:View {
     var paper:String?=nil
     var motion:String="idle"
     var animated:Bool=true
+    var groupOutline:Bool=false
     private var role:String {PaperLibrary.role(shape)}
     private var decodedImage:UIImage? {
         guard let image,let comma=image.firstIndex(of:","),["data:image/png;base64","data:image/jpeg;base64","data:image/webp;base64"].contains(String(image[..<comma])),let bytes=Data(base64Encoded:String(image[image.index(after:comma)...])) else {return nil}
@@ -27,7 +28,7 @@ struct BotAvatar:View {
     }
     var body:some View {
         Group {
-            if let bitmap=decodedImage {Image(uiImage:bitmap).resizable().scaledToFill().frame(width:size,height:size).clipShape(RoundedRectangle(cornerRadius:size*0.22))}
+            if let bitmap=decodedImage {Image(uiImage:bitmap).resizable().scaledToFill().frame(width:size,height:size).clipShape(RoundedRectangle(cornerRadius:size*0.22)).overlay { if groupOutline { RoundedRectangle(cornerRadius:size*0.22).stroke(.white,lineWidth:8) } }}
             else {Canvas {context,bounds in draw(context,bounds)}}
         }.frame(width:size,height:size).accessibilityHidden(true)
         .task(id: "\(shape)-\(color)-\(secondary ?? "")-\(ink ?? "")-\(paper ?? "")-\(reduceMotion)-\(animated)") {
@@ -56,9 +57,15 @@ struct BotAvatar:View {
         let frame=animated && !reduceMotion ? driver.frame ?? PaperLibrary.frame(role:role,state:motion,time:0) : PaperLibrary.frame(role:role,state:motion,time:0)
         let appearance = look ?? PaperLook.make(shape: shape, color: color, secondary: secondary, ink: ink, paper: paper)
         let body=appearance.body,paint=appearance.color(0),backing=appearance.color(1),edge=appearance.color(2),eyes=appearance.color(3)
-        var context=input;context.scaleBy(x:bounds.width/316,y:bounds.height/316);context.translateBy(x:158,y:158)
+        var context=input;context.translateBy(x:bounds.width/2,y:bounds.height/2);context.scaleBy(x:bounds.width/316*1.5,y:bounds.height/316*1.5)
         let arcs=motion == "work" ? PaperLibrary.arcs(time:driver.age) : []
         for arc in arcs {var c=context;c.opacity=arc.opacity;c.stroke(arc.back,with:.color(paint),style:StrokeStyle(lineWidth:arc.width,lineCap:.round))}
+        if groupOutline {
+            let stroke=StrokeStyle(lineWidth:8*316/(bounds.width*1.5),lineJoin:.round)
+            var backOutline=context;backOutline.translateBy(x:4.5,y:5.5);backOutline.rotate(by:.degrees(-3));backOutline.concatenate(frame.transform)
+            backOutline.fill(body,with:.color(.white));backOutline.stroke(body,with:.color(.white),style:stroke)
+            var outline=context;outline.concatenate(frame.transform);outline.fill(body,with:.color(.white));outline.stroke(body,with:.color(.white),style:stroke)
+        }
         var back=context;back.translateBy(x:4.5,y:5.5);back.rotate(by:.degrees(-3));back.concatenate(frame.transform);back.fill(body,with:.color(backing));back.stroke(body,with:.color(Color(relayHex:"#CFC4AB")),lineWidth:0.65)
         var material=context;material.concatenate(frame.transform);material.opacity=frame.alpha;material.fill(body,with:.color(paint));material.stroke(body,with:.color(edge.opacity(0.16)),lineWidth:0.75)
         var grain=material;grain.clip(to:body)

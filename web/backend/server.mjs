@@ -8,7 +8,7 @@ const defaultFrontend = fileURLToPath(new URL('../frontend/', import.meta.url));
 const assets = new Map([
   ['/', ['index.html', 'text/html']],
   ...['app', 'cache', 'avatars', 'motion', 'pwa', 'sw', 'summon-brand'].map(name => [`/${name}.js`, [`${name}.js`, 'text/javascript']]),
-  ...['style', 'mobile', 'group-chat', 'summon-brand'].map(name => [`/${name}.css`, [`${name}.css`, 'text/css']]),
+  ...['style', 'mobile', 'group-chat', 'summon-brand', 'motion'].map(name => [`/${name}.css`, [`${name}.css`, 'text/css']]),
   ['/manifest.webmanifest', ['manifest.webmanifest', 'application/manifest+json']],
   ['/offline.html', ['offline.html', 'text/html']],
   ['/icons/user-avatar.jpg', ['icons/user-avatar.jpg', 'image/jpeg']],

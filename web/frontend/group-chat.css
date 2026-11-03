@@ -42,14 +42,14 @@ button:focus-visible, a:focus-visible, select:focus-visible { outline-color: #00
 .sidebar-section-title { color: #7c817b; font-size: calc(16px * var(--ui-font-scale)); font-weight: 500; margin: 18px 12px 18px; line-height: 1.5; }
 .sidebar-section + .sidebar-section { margin-top: 32px; padding-top: 0; position: relative; }
 .sidebar-section + .sidebar-section:before { display: none; }
-.group-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); align-items: start; gap: 14px 10px; padding: 4px 0 10px; }
-.group-tile { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; width: 100%; min-height: 136px; padding: 14px 8px 12px; gap: 10px; text-align: center; border-radius: 18px; }
+.group-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); align-items: start; gap: 14px 10px; padding: 4px 0 10px; }
+.group-tile { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; width: 100%; min-height: 156px; padding: 14px 8px 12px; gap: 10px; text-align: center; border-radius: 18px; }
 .group-tile.selected { background: #e8e8e4; }
 .group-tile:hover { background: #edede9; }
-.group-tile > .group-avatar { width: 76px !important; height: 76px !important; background: transparent; border-radius: 0; }
+.group-tile > .group-avatar { width: 96px !important; height: 96px !important; background: transparent; border-radius: 0; }
 .group-avatar { isolation: isolate; background: transparent; border: 0; border-radius: 0; box-shadow: none; }
 .group-avatar-empty { display: flex; align-items: center; justify-content: center; color: #171a22; }
-.group-face { width: 56%; height: 56%; }
+.group-face { width: 58%; height: 58%; }
 .group-face.pos-0 { left: 0; top: 0; z-index: 1; }
 .group-face.pos-1 { right: 0; top: 0; z-index: 2; }
 .group-face.pos-2 { left: 0; bottom: 0; z-index: 3; }
@@ -57,14 +57,15 @@ button:focus-visible, a:focus-visible, select:focus-visible { outline-color: #00
 .group-face .bot-avatar, .group-face .user-avatar { filter: none; border-radius: 0; background: transparent; }
 .group-avatar .group-face > .bot-avatar { width: 100% !important; height: 100% !important; }
 .group-avatar .group-face .relay-bot-face { width: 100% !important; height: 100% !important; }
-.group-face svg.relay-bot-face { transform: scale(1.12); transform-origin: center; }
-.group-avatar .group-face img.relay-bot-face, .group-avatar .group-face > .user-avatar { width: 80% !important; height: 80% !important; border: 0; border-radius: 50% !important; box-shadow: none; object-fit: cover; }
+.group-face svg.relay-bot-face { transform: none; transform-origin: center; }
+.group-face .paper-avatar-outline { display: block; fill: #fff; stroke: #fff; stroke-width: 8px; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.group-avatar .group-face img.relay-bot-face, .group-avatar .group-face > .user-avatar { width: 86% !important; height: 86% !important; border: 0; border-radius: 50% !important; box-shadow: 0 0 0 4px #fff; object-fit: cover; }
 .group-avatar[data-count="1"] .group-face { width: 100%; height: 100%; left: 0; top: 0; right: auto; bottom: auto; }
 .group-avatar[data-count="1"] svg.relay-bot-face { transform: none; }
-.group-avatar[data-count="2"] .group-face { width: 68%; height: 68%; }
+.group-avatar[data-count="2"] .group-face { width: 66%; height: 66%; }
 .group-avatar[data-count="2"] .pos-0 { left: 0; top: 0; }
 .group-avatar[data-count="2"] .pos-1 { right: 0; bottom: 0; top: auto; }
-.group-avatar[data-count="3"] .pos-0 { left: 22%; top: 0; }
+.group-avatar[data-count="3"] .pos-0 { left: 21%; top: 0; }
 .group-avatar[data-count="3"] .pos-1 { right: 0; bottom: 0; top: auto; }
 .group-avatar[data-count="3"] .pos-2 { left: 0; bottom: 0; }
 .group-copy { display: flex; flex-direction: column; align-items: center; width: 100%; min-width: 0; gap: 0; }
@@ -326,7 +327,7 @@ button:focus-visible, a:focus-visible, select:focus-visible { outline-color: #00
   .main-content { overscroll-behavior: contain; min-height: 0; }
   .sidebar-toolbar { height: 83px; padding: 18px 24px; }
   .sidebar-section-title { font-size: calc(16px * var(--ui-font-scale)); }
-  .group-tile { min-height: 136px; }
+  .group-tile { min-height: 156px; }
   .group-copy strong { font-size: calc(16px * var(--ui-font-scale)); }
   .group-preview { font-size: calc(15px * var(--ui-font-scale)); }
   .contact-row { min-height: 88px; }

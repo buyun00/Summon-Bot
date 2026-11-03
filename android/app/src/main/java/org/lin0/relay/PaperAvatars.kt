@@ -6,6 +6,7 @@ import org.json.JSONObject
 import org.json.JSONArray
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.*
@@ -93,9 +94,9 @@ object PaperLibrary {
 }
 
 @Composable
-fun BotAvatar(shape:String,color:String,image:String?=null,size:Dp=48.dp,modifier:Modifier=Modifier,secondary:String?=null,ink:String?=null,paper:String?=null,motion:String="idle",animated:Boolean=true){
+fun BotAvatar(shape:String,color:String,image:String?=null,size:Dp=48.dp,modifier:Modifier=Modifier,secondary:String?=null,ink:String?=null,paper:String?=null,motion:String="idle",animated:Boolean=true,groupOutline:Boolean=false){
     val bitmap=remember(image){decodeDataImage(image)}
-    if(bitmap!=null){Image(bitmap.asImageBitmap(),null,modifier.size(size).clip(RoundedCornerShape(size*.22f)),contentScale=ContentScale.Crop);return}
+    if(bitmap!=null){Image(bitmap.asImageBitmap(),null,modifier.size(size).clip(RoundedCornerShape(size*.22f)).then(if(groupOutline) Modifier.border(4.dp,Color.White,RoundedCornerShape(size*.22f)) else Modifier),contentScale=ContentScale.Crop);return}
     val context=LocalContext.current;val role=PaperLibrary.role(shape)
     val model=remember(role){PaperLibrary.model(context,role)}
     var frame by remember{mutableStateOf(PaperLibrary.frame(model,motion,0f))}
@@ -131,13 +132,18 @@ fun BotAvatar(shape:String,color:String,image:String?=null,size:Dp=48.dp,modifie
     val fibers=remember{val rows=PaperLibrary.data(context).getJSONArray("fibers");(0 until rows.length()).map{PaperLibrary.floats(rows.getJSONArray(it))}}
     Canvas(modifier.size(size)){
         drawIntoCanvas{wrapper->
-            val c=wrapper.nativeCanvas;val save=c.save();c.scale(this.size.width/316,this.size.height/316);c.translate(158f,158f)
+            val c=wrapper.nativeCanvas;val save=c.save();c.translate(this.size.width/2,this.size.height/2);c.scale(this.size.width/316*1.5f,this.size.height/316*1.5f)
             val paint=android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply{strokeCap=android.graphics.Paint.Cap.ROUND;strokeJoin=android.graphics.Paint.Join.ROUND}
             fun fill(path:Path,slot:Int){paint.style=android.graphics.Paint.Style.FILL;paint.color=look.colors[slot].toArgb();c.drawPath(path,paint)}
             fun matrix(a:FloatArray)=android.graphics.Matrix().apply{setValues(floatArrayOf(a[0],a[2],a[4],a[1],a[3],a[5],0f,0f,1f))}
             val arcs=if(motion=="work")PaperLibrary.arcs(context,age) else emptyList()
             fun drawArcs(front:Boolean){for(a in arcs){paint.style=android.graphics.Paint.Style.STROKE;paint.color=look.colors[0].toArgb();paint.alpha=(a.alpha*255).toInt();paint.strokeWidth=a.width;c.drawPath(if(front)a.front else a.back,paint)};paint.alpha=255}
             drawArcs(false)
+            if(groupOutline){
+                paint.style=android.graphics.Paint.Style.FILL_AND_STROKE;paint.color=android.graphics.Color.WHITE;paint.strokeWidth=8.dp.toPx()*316/(this.size.width*1.5f)
+                val backOutline=c.save();c.translate(4.5f,5.5f);c.rotate(-3f);c.concat(matrix(displayed.body));c.drawPath(outline,paint);c.restoreToCount(backOutline)
+                c.drawPath(Path(outline).apply{transform(matrix(displayed.body))},paint)
+            }
             val back=c.save();c.translate(4.5f,5.5f);c.rotate(-3f);c.concat(matrix(displayed.body));fill(outline,1);c.restoreToCount(back)
             val body=Path(outline).apply{transform(matrix(displayed.body))}
             fill(body,0);paint.style=android.graphics.Paint.Style.STROKE;paint.color=look.colors[2].toArgb();paint.alpha=40;paint.strokeWidth=.75f;c.drawPath(body,paint);paint.alpha=255

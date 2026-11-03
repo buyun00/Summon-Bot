@@ -9,11 +9,12 @@ struct MemberAvatar: View {
     let bot: RelayBot?
     var size: CGFloat = 48
     var motion: String = "idle"
+    var groupOutline: Bool = false
 
     var body: some View {
         let avatar = bot?.resolvedAvatar ?? RelayAvatar()
         BotAvatar(shape: avatar.shape, color: avatar.color,
-                  image: avatar.image, size: size, secondary: avatar.secondary, ink: avatar.ink, paper: avatar.paper, motion: motion)
+                  image: avatar.image, size: size, secondary: avatar.secondary, ink: avatar.ink, paper: avatar.paper, motion: motion, groupOutline: groupOutline)
     }
 }
 
@@ -22,20 +23,32 @@ struct RoomAvatar: View {
     let room: RelayRoom
     var size: CGFloat = 86
 
-    private var members: [RelayBot] {
-        room.members.compactMap { id in store.bots.first { $0.id == id } }.prefix(3).map { $0 }
+    private var members: [String] {
+        Array(room.members.filter { id in id == "user" || store.bots.contains { $0.id == id } }.prefix(4))
     }
 
     var body: some View {
         ZStack {
             if members.isEmpty {
                 Image(systemName: "bubble.left.and.bubble.right.fill")
-                    .font(.system(size: size * 0.55))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: size * 0.55)).foregroundStyle(.secondary)
             } else {
-                ForEach(Array(members.enumerated()), id: \.element.id) { index, bot in
-                    MemberAvatar(bot: bot, size: members.count == 1 ? size : size * 0.62)
-                        .offset(x: xOffset(index), y: yOffset(index))
+                ForEach(Array(members.enumerated()), id: \.element) { index, id in
+                    let child = members.count == 1 ? size : size * (members.count == 2 ? 0.66 : 0.58)
+                    Group {
+                        if id == "user" {
+                            Text(String(store.settings.userName.prefix(1)))
+                                .font(.system(size: child * 0.25))
+                                .frame(width: child * 0.86, height: child * 0.86)
+                                .background(Color(uiColor: .systemGray5), in: Circle())
+                                .overlay(Circle().stroke(.white, lineWidth: 8))
+                                .frame(width: child, height: child)
+                        } else {
+                            MemberAvatar(bot: store.bots.first { $0.id == id }, size: child, groupOutline: true)
+                        }
+                    }
+                    .offset(x: xOffset(index), y: yOffset(index))
+                    .zIndex(Double(index))
                 }
             }
         }
@@ -44,12 +57,18 @@ struct RoomAvatar: View {
     }
 
     private func xOffset(_ index: Int) -> CGFloat {
-        members.count == 1 ? 0 : (index == 0 ? 0 : (index == 1 ? -size * 0.22 : size * 0.22))
+        if members.count == 1 { return 0 }
+        if members.count == 2 { return size * (index == 0 ? -0.17 : 0.17) }
+        if members.count == 3 && index == 0 { return 0 }
+        return size * (index % 2 == 0 ? -0.21 : 0.21)
     }
 
     private func yOffset(_ index: Int) -> CGFloat {
-        members.count == 1 ? 0 : (index == 0 ? -size * 0.21 : size * 0.23)
+        if members.count == 1 { return 0 }
+        if members.count == 2 { return size * (index == 0 ? -0.17 : 0.17) }
+        return size * (index < (members.count == 4 ? 2 : 1) ? -0.21 : 0.21)
     }
+
 }
 
 struct InlineError: View {

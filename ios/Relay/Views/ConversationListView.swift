@@ -129,7 +129,7 @@ struct ConversationListView: View {
             ForEach(groups) { room in
                 Button { openRoom(room.id) } label: {
                     VStack(spacing: 12) {
-                        RoomAvatar(room: room, size: 90)
+                        RoomAvatar(room: room, size: 96)
                         Text(room.name).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                         if room.kind == "deep" {
                             Text(room.status == "concluded" ? "已结束" : "深聊").font(.caption2).foregroundStyle(.tertiary)

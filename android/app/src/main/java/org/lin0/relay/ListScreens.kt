@@ -250,7 +250,7 @@ private fun GroupGrid(groups: List<RelayRoom>, bots: List<RelayBot>, onOpen: (St
             Row(Modifier.fillMaxWidth()) {
                 row.forEach { room ->
                     Column(Modifier.weight(1f).clickable { onOpen(room.id) }.padding(vertical = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        RoomAvatar(room, bots, 90.dp)
+                        RoomAvatar(room, bots, 96.dp)
                         Text(room.name, color = Color(0xFF8E8E93), maxLines = 1)
                         if (room.kind == "deep") Text(if (room.status == "concluded") "已结束" else "深聊", color = Color(0xFF636366), style = MaterialTheme.typography.labelSmall)
                     }
