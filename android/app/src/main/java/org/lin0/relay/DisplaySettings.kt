@@ -42,17 +42,17 @@ class RelayDisplayPreferences(context: Context) {
     var font by mutableStateOf(prefs.getInt("font", 100).coerceIn(90, 160))
         private set
 
-    fun setZoom(value: Int) {
+    fun updateZoom(value: Int) {
         zoom = value.coerceIn(50, 160)
         prefs.edit().putInt("zoom", zoom).apply()
     }
 
-    fun setFont(value: Int) {
+    fun updateFont(value: Int) {
         font = value.coerceIn(90, 160)
         prefs.edit().putInt("font", font).apply()
     }
 
-    fun reset() { setZoom(100); setFont(100) }
+    fun reset() { updateZoom(100); updateFont(100) }
 }
 
 val LocalRelayDisplay = staticCompositionLocalOf<RelayDisplayPreferences> { error("Display preferences unavailable") }
@@ -87,17 +87,17 @@ fun DisplaySettingsControls() {
     val display = LocalRelayDisplay.current
     Text("界面缩放  ${display.zoom}%", style = MaterialTheme.typography.titleSmall)
     Text("一起调整头像、控件、间距与文字的大小。", style = MaterialTheme.typography.bodySmall)
-    Slider(value = display.zoom.toFloat(), onValueChange = { display.setZoom(it.roundToInt()) },
+    Slider(value = display.zoom.toFloat(), onValueChange = { display.updateZoom(it.roundToInt()) },
         valueRange = 50f..160f, steps = 109, modifier = Modifier.semantics { contentDescription = "界面缩放" })
     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         listOf("紧凑 85%" to 85, "默认 100%" to 100, "宽松 115%" to 115).forEach { (title, value) ->
-            TextButton(onClick = { display.setZoom(value) }) { Text(title) }
+            TextButton(onClick = { display.updateZoom(value) }) { Text(title) }
         }
     }
     Spacer(Modifier.height(16.dp))
     Text("文字大小  ${display.font}%", style = MaterialTheme.typography.titleSmall)
     Text("统一调整聊天、统计、管理页面及操作记录的文字大小，同时保留系统文字大小设置。", style = MaterialTheme.typography.bodySmall)
-    Slider(value = display.font.toFloat(), onValueChange = { display.setFont((it / 5).roundToInt() * 5) },
+    Slider(value = display.font.toFloat(), onValueChange = { display.updateFont((it / 5).roundToInt() * 5) },
         valueRange = 90f..160f, steps = 13, modifier = Modifier.semantics { contentDescription = "文字大小" })
     Spacer(Modifier.height(16.dp))
     Text("显示效果预览", style = MaterialTheme.typography.titleSmall)
