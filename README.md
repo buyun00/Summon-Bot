@@ -6,17 +6,17 @@
 
 **Hand your goals to an AI team that remembers, collaborates, and keeps working.**
 
-Create your own Bots, work with them in private chat, organize projects in group chats, and connect tools, files, and desktop Codex.<br/>
-Work starts with a conversation and keeps moving with its goals, progress, and accumulated context.
+<sub>[English](README.md) · [简体中文](README.zh-CN.md)</sub>
+
+Create your own Bots, work with them in direct chats, organize projects in group chats, and connect tools, files, and desktop Codex.<br/>
+Work starts with one conversation and continues with its goal, progress, and accumulated knowledge.
 
 [![Node.js](https://img.shields.io/badge/Node.js-24%2B-43853d?style=flat-square)](package.json)
 [![Agent](https://img.shields.io/badge/Agent-Pi-64748b?style=flat-square)](bot/)
 [![Capabilities](https://img.shields.io/badge/Tools-MCP%20%2B%20HTTP%20%2B%20Skills-2563eb?style=flat-square)](docs/CAPABILITY_CATALOG.md)
-[![Status](https://img.shields.io/badge/Status-In_development-d97706?style=flat-square)](#platforms)
+[![Status](https://img.shields.io/badge/Status-In_development-d97706?style=flat-square)](#multi-platform-experience)
 
-**English** · [简体中文](README.zh-CN.md)
-
-[Overview](#what-is-summon-bot) · [Capabilities](#core-capabilities) · [Design](#design-differences) · [Architecture](#architecture) · [Platforms](#platforms) · [Deploy with AI](docs/DEPLOYMENT.md)
+[Overview](#what-is-summon-bot) · [Core capabilities](#core-capabilities) · [Design choices](#design-choices) · [Architecture](#architecture) · [Multi-platform experience](#multi-platform-experience) · [Let an AI deploy it](docs/DEPLOYMENT.md)
 
 </div>
 
@@ -24,143 +24,143 @@ Work starts with a conversation and keeps moving with its goals, progress, and a
 
 ## What is Summon Bot
 
-Summon Bot is an AI workspace built around long-term collaboration. Every Bot has a stable identity, role, contacts, work records, and its own knowledge. You can talk to a Bot one to one, or bring several Bots into the same project group and divide the work around a shared goal.
+Summon Bot is an AI workspace built around long-term collaboration. Every Bot has a stable identity, role, contacts, work records, and its own knowledge. You can talk to a Bot on its own, or put several Bots into one project group to divide work around a shared goal.
 
-A request becomes work that can keep moving: it records requirements, waits on dependencies, receives new information, and brings results back to the original conversation. Knowledge accumulated in real work lives in Markdown, and reusable methods can be distilled into Skills for later tasks to load on demand.
+A single request becomes work that can keep moving: it records requirements, waits on dependencies, receives new information, and brings results back to the original conversation. Knowledge accumulated in actual work is kept in Markdown, and refined reusable methods can be captured as Skills for later tasks to load on demand.
 
 For example, you can start like this:
 
-> **Development collaboration**: "Give this requirement to the engineering partner, push it forward in desktop Codex, and come back here when something needs my decision."
+> **Development collaboration**: "Give this requirement to the engineering partner, work on it in desktop Codex, and come back here for anything that needs my decision."
 >
-> **Project teaming**: "Put together the right members for this project, define the responsibilities, and track dependencies and handoffs."
+> **Project staffing**: "Organize suitable members for this project, make the responsibilities clear, and follow up on dependencies and handovers."
 >
-> **Ongoing attention**: "Watch the state of this work and tell me about substantive changes; write down how it was handled this time."
+> **Ongoing attention**: "Keep an eye on this work and tell me when something substantive changes; also write down how you handled it this time."
 
-These are usage examples; actual execution depends on configured models, connections, tool permissions, and user authorization.
+These are usage examples; actual execution depends on the configured model, connections, tool permissions, and user authorization.
 
 ## Core capabilities
 
-### Bots with identity, teams with responsibilities
+### Bots with identity, teams with clear roles
 
-Create and configure Bots by responsibility, maintaining their role, prompts, contacts, and available capabilities. Private chat is for direct collaboration; group chat carries project goals, requirements, deadlines, and member responsibilities.
+Create and configure Bots by responsibility, maintaining their role, prompts, contacts, and available capabilities. Direct chats are for working side by side; group chats carry project goals, requirements, deadlines, and member responsibilities.
 
-In a regular project group, the lead drives and integrates the work, while EggBot finds or creates suitable members, arranges temporary and standing responsibilities, and handles handoffs. Working members can also raise issues about dependencies, duplicated effort, or capability gaps based on real sources. Messages are delivered by explicit mentions, replies, and work ownership, with semantic routing only when needed. See [EggBot and team chat](docs/EGGBOT.md).
+In an ordinary project group, the lead drives progress and integration while EggBot finds or creates suitable members, arranges temporary and standing responsibilities, and handles handovers. Working members can also raise questions from real sources about dependencies, duplicated work, or capability gaps. Messages are delivered according to explicit mentions, replies, and work ownership, with semantic routing only when needed. See [EggBot and group teams](docs/EGGBOT.md).
 
 ### Work that can wait, resume, and stop
 
-Bots distinguish conversation from work internally, and each piece of work stores its own goal, requirements, progress, sources, and external execution bindings. One Bot can handle several pieces of work, each logical conversation stays serial, and foreground conversation comes first.
+Inside a Bot, conversation and work are distinct; each piece of work separately stores its goal, requirements, progress, sources, and external execution bindings. One Bot can handle multiple pieces of work, the same logical conversation always runs serially, and foreground conversation takes priority.
 
-When waiting on a peer, a time condition, or an external result, the work saves its waiting state and releases the execution slot; it resumes along the same work when the event arrives. Restarts preserve work records and waiting relationships, and pause, cancellation, and unknown outcomes each have an explicit state. The web UI shows execution progress, tool activity, and external task state, and can cancel the current operation.
+When waiting on a peer, a time condition, or an external result, the work stores its waiting state and releases the execution slot; once the event arrives it continues along the original work. Restarts preserve work records and waiting relations, and pauses, cancellations, and unknown results each have an explicit state. The web UI shows execution progress, tool activity, and external task status, and can cancel the current operation.
 
 ### Sourced memory, accumulated methods
 
-Raw conversations and tool results, organized knowledge, and current work state are stored separately. Knowledge is isolated per work or standalone conversation and written in Markdown; new work reads the relevant material from its goal and the knowledge directory on demand.
+Raw conversation and tool results, refined knowledge, and current work state are stored separately. Knowledge is isolated per work or per standalone conversation, with Markdown as the body; new work reads the relevant material on demand according to its current goal and the material directory.
 
-Organization, compaction, and context assembly each start a temporary maintenance conversation when needed. Real tool results and user corrections can become grounds for updating a Skill; a Bot can maintain its own methods and can also propose sourced revisions to the maintainer of a shared Skill. See [Context and continuous work design](docs/BOT_3_PLUS_3_DESIGN.md).
+Refinement, compaction, and context assembly each create a short-lived maintenance conversation on demand. Real tool results and user corrections can become the basis for updating a Skill; a Bot can maintain its own methods and can also propose sourced revisions to the maintainers of shared Skills. See [Context and persistent work design](docs/BOT_3_PLUS_3_DESIGN.md).
 
 ### One catalog for MCP, HTTP APIs, and Skills
 
-Manage MCP servers, plain HTTP APIs, and shared Skills in the capability catalog. MCP supports stdio and Streamable HTTP, and existing HTTP endpoints can be registered directly as tools; Skills hold usage conditions, operating methods, and related resources.
+Manage MCP services, ordinary HTTP APIs, and shared Skills in the capability catalog. MCP supports stdio and Streamable HTTP, and existing HTTP endpoints can also be registered directly as tools; a Skill stores its usage conditions, procedures, and related resources.
 
-Each registered capability automatically gets a dedicated maintenance Bot responsible for maintaining and advising on that connection or method. Other Bots use tools directly within their own authorization and delegate to the responsible Bot when business judgment is needed. See [Capability catalog and shared Skills](docs/CAPABILITY_CATALOG.md).
+Each registered capability is automatically bound to a dedicated maintenance Bot that maintains and advises on that connection or method. Other Bots use tools directly within their own authorization and delegate matters that need business judgment to the responsible owner. See [Capability catalog and shared Skills](docs/CAPABILITY_CATALOG.md).
 
 ### Desktop Codex and local workspaces
 
-Create, attach to, continue, read, and interrupt Codex sessions through the desktop connector, bringing desktop task progress and results back to the original work and conversation. External thread, turn, and operation identifiers are persisted, and unknown outcomes are resolved by querying the original operation.
+Create, connect to, continue, read, and interrupt Codex sessions through the desktop connector, bringing desktop task progress and results back to the original work and conversation. External threads, execution turns, and operation identifiers are stored durably, and unknown results are looked up against the original operation.
 
-File capabilities provide reading, writing, editing files, and running commands for Bot workspaces and configured project directories. Commands run with the host user's privileges, so available scope should be configured according to actual use. See [Operations](docs/OPERATIONS.md).
+File capabilities provide reading, writing, and editing files plus running commands, usable in Bot workspaces and configured project directories. Commands run with host user privileges, so the available scope should be configured according to actual use. See [Operations](docs/OPERATIONS.md).
 
-### Standing duties and visible usage
+### Standing responsibilities and visible usage
 
-Configure scheduled duties for a Bot, or have it observe work, task, and room states. With a clear observation source, it stays quiet when nothing changes; concurrent triggers of the same duty are merged, and foreground conversation comes first.
+Configure scheduled responsibilities for a Bot, or observe work, task, and room state. With explicit observation sources, it stays quiet when nothing has changed; in-flight triggers of the same responsibility are merged, and foreground conversation takes priority.
 
-Token statistics can show request details, cache usage, and estimated cost by Bot, direct chat, group chat, and time; background organization and context maintenance are recorded too. Costs are estimated from API receipts and configured prices, and supplier invoices remain authoritative.
+Token statistics show request details, cached usage, and reference cost by Bot, direct chat, group chat, and time range; background refinement and context maintenance are recorded as well. Cost is estimated from API receipts and configured prices, while the vendor's record remains authoritative for vendor billing.
 
-## Design differences
+## Design choices
 
-Summon Bot's choices focus on the relationship between identity, work, knowledge, and capabilities:
+Summon Bot's choices focus on the relationships among identity, work, knowledge, and capabilities:
 
 | Concern | The choice here | What it means for you |
 | --- | --- | --- |
-| Bots and tasks | A Bot is a stable identity; an ordinary request creates a separate piece of work | The same partner can take on several things with separate progress and context |
-| Team organization | The project lead drives, EggBot handles teaming and handoffs, members keep their own work | Responsibilities change around the project, and existing members can join other projects |
-| Long tasks | Waiting relationships and external bindings persist and resume from events | You can follow what the work is doing, waiting for, and when it needs you |
-| Context | Raw records, Markdown knowledge, and work state are layered, and material is assembled on demand | New requirements enter execution promptly, and relevant experience is reused in later work |
-| Shared capabilities | Connection configuration and Skill bodies are separate, and each capability has a dedicated maintainer | Tool onboarding, usage permissions, and method revisions all have clear ownership |
-| System boundaries | Bot core, domain capabilities, and user interfaces are implemented separately | UI, tool services, and Agent lifecycles can evolve independently |
+| Bots and tasks | A Bot is a stable identity; an ordinary request creates separate work | One partner can take on many things, each with its own progress and context |
+| Team organization | The project lead drives, EggBot staffs and hands over, members keep their own work | Teams adapt around the project, and existing members can join other projects too |
+| Long tasks | Waiting relations and external bindings persist and are resumed by events | You can follow what the work is doing, what it waits for, and when you need to step in |
+| Context | Raw records, Markdown knowledge, and work state are layered, with material assembled on demand | New requirements enter execution promptly, and relevant experience can be reused later |
+| Shared capabilities | Connection configuration and Skill bodies are separate, each capability has a dedicated maintainer | Tool integration, usage permissions, and method revisions all have clear ownership |
+| System boundaries | Bot kernel, domain capabilities, and user interfaces are implemented separately | Interfaces, tool services, and Agent lifecycles can each evolve independently |
 
 ## Architecture
 
-Summon Bot builds its backend with Node.js 24+ and ESM JavaScript, uses the Pi Agent as the execution core, stores runtime facts in SQLite, and keeps knowledge and methods in Markdown.
+Summon Bot builds its backend with Node.js 24+ and ESM JavaScript, uses Pi Agent as the execution kernel, stores runtime facts in SQLite, and keeps knowledge and methods in Markdown.
 
 ```mermaid
 flowchart TB
-  Clients["Web · Electron · iOS · Android"] --> Web["Web service<br/>API · event streams · files and client downloads"]
+  Clients["Web · Electron · iOS · Android"] --> Web["Web service<br/>API · event stream · files and client downloads"]
   Web --> Gateway["Capability gateway<br/>auth · routing · current version bindings"]
-  Gateway <--> Services["Independent capability services<br/>Bot management · chat rooms · knowledge<br/>files · Codex · memory management"]
-  Services <--> Bot["Independent Bots<br/>identity · inbox · conversation · work scheduling"]
+  Gateway <--> Services["Independent capability services<br/>Bot management · chatroom · knowledge<br/>files · Codex · memory management"]
+  Services <--> Bot["Independent Bot<br/>identity · inbox · conversation · work scheduling"]
   Bot --> Agent["Pi Agent<br/>each active execution has its own Agent state"]
   Agent --> Gateway
   Agent <--> Data["Bot data<br/>SQLite · Markdown · Skills · Artifacts"]
   Gateway --> Catalog["Capability catalog<br/>MCP · HTTP API · shared Skills"]
   Catalog -->|MCP / HTTP| External["External tools and business systems"]
-  Catalog -. methods loaded on demand .-> Agent
+  Catalog -. methods read on demand .-> Agent
   Services --> Codex["Desktop Codex connector"]
 ```
 
 ### Three clear runtime boundaries
 
-- **Bot core**: each Bot has its own configuration, inbox, SQLite database, and working directory; the scheduler enforces serial conversations and limited concurrency, and each active execution holds its own Pi Agent state. Four business execution slots by default, with separate throttling for background maintenance.
-- **Capability services**: chat rooms, knowledge, files, Codex, Bot management, and memory management each own their domain data. The gateway provides authentication, routing, capability bindings, and aggregate APIs; updates to an independent capability switch after active executions reach a safe boundary.
-- **User interfaces**: the web app provides pages, API forwarding, live events, and download distribution. Electron loads the same page, and native mobile clients connect through the API; Bots and external work run on the backend, so responsibilities and state persist after the page is closed.
+- **Bot kernel**: each Bot has its own configuration, inbox, SQLite, and working directory; the scheduler manages serial execution per conversation and bounded concurrency, with each active execution holding its own Pi Agent state. There are 4 business execution slots by default, with background maintenance limited separately.
+- **Capability services**: chatroom, knowledge, files, Codex, Bot management, and memory management each own their domain data. The gateway provides authentication, routing, capability bindings, and aggregated endpoints; independent capability updates switch over after active executions reach a safe boundary.
+- **User interfaces**: the web provides pages, API forwarding, real-time events, and download distribution. Electron loads the same web pages, and native mobile clients connect through the API; Bots and external work run in the backend, so responsibilities and state persist after the page is closed.
 
-### Three layers of persistent data
+### Three layers of durable data
 
 | Layer | What it stores | Where it lives |
 | --- | --- | --- |
-| S1 · Raw records | Messages, tool calls and results, events, and their sources | Bot SQLite and artifact directory |
-| S2 · Knowledge and summaries | Knowledge bodies organized per work or standalone conversation | Bot knowledge Markdown; SQLite holds the directory and processing positions |
-| S3 · Work state | Goals, requirements, progress, waits, external bindings, pauses, and notifications | Bot SQLite |
+| S1 · Raw records | Messages, tool calls and results, events, and their sources | Bot SQLite and the artifacts directory |
+| S2 · Knowledge and summaries | Knowledge bodies refined per work or standalone conversation | The Bot's knowledge Markdown; SQLite keeps the directory and processing position |
+| S3 · Work state | Goal, requirements, progress, waiting, external bindings, pauses, and notifications | Bot SQLite |
 
-Organization writes valuable increments back to the matching Markdown, assembly selects relevant material for the current execution, and compaction happens when the context budget requires it. All three start on demand and end when done; raw records are kept so sources can be located later.
+Refinement writes valuable increments back into the corresponding Markdown, assembly selects relevant material for the current execution, and compaction happens when the context budget requires it. All three start on demand and finish when done; raw records remain for later source lookup.
 
-Further reading: [Architecture](docs/ARCHITECTURE.md) · [Current implementation](docs/BOT_3_PLUS_3_IMPLEMENTATION.md) · [Capability services and updates](docs/CAPABILITY_SERVICES.md). For Pi adaptation details and upstream notes, see [Pi component notes](bot/third_party/pi/README.md).
+Further reading: [Architecture](docs/ARCHITECTURE.md) · [Current implementation](docs/BOT_3_PLUS_3_IMPLEMENTATION.md) · [Capability services and updates](docs/CAPABILITY_SERVICES.md). For Pi adaptation and upstream notes, see [Pi component notes](bot/third_party/pi/README.md).
 
-## Platforms
+## Multi-platform experience
 
-| Client | Implementation | How to use and update |
+| Platform | Implementation | How to use and update |
 | --- | --- | --- |
-| Web | Regular browser page | Refresh after deployment to get the current page |
-| Windows / macOS | Electron | Loads the same production web page; the shell handles downloads and restart updates |
-| iPhone / iPad | Swift / SwiftUI | Native UI, built and distributed from a Mac |
-| Android | Kotlin / Compose | Native UI, checks versions, downloads the APK, and installs it after system confirmation |
+| Web | Ordinary browser pages | Refresh after deployment to get the pages |
+| Windows / macOS | Electron | Loads the same production web pages; the shell provides downloads and restart-to-update |
+| iPhone / iPad | Swift / SwiftUI | Native interface, built and distributed from a Mac |
+| Android | Kotlin / Compose | Native interface, checks the version, downloads the APK, and installs after system confirmation |
 
-The project is in development. This table describes the source implementation and update path per platform; downloadable builds are those actually published under "Client downloads and updates" on the web page. macOS and iOS are packaged from the same commit on a Mac. Native mobile UIs are implemented separately as finalized features are synced.
+The project is in active development. The table describes the source implementation and update path of each platform; downloadable versions are those actually published under "Client downloads and updates" on the web. macOS and iOS are packaged from the same commit on a Mac. Native mobile interfaces are implemented separately as features are finalized.
 
 ## Code map
 
 ```text
-bot/                        Independent Bot core, scheduling, context, and persistence
+bot/                        Independent Bot kernel, scheduling, context, and persistence
 capabilities/               Domain capability services, gateway, capability catalog, and version bindings
 connectors/codex-desktop-api/ Desktop Codex connector
-roles/                       Role configurations and prompts
-skills/                      Skills shipped with the project
-web/                         Web page, HTTP entry points, and release distribution
+roles/                      Role configuration and prompts
+skills/                     Skills shipped with the project
+web/                        Web pages, HTTP entry points, and release package distribution
 desktop/                    Windows / macOS Electron shell
 ios/                        SwiftUI native client
 android/                    Kotlin / Compose native client
-scripts/                     Build, install, operational maintenance, and release tooling
-docs/                        Architecture, design, and operations documentation
+scripts/                    Build, install, operations, and per-platform releases
+docs/                       Architecture, design, and operations documentation
 ```
 
 ## Documentation
 
 | What you want to know | Start here |
 | --- | --- |
-| Have an AI install, start, or update it | [Deploy with AI](docs/DEPLOYMENT.md) |
-| Understand system components and data boundaries | [Architecture](docs/ARCHITECTURE.md) |
-| Understand Bot work, context, and persistence | [Design](docs/BOT_3_PLUS_3_DESIGN.md) · [Implementation](docs/BOT_3_PLUS_3_IMPLEMENTATION.md) |
-| Organize project teams and member handoffs | [EggBot and team chat](docs/EGGBOT.md) |
-| Onboard MCP, HTTP APIs, and shared methods | [Capability catalog](docs/CAPABILITY_CATALOG.md) · [Capability services](docs/CAPABILITY_SERVICES.md) |
+| Let an AI install, start, or update it | [Deploy with an AI](docs/DEPLOYMENT.md) |
+| Understand the system composition and data boundaries | [Architecture](docs/ARCHITECTURE.md) |
+| Understand a Bot's work, context, and persistence | [Design](docs/BOT_3_PLUS_3_DESIGN.md) · [Implementation](docs/BOT_3_PLUS_3_IMPLEMENTATION.md) |
+| Organize project teams and member handovers | [EggBot and group teams](docs/EGGBOT.md) |
+| Connect MCP, HTTP APIs, and shared methods | [Capability catalog](docs/CAPABILITY_CATALOG.md) · [Capability services](docs/CAPABILITY_SERVICES.md) |
 | Contribute to development and operations | [Development conventions](AGENTS.md) · [Development workflow](docs/DEVELOPMENT.md) · [Operations](docs/OPERATIONS.md) |
 | Build and release clients | [Client releases and updates](docs/CLIENT_RELEASES.md) · [iOS](ios/README.md) · [Android](android/README.md) · [Desktop](desktop/README.md) |
