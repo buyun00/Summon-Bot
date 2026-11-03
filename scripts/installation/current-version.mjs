@@ -23,6 +23,12 @@ async function removeWithin(root, target) {
 }
 const entries = async path => readdir(path, { withFileTypes: true }).catch(error => { if (error.code === 'ENOENT') return []; throw error; });
 const unfinished = value => ['queued', 'accepted', 'running', 'waiting'].includes(value.status);
+const activeBuild = name => {
+  const pid = Number(/\.building-(\d+)$/.exec(name)?.[1]);
+  if (!Number.isSafeInteger(pid) || pid < 1) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return error.code !== 'ESRCH'; }
+};
 
 /** Full installs stop every writer first, replace operational configuration, and
  * retain only the current release. Business history and user files are retained. */
@@ -141,7 +147,8 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
   if (sourceRoot) {
     const dist = join(sourceRoot, 'dist');
     for (const directory of await entries(dist)) if (directory.name !== 'releases') await removeWithin(sourceRoot, join(dist, directory.name));
-    for (const directory of await entries(join(dist, 'releases'))) if (directory.name !== buildId) await removeWithin(sourceRoot, join(dist, 'releases', directory.name));
+    // A concurrent build is still writing its staging directory; it is not an obsolete release.
+    for (const directory of await entries(join(dist, 'releases'))) if (directory.name !== buildId && !activeBuild(directory.name)) await removeWithin(sourceRoot, join(dist, 'releases', directory.name));
     await removeWithin(sourceRoot, join(sourceRoot, 'scripts/migration'));
   }
   return { currentOnly: true, bots, releaseRoot };

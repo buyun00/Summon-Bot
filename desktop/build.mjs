@@ -25,7 +25,7 @@ export async function buildDesktop({ platform, arch, output }) {
       win: { target: ['nsis'], icon: join(root, 'web/frontend/icons/icon-512.png') },
       nsis: { oneClick: true, perMachine: false, differentialPackage: false, runAfterFinish: false,
         createDesktopShortcut: true, deleteAppDataOnUninstall: false },
-      mac: { target: ['dmg', 'zip'], icon: join(root, 'ios/Relay/Assets.xcassets/AppIcon.appiconset/AppIcon.png'),
+      mac: { target: ['dmg', 'zip'], icon: join(root, 'ios/Relay/Assets.xcassets/RelayIcon.imageset/relay-icon.png'),
         category: 'public.app-category.productivity', forceCodeSigning: true, hardenedRuntime: true },
     },
   });
