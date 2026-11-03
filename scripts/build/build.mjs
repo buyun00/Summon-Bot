@@ -7,8 +7,9 @@ import { randomUUID } from 'node:crypto';
 import { copyTree, walk, readJson, writeJson, digest, within, parseArgs } from './files.mjs';
 
 export const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const directories = ['bot', 'web', 'capabilities', 'connectors', 'roles', 'skills', 'scripts/build', 'scripts/installation', 'scripts/maintenance'];
-const rootFiles = ['package.json', 'package-lock.json', 'README.md', 'AGENTS.md', 'Start.ps1', 'Start-Hidden.vbs', 'Stop.ps1', 'Run.cmd'];
+const directories = ['bot', 'web', 'capabilities', 'connectors', 'roles', 'skills', 'scripts/build', 'scripts/installation', 'scripts/maintenance', 'scripts/release'];
+const rootFiles = ['package.json', 'package-lock.json', 'release.json', 'README.md', 'AGENTS.md', 'Start.ps1', 'Start-Hidden.vbs', 'Stop.ps1', 'Run.cmd'];
+const docsFiles = ['REFACTOR_PLAN.md', 'ARCHITECTURE.md', 'OPERATIONS.md', 'VERIFICATION.md', 'CAPABILITY_SERVICES.md', 'CAPABILITY_CATALOG.md', 'DEVELOPMENT.md', 'CLIENT_RELEASES.md', 'BOT_3_PLUS_3_DESIGN.md', 'BOT_3_PLUS_3_IMPLEMENTATION.md', 'BOT_3_PLUS_3_ACCEPTANCE.md'];
 const include = name => !name.split('/').some(part => ['node_modules', '.git', '.relay', 'test', 'tests', 'coverage', 'dist'].includes(part)
   || /^\.env(?:\.|$)/.test(part) || /(?:\.sqlite(?:-\w+)?|\.log|\.tmp)$/.test(part));
 
@@ -33,11 +34,12 @@ async function materializeWorkspace(root, folder) {
   return { name: pkg.name, version: pkg.version, source: folder, entries: Object.keys(exports) };
 }
 
-export async function buildRelease({ sourceRoot = projectRoot, releaseRoot, bundleNode = true, integrity = false } = {}) {
+export async function buildRelease({ sourceRoot = projectRoot, releaseRoot, bundleNode = true, integrity = false, committedOnly = false } = {}) {
   // These Windows builds contain libuv's uninitialized OSVERSIONINFOW stack
   // overwrite in TCP keepalive (nodejs/node#62561). Never ship them again.
   if (process.platform === 'win32' && ['24.15.0','25.8.0'].includes(process.versions.node)) throw new Error('This Node build has a Windows TCP keepalive native crash. Build with the fixed Node 24.21.0 LTS runtime.');
   sourceRoot = resolve(sourceRoot);
+  const git = spawnSync('git', ['-C', sourceRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8', windowsHide: true });
   const buildId = `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`;
   releaseRoot = resolve(releaseRoot || join(sourceRoot, 'dist', 'releases', buildId));
   if (releaseRoot === sourceRoot || within(releaseRoot, sourceRoot)) throw new Error('Release must not contain or replace sourceRoot');
@@ -45,15 +47,22 @@ export async function buildRelease({ sourceRoot = projectRoot, releaseRoot, bund
   const stage = `${releaseRoot}.building-${process.pid}`;
   await mkdir(dirname(stage), { recursive: true }); await mkdir(stage);
   await writeJson(join(stage, 'build-owner.json'), { sourceRoot, releaseRoot, buildId, pid: process.pid });
-  const pkg = await readJson(join(sourceRoot, 'package.json')), lock = await readJson(join(sourceRoot, 'package-lock.json'));
-  for (const folder of directories) await copyTree(join(sourceRoot, folder), join(stage, folder), include);
-  // Every published shell must be discoverable by existing cache-first PWAs.
-  const workerPath = join(stage, 'web', 'frontend', 'sw.js');
-  const worker = await readFile(workerPath, 'utf8');
-  await writeFile(workerPath, worker.replace(/^const CACHE = .*;$/m, `const CACHE = 'relay-shell-${buildId}';`));
-  for (const name of rootFiles) await copyFile(join(sourceRoot, name), join(stage, name));
-  await mkdir(join(stage, 'docs'), { recursive: true });
-  for (const name of ['REFACTOR_PLAN.md', 'ARCHITECTURE.md', 'OPERATIONS.md', 'VERIFICATION.md', 'CAPABILITY_SERVICES.md', 'CAPABILITY_CATALOG.md', 'DEVELOPMENT.md', 'BOT_3_PLUS_3_DESIGN.md', 'BOT_3_PLUS_3_IMPLEMENTATION.md', 'BOT_3_PLUS_3_ACCEPTANCE.md']) if (existsSync(join(sourceRoot, 'docs', name))) await copyFile(join(sourceRoot, 'docs', name), join(stage, 'docs', name));
+  if (committedOnly) {
+    const archive = join(stage, 'source.tar');
+    if (git.status !== 0) throw new Error('Cannot determine release commit');
+    const exported = spawnSync('git', ['-C', sourceRoot, 'archive', '--format=tar', `--output=${archive}`, git.stdout.trim(), ...directories, ...rootFiles, ...docsFiles.filter(name => existsSync(join(sourceRoot, 'docs', name))).map(name => `docs/${name}`)], { encoding: 'utf8', windowsHide: true });
+    if (exported.status !== 0) throw new Error(`Cannot export committed release source: ${exported.stderr}`);
+    const extracted = spawnSync('tar', ['-xf', archive, '-C', stage,
+      ...['*/test', '*/tests', '*/node_modules', '*/coverage', '*/dist', '*/.relay', '*/.env*', '*.sqlite*', '*.log', '*.tmp'].map(pattern => `--exclude=${pattern}`)], { encoding: 'utf8', windowsHide: true });
+    if (extracted.status !== 0) throw new Error(`Cannot extract release source: ${extracted.stderr}`);
+    await unlink(archive);
+  } else {
+    for (const folder of directories) await copyTree(join(sourceRoot, folder), join(stage, folder), include);
+    for (const name of rootFiles) await copyFile(join(sourceRoot, name), join(stage, name));
+    await mkdir(join(stage, 'docs'), { recursive: true });
+    for (const name of docsFiles) if (existsSync(join(sourceRoot, 'docs', name))) await copyFile(join(sourceRoot, 'docs', name), join(stage, 'docs', name));
+  }
+  const pkg = await readJson(join(stage, 'package.json')), lock = await readJson(join(stage, 'package-lock.json'));
   const dependencies = [];
   for (const [path, info] of Object.entries(lock.packages)) {
     if (!path.includes('node_modules/') || info.dev || info.link) continue;
@@ -77,7 +86,6 @@ export async function buildRelease({ sourceRoot = projectRoot, releaseRoot, bund
     const records = await Promise.all(releaseFiles.slice(index, index + 64).map(async file => [file.name, integrity ? { size: file.size, sha256: digest(await readFile(file.path)) } : { size: file.size }]));
     for (const [name, record] of records) files[name] = record;
   }
-  const git = spawnSync('git', ['-C', sourceRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8', windowsHide: true });
   const gitStatus = integrity ? spawnSync('git', ['-C', sourceRoot, 'status', '--porcelain'], { encoding: 'utf8', windowsHide: true }) : null;
   const manifest = { format: 2, profile: integrity ? 'release' : 'development', application: pkg.name, version: pkg.version, buildId, builtAt: new Date().toISOString(),
     sourceCommit: git.status === 0 ? git.stdout.trim() : null, sourceDirty: gitStatus?.status === 0 ? Boolean(gitStatus.stdout.trim()) : null,
@@ -86,7 +94,7 @@ export async function buildRelease({ sourceRoot = projectRoot, releaseRoot, bund
     schemas: { layout: 2, bot: 1, capabilities: 1 }, workspaces, dependencies, files };
   await writeJson(join(stage, 'release-manifest.json'), manifest);
   await rename(stage, releaseRoot);
-  return { releaseRoot, buildId, profile: manifest.profile, files: Object.keys(files).length, contentHash: manifest.contentHash };
+  return { releaseRoot, buildId, sourceCommit: manifest.sourceCommit, profile: manifest.profile, files: Object.keys(files).length, contentHash: manifest.contentHash };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

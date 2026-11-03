@@ -1,8 +1,12 @@
+import groovy.json.JsonSlurper
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+val relayRelease = JsonSlurper().parse(rootProject.file("../release.json")) as Map<*, *>
 
 android {
     namespace = "org.lin0.relay"
@@ -12,12 +16,25 @@ android {
         applicationId = "org.lin0.relay"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = (relayRelease["buildNumber"] as Number).toInt()
+        versionName = relayRelease["version"] as String
+        buildConfigField("String", "RELAY_UPDATE_URL", "\"${relayRelease["appUrl"]}/api/releases/android/universal/latest.json\"")
+    }
+
+    signingConfigs {
+        if (!System.getenv("RELAY_ANDROID_KEYSTORE").isNullOrBlank()) {
+            create("release") {
+                storeFile = file(System.getenv("RELAY_ANDROID_KEYSTORE"))
+                storePassword = System.getenv("RELAY_ANDROID_STORE_PASSWORD")
+                keyAlias = System.getenv("RELAY_ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("RELAY_ANDROID_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
+            signingConfig = signingConfigs.findByName("release")
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
@@ -34,6 +51,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {

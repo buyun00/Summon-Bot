@@ -23,6 +23,7 @@ Desktop.ini
 # Immutable release artifacts; mutable data lives outside the repository
 dist/
 *.building-*/
+desktop/release.json
 
 # Xcode local state and build output
 ios/DerivedData/

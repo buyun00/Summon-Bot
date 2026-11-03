@@ -3,16 +3,9 @@
   :root{--ui-zoom:1;--ui-font-scale:1;--ui-vh:100dvh;--ui-vw:100vw}
   :root{color-scheme:dark;--canvas:#111;--surface:#202020;--white:#f6f6f6;--ink:#f2f2f2;--muted:#939398;--subtle:#68686d;--line:#333;--green:#e9e9eb;--green-soft:#282828;--green-mid:#aaa;--orange:#b5b5bb;--orange-soft:#252525;--red:#f48a94;--red-soft:#3b2227;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
   html,body{background:#111;color:var(--ink);height:100%;overflow:hidden;overscroll-behavior:none;-webkit-text-size-adjust:100%}
-  /* Pin both edges at rest: iOS standalone viewport units can under-report the screen. */
+  /* Keep the browser workspace within the visible viewport. */
   .app-shell{position:fixed;inset:0;height:auto;min-height:0;overflow:hidden;background:#111}
   .keyboard-open .app-shell{top:var(--mobile-vtop,0px);bottom:auto;height:var(--mobile-vh)}
-  /* Keep the document full-height: shrinking this clipping ancestor as well
-     as the shell hides the composer when WebKit scrolls to the focused input. */
-  :root.ios-standalone,:root.ios-standalone body{height:var(--ui-vh,100dvh);min-height:0}
-  .ios-standalone .app-shell{position:relative;inset:auto;height:var(--ui-vh,100dvh);min-height:0}
-  /* Absolute positioning follows pageTop, including the document scroll that
-     iOS performs during keyboard animation, without fixed-position clipping. */
-  .ios-standalone.keyboard-open .app-shell{position:absolute;top:var(--mobile-page-top,0px);left:0;right:0;bottom:auto;height:var(--mobile-vh)}
   .contact-sidebar{width:100%;border:0;background:#111;padding-top:env(safe-area-inset-top,0px)}
   .workspace{display:none;min-height:0;background:#111}
   .app-shell.mobile-room .contact-sidebar,.app-shell.management-open .contact-sidebar{display:none}

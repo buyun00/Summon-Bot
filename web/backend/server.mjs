@@ -3,14 +3,14 @@ import { request as httpsRequest } from 'node:https';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
+import { serveClientReleases } from './releases.mjs';
+import { createReleasePublisher } from './release-publisher.mjs';
 
 const defaultFrontend = fileURLToPath(new URL('../frontend/', import.meta.url));
 const assets = new Map([
   ['/', ['index.html', 'text/html']],
-  ...['app', 'cache', 'avatars', 'motion', 'pwa', 'sw', 'summon-brand'].map(name => [`/${name}.js`, [`${name}.js`, 'text/javascript']]),
-  ...['style', 'mobile', 'group-chat', 'summon-brand', 'motion'].map(name => [`/${name}.css`, [`${name}.css`, 'text/css']]),
-  ['/manifest.webmanifest', ['manifest.webmanifest', 'application/manifest+json']],
-  ['/offline.html', ['offline.html', 'text/html']],
+  ...['app', 'cache', 'avatars', 'motion', 'clients', 'summon-brand'].map(name => [`/${name}.js`, [`${name}.js`, 'text/javascript']]),
+  ...['style', 'mobile', 'group-chat', 'summon-brand', 'motion', 'clients'].map(name => [`/${name}.css`, [`${name}.css`, 'text/css']]),
   ['/icons/user-avatar.jpg', ['icons/user-avatar.jpg', 'image/jpeg']],
   ...['icon-192', 'icon-512', 'icon-maskable-192', 'icon-maskable-512', 'apple-touch-icon']
     .map(name => [`/icons/${name}.png`, [`icons/${name}.png`, 'image/png']]),
@@ -32,18 +32,27 @@ const showcaseMime = new Map([
 
 /** The Web process owns only HTTP/static assets. Business state and Agents stay outside. */
 export async function startWeb({ host = '127.0.0.1', port = 8787, publicOrigin = '', frontendRoot = defaultFrontend,
-  gatewayUrl, gatewayToken, requestTimeoutMs = 120000 } = {}) {
+  gatewayUrl, gatewayToken, clientReleaseRoot, clientPublishToken, webRelease, requestTimeoutMs = 120000 } = {}) {
   const upstream = new URL(gatewayUrl);
   if (!['http:', 'https:'].includes(upstream.protocol) || upstream.username || upstream.password) throw new Error('Invalid gateway URL');
   if (!gatewayToken) throw new Error('gatewayToken is required');
   if (publicOrigin && new URL(publicOrigin).origin !== publicOrigin) throw new Error('publicOrigin must be an origin without a path');
   const publicHost = publicOrigin ? new URL(publicOrigin).host.toLowerCase() : null;
+  const publishRelease = clientReleaseRoot ? await createReleasePublisher(clientReleaseRoot, clientPublishToken) : null;
   const active = new Set();
   let closing = false;
   const server = createServer(async (req, res) => {
     try {
       if (closing) return json(res, 503, { error: 'Web service is stopping' });
       const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+      if (url.pathname === '/sw.js' && ['GET', 'HEAD'].includes(req.method)) {
+        // Retire already-installed workers. This endpoint never installs a new offline application.
+        const script = `self.addEventListener('install',()=>self.skipWaiting());self.addEventListener('activate',event=>event.waitUntil((async()=>{for(const name of await caches.keys())if(name.startsWith('relay-shell-'))await caches.delete(name);await self.clients.claim();await self.registration.unregister();})()));`;
+        res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store', 'Service-Worker-Allowed': '/' });
+        res.end(req.method === 'HEAD' ? undefined : script); return;
+      }
+      if (publishRelease && await publishRelease(req, res, url)) return;
+      if (await serveClientReleases(req, res, url, clientReleaseRoot, webRelease)) return;
       if (url.pathname === showcasePrefix.slice(0, -1)) {
         res.writeHead(302, { Location: showcasePrefix }); res.end(); return;
       }
@@ -108,8 +117,7 @@ export async function startWeb({ host = '127.0.0.1', port = 8787, publicOrigin =
       const [filename, mime] = entry;
       const content = await readFile(join(frontendRoot, filename));
       res.writeHead(200, { 'Content-Type': mime.startsWith('image/') ? mime : `${mime}; charset=utf-8`, 'Content-Length': content.length,
-        'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
-        ...(url.pathname === '/sw.js' ? { 'Service-Worker-Allowed': '/' } : {}) });
+        'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
       res.end(req.method === 'HEAD' ? undefined : content);
     } catch {
       if (!res.headersSent) json(res, 500, { error: '网页请求处理失败' }); else res.destroy();

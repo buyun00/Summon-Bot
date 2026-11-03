@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { readFile } from 'node:fs/promises';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -64,6 +65,9 @@ try {
     const { startWeb } = await import(pathToFileURL(join(config.releaseRoot, 'web/backend/server.mjs')));
     const gateway = await readJson(join(config.dataRoot, 'capabilities/gateway/run/current.json'));
     app = await startWeb({ ...config.web, publicOrigin: config.publicOrigin || '',
+      clientReleaseRoot: join(config.dataRoot, 'client-releases'),
+      clientPublishToken: await readFile(join(config.dataRoot, 'config/client-releases-publish-token'), 'utf8').then(value => value.trim()).catch(error => { if (error.code === 'ENOENT') return ''; throw error; }),
+      webRelease: await readJson(join(config.releaseRoot, 'release.json')),
       frontendRoot: join(config.releaseRoot, 'web/frontend'), gatewayUrl: gateway.url, gatewayToken: config.gatewayToken });
   }
   await new Promise((ready, reject) => { control.once('error', reject); control.listen(0, '127.0.0.1', ready); });

@@ -91,6 +91,7 @@ enum class WorkspaceSection(val title: String, val icon: ImageVector) {
 @Composable
 fun ConversationListScreen(
     store: RelayStore,
+    updater: RelayAppUpdater,
     onOpenRoom: (String) -> Unit,
     onOpenWorkspace: (WorkspaceSection) -> Unit,
 ) {
@@ -238,7 +239,7 @@ fun ConversationListScreen(
             }
         }
     }
-    if (showSettings) SettingsSheet(store) { showSettings = false }
+    if (showSettings) SettingsSheet(store, updater) { showSettings = false }
     if (showCreateBot) CreateBotSheet(store, onOpenRoom) { showCreateBot = false }
     roomKind?.let { kind -> CreateRoomSheet(store, kind, onOpenRoom) { roomKind = null } }
 }
@@ -289,7 +290,7 @@ private fun preview(room: RelayRoom?, bot: RelayBot): String {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SettingsSheet(store: RelayStore, onDismiss: () -> Unit) {
+private fun SettingsSheet(store: RelayStore, updater: RelayAppUpdater, onDismiss: () -> Unit) {
     val scope = rememberCoroutineScope()
     var baseURL by remember { mutableStateOf(store.settings.baseURL) }
     var token by remember { mutableStateOf(store.savedToken) }
@@ -329,6 +330,7 @@ private fun SettingsSheet(store: RelayStore, onDismiss: () -> Unit) {
                 if (saving) CircularProgressIndicator(Modifier.size(18.dp)) else Text("保存并连接")
             }
             Text("已读取的会话和草稿保存在这台设备，失败消息需要手动重试。切换服务时会清除这台设备上的会话缓存。", color = Color(0xFF8E8E93), style = MaterialTheme.typography.bodySmall)
+            ClientUpdateSettings(updater)
             TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text("完成") }
             Spacer(Modifier.height(24.dp))
         }

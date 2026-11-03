@@ -33,6 +33,7 @@ import java.net.URLEncoder
 
 class RelayViewModel(app: Application) : AndroidViewModel(app) {
     val store = RelayStore(app)
+    val updater = RelayAppUpdater(app, viewModelScope)
     override fun onCleared() {
         store.dispose()
     }
@@ -53,7 +54,11 @@ private fun RelayApp(model: RelayViewModel = viewModel()) {
     DisposableEffect(lifecycle, store) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_START -> model.viewModelScope.launch { store.reconnect() }
+                Lifecycle.Event.ON_START -> {
+                    model.viewModelScope.launch { store.reconnect() }
+                    model.updater.resumeInstall()
+                    model.updater.check()
+                }
                 Lifecycle.Event.ON_STOP -> store.disconnect()
                 else -> Unit
             }
@@ -79,6 +84,7 @@ private fun RelayApp(model: RelayViewModel = viewModel()) {
                 composable("list") {
                     ConversationListScreen(
                         store,
+                        updater = model.updater,
                         onOpenRoom = { id -> nav.navigate("chat/${URLEncoder.encode(id, "UTF-8")}") },
                         onOpenWorkspace = { section -> nav.navigate("workspace/${section.name}") },
                     )

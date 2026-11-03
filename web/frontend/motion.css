@@ -1,4 +1,4 @@
-/* Shared timing for desktop, touch browsers and the installed PWA. */
+/* Shared timing for the desktop client and touch browsers. */
 @property --accent { syntax: '<color>'; inherits: true; initial-value: #7d824b; }
 .app-shell { position: relative; isolation: isolate; }
 .chat-layout { transition: --accent 420ms ease; }

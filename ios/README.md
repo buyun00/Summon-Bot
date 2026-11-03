@@ -31,6 +31,8 @@
 
 ## 工程说明
 
+版本统一由根目录 `release.json` 管理。Mac 命令行归档使用 `npm run release:ios`，需要导出 IPA 时传入本机 `--export-options` 文件；iOS 暂不接入应用内下载安装更新。各端打包与桌面上传见 [客户端发行与更新](../docs/CLIENT_RELEASES.md)。
+
 `Relay/` 是 Xcode 自动同步目录，新增 Swift 文件会自动进入 target；`Info.plist` 已从资源 membership 排除。未添加测试 target 或第三方包。
 
 `Assets.xcassets/AppIcon.appiconset` 已配置用户提供的蓝色层叠云朵图标，使用完整、不透明的 1024 像素 PNG；应用内 `RelayIcon.imageset` 与网页/PWA 共用同一原图。系统负责应用图标的圆角裁切。

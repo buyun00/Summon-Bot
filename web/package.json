@@ -1,10 +1,16 @@
 {
   "name": "@relay/web",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Relay user interface and transport facade; no Agent or business storage",
   "exports": "./backend/server.mjs",
-  "engines": { "node": ">=24.0.0" },
-  "files": ["backend", "frontend", "README.md"]
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "files": [
+    "backend",
+    "frontend",
+    "README.md"
+  ]
 }

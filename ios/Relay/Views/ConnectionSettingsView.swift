@@ -18,6 +18,8 @@ struct ConnectionSettingsView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Relay Bot").font(.headline)
                             Text("iOS 原生客户端").font(.subheadline).foregroundStyle(.secondary)
+                            Text("版本 \(appVersion)")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                     }.padding(.vertical, 8)
                 }
@@ -63,6 +65,8 @@ struct ConnectionSettingsView: View {
             }
         }
     }
+
+    private var appVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "" }
 
     private func save() async {
         saving = true; errorMessage = nil
