@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -35,6 +36,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.GridView
@@ -43,16 +45,17 @@ import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material.icons.filled.Work
 import androidx.compose.material3.Button
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
@@ -77,6 +80,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -107,7 +112,6 @@ fun ConversationListScreen(
     val scope = rememberCoroutineScope()
     var query by remember { mutableStateOf("") }
     var showSettings by remember { mutableStateOf(false) }
-    var showDisplay by remember { mutableStateOf(false) }
     var showCreateBot by remember { mutableStateOf(false) }
     var roomKind by remember { mutableStateOf<String?>(null) }
     var showSystem by remember { mutableStateOf(false) }
@@ -125,14 +129,43 @@ fun ConversationListScreen(
         .sortedByDescending { directRoom(store, it)?.lastMessage?.createdAt.orEmpty() }
     val systemBots = store.bots.filter { !it.presetId.isNullOrEmpty() && matches("${it.name} ${it.role}") }
     val peers = store.rooms.filter { it.kind == "dm" && !it.members.contains("user") && matches(it.name) }
+    val chat = store.modelSummary["chat"].takeIf { it is SummonJson.Obj } ?: SummonJson.obj("role" to SummonJson.Str("chat"))
+    val work = store.modelSummary["executors"].array.orEmpty().firstOrNull() ?: SummonJson.obj("role" to SummonJson.Str("executor"), "kind" to SummonJson.Str("codex"))
     val menuHeight = (LocalConfiguration.current.screenHeightDp * 100f / LocalSummonDisplay.current.zoom * .7f).dp
 
     Scaffold(
         containerColor = Color.Black,
         topBar = {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box {
+                    IconButton(onClick = { menu = true }, modifier = Modifier.size(44.dp).semantics {
+                        contentDescription = "${store.settings.userName}，菜单，${if (store.isConnected) "已连接" else "正在连接"}"
+                    }) {
+                        Box(Modifier.size(36.dp)) {
+                            Image(painterResource(R.drawable.owner_avatar), null, Modifier.fillMaxSize().clip(CircleShape), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                            Box(Modifier.align(Alignment.BottomEnd).size(8.dp).clip(CircleShape).background(if (store.isConnected) Color(0xFF93AD99) else Color.Gray))
+                        }
+                    }
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, modifier = Modifier.width(264.dp).heightIn(max = menuHeight)) {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            ModelQuotaSignal(chat, "CHAT", Modifier.weight(1f)) { menu = false; quotaItem = chat }
+                            ModelQuotaSignal(work, "WORK", Modifier.weight(1f)) { menu = false; quotaItem = work }
+                        }
+                        DropdownMenuItem(text = { Text("Token 统计") }, leadingIcon = { Icon(Icons.Filled.BarChart, null) }, onClick = { menu = false; onOpenUsage() })
+                        DropdownMenuItem(text = { Text("设置") }, leadingIcon = { Icon(Icons.Filled.Settings, null) }, onClick = { menu = false; showSettings = true })
+                        HorizontalDivider(Modifier.padding(vertical = 6.dp))
+                        listOf(WorkspaceSection.Event, WorkspaceSection.Routines, WorkspaceSection.Knowledge, WorkspaceSection.Works, WorkspaceSection.Bots).forEach { section ->
+                            val title = when (section) {
+                                WorkspaceSection.Event -> "事件"
+                                WorkspaceSection.Routines -> "定时"
+                                else -> section.title
+                            }
+                            DropdownMenuItem(text = { Text(title) }, leadingIcon = { Icon(section.icon, null) }, onClick = { menu = false; onOpenWorkspace(section) })
+                        }
+                    }
+                }
                 OutlinedTextField(value = query, onValueChange = { query = it }, placeholder = { Text("搜索") }, singleLine = true,
-                    leadingIcon = { Icon(Icons.Filled.Search, null) }, modifier = Modifier.weight(1f).padding(end = 8.dp), shape = RoundedCornerShape(24.dp))
+                    leadingIcon = { Icon(Icons.Filled.Search, null) }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(24.dp))
                 Box {
                     IconButton(onClick = { plus = true }) { Icon(Icons.Filled.Add, "新建", tint = Color.White) }
                     DropdownMenu(expanded = plus, onDismissRequest = { plus = false }, modifier = Modifier.heightIn(max = menuHeight)) {
@@ -142,40 +175,6 @@ fun ConversationListScreen(
                     }
                 }
             }
-        },
-        bottomBar = {
-            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { onOpenWorkspace(WorkspaceSection.Works) }, modifier = Modifier.weight(1f)) { Icon(Icons.Filled.Work, null, Modifier.size(17.dp)); Spacer(Modifier.width(6.dp)); Text("工作") }
-                    OutlinedButton(onClick = { onOpenWorkspace(WorkspaceSection.Knowledge) }, modifier = Modifier.weight(1f)) { Icon(Icons.Filled.MenuBook, null, Modifier.size(17.dp)); Spacer(Modifier.width(6.dp)); Text("知识") }
-                }
-                Row(verticalAlignment = Alignment.Top) {
-                  Box(Modifier.weight(1f)) {
-                    Column(Modifier.fillMaxWidth().clickable { menu = true }.padding(vertical = 3.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Box(Modifier.size(64.dp, 59.dp), contentAlignment = Alignment.TopCenter) {
-                            Box(Modifier.padding(top = 4.dp).size(48.dp)) {
-                                Image(painterResource(R.drawable.owner_avatar), null, Modifier.fillMaxSize().clip(CircleShape), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
-                                Box(Modifier.align(Alignment.BottomEnd).size(9.dp).clip(CircleShape).background(if (store.isConnected) Color(0xFF93AD99) else Color.Gray))
-                            }
-                        }
-                        Text(store.settings.userName.ifBlank { "Lin" }, color = Color(0xFF93AD99), fontSize = 10.sp)
-                    }
-                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, modifier = Modifier.heightIn(max = menuHeight)) {
-                        WorkspaceSection.entries.forEach { section ->
-                            DropdownMenuItem(text = { Text(section.title) }, leadingIcon = { Icon(section.icon, null) }, onClick = { menu = false; onOpenWorkspace(section) })
-                        }
-                        DropdownMenuItem(text = { Text("Token 统计") }, onClick = { menu = false; onOpenUsage() })
-                        DropdownMenuItem(text = { Text("模型与引擎") }, onClick = { menu = false; onOpenModels() })
-                        DropdownMenuItem(text = { Text("显示设置") }, onClick = { menu = false; showDisplay = true })
-                        DropdownMenuItem(text = { Text("连接设置") }, onClick = { menu = false; showSettings = true })
-                    }
-                }
-                val chat = store.modelSummary["chat"].takeIf { it is SummonJson.Obj } ?: SummonJson.obj("role" to SummonJson.Str("chat"))
-                val work = store.modelSummary["executors"].array.orEmpty().firstOrNull() ?: SummonJson.obj("role" to SummonJson.Str("executor"), "kind" to SummonJson.Str("codex"))
-                ModelQuotaSignal(chat, "CHAT", Modifier.weight(1f)) { quotaItem = chat }
-                ModelQuotaSignal(work, "WORK", Modifier.weight(1f)) { quotaItem = work }
-                }
-                }
         },
     ) { padding ->
         PullToRefreshBox(isRefreshing = store.isRefreshing, onRefresh = { scope.launch { store.refresh() } }, modifier = Modifier.fillMaxSize().padding(padding)) {
@@ -272,7 +271,6 @@ fun ConversationListScreen(
         }
     }
     if (showSettings) SettingsSheet(store, updater) { showSettings = false }
-    if (showDisplay) DisplaySettingsSheet { showDisplay = false }
     if (showCreateBot) CreateBotSheet(store, onOpenRoom) { showCreateBot = false }
     roomKind?.let { kind -> CreateRoomSheet(store, kind, onOpenRoom) { roomKind = null } }
 }

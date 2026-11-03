@@ -8,6 +8,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -94,9 +96,17 @@ object PaperLibrary {
 }
 
 @Composable
-fun BotAvatar(shape:String,color:String,image:String?=null,size:Dp=48.dp,modifier:Modifier=Modifier,secondary:String?=null,ink:String?=null,paper:String?=null,motion:String="idle",animated:Boolean=true,groupOutline:Boolean=false){
+fun BotAvatar(shape:String,color:String,image:String?=null,size:Dp=48.dp,modifier:Modifier=Modifier,secondary:String?=null,ink:String?=null,paper:String?=null,motion:String="idle",animated:Boolean=true,groupOutline:Color?=null){
     val bitmap=remember(image){decodeDataImage(image)}
-    if(bitmap!=null){Image(bitmap.asImageBitmap(),null,modifier.size(size).clip(RoundedCornerShape(size*.22f)).then(if(groupOutline) Modifier.border(4.dp,Color.White,RoundedCornerShape(size*.22f)) else Modifier),contentScale=ContentScale.Crop);return}
+    val inset=if(groupOutline==null) 0.dp else minOf(4.dp,size*.08f)
+    if(bitmap!=null){
+        val imageSize=size-inset*2
+        Box(modifier.size(size).padding(inset)) {
+            Image(bitmap.asImageBitmap(),null,Modifier.size(imageSize).clip(RoundedCornerShape(imageSize*.22f))
+                .then(if(groupOutline!=null) Modifier.border(inset,groupOutline,RoundedCornerShape(imageSize*.22f)) else Modifier),contentScale=ContentScale.Crop)
+        }
+        return
+    }
     val context=LocalContext.current;val role=PaperLibrary.role(shape)
     val model=remember(role){PaperLibrary.model(context,role)}
     var frame by remember{mutableStateOf(PaperLibrary.frame(model,motion,0f))}
@@ -132,15 +142,17 @@ fun BotAvatar(shape:String,color:String,image:String?=null,size:Dp=48.dp,modifie
     val fibers=remember{val rows=PaperLibrary.data(context).getJSONArray("fibers");(0 until rows.length()).map{PaperLibrary.floats(rows.getJSONArray(it))}}
     Canvas(modifier.size(size)){
         drawIntoCanvas{wrapper->
-            val c=wrapper.nativeCanvas;val save=c.save();c.translate(this.size.width/2,this.size.height/2);c.scale(this.size.width/316*1.5f,this.size.height/316*1.5f)
+            // Reserve room for the paper backing and separator within this canvas.
+            val scale=(this.size.width-inset.toPx()*2)/316*1.5f
+            val c=wrapper.nativeCanvas;val save=c.save();c.translate(this.size.width/2,this.size.height/2);c.scale(scale,scale)
             val paint=android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply{strokeCap=android.graphics.Paint.Cap.ROUND;strokeJoin=android.graphics.Paint.Join.ROUND}
             fun fill(path:Path,slot:Int){paint.style=android.graphics.Paint.Style.FILL;paint.color=look.colors[slot].toArgb();c.drawPath(path,paint)}
             fun matrix(a:FloatArray)=android.graphics.Matrix().apply{setValues(floatArrayOf(a[0],a[2],a[4],a[1],a[3],a[5],0f,0f,1f))}
             val arcs=if(motion=="work")PaperLibrary.arcs(context,age) else emptyList()
             fun drawArcs(front:Boolean){for(a in arcs){paint.style=android.graphics.Paint.Style.STROKE;paint.color=look.colors[0].toArgb();paint.alpha=(a.alpha*255).toInt();paint.strokeWidth=a.width;c.drawPath(if(front)a.front else a.back,paint)};paint.alpha=255}
             drawArcs(false)
-            if(groupOutline){
-                paint.style=android.graphics.Paint.Style.FILL_AND_STROKE;paint.color=android.graphics.Color.WHITE;paint.strokeWidth=8.dp.toPx()*316/(this.size.width*1.5f)
+            if(groupOutline!=null){
+                paint.style=android.graphics.Paint.Style.FILL_AND_STROKE;paint.color=groupOutline.toArgb();paint.strokeWidth=inset.toPx()/scale
                 val backOutline=c.save();c.translate(4.5f,5.5f);c.rotate(-3f);c.concat(matrix(displayed.body));c.drawPath(outline,paint);c.restoreToCount(backOutline)
                 c.drawPath(Path(outline).apply{transform(matrix(displayed.body))},paint)
             }

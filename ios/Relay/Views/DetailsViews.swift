@@ -194,7 +194,7 @@ struct RoomDetailsView: View {
         Form {
             if let room {
                 Section {
-                    HStack { Spacer(); RoomAvatar(room: room, size: 100); Spacer() }.padding(.vertical, 16)
+                    HStack { Spacer(); RoomAvatar(room: room, size: 100, background: Color(uiColor: .secondarySystemGroupedBackground)); Spacer() }.padding(.vertical, 16)
                     if room.kind == "dm" {
                         LabeledContent("名称", value: room.name)
                     } else {

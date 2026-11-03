@@ -9,7 +9,7 @@ struct MemberAvatar: View {
     let bot: SummonBot?
     var size: CGFloat = 48
     var motion: String = "idle"
-    var groupOutline: Bool = false
+    var groupOutline: Color? = nil
 
     var body: some View {
         let avatar = bot?.resolvedAvatar ?? SummonAvatar()
@@ -22,6 +22,7 @@ struct RoomAvatar: View {
     @Environment(SummonStore.self) private var store
     let room: SummonRoom
     var size: CGFloat = 86
+    var background: Color = SummonTheme.background
 
     private var members: [String] {
         Array(room.members.filter { id in id == "user" || store.bots.contains { $0.id == id } }.prefix(4))
@@ -35,16 +36,17 @@ struct RoomAvatar: View {
             } else {
                 ForEach(Array(members.enumerated()), id: \.element) { index, id in
                     let child = members.count == 1 ? size : size * (members.count == 2 ? 0.66 : 0.58)
+                    let outlineWidth = min(4, child * 0.08)
                     Group {
                         if id == "user" {
                             Text(String(store.settings.userName.prefix(1)))
                                 .font(.system(size: child * 0.25))
                                 .frame(width: child * 0.86, height: child * 0.86)
                                 .background(Color(uiColor: .systemGray5), in: Circle())
-                                .overlay(Circle().stroke(.white, lineWidth: 8))
+                                .overlay(Circle().stroke(background, lineWidth: outlineWidth))
                                 .frame(width: child, height: child)
                         } else {
-                            MemberAvatar(bot: store.bots.first { $0.id == id }, size: child, groupOutline: true)
+                            MemberAvatar(bot: store.bots.first { $0.id == id }, size: child, groupOutline: background)
                         }
                     }
                     .offset(x: xOffset(index), y: yOffset(index))

@@ -6,8 +6,8 @@ struct ConversationListView: View {
     @State private var query = ""
     @State private var showSettings = false
     @State private var showUsage = false
-    @State private var showDisplay = false
-    @State private var showModels = false
+    @State private var showProfileMenu = false
+    @State private var profileDestination: ProfileDestination?
     @State private var quotaItem: SummonJSONValue?
     @State private var showCreateBot = false
     @State private var newRoomKind: String?
@@ -81,6 +81,23 @@ struct ConversationListView: View {
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { showProfileMenu.toggle() } label: {
+                        Image("OwnerAvatar").resizable().scaledToFill()
+                            .frame(width: 36, height: 36).clipShape(.circle)
+                            .overlay(alignment: .bottomTrailing) {
+                                Circle().fill(store.isConnected ? Color(red: 0.58, green: 0.68, blue: 0.60) : .gray)
+                                    .frame(width: 8, height: 8)
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(store.settings.userName)，菜单，\(store.isConnected ? "已连接" : "正在连接")")
+                    .popover(isPresented: $showProfileMenu, arrowEdge: .top) {
+                        profileMenu
+                            .presentationCompactAdaptation(.popover)
+                            .onDisappear { presentProfileDestination() }
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("创建新 Bot", systemImage: "person.badge.plus") { showCreateBot = true }
@@ -91,7 +108,6 @@ struct ConversationListView: View {
                     }.accessibilityLabel("新建")
                 }
             }
-            .safeAreaInset(edge: .bottom, spacing: 0) { searchBar }
             .searchable(text: $query, prompt: "搜索")
             .task(id: store.settings.baseURL) {
                 while !Task.isCancelled { try? await store.refreshModelUsage(); try? await Task.sleep(for: .seconds(60)) }
@@ -99,8 +115,6 @@ struct ConversationListView: View {
             .navigationDestination(for: String.self) { id in ChatView(roomID: id) }
             .summonSheet(isPresented: $showSettings) { ConnectionSettingsView() }
             .summonSheet(isPresented: $showUsage) { TokenUsageView() }
-            .summonSheet(isPresented: $showDisplay) { SummonDisplaySettingsView() }
-            .summonSheet(isPresented: $showModels) { ModelSettingsView() }
             .summonSheet(isPresented: Binding(get: { quotaItem != nil }, set: { if !$0 { quotaItem = nil } })) { if let quotaItem { ModelQuotaDetailsView(item: quotaItem) } }
             .summonSheet(isPresented: $showCreateBot) {
                 CreateBotView { room in openRoom(room.id) }
@@ -147,37 +161,59 @@ struct ConversationListView: View {
         }.padding(.horizontal, 42).padding(.top, 32).padding(.bottom, 24)
     }
 
-    private var searchBar: some View {
-        VStack(spacing: 4) {
-            HStack(spacing: 8) {
-                Button { workspaceSection = .works } label: { Label("工作", systemImage: "briefcase").frame(maxWidth: .infinity) }.buttonStyle(.glass)
-                Button { workspaceSection = .knowledge } label: { Label("知识", systemImage: "book").frame(maxWidth: .infinity) }.buttonStyle(.glass)
-            }
-            HStack(alignment: .top, spacing: 4) {
-                Menu {
-                    ForEach(WorkspaceSection.allCases) { section in
-                        Button(section.title, systemImage: section.symbol) { workspaceSection = section }
+    private enum ProfileDestination {
+        case usage, settings
+        case quota(SummonJSONValue)
+        case workspace(WorkspaceSection)
+    }
+
+    private var profileMenu: some View {
+        ScrollView {
+            VStack(spacing: 2) {
+                HStack(spacing: 12) {
+                    ModelQuotaSignal(item: store.modelSummary["chat"], label: "CHAT") {
+                        selectProfileDestination(.quota(store.modelSummary["chat"]))
                     }
-                    Divider()
-                    Button("Token 统计", systemImage: "chart.bar") { showUsage = true }
-                    Button("模型与引擎", systemImage: "circle.dashed") { showModels = true }
-                    Button("显示设置", systemImage: "textformat.size") { showDisplay = true }
-                    Button("连接设置", systemImage: "network") { showSettings = true }
-                } label: {
-                    VStack(spacing: 1) {
-                        ZStack(alignment: .top) {
-                            Image("OwnerAvatar").resizable().scaledToFill().frame(width: 48, height: 48).clipShape(.circle)
-                                .overlay(alignment: .bottomTrailing) { Circle().fill(store.isConnected ? Color(red: 0.58, green: 0.68, blue: 0.60) : .gray).frame(width: 9, height: 9).offset(x: 1, y: 1) }.padding(.top, 4)
-                        }.frame(width: 64, height: 59)
-                        Text(store.settings.userName).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
-                    }.padding(.vertical, 3).frame(maxWidth: .infinity)
-                }
-                .accessibilityLabel("\(store.settings.userName)，设置，\(store.isConnected ? "已连接" : "正在连接")")
-                ModelQuotaSignal(item: store.modelSummary["chat"], label: "CHAT") { quotaItem = store.modelSummary["chat"] }.frame(maxWidth: .infinity)
-                ModelQuotaSignal(item: store.modelSummary["executors"].array?.first ?? .object(["role": .string("executor"), "kind": .string("codex")] ), label: "WORK") { quotaItem = store.modelSummary["executors"].array?.first }.frame(maxWidth: .infinity)
-            }
+                    let work = store.modelSummary["executors"].array?.first ?? .object(["role": .string("executor"), "kind": .string("codex")])
+                    ModelQuotaSignal(item: work, label: "WORK") { selectProfileDestination(.quota(work)) }
+                }.padding(.vertical, 8)
+                profileMenuButton("Token 统计", symbol: "chart.bar", destination: .usage)
+                profileMenuButton("设置", symbol: "gearshape", destination: .settings)
+                Divider().padding(.vertical, 6)
+                profileMenuButton("事件", symbol: "bolt", destination: .workspace(.event))
+                profileMenuButton("定时", symbol: "clock", destination: .workspace(.routines))
+                profileMenuButton("知识", symbol: "book", destination: .workspace(.knowledge))
+                profileMenuButton("工作", symbol: "briefcase", destination: .workspace(.works))
+                profileMenuButton("管理 Bot", symbol: "person.2", destination: .workspace(.bots))
+            }.padding(12)
         }
-        .padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 8).background(SummonTheme.background)
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(width: 264, height: 456)
+        .background(SummonTheme.surface)
+    }
+
+    private func profileMenuButton(_ title: String, symbol: String, destination: ProfileDestination) -> some View {
+        Button { selectProfileDestination(destination) } label: {
+            Label(title, systemImage: symbol)
+                .summonFont(.body).frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
+                .contentShape(Rectangle())
+        }.buttonStyle(SummonPressStyle()).foregroundStyle(.primary)
+    }
+
+    private func selectProfileDestination(_ destination: ProfileDestination) {
+        profileDestination = destination
+        showProfileMenu = false
+    }
+
+    private func presentProfileDestination() {
+        guard let destination = profileDestination else { return }
+        profileDestination = nil
+        switch destination {
+        case .usage: showUsage = true
+        case .settings: showSettings = true
+        case .quota(let item): quotaItem = item
+        case .workspace(let section): workspaceSection = section
+        }
     }
 
     private func contact(_ bot: SummonBot) -> some View {

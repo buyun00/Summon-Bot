@@ -89,7 +89,7 @@ fun LegacyCrewBotAvatar(shape:String,color:String,image:String?=null,size:Dp=48.
 }
 
 @Composable
-fun MemberAvatar(bot:SummonBot?,size:Dp=48.dp,modifier:Modifier=Modifier,motion:String="idle",groupOutline:Boolean=false) {
+fun MemberAvatar(bot:SummonBot?,size:Dp=48.dp,modifier:Modifier=Modifier,motion:String="idle",groupOutline:Color?=null) {
     val a=bot?.resolvedAvatar ?: SummonAvatar()
     BotAvatar(a.shape,a.color,a.image,size,modifier,a.secondary,a.ink,a.paper,motion,groupOutline=groupOutline)
 }
@@ -97,7 +97,7 @@ fun MemberAvatar(bot:SummonBot?,size:Dp=48.dp,modifier:Modifier=Modifier,motion:
 
 
 @Composable
-fun RoomAvatar(room: SummonRoom, bots: List<SummonBot>, size: Dp = 86.dp) {
+fun RoomAvatar(room: SummonRoom, bots: List<SummonBot>, size: Dp = 86.dp, background: Color = androidx.compose.material3.MaterialTheme.colorScheme.background) {
     val members = room.members.filter { id -> id == "user" || bots.any { it.id == id } }.take(4)
     Box(Modifier.size(size), contentAlignment = androidx.compose.ui.Alignment.Center) {
         if (members.isEmpty()) {
@@ -105,6 +105,7 @@ fun RoomAvatar(room: SummonRoom, bots: List<SummonBot>, size: Dp = 86.dp) {
         } else {
             members.forEachIndexed { index, id ->
                 val child = if (members.size == 1) size else size * (if (members.size == 2) 0.66f else 0.58f)
+                val outlineWidth = minOf(4.dp, child * 0.08f)
                 val x = when {
                     members.size == 1 || (members.size == 3 && index == 0) -> 0.dp
                     members.size == 2 -> size * (if (index == 0) -0.17f else 0.17f)
@@ -117,9 +118,9 @@ fun RoomAvatar(room: SummonRoom, bots: List<SummonBot>, size: Dp = 86.dp) {
                 }
                 Box(Modifier.offset(x, y).size(child), contentAlignment = androidx.compose.ui.Alignment.Center) {
                     if (id == "user") {
-                        androidx.compose.material3.Text("我", modifier = Modifier.size(child * 0.86f).clip(androidx.compose.foundation.shape.CircleShape).background(Color(0xFFE8E8E8)).border(4.dp,Color.White,androidx.compose.foundation.shape.CircleShape).wrapContentSize(), color = Color(0xFF555555))
+                        androidx.compose.material3.Text("我", modifier = Modifier.size(child * 0.86f).clip(androidx.compose.foundation.shape.CircleShape).background(Color(0xFFE8E8E8)).border(outlineWidth,background,androidx.compose.foundation.shape.CircleShape).wrapContentSize(), color = Color(0xFF555555))
                     } else {
-                        MemberAvatar(bots.first { it.id == id }, child, groupOutline=true)
+                        MemberAvatar(bots.first { it.id == id }, child, groupOutline=background)
                     }
                 }
             }
