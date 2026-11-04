@@ -108,7 +108,8 @@ globalThis.SummonModels = (() => {
     const selected = editor?.id ? data.connections.find(item => item.id === editor.id) : null;
     const login = view.login?.id === editor?.id ? view.login : null;
     const waiting = login && ['starting', 'waiting'].includes(login.status);
-    const authorization = editor && editor.kind !== 'api' ? `<div class="models-auth-panel"><div><strong>${selected?.configured ? '订阅已连接' : '连接你的订阅'}</strong><p>${editor.authMode === 'codex-local' ? '使用这台电脑的 Codex 登录。Pi 负责聊天和工具调用。' : '授权完成后，Pi 可以直接使用此账号的聊天模型。'}</p></div>${editor.kind === 'codex' && !selected ? '<button type="button" class="secondary-button" data-action="models-import-codex">导入本机 Codex 登录</button>' : ''}${selected && editor.authMode !== 'codex-local' ? `<button type="button" class="secondary-button" data-action="models-login" data-id="${esc(editor.id)}" ${waiting || view.busy ? 'disabled' : ''}>${selected.configured ? '重新授权' : '授权订阅'}</button>` : ''}
+    const localLogin = ['codex-local', 'grok-local'].includes(editor?.authMode), localBrand = editor?.kind === 'codex' ? 'Codex' : 'Grok';
+    const authorization = editor && editor.kind !== 'api' ? `<div class="models-auth-panel"><div><strong>${selected?.configured ? '订阅已连接' : '连接你的订阅'}</strong><p>${localLogin ? `使用这台机器的 ${localBrand} 登录。Pi 负责聊天和工具调用。` : '授权完成后，Pi 可以直接使用此账号的聊天模型。'}</p></div>${!selected ? `<button type="button" class="secondary-button" data-action="models-import-${esc(editor.kind)}">导入本机 ${localBrand} 登录</button>` : ''}${selected && !localLogin ? `<button type="button" class="secondary-button" data-action="models-login" data-id="${esc(editor.id)}" ${waiting || view.busy ? 'disabled' : ''}>${selected.configured ? '重新授权' : '授权订阅'}</button>` : ''}
       ${waiting ? `<div class="models-device-code"><span>${login.status === 'starting' ? '正在获取授权码…' : '在授权页面输入此代码'}</span>${login.userCode ? `<strong>${esc(login.userCode)}</strong>` : ''}${login.verificationUri ? `<a class="primary-button" href="${esc(login.verificationUri)}" target="_blank" rel="noopener noreferrer">打开授权页面 ${icon('link', 14)}</a>` : ''}<button type="button" class="text-button" data-action="models-cancel-login" data-id="${esc(editor.id)}">取消授权</button></div>` : ''}${login?.error ? `<p class="models-inline-error">${esc(login.error)}</p>` : ''}</div>` : '';
     const form = editor ? `<section class="models-editor"><div class="models-section-heading"><div><p class="models-eyebrow">${esc(kinds[editor.kind])}</p><h2>${editor.id ? esc(editor.name) : '添加聊天模型'}</h2></div>${selected?.active ? '<span class="model-active-badge">当前聊天模型</span>' : ''}</div>
       <form id="model-connection-form"><input type="hidden" name="kind" value="${esc(editor.kind)}">${input('连接名称', 'name', editor.name, { required: true })}
@@ -179,10 +180,11 @@ globalThis.SummonModels = (() => {
       if (action === 'models-new') { view.editor = defaults(element.dataset.kind); view.choices = []; view.login = null; }
       if (action === 'models-edit') { view.editor = { ...view.data.connections.find(item => item.id === element.dataset.id), apiKey: '' }; view.choices = []; view.login = null; await fetchChoices(element.dataset.id); }
       if (action === 'models-discover') { view.busy = true; await fetchChoices(element.dataset.id, view.editor.kind === 'api'); }
-      if (action === 'models-import-codex') {
-        view.busy = true; view.data = await provided.api('/api/model-settings/codex/import', 'POST', {});
-        view.editor = { ...view.data.connections.find(item => item.authMode === 'codex-local'), apiKey: '' }; view.summary = view.data;
-        await fetchChoices(view.editor.id); provided.toast('已导入本机 Codex 登录，选择模型后即可用于聊天');
+      if (['models-import-codex', 'models-import-grok'].includes(action)) {
+        const kind = action === 'models-import-codex' ? 'codex' : 'grok';
+        view.busy = true; view.data = await provided.api('/api/model-settings/local/import', 'POST', { kind });
+        view.editor = { ...view.data.connections.find(item => item.id === view.data.importedId), apiKey: '' }; view.summary = view.data;
+        await fetchChoices(view.editor.id); provided.toast(`已导入本机 ${kind === 'codex' ? 'Codex' : 'Grok'} 登录，选择模型后即可用于聊天`);
       }
       if (action === 'models-activate') { view.busy = true; view.data = await provided.api('/api/model-settings/active', 'POST', { id: element.dataset.id }); view.summary = view.data; provided.toast('Pi 聊天模型已切换'); await provided.refresh?.(); }
       if (action === 'models-remove') { view.busy = true; view.data = await provided.api(`/api/model-settings/connections/${encodeURIComponent(element.dataset.id)}`, 'DELETE', {}); view.editor = { ...view.data.connections.find(item => item.id === view.data.activeId), apiKey: '' }; view.summary = view.data; }

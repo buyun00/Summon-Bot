@@ -23,6 +23,7 @@ import { assertToolPolicy, permitsTool, permitsMaintenanceTool, taskMode } from 
 import { CapabilityCatalog,catalogTools } from '../services/catalog.mjs';
 import { UsageLedger,readUsage,usageRange,finishUsageTotals,emptyUsageTotals,USAGE_PRICING } from '../../bot/src/agent/usage.mjs';
 import { ModelConnections } from '../models/service.mjs';
+import { OnboardingService } from '../models/onboarding.mjs';
 
 const same=(a,b)=>typeof a==='string'&&typeof b==='string'&&Buffer.byteLength(a)===Buffer.byteLength(b)&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
 const activityText=(value,max=512)=>typeof value==='string'?value.replace(/[\u0000-\u001f\u007f]/g,' ').slice(0,max):null;
@@ -64,6 +65,7 @@ export async function startGateway(options={}) {
   const chatroom=new ChatroomService({store:store('chatroom'),manager,attachments,emit});
   const knowledge=new KnowledgeService({store:store('knowledge'),emit}),memories=new MemoryManagement({store:store('memory-management'),manager,dataRoot,emit});
   proxy(chatroom,'chatroom',['createRoom','updateRoom','post','append','dm','conclude','saveConclusion','retry','seed','teamRead','teamRaise','teamManage']);
+  const onboarding=await new OnboardingService({store:store('gateway'),models:modelConnections,manager,chatroom,emit}).initialize();
   const catalog=new CapabilityCatalog({store:store('registry'),registry,manager,dataRoot,workspace:defaultCwd,emit,delegate:(actor,input)=>chatroom.dm(actor,input)});
   proxy(knowledge,'knowledge',['saveNode','saveEdge']);
   proxy(memories,'memory-management',['write']);
@@ -116,7 +118,7 @@ export async function startGateway(options={}) {
     const messages=chatroom.store.list('messages'),jobs=chatroom.jobs(),runtime={started:true,fast:{running:jobs.filter(job=>['running','accepted'].includes(job.status)).length,queued:jobs.filter(job=>job.status==='queued').length},deep:{running:0,queued:0},jobs:jobs.slice(-80)};
     const selection=modelConnections.runtimeModel();
     const latestProvider=providers.filter(provider=>provider.connectionId===selection.id).sort((a,b)=>String(b.lastSuccessAt||'').localeCompare(String(a.lastSuccessAt||'')))[0]||{};
-    return {historyEpoch,bots:manager.list(),rooms:chatroom.rooms(),routines:manager.store.list('routines'),knowledge:knowledge.graph(),runtime,activity:messages.filter(message=>message.returnTo||message.peerReplyId||['event','work'].includes(message.kind)).slice(-100),works:[...await localWorks(),...codex.list().filter(work=>work.backend!=='desktop').map(work=>({...work,historical:true}))],agentRuns:agentRuns.slice(-100),provider:{configured:Boolean((await modelConnections.credentials.read(selection.id).catch(()=>null))||selection.allowNoKey),model:selection.model,...latestProvider},defaultCwd};
+    return {historyEpoch,onboarding:onboarding.state(),bots:manager.list(),rooms:chatroom.rooms(),routines:manager.store.list('routines'),knowledge:knowledge.graph(),runtime,activity:messages.filter(message=>message.returnTo||message.peerReplyId||['event','work'].includes(message.kind)).slice(-100),works:[...await localWorks(),...codex.list().filter(work=>work.backend!=='desktop').map(work=>({...work,historical:true}))],agentRuns:agentRuns.slice(-100),provider:{configured:Boolean((await modelConnections.credentials.read(selection.id).catch(()=>null))||selection.allowNoKey),model:selection.model,...latestProvider},defaultCwd};
   }
   function visibleTools(actor) {
     const allowed=actor==='controller'?null:manager.get(actor).allowedTools||[];
@@ -178,8 +180,12 @@ export async function startGateway(options={}) {
     if(method==='GET'&&path==='/api/health')return {ok:true,service:'summon-capabilities'};
     if(method==='GET'&&path==='/api/usage')return tokenUsage(params);
     if(path==='/api/model-settings'&&method==='GET')return modelConnections.snapshot();
+    if(path==='/api/model-settings/local'&&method==='GET')return modelConnections.localLogins();
+    if(path==='/api/model-settings/local/import'&&method==='POST')return modelConnections.importLocal(body.kind);
+    if(path==='/api/model-settings/onboarding'&&method==='GET')return onboarding.snapshot();
+    if(path==='/api/model-settings/onboarding/reply'&&method==='POST')return onboarding.reply(body);
+    if(path==='/api/model-settings/onboarding/start'&&method==='POST')return onboarding.start(body);
     if(path==='/api/model-settings/connections'&&method==='POST')return modelConnections.save(body);
-    if(path==='/api/model-settings/codex/import'&&method==='POST')return modelConnections.importCodex();
     if(path==='/api/model-settings/active'&&method==='POST')return modelConnections.select(body.id);
     if(path==='/api/model-settings/usage'&&method==='POST')return modelConnections.refreshUsage(body.force===true);
     if((match=path.match(/^\/api\/model-settings\/connections\/([A-Za-z0-9_-]+)(?:\/(login|models))?$/))){

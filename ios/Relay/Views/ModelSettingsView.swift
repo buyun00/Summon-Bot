@@ -126,7 +126,7 @@ struct ModelQuotaDetailsView: View {
                 if draft.object != nil {
                     ModelConnectionForm(entry: draft, selected: selected, presets: data["presets"].array ?? [], busy: busy,
                         save: { payload in run { try await save(payload) } },
-                        importCodex: { run { data = try await store.request(path: "/api/model-settings/codex/import", method: "POST", body: .object([:])); draft = entries.first { $0["authMode"].stringValue == "codex-local" } ?? .null; try await store.refreshModelUsage(force: true) } },
+                        importCodex: { run { data = try await store.request(path: "/api/model-settings/local/import", method: "POST", body: .object(["kind": draft["kind"]])); draft = entries.first { $0["id"].stringValue == data["importedId"].stringValue } ?? .null; try await store.refreshModelUsage(force: true) } },
                         authorize: { run { login = try await store.request(path: "/api/model-settings/connections/\(component(selected["id"]))/login", method: "POST", body: .object([:])) } },
                         activate: { run { data = try await store.request(path: "/api/model-settings/active", method: "POST", body: .object(["id": selected["id"]])); try await store.refreshModelUsage(force: true) } },
                         remove: { run { data = try await store.request(path: "/api/model-settings/connections/\(component(selected["id"]))", method: "DELETE"); draft = entries.first { $0["active"].bool == true } ?? .null; try await store.refreshModelUsage(force: true) } },
@@ -187,8 +187,8 @@ struct ModelQuotaDetailsView: View {
                 Toggle("这个服务无需 API Key", isOn: Binding(get: { fields["allowNoKey"]?.bool == true }, set: { fields["allowNoKey"] = .bool($0) }))
             } else {
                 Text(selected["configured"].bool == true ? "订阅已连接" : "保存后通过设备码授权").foregroundStyle(modelTint)
-                if kind == "codex" && selected.object == nil { Button("导入服务器上的 Codex 登录", action: importCodex) }
-                if selected.object != nil && selected["authMode"].stringValue != "codex-local" { Button("授权订阅", action: authorize) }
+                if selected.object == nil { Button("导入服务器上的 \(kind == "codex" ? "Codex" : "Grok") 登录", action: importCodex) }
+                if selected.object != nil && !["codex-local", "grok-local"].contains(selected["authMode"].stringValue) { Button("授权订阅", action: authorize) }
             }
             TextField("聊天模型 ID", text: binding("model")).textInputAutocapitalization(.never).autocorrectionDisabled()
             if selected.object != nil { Button("获取模型目录") { Task { do { choices = try await discover() } catch { self.error = error.localizedDescription } } } }

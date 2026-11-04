@@ -39,7 +39,11 @@ docs/OPERATIONS.md 和 docs/CLIENT_RELEASES.md，再检查当前代码与已有�
 
 运行需要 Node.js 24+，Windows 打包所用运行时版本按 [运行维护中的发行说明](OPERATIONS.md#发行与升级) 选择。依赖由 package-lock.json 固定，需要安装时在源码根运行 npm ci。
 
-模型配置由数据根的 config/deployment.json 管理，凭据沿用 config/runtime.env。客户端签名和发布凭据也保存在既有私有配置中，保留当前应用 ID 与签名身份。
+模型连接由数据根的 config/model-connections.json 管理，API Key 和独立订阅授权保存到 config/model-credentials.json，已有 config/runtime.env 凭据仍按明确引用使用。本机 Codex / Grok 导入引用各自的登录文件，不将令牌写入聊天。客户端签名和发布凭据保存在既有私有配置中，保留当前应用 ID 与签名身份。
+
+首次安装并启动后，打开网页会先进入与主 Bot 的入门对话。模型尚未配置时，介绍和选项由本地消息呈现：先查运行 Summon Bot 的主机上是否存在可导入的 Codex / Grok 登录，用户选择后才导入；没有可用登录时引导填写 API Key，也支持订阅设备码授权。检测不扫描远程网页访问者或手机上的文件，不读取浏览器 Cookie。API Key 使用隐藏输入，不进入消息、草稿或本地对话缓存。保存在系统凭据存储而非登录文件中的账号，可选择订阅授权。
+
+模型配置保存后，用户点击继续才发起第一条真实模型对话，由主 Bot 结合用户目标逐步介绍伙伴、工作、记忆和需要的后续配置。已有模型配置的安装不会被强制重新引导；“设置 → 新手引导”可以随时重新进入。网页与 Electron 直接显示同一网页；Android 和 iOS 使用原生对话界面，通过同一组模型接口接入主 Bot。脚本化入门回复不调用模型，不保存为真实聊天记录。
 
 ## 按任务选择入口
 

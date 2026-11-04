@@ -107,6 +107,7 @@ fun ConversationListScreen(
     updater: SummonAppUpdater,
     onOpenUsage: () -> Unit,
     onOpenModels: () -> Unit,
+    onOpenOnboarding: () -> Unit,
     onOpenRoom: (String) -> Unit,
     onOpenWorkspace: (WorkspaceSection) -> Unit,
 ) {
@@ -155,6 +156,7 @@ fun ConversationListScreen(
                         }
                         DropdownMenuItem(text = { Text("Token 统计") }, leadingIcon = { Icon(Icons.Filled.BarChart, null) }, onClick = { menu = false; onOpenUsage() })
                         DropdownMenuItem(text = { Text("设置") }, leadingIcon = { Icon(Icons.Filled.Settings, null) }, onClick = { menu = false; showSettings = true })
+                        DropdownMenuItem(text = { Text("新手引导") }, leadingIcon = { Icon(Icons.Filled.Bolt, null) }, onClick = { menu = false; onOpenOnboarding() })
                         HorizontalDivider(Modifier.padding(vertical = 6.dp))
                         listOf(WorkspaceSection.Event, WorkspaceSection.Routines, WorkspaceSection.Knowledge, WorkspaceSection.Works, WorkspaceSection.Bots).forEach { section ->
                             val title = when (section) {

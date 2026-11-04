@@ -10,6 +10,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.Lifecycle
@@ -88,6 +93,10 @@ private fun SummonApp(model: SummonViewModel = viewModel()) {
         )) {
             Surface(Modifier.fillMaxSize(), color = Color.Black) {
                 val nav = rememberNavController()
+                var onboardingShown by remember(store.settings.baseURL) { mutableStateOf(false) }
+                LaunchedEffect(store.onboardingRequired) {
+                    if (store.onboardingRequired && !onboardingShown) { onboardingShown = true; nav.navigate("onboarding") }
+                }
                 NavHost(nav, startDestination = "list",
                     enterTransition = { slideInHorizontally(tween(380)) { it } },
                     exitTransition = { slideOutHorizontally(tween(380)) { -it / 4 } },
@@ -99,6 +108,7 @@ private fun SummonApp(model: SummonViewModel = viewModel()) {
                             updater = model.updater,
                             onOpenUsage = { nav.navigate("usage") },
                             onOpenModels = { nav.navigate("models") },
+                            onOpenOnboarding = { nav.navigate("onboarding") },
                             onOpenRoom = { id -> nav.navigate("chat/${URLEncoder.encode(id, "UTF-8")}") },
                             onOpenWorkspace = { section -> nav.navigate("workspace/${section.name}") },
                         )
@@ -109,6 +119,11 @@ private fun SummonApp(model: SummonViewModel = viewModel()) {
                     }
                     composable("usage") { TokenUsageScreen(store) { nav.popBackStack() } }
                     composable("models") { ModelSettingsScreen(store) { nav.popBackStack() } }
+                    composable("onboarding") {
+                        OnboardingScreen(store, onBack = { nav.popBackStack() }, onRoom = { id ->
+                            nav.navigate("chat/${URLEncoder.encode(id, "UTF-8")}") { popUpTo("list") }
+                        })
+                    }
                     composable("workspace/{section}") { entry ->
                         val section = runCatching { WorkspaceSection.valueOf(entry.arguments?.getString("section").orEmpty()) }.getOrDefault(WorkspaceSection.Bots)
                         WorkspaceScreen(store, section) { nav.popBackStack() }

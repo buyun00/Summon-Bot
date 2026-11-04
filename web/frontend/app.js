@@ -7,7 +7,7 @@ const $ = (selector, root = document) => {
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)].filter(node => !node.closest('[data-motion-ghost]'));
 
 // Display preferences are local to this browser and independent for each layout.
-const UI_BUILD = '2026.11.04.3';
+const UI_BUILD = '2026.11.04.4';
 let displayDiagnosticSnapshot = null;
 function readViewportUnits() {
   const probe = document.createElement('div');
@@ -449,7 +449,7 @@ function restoreConversationScroll(messages, saved, { sameView, ready, wasReady 
 function preserveView() {
   const main = $('#main-content'), messages = $('.messages'), works = $('.works-list'), detail = $('.work-detail');
   const active = document.activeElement;
-  return { key: main.dataset.viewKey, chatReady: $('.chat-layout')?.dataset.ready === 'true', fields: $$('input[id]:not([type=file]),textarea[id],select[id]', main).map(field => ({ id: field.id, value: field.value })), panelTop: $('.detail-panel')?.scrollTop, panelSection: $('.detail-panel')?.dataset.section, top: main.scrollTop, chatScroll: captureChatScroll(messages), workTop: works?.scrollTop, detailTop: detail?.scrollTop, focusId: active?.id, start: active?.selectionStart, end: active?.selectionEnd };
+  return { key: main.dataset.viewKey, chatReady: $('.chat-layout')?.dataset.ready === 'true', fields: $$('input[id]:not([type=file]):not([type=password]),textarea[id],select[id]', main).map(field => ({ id: field.id, value: field.value })), panelTop: $('.detail-panel')?.scrollTop, panelSection: $('.detail-panel')?.dataset.section, top: main.scrollTop, chatScroll: captureChatScroll(messages), workTop: works?.scrollTop, detailTop: detail?.scrollTop, focusId: active?.id, start: active?.selectionStart, end: active?.selectionEnd };
 }
 function render() {
   persistClientSession();
@@ -459,14 +459,16 @@ function render() {
   const navigation = window.SummonMotion?.captureNavigation(ui.view === 'chat' ? (ui.mobileRoom ? `chat:${ui.roomId}` : 'list') : ui.view);
   markCurrentRoomRead(); renderTopbar();
   const views = { chat: renderChat, members: renderMembers, catalog: renderCatalog, works: renderWorks, knowledge: renderKnowledge, routines: renderRoutines, models: () => globalThis.SummonModels.render({ esc, icon }), usage: () => globalThis.SummonUsage.render({ esc, icon }) };
-  const key = `${ui.view}:${ui.view === 'chat' ? ui.roomId : ui.view === 'members' ? ui.botId : ui.view === 'works' ? ui.workId : ''}`;
+  const key = ui.view === 'chat' && globalThis.SummonOnboarding.visible() ? `onboarding:${globalThis.SummonOnboarding.key()}` : `${ui.view}:${ui.view === 'chat' ? ui.roomId : ui.view === 'members' ? ui.botId : ui.view === 'works' ? ui.workId : ''}`;
   const main = $('#main-content'), html = views[ui.view]();
   const signature = renderSignature(html);
   const restoreConversation = () => restoreConversationScroll($('.messages'), saved.chatScroll, { sameView: saved.key === key, ready: ui.messagesRoomId === ui.roomId, wasReady: saved.chatReady });
   if (ui.lastMainHtml === signature && main.dataset.viewKey === key) { restoreFocus(saved); restoreConversation(); window.SummonMotion?.finishNavigation(navigation); return; }
   const motion = captureMotion(main);
+  const onboardingSecret = saved.key === key ? $('#onboarding-input[type=password]') : null;
   $('.messages')?._summonChatScroll?.stop();
   main.innerHTML = html; ui.lastMainHtml = signature;
+  if (onboardingSecret) { const replacement = $('#onboarding-input[type=password]'); if (replacement) { onboardingSecret.disabled = replacement.disabled; replacement.replaceWith(onboardingSecret); } }
   main.dataset.viewKey = key;
   if (saved.key === key) for (const field of saved.fields) { const target = document.getElementById(field.id); if (target) target.value = field.value; }
   $('#main-content').scrollTop = saved.top;
@@ -500,7 +502,7 @@ function unresolvedJobLeaves(jobs = ui.roomJobs, messages = ui.messages) {
 function messageJobNotices(messageId, failures) {
   return failures.filter(job => job.messageId === messageId).map(job => {
     const retrying = ui.retryingJobs?.has(job.id);
-    return `<div class="job-notice" data-job-id="${esc(job.id)}" role="status"><div><strong>${esc(nameOf(job.botId))} 的${job.lane === 'deep' ? '深聊' : '回复'}${job.status === 'interrupted' ? '已中断' : '未完成'}</strong><p>${esc(job.error?.message || (typeof job.error === 'string' ? job.error : '') || '可根据当前状态重新尝试。')}</p></div><button class="small-button" data-action="retry-job" data-id="${esc(job.id)}" ${retrying ? 'disabled' : ''}>${retrying ? '正在安排…' : '重新尝试'}</button></div>`;
+    return `<div class="job-notice" data-job-id="${esc(job.id)}" role="status"><div><strong>${esc(nameOf(job.botId))} 的${job.lane === 'deep' ? '深聊' : '回复'}${job.status === 'interrupted' ? '已中断' : '未完成'}</strong><p>${esc(job.error?.message || (typeof job.error === 'string' ? job.error : '') || '可根据当前状态重新尝试。')}</p>${state.onboarding?.roomId === ui.roomId ? '<button class="text-button" data-action="onboarding-open">重新连接聊天模型</button>' : ''}</div><button class="small-button" data-action="retry-job" data-id="${esc(job.id)}" ${retrying ? 'disabled' : ''}>${retrying ? '正在安排…' : '重新尝试'}</button></div>`;
   }).join('');
 }
 function roomNotices(room, failures = unresolvedJobLeaves()) {
@@ -592,6 +594,7 @@ async function refresh(force = false) {
     void globalThis.SummonCache?.writeWorkspace(synced);
     Object.assign(state, structuredClone(next)); for (const [id, pending] of avatarSaves) { const bot = state.bots?.find(item => item.id === id); if (bot && (pending.running || pending.error || pending.savedVersion !== pending.version || avatarReadEpoch < pending.confirmedEpoch)) bot.avatar = { ...pending.target }; else if (!pending.running && !pending.error) avatarSaves.delete(id); } state.bots ||= []; state.rooms ||= []; state.works ||= []; state.agentRuns ||= []; state.routines ||= []; state.knowledge ||= { nodes: [], edges: [] };
     if (!ui.modelsStarted) { ui.modelsStarted = true; globalThis.SummonModels.start({ api, render, toast, refresh }); }
+    globalThis.SummonOnboarding.sync(state, onboardingBindings());
     const preferred = defaultConversationId();
     if (!roomById(ui.roomId) || !ui.roomChosenByUser && preferred !== ui.roomId) { ui.roomId = preferred; ui.reply = null; await restoreRoomMessages(ui.roomId); }
     if (!botById(ui.botId)) ui.botId = state.bots.find(bot => !bot.presetId)?.id || null;
@@ -605,6 +608,7 @@ async function refresh(force = false) {
   finally { ui.refreshing = false; if (ui.refreshAgain) { ui.refreshAgain = false; scheduleRefresh(); } }
 }
 async function loadCurrent() {
+  if (ui.view === 'chat' && globalThis.SummonOnboarding.visible()) return;
   if (ui.view === 'models') { await globalThis.SummonModels.load(api, render, toast, refresh); return; }
   if (ui.view === 'usage') { await globalThis.SummonUsage.load(api); return; }
   if (ui.view === 'catalog') {
@@ -644,7 +648,8 @@ async function loadCurrent() {
 }
 function defaultConversationId() {
   const custom = new Set(state.bots.filter(bot => !bot.presetId).map(bot => bot.id));
-  return state.rooms.find(room => room.kind === 'dm' && room.members?.includes('user') && room.members.some(id => custom.has(id)))?.id
+  return state.rooms.find(room => room.id === state.onboarding?.roomId)?.id
+    || state.rooms.find(room => room.kind === 'dm' && room.members?.includes('user') && room.members.some(id => custom.has(id)))?.id
     || state.rooms.find(room => room.kind !== 'dm')?.id || null;
 }
 async function restoreRoomMessages(id) {
@@ -767,7 +772,14 @@ async function restoreCachedWorkspace() {
   finally { ui.cacheReady = true; if (!ui.loading) render(); else renderTopbar(); }
 }
 function scheduleRefresh() { if (refreshTimer) return; refreshTimer = setTimeout(() => { refreshTimer = null; void refresh(); }, 230); }
-async function navigate(view) { ui.navigationSeq++; ui.menu = null; ui.view = view; location.hash = view; render(); try { await loadCurrent(); render(); } catch (error) { toast(error.message, true); render(); } }
+function onboardingBindings() {
+  return { api, render, refresh,
+    show() { ui.menu = null; ui.view = 'chat'; ui.mobileRoom = true; ui.detailOpen = false; location.hash = 'chat'; },
+    hide() { ui.mobileRoom = false; },
+    async enterRoom(id) { ui.view = 'chat'; ui.roomId = id; ui.roomChosenByUser = true; ui.mobileRoom = true; ui.reply = null; location.hash = 'chat'; await refresh(); }
+  };
+}
+async function navigate(view) { globalThis.SummonOnboarding.close(); ui.navigationSeq++; ui.menu = null; ui.view = view; location.hash = view; render(); try { await loadCurrent(); render(); } catch (error) { toast(error.message, true); render(); } }
 
 function roomSection(title, kind, rooms) {
   const filtered = rooms.filter(room => room.kind === kind && (!ui.roomQuery || room.name?.toLowerCase().includes(ui.roomQuery.toLowerCase())));
@@ -969,6 +981,8 @@ function openEventForm() {
 }
 
 async function act(action, element) {
+  if (action.startsWith('onboarding-')) { if (action === 'onboarding-open') return globalThis.SummonOnboarding.open(onboardingBindings()); return globalThis.SummonOnboarding.act(action, element); }
+  if (['select-room', 'dm-bot', 'room-back'].includes(action)) globalThis.SummonOnboarding.close();
   if (action.startsWith('usage-')) return globalThis.SummonUsage.act(action, element, api, render);
   if (action.startsWith('models-')) { if (action === 'models-quota') ui.menu = null; return globalThis.SummonModels.act(action, element, { api, render, toast, refresh }); }
   if (action.startsWith('catalog-')) return catalogAction(action, element);
@@ -1111,6 +1125,7 @@ document.addEventListener('submit', async event => {
   event.preventDefault(); const button = $('button[type=submit]', form); button.disabled = true;
   try {
     if (form.id === 'message-form') {
+      if (!state.provider.configured) { await globalThis.SummonOnboarding.open(onboardingBindings()); return; }
       const raw = $('#message-input', form).value, content = raw.trim();
       const roomId = form.dataset.roomId, attachments = attachmentDrafts(roomId).slice();
       if (!content && !attachments.length) return;
@@ -1290,7 +1305,7 @@ function renderTopbar() {
   const systemGroup = systemBots.length ? `<section class="system-bots ${selectedSystem ? 'has-selection' : ''}" aria-label="系统 Bot"><button class="system-bots-toggle" data-action="toggle-system-bots" aria-expanded="${systemOpen}" aria-controls="system-bot-contacts">${icon('settings', 18)}<span>系统 Bot${selectedSystem ? `<small>当前：${esc(selectedSystem.name)}</small>` : ''}</span><span class="system-bots-count">${systemBots.length}</span><span aria-hidden="true">${systemOpen ? '▾' : '▸'}</span></button>${systemOpen ? `<div id="system-bot-contacts">${systemBots.map(bot => renderBotContact(bot, selectedBot)).join('')}</div>` : '<div id="system-bot-contacts" hidden></div>'}</section>` : '';
   const activeWorks = state.works.filter(work => !work.historical && ['active', 'queued', 'running', 'waiting'].includes(work.status)).length;
   const menu = ui.menu === 'create' ? `<div class="context-menu create-menu"><button data-action="new-bot">${icon('person', 19)}创建新 Bot</button><button data-action="new-room">${icon('people', 19)}创建群聊</button><button data-action="new-deep">${icon('layers', 19)}创建深聊</button></div>` : '';
-  const appMenu = ui.menu === 'apps' ? `<div class="context-menu apps-menu"><div class="menu-title">设置</div><div class="connection-row"><span class="app-emblem flash">D</span><div><strong>${esc(globalThis.SummonModels.current()?.chat?.name || '聊天模型')}</strong><small class="${state.provider.lastError ? 'error-text' : ''}">${esc(providerLabel())}</small></div><button class="icon-button" data-action="refresh" title="刷新状态" aria-label="刷新状态">${icon('refresh', 17)}</button></div>${state.provider.lastError ? `<p class="menu-error">${esc(state.provider.lastError)}</p>` : ''}<div class="connection-row"><span class="app-emblem codex">${icon('computer', 21)}</span><div><strong>Codex</strong><small>${activeWorks ? `${activeWorks} 项工作进行中` : '专业执行端'}</small></div></div><div class="menu-separator"></div>${tabs.filter(tab => tab.id !== 'chat').map(tab => `<button data-action="navigate" data-view="${tab.id}">${icon(tab.icon, 19)}${tab.id === 'members' ? '管理 Bot' : tab.title}${tab.id === 'works' && activeWorks ? `<span class="menu-count">${activeWorks}</span>` : ''}</button>`).join('')}<button data-action="new-event">${icon('event', 19)}投递事件</button><div class="menu-separator"></div><button data-action="display-settings">${icon('settings', 19)}显示设置</button><button data-action="client-downloads">${icon('install', 19)}客户端下载与更新</button><button data-action="update-app">${icon('refresh', 19)}刷新页面</button></div>` : '';
+  const appMenu = ui.menu === 'apps' ? `<div class="context-menu apps-menu"><div class="menu-title">设置</div><div class="connection-row"><span class="app-emblem flash">D</span><div><strong>${esc(globalThis.SummonModels.current()?.chat?.name || '聊天模型')}</strong><small class="${state.provider.lastError ? 'error-text' : ''}">${esc(providerLabel())}</small></div><button class="icon-button" data-action="refresh" title="刷新状态" aria-label="刷新状态">${icon('refresh', 17)}</button></div>${state.provider.lastError ? `<p class="menu-error">${esc(state.provider.lastError)}</p>` : ''}<div class="connection-row"><span class="app-emblem codex">${icon('computer', 21)}</span><div><strong>Codex</strong><small>${activeWorks ? `${activeWorks} 项工作进行中` : '专业执行端'}</small></div></div><div class="menu-separator"></div>${tabs.filter(tab => tab.id !== 'chat').map(tab => `<button data-action="navigate" data-view="${tab.id}">${icon(tab.icon, 19)}${tab.id === 'members' ? '管理 Bot' : tab.title}${tab.id === 'works' && activeWorks ? `<span class="menu-count">${activeWorks}</span>` : ''}</button>`).join('')}<button data-action="new-event">${icon('event', 19)}投递事件</button><button data-action="onboarding-open">${icon('spark', 19)}新手引导</button><div class="menu-separator"></div><button data-action="display-settings">${icon('settings', 19)}显示设置</button><button data-action="client-downloads">${icon('install', 19)}客户端下载与更新</button><button data-action="update-app">${icon('refresh', 19)}刷新页面</button></div>` : '';
   const sidebar = $('#contact-sidebar');
   const connected = ui.streamConnected && !ui.connectionNotice;
   const connectionLabel = navigator.onLine === false ? '离线' : connected ? '已连接' : '正在连接';
@@ -1301,6 +1316,7 @@ function renderTopbar() {
     <div class="menu-anchor"><button class="round-button create-button" data-action="toggle-create" aria-label="新建" title="新建" aria-expanded="${ui.menu === 'create'}">${icon('plus', 23)}</button>${menu}</div>
   </div>
   <div class="contacts-scroll">
+    ${state.onboarding?.required || state.provider.configured === false ? `<button class="onboarding-sidebar-entry" data-action="onboarding-open">${icon('spark', 23)}<span>和主 Bot 一起开始<small>接上聊天模型，边聊边熟悉</small></span></button>` : ''}
     <section class="sidebar-section group-section"><div class="sidebar-section-heading"><h2 class="sidebar-section-title">群聊 <span>${groups.length}</span></h2><button class="section-add icon-button" data-action="new-room" title="创建群聊" aria-label="创建群聊">${icon('plus', 16)}</button></div><div class="group-grid">${groups.map(renderGroupContact).join('') || '<p class="sidebar-empty">还没有群聊</p>'}</div></section>
     <section class="sidebar-section partner-section"><div class="sidebar-section-heading"><h2 class="sidebar-section-title">伙伴 <span>${bots.length}</span></h2><button class="section-add icon-button" data-action="new-bot" title="创建伙伴" aria-label="创建伙伴">${icon('plus', 16)}</button></div><div class="bot-contacts">${bots.map(bot => renderBotContact(bot, selectedBot)).join('') || (!query ? '<p class="sidebar-empty">创建一位伙伴，开始协作</p>' : '')}</div></section>
     ${systemGroup}
@@ -1433,6 +1449,7 @@ function renderChatMessage(message, { isGroup, previousMessage, grouped, convers
   </article>`;
 }
 function renderChat() {
+  if (globalThis.SummonOnboarding.visible()) return globalThis.SummonOnboarding.render({ esc, icon, avatar });
   const room = roomById(ui.roomId), bot = currentBot(), isGroup = room?.kind !== 'dm' || !room?.members?.includes('user');
   const members = (room?.members || []).filter(id => id !== 'user').map(botById).filter(Boolean);
   const title = bot?.name || room?.name || 'Summon Bot';

@@ -17,6 +17,18 @@ import { anthropicMessagesApi } from '@earendil-works/pi-ai/api/anthropic-messag
 
 export const connectionPath = dataRoot => join(resolve(dataRoot), 'config', 'model-connections.json');
 export const localCodexAuthPath = () => join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'auth.json');
+export const localGrokAuthPath = () => process.env.GROK_AUTH_PATH || join(process.env.GROK_HOME || join(homedir(), '.grok'), 'auth.json');
+export function grokProxyHeaders(connection = {}) {
+  // Grok's proxy gates clients by wire version. Prefer the installed CLI's version;
+  // the bundled protocol baseline follows x.ai/cli/stable when this adapter is updated.
+  let version = '1.0.70';
+  try { const local = JSON.parse(readFileSync(join(dirname(connection.authFile || localGrokAuthPath()), 'version.json'), 'utf8')).version;
+    if (typeof local === 'string' && /^\d+\.\d+\.\d+$/.test(local)) version = local;
+  } catch {}
+  return { 'X-XAI-Token-Auth': 'xai-grok-cli', 'x-authenticateresponse': 'authenticate-response',
+    'x-grok-client-version': version, 'x-grok-client-mode': 'headless', 'x-grok-client-identifier': 'summon-bot',
+    ...(connection.model ? { 'x-grok-model-override': connection.model } : {}) };
+}
 const factories = { codex: openaiCodexProvider, grok: xaiProvider, deepseek: deepseekProvider, openai: openaiProvider, anthropic: anthropicProvider, xai: xaiProvider };
 const apis = { 'openai-completions': openAICompletionsApi, 'openai-responses': openAIResponsesApi,
   'openai-codex-responses': openAICodexResponsesApi, 'anthropic-messages': anthropicMessagesApi };
@@ -42,7 +54,8 @@ export function connectionModel(connection) {
   const maxTokens = Number(connection.maxTokens || known?.maxTokens || 8192);
   if (!Number.isSafeInteger(contextWindow) || contextWindow < 4096 || !Number.isSafeInteger(maxTokens) || maxTokens < 128 || maxTokens >= contextWindow) throw new Error('模型上下文与输出上限设置不正确');
   return { ...known, id: connection.model, name: known?.name || connection.model, type: 'chat', api,
-    provider: connection.id || connection.provider, baseUrl: connection.baseUrl || native?.baseUrl,
+    provider: connection.id || connection.provider, baseUrl: connection.kind === 'grok' ? 'https://cli-chat-proxy.grok.com/v1' : connection.baseUrl || native?.baseUrl,
+    ...(connection.kind === 'grok' ? { headers: { ...known?.headers, ...grokProxyHeaders(connection) } } : {}),
     reasoning: connection.reasoning !== false, input: known?.input || ['text'], contextWindow, maxTokens,
     cost: connection.kind === 'api' ? known?.cost || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     ...(api === 'openai-completions' && !known ? { compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: false, maxTokensField: 'max_tokens' } } : {}) };
@@ -61,6 +74,36 @@ export function codexCredential(value) {
   if (!accountId) throw new Error('本机 Codex 登录信息缺少订阅账号，请重新登录 Codex');
   return { type: 'oauth', access: tokens.access_token, refresh: tokens.refresh_token,
     expires: typeof claims.exp === 'number' ? claims.exp * 1000 - 60000 : 0, accountId };
+}
+// Grok Build stores a map of issuer scopes, not the Codex token format.
+export function localGrokLogin(value, scope) {
+  const candidates = Object.entries(value || {}).filter(([key, entry]) => (!scope || key === scope)
+    && entry && typeof entry.key === 'string' && entry.key && entry.auth_mode !== 'api_key'
+    && entry.oidc_issuer === 'https://auth.x.ai');
+  candidates.sort((a, b) => String(b[1].create_time || '').localeCompare(String(a[1].create_time || '')));
+  const [authScope, entry] = candidates[0] || [];
+  if (!entry) throw new Error('没有找到可导入的 Grok 订阅登录，请在 Grok 中登录，或使用订阅授权');
+  const claims = decodeModelToken(entry.key);
+  const expiresAt = entry.expires_at ? Date.parse(entry.expires_at) : typeof claims.exp === 'number' ? claims.exp * 1000 : Date.parse(entry.create_time) + 30 * 86400000;
+  const refreshable = typeof entry.refresh_token === 'string' && entry.refresh_token && typeof entry.oidc_client_id === 'string' && /^[A-Za-z0-9_-]{1,200}$/.test(entry.oidc_client_id);
+  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now() && !refreshable) throw new Error('本机 Grok 登录已过期，请重新登录或使用订阅授权');
+  return { authScope, identity: typeof entry.email === 'string' ? entry.email : '本机 Grok 账号', credential: {
+    type: 'oauth', access: entry.key, refresh: refreshable ? entry.refresh_token : '', expires: expiresAt - 60000,
+    clientId: refreshable ? entry.oidc_client_id : null } };
+}
+async function refreshLocalGrok(credential, signal) {
+  if (!credential.refresh || !credential.clientId) throw new Error('请在 Grok 中重新登录，然后再次导入');
+  const response = await fetch('https://auth.x.ai/oauth2/token', { method: 'POST', signal,
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+    body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: credential.refresh, client_id: credential.clientId }) });
+  if (!response.ok) throw new Error(`本机 Grok 登录刷新失败（HTTP ${response.status}），请重新登录或改用订阅授权`);
+  const result = await response.json();
+  if (typeof result.access_token !== 'string' || !result.access_token || !Number.isFinite(result.expires_in) || result.expires_in <= 0) throw new Error('Grok 未返回有效的登录信息，请重新授权');
+  return { ...credential, access: result.access_token, refresh: result.refresh_token || credential.refresh, expires: Date.now() + result.expires_in * 1000 - 60000 };
+}
+async function readLocalModelAuth(path) {
+  try { return JSON.parse(await readFile(path, 'utf8')); }
+  catch { throw new Error('无法读取本机模型登录，请重新登录或使用订阅授权'); }
 }
 function envValue(name, file) {
   if (!name) return undefined;
@@ -90,14 +133,15 @@ async function fileLock(path, action, signal) {
   try { return await action(); }
   finally { await unlink(join(lock, 'owner')); await rmdir(lock); }
 }
-/** Credentials stay on the host. Local Codex is referenced, so disconnecting Summon never logs out Codex. */
+/** Credentials stay on the host. Local logins are referenced; removing a Summon connection does not log out the CLI. */
 export class ModelCredentialStore {
   constructor(path, fallback) { this.catalogPath = path; this.path = path ? join(dirname(path), 'model-credentials.json') : null; this.fallback = fallback; this.memory = new Map(); }
   connection(id) { return this.catalogPath ? modelConnection({ connectionStore: this.catalogPath }, id) : this.fallback; }
   async saved() { if (!this.path) return Object.fromEntries(this.memory); try { return JSON.parse(await readFile(this.path, 'utf8')); } catch (error) { if (error.code === 'ENOENT') return {}; throw error; } }
   async read(id) {
     const connection = this.connection(id);
-    if (connection.authMode === 'codex-local') return codexCredential(JSON.parse(await readFile(connection.authFile, 'utf8')));
+    if (connection.authMode === 'codex-local') return codexCredential(await readLocalModelAuth(connection.authFile));
+    if (connection.authMode === 'grok-local') return localGrokLogin(await readLocalModelAuth(connection.authFile), connection.authScope).credential;
     const stored = (await this.saved())[id];
     if (stored) return stored;
     const key = connection.apiKey || envValue(connection.apiKeyEnv, connection.environmentFile);
@@ -114,11 +158,17 @@ export class ModelCredentialStore {
       const connection = this.connection(id), current = await this.read(id), next = await fn(current);
       if (!next || next === current) return current;
       if (connection.authMode === 'codex-local') {
-        const latest = JSON.parse(await readFile(connection.authFile, 'utf8'));
+        const latest = await readLocalModelAuth(connection.authFile);
         // A concurrently refreshed desktop login owns its newer credential.
         if (latest.tokens?.refresh_token !== current?.refresh) return codexCredential(latest);
         await writeFile(connection.authFile, JSON.stringify({ ...latest, tokens: { ...latest.tokens,
           access_token: next.access, refresh_token: next.refresh, account_id: next.accountId || latest.tokens.account_id }, last_refresh: new Date().toISOString() }), { mode: 0o600 });
+      } else if (connection.authMode === 'grok-local') {
+        const latest = await readLocalModelAuth(connection.authFile);
+        const entry = latest[connection.authScope], login = localGrokLogin(latest, connection.authScope);
+        if (login.credential.refresh !== current?.refresh || login.credential.access !== current?.access) return login.credential;
+        await saveModelJson(connection.authFile, { ...latest, [connection.authScope]: { ...entry,
+          key: next.access, refresh_token: next.refresh, expires_at: new Date(next.expires + 60000).toISOString(), create_time: new Date().toISOString() } });
       } else if (this.path) await saveModelJson(this.path, { ...await this.saved(), [id]: next });
       else this.memory.set(id, next);
       return next;
@@ -134,7 +184,7 @@ export function connectionRuntime(connection, credentials = new ModelCredentialS
   const model = connectionModel(connection), native = factories[connection.kind]?.();
   const factory = apis[model.api]; if (!factory) throw new Error('不支持此模型协议');
   const provider = createProvider({ id: model.provider, name: connection.name || connection.model, baseUrl: model.baseUrl,
-    auth: connection.kind === 'codex' || connection.kind === 'grok' ? { oauth: native.auth.oauth } : { apiKey: { name: 'API Key', resolve: async ({ credential }) => {
+    auth: connection.kind === 'codex' || connection.kind === 'grok' ? { oauth: connection.authMode === 'grok-local' ? { ...native.auth.oauth, refresh: refreshLocalGrok } : native.auth.oauth } : { apiKey: { name: 'API Key', resolve: async ({ credential }) => {
       const key = credential?.key || connection.apiKey || envValue(connection.apiKeyEnv, connection.environmentFile);
       return key || connection.allowNoKey ? { auth: { apiKey: key || 'summon-keyless' }, source: connection.apiKeyEnv || 'API Key' } : undefined;
     } } },

@@ -198,6 +198,7 @@ struct SummonWorkspace: Codable, Sendable {
     var rooms: [SummonRoom]
     var agentRuns: [SummonAgentRun]?
     var defaultCwd: String?
+    var onboarding: SummonJSONValue?
 }
 
 struct SummonRoomSnapshot: Codable, Sendable {

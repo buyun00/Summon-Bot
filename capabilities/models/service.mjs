@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { connectionPath, readConnectionCatalog, saveModelJson, modelConnection, connectionModel, connectionRuntime,
-  ModelCredentialStore, localCodexAuthPath, codexCredential, decodeModelToken, modelChoices, modelError } from '../../bot/src/agent/connections.mjs';
+  ModelCredentialStore, localCodexAuthPath, localGrokAuthPath, localGrokLogin, grokProxyHeaders, codexCredential, decodeModelToken, modelChoices, modelError } from '../../bot/src/agent/connections.mjs';
 import { DesktopCodex } from '../codex/desktop.mjs';
 
 const number = value => value !== '' && value !== null && value !== undefined && Number.isFinite(Number(value)) ? Number(value) : null;
@@ -51,7 +51,7 @@ export class ModelConnections {
     this.writeChain = result; return result;
   }
   publicEntry(entry) {
-    const { authFile, apiKeyEnv, environmentFile, ...value } = entry;
+    const { authFile, authScope, apiKeyEnv, environmentFile, ...value } = entry;
     return { ...value, active: entry.id === this.catalog().activeId, usage: this.usage[entry.id] || null };
   }
   summary() {
@@ -68,7 +68,8 @@ export class ModelConnections {
         { id: 'anthropic', name: 'Anthropic', baseUrl: 'https://api.anthropic.com', api: 'anthropic-messages' },
         { id: 'xai', name: 'xAI', baseUrl: 'https://api.x.ai/v1', api: 'openai-responses' },
         { id: 'openrouter', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', api: 'openai-completions' },
-        { id: 'openai-compatible', name: '其他 / 自定义地址', baseUrl: '', api: 'openai-completions' }] };
+        { id: 'openai-compatible', name: '其他 / 自定义地址', baseUrl: '', api: 'openai-completions' }].map(preset => ({ ...preset,
+          models: modelChoices('api', preset.id).map(model => ({ id: model.id, name: model.name, contextWindow: model.contextWindow, maxTokens: model.maxTokens })) })) };
   }
   async save(input) {
     if (!['api', 'codex', 'grok'].includes(input.kind)) throw new Error('请选择 Codex 订阅、Grok 订阅或通用 API');
@@ -81,7 +82,7 @@ export class ModelConnections {
       const name = String(input.name || previous?.name || (input.kind === 'api' ? 'API' : input.kind === 'codex' ? 'Codex 订阅' : 'Grok 订阅')).trim().slice(0, 80);
       const entry = { ...previous, id, kind: input.kind, name, model: String(input.model || previous?.model || (input.kind === 'codex' ? 'gpt-6-luna' : input.kind === 'grok' ? 'grok-4.7' : '')).trim(),
         provider: input.kind === 'codex' ? 'openai-codex' : input.kind === 'grok' ? 'xai' : String(input.provider || previous?.provider || 'openai-compatible'),
-        baseUrl: input.kind === 'codex' ? 'https://chatgpt.com/backend-api' : input.kind === 'grok' ? 'https://api.x.ai/v1' : String(input.baseUrl || previous?.baseUrl || '').trim().replace(/\/+$/, ''),
+        baseUrl: input.kind === 'codex' ? 'https://chatgpt.com/backend-api' : input.kind === 'grok' ? 'https://cli-chat-proxy.grok.com/v1' : String(input.baseUrl || previous?.baseUrl || '').trim().replace(/\/+$/, ''),
         api: input.kind === 'codex' ? 'openai-codex-responses' : input.kind === 'grok' ? 'openai-responses' : input.api || previous?.api || 'openai-completions',
         contextWindow: Number(input.contextWindow || previous?.contextWindow || (input.kind === 'codex' ? 1050000 : input.kind === 'grok' ? 500000 : 128000)),
         maxTokens: Number(input.maxTokens || previous?.maxTokens || 8192), thinkingLevel: input.thinkingLevel || previous?.thinkingLevel || 'off',
@@ -121,16 +122,36 @@ export class ModelConnections {
     await this.mutate(async catalog => { requireEntry(catalog, id); await this.credentials.delete(id); catalog.connections = catalog.connections.filter(entry => entry.id !== id); delete this.usage[id]; });
     return this.snapshot();
   }
-  async importCodex() {
-    const authFile = localCodexAuthPath();
-    let value; try { value = JSON.parse(await readFile(authFile, 'utf8')); } catch (error) { if (error.code === 'ENOENT') throw new Error('没有找到本机 Codex 登录，请先在这台电脑的 Codex 中登录'); throw error; }
-    const credential = codexCredential(value), identity = decodeModelToken(value.tokens.id_token || credential.access);
-    const existing = this.catalog().connections.find(entry => entry.authMode === 'codex-local');
-    if (!existing) await this.save({ kind: 'codex', id: 'codex-local', name: '本机 Codex 订阅' });
-    await this.mutate(catalog => { const entry = requireEntry(catalog, existing?.id || 'codex-local');
-      entry.authMode = 'codex-local'; entry.authFile = authFile; entry.identity = typeof identity.email === 'string' ? identity.email : '本机 Codex 账号';
-      delete this.usage[entry.id]; });
-    return this.snapshot();
+  async localLogins() {
+    const sources = await Promise.all(['codex', 'grok'].map(async kind => {
+      const name = kind === 'codex' ? 'Codex' : 'Grok', path = kind === 'codex' ? localCodexAuthPath() : localGrokAuthPath();
+      try {
+        const raw = await readFile(path, 'utf8');
+        let value; try { value = JSON.parse(raw); } catch { return { kind, name, available: false, status: 'unreadable', note: `${name} 登录文件无法读取，可以重新授权订阅。` }; }
+        if (kind === 'codex') codexCredential(value); else localGrokLogin(value);
+        return { kind, name, available: true, status: 'available', note: `找到可导入的 ${name} 登录。` };
+      } catch (error) {
+        return { kind, name, available: false, status: error.code === 'ENOENT' ? 'missing' : 'unavailable',
+          note: error.code === 'ENOENT' ? `未找到可导入的 ${name} 登录。` : `${name} 登录暂不可导入，可以重新授权订阅。` };
+      }
+    }));
+    return { scope: 'host', sources };
+  }
+  async importLocal(kind) {
+    if (!['codex', 'grok'].includes(kind)) throw new Error('请选择 Codex 或 Grok');
+    const name = kind === 'codex' ? 'Codex' : 'Grok', authMode = `${kind}-local`;
+    const authFile = kind === 'codex' ? localCodexAuthPath() : localGrokAuthPath();
+    let value; try { value = JSON.parse(await readFile(authFile, 'utf8')); } catch { throw new Error(`无法读取本机 ${name} 登录，请在这台机器上登录，或使用订阅授权`); }
+    let identity, authScope;
+    if (kind === 'codex') { const credential = codexCredential(value); identity = decodeModelToken(value.tokens.id_token || credential.access).email || '本机 Codex 账号'; }
+    else { const login = localGrokLogin(value); identity = login.identity; authScope = login.authScope; }
+    const existing = this.catalog().connections.find(entry => entry.authMode === authMode), id = existing?.id || authMode;
+    if (!existing) await this.save({ kind, id, name: `本机 ${name} 订阅` });
+    await this.mutate(catalog => { const entry = requireEntry(catalog, id);
+      entry.authMode = authMode; entry.authFile = authFile; entry.identity = identity;
+      if (kind === 'grok') { entry.authScope = authScope; entry.baseUrl = 'https://cli-chat-proxy.grok.com/v1'; }
+      delete this.usage[id]; });
+    return { ...await this.snapshot(), importedId: id };
   }
   loginStatus(id) {
     const login = this.logins.get(id);
@@ -139,7 +160,7 @@ export class ModelConnections {
   }
   startLogin(id) {
     const connection = modelConnection({ connectionStore: this.path }, id);
-    if (!['codex', 'grok'].includes(connection.kind) || connection.authMode === 'codex-local') throw new Error('这个连接不使用独立订阅授权');
+    if (!['codex', 'grok'].includes(connection.kind) || ['codex-local', 'grok-local'].includes(connection.authMode)) throw new Error('这个连接不使用独立订阅授权');
     this.cancelLogin(id);
     const controller = new AbortController(), login = { id, status: 'starting', controller, startedAt: new Date().toISOString() };
     this.logins.set(id, login);
@@ -201,7 +222,7 @@ export class ModelConnections {
         unlimited: usage.credits?.unlimited === true, accountId };
     }
     if (connection.kind === 'grok') {
-      const headers = { Authorization: `Bearer ${key}` };
+      const headers = { Authorization: `Bearer ${key}`, ...grokProxyHeaders(connection) };
       const [billing, settings] = await Promise.all([this.fetchJson('https://cli-chat-proxy.grok.com/v1/billing?format=credits', headers),
         this.fetchJson('https://cli-chat-proxy.grok.com/v1/settings', headers).catch(() => null)]);
       const config = billing.config || billing, period = config.currentPeriod;

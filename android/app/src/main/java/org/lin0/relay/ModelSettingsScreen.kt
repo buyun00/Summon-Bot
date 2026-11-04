@@ -159,7 +159,7 @@ private fun modelGauge(item: SummonJson): ModelGaugeData {
                             else if (entry["configured"].bool != true) login = store.request("/api/model-settings/connections/${SummonApiClient.component(id)}/login", "POST", SummonJson.obj())
                             store.refreshModelUsage(true)
                         } },
-                        onImport = { perform { data = store.request("/api/model-settings/codex/import", "POST", SummonJson.obj()); draft = data["connections"].array.orEmpty().first { it["authMode"].stringValue == "codex-local" }; store.refreshModelUsage(true) } },
+                        onImport = { perform { data = store.request("/api/model-settings/local/import", "POST", SummonJson.obj("kind" to draft["kind"])); draft = data["connections"].array.orEmpty().first { it["id"].stringValue == data["importedId"].stringValue }; store.refreshModelUsage(true) } },
                         onAuthorize = { perform { login = store.request("/api/model-settings/connections/${SummonApiClient.component(selected["id"].stringValue)}/login", "POST", SummonJson.obj()) } },
                         onActivate = { perform { data = store.request("/api/model-settings/active", "POST", SummonJson.obj("id" to selected["id"])); store.refreshModelUsage(true) } },
                         onRemove = { perform { data = store.request("/api/model-settings/connections/${SummonApiClient.component(selected["id"].stringValue)}", "DELETE"); draft = data["connections"].array.orEmpty().firstOrNull { it["active"].bool == true } ?: SummonJson.Null; store.refreshModelUsage(true) } },
@@ -198,8 +198,8 @@ private fun modelGauge(item: SummonJson): ModelGaugeData {
         Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(checked = fields["allowNoKey"]?.bool == true, onCheckedChange = { set("allowNoKey", SummonJson.Bool(it)) }); Text("这个服务无需 API Key") }
     } else {
         Text(if (selected["configured"].bool == true) "订阅已连接" else "保存后通过设备码授权", color = modelGreen)
-        if (kind == "codex" && selected !is SummonJson.Obj) TextButton(enabled = !busy, onClick = onImport) { Text("导入服务器上的 Codex 登录") }
-        if (selected is SummonJson.Obj && selected["authMode"].stringValue != "codex-local") TextButton(enabled = !busy, onClick = onAuthorize) { Text("授权订阅") }
+        if (selected !is SummonJson.Obj) TextButton(enabled = !busy, onClick = onImport) { Text("导入服务器上的 ${if (kind == "codex") "Codex" else "Grok"} 登录") }
+        if (selected is SummonJson.Obj && selected["authMode"].stringValue !in setOf("codex-local", "grok-local")) TextButton(enabled = !busy, onClick = onAuthorize) { Text("授权订阅") }
     }
     field("聊天模型 ID", "model")
     if (selected is SummonJson.Obj) TextButton(enabled = !busy, onClick = { scope.launch { try { choices = onDiscover() } catch (e: Exception) { localError = e.localizedMessage } } }) { Text("获取模型目录") }

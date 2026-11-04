@@ -76,6 +76,12 @@ Configure scheduled responsibilities for a Bot, or observe work, task, and room 
 
 Token statistics show request details, cached usage, and reference cost by Bot, direct chat, group chat, and time range; background refinement and context maintenance are recorded as well. Cost is estimated from API receipts and configured prices, while the vendor's record remains authoritative for vendor billing.
 
+## Start with a conversation
+
+After installing and starting the server, open the web workspace. The main Bot walks you through connecting a chat model: import an available Codex or Grok login from the machine running Summon Bot, authorize a subscription, or enter an API key in a hidden input. These first messages run locally until a model is configured; keys stay out of the conversation and its drafts.
+
+Continue to start a real conversation with the main Bot. It introduces the next steps around what you want to do, one question at a time. You can reopen this conversation from **Settings → New user guide (新手引导)**. The web, Electron, Android, and iOS interfaces use the same model connections and main Bot conversation.
+
 ## Design choices
 
 Summon Bot's choices focus on the relationships among identity, work, knowledge, and capabilities:

@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 @MainActor
 @Observable
 final class SummonStore {
+    private(set) var onboardingRequired = false
     private(set) var settings = SummonConnectionSettings()
     private(set) var bots: [SummonBot] = []
     private(set) var rooms: [SummonRoom] = []
@@ -189,6 +190,7 @@ final class SummonStore {
             guard connection == connectionGeneration, !Task.isCancelled else { return }
             acceptEpoch(snapshot.historyEpoch)
             bots = snapshot.bots
+            onboardingRequired = snapshot.onboarding?["required"].bool == true
             rooms = snapshot.rooms.map { room in
                 var updated = room
                 if let latest = messageHistory[room.id]?.last,
@@ -699,6 +701,7 @@ final class SummonStore {
     }
 
     private func clearWorkspace() {
+        onboardingRequired = false
         historyGeneration += 1
         hasSnapshot = false
         historyEpoch = nil

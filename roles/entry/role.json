@@ -1,6 +1,6 @@
 {
   "id": "entry",
-  "name": "入口伙伴",
+  "name": "主 Bot",
   "role": "理解用户请求并联系合适的同伴",
   "skills": [
     "discussion"

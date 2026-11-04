@@ -23,6 +23,8 @@ import java.time.format.DateTimeFormatter
 import java.util.UUID
 
 class SummonStore(private val app: Context) {
+    var onboardingRequired by mutableStateOf(false)
+        private set
     var settings by mutableStateOf(SummonConnectionSettings(baseURL = DEFAULT_URL))
         private set
     var bots by mutableStateOf<List<SummonBot>>(emptyList())
@@ -199,6 +201,7 @@ class SummonStore(private val app: Context) {
             if (connection != connectionGeneration) return
             acceptEpoch(snapshot.historyEpoch)
             bots = snapshot.bots
+            onboardingRequired = snapshot.onboardingRequired
             rooms = snapshot.rooms.map { room ->
                 val latest = messageHistory[room.id]?.lastOrNull()
                 if (latest != null && (latest.createdAt ?: "") > (room.lastMessage?.createdAt ?: "")) room.copy(lastMessage = latest) else room
@@ -722,6 +725,7 @@ class SummonStore(private val app: Context) {
     }
 
     private fun clearWorkspace() {
+        onboardingRequired = false
         historyGeneration += 1
         hasSnapshot = false
         historyEpoch = null

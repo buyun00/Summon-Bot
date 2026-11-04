@@ -15,6 +15,8 @@ struct ConversationListView: View {
     @State private var showPeerRooms = false
     @State private var workspaceSection: WorkspaceSection?
     @State private var openingBot = false
+    @State private var showOnboarding = false
+    @State private var onboardingShown = false
 
     private var groups: [SummonRoom] {
         store.rooms.filter { $0.kind != "dm" && matches("\($0.name) \($0.goal)") }
@@ -119,6 +121,13 @@ struct ConversationListView: View {
                 while !Task.isCancelled { try? await store.refreshModelUsage(); try? await Task.sleep(for: .seconds(60)) }
             }
             .navigationDestination(for: String.self) { id in ChatView(roomID: id) }
+            .onChange(of: store.onboardingRequired, initial: true) { _, required in
+                if required && !onboardingShown { onboardingShown = true; showOnboarding = true }
+            }
+            .onChange(of: store.settings.baseURL) { _, _ in onboardingShown = false }
+            .summonSheet(isPresented: $showOnboarding) {
+                OnboardingView { id in showOnboarding = false; openRoom(id) }
+            }
             .summonSheet(isPresented: $showSettings) { ConnectionSettingsView() }
             .summonSheet(isPresented: $showUsage) { TokenUsageView() }
             .summonSheet(isPresented: Binding(get: { quotaItem != nil }, set: { if !$0 { quotaItem = nil } })) { if let quotaItem { ModelQuotaDetailsView(item: quotaItem) } }
@@ -168,7 +177,7 @@ struct ConversationListView: View {
     }
 
     private enum ProfileDestination {
-        case usage, settings
+        case usage, settings, onboarding
         case quota(SummonJSONValue)
         case workspace(WorkspaceSection)
     }
@@ -185,6 +194,7 @@ struct ConversationListView: View {
                 }.padding(.vertical, 8)
                 profileMenuButton("Token 统计", symbol: "chart.bar", destination: .usage)
                 profileMenuButton("设置", symbol: "gearshape", destination: .settings)
+                profileMenuButton("新手引导", symbol: "sparkles", destination: .onboarding)
                 Divider().padding(.vertical, 6)
                 profileMenuButton("事件", symbol: "bolt", destination: .workspace(.event))
                 profileMenuButton("定时", symbol: "clock", destination: .workspace(.routines))
@@ -217,6 +227,7 @@ struct ConversationListView: View {
         switch destination {
         case .usage: showUsage = true
         case .settings: showSettings = true
+        case .onboarding: showOnboarding = true
         case .quota(let item): quotaItem = item
         case .workspace(let section): workspaceSection = section
         }
