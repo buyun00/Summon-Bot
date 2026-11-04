@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fail } from '../shared/validation.mjs';
+import { desktopExecutorState, requireDesktopExecutor } from '../../bot/src/capabilities/executor-connections.mjs';
 
 const now = () => new Date().toISOString();
 const terminal = new Set(['completed', 'failed', 'interrupted', 'cancelled']);
@@ -36,6 +37,10 @@ export class DesktopCodex {
     this.serial.set(id, pending); return pending.finally(() => { if (this.serial.get(id) === pending) this.serial.delete(id); });
   }
   async connection() {
+    requireDesktopExecutor(this.dataRoot);
+    return this.connector();
+  }
+  async connector() {
     const config = JSON.parse(await readFile(join(this.dataRoot, 'connectors', 'codex-desktop-api', 'config.json'), 'utf8'));
     const host = config.host || '127.0.0.1';
     if (!['127.0.0.1', 'localhost', '::1'].includes(host)) fail('The installed Desktop connector must use its configured local endpoint');
@@ -43,15 +48,24 @@ export class DesktopCodex {
   }
   async request(path, { method = 'GET', body, operationKey, signal } = {}) {
     const connection = await this.connection();
+    return this.connectorRequest(connection, path, { method, body, operationKey, signal });
+  }
+  async connectorRequest(connection, path, { method = 'GET', body, operationKey, signal } = {}) {
     const response = await fetch(`${connection.url}${path}`, { method, headers: { ...connection.headers, ...(operationKey ? { 'Idempotency-Key': operationKey } : {}) }, redirect: 'error', signal: signal || AbortSignal.timeout(65000), ...(body ? { body: JSON.stringify(body) } : {}) });
     const data = await response.json();
     if (!response.ok) throw Object.assign(new Error(data.error?.message || 'Desktop API request failed'), { status: response.status, code: data.error?.code, result: data });
     return data;
   }
+  // Called only by the user's manual connect action; it does not read usage.
+  async connect() {
+    const result = await this.connectorRequest(await this.connector(), '/v1/capabilities', { signal: AbortSignal.timeout(10000) });
+    if (!result.desktopConnected || !result.features?.createThread) throw new Error('Codex 桌面端暂不可连接，请先打开 Codex，再手动接入。');
+  }
   projects(signal) { return this.request('/v1/projects', { signal }); }
   threads(signal) { return this.request('/v1/threads?limit=50', { signal }); }
   path(work, suffix = 'state') { return `/v1/threads/${encodeURIComponent(work.externalThreadId)}/${suffix}?hostId=${encodeURIComponent(work.hostId || 'local')}`; }
   async read(id, { history = false, signal } = {}) {
+    requireDesktopExecutor(this.dataRoot);
     const work = this.require(id);
     if (work.backend !== 'desktop') return { ...this.get(id), historical: true, actionable: false };
     if (!work.externalThreadId) return this.get(id);
@@ -69,6 +83,7 @@ export class DesktopCodex {
     this.save({ id: work.id, ownerSyncPending: false, syncError: null });
   }
   async create(input) {
+    requireDesktopExecutor(this.dataRoot);
     const workId = requireText(input.workId, 'workId'), botId = requireText(input.botId, 'botId');
     const id = `${botId}:${workId}`;
     return this.exclusive(id, async () => {
@@ -85,6 +100,7 @@ export class DesktopCodex {
     });
   }
   async attach(input) {
+    requireDesktopExecutor(this.dataRoot);
     const id = `${requireText(input.botId, 'botId')}:${requireText(input.workId, 'workId')}`;
     return this.exclusive(id, async () => {
       const owner = await this.ownerWork(input.botId, input.workId), prior = this.store.get('works', id);
@@ -96,6 +112,7 @@ export class DesktopCodex {
     });
   }
   async send(id, input) {
+    requireDesktopExecutor(this.dataRoot);
     return this.exclusive(id, async () => {
       const work = this.require(id); this.assertDesktop(work);
       const owner = await this.ownerWork(work.botId, work.workId);
@@ -114,6 +131,7 @@ export class DesktopCodex {
     });
   }
   async interrupt(id, input) {
+    requireDesktopExecutor(this.dataRoot);
     return this.exclusive(id, async () => {
       const work = this.require(id); this.assertDesktop(work);
       const operationId = requireText(input.operationId, 'operationId'), previous = this.operation(work, operationId);
@@ -220,7 +238,7 @@ export class DesktopCodex {
   }
   follow(id) {
     const work = this.require(id);
-    if (this.closed || this.streams.has(id) || !active(work) || !work.externalThreadId) return;
+    if (this.closed || !desktopExecutorState({ dataRoot: this.dataRoot }).enabled || this.streams.has(id) || !active(work) || !work.externalThreadId) return;
     const controller = new AbortController();
     const promise = this.consume(id, controller.signal).catch(async error => {
       if (!this.closed && !controller.signal.aborted) {
@@ -241,6 +259,7 @@ export class DesktopCodex {
     if (!response.ok) throw new Error('Desktop event stream unavailable');
     let buffer = ''; const decoder = new TextDecoder();
     for await (const chunk of response.body) {
+      if (!desktopExecutorState({ dataRoot: this.dataRoot }).enabled) return;
       buffer += decoder.decode(chunk, { stream: true }).replace(/\r/g, '');
       let end;
       while ((end = buffer.indexOf('\n\n')) >= 0) {
@@ -269,6 +288,10 @@ export class DesktopCodex {
   }
   async tick() {
     if (this.closed || this.ticking) return;
+    if (!desktopExecutorState({ dataRoot: this.dataRoot }).enabled) {
+      for (const stream of this.streams.values()) stream.controller.abort();
+      return;
+    }
     this.ticking = true;
     try {
       for (const operation of this.store.list('desktopOperations')) if (!operation.appliedAt) {

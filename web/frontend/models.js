@@ -19,6 +19,8 @@ globalThis.SummonModels = (() => {
   const balances = usage => [...(usage?.balances || []), ...(usage?.balance ? [usage.balance] : [])];
   const percents = usage => (usage?.windows || []).filter(item => typeof item.remainingPercent === 'number' && Number.isFinite(item.remainingPercent));
   function usageBody(usage, esc, compact = false) {
+    if (usage?.status === 'not_connected') return `<small class="model-usage-note">${esc(usage.note || '待手动接入，尚未读取额度')}</small>`;
+    if (usage?.status === 'unconfigured') return '<small class="model-usage-note">选择聊天模型后读取额度</small>';
     const windows = percents(usage), money = balances(usage);
     const shown = compact ? windows.slice(0, 2) : windows;
     const credits = typeof usage?.credits === 'number' && Number.isFinite(usage.credits) ? usage.credits : null;
@@ -35,7 +37,8 @@ globalThis.SummonModels = (() => {
   const duration = window => Number.isFinite(window.durationMinutes) ? window.durationMinutes
     : /每周|周额|week/i.test(window.name || '') ? 10080 : /(?:5\s*小时|5\s*hour)/i.test(window.name || '') ? 300 : null;
   function signal(item, esc) {
-    const usage = item.usage, windows = percents(usage), money = balances(usage);
+    const awaiting = item.role === 'executor' && item.enabled !== true;
+    const usage = awaiting ? null : item.usage, windows = percents(usage), money = balances(usage);
     const isApi = item.kind === 'api', weekly = windows.find(window => duration(window) === 10080);
     const fiveHours = windows.find(window => duration(window) === 300);
     const main = weekly || windows[0] || null;
@@ -44,10 +47,11 @@ globalThis.SummonModels = (() => {
     const ring = isApi ? 100 : main?.remainingPercent ?? null;
     const dots = !isApi && short ? Math.ceil(Math.max(0, Math.min(100, short.remainingPercent)) / 25) : null;
     const percentage = main ? `${Math.round(Math.max(0, Math.min(100, main.remainingPercent)))}%` : '';
-    const value = isApi ? balance ? formatMoney(balance) : '—' : dots === null ? percentage || '—' : '';
+    const value = awaiting ? item.label || '待接入' : isApi ? balance ? formatMoney(balance) : '—' : dots === null ? percentage || '—' : '';
     const role = item.role === 'executor' ? '干活引擎' : '聊天引擎 · Pi';
-    const details = [role, item.name, item.model, isApi ? '圆环常满 · 底部显示余额' : main ? `圆环：${main.name}，剩余 ${Math.round(main.remainingPercent)}%` : '暂未取得订阅额度'];
-    if (isApi) {
+    const details = [role, item.name, item.model, awaiting ? item.note || '待手动接入，尚未读取额度' : isApi ? '圆环常满 · 底部显示余额' : main ? `圆环：${main.name}，剩余 ${Math.round(main.remainingPercent)}%` : '暂未取得订阅额度'];
+    if (awaiting) details.push('点击查看接入设置');
+    else if (isApi) {
       details.push(...money.map(value => `余额 ${formatMoney(value)}`));
       if (!balance) details.push('余额尚未返回');
     } else {
@@ -56,7 +60,7 @@ globalThis.SummonModels = (() => {
       for (const window of windows) details.push(`${window.name}：剩余 ${Math.round(window.remainingPercent)}%${window.resetsAt ? `，${resetTime(window.resetsAt)}` : ''}`);
     }
     if (usage?.status === 'error') details.push(usage.stale ? '当前为上次额度，最新数据暂不可用' : usage.error || '暂时无法读取额度');
-    details.push('点击查看额度');
+    if (!awaiting) details.push('点击查看额度');
     const description = [...new Set(details.filter(Boolean))].join('\n');
     const low = isApi ? balance?.amount <= 0 : ring !== null && ring < 10 || short?.remainingPercent < 10;
     const points = [[21, 49], [28.5, 51.5], [35.5, 51.5], [43, 49]];
@@ -65,14 +69,18 @@ globalThis.SummonModels = (() => {
         ${dots === null ? '' : points.map(([x, y], index) => `<circle class="quota-signal-dot ${index < dots ? 'on' : ''}" cx="${x}" cy="${y}" r="1.9"/>`).join('')}</svg><span class="quota-signal-brand">${globalThis.SummonModelIcons.svg(item)}</span>${value ? `<span class="quota-signal-value ${isApi ? 'is-money' : ''}" aria-hidden="true">${esc(value)}</span>` : ''}</span>
       <span class="quota-signal-role">${item.role === 'executor' ? 'WORK' : 'CHAT'}</span></button>`;
   }
+  function executorButton(item, esc) {
+    if (!item || item.role !== 'executor' || !item.enabled && !item.detected) return '';
+    return `<button class="${item.enabled ? 'secondary-button' : 'primary-button'}" data-action="models-executor-${item.enabled ? 'disconnect' : 'connect'}" ${view.busy ? 'disabled' : ''}>${esc(view.busy ? '正在处理…' : item.enabled ? '断开 Codex' : '接入 Codex 执行端')}</button>`;
+  }
   function sidebar(summary, { esc, icon, invalidate }) {
     invalidateSidebar = invalidate;
     if (summary) view.summary = summary;
     const current = view.summary;
     const rows = current ? [current.chat, ...(current.executors || [])] : [
-      { role: 'chat', name: '正在读取聊天模型' }, { role: 'executor', kind: 'codex', name: 'Codex 桌面端' }];
+      { role: 'chat', name: '正在读取聊天模型' }, { role: 'executor', kind: 'codex', name: 'Codex 桌面端', enabled: false, label: '待接入', usage: { status: 'not_connected' } }];
     const selected = rows.find(item => (item.id || item.role) === view.quotaId);
-    const popover = selected ? `<aside class="quota-popover" id="model-quota-popover" role="dialog" aria-label="${esc(selected.name || '模型')}额度"><header><span class="quota-popover-icon">${globalThis.SummonModelIcons.svg(selected, 28)}</span><div><small>${selected.role === 'executor' ? 'WORK · 执行引擎' : 'CHAT · 聊天引擎'}</small><strong>${esc(selected.name || '正在读取')}</strong></div><button class="icon-button" data-action="models-quota-close" aria-label="关闭额度详情">${icon('close', 16)}</button></header>${selected.model ? `<p class="quota-popover-model">${esc(selected.model)}</p>` : ''}<div class="quota-popover-usage">${usageBody(selected.usage, esc)}</div><footer><button data-action="navigate" data-view="models">管理模型与引擎 ${icon('arrow', 14)}</button></footer></aside>` : '';
+    const popover = selected ? `<aside class="quota-popover" id="model-quota-popover" role="dialog" aria-label="${esc(selected.name || '模型')}接入与额度"><header><span class="quota-popover-icon">${globalThis.SummonModelIcons.svg(selected, 28)}</span><div><small>${selected.role === 'executor' ? 'WORK · 执行引擎' : 'CHAT · 聊天引擎'}</small><strong>${esc(selected.name || '正在读取')}</strong></div><button class="icon-button" data-action="models-quota-close" aria-label="关闭额度详情">${icon('close', 16)}</button></header>${selected.model ? `<p class="quota-popover-model">${esc(selected.model)}</p>` : ''}<div class="quota-popover-usage">${usageBody(selected.usage, esc)}</div>${executorButton(selected, esc)}<footer><button data-action="navigate" data-view="models">管理模型与引擎 ${icon('arrow', 14)}</button></footer></aside>` : '';
     return `<section class="sidebar-models" aria-label="模型与引擎额度">${rows.map(item => signal(item, esc)).join('')}${popover}</section>`;
   }
   function closeQuota() {
@@ -103,6 +111,7 @@ globalThis.SummonModels = (() => {
   function render({ esc, icon }) {
     if (!view.data) return `<div class="page models-page"><h1>模型与引擎</h1><p class="subtle">${esc(view.error || '正在读取配置…')}</p><button class="secondary-button" data-action="models-reload">重新读取</button></div>`;
     const data = view.data, editor = view.editor, active = data.connections.find(item => item.id === data.activeId), summary = view.summary || data;
+    const executor = summary.executors?.[0];
     const input = (label, name, value, options = {}) => `<label class="models-field"><span>${label}</span><input name="${name}" ${options.type ? `type="${options.type}"` : ''} value="${esc(value ?? '')}" ${options.required ? 'required' : ''} ${options.placeholder ? `placeholder="${esc(options.placeholder)}"` : ''} ${options.list ? `list="${options.list}"` : ''} ${options.type === 'password' ? 'autocomplete="new-password"' : ''} ${options.type === 'number' ? 'min="128" step="1"' : ''}></label>`;
     const select = (label, name, values, current) => `<label class="models-field"><span>${label}</span><select name="${name}">${values.map(([value, title]) => `<option value="${esc(value)}" ${current === value ? 'selected' : ''}>${esc(title)}</option>`).join('')}</select></label>`;
     const selected = editor?.id ? data.connections.find(item => item.id === editor.id) : null;
@@ -122,7 +131,7 @@ globalThis.SummonModels = (() => {
       <div class="models-form-actions"><button class="primary-button" type="submit" ${view.busy ? 'disabled' : ''}>${view.busy ? '正在保存…' : editor.kind === 'api' ? '保存并用于聊天' : selected?.configured ? '保存配置' : '保存并授权'}</button>${selected?.configured && !selected.active ? `<button class="secondary-button" type="button" data-action="models-activate" data-id="${esc(selected.id)}" ${view.busy ? 'disabled' : ''}>用于 Pi 聊天</button>` : ''}${selected && !selected.active ? `<button class="text-button models-remove" type="button" data-action="models-remove" data-id="${esc(selected.id)}" ${view.busy ? 'disabled' : ''}>移除此连接</button>` : ''}</div></form></section>` : '';
     return `<div class="page models-page"><header class="models-header"><div><button class="text-button" data-action="navigate" data-view="chat">${icon('back', 16)}返回聊天</button><p class="models-eyebrow">SETTINGS / MODELS</p><h1>模型与引擎</h1><p>选择聊天的模型，查看干活的额度。</p></div><button class="secondary-button" data-action="models-refresh-usage" ${view.busy ? 'disabled' : ''}>${icon('refresh', 15)}刷新额度</button></header>
       ${view.error ? `<p class="models-inline-error" role="alert">${esc(view.error)}</p>` : ''}
-      <div class="models-engine-overview"><section class="models-engine-card"><div class="models-engine-title"><span class="model-source-dot"></span><h2>聊天引擎</h2><span>Pi</span></div><strong>${esc(active?.name || '尚未选择')}</strong><p>${esc(active?.model || '')}</p>${usageBody(summary.chat?.usage, esc)}</section><section class="models-engine-card"><div class="models-engine-title"><span class="model-source-dot executor"></span><h2>干活引擎</h2><span>Codex 桌面端</span></div><strong>Codex</strong><p>沿用现有桌面执行连接</p>${usageBody(summary.executors?.[0]?.usage, esc)}</section></div>
+      <div class="models-engine-overview"><section class="models-engine-card"><div class="models-engine-title"><span class="model-source-dot"></span><h2>聊天引擎</h2><span>Pi</span></div><strong>${esc(active?.name || '尚未选择')}</strong><p>${esc(active?.model || '')}</p>${usageBody(summary.chat?.usage, esc)}</section><section class="models-engine-card"><div class="models-engine-title"><span class="model-source-dot executor"></span><h2>干活引擎</h2><span>Codex 桌面端</span></div><strong>${esc(executor?.label || '待接入')}</strong><p>${esc(executor?.enabled ? executor.note : '由你手动接入这台主机上的 Codex，之后才读取额度和执行工作。')}</p>${usageBody(executor?.usage, esc)}${executorButton(executor, esc)}</section></div>
       <div class="models-configuration"><section class="models-connections"><div class="models-section-heading"><h2>聊天模型连接</h2><span>${data.connections.length}</span></div><div class="models-add-types">${Object.entries(kinds).map(([kind, label]) => `<button data-action="models-new" data-kind="${kind}" ${view.busy ? 'disabled' : ''}>${icon('plus', 14)}${label}</button>`).join('')}</div><div class="models-connection-list">${data.connections.map(item => `<button class="models-connection ${editor?.id === item.id ? 'selected' : ''}" data-action="models-edit" data-id="${esc(item.id)}"><span class="models-provider-monogram ${item.kind}">${globalThis.SummonModelIcons.svg(item, 22)}</span><span><strong>${esc(item.name)}</strong><small>${esc(item.model)}</small><small>${esc(kinds[item.kind])}${item.identity ? ` · ${esc(item.identity)}` : ''}</small></span>${item.active ? '<i class="models-selected-dot" title="当前聊天模型"></i>' : !item.configured ? '<small class="models-unconfigured">待连接</small>' : ''}</button>`).join('')}</div><p class="models-list-note">聊天模型由所有 Bot 共用。额度按账号显示，同一订阅不会因接入多个引擎而增加。</p></section>${form}</div></div>`;
   }
   async function updateUsage(force) {
@@ -177,6 +186,14 @@ globalThis.SummonModels = (() => {
     try {
       view.error = '';
       if (!view.data) await load(provided.api, provided.render, provided.toast, provided.refresh);
+      if (['models-executor-connect', 'models-executor-disconnect'].includes(action)) {
+        view.busy = true; provided.render();
+        const enabled = action === 'models-executor-connect';
+        view.data = await provided.api('/api/model-settings/executors/codex-desktop', 'POST', { enabled });
+        view.summary = view.data; view.loadedAt = Date.now();
+        provided.toast(enabled ? 'Codex 执行端已接入' : 'Codex 已断开，停止读取额度和后续调用');
+        await provided.refresh?.();
+      }
       if (action === 'models-new') { view.editor = defaults(element.dataset.kind); view.choices = []; view.login = null; }
       if (action === 'models-edit') { view.editor = { ...view.data.connections.find(item => item.id === element.dataset.id), apiKey: '' }; view.choices = []; view.login = null; await fetchChoices(element.dataset.id); }
       if (action === 'models-discover') { view.busy = true; await fetchChoices(element.dataset.id, view.editor.kind === 'api'); }

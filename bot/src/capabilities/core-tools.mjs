@@ -19,6 +19,7 @@ export function coreTools(services, task) {
   const frontend = taskMode(task) === 'chat';
   const workView = work => frontend ? compactWork(work) : work;
   return [
+    tool('executors_status', 'Read current host executor consent and detection without contacting Codex or reading quota. Detection is not consent. Only the user can connect in model settings; chat may query status, execution must use independent work.', object({}), 'read', () => services.executors()),
     tool('works_list', 'Find existing work before handing off. Frontend receives concise status only; workers see only their current work.', object({ status: string, query: string, limit: { type: 'integer', minimum: 1, maximum: 100 } }), 'read', args => services.works.list(args).filter(work => frontend || work.id === task.workId).map(workView)),
     tool('work_get', 'Read a work. Frontend receives concise coordination status, never execution transcripts.', object({ id: string }, ['id']), 'read', args => workView(services.works.get(args.id))),
     tool('work_create', 'Create and start an independent persistent work within this Bot. Reuse a stable id. A temporary assignment needs a work, not a cloned Bot. Sources retain the original user scope.',

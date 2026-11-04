@@ -36,6 +36,7 @@ private struct ModelGaugeData {
     var dots: Int?
     var value = "—"
     init(_ item: SummonJSONValue) {
+        if item["role"].stringValue == "executor" && item["enabled"].bool != true { value = item["label"].stringValue.isEmpty ? "待接入" : item["label"].stringValue; return }
         let usage = item["usage"]
         let windows = (usage["windows"].array ?? []).filter { $0["remainingPercent"].modelNumber != nil }
         let main = windows.first { $0["durationMinutes"].int == 10080 } ?? windows.first
@@ -86,18 +87,45 @@ private struct ModelUsageDetails: View {
             }
             if usage["credits"].modelNumber != nil { Text("附加点数 \(usage["credits"].stringValue) credits").summonFont(.caption).foregroundStyle(.secondary) }
             if usage["unlimited"].bool == true { Text("额外额度不设限").foregroundStyle(modelTint) }
-            if usage["status"].stringValue == "error" { Text(usage["stale"].bool == true ? "上次读取 · 当前暂未更新" : usage["error"].stringValue).summonFont(.caption).foregroundStyle(.orange) }
+            if usage["status"].stringValue == "not_connected" { Text(usage["note"].stringValue).summonFont(.caption).foregroundStyle(.secondary) }
+            else if usage["status"].stringValue == "unconfigured" { Text("选择聊天模型后读取额度").summonFont(.caption).foregroundStyle(.secondary) }
+            else if usage["status"].stringValue == "error" { Text(usage["stale"].bool == true ? "上次读取 · 当前暂未更新" : usage["error"].stringValue).summonFont(.caption).foregroundStyle(.orange) }
             else if (usage["windows"].array ?? []).isEmpty && (usage["balances"].array ?? []).isEmpty && usage["balance"].object == nil { Text("供应商未返回额度数值").summonFont(.caption).foregroundStyle(.secondary) }
             if let checked = SummonDate.parse(usage["checkedAt"].string) { Text("更新于 \(checked.formatted(date: .abbreviated, time: .shortened))").summonFont(.caption).foregroundStyle(.secondary) }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }
+private struct ModelExecutorControl: View {
+    @Environment(SummonStore.self) private var store
+    let item: SummonJSONValue
+    @State private var busy = false
+    @State private var error: String?
+    var body: some View {
+        if item["role"].stringValue == "executor" {
+            if let error { Text(error).summonFont(.caption).foregroundStyle(.orange) }
+            if item["enabled"].bool == true || item["detected"].bool == true {
+                Button(busy ? "正在处理…" : item["enabled"].bool == true ? "断开 Codex" : "接入 Codex 执行端") {
+                    let enabled = item["enabled"].bool != true
+                    Task { @MainActor in
+                        busy = true; error = nil; defer { busy = false }
+                        do {
+                            _ = try await store.request(path: "/api/model-settings/executors/codex-desktop", method: "POST", body: .object(["enabled": .bool(enabled)]))
+                            try await store.refreshModelUsage()
+                        } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+                    }
+                }.disabled(busy)
+            }
+        }
+    }
+}
 struct ModelQuotaDetailsView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(SummonStore.self) private var store
     let item: SummonJSONValue
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 22) { ModelUsageDetails(item: item); Divider(); NavigationLink("管理模型与引擎") { ModelSettingsView() }; Spacer(minLength: 0) }.padding(24)
+            let current = item["role"].stringValue == "executor" ? store.modelSummary["executors"].array?.first ?? item : item
+            VStack(alignment: .leading, spacing: 22) { ModelUsageDetails(item: current); ModelExecutorControl(item: current); Divider(); NavigationLink("管理模型与引擎") { ModelSettingsView() }; Spacer(minLength: 0) }.padding(24)
                 .background(SummonTheme.background).navigationTitle("额度").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }.presentationDetents([.medium, .large]).presentationDragIndicator(.visible).presentationCornerRadius(28)
@@ -118,7 +146,8 @@ struct ModelQuotaDetailsView: View {
         NavigationStack {
             Form {
                 if let error { Section { Text(error).foregroundStyle(.orange) } }
-                Section("当前额度") { ModelUsageDetails(item: store.modelSummary["chat"]); if let work = store.modelSummary["executors"].array?.first { ModelUsageDetails(item: work) } }
+                Section("当前额度") { ModelUsageDetails(item: store.modelSummary["chat"]) }
+                if let work = store.modelSummary["executors"].array?.first { Section("执行引擎接入") { ModelUsageDetails(item: work); ModelExecutorControl(item: work) } }
                 Section("聊天模型连接") {
                     ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in Button { draft = entry; login = .null } label: { HStack(spacing: 12) { ModelBrandImage(item: entry); VStack(alignment: .leading) { Text(entry["name"].stringValue); Text(entry["model"].stringValue).summonFont(.caption).foregroundStyle(.secondary) }; Spacer(); if entry["active"].bool == true { Text("当前").foregroundStyle(modelTint) } } } }
                     Menu("添加连接") { ForEach(["codex", "grok", "api"], id: \.self) { kind in Button(kind == "codex" ? "Codex 订阅" : kind == "grok" ? "Grok 订阅" : "通用 API") { draft = .object(["kind": .string(kind), "name": .string(kind == "codex" ? "Codex 订阅" : kind == "grok" ? "Grok 订阅" : "通用 API"), "model": .string(kind == "codex" ? "gpt-6-luna" : kind == "grok" ? "grok-4.7" : "")]); login = .null } } }

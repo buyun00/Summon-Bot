@@ -66,6 +66,7 @@ private class ModelBrandCatalog(context: android.content.Context) {
 }
 private data class ModelGaugeData(val ring: Double?, val dots: Int?, val value: String)
 private fun modelGauge(item: SummonJson): ModelGaugeData {
+    if (item["role"].stringValue == "executor" && item["enabled"].bool != true) return ModelGaugeData(null, null, item["label"].stringValue.ifBlank { "待接入" })
     val usage = item["usage"]
     val windows = usage["windows"].array.orEmpty().filter { it["remainingPercent"].modelNumber() != null }
     val main = windows.firstOrNull { it["durationMinutes"].int == 10080 } ?: windows.firstOrNull()
@@ -109,9 +110,32 @@ private fun modelGauge(item: SummonJson): ModelGaugeData {
     }
     if (usage["credits"].modelNumber() != null) Text("附加点数 ${usage["credits"].stringValue} credits", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
     if (usage["unlimited"].bool == true) Text("额外额度不设限", color = modelGreen)
-    if (usage["status"].stringValue == "error") Text(if (usage["stale"].bool == true) "上次读取 · 当前暂未更新" else usage["error"].stringValue, color = Color(0xFFD3A074))
+    if (usage["status"].stringValue == "not_connected") Text(usage["note"].stringValue, color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+    else if (usage["status"].stringValue == "unconfigured") Text("选择聊天模型后读取额度", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+    else if (usage["status"].stringValue == "error") Text(if (usage["stale"].bool == true) "上次读取 · 当前暂未更新" else usage["error"].stringValue, color = Color(0xFFD3A074))
     else if (usage["windows"].array.orEmpty().isEmpty() && usage["balances"].array.orEmpty().isEmpty() && usage["balance"] !is SummonJson.Obj) Text("供应商未返回额度数值", color = Color.Gray)
     if (usage["checkedAt"].stringValue.isNotBlank()) Text("更新于 ${usage["checkedAt"].stringValue}", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+}
+
+@Composable fun ModelExecutorControl(item: SummonJson, store: SummonStore) {
+    val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    if (item["role"].stringValue != "executor") return
+    error?.let { Text(it, color = Color(0xFFD3A074), style = MaterialTheme.typography.bodySmall) }
+    if (item["enabled"].bool == true || item["detected"].bool == true) {
+        Button(enabled = !busy, onClick = {
+            val enabled = item["enabled"].bool != true
+            scope.launch {
+                busy = true; error = null
+                try {
+                    store.request("/api/model-settings/executors/codex-desktop", "POST", SummonJson.obj("enabled" to SummonJson.Bool(enabled)))
+                    store.refreshModelUsage()
+                } catch (e: Exception) { if (e is CancellationException) throw e; error = e.localizedMessage }
+                finally { busy = false }
+            }
+        }) { Text(if (busy) "正在处理…" else if (item["enabled"].bool == true) "断开 Codex" else "接入 Codex 执行端") }
+    }
 }
 
 @Composable fun ModelSettingsScreen(store: SummonStore, onBack: () -> Unit) {
@@ -134,7 +158,7 @@ private fun modelGauge(item: SummonJson): ModelGaugeData {
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             error?.let { Text(it, color = Color(0xFFD3A074)) }
             listOf(store.modelSummary["chat"], store.modelSummary["executors"].array.orEmpty().firstOrNull() ?: SummonJson.Null).filter { it is SummonJson.Obj }.forEach { item ->
-                Surface(shape = RoundedCornerShape(18.dp), color = Color(0xFF1C231E)) { Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { ModelUsageDetails(item) } }
+                Surface(shape = RoundedCornerShape(18.dp), color = Color(0xFF1C231E)) { Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { ModelUsageDetails(item); ModelExecutorControl(item, store) } }
             }
             Text("聊天模型连接", style = MaterialTheme.typography.titleMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {

@@ -182,6 +182,7 @@ export async function startGateway(options={}) {
     if(path==='/api/model-settings'&&method==='GET')return modelConnections.snapshot();
     if(path==='/api/model-settings/local'&&method==='GET')return modelConnections.localLogins();
     if(path==='/api/model-settings/local/import'&&method==='POST')return modelConnections.importLocal(body.kind);
+    if(path==='/api/model-settings/executors/codex-desktop'&&method==='POST')return modelConnections.setExecutor('codex-desktop',body.enabled);
     if(path==='/api/model-settings/onboarding'&&method==='GET')return onboarding.snapshot();
     if(path==='/api/model-settings/onboarding/reply'&&method==='POST')return onboarding.reply(body);
     if(path==='/api/model-settings/onboarding/start'&&method==='POST')return onboarding.start(body);

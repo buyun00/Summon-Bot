@@ -10,6 +10,7 @@ import { saveArtifact } from '../storage/artifacts.mjs';
 import { BotEngine } from '../agent/engine.mjs';
 import { CapabilityUpdates } from './capability-updates.mjs';
 import { coreTools } from '../capabilities/core-tools.mjs';
+import { desktopExecutorState } from '../capabilities/executor-connections.mjs';
 import { requestBot, sendMessage } from '../messaging/client.mjs';
 import { WorkService } from './works.mjs';
 import { ConversationScheduler } from './scheduler.mjs';
@@ -77,6 +78,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
     let wakeTimer;
     const services = {
       store,
+      executors: () => ({ executors: [desktopExecutorState({ connectionStore: config.model.connectionStore })] }),
       contacts: () => config.contacts.map(({botId,name,dataDir}) => ({botId,name,transport:dataDir?'local-direct':'http-direct'})),
       async send(to, envelope, { signal, taskId } = {}) {
         const id = envelope.id || randomUUID(), key = `${to}:${id}`;

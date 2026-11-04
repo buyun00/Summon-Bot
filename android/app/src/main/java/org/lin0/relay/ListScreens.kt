@@ -269,7 +269,9 @@ fun ConversationListScreen(
     quotaItem?.let { item ->
         ModalBottomSheet(onDismissRequest = { quotaItem = null }, containerColor = Color(0xFF1C231E)) {
             Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                ModelUsageDetails(item)
+                val current = if (item["role"].stringValue == "executor") store.modelSummary["executors"].array.orEmpty().firstOrNull() ?: item else item
+                ModelUsageDetails(current)
+                ModelExecutorControl(current, store)
                 TextButton(onClick = { quotaItem = null; onOpenModels() }, modifier = Modifier.fillMaxWidth()) { Text("管理模型与引擎") }
             }
         }

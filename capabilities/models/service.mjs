@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { connectionPath, readConnectionCatalog, saveModelJson, modelConnection, connectionModel, connectionRuntime,
   ModelCredentialStore, localCodexAuthPath, localGrokAuthPath, localGrokLogin, grokProxyHeaders, codexCredential, decodeModelToken, modelChoices, modelError } from '../../bot/src/agent/connections.mjs';
 import { DesktopCodex } from '../codex/desktop.mjs';
+import { desktopExecutorState } from '../../bot/src/capabilities/executor-connections.mjs';
 
 const number = value => value !== '' && value !== null && value !== undefined && Number.isFinite(Number(value)) ? Number(value) : null;
 const clamp = value => Math.min(100, Math.max(0, value));
@@ -32,6 +33,9 @@ export class ModelConnections {
       if (original.apiKey) await this.credentials.modify('api-deepseek', async () => ({ type: 'api_key', key: original.apiKey }));
     }
     try { this.usage = JSON.parse(await readFile(this.usagePath, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (!desktopExecutorState({ dataRoot: this.dataRoot }).enabled && this.usage['codex-desktop']) {
+      delete this.usage['codex-desktop']; await saveModelJson(this.usagePath, this.usage);
+    }
     const deploymentPath = join(this.dataRoot, 'config', 'deployment.json');
     if (existsSync(deploymentPath)) {
       const deployment = JSON.parse(await readFile(deploymentPath, 'utf8'));
@@ -56,9 +60,21 @@ export class ModelConnections {
   }
   summary() {
     const catalog = this.catalog(), selected = catalog.activeId ? requireEntry(catalog, catalog.activeId) : null;
+    const executor = desktopExecutorState({ dataRoot: this.dataRoot });
     return { activeId: selected?.id || null, chat: selected ? { ...this.publicEntry(selected), role: 'chat', usage: this.usage[selected.id] || null }
       : { role: 'chat', name: '尚未选择聊天模型', configured: false, usage: { status: 'unconfigured' } },
-      executors: [{ id: 'codex-desktop', name: 'Codex 桌面端', role: 'executor', kind: 'codex', usage: this.usage['codex-desktop'] || null }] };
+      executors: [{ ...executor, usage: executor.enabled ? this.usage['codex-desktop'] || null : { status: 'not_connected', note: executor.note } }] };
+  }
+  async setExecutor(id, enabled) {
+    if (id !== 'codex-desktop' || typeof enabled !== 'boolean') throw new Error('请选择有效的执行引擎接入状态');
+    if (enabled) await new DesktopCodex({ dataRoot: this.dataRoot }).connect();
+    await this.mutate(catalog => {
+      catalog.executors = { ...catalog.executors, [id]: { enabled, ...(enabled ? { connectedAt: new Date().toISOString() } : {}) } };
+      delete this.usage[id];
+    });
+    if (enabled) await this.refreshOne(id, true);
+    await saveModelJson(this.usagePath, this.usage);
+    return this.snapshot();
   }
   async snapshot() {
     const catalog = this.catalog(), credentials = await this.credentials.list();
@@ -253,18 +269,19 @@ export class ModelConnections {
     return { source: 'API', windows: [], unsupported: true, note: '此服务未配置余额查询接口，可在设置中补充' };
   }
   refreshOne(id, force = false) {
+    if (id === 'codex-desktop' && !desktopExecutorState({ dataRoot: this.dataRoot }).enabled) return Promise.resolve(null);
     if (this.pendingUsage.has(id)) return this.pendingUsage.get(id);
     if (!force && this.usage[id]?.checkedAt && Date.now() - Date.parse(this.usage[id].checkedAt) < 60000) return Promise.resolve(this.usage[id]);
     const pending = (async () => {
-      try { const value = await this.accountUsage(id); this.usage[id] = { ...value, status: value.unsupported ? 'unsupported' : 'ready', checkedAt: new Date().toISOString() }; }
-      catch (error) { this.usage[id] = { ...this.usage[id], status: 'error', error: modelError(error), attemptedAt: new Date().toISOString(), stale: Boolean(this.usage[id]?.checkedAt) }; }
+      try { const value = await this.accountUsage(id); if (id !== 'codex-desktop' || desktopExecutorState({ dataRoot: this.dataRoot }).enabled) this.usage[id] = { ...value, status: value.unsupported ? 'unsupported' : 'ready', checkedAt: new Date().toISOString() }; }
+      catch (error) { if (id !== 'codex-desktop' || desktopExecutorState({ dataRoot: this.dataRoot }).enabled) this.usage[id] = { ...this.usage[id], status: 'error', error: modelError(error), attemptedAt: new Date().toISOString(), stale: Boolean(this.usage[id]?.checkedAt) }; }
       this.emit('models.usage', {}); return this.usage[id];
     })().finally(() => this.pendingUsage.delete(id));
     this.pendingUsage.set(id, pending); return pending;
   }
   async refreshUsage(force = false) {
     const activeId = this.catalog().activeId;
-    await Promise.all([...(activeId ? [this.refreshOne(activeId, force)] : []), this.refreshOne('codex-desktop', force)]);
+    await Promise.all([...(activeId ? [this.refreshOne(activeId, force)] : []), ...(desktopExecutorState({ dataRoot: this.dataRoot }).enabled ? [this.refreshOne('codex-desktop', force)] : [])]);
     await saveModelJson(this.usagePath, this.usage); return this.summary();
   }
   async close() { clearInterval(this.timer); for (const id of this.logins.keys()) this.cancelLogin(id); await Promise.allSettled([...this.logins.values()].map(login => login.promise)); await Promise.allSettled([...this.pendingUsage.values()]); await this.writeChain.catch(() => {}); }
