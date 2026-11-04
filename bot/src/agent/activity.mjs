@@ -84,6 +84,11 @@ export class TaskActivity {
     if (!current || !['accepted', 'queued', 'running'].includes(current.status) || this.closed) return;
     this.store.updateTask(this.task.id, { taskOverview: this.overview });
     if (['preparing', 'model'].includes(current.activity?.phase || this.phase)) this.model();
+    else if (['assemble', 'compact', 'organize'].includes(current.activity?.phase)) {
+      // Max-effort context work can outlive the caption request. Surface the
+      // task immediately while preserving the actually running stage/motion.
+      this.update({ ...current.activity, label: `${this.overview.label} · ${current.activity.label}` });
+    }
   }
   close() { this.closed = true; this.controller.abort(); }
 }
