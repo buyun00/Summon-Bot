@@ -49,7 +49,18 @@
     "/v1/capabilities": {
       "get": {
         "summary": "Inspect adapter connectivity, advertised tools and limits",
-        "parameters": [],
+        "description": "Before explicit executor consent, the default request reports local detection without contacting the desktop. connect=true is reserved for an explicit manual connection handshake and reads the advertised tool catalog only, never account usage. Successful handshake alone does not persist consent.",
+        "parameters": [
+          {
+            "name": "connect",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Success. Upstream payloads may contain their own status or queued result; HTTP acceptance is not task completion.",

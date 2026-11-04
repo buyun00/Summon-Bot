@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { FramedPipe } from './framed-pipe.js';
 import { ApiError, unavailable } from './errors.js';
 import { DesktopIpc } from './desktop-ipc.js';
+import { assertExecutorConnected } from './executor-connection.js';
 
 export const ALLOWED_TOOLS = new Set(['get_usage_limits', 'list_threads', 'list_archived_threads', 'read_thread', 'wait_threads', 'list_projects', 'create_thread', 'send_message_to_thread', 'set_thread_title', 'set_thread_archived', 'set_thread_read_state']);
 
@@ -67,6 +68,7 @@ export class AppTools {
     return this.connecting;
   }
   async call(tool, args = {}) {
+    assertExecutorConnected(this.config);
     if (tool === 'create_thread') {
       const operation = this.createQueue.then(() => this.createWithDesktopDefaults(args));
       this.createQueue = operation.catch(() => {});
@@ -136,8 +138,10 @@ export class AppTools {
     this.heldPermissionContext = null;
   }
   async callDesktopTool(tool, args = {}, callerThreadId = this.config.callerThreadId) {
+    assertExecutorConnected(this.config);
     if (!ALLOWED_TOOLS.has(tool)) throw new ApiError(403, 'tool_not_allowed', 'This tool is not exposed by the API.');
     await this.connect();
+    assertExecutorConnected(this.config);
     if (!this.catalog.some(entry => entry.namespace === 'codex_app' && entry.name === tool)) throw new ApiError(501, 'unsupported_capability', `Desktop does not advertise ${tool}.`);
     if (!callerThreadId) throw new ApiError(503, 'caller_thread_required', 'Set callerThreadId to an existing local Codex chat for desktop tool context.');
     const id = randomUUID();

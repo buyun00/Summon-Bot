@@ -14,7 +14,7 @@ const common = { hostId: { type: 'string', default: 'local' } };
 const options = { model: text, thinking: { type: 'string', enum: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] } };
 const paths = {
   '/healthz': { get: { ...operation('Process liveness; does not imply desktop connectivity'), security: [] } },
-  '/v1/capabilities': { get: operation('Inspect adapter connectivity, advertised tools and limits') },
+  '/v1/capabilities': { get: operation('Inspect adapter connectivity, advertised tools and limits', { parameters: [param('connect', 'query', { type: 'boolean', default: false })], description: 'Before explicit executor consent, the default request reports local detection without contacting the desktop. connect=true is reserved for an explicit manual connection handshake and reads the advertised tool catalog only, never account usage. Successful handshake alone does not persist consent.' }) },
   '/v1/openapi.json': { get: operation('Read this OpenAPI document') },
   '/v1/account/usage': { get: operation('Read weekly account usage from the local desktop', { description: 'Read-only, existing Bearer policy. No query parameters. Uses configured local caller context; identifies weekly primary/secondary windows by 10080 minutes. Prefers nonempty rateLimitsByLimitId over legacy rateLimits. Missing data is null with notes. Unsupported tool: 501; missing context/disconnected desktop: 503; upstream failure: 502. No reset or credit redemption.' }) },
   '/v1/projects': { get: operation('List saved projects') },

@@ -58,7 +58,7 @@ export class DesktopCodex {
   }
   // Called only by the user's manual connect action; it does not read usage.
   async connect() {
-    const result = await this.connectorRequest(await this.connector(), '/v1/capabilities', { signal: AbortSignal.timeout(10000) });
+    const result = await this.connectorRequest(await this.connector(), '/v1/capabilities?connect=true', { signal: AbortSignal.timeout(10000) });
     if (!result.desktopConnected || !result.features?.createThread) throw new Error('Codex 桌面端暂不可连接，请先打开 Codex，再手动接入。');
   }
   projects(signal) { return this.request('/v1/projects', { signal }); }

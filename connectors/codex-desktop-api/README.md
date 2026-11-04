@@ -4,6 +4,8 @@ Summon Bot 内置的本机 HTTP/SSE API，连接已运行的 Codex 桌面，监�
 
 代码随 Summon Bot 正式发行打包，实际运行安装目录 current.json 选择的版本。配置、SQLite 幂等记录、事件和日志统一放在 `D:/Relay-Bot-data/connectors/codex-desktop-api`。配置文件为 `config.json`，可参考 `config.example.json`；真实 token 和桌面调用上下文不进入源码。
 
+检测到连接器只显示“待接入”。用户在“模型与引擎”手动接入成功后，才启用 Codex 工具、后台对话发现、订阅和额度读取；聊天订阅的导入不启用执行端。接入状态保存在正式模型连接目录中，旧额度缓存不作为同意接入。断开后停止后续调用和订阅，已经提交到 Codex 的工作不会被自动取消。未接入时业务 API 返回 `409 CODEX_NOT_CONNECTED`；普通 `/v1/capabilities` 只报告本地接入状态，显式手动接入握手使用 `?connect=true`，不读取额度。
+
 开机助手沿用任务 `Codex Desktop API`，显示为“Summon Bot · Codex 连接器”。其入口为本项目的 `Run-Hidden.vbs`：由无控制台的 wscript 启动隐藏 PowerShell，并等待托管 Node 的整个生命周期；Windows Job Object 随任务关闭子进程。没有新增登录触发器。
 
 - 手动启动：双击 `Start-Hidden.vbs`，不显示控制台窗口。

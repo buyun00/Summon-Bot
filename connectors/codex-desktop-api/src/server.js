@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { ApiError, publicError } from './errors.js';
 import * as v from './validate.js';
 import { assertBrowserOrigin, serveConsole } from './console.js';
+import { executorState, assertExecutorConnected } from './executor-connection.js';
 
 function json(response, status, data, extra = {}) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...extra });
@@ -40,10 +41,12 @@ export function createServer({ config, tools, broker, store, openapi }) {
       assertAuthorization(request, response, config);
       assertBrowserOrigin(request, config);
       if (request.method === 'GET' && url.pathname === '/v1/capabilities') {
-        let available = true, error = null;
-        try { await tools.connect(); } catch (failure) { available = false; error = failure.message; }
+        query(url, ['connect']);
+        const executor = executorState(config), manualConnect = boolQuery(url, 'connect', false);
+        let available = false, error = null;
+        if (executor.enabled || manualConnect) try { await tools.connect(); available = true; } catch (failure) { error = failure.message; }
         json(response, 200, {
-          version: '0.1.0', adapter: 'codex-desktop-windows', desktopConnected: available,
+          version: '0.1.0', adapter: 'codex-desktop-windows', desktopConnected: available, executor,
           contextConfigured: !!config.callerThreadId, protocol: { type: 'private_desktop_ipc', expectedStreamVersion: 11, observedStreamVersion: broker.protocolVersion, testedDesktopVersion: '26.1021.3705.0' },
           features: { listThreads: available && tools.catalog.some(x => x.name === 'list_threads'), readHistory: available && tools.catalog.some(x => x.name === 'read_thread'), createThread: available && tools.catalog.some(x => x.name === 'create_thread'), sendMessage: available && tools.catalog.some(x => x.name === 'send_message_to_thread'), liveEvents: !!broker.ipc.pipe?.connected && broker.protocolVersion === 11, interrupt: broker.protocolVersion === 11, rename: available, archive: available },
           discovery: { recentLimit: config.discoveryLimit, includesPinned: true, liveSubscriptions: broker.subscriptions.size, maxSubscriptions: config.maxSubscriptions, lastPollAt: broker.lastPollAt ?? null },
@@ -53,6 +56,7 @@ export function createServer({ config, tools, broker, store, openapi }) {
         }); return;
       }
       if (request.method === 'GET' && url.pathname === '/v1/openapi.json') { json(response, 200, openapi); return; }
+      assertExecutorConnected(config);
       if (request.method === 'GET' && url.pathname === '/v1/account/usage') { query(url, []); json(response, 200, normalizeUsage(await tools.call('get_usage_limits'))); return; }
       if (request.method === 'GET' && url.pathname === '/v1/projects') { query(url, []); json(response, 200, await tools.call('list_projects')); return; }
       if (request.method === 'GET' && url.pathname === '/v1/threads') {

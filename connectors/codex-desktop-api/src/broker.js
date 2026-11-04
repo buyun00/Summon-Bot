@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { ApiError } from './errors.js';
 import { IPC_VERSIONS } from './desktop-ipc.js';
 import { applyPatches, normalizeState } from './state.js';
+import { executorState, assertExecutorConnected } from './executor-connection.js';
 
 export class Broker extends EventEmitter {
   constructor(config, tools, ipc, store) {
@@ -27,6 +28,7 @@ export class Broker extends EventEmitter {
     this.publish('thread.status', { status: 'unknown', stale: true, reason, lastObservedAt: slot.observedAt ?? null }, slot.threadId, slot.hostId);
   }
   async follow(threadId, hostId = 'local') {
+    assertExecutorConnected(this.config);
     const key = this.key(threadId, hostId);
     let slot = this.subscriptions.get(key);
     if (!slot) {
@@ -39,6 +41,7 @@ export class Broker extends EventEmitter {
     if (slot.pending) return slot.pending;
     slot.pending = (async () => {
       await this.ipc.connect();
+      assertExecutorConnected(this.config);
       slot.owner = await this.ipc.owner(threadId, hostId);
       this.ipc.broadcast('thread-stream-following-changed', { conversationId: threadId, hostId, following: true, targetClientIds: [slot.owner] }, [slot.owner]);
       return slot;
@@ -56,7 +59,7 @@ export class Broker extends EventEmitter {
     });
   }
   receive(message) {
-    if (this.closed) return;
+    if (this.closed || !executorState(this.config).enabled) return;
     if (message.method === 'client-status-changed' && message.params.status === 'disconnected') {
       for (const slot of this.subscriptions.values()) if (slot.owner === message.params.clientId) this.invalidate(slot, 'owner_disconnected');
     }
@@ -121,13 +124,22 @@ export class Broker extends EventEmitter {
     if (slot.resyncing) return;
     slot.resyncing = setTimeout(() => {
       slot.resyncing = null;
-      if (this.closed) return;
+      if (this.closed || !executorState(this.config).enabled) return;
       this.follow(slot.threadId, slot.hostId).catch(error => { this.lastError = error.message; });
     }, 1000);
     slot.resyncing.unref();
   }
   async poll() {
     if (this.polling || this.closed) return;
+    if (!executorState(this.config).enabled) {
+      if (this.wasEnabled) {
+        for (const slot of this.subscriptions.values()) { clearTimeout(slot.resyncing); this.ipc.unfollow(slot.threadId, slot.hostId, slot.owner); }
+        this.subscriptions.clear(); this.lastCatalog = null; this.lastSignature = null; this.lastPollAt = null;
+        this.tools.releasePermissionContext(); this.tools.permissionIpc.pipe?.close(); this.tools.pipe?.close(); this.ipc.pipe?.close();
+      }
+      this.wasEnabled = false; return;
+    }
+    this.wasEnabled = true;
     this.polling = true;
     try {
       const catalog = await this.tools.call('list_threads', { limit: this.config.discoveryLimit });
