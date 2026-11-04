@@ -8,7 +8,7 @@ const isAcknowledgement=text=>/^(?:收到|谢谢|谢谢你|感谢|好的|好|明
 const routeInstruction='这是一次临时语义路由，不是执行任务。只根据本条用户原文、明确引用和成员职责选择最适合承担的一个现有成员；不得群发、执行或代替用户授权。能确定已有工作才填写其真实 workId，不按最近活跃猜归属。输出且仅输出 JSON：{"recipientBotId":"已有成员ID或null","workId":"已知工作ID或null","reason":"简短依据"}。无法确定时 recipientBotId 设为你自己，由你的普通聊天对话作最小澄清或回答。';
 export class ChatroomService {
   constructor({store,manager,attachments,emit=()=>{},version=null,invoke}) { Object.assign(this,{store,manager,attachments,emit,version});this.teamService=new TeamService(this,{invoke});this.busy=false;this.closed=false; }
-  seed() { if(!this.store.get('rooms','room-lobby'))this.createRoom({id:'room-lobby',name:'项目大群',kind:'group',members:['user','bot-engineer','bot-components','bot-qa']}); }
+  seed() { if(!this.store.get('rooms','room-lobby'))this.createRoom({id:'room-lobby',name:'项目大群',kind:'group',members:['user','bot-entry','bot-eggbot']}); }
   need(kind,id) { const value=this.store.get(kind,id);if(!value)fail(`${kind} not found`,404);return value; }
   rooms() { return this.store.list('rooms').map(room=>({...room,lastMessage:this.messages(room.id).at(-1)||null})); }
   messages(id) { return this.store.list('messages').filter(message=>message.roomId===id); }

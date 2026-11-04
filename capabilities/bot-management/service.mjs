@@ -91,7 +91,7 @@ export class BotManager {
     this.emit('bot',this.public(updated));return this.public(updated);
   }
   async seed() {
-    for(const roleId of ['engineer','components','qa','entry','chatroom','manager','memory','eggbot']) {
+    for(const roleId of ['entry','eggbot']) {
       const id=`bot-${roleId}`,previous=this.store.get('bots',id);
       await this.create({id,roleId});
       // Existing installations predate explicit provenance. Only this exact
