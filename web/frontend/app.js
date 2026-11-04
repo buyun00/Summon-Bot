@@ -7,7 +7,7 @@ const $ = (selector, root = document) => {
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)].filter(node => !node.closest('[data-motion-ghost]'));
 
 // Display preferences are local to this browser and independent for each layout.
-const UI_BUILD = '2026.11.04.1';
+const UI_BUILD = '2026.11.04.2';
 let displayDiagnosticSnapshot = null;
 function readViewportUnits() {
   const probe = document.createElement('div');
