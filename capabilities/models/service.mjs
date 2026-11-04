@@ -42,7 +42,7 @@ export class ModelConnections {
     return this;
   }
   catalog() { return readConnectionCatalog(this.path); }
-  runtimeModel() { const connection = modelConnection({ connectionStore: this.path }); return { ...connection, connectionStore: this.path }; }
+  runtimeModel() { return this.catalog().activeId ? modelConnection({ connectionStore: this.path }) : null; }
   async mutate(fn) {
     const result = this.writeChain.catch(() => {}).then(async () => {
       const catalog = this.catalog(), value = await fn(catalog); await saveModelJson(this.path, catalog);
@@ -55,8 +55,9 @@ export class ModelConnections {
     return { ...value, active: entry.id === this.catalog().activeId, usage: this.usage[entry.id] || null };
   }
   summary() {
-    const catalog = this.catalog(), selected = requireEntry(catalog, catalog.activeId);
-    return { activeId: selected.id, chat: { ...this.publicEntry(selected), role: 'chat', usage: this.usage[selected.id] || null },
+    const catalog = this.catalog(), selected = catalog.activeId ? requireEntry(catalog, catalog.activeId) : null;
+    return { activeId: selected?.id || null, chat: selected ? { ...this.publicEntry(selected), role: 'chat', usage: this.usage[selected.id] || null }
+      : { role: 'chat', name: '尚未选择聊天模型', configured: false, usage: { status: 'unconfigured' } },
       executors: [{ id: 'codex-desktop', name: 'Codex 桌面端', role: 'executor', kind: 'codex', usage: this.usage['codex-desktop'] || null }] };
   }
   async snapshot() {
@@ -262,7 +263,8 @@ export class ModelConnections {
     this.pendingUsage.set(id, pending); return pending;
   }
   async refreshUsage(force = false) {
-    await Promise.all([this.refreshOne(this.catalog().activeId, force), this.refreshOne('codex-desktop', force)]);
+    const activeId = this.catalog().activeId;
+    await Promise.all([...(activeId ? [this.refreshOne(activeId, force)] : []), this.refreshOne('codex-desktop', force)]);
     await saveModelJson(this.usagePath, this.usage); return this.summary();
   }
   async close() { clearInterval(this.timer); for (const id of this.logins.keys()) this.cancelLogin(id); await Promise.allSettled([...this.logins.values()].map(login => login.promise)); await Promise.allSettled([...this.pendingUsage.values()]); await this.writeChain.catch(() => {}); }
