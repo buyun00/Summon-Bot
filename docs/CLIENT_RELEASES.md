@@ -1,6 +1,6 @@
 # 客户端发行与更新
 
-Summon Bot 使用普通网页、Windows/macOS Electron、Android Compose 和 iOS SwiftUI。网页及桌面共用正式页面。网页定稿、同步原生实现并提交推送后，Windows 默认本地打包，macOS 和 Android 默认由 GitHub Actions 构建。iOS 暂不打包发布。
+Summon Bot 使用普通网页、Windows/macOS Electron、Android Compose 和 iOS SwiftUI。网页及桌面共用正式页面。网页定稿、同步原生实现并提交推送后，Windows 在本地打包并只就位本机；GitHub 上的 Windows、macOS 和 Android 发行包统一由 GitHub Actions 构建发布。本机不上传安装包到 GitHub。iOS 暂不打包发布。
 
 ## 下载来源
 
@@ -27,22 +27,22 @@ npm run release:version
 npm run release:all
 ```
 
-该命令从 Git 当前提交构建并安装正式 Web/后端，正常停止和恢复既有服务与 Codex 连接器，然后只在本地构建 Windows 桌面端。Windows 包先发布本机发行目录，再用当前 `gh` 登录身份同步 GitHub Releases；不再本地构建 Android。首次需要桌面依赖时执行 `npm ci --prefix desktop --no-audit --no-fund`。
+该命令从 Git 当前提交构建并安装正式 Web/后端，正常停止和恢复既有服务与 Codex 连接器，然后只在本地构建 Windows 桌面端，产物发布到本机发行目录后即结束。本机不上传 GitHub，也不构建 Android。首次需要桌面依赖时执行 `npm ci --prefix desktop --no-audit --no-fund`。
 
 也可分别执行：
 
 ```powershell
 npm run release:web -- --committed-only
-npm run release:desktop -- --publish
+npm run release:desktop
 ```
 
-制作阶段 `npm run release:web` 仍可安装工作区网页效果，不会发布客户端。客户端不带发布参数时输出到 `.relay/client-builds`；`--publish` 在 Windows 同步本机和 GitHub，`--github` 只发布 GitHub。发布成功清理对应中间目录。若 GitHub 上传中断，保留的输入目录可用 `npm run release:publish -- --input <目录> --github` 继续上传。
+制作阶段 `npm run release:web` 仍可安装工作区网页效果，不会发布客户端。Windows 的 `release:desktop` 默认发布到本机发行目录，`--publish` 同样只发布本机。`--github` 仅允许在 GitHub Actions 中使用；本机调用会直接提示改用 Actions。发布完成清理对应中间目录，不通过本机重试 GitHub 上传。
 
 若运行时下载受网络影响，可将同版本 Electron ZIP 的绝对路径放入 `SUMMON_ELECTRON_DIST`。
 
 ## GitHub Actions
 
-[Client releases 工作流](../.github/workflows/client-releases.yml) 在主分支的 `release.json` 版本变更时运行，客户端改动在定稿时一并递增版本；也可手动选择 `cloud`、`macos`、`android` 或 `windows`。默认云端目标只有 macOS 和 Android，Windows 保留可手动触发的云端构建入口。工作流只安装依赖、构建和发布，不运行测试，不创建后端或预览服务。
+[Client releases 工作流](../.github/workflows/client-releases.yml) 在主分支的 `release.json` 版本变更时运行，客户端改动在定稿时一并递增版本；也可手动选择 `cloud`、`macos`、`android` 或 `windows`。`cloud` 和版本推送均构建 Windows、macOS 和 Android；各平台的 GitHub 发行物直接由对应 runner 构建发布。工作流只安装依赖、构建和发布，不运行测试，不创建后端或预览服务。
 
 macOS 使用 GitHub 的 Mac runner 构建 Intel + Apple Silicon universal DMG/ZIP。无需本地 Mac、Apple Developer 账户或证书，仅做 ad-hoc 签名，不进行 Developer ID 签名或公证。首次打开可能需要在系统“隐私与安全性”手动允许。客户端提示新版本并打开 DMG 下载，用户覆盖安装；不使用依赖开发者签名的自动安装更新。
 

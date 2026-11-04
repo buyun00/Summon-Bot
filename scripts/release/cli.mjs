@@ -47,13 +47,15 @@ async function describeBuild(input, platform, arch) {
 }
 async function publish(input) {
   const metadata = validateRelease(await readJson(join(input, 'artifact.json')));
-  if (metadata.platform === 'windows' && process.platform === 'win32' && !options.github) {
+  if (options.github) {
+    const release = await readJson(join(sourceRoot, 'release.json'));
+    await publishGithub(input, release.githubRepository);
+  } else {
+    if (metadata.platform !== 'windows' || process.platform !== 'win32') throw new Error('Local publishing is for Windows packages only; GitHub releases build in GitHub Actions');
     const record = await publishRelease(repositoryRoot, input, metadata);
     console.log(JSON.stringify({ published: true, platform: record.platform, arch: record.arch, version: record.version,
       directory: join(repositoryRoot, record.platform, record.arch, record.directory) }));
   }
-  const release = await readJson(join(sourceRoot, 'release.json'));
-  await publishGithub(input, release.githubRepository);
   if (inside(buildRoot, input)) await removeInside(buildRoot, input);
 }
 async function buildDesktop() {
@@ -65,7 +67,7 @@ async function buildDesktop() {
   const { buildDesktop } = await import(pathToFileURL(join(sourceRoot, 'desktop/build.mjs')));
   await buildDesktop({ platform, arch, output });
   await describeBuild(output, platform, arch);
-  if (options.publish || options.github || command === 'all') await publish(output);
+  if (platform === 'windows' || options.publish || options.github || command === 'all') await publish(output);
   else console.log(JSON.stringify({ built: true, platform, arch, output }));
 }
 
@@ -161,7 +163,8 @@ async function setVersion() {
   console.log(JSON.stringify(release));
 }
 async function main() {
-  if (command === 'help') { console.log('Summon Bot release: version | web | desktop | android | ios | publish --input DIR | all; --publish (Windows local + GitHub) | --github (GitHub only)'); return; }
+  if (command === 'help') { console.log('Summon Bot release: version | web | desktop | android | ios | publish --input DIR | all; Windows desktop builds publish locally; --publish (Windows local only) | --github (GitHub Actions only)'); return; }
+  if (options.github && process.env.GITHUB_ACTIONS !== 'true') throw new Error('GitHub packages must build and publish in GitHub Actions; local Windows builds stay in the local release directory');
   if (command === 'version') return setVersion();
   if (command === 'web') return deployWeb();
   if (command === 'desktop') return buildDesktop();

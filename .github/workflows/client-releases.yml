@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       platform:
-        description: Client to build (Windows normally builds locally)
+        description: Client to build and publish on GitHub Actions
         type: choice
         default: cloud
         options: [cloud, macos, android, windows]
@@ -67,7 +67,7 @@ jobs:
           SUMMON_ANDROID_KEY_PASSWORD: ${{ secrets.SUMMON_ANDROID_KEY_PASSWORD }}
 
   windows:
-    if: github.event_name == 'workflow_dispatch' && inputs.platform == 'windows'
+    if: github.event_name == 'push' || inputs.platform == 'cloud' || inputs.platform == 'windows'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
