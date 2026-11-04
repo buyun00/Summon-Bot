@@ -31,6 +31,7 @@ export class ModelProvider {
     const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
     this.controllers.add(controller);
     const started = Date.now(), secrets = new Set();
+    const tracksConnection = options.usageContext?.purpose !== 'activity';
     let record, selectedModel = model, received, ended = false, wireUsage;
     const cleanError = error => {
       let message = modelError(error); for (const secret of secrets) if (secret) message = message.split(secret).join('[redacted]');
@@ -46,7 +47,7 @@ export class ModelProvider {
           purpose: options.usageContext?.purpose || 'other', provider: connection.kind === 'api' ? connection.provider : connection.kind,
           connectionId: connection.id, billingMode: connection.kind === 'api' ? 'api' : 'subscription',
           model: model.id, requestedModel: model.id, startedAt: new Date(started).toISOString(), status: 'pending', ...reportedUsage(null),
-          thinking: Boolean(options.reasoning && options.reasoning !== 'off'),
+          thinking: Boolean(options.reasoning && options.reasoning !== 'off'), thinkingLevel: options.reasoning || 'off',
           messageCount: context.messages?.length || 0, toolCount: getCurrentTools(normalizeContext(context).messages).length, maxOutputTokens: options.maxTokens || model.maxTokens };
         const persist = () => this.config.recordUsage?.(record); persist();
         const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(options.timeoutMs || (record.thinking ? 180000 : 60000))]);
@@ -93,8 +94,8 @@ export class ModelProvider {
               finishedAt: new Date().toISOString(), latencyMs: Date.now() - started });
             if (event.type === 'error') {
               received.errorMessage = cleanError(received.errorMessage || '模型调用失败'); record.error = received.errorMessage;
-              this.status.failures += 1; Object.assign(this.status, { connected: false, lastError: received.errorMessage });
-            } else {
+              if (tracksConnection) { this.status.failures += 1; Object.assign(this.status, { connected: false, lastError: received.errorMessage }); }
+            } else if (tracksConnection) {
               this.status.calls += 1;
               this.status.promptTokens += record.inputTokens || 0; this.status.completionTokens += record.outputTokens || 0;
               this.status.cacheHitTokens += record.cacheHitTokens || 0; this.status.cacheMissTokens += record.cacheMissTokens || 0;
@@ -109,7 +110,7 @@ export class ModelProvider {
       } catch (error) {
         if (!ended) {
           const message = cleanError(error), cancelled = signal.aborted;
-          this.status.failures += 1; Object.assign(this.status, { connected: false, lastError: message });
+          if (tracksConnection) { this.status.failures += 1; Object.assign(this.status, { connected: false, lastError: message }); }
           if (record) { Object.assign(record, { status: cancelled ? 'cancelled' : 'failed', error: message, finishedAt: new Date().toISOString(), latencyMs: Date.now() - started }); this.config.recordUsage?.(record); }
           const failure = received || { role: 'assistant', content: [], api: selectedModel.api, provider: selectedModel.provider, model: selectedModel.id,
             usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, timestamp: Date.now() };

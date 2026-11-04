@@ -5,20 +5,31 @@ struct PaperFrame {
     var body: [Double]
     var eyes: [[Double]]
     var alpha: Double
+    var outline: [Double]
+    var effects: [String: Any]
     init(_ value: [String: Any]) {
         body=value["body"] as? [Double] ?? [1,0,0,1,0,0]
         eyes=value["eyes"] as? [[Double]] ?? []
         alpha=value["alpha"] as? Double ?? 1
+        outline=value["outline"] as? [Double] ?? []
+        effects=value
     }
     func blended(from: PaperFrame, amount: Double) -> PaperFrame {
         var result=self
         func mix(_ a:[Double],_ b:[Double])->[Double] { guard a.count == b.count else { return b }; return zip(a,b).map { pair in pair.0+(pair.1-pair.0)*amount } }
         result.body=mix(from.body,body)
+        result.outline=mix(from.outline,outline)
         result.eyes=eyes.enumerated().map { i,eye in i < from.eyes.count ? mix(from.eyes[i],eye) : eye }
         result.alpha=from.alpha+(alpha-from.alpha)*amount
         return result
     }
     var transform: CGAffineTransform { CGAffineTransform(a:body[0],b:body[1],c:body[2],d:body[3],tx:body[4],ty:body[5]) }
+    var outlinePath: Path? {
+        guard outline.count >= 2 else { return nil }
+        var path=Path();path.move(to:CGPoint(x:outline[0],y:outline[1]));var i=2
+        while i+5 < outline.count { path.addCurve(to:CGPoint(x:outline[i+4],y:outline[i+5]),control1:CGPoint(x:outline[i],y:outline[i+1]),control2:CGPoint(x:outline[i+2],y:outline[i+3]));i+=6 }
+        path.closeSubpath();return path
+    }
 }
 
 @MainActor enum PaperLibrary {
@@ -34,7 +45,7 @@ struct PaperFrame {
     static let fibers=data["fibers"] as? [[Double]] ?? []
     struct Clip { var duration:Double;var once:Bool;var pingpong:Bool;var rows:[PaperFrame] }
     static let clips:[String:[String:Clip]]=models.mapValues { model in
-        (model["frames"] as? [String:[String:Any]] ?? [:]).mapValues { value in
+        ((model["frames"] as? [String:[String:Any]] ?? [:]).merging(data["sharedClips"] as? [String:[String:Any]] ?? [:]) { _,new in new }).mapValues { value in
             Clip(duration:value["duration"] as? Double ?? 6.4,once:value["once"] as? Bool ?? false,pingpong:value["pingpong"] as? Bool ?? false,rows:(value["rows"] as? [[String:Any]] ?? []).map(PaperFrame.init))
         }
     }

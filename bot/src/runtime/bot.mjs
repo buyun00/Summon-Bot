@@ -137,7 +137,9 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         try { const result = await engine.run(task, { signal: controller.signal,
           onStart: () => store.updateTask(task.id, { status: 'running', startedAt: at() }) });
           if (task.metadata?.notificationId) await services.publishFrontendResult(task, result);
-          store.updateTask(task.id, { status: 'completed', result, finishedAt: at() });
+          store.updateTask(task.id, { status: 'completed', result, finishedAt: at(), activity: {
+            phase: result.suspended ? 'waiting' : 'completed', label: result.handoff ? '已交给独立工作处理' : result.suspended ? '工作已保留，正在等待后续条件' : '已完成本次任务',
+            motion: result.handoff ? 'exclaim' : result.suspended ? 'notify' : 'burst', source: 'execution', updatedAt: at() } });
           for (const pending of store.listTasks({ status: 'accepted', limit: 10000 }).filter(item => item.steeredIntoTaskId === task.id)) {
             if (result.steeredMessageIds?.includes(pending.messageId)) store.updateTask(pending.id, { status: 'completed', result: { content: '', consumedBy: task.id }, finishedAt: at() });
             else store.updateTask(pending.id, { steeredIntoTaskId: null });
@@ -153,7 +155,8 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
           }
         }
         catch (error) { store.updateTask(task.id, { status: controller.signal.aborted ? (state === 'stopping' ? 'interrupted' : 'cancelled') : 'failed',
-          error: clean({ name: error.name, code: error.code, message: error.message }), finishedAt: at() });
+          error: clean({ name: error.name, code: error.code, message: error.message }), finishedAt: at(), activity: {
+            phase: controller.signal.aborted ? 'cancelled' : 'failed', label: controller.signal.aborted ? '任务已停止' : '任务遇到问题', motion: controller.signal.aborted ? 'confused' : 'alert', source: 'execution', updatedAt: at() } });
           const corrections = store.listTasks({ status: 'accepted', limit: 10000 }).filter(item => item.steeredIntoTaskId === task.id);
           for (const pending of corrections) store.updateTask(pending.id, { steeredIntoTaskId: null });
           const current = task.workId && services.works.get(task.workId);

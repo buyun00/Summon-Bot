@@ -14,6 +14,7 @@ class PaperAvatar {
   private body:SVGElement;private backing:SVGElement;private edge:SVGElement;private maskBody:SVGElement;private eyes:SVGElement[]
   private groupOutline:SVGElement;private groupBackingOutline:SVGElement
   private backArcs:SVGElement;private frontArcs:SVGElement
+  private backDots:SVGElement;private frontDots:SVGElement;private material:SVGElement;private notification:SVGElement;private notch:SVGElement
   private palette:Record<string,string>={};private paletteFrom:Record<string,string>={};private paletteTarget:Record<string,string>={};private paletteChanged=0
   constructor(appearance:Appearance,size:number,motion:string){
     this.appearance=appearance;this.rig=new PaperRig(appearance.shape,motion);this.requested=motion
@@ -21,17 +22,19 @@ class PaperAvatar {
     this.svg=node('svg',{xmlns:ns,viewBox:'-105.333 -105.333 210.666 210.666',width:size,height:size,'aria-hidden':'true',class:'summon-bot-face',style:'display:block;flex:none;overflow:visible'})
     const defs=node('defs'),mask=node('mask',{id:`${id}-mask`,maskUnits:'userSpaceOnUse',x:-158,y:-158,width:316,height:316})
     this.maskBody=node('path',{fill:'#fff'});mask.append(this.maskBody)
-    this.eyes=[node('path',{fill:'#000'}),node('path',{fill:'#000'})];mask.append(...this.eyes);defs.append(mask)
+    this.eyes=[node('path',{fill:'#000'}),node('path',{fill:'#000'})];this.notch=node('circle',{fill:'#000'});mask.append(...this.eyes,this.notch);defs.append(mask)
     const filter=node('filter',{id:`${id}-grain`,x:'0%',y:'0%',width:'100%',height:'100%','color-interpolation-filters':'sRGB'})
     filter.append(node('feTurbulence',{type:'fractalNoise',baseFrequency:'0.76 0.59',numOctaves:3,seed:12,stitchTiles:'stitch'}),node('feColorMatrix',{type:'saturate',values:0}));defs.append(filter)
     this.backArcs=node('g');this.frontArcs=node('g')
+    this.backDots=node('g');this.frontDots=node('g');this.notification=node('circle',{fill:'#6A92BA',display:'none'})
     this.groupOutline=node('path',{class:'paper-avatar-outline',display:'none'})
     this.groupBackingOutline=node('path',{class:'paper-avatar-outline',display:'none',transform:'translate(4.5 5.5) rotate(-3)'})
     this.backing=node('path',{transform:'translate(4.5 5.5) rotate(-3)',stroke:'#CFC4AB','stroke-width':.65})
     this.body=node('path');this.edge=node('path',{fill:'none','stroke-opacity':.16,'stroke-width':.75})
     const ink=node('g',{mask:`url(#${id}-mask)`}),paint=node('rect',{x:-158,y:-158,width:316,height:316,'data-paper-fill':''})
     ink.append(paint,node('rect',{x:-158,y:-158,width:316,height:316,filter:`url(#${id}-grain)`,opacity:.15,style:'mix-blend-mode:soft-light'}))
-    this.svg.append(defs,this.backArcs,this.groupBackingOutline,this.groupOutline,this.backing,this.body,ink,this.edge,this.frontArcs)
+    this.material=node('g');this.material.append(this.groupBackingOutline,this.groupOutline,this.backing,this.body,ink,this.edge)
+    this.svg.append(defs,this.backArcs,this.backDots,this.material,this.frontDots,this.notification,this.frontArcs)
     this.setAppearance(appearance);this.draw(this.rig.sample(0))
   }
   setAppearance(value:Appearance){
@@ -60,6 +63,17 @@ class PaperAvatar {
     for(const part of [this.body,this.backing,this.edge,this.maskBody,this.groupOutline,this.groupBackingOutline])part.setAttribute('d',frame.bodyPath)
     frame.eyes.forEach((eye,index)=>{const path=this.eyes[index]!;path.setAttribute('d',eye.d);path.setAttribute('transform',eye.matrix);path.setAttribute('opacity',String(eye.alpha))})
     this.arcs(this.backArcs,frame.arcs,'back');this.arcs(this.frontArcs,frame.arcs,'front')
+    this.material.setAttribute('opacity',String(frame.bodyAlpha))
+    this.backDots.replaceChildren();this.frontDots.replaceChildren()
+    const dots=frame.dotsBehind?this.backDots:this.frontDots
+    for(const dot of frame.dots){
+      const attrs=dot.d?{d:dot.d,transform:`translate(${dot.x} ${dot.y}) rotate(${dot.rot||0})`}:{cx:dot.x,cy:dot.y,r:dot.r}
+      dots.append(node(dot.d?'path':'circle',{...attrs,fill:dot.color||this.appearance.color,opacity:dot.opacity,stroke:this.appearance.ink,'stroke-width':.5,'stroke-opacity':.12}))
+    }
+    for(const [element,circle]of [[this.notification,frame.notif],[this.notch,frame.notch]] as const){
+      element.setAttribute('display',circle?'inline':'none')
+      if(circle)for(const key of ['x','y','r']as const)element.setAttribute(key==='x'?'cx':key==='y'?'cy':key,String(circle[key]))
+    }
   }
   private resetAim(){
     if(!this.aiming)return

@@ -47,7 +47,7 @@ private fun usageNumber(value: SummonJson): String = (value as? SummonJson.Num)?
 private fun usageRate(value: SummonJson): String = (value as? SummonJson.Num)?.value?.let { String.format(Locale.CHINA, "%.1f%%", it * 100) } ?: "—"
 private fun usageAmount(value: SummonJson): String = (value as? SummonJson.Num)?.value?.let { String.format(Locale.CHINA, "%.4f", it) } ?: "—"
 private fun usageTime(value: SummonJson): String = runCatching { Instant.parse(value.stringValue).atZone(ZoneId.of("Asia/Shanghai")).format(DateTimeFormatter.ofPattern("MM-dd HH:mm")) }.getOrDefault("—")
-private val usagePurposes = mapOf("chat" to "聊天", "work" to "工作执行", "routing" to "群聊路由", "compress" to "上下文压缩", "compact" to "上下文压缩", "organize" to "记忆整理", "assemble" to "上下文组装", "other" to "其他调用")
+private val usagePurposes = mapOf("chat" to "聊天", "activity" to "快速任务说明", "work" to "工作执行", "routing" to "群聊路由", "compress" to "上下文压缩", "compact" to "上下文压缩", "organize" to "记忆整理", "assemble" to "上下文组装", "other" to "其他调用")
 private val usageStatuses = mapOf("succeeded" to "完成", "failed" to "失败", "cancelled" to "取消", "pending" to "调用中", "unknown" to "结果未知")
 
 @Composable

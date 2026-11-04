@@ -94,13 +94,13 @@ export async function startGateway(options={}) {
   }
   const downloads=new RunArtifactDownloads({getRun:ownRun,resolveRoot:run=>({dataRoot,artifactRoot:join(manager.directory(run.botId),'artifacts')}),tempRoot:join(dataRoot,'capabilities','gateway','tmp','downloads')});
   async function state() {
-    const agentRuns=[],providers=[];
+    const agentRuns=[],providers=[],botActivities=new Map();
     await Promise.all(manager.list().map(async bot=>{
       // A single durable snapshot per Bot avoids reopening its database for every
       // historical task and reading every full tool result on every UI refresh.
       const snapshot=await manager.readState(bot.id,db=>{
         if(!db)return {tasks:[],counts:{},lastTools:{}};
-        return {tasks:db.listTasks().slice(-100),
+        return {tasks:db.listTasks().slice(-100),maintenance:db.getState('runtime','maintenanceActivities')?.value||[],
           counts:Object.fromEntries(db.db.prepare('SELECT task_id,COUNT(*) AS count FROM tools GROUP BY task_id').all().map(row=>[row.task_id,row.count])),
           lastTools:Object.fromEntries(db.db.prepare(`SELECT task_id,
             COALESCE(json_extract(data,'$.name'),json_extract(data,'$.toolName')) AS name,
@@ -112,13 +112,18 @@ export async function startGateway(options={}) {
             .all().map(row=>[row.task_id,toolActivity(row)]))};
       });
       for(const task of snapshot.tasks)agentRuns.push({id:task.id||task.taskId,...task,botId:bot.id,summary:task.result?.content||task.summary||'',toolCount:task.result?.toolsCalled??snapshot.counts[task.id||task.taskId]??0,lastTool:snapshot.lastTools[task.id||task.taskId]||null,roomId:task.sessionId?.replace(/^room:/,'')});
+      const active=snapshot.tasks.filter(task=>['accepted','queued','running','waiting'].includes(task.status)).sort((a,b)=>String(a.updatedAt).localeCompare(String(b.updatedAt))).at(-1);
+      const maintenance=snapshot.maintenance?.at(-1);
+      const recent=snapshot.tasks.at(-1),fresh=recent&&Date.now()-Date.parse(recent.finishedAt||'')<8000;
+      const terminal=fresh?{phase:recent.status,label:recent.status==='completed'?'已完成本次任务':recent.status==='failed'?'任务遇到问题':recent.status==='cancelled'?'任务已取消':'任务已中断',motion:recent.status==='completed'?'burst':recent.status==='failed'?'alert':'confused',source:'execution',updatedAt:recent.finishedAt}:null;
+      botActivities.set(bot.id,bot.status==='paused'?{phase:'paused',label:'已暂停',motion:'sleep',source:'execution'}:active?(active.activity||{phase:active.status,label:active.status==='running'?'正在准备任务':'等待执行',motion:'thinking',source:'execution'}):maintenance||(fresh?recent.activity||terminal:null)||{phase:'idle',label:'空闲',motion:'idle',source:'execution'});
       try{const health=await manager.request(bot.id,'/health',{signal:AbortSignal.timeout(2000)});if(health.engine?.provider)providers.push(health.engine.provider);}catch{}
     }));
     agentRuns.sort((a,b)=>String(a.createdAt||'').localeCompare(String(b.createdAt||'')));
     const messages=chatroom.store.list('messages'),jobs=chatroom.jobs(),runtime={started:true,fast:{running:jobs.filter(job=>['running','accepted'].includes(job.status)).length,queued:jobs.filter(job=>job.status==='queued').length},deep:{running:0,queued:0},jobs:jobs.slice(-80)};
     const selection=modelConnections.runtimeModel();
     const latestProvider=selection?providers.filter(provider=>provider.connectionId===selection.id).sort((a,b)=>String(b.lastSuccessAt||'').localeCompare(String(a.lastSuccessAt||'')))[0]||{}:{};
-    return {historyEpoch,onboarding:onboarding.state(),bots:manager.list(),rooms:chatroom.rooms(),routines:manager.store.list('routines'),knowledge:knowledge.graph(),runtime,activity:messages.filter(message=>message.returnTo||message.peerReplyId||['event','work'].includes(message.kind)).slice(-100),works:[...await localWorks(),...codex.list().filter(work=>work.backend!=='desktop').map(work=>({...work,historical:true}))],agentRuns:agentRuns.slice(-100),provider:{configured:Boolean(selection&&((await modelConnections.credentials.read(selection.id).catch(()=>null))||selection.allowNoKey)),model:selection?.model||null,...latestProvider},defaultCwd};
+    return {historyEpoch,onboarding:onboarding.state(),bots:manager.list().map(bot=>({...bot,activity:botActivities.get(bot.id)})),rooms:chatroom.rooms(),routines:manager.store.list('routines'),knowledge:knowledge.graph(),runtime,activity:messages.filter(message=>message.returnTo||message.peerReplyId||['event','work'].includes(message.kind)).slice(-100),works:[...await localWorks(),...codex.list().filter(work=>work.backend!=='desktop').map(work=>({...work,historical:true}))],agentRuns:agentRuns.slice(-100),provider:{configured:Boolean(selection&&((await modelConnections.credentials.read(selection.id).catch(()=>null))||selection.allowNoKey)),model:selection?.model||null,...latestProvider},defaultCwd};
   }
   function visibleTools(actor) {
     const allowed=actor==='controller'?null:manager.get(actor).allowedTools||[];

@@ -89,9 +89,9 @@ fun LegacyCrewBotAvatar(shape:String,color:String,image:String?=null,size:Dp=48.
 }
 
 @Composable
-fun MemberAvatar(bot:SummonBot?,size:Dp=48.dp,modifier:Modifier=Modifier,motion:String="idle",groupOutline:Color?=null) {
+fun MemberAvatar(bot:SummonBot?,size:Dp=48.dp,modifier:Modifier=Modifier,motion:String?=null,groupOutline:Color?=null) {
     val a=bot?.resolvedAvatar ?: SummonAvatar()
-    BotAvatar(a.shape,a.color,a.image,size,modifier,a.secondary,a.ink,a.paper,motion,groupOutline=groupOutline)
+    BotAvatar(a.shape,a.color,a.image,size,modifier,a.secondary,a.ink,a.paper,motion ?: bot?.activity?.get("motion")?.string ?: "idle",groupOutline=groupOutline)
 }
 
 
@@ -130,9 +130,9 @@ fun RoomAvatar(room: SummonRoom, bots: List<SummonBot>, size: Dp = 86.dp, backgr
 }
 
 @Composable
-fun BotWorkingIndicator(bot: SummonBot?, name: String?, status: String) {
+fun BotWorkingIndicator(bot: SummonBot?, name: String?, status: String, motion: String? = null) {
     androidx.compose.foundation.layout.Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
-        MemberAvatar(bot,28.dp,motion="work")
+        MemberAvatar(bot,28.dp,motion=motion)
         androidx.compose.foundation.layout.Spacer(Modifier.size(9.dp))
         androidx.compose.foundation.layout.Column {
             (name ?: bot?.name)?.let { androidx.compose.material3.Text(it,style=androidx.compose.material3.MaterialTheme.typography.labelMedium) }

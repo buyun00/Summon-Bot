@@ -65,10 +65,11 @@ object PaperLibrary {
     }
     fun paperColor(context:Context,color:String,shape:String):String=if(shape in ids)color else data(context).getJSONObject("legacyColors").optString(color.uppercase(),color)
     fun floats(a:JSONArray)=FloatArray(a.length()){a.getDouble(it).toFloat()}
-    data class Frame(val body:FloatArray,val eyes:List<FloatArray>,val alpha:Float) {
+    data class Dot(val x:Float,val y:Float,val radius:Float,val alpha:Float,val path:Path?,val rotation:Float)
+    data class Frame(val body:FloatArray,val eyes:List<FloatArray>,val alpha:Float,val outline:FloatArray?=null,val dots:List<Dot> = emptyList(),val dotsBehind:Boolean=false,val arcs:List<Arc> = emptyList(),val notification:FloatArray?=null) {
         fun blend(from:Frame,k:Float):Frame {
             fun mix(a:FloatArray,b:FloatArray)=if(a.size!=b.size)b else FloatArray(b.size){a[it]+(b[it]-a[it])*k}
-            return Frame(mix(from.body,body),eyes.mapIndexed{i,e->if(i<from.eyes.size)mix(from.eyes[i],e) else e},from.alpha+(alpha-from.alpha)*k)
+            return copy(body=mix(from.body,body),eyes=eyes.mapIndexed{i,e->if(i<from.eyes.size)mix(from.eyes[i],e) else e},alpha=from.alpha+(alpha-from.alpha)*k,outline=outline?.let{to->from.outline?.let{mix(it,to)} ?: to})
         }
     }
     data class Clip(val duration:Float,val once:Boolean,val pingpong:Boolean,val frames:List<Frame>)
@@ -76,11 +77,19 @@ object PaperLibrary {
     data class Arc(val back:Path,val front:Path,val width:Float,val alpha:Float)
     private val models=mutableMapOf<String,Model>()
     private var rings:List<List<Arc>>?=null
+    private fun arc(a:JSONObject)=Arc(CrewLibrary.path(a.getJSONArray("back")),CrewLibrary.path(a.getJSONArray("front")),a.getDouble("width").toFloat(),a.getDouble("opacity").toFloat())
+    private fun parseFrame(row:JSONObject):Frame {
+        val eyes=row.getJSONArray("eyes");val dots=row.optJSONArray("dots");val arcs=row.optJSONArray("arcs")
+        return Frame(floats(row.getJSONArray("body")),(0 until eyes.length()).map{floats(eyes.getJSONArray(it))},row.getDouble("alpha").toFloat(),
+            row.optJSONArray("outline")?.let{floats(it)},
+            if(dots==null)emptyList() else (0 until dots.length()).map{i->val d=dots.getJSONObject(i);Dot(d.getDouble("x").toFloat(),d.getDouble("y").toFloat(),d.getDouble("r").toFloat(),d.getDouble("alpha").toFloat(),d.optJSONArray("path")?.let{CrewLibrary.path(it)},d.optDouble("rotation",0.0).toFloat())},
+            row.optBoolean("dotsBehind"),if(arcs==null)emptyList() else (0 until arcs.length()).map{arc(arcs.getJSONObject(it))},row.optJSONArray("notification")?.let{floats(it)})
+    }
     fun model(context:Context,role:String):Model=models.getOrPut(role){
-        val model=data(context).getJSONObject("characters").getJSONObject(role);val clips=model.getJSONObject("frames")
-        Model(CrewLibrary.path(model.getJSONArray("body")),clips.keys().asSequence().associateWith{key->
-            val clip=clips.getJSONObject(key);val rows=clip.getJSONArray("rows")
-            Clip(clip.getDouble("duration").toFloat(),clip.getBoolean("once"),clip.getBoolean("pingpong"),(0 until rows.length()).map{i->val row=rows.getJSONObject(i);val eyes=row.getJSONArray("eyes");Frame(floats(row.getJSONArray("body")),(0 until eyes.length()).map{floats(eyes.getJSONArray(it))},row.getDouble("alpha").toFloat())})
+        val model=data(context).getJSONObject("characters").getJSONObject(role);val clips=model.getJSONObject("frames");val shared=data(context).getJSONObject("sharedClips")
+        Model(CrewLibrary.path(model.getJSONArray("body")),(clips.keys().asSequence().toList()+shared.keys().asSequence().toList()).associateWith{key->
+            val clip=shared.optJSONObject(key) ?: clips.getJSONObject(key);val rows=clip.getJSONArray("rows")
+            Clip(clip.getDouble("duration").toFloat(),clip.getBoolean("once"),clip.getBoolean("pingpong"),(0 until rows.length()).map{i->parseFrame(rows.getJSONObject(i))})
         })
     }
     fun frame(model:Model,state:String,time:Float):Frame {
@@ -138,7 +147,7 @@ fun BotAvatar(shape:String,color:String,image:String?=null,size:Dp=48.dp,modifie
         }}
     }
     val displayed=if(enabled)frame else PaperLibrary.frame(model,motion,0f)
-    val outline=remember(look){look.path()}
+    val outline=displayed.outline?.let{points->Path().apply{moveTo(points[0],points[1]);var i=2;while(i+5<points.size){cubicTo(points[i],points[i+1],points[i+2],points[i+3],points[i+4],points[i+5]);i+=6};close()}} ?: remember(look){look.path()}
     val fibers=remember{val rows=PaperLibrary.data(context).getJSONArray("fibers");(0 until rows.length()).map{PaperLibrary.floats(rows.getJSONArray(it))}}
     Canvas(modifier.size(size)){
         drawIntoCanvas{wrapper->
@@ -148,9 +157,12 @@ fun BotAvatar(shape:String,color:String,image:String?=null,size:Dp=48.dp,modifie
             val paint=android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply{strokeCap=android.graphics.Paint.Cap.ROUND;strokeJoin=android.graphics.Paint.Join.ROUND}
             fun fill(path:Path,slot:Int){paint.style=android.graphics.Paint.Style.FILL;paint.color=look.colors[slot].toArgb();c.drawPath(path,paint)}
             fun matrix(a:FloatArray)=android.graphics.Matrix().apply{setValues(floatArrayOf(a[0],a[2],a[4],a[1],a[3],a[5],0f,0f,1f))}
-            val arcs=if(motion=="work")PaperLibrary.arcs(context,age) else emptyList()
+            val arcs=if(motion=="work")PaperLibrary.arcs(context,age) else displayed.arcs
+            fun drawDots(){for(dot in displayed.dots){paint.style=android.graphics.Paint.Style.FILL;paint.color=look.colors[0].toArgb();paint.alpha=(dot.alpha*255).toInt();if(dot.path!=null){val state=c.save();c.translate(dot.x,dot.y);c.rotate(dot.rotation);c.drawPath(dot.path,paint);c.restoreToCount(state)}else c.drawCircle(dot.x,dot.y,dot.radius,paint)};paint.alpha=255}
             fun drawArcs(front:Boolean){for(a in arcs){paint.style=android.graphics.Paint.Style.STROKE;paint.color=look.colors[0].toArgb();paint.alpha=(a.alpha*255).toInt();paint.strokeWidth=a.width;c.drawPath(if(front)a.front else a.back,paint)};paint.alpha=255}
             drawArcs(false)
+            if(displayed.dotsBehind)drawDots()
+            val material=c.saveLayerAlpha(null,(displayed.alpha*255).toInt())
             if(groupOutline!=null){
                 paint.style=android.graphics.Paint.Style.FILL_AND_STROKE;paint.color=groupOutline.toArgb();paint.strokeWidth=inset.toPx()/scale
                 val backOutline=c.save();c.translate(4.5f,5.5f);c.rotate(-3f);c.concat(matrix(displayed.body));c.drawPath(outline,paint);c.restoreToCount(backOutline)
@@ -163,7 +175,10 @@ fun BotAvatar(shape:String,color:String,image:String?=null,size:Dp=48.dp,modifie
             paint.color=android.graphics.Color.WHITE;paint.alpha=25;paint.style=android.graphics.Paint.Style.STROKE;paint.strokeWidth=.45f
             for(f in fibers){c.drawLine(f[0],f[1],f[0]+f[2],f[1]+f[3],paint)}
             for(e in displayed.eyes){if(e.size<11)continue;val eye=c.save();c.concat(matrix(e.copyOfRange(4,10)));paint.style=android.graphics.Paint.Style.FILL;paint.color=look.colors[3].toArgb();paint.alpha=(e[10]*255).toInt();val r=min(e[2],e[3])/2;c.drawRoundRect(e[0],e[1],e[0]+e[2],e[1]+e[3],r,r,paint);c.restoreToCount(eye)}
-            paint.alpha=255;c.restoreToCount(face);drawArcs(true);c.restoreToCount(save)
+            paint.alpha=255;c.restoreToCount(face);c.restoreToCount(material)
+            if(!displayed.dotsBehind)drawDots()
+            displayed.notification?.let{n->paint.style=android.graphics.Paint.Style.FILL;paint.color=android.graphics.Color.rgb(106,146,186);c.drawCircle(n[0],n[1],n[2],paint)}
+            drawArcs(true);c.restoreToCount(save)
         }
     }
 }

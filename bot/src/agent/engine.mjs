@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { modelFor } from './model.mjs';
 import { ModelProvider } from './provider.mjs';
+import { TaskActivity, toolActivity } from './activity.mjs';
 import { modelConnection } from './connections.mjs';
 import { SessionContext } from '../context/context.mjs';
 import { ContextMaintenance, contextTokens, repeatsObservation } from '../context/maintenance.mjs';
@@ -42,7 +43,7 @@ export class BotEngine {
       botId: config.botId, recordUsage: record => this.usage.save(clean({ botName: config.usage.botName || config.botId, ...record })) });
     this.context = new SessionContext({ sessions: store, clean });
     this.maintenance = new ContextMaintenance({ config, store, emit, services, clean, provider: this.provider, model: this.model });
-    this.queues = new Map(); this.active = new Map(); this.closed = false; this.taskGate = null; this.idleWaiters = new Set();
+    this.queues = new Map(); this.active = new Map(); this.activityPreviews = new Set(); this.closed = false; this.taskGate = null; this.idleWaiters = new Set();
   }
   async initialize() {
     this.usage.recoverBot(this.config.botId);
@@ -121,7 +122,7 @@ export class BotEngine {
     const task = routeOnly ? { ...originalTask, sessionId: `route:${originalTask.id}` }
       : originalTask.workId ? { ...originalTask, input: workInput(originalTask.input) } : originalTask;
     const controller = new AbortController(), combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
-    const agent = new Agent({ initialState: { model, thinkingLevel: modelConnection(this.config.model).thinkingLevel || 'off' }, convertToLlm,
+    const agent = new Agent({ initialState: { model, thinkingLevel: modelConnection(this.config.model).thinkingLevel || 'high' }, convertToLlm,
       toolExecution: 'sequential', streamFn: (model, context, options) => this.provider.stream(model, context, { ...options,
         usageContext: { taskId: task.id, runId: task.runId || task.id, sessionId: task.sessionId, conversationId: task.conversationId || task.sessionId,
           workId: task.workId, roomId: usageRoomId(task, this.store), roomName: (task.input?.current || task.input)?.room?.name,
@@ -130,6 +131,8 @@ export class BotEngine {
       agent, controller, steered: new Set(), consumedSteering: new Set(), preRecorded: new WeakSet(), acceptingSteering: true };
     this.active.set(task.id, active);
     const runId = task.runId || task.id, refs = { taskId: task.id, runId, sessionId: task.sessionId, conversationId: active.conversationId, workId: task.workId };
+    const activity = routeOnly ? null : new TaskActivity({ task, config: this.config, store: this.store, provider: this.provider, emit: this.emit, clean: this.clean, signal: combined, refs }).start();
+    if (activity) { this.activityPreviews.add(activity.pending); activity.pending.finally(() => this.activityPreviews.delete(activity.pending)); }
     let turns = 0, toolsCalled = 0, lastOutcome, suspended = false, suspensionReason, unsubscribe;
     const usage = emptyUsage(), clean = this.clean;
     const addUsage = message => { for (const key of Object.keys(usage)) usage[key] += message.usage?.[key] || 0; };
@@ -155,7 +158,11 @@ export class BotEngine {
             const saved = this.store.saveTool(clean({ ...record, ...refs, assistantMessageId: assistant ? this.context.sessionManager(task.sessionId).idForMessage(assistant) : null }));
             if (!routeOnly) this.maintenance.observeTool(task, record);
             for (const artifact of record.artifacts || []) if (typeof artifact?.id === 'string') this.store.saveArtifact(clean({ ...artifact, botId: this.config.botId, ...refs, toolRunId: record.id }));
-            active.waitingFor = record.status === 'running' ? { kind: 'tool', name: record.name, toolRunId: record.id } : null; return saved;
+            active.waitingFor = record.status === 'running' ? { kind: 'tool', name: record.name, toolRunId: record.id } : null;
+            activity?.update(record.status === 'running' ? toolActivity(record.name, record.args) : record.status === 'failed'
+              ? { phase: 'tool-error', label: '操作遇到问题，正在处理', motion: 'alert', source: 'execution' }
+              : { phase: 'model', label: '正在分析操作结果', motion: 'thinking', source: 'execution' });
+            return saved;
           });
         },
       });
@@ -277,6 +284,7 @@ export class BotEngine {
       agent.state.messages = buildMessages(); agent.state.tools = tools; agent.sessionId = task.sessionId;
       agent.prepareRequest = async request => {
         combined.throwIfAborted(); const messages = await compactIfNeeded(false); active.waitingFor = { kind: 'model', model: request.model.id };
+        activity?.model();
         this.emit('engine.request', { model: request.model.id, contextTokens: contextTokens(messages), contextBytes: Buffer.byteLength(JSON.stringify(messages)) }, refs);
         return { context: { ...request.context, messages, tools: agent.state.tools.slice() } };
       };
@@ -330,7 +338,7 @@ export class BotEngine {
           const canRecover = !recoveredOutput && (lastOutcome.stopReason === 'length' || overflow(lastOutcome.errorMessage));
           if (!canRetry && !canRecover) break;
           const manager = this.context.sessionManager(task.sessionId), sourceId = manager.idForMessage(lastOutcome); if (sourceId) manager.appendContextEdit(sourceId, null);
-          if (canRetry) { active.waitingFor = { kind: 'retry', attempt: ++retries }; await delay(2000 * 2 ** (retries - 1), undefined, { signal: combined }); }
+          if (canRetry) { active.waitingFor = { kind: 'retry', attempt: ++retries }; activity?.update({ phase: 'retry', label: '连接暂时中断，正在重新连接', motion: 'comet', source: 'execution' }); await delay(2000 * 2 ** (retries - 1), undefined, { signal: combined }); }
           else { recoveredOutput = true; await compactIfNeeded(true); }
           agent.state.messages = buildMessages(); await agent.continue();
         }
@@ -346,6 +354,7 @@ export class BotEngine {
         model: model.id, steeredMessageIds: [...active.consumedSteering], ...(suspended ? { suspended: true, waiting: suspensionReason } : {}), usage: { prompt_tokens: usage.input + usage.cacheRead, completion_tokens: usage.output, total_tokens: usage.totalTokens }, turns, toolsCalled });
     } catch (error) { const session = this.store.getSession(task.sessionId); if (session && !this.store.closed) this.repairSession(session); throw error; }
     finally {
+      activity?.close();
       unsubscribe?.(); agent.abort(); if (!routeOnly && !this.store.closed) this.maintenance.enqueue(task); this.active.delete(task.id);
       if (!this.active.size) { for (const resolve of this.idleWaiters) resolve(); this.idleWaiters.clear(); }
     }
@@ -359,7 +368,7 @@ export class BotEngine {
   async close() {
     this.closed = true;
     for (const active of this.active.values()) { active.controller.abort(new Error('Bot is closing')); active.agent.abort(); }
-    try { await this.maintenance.close(); await Promise.allSettled([...this.queues.values()]); await this.configured?.close(); }
+    try { await this.maintenance.close(); await Promise.allSettled([...this.queues.values()]); await Promise.allSettled([...this.activityPreviews]); await this.configured?.close(); }
     finally { this.provider.stop?.(); this.usage.close(); }
   }
 }

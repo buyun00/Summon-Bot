@@ -206,7 +206,7 @@ private fun modelGauge(item: SummonJson): ModelGaugeData {
     val scope = rememberCoroutineScope()
     val kind = entry["kind"].stringValue
     var fields by remember { mutableStateOf(entry.obj.orEmpty().toMutableMap().apply {
-        putIfAbsent("provider", SummonJson.Str("openai-compatible")); putIfAbsent("api", SummonJson.Str("openai-completions")); putIfAbsent("thinkingLevel", SummonJson.Str("off")); putIfAbsent("contextWindow", SummonJson.Num(if (kind == "codex") 1050000.0 else if (kind == "grok") 500000.0 else 128000.0)); putIfAbsent("maxTokens", SummonJson.Num(8192.0)); put("apiKey", SummonJson.Str(""))
+        putIfAbsent("provider", SummonJson.Str("openai-compatible")); putIfAbsent("api", SummonJson.Str("openai-completions")); putIfAbsent("thinkingLevel", SummonJson.Str("high")); putIfAbsent("contextWindow", SummonJson.Num(if (kind == "codex") 1050000.0 else if (kind == "grok") 500000.0 else 128000.0)); putIfAbsent("maxTokens", SummonJson.Num(8192.0)); put("apiKey", SummonJson.Str(""))
     }.toMap()) }
     var choices by remember { mutableStateOf<List<SummonJson>>(emptyList()) }
     var localError by remember { mutableStateOf<String?>(null) }
@@ -228,7 +228,7 @@ private fun modelGauge(item: SummonJson): ModelGaugeData {
     field("聊天模型 ID", "model")
     if (selected is SummonJson.Obj) TextButton(enabled = !busy, onClick = { scope.launch { try { choices = onDiscover() } catch (e: Exception) { localError = e.localizedMessage } } }) { Text("获取模型目录") }
     if (choices.isNotEmpty()) ModelChoice("选择模型", fields["model"]?.stringValue.orEmpty(), choices.map { it["id"].stringValue to it["name"].stringValue.ifBlank { it["id"].stringValue } }) { set("model", SummonJson.Str(it)) }
-    ModelChoice("思考强度", fields["thinkingLevel"]?.stringValue.orEmpty(), listOf("off" to "关闭 / 默认快速", "low" to "低", "medium" to "中", "high" to "高", "xhigh" to "很高", "max" to "最高")) { set("thinkingLevel", SummonJson.Str(it)) }
+    ModelChoice("思考强度", fields["thinkingLevel"]?.stringValue.orEmpty(), listOf("off" to "关闭思考", "low" to "低", "medium" to "中", "high" to "高", "xhigh" to "很高", "max" to "最高")) { set("thinkingLevel", SummonJson.Str(it)) }
     field("上下文上限 · Token", "contextWindow"); field("输出上限 · Token", "maxTokens")
     if (kind == "api") { field("余额查询路径（可选）", "balancePath"); field("余额 JSON 字段（可选）", "balanceField"); field("余额币种（默认 USD）", "balanceCurrency") }
     localError?.let { Text(it, color = Color(0xFFD3A074)) }

@@ -1,9 +1,10 @@
 import { BotEngine, type BotFrame } from '../bot/engine'
 import { SHAPE_BY_ID } from '../bot/skins'
 import { EXPRESSION_BY_ID } from '../bot/expressions'
+import { STATES, type StateId } from '../bot/states'
 import { paperShape } from '../../../../capabilities/shared/avatar-style.mjs'
 
-export const motions: Record<string,{duration:number;expression:string;pose:'idle'|'wink'}> = {
+export const motions: Record<string,{duration:number;expression:string;pose:StateId;once?:boolean;fullBody?:boolean}> = {
   idle:{duration:6.4,expression:'neutre',pose:'idle'},
   think:{duration:6.4,expression:'attentif',pose:'idle'},
   work:{duration:4.3,expression:'attentif',pose:'idle'},
@@ -12,6 +13,12 @@ export const motions: Record<string,{duration:number;expression:string;pose:'idl
   confused:{duration:6.4,expression:'confus',pose:'idle'},
   failed:{duration:6.4,expression:'triste',pose:'idle'},
   asleep:{duration:6.4,expression:'somnolent',pose:'idle'},
+}
+// The catalogue's silhouettes, particles and rings are real runtime states too.
+for (const state of STATES) {
+  if (state.id === 'idle') continue
+  motions[state.id] = {duration:Math.max(state.duration,state.minDuration||0),expression:'neutre',pose:state.id,
+    once:['wink','alert','exclaim','burst','swirl'].includes(state.id),fullBody:!state.baseBody}
 }
 // Explicit expression states keep the complete picker vocabulary available to branding.
 for (const expression of EXPRESSION_BY_ID.keys()) {

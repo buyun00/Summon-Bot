@@ -90,7 +90,7 @@ globalThis.SummonModels = (() => {
   }
   const defaults = kind => ({ kind, name: kinds[kind], model: kind === 'codex' ? 'gpt-6-luna' : kind === 'grok' ? 'grok-4.7' : '',
     provider: kind === 'api' ? 'openai-compatible' : kind === 'grok' ? 'xai' : 'openai-codex', api: kind === 'api' ? 'openai-completions' : 'openai-responses',
-    baseUrl: '', contextWindow: kind === 'codex' ? 1050000 : kind === 'grok' ? 500000 : 128000, maxTokens: 8192, thinkingLevel: 'off', apiKey: '' });
+    baseUrl: '', contextWindow: kind === 'codex' ? 1050000 : kind === 'grok' ? 500000 : 128000, maxTokens: 8192, thinkingLevel: 'high', apiKey: '' });
   function start(provided) {
     bindings = provided;
     if (!usageTimer) {
@@ -126,7 +126,7 @@ globalThis.SummonModels = (() => {
       <div class="models-field-heading"><span>聊天模型</span>${selected ? `<button type="button" class="text-button" data-action="models-discover" data-id="${esc(selected.id)}">${editor.kind === 'api' ? '获取模型目录' : '查看可选模型'}</button>` : ''}</div>
       <input class="models-model-input" name="model" list="models-choices" value="${esc(editor.model)}" placeholder="填写或选择模型 ID" required><datalist id="models-choices">${view.choices.map(item => `<option value="${esc(item.id)}">${esc(item.name || item.id)}</option>`).join('')}</datalist>
       <p class="models-field-hint">可以直接填写模型 ID；可用范围由当前账号决定。</p>
-      ${select('思考强度', 'thinkingLevel', [['off', '关闭 / 默认快速'], ['low', '低'], ['medium', '中'], ['high', '高'], ['xhigh', '很高'], ['max', '最高']], editor.thinkingLevel)}
+      ${select('思考强度', 'thinkingLevel', [['off', '关闭思考'], ['low', '低'], ['medium', '中'], ['high', '高'], ['xhigh', '很高'], ['max', '最高']], editor.thinkingLevel)}
       <details class="models-advanced"><summary>上下文与余额查询</summary><div class="models-form-grid">${input('上下文上限 · Token', 'contextWindow', editor.contextWindow, { type: 'number', required: true })}${input('输出上限 · Token', 'maxTokens', editor.maxTokens, { type: 'number', required: true })}</div>${editor.kind === 'api' ? `<p class="models-field-hint">DeepSeek 与 OpenRouter 自动读取余额。其他服务可填写自己的余额接口。</p>${input('余额查询路径', 'balancePath', editor.balancePath, { placeholder: '/account/balance' })}<div class="models-form-grid">${input('余额 JSON 字段', 'balanceField', editor.balanceField, { placeholder: 'data.balance' })}${input('币种', 'balanceCurrency', editor.balanceCurrency || 'USD', { placeholder: 'USD' })}</div>` : ''}</details>
       <div class="models-form-actions"><button class="primary-button" type="submit" ${view.busy ? 'disabled' : ''}>${view.busy ? '正在保存…' : editor.kind === 'api' ? '保存并用于聊天' : selected?.configured ? '保存配置' : '保存并授权'}</button>${selected?.configured && !selected.active ? `<button class="secondary-button" type="button" data-action="models-activate" data-id="${esc(selected.id)}" ${view.busy ? 'disabled' : ''}>用于 Pi 聊天</button>` : ''}${selected && !selected.active ? `<button class="text-button models-remove" type="button" data-action="models-remove" data-id="${esc(selected.id)}" ${view.busy ? 'disabled' : ''}>移除此连接</button>` : ''}</div></form></section>` : '';
     return `<div class="page models-page"><header class="models-header"><div><button class="text-button" data-action="navigate" data-view="chat">${icon('back', 16)}返回聊天</button><p class="models-eyebrow">SETTINGS / MODELS</p><h1>模型与引擎</h1><p>选择聊天的模型，查看干活的额度。</p></div><button class="secondary-button" data-action="models-refresh-usage" ${view.busy ? 'disabled' : ''}>${icon('refresh', 15)}刷新额度</button></header>

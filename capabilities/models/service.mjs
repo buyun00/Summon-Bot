@@ -29,7 +29,7 @@ export class ModelConnections {
       await saveModelJson(this.path, { schemaVersion: 1, activeId: 'api-deepseek', environmentFile: join(this.dataRoot, 'config', 'runtime.env'),
         connections: [{ id: 'api-deepseek', kind: 'api', name: original.provider === 'deepseek' ? 'DeepSeek' : '现有 API', provider: original.provider || 'openai-compatible',
           api: original.api || 'openai-completions', baseUrl: original.baseUrl || 'https://api.deepseek.com/v1', model: original.model || 'deepseek-flash',
-          apiKeyEnv: original.apiKeyEnv, contextWindow: original.contextWindow || 1048576, maxTokens: original.maxTokens || 393216, thinkingLevel: original.thinkingLevel || 'off' }] });
+          apiKeyEnv: original.apiKeyEnv, contextWindow: original.contextWindow || 1048576, maxTokens: original.maxTokens || 393216, thinkingLevel: original.thinkingLevel || 'high' }] });
       if (original.apiKey) await this.credentials.modify('api-deepseek', async () => ({ type: 'api_key', key: original.apiKey }));
     }
     try { this.usage = JSON.parse(await readFile(this.usagePath, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
@@ -102,7 +102,7 @@ export class ModelConnections {
         baseUrl: input.kind === 'codex' ? 'https://chatgpt.com/backend-api' : input.kind === 'grok' ? 'https://cli-chat-proxy.grok.com/v1' : String(input.baseUrl || previous?.baseUrl || '').trim().replace(/\/+$/, ''),
         api: input.kind === 'codex' ? 'openai-codex-responses' : input.kind === 'grok' ? 'openai-responses' : input.api || previous?.api || 'openai-completions',
         contextWindow: Number(input.contextWindow || previous?.contextWindow || (input.kind === 'codex' ? 1050000 : input.kind === 'grok' ? 500000 : 128000)),
-        maxTokens: Number(input.maxTokens || previous?.maxTokens || 8192), thinkingLevel: input.thinkingLevel || previous?.thinkingLevel || 'off',
+        maxTokens: Number(input.maxTokens || previous?.maxTokens || 8192), thinkingLevel: input.thinkingLevel || previous?.thinkingLevel || 'high',
         allowNoKey: input.kind === 'api' && input.allowNoKey === true,
         ...(input.kind === 'api' ? { balancePath: String(input.balancePath ?? previous?.balancePath ?? '').trim(), balanceField: String(input.balanceField ?? previous?.balanceField ?? '').trim(), balanceCurrency: String(input.balanceCurrency || previous?.balanceCurrency || 'USD').slice(0, 8) } : {}) };
       if (!entry.model || entry.model.length > 200 || /[\u0000-\u001f]/.test(entry.model)) throw new Error('请填写有效的模型 ID');

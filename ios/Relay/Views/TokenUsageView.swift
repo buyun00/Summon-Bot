@@ -35,7 +35,7 @@ struct TokenUsageView: View {
     @State private var detail: SummonJSONValue = .null
     @State private var loading = false
     @State private var errorMessage: String?
-    private let purposes = ["chat": "聊天", "work": "工作执行", "routing": "群聊路由", "compress": "上下文压缩", "compact": "上下文压缩", "organize": "记忆整理", "assemble": "上下文组装", "other": "其他调用"]
+    private let purposes = ["chat": "聊天", "activity": "快速任务说明", "work": "工作执行", "routing": "群聊路由", "compress": "上下文压缩", "compact": "上下文压缩", "organize": "记忆整理", "assemble": "上下文组装", "other": "其他调用"]
     private let statuses = ["succeeded": "完成", "failed": "失败", "cancelled": "取消", "pending": "调用中", "unknown": "结果未知"]
     private var requestKey: String { "\(period):\(selectedKind ?? "all"):\(selectedID):\(offset):\(revision)" }
     private var ranking: [SummonJSONValue] {

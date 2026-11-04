@@ -161,7 +161,8 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
                     Spacer(Modifier.height(20.dp))
                 }
                 items(working, key = { "work-${it.id}" }) { bot ->
-                    BotWorkingIndicator(bot, if (room?.kind == "dm") "" else bot.name, workingStatus(store, roomID, bot, now))
+                    BotWorkingIndicator(bot, if (room?.kind == "dm") "" else bot.name, workingStatus(store, roomID, bot, now),
+                        store.agentRuns.lastOrNull { it.roomId == roomID && it.botId == bot.id && it.isActive }?.activity?.get("motion")?.string)
                     Spacer(Modifier.height(12.dp))
                 }
             }
@@ -280,24 +281,11 @@ private fun workingStatus(store: SummonStore, roomID: String, bot: SummonBot, no
     val runID = job?.taskId ?: job?.agentRunId ?: run?.id
     val detail = runID?.let { store.agentRunDetails[it] }
     val status = detail?.status ?: run?.status ?: job?.status
-    if (status == "queued") return "正在挽起袖子"
-    if (status == "accepted") return "正在认真读题"
-    if (status == "waiting") return "正在等一点小提示"
-    if (status == "completed") return "正在把结果整理好"
-    val tool = detail?.tools?.lastOrNull { (it.status ?: "") in setOf("running", "queued", "accepted") }
-    if (tool != null) {
-        val name = tool.displayName.lowercase()
-        if (listOf("image_gen", "generate_image", "edit_image", "text_to_image", "draw", "paint", "comfy").any { name.contains(it) }) return "正在学习画画"
-        if (listOf("execute_command", "run_command", "exec_command", "terminal", "computer", "codex").any { name.contains(it) }) return "正在修理电脑"
-        if (listOf("write_file", "edit_file", "apply_patch", "create_file").any { name.contains(it) }) return "正在敲敲打打"
-        if (listOf("search", "browse", "fetch", "knowledge").any { name.contains(it) }) return "正在翻箱倒柜找资料"
-        if (listOf("read", "list_files", "resource").any { name.contains(it) }) return "正在认真翻笔记"
-        if (listOf("summon", "chat", "consult", "send_message").any { name.contains(it) }) return "正在和小伙伴商量"
-    }
-    val phrases = listOf("正在仔细分析", "正在认真琢磨", "正在组织语言", "正在纠结措辞")
-    val start = parseSummonDate(run?.startedAt ?: run?.createdAt ?: job?.createdAt)
-    val elapsed = if (start == null) 0 else kotlin.math.max(0, now.epochSecond - start.epochSecond)
-    return phrases[((elapsed / 6) % phrases.size).toInt()]
+    (run?.activity ?: detail?.activity)?.get("label")?.string?.let { return it }
+    if (status == "queued") return "等待执行"
+    if (status == "accepted") return "已接收，准备处理"
+    if (status == "waiting") return "正在等待答复或外部结果"
+    return "正在分析任务并准备下一步"
 }
 
 @Composable

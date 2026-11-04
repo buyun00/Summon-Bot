@@ -13,6 +13,12 @@ struct SummonAvatar: Codable, Equatable, Sendable {
     }
 }
 
+struct SummonActivity: Codable, Equatable, Sendable {
+    var label: String
+    var motion: String
+    var phase: String
+}
+
 struct SummonBot: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var name: String
@@ -23,6 +29,7 @@ struct SummonBot: Codable, Identifiable, Equatable, Sendable {
     var presetId: String?
     var roleId: String?
     var avatar: SummonAvatar?
+    var activity: SummonActivity?
     var createdAt: String?
 
     var isSystem: Bool { presetId != nil }
@@ -41,6 +48,7 @@ struct SummonBot: Codable, Identifiable, Equatable, Sendable {
         presetId = try c.decodeIfPresent(String.self, forKey: .presetId)
         roleId = try c.decodeIfPresent(String.self, forKey: .roleId)
         avatar = try c.decodeIfPresent(SummonAvatar.self, forKey: .avatar)
+        activity = try c.decodeIfPresent(SummonActivity.self, forKey: .activity)
         createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt)
     }
 }
@@ -154,6 +162,7 @@ struct SummonAgentRun: Codable, Identifiable, Equatable, Sendable {
     var roomId: String?
     var status: String?
     var summary: String?
+    var activity: SummonActivity?
     var content: SummonJSONValue?
     var result: SummonJSONValue?
     var error: SummonJSONValue?

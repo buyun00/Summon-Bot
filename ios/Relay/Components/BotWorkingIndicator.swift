@@ -6,6 +6,7 @@ struct BotWorkingIndicator: View {
     let bot: SummonBot?
     var name: String? = nil
     var status: String = "正在仔细分析"
+    var motion: String? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
@@ -28,7 +29,7 @@ struct BotWorkingIndicator: View {
         HStack(spacing: 9) {
             ZStack {
                 if let bot {
-                    MemberAvatar(bot: bot, size: 24, motion: "work")
+                    MemberAvatar(bot: bot, size: 24, motion: motion)
                         .id(bot.id)
                         .transition(.opacity)
                 } else {

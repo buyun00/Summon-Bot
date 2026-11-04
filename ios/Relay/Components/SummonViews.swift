@@ -8,13 +8,13 @@ enum SummonTheme {
 struct MemberAvatar: View {
     let bot: SummonBot?
     var size: CGFloat = 48
-    var motion: String = "idle"
+    var motion: String? = nil
     var groupOutline: Color? = nil
 
     var body: some View {
         let avatar = bot?.resolvedAvatar ?? SummonAvatar()
         BotAvatar(shape: avatar.shape, color: avatar.color,
-                  image: avatar.image, size: size, secondary: avatar.secondary, ink: avatar.ink, paper: avatar.paper, motion: motion, groupOutline: groupOutline)
+                  image: avatar.image, size: size, secondary: avatar.secondary, ink: avatar.ink, paper: avatar.paper, motion: motion ?? bot?.activity?.motion ?? "idle", groupOutline: groupOutline)
     }
 }
 

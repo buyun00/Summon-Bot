@@ -63,13 +63,24 @@ struct BotAvatar:View {
     private func draw(_ input:GraphicsContext,_ bounds:CGSize) {
         let frame=animated && !reduceMotion ? driver.frame ?? PaperLibrary.frame(role:role,state:motion,time:0) : PaperLibrary.frame(role:role,state:motion,time:0)
         let appearance = look ?? PaperLook.make(shape: shape, color: color, secondary: secondary, ink: ink, paper: paper)
-        let body=appearance.body,paint=appearance.color(0),backing=appearance.color(1),edge=appearance.color(2),eyes=appearance.color(3)
+        let body=frame.outlinePath ?? appearance.body,paint=appearance.color(0),backing=appearance.color(1),edge=appearance.color(2),eyes=appearance.color(3)
         // Keep the silhouette, paper backing and separator inside this member's canvas.
         let inset = groupOutline == nil ? 0 : min(4, size * 0.08)
         let scale = (bounds.width - inset * 2)/316*1.5
         var context=input;context.translateBy(x:bounds.width/2,y:bounds.height/2);context.scaleBy(x:scale,y:scale)
-        let arcs=motion == "work" ? PaperLibrary.arcs(time:driver.age) : []
+        let arcs=motion == "work" ? PaperLibrary.arcs(time:driver.age) : (frame.effects["arcs"] as? [[String:Any]] ?? []).map { PaperLibrary.Arc(back:CrewLibrary.path($0["back"] as? [[Any]] ?? []),front:CrewLibrary.path($0["front"] as? [[Any]] ?? []),width:$0["width"] as? Double ?? 1,opacity:$0["opacity"] as? Double ?? 1) }
+        func drawDots(_ input:GraphicsContext) {
+            for dot in frame.effects["dots"] as? [[String:Any]] ?? [] {
+                var c=input;c.opacity=dot["alpha"] as? Double ?? 1
+                let x=dot["x"] as? Double ?? 0,y=dot["y"] as? Double ?? 0,r=dot["r"] as? Double ?? 0
+                if let commands=dot["path"] as? [[Any]] { c.translateBy(x:x,y:y);c.rotate(by:.degrees(dot["rotation"] as? Double ?? 0));c.fill(CrewLibrary.path(commands),with:.color(paint)) }
+                else { c.fill(Path(ellipseIn:CGRect(x:x-r,y:y-r,width:r*2,height:r*2)),with:.color(paint)) }
+            }
+        }
         for arc in arcs {var c=context;c.opacity=arc.opacity;c.stroke(arc.back,with:.color(paint),style:StrokeStyle(lineWidth:arc.width,lineCap:.round))}
+        if frame.effects["dotsBehind"] as? Bool == true { drawDots(context) }
+        let decorationContext=context
+        context.opacity=frame.alpha
         if let groupOutline {
             let stroke=StrokeStyle(lineWidth:inset/scale,lineJoin:.round)
             var backOutline=context;backOutline.translateBy(x:4.5,y:5.5);backOutline.rotate(by:.degrees(-3));backOutline.concatenate(frame.transform)
@@ -85,6 +96,9 @@ struct BotAvatar:View {
             var c=face;c.opacity=eye[10];c.concatenate(CGAffineTransform(a:eye[4],b:eye[5],c:eye[6],d:eye[7],tx:eye[8],ty:eye[9]))
             c.fill(Path(roundedRect:CGRect(x:eye[0],y:eye[1],width:eye[2],height:eye[3]),cornerRadius:min(eye[2],eye[3])/2),with:.color(eyes))
         }
+        context=decorationContext
+        if frame.effects["dotsBehind"] as? Bool != true { drawDots(context) }
+        if let n=frame.effects["notification"] as? [Double],n.count==3 { context.fill(Path(ellipseIn:CGRect(x:n[0]-n[2],y:n[1]-n[2],width:n[2]*2,height:n[2]*2)),with:.color(Color(summonHex:"#6A92BA"))) }
         for arc in arcs {var c=context;c.opacity=arc.opacity;c.stroke(arc.front,with:.color(paint),style:StrokeStyle(lineWidth:arc.width,lineCap:.round))}
     }
 }

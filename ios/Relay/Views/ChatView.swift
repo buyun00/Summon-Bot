@@ -73,35 +73,11 @@ struct ChatView: View {
         let runID = job?.taskId ?? job?.agentRunId ?? run?.id
         let detail = runID.flatMap { store.agentRunDetails[$0] }
         let status = detail?.status ?? run?.status ?? job?.status
-        if status == "queued" { return "正在挽起袖子" }
-        if status == "accepted" { return "正在认真读题" }
-        if status == "waiting" { return "正在等一点小提示" }
-        if status == "completed" { return "正在把结果整理好" }
-        if let tool = detail?.tools?.last(where: { ["running", "queued", "accepted"].contains($0.status ?? "") }) {
-            let name = tool.displayName.lowercased()
-            if ["image_gen", "generate_image", "edit_image", "text_to_image", "draw", "paint", "comfy"].contains(where: { name.contains($0) }) {
-                return "正在学习画画"
-            }
-            if ["execute_command", "run_command", "exec_command", "terminal", "computer", "codex"].contains(where: { name.contains($0) }) {
-                return "正在修理电脑"
-            }
-            if ["write_file", "edit_file", "apply_patch", "create_file"].contains(where: { name.contains($0) }) {
-                return "正在敲敲打打"
-            }
-            if ["search", "browse", "fetch", "knowledge"].contains(where: { name.contains($0) }) {
-                return "正在翻箱倒柜找资料"
-            }
-            if ["read", "list_files", "resource"].contains(where: { name.contains($0) }) {
-                return "正在认真翻笔记"
-            }
-            if ["summon", "chat", "consult", "send_message"].contains(where: { name.contains($0) }) {
-                return "正在和小伙伴商量"
-            }
-        }
-        let phrases = ["正在仔细分析", "正在认真琢磨", "正在组织语言", "正在纠结措辞"]
-        let start = SummonDate.parse(run?.startedAt ?? run?.createdAt ?? job?.createdAt)
-        let elapsed = max(0, date.timeIntervalSince(start ?? Date(timeIntervalSince1970: 0)))
-        return phrases[Int(elapsed / 6) % phrases.count]
+        if let activity = run?.activity ?? detail?.activity { return activity.label }
+        if status == "queued" { return "等待执行" }
+        if status == "accepted" { return "已接收，准备处理" }
+        if status == "waiting" { return "正在等待答复或外部结果" }
+        return "正在分析任务并准备下一步"
     }
 
     var body: some View {
@@ -122,11 +98,14 @@ struct ChatView: View {
                     if hasWorkingIndicator {
                         TimelineView(.periodic(from: .now, by: 6)) { context in
                             let bots = workingBots
-                            BotWorkingIndicator(
-                                bot: bots.first,
-                                name: room?.kind == "dm" ? "" : bots.map(\.name).joined(separator: "、"),
-                                status: bots.count > 1 ? "正在工作…" : bots.first.map { workingStatus(for: $0, at: context.date) } ?? pendingStatus ?? ""
-                            )
+                            VStack(alignment: .leading, spacing: 6) {
+                                ForEach(bots) { bot in
+                                    BotWorkingIndicator(bot: bot, name: room?.kind == "dm" ? "" : bot.name,
+                                        status: workingStatus(for: bot, at: context.date),
+                                        motion: store.agentRuns.last { $0.roomId == roomID && $0.botId == bot.id && $0.isActive }?.activity?.motion)
+                                }
+                                if bots.isEmpty, let pendingStatus { BotWorkingIndicator(bot: nil, status: pendingStatus) }
+                            }
                         }
                         .id("conversation-working")
                         .transition(.opacity)

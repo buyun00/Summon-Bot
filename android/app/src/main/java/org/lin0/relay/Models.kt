@@ -49,6 +49,7 @@ data class SummonBot(
     val roleId: String?,
     val avatar: SummonAvatar?,
     val createdAt: String?,
+    val activity: SummonJson? = null,
 ) {
     val isSystem: Boolean get() = presetId != null
     val isPaused: Boolean get() = status == "paused"
@@ -61,6 +62,7 @@ data class SummonBot(
         "expertise" to SummonJson.Str(expertise),
         "prompt" to SummonJson.Str(prompt),
         "status" to SummonJson.Str(status),
+        "activity" to (activity ?: SummonJson.Null),
         "presetId" to (presetId?.let(SummonJson::Str) ?: SummonJson.Null),
         "roleId" to (roleId?.let(SummonJson::Str) ?: SummonJson.Null),
         "avatar" to (avatar?.toJson() ?: SummonJson.Null),
@@ -75,6 +77,7 @@ data class SummonBot(
             expertise = json["expertise"].stringValue,
             prompt = json["prompt"].string ?: "",
             status = json["status"].string ?: "active",
+            activity = json["activity"].takeIf { it is SummonJson.Obj },
             presetId = json["presetId"].string,
             roleId = json["roleId"].string,
             avatar = if (json["avatar"] is SummonJson.Obj) SummonAvatar.parse(json["avatar"]) else null,
@@ -292,6 +295,7 @@ data class SummonAgentRun(
     val createdAt: String?,
     val startedAt: String?,
     val finishedAt: String?,
+    val activity: SummonJson? = null,
 ) {
     val isActive: Boolean get() = (status ?: "") in setOf("queued", "accepted", "running", "waiting")
 
@@ -299,6 +303,7 @@ data class SummonAgentRun(
         "id" to SummonJson.Str(id),
         "botId" to (botId?.let(SummonJson::Str) ?: SummonJson.Null),
         "roomId" to (roomId?.let(SummonJson::Str) ?: SummonJson.Null),
+        "activity" to (activity ?: SummonJson.Null),
         "status" to (status?.let(SummonJson::Str) ?: SummonJson.Null),
         "summary" to (summary?.let(SummonJson::Str) ?: SummonJson.Null),
         "createdAt" to (createdAt?.let(SummonJson::Str) ?: SummonJson.Null),
@@ -311,6 +316,7 @@ data class SummonAgentRun(
             id = json["id"].string ?: "",
             botId = json["botId"].string,
             roomId = json["roomId"].string,
+            activity = json["activity"].takeIf { it is SummonJson.Obj },
             status = json["status"].string,
             summary = json["summary"].string,
             content = json["content"].takeUnless { it is SummonJson.Null },

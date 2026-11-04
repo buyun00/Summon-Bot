@@ -1192,7 +1192,7 @@ function avatar(id, large = false, key = `bot:${id}`) {
   const work=botWorkState(botById(id));
   const recent=(state.agentRuns||[]).filter(run=>run.botId===id).at(-1);
   const active=(state.agentRuns||[]).filter(run=>run.botId===id&&['accepted','queued','running','waiting'].includes(run.status)).at(-1)||(state.runtime?.jobs||[]).filter(job=>job.botId===id&&['accepted','queued','running','waiting'].includes(job.status)).at(-1);
-  const motion=work.kind==='paused'?'asleep':work.kind==='working'?'work':work.kind==='waiting'?(active?.status==='waiting'?'wait':'think'):['failed','interrupted'].includes(recent?.status)?'failed':'idle';
+  const motion=botById(id)?.activity?.motion||active?.activity?.motion||(work.kind==='paused'?'sleep':work.kind==='working'?'orbit':work.kind==='waiting'?(active?.status==='waiting'?'notify':'thinking'):['failed','interrupted'].includes(recent?.status)?'alert':'idle');
   return `<span class="bot-avatar" style="width:${size}px;height:${size}px" aria-hidden="true">${face(botAvatar(id), size, { key, identity: `bot:${id}`, state: motion })}</span>`;
 }
 function groupAvatar(room, size = 96, key = `group:${room?.id}:${size}`) {
@@ -1220,6 +1220,7 @@ function executionSummary(run, tool) {
   if (['failed', 'interrupted', 'cancelled'].includes(run.status)) return { text: labels[run.status] || run.status, path: '' };
   if (run.status === 'waiting') return { text: '等待答复', path: '' };
   if (['queued', 'accepted'].includes(run.status)) return { text: run.status === 'queued' ? '等待执行' : '已接收，准备处理', path: '' };
+  if (run.activity?.label) return { text: run.activity.label, path };
   const actions = { read_file: '正在读取文件', write_file: '正在写入文件', edit_file: '正在修改文件', list_files: '正在查看目录', search_files: '正在查找文件', search_text: '正在搜索内容', execute_command: '正在执行命令', run_command: '正在执行命令', messages_send: '正在联系同伴', chatroom_dm: '正在联系同伴', chatroom_send: '正在发送消息', tasks_get: '正在查看同伴进度', tasks_cancel: '正在取消同伴任务', work_create: '正在建立工作', work_wait: '正在登记等待', work_notify: '正在通知结果', knowledge_write: '正在整理知识', skill_write: '正在更新技能', contacts_list: '正在查看联系人', search_knowledge: '正在搜索知识', read_resource: '正在读取技能', read_session_history: '正在回顾会话' };
   const target = tool?.targetBotId || tool?.args?.targetBotId || tool?.args?.toBotId;
   const text = tool?.status === 'running' ? actions[tool.name] || '正在执行操作' : count ? `正在处理 · ${count} 项操作` : '正在处理';
@@ -1231,6 +1232,7 @@ function botWorkState(bot) {
   const run = (state.agentRuns || []).filter(run => run.botId === bot.id && ['accepted', 'queued', 'running', 'waiting'].includes(run.status)).at(-1);
   if (run) return { kind: run.status === 'running' ? 'working' : 'waiting', text: executionSummary(run, run.lastTool).text };
   if (job) return { kind: job.status === 'running' ? 'working' : 'waiting', text: job.status === 'running' ? '正在处理' : job.status === 'waiting' ? '等待答复' : '等待执行' };
+  if (bot.activity && !['idle','completed','failed','cancelled','interrupted'].includes(bot.activity.phase)) return {kind:'working',text:bot.activity.label};
   return { kind: 'idle', text: '空闲' };
 }
 function roomPreview(room) {
