@@ -1504,6 +1504,9 @@ var nt = class e {
 	setLook(t, n, r = e.LOOK_MORPH) {
 		(!t || Number.isFinite(t.yaw + t.pitch + t.mix + t.spin + t.wander)) && (this.lookPrev = this.lookAtTime(n), this.look = t ?? Qe, this.lookAt = n, this.lookMorph = r);
 	}
+	holdLook(e) {
+		this.setLook(this.lookAtTime(e), e);
+	}
 	lookAtTime(e) {
 		let n = (e - this.lookAt) / this.lookMorph;
 		return n >= 1 ? this.look : $e(this.lookPrev, this.look, r.easeOutQuint(t(n)));

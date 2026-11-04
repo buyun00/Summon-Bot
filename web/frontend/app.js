@@ -1310,7 +1310,20 @@ function renderTopbar() {
   <div class="sidebar-controls"><nav class="sidebar-shortcuts" aria-label="常用功能"><button class="${ui.view === 'works' ? 'selected' : ''}" data-action="navigate" data-view="works">${icon('work', 17)}<span>工作</span>${activeWorks ? `<small>${activeWorks}</small>` : ''}</button><button class="${ui.view === 'knowledge' ? 'selected' : ''}" data-action="navigate" data-view="knowledge">${icon('knowledge', 17)}<span>知识</span></button></nav>
   <div class="sidebar-footer"><div class="menu-anchor sidebar-owner-anchor"><button class="sidebar-owner" data-action="toggle-apps" aria-label="${esc(ownerName())}，设置，${connectionLabel}" aria-expanded="${ui.menu === 'apps'}"><span class="sidebar-owner-visual"><span class="contact-avatar-wrap">${avatar('user', 48)}<i class="presence-dot ${connectionKind}" aria-hidden="true"></i></span></span><span class="sidebar-owner-name">${esc(ownerName())}</span></button>${appMenu}</div>${globalThis.SummonModels.sidebar(null, { esc, icon, invalidate: () => { ui.lastSidebarHtml = null; } })}</div></div>`;
   const signature = renderSignature(html);
-  if (ui.lastSidebarHtml !== signature) { const motion = captureMotion(sidebar); sidebar.innerHTML = html; ui.lastSidebarHtml = signature; hydrateMotion(sidebar, motion); }
+  if (ui.lastSidebarHtml !== signature) {
+    const motion = captureMotion(sidebar), toolbar = sidebar.querySelector('.sidebar-toolbar');
+    if (toolbar) {
+      // Keep the wordmark mounted so menus and live updates do not restart its avatar.
+      const next = document.createElement('template'); next.innerHTML = html;
+      const nextToolbar = next.content.querySelector('.sidebar-toolbar'), wordmark = toolbar.querySelector('summon-wordmark');
+      for (const node of [...toolbar.childNodes]) if (node !== wordmark) node.remove();
+      toolbar.append(...[...nextToolbar.children].filter(node => node.localName !== 'summon-wordmark'));
+      nextToolbar.remove();
+      for (const node of [...sidebar.childNodes]) if (node !== toolbar) node.remove();
+      sidebar.append(next.content);
+    } else sidebar.innerHTML = html;
+    ui.lastSidebarHtml = signature; hydrateMotion(sidebar, motion);
+  }
   if ($('.contacts-scroll')) $('.contacts-scroll').scrollTop = oldContactTop;
   if ($('.peer-conversations') && oldPeerOpen !== undefined) $('.peer-conversations').open = oldPeerOpen;
   $('.app-shell').classList.toggle('mobile-room', ui.view === 'chat' && ui.mobileRoom);

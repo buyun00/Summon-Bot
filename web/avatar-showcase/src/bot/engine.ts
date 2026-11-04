@@ -265,6 +265,11 @@ export class BotEngine {
     this.lookMorph = morph
   }
 
+  /** Keep the displayed direction when pointer tracking is interrupted. */
+  holdLook(now: number) {
+    this.setLook(this.lookAtTime(now), now)
+  }
+
   /** Regard effectif a l'instant `now`, rattrapage en cours compris. */
   private lookAtTime(now: number): Look {
     const k = (now - this.lookAt) / this.lookMorph

@@ -10,6 +10,7 @@ function eyesColor(color:string,paper:string){const channels=[1,3,5].map(i=>pars
 class PaperAvatar {
   svg:SVGElement;rig:PaperRig;appearance:Appearance;time=0;seen=0;requested='idle';completedUntil=0;preview=false;nextExpression=0;followPointer=false
   private aiming=false
+  private tracking=false
   private body:SVGElement;private backing:SVGElement;private edge:SVGElement;private maskBody:SVGElement;private eyes:SVGElement[]
   private groupOutline:SVGElement;private groupBackingOutline:SVGElement
   private backArcs:SVGElement;private frontArcs:SVGElement
@@ -60,38 +61,47 @@ class PaperAvatar {
     frame.eyes.forEach((eye,index)=>{const path=this.eyes[index]!;path.setAttribute('d',eye.d);path.setAttribute('transform',eye.matrix);path.setAttribute('opacity',String(eye.alpha))})
     this.arcs(this.backArcs,frame.arcs,'back');this.arcs(this.frontArcs,frame.arcs,'front')
   }
-  setMotion(next:string){if(next===this.requested)return;const celebrate=next==='idle'&&['work','think'].includes(this.requested);this.requested=next;this.completedUntil=celebrate?this.time+2.8:0;this.rig.setMotion(celebrate?'done':next,this.time)}
+  private resetAim(){
+    if(!this.aiming)return
+    this.rig.engine.setLook(null,this.time-(reduced.matches?.45:0),.45)
+    for(const property of ['--paper-look-x','--paper-look-y','--paper-look-tilt'])this.svg.style.removeProperty(property)
+    this.aiming=false;this.tracking=false
+  }
+  private changeMotion(next:string){
+    if(next!==this.rig.motion&&(!pointer||!this.tracking))this.resetAim()
+    this.rig.setMotion(next,this.time)
+  }
+  setMotion(next:string){if(next===this.requested)return;const celebrate=next==='idle'&&['work','think'].includes(this.requested);this.requested=next;this.completedUntil=celebrate?this.time+2.8:0;this.changeMotion(celebrate?'done':next)}
   greet(intro=false){
     if(reduced.matches)return
-    this.rig.setMotion('expression:heureux',this.time);this.completedUntil=this.time+1.8;this.nextExpression=this.time+5
+    this.changeMotion('expression:heureux');this.completedUntil=this.time+1.8;this.nextExpression=this.time+5
     if(intro){
       const animation=this.svg.animate([{opacity:0,transform:'translateY(18px) scale(.08)'},{opacity:1,transform:'translateY(-5px) scale(1.08)',offset:.65},{opacity:1,transform:'none'}],{duration:820,delay:120,easing:'cubic-bezier(.22,.8,.22,1)',fill:'both'})
       animation.finished.then(()=>animation.cancel()).catch(()=>{})
     }
   }
   aim(box?:DOMRect){
-    if(!this.followPointer)return
-    if(pointer&&!reduced.matches&&!document.hidden&&box&&box.width>0&&box.height>0){
+    if(!this.followPointer||reduced.matches){this.resetAim();return}
+    if(pointer&&!document.hidden&&box&&box.width>0&&box.height>0){
       const nx=Math.tanh((pointer.x-box.left-box.width/2)/Math.max(180,innerWidth*.35))
       const ny=Math.tanh((pointer.y-box.top-box.height/2)/Math.max(140,innerHeight*.35))
-      this.rig.engine.setLook({yaw:nx*32,pitch:-ny*25,mix:1,spin:0,wander:.12},this.time,.22)
+      this.rig.engine.setLook({yaw:nx*32,pitch:-ny*25,mix:1,spin:0,wander:0},this.time,.22)
       this.svg.style.setProperty('--paper-look-x',`${nx*1.6}px`)
       this.svg.style.setProperty('--paper-look-y',`${ny*1.25}px`)
       this.svg.style.setProperty('--paper-look-tilt',`${nx*4}deg`)
-      this.aiming=true
-    }else if(this.aiming){
-      this.rig.engine.setLook(null,this.time-(reduced.matches?.45:0),.45)
-      for(const property of ['--paper-look-x','--paper-look-y','--paper-look-tilt'])this.svg.style.removeProperty(property)
-      this.aiming=false
+      this.aiming=true;this.tracking=true
+    }else if(this.tracking){
+      this.rig.engine.holdLook(this.time)
+      this.tracking=false
     }
   }
   tick(delta:number){
     this.time+=delta
     this.paintPalette()
-    if(this.completedUntil&&this.time>=this.completedUntil){this.completedUntil=0;this.rig.setMotion(this.requested,this.time)}
+    if(this.completedUntil&&this.time>=this.completedUntil){this.completedUntil=0;this.changeMotion(this.requested)}
     if(this.preview&&this.requested==='idle'&&!this.completedUntil&&this.time>=this.nextExpression){
       const expressions=['curieux','heureux','attentif','timide']
-      this.rig.setMotion('expression:'+expressions[Math.floor(Math.random()*expressions.length)],this.time)
+      this.changeMotion('expression:'+expressions[Math.floor(Math.random()*expressions.length)])
       this.completedUntil=this.time+1.8;this.nextExpression=this.time+5+Math.random()*3
     }
     this.draw(this.rig.sample(this.time))
@@ -140,7 +150,7 @@ function tick(now:number){
 }
 function wake(){if(!raf&&!document.hidden&&!reduced.matches){last=0;drawn=0;raf=requestAnimationFrame(tick)}}
 function releasePointer(){pointer=null;wake()}
-window.addEventListener('pointermove',event=>{pointer=event.pointerType==='touch'?null:{x:event.clientX,y:event.clientY};wake()},{passive:true})
+window.addEventListener('pointermove',event=>{pointer=event.pointerType==='touch'?null:{x:event.clientX,y:event.clientY};wake()},{passive:true,capture:true})
 window.addEventListener('pointerdown',event=>{if(event.pointerType==='touch')releasePointer()},{passive:true})
 document.addEventListener('pointerleave',releasePointer);window.addEventListener('pointercancel',releasePointer);window.addEventListener('blur',releasePointer)
 document.addEventListener('visibilitychange',()=>{if(document.hidden)pointer=null;wake()});document.addEventListener('scroll',wake,true);reduced.addEventListener('change',()=>{if(reduced.matches){pointer=null;if(raf)cancelAnimationFrame(raf);raf=0;for(const item of instances.values()){item.aim();item.draw(item.rig.sample(item.time))}}else wake()})
