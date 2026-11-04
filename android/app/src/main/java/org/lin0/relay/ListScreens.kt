@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -142,8 +143,9 @@ fun ConversationListScreen(
                         contentDescription = "${store.settings.userName}，菜单，${if (store.isConnected) "已连接" else "正在连接"}"
                     }) {
                         Box(Modifier.size(36.dp)) {
-                            Image(painterResource(R.drawable.owner_avatar), null, Modifier.fillMaxSize().clip(CircleShape), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
-                            Box(Modifier.align(Alignment.BottomEnd).size(8.dp).clip(CircleShape).background(if (store.isConnected) Color(0xFF93AD99) else Color.Gray))
+                            Image(painterResource(R.drawable.owner_paper_frame), null, Modifier.fillMaxSize())
+                            Image(painterResource(R.drawable.owner_avatar), null, Modifier.align(Alignment.Center).fillMaxSize(.74f).clip(CircleShape), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+                            Box(Modifier.align(Alignment.BottomEnd).padding(2.dp).size(8.dp).clip(CircleShape).background(if (store.isConnected) Color(0xFF93AD99) else Color.Gray).border(1.5.dp, Color(0xFFF5F5F3), CircleShape))
                         }
                     }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, modifier = Modifier.width(264.dp).heightIn(max = menuHeight)) {

@@ -123,13 +123,15 @@ button:focus-visible, a:focus-visible, select:focus-visible { outline-color: #65
 .sidebar-shortcuts > button:hover, .sidebar-shortcuts > button.selected { border-color: #c6d2be; background: #e3eadc; color: #374831; }
 .sidebar-shortcuts > button:focus-visible { outline: 2px solid #8aa797; outline-offset: 2px; }
 .sidebar-shortcuts small { position: absolute; top: -4px; right: -3px; min-width: 14px; border-radius: 5px; background: #dfe7d8; color: #5f7355; padding: 0 3px; font-size:calc(10px * var(--ui-font-scale,1)); line-height: 14px; }
-.sidebar-footer { position: relative; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: center; margin: 0; width: 100%; border: 0; height: auto; min-height: 0; padding: 0; gap: 4px; background: transparent; }
+.sidebar-footer { --sidebar-ring-diameter: 49.2px; position: relative; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: center; margin: 0; width: 100%; border: 0; height: auto; min-height: 0; padding: 0; gap: 4px; background: transparent; }
 .sidebar-owner-anchor { position: static; min-width: 0; }
 .sidebar-owner { display: flex; align-items: center; flex-direction: column; gap: 1px; min-width: 0; width: 100%; padding: 3px 0 2px; border-radius: 12px; }
 .sidebar-owner:hover { background: #75877b0a; }
-.sidebar-owner-visual { display: flex; justify-content: center; width: 64px; height: 59px; padding-top: 4px; flex: none; }
-.sidebar-owner .contact-avatar-wrap, .sidebar-owner .contact-avatar-wrap > .user-avatar { width: 48px !important; height: 48px !important; border-radius: 50%; background: transparent; }
-.sidebar-owner .presence-dot { left: auto; right: -1px; }
+.sidebar-owner-visual { display: flex; justify-content: center; width: 64px; height: 59px; padding-top: calc(29px - var(--sidebar-ring-diameter) / 2); flex: none; }
+/* Quota rings have radius 23px and a 3.2px stroke: the paper stays inside the same 49.2px diameter. */
+.sidebar-owner .contact-avatar-wrap { width: var(--sidebar-ring-diameter) !important; height: var(--sidebar-ring-diameter) !important; border-radius: 50%; background: url('/icons/owner-paper-frame.svg') center / 100% 100% no-repeat; }
+.sidebar-owner .contact-avatar-wrap > .user-avatar { width: 74% !important; height: 74% !important; border-radius: 50%; background: transparent; }
+.sidebar-owner .presence-dot { left: auto; right: 2px; bottom: 2px; width: 10px; height: 10px; border-color: #f5f5f3; }
 .sidebar-owner-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size:calc(10px * var(--ui-font-scale,1)); line-height: 15px; font-weight: 600; letter-spacing: .4px; color: #78877d; }
 .user-avatar { background: #fff; color: #fff; border: 0; object-fit: cover; }
 .apps-menu { left: 0; right: 0; width: auto; min-width: 0; bottom: calc(100% + 8px); max-height: calc(var(--ui-vh) - 96px); overscroll-behavior: contain; }

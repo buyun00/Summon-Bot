@@ -83,11 +83,17 @@ struct ConversationListView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button { showProfileMenu.toggle() } label: {
-                        Image("OwnerAvatar").resizable().scaledToFill()
-                            .frame(width: 36, height: 36).clipShape(.circle)
+                        ZStack {
+                            Image("OwnerPaperFrame").resizable().scaledToFit()
+                            Image("OwnerAvatar").resizable().scaledToFill()
+                                .frame(width: 36 * 0.74, height: 36 * 0.74).clipShape(.circle)
+                        }
+                            .frame(width: 36, height: 36)
                             .overlay(alignment: .bottomTrailing) {
                                 Circle().fill(store.isConnected ? Color(red: 0.58, green: 0.68, blue: 0.60) : .gray)
                                     .frame(width: 8, height: 8)
+                                    .overlay { Circle().strokeBorder(Color(red: 0.96, green: 0.96, blue: 0.95), lineWidth: 1.5) }
+                                    .padding(2)
                             }
                     }
                     .buttonStyle(.plain)
