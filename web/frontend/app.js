@@ -7,7 +7,7 @@ const $ = (selector, root = document) => {
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)].filter(node => !node.closest('[data-motion-ghost]'));
 
 // Display preferences are local to this browser and independent for each layout.
-const UI_BUILD = '2026.11.04.2';
+const UI_BUILD = '2026.11.04.3';
 let displayDiagnosticSnapshot = null;
 function readViewportUnits() {
   const probe = document.createElement('div');
@@ -1308,7 +1308,7 @@ function renderTopbar() {
     ${!matchingBots.length && !groups.length && query ? '<div class="sidebar-empty">没有找到匹配项</div>' : ''}
   </div>
   <div class="sidebar-controls"><nav class="sidebar-shortcuts" aria-label="常用功能"><button class="${ui.view === 'works' ? 'selected' : ''}" data-action="navigate" data-view="works">${icon('work', 17)}<span>工作</span>${activeWorks ? `<small>${activeWorks}</small>` : ''}</button><button class="${ui.view === 'knowledge' ? 'selected' : ''}" data-action="navigate" data-view="knowledge">${icon('knowledge', 17)}<span>知识</span></button></nav>
-  <div class="sidebar-footer"><div class="menu-anchor sidebar-owner-anchor"><button class="sidebar-owner" data-action="toggle-apps" aria-label="${esc(ownerName())}，设置，${connectionLabel}" aria-expanded="${ui.menu === 'apps'}"><span class="sidebar-owner-visual"><span class="contact-avatar-wrap">${avatar('user', 48)}<i class="presence-dot ${connectionKind}" aria-hidden="true"></i></span></span><span class="sidebar-owner-name">${esc(ownerName())}</span></button>${appMenu}</div>${globalThis.SummonModels.sidebar(null, { esc, icon, invalidate: () => { ui.lastSidebarHtml = null; } })}</div></div>`;
+  <div class="sidebar-footer"><div class="menu-anchor sidebar-owner-anchor"><button class="sidebar-owner" data-action="toggle-apps" aria-label="${esc(ownerName())}，设置，${connectionLabel}" aria-expanded="${ui.menu === 'apps'}"><span class="sidebar-owner-visual"><span class="contact-avatar-wrap"><img class="sidebar-owner-frame" src="/icons/owner-paper-frame.png?v=20261104" width="100" height="100" alt="" aria-hidden="true" draggable="false">${avatar('user', 48)}<i class="presence-dot ${connectionKind}" aria-hidden="true"></i></span></span><span class="sidebar-owner-name">${esc(ownerName())}</span></button>${appMenu}</div>${globalThis.SummonModels.sidebar(null, { esc, icon, invalidate: () => { ui.lastSidebarHtml = null; } })}</div></div>`;
   const signature = renderSignature(html);
   if (ui.lastSidebarHtml !== signature) {
     const motion = captureMotion(sidebar), toolbar = sidebar.querySelector('.sidebar-toolbar');

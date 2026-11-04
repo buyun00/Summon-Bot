@@ -11,7 +11,7 @@ const assets = new Map([
   ...['app', 'cache', 'avatars', 'motion', 'clients', 'usage', 'models', 'model-icons', 'summon-brand', 'branding-migration'].map(name => [`/${name}.js`, [`${name}.js`, 'text/javascript']]),
   ...['style', 'mobile', 'group-chat', 'typography', 'summon-brand', 'motion', 'clients', 'usage', 'models'].map(name => [`/${name}.css`, [`${name}.css`, 'text/css']]),
   ['/icons/user-avatar.jpg', ['icons/user-avatar.jpg', 'image/jpeg']],
-  ['/icons/owner-paper-frame.svg', ['icons/owner-paper-frame.svg', 'image/svg+xml']],
+  ['/icons/owner-paper-frame.png', ['icons/owner-paper-frame.png', 'image/png']],
   ['/icons/ai-brands.svg', ['icons/ai-brands.svg', 'image/svg+xml']],
   ['/icons/ai-brands-LICENSE.txt', ['icons/ai-brands-LICENSE.txt', 'text/plain']],
   ...['icon-192', 'icon-512', 'icon-maskable-192', 'icon-maskable-512', 'apple-touch-icon']
