@@ -24,16 +24,45 @@ jobs:
   macos:
     if: github.event_name == 'push' || inputs.platform == 'cloud' || inputs.platform == 'macos'
     runs-on: macos-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
       - run: npm ci --prefix desktop --no-audit --no-fund
-      - name: Build and publish unsigned universal DMG and ZIP
+      - name: Prepare Developer ID and notarization credentials
+        env:
+          SUMMON_MACOS_P12_BASE64: ${{ secrets.SUMMON_MACOS_P12_BASE64 }}
+          SUMMON_MACOS_P12_PASSWORD: ${{ secrets.SUMMON_MACOS_P12_PASSWORD }}
+          SUMMON_ASC_PRIVATE_KEY: ${{ secrets.SUMMON_ASC_PRIVATE_KEY }}
+          SUMMON_ASC_KEY_ID: ${{ secrets.SUMMON_ASC_KEY_ID }}
+          SUMMON_ASC_ISSUER_ID: ${{ secrets.SUMMON_ASC_ISSUER_ID }}
+        run: |
+          umask 077
+          python3 - <<'PY'
+          import base64, os, pathlib
+          names = ['SUMMON_MACOS_P12_BASE64', 'SUMMON_MACOS_P12_PASSWORD', 'SUMMON_ASC_PRIVATE_KEY',
+                   'SUMMON_ASC_KEY_ID', 'SUMMON_ASC_ISSUER_ID']
+          missing = [name for name in names if not os.environ.get(name)]
+          if missing: raise SystemExit('Missing macOS signing configuration: ' + ', '.join(missing))
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'summon-macos-signing'
+          root.mkdir(mode=0o700)
+          root.joinpath('distribution.p12').write_bytes(base64.b64decode(os.environ['SUMMON_MACOS_P12_BASE64'], validate=True))
+          root.joinpath('AuthKey.p8').write_text(os.environ['SUMMON_ASC_PRIVATE_KEY'])
+          PY
+      - name: Build, sign, notarize, and publish universal DMG and ZIP
         run: npm run release:desktop -- --github
         env:
           GH_TOKEN: ${{ github.token }}
+          CSC_LINK: ${{ runner.temp }}/summon-macos-signing/distribution.p12
+          CSC_KEY_PASSWORD: ${{ secrets.SUMMON_MACOS_P12_PASSWORD }}
+          APPLE_API_KEY: ${{ runner.temp }}/summon-macos-signing/AuthKey.p8
+          APPLE_API_KEY_ID: ${{ secrets.SUMMON_ASC_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.SUMMON_ASC_ISSUER_ID }}
+      - name: Remove macOS signing material
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/summon-macos-signing"
 
   android:
     if: github.event_name == 'push' || inputs.platform == 'cloud' || inputs.platform == 'android'

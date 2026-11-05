@@ -6,6 +6,10 @@ import builder from 'electron-builder';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export async function buildDesktop({ platform, arch, output }) {
   if (platform !== (process.platform === 'darwin' ? 'macos' : 'windows')) throw new Error('Build desktop packages on their target operating system');
+  if (platform === 'macos') {
+    const missing = ['CSC_LINK', 'CSC_KEY_PASSWORD', 'APPLE_API_KEY', 'APPLE_API_KEY_ID', 'APPLE_API_ISSUER'].filter(name => !process.env[name]);
+    if (missing.length) throw new Error(`macOS Developer ID signing and notarization require: ${missing.join(', ')}`);
+  }
   const release = JSON.parse(await readFile(join(root, 'release.json'), 'utf8'));
   const electronChecksums = JSON.parse(await readFile(join(root, 'desktop/node_modules/electron/checksums.json'), 'utf8'));
   const updatePath = `/api/releases/${platform}/${arch}/`;
@@ -16,6 +20,7 @@ export async function buildDesktop({ platform, arch, output }) {
   return builder.build({ projectDir: join(root, 'desktop'), targets: target.createTarget(undefined, builder.Arch[arch]), publish: 'never',
     config: {
       appId: 'org.lin0.relay.desktop', productName: 'Summon Bot', electronVersion: '45.2.1',
+      ...(platform === 'macos' ? { forceCodeSigning: true } : {}),
       electronDownload: { checksums: electronChecksums },
       ...(process.env.SUMMON_ELECTRON_DIST ? { electronDist: resolve(process.env.SUMMON_ELECTRON_DIST) } : {}),
       directories: { app: join(root, 'desktop'), output },
@@ -28,7 +33,10 @@ export async function buildDesktop({ platform, arch, output }) {
         shortcutName: 'Summon Bot',
         createDesktopShortcut: true, deleteAppDataOnUninstall: false },
       mac: { target: ['dmg', 'zip'], icon: join(root, 'ios/Summon/Assets.xcassets/SummonIcon.imageset/summon-icon.png'),
-        category: 'public.app-category.productivity', identity: '-', notarize: false, hardenedRuntime: false },
+        category: 'public.app-category.productivity', notarize: true, hardenedRuntime: true,
+        entitlements: join(root, 'desktop/entitlements.mac.plist'),
+        entitlementsInherit: join(root, 'desktop/entitlements.mac.plist') },
+      dmg: { sign: true },
     },
   });
 }

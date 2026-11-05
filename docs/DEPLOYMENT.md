@@ -87,7 +87,7 @@ npm install --prefix desktop --no-audit --no-fund
 npm run release:all
 ```
 
-Windows 上的完整发布从 Git 当前提交构建网页与后端，安装后只构建 Windows 桌面端，并同步本机发行目录和 GitHub Releases。macOS 和 Android 默认由 GitHub Actions 构建发布，macOS 使用无需开发者证书的 ad-hoc 签名，iOS 使用 GitHub Actions 签名上传并通过 TestFlight 内部测试分发，操作见 docs/IOS_TESTFLIGHT.md。具体操作见 [客户端发行与更新](CLIENT_RELEASES.md)。
+Windows 上的完整发布从 Git 当前提交构建网页与后端，安装后只构建 Windows 桌面端，并同步本机发行目录和 GitHub Releases。macOS 和 Android 默认由 GitHub Actions 构建发布，macOS 使用 Developer ID Application 签名和 Apple 公证，iOS 使用 GitHub Actions 签名上传并通过 TestFlight 内部测试分发，操作见 docs/IOS_TESTFLIGHT.md。具体操作见 [客户端发行与更新](CLIENT_RELEASES.md)。
 
 客户端下载先查设备本机，再直接从 GitHub 获取，远程安装包不再通过正式主机转发。发布流程先就位新产物，再切换最新版元数据，清理被替代的版本与中间目录，保留有效业务资料。
 

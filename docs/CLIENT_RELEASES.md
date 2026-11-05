@@ -44,7 +44,7 @@ npm run release:desktop
 
 [Client releases 工作流](../.github/workflows/client-releases.yml) 在主分支的 `release.json` 版本变更时运行，客户端改动在定稿时一并递增版本；也可手动选择 `cloud`、`macos`、`android` 或 `windows`。`cloud` 和版本推送均构建 Windows、macOS 和 Android；各平台的 GitHub 发行物直接由对应 runner 构建发布。工作流只安装依赖、构建和发布，不运行测试，不创建后端或预览服务。
 
-macOS 使用 GitHub 的 Mac runner 构建 Intel + Apple Silicon universal DMG/ZIP。无需本地 Mac、Apple Developer 账户或证书，仅做 ad-hoc 签名，不进行 Developer ID 签名或公证。首次打开可能需要在系统“隐私与安全性”手动允许。客户端提示新版本并打开 DMG 下载，用户覆盖安装；不使用依赖开发者签名的自动安装更新。
+macOS 使用 GitHub 的 Mac runner 构建 Intel + Apple Silicon universal DMG/ZIP。使用付费 Apple Developer 团队的 Developer ID Application 证书签名，启用 Hardened Runtime，并完成 Apple 公证和 App 票据附加。缺少证书或公证失败时停止发布；准备方法见 [macOS 签名与公证](MACOS_SIGNING.md)。客户端仍提示新版本并打开 DMG 下载，由用户覆盖安装。
 
 Android 使用 Linux runner、Java 17 和仓库的 Gradle wrapper 构建正式 APK。必须沿用现有签名身份，在 GitHub Actions Secrets 中配置：
 
