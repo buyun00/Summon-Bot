@@ -37,22 +37,24 @@ async function githubReleases(repository) {
   const cached = githubCache.get(repository);
   if (cached && cached.expires > Date.now()) return cached.promise;
   const promise = (async () => {
-    // One cached public API request serves the whole catalog; assets download directly from GitHub.
+    // Release descriptions are for people; latest.json supplies the updater catalog.
     const response = await fetch(`https://api.github.com/repos/${repository}/releases?per_page=100`, {
       headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Summon-Bot' }, signal: AbortSignal.timeout(15000),
     });
     if (!response.ok) throw new Error(`GitHub 版本信息暂时不可用（HTTP ${response.status}）`);
     const releases = await response.json();
-    return releaseTargets.flatMap(([platform, arch]) => {
+    return (await Promise.all(releaseTargets.map(async ([platform, arch]) => {
       const release = releases.find(item => !item.draft && item.tag_name === releaseTag(platform, arch));
       if (!release) return [];
-      const metadata = validateRelease(JSON.parse(release.body));
-      if (metadata.platform !== platform || metadata.arch !== arch) throw new Error('GitHub client release target mismatch');
       const base = githubBase(repository, platform, arch);
+      const manifest = await fetch(`${base}latest.json`, { signal: AbortSignal.timeout(15000) });
+      if (!manifest.ok) throw new Error(`GitHub 版本信息暂时不可用（HTTP ${manifest.status}）`);
+      const metadata = validateRelease(await manifest.json());
+      if (metadata.platform !== platform || metadata.arch !== arch) throw new Error('GitHub client release target mismatch');
       return [{ ...metadata, source: 'github', publishedAt: release.published_at,
         downloadUrl: `${base}${encodeURIComponent(metadata.mainFile)}`,
         files: metadata.files.map(file => ({ ...file, url: `${base}${encodeURIComponent(file.name)}` })) }];
-    });
+    }))).flat();
   })();
   githubCache.set(repository, { promise, expires: Date.now() + 120000 });
   try { return await promise; }
