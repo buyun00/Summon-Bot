@@ -42,19 +42,19 @@ export function workExecutor({ store, services, emit }) {
       if (!event.transport) {
         const prompt = JSON.stringify(event.content);
         const executor = services.works.executor(work);
-        const name = binding ? 'codex_send' : 'codex_create';
-        const args = binding ? { workId: work.id, operationId: event.id, message: prompt } :
+        const name = binding?.externalThreadId ? 'codex_send' : 'codex_create';
+        const args = binding?.externalThreadId ? { workId: work.id, operationId: event.id, message: prompt } :
           { workId: work.id, operationId: event.id, prompt, target: executor.target };
         event = store.putRecord('work-events', { ...event, sourceTaskId: task.id, transport: { name, args }, status: 'submitting' });
       }
       // Retries always use the same Desktop operation; its service queries unknown outcomes.
       const receipt = await services.capability(event.transport.name, event.transport.args, store.getTask(event.sourceTaskId), { operationId: event.id });
       this.record(task, { kind: 'submission_receipt', operationId: event.id, status: receipt.status, bindingId: receipt.id, threadId: receipt.externalThreadId });
-      store.putRecord('work-events', { ...event, status: receipt.status === 'unknown' ? 'unknown' : 'submitted', executionReceipt: receipt, submittedAt: at() });
+      store.putRecord('work-events', { ...store.getRecord('work-events', event.id), status: receipt.status === 'failed' ? 'failed' : receipt.status === 'unknown' ? 'unknown' : 'submitted', executionReceipt: receipt, submittedAt: at() });
       const current = services.works.get(work.id);
-      if (!stopped.has(current.status)) services.works.update(work.id, { status: 'waiting',
+      if (!stopped.has(current.status)) services.works.update(work.id, { status: receipt.status === 'failed' ? 'blocked' : 'waiting',
         waiting: { kind: 'external', operationId: event.id, bindingId: receipt.id, since: at() },
-        executionOutcome: { kind: receipt.status === 'unknown' ? 'result-unknown' : 'submission-accepted', operationId: event.id } });
+        executionOutcome: { kind: receipt.status === 'failed' ? 'failed' : receipt.status === 'unknown' ? 'result-unknown' : 'submission-accepted', operationId: event.id } });
       emit('work.execution_submitted', { workId: work.id, operationId: event.id, status: receipt.status });
       return { content: '', suspended: true, waiting: 'external', executor: 'codex', operationId: event.id };
     },
@@ -64,25 +64,29 @@ export function workExecutor({ store, services, emit }) {
       if (!binding || content.source !== 'codex-desktop-connector' || (content.externalThreadId && binding.externalThreadId !== content.externalThreadId))
         throw new Error('External result does not match this work binding');
       const eventId = `external:${task.metadata?.observationMessageId || task.messageId}`;
-      const late = stopped.has(work.status) || Boolean(content.operationId && binding.operationId !== content.operationId);
+      const operation = content.operationId && store.getRecord('work-events', content.operationId);
+      const superseded = Boolean(content.operationId && binding.operationId !== content.operationId);
+      const knownOperation = operation?.workId === work.id && operation.transport;
+      const late = stopped.has(work.status) || superseded && !knownOperation;
       store.putRecord('work-observations', { id: eventId, workId: work.id, taskId: task.id, late, content, observedAt: at() });
       this.record(task, { kind: 'external_observation', author: 'codex', late, ...content });
       if (late) return { content: '', observed: true, late: true, suspended: true, waiting: work.status, executor: 'codex' };
+      const expectedTurn = superseded ? operation?.executionReceipt?.turnId : binding.turnId;
       const final = content.final?.confirmed && content.final.threadId === binding.externalThreadId && content.final.turnId === content.turnId &&
-        (!binding.turnId || binding.turnId === content.turnId) ? content.final : null;
+        (!expectedTurn || expectedTurn === content.turnId) ? content.final : null;
       const status = content.status || (content.type === 'operation_failed' ? 'failed' : 'unknown');
       const outcome = status === 'completed' ? 'execution-ended' : status === 'waiting_for_input' ? 'needs-input' :
         ['failed', 'interrupted', 'cancelled'].includes(status) ? status : 'result-unknown';
-      if (!late) services.works.update(work.id, { status: outcome === 'failed' ? 'blocked' : 'waiting',
+      if (!superseded) services.works.update(work.id, { status: outcome === 'failed' ? 'blocked' : 'waiting',
         waiting: { kind: outcome === 'execution-ended' ? 'user-input' : 'external', outcome, since: at() },
         executionOutcome: { kind: outcome, turnId: content.turnId, operationId: content.operationId, finalConfirmed: Boolean(final) },
         progress: final?.text ? final.text.slice(0, 1200) : `Codex：${outcome}` });
       const label = ({ 'execution-ended': 'Codex 本次执行已结束', 'needs-input': 'Codex 需要你补充信息或处理请求', failed: 'Codex 本次执行失败',
         interrupted: 'Codex 本次执行已中断', cancelled: 'Codex 本次执行已取消', 'result-unknown': 'Codex 当前结果尚未确认' })[outcome];
-      const text = (final?.text || `${label}。${content.error?.message || content.state?.currentTurn?.error?.message || ''}\n来源：${binding.externalThreadId || '线程尚未确认'}${content.turnId ? ` / ${content.turnId}` : ''}。${outcome === 'execution-ended' ? '未取得可确认归属的最终文本，尚未据此判定整个工作完成。' : ''}`) +
+      const text = (final?.text || `${label}。${content.error?.message || content.result?.error?.message || content.state?.currentTurn?.error?.message || ''}\n来源：${binding.externalThreadId || '线程尚未确认'}${content.turnId ? ` / ${content.turnId}` : ''}。${outcome === 'execution-ended' ? '未取得可确认归属的最终文本，尚未据此判定整个工作完成。' : ''}`) +
         (final?.truncated ? '\n（以上为已取得的答复片段；完整内容保留在原 Codex 线程。）' : '') +
         (final?.artifacts?.length ? `\n产物引用：\n${JSON.stringify(final.artifacts)}` : '');
-      await services.notify({ id: work.id, notificationId: eventId, content: text, resultKind: outcome,
+      await services.notify({ id: work.id, notificationId: eventId, publication: 'external', content: text, resultKind: outcome,
         sourceRefs: [{ type: 'codex', threadId: binding.externalThreadId, turnId: content.turnId, operationId: content.operationId }], late }, task, {});
       return { content: '', observed: true, suspended: true, waiting: outcome, executor: 'codex' };
     },

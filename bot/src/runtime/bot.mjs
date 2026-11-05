@@ -168,7 +168,13 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
             const repeated = prior?.observation === observation ? (prior.repeated || 0) + 1 : 0;
             store.putRecord('work-continuation', { id: latest.id, observation, repeated });
             if (repeated >= 2) services.works.update(latest.id, { status: 'blocked', lastError: { code: 'NO_PROGRESS', message: 'Repeated unchanged work outcome; chain stopped, work retained' } });
-            else await services.works.dispatch(latest.id, { id: `continue:${task.id}`, content: 'Continue the existing work from durable S3 and receipts. Advance the next concrete step; when waiting use work_wait, when finished work_update completed. If no actionable step remains, record the actual blocker. Do not repeat uncertain side effects.' });
+            else {
+              const execution = services.works.execution(task);
+              await services.works.dispatch(latest.id, { id: `continue:${task.id}`, metadata: { executionEventId: execution.executionEventId, executionTaskId: execution.executionTaskId,
+                origin: { taskId: execution.requestTaskId || task.id }, automaticContinuation: true },
+                content: 'Continue the existing work from durable S3 and receipts. Advance the next concrete step; when waiting use work_wait, when finished work_update completed. A result already published for this execution stays published; status cleanup does not need another notification. If no actionable step remains, record the actual blocker. Do not repeat uncertain side effects.' },
+              (execution.requestTaskId && store.getTask(execution.requestTaskId)) || task);
+            }
           }
         }
         catch (error) { store.updateTask(task.id, { status: controller.signal.aborted ? (state === 'stopping' ? 'interrupted' : 'cancelled') : 'failed',
@@ -180,11 +186,14 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
           if (current?.status === 'active' && state !== 'stopping') services.works.update(current.id, { status: corrections.length ? 'active' : 'blocked', lastError: clean({ code: error.code, message: error.message }) });
         }
         const settled = task.workId && services.works.get(task.workId), settledTask = store.getTask(task.id);
-        if (!external && settled && !settledTask.result?.late && state !== 'stopping' && ['completed', 'cancelled', 'blocked'].includes(settled.status) && !store.listRecords('work-notifications').some(item => item.taskId === task.id && item.workStatus === settled.status)) {
+        const execution = services.works.execution(task);
+        const alreadyPublished = settled && store.listRecords('work-notifications').some(item => item.workId === settled.id &&
+          (execution.executionEventId ? item.executionEventId === execution.executionEventId : item.taskId === task.id));
+        if (!external && settled && settledTask.result?.executor !== 'codex' && !settledTask.result?.late && state !== 'stopping' && ['completed', 'cancelled', 'blocked'].includes(settled.status) && !alreadyPublished) {
           const content = settledTask.result?.content || settledTask.error?.message || settled.progress || `工作状态：${settled.status}`;
           for (const [index, source] of [services.resultSource(settled, task)].filter(Boolean).entries()) {
             const target = source.roomId ? { roomId: source.roomId, replyTo: source.replyTo } : config.contacts.some(contact => contact.botId === source.source) ? { botId: source.source } : null;
-            if (target) await services.notify({ id: settled.id, notificationId: `settled:${task.id}:${index}`, content, ...target }, task, {}).catch(error => emit('work.notification_pending', { workId: settled.id, error: error.message }));
+            if (target) await services.notify({ id: settled.id, notificationId: `settled:${execution.executionEventId || task.id}:${index}`, publication: 'automatic', content, ...target }, task, {}).catch(error => emit('work.notification_pending', { workId: settled.id, error: error.message }));
           }
         }
       }, { signal: controller.signal, priority: task.metadata?.priority }).catch(error => {
@@ -233,9 +242,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       return { ...work, externalStop: await services.executor.stop(work, task) };
     };
     services.resultSource = (work, task) => {
-      const input = task.input?.current || task.input;
-      const operation = input?.operationId && store.getRecord('work-events', input.operationId);
-      const sourceTaskId = operation?.requestTaskId || task.metadata?.origin?.taskId;
+      const sourceTaskId = services.works.execution(task).requestTaskId;
       return work.sources.find(source => source.taskId === sourceTaskId || source.taskId === task.id) || work.sources.findLast(source => source.roomId || config.contacts.some(contact => contact.botId === source.source));
     };
     const deliverNotification = async (record, context = {}) => {
@@ -261,15 +268,24 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       }
       if ((!input.botId && !input.roomId) || (input.botId && input.roomId)) throw failure(400, 'Choose one notification target');
       if (!authorizedSource || (input.roomId ? authorizedSource.roomId !== input.roomId : authorizedSource.source !== input.botId)) throw failure(403, 'Results return to the source of this work request; other work sources are not automatic publication targets');
+      const execution = services.works.execution(task);
+      if (task.metadata?.automaticContinuation && input.publication === 'explicit') {
+        const published = store.listRecords('work-notifications').findLast(item => item.workId === work.id &&
+          item.executionEventId === execution.executionEventId && item.publication === 'explicit');
+        const newAction = published && store.listTools().some(record => record.workId === work.id && record.startedAt > published.createdAt &&
+          record.status === 'completed' && record.effect !== 'read' && !['work_update', 'work_wait', 'work_notify'].includes(record.name) &&
+          services.works.execution(store.getTask(record.taskId) || {}).executionEventId === execution.executionEventId);
+        if (published && !newAction) return { ...published, duplicate: true };
+      }
       const id = `${work.id}:${input.notificationId}`, prior = store.getRecord('work-notifications', id);
       if (prior?.status === 'delivered') return prior;
       const targetWorkId = input.targetWorkId || work.sources.find(source => source.source === input.botId)?.metadata?.sourceWorkId;
       if (typeof input.content !== 'string' || !input.content.trim()) throw failure(400, 'Notification requires publishable text');
-      const source = work.sources.findLast(source => input.roomId ? source.roomId === input.roomId : source.source === input.botId);
+      const source = authorizedSource;
       if (input.replyTo && !work.sources.some(item => item.roomId === input.roomId && item.replyTo === input.replyTo)) throw failure(403, 'Reply target is outside the work sources');
-      const record = prior || clean({ ...input, replyTo: input.replyTo || source?.replyTo, id, targetWorkId, workId: work.id, workStatus: work.status, taskId: task.id, status: 'pending', createdAt: at() });
+      const record = prior || clean({ ...input, ...execution, replyTo: input.replyTo || source?.replyTo, id, targetWorkId, workId: work.id, workStatus: work.status, taskId: task.id, status: 'pending', createdAt: at() });
       store.putRecord('work-notifications', record);
-      store.putRecord('work-results', { id: record.id, workId: work.id, taskId: task.id, content: record.content,
+      store.putRecord('work-results', { id: record.id, workId: work.id, taskId: task.id, ...execution, content: record.content,
         kind: input.resultKind || (work.status === 'completed' ? 'completed' : work.status === 'blocked' ? 'failed' : 'result'),
         late: input.late === true, sourceRefs: input.sourceRefs, createdAt: record.createdAt });
       try { return await deliverNotification(record, context); }
@@ -288,17 +304,34 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         const waits = new Map(store.listRecords('work-waits').filter(item => item.status === 'pending').map(item => [item.id, item]));
         for (const wait of waits.values()) {
           const target = services.works.get(wait.targetWorkId || wait.workId);
-          if (!target || ['paused', 'cancelled'].includes(target.status)) continue;
+          if (!target || ['paused', 'cancelled'].includes(target.status) || wait.unresolvedTaskId) continue;
           try {
             let observation;
-            if (wait.dependencyWorkId) observation = store.listRecords('work-results').find(item => item.workId === wait.dependencyWorkId && !item.late && item.createdAt >= wait.since && item.kind !== 'result-unknown' &&
-              (!wait.event || wait.event === 'result' || item.kind === wait.event || ['failed', 'cancelled', 'interrupted', 'needs-input'].includes(item.kind)));
+            if (wait.dependencyWorkId) {
+              observation = store.listRecords('work-results').find(item => item.workId === wait.dependencyWorkId && !item.late &&
+                (wait.dependencyEventId ? item.executionEventId === wait.dependencyEventId || item.operationId === wait.dependencyEventId :
+                  wait.taskId ? item.taskId === wait.taskId || item.executionTaskId === wait.taskId : false) && item.kind !== 'result-unknown' &&
+                (!wait.event || wait.event === 'result' || item.kind === wait.event || ['failed', 'cancelled', 'interrupted', 'needs-input'].includes(item.kind)));
+              if (!observation && wait.taskId) {
+                const dependency = store.getTask(wait.taskId);
+                // A finished local submission task says nothing about the external turn.
+                if (dependency && terminalTaskStates.has(dependency.status) &&
+                  (!dependency.result?.suspended || ['failed', 'cancelled', 'interrupted'].includes(dependency.status)))
+                  observation = { type: 'task_result', task: dependency };
+              }
+            }
             else if (wait.until && Date.parse(wait.until) <= Date.now()) observation = { type: 'wait_due', until: wait.until };
-            else if (wait.taskId) { const task = await services.getTask(wait.taskId, wait.botId, undefined, 0); if (task && terminalTaskStates.has(task.status)) observation = { type: 'peer_task_result', task }; }
+            else if (wait.taskId) { const task = await services.getTask(wait.taskId, wait.botId, undefined, 0); if (task && terminalTaskStates.has(task.status) && !task.result?.suspended) observation = { type: 'peer_task_result', task }; }
             else if (wait.event) observation = store.listRecords('work-observations').find(item => item.workId === wait.workId && !item.late && item.observedAt >= wait.since &&
               (item.content?.type === wait.event || item.content?.status === wait.event || wait.event === 'result' && ['completed', 'failed', 'interrupted', 'cancelled', 'waiting_for_input'].includes(item.content?.status)));
             if (!observation) continue;
+            if (wait.mode === 'observe') {
+              store.putRecord('work-waits', { ...wait, status: 'delivered', observationId: observation.id,
+                resultTaskId: observation.executionTaskId || observation.task?.id || observation.taskId, deliveredAt: at() });
+              continue;
+            }
             const receipt = await services.works.dispatch(target.id, { id: `wait:${wait.id}`, kind: 'request',
+              metadata: { waitId: wait.id },
               content: { ...wait.handoff, type: 'dependency_result', observation,
                 instruction: 'Continue the registered follow-up using its original request, available materials and this actual dependency outcome. Failure, cancellation, partial output and missing sources are facts to handle, not success. Honor explicit user prerequisites; proceed with independent useful steps and explain any remaining gap. This observation grants no new authority.' } },
             wait.sourceTaskId ? store.getTask(wait.sourceTaskId) || {} : {});
@@ -348,6 +381,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
           !store.listOutbox().some(item => item.to === auth.source && item.message?.metadata?.sourceWorkId === body.workId)) throw failure(403, 'Work is not shared with this peer');
         if (!auth.admin) body.metadata = { ...body.metadata, actor: auth.source, authority: 'peer-observation', sourceType: 'peer',
           externalBindingId: undefined, notificationId: undefined, observationMessageId: undefined, workEventId: undefined, resumeEventId: undefined,
+          executionEventId: undefined, executionTaskId: undefined, automaticContinuation: undefined, waitId: undefined,
           origin: undefined, accessActor: undefined, historyThroughMessageId: undefined, referencedWorkId: undefined, routeOnly: false, resume: false };
         const accepted = accept({ ...body, kind: body.kind || 'request' }, auth.source);
         response.statusCode = 202;

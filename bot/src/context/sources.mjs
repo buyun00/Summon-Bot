@@ -20,7 +20,7 @@ export function publicMessage(message) {
   return { role: 'user', content: [{ type: 'text', text: JSON.stringify({ type: 'published_room_message',
     reference: { type: 'room', roomId: message.roomId, messageId: message.id }, author: message.senderId,
     content: message.content, replyTo: message.replyTo || null, attachments: message.attachments || [],
-    kind: message.kind, workId: message.workId || null, replyWorkId: message.replyWorkId || null, sourceRefs: message.sourceRefs || [] }) }],
+    kind: message.kind, workId: message.workId || null, replyWorkId: message.replyWorkId || null, sourceRefs: message.sourceRefs || [], authority: 'published-history' }) }],
     source: { roomId: message.roomId, messageId: message.id, actor: message.senderId }, timestamp: Date.parse(message.createdAt) || 0 };
 }
 
@@ -163,9 +163,27 @@ export class RuntimeSources {
       type: value.type || (roomId ? 'room' : sessionId ? 'session' : value.id ? 'artifact' : undefined),
       ...(value.entryId === undefined && value.index !== undefined ? { entryId: `m:${value.index}` } : {}) };
   }
+  references(value, task) {
+    if (Array.isArray(value)) return value.flatMap(item => this.references(item, task));
+    if (typeof value !== 'string') return value ? [value] : [];
+    try { const parsed = JSON.parse(value); if (parsed !== value) return this.references(parsed, task); } catch {}
+    // Prose may name exact references just returned in this turn. Recover only
+    // those known pointers, then recheck each source's current authorization.
+    const found = new Map();
+    for (const tool of this.store.listTools(task.id)) {
+      if (tool.status !== 'completed') continue;
+      for (const item of tool.output?.details?.messages || []) {
+        const ref = item.reference;
+        const names = [item.id, ref?.messageId, ref?.sessionId && `${ref.sessionId}#${item.index}`,
+          ref?.sessionId?.startsWith('work:') && `${ref.sessionId.slice(5)}#${item.index}`].filter(Boolean);
+        if (ref && names.some(name => value.includes(name))) found.set(JSON.stringify(ref), ref);
+      }
+    }
+    return found.size ? [...found.values()] : [value];
+  }
   async handoff(task, input = {}) {
     const args = modelArgs(input), supplied = args.evidence ?? args.references ?? args.sourceRefs ?? [];
-    const evidence = Array.isArray(supplied) ? supplied : [supplied];
+    const evidence = this.references(supplied, task);
     const warnings = [];
     const source = taskSource(task, this.store);
     let original = { reference: source.roomId && source.replyTo ? { type: 'room', roomId: source.roomId, messageId: source.replyTo } : { type: 'message', messageId: source.messageId },

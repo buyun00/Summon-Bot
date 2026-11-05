@@ -4,12 +4,17 @@ import { randomUUID } from 'node:crypto';
 import { fail } from '../shared/validation.mjs';
 import { desktopExecutorState, requireDesktopExecutor } from '../../bot/src/capabilities/executor-connections.mjs';
 import { modelText } from '../../bot/src/context/model-input.mjs';
+import { codexTarget } from '../../bot/src/capabilities/codex-target.mjs';
 
 const now = () => new Date().toISOString();
 const terminal = new Set(['completed', 'failed', 'interrupted', 'cancelled']);
 const active = work => work.backend === 'desktop' && !terminal.has(work.status);
 const requireText = (value, name) => { if (typeof value !== 'string' || !value.trim()) fail(`${name} is required`); return value; };
 const errorView = error => ({ code: error.code || 'CONNECTOR_UNAVAILABLE', message: error.code ? error.message : 'Codex Desktop connector did not return a confirmed response.' });
+const rejected = error => error.result?.error?.details?.outcome !== 'unknown' &&
+  !['operation_uncertain', 'idempotency_conflict'].includes(error.code) && Boolean(error.code) &&
+  (error.status >= 400 && error.status < 500 && error.status !== 408 ||
+    ['desktop_defaults_unavailable', 'unsupported_permission_default', 'permission_context_unavailable', 'unsupported_permission_host', 'caller_thread_required', 'unsupported_capability'].includes(error.code));
 const turnStatus = state => state?.status === 'waiting_for_input' ? state.status : state?.currentTurn?.status || state?.status || 'unknown';
 function finalReply(state, threadId, turnId, history) {
   if (!turnId || state?.stale || state?.threadId !== threadId || state?.currentTurn?.id !== turnId) return null;
@@ -110,7 +115,7 @@ export class DesktopCodex {
       if (!input.target || !['project', 'projectless'].includes(input.target.type)) fail('Use an explicit existing project target or authorized projectless target');
       if (!before) this.save({ id, workId, botId, conversationId: owner.conversationId, goal: owner.goal, backend: 'desktop', hostId: 'local', status: 'submitting', serviceVersion: this.version, roomId: input.roomId || null });
       if (before?.externalThreadId && before.operationId !== input.operationId) fail('This work is already bound; use codex_send to continue its thread', 409);
-      return this.mutate(id, 'create', input.operationId, '/v1/threads', { prompt, target: input.target });
+      return this.mutate(id, 'create', input.operationId, '/v1/threads', { prompt, target: codexTarget(input.target) });
     });
   }
   async attach(input) {
@@ -189,6 +194,9 @@ export class DesktopCodex {
     try {
       result = await this.request(operation.path, { method: 'POST', body: operation.body, operationKey: operation.operationKey });
     } catch (error) {
+      if (rejected(error)) return this.applyOperation(this.store.save('desktopOperations', {
+        id: operation.id, status: 'failed', httpStatus: error.status, error: errorView(error),
+        result: { error: error.result?.error || errorView(error), rejected: true } }));
       this.store.save('desktopOperations', { id: operation.id, status: 'unknown', error: errorView(error) });
       this.save({ id, status: 'unknown', error: errorView(error) });
       await this.queue(id, `operation:${operation.operationKey}:unknown`, { type: 'operation_unknown', operationKey: operation.operationKey, error: errorView(error) });
@@ -204,7 +212,7 @@ export class DesktopCodex {
       const result = await this.request(`/v1/operations/${encodeURIComponent(operation.operationKey)}`);
       if (['completed', 'failed'].includes(result.state)) return this.applyOperation(this.store.save('desktopOperations', { id: operation.id, status: result.state === 'completed' ? 'received' : 'failed', result: result.result, httpStatus: result.status }));
       this.store.save('desktopOperations', { id: operation.id, remoteState: result.state, checkedAt: now() });
-    } catch (error) { this.store.save('desktopOperations', { id: operation.id, error: errorView(error), checkedAt: now() }); }
+    } catch (error) { this.store.save('desktopOperations', { id: operation.id, reconcileError: errorView(error), checkedAt: now() }); }
     return this.get(operation.workId);
   }
   async applyOperation(operation) {
@@ -213,7 +221,7 @@ export class DesktopCodex {
     if (!operation.resultAppliedAt) this.store.transaction(() => {
       if (operation.status === 'failed' || operation.result?.error) {
         this.save({ id: work.id, status: 'failed', error: operation.result?.error || { message: 'Desktop operation failed' }, finishedAt: now() });
-        this.queue(work.id, `operation:${operation.operationKey}:failed`, { type: 'operation_failed', operationId: operation.operationId, result: operation.result });
+        this.queue(work.id, `operation:${operation.operationKey}:failed`, { type: 'operation_failed', operationId: operation.operationId, status: 'failed', error: operation.result?.error, result: operation.result });
       } else {
         const result = operation.result || {}, threadId = result.threadId || result.thread?.id || work.externalThreadId;
         this.save({ id: work.id, externalThreadId: threadId || null, pendingClientThreadId: result.clientThreadId || null,

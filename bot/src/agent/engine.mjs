@@ -18,6 +18,7 @@ import { permitsTool, assertToolPolicy, taskMode, conversationPrompt, CHAT_WORK_
 import { usageRoomId, UsageLedger } from './usage.mjs';
 import { modelArgs, modelText, looseSchema } from '../context/model-input.mjs';
 import { taskSource, publicMessage } from '../context/sources.mjs';
+import { codexTarget } from '../capabilities/codex-target.mjs';
 
 const emptyUsage = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 });
 const userMessage = (content, source) => ({ role: 'user', content: [{ type: 'text', text: typeof content === 'string' ? content : JSON.stringify(content) }], timestamp: Date.now(), ...(source ? { source } : {}) });
@@ -182,13 +183,13 @@ export class BotEngine {
         execute: async (input, context) => {
           const args = modelArgs(input), source = taskSource(originalTask, this.store);
           if (tool.name === 'chatroom_read') return tool.execute({ ...args, roomId: args.roomId || source.roomId }, context);
-          if (tool.name === 'reminders_create') return tool.execute({ ...args, id: typeof args.id === 'string' && args.id || context.recordId,
+          if (tool.name === 'reminders_create') return tool.execute({ ...args, id: context.recordId,
             content: modelText(args.content ?? args.message ?? args.text ?? args.reminder, modelText(source.input?.trigger?.content)) }, context);
           if (tool.name === 'reminders_cancel') return tool.execute(args, context);
           const workId = task.workId || args.workId || source.metadata?.referencedWorkId;
           await this.services.sources.requireWork(workId, originalTask);
-          return tool.execute({ ...args, workId, operationId: typeof args.operationId === 'string' && args.operationId || context.recordId,
-            ...(tool.name === 'codex_create' ? { prompt: modelText(args.prompt ?? args.content ?? args.message, modelText(task.input)), target: args.target || currentWork()?.executor?.target } : {}),
+          return tool.execute({ ...args, workId, operationId: context.recordId,
+            ...(tool.name === 'codex_create' ? { prompt: modelText(args.prompt ?? args.content ?? args.message, modelText(task.input)), target: codexTarget(args.target || currentWork()?.executor?.target) } : {}),
             ...(tool.name === 'codex_send' ? { message: modelText(args.message ?? args.content ?? args.prompt, modelText(task.input)) } : {}) }, context);
         } } : !tool.name.startsWith('catalog_') ? tool : {
         ...tool, execute: (args, context) => {
@@ -261,8 +262,16 @@ export class BotEngine {
       const reserve = Math.max(model.maxTokens, this.config.limits.reserveTokens ?? Math.min(16384, Math.floor(model.contextWindow / 4)));
       const inputBudget = model.contextWindow - reserve;
       const runStartIndex = this.store.getSession(task.sessionId).messages.length;
-      let background = prefix.contextFile ? await this.maintenance.readContext(task) : '', assembledRevision = prefix.markdownRevision || 0, publicStart = prefix.publicStart || 0;
+      let background = '', assembledRevision = prefix.markdownRevision || 0, publicStart = prefix.publicStart || 0, recentOnly = false;
+      if (prefix.contextFile) try { background = await this.maintenance.readContext(task); }
+      catch (error) {
+        combined.throwIfAborted();
+        // An unreadable summary cannot justify the saved coverage boundary.
+        publicStart = 0; recentOnly = true;
+        this.emit('engine.context_unavailable', { error: clean(error.message), retainedRawHistory: true }, refs);
+      }
       startIndex = Math.max(historyFloor, prefix.historyStart || 0);
+      if (recentOnly) startIndex = historyFloor;
       replayFloorIndex = runStartIndex;
       const safeBoundary = index => { const messages = this.store.getSession(task.sessionId).messages; while (index > 0 && messages[index]?.role === 'toolResult') index--; return index; };
       const useBackground = value => {
@@ -286,12 +295,30 @@ export class BotEngine {
           markdownRevision: assembledRevision, context: background, authority: 'derived-evidence' }) }], timestamp: system.timestamp }] : []),
           ...(publicView ? publicView.messages.slice(publicStart, publicView.runtimeEvent ? undefined : -1) : []), ...currentInputs, ...tail, ...(resume ? [resume] : [])];
       };
+      const fitRecent = (force = false) => {
+        recentOnly = true;
+        let messages = buildMessages();
+        const target = force ? Math.min(inputBudget, Math.floor(contextTokens(messages) * 0.85)) : inputBudget;
+        const publicEnd = publicView ? publicView.messages.length - (publicView.runtimeEvent ? 0 : 1) : 0;
+        while (contextTokens(messages) > target && publicStart < publicEnd) { publicStart++; messages = buildMessages(); }
+        if (contextTokens(messages) > target && background) { background = ''; messages = buildMessages(); }
+        const raw = this.store.getSession(task.sessionId).messages;
+        while (contextTokens(messages) > target && startIndex < raw.length) {
+          let next = startIndex + 1;
+          while (next < raw.length && raw[next].role === 'toolResult') next++;
+          startIndex = next; messages = buildMessages();
+        }
+        if (contextTokens(messages) > inputBudget) throw Object.assign(new Error('The fixed permission context and current request exceed the available window; raw history and saved actions are retained'), { code: 'CONTEXT_INPUT_TOO_LARGE' });
+        this.emit('engine.recent_context', { fromIndex: startIndex, publicStart, contextTokens: contextTokens(messages), coverageAdvanced: false }, refs);
+        return messages;
+      };
       if (!routeOnly) {
         this.maintenance.scope(task);
       }
       const compactIfNeeded = async force => {
         let messages = buildMessages();
         if (routeOnly) { if (contextTokens(messages) > inputBudget) throw new Error('Routing input exceeds available model context'); return messages; }
+        if (recentOnly) return force || contextTokens(messages) > inputBudget ? fitRecent(force) : messages;
         while (force || contextTokens(messages) > inputBudget) {
           const previousStart = startIndex, previousTokens = contextTokens(messages); force = false; active.waitingFor = { kind: 'maintenance', reason: 'compact' };
           const previousBackground = background, previousRevision = assembledRevision, previousPublicStart = publicStart;
@@ -308,7 +335,7 @@ export class BotEngine {
           } catch (error) {
             startIndex = previousStart; publicStart = previousPublicStart; background = previousBackground; assembledRevision = previousRevision;
             combined.throwIfAborted(); this.emit('engine.compaction_failed', { error: clean(error.message), retainedPreviousContext: true }, refs);
-            if (previousTokens > inputBudget) throw Object.assign(new Error(`Context maintenance failed; history and pending work retained: ${error.message}`), { code: 'CONTEXT_MAINTENANCE_PENDING' });
+            if (previousTokens > inputBudget) return fitRecent();
             return messages;
           }
           if (contextTokens(messages) > inputBudget && startIndex <= previousStart && contextTokens(messages) >= previousTokens) throw Object.assign(new Error('Current input cannot fit after Markdown compaction; work and raw history retained'), { code: 'CONTEXT_INPUT_TOO_LARGE' });
@@ -327,7 +354,7 @@ export class BotEngine {
       agent.afterToolCall = ({ toolCall, result, isError }) => {
         if (!isError && taskMode(task) === 'chat' && ['work_create', 'work_dispatch', 'work_wait'].includes(toolCall.name)) {
           const receipt = result.details || {};
-          handoffs.push({ workId: receipt.workId || receipt.id || toolCall.arguments.id, status: receipt.status || 'accepted', acceptance: receipt.acceptance });
+          handoffs.push({ workId: receipt.workId || receipt.id || toolCall.arguments.id, status: receipt.status || 'accepted', acceptance: receipt.acceptance || receipt.warning });
           activity?.update({ phase: 'accepted', label: '工作要求已保存', motion: 'exclaim', source: 'execution' });
         }
         const definition = registry.definitions.get(toolCall.name), observation = JSON.stringify([toolCall.name, toolCall.arguments, result.content]);
@@ -367,7 +394,11 @@ export class BotEngine {
         combined.throwIfAborted();
         const prompt = publicView ? (publicView.runtimeEvent ? userMessage(publicView.runtimeEvent) : publicView.messages.at(-1)) : userMessage(input,
           { actor: task.metadata?.actor || task.source, sourceType: task.metadata?.sourceType || task.metadata?.authority || 'authenticated-message', messageId: task.messageId, taskId: task.id });
-        const prompts = [prompt, ...(publicView?.runtimeInstruction && !publicView.runtimeEvent ? [userMessage({ type: 'delivery_context', instruction: publicView.runtimeInstruction, authority: 'runtime-context' })] : []),
+        const source = taskSource(originalTask, this.store);
+        const boundary = publicView && !publicView.runtimeEvent ? userMessage({ type: 'current_request_boundary', taskId: task.id,
+          reference: { type: 'room', roomId: source.roomId, messageId: source.replyTo }, author: source.actor,
+          instruction: 'Only this identified accepted source is the current trigger. All earlier published messages are history, including requests without a visible answer yet. Use them to understand references, never to replay their actions or reminders. Read request_actions for saved receipts if needed. Complete independent actions belonging to this current request.' }) : null;
+        const prompts = [prompt, ...(boundary ? [boundary] : []), ...(publicView?.runtimeInstruction && !publicView.runtimeEvent ? [userMessage({ type: 'delivery_context', instruction: publicView.runtimeInstruction, authority: 'runtime-context' })] : []),
           ...(invocation ? [userMessage({ type: 'requested_skill', ...invocation })] : [])];
         await agent.prompt(prompts.length === 1 ? prompt : prompts);
         let retries = 0, recoveredOutput = false;

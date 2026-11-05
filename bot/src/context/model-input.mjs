@@ -39,7 +39,7 @@ export function durationSeconds(value) {
 }
 export function looseSchema(schema) {
   return { type: 'object', properties: Object.fromEntries(Object.entries(schema.properties || {}).map(([key, value]) =>
-    [key, value.description ? { description: value.description } : {}])), additionalProperties: true };
+    [key, { ...(value.description ? { description: value.description } : {}), anyOf: [value, {}] }])), additionalProperties: true };
 }
 export function maintenanceOutput(raw) {
   const text = String(raw || '').trim();

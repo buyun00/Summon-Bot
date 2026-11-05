@@ -262,7 +262,12 @@ export class BotManager {
   saveReminder(input, botId, source) {
     this.get(botId);
     if (!source?.taskId || !source.roomId || !source.replyTo) fail('A reminder requires an accepted room request');
-    const relative=durationSeconds(input.delaySeconds??input.delay??input.after??input.when??source.input?.trigger?.content);
+    let relative=[input.delaySeconds,input.delay,input.after,input.when].map(durationSeconds).find(value=>Number.isFinite(value)&&value>=0);
+    if(!Number.isFinite(relative)) {
+      const original=modelText(source.input?.trigger?.content);
+      const durations=[...original.matchAll(/(?:\d+(?:\.\d+)?|[零一二两三四五六七八九十半]+)\s*(?:个)?\s*(?:小时|分钟|秒钟?|天|hours?|minutes?|seconds?|days?)\s*(?:后|以后|later|from now)/gi)].map(match=>durationSeconds(match[0]));
+      if(durations.length===1)relative=durations[0];
+    }
     const absolute=typeof input.dueAt==='string'&&/(?:Z|[+-]\d{2}:\d{2})$/i.test(input.dueAt)?Date.parse(input.dueAt):NaN;
     const deadline=Number.isFinite(absolute)?absolute:Number.isFinite(relative)&&relative>=0?Date.parse(source.receivedAt)+relative*1000:NaN;
     if (!Number.isFinite(deadline)) fail('这条提醒还没有有效时间。请提供相对时长，或带时区的到期时间；其他已保存的动作不受影响。');

@@ -42,6 +42,18 @@ export class WorkService {
   }
   source(task) { const { input, ...source } = taskSource(task, this.store); return source; }
   executor(work) { return work.bindings?.some(binding => binding.type === 'codex-desktop') ? { ...work.executor, kind: 'codex' } : work.executor || { kind: 'pi' }; }
+  execution(task = {}) {
+    task = task.id ? this.store.getTask(task.id) || task : task;
+    const input = task.input?.current || task.input;
+    const id = task.metadata?.executionEventId || (task.metadata?.sourceType === 'external' ? input?.operationId : undefined) || task.metadata?.resumeEventId || task.metadata?.workEventId;
+    const candidate = id && this.store.getRecord('work-events', id);
+    const event = candidate?.workId === task.workId ? candidate : null;
+    const root = event?.metadata?.executionEventId ? this.store.getRecord('work-events', event.metadata.executionEventId) || event : event;
+    return { executionEventId: root?.id || task.metadata?.executionEventId || (task.id ? `task:${task.id}` : undefined),
+      executionTaskId: root?.receipt?.taskId || task.metadata?.executionTaskId || task.id,
+      requestTaskId: root?.requestTaskId || task.metadata?.origin?.taskId,
+      operationId: root?.transport ? root.id : undefined, turnId: input?.turnId };
+  }
   update(id, input) {
     return this.store.transaction(() => {
       const previous = this.get(id); if (!previous) fail('Unknown work', 404);
@@ -67,7 +79,7 @@ export class WorkService {
     const work = this.get(id); if (!work) fail('Unknown work', 404);
     if (!work.executor) this.update(id, { executor: this.executor(work).kind === 'codex' ? { kind: 'codex' } : { kind: 'pi', ...this.selectModel?.() } });
     const eventId = input.id || randomUUID(), prior = this.store.getRecord('work-events', `${id}:${eventId}`);
-    if (prior?.receipt) return prior.receipt;
+    if (prior?.receipt) return { ...prior.receipt, duplicate: true };
     if (task.id && !task.workId && input.kind === 'request') {
       const source = this.source(task);
       if (!work.sources.some(item => item.taskId === source.taskId)) this.update(id, { sources: [...work.sources, source] });
@@ -86,35 +98,61 @@ export class WorkService {
   wait(id, input = {}, task = {}) {
     const work = this.get(id); if (!work) fail('Unknown work', 404);
     const bound = work.bindings?.some(binding => binding.type === 'codex-desktop') || work.waiting?.kind === 'external';
-    if (!input.taskId && !input.until && !input.dependencyWorkId) {
-      const dependencies = [...new Set(this.store.listRecords('work-events').filter(event => event.requestTaskId === task.id && event.workId !== id && event.receipt?.accepted).map(event => event.workId))];
+    const events = this.store.listRecords('work-events').filter(event => event.requestTaskId === task.id && event.receipt?.accepted);
+    if (!input.unresolvedTaskId && !input.taskId && !input.until && !input.dependencyWorkId) {
+      const dependencies = [...new Set(events.filter(event => event.workId !== id).map(event => event.workId))];
       const peers = this.store.listOutbox().filter(item => item.taskId === task.id && item.receipt?.taskId);
       if (dependencies.length === 1) input = { ...input, dependencyWorkId: dependencies[0], event: 'result' };
       else if (peers.length === 1) input = { ...input, taskId: peers[0].receipt.taskId, botId: peers[0].to };
-      else if (bound) input = { ...input, event: 'result' };
+      else if (bound || events.some(event => event.workId === id)) input = { ...input, dependencyWorkId: id, event: 'result' };
       else if (work.waiting?.taskId || work.waiting?.dependencyWorkId || work.waiting?.until) input = { ...work.waiting, ...input };
     }
-    if (!input || (!input.taskId && !input.until && !input.event && !input.dependencyWorkId)) fail('Waiting requires a task, work result, deadline, or event');
+    if (!input.taskId && !input.dependencyWorkId && input.event && bound) input = { ...input, dependencyWorkId: id };
+    if (!input.unresolvedTaskId && !input.taskId && input.dependencyWorkId) {
+      const candidates = events.filter(event => event.workId === input.dependencyWorkId);
+      if (candidates.length === 1) input = { ...input, taskId: candidates[0].receipt.taskId };
+      else if (candidates.length > 1) input = { ...input, unresolvedTaskId: 'multiple-current-executions' };
+      else {
+        const dependency = this.get(input.dependencyWorkId);
+        const operationId = dependency?.waiting?.operationId || dependency?.bindings?.find(binding => binding.type === 'codex-desktop')?.operationId;
+        const event = operationId && this.store.getRecord('work-events', operationId);
+        if (event?.receipt?.taskId) input = { ...input, taskId: event.receipt.taskId };
+        else if (operationId) input = { ...input, dependencyEventId: operationId };
+        else if (dependency?.lastTaskId) input = { ...input, taskId: dependency.lastTaskId };
+        else input = { ...input, unresolvedTaskId: 'execution-not-yet-identified' };
+      }
+    }
+    if (input.taskId && (!input.botId || input.botId === this.botId)) {
+      const dependency = this.store.getTask(input.taskId);
+      if (dependency?.workId) input = { ...input, dependencyWorkId: dependency.workId,
+        dependencyEventId: this.execution(dependency).executionEventId };
+    }
+    if (!input.taskId && !input.until && !input.event && !input.dependencyWorkId && !input.unresolvedTaskId) fail('Waiting requires a task, work result, deadline, or event');
     if (input.until && !Number.isFinite(Date.parse(input.until))) {
       const duration = durationSeconds(input.until);
       if (Number.isFinite(duration) && duration >= 0) input = { ...input, until: new Date(Date.parse(task.createdAt || now()) + duration * 1000).toISOString() };
       else if (input.taskId || input.dependencyWorkId || bound) input = { ...input, until: undefined, ...(!input.taskId && !input.dependencyWorkId ? { event: 'result' } : {}) };
       else fail('这一步还没有有效的等待时间或已知外部绑定。请补充该条件；其他工作和材料保留。');
     }
-    const waitId = `${id}:${input.waitId || task.id || randomUUID()}`;
+    const waitId = `${id}:${task.id || 'runtime'}:${input.waitId || randomUUID()}`;
     const previous = this.store.getRecord('work-waits', waitId);
     if (previous) return { accepted: true, workId: id, waitId, status: previous.status };
     const targetWorkId = input.targetWorkId || id;
     if (!this.get(targetWorkId)) fail('Unknown follow-up work', 404);
-    const waiting = this.clean({ ...input, id: waitId, workId: id, targetWorkId, sourceTaskId: task.id,
+    const mode = input.mode === 'observe' || input.mode === 'follow_up' ? input.mode :
+      input.dependencyWorkId === targetWorkId ? 'observe' : 'follow_up';
+    const waiting = this.clean({ ...input, mode, id: waitId, workId: id, targetWorkId, sourceTaskId: task.id,
       since: task.createdAt || now(), status: 'pending', createdAt: now() });
     this.store.putRecord('work-waits', waiting);
     if (task.id && !task.workId) {
       const work = this.get(id);
       if (!work.sources.some(source => source.taskId === task.id)) this.update(id, { sources: [...work.sources, this.source(task)] });
     }
-    this.update(id, { status: 'waiting', waiting });
-    return { accepted: true, workId: id, waitId, status: 'waiting' };
+    // Observing a running action must not replace its external operation state.
+    if (mode === 'follow_up') this.update(id, { status: 'waiting', waiting });
+    return { accepted: true, workId: id, waitId, status: 'waiting', mode,
+      taskId: waiting.taskId, dependencyEventId: waiting.dependencyEventId,
+      ...(waiting.unresolvedTaskId ? { unresolved: true, warning: '等待已保留，但尚未确定对应执行回合；请补充确切 taskId。不会消费其他回合的结果。' } : {}) };
   }
   stop(id, status = 'paused') {
     if (!['paused', 'cancelled'].includes(status)) fail('Stop status must be paused or cancelled');
