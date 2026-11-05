@@ -17,7 +17,7 @@ docs/OPERATIONS.md 和 docs/CLIENT_RELEASES.md，再检查当前代码与已有�
 
 先在网页制作效果。网页定稿后同步原生手机端与必要的桌面代码，
 提交并推送，再按现有流程部署和发布。制作阶段可以更新正式网页，
-客户端安装包在定稿后发布；Windows 默认本地打包，macOS 和 Android 默认由 GitHub Actions 构建，iOS 暂不打包发布。
+客户端安装包在定稿后发布；Windows 默认本地打包，macOS 和 Android 默认由 GitHub Actions 构建，iOS 使用 GitHub Actions 签名上传并通过 TestFlight 内部测试分发，操作见 docs/IOS_TESTFLIGHT.md。
 
 只完成当前任务必要的构建、配置和启停，不另起开发或预览服务。
 遵守仓库关于不自动运行或补写测试、不计算或比对哈希的约定，
@@ -87,7 +87,7 @@ npm install --prefix desktop --no-audit --no-fund
 npm run release:all
 ```
 
-Windows 上的完整发布从 Git 当前提交构建网页与后端，安装后只构建 Windows 桌面端，并同步本机发行目录和 GitHub Releases。macOS 和 Android 默认由 GitHub Actions 构建发布，macOS 使用无需开发者证书的 ad-hoc 签名，iOS 暂不打包发布。具体操作见 [客户端发行与更新](CLIENT_RELEASES.md)。
+Windows 上的完整发布从 Git 当前提交构建网页与后端，安装后只构建 Windows 桌面端，并同步本机发行目录和 GitHub Releases。macOS 和 Android 默认由 GitHub Actions 构建发布，macOS 使用无需开发者证书的 ad-hoc 签名，iOS 使用 GitHub Actions 签名上传并通过 TestFlight 内部测试分发，操作见 docs/IOS_TESTFLIGHT.md。具体操作见 [客户端发行与更新](CLIENT_RELEASES.md)。
 
 客户端下载先查设备本机，再直接从 GitHub 获取，远程安装包不再通过正式主机转发。发布流程先就位新产物，再切换最新版元数据，清理被替代的版本与中间目录，保留有效业务资料。
 

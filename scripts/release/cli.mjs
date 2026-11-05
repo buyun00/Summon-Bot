@@ -119,7 +119,7 @@ async function buildIos() {
   const release = await readJson(join(sourceRoot, 'release.json'));
   const output = await outputDirectory('ios');
   const archive = join(output, 'Summon Bot.xcarchive');
-  await run('xcodebuild', ['-project', join(sourceRoot, 'ios/Relay.xcodeproj'), '-scheme', 'SummonBot', '-configuration', 'Release',
+  await run('xcodebuild', ['-project', join(sourceRoot, 'ios/Summon.xcodeproj'), '-scheme', 'SummonBot', '-configuration', 'Release',
     '-destination', 'generic/platform=iOS', '-archivePath', archive, '-derivedDataPath', join(output, 'DerivedData'),
     '-allowProvisioningUpdates', `MARKETING_VERSION=${release.version}`, `CURRENT_PROJECT_VERSION=${release.buildNumber}`,
     ...(process.env.SUMMON_APPLE_TEAM_ID ? [`DEVELOPMENT_TEAM=${process.env.SUMMON_APPLE_TEAM_ID}`] : []), 'archive']);
@@ -157,7 +157,7 @@ async function setVersion() {
     for (const [name, entry] of Object.entries(value.packages || {})) if (name === '' || (!directory && ['bot', 'web', 'capabilities'].includes(name))) entry.version = release.version;
     await writeJson(path, value);
   }
-  const project = join(sourceRoot, 'ios/Relay.xcodeproj/project.pbxproj');
+  const project = join(sourceRoot, 'ios/Summon.xcodeproj/project.pbxproj');
   await writeFile(project, (await readFile(project, 'utf8')).replace(/CURRENT_PROJECT_VERSION = \d+;/g, `CURRENT_PROJECT_VERSION = ${release.buildNumber};`)
     .replace(/MARKETING_VERSION = [^;]+;/g, `MARKETING_VERSION = ${release.version};`));
   console.log(JSON.stringify(release));

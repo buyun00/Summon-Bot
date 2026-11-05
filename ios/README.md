@@ -5,8 +5,8 @@
 ## 在 Mac 上运行
 
 1. 安装 Xcode 26 或更新版本及 iOS 26 SDK，clone 本仓库。
-2. 打开 `ios/Relay.xcodeproj`，选择 `SummonBot` scheme 和 iOS 26 模拟器或 iPhone。
-3. 真机运行时，在 target 的 **Signing & Capabilities** 中选择自己的 Team；沿用现有 `org.lin0.relay` Bundle Identifier 和签名身份，并在 iPhone 开启开发者模式。
+2. 打开 `ios/Summon.xcodeproj`，选择 `SummonBot` scheme 和 iOS 26 模拟器或 iPhone。
+3. 真机运行时，在 target 的 **Signing & Capabilities** 中选择自己的 Team；使用 `org.lin0.summon` Bundle Identifier，Team 为 `6Y29E7PSVF`，并在 iPhone 开启开发者模式。
 4. 点击 Run。首次启动连接设置默认使用 `https://bot.lin0.org`，可在应用中修改服务地址并填写部署所用访问令牌。
 
 应用连接既有 Summon Bot API，Bot、模型凭据和服务端能力仍在服务器上运行，手机只负责原生交互。无需在 Mac 上启动 Node 服务即可连接已部署的服务器；需要自行部署时参考仓库根目录说明。
@@ -22,7 +22,7 @@
 - Token 统计：今天、昨天、近 7 天和累计，Bot/单聊/群聊排行、逐次调用及供应商截图总量对照；从工作台菜单进入。
 - 本机聊天缓存、逐会话草稿、失败消息手动重试；回到前台时同步记录，当前会话独立接收实时更新并在断流时补读。
 
-导航、菜单、按钮、表单、弹层和文件选择使用系统原生组件，自定义搜索及输入区域使用 SwiftUI Liquid Glass API。服务端记录保持为数据来源，后台不保持长连接，也未接入 APNs 离线推送。
+导航、菜单、按钮、表单、弹层和文件选择使用系统原生组件，自定义搜索及输入区域使用 SwiftUI Liquid Glass API。服务端记录保持为数据来源，后台不保持长连接；新消息通过 APNs 生产环境推送，授权与登记状态见连接设置。
 
 ## 连接与本地开发
 
@@ -32,10 +32,10 @@
 
 ## 工程说明
 
-版本统一由根目录 `release.json` 管理。当前暂无 Apple Developer 账户，iOS 暂不打包发布，也不接入应用内下载安装更新。手动归档命令 `npm run release:ios` 继续保留，需要导出 IPA 时传入本机 `--export-options` 文件。各端云端发布见 [客户端发行与更新](../docs/CLIENT_RELEASES.md)。
+版本统一由根目录 `release.json` 管理。已配置 GitHub Actions 签名上传与 TestFlight 内部组分发代码，启用步骤见 [完整教程](../docs/IOS_TESTFLIGHT.md)。应用更新由 TestFlight 完成。手动归档命令 `npm run release:ios` 继续保留，需要导出 IPA 时传入本机 `--export-options` 文件。各端云端发布见 [客户端发行与更新](../docs/CLIENT_RELEASES.md)。
 
-`Relay/` 是 Xcode 自动同步目录，新增 Swift 文件会自动进入 target；`Info.plist` 已从资源 membership 排除。未添加测试 target 或第三方包。
+`Summon/` 是 Xcode 自动同步目录，新增 Swift 文件会自动进入 target；`Info.plist` 已从资源 membership 排除。未添加测试 target 或第三方包。
 
-`Assets.xcassets/AppIcon.appiconset` 已配置用户提供的蓝色层叠云朵图标，使用完整、不透明的 1024 像素 PNG；应用内 `RelayIcon.imageset` 与网页/PWA 共用同一原图。系统负责应用图标的圆角裁切。
+`Assets.xcassets/AppIcon.appiconset` 已配置用户提供的蓝色层叠云朵图标，使用完整、不透明的 1024 像素 PNG；应用内 `SummonIcon.imageset` 与网页 共用同一原图。系统负责应用图标的圆角裁切。
 
-本次在 Windows 上编写工程，未执行 Xcode 构建、模拟器运行或真机安装。
+签名和真实发布状态以 GitHub Actions 与本应用 TestFlight 的准确版本、构建号为准。

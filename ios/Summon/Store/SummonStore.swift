@@ -77,7 +77,7 @@ final class SummonStore {
         }
         if let root = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                                    appropriateFor: nil, create: true) {
-            let directory = root.appending(path: "RelayNative", directoryHint: .isDirectory)
+            let directory = root.appending(path: "SummonNative", directoryHint: .isDirectory)
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             var excluded = directory
             var values = URLResourceValues()
@@ -97,6 +97,7 @@ final class SummonStore {
         startStream()
         startRoomRecovery()
         await refresh()
+        if connection == connectionGeneration, errorMessage == nil, let client { await SummonPush.shared.connect(client) }
     }
 
     func reconnect() async {
@@ -146,6 +147,7 @@ final class SummonStore {
         let endpoint = url.absoluteString
         try SummonKeychain.save(token: token.trimmingCharacters(in: .whitespacesAndNewlines), for: endpoint)
         let changedEndpoint = endpoint != settings.baseURL
+        if changedEndpoint { try await SummonPush.shared.changeServer() }
         disconnect()
         settings = SummonConnectionSettings(baseURL: endpoint,
                                            userName: userName?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? settings.userName)

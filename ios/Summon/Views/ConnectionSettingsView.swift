@@ -15,7 +15,7 @@ struct ConnectionSettingsView: View {
             Form {
                 Section {
                     HStack(spacing: 16) {
-                        Image("RelayIcon").resizable().frame(width: 52, height: 52).clipShape(RoundedRectangle(cornerRadius: 14))
+                        Image("SummonIcon").resizable().frame(width: 52, height: 52).clipShape(RoundedRectangle(cornerRadius: 14))
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Summon Bot").summonFont(.headline)
                             Text("iOS 原生客户端").summonFont(.subheadline).foregroundStyle(.secondary)
@@ -38,6 +38,11 @@ struct ConnectionSettingsView: View {
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                 } header: { Text("服务连接") } footer: {
                     Text("填写现有 Summon Bot Web 服务地址。直接连接网关时填写访问令牌，令牌保存在 iOS 钥匙串中。")
+                }
+                Section("消息通知") {
+                    Text(SummonPush.shared.status).foregroundStyle(.secondary)
+                    Button("启用消息通知") { Task { await SummonPush.shared.enable() } }
+                    Link("打开系统通知设置", destination: URL(string: UIApplication.openNotificationSettingsURLString)!)
                 }
                 Section("连接状态") {
                     LabeledContent("实时消息", value: store.isConnected ? "已连接" : "未连接")

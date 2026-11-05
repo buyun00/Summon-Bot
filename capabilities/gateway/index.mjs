@@ -3,6 +3,7 @@ import { randomBytes,timingSafeEqual,randomUUID } from 'node:crypto';
 import { mkdir,writeFile,readFile } from 'node:fs/promises';
 import { join,resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
+import { PushService } from './push.mjs';
 import { RecordStore } from '../shared/store.mjs';
 import { IncrementalSync } from '../shared/sync.mjs';
 import { RunArtifactDownloads,projectRunArtifacts } from '../shared/run-artifacts.mjs';
@@ -63,6 +64,7 @@ export async function startGateway(options={}) {
   proxy(manager,'bot-management',['create','update','start','stop','send','saveRoutine','seed','restore','monitor','quiesce','shutdownAll','connect','ensureCatalogMaintainer','setCatalogMaintainerState']);
   const attachments=new AttachmentStore(join(dataRoot,'capabilities','chatroom'));
   const chatroom=new ChatroomService({store:store('chatroom'),manager,attachments,emit});
+  const push=await new PushService({store:store('push'),messages:store('chatroom'),dataRoot,historyEpoch}).initialize();
   const knowledge=new KnowledgeService({store:store('knowledge'),emit}),memories=new MemoryManagement({store:store('memory-management'),manager,dataRoot,emit});
   proxy(chatroom,'chatroom',['createRoom','updateRoom','post','append','dm','conclude','saveConclusion','retry','seed','teamRead','teamRaise','teamManage']);
   const onboarding=await new OnboardingService({store:store('gateway'),models:modelConnections,manager,chatroom,emit}).initialize();
@@ -229,6 +231,9 @@ export async function startGateway(options={}) {
     if((match=path.match(/^\/api\/bots\/([^/]+)$/))&&method==='PATCH')return manager.update(decodeURIComponent(match[1]),body);
     if((match=path.match(/^\/api\/bots\/([^/]+)\/memories$/))){const id=decodeURIComponent(match[1]);if(method==='GET')return {memories:(await memories.list(id)).map(memory=>({...memory,content:memory.text}))};if(method==='POST')return memories.write(id,body);}
     if((match=path.match(/^\/api\/memories\/([^/]+)$/))&&method==='PATCH'){for(const bot of manager.list()){const found=(await memories.list(bot.id)).find(memory=>memory.id===decodeURIComponent(match[1]));if(found)return memories.write(bot.id,{...body,id:found.id,expectedRevision:body.expectedRevision??found.revision});}fail('Memory not found',404);}
+    if(method==='GET'&&path==='/api/push/status')return push.status();
+    if(method==='POST'&&path==='/api/push/devices')return push.register(body);
+    if(method==='DELETE'&&path==='/api/push/devices')return push.remove(body);
     if(method==='GET'&&path==='/api/rooms')return {rooms:chatroom.rooms()};
     if(method==='POST'&&path==='/api/rooms')return chatroom.createRoom(body);
     if((match=path.match(/^\/api\/rooms\/([^/]+)\/team(?:\/(raise|manage))?$/))){const input={...body,roomId:decodeURIComponent(match[1])};if(method==='GET'&&!match[2])return chatroom.teamRead(input,'controller');if(method==='POST'&&match[2])return chatroom[match[2]==='raise'?'teamRaise':'teamManage'](input,'controller');}
@@ -385,7 +390,7 @@ export async function startGateway(options={}) {
     control.pinExisting();await control.tick();
     if(options.restore!==false)await manager.restore();
   } catch(error) {
-    closing=true;await control.close();await catalog.close();await stopIdleWorkers().catch(()=>{});for(const client of clients)client.end();server.closeAllConnections();if(server.listening)await new Promise(done=>server.close(done));await Promise.allSettled([...pending]);manager.closeReadStores();for(const value of stores.values())value.close();usageLedger.close();throw error;
+    closing=true;await push.close();await control.close();await catalog.close();await stopIdleWorkers().catch(()=>{});for(const client of clients)client.end();server.closeAllConnections();if(server.listening)await new Promise(done=>server.close(done));await Promise.allSettled([...pending]);manager.closeReadStores();for(const value of stores.values())value.close();usageLedger.close();throw error;
   }
   const monitor=setInterval(async()=>{if(monitoring||closing||quiescing)return;monitoring=true;try{await manager.monitor();}catch(error){emit('gateway-error',{error:error.message});}finally{monitoring=false;}},5000);monitor.unref();
   const serviceMonitor=setInterval(()=>{void monitorServices().catch(error=>emit('gateway-error',{error:error.message}));},2000);serviceMonitor.unref();
@@ -403,7 +408,7 @@ export async function startGateway(options={}) {
     return manager.shutdownAll(stopOptions);
   })().catch(error=>{stopBotsPromise=null;throw error;});}
   let closePromise;const close=()=>closePromise||=(async()=>{
-    closing=true;clearInterval(scheduler);clearInterval(heartbeat);clearInterval(monitor);clearInterval(serviceMonitor);clearInterval(eventPoll);clearInterval(switches);
+    closing=true;await push.close();clearInterval(scheduler);clearInterval(heartbeat);clearInterval(monitor);clearInterval(serviceMonitor);clearInterval(eventPoll);clearInterval(switches);
     await modelConnections.close();await control.close();await catalog.close();while(ticking||monitoring||serviceMonitoring||polling)await new Promise(done=>setTimeout(done,10));
     while(pending.size)await Promise.allSettled([...pending]);
     await stopIdleWorkers();for(const client of clients)client.end();

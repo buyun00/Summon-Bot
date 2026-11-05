@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct SummonApp: App {
+    @UIApplicationDelegateAdaptor(SummonAppDelegate.self) private var appDelegate
     @State private var store = SummonStore()
     @Environment(\.scenePhase) private var scenePhase
 

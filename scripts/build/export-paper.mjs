@@ -39,9 +39,9 @@ const fibers=Array.from({length:115},(_,i)=>[round(((i*73)%199)-99),round(((i*12
 const native={version:3,fps,shapes:paperShapes,templates:paperTemplates,legacyRoles:paperLegacyShapes,legacyColors:paperLegacyColors,characters,sharedClips,rings,fibers,defaults:Object.fromEntries(['bot-engineer','bot-components','bot-qa','bot-lumi','lumi','bot-entry','bot-chatroom','bot-manager','bot-memory'].map(id=>[id,defaultPaperAvatar(id)]))};
 async function save(name,text){const url=new URL(name,root);await mkdir(new URL('.',url),{recursive:true});await writeFile(url,text);}
 const json=JSON.stringify(native);
-await save('ios/Relay/Resources/paper-avatars.json',json);
+await save('ios/Summon/Resources/paper-avatars.json',json);
 await save('android/app/src/main/assets/paper-avatars.json',json);
 const license=await readFile(new URL('LICENSE',showcase),'utf8');
-await save('ios/Relay/Resources/Bloub-LICENSE.txt',license);
+await save('ios/Summon/Resources/Bloub-LICENSE.txt',license);
 await save('android/app/src/main/assets/Bloub-LICENSE.txt',license);
 console.log(`Exported paper avatars: ${paperShapes.length} shapes, ${Object.keys(motions).length} Bloub vector motions, ${json.length} bytes per native catalog.`);

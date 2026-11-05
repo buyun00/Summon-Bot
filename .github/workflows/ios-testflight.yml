@@ -1,0 +1,87 @@
+name: iOS TestFlight
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'release.json'
+      - 'ios/**'
+      - 'scripts/ios/**'
+      - '.github/workflows/ios-testflight.yml'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'release uploads to TestFlight; compile builds the iPhone app without signing'
+        type: choice
+        default: release
+        options: [release, compile]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: summon-ios-testflight
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: vars.SUMMON_IOS_RELEASE_ENABLED == 'true' || (github.event_name == 'workflow_dispatch' && inputs.action == 'compile')
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      RELEASE: ${{ github.event_name != 'workflow_dispatch' || inputs.action != 'compile' }}
+      SUMMON_APPLE_TEAM_ID: ${{ vars.SUMMON_APPLE_TEAM_ID }}
+      SUMMON_IOS_DISTRIBUTION_P12_BASE64: ${{ secrets.SUMMON_IOS_DISTRIBUTION_P12_BASE64 }}
+      SUMMON_IOS_DISTRIBUTION_P12_PASSWORD: ${{ secrets.SUMMON_IOS_DISTRIBUTION_P12_PASSWORD }}
+      SUMMON_IOS_APP_PROFILE_BASE64: ${{ secrets.SUMMON_IOS_APP_PROFILE_BASE64 }}
+      ASC_KEY_ID: ${{ secrets.SUMMON_ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.SUMMON_ASC_ISSUER_ID }}
+      ASC_PRIVATE_KEY: ${{ secrets.SUMMON_ASC_PRIVATE_KEY }}
+      TESTFLIGHT_GROUP: ${{ vars.SUMMON_TESTFLIGHT_GROUP }}
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select stable Xcode 26 and check configuration
+        run: |
+          set -euo pipefail
+          XCODE_PATH=$(python3 - <<'PY'
+          import glob, os, re
+          names = ['SUMMON_APPLE_TEAM_ID', 'SUMMON_IOS_DISTRIBUTION_P12_BASE64',
+                   'SUMMON_IOS_DISTRIBUTION_P12_PASSWORD', 'SUMMON_IOS_APP_PROFILE_BASE64',
+                   'ASC_KEY_ID', 'ASC_ISSUER_ID', 'ASC_PRIVATE_KEY', 'TESTFLIGHT_GROUP']
+          missing = [name for name in names if not os.environ.get(name)] if os.environ['RELEASE'] == 'true' else []
+          if missing: raise SystemExit('Missing configuration: ' + ', '.join(missing))
+          versions = []
+          for path in glob.glob('/Applications/Xcode_26*.app'):
+              match = re.fullmatch(r'/Applications/Xcode_(26(?:\.\d+)+)\.app', path)
+              if match: versions.append((tuple(map(int, match[1].split('.'))), path))
+          if not versions: raise SystemExit('No stable Xcode 26 available')
+          print(max(versions)[1])
+          PY
+          )
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          xcodebuild -version
+          python3 -m venv "$RUNNER_TEMP/asc-python"
+          "$RUNNER_TEMP/asc-python/bin/pip" install 'PyJWT==2.10.1' 'cryptography==46.0.3'
+      - name: Sign, archive, and upload
+        if: env.RELEASE == 'true'
+        run: bash scripts/ios/ci-release.sh
+      - name: Compile iPhone app while Apple materials are being prepared
+        if: env.RELEASE != 'true'
+        run: |
+          xcodebuild -project ios/Summon.xcodeproj -scheme SummonBot -configuration Release \
+            -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/summon-derived" \
+            CODE_SIGNING_ALLOWED=NO build > "$RUNNER_TEMP/summon-build.log" 2>&1 || { tail -n 150 "$RUNNER_TEMP/summon-build.log"; exit 1; }
+          echo 'iPhone compilation completed. No signed archive was uploaded.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Wait for exact build and internal TestFlight distribution
+        if: env.RELEASE == 'true'
+        timeout-minutes: 35
+        run: '"$RUNNER_TEMP/asc-python/bin/python" scripts/ios/ci-testflight.py'
+      - name: Remove signing materials and build intermediates
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/summon-signing.keychain-db" ]; then
+            security delete-keychain "$RUNNER_TEMP/summon-signing.keychain-db"
+          fi
+          rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/summon-ci.mobileprovision"
+          rm -rf "$RUNNER_TEMP/summon-signing" "$RUNNER_TEMP/summon-derived"

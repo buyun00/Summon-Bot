@@ -1,6 +1,6 @@
 # 客户端发行与更新
 
-Summon Bot 使用普通网页、Windows/macOS Electron、Android Compose 和 iOS SwiftUI。网页及桌面共用正式页面。网页定稿、同步原生实现并提交推送后，Windows 在本地打包并只就位本机；GitHub 上的 Windows、macOS 和 Android 发行包统一由 GitHub Actions 构建发布。本机不上传安装包到 GitHub。iOS 暂不打包发布。
+Summon Bot 使用普通网页、Windows/macOS Electron、Android Compose 和 iOS SwiftUI。网页及桌面共用正式页面。网页定稿、同步原生实现并提交推送后，Windows 在本地打包并只就位本机；GitHub 上的 Windows、macOS 和 Android 发行包统一由 GitHub Actions 构建发布。本机不上传安装包到 GitHub。iOS 使用 GitHub Actions 签名上传并通过 TestFlight 内部测试分发，操作见 docs/IOS_TESTFLIGHT.md。
 
 ## 下载来源
 
@@ -62,7 +62,7 @@ macOS：网页内容刷新即可更新；外壳通过 DMG 手动覆盖安装。�
 
 Android：进入前台后检查版本，优先使用已经下载到应用缓存的对应 APK。下载时由系统确认覆盖安装；首次可能需要允许此应用安装未知来源应用。本机发行服务缺失时使用 GitHub，与手机设置的业务服务地址无关。
 
-iOS：保留 SwiftUI 源码和手动 `release:ios` 命令，当前不配置云端构建、签名、IPA 分发或应用内下载安装更新。
+iOS：GitHub Actions 从同一提交签名归档并上传 TestFlight，处理完成后分发到本应用内部组；安装与更新由 TestFlight 完成。详见 [iOS 发布与推送教程](IOS_TESTFLIGHT.md)。
 
 ## 正式环境和清理
 

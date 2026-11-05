@@ -27,7 +27,7 @@ export async function buildDesktop({ platform, arch, output }) {
       nsis: { oneClick: true, perMachine: false, differentialPackage: false, runAfterFinish: false,
         shortcutName: 'Summon Bot',
         createDesktopShortcut: true, deleteAppDataOnUninstall: false },
-      mac: { target: ['dmg', 'zip'], icon: join(root, 'ios/Relay/Assets.xcassets/RelayIcon.imageset/summon-icon.png'),
+      mac: { target: ['dmg', 'zip'], icon: join(root, 'ios/Summon/Assets.xcassets/SummonIcon.imageset/summon-icon.png'),
         category: 'public.app-category.productivity', identity: '-', notarize: false, hardenedRuntime: false },
     },
   });

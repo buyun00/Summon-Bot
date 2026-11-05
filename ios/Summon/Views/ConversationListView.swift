@@ -121,6 +121,12 @@ struct ConversationListView: View {
                 while !Task.isCancelled { try? await store.refreshModelUsage(); try? await Task.sleep(for: .seconds(60)) }
             }
             .navigationDestination(for: String.self) { id in ChatView(roomID: id) }
+            .onChange(of: SummonPush.shared.destinationRoomID, initial: true) { _, roomID in
+                guard let roomID else { return }
+                showSettings = false; showOnboarding = false
+                path = [roomID]
+                SummonPush.shared.destinationRoomID = nil
+            }
             .onChange(of: store.onboardingRequired, initial: true) { _, required in
                 if required && !onboardingShown { onboardingShown = true; showOnboarding = true }
             }

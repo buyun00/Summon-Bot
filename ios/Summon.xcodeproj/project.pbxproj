@@ -15,6 +15,7 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
+				Summon.entitlements,
 			);
 			target = A10000000000000000000003 /* Summon Bot */;
 		};
@@ -26,7 +27,7 @@
 			exceptions = (
 				A10000000000000000000002 /* Exceptions for Summon Bot folder in Summon Bot target */,
 			);
-			path = Relay;
+			path = Summon;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -96,6 +97,7 @@
 					A10000000000000000000003 = {
 						CreatedOnToolsVersion = 26.0;
 						ProvisioningStyle = Automatic;
+						SystemCapabilities = { com.apple.Push = { enabled = 1; }; };
 					};
 				};
 			};
@@ -188,17 +190,18 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_ENTITLEMENTS = Summon/Summon.entitlements;
 				CURRENT_PROJECT_VERSION = 21;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 6Y29E7PSVF;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = Relay/Info.plist;
+				INFOPLIST_FILE = Summon/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 0.3.17;
-				PRODUCT_BUNDLE_IDENTIFIER = org.lin0.relay;
+				PRODUCT_BUNDLE_IDENTIFIER = org.lin0.summon;
 				PRODUCT_NAME = "Summon Bot";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -217,17 +220,18 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_ENTITLEMENTS = Summon/Summon.entitlements;
 				CURRENT_PROJECT_VERSION = 21;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 6Y29E7PSVF;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = Relay/Info.plist;
+				INFOPLIST_FILE = Summon/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 0.3.17;
-				PRODUCT_BUNDLE_IDENTIFIER = org.lin0.relay;
+				PRODUCT_BUNDLE_IDENTIFIER = org.lin0.summon;
 				PRODUCT_NAME = "Summon Bot";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";

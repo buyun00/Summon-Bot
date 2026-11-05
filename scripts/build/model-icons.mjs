@@ -8,7 +8,7 @@ import { Resvg } from '@resvg/resvg-js';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const web = join(root, 'web/frontend');
 const android = join(root, 'android/app/src/main');
-const ios = join(root, 'ios/Relay');
+const ios = join(root, 'ios/Summon');
 const context = vm.createContext({ URL });
 const source = (await readFile(join(web, 'model-icons.js'), 'utf8')).replace('return { brand, svg, name:', 'return { aliases, models, hosts, brand, svg, name:');
 vm.runInContext(source, context);
