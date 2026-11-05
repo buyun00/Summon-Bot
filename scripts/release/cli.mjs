@@ -192,4 +192,4 @@ if (process.platform === 'win32' && ['24.15.0', '25.8.0'].includes(process.versi
     try { await run(runner, [fileURLToPath(import.meta.url), ...process.argv.slice(2)], { env: { ...process.env, SUMMON_RELEASE_RUNNER: '1' } }); }
     finally { await removeInside(join(sourceRoot, '.relay'), runnerRoot); }
   } catch (error) { console.error(error.message); process.exitCode = 1; }
-} else main().catch(error => { console.error(error.message); process.exitCode = 1; });
+} else main().catch(error => { console.error(error.message); process.exit(1); });

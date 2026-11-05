@@ -48,8 +48,12 @@ def main():
         raise ValueError('Developer ID Application is required; iOS or Installer certificates cannot be used')
     cert.extensions.get_extension_for_oid(ObjectIdentifier('1.2.840.113635.100.6.1.13'))
     password = secrets.token_urlsafe(32)
+    # macOS security import requires the compatible PKCS#12 format. GitHub Secrets protects storage.
+    encryption = (serialization.PrivateFormat.PKCS12.encryption_builder().kdf_rounds(50000)
+        .key_cert_algorithm(pkcs12.PBES.PBESv1SHA1And3KeyTripleDESCBC)
+        .hmac_hash(hashes.SHA1()).build(password.encode()))
     p12 = pkcs12.serialize_key_and_certificates(b'Summon Developer ID', key, cert, None,
-        serialization.BestAvailableEncryption(password.encode()))
+        encryption)
     # Reuse the already authorized GitHub login, with no token in command arguments.
     auth = subprocess.run(['gh', 'auth', 'token'], capture_output=True, text=True)
     if auth.returncode: raise RuntimeError('GitHub CLI login required')
