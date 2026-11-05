@@ -123,26 +123,7 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
     const database = join(dataRoot, 'bots', directory.name, 'state.sqlite');
     if (existsSync(database)) {
       const store = new BotStore(database);
-      try {
-        for (const record of store.listRecords('capability-updates')) store.db.prepare('DELETE FROM records WHERE kind=? AND id=?').run('capability-updates', record.id);
-        store.transaction(() => {
-          // Convert pending result routes in place. Raw tasks, replies and source records remain S1.
-          for (const notification of store.listRecords('work-notifications')) {
-            if (!notification.frontendTaskId && !Object.hasOwn(notification, 'frontendContent')) continue;
-            const frontend = notification.frontendTaskId && store.getTask(notification.frontendTaskId);
-            if (frontend && !['completed', 'failed', 'cancelled', 'interrupted'].includes(frontend.status)) store.updateTask(frontend.id, {
-              status: 'completed', result: { content: '', observed: true, notificationId: notification.id }, finishedAt: new Date().toISOString() });
-            const { frontendTaskId, frontendContent, queuedAt, ...current } = notification;
-            store.putRecord('work-notifications', { ...current, status: notification.status === 'delivered' ? 'delivered' : 'pending' });
-          }
-          for (const work of store.listRecords('works')) {
-            const waiting = work.waiting;
-            if (work.status === 'waiting' && waiting?.id && !store.getRecord('work-waits', waiting.id)) store.putRecord('work-waits', {
-              ...waiting, workId: work.id, targetWorkId: work.id, status: 'pending', sourceTaskId: work.lastTaskId,
-              since: waiting.since || work.updatedAt, createdAt: waiting.since || work.updatedAt });
-          }
-        });
-      }
+      try { for (const record of store.listRecords('capability-updates')) store.db.prepare('DELETE FROM records WHERE kind=? AND id=?').run('capability-updates', record.id); }
       finally { store.close(); }
     }
   }
