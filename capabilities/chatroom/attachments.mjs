@@ -92,10 +92,15 @@ export class AttachmentStore {
     const ids = [...new Set(references.flatMap(message => (message.attachments || []).map(item => item.id)))];
     if (!ids.length) return context;
     const directory = join(workspace, 'attachments');
-    await mkdir(directory, { recursive: true });
-    if (!within(await realpath(workspace), await realpath(directory))) fail('附件目录不在 Bot 工作区内');
+    let directoryError;
+    try {
+      await mkdir(directory, { recursive: true });
+      if (!within(await realpath(workspace), await realpath(directory))) fail('附件目录不在 Bot 工作区内');
+    } catch (error) { directoryError = error; }
     const staged = new Map();
     for (const id of ids) {
+      try {
+      if (directoryError) throw directoryError;
       const record = this.get(id);
       const extension = extname(record.name).match(/^\.[a-z0-9]{1,12}$/i)?.[0] || '.bin';
       const path = join(directory, `${id}${extension}`);
@@ -110,6 +115,11 @@ export class AttachmentStore {
       staged.set(id, { ...record, path, ...(record.mimeType.startsWith('image/') ? {
         modelNote: '当前模型仅接收文本，此图片只提供文件路径，尚未读取或理解图像内容；不能根据文件名猜测画面。',
       } : { modelNote: '附件已暂存到工作区；请用文件工具读取实际内容，不要仅凭文件名猜测。' }) });
+      } catch (error) {
+        const original = references.flatMap(message => message.attachments || []).find(item => item.id === id);
+        staged.set(id, { ...original, path: undefined, unavailable: true,
+          modelNote: `该附件暂时无法读取：${error.message}。保留原始引用，继续使用其他资料；明确依赖它的步骤须说明缺口。` });
+      }
     }
     const decorate = message => message?.attachments?.length ? { ...message, attachments: message.attachments.map(item => staged.get(item.id)) } : message;
     return { ...context, messages: (context.messages || []).map(decorate), trigger: decorate(context.trigger) };

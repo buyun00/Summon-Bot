@@ -1,8 +1,9 @@
+import { looseSchema } from '../../bot/src/context/model-input.mjs';
 const object = properties => ({type:'object',properties,additionalProperties:true});
 const string={type:'string'},number={type:'number'},boolean={type:'boolean'},array={type:'array',items:{type:'string'}};
 const definitions=[
  ['chatroom_list','List shared conversations',{},'read'],
- ['chatroom_read','Read a bounded page of sourced room history or one exact message; follow cursors for more.',{roomId:string,messageId:string,afterMessageId:string,beforeMessageId:string,limit:number},'read'],
+ ['chatroom_read','Read bounded original room messages with author, exact reference and fragment cursor. Query selects evidence; follow message and character cursors for more.',{roomId:string,messageId:string,afterMessageId:string,beforeMessageId:string,throughMessageId:string,oldestFirst:boolean,query:string,offset:number,length:number,limit:number},'read'],
  ['chatroom_create','Create a group with a project lead and EggBot by default, a DM or discussion',{name:string,kind:string,members:array,goal:string,leadBotId:string},'write'],
  ['chatroom_team_read','Read shared project goals, lead/EggBot, member responsibilities, open concerns, real work states and routine costs; private conversations stay private.',{roomId:string},'read'],
  ['chatroom_team_raise','Raise a sourced collaboration, staffing, lifecycle, scope, dependency, timing, handoff or improvement question in this group. Stable operationId deduplicates; the responsible member is notified.',{roomId:string,operationId:string,kind:string,title:string,message:string,sourceMessageId:string,targetBotId:string},'external'],
@@ -35,6 +36,10 @@ const definitions=[
  ['bots_stop','Normally stop a managed Bot',{botId:string},'external'],
  ['bots_cleanup','Clean disposable tmp only when stopped and no unknown/background work remains',{botId:string},'external'],
  ['routines_create','Maintain an authorized ongoing responsibility; merge in-flight events, optional watch wakes only on changed state. Reuse id; enabled:false stops.',{id:string,botId:string,roomId:string,name:string,instruction:string,intervalSeconds:number,enabled:boolean,nextRunAt:string,workId:string,eventKey:string,watch:{type:'object'}},'external'],
+ ['reminders_create','Save a one-time reminder. Supply delaySeconds from the accepted message time OR dueAt with explicit time zone, plus exact delivery text. The original room/Bot/source are server-derived. A saved receipt is acceptance; due delivery uses no model.',{id:string,delaySeconds:number,dueAt:string,content:string},'write'],
+ ['reminders_list','Read one-time reminders belonging to this source room.',{},'read'],
+ ['reminders_cancel','Cancel a saved reminder by its returned ID. A sending reminder returns cancellation requested until the actual delivery outcome is known.',{id:string},'write'],
 ];
-export const toolDefinitions=definitions.map(([name,description,properties,effect])=>({name,description,inputSchema:object(properties),effect}));
+export const toolDefinitions=definitions.map(([name,description,properties,effect])=>({name,description,inputSchema:
+  name==='chatroom_read'||name.startsWith('reminders_')||name.startsWith('codex_')?looseSchema({properties}):object(properties),effect}));
 export const FILE_TOOLS=new Set(['list_files','read_file','search_files','write_file','edit_file','run_command','web_search','web_read']);

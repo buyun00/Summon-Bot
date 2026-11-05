@@ -5,6 +5,7 @@ import { join,resolve,relative } from 'node:path';
 import { spawn } from 'node:child_process';
 import { safeId,required,fail,avatarOf,pick,within,now } from '../shared/validation.mjs';
 import { normalizePaperAvatar,defaultPaperAvatar } from '../shared/avatar-style.mjs';
+import { modelText, durationSeconds } from '../../bot/src/context/model-input.mjs';
 
 const core = () => import('@summon/bot');
 const sleep = ms => new Promise(done=>setTimeout(done,ms));
@@ -258,6 +259,36 @@ export class BotManager {
     finally{if(!this.cacheReadStores)store.close();}
   }
   closeReadStores(){for(const store of this.readStores.values())store.close();this.readStores.clear();}
+  saveReminder(input, botId, source) {
+    this.get(botId);
+    if (!source?.taskId || !source.roomId || !source.replyTo) fail('A reminder requires an accepted room request');
+    const relative=durationSeconds(input.delaySeconds??input.delay??input.after??input.when??source.input?.trigger?.content);
+    const absolute=typeof input.dueAt==='string'&&/(?:Z|[+-]\d{2}:\d{2})$/i.test(input.dueAt)?Date.parse(input.dueAt):NaN;
+    const deadline=Number.isFinite(absolute)?absolute:Number.isFinite(relative)&&relative>=0?Date.parse(source.receivedAt)+relative*1000:NaN;
+    if (!Number.isFinite(deadline)) fail('这条提醒还没有有效时间。请提供相对时长，或带时区的到期时间；其他已保存的动作不受影响。');
+    const content=required(modelText(input.content??input.text??input.message,modelText(source.input?.trigger?.content)),'content',16000),dueAt=new Date(deadline).toISOString();
+    const id=`reminder:${botId}:${input.id||source.taskId}`,prior=this.store.get('reminders',id);
+    if(prior){if(prior.content!==content||prior.dueAt!==dueAt||prior.roomId!==source.roomId)fail('Reminder ID already belongs to another request',409);return prior;}
+    return this.store.save('reminders',{id,botId,roomId:source.roomId,replyTo:source.replyTo,sourceTaskId:source.taskId,
+      sourceMessageId:source.messageId,actor:source.actor,receivedAt:source.receivedAt,dueAt,content,status:'pending',attempts:0});
+  }
+  cancelReminder(id,botId,source) {
+    const candidates=this.store.list('reminders').filter(item=>item.botId===botId&&item.roomId===source?.roomId&&['pending','sending'].includes(item.status));
+    const reminder=this.store.get('reminders',id)||candidates.find(item=>item.id===source?.replyTo)||(candidates.length===1&&!id?candidates[0]:null);
+    if(!reminder||reminder.botId!==botId||reminder.roomId!==source?.roomId)fail('Reminder is outside this source scope',403);
+    if(['delivered','cancelled'].includes(reminder.status))return reminder;
+    return this.store.save('reminders',{id:reminder.id,status:reminder.status==='sending'?'sending':'cancelled',cancelRequested:true,cancelRequestedAt:now()});
+  }
+  claimReminder(id) {
+    const reminder=this.store.get('reminders',id);
+    if(!reminder||!['pending','sending'].includes(reminder.status)||Date.parse(reminder.dueAt)>Date.now()||(reminder.retryAt&&Date.parse(reminder.retryAt)>Date.now()))return null;
+    if(reminder.cancelRequested)return this.store.save('reminders',{id,status:'cancelled'});
+    return this.store.save('reminders',{id,status:'sending',attempts:(reminder.attempts||0)+1,attemptedAt:now()});
+  }
+  settleReminder(id,input) {
+    const prior=this.store.get('reminders',id);if(!prior||prior.status==='delivered')return prior;
+    return this.store.save('reminders',{id,...pick(input,['status','receipt','deliveredAt','retryAt','error'])});
+  }
   async saveRoutine(input) {
     let previous=input.id&&this.store.get('routines',input.id);
     const botId=input.botId||previous?.botId;this.get(botId);

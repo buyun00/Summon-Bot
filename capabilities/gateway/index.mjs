@@ -21,6 +21,8 @@ import { BUILTIN_CAPABILITIES } from '../services/builtin.mjs';
 import { deployCapability } from '../services/publish.mjs';
 import { coreTools } from '../../bot/src/capabilities/core-tools.mjs';
 import { assertToolPolicy, permitsTool, permitsMaintenanceTool, taskMode } from '../../bot/src/capabilities/task-policy.mjs';
+import { taskSource } from '../../bot/src/context/sources.mjs';
+import { notificationParts } from '../../bot/src/runtime/notifications.mjs';
 import { CapabilityCatalog,catalogTools } from '../services/catalog.mjs';
 import { UsageLedger,readUsage,usageRange,finishUsageTotals,emptyUsageTotals,USAGE_PRICING } from '../../bot/src/agent/usage.mjs';
 import { ModelConnections } from '../models/service.mjs';
@@ -48,7 +50,7 @@ export async function startGateway(options={}) {
   const emit=(type,payload={})=>{const line=`data: ${JSON.stringify({type,...payload})}\n\n`;for(const client of clients)client.write(line);};
   const modelConnections=await new ModelConnections({dataRoot,model:options.model,emit}).initialize();
   options.model={connectionStore:modelConnections.path};
-  const botToolNames=[...coreTools({},{}).map(tool=>tool.name),'read_resource','read_session_history','knowledge_list','knowledge_read','knowledge_write','skills_list','skill_write'];
+  const botToolNames=[...coreTools({},{}).map(tool=>tool.name),'read_resource','read_session_history','context_assemble','knowledge_list','knowledge_read','knowledge_write','skills_list','skill_write'];
   const registry=new CapabilityRegistry({store:store('registry'),emit,reservedTools:[...botToolNames,...controlTools.map(tool=>tool.name),...catalogTools.map(tool=>tool.name)]});
   const supervisor=new CapabilityServiceSupervisor({dataRoot,releaseRoot});
   let control;
@@ -61,12 +63,12 @@ export async function startGateway(options={}) {
     return registry.invokeVersion(id,selected,operation,args,{context:{actor:'controller'}});
   };
   const proxy=(target,id,names)=>{for(const name of names)target[name]=(...args)=>rpc(id,name,args);};
-  proxy(manager,'bot-management',['create','update','start','stop','send','saveRoutine','seed','restore','monitor','quiesce','shutdownAll','connect','ensureCatalogMaintainer','setCatalogMaintainerState']);
+  proxy(manager,'bot-management',['create','update','start','stop','send','saveRoutine','claimReminder','settleReminder','seed','restore','monitor','quiesce','shutdownAll','connect','ensureCatalogMaintainer','setCatalogMaintainerState']);
   const attachments=new AttachmentStore(join(dataRoot,'capabilities','chatroom'));
   const chatroom=new ChatroomService({store:store('chatroom'),manager,attachments,emit});
   const push=await new PushService({store:store('push'),messages:store('chatroom'),dataRoot,historyEpoch}).initialize();
   const knowledge=new KnowledgeService({store:store('knowledge'),emit}),memories=new MemoryManagement({store:store('memory-management'),manager,dataRoot,emit});
-  proxy(chatroom,'chatroom',['createRoom','updateRoom','post','append','dm','conclude','saveConclusion','retry','seed','teamRead','teamRaise','teamManage']);
+  proxy(chatroom,'chatroom',['createRoom','updateRoom','post','append','messageReceipt','dm','conclude','saveConclusion','retry','seed','teamRead','teamRaise','teamManage']);
   const onboarding=await new OnboardingService({store:store('gateway'),models:modelConnections,manager,chatroom,emit}).initialize();
   const catalog=new CapabilityCatalog({store:store('registry'),registry,manager,dataRoot,workspace:defaultCwd,emit,delegate:(actor,input)=>chatroom.dm(actor,input)});
   proxy(knowledge,'knowledge',['saveNode','saveEdge']);
@@ -136,15 +138,24 @@ export async function startGateway(options={}) {
     if(quiescing&&definition?.effect!=='read')fail('Gateway is stopping; new work is unavailable',503);
     if(actor!=='controller'&&!(manager.store.get('bots',actor)?.allowedTools||[]).includes(name))fail('Tool not authorized for this Bot',403);
     const {_context,...input}=args;args=input;
-    let task;
+    let task,source,runtimeOperation;
     if(actor!=='controller'){
       if(taskId){
         task=await manager.readState(actor,db=>db?.getTask(taskId));
-        const notification=task?.metadata?.notificationId&&name==='chatroom_send'
-          ?await manager.readState(actor,db=>db?.getRecord('work-notifications',task.metadata.notificationId)):null;
-        const publishing=notification&&notification.frontendContent===args.content&&notification.id===args.clientId&&notification.roomId===args.roomId;
-        if(!task||(task.status!=='running'&&!publishing))fail('An active task owned by this Bot is required',403);
-        assertToolPolicy(task,definition,args);
+        const saved=await manager.readState(actor,db=>({source:task&&taskSource(task,db),
+          notification:name==='chatroom_send'&&_context?.notificationId?db?.getRecord('work-notifications',_context.notificationId):null,
+          operation:_context?.operationId?db?.getRecord('work-events',_context.operationId):null}));
+        source=saved.source;
+        const publishing=saved.notification&&saved.notification.status!=='delivered'&&saved.notification.taskId===taskId&&
+          notificationParts(saved.notification).some(part=>Object.entries(part).every(([key,value])=>JSON.stringify(args[key])===JSON.stringify(value)));
+        runtimeOperation=saved.operation?.sourceTaskId===taskId&&saved.operation.transport?.name===name&&
+          JSON.stringify(saved.operation.transport.args)===JSON.stringify(args)?saved.operation:null;
+        if(runtimeOperation?.requestTaskId&&['chatroom_read','chatroom_list'].includes(name)) source=await manager.readState(actor,db=>{
+          const origin=db?.getTask(runtimeOperation.requestTaskId);return origin?taskSource(origin,db):null;
+        });
+        if(runtimeOperation&&['chatroom_read','chatroom_list'].includes(name)&&!source)fail('Original evidence authorization is unavailable',403);
+        if(!task||(task.status!=='running'&&!publishing&&!runtimeOperation))fail('An active task or saved delivery owned by this Bot is required',403);
+        if(!publishing&&!runtimeOperation)assertToolPolicy(task,definition,args);
       }else if(!permitsMaintenanceTool(name))fail('A runtime task context is required',403);
     }
     if(catalogTools.some(tool=>tool.name===name)){
@@ -156,7 +167,7 @@ export async function startGateway(options={}) {
     }
     if(controlTools.some(tool=>tool.name===name))return control.call(name,args,{actor});
     if(pin&&!control.permittedVersion(actor,pin.id,pin.version))fail('This capability version is not bound to the Bot',403);
-    const context={actor,...(task?{taskId:task.id,workId:task.workId,mode:taskMode(task)}:{})};
+    const context={actor,...(task?{taskId:task.id,workId:runtimeOperation?.workId||task.workId,mode:runtimeOperation?'work':taskMode(task),source}:{})};
     if(pin)return registry.callVersion(pin.id,pin.version,name,args,{signal,context});
     return registry.call(actor,name,args,{signal,context});
   }

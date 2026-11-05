@@ -20,7 +20,7 @@ export function capabilityForTool(name) {
   if (name.startsWith('chatroom_')) return 'chatroom';
   if (name.startsWith('knowledge_')) return 'knowledge';
   if (name.startsWith('codex_')) return 'codex';
-  if (name.startsWith('bots_') || name === 'routines_create') return 'bot-management';
+  if (name.startsWith('bots_') || name.startsWith('reminders_') || name === 'routines_create') return 'bot-management';
 }
 const unfinished = item => ['queued','accepted','running','waiting'].includes(item.status);
 
@@ -72,17 +72,10 @@ export async function createCapability(options) {
       return {...result,artifacts,isError:Boolean(result.details?.timedOut||result.details?.aborted||(result.details?.exitCode!==undefined&&result.details.exitCode!==0))};
     }
     switch(name) {
-      case 'chatroom_list':return chatroom.rooms().filter(room=>actor==='controller'||room.members.includes(actor));
+      case 'chatroom_list':{const sourceActor=context.source?.accessActor||context.source?.actor;return chatroom.rooms().filter(room=>actor==='controller'||room.members.includes(actor)&&(!sourceActor||sourceActor==='system'||room.members.includes(sourceActor)));}
       case 'chatroom_read':{
-        const room=chatroom.need('rooms',args.roomId);if(actor!=='controller'&&!room.members.includes(actor))fail('Not a room member',403);
-        const all=chatroom.messages(room.id),limit=Math.max(1,Math.min(200,Math.trunc(Number(args.limit)||50)));
-        if(args.messageId)return {room,messages:all.filter(message=>message.id===args.messageId)};
-        const after=args.afterMessageId?all.findIndex(message=>message.id===args.afterMessageId):-1;
-        const before=args.beforeMessageId?all.findIndex(message=>message.id===args.beforeMessageId):all.length;
-        if((args.afterMessageId&&after<0)||(args.beforeMessageId&&before<0))fail('Message cursor not found',404);
-        const candidates=all.slice(after+1,before),messages=args.afterMessageId?candidates.slice(0,limit):candidates.slice(-limit);
-        const ids=new Set(messages.map(message=>message.id));
-        return {room,messages,jobs:chatroom.jobs(room.id).filter(job=>ids.has(job.messageId)),hasMore:candidates.length>messages.length,firstMessageId:messages[0]?.id||null,lastMessageId:messages.at(-1)?.id||null};
+        const page=chatroom.read(args,actor,context.source);
+        return actor==='controller'?page:attachments.stageContext(page,(await manager.config(actor)).workspace);
       }
       case 'chatroom_create':return chatroom.createRoom({...args,members:[...new Set([...(args.members||[]),...(actor==='controller'?[]:[actor])])]});
       case 'chatroom_team_read':return chatroom.teamRead(args,actor);
@@ -111,19 +104,30 @@ export async function createCapability(options) {
       case 'bots_stop':return manager.stop(args.botId);
       case 'bots_cleanup':return cleanTemporaryData(manager,args.botId,{externalTasks:()=>store('codex').list('works')});
       case 'routines_create':{const previous=args.id&&manager.store.get('routines',args.id);if(previous)assertOwner(actor,previous.botId);const botId=args.botId||previous?.botId||actor;assertOwner(actor,botId);return manager.saveRoutine({...args,botId});}
+      case 'reminders_create':return manager.saveReminder(args,actor,context.source);
+      case 'reminders_list':return manager.store.list('reminders').filter(item=>item.botId===actor&&item.roomId===context.source?.roomId);
+      case 'reminders_cancel':return manager.cancelReminder(args.id,actor,context.source);
       case 'codex_projects':return codex.projects(signal);
       case 'codex_threads':return codex.threads(signal);
       case 'codex_create':case 'codex_attach':return codex[name==='codex_create'?'create':'attach']({...args,botId:actor});
       case 'codex_status':{const id=codex.bindingId(actor,args.workId),work=codex.require(id);assertOwner(actor,work.botId);return codex.get(id);}
-      case 'codex_read':case 'codex_send':case 'codex_interrupt':{const id=codex.bindingId(actor,args.workId),work=codex.require(id);assertOwner(actor,work.botId);return codex[{codex_read:'read',codex_send:'send',codex_interrupt:'interrupt'}[name]](id,{...args,signal});}
+      case 'codex_read':case 'codex_send':case 'codex_interrupt':{
+        const id=codex.bindingId(actor,args.workId||context.workId),work=codex.require(id);assertOwner(actor,work.botId);
+        if(name==='codex_interrupt'&&!args.expectedTurnId){
+          const operation=codex.operation(work,args.operationId);
+          if(operation)args={...args,expectedTurnId:operation.body.expectedTurnId};
+          else{const observed=await codex.read(id,{signal});args={...args,expectedTurnId:observed.observed?.currentTurn?.id};}
+        }
+        return codex[{codex_read:'read',codex_send:'send',codex_interrupt:'interrupt'}[name]](id,{...args,signal});
+      }
       default:fail('Unknown capability tool',404);
     }
   }
   const operations={};
   const expose=(target,names)=>{for(const name of names)operations[name]=(...args)=>locked(()=>target[name](...args));};
-  if(id==='bot-management')expose(manager,['create','update','start','stop','send','saveRoutine','seed','restore','monitor','quiesce','shutdownAll','connect','pauseProject','ensureCatalogMaintainer','setCatalogMaintainerState']);
+  if(id==='bot-management')expose(manager,['create','update','start','stop','send','saveRoutine','claimReminder','settleReminder','seed','restore','monitor','quiesce','shutdownAll','connect','pauseProject','ensureCatalogMaintainer','setCatalogMaintainerState']);
   if(chatroom){
-    expose(chatroom,['createRoom','updateRoom','post','append','dm','conclude','saveConclusion','retry','seed','teamRead','teamRaise','teamManage']);operations.upload=(...args)=>locked(()=>attachments.upload(...args));
+    expose(chatroom,['createRoom','updateRoom','post','append','messageReceipt','dm','conclude','saveConclusion','retry','seed','teamRead','teamRaise','teamManage']);operations.upload=(...args)=>locked(()=>attachments.upload(...args));
     operations.pause=async()=>{await chatroom.close();return {paused:true};};
     operations.resumeService=()=>{if(chatroom.closed)chatroom.start();return {ready:true};};
   }

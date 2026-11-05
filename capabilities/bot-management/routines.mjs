@@ -4,6 +4,21 @@ const passiveWork=new Set(['paused','cancelled','completed','archived']);
 
 /** Existing gateway timer calls this; observations and in-flight ownership stay in its current databases. */
 export async function tickRoutines({manager,chatroom}) {
+  // Fixed-text delivery uses no Bot slot and does not wake a model, even during active work.
+  for(const item of manager.store.list('reminders').filter(item=>['pending','sending'].includes(item.status)&&Date.parse(item.dueAt)<=Date.now())){
+    try{
+    if(item.attempts){
+      // The serialized room read settles an uncertain prior send before cancellation or retry.
+      const existing=await chatroom.messageReceipt(item.id);
+      if(existing){await manager.settleReminder(item.id,{status:'delivered',receipt:{messageId:existing.id},deliveredAt:existing.createdAt,error:null,retryAt:null});continue;}
+    }
+    const reminder=await manager.claimReminder(item.id);
+    if(!reminder||reminder.status!=='sending')continue;
+      const receipt=await chatroom.append(reminder.roomId,{id:reminder.id,clientId:reminder.id,content:reminder.content,
+        replyTo:reminder.replyTo,kind:'event',eventType:'reminder',purpose:'fyi',sourceRefs:[{type:'reminder',id:reminder.id}]},reminder.botId);
+      await manager.settleReminder(reminder.id,{status:'delivered',receipt:{messageId:receipt.id},deliveredAt:now(),error:null,retryAt:null});
+    }catch(error){try{await manager.settleReminder(item.id,{status:'pending',error:error.message,retryAt:new Date(Date.now()+30000).toISOString()});}catch{}}
+  }
   const due=manager.store.list('routines').filter(item=>item.enabled&&Date.parse(item.nextRunAt)<=Date.now());
   for(const snapshot of due){
     const routine=manager.store.get('routines',snapshot.id);

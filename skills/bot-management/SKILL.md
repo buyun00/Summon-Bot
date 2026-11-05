@@ -10,3 +10,5 @@ description: 普通独立 Bot 的职责、运行与持续安排
 交接保留目标、来源、已有授权、实际进度、等待与外部绑定。新 Bot 不是原 Bot 的副本，不复制凭据、完整私聊或结果未知的操作。bots_start/bots_stop 管理运行，停止受理不等于外部任务已终止。
 
 持续职责用 routines_create，已有职责复用 id/eventKey。watch 支持已知 work、task 或 room，状态不变时不唤醒模型；同职责在途项会合并。临时外部等待用 work_wait，不为每个任务创建轮询职责。enabled:false 停止后续触发，当前外部工作需按实际能力单独取消。
+
+一次性提醒使用 reminders_create：正文 content，加相对 delaySeconds 或带明确时区的 dueAt。延时以本轮消息接收时刻计算，原房间与回复目标由程序取回；返回提醒 ID 后才表示保存受理。到点直接发送保存的正文，重启后继续同一记录的投递，不启动模型任务。reminders_list 查询当前房间的记录；reminders_cancel 使用原 ID，发送中取消是否成功以实际回执为准。
