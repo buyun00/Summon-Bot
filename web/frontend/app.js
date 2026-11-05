@@ -329,6 +329,7 @@ async function api(path, method = 'GET', body) {
   const response = await fetch(path, { method, headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(method === 'GET' ? 30000 : 120000) });
   let data;
   try { data = await response.json(); } catch { throw new Error(`服务返回了无法读取的内容（${response.status}）`); }
+  if (response.status === 401) { location.replace('/'); throw new Error('请重新输入访问 Token'); }
   if (!response.ok) throw new Error(data.error?.message || data.error || `请求失败（${response.status}）`);
   return data;
 }

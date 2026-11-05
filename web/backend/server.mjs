@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { serveClientReleases } from './releases.mjs';
+import { createWebAuth } from './auth.mjs';
 
 const defaultFrontend = fileURLToPath(new URL('../frontend/', import.meta.url));
 const assets = new Map([
@@ -34,7 +35,8 @@ const showcaseMime = new Map([
 
 /** The Web process owns only HTTP/static assets. Business state and Agents stay outside. */
 export async function startWeb({ host = '127.0.0.1', port = 8787, publicOrigin = '', frontendRoot = defaultFrontend,
-  gatewayUrl, gatewayToken, clientReleaseRoot, webRelease, requestTimeoutMs = 120000 } = {}) {
+  gatewayUrl, gatewayToken, accessToken, clientReleaseRoot, webRelease, requestTimeoutMs = 120000 } = {}) {
+  const authorize = createWebAuth(accessToken, publicOrigin);
   const upstream = new URL(gatewayUrl);
   if (!['http:', 'https:'].includes(upstream.protocol) || upstream.username || upstream.password) throw new Error('Invalid gateway URL');
   if (!gatewayToken) throw new Error('gatewayToken is required');
@@ -49,6 +51,7 @@ export async function startWeb({ host = '127.0.0.1', port = 8787, publicOrigin =
     try {
       if (closing) return json(res, 503, { error: 'Web service is stopping' });
       const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+      if (!authorize(req, res, url)) return;
       if (url.pathname === '/sw.js' && ['GET', 'HEAD'].includes(req.method)) {
         // Retire already-installed workers. This endpoint never installs a new offline application.
         const script = `self.addEventListener('install',()=>self.skipWaiting());self.addEventListener('activate',event=>event.waitUntil((async()=>{for(const name of await caches.keys())if(name.startsWith('relay-shell-'))await caches.delete(name);await self.clients.claim();await self.registration.unregister();})()));`;

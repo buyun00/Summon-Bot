@@ -21,7 +21,7 @@ export async function initializeDeployment({ dataRoot, releaseRoot, defaultCwd, 
   if (existsSync(path)) return { created: false, configPath: path, config: await readJson(path) };
   const config = { schemaVersion: 2, dataRoot, releaseRoot, defaultCwd: resolve(defaultCwd || join(dataRoot, 'workspace')),
     runIntent: 'running', publicOrigin, gatewayToken: token(), controlToken: token(),
-    environmentFile: join(dataRoot, 'config', 'runtime.env'), web: { host: '127.0.0.1', port: Number(port) },
+    environmentFile: join(dataRoot, 'config', 'runtime.env'), web: { host: '127.0.0.1', port: Number(port), accessToken: token() },
     gateway: { host: '127.0.0.1', port: 0 },
     model: { provider: 'deepseek', model: 'deepseek-flash', baseUrl: 'https://api.deepseek.com/v1', apiKeyEnv: 'DEEPSEEK_API_KEY', contextWindow: 1048576, maxTokens: 393216, thinkingLevel: 'high' } };
   await mkdir(config.defaultCwd, { recursive: true });
