@@ -67,6 +67,7 @@ def main():
         result = subprocess.run(['gh', *args, '--repo', repo], input=value, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if result.returncode:
+            print('GitHub operation failed: ' + ' '.join(args) + '; exit=' + str(result.returncode), file=sys.stderr)
             raise RuntimeError('GitHub configuration write failed; check gh authentication and repository permissions')
     secrets = {
         'SUMMON_IOS_DISTRIBUTION_P12_BASE64': base64.b64encode(p12).decode(),
@@ -85,7 +86,10 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except Exception:
+    except Exception as error:
+        import traceback
+        frame = traceback.extract_tb(error.__traceback__)[-1]
+        print(f"Configuration error: {type(error).__name__} at {pathlib.Path(frame.filename).name}:{frame.lineno}", file=sys.stderr)
         # Third-party errors may contain credentials or private file contents.
         print('Configuration incomplete: check private input files, Summon app/group membership, and API/GitHub access.', file=sys.stderr)
         sys.exit(1)

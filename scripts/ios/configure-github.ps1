@@ -22,6 +22,10 @@ $payload = @{
 $start = [System.Diagnostics.ProcessStartInfo]::new('py')
 $start.ArgumentList.Add('-X'); $start.ArgumentList.Add('utf8')
 $start.ArgumentList.Add((Join-Path $PSScriptRoot 'configure-github.py'))
+$githubToken = (& gh auth token 2>$null)
+if ($LASTEXITCODE -ne 0 -or !$githubToken) { throw 'GitHub CLI login is required' }
+$start.Environment['GH_TOKEN'] = $githubToken.Trim()
+$githubToken = $null
 $start.UseShellExecute = $false
 $start.RedirectStandardInput = $true
 $start.CreateNoWindow = $true
