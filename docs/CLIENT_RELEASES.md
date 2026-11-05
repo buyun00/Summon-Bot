@@ -11,7 +11,7 @@ Summon Bot 使用普通网页、Windows/macOS Electron、Android Compose 和 iOS
 
 网页“客户端下载与更新”使用相同来源顺序。本机包的构建号至少应达到当前正式版本，过时文件不参与下载选择。远程 `GET /api/releases` 仅返回 GitHub 版本目录和直接下载链接；本机入口可读取本机发行物，`?local=1` 仅查询本机且不访问 GitHub。浏览器不允许本机网络访问时继续使用 GitHub。
 
-每个目标使用固定的 GitHub Release 标签：`client-windows-x64`、`client-windows-arm64`、`client-macos-universal`、`client-android-universal`。每个标签仅保留最新版安装包和元数据。发行描述包含当前 JSON 版本目录，`latest.json` 供原生端查询，Windows 的 `latest.yml` 供 Electron 更新器读取。发布先上传安装包，再切换元数据，最后删除被替代的资产。
+每个目标使用固定的 GitHub Release 标签：`client-windows-x64`、`client-windows-arm64`、`client-macos-arm64`、`client-android-universal`。每个标签仅保留最新版安装包和元数据。发行描述展示下载链接和安装说明，`latest.json` 供原生端查询，Windows 的 `latest.yml` 供 Electron 更新器读取。发布先上传安装包，再切换元数据，最后删除被替代的资产。
 
 ## 版本和 Windows 发布
 
@@ -44,7 +44,7 @@ npm run release:desktop
 
 [Client releases 工作流](../.github/workflows/client-releases.yml) 在主分支的 `release.json` 版本变更时运行，客户端改动在定稿时一并递增版本；也可手动选择 `cloud`、`macos`、`android` 或 `windows`。`cloud` 和版本推送均构建 Windows、macOS 和 Android；各平台的 GitHub 发行物直接由对应 runner 构建发布。工作流只安装依赖、构建和发布，不运行测试，不创建后端或预览服务。
 
-macOS 使用 GitHub 的 Mac runner 构建 Intel + Apple Silicon universal DMG/ZIP。使用付费 Apple Developer 团队的 Developer ID Application 证书签名，启用 Hardened Runtime，并完成 Apple 公证和 App 票据附加。缺少证书或公证失败时停止发布；准备方法见 [macOS 签名与公证](MACOS_SIGNING.md)。客户端仍提示新版本并打开 DMG 下载，由用户覆盖安装。
+macOS 使用 GitHub 的 Mac runner 构建 仅支持 Apple Silicon 的 arm64 DMG/ZIP，不再支持 Intel。使用付费 Apple Developer 团队的 Developer ID Application 证书签名，启用 Hardened Runtime，并完成 Apple 公证和 App 票据附加。缺少证书或公证失败时停止发布；准备方法见 [macOS 签名与公证](MACOS_SIGNING.md)。客户端仍提示新版本并打开 DMG 下载，由用户覆盖安装。
 
 Android 使用 Linux runner、Java 17 和仓库的 Gradle wrapper 构建正式 APK。必须沿用现有签名身份，在 GitHub Actions Secrets 中配置：
 

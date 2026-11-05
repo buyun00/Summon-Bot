@@ -7,6 +7,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export async function buildDesktop({ platform, arch, output }) {
   if (platform !== (process.platform === 'darwin' ? 'macos' : 'windows')) throw new Error('Build desktop packages on their target operating system');
   if (platform === 'macos') {
+    if (arch !== 'arm64') throw new Error('macOS supports Apple Silicon (arm64) only');
     const missing = ['CSC_LINK', 'CSC_KEY_PASSWORD', 'APPLE_API_KEY', 'APPLE_API_KEY_ID', 'APPLE_API_ISSUER'].filter(name => !process.env[name]);
     if (missing.length) throw new Error(`macOS Developer ID signing and notarization require: ${missing.join(', ')}`);
   }

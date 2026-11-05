@@ -43,7 +43,7 @@
         return `<section class="client-release-row"><div class="client-release-heading"><strong>${platformNames[platform]}</strong><small>${platform === 'android' ? '原生应用 · APK' : '桌面客户端'}</small></div><div class="client-release-actions">${records.length ? records.map(item => {
           const main = item.files.find(file => item.downloadUrl === file.url);
           const url = downloadUrl(item);
-          return `<div><span>${escape(item.version)}${platform !== 'android' ? ` · ${escape(item.arch)}` : ''}${main ? ` · ${size(main.size)}` : ''}${platform === 'macos' ? ' · 手动安装' : ''}</span>${url ? `<a class="secondary-button" href="${escape(url)}" download>下载${platform === 'android' ? ' APK' : ''}</a>` : ''}</div>`;
+          return `<div><span>${escape(item.version)}${platform !== 'android' ? ` · ${escape(platform === 'macos' ? 'Apple Silicon · 不支持 Intel' : item.arch)}` : ''}${main ? ` · ${size(main.size)}` : ''}${platform === 'macos' ? ' · 手动安装' : ''}</span>${url ? `<a class="secondary-button" href="${escape(url)}" download>下载${platform === 'android' ? ' APK' : ''}</a>` : ''}</div>`;
         }).join('') : '<span class="subtle">尚未发布</span>'}</div></section>`;
       }).join('')}<section class="client-release-row"><div class="client-release-heading"><strong>iOS</strong><small>原生应用</small></div><span class="subtle">暂不发布</span></section></div>`;
   }

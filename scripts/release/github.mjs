@@ -34,8 +34,8 @@ async function releaseMetadata(release, endpoint) {
 
 export function releaseDescription(metadata, repository) {
   const platform = { windows: 'Windows', macos: 'macOS', android: 'Android' }[metadata.platform];
-  const architecture = metadata.arch === 'universal'
-    ? (metadata.platform === 'macos' ? 'Intel / Apple Silicon 通用' : '通用版') : metadata.arch;
+  const architecture = metadata.platform === 'macos' ? 'Apple Silicon（M 系列芯片），不支持 Intel'
+    : metadata.arch === 'universal' ? '通用版' : metadata.arch;
   const url = `${githubBase(repository, metadata.platform, metadata.arch)}${encodeURIComponent(metadata.mainFile)}`;
   const instructions = {
     windows: '下载安装程序并运行，按提示完成安装。已安装的用户可通过应用内更新升级。',
@@ -47,7 +47,7 @@ export function releaseDescription(metadata, repository) {
     `## [下载 Summon Bot](${url})`, '', instructions, '',
     ...(metadata.notes?.trim() ? ['### 更新内容', '', metadata.notes.trim(), ''] : []),
     '---', '',
-    '其他平台：[Windows](https://github.com/' + repository + '/releases/tag/client-windows-x64) · [macOS](https://github.com/' + repository + '/releases/tag/client-macos-universal) · [Android](https://github.com/' + repository + '/releases/tag/client-android-universal)', '',
+    '其他平台：[Windows](https://github.com/' + repository + '/releases/tag/client-windows-x64) · [macOS](https://github.com/' + repository + '/releases/tag/client-macos-arm64) · [Android](https://github.com/' + repository + '/releases/tag/client-android-universal)', '',
     'iPhone / iPad 请通过 TestFlight 邀请安装。', '',
     '下方 Assets 中的 JSON、YML 和 blockmap 文件用于自动更新，无需手动下载。', '',
   ].join('\n');

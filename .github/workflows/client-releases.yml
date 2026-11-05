@@ -51,8 +51,8 @@ jobs:
           root.joinpath('distribution.p12').write_bytes(base64.b64decode(os.environ['SUMMON_MACOS_P12_BASE64'], validate=True))
           root.joinpath('AuthKey.p8').write_text(os.environ['SUMMON_ASC_PRIVATE_KEY'])
           PY
-      - name: Build, sign, notarize, and publish universal DMG and ZIP
-        run: npm run release:desktop -- --github
+      - name: Build, sign, notarize, and publish Apple Silicon DMG and ZIP
+        run: npm run release:desktop -- --github --arch arm64
         env:
           GH_TOKEN: ${{ github.token }}
           CSC_LINK: ${{ runner.temp }}/summon-macos-signing/distribution.p12

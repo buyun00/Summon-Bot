@@ -1,6 +1,6 @@
 export const releaseTargets = [
   ['windows', 'x64'], ['windows', 'arm64'],
-  ['macos', 'universal'], ['android', 'universal'],
+  ['macos', 'arm64'], ['android', 'universal'],
 ];
 export const validTarget = (platform, arch) => releaseTargets.some(target => target[0] === platform && target[1] === arch);
 export const releaseTag = (platform, arch) => `client-${platform}-${arch}`;
