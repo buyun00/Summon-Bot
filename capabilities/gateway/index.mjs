@@ -21,7 +21,7 @@ import { BUILTIN_CAPABILITIES } from '../services/builtin.mjs';
 import { deployCapability } from '../services/publish.mjs';
 import { coreTools } from '../../bot/src/capabilities/core-tools.mjs';
 import { assertToolPolicy, permitsTool, permitsMaintenanceTool, taskMode } from '../../bot/src/capabilities/task-policy.mjs';
-import { taskSource } from '../../bot/src/context/sources.mjs';
+import { taskSource,workExecution } from '../../bot/src/context/sources.mjs';
 import { notificationParts } from '../../bot/src/runtime/notifications.mjs';
 import { CapabilityCatalog,catalogTools } from '../services/catalog.mjs';
 import { UsageLedger,readUsage,usageRange,finishUsageTotals,emptyUsageTotals,USAGE_PRICING } from '../../bot/src/agent/usage.mjs';
@@ -160,7 +160,7 @@ export async function startGateway(options={}) {
     }
     if(catalogTools.some(tool=>tool.name===name)){
       const current=task?.input?.current||task?.input,work=task?.workId&&await manager.readState(actor,db=>db?.getRecord('works',task.workId));
-      const source=work?.sources?.findLast(item=>item.roomId)||{};
+      const source=work?await manager.readState(actor,db=>workExecution(task,db).authorization?.source||{}):{};
       const provenance=task?{workId:task.workId,conversationId:task.conversationId,originRoomId:current?.room?.id||source.roomId,
         originMessageId:current?.trigger?.id||source.replyTo,sourceRefs:[`task:${task.id}`]}:undefined;
       return catalog.call(name,{...args,...(provenance?{_context:provenance}:{})},{actor,signal,task});

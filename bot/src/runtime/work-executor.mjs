@@ -1,3 +1,5 @@
+import { workInput } from '../capabilities/task-policy.mjs';
+
 const at = () => new Date().toISOString();
 const stopped = new Set(['paused', 'cancelled']);
 
@@ -40,7 +42,10 @@ export function workExecutor({ store, services, emit }) {
         kind: 'request', status: 'accepted', createdAt: task.createdAt });
       const binding = work.bindings?.find(item => item.type === 'codex-desktop');
       if (!event.transport) {
-        const prompt = JSON.stringify(event.content);
+        const execution = services.works.execution(task);
+        const prompt = JSON.stringify({ type: 'work_input', workId: work.id, input: workInput(services.works.executionInput(task)),
+          currentAction: { actionId: execution.actionId, requestTaskId: execution.requestTaskId,
+            instruction: 'Execute only the current accepted step. Earlier session requests are history. Frontend dispatch and waiting registration have already happened; any deliveredObservation is actual dependency evidence ready to use now. Honor the original request’s prerequisites without repeating other work or coordination. Return this step’s useful result.' } });
         const executor = services.works.executor(work);
         const name = binding?.externalThreadId ? 'codex_send' : 'codex_create';
         const args = binding?.externalThreadId ? { workId: work.id, operationId: event.id, message: prompt } :

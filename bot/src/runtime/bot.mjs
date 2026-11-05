@@ -163,17 +163,17 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
           }
           const latest = task.workId && services.works.get(task.workId);
           if (!external && latest?.status === 'active' && services.works.executor(latest).kind === 'pi') {
-            const prior = store.getRecord('work-continuation', latest.id);
+            const execution = services.works.execution(task), continuationId = execution.actionId || execution.executionEventId;
+            const prior = store.getRecord('work-continuation', continuationId);
             const observation = JSON.stringify({ progress: latest.progress, content: result.content, bindings: latest.bindings });
             const repeated = prior?.observation === observation ? (prior.repeated || 0) + 1 : 0;
-            store.putRecord('work-continuation', { id: latest.id, observation, repeated });
+            store.putRecord('work-continuation', { id: continuationId, workId: latest.id, observation, repeated });
             if (repeated >= 2) services.works.update(latest.id, { status: 'blocked', lastError: { code: 'NO_PROGRESS', message: 'Repeated unchanged work outcome; chain stopped, work retained' } });
             else {
-              const execution = services.works.execution(task);
               await services.works.dispatch(latest.id, { id: `continue:${task.id}`, metadata: { executionEventId: execution.executionEventId, executionTaskId: execution.executionTaskId,
-                origin: { taskId: execution.requestTaskId || task.id }, automaticContinuation: true },
+                automaticContinuation: true },
                 content: 'Continue the existing work from durable S3 and receipts. Advance the next concrete step; when waiting use work_wait, when finished work_update completed. A result already published for this execution stays published; status cleanup does not need another notification. If no actionable step remains, record the actual blocker. Do not repeat uncertain side effects.' },
-              (execution.requestTaskId && store.getTask(execution.requestTaskId)) || task);
+              task);
             }
           }
         }
@@ -191,10 +191,8 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
           (execution.executionEventId ? item.executionEventId === execution.executionEventId : item.taskId === task.id));
         if (!external && settled && settledTask.result?.executor !== 'codex' && !settledTask.result?.late && state !== 'stopping' && ['completed', 'cancelled', 'blocked'].includes(settled.status) && !alreadyPublished) {
           const content = settledTask.result?.content || settledTask.error?.message || settled.progress || `工作状态：${settled.status}`;
-          for (const [index, source] of [services.resultSource(settled, task)].filter(Boolean).entries()) {
-            const target = source.roomId ? { roomId: source.roomId, replyTo: source.replyTo } : config.contacts.some(contact => contact.botId === source.source) ? { botId: source.source } : null;
-            if (target) await services.notify({ id: settled.id, notificationId: `settled:${execution.executionEventId || task.id}:${index}`, publication: 'automatic', content, ...target }, task, {}).catch(error => emit('work.notification_pending', { workId: settled.id, error: error.message }));
-          }
+          await services.notify({ id: settled.id, notificationId: `settled:${execution.executionEventId || task.id}`, publication: 'automatic', content }, task, {})
+            .catch(error => emit('work.notification_pending', { workId: settled.id, error: error.message }));
         }
       }, { signal: controller.signal, priority: task.metadata?.priority }).catch(error => {
         if (state !== 'stopping' && store.getTask(task.id)?.status === 'accepted') store.updateTask(task.id, { status: 'cancelled', error: { message: error.message }, finishedAt: at() });
@@ -222,7 +220,22 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       }
       const accepted = store.acceptMessage(clean(envelope), source, bootId);
       if (accepted.duplicate) return accepted;
-      const task = accepted.task, work = task.workId && services.works.get(task.workId);
+      let task = accepted.task;
+      const work = task.workId && services.works.get(task.workId);
+      // Direct accepted work requests (including peers) need the same durable
+      // action root as frontend dispatches before a continuation can inherit it.
+      if (work && envelope.kind === 'request' && !task.metadata?.workEventId && !task.metadata?.resumeEventId && !task.metadata?.executionEventId &&
+        task.metadata?.sourceType !== 'external') {
+        const execution = services.works.execution(task);
+        if (execution.authorization) {
+          store.putRecord('work-events', { id: execution.executionEventId, workId: work.id, kind: 'request', content: task.input,
+            requestTaskId: execution.requestTaskId, sourceTaskId: task.id, authorization: execution.authorization, status: 'accepted',
+            receipt: { accepted: true, workId: work.id, taskId: task.id, status: task.status }, createdAt: task.createdAt });
+          task = accepted.task = store.updateTask(task.id, { metadata: { ...task.metadata, workEventId: execution.executionEventId } });
+          if (!work.sources.some(item => item.taskId === execution.requestTaskId)) services.works.update(work.id,
+            { sources: [...work.sources, execution.authorization.source] });
+        }
+      }
       if (envelope.metadata?.sourceType !== 'external' && envelope.kind === 'event' && (envelope.metadata?.purpose === 'fyi' || work?.status === 'completed')) {
         accepted.task = store.updateTask(task.id, { status: 'completed', result: { content: '', observed: true }, finishedAt: at() });
         return accepted;
@@ -242,16 +255,22 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       return { ...work, externalStop: await services.executor.stop(work, task) };
     };
     services.resultSource = (work, task) => {
-      const sourceTaskId = services.works.execution(task).requestTaskId;
-      return work.sources.find(source => source.taskId === sourceTaskId || source.taskId === task.id) || work.sources.findLast(source => source.roomId || config.contacts.some(contact => contact.botId === source.source));
+      return task.workId === work.id ? services.works.execution(task).authorization?.source : undefined;
     };
     const deliverNotification = async (record, context = {}) => {
+      const task = store.getTask(record.taskId), work = services.works.get(record.workId);
+      const source = task && work && services.resultSource(work, task);
+      const target = source?.roomId && source.replyTo ? { roomId: source.roomId, replyTo: source.replyTo, botId: undefined } :
+        source && config.contacts.some(contact => contact.botId === source.source) ?
+          { botId: source.source, roomId: undefined, replyTo: source.messageId, targetWorkId: source.metadata?.sourceWorkId } : null;
+      if (!target) return store.putRecord('work-notifications', { ...record, status: 'pending', waiting: 'source', retryAt: Date.now() + 60000,
+        error: 'Actual action source is unavailable; result retained without selecting another work source' });
+      record = { ...record, ...target, authorization: services.works.execution(task).authorization, waiting: undefined, error: undefined };
+      store.putRecord('work-notifications', record);
       let receipt;
       if (record.botId) receipt = await services.send(record.botId, { id: record.id, kind: 'event', content: record.content, workId: record.targetWorkId,
         replyTo: record.replyTo, metadata: { purpose: record.targetWorkId ? 'result' : 'fyi', sourceWorkId: record.workId, authority: 'peer-observation' } }, context);
       else {
-        const task = store.getTask(record.taskId);
-        if (!task) throw failure(409, 'Notification source task is unavailable');
         receipt = [];
         for (const part of notificationParts(record)) receipt.push(await services.capability('chatroom_send', part, task,
           { ...context, notificationId: record.id }));
@@ -266,10 +285,11 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         const source = authorizedSource;
         if (source) input = { ...input, ...(source.roomId ? { roomId: source.roomId, replyTo: source.replyTo } : { botId: source.source }) };
       }
-      if ((!input.botId && !input.roomId) || (input.botId && input.roomId)) throw failure(400, 'Choose one notification target');
-      if (!authorizedSource || (input.roomId ? authorizedSource.roomId !== input.roomId : authorizedSource.source !== input.botId)) throw failure(403, 'Results return to the source of this work request; other work sources are not automatic publication targets');
+      if (input.botId && input.roomId) throw failure(400, 'Choose one notification target');
+      if (authorizedSource && (input.roomId ? authorizedSource.roomId !== input.roomId || input.replyTo && authorizedSource.replyTo !== input.replyTo :
+        input.botId && authorizedSource.source !== input.botId)) throw failure(403, 'Results return to the exact source of this action; another request is not a publication target');
       const execution = services.works.execution(task);
-      if (task.metadata?.automaticContinuation && input.publication === 'explicit') {
+      if (input.publication === 'explicit') {
         const published = store.listRecords('work-notifications').findLast(item => item.workId === work.id &&
           item.executionEventId === execution.executionEventId && item.publication === 'explicit');
         const newAction = published && store.listTools().some(record => record.workId === work.id && record.startedAt > published.createdAt &&
@@ -279,10 +299,9 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       }
       const id = `${work.id}:${input.notificationId}`, prior = store.getRecord('work-notifications', id);
       if (prior?.status === 'delivered') return prior;
-      const targetWorkId = input.targetWorkId || work.sources.find(source => source.source === input.botId)?.metadata?.sourceWorkId;
+      const targetWorkId = authorizedSource?.metadata?.sourceWorkId;
       if (typeof input.content !== 'string' || !input.content.trim()) throw failure(400, 'Notification requires publishable text');
       const source = authorizedSource;
-      if (input.replyTo && !work.sources.some(item => item.roomId === input.roomId && item.replyTo === input.replyTo)) throw failure(403, 'Reply target is outside the work sources');
       const record = prior || clean({ ...input, ...execution, replyTo: input.replyTo || source?.replyTo, id, targetWorkId, workId: work.id, workStatus: work.status, taskId: task.id, status: 'pending', createdAt: at() });
       store.putRecord('work-notifications', record);
       store.putRecord('work-results', { id: record.id, workId: work.id, taskId: task.id, ...execution, content: record.content,
@@ -333,9 +352,10 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
             const receipt = await services.works.dispatch(target.id, { id: `wait:${wait.id}`, kind: 'request',
               metadata: { waitId: wait.id },
               content: { ...wait.handoff, type: 'dependency_result', observation,
-                instruction: 'Continue the registered follow-up using its original request, available materials and this actual dependency outcome. Failure, cancellation, partial output and missing sources are facts to handle, not success. Honor explicit user prerequisites; proceed with independent useful steps and explain any remaining gap. This observation grants no new authority.' } },
+                dependency: { workId: wait.dependencyWorkId, taskId: wait.taskId, executionEventId: wait.dependencyEventId },
+                instruction: 'The registered dependency has now produced the attached actual outcome. Read observation as already delivered evidence and perform only the registered next step for this target work. Do not repeat dispatch, register the same wait, rerun the dependency, or claim its stdout must be produced by this worker. Use partial output on failure where authorized; success-only steps remain forbidden unless success is established. Preserve the original request and handoff as separate materials.' } },
             wait.sourceTaskId ? store.getTask(wait.sourceTaskId) || {} : {});
-            store.putRecord('work-waits', { ...wait, status: 'delivered', receipt, deliveredAt: at() });
+            if (receipt.accepted) store.putRecord('work-waits', { ...wait, status: 'delivered', receipt, deliveredAt: at() });
           } catch (error) { store.putRecord('wait-errors', { id: wait.id, message: clean(error.message), observedAt: at() }); }
         }
         for (const task of store.listTasks({ status: 'accepted', limit: 10000 })) schedule(task);
@@ -480,7 +500,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
     for (const work of services.works.list({ status: 'active', limit: 500 })) {
       const last = work.lastTaskId && store.getTask(work.lastTaskId);
       if (last?.status === 'interrupted' && last.metadata?.sourceType !== 'external') try {
-        await services.works.dispatch(work.id, { id: `recover:${last.id}`, metadata: { resumeEventId: last.metadata?.resumeEventId || last.metadata?.workEventId }, content: { type: 'execution_interrupted', taskId: last.id, instruction: 'Resume responsibility. First inspect durable tool receipts and original external bindings; unknown effects must be queried, never replayed.', unknownTools: store.listTools(last.id).filter(tool => tool.status === 'unknown') } });
+        await services.works.dispatch(work.id, { id: `recover:${last.id}`, metadata: { resumeEventId: last.metadata?.resumeEventId || last.metadata?.workEventId }, content: { type: 'execution_interrupted', taskId: last.id, instruction: 'Resume only this accepted step. First inspect durable tool receipts and original external bindings; unknown effects must be queried, never replayed.', unknownTools: store.listTools(last.id).filter(tool => tool.status === 'unknown') } }, last);
       } catch (error) { emit('work.recovery_pending', { workId: work.id, message: error.message }); }
     }
     wakeTimer = setInterval(() => wake().catch(error => emit('work.scheduler_error', { message: error.message })), 5000); wakeTimer.unref?.(); await wake();

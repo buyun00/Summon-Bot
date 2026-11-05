@@ -106,10 +106,18 @@ export function coreTools(services, task) {
         const receipt = await services.works.dispatch(work.id, { id: actionId(args, ctx, 'eventId'), kind: frontend ? 'request' : 'event', content, metadata: { correction: args.correction === true, resume: frontend && userRequest, priority: 'foreground' } }, task);
         return { ...receipt, acceptance: modelText(args.acceptance), evidenceWarnings: content.evidenceWarnings };
       }),
-    tool('work_wait', 'Save waiting for a precise work/peer execution result or deadline. Waiting for the same Codex action only observes its direct result and never sends another prompt. Use mode=follow_up only for an explicitly authorized new action after the dependency, not to report its result. Different dependency/target works default to follow_up. Finish other independent actions in this turn.',
+    tool('work_wait', 'Save a wait for a precise execution result or deadline. For “wait for B, then let A use B’s output”, set targetWorkId=A, dependencyWorkId=B, taskId=B’s accepted task and instruction=the step A should perform. This includes A explaining partial output after B fails; keep success-only prerequisites in the instruction. The runtime derives follow_up for this cross-work step even if an optional mode conflicts. Waiting only to receive the same action’s already published result is observe and never sends another prompt. Supply no new step unless the user authorized one. Missing IDs can be recovered from unique accepted actions; explicit invalid work IDs are rejected. Finish other independent actions and reminders in this turn.',
       object({ id: string, waitId: string, taskId: string, botId: string, until: string, event: string,
         mode: { type: 'string', enum: ['observe', 'follow_up'] }, dependencyWorkId: string, targetWorkId: string, ...handoffFields }), 'write', async (args, ctx) => {
-        const work = await services.sources.requireWork(workId(args), task);
+        let targetArgs = args;
+        if (!(args.id ?? args.workId)) {
+          const hint = args.targetWorkId || task.workId || source.metadata?.referencedWorkId || source.input?.trigger?.replyWorkId;
+          const dependency = args.taskId && (!args.botId || args.botId === services.works.botId) && store.getTask(args.taskId);
+          const accepted = store.listRecords('work-events').filter(event => event.requestTaskId === task.id && event.receipt?.accepted);
+          const uniqueWorks = [...new Set(accepted.map(event => event.workId))];
+          targetArgs = { ...args, id: hint || dependency?.workId || args.dependencyWorkId || (uniqueWorks.length === 1 ? uniqueWorks[0] : undefined) };
+        }
+        const work = await services.sources.requireWork(workId(targetArgs), task);
         if (args.dependencyWorkId) await services.sources.requireWork(args.dependencyWorkId, task);
         if (args.targetWorkId) await services.sources.requireWork(args.targetWorkId, task);
         let unresolvedTaskId;
@@ -121,7 +129,7 @@ export function coreTools(services, task) {
             const dependency = store.getTask(args.taskId);
             if (!dependency || args.dependencyWorkId && dependency.workId !== args.dependencyWorkId) {
               const candidates = store.listRecords('work-events').filter(event => event.requestTaskId === task.id &&
-                event.workId === args.dependencyWorkId && event.receipt?.accepted);
+                (!args.dependencyWorkId || event.workId === args.dependencyWorkId) && event.receipt?.accepted);
               if (candidates.length === 1) args = { ...args, taskId: candidates[0].receipt.taskId };
               else { unresolvedTaskId = args.taskId; args = { ...args, taskId: undefined }; }
             } else if (dependency.conversationId !== task.conversationId) await services.sources.requireWork(dependency.workId, task);

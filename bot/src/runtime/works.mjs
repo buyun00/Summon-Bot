@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { taskSource } from '../context/sources.mjs';
+import { taskSource, workExecution } from '../context/sources.mjs';
 import { modelText, boundedNumber, durationSeconds } from '../context/model-input.mjs';
 
 const now = () => new Date().toISOString();
@@ -35,24 +35,25 @@ export class WorkService {
       this.store.putRecord('works', record);
       if (sourceKey) this.store.putRecord('work-handoffs', { id: sourceKey, workId: id, createdAt: now() });
       if (input.initialHandoff) this.store.putRecord('work-events', { id: `${id}:${input.operationId || 'initial'}`, workId: id,
-        kind: 'request', content: input.initialHandoff, requestTaskId: task.id, sourceTaskId: task.id, status: 'pending', createdAt: now() });
+        kind: 'request', content: input.initialHandoff, requestTaskId: task.id, sourceTaskId: task.id,
+        authorization: this.authorization(task, `${id}:${input.operationId || 'initial'}`), status: 'pending', createdAt: now() });
       this.store.appendEvent('work.created', { work: record }, { workId: id, conversationId: record.conversationId });
     });
     return record;
   }
   source(task) { const { input, ...source } = taskSource(task, this.store); return source; }
   executor(work) { return work.bindings?.some(binding => binding.type === 'codex-desktop') ? { ...work.executor, kind: 'codex' } : work.executor || { kind: 'pi' }; }
-  execution(task = {}) {
-    task = task.id ? this.store.getTask(task.id) || task : task;
-    const input = task.input?.current || task.input;
-    const id = task.metadata?.executionEventId || (task.metadata?.sourceType === 'external' ? input?.operationId : undefined) || task.metadata?.resumeEventId || task.metadata?.workEventId;
-    const candidate = id && this.store.getRecord('work-events', id);
-    const event = candidate?.workId === task.workId ? candidate : null;
-    const root = event?.metadata?.executionEventId ? this.store.getRecord('work-events', event.metadata.executionEventId) || event : event;
-    return { executionEventId: root?.id || task.metadata?.executionEventId || (task.id ? `task:${task.id}` : undefined),
-      executionTaskId: root?.receipt?.taskId || task.metadata?.executionTaskId || task.id,
-      requestTaskId: root?.requestTaskId || task.metadata?.origin?.taskId,
-      operationId: root?.transport ? root.id : undefined, turnId: input?.turnId };
+  execution(task = {}) { return workExecution(task, this.store); }
+  authorization(task, actionId) {
+    if (task.workId) return this.execution(task).authorization;
+    const accepted = task.id && this.store.getTask(task.id);
+    return accepted ? { actionId, requestTaskId: accepted.id, source: this.source(accepted) } : undefined;
+  }
+  executionInput(task) {
+    const execution = this.execution(task);
+    const original = execution.executionEventId && this.store.getRecord('work-events', execution.executionEventId)?.content;
+    return task.metadata?.automaticContinuation || task.metadata?.resumeEventId ?
+      { type: 'work_continuation', acceptedStep: original, continuation: task.input } : task.input;
   }
   update(id, input) {
     return this.store.transaction(() => {
@@ -84,11 +85,22 @@ export class WorkService {
       const source = this.source(task);
       if (!work.sources.some(item => item.taskId === source.taskId)) this.update(id, { sources: [...work.sources, source] });
     }
-    const intent = prior || this.store.putRecord('work-events', this.clean({ id: `${id}:${eventId}`, workId: id,
-      kind: input.kind || 'event', content: input.content, requestTaskId: task.id, sourceTaskId: task.id, metadata: input.metadata, status: 'pending', createdAt: now() }));
+    const inherited = task.workId ? this.execution(task) : null;
+    const wait = input.metadata?.waitId && this.store.getRecord('work-waits', input.metadata.waitId);
+    const authorization = (wait?.targetWorkId === id && wait.authorization) || this.authorization(task, `${id}:${eventId}`);
+    let intent = prior || this.store.putRecord('work-events', this.clean({ id: `${id}:${eventId}`, workId: id,
+      kind: input.kind || 'event', content: input.content, requestTaskId: authorization?.requestTaskId, sourceTaskId: task.id, authorization,
+      metadata: { ...input.metadata, ...(inherited?.executionEventId ? { executionEventId: inherited.executionEventId } : {}) }, status: 'pending', createdAt: now() }));
+    if (!intent.authorization && intent.requestTaskId) {
+      const sourceTask = this.store.getTask(intent.requestTaskId);
+      const saved = sourceTask && this.authorization(sourceTask, intent.id);
+      if (saved) intent = this.store.putRecord('work-events', { ...intent, authorization: saved, requestTaskId: saved.requestTaskId });
+    }
+    if (!intent.authorization?.source) return { accepted: false, workId: id, status: 'pending', unresolved: true,
+      warning: '已保留这一步，但尚未确定实际授权来源；不会按工作最新消息猜测来源或执行。' };
     const envelope = { id: `work:${id}:${eventId}`, to: this.botId, kind: intent.kind, workId: id,
       conversationId: work.conversationId, content: intent.content, metadata: { authority: 'internal-event', sourceType: 'internal', actor: this.botId, ...intent.metadata,
-        workEventId: intent.id, origin: intent.metadata?.origin || { taskId: task.id, messageId: task.messageId, source: task.source }, priority: intent.metadata?.priority || 'background' } };
+        workEventId: intent.id, origin: intent.authorization?.source, priority: intent.metadata?.priority || 'background' } };
     if (envelope.content === undefined) fail('Work event requires content');
     const result = await this.accept(envelope, task.source || 'controller');
     const receipt = { accepted: true, duplicate: result.duplicate, workId: id, taskId: result.task.id, status: result.task.status, executor: this.executor(work).kind };
@@ -139,9 +151,14 @@ export class WorkService {
     if (previous) return { accepted: true, workId: id, waitId, status: previous.status };
     const targetWorkId = input.targetWorkId || id;
     if (!this.get(targetWorkId)) fail('Unknown follow-up work', 404);
-    const mode = input.mode === 'observe' || input.mode === 'follow_up' ? input.mode :
-      input.dependencyWorkId === targetWorkId ? 'observe' : 'follow_up';
+    const instruction = modelText(input.handoff?.handoff?.instruction).trim();
+    const crossWorkStep = input.dependencyWorkId && input.dependencyWorkId !== targetWorkId && instruction;
+    // A concrete handoff to another work is an action even when its purpose is
+    // to explain partial output. A mode hint cannot discard that accepted step.
+    // Merely observing the same execution never creates another send.
+    const mode = crossWorkStep || task.workId && input.mode !== 'observe' || instruction && input.mode === 'follow_up' ? 'follow_up' : 'observe';
     const waiting = this.clean({ ...input, mode, id: waitId, workId: id, targetWorkId, sourceTaskId: task.id,
+      authorization: this.authorization(task, waitId),
       since: task.createdAt || now(), status: 'pending', createdAt: now() });
     this.store.putRecord('work-waits', waiting);
     if (task.id && !task.workId) {
