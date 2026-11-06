@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { serveClientReleases } from './releases.mjs';
 import { createWebAuth } from './auth.mjs';
+import { matchesOrigin, originForHost } from './origins.mjs';
+import { workspaceProof } from './workspace-probe.mjs';
 
 const defaultFrontend = fileURLToPath(new URL('../frontend/', import.meta.url));
 const assets = new Map([
@@ -34,31 +36,47 @@ const showcaseMime = new Map([
 ]);
 
 /** The Web process owns only HTTP/static assets. Business state and Agents stay outside. */
-export async function startWeb({ host = '127.0.0.1', port = 8787, publicOrigin = '', frontendRoot = defaultFrontend,
+export async function startWeb({ host = '127.0.0.1', port = 8787, getRemoteOrigins = async () => [], frontendRoot = defaultFrontend,
   gatewayUrl, gatewayToken, accessToken, clientReleaseRoot, webRelease, requestTimeoutMs = 120000 } = {}) {
-  const authorize = createWebAuth(accessToken, publicOrigin);
+  const authorize = createWebAuth(accessToken);
   const upstream = new URL(gatewayUrl);
   if (!['http:', 'https:'].includes(upstream.protocol) || upstream.username || upstream.password) throw new Error('Invalid gateway URL');
   if (!gatewayToken) throw new Error('gatewayToken is required');
-  if (publicOrigin && new URL(publicOrigin).origin !== publicOrigin) throw new Error('publicOrigin must be an origin without a path');
   // Keep symbol definitions in the document so rerendered icons never reload an external SVG.
   const modelIconSprite = (await readFile(join(frontendRoot, 'icons/ai-brands.svg'), 'utf8'))
     .replace('<svg ', '<svg aria-hidden="true" focusable="false" style="position:absolute;width:0;height:0;overflow:hidden;pointer-events:none;fill:currentColor;stroke:none" ');
-  const publicHost = publicOrigin ? new URL(publicOrigin).host.toLowerCase() : null;
   const active = new Set();
   let closing = false;
   const server = createServer(async (req, res) => {
     try {
       if (closing) return json(res, 503, { error: 'Web service is stopping' });
-      const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-      if (!authorize(req, res, url)) return;
+      const localOrigins = [host, ...(host === '127.0.0.1' ? ['localhost'] : [])].map(name => `http://${name}:${server.address().port}`);
+      const remote = await getRemoteOrigins();
+      const requestOrigin = originForHost(req.headers.host, [...remote, ...localOrigins]);
+      if (!requestOrigin || !req.url?.startsWith('/') || req.url.startsWith('//')) return json(res, 403, { error: '工作区地址未登记' });
+      if (req.headers['tailscale-funnel-request'] === '?1') return json(res, 403, { error: '工作区使用私网 Tailscale Serve' });
+      const url = new URL(req.url, requestOrigin);
+      if (url.origin !== requestOrigin) return json(res, 403, { error: '工作区地址未登记' });
+      const local = localOrigins.includes(requestOrigin) && !req.headers['x-forwarded-host'] && !req.headers.forwarded;
+      // The device's update feed contains public packages and has no workspace credentials.
+      const origin = req.headers.origin;
+      const releaseRequest = url.pathname === '/api/releases' || url.pathname.startsWith('/api/releases/');
+      const localRelease = releaseRequest && local && (!origin || [requestOrigin, ...remote].some(item => matchesOrigin(origin, item)));
+      if (localRelease && await serveClientReleases(req, res, url, clientReleaseRoot, webRelease, { local, origin })) return;
+      if (origin !== undefined && !matchesOrigin(origin, requestOrigin)) return json(res, 403, { error: '只接受同源工作台请求' });
+      if (req.method === 'GET' && url.pathname === '/auth/instance') {
+        const challenge = url.searchParams.get('challenge') || '';
+        return /^[A-Za-z0-9_-]{43}$/.test(challenge) ? json(res, 200, { proof: workspaceProof(accessToken, challenge) })
+          : json(res, 400, { error: '无效的工作区探测请求' });
+      }
+      if (!authorize(req, res, url, requestOrigin)) return;
       if (url.pathname === '/sw.js' && ['GET', 'HEAD'].includes(req.method)) {
         // Retire already-installed workers. This endpoint never installs a new offline application.
         const script = `self.addEventListener('install',()=>self.skipWaiting());self.addEventListener('activate',event=>event.waitUntil((async()=>{for(const name of await caches.keys())if(name.startsWith('relay-shell-'))await caches.delete(name);await self.clients.claim();await self.registration.unregister();})()));`;
         res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store', 'Service-Worker-Allowed': '/' });
         res.end(req.method === 'HEAD' ? undefined : script); return;
       }
-      if (await serveClientReleases(req, res, url, clientReleaseRoot, webRelease)) return;
+      if (releaseRequest && await serveClientReleases(req, res, url, clientReleaseRoot, webRelease, { local })) return;
       if (url.pathname === showcasePrefix.slice(0, -1)) {
         res.writeHead(302, { Location: showcasePrefix }); res.end(); return;
       }
@@ -81,9 +99,6 @@ export async function startWeb({ host = '127.0.0.1', port = 8787, publicOrigin =
         if (!['GET', 'HEAD', 'POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method)) return json(res, 405, { error: '不支持此方法' });
         let body;
         if (!['GET', 'HEAD'].includes(req.method)) {
-          const origin = req.headers.origin;
-          const publicRequest = publicOrigin && origin === publicOrigin && req.headers.host?.toLowerCase() === publicHost;
-          if (origin && origin !== `http://${req.headers.host}` && !publicRequest) return json(res, 403, { error: '只接受同源工作台请求' });
           if (!req.headers['content-type']?.toLowerCase().startsWith('application/json')) return json(res, 415, { error: '请求需要 application/json' });
           const limit = req.method === 'POST' && url.pathname === '/api/attachments' ? 29 * 1024 * 1024 : 1024 * 1024;
           const chunks = []; let size = 0;

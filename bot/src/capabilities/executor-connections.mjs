@@ -16,7 +16,7 @@ export function desktopExecutorState({ dataRoot, connectionStore } = {}) {
     label: enabled ? '已接入' : detected ? '待接入' : '未检测到',
     note: enabled ? '已允许使用运行 Summon Bot 的这台主机上的 Codex。实际执行由独立工作完成。'
       : detected ? '检测到 Codex 连接器，待手动接入。接入前不读取额度，也不调用 Codex。'
-        : '未检测到这台主机上的 Codex 桌面连接器。' };
+        : '待在部署机接入。安装包已包含连接器，请先打开 Codex 并准备本机会话。' };
 }
 
 export function requireDesktopExecutor(dataRoot) {

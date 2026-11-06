@@ -35,6 +35,16 @@ class SummonApiClient(val baseURL: URI, private val token: String) {
         .callTimeout(180, TimeUnit.SECONDS)
         .build()
 
+    fun verifyWorkspace() {
+        val probe = http.newBuilder().callTimeout(12, TimeUnit.SECONDS).followRedirects(false).followSslRedirects(false).build()
+        val request = build("/api/health", "GET", null, "application/json")
+        probe.newCall(request).execute().use { response ->
+            val payload = runCatching { SummonJson.parse(response.body?.string().orEmpty()) }.getOrNull()
+            if (!response.isSuccessful) throw SummonApiException.http(response.code, payload?.get("error")?.stringValue.orEmpty())
+            if (payload?.get("service")?.string != "summon-capabilities") throw SummonApiException.invalidResponse
+        }
+    }
+
     fun requestJson(path: String, method: String = "GET", body: SummonJson? = null): SummonJson {
         val (responseBody, code) = execute(path, method, body, "application/json")
         if (code !in 200..299) {

@@ -6,10 +6,14 @@ import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { readJson, writeJson, within } from '../build/files.mjs';
 import { inspectServiceLock } from './service-lock.mjs';
+import { migratePublicOrigin } from './remote-config.mjs';
 
 const pause = milliseconds => new Promise(resolvePause => setTimeout(resolvePause, milliseconds));
 export const deploymentPath = dataRoot => join(resolve(dataRoot), 'config', 'deployment.json');
-export const serviceRunPath = (dataRoot, type) => join(dataRoot, type === 'web' ? 'web' : 'capabilities/gateway', 'run', 'current.json');
+export const serviceFolders = { web: 'web', gateway: 'capabilities/gateway', 'codex-connector': 'connectors/codex-desktop-api', cloudflared: 'connectors/cloudflared' };
+export const serviceRoot = (dataRoot, type) => join(dataRoot, serviceFolders[type]);
+export const serviceRunPath = (dataRoot, type) => join(serviceRoot(dataRoot, type), 'run', 'current.json');
+export const bundledNode = releaseRoot => join(releaseRoot, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node');
 const token = () => randomBytes(32).toString('base64url');
 const transientStartupHandshake = error => error.code === 'SERVICE_IDENTITY_UNAVAILABLE'
   && ['SERVICE_HANDSHAKE_TIMEOUT', 'SERVICE_HANDSHAKE_INCOMPLETE', 'ECONNRESET', 'EPIPE'].includes(error.cause?.code);
@@ -19,12 +23,13 @@ export async function initializeDeployment({ dataRoot, releaseRoot, defaultCwd, 
   if (within(releaseRoot, dataRoot) || within(dataRoot, releaseRoot)) throw new Error('Deployment code and data roots must be disjoint');
   const path = deploymentPath(dataRoot);
   if (existsSync(path)) return { created: false, configPath: path, config: await readJson(path) };
-  const config = { schemaVersion: 2, dataRoot, releaseRoot, defaultCwd: resolve(defaultCwd || join(dataRoot, 'workspace')),
-    runIntent: 'running', publicOrigin, gatewayToken: token(), controlToken: token(),
+  const config = { schemaVersion: 3, dataRoot, releaseRoot, defaultCwd: resolve(defaultCwd || join(dataRoot, 'workspace')),
+    runIntent: 'running', gatewayToken: token(), controlToken: token(),
     environmentFile: join(dataRoot, 'config', 'runtime.env'), web: { host: '127.0.0.1', port: Number(port), accessToken: token() },
     gateway: { host: '127.0.0.1', port: 0 },
     model: { provider: 'deepseek', model: 'deepseek-flash', baseUrl: 'https://api.deepseek.com/v1', apiKeyEnv: 'DEEPSEEK_API_KEY', contextWindow: 1048576, maxTokens: 393216, thinkingLevel: 'high' } };
   await mkdir(config.defaultCwd, { recursive: true });
+  await migratePublicOrigin(dataRoot, publicOrigin);
   await writeJson(path, config);
   return { created: true, configPath: path, config };
 }
@@ -68,9 +73,9 @@ export async function launchService(config, type, { foreground = false, timeoutM
   if (current.state !== 'stopped') throw new Error(`${type} identity is ${current.state}; refusing to launch a duplicate`);
   const entry = join(config.releaseRoot, 'scripts/installation/service.mjs');
   if (!existsSync(entry)) throw new Error(`Missing service entry: ${entry}`);
-  const logRoot = join(config.dataRoot, type === 'web' ? 'web' : 'capabilities/gateway', 'logs');
+  const logRoot = join(serviceRoot(config.dataRoot, type), 'logs');
   await mkdir(logRoot, { recursive: true });
-  const bundled = join(config.releaseRoot, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node');
+  const bundled = bundledNode(config.releaseRoot);
   const child = spawn(existsSync(bundled) ? bundled : process.execPath,
     [entry, '--type', type, '--config', deploymentPath(config.dataRoot)],
     { cwd: config.defaultCwd, env: await deploymentEnvironment(config), detached: !foreground, windowsHide: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
@@ -113,7 +118,9 @@ export async function startSystem(config, { foreground = false, respectIntent = 
   if (config.runIntent === 'stopped') { config = { ...config, runIntent: 'running' }; await writeJson(deploymentPath(config.dataRoot), config); }
   const gateway = await launchService(config, 'gateway', { foreground });
   const web = await launchService(config, 'web', { foreground });
-  return { state: 'ready', gateway, web };
+  const { restoreAuxiliaries } = await import('./auxiliaries.mjs');
+  const auxiliaries = await restoreAuxiliaries(config);
+  return { state: 'ready', gateway, web, auxiliaries };
 }
 
 export async function stopService(config, type) {
@@ -164,7 +171,9 @@ export async function stopSystem(config) {
   const stoppedGateway = await stopService(config, 'gateway');
   const supervisor = await capabilitySupervisor(config), capabilities = [];
   if (supervisor) for (const service of await supervisor.list()) capabilities.push(await supervisor.stop(service.id, service.version));
-  return { state: 'stopped', web, gateway: stoppedGateway, capabilities };
+  const auxiliaries = [];
+  for (const type of ['codex-connector', 'cloudflared']) auxiliaries.push(await stopService(config, type));
+  return { state: 'stopped', web, gateway: stoppedGateway, capabilities, auxiliaries };
 }
 
 async function capabilitySupervisor(config) {

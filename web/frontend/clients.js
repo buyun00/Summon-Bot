@@ -14,7 +14,10 @@
     root.style.setProperty('--window-controls-left', `${overlay && !overlay.visible ? 0 : left}px`);
     root.style.setProperty('--window-controls-right', `${overlay && !overlay.visible ? 0 : right}px`);
   }
-  function setDesktopInfo(value) { desktop = value; desktopUpdate = value.update; syncWindowChrome(); }
+  function setDesktopInfo(value) {
+    desktop = value; desktopUpdate = value.update; syncWindowChrome();
+    document.documentElement.dataset.localWorkspace = String(value.localWorkspace === true);
+  }
   const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
   const size = bytes => bytes ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : '';
   function statusText() {

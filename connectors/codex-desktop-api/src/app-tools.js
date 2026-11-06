@@ -40,7 +40,7 @@ export function matchesPermissionDefault(permissions, expected) {
 
 export function discoverToolsPipe(explicit) {
   if (explicit) return explicit;
-  if (process.platform !== 'win32') throw unavailable('Automatic desktop discovery currently supports Windows only.');
+  if (process.platform !== 'win32') throw unavailable('Configure the running Codex desktop tool socket (toolsPipe).');
   const names = readdirSync('\\\\.\\pipe\\').filter(name => /^codex-app-tools-[0-9a-f-]+$/i.test(name));
   if (names.length !== 1) throw unavailable(names.length ? 'Multiple desktops found; configure toolsPipe explicitly.' : 'No Codex desktop tool pipe found.');
   return `\\\\.\\pipe\\${names[0]}`;
@@ -75,6 +75,15 @@ export class AppTools {
       return operation;
     }
     return this.callDesktopTool(tool, args);
+  }
+  async verifyPermissions() {
+    if (!this.config.callerThreadId) throw unavailable('请填写一个使用当前默认权限的本机 Codex 会话 ID。');
+    const expected = this.readPermissionDefault();
+    const context = await this.permissionIpc.permissionSnapshot(this.config.callerThreadId);
+    try {
+      if (!matchesPermissionDefault(context.permissions, expected)) throw unavailable('当前会话权限与 Codex 桌面的默认权限不一致。请打开使用默认权限的本机会话。');
+      return true;
+    } finally { this.permissionIpc.unfollow(context.threadId, 'local', context.owner); }
   }
   async permissionContext(expected) {
     const checked = new Set();

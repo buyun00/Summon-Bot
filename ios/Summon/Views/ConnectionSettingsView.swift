@@ -31,13 +31,13 @@ struct ConnectionSettingsView: View {
                     Button("显示设置", systemImage: "textformat.size") { showDisplay = true }
                 }
                 Section {
-                    TextField("https://bot.lin0.org", text: $baseURL)
+                    TextField("https://你的工作区地址", text: $baseURL)
                         .keyboardType(.URL).textContentType(.URL)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    SecureField("访问令牌（如服务需要）", text: $token)
+                    SecureField("工作区访问令牌", text: $token)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                 } header: { Text("服务连接") } footer: {
-                    Text("填写现有 Summon Bot Web 服务地址。直接连接网关时填写访问令牌，令牌保存在 iOS 钥匙串中。")
+                    Text("使用部署机提供的 HTTPS 地址和访问令牌。令牌保存在 iOS 钥匙串中。")
                 }
                 Section("消息通知") {
                     Text(SummonPush.shared.status).foregroundStyle(.secondary)
@@ -85,5 +85,50 @@ struct ConnectionSettingsView: View {
             try await store.saveConnection(baseURL: baseURL, token: token, userName: userName)
             dismiss()
         } catch { errorMessage = error.localizedDescription }
+    }
+}
+
+struct SummonConnectionGuideView: View {
+    @Environment(SummonStore.self) private var store
+    @State private var address = ""
+    @State private var token = ""
+    @State private var awaitingToken = false
+    @State private var saving = false
+    @State private var failure: String?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                Image("SummonIcon").resizable().frame(width: 52, height: 52).clipShape(RoundedRectangle(cornerRadius: 14))
+                Text("你好，我是主 Bot。").font(.largeTitle.bold())
+                Text("欢迎来到 Summon Bot。告诉我你的工作区地址，我们就可以接着聊。")
+                    .padding(14).background(SummonTheme.surface, in: RoundedRectangle(cornerRadius: 16))
+                if awaitingToken {
+                    Text(address).foregroundStyle(.secondary)
+                    Text("接下来输入部署者给你的访问令牌。")
+                    SecureField("访问令牌", text: $token).textFieldStyle(.roundedBorder)
+                    Button("连接工作区") {
+                        let credential = token.trimmingCharacters(in: .whitespacesAndNewlines)
+                        token = ""; saving = true; failure = nil
+                        Task {
+                            defer { saving = false }
+                            do { try await store.saveConnection(baseURL: address, token: credential) }
+                            catch { failure = error.localizedDescription }
+                        }
+                    }.buttonStyle(.borderedProminent).disabled(saving || token.isEmpty)
+                    Button("更改地址") { awaitingToken = false; token = ""; failure = nil }.disabled(saving)
+                } else {
+                    TextField("https://你的工作区地址", text: $address)
+                        .keyboardType(.URL).textContentType(.URL).textInputAutocapitalization(.never)
+                        .autocorrectionDisabled().textFieldStyle(.roundedBorder)
+                    Button("继续") {
+                        do { address = try SummonAPIClient.normalizedURL(address).absoluteString; awaitingToken = true; failure = nil }
+                        catch { failure = error.localizedDescription }
+                    }.buttonStyle(.borderedProminent).disabled(address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                if saving { ProgressView("正在连接…") }
+                if let failure { InlineError(message: failure) }
+            }.padding(24)
+        }.background(SummonTheme.background)
     }
 }

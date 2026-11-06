@@ -127,7 +127,7 @@ export async function startGateway(options={}) {
     const messages=chatroom.store.list('messages'),jobs=chatroom.jobs(),runtime={started:true,fast:{running:jobs.filter(job=>['running','accepted'].includes(job.status)).length,queued:jobs.filter(job=>job.status==='queued').length},deep:{running:0,queued:0},jobs:jobs.slice(-80)};
     const selection=modelConnections.runtimeModel();
     const latestProvider=selection?providers.filter(provider=>provider.connectionId===selection.id).sort((a,b)=>String(b.lastSuccessAt||'').localeCompare(String(a.lastSuccessAt||'')))[0]||{}:{};
-    return {historyEpoch,onboarding:onboarding.state(),bots:manager.list().map(bot=>({...bot,activity:botActivities.get(bot.id)})),rooms:chatroom.rooms(),routines:manager.store.list('routines'),knowledge:knowledge.graph(),runtime,activity:messages.filter(message=>message.returnTo||message.peerReplyId||['event','work'].includes(message.kind)).slice(-100),works:[...await localWorks(),...codex.list().filter(work=>work.backend!=='desktop').map(work=>({...work,historical:true}))],agentRuns:agentRuns.slice(-100),provider:{configured:Boolean(selection&&((await modelConnections.credentials.read(selection.id).catch(()=>null))||selection.allowNoKey)),model:selection?.model||null,...latestProvider},defaultCwd};
+    return {historyEpoch,onboarding:await onboarding.publicState(),bots:manager.list().map(bot=>({...bot,activity:botActivities.get(bot.id)})),rooms:chatroom.rooms(),routines:manager.store.list('routines'),knowledge:knowledge.graph(),runtime,activity:messages.filter(message=>message.returnTo||message.peerReplyId||['event','work'].includes(message.kind)).slice(-100),works:[...await localWorks(),...codex.list().filter(work=>work.backend!=='desktop').map(work=>({...work,historical:true}))],agentRuns:agentRuns.slice(-100),provider:{configured:Boolean(selection&&((await modelConnections.credentials.read(selection.id).catch(()=>null))||selection.allowNoKey)),model:selection?.model||null,...latestProvider},defaultCwd};
   }
   function visibleTools(actor) {
     const allowed=actor==='controller'?null:manager.get(actor).allowedTools||[];
@@ -204,6 +204,7 @@ export async function startGateway(options={}) {
     if(path==='/api/model-settings/onboarding'&&method==='GET')return onboarding.snapshot();
     if(path==='/api/model-settings/onboarding/reply'&&method==='POST')return onboarding.reply(body);
     if(path==='/api/model-settings/onboarding/start'&&method==='POST')return onboarding.start(body);
+    if(path==='/api/model-settings/onboarding/advance'&&method==='POST')return onboarding.advance(body);
     if(path==='/api/model-settings/connections'&&method==='POST')return modelConnections.save(body);
     if(path==='/api/model-settings/active'&&method==='POST')return modelConnections.select(body.id);
     if(path==='/api/model-settings/usage'&&method==='POST')return modelConnections.refreshUsage(body.force===true);

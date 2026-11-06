@@ -12,6 +12,7 @@ export class DesktopIpc extends EventEmitter {
     if (this.pipe?.connected && this.clientId !== 'initializing-client') return;
     if (this.connecting) return this.connecting;
     this.connecting = (async () => {
+      if (process.platform !== 'win32' && !this.config.ipcPipe) throw unavailable('Configure the running Codex desktop IPC socket (ipcPipe).');
       this.clientId = 'initializing-client';
       const pipe = new FramedPipe(this.config.ipcPipe || '\\\\.\\pipe\\codex-ipc', { timeoutMs: this.config.requestTimeoutMs });
       this.pipe?.close(); this.pipe = pipe;

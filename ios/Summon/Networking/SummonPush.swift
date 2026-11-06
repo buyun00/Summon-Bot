@@ -12,7 +12,7 @@ final class SummonPush {
     private var client: SummonAPIClient?
     private var endpoint: String?
     private var revision = 0
-    private var syncing = false
+    private var syncingRevision: Int?
     private var deviceToken: String?
     private var pendingRoomID: String?
     private var pendingDeviceID: String?
@@ -62,16 +62,20 @@ final class SummonPush {
     func failed() { status = "推送注册失败，请检查网络后重新打开 App" }
 
     private func synchronize() async {
-        guard !syncing, let client, let deviceToken else { return }
-        syncing = true
+        guard syncingRevision != revision, let client, let deviceToken else { return }
         let generation = revision
-        defer { syncing = false }
+        let registration = deviceID
+        syncingRevision = generation
+        defer { if syncingRevision == generation { syncingRevision = nil } }
         do {
             let result = try await client.request(SummonJSONValue.self, path: "/api/push/devices", method: "POST", body: .object([
-                "deviceId": .string(deviceID), "token": .string(deviceToken),
+                "deviceId": .string(registration), "token": .string(deviceToken),
                 "bundleId": .string("org.lin0.summon"), "environment": .string("production")
             ]))
-            guard generation == revision else { return }
+            guard generation == revision else {
+                try? await unregister(from: client, id: registration)
+                return
+            }
             status = result["configured"].bool == true ? "已启用新消息推送" : "设备已登记，服务端推送待配置"
         } catch {
             guard generation == revision else { return }
@@ -81,18 +85,22 @@ final class SummonPush {
 
     private func unregister() async throws {
         guard let client else { return }
-        _ = try await client.request(SummonJSONValue.self, path: "/api/push/devices", method: "DELETE",
-            body: .object(["deviceId": .string(deviceID)]))
+        try await unregister(from: client, id: deviceID)
     }
 
-    func changeServer() async throws {
-        // A changed server must not retain a registration for this installation.
-        while syncing { try await Task.sleep(for: .milliseconds(100)) }
-        try await unregister()
+    private func unregister(from client: SummonAPIClient, id: String) async throws {
+        _ = try await client.request(SummonJSONValue.self, path: "/api/push/devices", method: "DELETE",
+            body: .object(["deviceId": .string(id)]))
+    }
+
+    func changeServer() {
+        let oldClient = client
+        let oldDeviceID = deviceID
         revision += 1
         client = nil; endpoint = nil
         pendingRoomID = nil; pendingDeviceID = nil; destinationRoomID = nil
         defaults.set(UUID().uuidString, forKey: "Summon.push.deviceID")
+        if let oldClient { Task { try? await unregister(from: oldClient, id: oldDeviceID) } }
     }
 
     func open(roomID: String?, deviceID: String?) {

@@ -20,6 +20,7 @@ server.on('error', error => { console.error(error.message); webhook.close(); bro
 server.listen(config.port, config.host, () => {
   console.log(JSON.stringify({ service: 'codex-desktop-api', version: '0.1.0', url: `http://${config.host}:${config.port}`, pid: process.pid }));
   broker.start();
+  if (process.connected) process.send({ type: 'ready' }, () => {});
 });
 let stopping = false;
 async function stop() {
@@ -29,5 +30,8 @@ async function stop() {
   const deadline = Date.now() + 1500;
   while (broker.polling && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
   store.close();
+  if (process.connected) process.disconnect();
 }
 process.on('SIGINT', stop); process.on('SIGTERM', stop);
+process.on('message', message => { if (message?.type === 'shutdown') void stop(); });
+process.on('disconnect', () => void stop());

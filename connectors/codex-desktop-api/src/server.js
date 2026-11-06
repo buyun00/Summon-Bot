@@ -43,10 +43,17 @@ export function createServer({ config, tools, broker, store, openapi }) {
       if (request.method === 'GET' && url.pathname === '/v1/capabilities') {
         query(url, ['connect']);
         const executor = executorState(config), manualConnect = boolQuery(url, 'connect', false);
-        let available = false, error = null;
-        if (executor.enabled || manualConnect) try { await tools.connect(); available = true; } catch (failure) { error = failure.message; }
+        let available = false, error = null, permissionVerified = null;
+        if (executor.enabled || manualConnect) try {
+          await tools.connect(); available = true;
+          if (manualConnect && config.managed) permissionVerified = await tools.verifyPermissions();
+        } catch (failure) {
+          if (manualConnect && config.managed) permissionVerified = false;
+          error = failure.code === 'ENOENT' ? 'Codex 本机端点不存在。请检查 Codex 是否已打开及套接字设置。'
+            : failure.message;
+        }
         json(response, 200, {
-          version: '0.1.0', adapter: 'codex-desktop-windows', desktopConnected: available, executor,
+          version: '0.1.0', adapter: 'codex-desktop-' + (process.platform === 'darwin' ? 'macos' : 'windows'), desktopConnected: available, executor, permissionVerified,
           contextConfigured: !!config.callerThreadId, protocol: { type: 'private_desktop_ipc', expectedStreamVersion: 11, observedStreamVersion: broker.protocolVersion, testedDesktopVersion: '26.1021.3705.0' },
           features: { listThreads: available && tools.catalog.some(x => x.name === 'list_threads'), readHistory: available && tools.catalog.some(x => x.name === 'read_thread'), createThread: available && tools.catalog.some(x => x.name === 'create_thread'), sendMessage: available && tools.catalog.some(x => x.name === 'send_message_to_thread'), liveEvents: !!broker.ipc.pipe?.connected && broker.protocolVersion === 11, interrupt: broker.protocolVersion === 11, rename: available, archive: available },
           discovery: { recentLimit: config.discoveryLimit, includesPinned: true, liveSubscriptions: broker.subscriptions.size, maxSubscriptions: config.maxSubscriptions, lastPollAt: broker.lastPollAt ?? null },

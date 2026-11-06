@@ -23,9 +23,10 @@ import java.time.format.DateTimeFormatter
 import java.util.UUID
 
 class SummonStore(private val app: Context) {
-    var onboardingRequired by mutableStateOf(false)
+    var onboarding by mutableStateOf<SummonJson>(SummonJson.Null)
         private set
-    var settings by mutableStateOf(SummonConnectionSettings(baseURL = DEFAULT_URL))
+    val onboardingRequired: Boolean get() = onboarding["required"].bool == true || onboarding["status"].string == "guiding"
+    var settings by mutableStateOf(SummonConnectionSettings(baseURL = ""))
         private set
     var bots by mutableStateOf<List<SummonBot>>(emptyList())
         private set
@@ -166,13 +167,15 @@ class SummonStore(private val app: Context) {
     suspend fun saveConnection(baseURL: String, token: String, userName: String? = null) {
         val url = SummonApiClient.normalized(baseURL)
         val endpoint = url.toString()
+        val newClient = SummonApiClient(url, token.trim())
+        withContext(Dispatchers.IO) { newClient.verifyWorkspace() }
         SummonKeystore.save(app, token.trim(), endpoint)
         val changed = endpoint != settings.baseURL
         disconnect()
         val name = userName?.trim()?.ifBlank { null } ?: settings.userName
         settings = SummonConnectionSettings(endpoint, name.ifBlank { "你" })
         if (changed) clearWorkspace()
-        client = SummonApiClient(url, SummonKeystore.token(app, endpoint))
+        client = newClient
         prefs.edit().putString(SETTINGS_KEY, settings.toJson().encode().toString()).apply()
         errorMessage = null
         persistNow()
@@ -201,7 +204,7 @@ class SummonStore(private val app: Context) {
             if (connection != connectionGeneration) return
             acceptEpoch(snapshot.historyEpoch)
             bots = snapshot.bots
-            onboardingRequired = snapshot.onboardingRequired
+            onboarding = snapshot.onboarding
             rooms = snapshot.rooms.map { room ->
                 val latest = messageHistory[room.id]?.lastOrNull()
                 if (latest != null && (latest.createdAt ?: "") > (room.lastMessage?.createdAt ?: "")) room.copy(lastMessage = latest) else room
@@ -725,7 +728,7 @@ class SummonStore(private val app: Context) {
     }
 
     private fun clearWorkspace() {
-        onboardingRequired = false
+        onboarding = SummonJson.Null
         historyGeneration += 1
         hasSnapshot = false
         historyEpoch = null
@@ -812,7 +815,6 @@ class SummonStore(private val app: Context) {
     }
 
     companion object {
-        const val DEFAULT_URL = "https://bot.lin0.org"
         private const val SETTINGS_KEY = "SummonNative.connection.v1"
     }
 }

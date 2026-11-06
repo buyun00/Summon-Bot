@@ -4,7 +4,7 @@ const equal = (a, b) => typeof a === 'string' && Buffer.byteLength(a) === Buffer
   && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
 // Do not trust forwarded IP headers: the public tunnel and local callers share this listener.
-export function createWebAuth(token, publicOrigin) {
+export function createWebAuth(token) {
   if (typeof token !== 'string' || token.length < 43) throw new Error('web.accessToken must contain at least 43 characters');
   const failures = new Map();
   const lifetime = 30 * 86400000;
@@ -20,10 +20,9 @@ export function createWebAuth(token, publicOrigin) {
     return equal(parts[2], sign(`${parts[0]}.${parts[1]}`)) ? Number(parts[0]) : 0;
   };
   let globalWindow = 0, globalCount = 0;
-  return (req, res, url) => {
+  return (req, res, url, requestOrigin) => {
     const now = Date.now();
-    const secure = Boolean(publicOrigin && req.headers.host?.toLowerCase() === new URL(publicOrigin).host.toLowerCase()
-      && new URL(publicOrigin).protocol === 'https:');
+    const secure = requestOrigin.startsWith('https:');
     const cookieName = secure ? '__Host-summon_session' : 'summon_local_session';
     const cookie = (req.headers.cookie || '').split(';').map(v => v.trim()).find(v => v.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
     const setSession = () => res.setHeader('Set-Cookie', `${cookieName}=${issue(now)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000${secure ? '; Secure' : ''}`);
@@ -37,10 +36,6 @@ export function createWebAuth(token, publicOrigin) {
       res.end(JSON.stringify(value));
     };
     if (login && bearer) {
-      const origin = req.headers.origin;
-      if (origin && origin !== (secure ? publicOrigin : `http://${req.headers.host}`)) {
-        send(403, { error: '只接受同源登录' }); return false;
-      }
       setSession();
       send(200, { authenticated: true });
       return false;

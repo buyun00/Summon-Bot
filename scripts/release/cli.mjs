@@ -62,12 +62,13 @@ async function buildDesktop() {
   if (!['win32', 'darwin'].includes(process.platform)) throw new Error('Desktop builds run on Windows or macOS');
   const platform = process.platform === 'win32' ? 'windows' : 'macos';
   const arch = options.arch || (platform === 'macos' ? 'arm64' : process.arch);
-  if (!(platform === 'macos' ? ['arm64'] : ['x64', 'arm64']).includes(arch)) throw new Error('Unsupported desktop architecture');
+  if (arch !== (platform === 'macos' ? 'arm64' : 'x64')) throw new Error('Unsupported desktop architecture');
+  if (options.candidate && (options.github || options.publish || command === 'all')) throw new Error('Candidate builds cannot publish');
   const output = await outputDirectory(`${platform}-${arch}`);
   const { buildDesktop } = await import(pathToFileURL(join(sourceRoot, 'desktop/build.mjs')));
   await buildDesktop({ platform, arch, output });
   await describeBuild(output, platform, arch);
-  if (platform === 'windows' || options.publish || options.github || command === 'all') await publish(output);
+  if (!options.candidate && (platform === 'windows' || options.publish || options.github || command === 'all')) await publish(output);
   else console.log(JSON.stringify({ built: true, platform, arch, output }));
 }
 

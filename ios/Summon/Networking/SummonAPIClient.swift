@@ -26,6 +26,13 @@ enum SummonAPIError: LocalizedError, Sendable {
 
 /// Native API calls use the same JSON routes as the existing web client.
 /// A Web URL uses its existing gateway proxy; a direct gateway URL requires its controller token.
+private final class SummonConnectionProbe: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+}
+
 struct SummonAPIClient: Sendable {
     let baseURL: URL
     private let token: String
@@ -56,6 +63,18 @@ struct SummonAPIClient: Sendable {
     static func component(_ value: String) -> String {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
         return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+
+    func verifyWorkspace() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 10
+        configuration.timeoutIntervalForResource = 12
+        let probe = URLSession(configuration: configuration, delegate: SummonConnectionProbe(), delegateQueue: nil)
+        defer { probe.finishTasksAndInvalidate() }
+        let (data, response) = try await probe.data(for: makeRequest(path: "/api/health"))
+        try validate(response: response, data: data)
+        guard (try? JSONDecoder().decode(SummonJSONValue.self, from: data))?["service"].string == "summon-capabilities"
+        else { throw SummonAPIError.invalidResponse }
     }
 
     func makeRequest(path: String, method: String = "GET", body: SummonJSONValue? = nil) throws -> URLRequest {

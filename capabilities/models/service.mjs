@@ -6,6 +6,7 @@ import { connectionPath, readConnectionCatalog, saveModelJson, modelConnection, 
   ModelCredentialStore, localCodexAuthPath, localGrokAuthPath, localGrokLogin, grokProxyHeaders, codexCredential, decodeModelToken, modelChoices, modelError } from '../../bot/src/agent/connections.mjs';
 import { DesktopCodex } from '../codex/desktop.mjs';
 import { desktopExecutorState } from '../../bot/src/capabilities/executor-connections.mjs';
+import { ensureCodexConnector, stopCodexConnector } from '../../scripts/installation/auxiliaries.mjs';
 
 const number = value => value !== '' && value !== null && value !== undefined && Number.isFinite(Number(value)) ? Number(value) : null;
 const clamp = value => Math.min(100, Math.max(0, value));
@@ -65,14 +66,27 @@ export class ModelConnections {
       : { role: 'chat', name: '尚未选择聊天模型', configured: false, usage: { status: 'unconfigured' } },
       executors: [{ ...executor, usage: executor.enabled ? this.usage['codex-desktop'] || null : { status: 'not_connected', note: executor.note } }] };
   }
-  async setExecutor(id, enabled) {
+  setExecutor(id, enabled) {
     if (id !== 'codex-desktop' || typeof enabled !== 'boolean') throw new Error('请选择有效的执行引擎接入状态');
-    if (enabled) await new DesktopCodex({ dataRoot: this.dataRoot }).connect();
+    const change = (this.executorChange || Promise.resolve()).catch(() => {}).then(() => this.changeExecutor(id, enabled));
+    this.executorChange = change;
+    return change.finally(() => { if (this.executorChange === change) this.executorChange = null; });
+  }
+  async changeExecutor(id, enabled) {
+    if (enabled) {
+      const connection = await ensureCodexConnector(this.dataRoot);
+      try { await new DesktopCodex({ dataRoot: this.dataRoot }).connect(connection); }
+      catch (error) {
+        if (connection.managed && !desktopExecutorState({ dataRoot: this.dataRoot }).enabled) await stopCodexConnector(this.dataRoot);
+        throw error;
+      }
+    }
     await this.mutate(catalog => {
       catalog.executors = { ...catalog.executors, [id]: { enabled, ...(enabled ? { connectedAt: new Date().toISOString() } : {}) } };
       delete this.usage[id];
     });
     if (enabled) await this.refreshOne(id, true);
+    else await stopCodexConnector(this.dataRoot);
     await saveModelJson(this.usagePath, this.usage);
     return this.snapshot();
   }

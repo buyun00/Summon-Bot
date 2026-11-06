@@ -5,7 +5,8 @@ import UniformTypeIdentifiers
 @MainActor
 @Observable
 final class SummonStore {
-    private(set) var onboardingRequired = false
+    private(set) var onboarding: SummonJSONValue = .null
+    var onboardingRequired: Bool { onboarding["required"].bool == true || onboarding["status"].string == "guiding" }
     private(set) var settings = SummonConnectionSettings()
     private(set) var bots: [SummonBot] = []
     private(set) var rooms: [SummonRoom] = []
@@ -69,7 +70,6 @@ final class SummonStore {
     init() {
         do { try SummonBrandingMigration.run() }
         catch { errorMessage = "无法迁移本机连接设置：\(error.localizedDescription)" }
-        settings.baseURL = Bundle.main.object(forInfoDictionaryKey: "SummonDefaultServerURL") as? String ?? "https://bot.lin0.org"
         if let data = defaults.data(forKey: settingsKey),
            let saved = try? JSONDecoder().decode(SummonConnectionSettings.self, from: data) { settings = saved }
         if let url = try? SummonAPIClient.normalizedURL(settings.baseURL) {
@@ -145,14 +145,18 @@ final class SummonStore {
     func saveConnection(baseURL: String, token: String, userName: String? = nil) async throws {
         let url = try SummonAPIClient.normalizedURL(baseURL)
         let endpoint = url.absoluteString
-        try SummonKeychain.save(token: token.trimmingCharacters(in: .whitespacesAndNewlines), for: endpoint)
+        let newToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newClient = SummonAPIClient(baseURL: url, token: newToken)
+        try await newClient.verifyWorkspace()
+        let previousToken = savedToken
+        try SummonKeychain.save(token: newToken, for: endpoint)
         let changedEndpoint = endpoint != settings.baseURL
-        if changedEndpoint { try await SummonPush.shared.changeServer() }
+        if changedEndpoint || newToken != previousToken { SummonPush.shared.changeServer() }
         disconnect()
         settings = SummonConnectionSettings(baseURL: endpoint,
                                            userName: userName?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? settings.userName)
         if changedEndpoint { clearWorkspace() }
-        client = SummonAPIClient(baseURL: url, token: SummonKeychain.token(for: endpoint))
+        client = newClient
         if let data = try? JSONEncoder().encode(settings) { defaults.set(data, forKey: settingsKey) }
         errorMessage = nil
         persistNow()
@@ -192,7 +196,7 @@ final class SummonStore {
             guard connection == connectionGeneration, !Task.isCancelled else { return }
             acceptEpoch(snapshot.historyEpoch)
             bots = snapshot.bots
-            onboardingRequired = snapshot.onboarding?["required"].bool == true
+            onboarding = snapshot.onboarding ?? .null
             rooms = snapshot.rooms.map { room in
                 var updated = room
                 if let latest = messageHistory[room.id]?.last,
@@ -703,7 +707,7 @@ final class SummonStore {
     }
 
     private func clearWorkspace() {
-        onboardingRequired = false
+        onboarding = .null
         historyGeneration += 1
         hasSnapshot = false
         historyEpoch = nil

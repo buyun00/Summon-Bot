@@ -76,9 +76,14 @@ export class DesktopCodex {
     return data;
   }
   // Called only by the user's manual connect action; it does not read usage.
-  async connect() {
-    const result = await this.connectorRequest(await this.connector(), '/v1/capabilities?connect=true', { signal: AbortSignal.timeout(10000) });
-    if (!result.desktopConnected || !result.features?.createThread) throw new Error('Codex 桌面端暂不可连接，请先打开 Codex，再手动接入。');
+  async connect({ managed = false } = {}) {
+    const result = await this.connectorRequest(await this.connector(), '/v1/capabilities?connect=true', { signal: AbortSignal.timeout(18000) });
+    if (!result.desktopConnected || !result.features?.createThread || managed && !result.permissionVerified) {
+      const message = !result.desktopConnected ? 'Codex 桌面端暂不可连接。请打开 Codex 并检查本机端点。'
+        : managed && !result.permissionVerified ? 'Codex 权限握手未完成。请打开使用默认权限的本机会话，再手动接入。'
+        : 'Codex 桌面端没有提供所需的工作执行工具。';
+      throw Object.assign(new Error(message), { expose: true, status: 409 });
+    }
   }
   projects(signal) { return this.request('/v1/projects', { signal }); }
   threads(signal) { return this.request('/v1/threads?limit=50', { signal }); }

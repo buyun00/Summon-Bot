@@ -173,6 +173,7 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
                 }) { Icon(Icons.Filled.ArrowDownward, "回到最新消息", modifier = Modifier.padding(10.dp)) }
             }
         }
+        OnboardingStep(store, roomID)
         Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
             localError?.let { Text(it, color = Color(0xFFFF9F0A), modifier = Modifier.padding(horizontal = 20.dp)) }
             reply?.let { quoted ->

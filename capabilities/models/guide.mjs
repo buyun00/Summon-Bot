@@ -1,11 +1,12 @@
 import { modelChoices } from '../../bot/src/agent/connections.mjs';
 
-// Native clients render these scripted replies as local chat bubbles. No model is called here.
+export const option = (label, action, value = '') => ({ label, action, value });
+export const looksLikeSecret = text => /\b(?:sk-|xai-)[\w-]{12,}|\beyJ[\w-]+\.[\w-]+\.[\w-]+|^(?=[A-Za-z0-9_+/=-]{32,}$)(?=.*[A-Za-z])(?=.*\d)/.test(text);
+
 export async function guideReply(onboarding, input = {}) {
   const models = onboarding.models, action = String(input.action || 'hello'), value = String(input.value || '').trim();
-  const draft = Object.fromEntries(['id', 'kind', 'name', 'provider', 'api', 'baseUrl', 'model', 'contextWindow', 'maxTokens', 'thinkingLevel']
-    .filter(key => input.draft?.[key] !== undefined).map(key => [key, input.draft[key]]));
-  const choice = (label, action, value = '') => ({ label, action, value });
+  const script = onboarding.record().script, draft = { ...script?.draft };
+  const choice = option;
   const reply = (phase, text, options = [], extra = {}) => ({ phase, text, options, draft, input: 'text', ...extra });
   const back = choice('换一种连接方式', 'back');
   const ready = entry => reply('ready', `${entry.name} · ${entry.model} 的配置已经保存。接下来发起第一条真实对话，由主 Bot 继续带你入门。`,
@@ -16,10 +17,33 @@ export async function guideReply(onboarding, input = {}) {
     const preferred = draft.model ? [catalog.find(entry => entry.id === draft.model) || { id: draft.model }, ...catalog.filter(entry => entry.id !== draft.model)] : catalog;
     return reply('model', '你想用哪个聊天模型？可以选择下面的模型，也可以输入模型 ID。', [...preferred.slice(0, 6).map(entry => choice(entry.id, 'model', entry.id)), back], { placeholder: '输入模型 ID…' });
   };
-  const keyLike = text => /\b(?:sk-|xai-)[\w-]{12,}|\beyJ[\w-]+\.[\w-]+\.[\w-]+|^(?=[A-Za-z0-9_+/=]{32,}$)(?=.*[A-Za-z])(?=.*\d)/.test(text);
-  if (!['key', 'poll'].includes(action) && keyLike(value)) throw new Error('请在隐藏的 API Key 输入中填写密钥，不要发送到聊天里。');
+  const handoffReply = state => {
+    if (state.status === 'guiding') return reply('complete', '', [], { roomId: state.roomId, input: 'none', draft: {} });
+    if (state.status === 'starting') return reply('waiting', '我在等模型返回第一条回复。', [], { input: 'none', draft: {} });
+    return reply('failed', state.error || '首条回复还没到。', [choice('重试首条对话', 'handoff'), choice('换一个模型', 'choose')], { input: 'none', draft: {} });
+  };
+  if (!['key', 'poll'].includes(action) && looksLikeSecret(value)) throw new Error('请在隐藏的 API Key 输入中填写密钥，不要发送到聊天里。');
+  if (action === 'progress') {
+    const state = onboarding.state();
+    return state.status === 'starting' && !onboarding.kickoff(state.roomId, onboarding.record().kickoffId).latest && !onboarding.submitting
+      ? handoffReply(await onboarding.handoff({})) : handoffReply(state);
+  }
   if (action === 'hello') {
+    const state = onboarding.state();
+    if (state.status === 'starting' || state.status === 'guiding') return handoffReply(state);
+    if (script?.phase === 'login') {
+      const login = models.loginStatus(draft.id);
+      const saved = (await models.snapshot()).connections.find(entry => entry.id === draft.id);
+      if (login.status === 'completed' || saved?.configured) return modelPrompt();
+      if (['starting', 'waiting'].includes(login.status)) return { ...script, login };
+      return reply('choose', '授权已结束。可以重新授权，或改用 API Key。', [
+        choice('重新授权订阅', 'authorize', draft.kind), choice('换一种连接方式', 'choose')
+      ], { input: 'none', draft: {} });
+    }
+    if (script && !['choose', 'ready'].includes(script.phase)) return script;
     const snapshot = await models.snapshot(), active = snapshot.connections.find(entry => entry.active && entry.configured);
+    if (active && state.status === 'failed') return handoffReply(state);
+    if (active && state.status === 'paused') return reply('ready', '上次停在这里。接着聊吧？', [choice('继续新手引导', 'handoff'), choice('换一个模型', 'choose')], { draft: {} });
     if (active) return ready(active);
   }
   if (['hello', 'choose', 'back'].includes(action)) {
@@ -86,6 +110,6 @@ export async function guideReply(onboarding, input = {}) {
     return select(draft.id);
   }
   if (action === 'use') return select(value);
-  if (action === 'handoff') return reply('complete', '', [], { roomId: (await onboarding.start({ message: value })).roomId, input: 'none', draft: {} });
+  if (action === 'handoff') return handoffReply(await onboarding.handoff({ message: value }));
   throw new Error('请选择下面的连接方式，或继续填写当前步骤');
 }

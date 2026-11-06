@@ -2,6 +2,8 @@
 *.md text eol=lf
 .gitignore text eol=lf
 .gitattributes text eol=lf
+desktop/summon text eol=lf
+desktop/summon.cmd text eol=crlf
 
 # Provenance hashes and upstream fixtures refer to exact original bytes.
 bot/third_party/pi/** -text

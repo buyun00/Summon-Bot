@@ -61,12 +61,10 @@ async function githubReleases(repository) {
   catch (error) { githubCache.delete(repository); throw error; }
 }
 
-export async function serveClientReleases(req, res, url, root, webRelease) {
+export async function serveClientReleases(req, res, url, root, webRelease, { local, origin }) {
   if (url.pathname !== prefix && !url.pathname.startsWith(`${prefix}/`)) return false;
-  const local = ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)
-    && !req.headers['x-forwarded-host'] && !req.headers.forwarded;
-  if (local && req.headers.origin === new URL(webRelease.appUrl).origin) {
-    res.setHeader('Access-Control-Allow-Origin', req.headers.origin);
+  if (local && origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
     res.setHeader('Access-Control-Allow-Private-Network', 'true');
     res.setHeader('Vary', 'Origin');

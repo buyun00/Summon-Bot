@@ -5,6 +5,8 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs, readJson, writeJson } from '../build/files.mjs';
 import { acquireServiceLock } from './service-lock.mjs';
 import { installProcessLog } from '@summon/bot/process-log';
+import { remoteOrigins } from './remote-config.mjs';
+import { serviceFolders, serviceRoot as rootForService, serviceRunPath } from './system.mjs';
 
 const bootId = randomUUID();
 const notify = value => { if (process.connected) process.send(value, () => {}); };
@@ -22,9 +24,9 @@ try {
   const { options } = parseArgs(process.argv.slice(2));
   const config = await readJson(resolve(options.config));
   const type = options.type;
-  if (!['gateway', 'web'].includes(type)) throw new Error('Service type must be gateway or web');
-  const serviceRoot = join(config.dataRoot, type === 'web' ? 'web' : 'capabilities/gateway');
-  runPath = join(serviceRoot, 'run', 'current.json');
+  if (!Object.hasOwn(serviceFolders, type)) throw new Error('Unknown managed service type');
+  const serviceRoot = rootForService(config.dataRoot, type);
+  runPath = serviceRunPath(config.dataRoot, type);
   ownership = await acquireServiceLock(config.dataRoot, type, () => record || { pid: process.pid, bootId, state: 'starting', releaseRoot: config.releaseRoot });
   processLog = installProcessLog(join(serviceRoot, 'logs'), { ...config.logs, ...config[type]?.logs });
   // Node's fatal stderr path can bypass the redirected stream on Windows.
@@ -60,13 +62,16 @@ try {
       const latest = await readJson(resolve(options.config));
       await writeJson(resolve(options.config), { ...latest, gateway: { ...latest.gateway, port: Number(new URL(app.url).port) } });
     }
-  } else {
+  } else if (type === 'web') {
     const { startWeb } = await import(pathToFileURL(join(config.releaseRoot, 'web/backend/server.mjs')));
     const gateway = await readJson(join(config.dataRoot, 'capabilities/gateway/run/current.json'));
-    app = await startWeb({ ...config.web, publicOrigin: config.publicOrigin || '',
+    app = await startWeb({ ...config.web, getRemoteOrigins: () => remoteOrigins(config.dataRoot),
       clientReleaseRoot: join(config.dataRoot, 'client-releases'),
       webRelease: await readJson(join(config.releaseRoot, 'release.json')),
       frontendRoot: join(config.releaseRoot, 'web/frontend'), gatewayUrl: gateway.url, gatewayToken: config.gatewayToken });
+  } else {
+    const { startAuxiliary } = await import('./auxiliaries.mjs');
+    app = await startAuxiliary(config, type, () => void shutdown().catch(() => { process.exitCode = 1; }));
   }
   await new Promise((ready, reject) => { control.once('error', reject); control.listen(0, '127.0.0.1', ready); });
   record = { type, pid: process.pid, bootId, url: app.url, state: 'ready', releaseRoot: config.releaseRoot,

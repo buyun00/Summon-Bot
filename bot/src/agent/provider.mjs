@@ -34,8 +34,9 @@ export class ModelProvider {
     const tracksConnection = options.usageContext?.purpose !== 'activity';
     let record, selectedModel = model, received, ended = false, wireUsage;
     const cleanError = error => {
-      let message = modelError(error); for (const secret of secrets) if (secret) message = message.split(secret).join('[redacted]');
-      return this.config.redact({ message }).message;
+      let message = String(error?.message || error);
+      for (const secret of secrets) if (secret) message = message.split(secret).join('[redacted]');
+      return this.config.redact({ message: modelError(message) }).message;
     };
     void (async () => {
       try {

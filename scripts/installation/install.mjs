@@ -1,20 +1,22 @@
-import { resolve,join } from 'node:path';
+import { resolve,join,dirname } from 'node:path';
 import { fileURLToPath,pathToFileURL } from 'node:url';
-import { mkdir,copyFile,readdir } from 'node:fs/promises';
+import { mkdir,copyFile,mkdtemp,readdir,rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { copyTree,readJson,writeJson,within,parseArgs } from '../build/files.mjs';
 import { verifyRelease } from '../build/verify.mjs';
 import { initializeDeployment,inspectService,deploymentPath } from './system.mjs';
 import { selectCurrentVersion } from './current-version.mjs';
+import { migratePublicOrigin } from './remote-config.mjs';
+import { removeInside } from '../release/repository.mjs';
 
 /** Install a selected build; development packages use manifest metadata only. */
 export async function installRelease({releaseRoot,appRoot,dataRoot,sourceRoot,defaultCwd,publicOrigin='',port=8787}={}) {
   releaseRoot=resolve(releaseRoot);appRoot=resolve(appRoot);dataRoot=resolve(dataRoot);
   if(within(appRoot,dataRoot)||within(dataRoot,appRoot))throw new Error('Application and data roots must be disjoint');
   const verified=await verifyRelease(releaseRoot),destination=join(appRoot,'releases',verified.buildId);
-  if(!within(join(appRoot,'releases'),destination))throw new Error('Invalid release build ID');
+  if(!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(verified.buildId)||!within(join(appRoot,'releases'),destination))throw new Error('Invalid release build ID');
   if(existsSync(deploymentPath(dataRoot))){
-    const current=await readJson(deploymentPath(dataRoot));for(const type of ['gateway','web'])if((await inspectService(current,type)).state!=='stopped')throw new Error('Stop managed services before installing a different release');
+    const current=await readJson(deploymentPath(dataRoot));for(const type of ['gateway','web','codex-connector','cloudflared'])if((await inspectService(current,type)).state!=='stopped')throw new Error('Stop managed services before installing a different release');
     const module=join(releaseRoot,'capabilities/services/supervisor.mjs');
     if(existsSync(module)){
       const {CapabilityServiceSupervisor}=await import(pathToFileURL(module));
@@ -31,10 +33,17 @@ export async function installRelease({releaseRoot,appRoot,dataRoot,sourceRoot,de
     const sameBuild=(installed.profile||'release')===verified.profile&&installed.buildId===verified.buildId&&installed.sourceCommit===verified.sourceCommit;
     if(!sameBuild)throw new Error('Release ID collision');await verifyRelease(destination);
   }
-  else {await copyTree(releaseRoot,destination);await verifyRelease(destination);}
+  else {
+    await mkdir(dirname(destination),{recursive:true});
+    const staging=await mkdtemp(join(dirname(destination),'.installing-'));
+    try {await copyTree(releaseRoot,staging);await rename(staging,destination);}
+    finally {await removeInside(dirname(destination),staging);}
+  }
   const initialized=await initializeDeployment({dataRoot,releaseRoot:destination,defaultCwd,publicOrigin,port});
   sourceRoot=sourceRoot||initialized.config.sourceRoot;
-  await writeJson(deploymentPath(dataRoot),{...initialized.config,releaseRoot:destination,...(sourceRoot?{sourceRoot:resolve(sourceRoot)}:{})});
+  const {publicOrigin:previousOrigin,...deployment}=initialized.config;
+  await migratePublicOrigin(dataRoot,previousOrigin);
+  await writeJson(deploymentPath(dataRoot),{...deployment,schemaVersion:3,releaseRoot:destination,...(sourceRoot?{sourceRoot:resolve(sourceRoot)}:{})});
   await mkdir(appRoot,{recursive:true});
   for(const name of ['Start.ps1','Start-Hidden.vbs','Stop.ps1','Run.cmd'])await copyFile(join(destination,name),join(appRoot,name));
   const selection={schemaVersion:1,releaseRoot:destination,buildId:verified.buildId,dataRoot,selectedAt:new Date().toISOString()};

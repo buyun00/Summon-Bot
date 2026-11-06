@@ -1,6 +1,6 @@
 {
   "name": "@summon/capabilities",
-  "version": "0.3.21",
+  "version": "0.3.23",
   "private": true,
   "type": "module",
   "exports": {
@@ -11,6 +11,6 @@
     "./registry": "./services/registry.mjs"
   },
   "dependencies": {
-    "@summon/bot": "0.3.8"
+    "@summon/bot": "file:../bot"
   }
 }

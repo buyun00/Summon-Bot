@@ -24,8 +24,6 @@
 	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
-	<key>SummonDefaultServerURL</key>
-	<string>https://bot.lin0.org</string>
 	<key>UIUserInterfaceStyle</key>
 	<string>Dark</string>
 	<key>NSAppTransportSecurity</key>

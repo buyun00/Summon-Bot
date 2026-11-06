@@ -92,9 +92,13 @@ private fun SummonApp(model: SummonViewModel = viewModel()) {
             onSurface = Color.White,
         )) {
             Surface(Modifier.fillMaxSize(), color = Color.Black) {
+                if (store.settings.baseURL.isBlank()) {
+                    WorkspaceConnectionGuide(store, model.viewModelScope)
+                    return@Surface
+                }
                 val nav = rememberNavController()
                 var onboardingShown by remember(store.settings.baseURL) { mutableStateOf(false) }
-                LaunchedEffect(store.onboardingRequired) {
+                LaunchedEffect(store.settings.baseURL, store.onboardingRequired) {
                     if (store.onboardingRequired && !onboardingShown) { onboardingShown = true; nav.navigate("onboarding") }
                 }
                 NavHost(nav, startDestination = "list",

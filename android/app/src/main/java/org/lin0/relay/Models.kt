@@ -337,7 +337,7 @@ data class SummonWorkspace(
     val rooms: List<SummonRoom>,
     val agentRuns: List<SummonAgentRun>,
     val defaultCwd: String?,
-    val onboardingRequired: Boolean = false,
+    val onboarding: SummonJson = SummonJson.Null,
 ) {
     companion object {
         fun parse(json: SummonJson): SummonWorkspace = SummonWorkspace(
@@ -346,7 +346,7 @@ data class SummonWorkspace(
             rooms = json["rooms"].array.orEmpty().map(SummonRoom::parse).filter { it.id.isNotEmpty() },
             agentRuns = json["agentRuns"].array.orEmpty().map(SummonAgentRun::parse),
             defaultCwd = json["defaultCwd"].string,
-            onboardingRequired = json["onboarding"]["required"].bool == true,
+            onboarding = json["onboarding"],
         )
     }
 }

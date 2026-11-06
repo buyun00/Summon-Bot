@@ -8,7 +8,10 @@ struct SummonApp: App {
 
     var body: some Scene {
         WindowGroup {
-            SummonDisplayContainer { ConversationListView() }
+            SummonDisplayContainer {
+                if store.settings.baseURL.isEmpty { SummonConnectionGuideView() }
+                else { ConversationListView() }
+            }
                 .environment(store)
                 .preferredColorScheme(.dark)
                 .tint(.white)

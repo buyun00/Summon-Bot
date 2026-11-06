@@ -1,5 +1,5 @@
 export const releaseTargets = [
-  ['windows', 'x64'], ['windows', 'arm64'],
+  ['windows', 'x64'],
   ['macos', 'arm64'], ['android', 'universal'],
 ];
 export const validTarget = (platform, arch) => releaseTargets.some(target => target[0] === platform && target[1] === arch);

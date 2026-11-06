@@ -1,17 +1,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 export const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-export const DATA_ROOT = 'D:/Relay-Bot-data/connectors/codex-desktop-api';
+export const DATA_ROOT = path.join(process.env.SUMMON_DATA_ROOT || (process.platform === 'win32' ? 'D:/Relay-Bot-data'
+  : path.join(os.homedir(), 'Library', 'Application Support', 'Relay', 'workspace-data')), 'connectors', 'codex-desktop-api');
 export const CONFIG_FILE = path.join(DATA_ROOT, 'config.json');
 export function loadConfig(env = process.env) {
-  const file = path.resolve(env.CODEX_DESKTOP_API_CONFIG || CONFIG_FILE);
+  const file = path.resolve(env.CODEX_DESKTOP_API_CONFIG || (env.SUMMON_DATA_ROOT
+    ? path.join(env.SUMMON_DATA_ROOT, 'connectors', 'codex-desktop-api', 'config.json') : CONFIG_FILE));
   const saved = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
   const config = {
     host: '127.0.0.1', port: 47831, requestTimeoutMs: 45000, pollIntervalMs: 5000,
     discoveryLimit: 50, maxSubscriptions: 128, eventRetention: 10000,
-    dataDir: DATA_ROOT, callerThreadId: env.CODEX_THREAD_ID || null,
+    dataDir: path.dirname(file), callerThreadId: env.CODEX_THREAD_ID || null,
     ...saved,
     ...(env.CODEX_DESKTOP_API_HOST ? { host: env.CODEX_DESKTOP_API_HOST } : {}),
     ...(env.CODEX_DESKTOP_API_PORT ? { port: Number(env.CODEX_DESKTOP_API_PORT) } : {}),

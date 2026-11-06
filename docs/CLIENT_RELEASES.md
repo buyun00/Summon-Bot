@@ -4,6 +4,8 @@ Summon Bot 使用普通网页、Windows/macOS Electron、Android Compose 和 iOS
 
 ## 下载来源
 
+Windows x64 EXE 和 Apple Silicon DMG 内置本机工作区运行环境，也可以连接已有工作区。iOS 和 Android 首次使用时填写自己的地址和访问令牌。桌面操作与候选构建见 [桌面端说明](../desktop/README.md)。
+
 客户端下载与更新按设备本机、GitHub 的顺序查找：
 
 1. 先查询设备自己的 `http://127.0.0.1:8787`。本机包在 `D:/Relay-Bot-data/client-releases/<platform>/<arch>`；已有有效发行物时优先使用，不再请求该目标的远端版本。
@@ -11,7 +13,7 @@ Summon Bot 使用普通网页、Windows/macOS Electron、Android Compose 和 iOS
 
 网页“客户端下载与更新”使用相同来源顺序。本机包的构建号至少应达到当前正式版本，过时文件不参与下载选择。远程 `GET /api/releases` 仅返回 GitHub 版本目录和直接下载链接；本机入口可读取本机发行物，`?local=1` 仅查询本机且不访问 GitHub。浏览器不允许本机网络访问时继续使用 GitHub。
 
-每个目标使用固定的 GitHub Release 标签：`client-windows-x64`、`client-windows-arm64`、`client-macos-arm64`、`client-android-universal`。每个标签仅保留最新版安装包和元数据。发行描述展示下载链接和安装说明，`latest.json` 供原生端查询，Windows 的 `latest.yml` 供 Electron 更新器读取。发布先上传安装包，再切换元数据，最后删除被替代的资产。
+GitHub Release 标签为 `client-windows-x64`、`client-macos-arm64` 和 `client-android-universal`。每个标签保留最新版安装包和元数据。发行描述展示下载链接和安装说明，`latest.json` 供原生端查询，Windows 的 `latest.yml` 供 Electron 更新器读取。发布先上传安装包，再切换元数据，最后删除被替代的资产。
 
 ## 版本和 Windows 发布
 

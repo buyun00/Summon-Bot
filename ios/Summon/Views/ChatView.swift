@@ -168,7 +168,12 @@ struct ChatView: View {
                 }.accessibilityLabel("会话详情")
             }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) { composer }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                SummonOnboardingStepView(roomID: roomID)
+                composer
+            }
+        }
         .task(id: roomID) {
             text = store.draft(for: roomID)
             attachments = store.draftAttachments[roomID] ?? []
