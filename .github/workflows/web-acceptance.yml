@@ -2,6 +2,10 @@ name: Installed PC backend Web acceptance round 2
 on:
   workflow_dispatch:
     inputs:
+      followup:
+        type: boolean
+        default: false
+        description: Resolve raw Host transport and installed CLI process timing only
       diagnostics:
         type: boolean
         default: false
@@ -42,7 +46,7 @@ jobs:
           Add-Content -LiteralPath "$env:SystemRoot\System32\drivers\etc\hosts" -Value '127.0.0.1 acceptance-cloud.test acceptance-node.acceptance.ts.net'
           @{ installer = $installer.Name; exitCode = $process.ExitCode; cliPresent = $true; sourceRun = 42196380346; scope = 'Installed PC backend; Web-only feature acceptance' } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $acceptanceRoot 'evidence\installation.json')
       - name: Drive installed backend through Web HTTP SSE and actual Pi
-        if: ${{ !inputs.diagnostics }}
+        if: ${{ !inputs.diagnostics && !inputs.followup }}
         shell: pwsh
         env:
           NODE_EXTRA_CA_CERTS: ${{ runner.temp }}\summon-acceptance\tls.crt
@@ -50,6 +54,15 @@ jobs:
           SUMMON_INSTALL_ROOT: ${{ runner.temp }}\summon-acceptance\installed
         run: |
           & "$env:SUMMON_INSTALL_ROOT\resources\summon-runtime\runtime\node.exe" harness/scripts/acceptance/desktop-web-round2.mjs
+          exit $LASTEXITCODE
+      - name: Resolve Host transport and installed CLI timing
+        if: ${{ inputs.followup }}
+        shell: pwsh
+        env:
+          ACCEPTANCE_ROOT: ${{ runner.temp }}\summon-acceptance
+          SUMMON_INSTALL_ROOT: ${{ runner.temp }}\summon-acceptance\installed
+        run: |
+          & "$env:SUMMON_INSTALL_ROOT\resources\summon-runtime\runtime\node.exe" harness/scripts/acceptance/desktop-web-round2-followup.mjs
           exit $LASTEXITCODE
       - name: Inspect installed resource paths and remaining CLI entries
         if: ${{ inputs.diagnostics }}
