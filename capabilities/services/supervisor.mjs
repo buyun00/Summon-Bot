@@ -141,12 +141,22 @@ export class CapabilityServiceSupervisor {
     } finally { await ownership.close(); }
   }
   async drain(id, version) { return this.request(id, version, '/internal/drain', { method: 'POST', body: {} }); }
-  async stop(id, version, { timeoutMs = 10000 } = {}) {
+  async stop(id, version, { timeoutMs = 10000, drain = false } = {}) {
     const before = await this.descriptor(id, version);
     if (!before || before.state === 'stopped') return { id, version, state: 'stopped' };
     if (!before.url) throw failure('Capability is still starting; its process has been preserved', 'SERVICE_START_PENDING', 409);
-    await this.request(id, version, '/internal/shutdown', { method: 'POST', body: {} });
     const deadline = Date.now() + timeoutMs;
+    if (drain) {
+      await this.drain(id, version);
+      for (;;) {
+        const status = await this.status(id, version);
+        if (status.state === 'stopped') return { id, version, state: 'stopped' };
+        if (!status.activeRequests && !status.pendingWork) break;
+        if (Date.now() >= deadline) throw failure(`${id}@${version} is still draining active work`, 'SERVICE_STOP_PENDING', 409);
+        await sleep(25);
+      }
+    }
+    await this.request(id, version, '/internal/shutdown', { method: 'POST', body: {} });
     while (Date.now() < deadline) {
       const after = await this.descriptor(id, version);
       if (after?.state === 'stopped' || !after) return { id, version, state: 'stopped' };

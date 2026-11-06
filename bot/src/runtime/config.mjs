@@ -73,12 +73,16 @@ export function createRedactor(config) {
   if (config.model.apiKeyEnv && process.env[config.model.apiKeyEnv]) secrets.add(process.env[config.model.apiKeyEnv]);
   const workspaceSecrets = config.model.connectionStore
     ? ['deployment.json', 'model-credentials.json'].map(name => resolve(dirname(config.model.connectionStore), name)) : [];
-  return value => {
-    if (value === undefined) return undefined;
+  const refreshSecrets = () => {
     for (const path of workspaceSecrets) {
       try { visit(JSON.parse(readFileSync(path, 'utf8'))); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
     }
+  };
+  refreshSecrets();
+  return value => {
+    if (value === undefined) return undefined;
+    refreshSecrets();
     let text = JSON.stringify(value);
     for (const secret of secrets) text = text.split(secret).join('[redacted]');
     return JSON.parse(text.replace(/\bsk-[a-zA-Z0-9_-]{12,}\b/g, '[redacted]'));

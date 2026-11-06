@@ -172,7 +172,7 @@ export async function stopSystem(config) {
   const web = await stopService(config, 'web');
   const stoppedGateway = await stopService(config, 'gateway');
   const supervisor = await capabilitySupervisor(config), capabilities = [];
-  if (supervisor) for (const service of await supervisor.list()) capabilities.push(await supervisor.stop(service.id, service.version));
+  if (supervisor) for (const service of await supervisor.list()) capabilities.push(await supervisor.stop(service.id, service.version, { drain: true, timeoutMs: 60000 }));
   const auxiliaries = [];
   for (const type of ['codex-connector', 'cloudflared', 'remote-bridge']) auxiliaries.push(await stopService(config, type));
   return { state: 'stopped', web, gateway: stoppedGateway, capabilities, auxiliaries };
