@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs, readJson, writeJson } from '../build/files.mjs';
 import { acquireServiceLock } from './service-lock.mjs';
 import { installProcessLog } from '@summon/bot/process-log';
-import { remoteOrigins } from './remote-config.mjs';
+import { readRemoteAccess, remoteOrigins } from './remote-config.mjs';
 import { serviceFolders, serviceRoot as rootForService, serviceRunPath } from './system.mjs';
 
 const bootId = randomUUID();
@@ -65,10 +65,25 @@ try {
   } else if (type === 'web') {
     const { startWeb } = await import(pathToFileURL(join(config.releaseRoot, 'web/backend/server.mjs')));
     const gateway = await readJson(join(config.dataRoot, 'capabilities/gateway/run/current.json'));
-    app = await startWeb({ ...config.web, getRemoteOrigins: () => remoteOrigins(config.dataRoot),
+    const webOptions = { ...config.web, getRemoteOrigins: () => remoteOrigins(config.dataRoot),
       clientReleaseRoot: join(config.dataRoot, 'client-releases'),
       webRelease: await readJson(join(config.releaseRoot, 'release.json')),
-      frontendRoot: join(config.releaseRoot, 'web/frontend'), gatewayUrl: gateway.url, gatewayToken: config.gatewayToken });
+      frontendRoot: join(config.releaseRoot, 'web/frontend'), gatewayUrl: gateway.url, gatewayToken: config.gatewayToken };
+    try {
+      app = await startWeb(webOptions);
+    } catch (error) {
+      if (error.code !== 'EADDRINUSE' || config.web.autoPort !== true || config.web.host !== '127.0.0.1') throw error;
+      const remote = await readRemoteAccess(config.dataRoot);
+      if (remote.cloudflare || remote.tailscale) {
+        throw new Error('本机端口 ' + config.web.port + ' 已被占用。远程入口依赖该端口，请释放后重试。');
+      }
+      app = await startWeb({ ...webOptions, port: 0 });
+    }
+    const port = Number(new URL(app.url).port || 80);
+    if (port !== Number(config.web.port)) {
+      const path = resolve(options.config), latest = await readJson(path);
+      await writeJson(path, { ...latest, web: { ...latest.web, port } });
+    }
   } else {
     const { startAuxiliary } = await import('./auxiliaries.mjs');
     app = await startAuxiliary(config, type, () => void shutdown().catch(() => { process.exitCode = 1; }));

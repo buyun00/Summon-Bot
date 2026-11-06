@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { createServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { workspaceOrigin } from '../../web/backend/origins.mjs';
 import { parseArgs, readJson, within, writeJson } from '../build/files.mjs';
@@ -14,7 +13,6 @@ import { applyRemote, prepareRemote, remoteStatus, revokeRemote } from './remote
 import { inspectCodex, prepareCodex } from './auxiliaries.mjs';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const loopback = 'http://127.0.0.1:8787';
 const workspaceFile = root => join(root, 'desktop-workspace.json');
 const appFolder = root => join(root, 'workspace-runtime');
 const fresh = () => ({ mode: 'unselected', origin: null, localDataRoot: null, ownedDataRoot: null });
@@ -39,25 +37,24 @@ async function inspectWorkspace(config, profileRoot) {
     web: { state: web.state, pid: web.pid, url: web.url }, gateway: { state: gateway.state, pid: gateway.pid }, runIntent: config.runIntent };
 }
 
+function localOrigin(config, web) {
+  if (config?.web?.host !== '127.0.0.1' || !web?.url) return null;
+  const url = new URL(web.url);
+  return url.protocol === 'http:' && url.hostname === '127.0.0.1' && Number(url.port || 80) === Number(config.web.port)
+    ? url.origin : null;
+}
+
 async function readProfile(profileRoot, releaseRoot) {
   const profile = await optionalJson(workspaceFile(profileRoot)) || fresh();
-  const local = await inspectWorkspace(profile.localDataRoot && await optionalJson(deploymentPath(profile.localDataRoot)), profileRoot);
+  const config = profile.localDataRoot && await optionalJson(deploymentPath(profile.localDataRoot));
+  const local = await inspectWorkspace(config, profileRoot);
+  const origin = profile.mode === 'local' && local?.state === 'ready' ? localOrigin(config, local.web) : profile.origin;
   const manifest = await readJson(join(releaseRoot, 'release-manifest.json'));
   const installed = await optionalJson(join(appFolder(profileRoot), 'current.json'));
   const activeRelease = installed && await optionalJson(join(installed.releaseRoot, 'release-manifest.json'));
-  return { mode: profile.mode, origin: profile.origin, local, defaultDataRoot: profile.ownedDataRoot || join(profileRoot, 'workspace-data'),
+  return { mode: profile.mode, origin, local, defaultDataRoot: profile.ownedDataRoot || join(profileRoot, 'workspace-data'),
     version: manifest.version, buildId: manifest.buildId, sourceCommit: manifest.sourceCommit, runtime: manifest.runtime,
     installedVersion: activeRelease?.version || null, installedBuildId: activeRelease?.buildId || null };
-}
-
-async function portAvailable() {
-  const server = createServer();
-  try {
-    await new Promise((ready, reject) => { server.once('error', reject); server.listen(8787, '127.0.0.1', ready); });
-  } catch {
-    throw new Error('本机 8787 端口已被占用。可连接现有工作区，或先通过原有入口停止占用该端口的服务。');
-  }
-  await new Promise(ready => server.close(ready));
 }
 
 export async function verifyWorkspace(origin, token) {
@@ -79,13 +76,14 @@ async function startLocal(profileRoot, releaseRoot, profile, requested) {
   const dataRoot = await realpath(chosen);
   if (within(appRoot, dataRoot) || within(dataRoot, appRoot)) throw new Error('请为工作区数据选择独立目录。');
   let config = await optionalJson(deploymentPath(dataRoot));
+  let web;
   if (config && !owns(config, profileRoot)) {
     const service = await inspectWorkspace(config, profileRoot);
-    if (service.state !== 'ready' || service.web.url !== loopback) throw new Error('该工作区由外部管理。请用它原有的入口启动本机 Web 服务。');
+    if (service.state !== 'ready') throw new Error('该工作区由外部管理。请用它原有的入口启动本机 Web 服务。');
+    web = service.web;
   } else {
     const ownedRoot = profile.ownedDataRoot;
     if (ownedRoot && relative(ownedRoot, dataRoot)) throw new Error('此安装已管理另一个数据目录，请使用已选目录。');
-    if (!config) await portAvailable();
     if (!ownedRoot) {
       profile.ownedDataRoot = dataRoot;
       await writeJson(workspaceFile(profileRoot), profile);
@@ -97,11 +95,17 @@ async function startLocal(profileRoot, releaseRoot, profile, requested) {
       await installRelease({ releaseRoot, appRoot, dataRoot });
       config = await readJson(deploymentPath(dataRoot));
     }
-    const services = await startSystem(config);
-    if (services.web?.url !== loopback) throw new Error('本机工作区未在回环入口就绪。');
+    if (config.web.autoPort !== true) {
+      config.web.autoPort = true;
+      await writeJson(deploymentPath(dataRoot), config);
+    }
+    ({ web } = await startSystem(config));
+    config = await readJson(deploymentPath(dataRoot));
   }
-  await verifyWorkspace(loopback, config.web.accessToken);
-  await writeJson(workspaceFile(profileRoot), { ...profile, mode: 'local', origin: loopback, localDataRoot: dataRoot });
+  const origin = localOrigin(config, web);
+  if (!origin) throw new Error('本机工作区未在已配置的回环地址就绪。');
+  await verifyWorkspace(origin, config.web.accessToken);
+  await writeJson(workspaceFile(profileRoot), { ...profile, mode: 'local', origin, localDataRoot: dataRoot });
 }
 
 async function stopOwned(profileRoot, profile) {

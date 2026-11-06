@@ -23,7 +23,10 @@ export function createWebAuth(token) {
   return (req, res, url, requestOrigin) => {
     const now = Date.now();
     const secure = requestOrigin.startsWith('https:');
-    const cookieName = secure ? '__Host-summon_session' : 'summon_local_session';
+    const port = new URL(requestOrigin).port || '80';
+    // Browser cookies are scoped to the host, so different local ports need distinct names.
+    const localCookie = port === '8787' ? 'summon_local_session' : 'summon_local_session_' + port;
+    const cookieName = secure ? '__Host-summon_session' : localCookie;
     const cookie = (req.headers.cookie || '').split(';').map(v => v.trim()).find(v => v.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
     const setSession = () => res.setHeader('Set-Cookie', `${cookieName}=${issue(now)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000${secure ? '; Secure' : ''}`);
     const bearer = equal(req.headers.authorization, `Bearer ${token}`);

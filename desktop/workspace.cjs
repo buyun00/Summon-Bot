@@ -28,8 +28,13 @@ function workspaceCommand(profile, command, input = {}) {
 }
 
 async function workspaceToken(state) {
-  if (state.mode !== 'local' || state.local?.state !== 'ready' || state.origin !== 'http://127.0.0.1:8787') throw new Error('请先启动本机工作区。');
+  if (state.mode !== 'local' || state.local?.state !== 'ready' || !state.local.web?.url) throw new Error('请先启动本机工作区。');
   const config = JSON.parse(await readFile(join(state.local.dataRoot, 'config', 'deployment.json'), 'utf8'));
+  const web = new URL(state.local.web.url);
+  if (web.protocol !== 'http:' || web.hostname !== '127.0.0.1' || web.origin !== state.origin
+    || config.web.host !== web.hostname || Number(config.web.port) !== Number(web.port || 80)) {
+    throw new Error('本机工作区地址已变化，请重新打开工作区。');
+  }
   return config.web.accessToken;
 }
 
@@ -37,11 +42,12 @@ async function login(session, origin, token) {
   const response = await fetch(new URL('/auth/session', origin), {
     method: 'POST', headers: { Authorization: 'Bearer ' + token }, redirect: 'error', signal: AbortSignal.timeout(10000),
   });
-  const secure = origin.startsWith('https:');
-  const name = secure ? '__Host-summon_session' : 'summon_local_session';
-  const cookie = response.headers.get('set-cookie')?.split(';')[0];
-  if (!response.ok || !cookie?.startsWith(name + '=')) throw new Error('工作区登录未完成，请检查访问令牌。');
-  await session.cookies.set({ url: origin + '/', name, value: cookie.slice(name.length + 1), path: '/', secure, httpOnly: true,
+  const address = new URL(origin), secure = address.protocol === 'https:';
+  const cookie = response.headers.get('set-cookie')?.split(';')[0] || '';
+  const separator = cookie.indexOf('='), name = cookie.slice(0, separator);
+  const names = secure ? ['__Host-summon_session'] : ['summon_local_session', 'summon_local_session_' + (address.port || '80')];
+  if (!response.ok || separator <= 0 || !names.includes(name)) throw new Error('工作区登录未完成，请检查访问令牌。');
+  await session.cookies.set({ url: origin + '/', name, value: cookie.slice(separator + 1), path: '/', secure, httpOnly: true,
     sameSite: 'strict', expirationDate: Date.now() / 1000 + 30 * 86400 });
 }
 

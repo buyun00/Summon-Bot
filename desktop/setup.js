@@ -65,7 +65,7 @@ async function perform(action) {
 
 function chooseLocal() {
   say('在本机创建工作区', true);
-  say('工作区会保存在你选的目录。平时关闭这个窗口，服务也可以继续运行。');
+  say('工作区会保存在你选的目录。新建时如果默认端口被占用，我会自动选一个空闲端口。关闭窗口后，服务可以继续运行。');
   form([field('工作区数据目录', 'dataRoot', { placeholder: workspace.defaultDataRoot || '使用默认目录' })], '创建或打开本机工作区', async values => {
     await setup.action('local', { dataRoot: values.dataRoot.trim() || undefined });
   });
@@ -202,7 +202,7 @@ async function open() {
   else if (info.section !== 'workspace') await showAccess(info.section);
   else {
     say('欢迎来到 Summon Bot。你可以在这台电脑上创建自己的工作区，也可以连接一个已经运行的工作区。');
-    if (workspace.origin) say('当前选择了' + (workspace.mode === 'local' ? '本机工作区。' : '远程工作区。\n' + workspace.origin));
+    if (workspace.origin) say('当前选择了' + (workspace.mode === 'local' ? '本机工作区。' : '远程工作区。') + '\n' + workspace.origin);
     showChoices();
   }
   status.textContent = info.error || '';
