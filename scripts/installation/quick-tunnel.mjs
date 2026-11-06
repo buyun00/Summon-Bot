@@ -16,11 +16,12 @@ if (!file) {
   const child = spawn(file, ['tunnel', '--config', config, '--no-autoupdate', '--protocol', 'http2', '--url', target.href], {
     env: safeEnvironment(), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
   });
-  let reported = false, text = '';
+  let reported = false, registered = false, origin, text = '';
   const read = chunk => {
     text = (text + chunk.toString()).slice(-16384);
-    const origin = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com\b/i)?.[0];
-    if (origin && !reported) { reported = true; process.send?.({ type: 'remote-ready', origin }); }
+    origin ||= text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com\b/i)?.[0];
+    registered ||= /Registered tunnel connection/i.test(text);
+    if (origin && registered && !reported) { reported = true; process.send?.({ type: 'remote-ready', origin }); }
   };
   child.stdout.on('data', read); child.stderr.on('data', read);
   child.once('error', error => { process.send?.({ type: 'remote-error', message: error.message }); process.exitCode = 1; });

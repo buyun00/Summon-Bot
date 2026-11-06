@@ -11,6 +11,7 @@ import { KnowledgeService } from '../knowledge/service.mjs';
 import { MemoryManagement } from '../memory-management/service.mjs';
 import { DesktopCodex } from '../codex/desktop.mjs';
 import { createFileTools } from '../filesystem/tools.mjs';
+import { createRedactor } from '../../bot/src/runtime/config.mjs';
 import { toolDefinitions, FILE_TOOLS } from '../gateway/tools.mjs';
 import { fail } from '../shared/validation.mjs';
 
@@ -67,7 +68,7 @@ export async function createCapability(options) {
     if(FILE_TOOLS.has(name)) {
       if(actor==='controller')fail('Filesystem tools require an explicit Bot identity');
       const config=await manager.config(actor),artifacts=[];
-      const definitions=createFileTools({workspace:config.workspace,projectRoot:defaultCwd,protectedRoot:dataRoot,tempRoot:join(manager.directory(actor),'tmp','capability-tools'),onArtifacts:items=>artifacts.push(...items),withExecution:(fn,toolSignal)=>lockFor(defaultCwd).withLock(`bot:${actor}`,fn,toolSignal),saveArtifact:async input=>(await manager.botApi()).saveArtifact(join(manager.directory(actor),'artifacts'),input)});
+      const definitions=createFileTools({workspace:config.workspace,projectRoot:defaultCwd,protectedRoot:dataRoot,redact:createRedactor(config),containProcesses:context.workId?.startsWith('onboarding-')===true,tempRoot:join(manager.directory(actor),'tmp','capability-tools'),onArtifacts:items=>artifacts.push(...items),withExecution:(fn,toolSignal)=>lockFor(defaultCwd).withLock(`bot:${actor}`,fn,toolSignal),saveArtifact:async input=>(await manager.botApi()).saveArtifact(join(manager.directory(actor),'artifacts'),input)});
       const result=await definitions.find(tool=>tool.name===name).execute(randomUUID(),args,signal);
       return {...result,artifacts,isError:Boolean(result.details?.timedOut||result.details?.aborted||(result.details?.exitCode!==undefined&&result.details.exitCode!==0))};
     }

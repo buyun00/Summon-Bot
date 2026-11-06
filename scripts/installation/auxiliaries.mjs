@@ -7,7 +7,7 @@ import { workspaceOrigin } from '../../web/backend/origins.mjs';
 import { setTimeout as pause } from 'node:timers/promises';
 import { readJson, writeJson } from '../build/files.mjs';
 import { bundledNode, deploymentPath, inspectService, launchService, serviceRoot, stopService } from './system.mjs';
-import { readRemoteAccess, registerCustomRemote } from './remote-config.mjs';
+import { readRemoteAccess, registerCustomRemote, removeCustomRemote } from './remote-config.mjs';
 import { desktopExecutorState } from '../../bot/src/capabilities/executor-connections.mjs';
 import { terminateTree } from '../../bot/src/runtime/process-tools.mjs';
 
@@ -147,7 +147,7 @@ export async function startAuxiliary(config, type, onExit) {
     }, onExit);
     try {
       const result = await registerCustomRemote(config, { ...bridge, bridgePath, origin: service.url });
-      if (!result.reachable) throw new Error('远程桥已启动，但入口尚未连到当前工作区。');
+      if (!result.reachable) throw new Error('远程桥已启动，但入口尚未连到当前工作区。' + (result.error?.code || '') + ' ' + (result.error?.message || ''));
       return service;
     } catch (error) { await service.close(); throw error; }
   }
@@ -191,8 +191,17 @@ export async function startRemoteBridge(config, input) {
   await stopService(config, 'remote-bridge');
   await writeJson(join(serviceRoot(config.dataRoot, 'remote-bridge'), 'config.json'), {
     ...(input.bridgePath ? { bridgePath: input.bridgePath } : { builtin: 'quick-tunnel' }),
-    arguments: args, label: input.label || '临时远程入口', temporary: input.temporary !== false,
+    arguments: args, label: input.label || '临时远程入口', temporary: input.temporary !== false, workId: input.workId,
   });
   await launchService(config, 'remote-bridge', { timeoutMs: 90000 });
   return { provider: 'custom', state: 'reachable', reachable: true, ...(await readRemoteAccess(config.dataRoot)).custom };
+}
+
+export async function stopRemoteBridge(config, workId) {
+  let bridge;
+  try { bridge = await readJson(join(serviceRoot(config.dataRoot, 'remote-bridge'), 'config.json')); }
+  catch (error) { if (error.code === 'ENOENT') return; throw error; }
+  if (bridge.workId !== workId) return;
+  await stopService(config, 'remote-bridge');
+  await removeCustomRemote(config, workId);
 }

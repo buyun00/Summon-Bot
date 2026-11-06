@@ -5,7 +5,7 @@ import { guideReply, looksLikeSecret, option } from './guide.mjs';
 import { fail, within } from '../shared/validation.mjs';
 import { probeRemoteOrigin, readRemoteAccess, registerCustomRemote } from '../../scripts/installation/remote-config.mjs';
 import { applyRemote, prepareRemote, remoteStatus } from '../../scripts/installation/remote-access.mjs';
-import { startRemoteBridge } from '../../scripts/installation/auxiliaries.mjs';
+import { startRemoteBridge, stopRemoteBridge } from '../../scripts/installation/auxiliaries.mjs';
 
 const engines = new Map([
   ['codex', { id: 'codex-cli', name: 'Codex' }],
@@ -157,6 +157,7 @@ export class OnboardingService {
       const work = await this.manager.readState(botId, db => db?.getRecord('works', setup.workId));
       if (work && !['completed', 'cancelled'].includes(work.status)) await this.manager.request(botId,
         '/works/' + encodeURIComponent(work.id), { method: 'PATCH', body: JSON.stringify({ status: 'cancelled' }) });
+      await stopRemoteBridge(JSON.parse(await readFile(join(this.models.dataRoot, 'config', 'deployment.json'), 'utf8')), setup.workId);
     }
     this.save({ status: step === 'done' ? 'complete' : 'guiding', step,
       questionId: step === 'done' ? null : randomUUID(), error: null, setup: null });
@@ -174,6 +175,7 @@ export class OnboardingService {
     const instruction = `当前用户正在配置 ${engines.get(state.step)?.name || remoteProviders.get(state.step)}。当前问题：${guide.text}\n`
       + '你正在这一步的独立 Pi 工作中。先调用 workspace_setup status 读取真实配置。按当前用户授权完成安装、登录状态检查和配置；缺组件就安装，接口不匹配就修复或在自己的工作目录编写 Node CLI 桥，再用 workspace_setup 完成接入。'
       + '失败后根据真实错误继续处理，不把预置入口缺失当成不能配置的理由。涉及用户账号登录、外部授权或秘密输入时，只让用户完成所缺的那一步，随后续接同一工作。'
+      + 'run_command 用于有期限的前台诊断，其子进程会随命令结束回收。需要持续运行的远程桥一律交给 workspace_setup start-remote 管理。'
       + '不要索要普通聊天中的密钥。已有成功或未知结果先查状态，避免重复操作。workspace_setup 成功会标记当前配置工作完成并自动推进下一条引导问题，直接结束当前工作，不追加已接通或询问想做什么的消息。';
     try {
       await this.manager.start(state.bot.id);
@@ -192,6 +194,10 @@ export class OnboardingService {
   setupAction(input, context) {
     return this.serialize(async () => {
       const state = this.state(), setup = this.record().setup, { actor, task, work, source } = context;
+      const completed = work && this.store.get('setup-completions', work.id);
+      if (completed?.botId === actor && completed.sourceIds.includes(source?.replyTo) && source?.actor === 'user') {
+        return { completed: true, nextStep: completed.nextStep, questionAlreadyPublished: true };
+      }
       if (state.status !== 'guiding' || actor !== state.bot.id || work?.id !== setup?.workId || work?.executor?.kind !== 'pi'
         || setup.questionId !== state.questionId || source?.actor !== 'user' || source.roomId !== state.roomId || !setup.sourceIds.includes(source.replyTo)) {
         fail('当前工作不属于已授权的这一步配置。请回到当前引导问题继续。', 403);
@@ -208,6 +214,7 @@ export class OnboardingService {
       const finish = async next => {
         await this.manager.request(actor, '/works/' + encodeURIComponent(work.id), { method: 'PATCH', body: JSON.stringify({
           status: 'completed', executionOutcome: { ...work.executionOutcome, onboardingCompletedTaskId: task.id } }) });
+        this.store.save('setup-completions', { id: work.id, botId: actor, sourceIds: setup.sourceIds, nextStep: next });
         await this.move(next, { cancelSetup: false });
         return { completed: true, nextStep: next, questionAlreadyPublished: true };
       };
@@ -227,7 +234,7 @@ export class OnboardingService {
       if (!remoteProviders.has(state.step)) fail('请先完成当前工作引擎的配置。');
       if (input.action === 'start-remote') {
         const bridgePath = input.bridgePath ? await privateFile(input.bridgePath, true) : undefined;
-        const result = await startRemoteBridge(config, { ...input, bridgePath });
+        const result = await startRemoteBridge(config, { ...input, bridgePath, workId: work.id });
         return { ...result, ...await finish('done') };
       }
       if (input.action === 'register-remote') {

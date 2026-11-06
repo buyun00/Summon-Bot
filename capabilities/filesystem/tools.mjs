@@ -8,7 +8,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { tmpdir } from 'node:os';
 import { finished } from 'node:stream/promises';
 import { truncateHead } from '../shared/truncate.mjs';
-import { cleanEnvironment, terminateTree } from '../../bot/src/runtime/process-tools.mjs';
+import { cleanEnvironment, terminateTree, windowsProcessJob } from '../../bot/src/runtime/process-tools.mjs';
 
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_OUTPUT_BYTES = 64 * 1024;
@@ -72,7 +72,7 @@ async function physicalPath(path) {
   }
 }
 
-async function runCommand(command, cwd, timeoutMs, signal, redact, saveArtifact, onArtifacts, tempRoot) {
+async function runCommand(command, cwd, timeoutMs, signal, redact, saveArtifact, onArtifacts, tempRoot, containProcesses) {
   cancelled(signal);
   if (saveArtifact && tempRoot) await mkdir(tempRoot, { recursive: true });
   const outputDirectory = saveArtifact ? await mkdtemp(join(tempRoot || tmpdir(), 'summon-command-output-')) : null;
@@ -93,6 +93,7 @@ async function runCommand(command, cwd, timeoutMs, signal, redact, saveArtifact,
 $OutputEncoding = [Console]::OutputEncoding
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+${containProcesses ? windowsProcessJob : ''}
 $PSDefaultParameterValues = @{ 'Get-Content:Encoding' = 'utf8'; 'Set-Content:Encoding' = 'utf8'; 'Add-Content:Encoding' = 'utf8'; 'Out-File:Encoding' = 'utf8'; 'Select-String:Encoding' = 'utf8' }
 ${command}
 $summonCommandSucceeded = $?
@@ -146,6 +147,7 @@ if (-not $summonCommandSucceeded) { exit 1 }
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener('abort', abort);
+    if (containProcesses && !WINDOWS) await terminateTree(child);
     if (fullOutput) {
       for (const stream of Object.values(fullOutput)) stream.destroy();
       await Promise.allSettled(Object.values(fullOutput).map(stream => finished(stream)));
@@ -155,7 +157,7 @@ if (-not $summonCommandSucceeded) { exit 1 }
 }
 
 /** Filesystem access is constrained here; command cwd is a convenience, not an OS sandbox. */
-export function createFileTools({ workspace, projectRoot, protectedRoot, protectedRoots = [], signal: defaultSignal, withExecution = async fn => fn(), redact = defaultRedact, saveArtifact, onArtifacts, tempRoot }) {
+export function createFileTools({ workspace, projectRoot, protectedRoot, protectedRoots = [], signal: defaultSignal, withExecution = async fn => fn(), redact = defaultRedact, saveArtifact, onArtifacts, tempRoot, containProcesses = false }) {
   const workspaceRoot = resolve(textValue(workspace, 'workspace'));
   const project = resolve(textValue(projectRoot, 'projectRoot'));
   const protectedDirectories = [...new Set([protectedRoot, ...protectedRoots].filter(value => value != null)
@@ -343,7 +345,7 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
       if (command.length > 20000) throw new Error('command is too long');
       const cwd = await checkedPath(args.cwd, { directory: true });
       const timeoutMs = boundedInteger(args.timeoutMs, 30000, 100, 120000, 'timeoutMs');
-      return runCommand(command, cwd, timeoutMs, signal, sanitize, saveArtifact, onArtifacts, tempRoot);
+      return runCommand(command, cwd, timeoutMs, signal, sanitize, saveArtifact, onArtifacts, tempRoot, containProcesses);
     }, true),
   ];
 }

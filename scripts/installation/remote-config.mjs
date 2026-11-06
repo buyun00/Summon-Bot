@@ -31,13 +31,22 @@ export async function remoteOrigins(dataRoot) {
     .map(entry => workspaceOrigin(entry.origin, { httpsOnly: true }));
 }
 
-export async function probeRemoteOrigin(config, origin) {
+export async function inspectRemoteOrigin(config, origin) {
   const challenge = randomBytes(32).toString('base64url'), url = new URL('/auth/instance', origin);
   url.searchParams.set('challenge', challenge);
   try {
     const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(3000) });
-    return response.ok && (await response.json()).proof === workspaceProof(config.web.accessToken, challenge);
-  } catch { return false; }
+    if (!response.ok) return { reachable: false, status: response.status, code: 'REMOTE_HTTP_ERROR', message: '远程入口返回 HTTP ' + response.status + '。请检查代理目标及 Host 转发。' };
+    const body = await response.json().catch(() => null);
+    if (body?.proof !== workspaceProof(config.web.accessToken, challenge)) return { reachable: false, status: response.status, code: 'REMOTE_INSTANCE_MISMATCH', message: '远程入口没有返回当前工作区的身份，请检查它转发到的实例。' };
+    return { reachable: true, status: response.status };
+  } catch (error) {
+    return { reachable: false, code: error.cause?.code || error.code || error.name, message: '无法连接远程入口，请检查 DNS、网络及代理连接。' };
+  }
+}
+
+export async function probeRemoteOrigin(config, origin) {
+  return (await inspectRemoteOrigin(config, origin)).reachable;
 }
 
 export async function registerCustomRemote(config, input) {
@@ -46,16 +55,29 @@ export async function registerCustomRemote(config, input) {
   try {
     const entries = await readRemoteAccess(config.dataRoot), previous = entries.custom;
     entries.custom = { origin, owner: input.bridgePath ? 'summon' : 'external', label: String(input.label || '自定义远程入口').slice(0, 80),
-      temporary: input.temporary === true, ...(input.bridgePath ? { bridgePath: input.bridgePath } : {}) };
+      temporary: input.temporary === true, ...(input.bridgePath ? { bridgePath: input.bridgePath } : {}), ...(input.workId ? { workId: input.workId } : {}) };
     await writeRemoteAccess(config.dataRoot, entries);
     const deadline = Date.now() + 30000;
+    let probe;
     do {
-      if (await probeRemoteOrigin(config, origin)) return { provider: 'custom', state: 'reachable', registered: true, reachable: true, ...entries.custom };
+      probe = await inspectRemoteOrigin(config, origin);
+      if (probe.reachable) return { provider: 'custom', state: 'reachable', registered: true, reachable: true, ...entries.custom };
       await pause(500);
     } while (Date.now() < deadline);
     if (previous) entries.custom = previous;
     else delete entries.custom;
     await writeRemoteAccess(config.dataRoot, entries);
-    return { provider: 'custom', state: 'unreachable', registered: false, reachable: false, origin };
+    return { provider: 'custom', state: 'unreachable', registered: false, reachable: false, origin, error: probe };
+  } finally { await lock.close(); }
+}
+
+export async function removeCustomRemote(config, workId) {
+  const lock = await acquireServiceLock(config.dataRoot, 'remote-access-operation', () => ({ pid: process.pid, bootId: 'custom-remote', state: 'working' }));
+  try {
+    const entries = await readRemoteAccess(config.dataRoot);
+    if (entries.custom?.workId === workId) {
+      delete entries.custom;
+      await writeRemoteAccess(config.dataRoot, entries);
+    }
   } finally { await lock.close(); }
 }

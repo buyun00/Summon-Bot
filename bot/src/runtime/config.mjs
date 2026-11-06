@@ -62,7 +62,7 @@ export function loadBotConfig(path) {
 export function createRedactor(config) {
   const secrets = new Set();
   const visit = (value, key = '') => {
-    if (typeof value === 'string' && /token|apiKey|authorization|password|secret/i.test(key) && value.length >= 8) secrets.add(value);
+    if (typeof value === 'string' && /token|apiKey|authorization|password|secret|^(?:key|access|refresh)$/i.test(key) && value.length >= 8) secrets.add(value);
     else if (value && typeof value === 'object') for (const [childKey, child] of Object.entries(value)) {
       if (childKey === 'headersEnv' && child && typeof child === 'object') for (const name of Object.values(child)) if (process.env[name]) secrets.add(process.env[name]);
       if (childKey === 'env' && typeof child === 'string' && process.env[child]) secrets.add(process.env[child]);
@@ -71,8 +71,14 @@ export function createRedactor(config) {
   };
   visit(config);
   if (config.model.apiKeyEnv && process.env[config.model.apiKeyEnv]) secrets.add(process.env[config.model.apiKeyEnv]);
+  const workspaceSecrets = config.model.connectionStore
+    ? ['deployment.json', 'model-credentials.json'].map(name => resolve(dirname(config.model.connectionStore), name)) : [];
   return value => {
     if (value === undefined) return undefined;
+    for (const path of workspaceSecrets) {
+      try { visit(JSON.parse(readFileSync(path, 'utf8'))); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
     let text = JSON.stringify(value);
     for (const secret of secrets) text = text.split(secret).join('[redacted]');
     return JSON.parse(text.replace(/\bsk-[a-zA-Z0-9_-]{12,}\b/g, '[redacted]'));
