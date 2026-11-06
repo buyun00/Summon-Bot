@@ -146,8 +146,7 @@ export async function startAuxiliary(config, type, onExit) {
       env: { ...env, SUMMON_WEB_URL: 'http://127.0.0.1:' + config.web.port }, cwd, ipc: true, discoverOrigin: true,
     }, onExit);
     try {
-      const result = await registerCustomRemote(config, { ...bridge, bridgePath, origin: service.url });
-      if (!result.reachable) throw new Error('远程桥已启动，但入口尚未连到当前工作区。' + (result.error?.code || '') + ' ' + (result.error?.message || ''));
+      await registerCustomRemote(config, { ...bridge, bridgePath, origin: service.url });
       return service;
     } catch (error) { await service.close(); throw error; }
   }
@@ -193,13 +192,30 @@ export async function startRemoteBridge(config, input, { signal } = {}) {
     ...(input.bridgePath ? { bridgePath: input.bridgePath } : { builtin: 'quick-tunnel' }),
     arguments: args, label: input.label || '临时远程入口', temporary: input.temporary !== false, workId: input.workId,
   });
+  let run;
   try {
-    await launchService(config, 'remote-bridge', { timeoutMs: 150000, signal });
+    run = await launchService(config, 'remote-bridge', { timeoutMs: 150000, signal });
   } catch (error) {
     if (signal?.aborted) await removeCustomRemote(config, input.workId);
     throw error;
   }
-  return { provider: 'custom', state: 'reachable', reachable: true, ...(await readRemoteAccess(config.dataRoot)).custom };
+  const registered = (await readRemoteAccess(config.dataRoot)).custom;
+  if (registered?.origin === run.url && registered.workId === input.workId) {
+    return { provider: 'custom', state: 'reachable', reachable: true, ...registered };
+  }
+  return { provider: 'custom', state: 'waiting', reachable: false, origin: run.url,
+    instruction: '桥接进程已保留，公网入口尚未验证成功。继续调用 check-remote 检查同一地址，DNS 暂未就绪时不要重启桥接或更换域名。' };
+}
+
+export async function checkRemoteBridge(config, workId, { signal } = {}) {
+  let bridge;
+  try { bridge = await readJson(join(serviceRoot(config.dataRoot, 'remote-bridge'), 'config.json')); }
+  catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  if (bridge.workId !== workId) return null;
+  const run = await inspectService(config, 'remote-bridge');
+  if (run.state !== 'ready') return { provider: 'custom', state: run.state, reachable: false };
+  const bridgePath = bridge.builtin === 'quick-tunnel' ? join(config.releaseRoot, 'scripts', 'installation', 'quick-tunnel.mjs') : bridge.bridgePath;
+  return registerCustomRemote(config, { ...bridge, bridgePath, origin: run.url }, { signal });
 }
 
 export async function stopRemoteBridge(config, workId) {

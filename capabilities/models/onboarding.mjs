@@ -5,7 +5,7 @@ import { guideReply, looksLikeSecret, option } from './guide.mjs';
 import { fail, within } from '../shared/validation.mjs';
 import { probeRemoteOrigin, readRemoteAccess, registerCustomRemote } from '../../scripts/installation/remote-config.mjs';
 import { applyRemote, prepareRemote, remoteStatus } from '../../scripts/installation/remote-access.mjs';
-import { startRemoteBridge, stopRemoteBridge } from '../../scripts/installation/auxiliaries.mjs';
+import { checkRemoteBridge, startRemoteBridge, stopRemoteBridge } from '../../scripts/installation/auxiliaries.mjs';
 
 const engines = new Map([
   ['codex', { id: 'codex-cli', name: 'Codex' }],
@@ -247,7 +247,7 @@ export class OnboardingService {
           remote: state.step === 'custom' ? (await readRemoteAccess(config.dataRoot)).custom || null
             : remoteProviders.has(state.step) ? await remoteStatus(config, state.step) : null,
           bridgeProtocol: engine ? 'Node CLI bridge receives the same arguments as the chosen official CLI. During setup, verify only login status for Codex (report ChatGPT), auth status --json for Claude, or --no-auto-update --help for Grok. Do not run codex exec, a generated reply, or any sample work. workspace_setup connect-engine is the authoritative connection check. For later user work the adapter must implement the installed runtime cli-work-engine.mjs protocol; read that file only when implementing the adapter.'
-            : 'For a temporary Cloudflare Quick Tunnel, call start-remote with no bridgePath. If cloudflared is missing, install or download it and pass its absolute path as arguments[0]. When the user authorizes another provider or a custom bridge, write a Node bridge in your workspace, then pass bridgePath and arguments to start-remote. Do not substitute this for an explicitly requested built-in route. The bridge receives SUMMON_WEB_URL, stays running, and sends process.send({type:"remote-ready",origin:"https://..."}) when its public route is ready. The service owns and stops its process tree. Existing external routes can use register-remote with origin, label and temporary. Preserve Host and support ordinary HTTP; the webpage polls when SSE is unavailable.' };
+            : 'For a temporary Cloudflare Quick Tunnel, call start-remote with no bridgePath. If cloudflared is missing, install or download it and pass its absolute path as arguments[0]. A waiting result keeps the managed bridge alive: use check-remote to verify that same route while DNS propagates. Do not repeatedly start new tunnels for DNS failures. Call start-remote again only when the managed process has stopped or a script or launch configuration has been repaired and must restart. When the user authorizes another provider or a custom bridge, write a Node bridge in your workspace, then pass bridgePath and arguments to start-remote. Do not substitute this for an explicitly requested built-in route. The bridge receives SUMMON_WEB_URL, stays running, and sends process.send({type:"remote-ready",origin:"https://..."}) when its public route is ready. The service owns and stops its process tree. Existing external routes can use register-remote with origin, label and temporary. Preserve Host and support ordinary HTTP; the webpage polls when SSE is unavailable.' };
         if (input.action === 'connect-engine' && engine) {
           const bridgePath = input.bridgePath ? await privateFile(input.bridgePath, true) : undefined;
           await this.models.setExecutor(engine.id, true, { select: true, bridgePath, signal });
@@ -257,11 +257,15 @@ export class OnboardingService {
         if (input.action === 'start-remote') {
           const bridgePath = input.bridgePath ? await privateFile(input.bridgePath, true) : undefined;
           const result = await startRemoteBridge(config, { ...input, bridgePath, workId: work.id }, { signal });
-          return { ...result, ...await finish('done') };
+          return result.reachable ? { ...result, ...await finish('done') } : result;
         }
         if (input.action === 'register-remote') {
           const result = await registerCustomRemote(config, { origin: input.origin, label: input.label, temporary: input.temporary }, { signal });
           return result.reachable ? { ...result, ...await finish('done') } : result;
+        }
+        if (input.action === 'check-remote') {
+          const managed = await checkRemoteBridge(config, work.id, { signal });
+          if (managed) return managed.reachable ? { ...managed, ...await finish('done') } : managed;
         }
         if (state.step === 'custom') {
           const custom = (await readRemoteAccess(config.dataRoot)).custom;
