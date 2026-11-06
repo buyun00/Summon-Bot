@@ -183,6 +183,7 @@ export class OnboardingService {
       + '失败后根据真实错误继续处理，不把预置入口缺失当成不能配置的理由。涉及用户账号登录、外部授权或秘密输入时，只让用户完成所缺的那一步，随后续接同一工作。'
       + '接入工作引擎只检查安装、登录和非生成式握手，不运行 codex exec、试聊或演示任务。接入成功由 workspace_setup connect-engine 判定，不能为了验证接入而调用模型。用户明确提出的限制在后续排障中持续有效。'
       + '当前配置工作的完成状态只由 workspace_setup 核实成功后写入，不自行调用 work_update completed 或 cancelled。尚缺条件时使用 work_wait，后续沿同一工作接续。'
+      + '报错不会扩大用户授权。用户若限定供应商、内置入口、命令或禁止事项，重试和诊断仍须遵守；不能擅自替换供应商、绕过指定入口或另起临时 HTTP 服务。确需改变用户限定的方法时，在同一工作中说明所缺条件并用 work_wait 等待用户补充。没有这类限制时，继续自主完成已授权的安装和桥接。'
       + 'run_command 用于有期限的前台诊断，其子进程会随命令结束回收。需要持续运行的远程桥一律交给 workspace_setup start-remote 管理。'
       + '不要索要普通聊天中的密钥。已有成功或未知结果先查状态，避免重复操作。workspace_setup 成功会标记当前配置工作完成并自动推进下一条引导问题，直接结束当前工作，不追加已接通或询问想做什么的消息。';
     const sourceIds = new Set(this.record().setup.sourceIds);
@@ -238,13 +239,15 @@ export class OnboardingService {
           return { completed: true, nextStep: next, questionAlreadyPublished: true };
         };
         if (input.action === 'status') return { step: state.step, engineId: engine?.id, workId: work.id,
+          userInstructions: this.chatroom.messages(state.roomId).filter(message => setup.sourceIds.includes(message.id) && message.senderId === 'user').map(message => message.content),
+          authorization: 'Follow these original user instructions throughout diagnosis and retries. An error does not authorize a different provider, a prohibited command, or a temporary HTTP server. If the user limited the method, keep that method or use work_wait for the missing condition; an alternative requires the user to authorize it in this work.',
           platform: process.platform, workspace: botConfig.workspace, runtimeRoot: this.manager.releaseRoot,
           setupCli: join(this.manager.releaseRoot, 'scripts', 'installation', 'desktop.mjs'), dataRoot: this.models.dataRoot,
           executors: this.models.summary().executors,
           remote: state.step === 'custom' ? (await readRemoteAccess(config.dataRoot)).custom || null
             : remoteProviders.has(state.step) ? await remoteStatus(config, state.step) : null,
           bridgeProtocol: engine ? 'Node CLI bridge receives the same arguments as the chosen official CLI. During setup, verify only login status for Codex (report ChatGPT), auth status --json for Claude, or --no-auto-update --help for Grok. Do not run codex exec, a generated reply, or any sample work. workspace_setup connect-engine is the authoritative connection check. For later user work the adapter must implement the installed runtime cli-work-engine.mjs protocol; read that file only when implementing the adapter.'
-            : 'For a temporary Cloudflare Quick Tunnel, call start-remote with no bridgePath. If cloudflared is missing, install or download it and pass its absolute path as arguments[0]. For another provider, write a Node bridge in your workspace, then pass bridgePath and arguments to start-remote. The bridge receives SUMMON_WEB_URL, stays running, and sends process.send({type:"remote-ready",origin:"https://..."}) when its public route is ready. The service owns and stops its process tree. Existing external routes can use register-remote with origin, label and temporary. Preserve Host and support ordinary HTTP; the webpage polls when SSE is unavailable.' };
+            : 'For a temporary Cloudflare Quick Tunnel, call start-remote with no bridgePath. If cloudflared is missing, install or download it and pass its absolute path as arguments[0]. When the user authorizes another provider or a custom bridge, write a Node bridge in your workspace, then pass bridgePath and arguments to start-remote. Do not substitute this for an explicitly requested built-in route. The bridge receives SUMMON_WEB_URL, stays running, and sends process.send({type:"remote-ready",origin:"https://..."}) when its public route is ready. The service owns and stops its process tree. Existing external routes can use register-remote with origin, label and temporary. Preserve Host and support ordinary HTTP; the webpage polls when SSE is unavailable.' };
         if (input.action === 'connect-engine' && engine) {
           const bridgePath = input.bridgePath ? await privateFile(input.bridgePath, true) : undefined;
           await this.models.setExecutor(engine.id, true, { select: true, bridgePath, signal });
