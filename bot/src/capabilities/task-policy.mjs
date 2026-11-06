@@ -1,3 +1,5 @@
+import { modelArgs, modelText } from '../context/model-input.mjs';
+
 // Conversation authority is derived from durable task ownership, never model arguments.
 export const CHAT_WORK_POLICY = 1;
 const chatCoordination = new Set(['work_create', 'work_dispatch', 'work_update', 'tasks_cancel',
@@ -23,7 +25,7 @@ export function assertToolPolicy(task, tool, args = {}) {
   if (!permitsTool(task, tool)) deny(`${taskMode(task)} conversation cannot use ${tool.name}`);
   if (taskMode(task) === 'chat' && tool.name === 'work_update' && !['paused', 'cancelled'].includes(args.status)) deny('Only the worker records execution progress and completion');
   if (taskMode(task) === 'work' && tool.name === 'work_update' && (args.sources || args.notifications)) deny('Work cannot change its authorization sources or result recipients');
-  if (task.workId?.startsWith('onboarding-') && tool.name === 'work_update' && ['completed', 'cancelled', 'done'].includes(args.status)) {
+  if (task.workId?.startsWith('onboarding-') && tool.name === 'work_update' && ['completed', 'cancelled', 'done'].includes(modelText(modelArgs(args).status))) {
     deny('配置工作由 workspace_setup 核实成功后完成，取消由用户的引导选择处理。当前只记录进展，缺少条件时使用 work_wait，保留同一工作继续配置。');
   }
   if (taskMode(task) === 'work' && tool.name.startsWith('codex_') && args.workId && args.workId !== task.workId) deny('Codex execution belongs to the current work only');
