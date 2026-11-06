@@ -64,6 +64,7 @@ function installSetupProtocol() {
     ['/index.html', [join(__dirname, 'setup.html'), 'text/html']],
     ['/setup.js', [join(__dirname, 'setup.js'), 'text/javascript']],
     ['/setup.css', [join(__dirname, 'setup.css'), 'text/css']],
+    ['/startup-art.png', [join(__dirname, 'startup-art.png'), 'image/png']],
     ['/avatars.js', [join(runtime, 'web/frontend/avatars.js'), 'text/javascript']],
     ['/icon.png', [join(runtime, 'web/frontend/icons/icon-192.png'), 'image/png']],
   ]);

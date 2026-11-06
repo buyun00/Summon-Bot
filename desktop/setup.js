@@ -6,21 +6,22 @@ const status = document.querySelector('#status');
 const welcome = document.querySelector('#welcome');
 const unpacking = document.querySelector('#unpacking');
 const parcel = unpacking.querySelector('.parcel');
-const strip = parcel.querySelector('.parcel-strip');
-const lid = parcel.querySelector('.parcel-lid');
 const parcelTitle = document.querySelector('#unpacking-title');
 const parcelActions = document.querySelector('#parcel-actions');
 const stageLabel = document.querySelector('#unpacking-stage');
 const stageDetail = document.querySelector('#unpacking-detail');
-const unpackingStages = new Map([
-  ['welcome', [0, '主 Bot 就在箱子里', '拆开箱子，开始创建你的工作区。']],
-  ['choice', [0, '发现一个已有的工作区', '你想继续用原来的工作区，还是新建一个？']],
-  ['prepare', [3, '正在准备本机工作区', '首次创建需要准备运行组件并启动服务，请稍等片刻。']],
-  ['runtime', [8, '正在复制运行组件', '首次创建需要复制本机运行所需的文件。']],
-  ['gateway', [60, '正在启动主 Bot', '正在打开工作区的数据和本机能力。']],
-  ['web', [82, '正在启动工作区页面', '正在为主界面准备本机地址。']],
-  ['verify', [94, '正在确认工作区就绪', '正在检查服务和工作区连接。']],
-  ['ready', [100, '工作区准备好了', '正在打开箱盖。']],
+const startup = document.querySelector('#startup');
+const startupBand = startup.querySelector('.startup-band');
+const startupFill = startup.querySelector('.startup-fill');
+const startupLabel = document.querySelector('#startup-label');
+const startupPercent = document.querySelector('#startup-percent');
+const startupStages = new Map([
+  ['prepare', [3, '正在准备本机工作区']],
+  ['runtime', [8, '正在复制运行组件']],
+  ['gateway', [60, '正在启动主 Bot']],
+  ['web', [82, '正在启动工作区页面']],
+  ['verify', [94, '正在确认工作区就绪']],
+  ['ready', [100, '工作区准备好了']],
 ]);
 let workspace, busy = false;
 
@@ -85,51 +86,52 @@ async function perform(action) {
   finally { busy = false; controls.inert = false; }
 }
 
-function unpackingProgress({ stage, ratio }) {
-  const info = unpackingStages.get(stage);
+function updateStartupProgress({ stage, ratio }) {
+  const info = startupStages.get(stage);
   if (!info) return;
-  const [start, label, detail] = info;
-  const percent = stage === 'runtime' ? Math.round(100 * ratio) : 0;
-  const position = start + Math.round(.46 * percent);
-  strip.style.setProperty('--tear-progress', position + '%');
-  const peek = Math.min(85, Math.max(0, (position - 20) * 1.65));
-  parcel.style.setProperty('--peek-rise', peek + '%');
-  parcel.toggleAttribute('data-peek', peek > 35);
-  strip.setAttribute('aria-valuenow', position);
-  strip.setAttribute('aria-valuetext', label);
-  if (stageLabel.textContent !== label) stageLabel.textContent = label;
-  stageDetail.textContent = percent ? `已复制 ${percent}% 的运行组件` : detail;
+  const [start, label] = info;
+  const copied = stage === 'runtime' && Number.isFinite(ratio) ? Math.min(1, Math.max(0, ratio)) : 0;
+  const previous = stage === 'prepare' ? 0 : Number(startupBand.getAttribute('aria-valuenow'));
+  const position = Math.max(previous, start + Math.round(46 * copied));
+  startupBand.style.setProperty('--startup-progress', position + '%');
+  startupBand.setAttribute('aria-valuenow', position);
+  startupBand.setAttribute('aria-valuetext', `${label}，${position}%`);
+  startupPercent.textContent = position + '%';
+  const caption = stage === 'ready' ? '工作区准备好了' : '正在启动 Bot…';
+  if (startupLabel.textContent !== caption) startupLabel.textContent = caption;
 }
 
 function showParcel() {
+  startup.hidden = true;
   welcome.hidden = true;
   unpacking.hidden = false;
   parcelActions.hidden = true;
 }
 
 function chooseParcel(root) {
-  parcel.classList.remove('is-open');
   showParcel();
   parcelTitle.textContent = '打开你的工作区';
-  unpackingProgress({ stage: 'choice' });
+  stageLabel.textContent = '发现一个已有的工作区';
+  stageDetail.textContent = '你想继续用原来的工作区，还是新建一个？';
   parcelActions.replaceChildren(button('使用已有工作区', () => unpackLocal('local', root, true), true),
     button('新建工作区', () => unpackLocal('new', undefined, true)));
   parcelActions.hidden = false;
 }
 
 async function unpackLocal(command, dataRoot, fromStartup = false) {
-  parcel.classList.remove('is-open');
-  parcelTitle.textContent = '正在准备你的工作区';
-  unpackingProgress({ stage: 'prepare' });
-  showParcel();
+  updateStartupProgress({ stage: 'prepare' });
+  unpacking.hidden = true;
+  welcome.hidden = true;
+  startup.hidden = false;
   try {
     await setup.action(command, { dataRoot });
-    unpackingProgress({ stage: 'ready' });
-    parcel.classList.add('is-open');
-    await Promise.all(lid.getAnimations().map(animation => animation.finished.catch(() => {})));
+    updateStartupProgress({ stage: 'ready' });
+    await Promise.all(startupFill.getAnimations().map(animation => animation.finished.catch(() => {})));
     await setup.action('continue');
   } catch (error) {
+    startup.hidden = true;
     if (fromStartup) {
+      showParcel();
       parcelTitle.textContent = '开箱暂未完成';
       stageLabel.textContent = '工作区暂时无法打开';
       stageDetail.textContent = String(error.message).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
@@ -141,7 +143,6 @@ async function unpackLocal(command, dataRoot, fromStartup = false) {
       parcelActions.hidden = false;
       return;
     }
-    unpacking.hidden = true;
     welcome.hidden = false;
     throw error;
   }
@@ -276,11 +277,13 @@ async function open() {
     if (workspace.mode === 'local') return unpackLocal('resume', undefined, true);
     showParcel();
     parcelTitle.textContent = '拆开你的新工作区';
-    unpackingProgress({ stage: 'welcome' });
+    stageLabel.textContent = '主 Bot 就在箱子里';
+    stageDetail.textContent = '拆开箱子，开始创建你的工作区。';
     parcelActions.replaceChildren(button('新建工作区', () => unpackLocal('local', undefined, true), true));
     parcelActions.hidden = false;
     return;
   }
+  startup.hidden = true;
   unpacking.hidden = true;
   welcome.hidden = false;
   if (info.section === 'codex') await showCodex();
@@ -295,6 +298,6 @@ async function open() {
 
 const avatars = window.SummonAvatars;
 if (avatars) parcel.querySelector('.parcel-bot').innerHTML = avatars.render(avatars.defaults('bot-entry'), 144, { static: true });
-setup.onProgress(progress => { if (!unpacking.hidden) unpackingProgress(progress); });
+setup.onProgress(progress => { if (!startup.hidden) updateStartupProgress(progress); });
 setup.onSetup(() => void perform(open));
 void perform(open);

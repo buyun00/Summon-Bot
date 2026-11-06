@@ -35,7 +35,7 @@ export async function buildDesktop({ platform, arch, output }) {
       electronDownload: { checksums: electronChecksums },
       ...(process.env.SUMMON_ELECTRON_DIST ? { electronDist: resolve(process.env.SUMMON_ELECTRON_DIST) } : {}),
       directories: { app: join(root, 'desktop'), output },
-      files: ['main.cjs', 'preload.cjs', 'workspace.cjs', 'setup.html', 'setup.css', 'setup.js', 'release.json', 'package.json'],
+      files: ['main.cjs', 'preload.cjs', 'workspace.cjs', 'setup.html', 'setup.css', 'setup.js', 'startup-art.png', 'release.json', 'package.json'],
       // electron-builder drops node_modules at the root of a resource source.
       extraResources: [{ from: stage, to: '.', filter: ['summon-runtime'] },
         ...(platform === 'macos' ? [{ from: join(root, 'desktop/summon'), to: 'summon' }] : [])],
