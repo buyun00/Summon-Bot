@@ -10,7 +10,7 @@ import { migratePublicOrigin } from './remote-config.mjs';
 import { removeInside } from '../release/repository.mjs';
 
 /** Install a selected build; development packages use manifest metadata only. */
-export async function installRelease({releaseRoot,appRoot,dataRoot,sourceRoot,defaultCwd,publicOrigin='',port=8787}={}) {
+export async function installRelease({releaseRoot,appRoot,dataRoot,sourceRoot,defaultCwd,publicOrigin='',port=8787,onCopyProgress}={}) {
   releaseRoot=resolve(releaseRoot);appRoot=resolve(appRoot);dataRoot=resolve(dataRoot);
   if(within(appRoot,dataRoot)||within(dataRoot,appRoot))throw new Error('Application and data roots must be disjoint');
   const verified=await verifyRelease(releaseRoot),destination=join(appRoot,'releases',verified.buildId);
@@ -36,7 +36,10 @@ export async function installRelease({releaseRoot,appRoot,dataRoot,sourceRoot,de
   else {
     await mkdir(dirname(destination),{recursive:true});
     const staging=await mkdtemp(join(dirname(destination),'.installing-'));
-    try {await copyTree(releaseRoot,staging);await rename(staging,destination);}
+    try {
+      await copyTree(releaseRoot, staging, undefined, onCopyProgress);
+      await rename(staging, destination);
+    }
     finally {await removeInside(dirname(destination),staging);}
   }
   const initialized=await initializeDeployment({dataRoot,releaseRoot:destination,defaultCwd,publicOrigin,port});

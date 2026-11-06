@@ -3,6 +3,21 @@ const setup = window.SummonSetup;
 const transcript = document.querySelector('#conversation');
 const controls = document.querySelector('#controls');
 const status = document.querySelector('#status');
+const welcome = document.querySelector('#welcome');
+const unpacking = document.querySelector('#unpacking');
+const parcel = unpacking.querySelector('.parcel');
+const strip = parcel.querySelector('.parcel-strip');
+const lid = parcel.querySelector('.parcel-lid');
+const stageLabel = document.querySelector('#unpacking-stage');
+const stageDetail = document.querySelector('#unpacking-detail');
+const unpackingStages = new Map([
+  ['prepare', [3, '正在准备本机工作区', '首次创建需要准备运行组件并启动服务，请稍等片刻。']],
+  ['runtime', [8, '正在复制运行组件', '首次创建需要复制本机运行所需的文件。']],
+  ['gateway', [60, '正在启动主 Bot', '正在打开工作区的数据和本机能力。']],
+  ['web', [82, '正在启动工作区页面', '正在为主界面准备本机地址。']],
+  ['verify', [94, '正在确认工作区就绪', '正在检查服务和工作区连接。']],
+  ['ready', [100, '工作区准备好了', '正在打开箱盖。']],
+]);
 let workspace, busy = false;
 
 function say(text, user = false) {
@@ -58,17 +73,50 @@ async function perform(action) {
   if (busy) return;
   busy = true; status.textContent = '正在处理…';
   controls.inert = true;
-  try { status.textContent = ''; await action(); }
+  try {
+    await action();
+    if (status.textContent === '正在处理…') status.textContent = '';
+  }
   catch (error) { status.textContent = String(error.message).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, ''); }
   finally { busy = false; controls.inert = false; }
+}
+
+function unpackingProgress({ stage, ratio }) {
+  const info = unpackingStages.get(stage);
+  if (!info) return;
+  const [start, label, detail] = info;
+  const percent = stage === 'runtime' ? Math.round(100 * ratio) : 0;
+  const position = start + Math.round(.46 * percent);
+  strip.style.setProperty('--tear-progress', position + '%');
+  strip.setAttribute('aria-valuenow', position);
+  strip.setAttribute('aria-valuetext', label);
+  if (stageLabel.textContent !== label) stageLabel.textContent = label;
+  stageDetail.textContent = percent ? `已复制 ${percent}% 的运行组件` : detail;
+}
+
+async function unpackLocal(command, dataRoot) {
+  parcel.classList.remove('is-open');
+  unpackingProgress({ stage: 'prepare' });
+  welcome.hidden = true;
+  unpacking.hidden = false;
+  try {
+    await setup.action(command, { dataRoot });
+    unpackingProgress({ stage: 'ready' });
+    parcel.classList.add('is-open');
+    await Promise.all(lid.getAnimations().map(animation => animation.finished.catch(() => {})));
+    await setup.action('continue');
+  } catch (error) {
+    unpacking.hidden = true;
+    welcome.hidden = false;
+    throw error;
+  }
 }
 
 function chooseLocal() {
   say('在本机创建工作区', true);
   say('工作区会保存在你选的目录。新建时如果默认端口被占用，我会自动选一个空闲端口。关闭窗口后，服务可以继续运行。');
-  form([field('工作区数据目录', 'dataRoot', { placeholder: workspace.defaultDataRoot || '使用默认目录' })], '创建或打开本机工作区', async values => {
-    await setup.action('local', { dataRoot: values.dataRoot.trim() || undefined });
-  });
+  form([field('工作区数据目录', 'dataRoot', { placeholder: workspace.defaultDataRoot || '使用默认目录' })],
+    '创建或打开本机工作区', values => unpackLocal('local', values.dataRoot.trim() || undefined));
   buttons(button('返回选择', showChoices));
 }
 
@@ -120,7 +168,7 @@ async function showCodex() {
     controls.replaceChildren();
     buttons(button(result.enabled ? '停用 Codex 执行器' : '允许接入 Codex 执行器', () => connectCodex(!result.enabled), true));
   }
-  buttons(button('返回工作区选择', showChoices));
+  buttons(button('返回主 Bot 对话', () => setup.action('continue')), button('返回工作区选择', showChoices));
   document.querySelector('#title').textContent = title;
 }
 
@@ -176,7 +224,7 @@ async function showAccess(provider) {
       await showAccess(provider);
     }, true), button('取消', () => showAccess(provider)));
   }));
-  buttons(button('返回工作区选择', showChoices));
+  buttons(button('返回主 Bot 对话', () => setup.action('continue')), button('返回工作区选择', showChoices));
 }
 
 function confirmAccess(provider, plan) {
@@ -199,14 +247,18 @@ async function open() {
   workspace = info.workspace; transcript.replaceChildren(); controls.replaceChildren();
   document.querySelector('#title').textContent = '你好，我是主 Bot。';
   if (info.section === 'codex') await showCodex();
-  else if (info.section !== 'workspace') await showAccess(info.section);
+  else if (['cloudflare', 'tailscale'].includes(info.section)) await showAccess(info.section);
   else {
     say('欢迎来到 Summon Bot。你可以在这台电脑上创建自己的工作区，也可以连接一个已经运行的工作区。');
     if (workspace.origin) say('当前选择了' + (workspace.mode === 'local' ? '本机工作区。' : '远程工作区。') + '\n' + workspace.origin);
     showChoices();
+    if (info.section === 'unpacking') await unpackLocal('resume');
   }
   status.textContent = info.error || '';
 }
 
+const avatars = window.SummonAvatars;
+if (avatars) parcel.querySelector('.parcel-bot').innerHTML = avatars.render(avatars.defaults('bot-entry'), 144, { static: true });
+setup.onProgress(progress => { if (!unpacking.hidden) unpackingProgress(progress); });
 setup.onSetup(() => void perform(open));
 void perform(open);

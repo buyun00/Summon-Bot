@@ -75,7 +75,7 @@ export class ChatroomService {
     if(owners.length===1&&active.includes(owners[0]))return {botId:owners[0],workId:deliveries.at(-1)?.workId};
     return null;
   }
-  async post(roomId,input,senderId='user') {
+  async post(roomId,input,senderId='user',{instruction}={}) {
     const room=this.need('rooms',roomId);if(room.status==='concluded')fail('Discussion has concluded',409);
     if(!['user','system'].includes(senderId)){
       const active=this.jobs(roomId).filter(job=>job.botId===senderId&&!TERMINAL.has(job.status)).at(-1);
@@ -103,7 +103,8 @@ export class ChatroomService {
       const repeats=peer&&this.messages(roomId).some(old=>old.id!==message.id&&old.rootId===message.rootId&&old.senderId===senderId&&old.toBotId===message.toBotId&&normalized(old.content)===normalized(message.content)&&JSON.stringify(old.sourceRefs||[])===JSON.stringify(message.sourceRefs||[]));
       if(repeats){this.store.save('suppressed-chains',{id:`${message.id}:${botId}`,messageId:message.id,botId,rootId:message.rootId,reason:'repeated-without-new-information'});continue;}
       const relatedWorkId=message.targetWorkId||message.workId||(owner?.botId===botId?owner.workId:null);
-      this.enqueue(message,botId,senderId==='user'?{workId:null,referencedWorkId:relatedWorkId}:{workId:relatedWorkId});
+      const delivery=senderId==='user'?{workId:null,referencedWorkId:relatedWorkId}:{workId:relatedWorkId};
+      this.enqueue(message,botId,{...delivery,...(instruction?{instruction}:{})});
     }
     if(senderId==='user'&&room.team&&!room.team.introducedAt){
       this.store.save('rooms',{id:room.id,team:{...room.team,introducedAt:now()}});

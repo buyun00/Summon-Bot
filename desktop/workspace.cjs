@@ -6,15 +6,18 @@ const runtime = join(process.resourcesPath, 'summon-runtime');
 const node = join(runtime, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node');
 const setupUrl = 'summon-setup://workspace/index.html';
 
-function workspaceCommand(profile, command, input = {}) {
+function workspaceCommand(profile, command, input = {}, onProgress) {
   return new Promise((accept, reject) => {
     const child = spawn(node, [join(runtime, 'scripts/installation/desktop.mjs'), command, '--profile-root', profile, '--stdin'], {
-      stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe', 'ipc'], windowsHide: true,
     });
     let output = '', error = '';
     child.stdout.setEncoding('utf8'); child.stdout.on('data', chunk => { output += chunk; });
     child.stderr.setEncoding('utf8'); child.stderr.on('data', chunk => { error += chunk; });
     child.stdin.on('error', () => {});
+    child.on('message', message => {
+      if (message?.type === 'workspace-progress') onProgress?.(message.progress);
+    });
     child.once('error', () => reject(new Error('安装包中的本机运行环境无法启动。')));
     child.once('close', code => {
       try {

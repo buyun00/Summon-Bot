@@ -67,7 +67,7 @@ export async function verifyWorkspace(origin, token) {
   if (!response.ok || health?.service !== 'summon-capabilities') throw new Error('该地址的 Summon Bot 工作区暂不可用。');
 }
 
-async function startLocal(profileRoot, releaseRoot, profile, requested) {
+async function startLocal(profileRoot, releaseRoot, profile, requested, onProgress) {
   const chosen = requested || profile.localDataRoot || profile.ownedDataRoot || join(profileRoot, 'workspace-data');
   if (typeof chosen !== 'string' || !isAbsolute(chosen)) throw new Error('请填写本机数据的绝对路径。');
   const appRoot = appFolder(profileRoot);
@@ -91,19 +91,22 @@ async function startLocal(profileRoot, releaseRoot, profile, requested) {
     const embedded = await readJson(join(releaseRoot, 'release-manifest.json'));
     const installed = config && await optionalJson(join(config.releaseRoot, 'release-manifest.json'));
     if (!installed || installed.buildId !== embedded.buildId) {
+      onProgress?.({ stage: 'runtime', ratio: 0 });
       if (config) await stopSystem(config);
-      await installRelease({ releaseRoot, appRoot, dataRoot });
+      await installRelease({ releaseRoot, appRoot, dataRoot,
+        onCopyProgress: ratio => onProgress?.({ stage: 'runtime', ratio }) });
       config = await readJson(deploymentPath(dataRoot));
     }
     if (config.web.autoPort !== true) {
       config.web.autoPort = true;
       await writeJson(deploymentPath(dataRoot), config);
     }
-    ({ web } = await startSystem(config));
+    ({ web } = await startSystem(config, { onProgress }));
     config = await readJson(deploymentPath(dataRoot));
   }
   const origin = localOrigin(config, web);
   if (!origin) throw new Error('本机工作区未在已配置的回环地址就绪。');
+  onProgress?.({ stage: 'verify' });
   await verifyWorkspace(origin, config.web.accessToken);
   await writeJson(workspaceFile(profileRoot), { ...profile, mode: 'local', origin, localDataRoot: dataRoot });
 }
@@ -114,7 +117,7 @@ async function stopOwned(profileRoot, profile) {
   if (owns(config, profileRoot)) await stopSystem(config);
 }
 
-export async function desktopCommand(command, input = {}, { profileRoot = defaultProfile(), releaseRoot = packageRoot } = {}) {
+export async function desktopCommand(command, input = {}, { profileRoot = defaultProfile(), releaseRoot = packageRoot, onProgress } = {}) {
   profileRoot = resolve(profileRoot);
   if (command === 'status') return readProfile(profileRoot, releaseRoot);
   await mkdir(profileRoot, { recursive: true, mode: 0o700 });
@@ -126,7 +129,7 @@ export async function desktopCommand(command, input = {}, { profileRoot = defaul
       if (command !== 'local' && profile.mode !== 'local') throw new Error('请先选择本机工作区。');
       const local = profile.localDataRoot && await optionalJson(deploymentPath(profile.localDataRoot));
       if (command !== 'resume' || local?.runIntent !== 'stopped') {
-        await startLocal(profileRoot, releaseRoot, profile, command === 'local' ? input.dataRoot : undefined);
+        await startLocal(profileRoot, releaseRoot, profile, command === 'local' ? input.dataRoot : undefined, onProgress);
       }
     } else if (command === 'remote') {
       const origin = workspaceOrigin(input.address);
@@ -187,7 +190,10 @@ async function cli() {
     origin: options.origin, owner: options.owner, port: options.port, planId: options.plan, confirm: options.confirm === true, token,
     callerThreadId: options['caller-thread-id'], toolsPipe: options['tools-pipe'], ipcPipe: options['ipc-pipe'],
   };
-  const result = await desktopCommand(command, input, { profileRoot: options['profile-root'] });
+  const onProgress = progress => {
+    if (process.connected) process.send({ type: 'workspace-progress', progress }, () => {});
+  };
+  const result = await desktopCommand(command, input, { profileRoot: options['profile-root'], onProgress });
   console.log(JSON.stringify(result));
   if (['missing', 'needs-login', 'needs-https', 'needs-authorization', 'unavailable', 'conflict', 'mapping-unconfirmed',
     'connector-unavailable', 'waiting-connector'].includes(result.state)) process.exitCode = 2;

@@ -33,21 +33,26 @@ function showSetup(section = 'workspace', error = '') {
   else window?.loadURL(setupUrl).catch(() => {});
 }
 
-async function showWorkspace(token) {
+async function showWorkspace(token, reportError = false) {
   if (!window || !workspace.origin) return showSetup();
   try {
     if (workspace.mode === 'local') token = await workspaceToken(workspace);
     if (token) await login(window.webContents.session, workspace.origin, token);
     await window.loadURL(workspace.origin);
-  } catch (error) {
-    showSetup('workspace', workspace.mode === 'local' && workspace.local?.state === 'stopped'
-      ? '本机工作区已停止。可以在这里重新启动。' : '暂时无法打开工作区。请检查地址、令牌和服务状态后重试。');
+  } catch {
+    const message = workspace.mode === 'local' && workspace.local?.state === 'stopped'
+      ? '本机工作区已停止。可以在这里重新启动。' : '暂时无法打开工作区。请检查地址、令牌和服务状态后重试。';
+    if (reportError) throw new Error(message);
+    showSetup('workspace', message);
   }
 }
 
 async function restoreWorkspace() {
   try {
     workspace = await workspaceCommand(profile, 'status');
+    const local = workspace.local;
+    if (workspace.mode === 'local' && local?.owner === 'summon' && local.runIntent !== 'stopped'
+      && (local.state !== 'ready' || workspace.buildId !== workspace.installedBuildId)) return showSetup('unpacking');
     if (workspace.mode === 'local') workspace = await workspaceCommand(profile, 'resume');
     await showWorkspace();
   } catch (error) { showSetup('workspace', error.message); }
@@ -58,6 +63,7 @@ function installSetupProtocol() {
     ['/index.html', [join(__dirname, 'setup.html'), 'text/html']],
     ['/setup.js', [join(__dirname, 'setup.js'), 'text/javascript']],
     ['/setup.css', [join(__dirname, 'setup.css'), 'text/css']],
+    ['/avatars.js', [join(runtime, 'web/frontend/avatars.js'), 'text/javascript']],
     ['/icon.png', [join(runtime, 'web/frontend/icons/icon-192.png'), 'image/png']],
   ]);
   protocol.handle('summon-setup', async request => {
@@ -165,7 +171,7 @@ ipcMain.handle('summon:workspace-action', async (event, command, input = {}) => 
   if (busy) throw new Error('另一个设置操作正在进行。');
   busy = true;
   try {
-    if (command === 'continue') { void showWorkspace(); return workspace; }
+    if (command === 'continue') { await showWorkspace(undefined, true); return workspace; }
     if (command === 'copy-access-token') {
       clipboard.writeText(await workspaceToken(workspace));
       return { copied: true };
@@ -181,10 +187,14 @@ ipcMain.handle('summon:workspace-action', async (event, command, input = {}) => 
       const { dataRoot, ...options } = input;
       return await workspaceCommand(profile, command, options);
     }
-    if (!['local', 'remote', 'start', 'stop'].includes(command)) throw new Error('未知的工作区操作。');
-    workspace = await workspaceCommand(profile, command, input);
+    if (!['local', 'remote', 'start', 'resume', 'stop'].includes(command)) throw new Error('未知的工作区操作。');
+    workspace = await workspaceCommand(profile, command, input, progress => {
+      if (!event.sender.isDestroyed() && event.sender.getURL() === setupUrl) {
+        event.sender.send('summon:workspace-progress', progress);
+      }
+    });
     if (command === 'stop') showSetup('workspace', '本机工作区已停止。');
-    else void showWorkspace(command === 'remote' ? input.token : undefined);
+    else if (!['local', 'resume'].includes(command)) void showWorkspace(command === 'remote' ? input.token : undefined);
     return workspace;
   } finally { busy = false; }
 });

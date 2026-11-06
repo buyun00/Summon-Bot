@@ -33,9 +33,15 @@ export async function walk(root, filter = () => true) {
   }
   await visit(root); return entries.sort((a, b) => a.name.localeCompare(b.name));
 }
-export async function copyTree(source, destination, filter) {
+export async function copyTree(source, destination, filter, onProgress) {
   const files = await walk(source, filter);
-  for (let index = 0; index < files.length; index += 64) await Promise.all(files.slice(index, index + 64).map(async file => {
-    const target = join(destination, file.name); await mkdir(dirname(target), { recursive: true }); await copyFile(file.path, target);
-  }));
+  for (let index = 0; index < files.length; index += 64) {
+    const batch = files.slice(index, index + 64);
+    await Promise.all(batch.map(async file => {
+      const target = join(destination, file.name);
+      await mkdir(dirname(target), { recursive: true });
+      await copyFile(file.path, target);
+    }));
+    onProgress?.((index + batch.length) / files.length);
+  }
 }

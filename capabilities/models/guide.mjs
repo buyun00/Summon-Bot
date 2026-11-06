@@ -11,7 +11,11 @@ export async function guideReply(onboarding, input = {}) {
   const back = choice('换一种连接方式', 'back');
   const ready = entry => reply('ready', `${entry.name} · ${entry.model} 的配置已经保存。接下来发起第一条真实对话，由主 Bot 继续带你入门。`,
     [choice('开始，带我熟悉一下', 'handoff'), choice('换一个模型', 'choose')], { draft: {}, placeholder: '回复“开始”，或告诉我最想做的事…' });
-  const select = async id => { const settings = await models.select(id); return ready(settings.connections.find(entry => entry.id === id)); };
+  const select = async id => {
+    await models.select(id);
+    try { return handoffReply(await onboarding.handoff({})); }
+    catch (error) { return handoffReply({ error: error.expose ? error.message : '聊天模型已保存，主 Bot 暂时无法开始对话。' }); }
+  };
   const modelPrompt = () => {
     const catalog = modelChoices(draft.kind, draft.provider);
     const preferred = draft.model ? [catalog.find(entry => entry.id === draft.model) || { id: draft.model }, ...catalog.filter(entry => entry.id !== draft.model)] : catalog;
@@ -44,6 +48,7 @@ export async function guideReply(onboarding, input = {}) {
     const snapshot = await models.snapshot(), active = snapshot.connections.find(entry => entry.active && entry.configured);
     if (active && state.status === 'failed') return handoffReply(state);
     if (active && state.status === 'paused') return reply('ready', '上次停在这里。接着聊吧？', [choice('继续新手引导', 'handoff'), choice('换一个模型', 'choose')], { draft: {} });
+    if (active && state.status === 'pending') return handoffReply(await onboarding.handoff({}));
     if (active) return ready(active);
   }
   if (['hello', 'choose', 'back'].includes(action)) {

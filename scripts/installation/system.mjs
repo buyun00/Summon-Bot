@@ -112,11 +112,13 @@ export async function launchService(config, type, { foreground = false, timeoutM
   } finally { if (child.connected) child.disconnect(); }
 }
 
-export async function startSystem(config, { foreground = false, respectIntent = false } = {}) {
+export async function startSystem(config, { foreground = false, respectIntent = false, onProgress } = {}) {
   config = await readJson(deploymentPath(config.dataRoot));
   if (respectIntent && config.runIntent === 'stopped') return { state: 'stopped', reason: 'saved-stop-intent' };
   if (config.runIntent === 'stopped') { config = { ...config, runIntent: 'running' }; await writeJson(deploymentPath(config.dataRoot), config); }
+  onProgress?.({ stage: 'gateway' });
   const gateway = await launchService(config, 'gateway', { foreground });
+  onProgress?.({ stage: 'web' });
   const web = await launchService(config, 'web', { foreground });
   const { restoreAuxiliaries } = await import('./auxiliaries.mjs');
   const auxiliaries = await restoreAuxiliaries(config);
