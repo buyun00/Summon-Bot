@@ -51,7 +51,8 @@ function run(file, args, extra = {}) {
   return new Promise(resolve => {
     const child = execFile(file, args, { timeout: 210000, maxBuffer: 6 * 1024 * 1024, env: process.env, ...extra }, (error, stdout, stderr) => {
       let result; try { result = JSON.parse(stdout); } catch { try { result = JSON.parse(stderr); } catch {} }
-      resolve({ code: typeof error?.code === 'number' ? error.code : error ? 1 : 0, result, stdout, stderr });
+      resolve({ code: error ? typeof error.code === 'number' && error.code !== 0 ? error.code : 1 : 0,
+        killed: Boolean(error?.killed), signal: error?.signal, result, stdout, stderr });
     });
     child.stdin.end(extra.input || '');
   });
@@ -59,9 +60,8 @@ function run(file, args, extra = {}) {
 const cli = (command, args = []) => run(node, [cliFile, command, '--data-root', data, '--release-root', release, ...args]);
 const control = (args, input) => run(node, [desktopCLI, ...args, '--data-root', data, '--profile-root', join(root, 'control-profile')], input ? { input } : {});
 async function installedLocal() {
-  const quote = value => "'" + value.replaceAll("'", "''") + "'";
-  return run('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
-    '& ' + quote(join(install, 'summon.cmd')) + ' local --profile-root ' + quote(join(root, 'installed-profile')) + ' --data-root ' + quote(data)]);
+  const command = `""${join(install, 'summon.cmd')}" local --profile-root "${join(root, 'installed-profile')}" --data-root "${data}""`;
+  return run(process.env.ComSpec, ['/d', '/s', '/c', command], { windowsVerbatimArguments: true, windowsHide: true });
 }
 async function serviceDiagnostics() {
   try {
@@ -93,6 +93,16 @@ async function api(path, body, opts = {}) {
   return { status: response.status, headers: response.headers, text, json };
 }
 function okHTTP(response) { assert(response.status >= 200 && response.status < 300, `HTTP ${response.status}: ${response.text.slice(0, 1000)}`); return response.json; }
+function rawHostStatus(host) {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest(base + '/api/state', { headers: { Host: host, Authorization: 'Bearer ' + token } }, response => {
+      let text = ''; response.on('data', chunk => text += chunk);
+      response.on('end', () => { observed.push(text); resolve({ status: response.statusCode, sentHost: request.getHeader('host') }); });
+    });
+    request.setTimeout(5000, () => request.destroy(new Error('Raw Host request timed out')));
+    request.once('error', reject); request.end();
+  });
+}
 const onboarding = () => api('/api/model-settings/onboarding').then(okHTTP);
 const reply = (action, value = '') => api('/api/model-settings/onboarding/reply', { action, value }).then(okHTTP);
 const advance = (step, action) => api('/api/model-settings/onboarding/advance', { step, action }).then(okHTTP);
@@ -353,12 +363,12 @@ try {
   await checkCase('W14', 'Unregistered Host, unrelated/cross-host Origin and Funnel requests are rejected', async () => {
     const results = [];
     for (const [name, opts] of [
-      ['unknown-host', { headers: { Host: 'unregistered.invalid' } }],
+      ['unknown-host', { rawHost: 'unregistered.invalid' }],
       ['unrelated-origin', { origin: cf, headers: { Origin: 'https://unrelated.invalid' } }],
       ['other-registered-origin', { origin: cf, headers: { Origin: ts } }],
       ['scheme-mismatch', { origin: cf, headers: { Origin: 'http://acceptance-cloud.test:9443' } }],
       ['funnel', { origin: ts, headers: { 'tailscale-funnel-request': '?1' } }],
-    ]) { try { const r = await api('/api/state', undefined, opts); results.push({ name, status: r.status }); } catch (error) { results.push({ name, error: error.message }); } }
+    ]) { try { const r = opts.rawHost ? await rawHostStatus(opts.rawHost) : await api('/api/state', undefined, opts); results.push({ name, status: r.status, sentHost: r.sentHost }); } catch (error) { results.push({ name, error: error.message }); } }
     const normalized = await api('/api/state', undefined, { origin: cf, headers: { Origin: 'https://ACCEPTANCE-CLOUD.TEST:9443' } });
     assert(results.every(r => r.status === 403), 'Origin/Host rejection results: ' + JSON.stringify(results));
     assert(normalized.status === 200, 'Normalized equivalent origin rejected');
