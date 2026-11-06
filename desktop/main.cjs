@@ -50,6 +50,7 @@ async function showWorkspace(token, reportError = false) {
 async function restoreWorkspace() {
   try {
     workspace = await workspaceCommand(profile, 'status');
+    if (workspace.mode === 'unselected') return showSetup('unpacking');
     const local = workspace.local;
     if (workspace.mode === 'local' && local?.owner === 'summon' && local.runIntent !== 'stopped'
       && (local.state !== 'ready' || workspace.buildId !== workspace.installedBuildId)) return showSetup('unpacking');
@@ -187,14 +188,19 @@ ipcMain.handle('summon:workspace-action', async (event, command, input = {}) => 
       const { dataRoot, ...options } = input;
       return await workspaceCommand(profile, command, options);
     }
-    if (!['local', 'remote', 'start', 'resume', 'stop'].includes(command)) throw new Error('未知的工作区操作。');
-    workspace = await workspaceCommand(profile, command, input, progress => {
-      if (!event.sender.isDestroyed() && event.sender.getURL() === setupUrl) {
-        event.sender.send('summon:workspace-progress', progress);
-      }
-    });
+    if (!['local', 'new', 'remote', 'start', 'resume', 'stop'].includes(command)) throw new Error('未知的工作区操作。');
+    try {
+      workspace = await workspaceCommand(profile, command, input, progress => {
+        if (!event.sender.isDestroyed() && event.sender.getURL() === setupUrl) {
+          event.sender.send('summon:workspace-progress', progress);
+        }
+      });
+    } catch (error) {
+      workspace = await workspaceCommand(profile, 'status').catch(() => workspace);
+      throw error;
+    }
     if (command === 'stop') showSetup('workspace', '本机工作区已停止。');
-    else if (!['local', 'resume'].includes(command)) void showWorkspace(command === 'remote' ? input.token : undefined);
+    else if (!['local', 'new', 'resume'].includes(command)) void showWorkspace(command === 'remote' ? input.token : undefined);
     return workspace;
   } finally { busy = false; }
 });

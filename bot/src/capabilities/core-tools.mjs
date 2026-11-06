@@ -45,7 +45,7 @@ export function coreTools(services, task) {
   return [
     tool('evidence_read', 'Read a bounded original fragment by exact reference. Workers may follow only handed-off references, never browse another room/session feed. Current source access is rechecked.',
       object({ reference }, ['reference']), 'read', args => services.sources.resolve(services.sources.reference(args.reference ?? args, task), task)),
-    tool('executors_status', 'Read current host executor consent and detection without contacting Codex or reading quota. Detection is not consent. Only the user can connect in model settings; chat may query status, execution must use independent work.', object({}), 'read', () => services.executors()),
+    tool('executors_status', 'Read the current default work engine and saved host executor consent. Only the user can connect an engine in settings. Execution runs as independent work.', object({}), 'read', () => services.executors()),
     tool('request_actions', 'Read saved action receipts for an original message in this conversation (messageId defaults to the current trigger). Use this when older published user instructions lack a visible reply: history is not permission to repeat them. Returns saved action identity/status without replaying anything.',
       object({ messageId: string }), 'read', args => {
         const messageId = args.messageId || source.replyTo || source.messageId;
@@ -64,9 +64,9 @@ export function coreTools(services, task) {
       return values;
     }),
     tool('work_get', 'Read accessible work status and its existing executor/session binding. The current/replied-to work is the default. Read selected evidence through read_session_history.', object({ id: string }, ['id']), 'read', async args => workView(await services.sources.requireWork(workId(args), task))),
-    tool('work_create', 'Create and start independent work. Give the goal and optional executor/selected target, evidence and handoff prose. The program supplies source and operation IDs. Temporary assignments use work, not a cloned Bot.',
+    tool('work_create', 'Create and start independent work. Omit executor to use the user’s default engine. Give the goal, evidence, handoff prose and any explicitly selected target. The program supplies source and operation IDs. Temporary assignments use work, not a cloned Bot.',
       object({ id: string, operationId: string, goal: string, requirements: string, responsibility: string, ...handoffFields,
-        executor: object({ kind: { type: 'string', enum: ['pi', 'codex'] }, connectionId: string, target: { type: 'object' } }, ['kind']) }), 'write', async (args, ctx) => {
+        executor: object({ kind: { type: 'string', enum: ['pi', 'codex', 'grok', 'claude-code'] }, connectionId: string, target: { type: 'object' } }, ['kind']) }), 'write', async (args, ctx) => {
         const content = await services.sources.handoff(task, args);
         const id = typeof args.id === 'string' && /^[\w.-]{1,160}$/.test(args.id) ? args.id : randomUUID();
         const existing = services.works.get(id);
@@ -76,9 +76,9 @@ export function coreTools(services, task) {
         }
         const suppliedExecutor = typeof args.executor === 'string' ? { kind: args.executor } : modelArgs(args.executor);
         const selectedTarget = suppliedExecutor.target || args.target || (args.projectId ? { type: 'project', projectId: args.projectId } : null);
-        const kind = modelText(suppliedExecutor.kind || suppliedExecutor.type || (selectedTarget ? 'codex' : 'pi')).toLowerCase();
-        const executor = { kind, ...(suppliedExecutor.connectionId ? { connectionId: suppliedExecutor.connectionId } : {}),
-          ...(selectedTarget ? { target: codexTarget(selectedTarget) } : {}) };
+        const kind = modelText(suppliedExecutor.kind || suppliedExecutor.type || (selectedTarget ? 'codex' : '')).toLowerCase();
+        const executor = kind ? { kind, ...(suppliedExecutor.connectionId ? { connectionId: suppliedExecutor.connectionId } : {}),
+          ...(selectedTarget ? { target: codexTarget(selectedTarget) } : {}) } : undefined;
         const operationId = actionId(args, ctx, 'operationId');
         const work = services.works.create({ id, operationId, goal: modelText(args.goal || args.instruction || args.content || content.originalRequest.content),
           requirements: modelText(args.requirements), responsibility: modelText(args.responsibility), executor, initialHandoff: content }, task);

@@ -8,9 +8,12 @@ const unpacking = document.querySelector('#unpacking');
 const parcel = unpacking.querySelector('.parcel');
 const strip = parcel.querySelector('.parcel-strip');
 const lid = parcel.querySelector('.parcel-lid');
+const parcelTitle = document.querySelector('#unpacking-title');
+const parcelActions = document.querySelector('#parcel-actions');
 const stageLabel = document.querySelector('#unpacking-stage');
 const stageDetail = document.querySelector('#unpacking-detail');
 const unpackingStages = new Map([
+  ['choice', [0, '发现一个已有的工作区', '你想继续用原来的工作区，还是新建一个？']],
   ['prepare', [3, '正在准备本机工作区', '首次创建需要准备运行组件并启动服务，请稍等片刻。']],
   ['runtime', [8, '正在复制运行组件', '首次创建需要复制本机运行所需的文件。']],
   ['gateway', [60, '正在启动主 Bot', '正在打开工作区的数据和本机能力。']],
@@ -88,17 +91,36 @@ function unpackingProgress({ stage, ratio }) {
   const percent = stage === 'runtime' ? Math.round(100 * ratio) : 0;
   const position = start + Math.round(.46 * percent);
   strip.style.setProperty('--tear-progress', position + '%');
+  const peek = Math.min(85, Math.max(0, (position - 20) * 1.65));
+  parcel.style.setProperty('--peek-rise', peek + '%');
+  parcel.toggleAttribute('data-peek', peek > 35);
   strip.setAttribute('aria-valuenow', position);
   strip.setAttribute('aria-valuetext', label);
   if (stageLabel.textContent !== label) stageLabel.textContent = label;
   stageDetail.textContent = percent ? `已复制 ${percent}% 的运行组件` : detail;
 }
 
-async function unpackLocal(command, dataRoot) {
-  parcel.classList.remove('is-open');
-  unpackingProgress({ stage: 'prepare' });
+function showParcel() {
   welcome.hidden = true;
   unpacking.hidden = false;
+  parcelActions.hidden = true;
+}
+
+function chooseParcel(root) {
+  parcel.classList.remove('is-open');
+  showParcel();
+  parcelTitle.textContent = '打开你的工作区';
+  unpackingProgress({ stage: 'choice' });
+  parcelActions.replaceChildren(button('使用已有工作区', () => unpackLocal('local', root, true), true),
+    button('新建工作区', () => unpackLocal('new', undefined, true)));
+  parcelActions.hidden = false;
+}
+
+async function unpackLocal(command, dataRoot, fromStartup = false) {
+  parcel.classList.remove('is-open');
+  parcelTitle.textContent = '正在准备你的工作区';
+  unpackingProgress({ stage: 'prepare' });
+  showParcel();
   try {
     await setup.action(command, { dataRoot });
     unpackingProgress({ stage: 'ready' });
@@ -106,6 +128,18 @@ async function unpackLocal(command, dataRoot) {
     await Promise.all(lid.getAnimations().map(animation => animation.finished.catch(() => {})));
     await setup.action('continue');
   } catch (error) {
+    if (fromStartup) {
+      parcelTitle.textContent = '开箱暂未完成';
+      stageLabel.textContent = '工作区暂时无法打开';
+      stageDetail.textContent = String(error.message).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
+      parcelActions.replaceChildren(button('重试打开工作区', () => open(), true), button('工作区选项', () => {
+        unpacking.hidden = true;
+        welcome.hidden = false;
+        showChoices();
+      }));
+      parcelActions.hidden = false;
+      return;
+    }
     unpacking.hidden = true;
     welcome.hidden = false;
     throw error;
@@ -246,13 +280,19 @@ async function open() {
   const info = await setup.info();
   workspace = info.workspace; transcript.replaceChildren(); controls.replaceChildren();
   document.querySelector('#title').textContent = '你好，我是主 Bot。';
+  if (info.section === 'unpacking') {
+    const existing = workspace.existingDataRoot || (workspace.buildId !== workspace.installedBuildId && workspace.local?.dataRoot);
+    if (existing) return chooseParcel(existing);
+    return unpackLocal(workspace.mode === 'local' ? 'resume' : 'local', undefined, true);
+  }
+  unpacking.hidden = true;
+  welcome.hidden = false;
   if (info.section === 'codex') await showCodex();
   else if (['cloudflare', 'tailscale'].includes(info.section)) await showAccess(info.section);
   else {
     say('欢迎来到 Summon Bot。你可以在这台电脑上创建自己的工作区，也可以连接一个已经运行的工作区。');
     if (workspace.origin) say('当前选择了' + (workspace.mode === 'local' ? '本机工作区。' : '远程工作区。') + '\n' + workspace.origin);
     showChoices();
-    if (info.section === 'unpacking') await unpackLocal('resume');
   }
   status.textContent = info.error || '';
 }

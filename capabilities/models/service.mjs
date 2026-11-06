@@ -5,7 +5,8 @@ import { randomUUID } from 'node:crypto';
 import { connectionPath, readConnectionCatalog, saveModelJson, modelConnection, connectionModel, connectionRuntime,
   ModelCredentialStore, localCodexAuthPath, localGrokAuthPath, localGrokLogin, grokProxyHeaders, codexCredential, decodeModelToken, modelChoices, modelError } from '../../bot/src/agent/connections.mjs';
 import { DesktopCodex } from '../codex/desktop.mjs';
-import { desktopExecutorState } from '../../bot/src/capabilities/executor-connections.mjs';
+import { cliExecutorStates, desktopExecutorState, isCliExecutor } from '../../bot/src/capabilities/executor-connections.mjs';
+import { confirmWorkCli } from '../../bot/src/runtime/cli-work-engine.mjs';
 import { ensureCodexConnector, stopCodexConnector } from '../../scripts/installation/auxiliaries.mjs';
 
 const number = value => value !== '' && value !== null && value !== undefined && Number.isFinite(Number(value)) ? Number(value) : null;
@@ -62,18 +63,24 @@ export class ModelConnections {
   summary() {
     const catalog = this.catalog(), selected = catalog.activeId ? requireEntry(catalog, catalog.activeId) : null;
     const executor = desktopExecutorState({ dataRoot: this.dataRoot });
+    const executors = [{ ...executor, usage: executor.enabled ? this.usage['codex-desktop'] || null : { status: 'not_connected', note: executor.note } },
+      ...cliExecutorStates(catalog)];
+    const workExecutor = catalog.workExecutorId === 'pi'
+      ? { id: 'pi', name: '内置 Pi', kind: 'pi', role: 'executor', enabled: true, label: '当前工作引擎' }
+      : executors.find(item => item.enabled && item.id === catalog.workExecutorId) || null;
     return { activeId: selected?.id || null, chat: selected ? { ...this.publicEntry(selected), role: 'chat', usage: this.usage[selected.id] || null }
       : { role: 'chat', name: '尚未选择聊天模型', configured: false, usage: { status: 'unconfigured' } },
-      executors: [{ ...executor, usage: executor.enabled ? this.usage['codex-desktop'] || null : { status: 'not_connected', note: executor.note } }] };
+      executors, workExecutor };
   }
-  setExecutor(id, enabled) {
-    if (id !== 'codex-desktop' || typeof enabled !== 'boolean') throw new Error('请选择有效的执行引擎接入状态');
-    const change = (this.executorChange || Promise.resolve()).catch(() => {}).then(() => this.changeExecutor(id, enabled));
+  setExecutor(id, enabled, { select = false } = {}) {
+    if ((id !== 'codex-desktop' && !isCliExecutor(id)) || typeof enabled !== 'boolean') throw new Error('请选择有效的执行引擎接入状态');
+    const change = (this.executorChange || Promise.resolve()).catch(() => {}).then(() => this.changeExecutor(id, enabled, select));
     this.executorChange = change;
     return change.finally(() => { if (this.executorChange === change) this.executorChange = null; });
   }
-  async changeExecutor(id, enabled) {
-    if (enabled) {
+  async changeExecutor(id, enabled, select) {
+    const desktop = id === 'codex-desktop';
+    if (enabled && desktop) {
       const connection = await ensureCodexConnector(this.dataRoot);
       try { await new DesktopCodex({ dataRoot: this.dataRoot }).connect(connection); }
       catch (error) {
@@ -81,13 +88,24 @@ export class ModelConnections {
         throw error;
       }
     }
+    if (enabled && !desktop) await confirmWorkCli(id);
     await this.mutate(catalog => {
       catalog.executors = { ...catalog.executors, [id]: { enabled, ...(enabled ? { connectedAt: new Date().toISOString() } : {}) } };
+      if (enabled && select) catalog.workExecutorId = id;
+      if (!enabled && catalog.workExecutorId === id) catalog.workExecutorId = 'pi';
       delete this.usage[id];
     });
-    if (enabled) await this.refreshOne(id, true);
-    else await stopCodexConnector(this.dataRoot);
+    if (desktop && enabled) await this.refreshOne(id, true);
+    else if (desktop) await stopCodexConnector(this.dataRoot);
     await saveModelJson(this.usagePath, this.usage);
+    return this.snapshot();
+  }
+  async selectWorkExecutor(id) {
+    await this.mutate(catalog => {
+      const connected = (id === 'codex-desktop' || isCliExecutor(id)) && catalog.executors?.[id]?.enabled === true;
+      if (id !== 'pi' && !connected) throw new Error('请先接入这个工作引擎。');
+      catalog.workExecutorId = id;
+    });
     return this.snapshot();
   }
   async snapshot() {

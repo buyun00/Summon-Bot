@@ -2,3 +2,5 @@
 @media(max-width:820px){.onboarding-messages{padding-top:84px}.onboarding-message{gap:9px;margin-bottom:20px}.onboarding-bubble{padding:12px 15px}.onboarding-response{padding-left:0}.onboarding-chat .composer input{font-size:16px;padding:10px 3px}.onboarding-chat .floating-header{padding-right:16px}.onboarding-chat .composer-hint{font-size:11px}.onboarding-sidebar-entry{margin:0 0 16px}}
 .onboarding-followup { margin: 12px 0 0; overflow-wrap: anywhere; }
 .onboarding-followup button { font-size: var(--text-meta); white-space: normal; text-align: left; }
+.onboarding-followup .onboarding-choices { align-items: center; }
+.onboarding-followup .onboarding-choices p { margin: 0; }

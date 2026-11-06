@@ -70,14 +70,16 @@ globalThis.SummonModels = (() => {
       <span class="quota-signal-role">${item.role === 'executor' ? 'WORK' : 'CHAT'}</span></button>`;
   }
   function executorButton(item, esc) {
-    if (!item || item.role !== 'executor' || !item.enabled && !item.detected) return '';
-    return `<button class="${item.enabled ? 'secondary-button' : 'primary-button'}" data-action="models-executor-${item.enabled ? 'disconnect' : 'connect'}" ${view.busy ? 'disabled' : ''}>${esc(view.busy ? '正在处理…' : item.enabled ? '断开 Codex' : '接入 Codex 执行端')}</button>`;
+    if (!item || item.role !== 'executor' || item.id === 'pi') return '';
+    const action = !item.enabled && item.id === 'codex-desktop' && document.documentElement.dataset.localWorkspace === 'true'
+      ? 'setup' : item.enabled ? 'disconnect' : 'connect';
+    return `<button class="${item.enabled ? 'secondary-button' : 'primary-button'}" data-action="models-executor-${action}" data-id="${esc(item.id)}" ${view.busy ? 'disabled' : ''}>${esc(action === 'setup' ? '打开 Codex 设置' : item.enabled ? '断开' : '接入')}</button>`;
   }
   function sidebar(summary, { esc, icon, invalidate }) {
     invalidateSidebar = invalidate;
     if (summary) view.summary = summary;
     const current = view.summary;
-    const rows = current ? [current.chat, ...(current.executors || [])] : [
+    const rows = current ? [current.chat, current.workExecutor || current.executors?.[0]].filter(Boolean) : [
       { role: 'chat', name: '正在读取聊天模型' }, { role: 'executor', kind: 'codex', name: 'Codex 桌面端', enabled: false, label: '待接入', usage: { status: 'not_connected' } }];
     const selected = rows.find(item => (item.id || item.role) === view.quotaId);
     const popover = selected ? `<aside class="quota-popover" id="model-quota-popover" role="dialog" aria-label="${esc(selected.name || '模型')}接入与额度"><header><span class="quota-popover-icon">${globalThis.SummonModelIcons.svg(selected, 28)}</span><div><small>${selected.role === 'executor' ? 'WORK · 执行引擎' : 'CHAT · 聊天引擎'}</small><strong>${esc(selected.name || '正在读取')}</strong></div><button class="icon-button" data-action="models-quota-close" aria-label="关闭额度详情">${icon('close', 16)}</button></header>${selected.model ? `<p class="quota-popover-model">${esc(selected.model)}</p>` : ''}<div class="quota-popover-usage">${usageBody(selected.usage, esc)}</div>${executorButton(selected, esc)}<footer><button data-action="navigate" data-view="models">管理模型与引擎 ${icon('arrow', 14)}</button></footer></aside>` : '';
@@ -111,7 +113,8 @@ globalThis.SummonModels = (() => {
   function render({ esc, icon }) {
     if (!view.data) return `<div class="page models-page"><h1>模型与引擎</h1><p class="subtle">${esc(view.error || '正在读取配置…')}</p><button class="secondary-button" data-action="models-reload">重新读取</button></div>`;
     const data = view.data, editor = view.editor, active = data.connections.find(item => item.id === data.activeId), summary = view.summary || data;
-    const executor = summary.executors?.[0];
+    const executor = summary.workExecutor;
+    const engineRows = (summary.executors || []).map(item => `<div class="models-executor-row"><div><strong>${esc(item.name)}</strong><p>${esc(item.id === executor?.id ? '当前工作引擎' : item.note || item.label)}</p></div><div class="models-executor-actions">${item.enabled && item.id !== executor?.id ? `<button class="secondary-button" data-action="models-executor-select" data-id="${esc(item.id)}" ${view.busy ? 'disabled' : ''}>用于工作</button>` : ''}${executorButton(item, esc)}</div></div>`).join('');
     const input = (label, name, value, options = {}) => `<label class="models-field"><span>${label}</span><input name="${name}" ${options.type ? `type="${options.type}"` : ''} value="${esc(value ?? '')}" ${options.required ? 'required' : ''} ${options.placeholder ? `placeholder="${esc(options.placeholder)}"` : ''} ${options.list ? `list="${options.list}"` : ''} ${options.type === 'password' ? 'autocomplete="new-password"' : ''} ${options.type === 'number' ? 'min="128" step="1"' : ''}></label>`;
     const select = (label, name, values, current) => `<label class="models-field"><span>${label}</span><select name="${name}">${values.map(([value, title]) => `<option value="${esc(value)}" ${current === value ? 'selected' : ''}>${esc(title)}</option>`).join('')}</select></label>`;
     const selected = editor?.id ? data.connections.find(item => item.id === editor.id) : null;
@@ -131,7 +134,7 @@ globalThis.SummonModels = (() => {
       <div class="models-form-actions"><button class="primary-button" type="submit" ${view.busy ? 'disabled' : ''}>${view.busy ? '正在保存…' : editor.kind === 'api' ? '保存并用于聊天' : selected?.configured ? '保存配置' : '保存并授权'}</button>${selected?.configured && !selected.active ? `<button class="secondary-button" type="button" data-action="models-activate" data-id="${esc(selected.id)}" ${view.busy ? 'disabled' : ''}>用于 Pi 聊天</button>` : ''}${selected && !selected.active ? `<button class="text-button models-remove" type="button" data-action="models-remove" data-id="${esc(selected.id)}" ${view.busy ? 'disabled' : ''}>移除此连接</button>` : ''}</div></form></section>` : '';
     return `<div class="page models-page"><header class="models-header"><div><button class="text-button" data-action="navigate" data-view="chat">${icon('back', 16)}返回聊天</button><p class="models-eyebrow">SETTINGS / MODELS</p><h1>模型与引擎</h1><p>选择聊天的模型，查看干活的额度。</p></div><button class="secondary-button" data-action="models-refresh-usage" ${view.busy ? 'disabled' : ''}>${icon('refresh', 15)}刷新额度</button></header>
       ${view.error ? `<p class="models-inline-error" role="alert">${esc(view.error)}</p>` : ''}
-      <div class="models-engine-overview"><section class="models-engine-card"><div class="models-engine-title"><span class="model-source-dot"></span><h2>聊天引擎</h2><span>Pi</span></div><strong>${esc(active?.name || '尚未选择')}</strong><p>${esc(active?.model || '')}</p>${usageBody(summary.chat?.usage, esc)}</section><section class="models-engine-card"><div class="models-engine-title"><span class="model-source-dot executor"></span><h2>干活引擎</h2><span>Codex 桌面端</span></div><strong>${esc(executor?.label || '待接入')}</strong><p>${esc(executor?.enabled ? executor.note : '由你手动接入这台主机上的 Codex，之后才读取额度和执行工作。')}</p>${usageBody(executor?.usage, esc)}${executorButton(executor, esc)}</section></div>
+      <div class="models-engine-overview"><section class="models-engine-card"><div class="models-engine-title"><span class="model-source-dot"></span><h2>聊天引擎</h2><span>Pi</span></div><strong>${esc(active?.name || '尚未选择')}</strong><p>${esc(active?.model || '')}</p>${usageBody(summary.chat?.usage, esc)}</section><section class="models-engine-card"><div class="models-engine-title"><span class="model-source-dot executor"></span><h2>工作引擎</h2><span>${esc(executor?.name || '待选择')}</span></div>${engineRows}${executor?.usage ? usageBody(executor.usage, esc) : ''}${executor?.id !== 'pi' ? `<button class="text-button" data-action="models-executor-select" data-id="pi" ${view.busy ? 'disabled' : ''}>使用内置 Pi</button>` : ''}</section></div>
       <div class="models-configuration"><section class="models-connections"><div class="models-section-heading"><h2>聊天模型连接</h2><span>${data.connections.length}</span></div><div class="models-add-types">${Object.entries(kinds).map(([kind, label]) => `<button data-action="models-new" data-kind="${kind}" ${view.busy ? 'disabled' : ''}>${icon('plus', 14)}${label}</button>`).join('')}</div><div class="models-connection-list">${data.connections.map(item => `<button class="models-connection ${editor?.id === item.id ? 'selected' : ''}" data-action="models-edit" data-id="${esc(item.id)}"><span class="models-provider-monogram ${item.kind}">${globalThis.SummonModelIcons.svg(item, 22)}</span><span><strong>${esc(item.name)}</strong><small>${esc(item.model)}</small><small>${esc(kinds[item.kind])}${item.identity ? ` · ${esc(item.identity)}` : ''}</small></span>${item.active ? '<i class="models-selected-dot" title="当前聊天模型"></i>' : !item.configured ? '<small class="models-unconfigured">待连接</small>' : ''}</button>`).join('')}</div><p class="models-list-note">聊天模型由所有 Bot 共用。额度按账号显示，同一订阅不会因接入多个引擎而增加。</p></section>${form}</div></div>`;
   }
   async function updateUsage(force) {
@@ -183,15 +186,22 @@ globalThis.SummonModels = (() => {
     if (action === 'models-refresh-usage') return updateUsage(true);
     if (action === 'models-reload') { view.loadedAt = 0; await load(provided.api, provided.render, provided.toast, provided.refresh); return provided.render(); }
     if (view.busy) return;
+    if (action === 'models-executor-setup') return window.SummonDesktop?.openWorkspaceSetup('codex');
     try {
       view.error = '';
       if (!view.data) await load(provided.api, provided.render, provided.toast, provided.refresh);
       if (['models-executor-connect', 'models-executor-disconnect'].includes(action)) {
         view.busy = true; provided.render();
         const enabled = action === 'models-executor-connect';
-        view.data = await provided.api('/api/model-settings/executors/codex-desktop', 'POST', { enabled });
+        view.data = await provided.api('/api/model-settings/executors/' + encodeURIComponent(element.dataset.id), 'POST', { enabled, select: enabled });
         view.summary = view.data; view.loadedAt = Date.now();
-        provided.toast(enabled ? 'Codex 执行端已接入' : 'Codex 已断开，停止读取额度和后续调用');
+        provided.toast(enabled ? '工作引擎已接入' : '工作引擎已断开');
+        await provided.refresh?.();
+      }
+      if (action === 'models-executor-select') {
+        view.busy = true; provided.render();
+        view.data = await provided.api('/api/model-settings/executors/active', 'POST', { id: element.dataset.id });
+        view.summary = view.data; view.loadedAt = Date.now();
         await provided.refresh?.();
       }
       if (action === 'models-new') { view.editor = defaults(element.dataset.kind); view.choices = []; view.login = null; }

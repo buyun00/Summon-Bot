@@ -52,7 +52,9 @@ async function readProfile(profileRoot, releaseRoot) {
   const manifest = await readJson(join(releaseRoot, 'release-manifest.json'));
   const installed = await optionalJson(join(appFolder(profileRoot), 'current.json'));
   const activeRelease = installed && await optionalJson(join(installed.releaseRoot, 'release-manifest.json'));
-  return { mode: profile.mode, origin, local, defaultDataRoot: profile.ownedDataRoot || join(profileRoot, 'workspace-data'),
+  const defaultDataRoot = profile.ownedDataRoot || installed?.dataRoot || join(profileRoot, 'workspace-data');
+  const existingDataRoot = profile.mode === 'unselected' && await optionalJson(deploymentPath(defaultDataRoot)) ? defaultDataRoot : null;
+  return { mode: profile.mode, origin, local, defaultDataRoot, existingDataRoot,
     version: manifest.version, buildId: manifest.buildId, sourceCommit: manifest.sourceCommit, runtime: manifest.runtime,
     installedVersion: activeRelease?.version || null, installedBuildId: activeRelease?.buildId || null };
 }
@@ -83,8 +85,12 @@ async function startLocal(profileRoot, releaseRoot, profile, requested, onProgre
     web = service.web;
   } else {
     const ownedRoot = profile.ownedDataRoot;
-    if (ownedRoot && relative(ownedRoot, dataRoot)) throw new Error('此安装已管理另一个数据目录，请使用已选目录。');
-    if (!ownedRoot) {
+    const switching = ownedRoot && relative(ownedRoot, dataRoot);
+    if (switching) {
+      if (!requested || !owns(config, profileRoot)) throw new Error('请使用当前数据目录，或选择一个已创建的本机工作区。');
+      await stopOwned(profileRoot, profile);
+    }
+    if (!ownedRoot || switching) {
       profile.ownedDataRoot = dataRoot;
       await writeJson(workspaceFile(profileRoot), profile);
     }
@@ -92,7 +98,7 @@ async function startLocal(profileRoot, releaseRoot, profile, requested, onProgre
     const installed = config && await optionalJson(join(config.releaseRoot, 'release-manifest.json'));
     if (!installed || installed.buildId !== embedded.buildId) {
       onProgress?.({ stage: 'runtime', ratio: 0 });
-      if (config) await stopSystem(config);
+      if (config && (installed || config.runIntent !== 'stopped')) await stopSystem(config);
       await installRelease({ releaseRoot, appRoot, dataRoot,
         onCopyProgress: ratio => onProgress?.({ stage: 'runtime', ratio }) });
       config = await readJson(deploymentPath(dataRoot));
@@ -125,7 +131,12 @@ export async function desktopCommand(command, input = {}, { profileRoot = defaul
     () => ({ pid: process.pid, bootId: randomUUID(), state: 'working' }));
   try {
     const profile = await optionalJson(workspaceFile(profileRoot)) || fresh();
-    if (command === 'local' || command === 'start' || command === 'resume') {
+    if (command === 'new') {
+      const installed = await optionalJson(join(appFolder(profileRoot), 'current.json'));
+      await stopOwned(profileRoot, { ownedDataRoot: profile.ownedDataRoot || installed?.dataRoot });
+      const next = join(profileRoot, 'workspaces', randomUUID());
+      await startLocal(profileRoot, releaseRoot, fresh(), next, onProgress);
+    } else if (command === 'local' || command === 'start' || command === 'resume') {
       if (command !== 'local' && profile.mode !== 'local') throw new Error('请先选择本机工作区。');
       const local = profile.localDataRoot && await optionalJson(deploymentPath(profile.localDataRoot));
       if (command !== 'resume' || local?.runIntent !== 'stopped') {

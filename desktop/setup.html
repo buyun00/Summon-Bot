@@ -8,7 +8,7 @@
 <script defer src="setup.js"></script>
 <body>
   <header class="titlebar"><img src="icon.png" alt=""><span>Summon Bot</span></header>
-  <main id="welcome">
+  <main id="welcome" hidden>
     <div class="welcome-heading">
       <span>工作区</span>
       <h1 id="title">你好，我是主 Bot。</h1>
@@ -46,6 +46,7 @@
     <div class="unpacking-caption">
       <p id="unpacking-stage" role="status"></p>
       <p id="unpacking-detail"></p>
+      <div id="parcel-actions" class="buttons" hidden></div>
     </div>
   </main>
 </body>

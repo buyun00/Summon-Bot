@@ -8,6 +8,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { tmpdir } from 'node:os';
 import { finished } from 'node:stream/promises';
 import { truncateHead } from '../shared/truncate.mjs';
+import { cleanEnvironment, terminateTree } from '../../bot/src/runtime/process-tools.mjs';
 
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_OUTPUT_BYTES = 64 * 1024;
@@ -68,25 +69,6 @@ async function physicalPath(path) {
       missing.push(basename(current));
       current = parent;
     }
-  }
-}
-
-function cleanEnvironment() {
-  return Object.fromEntries(Object.entries(process.env).filter(([key]) =>
-    !/(?:SECRET|TOKEN|PASSWORD|PASSWD|API[_-]?KEY|CREDENTIAL|AUTHORIZATION|PRIVATE[_-]?KEY)/i.test(key) &&
-    !/^(?:AWS_|AZURE_|GOOGLE_|GITHUB_|SSH_|GIT_ASKPASS$|BASH_ENV$|ENV$|NODE_OPTIONS$|PYTHONSTARTUP$|NPM_CONFIG_USERCONFIG$)/i.test(key)));
-}
-
-async function terminateTree(child) {
-  if (!child.pid) return;
-  if (WINDOWS) {
-    await new Promise(resolveDone => {
-      const killer = spawn(join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe'), ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-      killer.once('error', () => { child.kill(); resolveDone(); });
-      killer.once('close', resolveDone);
-    });
-  } else {
-    try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
   }
 }
 

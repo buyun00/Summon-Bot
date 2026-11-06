@@ -30,3 +30,8 @@
 .quota-popover-model{font-size:var(--text-caption);color:#91a08c;overflow-wrap:anywhere;margin-bottom:14px}.quota-popover .model-balances{margin:5px 0 14px}.quota-popover .model-balances strong{font-size:var(--text-heading);font-weight:500;letter-spacing:-.5px}.quota-popover .model-balances small{font-size:var(--text-caption);letter-spacing:0}.quota-popover .model-usage-note{font-size:var(--text-caption)}.quota-popover .models-inline-error{font-size:var(--text-caption);padding:9px;margin:9px 0}
 .quota-popover-usage{padding-bottom:15px}.quota-popover footer{border-top:1px solid #e7ece2;padding:11px 0}.quota-popover footer button{display:flex;align-items:center;justify-content:space-between;width:100%;color:#71886b;font-size:var(--text-caption);padding:3px 0}
 @media(prefers-reduced-motion:reduce){.quota-signal,.quota-signal-progress,.quota-signal-dot{transition:none}}
+.models-executor-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid var(--line)}
+.models-executor-row strong{font-size:var(--text-meta)}
+.models-executor-row p{color:var(--muted);font-size:var(--text-caption);margin:3px 0 0}
+.models-executor-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:6px;flex-shrink:0}
+.models-executor-actions button{font-size:var(--text-caption)}

@@ -9,12 +9,12 @@ export async function guideReply(onboarding, input = {}) {
   const choice = option;
   const reply = (phase, text, options = [], extra = {}) => ({ phase, text, options, draft, input: 'text', ...extra });
   const back = choice('换一种连接方式', 'back');
-  const ready = entry => reply('ready', `${entry.name} · ${entry.model} 的配置已经保存。接下来发起第一条真实对话，由主 Bot 继续带你入门。`,
-    [choice('开始，带我熟悉一下', 'handoff'), choice('换一个模型', 'choose')], { draft: {}, placeholder: '回复“开始”，或告诉我最想做的事…' });
+  const ready = () => reply('ready', '可以继续设置工作引擎和远程访问。',
+    [choice('继续配置', 'handoff'), choice('换一个聊天模型', 'choose')], { draft: {}, placeholder: '回复“继续”…' });
   const select = async id => {
     await models.select(id);
-    try { return handoffReply(await onboarding.handoff({})); }
-    catch (error) { return handoffReply({ error: error.expose ? error.message : '聊天模型已保存，主 Bot 暂时无法开始对话。' }); }
+    try { return handoffReply(await onboarding.handoff()); }
+    catch (error) { return handoffReply({ error: error.expose ? error.message : '暂时无法打开主 Bot 的配置引导。' }); }
   };
   const modelPrompt = () => {
     const catalog = modelChoices(draft.kind, draft.provider);
@@ -23,19 +23,13 @@ export async function guideReply(onboarding, input = {}) {
   };
   const handoffReply = state => {
     if (state.status === 'guiding') return reply('complete', '', [], { roomId: state.roomId, input: 'none', draft: {} });
-    if (state.status === 'starting') {
-      const text = { dispatch: '聊天模型已保存，正在把首条消息交给主 Bot。',
-        retry: '首条消息暂未投递成功，正在重试。',
-        reply: '主 Bot 已收到消息，正在准备第一条回复。' }[state.kickoffStage];
-      return reply('waiting', text, [], { input: 'none', draft: {} });
-    }
-    return reply('failed', state.error || '首条回复还没到。', [choice('重试首条对话', 'handoff'), choice('换一个模型', 'choose')], { input: 'none', draft: {} });
+    return reply('failed', state.error || '暂时无法打开配置引导。', [choice('重试引导', 'handoff'), choice('换一个聊天模型', 'choose')], { input: 'none', draft: {} });
   };
   if (!['key', 'poll'].includes(action) && looksLikeSecret(value)) throw new Error('请在隐藏的 API Key 输入中填写密钥，不要发送到聊天里。');
-  if (action === 'progress') return handoffReply(await onboarding.progress());
+  if (action === 'progress') return handoffReply(await onboarding.handoff());
   if (action === 'hello') {
     const state = onboarding.state();
-    if (state.status === 'starting' || state.status === 'guiding') return handoffReply(state);
+    if (state.status === 'guiding') return handoffReply(await onboarding.handoff());
     if (script?.phase === 'login') {
       const login = models.loginStatus(draft.id);
       const saved = (await models.snapshot()).connections.find(entry => entry.id === draft.id);
@@ -49,8 +43,8 @@ export async function guideReply(onboarding, input = {}) {
     const snapshot = await models.snapshot(), active = snapshot.connections.find(entry => entry.active && entry.configured);
     if (active && state.status === 'failed') return handoffReply(state);
     if (active && state.status === 'paused') return reply('ready', '上次停在这里。接着聊吧？', [choice('继续新手引导', 'handoff'), choice('换一个模型', 'choose')], { draft: {} });
-    if (active && state.status === 'pending') return handoffReply(await onboarding.handoff({}));
-    if (active) return ready(active);
+    if (active && state.status === 'pending') return handoffReply(await onboarding.handoff());
+    if (active) return ready();
   }
   if (['hello', 'choose', 'back'].includes(action)) {
     if (action === 'back' && draft.id) models.cancelLogin(draft.id);
@@ -116,6 +110,6 @@ export async function guideReply(onboarding, input = {}) {
     return select(draft.id);
   }
   if (action === 'use') return select(value);
-  if (action === 'handoff') return handoffReply(await onboarding.handoff({ message: value }));
+  if (action === 'handoff') return handoffReply(await onboarding.handoff());
   throw new Error('请选择下面的连接方式，或继续填写当前步骤');
 }

@@ -10,7 +10,8 @@ import { saveArtifact } from '../storage/artifacts.mjs';
 import { BotEngine } from '../agent/engine.mjs';
 import { CapabilityUpdates } from './capability-updates.mjs';
 import { coreTools } from '../capabilities/core-tools.mjs';
-import { desktopExecutorState } from '../capabilities/executor-connections.mjs';
+import { isCliExecutor, selectedWorkExecutor, workExecutorChoices } from '../capabilities/executor-connections.mjs';
+import { executeCliWork } from './cli-work-engine.mjs';
 import { requestBot, sendMessage } from '../messaging/client.mjs';
 import { WorkService } from './works.mjs';
 import { ConversationScheduler } from './scheduler.mjs';
@@ -92,7 +93,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         if (output.isError) throw new Error(output.content?.map(item => item.text || '').join('\n') || `${name} failed`);
         return output.details ?? output.structuredContent ?? output;
       },
-      executors: () => ({ executors: [desktopExecutorState({ connectionStore: config.model.connectionStore })] }),
+      executors: () => workExecutorChoices(config.model),
       contacts: () => config.contacts.map(({botId,name,dataDir}) => ({botId,name,transport:dataDir?'local-direct':'http-direct'})),
       async send(to, envelope, { signal, taskId } = {}) {
         const id = envelope.id || randomUUID(), key = `${to}:${id}`;
@@ -150,7 +151,11 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         try {
           const start = () => store.updateTask(task.id, { status: 'running', startedAt: at() });
           let result;
-          if (currentWork && (external || services.works.executor(currentWork).kind === 'codex')) {
+          const executor = currentWork && services.works.executor(currentWork).kind;
+          if (!external && isCliExecutor(executor)) {
+            start();
+            result = await executeCliWork({ store, services, config, task, signal: controller.signal, clean });
+          } else if (currentWork && (external || executor === 'codex')) {
             start(); result = await services.executor.execute(task); engine.maintenance.enqueue(task);
           }
           else result = await engine.run(task, { signal: controller.signal, onStart: start });
@@ -245,7 +250,8 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       schedule(task);
       return accepted;
     };
-    services.works = new WorkService({ store, botId: config.botId, accept, cancel, clean, selectModel: id => {
+    services.works = new WorkService({ store, botId: config.botId, accept, cancel, clean,
+      selectExecutor: () => selectedWorkExecutor(config.model), selectModel: id => {
       const selected = id ? modelConnection(config.model, id) : selectedConnection(config);
       return { connectionId: selected.id, modelId: selected.model, thinkingLevel: selected.thinkingLevel };
     } });

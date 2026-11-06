@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { taskSource, workExecution } from '../context/sources.mjs';
 import { modelText, boundedNumber, durationSeconds } from '../context/model-input.mjs';
+import { isCliExecutor } from '../capabilities/executor-connections.mjs';
 
 const now = () => new Date().toISOString();
 const statuses = new Set(['active', 'waiting', 'paused', 'blocked', 'completed', 'cancelled']);
@@ -8,7 +9,9 @@ const fail = (message, status = 400) => { throw Object.assign(new Error(message)
 
 /** S3 is state and pointers only. Knowledge正文 lives in Markdown, never here. */
 export class WorkService {
-  constructor({ store, botId, accept, cancel, selectModel, clean = value => value }) { Object.assign(this, { store, botId, accept, cancel, selectModel, clean }); this.dispatches = new Map(); }
+  constructor({ store, botId, accept, cancel, selectModel, selectExecutor, clean = value => value }) {
+    Object.assign(this, { store, botId, accept, cancel, selectModel, selectExecutor, clean }); this.dispatches = new Map();
+  }
   get(id) { return this.store.getRecord('works', id); }
   list({ status, query, limit = 100 } = {}) {
     return this.store.listRecords('works').filter(work => (!status || work.status === status) &&
@@ -23,9 +26,10 @@ export class WorkService {
     const id = input.id || randomUUID();
     if (!/^[\w.-]{1,160}$/.test(id)) fail('Invalid work id');
     const previous = this.get(id); if (previous) return previous;
-    const executor = input.executor || { kind: 'pi' };
-    if (!['pi', 'codex'].includes(executor.kind)) fail('Executor must be pi or codex');
+    const executor = input.executor || this.selectExecutor?.() || { kind: 'pi' };
+    if (!['pi', 'codex'].includes(executor.kind) && !isCliExecutor(executor.kind)) fail('Unknown work executor');
     if (executor.kind === 'codex' && !['project', 'projectless'].includes(executor.target?.type)) fail('Codex requires the selected authorized project target');
+    if (isCliExecutor(executor.kind) && executor.target) fail('这个工作引擎使用 Bot 的本机工作目录。');
     const binding = executor.kind === 'pi' ? { kind: 'pi', ...this.selectModel?.(executor.connectionId) } : executor;
     const record = this.clean({ id, botId: this.botId, conversationId: `work:${id}`, goal: input.goal,
       requirements: input.requirements || '', executor: binding, progress: '', status: 'active', waiting: null, bindings: [], notifications: [],

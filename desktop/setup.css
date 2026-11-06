@@ -100,12 +100,13 @@ form { display: grid; gap: 12px; }
 .parcel-bot {
   position: absolute;
   z-index: 1;
-  inset: 12% auto auto 50%;
+  inset: 1% auto auto 50%;
   width: clamp(98px, 17vh, 144px);
-  transform: translateX(-50%) scale(.74);
-  opacity: 0;
+  transform: translate(-50%, calc(24% - var(--peek-rise, 0%))) scale(.88);
+  transition: transform 380ms cubic-bezier(.22,.72,.28,1);
 }
 .parcel-bot svg { display: block; width: 100%; height: auto; filter: drop-shadow(0 3px 2px #463e2f35); }
+.parcel[data-peek]:not(.is-open) .parcel-bot svg { animation: bot-peek 2.9s ease-in-out infinite; }
 .parcel-front {
   position: absolute;
   z-index: 2;
@@ -167,6 +168,8 @@ form { display: grid; gap: 12px; }
 .unpacking-caption p { margin: 0; }
 #unpacking-stage { font-size: 16px; font-weight: 720; }
 #unpacking-detail { margin-top: 4px; color: #696b56; font-size: 13px; }
+#parcel-actions:not([hidden]) { justify-content: center; margin-top: 16px; }
+#parcel-actions[hidden] { display: none; }
 .parcel.is-open .parcel-lid { animation: box-open 540ms 240ms ease-in-out both; }
 .parcel.is-open .parcel-bot { animation: bot-rise 540ms 240ms cubic-bezier(.16,.8,.28,1) both; }
 .parcel.is-open .parcel-tab { animation: strip-away 320ms 240ms ease-out both; }
@@ -176,10 +179,12 @@ form { display: grid; gap: 12px; }
 }
 @keyframes strip-away { to { transform: translate(35px, -20px) rotate(-21deg); opacity: 0; } }
 @keyframes box-open { to { transform: translateY(-12px) rotateX(106deg); opacity: .4; } }
-@keyframes bot-rise { to { transform: translate(-50%, -64%) rotate(-6deg); opacity: 1; } }
+@keyframes bot-peek { 50% { transform: translateY(8px) rotate(3deg); } }
+@keyframes bot-rise { to { transform: translate(-50%, -87%) rotate(-6deg); } }
 @media (prefers-reduced-motion: reduce) {
-  .parcel-tear, .parcel-tab { transition: none; }
+  .parcel-tear, .parcel-tab, .parcel-bot { transition: none; }
   .parcel-tab, .parcel.is-open .parcel-tab, .parcel.is-open .parcel-lid, .parcel.is-open .parcel-bot { animation: none; }
+  .parcel[data-peek]:not(.is-open) .parcel-bot svg { animation: none; }
   .parcel.is-open .parcel-lid, .parcel.is-open .parcel-tab { visibility: hidden; }
-  .parcel.is-open .parcel-bot { transform: translate(-50%, -64%); opacity: 1; }
+  .parcel.is-open .parcel-bot { transform: translate(-50%, -87%); }
 }
