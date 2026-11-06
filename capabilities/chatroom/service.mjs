@@ -75,7 +75,7 @@ export class ChatroomService {
     if(owners.length===1&&active.includes(owners[0]))return {botId:owners[0],workId:deliveries.at(-1)?.workId};
     return null;
   }
-  async post(roomId,input,senderId='user',{instruction}={}) {
+  async post(roomId,input,senderId='user',{instruction,wakeRecipient}={}) {
     const room=this.need('rooms',roomId);if(room.status==='concluded')fail('Discussion has concluded',409);
     if(!['user','system'].includes(senderId)){
       const active=this.jobs(roomId).filter(job=>job.botId===senderId&&!TERMINAL.has(job.status)).at(-1);
@@ -104,7 +104,7 @@ export class ChatroomService {
       if(repeats){this.store.save('suppressed-chains',{id:`${message.id}:${botId}`,messageId:message.id,botId,rootId:message.rootId,reason:'repeated-without-new-information'});continue;}
       const relatedWorkId=message.targetWorkId||message.workId||(owner?.botId===botId?owner.workId:null);
       const delivery=senderId==='user'?{workId:null,referencedWorkId:relatedWorkId}:{workId:relatedWorkId};
-      this.enqueue(message,botId,{...delivery,...(instruction?{instruction}:{})});
+      this.enqueue(message,botId,{...delivery,instruction,wakeRecipient});
     }
     if(senderId==='user'&&room.team&&!room.team.introducedAt){
       this.store.save('rooms',{id:room.id,team:{...room.team,introducedAt:now()}});
@@ -164,11 +164,12 @@ export class ChatroomService {
     try {
       if(item.status==='queued'){
         const owner=this.manager.get(item.botId),trigger=this.need('messages',item.messageId);
-        if(owner.status!=='active'||owner.runIntent==='stopped'&&trigger.senderId!=='user'){
+        const canWake=trigger.senderId==='user'||item.wakeRecipient===true;
+        if(owner.status!=='active'||owner.runIntent==='stopped'&&!canWake){
           this.store.save('deliveries',{id:item.id,deferredReason:'recipient-stopped',retryAt:new Date(Date.now()+30000).toISOString()});return;
         }
         const input=await this.inputFor(item),receipt=await this.manager.send(item.botId,input);
-        item=this.store.save('deliveries',{...item,status:'accepted',taskId:receipt.taskId,startedAt:now(),attempts:0,error:null});this.emit('job',item);
+        item=this.store.save('deliveries',{...item,status:'accepted',taskId:receipt.taskId,startedAt:now(),attempts:0,error:null,deferredReason:null,retryAt:null});this.emit('job',item);
         // The Bot has durably accepted the exact input. Failed/unknown sends never advance this cursor.
         if(!item.routeOnly){const key=`${item.botId}:${item.roomId}:${item.workId||'chat'}`,all=this.messages(item.roomId),previous=this.store.get('delivery-cursors',key);if(all.findIndex(message=>message.id===item.messageId)>all.findIndex(message=>message.id===previous?.messageId))this.store.save('delivery-cursors',{id:key,messageId:item.messageId});}
       }
@@ -244,7 +245,7 @@ export class ChatroomService {
     if(this.messages(room.id).some(message=>seen.has(message.jobId)&&message.replyTo===original.messageId&&message.senderId===original.botId&&message.kind!=='error'))fail('This task already has a recorded reply; inspect its history instead of retrying',409);
     const item=family.at(-1);let retry;
     if(!item.taskId){retry=this.store.save('deliveries',{...item,status:'queued',serviceVersion:this.version,attempts:0,error:null,retryAt:null,startedAt:null,finishedAt:null});this.emit('job',retry);}
-    else{const trigger=this.need('messages',item.messageId);retry=this.enqueue(trigger,item.botId,{...pick(item,['instruction','peerAnswer','routineId','discussionBatch','hop','lane','routeOnly','priority','workId']),id:`retry:${randomUUID()}`,retryOf:item.id});}
+    else{const trigger=this.need('messages',item.messageId);retry=this.enqueue(trigger,item.botId,{...pick(item,['instruction','wakeRecipient','peerAnswer','routineId','discussionBatch','hop','lane','routeOnly','priority','workId']),id:`retry:${randomUUID()}`,retryOf:item.id});}
     void this.tick();return retry;
   }
   start() {this.closed=false;this.timer=setInterval(()=>void this.tick(),750);this.timer.unref();void this.tick();}

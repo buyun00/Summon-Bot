@@ -23,15 +23,16 @@ export async function guideReply(onboarding, input = {}) {
   };
   const handoffReply = state => {
     if (state.status === 'guiding') return reply('complete', '', [], { roomId: state.roomId, input: 'none', draft: {} });
-    if (state.status === 'starting') return reply('waiting', '我在等模型返回第一条回复。', [], { input: 'none', draft: {} });
+    if (state.status === 'starting') {
+      const text = { dispatch: '聊天模型已保存，正在把首条消息交给主 Bot。',
+        retry: '首条消息暂未投递成功，正在重试。',
+        reply: '主 Bot 已收到消息，正在准备第一条回复。' }[state.kickoffStage];
+      return reply('waiting', text, [], { input: 'none', draft: {} });
+    }
     return reply('failed', state.error || '首条回复还没到。', [choice('重试首条对话', 'handoff'), choice('换一个模型', 'choose')], { input: 'none', draft: {} });
   };
   if (!['key', 'poll'].includes(action) && looksLikeSecret(value)) throw new Error('请在隐藏的 API Key 输入中填写密钥，不要发送到聊天里。');
-  if (action === 'progress') {
-    const state = onboarding.state();
-    return state.status === 'starting' && !onboarding.kickoff(state.roomId, onboarding.record().kickoffId).latest && !onboarding.submitting
-      ? handoffReply(await onboarding.handoff({})) : handoffReply(state);
-  }
+  if (action === 'progress') return handoffReply(await onboarding.progress());
   if (action === 'hello') {
     const state = onboarding.state();
     if (state.status === 'starting' || state.status === 'guiding') return handoffReply(state);

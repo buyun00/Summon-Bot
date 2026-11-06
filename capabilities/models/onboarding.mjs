@@ -12,6 +12,8 @@ const later = option('稍后继续', 'pause');
 const next = option('下一步', 'next');
 const remoteQuestion = '你想从手机或另一台电脑访问这个工作区吗？也可以先在本机使用。';
 const dialogueInstruction = '这是主 Bot 的新手引导。先回应用户这一句，再用自然的话推进当前一步，每次只问一个问题。用户可以直接在对话里回答。只描述已确认的配置状态。需要本机设置时，告诉用户用对话里的设置入口并回来说一声。请勿索要密钥、访问令牌，也不要自行改动接入配置。';
+const needsWakeup = (job, bot) => job?.status === 'queued' && job.deferredReason === 'recipient-stopped'
+  && bot?.status === 'active' && bot.runIntent === 'stopped';
 
 function guideUpdate(state, guide, content) {
   const answer = content.replace(/^(?:好|好的|是的|可以|要)[，,、]\s*/, '').replace(/[。！!.\s]+$/, '');
@@ -74,6 +76,8 @@ export class OnboardingService {
 
   state() {
     let progress = this.record();
+    const bot = this.bot();
+    let kickoffStage = 'dispatch';
     if (progress.pendingGuide && !this.postingGuide) {
       const { clientId, update } = progress.pendingGuide;
       const sent = this.chatroom.messages(progress.roomId).find(message => message.senderId === 'user' && message.clientId === clientId);
@@ -82,13 +86,18 @@ export class OnboardingService {
     if (progress.status === 'starting' && !this.submitting) {
       const { reply, latest, active } = this.kickoff(progress.roomId, progress.kickoffId);
       if (reply) progress = this.save({ status: 'guiding', step: 'remote', error: null, script: null });
+      else if (!latest?.taskId && bot?.status !== 'active') progress = this.save({ status: 'failed',
+        error: '主 Bot 暂不可用，请先在成员设置中恢复。' });
       else if (latest && !active) progress = this.save({ status: 'failed',
-        error: '聊天模型没有返回可用回复。请检查授权、额度和连接，或换一个模型后重试。' });
+        error: latest.taskId ? '聊天模型没有返回可用回复。请检查授权、额度和连接，或换一个模型后重试。'
+          : '首条消息未能投递到主 Bot，请检查主 Bot 状态后重试。' });
+      else if (latest?.taskId) kickoffStage = 'reply';
+      else if (latest?.error) kickoffStage = 'retry';
     }
     const { status, roomId, step, error, remoteRequested, codexRequested } = progress;
-    const bot = this.bot();
     return { required: ['pending', 'starting', 'failed'].includes(status), status, roomId: roomId || null,
       step: step || null, error: error || null, remoteRequested, codexRequested,
+      ...(status === 'starting' ? { kickoffStage } : {}),
       bot: { id: bot?.id || 'bot-entry', name: bot?.name || '主 Bot' } };
   }
 
@@ -161,6 +170,13 @@ export class OnboardingService {
   }
   start(input = {}) { return this.serialize(() => this.handoff(input)); }
 
+  async progress() {
+    const state = this.state();
+    if (state.status !== 'starting' || this.submitting) return state;
+    const { latest } = this.kickoff(state.roomId, this.record().kickoffId);
+    return !latest || needsWakeup(latest, this.bot()) ? this.handoff({}) : state;
+  }
+
   async handoff(input) {
     const state = this.state(), progress = this.record();
     if (state.status === 'guiding') return state;
@@ -180,7 +196,15 @@ export class OnboardingService {
       await this.chatroom.createRoom({ id: 'room-onboarding', kind: 'dm', name: '与 ' + bot.name + ' 的私聊', members: ['user', bot.id] });
     let attempt = progress.attempt || 0, kickoffId = progress.conversationFlow && progress.kickoffId || setupStartId;
     const { latest, active } = this.kickoff(room.id, kickoffId);
-    if (active) return this.state();
+    if (active) {
+      try {
+        if (needsWakeup(latest, bot)) await this.manager.start(bot.id);
+        if (state.status !== 'starting') this.save({ status: 'starting', error: null });
+      } catch {
+        this.save({ status: 'failed', error: '主 Bot 暂时无法启动，请重试首条对话。' });
+      }
+      return this.state();
+    }
     if (latest && ['completed', 'cancelled'].includes(latest.status)) {
       kickoffId = setupStartId + '-' + ++attempt;
     }
@@ -194,7 +218,8 @@ export class OnboardingService {
         await this.chatroom.post(room.id, { clientId: kickoffId, toBotId: bot.id,
           content: original || '聊天模型已接通。', kind: original ? 'message' : 'event',
           sourceRefs: [guideSource] }, original ? 'user' : 'system',
-        { instruction: dialogueInstruction + ' 简短欢迎，然后在这条回复里问远程访问。' + remoteQuestion });
+        { instruction: dialogueInstruction + ' 简短欢迎，然后在这条回复里问远程访问。' + remoteQuestion,
+          wakeRecipient: true });
       }
     } catch {
       this.save({ status: 'failed', error: '首条消息暂未开始。请确认主 Bot 可用后重试。' });
