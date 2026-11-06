@@ -71,16 +71,15 @@ globalThis.SummonModels = (() => {
   }
   function executorButton(item, esc) {
     if (!item || item.role !== 'executor' || item.id === 'pi') return '';
-    const action = !item.enabled && item.id === 'codex-desktop' && document.documentElement.dataset.localWorkspace === 'true'
-      ? 'setup' : item.enabled ? 'disconnect' : 'connect';
-    return `<button class="${item.enabled ? 'secondary-button' : 'primary-button'}" data-action="models-executor-${action}" data-id="${esc(item.id)}" ${view.busy ? 'disabled' : ''}>${esc(action === 'setup' ? '打开 Codex 设置' : item.enabled ? '断开' : '接入')}</button>`;
+    const action = item.enabled ? 'disconnect' : 'connect';
+    return `<button class="${item.enabled ? 'secondary-button' : 'primary-button'}" data-action="models-executor-${action}" data-id="${esc(item.id)}" ${view.busy ? 'disabled' : ''}>${esc(item.enabled ? '断开' : item.id === 'codex-cli' ? '同意并接入 Codex' : '接入')}</button>`;
   }
   function sidebar(summary, { esc, icon, invalidate }) {
     invalidateSidebar = invalidate;
     if (summary) view.summary = summary;
     const current = view.summary;
     const rows = current ? [current.chat, current.workExecutor || current.executors?.[0]].filter(Boolean) : [
-      { role: 'chat', name: '正在读取聊天模型' }, { role: 'executor', kind: 'codex', name: 'Codex 桌面端', enabled: false, label: '待接入', usage: { status: 'not_connected' } }];
+      { role: 'chat', name: '正在读取聊天模型' }, { role: 'executor', id: 'codex-cli', kind: 'codex-cli', name: 'Codex', enabled: false, label: '待接入', usage: { status: 'not_connected' } }];
     const selected = rows.find(item => (item.id || item.role) === view.quotaId);
     const popover = selected ? `<aside class="quota-popover" id="model-quota-popover" role="dialog" aria-label="${esc(selected.name || '模型')}接入与额度"><header><span class="quota-popover-icon">${globalThis.SummonModelIcons.svg(selected, 28)}</span><div><small>${selected.role === 'executor' ? 'WORK · 执行引擎' : 'CHAT · 聊天引擎'}</small><strong>${esc(selected.name || '正在读取')}</strong></div><button class="icon-button" data-action="models-quota-close" aria-label="关闭额度详情">${icon('close', 16)}</button></header>${selected.model ? `<p class="quota-popover-model">${esc(selected.model)}</p>` : ''}<div class="quota-popover-usage">${usageBody(selected.usage, esc)}</div>${executorButton(selected, esc)}<footer><button data-action="navigate" data-view="models">管理模型与引擎 ${icon('arrow', 14)}</button></footer></aside>` : '';
     return `<section class="sidebar-models" aria-label="模型与引擎额度">${rows.map(item => signal(item, esc)).join('')}${popover}</section>`;
@@ -186,7 +185,6 @@ globalThis.SummonModels = (() => {
     if (action === 'models-refresh-usage') return updateUsage(true);
     if (action === 'models-reload') { view.loadedAt = 0; await load(provided.api, provided.render, provided.toast, provided.refresh); return provided.render(); }
     if (view.busy) return;
-    if (action === 'models-executor-setup') return window.SummonDesktop?.openWorkspaceSetup('codex');
     try {
       view.error = '';
       if (!view.data) await load(provided.api, provided.render, provided.toast, provided.refresh);

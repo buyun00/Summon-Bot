@@ -54,19 +54,6 @@ async function login(session, origin, token) {
     sameSite: 'strict', expirationDate: Date.now() / 1000 + 30 * 86400 });
 }
 
-async function codexConsent(state, enabled) {
-  const token = await workspaceToken(state);
-  const response = await fetch(new URL('/api/model-settings/executors/codex-desktop', state.origin), {
-    method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ enabled }), redirect: 'error', signal: AbortSignal.timeout(45000),
-  });
-  if (!response.ok) {
-    const result = await response.json().catch(() => null);
-    throw new Error(result?.error?.message || result?.error || 'Codex 执行器暂不可用。');
-  }
-  return { enabled };
-}
-
 async function authorizationUrl(state, provider) {
   if (state.mode !== 'local' || !state.local?.dataRoot || provider !== 'tailscale') return null;
   const file = join(state.local.dataRoot, 'config', 'remote-tailscale-plan.json');
@@ -79,4 +66,4 @@ async function authorizationUrl(state, provider) {
   return null;
 }
 
-module.exports = { runtime, setupUrl, workspaceCommand, workspaceToken, login, codexConsent, authorizationUrl };
+module.exports = { runtime, setupUrl, workspaceCommand, workspaceToken, login, authorizationUrl };

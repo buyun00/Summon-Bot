@@ -114,15 +114,14 @@ globalThis.SummonOnboarding = (() => {
     const guide = progress?.guide;
     if (!guide || guide.messageId !== message.id) return '';
     const local = guide.localControl, onHost = document.documentElement.dataset.localWorkspace === 'true';
-    const setupLabel = local && { codex: '打开 Codex 设置', cloudflare: '配置 Cloudflare Tunnel', tailscale: '配置 Tailscale Serve' }[local.provider];
+    const setupLabel = local && { cloudflare: '配置 Cloudflare Tunnel', tailscale: '配置 Tailscale Serve' }[local.provider];
     const setup = local?.origin?.startsWith('https://')
       ? `<p><a href="${esc(local.origin)}" target="_blank" rel="noopener noreferrer">${esc(local.origin)}</a></p>`
       : onHost && setupLabel
         ? `<button type="button" class="secondary-button" data-action="onboarding-local-setup" data-provider="${esc(local.provider)}">${setupLabel}</button>`
         : local ? '<small>请在部署机的桌面应用或安装 CLI 中完成设置。</small>' : '';
-    const install = { grok: 'https://docs.x.ai/build/overview', 'claude-code': 'https://code.claude.com/docs/en/setup' }[guide.step];
-    const options = guide.options.filter(choice => !(onHost && local?.provider === 'codex' && choice.action === 'connect-engine'))
-      .map(choice => `<button type="button" class="secondary-button" data-action="onboarding-choice" data-step="${esc(guide.step)}" data-message-id="${esc(message.id)}" data-value="${esc(choice.action)}" ${actionBusy ? 'disabled' : ''}>${esc(choice.label)}</button>`).join('');
+    const install = { codex: 'https://developers.openai.com/codex/cli', grok: 'https://docs.x.ai/build/overview', 'claude-code': 'https://code.claude.com/docs/en/setup' }[guide.step];
+    const options = guide.options.map(choice => `<button type="button" class="secondary-button" data-action="onboarding-choice" data-step="${esc(guide.step)}" data-message-id="${esc(message.id)}" data-value="${esc(choice.action)}" ${actionBusy ? 'disabled' : ''}>${esc(choice.label)}</button>`).join('');
     return `<div class="onboarding-followup">${guide.error ? `<p class="onboarding-error" role="alert">${esc(guide.error)}</p>` : ''}
       <div class="onboarding-choices">${setup}${options}${install ? `<a href="${esc(install)}" target="_blank" rel="noopener noreferrer">官方安装指引</a>` : ''}</div></div>`;
   }

@@ -3,7 +3,7 @@ const { join } = require('node:path');
 const { readFile } = require('node:fs/promises');
 const { autoUpdater } = require('electron-updater');
 const release = require('./release.json');
-const { runtime, setupUrl, workspaceCommand, workspaceToken, login, codexConsent, authorizationUrl } = require('./workspace.cjs');
+const { runtime, setupUrl, workspaceCommand, workspaceToken, login, authorizationUrl } = require('./workspace.cjs');
 // Keep the existing profile directory while changing the product's visible name.
 app.setPath('userData', join(app.getPath('appData'), 'Relay'));
 app.setName('Summon Bot');
@@ -182,7 +182,8 @@ ipcMain.handle('summon:workspace-action', async (event, command, input = {}) => 
       if (url) await shell.openExternal(url);
       return { opened: Boolean(url) };
     }
-    if (command === 'codex-consent') return await codexConsent(workspace, input.enabled === true);
+    if (command === 'codex-status') return await workspaceCommand(profile, 'codex', { action: 'status' });
+    if (command === 'codex-consent') return await workspaceCommand(profile, 'codex', { action: input.enabled === true ? 'connect' : 'disconnect' });
     if (['access', 'codex'].includes(command)) {
       if (workspace.mode !== 'local') throw new Error('请在部署机配置本机能力。');
       const { dataRoot, ...options } = input;

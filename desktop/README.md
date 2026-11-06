@@ -23,12 +23,13 @@ summon access prepare cloudflare --origin HTTPS --owner summon
 summon access apply cloudflare --plan PLAN_ID --confirm --token-file PATH
 summon access revoke cloudflare --confirm
 summon codex status
-summon codex prepare --caller-thread-id ID [--tools-pipe PATH --ipc-pipe PATH]
+summon codex connect
+summon codex disconnect
 ```
 
 `remote --stop-local` 停止本安装管理且当前选择的本机工作区。令牌文件可用 `-` 从标准输入读取。命令输出 JSON。退出码 `0` 表示操作已处理，`1` 表示失败，`2` 表示需要组件、授权或恢复操作。外部 Cloudflare 入口使用已发布的主机名，代理目标填本机 Web 地址并保留请求 Host。Tailscale 使用官方客户端的私网 Serve，遇到现有映射时可选择另一 HTTPS 端口。
 
-Codex 的准备命令保存本机端点。打开使用当前默认权限的本机会话后，由用户在主 Bot 引导或「模型与引擎」中授权 WORK。Mac 需要填写运行中的 Codex 工具与会话 IPC 套接字。CHAT 订阅单独导入。
+Codex 在主 Bot 引导或「模型与引擎」中点击「同意并接入 Codex」，也可以运行 `summon codex connect`。程序复用本机 Codex 的订阅登录及配置，执行工作时自动创建和续接会话。CHAT 订阅单独导入。
 
 API 使用工作区访问令牌。可从桌面本机设置复制令牌，程序化操作也可从部署配置的私有 `web.accessToken` 字段读取。模型引导依次调用 `/api/model-settings/onboarding/reply`，按返回的 `options` 提交 `action` 与 `value`。等待首条真实回复时查询 `GET /api/model-settings/onboarding`，或提交 `action=progress`。进入真实房间后按 `guide.options` 向 `/api/model-settings/onboarding/advance` 提交 `step` 与 `action`。
 

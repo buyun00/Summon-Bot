@@ -63,8 +63,8 @@ export class ModelConnections {
   summary() {
     const catalog = this.catalog(), selected = catalog.activeId ? requireEntry(catalog, catalog.activeId) : null;
     const executor = desktopExecutorState({ dataRoot: this.dataRoot });
-    const executors = [{ ...executor, usage: executor.enabled ? this.usage['codex-desktop'] || null : { status: 'not_connected', note: executor.note } },
-      ...cliExecutorStates(catalog)];
+    const executors = [...cliExecutorStates(catalog),
+      ...(executor.enabled ? [{ ...executor, usage: this.usage['codex-desktop'] || null }] : [])];
     const workExecutor = catalog.workExecutorId === 'pi'
       ? { id: 'pi', name: '内置 Pi', kind: 'pi', role: 'executor', enabled: true, label: '当前工作引擎' }
       : executors.find(item => item.enabled && item.id === catalog.workExecutorId) || null;

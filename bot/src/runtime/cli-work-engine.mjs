@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { access, mkdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { delimiter, isAbsolute, join } from 'node:path';
+import { createRequire } from 'node:module';
+import { delimiter, dirname, isAbsolute, join } from 'node:path';
 import { cleanEnvironment, terminateTree } from './process-tools.mjs';
 import { localGrokAuthPath, localGrokLogin } from '../agent/connections.mjs';
 import { cliExecutorNames, requireCliExecutor } from '../capabilities/executor-connections.mjs';
@@ -11,16 +12,38 @@ import { workInput } from '../capabilities/task-policy.mjs';
 
 const windows = process.platform === 'win32';
 const workError = (message, code) => Object.assign(new Error(message), { code, status: 409, expose: true });
-const credentialNames = id => id === 'grok' ? ['XAI_API_KEY'] : ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
+const credentialNames = id => id === 'codex-cli' ? [] : id === 'grok' ? ['XAI_API_KEY'] : ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
 
 async function executableFor(id) {
-  const home = homedir(), binary = (id === 'grok' ? 'grok' : 'claude') + (windows ? '.exe' : '');
+  const home = homedir(), binary = (id === 'codex-cli' ? 'codex' : id === 'grok' ? 'grok' : 'claude') + (windows ? '.exe' : '');
   const pathFolders = (process.env.PATH || '').split(delimiter).map(folder => folder.replace(/^"|"$/g, '')).filter(isAbsolute);
   const folders = id === 'grok' ? [join(process.env.GROK_HOME || join(home, '.grok'), 'bin')]
-    : [join(home, '.local', 'bin'), ...(windows && process.env.APPDATA
+    : [join(home, '.local', 'bin'), ...(id === 'claude-code' && windows && process.env.APPDATA
       ? [join(process.env.APPDATA, 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'bin')] : [])];
-  for (const folder of [...folders, ...pathFolders]) {
-    const file = join(folder, binary);
+  const candidates = [...folders, ...pathFolders].map(folder => join(folder, binary));
+  if (id === 'codex-cli') {
+    const platform = { win32: 'pc-windows-msvc', darwin: 'apple-darwin', linux: 'unknown-linux-musl' }[process.platform];
+    const architecture = { x64: 'x86_64', arm64: 'aarch64' }[process.arch];
+    const target = architecture + '-' + platform;
+    const packageName = '@openai/codex-' + process.platform + '-' + process.arch;
+    const npmFolders = [...(windows && process.env.APPDATA ? [join(process.env.APPDATA, 'npm')] : []), ...pathFolders];
+    for (const folder of npmFolders) {
+      for (const root of [join(folder, 'node_modules', '@openai', 'codex'), join(folder, '..', 'lib', 'node_modules', '@openai', 'codex')]) {
+        try {
+          await access(join(root, 'package.json'));
+          const require = createRequire(join(root, 'package.json'));
+          const vendor = join(dirname(require.resolve(packageName + '/package.json')), 'vendor');
+          candidates.push(join(vendor, target, 'bin', binary));
+        } catch {}
+        candidates.push(join(root, 'vendor', target, 'bin', binary));
+      }
+    }
+    if (process.platform === 'darwin') {
+      candidates.push('/Applications/Codex.app/Contents/Resources/codex', join(home, 'Applications', 'Codex.app', 'Contents', 'Resources', 'codex'));
+    }
+    if (windows && process.env.LOCALAPPDATA) candidates.push(join(process.env.LOCALAPPDATA, 'OpenAI', 'Codex', 'bin', binary));
+  }
+  for (const file of new Set(candidates)) {
     try {
       await access(file, constants.X_OK);
       if ((await stat(file)).isFile()) return file;
@@ -29,13 +52,13 @@ async function executableFor(id) {
   throw workError('部署机没有找到 ' + cliExecutorNames[id] + '，请安装后重试。', 'WORK_ENGINE_MISSING');
 }
 
-async function runCli(file, args, { id, cwd, input = '', signal, timeout }) {
+async function runCli(file, args, { id, cwd, input = '', signal, timeout, onLine, captureStderr = false }) {
   signal?.throwIfAborted();
   const env = cleanEnvironment();
   for (const key of credentialNames(id)) if (process.env[key]) env[key] = process.env[key];
-  const child = spawn(file, args, { cwd, env, windowsHide: true, detached: !windows, stdio: ['pipe', 'pipe', 'ignore'] });
+  const child = spawn(file, args, { cwd, env, windowsHide: true, detached: !windows, stdio: ['pipe', 'pipe', captureStderr ? 'pipe' : 'ignore'] });
   const chunks = [];
-  let bytes = 0, failure, killing;
+  let bytes = 0, pending = '', failure, killing;
   const stop = error => {
     failure ||= error;
     killing ||= terminateTree(child);
@@ -43,11 +66,21 @@ async function runCli(file, args, { id, cwd, input = '', signal, timeout }) {
   const abort = () => stop(signal.reason || new Error('工作已取消。'));
   const timer = setTimeout(() => stop(workError('工作引擎执行超时。', 'WORK_ENGINE_TIMEOUT')), timeout);
   signal?.addEventListener('abort', abort, { once: true });
-  child.stdout.on('data', chunk => {
-    bytes += chunk.length;
+  const capture = chunk => {
+    bytes += Buffer.byteLength(chunk);
     if (bytes > 2 * 1024 * 1024) stop(workError('工作引擎的返回内容过长。', 'WORK_ENGINE_OUTPUT_LIMIT'));
     else chunks.push(chunk);
+  };
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', chunk => {
+    capture(chunk);
+    if (!onLine || failure) return;
+    const lines = (pending + chunk).split('\n');
+    pending = lines.pop();
+    try { for (const line of lines) if (line.trim()) onLine(line); }
+    catch (error) { stop(error); }
   });
+  if (captureStderr) { child.stderr.setEncoding('utf8'); child.stderr.on('data', capture); }
   child.stdin.on('error', () => {});
   child.stdin.end(input);
   try {
@@ -56,9 +89,12 @@ async function runCli(file, args, { id, cwd, input = '', signal, timeout }) {
       child.once('close', resolve);
       if (signal?.aborted) abort();
     });
+    if (onLine && pending.trim() && !failure) {
+      try { onLine(pending); } catch (error) { stop(error); }
+    }
     if (killing) await killing;
     if (failure) throw failure;
-    return { exitCode, output: Buffer.concat(chunks).toString('utf8').trim() };
+    return { exitCode, output: chunks.join('').trim() };
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener('abort', abort);
@@ -67,8 +103,13 @@ async function runCli(file, args, { id, cwd, input = '', signal, timeout }) {
 
 export async function confirmWorkCli(id) {
   const file = await executableFor(id);
-  const run = args => runCli(file, args, { id, cwd: homedir(), timeout: 15000 });
-  if (id === 'claude-code') {
+  const run = (args, options) => runCli(file, args, { id, cwd: homedir(), timeout: 15000, ...options });
+  if (id === 'codex-cli') {
+    const result = await run(['login', 'status'], { captureStderr: true });
+    if (result.exitCode !== 0 || !/\bChatGPT\b/i.test(result.output)) {
+      throw workError('请先在这台电脑运行 codex login，使用 ChatGPT 订阅登录后重试。', 'WORK_ENGINE_LOGIN_REQUIRED');
+    }
+  } else if (id === 'claude-code') {
     const result = await run(['auth', 'status', '--json']);
     if (result.exitCode !== 0) throw workError('请先在部署机运行 claude auth login 完成登录。', 'WORK_ENGINE_LOGIN_REQUIRED');
   } else {
@@ -82,11 +123,33 @@ export async function confirmWorkCli(id) {
       catch { throw workError('请先在部署机运行 grok login 完成登录。', 'WORK_ENGINE_LOGIN_REQUIRED'); }
     }
   }
+  return file;
 }
 
-async function runWorkCli(id, file, sessionId, resume, prompt, config, signal) {
+async function runWorkCli(id, file, sessionId, resume, prompt, config, signal, onSession) {
   const name = cliExecutorNames[id];
   const run = (args, input) => runCli(file, args, { id, cwd: config.workspace, input, signal, timeout: 30 * 60 * 1000 });
+  if (id === 'codex-cli') {
+    let threadId, completed = false, failed = false, content = '';
+    const onLine = line => {
+      const event = JSON.parse(line);
+      if (event.type === 'thread.started') {
+        if (typeof event.thread_id !== 'string' || !event.thread_id || sessionId && event.thread_id !== sessionId || threadId && event.thread_id !== threadId) {
+          throw workError('Codex 返回的工作会话与当前委托不一致。', 'WORK_ENGINE_SESSION_MISMATCH');
+        }
+        if (!threadId) { threadId = event.thread_id; onSession(threadId); }
+      }
+      if (event.type === 'item.completed' && event.item?.type === 'agent_message' && typeof event.item.text === 'string') content = event.item.text.trim();
+      if (event.type === 'turn.completed') completed = true;
+      if (['turn.failed', 'error'].includes(event.type)) failed = true;
+    };
+    const args = ['exec', ...(resume ? ['resume', sessionId] : []), '--json', '--skip-git-repo-check', '-'];
+    const result = await runCli(file, args, { id, cwd: config.workspace, input: prompt, signal, onLine, timeout: 30 * 60 * 1000 });
+    if (result.exitCode !== 0 || failed || !completed || !threadId || !content) {
+      throw workError('Codex 没有返回可确认的执行结果（退出状态 ' + result.exitCode + '）。', 'WORK_ENGINE_FAILED');
+    }
+    return content;
+  }
   const session = [resume ? '--resume' : '--session-id', sessionId];
   if (id === 'claude-code') {
     const result = await run(['-p', '--output-format', 'json', '--permission-mode', 'dontAsk',
@@ -124,8 +187,8 @@ export async function executeCliWork({ store, services, config, task, signal, cl
   const event = store.getRecord('work-events', eventId) || { id: eventId, workId: work.id, content: task.input };
   if (event.cliExecution?.status === 'completed') return { executor: kind, content: event.cliExecution.content };
   if (event.cliExecution) throw workError('上一次执行已有记录。请根据结果或现有工作状态给出下一步。', 'WORK_ENGINE_OUTCOME_UNKNOWN');
-  const file = await executableFor(kind);
-  const sessionId = executor.sessionId || randomUUID();
+  const file = kind === 'codex-cli' ? await confirmWorkCli(kind) : await executableFor(kind);
+  let sessionId = executor.sessionId || (kind === 'codex-cli' ? null : randomUUID());
   const operation = { kind, sessionId, status: 'running', taskId: task.id, startedAt: new Date().toISOString() };
   const prompt = JSON.stringify({ type: 'work_input', goal: work.goal, requirements: work.requirements,
     input: workInput(services.works.executionInput(task)),
@@ -134,7 +197,14 @@ export async function executeCliWork({ store, services, config, task, signal, cl
   store.putRecord('work-events', { ...event, cliExecution: operation });
   let content;
   try {
-    let result = await runWorkCli(kind, file, sessionId, Boolean(executor.sessionId), prompt, config, signal);
+    let result = await runWorkCli(kind, file, sessionId, Boolean(executor.sessionId), prompt, config, signal, id => {
+      sessionId = id;
+      operation.sessionId = id;
+      store.transaction(() => {
+        store.putRecord('work-events', { ...store.getRecord('work-events', eventId), cliExecution: operation });
+        if (services.works.get(work.id)?.status === 'active') services.works.update(work.id, { executor: { ...executor, sessionId } });
+      });
+    });
     for (const key of credentialNames(kind)) {
       const secret = process.env[key];
       if (secret?.length >= 8) result = result.replaceAll(secret, '[redacted]');

@@ -184,31 +184,20 @@ function showChoices() {
 }
 
 async function showCodex() {
-  const result = await setup.action('codex', { action: 'status' });
+  const result = await setup.action('codex-status');
   const title = 'Codex 工作执行器';
-  say(result.enabled ? 'Codex 已获得 WORK 执行授权。聊天继续用你选择的模型。' : '先打开使用默认权限的本机 Codex 会话。我们会核对它的权限，再接入 WORK 执行器。');
-  const fields = [field('本机 Codex 会话 ID', 'callerThreadId', { placeholder: result.callerConfigured ? '已设置，留空可沿用' : '' })];
-  if (result.platform === 'darwin') fields.push(field('Codex 工具套接字', 'toolsPipe'), field('Codex 会话 IPC 套接字', 'ipcPipe'));
-  if (!result.enabled && result.status !== 'external') {
-    form(fields, '保存本机端点', async values => {
-      const saved = await setup.action('codex', { action: 'prepare', ...values });
-      say(saved.callerConfigured && saved.socketsConfigured ? '本机端点已保存。现在可以确认接入。' : '请补齐会话 ID 和本机端点。');
-      if (saved.callerConfigured && saved.socketsConfigured) {
-        controls.replaceChildren();
-        buttons(button('允许接入 Codex 执行器', () => connectCodex(true), true), button('返回', showChoices));
-      }
-    });
-  } else {
-    controls.replaceChildren();
-    buttons(button(result.enabled ? '停用 Codex 执行器' : '允许接入 Codex 执行器', () => connectCodex(!result.enabled), true));
-  }
+  say(result.enabled ? 'Codex 已获得工作执行授权。工作会话会自动创建，结果会回到主 Bot 对话。'
+    : '允许我使用这台电脑上已登录的 Codex 订阅执行工作吗？确认后，我会在每次工作时自动创建独立会话，完成后把结果带回这里。');
+  controls.replaceChildren();
+  buttons(button(result.enabled ? '停用 Codex 执行器' : '同意并接入 Codex', () => connectCodex(!result.enabled), true));
   buttons(button('返回主 Bot 对话', () => setup.action('continue')), button('返回工作区选择', showChoices));
   document.querySelector('#title').textContent = title;
 }
 
 async function connectCodex(enabled) {
   await setup.action('codex-consent', { enabled });
-  await showCodex();
+  if (enabled) await setup.action('continue');
+  else await showCodex();
 }
 
 const statusText = {

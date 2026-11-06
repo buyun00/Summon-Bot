@@ -4,7 +4,7 @@ import { fail } from '../shared/validation.mjs';
 import { readRemoteAccess } from '../../scripts/installation/remote-config.mjs';
 
 const engines = new Map([
-  ['codex', { id: 'codex-desktop', name: 'Codex' }],
+  ['codex', { id: 'codex-cli', name: 'Codex' }],
   ['grok', { id: 'grok', name: 'Grok' }],
   ['claude-code', { id: 'claude-code', name: 'Claude Code' }],
 ]);
@@ -15,7 +15,7 @@ const usePi = option('先用内置 Pi', 'use-pi');
 
 function question(step) {
   if (step === 'engine') return '我是你的主 Bot，可以帮你把事交给能独立执行的工作同伴，比如查资料、改代码、整理文件、定时提醒，做完结果会直接回到这里。你现在是用 Codex、Grok，还是 Claude Code？';
-  if (step === 'codex') return '请在运行 Summon Bot 的电脑上打开 Codex。从这条消息进入设置，确认允许我用它执行独立工作。';
+  if (step === 'codex') return '允许我使用这台电脑上已登录的 Codex 订阅执行工作吗？确认后，我会在每次工作时自动创建独立会话，完成后把结果带回这里。';
   if (engines.has(step)) {
     const { name } = engines.get(step);
     return '请在运行 Summon Bot 的电脑上安装并登录 ' + (step === 'grok' ? 'Grok Build' : name) + '，然后在这条消息里确认接入。';
@@ -93,8 +93,7 @@ export class OnboardingService {
     else if (step === 'remote') options = [option('配置远程访问', 'remote-provider'), localOnly];
     else if (step === 'remote-provider') options = [...remoteProviders].map(([action, name]) => option(name, action)).concat(localOnly);
     else if (engines.has(step)) {
-      options = [option('确认接入 ' + engines.get(step).name, 'connect-engine'), usePi];
-      if (step === 'codex') localControl = { provider: 'codex' };
+      options = [option(step === 'codex' ? '同意并接入 Codex' : '确认接入 ' + engines.get(step).name, 'connect-engine'), usePi];
     } else if (remoteProviders.has(step)) {
       const entry = (await readRemoteAccess(this.models.dataRoot))[step];
       localControl = { provider: step, origin: !entry?.pending && entry?.origin || null };

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-export const cliExecutorNames = Object.freeze({ grok: 'Grok Build', 'claude-code': 'Claude Code' });
+export const cliExecutorNames = Object.freeze({ 'codex-cli': 'Codex', grok: 'Grok Build', 'claude-code': 'Claude Code' });
 export const isCliExecutor = id => Object.hasOwn(cliExecutorNames, id);
 
 function executorCatalog({ dataRoot, connectionStore } = {}) {
@@ -29,13 +29,16 @@ export function cliExecutorStates(catalog) {
   return Object.entries(cliExecutorNames).map(([id, name]) => {
     const enabled = catalog.executors?.[id]?.enabled === true;
     return { id, name, kind: id, role: 'executor', scope: 'host', enabled, configured: enabled,
-      label: enabled ? '已接入' : '待接入', note: enabled ? '使用部署机上已登录的命令行工具执行工作。' : '请在部署机安装并登录后接入。' };
+      label: enabled ? '已接入' : '待接入', note: id === 'codex-cli'
+        ? '确认后使用这台电脑已登录的 Codex 订阅，工作会话自动创建。'
+        : enabled ? '使用部署机上已登录的命令行工具执行工作。' : '请在部署机安装并登录后接入。' };
   });
 }
 
 export function workExecutorChoices(source) {
   const catalog = executorCatalog(source);
-  return { defaultId: catalog.workExecutorId || null, executors: [desktopExecutorState(source), ...cliExecutorStates(catalog)] };
+  const desktop = desktopExecutorState(source);
+  return { defaultId: catalog.workExecutorId || null, executors: [...cliExecutorStates(catalog), ...(desktop.enabled ? [desktop] : [])] };
 }
 
 export function selectedWorkExecutor(source) {

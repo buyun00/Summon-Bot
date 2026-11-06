@@ -66,7 +66,7 @@ export function coreTools(services, task) {
     tool('work_get', 'Read accessible work status and its existing executor/session binding. The current/replied-to work is the default. Read selected evidence through read_session_history.', object({ id: string }, ['id']), 'read', async args => workView(await services.sources.requireWork(workId(args), task))),
     tool('work_create', 'Create and start independent work. Omit executor to use the user’s default engine. Give the goal, evidence, handoff prose and any explicitly selected target. The program supplies source and operation IDs. Temporary assignments use work, not a cloned Bot.',
       object({ id: string, operationId: string, goal: string, requirements: string, responsibility: string, ...handoffFields,
-        executor: object({ kind: { type: 'string', enum: ['pi', 'codex', 'grok', 'claude-code'] }, connectionId: string, target: { type: 'object' } }, ['kind']) }), 'write', async (args, ctx) => {
+        executor: object({ kind: { type: 'string', enum: ['pi', 'codex', 'codex-cli', 'grok', 'claude-code'] }, connectionId: string, target: { type: 'object' } }, ['kind']) }), 'write', async (args, ctx) => {
         const content = await services.sources.handoff(task, args);
         const id = typeof args.id === 'string' && /^[\w.-]{1,160}$/.test(args.id) ? args.id : randomUUID();
         const existing = services.works.get(id);

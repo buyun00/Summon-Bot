@@ -10,7 +10,6 @@ import { installRelease } from './install.mjs';
 import { acquireServiceLock } from './service-lock.mjs';
 import { deploymentPath, inspectService, startSystem, stopSystem } from './system.mjs';
 import { applyRemote, prepareRemote, remoteStatus, revokeRemote } from './remote-access.mjs';
-import { inspectCodex, prepareCodex } from './auxiliaries.mjs';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const workspaceFile = root => join(root, 'desktop-workspace.json');
@@ -160,8 +159,18 @@ export async function desktopCommand(command, input = {}, { profileRoot = defaul
       const config = await optionalJson(deploymentPath(dataRoot));
       if (!config) throw new Error('该数据目录尚未初始化。');
       if (command === 'codex') {
-        if (input.action === 'status') return await inspectCodex(config);
-        if (input.action === 'prepare') return await prepareCodex(config, input);
+        if (!['status', 'connect', 'disconnect'].includes(input.action)) throw new Error('请选择 Codex 的 status、connect 或 disconnect。');
+        const change = input.action !== 'status', enabled = input.action === 'connect';
+        const origin = workspaceOrigin(`http://${config.web.host}:${config.web.port}`);
+        const response = await fetch(new URL(change ? '/api/model-settings/executors/codex-cli' : '/api/model-settings', origin), {
+          method: change ? 'POST' : 'GET', headers: { Authorization: 'Bearer ' + config.web.accessToken, 'Content-Type': 'application/json' },
+          ...(change ? { body: JSON.stringify({ enabled, select: enabled }) } : {}), redirect: 'error', signal: AbortSignal.timeout(45000),
+        });
+        const result = await response.json().catch(() => null);
+        if (!response.ok) throw new Error(result?.error?.message || result?.error || 'Codex 执行器暂不可用。');
+        const executor = result?.executors?.find(item => item.id === 'codex-cli');
+        if (!executor) throw new Error('工作区尚未支持一键接入 Codex，请先更新本机工作区。');
+        return executor;
       } else {
         if (input.action === 'status') return await remoteStatus(config, input.provider);
         if (input.action === 'prepare') return await prepareRemote(config, input.provider, input);
@@ -191,7 +200,7 @@ async function cli() {
   if (command === 'help' || options.help) {
     console.log('summon status | local [--data-root PATH] | remote --address URL --token-file PATH|- [--stop-local] | start | stop\n'
       + 'summon access status|prepare|apply|revoke cloudflare|tailscale [--origin HTTPS] [--owner external|summon] [--port PORT] [--plan ID --confirm] [--token-file PATH|-]\n'
-      + 'summon codex status|prepare [--caller-thread-id ID] [--tools-pipe PATH --ipc-pipe PATH]');
+      + 'summon codex status|connect|disconnect');
     return;
   }
   const file = options['token-file'];
@@ -199,7 +208,6 @@ async function cli() {
   const input = options.stdin ? JSON.parse(await readStdin()) : {
     action, provider, dataRoot: options['data-root'], address: options.address, stopLocal: options['stop-local'] === true,
     origin: options.origin, owner: options.owner, port: options.port, planId: options.plan, confirm: options.confirm === true, token,
-    callerThreadId: options['caller-thread-id'], toolsPipe: options['tools-pipe'], ipcPipe: options['ipc-pipe'],
   };
   const onProgress = progress => {
     if (process.connected) process.send({ type: 'workspace-progress', progress }, () => {});
