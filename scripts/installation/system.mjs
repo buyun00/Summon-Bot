@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { readJson, writeJson, within } from '../build/files.mjs';
 import { inspectServiceLock } from './service-lock.mjs';
 import { migratePublicOrigin } from './remote-config.mjs';
+import { terminateTree } from '../../bot/src/runtime/process-tools.mjs';
 
 const pause = milliseconds => new Promise(resolvePause => setTimeout(resolvePause, milliseconds));
 export const deploymentPath = dataRoot => join(resolve(dataRoot), 'config', 'deployment.json');
@@ -64,8 +65,10 @@ export async function inspectService(config, type) {
   } catch (error) { if (error.code === 'SERVICE_IDENTITY_MISMATCH') throw error; return { ...run, state: 'unreachable' }; }
 }
 
-export async function launchService(config, type, { foreground = false, timeoutMs = 180000, onExit } = {}) {
+export async function launchService(config, type, { foreground = false, timeoutMs = 180000, onExit, signal } = {}) {
+  signal?.throwIfAborted();
   const current = await inspectService(config, type);
+  signal?.throwIfAborted();
   if (current.state === 'ready') {
     if (resolve(current.releaseRoot) !== resolve(config.releaseRoot)) throw new Error(`${type} still runs another release; stop it before switching`);
     return current;
@@ -79,7 +82,10 @@ export async function launchService(config, type, { foreground = false, timeoutM
   const child = spawn(existsSync(bundled) ? bundled : process.execPath,
     [entry, '--type', type, '--config', deploymentPath(config.dataRoot)],
     { cwd: config.defaultCwd, env: await deploymentEnvironment(config), detached: !foreground, windowsHide: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
-  let failure;
+  let failure, stopping;
+  const abort = () => { stopping ||= terminateTree(child); };
+  signal?.addEventListener('abort', abort, { once: true });
+  if (signal?.aborted) abort();
   child.once('error', error => { failure = error; });
   child.once('exit', (code, signal) => { failure ||= new Error(`${type} exited before readiness (${code ?? signal}); see ${logRoot}`); onExit?.(code, signal); });
   child.on('message', message => {
@@ -91,6 +97,7 @@ export async function launchService(config, type, { foreground = false, timeoutM
   let lastHandshakeError;
   try {
     while (Date.now() < deadline) {
+      signal?.throwIfAborted();
       if (failure) throw failure;
       let next;
       try { next = await inspectService(config, type); }
@@ -101,6 +108,7 @@ export async function launchService(config, type, { foreground = false, timeoutM
         if (!transientStartupHandshake(error)) throw error;
         lastHandshakeError = error;
       }
+      signal?.throwIfAborted();
       if (failure) throw failure;
       if (next && next.state !== 'stopped' && next.pid !== child.pid) throw Object.assign(new Error(`${type} startup identity belongs to another process`), { code: 'SERVICE_IDENTITY_MISMATCH' });
       if (Date.now() >= deadline) break;
@@ -109,7 +117,11 @@ export async function launchService(config, type, { foreground = false, timeoutM
     }
     if (failure) throw failure;
     throw Object.assign(new Error(`${type} did not become ready before the startup deadline; inspect its identity and logs before retrying (PID ${child.pid})`, { cause: lastHandshakeError }), { code: 'SERVICE_STARTUP_TIMEOUT' });
-  } finally { if (child.connected) child.disconnect(); }
+  } finally {
+    signal?.removeEventListener('abort', abort);
+    if (stopping) await stopping;
+    if (child.connected) child.disconnect();
+  }
 }
 
 export async function startSystem(config, { foreground = false, respectIntent = false, onProgress } = {}) {

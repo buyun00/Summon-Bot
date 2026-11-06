@@ -107,9 +107,9 @@ async function runCli(file, args, { id, cwd, input = '', signal, timeout, onLine
   }
 }
 
-export async function confirmWorkCli(id, { bridgePath } = {}) {
+export async function confirmWorkCli(id, { bridgePath, signal } = {}) {
   const file = await executableFor(id, bridgePath);
-  const run = (args, options) => runCli(file, args, { id, cwd: homedir(), timeout: 15000, ...options });
+  const run = (args, options) => runCli(file, args, { id, cwd: homedir(), timeout: 15000, signal, ...options });
   if (id === 'codex-cli') {
     const result = await run(['login', 'status'], { captureStderr: true });
     if (result.exitCode !== 0 || !/\bChatGPT\b/i.test(result.output)) {

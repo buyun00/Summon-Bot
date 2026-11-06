@@ -72,13 +72,14 @@ export class ModelConnections {
       : { role: 'chat', name: '尚未选择聊天模型', configured: false, usage: { status: 'unconfigured' } },
       executors, workExecutor };
   }
-  setExecutor(id, enabled, { select = false, bridgePath } = {}) {
+  setExecutor(id, enabled, { select = false, bridgePath, signal } = {}) {
     if ((id !== 'codex-desktop' && !isCliExecutor(id)) || typeof enabled !== 'boolean') throw new Error('请选择有效的执行引擎接入状态');
-    const change = (this.executorChange || Promise.resolve()).catch(() => {}).then(() => this.changeExecutor(id, enabled, select, bridgePath));
+    const change = (this.executorChange || Promise.resolve()).catch(() => {}).then(() => this.changeExecutor(id, enabled, select, bridgePath, signal));
     this.executorChange = change;
     return change.finally(() => { if (this.executorChange === change) this.executorChange = null; });
   }
-  async changeExecutor(id, enabled, select, bridgePath) {
+  async changeExecutor(id, enabled, select, bridgePath, signal) {
+    signal?.throwIfAborted();
     const desktop = id === 'codex-desktop';
     const bridge = bridgePath === undefined ? this.catalog().executors?.[id]?.bridgePath : bridgePath;
     if (enabled && desktop) {
@@ -89,7 +90,8 @@ export class ModelConnections {
         throw error;
       }
     }
-    if (enabled && !desktop) await confirmWorkCli(id, { bridgePath: bridge });
+    if (enabled && !desktop) await confirmWorkCli(id, { bridgePath: bridge, signal });
+    signal?.throwIfAborted();
     await this.mutate(catalog => {
       catalog.executors = { ...catalog.executors, [id]: { enabled, ...(bridge ? { bridgePath: bridge } : {}), ...(enabled ? { connectedAt: new Date().toISOString() } : {}) } };
       if (enabled && select) catalog.workExecutorId = id;

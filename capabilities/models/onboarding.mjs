@@ -117,6 +117,12 @@ export class OnboardingService {
     return pending.finally(() => { if (this.operation === pending) this.operation = null; });
   }
 
+  interruptSetup(action, questionId) {
+    if (['local-only', 'use-pi', 'next'].includes(action) && this.pendingSetup?.questionId === questionId) {
+      this.pendingSetup.controller.abort(new Error('当前配置已取消。'));
+    }
+  }
+
   reply(input) {
     return this.serialize(async () => {
       const result = await guideReply(this, input);
@@ -175,12 +181,19 @@ export class OnboardingService {
     const instruction = `当前用户正在配置 ${engines.get(state.step)?.name || remoteProviders.get(state.step)}。当前问题：${guide.text}\n`
       + '你正在这一步的独立 Pi 工作中。先调用 workspace_setup status 读取真实配置。按当前用户授权完成安装、登录状态检查和配置；缺组件就安装，接口不匹配就修复或在自己的工作目录编写 Node CLI 桥，再用 workspace_setup 完成接入。'
       + '失败后根据真实错误继续处理，不把预置入口缺失当成不能配置的理由。涉及用户账号登录、外部授权或秘密输入时，只让用户完成所缺的那一步，随后续接同一工作。'
+      + '接入工作引擎只检查安装、登录和非生成式握手，不运行 codex exec、试聊或演示任务。接入成功由 workspace_setup connect-engine 判定，不能为了验证接入而调用模型。用户明确提出的限制在后续排障中持续有效。'
       + 'run_command 用于有期限的前台诊断，其子进程会随命令结束回收。需要持续运行的远程桥一律交给 workspace_setup start-remote 管理。'
       + '不要索要普通聊天中的密钥。已有成功或未知结果先查状态，避免重复操作。workspace_setup 成功会标记当前配置工作完成并自动推进下一条引导问题，直接结束当前工作，不追加已接通或询问想做什么的消息。';
+    const sourceIds = new Set(this.record().setup.sourceIds);
+    const requests = this.chatroom.messages(state.roomId).filter(item => item.senderId === 'user' && sourceIds.has(item.id));
+    const requirements = instruction + '\n当前步骤的用户原始要求（按时间顺序，后续补充持续生效）：\n'
+      + requests.map(item => item.content).join('\n');
     try {
       await this.manager.start(state.bot.id);
-      await this.manager.request(state.bot.id, '/works', { method: 'POST', body: JSON.stringify({ id: workId,
-        goal: '完成 ' + (engines.get(state.step)?.name || remoteProviders.get(state.step)) + ' 配置', requirements: instruction, executor: { kind: 'pi' } }) });
+      const work = await this.manager.request(state.bot.id, '/works', { method: 'POST', body: JSON.stringify({ id: workId,
+        goal: '完成 ' + (engines.get(state.step)?.name || remoteProviders.get(state.step)) + ' 配置', requirements, executor: { kind: 'pi' } }) });
+      if (work.requirements !== requirements) await this.manager.request(state.bot.id, '/works/' + encodeURIComponent(workId),
+        { method: 'PATCH', body: JSON.stringify({ requirements }) });
       await this.manager.send(state.bot.id, { id: 'setup:' + messageId, kind: 'request', workId,
         content: { type: 'workspace_setup', step: state.step, userMessage: message.content, instruction },
         metadata: { actor: 'user', roomId: state.roomId, originMessageId: messageId, resume: true, priority: 'foreground' } });
@@ -202,60 +215,68 @@ export class OnboardingService {
         || setup.questionId !== state.questionId || source?.actor !== 'user' || source.roomId !== state.roomId || !setup.sourceIds.includes(source.replyTo)) {
         fail('当前工作不属于已授权的这一步配置。请回到当前引导问题继续。', 403);
       }
-      const config = JSON.parse(await readFile(join(this.models.dataRoot, 'config', 'deployment.json'), 'utf8'));
-      const botConfig = await this.manager.config(actor), engine = engines.get(state.step);
-      const privateFile = async (path, bridge = false) => {
-        if (typeof path !== 'string' || !isAbsolute(path)) fail('请提供当前工作目录内文件的绝对路径。');
-        const file = await realpath(path), root = await realpath(botConfig.workspace), info = await stat(file);
-        if (!within(root, file) || !info.isFile() || bridge && !['.mjs', '.cjs', '.js'].includes(extname(file))) fail('文件必须位于当前 Bot 工作目录中。');
-        if (!bridge && info.size > 16384) fail('私有令牌文件过长。');
-        return file;
-      };
-      const finish = async next => {
-        await this.manager.request(actor, '/works/' + encodeURIComponent(work.id), { method: 'PATCH', body: JSON.stringify({
-          status: 'completed', executionOutcome: { ...work.executionOutcome, onboardingCompletedTaskId: task.id } }) });
-        this.store.save('setup-completions', { id: work.id, botId: actor, sourceIds: setup.sourceIds, nextStep: next });
-        await this.move(next, { cancelSetup: false });
-        return { completed: true, nextStep: next, questionAlreadyPublished: true };
-      };
-      if (input.action === 'status') return { step: state.step, engineId: engine?.id, workId: work.id,
-        platform: process.platform, workspace: botConfig.workspace, runtimeRoot: this.manager.releaseRoot,
-        setupCli: join(this.manager.releaseRoot, 'scripts', 'installation', 'desktop.mjs'), dataRoot: this.models.dataRoot,
-        executors: this.models.summary().executors,
-        remote: state.step === 'custom' ? (await readRemoteAccess(config.dataRoot)).custom || null
-          : remoteProviders.has(state.step) ? await remoteStatus(config, state.step) : null,
-        bridgeProtocol: engine ? 'Node CLI bridge receives the same arguments as the chosen official CLI. Codex uses login status (report ChatGPT) and exec [resume SESSION_ID] --json --skip-git-repo-check -, with JSONL thread.started, item.completed agent_message, turn.completed events. Grok and Claude use their documented noninteractive CLI protocols. Read the installed runtime cli-work-engine.mjs when implementing an adapter.'
-          : 'For a temporary Cloudflare Quick Tunnel, call start-remote with no bridgePath. If cloudflared is missing, install or download it and pass its absolute path as arguments[0]. For another provider, write a Node bridge in your workspace, then pass bridgePath and arguments to start-remote. The bridge receives SUMMON_WEB_URL, stays running, and sends process.send({type:"remote-ready",origin:"https://..."}) when its public route is ready. The service owns and stops its process tree. Existing external routes can use register-remote with origin, label and temporary. Preserve Host and support ordinary HTTP; the webpage polls when SSE is unavailable.' };
-      if (input.action === 'connect-engine' && engine) {
-        const bridgePath = input.bridgePath ? await privateFile(input.bridgePath, true) : undefined;
-        await this.models.setExecutor(engine.id, true, { select: true, bridgePath });
-        return finish('remote');
+      const pending = { questionId: state.questionId, controller: new AbortController() };
+      this.pendingSetup = pending;
+      const signal = pending.controller.signal;
+      try {
+        const config = JSON.parse(await readFile(join(this.models.dataRoot, 'config', 'deployment.json'), 'utf8'));
+        const botConfig = await this.manager.config(actor), engine = engines.get(state.step);
+        const privateFile = async (path, bridge = false) => {
+          if (typeof path !== 'string' || !isAbsolute(path)) fail('请提供当前工作目录内文件的绝对路径。');
+          const file = await realpath(path), root = await realpath(botConfig.workspace), info = await stat(file);
+          if (!within(root, file) || !info.isFile() || bridge && !['.mjs', '.cjs', '.js'].includes(extname(file))) fail('文件必须位于当前 Bot 工作目录中。');
+          if (!bridge && info.size > 16384) fail('私有令牌文件过长。');
+          return file;
+        };
+        const finish = async next => {
+          signal.throwIfAborted();
+          await this.manager.request(actor, '/works/' + encodeURIComponent(work.id), { method: 'PATCH', body: JSON.stringify({
+            status: 'completed', executionOutcome: { ...work.executionOutcome, onboardingCompletedTaskId: task.id } }) });
+          this.store.save('setup-completions', { id: work.id, botId: actor, sourceIds: setup.sourceIds, nextStep: next });
+          await this.move(next, { cancelSetup: false });
+          return { completed: true, nextStep: next, questionAlreadyPublished: true };
+        };
+        if (input.action === 'status') return { step: state.step, engineId: engine?.id, workId: work.id,
+          platform: process.platform, workspace: botConfig.workspace, runtimeRoot: this.manager.releaseRoot,
+          setupCli: join(this.manager.releaseRoot, 'scripts', 'installation', 'desktop.mjs'), dataRoot: this.models.dataRoot,
+          executors: this.models.summary().executors,
+          remote: state.step === 'custom' ? (await readRemoteAccess(config.dataRoot)).custom || null
+            : remoteProviders.has(state.step) ? await remoteStatus(config, state.step) : null,
+          bridgeProtocol: engine ? 'Node CLI bridge receives the same arguments as the chosen official CLI. During setup, verify only login status for Codex (report ChatGPT), auth status --json for Claude, or --no-auto-update --help for Grok. Do not run codex exec, a generated reply, or any sample work. workspace_setup connect-engine is the authoritative connection check. For later user work the adapter must implement the installed runtime cli-work-engine.mjs protocol; read that file only when implementing the adapter.'
+            : 'For a temporary Cloudflare Quick Tunnel, call start-remote with no bridgePath. If cloudflared is missing, install or download it and pass its absolute path as arguments[0]. For another provider, write a Node bridge in your workspace, then pass bridgePath and arguments to start-remote. The bridge receives SUMMON_WEB_URL, stays running, and sends process.send({type:"remote-ready",origin:"https://..."}) when its public route is ready. The service owns and stops its process tree. Existing external routes can use register-remote with origin, label and temporary. Preserve Host and support ordinary HTTP; the webpage polls when SSE is unavailable.' };
+        if (input.action === 'connect-engine' && engine) {
+          const bridgePath = input.bridgePath ? await privateFile(input.bridgePath, true) : undefined;
+          await this.models.setExecutor(engine.id, true, { select: true, bridgePath, signal });
+          return finish('remote');
+        }
+        if (!remoteProviders.has(state.step)) fail('请先完成当前工作引擎的配置。');
+        if (input.action === 'start-remote') {
+          const bridgePath = input.bridgePath ? await privateFile(input.bridgePath, true) : undefined;
+          const result = await startRemoteBridge(config, { ...input, bridgePath, workId: work.id }, { signal });
+          return { ...result, ...await finish('done') };
+        }
+        if (input.action === 'register-remote') {
+          const result = await registerCustomRemote(config, { origin: input.origin, label: input.label, temporary: input.temporary }, { signal });
+          return result.reachable ? { ...result, ...await finish('done') } : result;
+        }
+        if (state.step === 'custom') {
+          const custom = (await readRemoteAccess(config.dataRoot)).custom;
+          const reachable = custom?.origin && await probeRemoteOrigin(config, custom.origin);
+          if (input.action === 'check-remote') return reachable ? { ...custom, ...await finish('done') } : { ...custom, state: 'unreachable', reachable: false };
+          fail('自定义方案可用 start-remote 启动桥接脚本，或用 register-remote 接入已有地址。');
+        }
+        if (input.action === 'prepare-remote') return prepareRemote(config, state.step, { origin: input.origin, owner: input.owner, port: input.port });
+        let result;
+        if (input.action === 'apply-remote') {
+          const token = input.tokenFile ? (await readFile(await privateFile(input.tokenFile), 'utf8')).trim() : undefined;
+          result = await applyRemote(config, state.step, { planId: input.planId, confirm: true, token });
+        } else if (input.action === 'check-remote') result = await remoteStatus(config, state.step);
+        else fail('未知的配置操作。');
+        if (['registered', 'reachable'].includes(result.state) && result.reachable !== false) return { ...result, ...await finish('done') };
+        return result;
+      } finally {
+        if (this.pendingSetup === pending) this.pendingSetup = null;
       }
-      if (!remoteProviders.has(state.step)) fail('请先完成当前工作引擎的配置。');
-      if (input.action === 'start-remote') {
-        const bridgePath = input.bridgePath ? await privateFile(input.bridgePath, true) : undefined;
-        const result = await startRemoteBridge(config, { ...input, bridgePath, workId: work.id });
-        return { ...result, ...await finish('done') };
-      }
-      if (input.action === 'register-remote') {
-        const result = await registerCustomRemote(config, { origin: input.origin, label: input.label, temporary: input.temporary });
-        return result.reachable ? { ...result, ...await finish('done') } : result;
-      }
-      if (state.step === 'custom') {
-        const custom = (await readRemoteAccess(config.dataRoot)).custom;
-        const reachable = custom?.origin && await probeRemoteOrigin(config, custom.origin);
-        if (input.action === 'check-remote') return reachable ? { ...custom, ...await finish('done') } : { ...custom, state: 'unreachable', reachable: false };
-        fail('自定义方案可用 start-remote 启动桥接脚本，或用 register-remote 接入已有地址。');
-      }
-      if (input.action === 'prepare-remote') return prepareRemote(config, state.step, { origin: input.origin, owner: input.owner, port: input.port });
-      let result;
-      if (input.action === 'apply-remote') {
-        const token = input.tokenFile ? (await readFile(await privateFile(input.tokenFile), 'utf8')).trim() : undefined;
-        result = await applyRemote(config, state.step, { planId: input.planId, confirm: true, token });
-      } else if (input.action === 'check-remote') result = await remoteStatus(config, state.step);
-      else fail('未知的配置操作。');
-      if (['registered', 'reachable'].includes(result.state) && result.reachable !== false) return { ...result, ...await finish('done') };
-      return result;
     });
   }
 
@@ -285,10 +306,13 @@ export class OnboardingService {
     });
   }
 
-  postMessage(roomId, input) {
+  async postMessage(roomId, input) {
     const current = this.record();
     const content = typeof input.content === 'string' ? input.content.trim() : '';
     if (current.status !== 'guiding' || current.roomId !== roomId || !content) return this.chatroom.post(roomId, input);
+    const currentGuide = await this.guide();
+    const currentAction = currentGuide && !input.attachments?.length && typedChoice(currentGuide, content);
+    if (currentGuide?.options.some(choice => choice.action === currentAction)) this.interruptSetup(currentAction, currentGuide.messageId);
     return this.serialize(async () => {
       const existing = input.clientId && this.chatroom.messages(roomId)
         .find(message => message.senderId === 'user' && message.clientId === input.clientId);
@@ -316,7 +340,10 @@ export class OnboardingService {
     });
   }
 
-  advance(input = {}) {
+  async advance(input = {}) {
+    const currentGuide = await this.guide();
+    if (currentGuide?.step === input.step && (!input.messageId || input.messageId === currentGuide.messageId)
+      && currentGuide.options.some(choice => choice.action === input.action)) this.interruptSetup(input.action, currentGuide.messageId);
     return this.serialize(async () => {
       const state = this.state(), guide = await this.guide(state);
       if (!guide || guide.step !== input.step || input.messageId && input.messageId !== guide.messageId) return this.snapshot();

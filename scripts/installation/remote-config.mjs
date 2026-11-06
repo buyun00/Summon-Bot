@@ -31,16 +31,17 @@ export async function remoteOrigins(dataRoot) {
     .map(entry => workspaceOrigin(entry.origin, { httpsOnly: true }));
 }
 
-export async function inspectRemoteOrigin(config, origin) {
+export async function inspectRemoteOrigin(config, origin, { signal } = {}) {
   const challenge = randomBytes(32).toString('base64url'), url = new URL('/auth/instance', origin);
   url.searchParams.set('challenge', challenge);
   try {
-    const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(3000) });
+    const response = await fetch(url, { redirect: 'error', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(3000)]) : AbortSignal.timeout(3000) });
     if (!response.ok) return { reachable: false, status: response.status, code: 'REMOTE_HTTP_ERROR', message: '远程入口返回 HTTP ' + response.status + '。请检查代理目标及 Host 转发。' };
     const body = await response.json().catch(() => null);
     if (body?.proof !== workspaceProof(config.web.accessToken, challenge)) return { reachable: false, status: response.status, code: 'REMOTE_INSTANCE_MISMATCH', message: '远程入口没有返回当前工作区的身份，请检查它转发到的实例。' };
     return { reachable: true, status: response.status };
   } catch (error) {
+    signal?.throwIfAborted();
     return { reachable: false, code: error.cause?.code || error.code || error.name, message: '无法连接远程入口，请检查 DNS、网络及代理连接。' };
   }
 }
@@ -49,7 +50,8 @@ export async function probeRemoteOrigin(config, origin) {
   return (await inspectRemoteOrigin(config, origin)).reachable;
 }
 
-export async function registerCustomRemote(config, input) {
+export async function registerCustomRemote(config, input, { signal } = {}) {
+  signal?.throwIfAborted();
   const origin = workspaceOrigin(input.origin, { httpsOnly: true });
   const lock = await acquireServiceLock(config.dataRoot, 'remote-access-operation', () => ({ pid: process.pid, bootId: 'custom-remote', state: 'working' }));
   try {
@@ -57,17 +59,30 @@ export async function registerCustomRemote(config, input) {
     entries.custom = { origin, owner: input.bridgePath ? 'summon' : 'external', label: String(input.label || '自定义远程入口').slice(0, 80),
       temporary: input.temporary === true, ...(input.bridgePath ? { bridgePath: input.bridgePath } : {}), ...(input.workId ? { workId: input.workId } : {}) };
     await writeRemoteAccess(config.dataRoot, entries);
-    const deadline = Date.now() + 30000;
-    let probe;
-    do {
-      probe = await inspectRemoteOrigin(config, origin);
-      if (probe.reachable) return { provider: 'custom', state: 'reachable', registered: true, reachable: true, ...entries.custom };
-      await pause(500);
-    } while (Date.now() < deadline);
-    if (previous) entries.custom = previous;
-    else delete entries.custom;
-    await writeRemoteAccess(config.dataRoot, entries);
-    return { provider: 'custom', state: 'unreachable', registered: false, reachable: false, origin, error: probe };
+    let registered = false;
+    try {
+      const startedAt = Date.now();
+      let deadline = startedAt + 30000;
+      let probe;
+      do {
+        probe = await inspectRemoteOrigin(config, origin, { signal });
+        if (probe.reachable) {
+          registered = true;
+          return { provider: 'custom', state: 'reachable', registered: true, reachable: true, ...entries.custom };
+        }
+        // A newly issued tunnel hostname can lag behind the live connector.
+        // Keep this same route alive while DNS and the edge become available.
+        if (['ENOTFOUND', 'EAI_AGAIN'].includes(probe.code) || probe.status >= 520) deadline = startedAt + 90000;
+        await pause(500, undefined, { signal });
+      } while (Date.now() < deadline);
+      return { provider: 'custom', state: 'unreachable', registered: false, reachable: false, origin, error: probe };
+    } finally {
+      if (!registered) {
+        if (previous) entries.custom = previous;
+        else delete entries.custom;
+        await writeRemoteAccess(config.dataRoot, entries);
+      }
+    }
   } finally { await lock.close(); }
 }
 

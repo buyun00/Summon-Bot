@@ -180,12 +180,12 @@ export async function restoreAuxiliaries(config) {
   }
   const custom = (await readRemoteAccess(config.dataRoot)).custom;
   if (custom?.owner === 'summon' && custom.bridgePath) {
-    result.custom = await launchService(config, 'remote-bridge', { timeoutMs: 90000 }).then(() => 'running', () => 'unavailable');
+    result.custom = await launchService(config, 'remote-bridge', { timeoutMs: 150000 }).then(() => 'running', () => 'unavailable');
   }
   return result;
 }
 
-export async function startRemoteBridge(config, input) {
+export async function startRemoteBridge(config, input, { signal } = {}) {
   const args = input.arguments || [];
   if (!Array.isArray(args) || args.some(value => typeof value !== 'string')) throw new Error('桥接参数必须为字符串数组。');
   await stopService(config, 'remote-bridge');
@@ -193,7 +193,12 @@ export async function startRemoteBridge(config, input) {
     ...(input.bridgePath ? { bridgePath: input.bridgePath } : { builtin: 'quick-tunnel' }),
     arguments: args, label: input.label || '临时远程入口', temporary: input.temporary !== false, workId: input.workId,
   });
-  await launchService(config, 'remote-bridge', { timeoutMs: 90000 });
+  try {
+    await launchService(config, 'remote-bridge', { timeoutMs: 150000, signal });
+  } catch (error) {
+    if (signal?.aborted) await removeCustomRemote(config, input.workId);
+    throw error;
+  }
   return { provider: 'custom', state: 'reachable', reachable: true, ...(await readRemoteAccess(config.dataRoot)).custom };
 }
 
