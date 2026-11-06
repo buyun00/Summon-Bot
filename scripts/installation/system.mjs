@@ -10,7 +10,7 @@ import { migratePublicOrigin } from './remote-config.mjs';
 
 const pause = milliseconds => new Promise(resolvePause => setTimeout(resolvePause, milliseconds));
 export const deploymentPath = dataRoot => join(resolve(dataRoot), 'config', 'deployment.json');
-export const serviceFolders = { web: 'web', gateway: 'capabilities/gateway', 'codex-connector': 'connectors/codex-desktop-api', cloudflared: 'connectors/cloudflared' };
+export const serviceFolders = { web: 'web', gateway: 'capabilities/gateway', 'codex-connector': 'connectors/codex-desktop-api', cloudflared: 'connectors/cloudflared', 'remote-bridge': 'connectors/remote-bridge' };
 export const serviceRoot = (dataRoot, type) => join(dataRoot, serviceFolders[type]);
 export const serviceRunPath = (dataRoot, type) => join(serviceRoot(dataRoot, type), 'run', 'current.json');
 export const bundledNode = releaseRoot => join(releaseRoot, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node');
@@ -174,7 +174,7 @@ export async function stopSystem(config) {
   const supervisor = await capabilitySupervisor(config), capabilities = [];
   if (supervisor) for (const service of await supervisor.list()) capabilities.push(await supervisor.stop(service.id, service.version));
   const auxiliaries = [];
-  for (const type of ['codex-connector', 'cloudflared']) auxiliaries.push(await stopService(config, type));
+  for (const type of ['codex-connector', 'cloudflared', 'remote-bridge']) auxiliaries.push(await stopService(config, type));
   return { state: 'stopped', web, gateway: stoppedGateway, capabilities, auxiliaries };
 }
 

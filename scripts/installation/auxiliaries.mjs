@@ -3,11 +3,13 @@ import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { existsSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
+import { workspaceOrigin } from '../../web/backend/origins.mjs';
 import { setTimeout as pause } from 'node:timers/promises';
 import { readJson, writeJson } from '../build/files.mjs';
 import { bundledNode, deploymentPath, inspectService, launchService, serviceRoot, stopService } from './system.mjs';
-import { readRemoteAccess } from './remote-config.mjs';
+import { readRemoteAccess, registerCustomRemote } from './remote-config.mjs';
 import { desktopExecutorState } from '../../bot/src/capabilities/executor-connections.mjs';
+import { terminateTree } from '../../bot/src/runtime/process-tools.mjs';
 
 export const codexConfigPath = dataRoot => join(serviceRoot(dataRoot, 'codex-connector'), 'config.json');
 export const tunnelTokenPath = dataRoot => join(serviceRoot(dataRoot, 'cloudflared'), 'tunnel-token');
@@ -86,14 +88,31 @@ export async function stopCodexConnector(dataRoot) {
   await stopService(await readJson(deploymentPath(dataRoot)), 'codex-connector');
 }
 
-async function spawnAuxiliary(file, args, { env, cwd, ipc, url, health }, onExit) {
-  const child = spawn(file, args, { env, cwd, windowsHide: true, stdio: ipc ? ['ignore', 'ignore', 'ignore', 'ipc'] : 'ignore' });
+async function spawnAuxiliary(file, args, { env, cwd, ipc, url, health, discoverOrigin }, onExit) {
+  const child = spawn(file, args, { env, cwd, windowsHide: true, detached: discoverOrigin && !windows, stdio: ipc ? ['ignore', 'ignore', 'ignore', 'ipc'] : 'ignore' });
   let exited;
   const completion = new Promise(ready => {
     child.once('exit', () => { exited = true; ready(); });
     child.once('error', () => { exited = true; ready(); });
   });
-  await new Promise((ready, reject) => { child.once('spawn', ready); child.once('error', reject); });
+  let originTimer;
+  const originReady = discoverOrigin && new Promise((ready, reject) => {
+    originTimer = setTimeout(() => reject(new Error('远程桥接脚本尚未返回可用地址。')), 45000);
+    child.on('message', message => {
+      if (message?.type === 'remote-ready') {
+        try { ready(workspaceOrigin(message.origin, { httpsOnly: true })); } catch (error) { reject(error); }
+      }
+      if (message?.type === 'remote-error') reject(new Error(String(message.message || '远程桥接启动失败。').slice(0, 300)));
+    });
+    child.once('exit', () => reject(new Error('远程桥接脚本启动后退出。')));
+    child.once('error', reject);
+  });
+  if (originReady) void originReady.catch(() => {});
+  try {
+    await new Promise((ready, reject) => { child.once('spawn', ready); child.once('error', reject); });
+    if (discoverOrigin) url = await originReady;
+  } catch (error) { if (discoverOrigin) await terminateTree(child); throw error; }
+  finally { clearTimeout(originTimer); }
   if (health) {
     for (let attempt = 0; attempt < 40; attempt++) {
       if (exited) throw new Error('本机连接器启动后退出。请检查端口和配置。');
@@ -109,6 +128,7 @@ async function spawnAuxiliary(file, args, { env, cwd, ipc, url, health }, onExit
     url,
     async close() {
       if (exited) return;
+      if (discoverOrigin) { await terminateTree(child); await completion; return; }
       if (ipc && child.connected) child.send({ type: 'shutdown' }, () => {});
       else child.kill();
       const timer = setTimeout(() => { if (!exited) child.kill('SIGKILL'); }, 3000);
@@ -119,6 +139,18 @@ async function spawnAuxiliary(file, args, { env, cwd, ipc, url, health }, onExit
 
 export async function startAuxiliary(config, type, onExit) {
   const env = safeEnvironment(), cwd = serviceRoot(config.dataRoot, type);
+  if (type === 'remote-bridge') {
+    const bridge = await readJson(join(cwd, 'config.json'));
+    const bridgePath = bridge.builtin === 'quick-tunnel' ? join(config.releaseRoot, 'scripts', 'installation', 'quick-tunnel.mjs') : bridge.bridgePath;
+    const service = await spawnAuxiliary(bundledNode(config.releaseRoot), [bridgePath, ...bridge.arguments], {
+      env: { ...env, SUMMON_WEB_URL: 'http://127.0.0.1:' + config.web.port }, cwd, ipc: true, discoverOrigin: true,
+    }, onExit);
+    try {
+      const result = await registerCustomRemote(config, { ...bridge, bridgePath, origin: service.url });
+      if (!result.reachable) throw new Error('远程桥已启动，但入口尚未连到当前工作区。');
+      return service;
+    } catch (error) { await service.close(); throw error; }
+  }
   if (type === 'codex-connector') {
     const file = codexConfigPath(config.dataRoot);
     const connector = await readJson(file);
@@ -146,5 +178,21 @@ export async function restoreAuxiliaries(config) {
   if (entry?.owner === 'summon' && !entry.pending) {
     result.cloudflare = await launchService(config, 'cloudflared', { timeoutMs: 10000 }).then(() => 'running', () => 'unavailable');
   }
+  const custom = (await readRemoteAccess(config.dataRoot)).custom;
+  if (custom?.owner === 'summon' && custom.bridgePath) {
+    result.custom = await launchService(config, 'remote-bridge', { timeoutMs: 90000 }).then(() => 'running', () => 'unavailable');
+  }
   return result;
+}
+
+export async function startRemoteBridge(config, input) {
+  const args = input.arguments || [];
+  if (!Array.isArray(args) || args.some(value => typeof value !== 'string')) throw new Error('桥接参数必须为字符串数组。');
+  await stopService(config, 'remote-bridge');
+  await writeJson(join(serviceRoot(config.dataRoot, 'remote-bridge'), 'config.json'), {
+    ...(input.bridgePath ? { bridgePath: input.bridgePath } : { builtin: 'quick-tunnel' }),
+    arguments: args, label: input.label || '临时远程入口', temporary: input.temporary !== false,
+  });
+  await launchService(config, 'remote-bridge', { timeoutMs: 90000 });
+  return { provider: 'custom', state: 'reachable', reachable: true, ...(await readRemoteAccess(config.dataRoot)).custom };
 }

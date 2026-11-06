@@ -13,8 +13,9 @@ const object = (properties = {}, required = []) => ({ type: 'object', properties
 const text = { type: 'string' }, names = { type: 'array', items: text };
 export const controlTools = [
   ['workspace_setup', 'Inspect and complete the current user-authorized onboarding step from its Pi work. Diagnose failures with file, command and web tools, install missing components, or write a Node CLI bridge in the Bot workspace and pass bridgePath when connecting. Reuse the actual saved configuration and report only verified results. Secrets stay in private files; pass tokenFile, never a token value.', 'external', object({
-    action: { type: 'string', enum: ['status', 'connect-engine', 'prepare-remote', 'apply-remote', 'check-remote'] },
+    action: { type: 'string', enum: ['status', 'connect-engine', 'prepare-remote', 'apply-remote', 'check-remote', 'start-remote', 'register-remote'] },
     bridgePath: text, origin: text, owner: { type: 'string', enum: ['external', 'summon'] }, port: { type: 'integer' }, planId: text, tokenFile: text,
+    label: text, temporary: { type: 'boolean' }, arguments: { type: 'array', items: text },
   }, ['action'])],
   ['capabilities_list', 'Inspect a compact paginated capability inventory; filter id or botId and use nextOffset for more. Tool schemas are omitted.', 'read', object({ id: text, botId: text, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 20 } })],
   ['capabilities_register', 'Register an independent API/MCP service manifest; registration does not grant access', 'external', object({ id: text, version: text, endpoint: text, token: text }, ['id', 'version', 'endpoint'])],

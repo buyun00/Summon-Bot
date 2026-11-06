@@ -119,7 +119,7 @@ globalThis.SummonOnboarding = (() => {
       ? `<p><a href="${esc(local.origin)}" target="_blank" rel="noopener noreferrer">${esc(local.origin)}</a></p>`
       : onHost && setupLabel
         ? `<button type="button" class="secondary-button" data-action="onboarding-local-setup" data-provider="${esc(local.provider)}">${setupLabel}</button>`
-        : local ? '<small>请在部署机的桌面应用或安装 CLI 中完成设置。</small>' : '';
+        : local ? '<small>主 Bot 会在这里继续处理远程配置，需要你授权时会提示。</small>' : '';
     const install = { codex: 'https://developers.openai.com/codex/cli', grok: 'https://docs.x.ai/build/overview', 'claude-code': 'https://code.claude.com/docs/en/setup' }[guide.step];
     const working = guide.setup && ['queued', 'active'].includes(guide.setup.status);
     const setupStatus = guide.setup ? `<p class="onboarding-working" role="status">${esc(working ? 'Pi 正在配置，有问题我会继续处理…' : guide.setup.status === 'waiting' ? '正在等待当前配置所需的授权或信息，可以直接在聊天中继续。' : '可以直接在聊天中补充信息，让我接着处理。')}</p>` : '';

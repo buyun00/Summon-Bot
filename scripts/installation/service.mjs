@@ -74,7 +74,7 @@ try {
     } catch (error) {
       if (error.code !== 'EADDRINUSE' || config.web.autoPort !== true || config.web.host !== '127.0.0.1') throw error;
       const remote = await readRemoteAccess(config.dataRoot);
-      if (remote.cloudflare || remote.tailscale) {
+      if (Object.values(remote).some(entry => entry?.origin)) {
         throw new Error('本机端口 ' + config.web.port + ' 已被占用。远程入口依赖该端口，请释放后重试。');
       }
       app = await startWeb({ ...webOptions, port: 0 });

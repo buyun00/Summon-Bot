@@ -3,15 +3,16 @@ import { readFile, realpath, stat } from 'node:fs/promises';
 import { extname, isAbsolute, join } from 'node:path';
 import { guideReply, looksLikeSecret, option } from './guide.mjs';
 import { fail, within } from '../shared/validation.mjs';
-import { readRemoteAccess } from '../../scripts/installation/remote-config.mjs';
+import { probeRemoteOrigin, readRemoteAccess, registerCustomRemote } from '../../scripts/installation/remote-config.mjs';
 import { applyRemote, prepareRemote, remoteStatus } from '../../scripts/installation/remote-access.mjs';
+import { startRemoteBridge } from '../../scripts/installation/auxiliaries.mjs';
 
 const engines = new Map([
   ['codex', { id: 'codex-cli', name: 'Codex' }],
   ['grok', { id: 'grok', name: 'Grok' }],
   ['claude-code', { id: 'claude-code', name: 'Claude Code' }],
 ]);
-const remoteProviders = new Map([['tailscale', 'Tailscale Serve'], ['cloudflare', 'Cloudflare Tunnel']]);
+const remoteProviders = new Map([['tailscale', 'Tailscale Serve'], ['cloudflare', 'Cloudflare Tunnel'], ['custom', '临时访问或其他方案']]);
 const guideSource = 'summon:onboarding';
 const localOnly = option('先只在这台电脑上用', 'local-only');
 const usePi = option('先用内置 Pi', 'use-pi');
@@ -24,7 +25,8 @@ function question(step) {
     return '请在运行 Summon Bot 的电脑上安装并登录 ' + (step === 'grok' ? 'Grok Build' : name) + '，然后在这条消息里确认接入。';
   }
   if (step === 'remote') return '你想从手机或另一台电脑访问这个工作区吗？还是先只在这台电脑上用？';
-  if (step === 'remote-provider') return '你希望只在自己的设备之间访问，还是需要一个公开网址？私网用 Tailscale，公开网址用 Cloudflare。';
+  if (step === 'remote-provider') return '你想使用 Tailscale、Cloudflare，还是先开一个临时入口？也可以直接告诉我其他远程方案，我来配置。';
+  if (step === 'custom') return '我来准备远程入口。可以先用临时地址，也可以直接告诉我你想用的方案，需要的桥接脚本由我来处理。';
   return '我来配置 ' + remoteProviders.get(step) + '。我会先检查这台电脑的安装和登录情况，遇到问题会继续修复，需要你登录时会在这里告诉你。';
 }
 
@@ -213,14 +215,31 @@ export class OnboardingService {
         platform: process.platform, workspace: botConfig.workspace, runtimeRoot: this.manager.releaseRoot,
         setupCli: join(this.manager.releaseRoot, 'scripts', 'installation', 'desktop.mjs'), dataRoot: this.models.dataRoot,
         executors: this.models.summary().executors,
-        remote: remoteProviders.has(state.step) ? await remoteStatus(config, state.step) : null,
-        bridgeProtocol: engine ? 'Node CLI bridge receives the same arguments as the chosen official CLI. Codex uses login status (report ChatGPT) and exec [resume SESSION_ID] --json --skip-git-repo-check -, with JSONL thread.started, item.completed agent_message, turn.completed events. Grok and Claude use their documented noninteractive CLI protocols. Read the installed runtime cli-work-engine.mjs when implementing an adapter.' : null };
+        remote: state.step === 'custom' ? (await readRemoteAccess(config.dataRoot)).custom || null
+          : remoteProviders.has(state.step) ? await remoteStatus(config, state.step) : null,
+        bridgeProtocol: engine ? 'Node CLI bridge receives the same arguments as the chosen official CLI. Codex uses login status (report ChatGPT) and exec [resume SESSION_ID] --json --skip-git-repo-check -, with JSONL thread.started, item.completed agent_message, turn.completed events. Grok and Claude use their documented noninteractive CLI protocols. Read the installed runtime cli-work-engine.mjs when implementing an adapter.'
+          : 'For a temporary Cloudflare Quick Tunnel, call start-remote with no bridgePath. If cloudflared is missing, install or download it and pass its absolute path as arguments[0]. For another provider, write a Node bridge in your workspace, then pass bridgePath and arguments to start-remote. The bridge receives SUMMON_WEB_URL, stays running, and sends process.send({type:"remote-ready",origin:"https://..."}) when its public route is ready. The service owns and stops its process tree. Existing external routes can use register-remote with origin, label and temporary. Preserve Host and support ordinary HTTP; the webpage polls when SSE is unavailable.' };
       if (input.action === 'connect-engine' && engine) {
         const bridgePath = input.bridgePath ? await privateFile(input.bridgePath, true) : undefined;
         await this.models.setExecutor(engine.id, true, { select: true, bridgePath });
         return finish('remote');
       }
       if (!remoteProviders.has(state.step)) fail('请先完成当前工作引擎的配置。');
+      if (input.action === 'start-remote') {
+        const bridgePath = input.bridgePath ? await privateFile(input.bridgePath, true) : undefined;
+        const result = await startRemoteBridge(config, { ...input, bridgePath });
+        return { ...result, ...await finish('done') };
+      }
+      if (input.action === 'register-remote') {
+        const result = await registerCustomRemote(config, { origin: input.origin, label: input.label, temporary: input.temporary });
+        return result.reachable ? { ...result, ...await finish('done') } : result;
+      }
+      if (state.step === 'custom') {
+        const custom = (await readRemoteAccess(config.dataRoot)).custom;
+        const reachable = custom?.origin && await probeRemoteOrigin(config, custom.origin);
+        if (input.action === 'check-remote') return reachable ? { ...custom, ...await finish('done') } : { ...custom, state: 'unreachable', reachable: false };
+        fail('自定义方案可用 start-remote 启动桥接脚本，或用 register-remote 接入已有地址。');
+      }
       if (input.action === 'prepare-remote') return prepareRemote(config, state.step, { origin: input.origin, owner: input.owner, port: input.port });
       let result;
       if (input.action === 'apply-remote') {
@@ -279,6 +298,11 @@ export class OnboardingService {
         return sent;
       }
       if (this.record().setup?.questionId === state.questionId) return this.startSetup(guide, input);
+      if (['remote', 'remote-provider'].includes(state.step)) {
+        const sent = await this.chatroom.append(roomId, input, 'user');
+        await this.move('custom');
+        return this.startSetup(await this.guide(), sent);
+      }
       const instruction = '回应用户这条消息。当前在配置引导，实际选项在主 Bot 的引导消息中。' + guide.text +
         ' 结合真实情况说明当前步骤，需要配置时引导用户确认接入，后续配置与排障由 Pi 工作完成。密钥通过安全输入提供。';
       return this.chatroom.post(roomId, { ...input, toBotId: state.bot.id }, 'user', { instruction });

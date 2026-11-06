@@ -609,7 +609,7 @@ async function refresh(force = false) {
     // Publish the workspace immediately; a slow room GET must not blank the list.
     ui.loading = false; render();
     await loadCurrent();
-    ui.loading = false; showConnection(ui.streamConnected ? '' : '实时连接暂未建立，当前显示最近一次读取的状态；正在自动重连。'); render();
+    ui.loading = false; showConnection(ui.streamConnected ? '' : '正在通过定时刷新同步工作区。'); render();
   } catch (error) { showConnection(`无法读取最新状态：${error.message}。正在自动重连，已显示的消息与草稿会保留。`); if (ui.loading) $('#main-content').innerHTML = emptyState('暂时无法打开工作空间', error.message, '<button class="primary-button" data-action="refresh">重新连接</button>', 'info'); }
   finally { ui.refreshing = false; if (ui.refreshAgain) { ui.refreshAgain = false; scheduleRefresh(); } }
 }
@@ -1612,7 +1612,8 @@ stream.onopen = () => { const wasConnected = ui.streamConnected; ui.streamConnec
 stream.onmessage = () => scheduleRefresh();
 stream.addEventListener('change', () => scheduleRefresh());
 stream.addEventListener('state', () => scheduleRefresh());
-stream.onerror = () => { ui.streamConnected = false; showConnection('实时连接已断开，正在自动重连。已显示的记录仍然保留。'); };
+stream.onerror = () => { ui.streamConnected = false; showConnection('正在通过定时刷新同步工作区。'); };
+setInterval(() => { if (!ui.streamConnected && navigator.onLine && !document.hidden) scheduleRefresh(); }, 3000);
 window.addEventListener('offline', () => { ui.streamConnected = false; persistClientSession(); showConnection('当前离线，草稿与未确认消息已保留；恢复网络后可重试发送。'); });
 window.addEventListener('online', () => { showConnection('网络已恢复，正在同步最新状态…'); scheduleRefresh(); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); else persistClientSession(); });
