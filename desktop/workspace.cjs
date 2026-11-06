@@ -70,4 +70,4 @@ async function authorizationUrl(state, provider) {
   return null;
 }
 
-module.exports = { setupUrl, workspaceCommand, workspaceToken, login, codexConsent, authorizationUrl };
+module.exports = { runtime, setupUrl, workspaceCommand, workspaceToken, login, codexConsent, authorizationUrl };

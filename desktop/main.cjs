@@ -3,7 +3,7 @@ const { join } = require('node:path');
 const { readFile } = require('node:fs/promises');
 const { autoUpdater } = require('electron-updater');
 const release = require('./release.json');
-const { setupUrl, workspaceCommand, workspaceToken, login, codexConsent, authorizationUrl } = require('./workspace.cjs');
+const { runtime, setupUrl, workspaceCommand, workspaceToken, login, codexConsent, authorizationUrl } = require('./workspace.cjs');
 // Keep the existing profile directory while changing the product's visible name.
 app.setPath('userData', join(app.getPath('appData'), 'Relay'));
 app.setName('Summon Bot');
@@ -54,12 +54,16 @@ async function restoreWorkspace() {
 }
 
 function installSetupProtocol() {
-  const assets = new Map([['/index.html', ['setup.html', 'text/html']], ['/setup.js', ['setup.js', 'text/javascript']],
-    ['/setup.css', ['setup.css', 'text/css']], ['/icon.png', ['setup-icon.png', 'image/png']]]);
+  const assets = new Map([
+    ['/index.html', [join(__dirname, 'setup.html'), 'text/html']],
+    ['/setup.js', [join(__dirname, 'setup.js'), 'text/javascript']],
+    ['/setup.css', [join(__dirname, 'setup.css'), 'text/css']],
+    ['/icon.png', [join(runtime, 'web/frontend/icons/icon-192.png'), 'image/png']],
+  ]);
   protocol.handle('summon-setup', async request => {
     const url = new URL(request.url), asset = url.host === 'workspace' && assets.get(url.pathname);
     if (!asset || request.method !== 'GET') return new Response(null, { status: 404 });
-    return new Response(await readFile(join(__dirname, asset[0])), { headers: {
+    return new Response(await readFile(asset[0]), { headers: {
       'Content-Type': asset[1], 'Cache-Control': 'no-store',
       'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     } });
