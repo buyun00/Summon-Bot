@@ -13,6 +13,7 @@ const parcelActions = document.querySelector('#parcel-actions');
 const stageLabel = document.querySelector('#unpacking-stage');
 const stageDetail = document.querySelector('#unpacking-detail');
 const unpackingStages = new Map([
+  ['welcome', [0, '主 Bot 就在箱子里', '拆开箱子，开始创建你的工作区。']],
   ['choice', [0, '发现一个已有的工作区', '你想继续用原来的工作区，还是新建一个？']],
   ['prepare', [3, '正在准备本机工作区', '首次创建需要准备运行组件并启动服务，请稍等片刻。']],
   ['runtime', [8, '正在复制运行组件', '首次创建需要复制本机运行所需的文件。']],
@@ -272,7 +273,13 @@ async function open() {
   if (info.section === 'unpacking') {
     const existing = workspace.existingDataRoot || (workspace.buildId !== workspace.installedBuildId && workspace.local?.dataRoot);
     if (existing) return chooseParcel(existing);
-    return unpackLocal(workspace.mode === 'local' ? 'resume' : 'local', undefined, true);
+    if (workspace.mode === 'local') return unpackLocal('resume', undefined, true);
+    showParcel();
+    parcelTitle.textContent = '拆开你的新工作区';
+    unpackingProgress({ stage: 'welcome' });
+    parcelActions.replaceChildren(button('新建工作区', () => unpackLocal('local', undefined, true), true));
+    parcelActions.hidden = false;
+    return;
   }
   unpacking.hidden = true;
   welcome.hidden = false;
