@@ -6,6 +6,7 @@
     "discussion"
   ],
   "tools": [
+    "workspace_setup",
     "chatroom_list",
     "chatroom_read",
     "reminders_create",

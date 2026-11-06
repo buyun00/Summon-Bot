@@ -3,6 +3,7 @@ import { randomBytes,timingSafeEqual,randomUUID } from 'node:crypto';
 import { mkdir,writeFile,readFile } from 'node:fs/promises';
 import { join,resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
+import { setTimeout as pause } from 'node:timers/promises';
 import { PushService } from './push.mjs';
 import { RecordStore } from '../shared/store.mjs';
 import { IncrementalSync } from '../shared/sync.mjs';
@@ -69,7 +70,16 @@ export async function startGateway(options={}) {
   const push=await new PushService({store:store('push'),messages:store('chatroom'),dataRoot,historyEpoch}).initialize();
   const knowledge=new KnowledgeService({store:store('knowledge'),emit}),memories=new MemoryManagement({store:store('memory-management'),manager,dataRoot,emit});
   proxy(chatroom,'chatroom',['createRoom','updateRoom','post','append','messageReceipt','dm','conclude','saveConclusion','retry','seed','teamRead','teamRaise','teamManage']);
-  const onboarding=await new OnboardingService({store:store('gateway'),models:modelConnections,manager,chatroom,emit}).initialize();
+  const onboarding=await new OnboardingService({store:store('gateway'),models:modelConnections,manager,chatroom,emit,
+    ensureSetupAccess:async bot=>{
+      await control.grant(bot.id,[...new Set([...(bot.allowedTools||[]),'workspace_setup'])]);
+      for(let attempt=0;attempt<100;attempt++){
+        await control.tick();
+        if((await manager.config(bot.id)).tools.some(tool=>tool.name==='workspace_setup'))return;
+        await pause(100);
+      }
+      fail('Pi 正在切换配置能力，稍后可继续当前步骤。',503);
+    }}).initialize();
   const catalog=new CapabilityCatalog({store:store('registry'),registry,manager,dataRoot,workspace:defaultCwd,emit,delegate:(actor,input)=>chatroom.dm(actor,input)});
   proxy(knowledge,'knowledge',['saveNode','saveEdge']);
   proxy(memories,'memory-management',['write']);
@@ -164,6 +174,10 @@ export async function startGateway(options={}) {
       const provenance=task?{workId:task.workId,conversationId:task.conversationId,originRoomId:current?.room?.id||source.roomId,
         originMessageId:current?.trigger?.id||source.replyTo,sourceRefs:[`task:${task.id}`]}:undefined;
       return catalog.call(name,{...args,...(provenance?{_context:provenance}:{})},{actor,signal,task});
+    }
+    if(name==='workspace_setup'){
+      const context=task?.workId&&await manager.readState(actor,db=>({work:db?.getRecord('works',task.workId),source:workExecution(task,db).authorization?.source}));
+      return onboarding.setupAction(args,{actor,task,...context});
     }
     if(controlTools.some(tool=>tool.name===name))return control.call(name,args,{actor});
     if(pin&&!control.permittedVersion(actor,pin.id,pin.version))fail('This capability version is not bound to the Bot',403);

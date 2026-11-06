@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 
 export const cliExecutorNames = Object.freeze({ 'codex-cli': 'Codex', grok: 'Grok Build', 'claude-code': 'Claude Code' });
 export const isCliExecutor = id => Object.hasOwn(cliExecutorNames, id);
+export const cliExecutorBridge = (source, id) => executorCatalog(source).executors?.[id]?.bridgePath || null;
 
 function executorCatalog({ dataRoot, connectionStore } = {}) {
   const path = connectionStore || (dataRoot && join(dataRoot, 'config', 'model-connections.json'));

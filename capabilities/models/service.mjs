@@ -72,14 +72,15 @@ export class ModelConnections {
       : { role: 'chat', name: '尚未选择聊天模型', configured: false, usage: { status: 'unconfigured' } },
       executors, workExecutor };
   }
-  setExecutor(id, enabled, { select = false } = {}) {
+  setExecutor(id, enabled, { select = false, bridgePath } = {}) {
     if ((id !== 'codex-desktop' && !isCliExecutor(id)) || typeof enabled !== 'boolean') throw new Error('请选择有效的执行引擎接入状态');
-    const change = (this.executorChange || Promise.resolve()).catch(() => {}).then(() => this.changeExecutor(id, enabled, select));
+    const change = (this.executorChange || Promise.resolve()).catch(() => {}).then(() => this.changeExecutor(id, enabled, select, bridgePath));
     this.executorChange = change;
     return change.finally(() => { if (this.executorChange === change) this.executorChange = null; });
   }
-  async changeExecutor(id, enabled, select) {
+  async changeExecutor(id, enabled, select, bridgePath) {
     const desktop = id === 'codex-desktop';
+    const bridge = bridgePath === undefined ? this.catalog().executors?.[id]?.bridgePath : bridgePath;
     if (enabled && desktop) {
       const connection = await ensureCodexConnector(this.dataRoot);
       try { await new DesktopCodex({ dataRoot: this.dataRoot }).connect(connection); }
@@ -88,9 +89,9 @@ export class ModelConnections {
         throw error;
       }
     }
-    if (enabled && !desktop) await confirmWorkCli(id);
+    if (enabled && !desktop) await confirmWorkCli(id, { bridgePath: bridge });
     await this.mutate(catalog => {
-      catalog.executors = { ...catalog.executors, [id]: { enabled, ...(enabled ? { connectedAt: new Date().toISOString() } : {}) } };
+      catalog.executors = { ...catalog.executors, [id]: { enabled, ...(bridge ? { bridgePath: bridge } : {}), ...(enabled ? { connectedAt: new Date().toISOString() } : {}) } };
       if (enabled && select) catalog.workExecutorId = id;
       if (!enabled && catalog.workExecutorId === id) catalog.workExecutorId = 'pi';
       delete this.usage[id];

@@ -86,7 +86,7 @@ globalThis.SummonOnboarding = (() => {
       repaint();
       try {
         await bindings.api(endpoint + '/advance', 'POST', { action: element.dataset.value, step: element.dataset.step,
-          messageId: element.dataset.messageId });
+          messageId: element.dataset.messageId, requestId: crypto.randomUUID() });
         await bindings.refresh();
       } finally { actionBusy = false; repaint(); }
       return;
@@ -121,9 +121,11 @@ globalThis.SummonOnboarding = (() => {
         ? `<button type="button" class="secondary-button" data-action="onboarding-local-setup" data-provider="${esc(local.provider)}">${setupLabel}</button>`
         : local ? '<small>请在部署机的桌面应用或安装 CLI 中完成设置。</small>' : '';
     const install = { codex: 'https://developers.openai.com/codex/cli', grok: 'https://docs.x.ai/build/overview', 'claude-code': 'https://code.claude.com/docs/en/setup' }[guide.step];
-    const options = guide.options.map(choice => `<button type="button" class="secondary-button" data-action="onboarding-choice" data-step="${esc(guide.step)}" data-message-id="${esc(message.id)}" data-value="${esc(choice.action)}" ${actionBusy ? 'disabled' : ''}>${esc(choice.label)}</button>`).join('');
+    const working = guide.setup && ['queued', 'active'].includes(guide.setup.status);
+    const setupStatus = guide.setup ? `<p class="onboarding-working" role="status">${esc(working ? 'Pi 正在配置，有问题我会继续处理…' : guide.setup.status === 'waiting' ? '正在等待当前配置所需的授权或信息，可以直接在聊天中继续。' : '可以直接在聊天中补充信息，让我接着处理。')}</p>` : '';
+    const options = guide.options.map(choice => `<button type="button" class="secondary-button" data-action="onboarding-choice" data-step="${esc(guide.step)}" data-message-id="${esc(message.id)}" data-value="${esc(choice.action)}" ${actionBusy || working && ['connect-engine', 'check'].includes(choice.action) ? 'disabled' : ''}>${esc(choice.label)}</button>`).join('');
     return `<div class="onboarding-followup">${guide.error ? `<p class="onboarding-error" role="alert">${esc(guide.error)}</p>` : ''}
-      <div class="onboarding-choices">${setup}${options}${install ? `<a href="${esc(install)}" target="_blank" rel="noopener noreferrer">官方安装指引</a>` : ''}</div></div>`;
+      ${setupStatus}<div class="onboarding-choices">${setup}${options}${install ? `<a href="${esc(install)}" target="_blank" rel="noopener noreferrer">官方安装指引</a>` : ''}</div></div>`;
   }
 
   function visibleMessages(messages) {

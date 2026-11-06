@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto';
+import { readFile, realpath, stat } from 'node:fs/promises';
+import { extname, isAbsolute, join } from 'node:path';
 import { guideReply, looksLikeSecret, option } from './guide.mjs';
-import { fail } from '../shared/validation.mjs';
+import { fail, within } from '../shared/validation.mjs';
 import { readRemoteAccess } from '../../scripts/installation/remote-config.mjs';
+import { applyRemote, prepareRemote, remoteStatus } from '../../scripts/installation/remote-access.mjs';
 
 const engines = new Map([
   ['codex', { id: 'codex-cli', name: 'Codex' }],
@@ -22,7 +25,7 @@ function question(step) {
   }
   if (step === 'remote') return '你想从手机或另一台电脑访问这个工作区吗？还是先只在这台电脑上用？';
   if (step === 'remote-provider') return '你希望只在自己的设备之间访问，还是需要一个公开网址？私网用 Tailscale，公开网址用 Cloudflare。';
-  return '请在部署机上完成 ' + remoteProviders.get(step) + ' 的设置。完成后就能在这里查看入口。';
+  return '我来配置 ' + remoteProviders.get(step) + '。我会先检查这台电脑的安装和登录情况，遇到问题会继续修复，需要你登录时会在这里告诉你。';
 }
 
 function typedChoice(guide, text) {
@@ -38,7 +41,7 @@ function typedChoice(guide, text) {
 }
 
 export class OnboardingService {
-  constructor({ store, models, manager, chatroom, emit }) { Object.assign(this, { store, models, manager, chatroom, emit }); }
+  constructor({ store, models, manager, chatroom, emit, ensureSetupAccess }) { Object.assign(this, { store, models, manager, chatroom, emit, ensureSetupAccess }); }
 
   async initialize() {
     const saved = this.record();
@@ -88,18 +91,22 @@ export class OnboardingService {
   async guide(state = this.state()) {
     if (state.status !== 'guiding') return null;
     const { step, questionId, error } = state;
+    const setup = this.record().setup;
+    const work = setup?.questionId === questionId && await this.manager.readState(state.bot.id, db => db?.getRecord('works', setup.workId));
     let options, localControl;
     if (step === 'engine') options = [...engines].map(([action, { name }]) => option(name, action));
     else if (step === 'remote') options = [option('配置远程访问', 'remote-provider'), localOnly];
     else if (step === 'remote-provider') options = [...remoteProviders].map(([action, name]) => option(name, action)).concat(localOnly);
     else if (engines.has(step)) {
-      options = [option(step === 'codex' ? '同意并接入 Codex' : '确认接入 ' + engines.get(step).name, 'connect-engine'), usePi];
+      options = [option(setup?.questionId === questionId ? '继续配置 ' + engines.get(step).name
+        : step === 'codex' ? '同意并接入 Codex' : '确认接入 ' + engines.get(step).name, 'connect-engine'), usePi];
     } else if (remoteProviders.has(step)) {
       const entry = (await readRemoteAccess(this.models.dataRoot))[step];
       localControl = { provider: step, origin: !entry?.pending && entry?.origin || null };
-      options = localControl.origin ? [option('完成引导', 'next')] : [option('查看配置状态', 'check'), localOnly];
+      options = localControl.origin ? [option('完成引导', 'next')] : [option('继续配置', 'check'), localOnly];
     } else return null;
-    return { step, text: question(step), options, localControl, messageId: questionId, error };
+    return { step, text: question(step), options, localControl, messageId: questionId, error,
+      setup: setup?.questionId === questionId ? { workId: setup.workId, status: error ? 'blocked' : work?.status || 'queued', progress: work?.progress || '' } : null };
   }
 
   serialize(operation) {
@@ -141,40 +148,113 @@ export class OnboardingService {
     return this.state();
   }
 
-  async move(step) {
+  async move(step, { cancelSetup = true } = {}) {
+    const setup = this.record().setup;
+    if (setup && cancelSetup) {
+      const botId = this.state().bot.id;
+      const work = await this.manager.readState(botId, db => db?.getRecord('works', setup.workId));
+      if (work && !['completed', 'cancelled'].includes(work.status)) await this.manager.request(botId,
+        '/works/' + encodeURIComponent(work.id), { method: 'PATCH', body: JSON.stringify({ status: 'cancelled' }) });
+    }
     this.save({ status: step === 'done' ? 'complete' : 'guiding', step,
-      questionId: step === 'done' ? null : randomUUID(), error: null });
+      questionId: step === 'done' ? null : randomUUID(), error: null, setup: null });
     await this.ensureQuestion();
   }
 
-  async applyChoice(action, guide) {
-    if (action === 'check') return;
+  async startSetup(guide, input = {}) {
+    const state = this.state(), previous = this.record().setup;
+    const messageId = input.id || randomUUID(), workId = 'onboarding-' + state.questionId;
+    if (!this.bot().allowedTools?.includes('workspace_setup')) await this.ensureSetupAccess(this.bot());
+    const message = await this.chatroom.append(state.roomId, { ...input, id: messageId, toBotId: state.bot.id,
+      content: input.content || '请继续完成当前配置。', sourceRefs: [...new Set([...(input.sourceRefs || []), guideSource])] }, 'user');
+    this.save({ error: null, setup: { questionId: state.questionId, workId,
+      sourceIds: [...new Set([...(previous?.questionId === state.questionId ? previous.sourceIds : []), messageId])] } });
+    const instruction = `当前用户正在配置 ${engines.get(state.step)?.name || remoteProviders.get(state.step)}。当前问题：${guide.text}\n`
+      + '你正在这一步的独立 Pi 工作中。先调用 workspace_setup status 读取真实配置。按当前用户授权完成安装、登录状态检查和配置；缺组件就安装，接口不匹配就修复或在自己的工作目录编写 Node CLI 桥，再用 workspace_setup 完成接入。'
+      + '失败后根据真实错误继续处理，不把预置入口缺失当成不能配置的理由。涉及用户账号登录、外部授权或秘密输入时，只让用户完成所缺的那一步，随后续接同一工作。'
+      + '不要索要普通聊天中的密钥。已有成功或未知结果先查状态，避免重复操作。workspace_setup 成功会标记当前配置工作完成并自动推进下一条引导问题，直接结束当前工作，不追加已接通或询问想做什么的消息。';
+    try {
+      await this.manager.start(state.bot.id);
+      await this.manager.request(state.bot.id, '/works', { method: 'POST', body: JSON.stringify({ id: workId,
+        goal: '完成 ' + (engines.get(state.step)?.name || remoteProviders.get(state.step)) + ' 配置', requirements: instruction, executor: { kind: 'pi' } }) });
+      await this.manager.send(state.bot.id, { id: 'setup:' + messageId, kind: 'request', workId,
+        content: { type: 'workspace_setup', step: state.step, userMessage: message.content, instruction },
+        metadata: { actor: 'user', roomId: state.roomId, originMessageId: messageId, resume: true, priority: 'foreground' } });
+    } catch (error) {
+      this.save({ error: 'Pi 配置工作尚未启动，请继续重试。' });
+      throw error;
+    }
+    return message;
+  }
+
+  setupAction(input, context) {
+    return this.serialize(async () => {
+      const state = this.state(), setup = this.record().setup, { actor, task, work, source } = context;
+      if (state.status !== 'guiding' || actor !== state.bot.id || work?.id !== setup?.workId || work?.executor?.kind !== 'pi'
+        || setup.questionId !== state.questionId || source?.actor !== 'user' || source.roomId !== state.roomId || !setup.sourceIds.includes(source.replyTo)) {
+        fail('当前工作不属于已授权的这一步配置。请回到当前引导问题继续。', 403);
+      }
+      const config = JSON.parse(await readFile(join(this.models.dataRoot, 'config', 'deployment.json'), 'utf8'));
+      const botConfig = await this.manager.config(actor), engine = engines.get(state.step);
+      const privateFile = async (path, bridge = false) => {
+        if (typeof path !== 'string' || !isAbsolute(path)) fail('请提供当前工作目录内文件的绝对路径。');
+        const file = await realpath(path), root = await realpath(botConfig.workspace), info = await stat(file);
+        if (!within(root, file) || !info.isFile() || bridge && !['.mjs', '.cjs', '.js'].includes(extname(file))) fail('文件必须位于当前 Bot 工作目录中。');
+        if (!bridge && info.size > 16384) fail('私有令牌文件过长。');
+        return file;
+      };
+      const finish = async next => {
+        await this.manager.request(actor, '/works/' + encodeURIComponent(work.id), { method: 'PATCH', body: JSON.stringify({
+          status: 'completed', executionOutcome: { ...work.executionOutcome, onboardingCompletedTaskId: task.id } }) });
+        await this.move(next, { cancelSetup: false });
+        return { completed: true, nextStep: next, questionAlreadyPublished: true };
+      };
+      if (input.action === 'status') return { step: state.step, engineId: engine?.id, workId: work.id,
+        platform: process.platform, workspace: botConfig.workspace, runtimeRoot: this.manager.releaseRoot,
+        setupCli: join(this.manager.releaseRoot, 'scripts', 'installation', 'desktop.mjs'), dataRoot: this.models.dataRoot,
+        executors: this.models.summary().executors,
+        remote: remoteProviders.has(state.step) ? await remoteStatus(config, state.step) : null,
+        bridgeProtocol: engine ? 'Node CLI bridge receives the same arguments as the chosen official CLI. Codex uses login status (report ChatGPT) and exec [resume SESSION_ID] --json --skip-git-repo-check -, with JSONL thread.started, item.completed agent_message, turn.completed events. Grok and Claude use their documented noninteractive CLI protocols. Read the installed runtime cli-work-engine.mjs when implementing an adapter.' : null };
+      if (input.action === 'connect-engine' && engine) {
+        const bridgePath = input.bridgePath ? await privateFile(input.bridgePath, true) : undefined;
+        await this.models.setExecutor(engine.id, true, { select: true, bridgePath });
+        return finish('remote');
+      }
+      if (!remoteProviders.has(state.step)) fail('请先完成当前工作引擎的配置。');
+      if (input.action === 'prepare-remote') return prepareRemote(config, state.step, { origin: input.origin, owner: input.owner, port: input.port });
+      let result;
+      if (input.action === 'apply-remote') {
+        const token = input.tokenFile ? (await readFile(await privateFile(input.tokenFile), 'utf8')).trim() : undefined;
+        result = await applyRemote(config, state.step, { planId: input.planId, confirm: true, token });
+      } else if (input.action === 'check-remote') result = await remoteStatus(config, state.step);
+      else fail('未知的配置操作。');
+      if (['registered', 'reachable'].includes(result.state) && result.reachable !== false) return { ...result, ...await finish('done') };
+      return result;
+    });
+  }
+
+  async applyChoice(action, guide, message) {
+    if (action === 'check') return this.startSetup(guide, message);
     const preferred = engines.get(action);
     if (preferred && this.models.summary().executors.some(item => item.id === preferred.id && item.enabled)) {
       await this.models.selectWorkExecutor(preferred.id);
       return this.move('remote');
     }
-    if (action === 'connect-engine') {
-      try { await this.models.setExecutor(engines.get(guide.step).id, true, { select: true }); }
-      catch (error) {
-        this.save({ error: error.expose ? error.message : '暂时无法接入工作引擎，请检查部署机的安装和登录状态后重试。' });
-        return;
-      }
-      return this.move('remote');
-    }
+    if (action === 'connect-engine') return this.startSetup(guide, message);
     if (action === 'use-pi') {
       await this.models.selectWorkExecutor('pi');
       return this.move('remote');
     }
-    return this.move(action === 'local-only' || action === 'next' ? 'done' : action);
+    await this.move(action === 'local-only' || action === 'next' ? 'done' : action);
+    if (remoteProviders.has(action)) return this.startSetup(await this.guide(), message);
   }
 
   configureExecutor(id, enabled, useForWork = false) {
     return this.serialize(async () => {
       const state = this.state();
       const select = enabled === true && state.status === 'guiding' && engines.get(state.step)?.id === id;
+      if (select) { await this.startSetup(await this.guide(), { content: '同意并接入 ' + engines.get(state.step).name }); return this.models.snapshot(); }
       const result = await this.models.setExecutor(id, enabled, { select: select || useForWork === true });
-      if (select) await this.move('remote');
       return result;
     });
   }
@@ -195,11 +275,12 @@ export class OnboardingService {
       const action = !input.attachments?.length && typedChoice(guide, content);
       if (action && guide.options.some(choice => choice.action === action)) {
         const sent = await this.chatroom.append(roomId, input, 'user');
-        await this.applyChoice(action, guide);
+        await this.applyChoice(action, guide, sent);
         return sent;
       }
+      if (this.record().setup?.questionId === state.questionId) return this.startSetup(guide, input);
       const instruction = '回应用户这条消息。当前在配置引导，实际选项在主 Bot 的引导消息中。' + guide.text +
-        ' 只解释当前一步，不索要密钥或令牌，也不自行改变配置。';
+        ' 结合真实情况说明当前步骤，需要配置时引导用户确认接入，后续配置与排障由 Pi 工作完成。密钥通过安全输入提供。';
       return this.chatroom.post(roomId, { ...input, toBotId: state.bot.id }, 'user', { instruction });
     });
   }
@@ -211,11 +292,12 @@ export class OnboardingService {
       const choice = guide.options.find(item => item.action === input.action);
       if (!choice) fail('请从当前引导消息中选择。', 409);
       await this.ensureQuestion(state);
+      let message;
       if (!['check', 'connect-engine'].includes(choice.action)) {
-        await this.chatroom.append(state.roomId, { clientId: 'summon-guide-choice:' + state.questionId + ':' + choice.action,
+        message = await this.chatroom.append(state.roomId, { clientId: 'summon-guide-choice:' + state.questionId + ':' + choice.action,
           content: choice.label, replyTo: state.questionId }, 'user');
       }
-      await this.applyChoice(choice.action, guide);
+      await this.applyChoice(choice.action, guide, message || { id: input.requestId || randomUUID(), content: choice.label, replyTo: state.questionId });
       return this.snapshot();
     });
   }

@@ -7,14 +7,19 @@ import { createRequire } from 'node:module';
 import { delimiter, dirname, isAbsolute, join } from 'node:path';
 import { cleanEnvironment, terminateTree } from './process-tools.mjs';
 import { localGrokAuthPath, localGrokLogin } from '../agent/connections.mjs';
-import { cliExecutorNames, requireCliExecutor } from '../capabilities/executor-connections.mjs';
+import { cliExecutorBridge, cliExecutorNames, requireCliExecutor } from '../capabilities/executor-connections.mjs';
 import { workInput } from '../capabilities/task-policy.mjs';
 
 const windows = process.platform === 'win32';
 const workError = (message, code) => Object.assign(new Error(message), { code, status: 409, expose: true });
 const credentialNames = id => id === 'codex-cli' ? [] : id === 'grok' ? ['XAI_API_KEY'] : ['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
 
-async function executableFor(id) {
+async function executableFor(id, bridgePath) {
+  if (bridgePath) {
+    if (!isAbsolute(bridgePath) || !(await stat(bridgePath)).isFile()) throw workError('工作引擎的桥接脚本不可用，请让主 Bot 修复。', 'WORK_ENGINE_BRIDGE_MISSING');
+    await access(bridgePath, constants.R_OK);
+    return { file: process.execPath, prefix: [bridgePath] };
+  }
   const home = homedir(), binary = (id === 'codex-cli' ? 'codex' : id === 'grok' ? 'grok' : 'claude') + (windows ? '.exe' : '');
   const pathFolders = (process.env.PATH || '').split(delimiter).map(folder => folder.replace(/^"|"$/g, '')).filter(isAbsolute);
   const folders = id === 'grok' ? [join(process.env.GROK_HOME || join(home, '.grok'), 'bin')]
@@ -56,7 +61,8 @@ async function runCli(file, args, { id, cwd, input = '', signal, timeout, onLine
   signal?.throwIfAborted();
   const env = cleanEnvironment();
   for (const key of credentialNames(id)) if (process.env[key]) env[key] = process.env[key];
-  const child = spawn(file, args, { cwd, env, windowsHide: true, detached: !windows, stdio: ['pipe', 'pipe', captureStderr ? 'pipe' : 'ignore'] });
+  const command = typeof file === 'string' ? { file, prefix: [] } : file;
+  const child = spawn(command.file, [...command.prefix, ...args], { cwd, env, windowsHide: true, detached: !windows, stdio: ['pipe', 'pipe', captureStderr ? 'pipe' : 'ignore'] });
   const chunks = [];
   let bytes = 0, pending = '', failure, killing;
   const stop = error => {
@@ -101,8 +107,8 @@ async function runCli(file, args, { id, cwd, input = '', signal, timeout, onLine
   }
 }
 
-export async function confirmWorkCli(id) {
-  const file = await executableFor(id);
+export async function confirmWorkCli(id, { bridgePath } = {}) {
+  const file = await executableFor(id, bridgePath);
   const run = (args, options) => runCli(file, args, { id, cwd: homedir(), timeout: 15000, ...options });
   if (id === 'codex-cli') {
     const result = await run(['login', 'status'], { captureStderr: true });
@@ -187,7 +193,8 @@ export async function executeCliWork({ store, services, config, task, signal, cl
   const event = store.getRecord('work-events', eventId) || { id: eventId, workId: work.id, content: task.input };
   if (event.cliExecution?.status === 'completed') return { executor: kind, content: event.cliExecution.content };
   if (event.cliExecution) throw workError('上一次执行已有记录。请根据结果或现有工作状态给出下一步。', 'WORK_ENGINE_OUTCOME_UNKNOWN');
-  const file = kind === 'codex-cli' ? await confirmWorkCli(kind) : await executableFor(kind);
+  const bridgePath = cliExecutorBridge(config.model, kind);
+  const file = kind === 'codex-cli' ? await confirmWorkCli(kind, { bridgePath }) : await executableFor(kind, bridgePath);
   let sessionId = executor.sessionId || (kind === 'codex-cli' ? null : randomUUID());
   const operation = { kind, sessionId, status: 'running', taskId: task.id, startedAt: new Date().toISOString() };
   const prompt = JSON.stringify({ type: 'work_input', goal: work.goal, requirements: work.requirements,

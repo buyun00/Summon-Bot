@@ -45,7 +45,7 @@ export function coreTools(services, task) {
   return [
     tool('evidence_read', 'Read a bounded original fragment by exact reference. Workers may follow only handed-off references, never browse another room/session feed. Current source access is rechecked.',
       object({ reference }, ['reference']), 'read', args => services.sources.resolve(services.sources.reference(args.reference ?? args, task), task)),
-    tool('executors_status', 'Read the current default work engine and saved host executor consent. Only the user can connect an engine in settings. Execution runs as independent work.', object({}), 'read', () => services.executors()),
+    tool('executors_status', 'Read the current default work engine and saved host executor consent. Authorized onboarding Pi work can connect with workspace_setup. Execution runs as independent work.', object({}), 'read', () => services.executors()),
     tool('request_actions', 'Read saved action receipts for an original message in this conversation (messageId defaults to the current trigger). Use this when older published user instructions lack a visible reply: history is not permission to repeat them. Returns saved action identity/status without replaying anything.',
       object({ messageId: string }), 'read', args => {
         const messageId = args.messageId || source.replyTo || source.messageId;

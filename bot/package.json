@@ -1,6 +1,6 @@
 {
   "name": "@summon/bot",
-  "version": "0.3.28",
+  "version": "0.3.29",
   "description": "Independent Pi Agent with durable messages, tasks, state and configured capabilities",
   "type": "module",
   "engines": {

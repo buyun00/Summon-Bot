@@ -194,7 +194,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         const execution = services.works.execution(task);
         const alreadyPublished = settled && store.listRecords('work-notifications').some(item => item.workId === settled.id &&
           (execution.executionEventId ? item.executionEventId === execution.executionEventId : item.taskId === task.id));
-        if (!external && settled && settledTask.result?.executor !== 'codex' && !settledTask.result?.late && state !== 'stopping' && ['completed', 'cancelled', 'blocked'].includes(settled.status) && !alreadyPublished) {
+        if (!external && settled && settled.executionOutcome?.onboardingCompletedTaskId !== task.id && settledTask.result?.executor !== 'codex' && !settledTask.result?.late && state !== 'stopping' && ['completed', 'cancelled', 'blocked'].includes(settled.status) && !alreadyPublished) {
           const content = settledTask.result?.content || settledTask.error?.message || settled.progress || `工作状态：${settled.status}`;
           await services.notify({ id: settled.id, notificationId: `settled:${execution.executionEventId || task.id}`, publication: 'automatic', content }, task, {})
             .catch(error => emit('work.notification_pending', { workId: settled.id, error: error.message }));
