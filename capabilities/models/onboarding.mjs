@@ -182,6 +182,7 @@ export class OnboardingService {
       + '你正在这一步的独立 Pi 工作中。先调用 workspace_setup status 读取真实配置。按当前用户授权完成安装、登录状态检查和配置；缺组件就安装，接口不匹配就修复或在自己的工作目录编写 Node CLI 桥，再用 workspace_setup 完成接入。'
       + '失败后根据真实错误继续处理，不把预置入口缺失当成不能配置的理由。涉及用户账号登录、外部授权或秘密输入时，只让用户完成所缺的那一步，随后续接同一工作。'
       + '接入工作引擎只检查安装、登录和非生成式握手，不运行 codex exec、试聊或演示任务。接入成功由 workspace_setup connect-engine 判定，不能为了验证接入而调用模型。用户明确提出的限制在后续排障中持续有效。'
+      + '当前配置工作的完成状态只由 workspace_setup 核实成功后写入，不自行调用 work_update completed 或 cancelled。尚缺条件时使用 work_wait，后续沿同一工作接续。'
       + 'run_command 用于有期限的前台诊断，其子进程会随命令结束回收。需要持续运行的远程桥一律交给 workspace_setup start-remote 管理。'
       + '不要索要普通聊天中的密钥。已有成功或未知结果先查状态，避免重复操作。workspace_setup 成功会标记当前配置工作完成并自动推进下一条引导问题，直接结束当前工作，不追加已接通或询问想做什么的消息。';
     const sourceIds = new Set(this.record().setup.sourceIds);

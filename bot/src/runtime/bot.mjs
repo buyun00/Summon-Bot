@@ -177,7 +177,10 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
             else {
               await services.works.dispatch(latest.id, { id: `continue:${task.id}`, metadata: { executionEventId: execution.executionEventId, executionTaskId: execution.executionTaskId,
                 automaticContinuation: true },
-                content: 'Continue the existing work from durable S3 and receipts. Advance the next concrete step; when waiting use work_wait, when finished work_update completed. A result already published for this execution stays published; status cleanup does not need another notification. If no actionable step remains, record the actual blocker. Do not repeat uncertain side effects.' },
+                content: 'Continue the existing work from durable S3 and receipts. Advance the next concrete step; when waiting use work_wait. '
+                  + (latest.id.startsWith('onboarding-') ? 'Complete configuration through workspace_setup so it can verify the result and advance the guide. Do not mark this work completed or cancelled yourself. '
+                    : 'When finished use work_update completed. ')
+                  + 'A result already published for this execution stays published; status cleanup does not need another notification. If no actionable step remains, record the actual blocker. Do not repeat uncertain side effects.' },
               task);
             }
           }
