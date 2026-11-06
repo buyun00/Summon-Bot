@@ -146,7 +146,7 @@ export async function stopSystem(config) {
   await writeJson(deploymentPath(config.dataRoot), { ...config, runIntent: 'stopped' });
   const gateway = await inspectService(config, 'gateway');
   if (gateway.state === 'ready') {
-    const response = await fetch(new URL('/internal/bots/stop-all', gateway.url), { method: 'POST', headers: { Authorization: `Bearer ${config.gatewayToken}`, 'Content-Type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(120000) });
+    const response = await fetch(new URL('/internal/bots/stop-all', gateway.url), { method: 'POST', headers: { Authorization: `Bearer ${config.gatewayToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ persistIntent: false }), signal: AbortSignal.timeout(120000) });
     if (!response.ok) throw new Error(`Bot shutdown failed (${response.status}); services remain available for inspection`);
   } else if (gateway.state !== 'stopped') throw new Error('Gateway unreachable; inspect active Bots before stopping the system');
   else {
@@ -165,7 +165,7 @@ export async function stopSystem(config) {
     const path = join(config.dataRoot, 'capabilities/bot-management/state.sqlite');
     if (existsSync(path)) {
       const store = new RecordStore(path);
-      try { await new BotManager({ store, dataRoot: config.dataRoot, releaseRoot: config.releaseRoot }).shutdownAll(); }
+      try { await new BotManager({ store, dataRoot: config.dataRoot, releaseRoot: config.releaseRoot }).shutdownAll({ persistIntent: false }); }
       finally { store.close(); }
     }
   }
