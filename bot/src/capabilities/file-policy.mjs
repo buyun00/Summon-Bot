@@ -1,6 +1,6 @@
 import { isAbsolute, relative, resolve } from 'node:path';
 
-export const FILE_ACCESS_GUIDANCE = 'A file access refusal is a permission/protection boundary, not a missing tool or an ordinary command error. Do not switch to shell, another API, a copy or a renamed path to perform the refused file operation. Preserve the restriction and report the actual result; other authorized paths and operations may continue.';
+export const FILE_ACCESS_GUIDANCE = 'A file access refusal is a permission/protection boundary, not a missing tool or an ordinary command error. Do not switch to shell, another API, a copy or a renamed path to perform the refused file operation. Report the exact attempted operation and refusal reason. A refused read does not establish that a write was attempted or refused; distinguish an original user prohibition from an observed tool denial. Preserve the restriction and report the actual result; other authorized paths and operations may continue.';
 
 export function fileAccessDenied(path, reason, extra = {}) {
   return Object.assign(new Error(`File access refused (${reason}). ${FILE_ACCESS_GUIDANCE}`), {
@@ -18,6 +18,7 @@ export function assertPathPolicy(path, policy = {}, { operations = ['read', 'wri
     operations.some(operation => (constraint.operations || ['read', 'write']).includes(operation)) && contains(resolve(constraint.path), path))
     throw fileAccessDenied(path, constraint.reason || 'prior_access_refusal', {
       sourceMessageId: constraint.sourceMessageId, originalPath: constraint.path, operations,
+      blockedOperations: operations.filter(operation => (constraint.operations || ['read', 'write']).includes(operation)),
       originReason: constraint.originReason || constraint.reason,
     });
 }

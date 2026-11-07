@@ -177,17 +177,17 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
     textValue(input, 'path');
     const requested = resolve(workspaceRoot, input);
     assertPathPolicy(requested, accessPolicy, { operations, alternative });
-    if (![workspaceRoot, project].some(root => within(root, requested))) throw fileAccessDenied(requested, 'outside_allowed_roots');
+    if (![workspaceRoot, project].some(root => within(root, requested))) throw fileAccessDenied(requested, 'outside_allowed_roots', { operations });
     if (sensitivePath(requested, workspaceRoot) || (protectedDirectories.some(root => within(root, requested)) && !within(workspaceRoot, requested)))
-      throw fileAccessDenied(requested, 'protected_path');
+      throw fileAccessDenied(requested, 'protected_path', { operations });
     const [actual, actualWorkspace, actualProject, actualProtected] = await Promise.all([
       physicalPath(requested), realpath(workspaceRoot), realpath(project), Promise.all(protectedDirectories.map(physicalPath)),
     ]);
     const actualDenied = await Promise.all((accessPolicy.deniedPaths || []).map(async item => ({ ...item, path: await physicalPath(item.path) })));
     assertPathPolicy(actual, { deniedPaths: actualDenied }, { operations, alternative });
-    if (![actualWorkspace, actualProject].some(root => within(root, actual))) throw fileAccessDenied(requested, 'resolved_outside_allowed_roots');
+    if (![actualWorkspace, actualProject].some(root => within(root, actual))) throw fileAccessDenied(requested, 'resolved_outside_allowed_roots', { operations });
     if (sensitivePath(actual, actualWorkspace) || (actualProtected.some(root => within(root, actual)) && !within(actualWorkspace, actual)))
-      throw fileAccessDenied(requested, 'resolved_protected_path');
+      throw fileAccessDenied(requested, 'resolved_protected_path', { operations });
     if (directory && !(await stat(actual)).isDirectory()) throw new Error('Path is not a directory');
     return actual;
   }

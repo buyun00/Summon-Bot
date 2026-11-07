@@ -15,33 +15,50 @@ const fileOperations = name => name === 'edit_file' ? ['read', 'write'] : name =
 const canonical = new Set(['read_file', 'write_file', 'edit_file']);
 const boundaryReasons = new Set(['outside_allowed_roots', 'protected_path', 'resolved_outside_allowed_roots', 'resolved_protected_path', 'os_permission_denied']);
 const pathKey = (workspace, path) => resolve(workspace, path).toLowerCase();
+const refusalCondition = /(?:若|如果|一旦|当|\bif\b|\bonce\b).{0,60}(?:拒绝|受保护|denied|refus(?:ed|al)|protected)/i;
+const alternativeChannel = /(?:换(?:成|用)?|使用|用|通过|借助|切换到)\s*(?:shell\b|命令(?:行|通道))|\bshell\s*(?:来|去)?(?:读|写|访问|修改)|其他(?:通道|工具|\s*API)|另(?:一|个)种?通道|\b(?:via|use|using|with|switch\s+to)\s+(?:the\s+)?shell\b|\b(?:another|alternative|other)\s+(?:tool|api|channel)\b/i;
+const excludedSubject = /(?:这份|该|这个|此|它|\b(?:this|that)\b)\s*(?:文件|材料|file|document)?\s*(?:以外|之外)|\b(?:except(?:\s+for)?|other\s+than|outside\s+(?:this|that)\s+file)\b/i;
+const directiveTargets = text => fileNames(text).filter(name => {
+  const index = text.indexOf(name), before = text.slice(0, index), after = text.slice(index + name.length);
+  return !/(?:以外|之外)(?:的|$)/.test(name) && !/^\s*[`"']*\s*(?:以外|之外)/.test(after) &&
+    !/(?:除(?:了)?|\bexcept(?:\s+for)?|\bother\s+than)\s*[`"']*\s*$/i.test(before);
+});
 
 // Restrict explicit file-access clauses, not every filename in a sentence.
 // Within a clause each verb binds the following targets; adjacent verbs may
 // share a target. Pronouns use the preceding named subject, never a later file.
 function fileDirectives(content) {
   const result = []; let previous = [], lastDirective;
-  for (const clause of content.split(/[，,。；;\n]+|\b(?:but|however)\b|(?:但是|但)(?=可以|允许|请|继续)/i)) {
-    const names = fileNames(clause), refusal = negative.exec(clause), permit = !refusal && (positive.exec(clause) || imperative.exec(clause));
-    const marker = refusal || permit;
-    if (marker) {
-      const action = clause.slice(marker.index), verbs = [...action.matchAll(operations)];
-      let pending = [];
-      for (let i = 0; i < verbs.length; i++) {
-        const verb = verbs[i], fragment = action.slice(verb.index + verb[0].length, verbs[i + 1]?.index);
-        pending.push(...operationKinds(verb[0]));
-        let targets = fileNames(fragment);
-        if (!targets.length && i === verbs.length - 1) {
-          targets = fileNames(clause.slice(0, marker.index));
-          if (!targets.length && /它|该文件|这份|\bit\b|this\s+file/i.test(fragment)) targets = previous.slice(-1);
+  for (const sentence of content.split(/[。；;\n]+/)) {
+    let afterRefusal = false;
+    for (const clause of sentence.split(/[，,]+|\b(?:but|however)\b|(?:但是|但)(?=可以|允许|请|继续)/i)) {
+      const names = fileNames(clause), refusal = negative.exec(clause), permit = !refusal && (positive.exec(clause) || imperative.exec(clause));
+      const marker = refusal || permit;
+      afterRefusal ||= refusalCondition.test(clause);
+      // A condition on a future refusal is not a present file prohibition. Real
+      // refusals below supply the alternate-channel guard after they occur.
+      if (marker && !(refusal && afterRefusal)) {
+        const action = clause.slice(marker.index), verbs = [...action.matchAll(operations)];
+        let pending = [];
+        for (let i = 0; i < verbs.length; i++) {
+          const verb = verbs[i], fragment = action.slice(verb.index + verb[0].length, verbs[i + 1]?.index);
+          pending.push(...operationKinds(verb[0]));
+          let targets = directiveTargets(fragment);
+          if (!targets.length && i === verbs.length - 1) {
+            targets = directiveTargets(clause.slice(0, marker.index));
+            // In “do not read anything other than this file”, this file is the
+            // excluded subject of the ban, not the target of that prohibition.
+            if (!targets.length && !excludedSubject.test(fragment) && /它|该文件|这份|\bit\b|this\s+file/i.test(fragment)) targets = previous.slice(-1);
+          }
+          if (targets.length) { lastDirective = { targets, operations: [...new Set(pending)], denied: Boolean(refusal),
+            alternativesOnly: alternativeChannel.test(clause) }; result.push(lastDirective); pending = []; }
         }
-        if (targets.length) { lastDirective = { targets, operations: [...new Set(pending)], denied: Boolean(refusal) }; result.push(lastDirective); pending = []; }
+      } else if (!marker && !afterRefusal && names.length && lastDirective) {
+        const rest = names.reduce((value, name) => value.replace(name, ''), clause).replace(/\b(?:and|or)\b|[、和及与\s`"']/gi, '');
+        if (!rest) { lastDirective = { ...lastDirective, targets: names }; result.push(lastDirective); }
       }
-    } else if (names.length && lastDirective) {
-      const rest = names.reduce((value, name) => value.replace(name, ''), clause).replace(/\b(?:and|or)\b|[、和及与\s`"']/gi, '');
-      if (!rest) { lastDirective = { ...lastDirective, targets: names }; result.push(lastDirective); }
+      if (names.length) previous = names;
     }
-    if (names.length) previous = names;
   }
   return result;
 }
@@ -62,9 +79,10 @@ export function taskFileAccessPolicy(task, store, workspace) {
     if (typeof content !== 'string') continue;
     originals.push(content);
     for (const directive of fileDirectives(content)) for (const path of directive.targets) {
-      const key = pathKey(workspace, path), prior = userRules.get(key), denied = new Set(prior?.operations || []);
+      const key = JSON.stringify([pathKey(workspace, path), directive.alternativesOnly]), prior = userRules.get(key), denied = new Set(prior?.operations || []);
       for (const operation of directive.operations) if (directive.denied) denied.add(operation); else denied.delete(operation);
-      userRules.set(key, { path: resolve(workspace, path), reason: 'explicit_user_file_restriction', operations: [...denied], sourceMessageId: source.replyTo || source.messageId });
+      userRules.set(key, { path: resolve(workspace, path), reason: 'explicit_user_file_restriction', operations: [...denied],
+        ...(directive.alternativesOnly ? { alternativesOnly: true } : {}), sourceMessageId: source.replyTo || source.messageId });
     }
   }
   constraints.push(...[...userRules.values()].filter(rule => rule.operations.length));

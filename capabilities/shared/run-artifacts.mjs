@@ -12,8 +12,8 @@ const removeSnapshot = async directory => {
   await rmdir(directory);
 };
 
-export const runArtifactUrl = (runId, toolId, artifactId) =>
-  `/api/agent-runs/${encodeURIComponent(runId)}/tools/${encodeURIComponent(toolId)}/artifacts/${encodeURIComponent(artifactId)}`;
+export const runArtifactUrl = (taskId, toolId, artifactId) =>
+  `/api/agent-runs/${encodeURIComponent(taskId)}/tools/${encodeURIComponent(toolId)}/artifacts/${encodeURIComponent(artifactId)}`;
 
 export function projectRunArtifacts(run) {
   return { ...run, tools: (run.tools || []).map(tool => ({ ...tool, artifacts: (tool.artifacts || []).map(artifact =>
@@ -28,12 +28,14 @@ export function projectRunArtifacts(run) {
 export class RunArtifactDownloads {
   constructor({ getRun, resolveRoot, tempRoot }) { Object.assign(this, { getRun, resolveRoot, tempRoot }); }
 
-  async read(runId, toolId, artifactId) {
-    if (![runId, toolId].every(validLookupId) ||
+  async read(taskId, toolId, artifactId) {
+    if (![taskId, toolId].every(validLookupId) ||
         !artifactIdPattern.test(artifactId)) fail();
-    const run = await this.getRun(runId);
-    if (!run || run.id !== runId) fail();
-    const tools = (run.tools || []).filter(tool => tool.id === toolId && tool.runId === runId);
+    // /agent-runs is the public task projection. Its runId is the independent
+    // engine execution identity; neither ID is an alias for the other.
+    const run = await this.getRun(taskId);
+    if (!run || run.id !== taskId || run.taskId !== taskId || !validLookupId(run.runId)) fail();
+    const tools = (run.tools || []).filter(tool => tool.id === toolId && tool.taskId === taskId && tool.runId === run.runId);
     if (tools.length !== 1) fail();
     const artifacts = (tools[0].artifacts || []).filter(artifact => artifact?.id === artifactId);
     if (artifacts.length !== 1) fail();

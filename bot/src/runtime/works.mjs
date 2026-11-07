@@ -161,7 +161,8 @@ export class WorkService {
     if (previous) return { accepted: true, workId: id, waitId, status: previous.status };
     const targetWorkId = input.targetWorkId || id;
     if (!this.get(targetWorkId)) fail('Unknown follow-up work', 404);
-    const instruction = modelText(input.handoff?.handoff?.instruction).trim();
+    const handoff = input.handoff?.handoff;
+    const instruction = ['instruction', 'content', 'message', 'handoff', 'goal'].map(key => modelText(handoff?.[key]).trim()).filter(Boolean).join('\n');
     const crossWorkStep = input.dependencyWorkId && input.dependencyWorkId !== targetWorkId && instruction;
     // A concrete handoff to another work is an action even when its purpose is
     // to explain partial output. A mode hint cannot discard that accepted step.

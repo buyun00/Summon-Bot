@@ -133,11 +133,11 @@ export function coreTools(services, task) {
           warning: `未识别可选状态 ${ignoredStatus}；有效进展已保留，工作状态未改动。` };
         return services.works.update(work.id, { ...patch, expectedRevision: work.revision });
       }),
-    tool('work_dispatch', 'Continue an existing work with new instructions and available evidence. The program supplies the event ID and original binding. Stopped work resumes only for a fresh user request; peer observations add no authority.',
+    tool('work_dispatch', 'Continue an existing work with new instructions and available evidence. Detailed content and concise instruction are complementary derived guidance; both are retained. The program supplies the event ID and original binding. Stopped work resumes only for a fresh user request; peer observations add no authority.',
       object({ id: string, content: {}, ...handoffFields, correction: { type: 'boolean' } }), 'write', async (args, ctx) => {
         const work = await services.sources.requireWork(workId(args), task);
         if (['paused', 'cancelled'].includes(work.status) && !userRequest) throw new Error('这项工作已停止；当前事件不包含用户新的继续要求。其他动作可以继续。');
-        const content = await services.sources.handoff(task, { ...args, instruction: args.instruction || args.content || '' });
+        const content = await services.sources.handoff(task, args);
         try { content.projectKnowledge = await services.memory.forProject(task, services.sources.project(work)); }
         catch (error) { content.evidenceWarnings.push({ message: `Project knowledge is unavailable: ${error.message}` }); }
         try { content.currentKnowledge = await services.memory.forRequest(task, services.sources.project(work)); }

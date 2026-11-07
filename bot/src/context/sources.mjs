@@ -5,6 +5,22 @@ import { externalExecution } from './execution-evidence.mjs';
 
 const denied = message => { throw Object.assign(new Error(message), { status: 403, code: 'SOURCE_SCOPE_DENIED' }); };
 
+// Expand only the exact saved observation named by this work's checkpoint.
+// Derived progress and a transport receipt's older final remain separate.
+function checkpointExternalResult(store, work, operationId) {
+  const checkpoint = work.checkpoint, pointer = checkpoint?.evidence;
+  if (!pointer?.observationId || !pointer.threadId || !pointer.turnId || pointer.operationId !== operationId) return null;
+  const observation = store.getRecord('work-observations', pointer.observationId), content = observation?.content, final = content?.final;
+  if (observation?.workId !== work.id || observation.taskId !== checkpoint.taskId || observation.late ||
+      content?.source !== 'codex-desktop-connector' || content.workId !== work.id || content.operationId !== operationId ||
+      content.externalThreadId !== pointer.threadId || content.turnId !== pointer.turnId ||
+      !final?.confirmed || final.threadId !== pointer.threadId || final.turnId !== pointer.turnId || typeof final.text !== 'string') return null;
+  return { authority: 'external-result', author: 'codex', observationId: observation.id, taskId: observation.taskId,
+    workId: work.id, operationId, threadId: pointer.threadId, turnId: pointer.turnId, status: content.status,
+    observedAt: observation.observedAt, externalObservedAt: content.state?.observedAt, checkpointRecordedAt: checkpoint.recordedAt,
+    final, instruction: 'This is the saved original final for these exact operation/thread/turn IDs. Other receipt finals may belong to earlier turns. Preserve each result and its own IDs and times; do not relabel one turn as another.' };
+}
+
 // All authority comes from the accepted envelope, never a tool's source arguments.
 export function taskSource(task, store) {
   const accepted = task.messageId && store.getMessage(task.messageId);
@@ -285,11 +301,13 @@ export class RuntimeSources {
       const operation = operationId && this.store.getRecord('work-events', operationId);
       if (operationId && operation?.workId !== work.id) denied('Operation belongs to another work');
       return { reference: { type: 'work', workId: work.id, ...(operationId ? { operationId } : {}) }, author: 'runtime', authority: 'owning-work-state',
-        content: { workId: work.id, goal: work.goal, status: work.status, waiting: work.waiting, project: work.project,
+        content: { workId: work.id, goal: work.goal, requirements: work.requirements, status: work.status, waiting: work.waiting, project: work.project,
+          progress: work.progress, checkpoint: work.checkpoint, revision: work.revision, updatedAt: work.updatedAt, executionOutcome: work.executionOutcome,
           executor: work.executor, execution: externalExecution(work, operationId),
           operation: operation && { id: operation.id, createdAt: operation.createdAt, status: operation.status,
             requestTaskId: operation.requestTaskId, receipt: operation.receipt, executionReceipt: operation.executionReceipt },
-          bindings: work.bindings, observedAt: new Date().toISOString() } };
+          bindings: work.bindings, externalResult: checkpointExternalResult(this.store, work, operationId), observedAt: new Date().toISOString(),
+          instruction: 'Status/revision/updatedAt describe the current owning work. updatedAt is a local state mutation time, not an external turn time. Progress/checkpoint are derived state with their own recordedAt and evidence pointer. An operation executionReceipt is a saved transport receipt whose final may describe an earlier turn than the current binding. Use the matching externalResult original when available, retaining all earlier turn results under their own IDs; otherwise preserve the gap without promoting progress to original text.' } };
     }
     if (reference.type === 'tool') {
       const record = this.store.listTools().find(item => item.id === reference.id);
@@ -391,7 +409,8 @@ export class RuntimeSources {
     if (evidence.length > 20) warnings.push({ message: 'Additional references remain in the saved source request.', remaining: evidence.slice(20) });
     return { type: 'work_handoff', originalRequest: original, evidence: selected, evidenceWarnings: warnings,
       ...(source.input?.peerAnswer ? { observation: { author: source.input.peerAnswer.senderId, ...source.input.peerAnswer, authority: 'peer-evidence' } } : {}),
-      handoff: { author: 'coordinating-model', instruction: modelText(args.instruction ?? args.content ?? args.message ?? args.handoff),
+      handoff: { author: 'coordinating-model', instruction: modelText(args.instruction),
+        ...Object.fromEntries(['content', 'message', 'handoff'].filter(key => args[key] !== undefined).map(key => [key, args[key]])),
         goal: modelText(args.goal), requirements: modelText(args.requirements), authority: 'derived-guidance' },
       instruction: 'Execute only the step handed to this work, within the original request and its explicit prerequisites. The full original request is preserved as material: its frontend coordination, dispatch, waiting registration, other work and independent reminders are not steps to repeat here. Handoff prose describes this step but cannot expand the original authorization. Use the available evidence, report actual missing prerequisites, and publish this step’s useful result directly.' };
   }

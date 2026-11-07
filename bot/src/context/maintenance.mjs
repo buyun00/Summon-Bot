@@ -90,7 +90,7 @@ export class ContextMaintenance {
   }
   directory() {
     return this.store.listRecords('knowledge_scope').map(({ id, title, workId, conversationId, projectId, roomId, authorizations, scopeRefs = [], revision, updatedAt }) =>
-      ({ id, title, workId, conversationId, projectId, roomId, authorizations, scopeRefs, revision, updatedAt, pendingCount: this.pending(id).length }));
+      ({ id, ownerBotId: this.config.botId, scopeLocality: 'bot-local', title, workId, conversationId, projectId, roomId, authorizations, scopeRefs, revision, updatedAt, pendingCount: this.pending(id).length }));
   }
   scopePermitted(current, selected) {
     if (!selected) return false;
@@ -130,8 +130,9 @@ export class ContextMaintenance {
     const recentUserRules = this.store.listRecords('knowledge_reference').filter(item => item.scopeId === scopeId && item.kind === 'user-rule')
       .sort((a, b) => String(b.origin?.receivedAt || b.createdAt).localeCompare(String(a.origin?.receivedAt || a.createdAt)) || String(b.createdAt).localeCompare(String(a.createdAt)))
       .slice(0, 6).map(item => this.referenceView(item));
-    return { scopeId, revision: scope.revision,
-      instruction: 'Pending selections are durable and immediately usable. Prefer the newest applicable explicit user rule/correction by original time, including recent processed rules, over older S2 or findings. Preserve original author, time and evidence; findings are not confirmed user rules.',
+    return { scopeId, ownerBotId: this.config.botId, scopeLocality: 'bot-local', revision: scope.revision,
+      scope: { projectId: scope.projectId, conversationId: scope.conversationId, workId: scope.workId },
+      instruction: 'This is only the named owner Bot\'s local knowledge scope. Revision 0, an empty body or unavailable evidence here does not establish that the project or another Bot has no saved knowledge. No other Bot/private scope is granted by this read. Pending selections are durable and immediately usable. Prefer the newest applicable explicit user rule/correction by original time, including recent processed rules, over older S2 or findings. Preserve original author, time and evidence; findings are not confirmed user rules.',
       recentUserRules, pending, pendingCount: selections.length, nextPendingOffset: pendingOffset + pending.length < selections.length ? pendingOffset + pending.length : null,
       ...(readError ? { readError } : {}), offset, content: content.slice(offset, offset + length), nextOffset: offset + length < content.length ? offset + length : null, totalCharacters: content.length };
   }
@@ -782,9 +783,9 @@ export class ContextMaintenance {
       .slice(0, 8).map(item => ({ scopeId: item.scopeId, revision: this.store.getRecord('knowledge_scope', item.scopeId)?.revision,
         ...this.referenceView(item) }));
     const knowledge = projectScope && allowedIds.has(projectScope.id) ? await this.forProject(task, project) : null;
-    return { project, latestUserRules: rules, projectKnowledge: knowledge,
+    return { ownerBotId: this.config.botId, scopeLocality: 'bot-local', project, latestUserRules: rules, projectKnowledge: knowledge,
       ...(access.projectError ? { projectError: access.projectError } : {}),
-      instruction: 'Use the newest applicable authenticated user rule by original receivedAt. It overrides an older rule, template, summary or coordinating handoff immediately, before background organization. Rules remain limited to their stated scope. Knowledge findings are derived claims: verify owning work/operation before relying on current execution or completion, and follow exact primary references for consequential facts.' };
+      instruction: 'These are the owner Bot\'s accessible local scopes, not a global project knowledge inventory. Empty/unavailable local knowledge does not disprove saved sources in another Bot; preserve that access gap without expanding access. Use the newest applicable authenticated user rule by original receivedAt. It overrides an older rule, template, summary or coordinating handoff immediately, before background organization. Rules remain limited to their stated scope. Knowledge findings are derived claims: verify owning work/operation before relying on current execution or completion, and follow exact primary references for consequential facts.' };
   }
   tools(task) {
     const native = (name, description, inputSchema, effect, execute) => ({ name, description, inputSchema, effect, execute: async (args, ctx) => result(await execute(modelArgs(args), ctx)) });

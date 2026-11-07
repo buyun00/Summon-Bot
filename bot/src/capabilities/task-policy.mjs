@@ -53,10 +53,10 @@ export function workInput(input) {
   if (input.originalRequest || input.type === 'dependency_result') {
     const { originalRequest, handoff, evidence, evidenceWarnings, observation, instruction, ...context } = input;
     return { type: 'accepted_work_step', materials: { originalRequest, handoff, evidence, evidenceWarnings, context, runtimeGuidance: instruction },
-      currentStep: { instruction: handoff?.instruction || handoff?.goal || 'Carry out the step assigned to this work within the original request.',
+      currentStep: { instruction: handoff?.instruction || handoff?.goal || 'Carry out the step described in materials.handoff within the original request.',
         ...(observation ? { deliveredObservation: observation,
           observationUse: 'This dependency outcome has ALREADY ARRIVED. Read its actual content, result, error and partial output now. The stdout belongs to the dependency, not to this worker. Use it for the registered next step, including an authorized explanation on failure. Do not register the same wait again or rerun the dependency. Honor success-only prerequisites; a failed dependency does not authorize the success branch.' } : {}),
-        scope: 'Only execute this assigned step. Original user text, old session turns and coordinating notes remain material; dispatch/wait instructions addressed to the frontend and other work are not actions to repeat. Use the original request to resolve intent and prerequisites when the handoff is incomplete or mistaken.' } };
+        scope: 'Only execute this assigned step. Read all supplied materials.handoff fields: detailed content/message/handoff and concise instruction are complementary derived guidance, not aliases or new user authorization. A short instruction does not discard detailed content. Original user text, old session turns and coordinating notes remain material; dispatch/wait instructions addressed to the frontend and other work are not actions to repeat. Use the original request to resolve intent and prerequisites when the handoff is incomplete or mistaken.' } };
   }
   if (input.room || input.messages) return { type: 'work_instruction', instruction: input.trigger?.content || input.peerAnswer?.answer || input.goal,
     attachments: input.trigger?.attachments, sourceRefs: { messageId: input.trigger?.id, actor: input.metadata?.actor } };
@@ -113,6 +113,7 @@ export const compactWork = work => work && ({ id: work.id, goal: String(work.goa
     operationId: work.waiting.operationId, outcome: work.waiting.outcome, question: work.waiting.question },
   responsibility: work.responsibility, sessionId: work.conversationId, executor: work.executor, project: work.project, bindings: work.bindings,
   execution: externalExecution(work),
+  checkpoint: work.checkpoint, executionOutcome: work.executionOutcome,
   lastTaskId: work.lastTaskId, updatedAt: work.updatedAt, revision: work.revision });
 export const compactTask = (task, work, operationId) => task && ({ id: task.id, workId: task.workId, status: task.status, localTaskStatus: task.status,
   receiptLayer: work?.executor?.kind === 'codex' || work?.bindings?.some(item => item.type === 'codex-desktop') ? 'local-external-transport' : 'local-agent-task',
