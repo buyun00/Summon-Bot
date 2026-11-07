@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { open, realpath, mkdtemp, unlink, rmdir, mkdir } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep, join } from 'node:path';
 
@@ -40,7 +39,7 @@ export class RunArtifactDownloads {
     if (artifacts.length !== 1) fail();
     const artifact = artifacts[0];
     if (typeof artifact.path !== 'string' || !isAbsolute(artifact.path) ||
-        !Number.isSafeInteger(artifact.size) || artifact.size < 0 || !/^[a-f0-9]{64}$/i.test(artifact.sha256 || '')) fail();
+        !Number.isSafeInteger(artifact.size) || artifact.size < 0) fail();
     if (artifact.size > MAX_RUN_ARTIFACT_DOWNLOAD_BYTES) fail('执行产物超过单次下载 256 MiB 上限，请从本机产物目录读取', 413);
     let handle, snapshot, snapshotDirectory;
     try {
@@ -64,23 +63,20 @@ export class RunArtifactDownloads {
       if (!within(dataRoot, await realpath(temporaryRoot))) fail();
       snapshotDirectory = await mkdtemp(join(temporaryRoot, 'download-'));
       snapshot = await open(join(snapshotDirectory, 'download'), 'wx+', 0o600);
-      const hash = createHash('sha256');
       if (before.size) {
         for await (const chunk of handle.createReadStream({ autoClose: false, start: 0, end: before.size - 1 })) {
-          hash.update(chunk);
           await snapshot.writeFile(chunk);
         }
       }
       const after = await handle.stat();
-      if (hash.digest('hex') !== artifact.sha256.toLowerCase() || after.size !== before.size ||
+      if (after.size !== before.size ||
           after.mtimeMs !== before.mtimeMs || await realpath(candidate) !== filePath) {
-        fail('执行产物内容已变化，无法作为原记录下载', 409);
+        fail('执行产物在准备下载时发生变化，请重新获取', 409);
       }
       await handle.close(); handle = null;
       const name = typeof artifact.name === 'string' ? artifact.name : 'artifact';
-      // The bytes sent later are the same snapshot that was hashed above.
-      // Re-reading the live original after validation would allow a same-size
-      // edit to bypass the digest check between validation and HTTP streaming.
+      // Stream the captured snapshot so a later edit of the live original does
+      // not change the bytes sent during this response. No digest is computed.
       let closing;
       return { handle: snapshot, size: before.size,
         close: () => closing ||= (async () => { await snapshot.close(); await removeSnapshot(snapshotDirectory); })(),

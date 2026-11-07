@@ -1,5 +1,5 @@
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { createHash, randomUUID } from 'node:crypto';
+import { copyFile, mkdir, stat, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { basename, resolve } from 'node:path';
 
 export async function saveArtifact(directory, input, refs = {}) {
@@ -13,6 +13,6 @@ export async function saveArtifact(directory, input, refs = {}) {
     const content = Buffer.isBuffer(input.content) || typeof input.content === 'string' ? input.content : JSON.stringify(input.content ?? null, null, 2);
     await writeFile(path, content, { flag: 'wx', mode: 0o600 });
   }
-  const bytes = await readFile(path);
-  return { id, name, path, relativePath: `artifacts/${basename(path)}`, mimeType: input.mimeType || 'application/octet-stream', size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), ...refs };
+  const size = (await stat(path)).size;
+  return { id, name, path, relativePath: `artifacts/${basename(path)}`, mimeType: input.mimeType || 'application/octet-stream', size, ...refs };
 }

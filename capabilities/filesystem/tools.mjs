@@ -1,7 +1,7 @@
 import { open, readdir, stat, realpath, mkdir, readFile, rename, link, unlink, mkdtemp, rm } from 'node:fs/promises';
 import { constants, existsSync, createWriteStream } from 'node:fs';
 import { resolve, relative, isAbsolute, dirname, basename, join, parse, delimiter } from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createWebTools } from './web-tools.mjs';
 import { StringDecoder } from 'node:string_decoder';
@@ -17,7 +17,6 @@ const DEFAULT_LINES = 300;
 const SKIP_DIRECTORIES = new Set(['node_modules', '.git', '.hg', '.svn']);
 const WINDOWS = process.platform === 'win32';
 const within = (root, path) => { const part = relative(root, path); return part === '' || (!part.startsWith(`..${WINDOWS ? '\\' : '/'}`) && part !== '..' && !isAbsolute(part)); };
-const sha256 = value => createHash('sha256').update(value).digest('hex');
 const objectSchema = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const stringSchema = description => ({ type: 'string', description });
 const integerSchema = (description, minimum, maximum) => ({ type: 'integer', description, minimum, maximum });
@@ -223,7 +222,7 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
       else await link(temporary, path);
       const saved = await readFile(path);
       if (!saved.equals(bytes)) throw new Error('Write completed but read-back verification failed');
-      return { path, bytes: saved.length, sha256: sha256(saved), verified: true };
+      return { path, bytes: saved.length, verified: true };
     } finally {
       await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; });
     }
@@ -330,7 +329,7 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
       }
       return { path, query, matches, scannedFiles, skippedFiles, truncated };
     }),
-    tool('write_file', 'Write a UTF-8 file, creating parent directories. Existing files require overwrite:true. Re-reads the saved bytes and returns their SHA-256.', objectSchema({ path: stringSchema('Destination file path'), content: stringSchema('Complete UTF-8 content, at most 1 MiB'), overwrite: { type: 'boolean', description: 'Explicitly allow replacing an existing file; default false' } }, ['path', 'content']), async (args, signal) => {
+    tool('write_file', 'Write a UTF-8 file atomically, creating parent directories. Existing files require overwrite:true. Returns the saved path and byte count after read-back.', objectSchema({ path: stringSchema('Destination file path'), content: stringSchema('Complete UTF-8 content, at most 1 MiB'), overwrite: { type: 'boolean', description: 'Explicitly allow replacing an existing file; default false' } }, ['path', 'content']), async (args, signal) => {
       const content = textValue(args.content, 'content', true);
       const bytes = Buffer.from(content);
       if (bytes.length > MAX_FILE_BYTES) throw new Error('Content exceeds 1 MiB');
