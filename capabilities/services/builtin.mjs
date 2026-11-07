@@ -68,7 +68,7 @@ export async function createCapability(options) {
     if(FILE_TOOLS.has(name)) {
       if(actor==='controller')fail('Filesystem tools require an explicit Bot identity');
       const config=await manager.config(actor),artifacts=[];
-      const definitions=createFileTools({workspace:config.workspace,projectRoot:defaultCwd,protectedRoot:dataRoot,redact:createRedactor(config),containProcesses:context.workId?.startsWith('onboarding-')===true,tempRoot:join(manager.directory(actor),'tmp','capability-tools'),onArtifacts:items=>artifacts.push(...items),withExecution:(fn,toolSignal)=>lockFor(defaultCwd).withLock(`bot:${actor}`,fn,toolSignal),saveArtifact:async input=>(await manager.botApi()).saveArtifact(join(manager.directory(actor),'artifacts'),input)});
+      const definitions=createFileTools({workspace:config.workspace,projectRoot:defaultCwd,protectedRoot:dataRoot,accessPolicy:context.fileAccessPolicy,redact:createRedactor(config),containProcesses:context.workId?.startsWith('onboarding-')===true,tempRoot:join(manager.directory(actor),'tmp','capability-tools'),onArtifacts:items=>artifacts.push(...items),withExecution:(fn,toolSignal)=>lockFor(defaultCwd).withLock(`bot:${actor}`,fn,toolSignal),saveArtifact:async input=>(await manager.botApi()).saveArtifact(join(manager.directory(actor),'artifacts'),input)});
       const result=await definitions.find(tool=>tool.name===name).execute(randomUUID(),args,signal);
       return {...result,artifacts,isError:Boolean(result.details?.timedOut||result.details?.aborted||(result.details?.exitCode!==undefined&&result.details.exitCode!==0))};
     }

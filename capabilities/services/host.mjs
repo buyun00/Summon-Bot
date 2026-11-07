@@ -145,13 +145,17 @@ export async function startCapabilityService(options) {
           try {
             const result = await work(req, res, signal => invokeTool(body.params?.name, body.params?.arguments ?? {}, body.params?._meta?.context, signal));
             return reply(result?.content && Array.isArray(result.content) ? result : { content: [{ type: 'text', text: JSON.stringify(result ?? null) }] });
-          } catch (error) { return reply({ isError: true, content: [{ type: 'text', text: JSON.stringify({ error: error.message, code: error.code || 'CAPABILITY_ERROR' }) }] }); }
+          } catch (error) {
+            const details = { error: error.message, code: error.code || 'CAPABILITY_ERROR', ...(error.accessDenial ? { accessDenial: error.accessDenial } : {}) };
+            return reply({ isError: true, structuredContent: details, content: [{ type: 'text', text: JSON.stringify(details) }] });
+          }
         }
         return json(res, 200, { jsonrpc: '2.0', id: requestId, error: { code: -32601, message: 'Method not found' } });
       }
       json(res, 404, { error: 'Not found', code: 'NOT_FOUND' });
     } catch (error) {
-      json(res, Number.isInteger(error.status) ? error.status : 500, { error: error.message || 'Capability request failed', code: error.code || 'CAPABILITY_ERROR' });
+      json(res, Number.isInteger(error.status) ? error.status : 500, { error: error.message || 'Capability request failed', code: error.code || 'CAPABILITY_ERROR',
+        ...(error.accessDenial ? { accessDenial: error.accessDenial } : {}) });
     }
   });
   server.requestTimeout = 30000;

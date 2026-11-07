@@ -148,7 +148,11 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         if (!external && currentWork && ['paused', 'cancelled', 'blocked'].includes(currentWork.status)) return;
         if (!external && currentWork?.status === 'waiting' && currentWork.waiting?.dependencyWorkId &&
           store.getRecord('work-waits', currentWork.waiting.id)?.status === 'pending') return;
-        if (!external && currentWork?.status === 'waiting') services.works.update(currentWork.id, { status: 'active', waiting: null });
+        // A later request can be accepted while its predecessor is still active.
+        // The predecessor may finish after acceptance, so refresh at actual
+        // queue start as well; its completed state does not describe this task.
+        if (!external && currentWork && ['waiting', 'completed'].includes(currentWork.status))
+          services.works.update(currentWork.id, { status: 'active', waiting: null, lastError: null, executionOutcome: null });
         // Keep each accepted request and its publication route intact in the work queue.
         if (currentWork) services.works.update(currentWork.id, { lastTaskId: task.id });
         try {

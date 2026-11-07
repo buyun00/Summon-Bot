@@ -169,6 +169,29 @@ export class RuntimeSources {
     if (!await this.canReadWork(work, task)) denied('Work is not accessible from this request');
     return work;
   }
+  async lookupWork(id, task) {
+    const suppliedId = typeof id === 'string' ? id.trim() : '';
+    const exact = suppliedId && this.store.getRecord('works', suppliedId);
+    if (exact && await this.canReadWork(exact, task)) return { work: exact,
+      lookup: { suppliedId, canonicalId: exact.id, match: 'exact', found: true } };
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const prefix = !uuid.test(suppliedId) && /^[0-9a-f]{8}(?:[0-9a-f-]{0,27})$/i.test(suppliedId);
+    if (prefix) {
+      const rooms = await this.rooms(task), candidates = [];
+      for (const work of this.store.listRecords('works')) if (uuid.test(work.id) && work.id.toLowerCase().startsWith(suppliedId.toLowerCase()) && await this.canReadWork(work, task, rooms)) candidates.push(work);
+      if (candidates.length === 1) return { work: candidates[0], lookup: {
+        suppliedId, canonicalId: candidates[0].id, match: 'unique-accessible-prefix', found: true,
+        instruction: 'This canonical ID came from an actual readable work, not a guessed UUID. Copy the full ID into subsequent references and actions.',
+      } };
+      return { lookup: { suppliedId, found: false, existence: 'unconfirmed', match: candidates.length ? 'ambiguous-prefix' : 'unresolved-prefix',
+        candidates: candidates.map(work => ({ id: work.id, goal: work.goal })),
+        instruction: 'This incomplete ID did not resolve to one accessible work. Read works_list or a known full source reference. Do not guess a UUID, select another work, infer nonexistence, or discard already established evidence.',
+      } };
+    }
+    return { lookup: { suppliedId, found: false, existence: 'unconfirmed', match: exact ? 'not-accessible-from-this-source' : 'not-found-in-this-bot',
+      instruction: 'This lookup did not obtain a readable work in this Bot/source. It is not proof that the work does not exist elsewhere, nor a contradiction of a previously read binding. Check the exact owning Bot and full source reference; other work is not a substitute.',
+    } };
+  }
   async sessions(task) {
     const rooms = await this.rooms(task), allowed = new Set([task.sessionId]);
     for (const session of this.store.listSessions()) {

@@ -45,6 +45,7 @@ function sanitizedError(error, redact) {
   result.name = error?.name || 'Error';
   for (const key of ['code', 'status', 'statusCode', 'outcomeUnknown']) if (error?.[key] !== undefined) result[key] = typeof error[key] === 'string' ? redact(error[key]) : error[key];
   if (error?.responseBody !== undefined) result.responseBody = sanitizeValue(error.responseBody, redact);
+  if (error?.accessDenial !== undefined) result.accessDenial = sanitizeValue(error.accessDenial, redact);
   return result;
 }
 
@@ -161,7 +162,8 @@ function httpTool(definition, headers) {
         const outcomeUnknown = isRecord(payload) && (payload.outcomeUnknown === true || payload.error?.outcomeUnknown === true);
         throw Object.assign(new Error(`HTTP tool returned ${response.status}${detail ? `: ${String(detail).slice(0, 1200)}` : ''}`),
           { status: response.status, responseBody: payload,
-            ...(typeof code === 'string' || typeof code === 'number' ? { code } : {}), ...(outcomeUnknown ? { outcomeUnknown: true } : {}) });
+            ...(typeof code === 'string' || typeof code === 'number' ? { code } : {}), ...(outcomeUnknown ? { outcomeUnknown: true } : {}),
+            ...(payload?.accessDenial ? { accessDenial: payload.accessDenial } : {}) });
       }
       return payload;
     },

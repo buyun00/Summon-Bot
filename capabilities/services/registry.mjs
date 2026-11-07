@@ -295,7 +295,10 @@ export class CapabilityRegistry {
       received = true;
       if (!response.ok) {
         const detail = plain(payload) ? payload.error?.message || payload.error || payload.message : undefined;
-        throw fail(`Capability service returned HTTP ${response.status}${typeof detail === 'string' ? `: ${this._redact(detail).slice(0, 1200)}` : ''}`, response.status, 'CAPABILITY_REMOTE_ERROR');
+        const denial = payload?.code === 'FILE_ACCESS_DENIED' && payload.accessDenial;
+        const error = fail(`Capability service returned HTTP ${response.status}${typeof detail === 'string' ? `: ${this._redact(detail).slice(0, 1200)}` : ''}`, response.status, denial ? 'FILE_ACCESS_DENIED' : 'CAPABILITY_REMOTE_ERROR');
+        if (denial && typeof denial.path === 'string' && typeof denial.reason === 'string') error.accessDenial = JSON.parse(this._redact(JSON.stringify(denial)));
+        throw error;
       }
       this._finishRequest({ id: requestId, status: 'completed', finishedAt: new Date().toISOString() });
       return payload;
@@ -305,6 +308,7 @@ export class CapabilityRegistry {
       const failure = fail(received ? this._redact(error.message) : 'Capability request outcome is unknown; it was not retried', received ? error.status || 502 : 502, received ? error.code || 'CAPABILITY_REMOTE_ERROR' : 'CAPABILITY_OUTCOME_UNKNOWN');
       failure.requestId = requestId;
       failure.outcome = status;
+      if (error.accessDenial) failure.accessDenial = error.accessDenial;
       throw failure;
     } finally {
       const count = (this.inFlight.get(key) || 1) - 1;

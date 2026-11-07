@@ -5,6 +5,7 @@ const effects = new Set(['read', 'write', 'process', 'external']);
 const timestamp = () => new Date().toISOString();
 const errorRecord = error => ({ name: error?.name || 'Error', message: error?.message || String(error),
   ...(error?.code === undefined ? {} : { code: error.code }),
+  ...(error?.accessDenial ? { accessDenial: error.accessDenial } : {}),
   ...(error?.outcomeUnknown ? { outcomeUnknown: true } : {}) });
 
 /** One registry handles native definitions and unchanged SDK tool projections.
@@ -49,7 +50,7 @@ export class ToolRegistry {
     let executing = false, recordingOutcome = false;
     try {
       const args = validateToolArguments({ name, parameters: definition.inputSchema }, { name, id: context.toolCallId, arguments: input });
-      this.authorize(definition, args);
+      await this.authorize(definition, args, context);
       context.signal?.throwIfAborted();
       if (context.allowedEffects !== undefined && (!Array.isArray(context.allowedEffects) || !context.allowedEffects.includes(definition.effect))) {
         throw Object.assign(new Error(`Task tool policy denies ${definition.effect} capability ${name}`), { code: 'TOOL_POLICY_DENIED' });

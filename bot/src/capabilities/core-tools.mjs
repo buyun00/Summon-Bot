@@ -35,7 +35,7 @@ export function coreTools(services, task) {
     const id = args.id ?? args.workId;
     if (id !== undefined && id !== null && id !== '') {
       if (typeof id === 'string' && services.works.get(id)) return id;
-      throw new Error('明确指定的工作不存在。请核对该 ID；不会改投回复关联的其他工作，其他动作可继续。');
+      throw Object.assign(new Error('明确指定的工作标识未解析。请先用 work_get / works_list 取得可读取的完整 canonical ID；缩写查询失败不证明实际工作不存在，也不能反证已有绑定。不会改投回复关联的其他工作。'), { code: 'WORK_ID_UNRESOLVED' });
     }
     const hint = task.workId || source.metadata?.referencedWorkId || source.input?.trigger?.replyWorkId;
     if (hint && services.works.get(hint)) return hint;
@@ -66,7 +66,11 @@ export function coreTools(services, task) {
       for (const work of services.works.list(args)) if (await services.sources.canReadWork(work, task, rooms)) values.push(workView(work));
       return values;
     }),
-    tool('work_get', 'Read the owning work, operation and actual executor binding. Local active/submitting is not an external start. Only execution.startedConfirmed with matching non-stale observation proves that turn ran. A directory project is a local authorization scope, not native registration. Read exact work/operation evidence before evaluating a peer execution claim.', object({ id: string }, ['id']), 'read', async args => workView(await services.sources.requireWork(workId(args), task))),
+    tool('work_get', 'Read owning work, operation and actual binding by full ID. A UUID prefix resolves only when exactly one actually accessible work matches; use the returned canonicalId in later actions. An unresolved/ambiguous/not-accessible lookup is not evidence that an established work or binding disappeared. Use works_list or a known full reference. Local active/submitting is not external start; only a matching non-stale execution.startedConfirmed proves the turn ran.', object({ id: string }, ['id']), 'read', async args => {
+      const id = args.id ?? args.workId ?? task.workId ?? source.metadata?.referencedWorkId ?? source.input?.trigger?.replyWorkId;
+      const result = await services.sources.lookupWork(id, task);
+      return result.work ? { ...workView(result.work), lookup: result.lookup } : { unresolved: true, lookup: result.lookup };
+    }),
     tool('work_create', 'Accept and asynchronously dispatch independent work. The receipt confirms local scheduling only, not Pi/Codex execution, native registration or completion. Omit executor for the default engine. Give goal, evidence, handoff prose and an authorized target; the program supplies operation IDs and refreshes current project rules. Do not repeat or wait on this frontend call to strengthen the acknowledgment.',
       object({ id: string, operationId: string, goal: string, requirements: string, responsibility: string, ...handoffFields,
         executor: object({ kind: { type: 'string', enum: ['pi', 'codex', 'codex-cli', 'grok', 'claude-code'] }, connectionId: string,

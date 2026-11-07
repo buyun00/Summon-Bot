@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { finished } from 'node:stream/promises';
 import { truncateHead } from '../shared/truncate.mjs';
 import { cleanEnvironment, terminateTree, windowsProcessJob } from '../../bot/src/runtime/process-tools.mjs';
+import { assertPathPolicy, assertCommandPolicy, fileAccessDenied } from '../../bot/src/capabilities/file-policy.mjs';
 
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_OUTPUT_BYTES = 64 * 1024;
@@ -45,11 +46,15 @@ function defaultRedact(value) {
 
 function sensitivePath(path, workspace) {
   const parts = path.slice(parse(path).root.length).split(/[\\/]+/).map(part => part.toLowerCase());
-  for (const part of parts) {
+  for (const [index, part] of parts.entries()) {
     if (part === '.git' || part === '.ssh' || part === '.aws' || part === '.azure' || part === 'gcloud') return true;
     if (part === '.relay' && !within(workspace, path)) return true;
     if (/^\.env(?:[.-]|$)/.test(part) || /^\.(?:npmrc|pypirc|netrc|git-credentials)$/.test(part)) return true;
-    if (/^(?:id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|credentials?(?:[._-].*)?|secrets?(?:[._-].*)?|ds\.txt|summon\.sqlite(?:[.-].*)?)$/.test(part)) return true;
+    // A credential-themed review/guide is not a credential container. Keep
+    // exact credential names and data/export formats protected; only explicit
+    // documentation suffixes distinguish the overbroad prefix match here.
+    const credentialDocument = index === parts.length - 1 && /^credentials?[_-](?:[a-z0-9]+[_-])*(?:readme|guide|manual|design|spec|plan|report|brief|review(?:[_-]card)?)\.md$/.test(part);
+    if (/^(?:id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|credentials?(?:[._-].*)?|secrets?(?:[._-].*)?|ds\.txt|summon\.sqlite(?:[.-].*)?)$/.test(part) && !credentialDocument) return true;
     if (/\.(?:pem|p12|pfx|key)$/.test(part) || part.includes(':')) return true;
   }
   return false;
@@ -157,7 +162,7 @@ if (-not $summonCommandSucceeded) { exit 1 }
 }
 
 /** Filesystem access is constrained here; command cwd is a convenience, not an OS sandbox. */
-export function createFileTools({ workspace, projectRoot, protectedRoot, protectedRoots = [], signal: defaultSignal, withExecution = async fn => fn(), redact = defaultRedact, saveArtifact, onArtifacts, tempRoot, containProcesses = false }) {
+export function createFileTools({ workspace, projectRoot, protectedRoot, protectedRoots = [], accessPolicy = {}, signal: defaultSignal, withExecution = async fn => fn(), redact = defaultRedact, saveArtifact, onArtifacts, tempRoot, containProcesses = false }) {
   const workspaceRoot = resolve(textValue(workspace, 'workspace'));
   const project = resolve(textValue(projectRoot, 'projectRoot'));
   const protectedDirectories = [...new Set([protectedRoot, ...protectedRoots].filter(value => value != null)
@@ -172,13 +177,18 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
   async function checkedPath(input = '.', { directory = false } = {}) {
     textValue(input, 'path');
     const requested = resolve(workspaceRoot, input);
-    if (![workspaceRoot, project].some(root => within(root, requested)) || sensitivePath(requested, workspaceRoot) ||
-      (protectedDirectories.some(root => within(root, requested)) && !within(workspaceRoot, requested))) throw new Error('Path is outside the allowed roots or is protected');
+    assertPathPolicy(requested, accessPolicy);
+    if (![workspaceRoot, project].some(root => within(root, requested))) throw fileAccessDenied(requested, 'outside_allowed_roots');
+    if (sensitivePath(requested, workspaceRoot) || (protectedDirectories.some(root => within(root, requested)) && !within(workspaceRoot, requested)))
+      throw fileAccessDenied(requested, 'protected_path');
     const [actual, actualWorkspace, actualProject, actualProtected] = await Promise.all([
       physicalPath(requested), realpath(workspaceRoot), realpath(project), Promise.all(protectedDirectories.map(physicalPath)),
     ]);
-    if (![actualWorkspace, actualProject].some(root => within(root, actual)) || sensitivePath(actual, actualWorkspace) ||
-      (actualProtected.some(root => within(root, actual)) && !within(actualWorkspace, actual))) throw new Error('Resolved path is outside the allowed roots or is protected');
+    const actualDenied = await Promise.all((accessPolicy.deniedPaths || []).map(async item => ({ ...item, path: await physicalPath(item.path) })));
+    assertPathPolicy(actual, { deniedPaths: actualDenied });
+    if (![actualWorkspace, actualProject].some(root => within(root, actual))) throw fileAccessDenied(requested, 'resolved_outside_allowed_roots');
+    if (sensitivePath(actual, actualWorkspace) || (actualProtected.some(root => within(root, actual)) && !within(actualWorkspace, actual)))
+      throw fileAccessDenied(requested, 'resolved_protected_path');
     if (directory && !(await stat(actual)).isDirectory()) throw new Error('Path is not a directory');
     return actual;
   }
@@ -255,8 +265,10 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
           const details = sanitizeResult(mutation ? await withExecution(perform, signal) : await perform());
           return { content: [{ type: 'text', text: JSON.stringify(details) }], details };
         } catch (error) {
+          if (['EACCES', 'EPERM'].includes(error.code)) error = fileAccessDenied(resolve(workspaceRoot, args?.path || args?.cwd || '.'), 'os_permission_denied');
           const safe = new Error(sanitize(error.message || String(error)));
           safe.name = error.name || 'Error';
+          for (const key of ['code', 'status', 'accessDenial']) if (error[key] !== undefined) safe[key] = sanitizeResult(error[key]);
           throw safe;
         }
       },
@@ -343,10 +355,15 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
       path = await checkedPath(args.path);
       return { ...await saveVerified(path, bytes, signal, { overwrite: true, expected: original }), replacements: 1 };
     }, true),
-    tool('run_command', 'Execute a non-interactive shell command (PowerShell on Windows), with a timeout and capped output. cwd must be in an allowed root. IMPORTANT: cwd is not an OS sandbox; commands run with host-user privileges. Do not access credentials, delete unrelated files, or launch persistent services.', objectSchema({ command: stringSchema('Shell command'), cwd: stringSchema('Allowed working directory; defaults to workspace'), timeoutMs: integerSchema('Timeout in milliseconds, default 30000', 100, 120000) }, ['command']), async (args, signal) => {
+    tool('run_command', 'Execute a non-interactive shell command (PowerShell on Windows), with a timeout and capped output. File access refusals and explicit user file restrictions apply across tools, including shell/.NET, copies and renames. cwd is not an OS sandbox; commands run with host-user privileges. Do not access credentials or delete unrelated files.', objectSchema({ command: stringSchema('Shell command'), cwd: stringSchema('Allowed working directory; defaults to workspace'), timeoutMs: integerSchema('Timeout in milliseconds, default 30000', 100, 120000) }, ['command']), async (args, signal) => {
       const command = textValue(args.command, 'command');
       if (command.length > 20000) throw new Error('command is too long');
       const cwd = await checkedPath(args.cwd, { directory: true });
+      await assertCommandPolicy(command, cwd, accessPolicy, async path => {
+        // Executables installed outside the project are legitimate command
+        // operands. File operands still use the actual filesystem boundary.
+        if (!/\.(?:exe|dll)$/i.test(path)) await checkedPath(path);
+      });
       const timeoutMs = boundedInteger(args.timeoutMs, 30000, 100, 120000, 'timeoutMs');
       return runCommand(command, cwd, timeoutMs, signal, sanitize, saveArtifact, onArtifacts, tempRoot, containProcesses);
     }, true),

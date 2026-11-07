@@ -23,6 +23,7 @@ import { deployCapability } from '../services/publish.mjs';
 import { coreTools } from '../../bot/src/capabilities/core-tools.mjs';
 import { assertToolPolicy, permitsTool, permitsMaintenanceTool, taskMode } from '../../bot/src/capabilities/task-policy.mjs';
 import { taskSource,workExecution } from '../../bot/src/context/sources.mjs';
+import { taskFileAccessPolicy } from '../../bot/src/capabilities/file-access.mjs';
 import { notificationParts } from '../../bot/src/runtime/notifications.mjs';
 import { CapabilityCatalog,catalogTools } from '../services/catalog.mjs';
 import { UsageLedger,readUsage,usageRange,finishUsageTotals,emptyUsageTotals,USAGE_PRICING } from '../../bot/src/agent/usage.mjs';
@@ -191,6 +192,10 @@ export async function startGateway(options={}) {
     if(controlTools.some(tool=>tool.name===name))return control.call(name,args,{actor});
     if(pin&&!control.permittedVersion(actor,pin.id,pin.version))fail('This capability version is not bound to the Bot',403);
     const context={actor,...(task?{taskId:task.id,workId:runtimeOperation?.workId||task.workId,mode:runtimeOperation?'work':taskMode(task),source}:{})};
+    if(task&&['list_files','read_file','search_files','write_file','edit_file','run_command'].includes(name)){
+      const config=await manager.config(actor);
+      context.fileAccessPolicy=await manager.readState(actor,db=>taskFileAccessPolicy(task,db,config.workspace));
+    }
     if(pin)return registry.callVersion(pin.id,pin.version,name,args,{signal,context});
     return registry.call(actor,name,args,{signal,context});
   }
@@ -346,14 +351,14 @@ export async function startGateway(options={}) {
         if(body.id===undefined){res.writeHead(202);res.end();return;}
         try{let result;if(body.method==='initialize')result={protocolVersion:['2025-03-26','2024-11-05','2025-06-18'].includes(body.params?.protocolVersion)?body.params.protocolVersion:'2025-03-26',capabilities:{tools:{}},serverInfo:{name:'summon-capabilities',version:'0.2.0'}};
           else if(body.method==='ping')result={};else if(body.method==='tools/list')result={tools:visibleTools(actor).map(({name,description,inputSchema})=>({name,description,inputSchema}))};
-          else if(body.method==='tools/call'){try{const value=await callTool(body.params?.name,body.params?.arguments||{},actor,undefined,undefined,runtimeTaskId);result={content:[{type:'text',text:JSON.stringify(value)}],isError:false};}catch(error){result={content:[{type:'text',text:error.message}],isError:true};}}
+          else if(body.method==='tools/call'){try{const value=await callTool(body.params?.name,body.params?.arguments||{},actor,undefined,undefined,runtimeTaskId);result={content:[{type:'text',text:JSON.stringify(value)}],isError:false};}catch(error){const details={error:error.message,code:error.code,...(error.accessDenial?{accessDenial:error.accessDenial}:{})};result={content:[{type:'text',text:JSON.stringify(details)}],structuredContent:details,isError:true};}}
           else return json(res,200,{jsonrpc:'2.0',id:body.id,error:{code:-32601,message:'Method not found'}});return json(res,200,{jsonrpc:'2.0',id:body.id,result});
         }catch(error){return json(res,200,{jsonrpc:'2.0',id:body.id,error:{code:-32603,message:error.message}});}
       }
       const attachment=path.match(/^\/api\/attachments\/([^/]+)(\/preview)?$/);if(attachment&&['GET','HEAD'].includes(req.method)){const file=await attachments.read(attachment[1],Boolean(attachment[2]));res.writeHead(200,file.headers);res.end(req.method==='HEAD'?undefined:file.bytes);return;}
       const artifact=path.match(/^\/api\/agent-runs\/([^/]+)\/tools\/([^/]+)\/artifacts\/([^/]+)$/);if(artifact&&['GET','HEAD'].includes(req.method)){if(requestUrl.search)fail('Artifact IDs only',404);const file=await downloads.read(...artifact.slice(1).map(decodeURIComponent));try{res.writeHead(200,file.headers);if(req.method==='HEAD'||file.size===0)res.end();else await pipeline(file.handle.createReadStream({autoClose:false,start:0,end:file.size-1}),res);}finally{await file.close();}return;}
       const result=await handleApi(req.method,path,body,requestUrl.searchParams);if(result===undefined)fail('Not found',404);json(res,200,result);
-    }catch(error){if(!res.headersSent)json(res,error.status||400,{error:catalog.clean(String(error.message)),...(error.code?{code:error.code}:{}),...(error.outcomeUnknown?{outcomeUnknown:true}:{})});else res.end();}
+    }catch(error){if(!res.headersSent)json(res,error.status||400,{error:catalog.clean(String(error.message)),...(error.code?{code:error.code}:{}),...(error.outcomeUnknown?{outcomeUnknown:true}:{}),...(error.accessDenial?{accessDenial:JSON.parse(catalog.clean(JSON.stringify(error.accessDenial)))}:{})});else res.end();}
   })();pending.add(work);void work.catch(error=>console.error('Gateway request failed:',error.stack||error.message)).finally(()=>pending.delete(work));});
   async function stopIdleWorkers() {
     for(const service of await supervisor.list())if(service.state!=='stopped'&&!service.pendingWork&&!service.activeRequests){
