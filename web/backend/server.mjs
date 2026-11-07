@@ -69,13 +69,14 @@ export async function startWeb({ host = '127.0.0.1', port = 8787, getRemoteOrigi
         return /^[A-Za-z0-9_-]{43}$/.test(challenge) ? json(res, 200, { proof: workspaceProof(accessToken, challenge) })
           : json(res, 400, { error: '无效的工作区探测请求' });
       }
-      if (!authorize(req, res, url, requestOrigin)) return;
       if (url.pathname === '/sw.js' && ['GET', 'HEAD'].includes(req.method)) {
-        // Retire already-installed workers. This endpoint never installs a new offline application.
+        // Old workers must be able to retire after their login expires. Host/Origin checks still apply.
+        // This script only removes the offline shell; the next navigation uses the current login/page.
         const script = `self.addEventListener('install',()=>self.skipWaiting());self.addEventListener('activate',event=>event.waitUntil((async()=>{for(const name of await caches.keys())if(name.startsWith('relay-shell-'))await caches.delete(name);await self.clients.claim();await self.registration.unregister();})()));`;
         res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store', 'Service-Worker-Allowed': '/' });
         res.end(req.method === 'HEAD' ? undefined : script); return;
       }
+      if (!authorize(req, res, url, requestOrigin)) return;
       if (releaseRequest && await serveClientReleases(req, res, url, clientReleaseRoot, webRelease, { local })) return;
       if (url.pathname === showcasePrefix.slice(0, -1)) {
         res.writeHead(302, { Location: showcasePrefix }); res.end(); return;
