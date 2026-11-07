@@ -1,6 +1,6 @@
 'use strict';
 globalThis.SummonModels = (() => {
-  const view = { data: null, summary: null, editor: null, choices: [], error: '', busy: false, login: null, loadedAt: 0, quotaId: null };
+  const view = { data: null, summary: null, editor: null, choices: [], error: '', busy: false, login: null, loadedAt: 0, quotaId: null, connectingId: null };
   let bindings, loginTimer, usageTimer, loading, invalidateSidebar;
   const kinds = { codex: 'Codex 订阅', grok: 'Grok 订阅', api: '通用 API' };
   const formatMoney = balance => {
@@ -21,10 +21,13 @@ globalThis.SummonModels = (() => {
   function usageBody(usage, esc, compact = false) {
     if (usage?.status === 'not_connected') return `<small class="model-usage-note">${esc(usage.note || '待手动接入，尚未读取额度')}</small>`;
     if (usage?.status === 'unconfigured') return '<small class="model-usage-note">选择聊天模型后读取额度</small>';
+    if (usage?.status === 'connecting') return '<small class="model-usage-note">正在接入引擎…</small>';
+    if (!usage || usage.status === 'loading') return '<small class="model-usage-note">正在读取额度…</small>';
+    if (usage.status === 'shared') return `<small class="model-usage-note">${esc(usage.note)}</small>`;
     const windows = percents(usage), money = balances(usage);
     const shown = compact ? windows.slice(0, 2) : windows;
     const credits = typeof usage?.credits === 'number' && Number.isFinite(usage.credits) ? usage.credits : null;
-    const status = usage?.status === 'error' ? (usage.stale ? '上次读取 · 暂未更新' : '暂时无法读取') : usage?.unsupported ? '未提供余额接口' : !usage ? '正在读取额度…' : !windows.length && !money.length && credits === null && !usage.unlimited ? '供应商未返回额度数值' : '';
+    const status = usage.status === 'error' ? (usage.stale ? '上次读取 · 暂未更新' : '暂时无法读取') : usage.unsupported ? '未提供额度接口' : !windows.length && !money.length && credits === null && !usage.unlimited ? '供应商未返回额度数值' : '';
     return `${money.length ? `<div class="model-balances">${money.map(value => `<strong>${esc(formatMoney(value))}<small>余额</small></strong>`).join('')}</div>` : ''}
       ${shown.map(item => `<div class="model-quota-window"><div><span>${esc(item.name)}</span><strong>${Math.round(item.remainingPercent)}% <small>剩余</small></strong></div><span class="model-quota-track ${item.remainingPercent < 10 ? 'low' : ''}" role="meter" aria-label="${esc(item.name)}剩余额度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(item.remainingPercent)}"><i style="width:${Math.max(0, Math.min(100, item.remainingPercent))}%"></i></span>${!compact && item.resetsAt ? `<small>${esc(resetTime(item.resetsAt))} · ${esc(new Date(item.resetsAt).toLocaleString('zh-CN'))}</small>` : ''}</div>`).join('')}
       ${credits !== null && !compact ? `<span class="model-usage-note">附加点数 ${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(credits)} credits</span>` : ''}
@@ -37,20 +40,29 @@ globalThis.SummonModels = (() => {
   const duration = window => Number.isFinite(window.durationMinutes) ? window.durationMinutes
     : /每周|周额|week/i.test(window.name || '') ? 10080 : /(?:5\s*小时|5\s*hour)/i.test(window.name || '') ? 300 : null;
   function signal(item, esc) {
-    const awaiting = item.role === 'executor' && item.enabled !== true;
+    const executor = item.role === 'executor';
+    const awaiting = executor ? !item.enabled : !item.configured;
     const usage = awaiting ? null : item.usage, windows = percents(usage), money = balances(usage);
-    const isApi = item.kind === 'api', weekly = windows.find(window => duration(window) === 10080);
-    const fiveHours = windows.find(window => duration(window) === 300);
-    const main = weekly || windows[0] || null;
+    const loading = item.connecting || !awaiting && (!usage || usage.status === 'loading');
+    const codexWindows = windows.filter(window => window.limitId === 'codex');
+    const primaryWindows = codexWindows.length ? codexWindows : windows;
+    const isApi = item.kind === 'api', weekly = primaryWindows.find(window => duration(window) === 10080);
+    const fiveHours = primaryWindows.find(window => duration(window) === 300);
+    const main = weekly || primaryWindows[0] || null;
     const short = fiveHours && main !== fiveHours ? fiveHours : null;
     const balance = money.find(value => value.currency === 'CNY') || money[0] || null;
-    const ring = isApi ? 100 : main?.remainingPercent ?? null;
-    const dots = !isApi && short ? Math.ceil(Math.max(0, Math.min(100, short.remainingPercent)) / 25) : null;
+    const ring = awaiting || loading ? null : isApi ? 100 : main?.remainingPercent ?? null;
+    const dots = !loading && !isApi && short ? Math.ceil(Math.max(0, Math.min(100, short.remainingPercent)) / 25) : null;
     const percentage = main ? `${Math.round(Math.max(0, Math.min(100, main.remainingPercent)))}%` : '';
-    const value = awaiting ? item.label || '待接入' : isApi ? balance ? formatMoney(balance) : '—' : dots === null ? percentage || '—' : '';
-    const role = item.role === 'executor' ? '干活引擎' : '聊天引擎 · Pi';
+    let value = '';
+    if (loading) value = item.connecting ? '配置中' : '读取中';
+    else if (awaiting) value = item.label || (executor ? '待接入' : '待配置');
+    else if (isApi) value = balance ? formatMoney(balance) : '暂无余额';
+    else if (dots === null) value = percentage || (executor ? '已接入' : '暂无额度');
+    const role = executor ? '工作引擎' : '聊天引擎 · Pi';
     const details = [role, item.name, item.model, awaiting ? item.note || '待手动接入，尚未读取额度' : isApi ? '圆环常满 · 底部显示余额' : main ? `圆环：${main.name}，剩余 ${Math.round(main.remainingPercent)}%` : '暂未取得订阅额度'];
-    if (awaiting) details.push('点击查看接入设置');
+    if (loading) details.push(item.connecting ? '正在配置引擎' : '正在读取额度');
+    else if (awaiting) details.push('点击查看接入设置');
     else if (isApi) {
       details.push(...money.map(value => `余额 ${formatMoney(value)}`));
       if (!balance) details.push('余额尚未返回');
@@ -64,22 +76,28 @@ globalThis.SummonModels = (() => {
     const description = [...new Set(details.filter(Boolean))].join('\n');
     const low = isApi ? balance?.amount <= 0 : ring !== null && ring < 10 || short?.remainingPercent < 10;
     const points = [[21, 49], [28.5, 51.5], [35.5, 51.5], [43, 49]];
-    return `<button class="quota-signal ${item.role === 'executor' ? 'executor' : ''} ${ring === null ? 'is-unknown' : ''} ${low ? 'is-low' : ''} ${usage?.status === 'error' ? 'is-stale' : ''}" data-action="models-quota" data-id="${esc(item.id || item.role)}" aria-label="${esc(description)}" aria-expanded="${view.quotaId === (item.id || item.role)}" aria-controls="model-quota-popover">
+    const brand = loading ? '<i class="quota-signal-spinner" aria-hidden="true"></i>' : awaiting ? '' : globalThis.SummonModelIcons.svg(item);
+    return `<button class="quota-signal ${executor ? 'executor' : ''} ${ring === null ? 'is-unknown' : ''} ${low ? 'is-low' : ''} ${usage?.status === 'error' ? 'is-stale' : ''}" data-action="models-quota" data-id="${esc(item.id || item.role)}" aria-label="${esc(description)}" aria-busy="${Boolean(loading)}" aria-expanded="${view.quotaId === (item.id || item.role)}" aria-controls="model-quota-popover">
       <span class="quota-signal-visual"><svg class="quota-signal-face" viewBox="0 0 64 59" aria-hidden="true" focusable="false"><path class="quota-signal-track" d="M15.74 45.26 A23 23 0 1 1 48.26 45.26" pathLength="100"/><path class="quota-signal-progress" d="M15.74 45.26 A23 23 0 1 1 48.26 45.26" pathLength="100" stroke-dasharray="${ring === null ? 0 : Math.max(0, Math.min(100, ring))} 100"/>
-        ${dots === null ? '' : points.map(([x, y], index) => `<circle class="quota-signal-dot ${index < dots ? 'on' : ''}" cx="${x}" cy="${y}" r="1.9"/>`).join('')}</svg><span class="quota-signal-brand">${globalThis.SummonModelIcons.svg(item)}</span>${value ? `<span class="quota-signal-value ${isApi ? 'is-money' : ''}" aria-hidden="true">${esc(value)}</span>` : ''}</span>
-      <span class="quota-signal-role">${item.role === 'executor' ? 'WORK' : 'CHAT'}</span></button>`;
+        ${dots === null ? '' : points.map(([x, y], index) => `<circle class="quota-signal-dot ${index < dots ? 'on' : ''}" cx="${x}" cy="${y}" r="1.9"/>`).join('')}</svg><span class="quota-signal-brand">${brand}</span>${value ? `<span class="quota-signal-value ${balance && !loading ? 'is-money' : ''}" aria-hidden="true">${esc(value)}</span>` : ''}</span>
+      <span class="quota-signal-role">${executor ? 'WORK' : 'CHAT'}</span></button>`;
   }
   function executorButton(item, esc) {
     if (!item || item.role !== 'executor' || item.id === 'pi') return '';
     const action = item.enabled ? 'disconnect' : 'connect';
-    return `<button class="${item.enabled ? 'secondary-button' : 'primary-button'}" data-action="models-executor-${action}" data-id="${esc(item.id)}" ${view.busy ? 'disabled' : ''}>${esc(item.enabled ? '断开' : item.id === 'codex-cli' ? '同意并接入 Codex' : '接入')}</button>`;
+    return `<button class="${item.enabled ? 'secondary-button' : 'primary-button'}" data-action="models-executor-${action}" data-id="${esc(item.id)}" ${view.busy || item.connecting ? 'disabled' : ''}>${esc(item.enabled ? '断开' : item.id === 'codex-cli' ? '同意并接入 Codex' : '接入')}</button>`;
   }
-  function sidebar(summary, { esc, icon, invalidate }) {
+  function sidebar({ esc, icon, invalidate, chatConfigured, chatConnecting, setup }) {
     invalidateSidebar = invalidate;
-    if (summary) view.summary = summary;
     const current = view.summary;
-    const rows = current ? [current.chat, current.workExecutor || current.executors?.[0]].filter(Boolean) : [
-      { role: 'chat', name: '正在读取聊天模型' }, { role: 'executor', id: 'codex-cli', kind: 'codex-cli', name: 'Codex', enabled: false, label: '待接入', usage: { status: 'not_connected' } }];
+    const chat = { ...(current?.chat || { role: 'chat', name: '聊天引擎' }), configured: chatConfigured, connecting: chatConnecting };
+    if (!chatConfigured) chat.usage = { status: 'unconfigured' };
+    const pendingId = view.connectingId || setup?.engineId;
+    const work = { ...(current?.executors?.find(item => item.id === pendingId) || current?.workExecutor || current?.executors?.[0]
+      || { role: 'executor', id: 'codex-cli', kind: 'codex-cli', name: 'Codex', enabled: false, label: '待接入', usage: { status: 'not_connected' } }) };
+    if (work.id === pendingId && (view.connectingId || ['queued', 'running'].includes(setup?.status))) work.connecting = true;
+    if (work.id === setup?.engineId && setup?.status === 'waiting' && !work.enabled) work.label = '待授权';
+    const rows = [chat, work];
     const selected = rows.find(item => (item.id || item.role) === view.quotaId);
     const popover = selected ? `<aside class="quota-popover" id="model-quota-popover" role="dialog" aria-label="${esc(selected.name || '模型')}接入与额度"><header><span class="quota-popover-icon">${globalThis.SummonModelIcons.svg(selected, 28)}</span><div><small>${selected.role === 'executor' ? 'WORK · 执行引擎' : 'CHAT · 聊天引擎'}</small><strong>${esc(selected.name || '正在读取')}</strong></div><button class="icon-button" data-action="models-quota-close" aria-label="关闭额度详情">${icon('close', 16)}</button></header>${selected.model ? `<p class="quota-popover-model">${esc(selected.model)}</p>` : ''}<div class="quota-popover-usage">${usageBody(selected.usage, esc)}</div>${executorButton(selected, esc)}<footer><button data-action="navigate" data-view="models">管理模型与引擎 ${icon('arrow', 14)}</button></footer></aside>` : '';
     return `<section class="sidebar-models" aria-label="模型与引擎额度">${rows.map(item => signal(item, esc)).join('')}${popover}</section>`;
@@ -189,11 +207,12 @@ globalThis.SummonModels = (() => {
       view.error = '';
       if (!view.data) await load(provided.api, provided.render, provided.toast, provided.refresh);
       if (['models-executor-connect', 'models-executor-disconnect'].includes(action)) {
-        view.busy = true; provided.render();
         const enabled = action === 'models-executor-connect';
+        view.busy = true; view.connectingId = enabled ? element.dataset.id : null; provided.render();
         view.data = await provided.api('/api/model-settings/executors/' + encodeURIComponent(element.dataset.id), 'POST', { enabled, select: enabled });
         view.summary = view.data; view.loadedAt = Date.now();
-        provided.toast(enabled ? '工作引擎已接入' : '工作引擎已断开');
+        const connected = view.data.executors.some(item => item.id === element.dataset.id && item.enabled);
+        provided.toast(enabled ? connected ? '工作引擎已接入' : '正在配置工作引擎' : '工作引擎已断开');
         await provided.refresh?.();
       }
       if (action === 'models-executor-select') {
@@ -216,7 +235,7 @@ globalThis.SummonModels = (() => {
       if (action === 'models-login') await beginLogin(element.dataset.id);
       if (action === 'models-cancel-login') { clearTimeout(loginTimer); view.login = await provided.api(`/api/model-settings/connections/${encodeURIComponent(element.dataset.id)}/login`, 'DELETE', {}); }
     } catch (error) { view.error = error.message; provided.toast(error.message, true); }
-    finally { view.busy = false; provided.render(); }
+    finally { view.busy = false; view.connectingId = null; provided.render(); }
   }
   document.addEventListener('click', event => { if (view.quotaId && !event.target.closest('.quota-popover,.quota-signal')) closeQuota(); });
   document.addEventListener('keydown', event => { if (event.key === 'Escape' && view.quotaId) closeQuota(); });
@@ -240,5 +259,5 @@ globalThis.SummonModels = (() => {
       if (model?.contextWindow && model?.maxTokens) { view.editor.contextWindow = model.contextWindow; view.editor.maxTokens = Math.min(model.maxTokens, 8192); bindings.render(); }
     }
   });
-  return { sidebar, start, load, render, act, current: () => view.summary };
+  return { sidebar, start, load, render, act, sync: summary => { if (summary) view.summary = summary; }, current: () => view.summary };
 })();

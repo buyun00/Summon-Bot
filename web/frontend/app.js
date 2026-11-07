@@ -600,6 +600,7 @@ async function refresh(force = false) {
     void globalThis.SummonCache?.writeWorkspace(synced);
     Object.assign(state, structuredClone(next)); for (const [id, pending] of avatarSaves) { const bot = state.bots?.find(item => item.id === id); if (bot && (pending.running || pending.error || pending.savedVersion !== pending.version || avatarReadEpoch < pending.confirmedEpoch)) bot.avatar = { ...pending.target }; else if (!pending.running && !pending.error) avatarSaves.delete(id); } state.bots ||= []; state.rooms ||= []; state.works ||= []; state.agentRuns ||= []; state.routines ||= []; state.knowledge ||= { nodes: [], edges: [] };
     if (!ui.modelsStarted) { ui.modelsStarted = true; globalThis.SummonModels.start({ api, render, toast, refresh }); }
+    globalThis.SummonModels.sync(state.modelSettings);
     globalThis.SummonOnboarding.sync(state, onboardingBindings());
     const preferred = defaultConversationId();
     if (!roomById(ui.roomId) || !ui.roomChosenByUser && preferred !== ui.roomId) { ui.roomId = preferred; ui.reply = null; await restoreRoomMessages(ui.roomId); }
@@ -768,6 +769,7 @@ async function restoreCachedWorkspace() {
     if (workspace) {
       ui.workspaceSnapshot = workspace.snapshot; ui.workspaceCursor = workspace.cursor;
       Object.assign(state, structuredClone(workspace.snapshot));
+      globalThis.SummonModels.sync(state.modelSettings);
       restoreClientSession(session);
       if (!roomById(ui.roomId) || !ui.roomChosenByUser) ui.roomId = defaultConversationId();
       await restoreRoomMessages(ui.roomId);
@@ -1333,7 +1335,8 @@ function renderTopbar() {
     ${!matchingBots.length && !groups.length && query ? '<div class="sidebar-empty">没有找到匹配项</div>' : ''}
   </div>
   <div class="sidebar-controls"><nav class="sidebar-shortcuts" aria-label="常用功能"><button class="${ui.view === 'works' ? 'selected' : ''}" data-action="navigate" data-view="works">${icon('work', 17)}<span>工作</span>${activeWorks ? `<small>${activeWorks}</small>` : ''}</button><button class="${ui.view === 'knowledge' ? 'selected' : ''}" data-action="navigate" data-view="knowledge">${icon('knowledge', 17)}<span>知识</span></button></nav>
-  <div class="sidebar-footer"><div class="menu-anchor sidebar-owner-anchor"><button class="sidebar-owner" data-action="toggle-apps" aria-label="${esc(ownerName())}，设置，${connectionLabel}" aria-expanded="${ui.menu === 'apps'}"><span class="sidebar-owner-visual"><span class="contact-avatar-wrap"><img class="sidebar-owner-frame" src="/icons/owner-paper-frame.png?v=20261104" width="100" height="100" alt="" aria-hidden="true" draggable="false">${avatar('user', 48)}<i class="presence-dot ${connectionKind}" aria-hidden="true"></i></span></span><span class="sidebar-owner-name">${esc(ownerName())}</span></button>${appMenu}</div>${globalThis.SummonModels.sidebar(null, { esc, icon, invalidate: () => { ui.lastSidebarHtml = null; } })}</div></div>`;
+  <div class="sidebar-footer"><div class="menu-anchor sidebar-owner-anchor"><button class="sidebar-owner" data-action="toggle-apps" aria-label="${esc(ownerName())}，设置，${connectionLabel}" aria-expanded="${ui.menu === 'apps'}"><span class="sidebar-owner-visual"><span class="contact-avatar-wrap"><img class="sidebar-owner-frame" src="/icons/owner-paper-frame.png?v=20261104" width="100" height="100" alt="" aria-hidden="true" draggable="false">${avatar('user', 48)}<i class="presence-dot ${connectionKind}" aria-hidden="true"></i></span></span><span class="sidebar-owner-name">${esc(ownerName())}</span></button>${appMenu}</div>${globalThis.SummonModels.sidebar({ esc, icon, invalidate: () => { ui.lastSidebarHtml = null; }, chatConfigured: state.provider.configured,
+    chatConnecting: globalThis.SummonOnboarding.chatConnecting(), setup: globalThis.SummonOnboarding.setupActivity(state.onboarding?.roomId) })}</div></div>`;
   const signature = renderSignature(html);
   if (ui.lastSidebarHtml !== signature) {
     const motion = captureMotion(sidebar), toolbar = sidebar.querySelector('.sidebar-toolbar');
@@ -1411,12 +1414,16 @@ function chatExecutionBindings(messages) {
   return { byMessage, orphaned, pending, active };
 }
 function pendingJobStatus(job) {
-  const text = job.status === 'running' ? '正在处理' : job.status === 'waiting' ? '等待答复' : '等待执行';
-  return `<div class="message-work-status ${esc(job.status)}" role="status">${avatar(job.botId, 22, `pending:${job.id}`)}<span>${esc(nameOf(job.botId))} · ${text}</span></div>`;
+  const text = job.label || (job.status === 'running' ? '正在处理' : job.status === 'waiting' ? '等待答复' : '等待执行');
+  return `<div class="message-work-status ${esc(job.status)}" role="status">${avatar(job.botId, 22, `pending:${job.id}`)}<span>${esc(nameOf(job.botId))} · ${esc(text)}</span></div>`;
+}
+function composerActivity(statuses) {
+  return statuses ? `<div class="composer-activity" aria-label="当前运行状态" aria-live="polite">${statuses}</div>` : '';
 }
 function renderComposerActivity(executions) {
-  const statuses = executions.active.map(run => renderAgentRun(run, { showBot: true })).join('') + executions.pending.map(pendingJobStatus).join('');
-  return statuses ? `<div class="composer-activity" aria-label="当前运行状态" aria-live="polite">${statuses}</div>` : '';
+  const setup = globalThis.SummonOnboarding.setupActivity(ui.roomId);
+  const status = setup && !executions.active.some(item => setup.workId && item.workId === setup.workId) ? pendingJobStatus(setup) : '';
+  return composerActivity(executions.active.map(run => renderAgentRun(run, { showBot: true })).join('') + executions.pending.map(pendingJobStatus).join('') + status);
 }
 function collaborationBindings(messages, activities) {
   const byMessage = new Map(), orphaned = [];
@@ -1459,7 +1466,7 @@ function renderChatMessage(message, { isGroup, previousMessage, grouped, convers
   </article>`;
 }
 function renderChat() {
-  if (globalThis.SummonOnboarding.visible()) return globalThis.SummonOnboarding.render({ esc, icon, avatar });
+  if (globalThis.SummonOnboarding.visible()) return globalThis.SummonOnboarding.render({ esc, icon, avatar, renderActivity: setup => composerActivity(pendingJobStatus(setup)) });
   const room = roomById(ui.roomId), bot = currentBot(), isGroup = room?.kind !== 'dm' || !room?.members?.includes('user');
   const members = (room?.members || []).filter(id => id !== 'user').map(botById).filter(Boolean);
   const title = bot?.name || room?.name || 'Summon Bot';

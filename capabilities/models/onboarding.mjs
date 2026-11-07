@@ -16,6 +16,7 @@ const remoteProviders = new Map([['tailscale', 'Tailscale Serve'], ['cloudflare'
 const guideSource = 'summon:onboarding';
 const localOnly = option('先只在这台电脑上用', 'local-only');
 const usePi = option('先用内置 Pi', 'use-pi');
+const setupConfirmation = step => engines.has(step) ? `${engines.get(step).name} 已接入，可以用来执行工作。` : '远程访问已准备好。';
 
 function question(step) {
   if (step === 'engine') return '我是你的主 Bot，可以帮你把事交给能独立执行的工作同伴，比如查资料、改代码、整理文件、定时提醒，做完结果会直接回到这里。你现在是用 Codex、Grok，还是 Claude Code？';
@@ -86,14 +87,16 @@ export class OnboardingService {
   }
 
   async ensureQuestion(state = this.state()) {
-    if (state.status !== 'guiding' || !state.questionId || this.chatroom.store.get('messages', state.questionId)) return;
-    await this.chatroom.append(state.roomId, { id: state.questionId, content: question(state.step), sourceRefs: [guideSource] }, state.bot.id);
+    const completed = state.status === 'complete' && state.step === 'done';
+    if ((!completed && state.status !== 'guiding') || !state.questionId || this.chatroom.store.get('messages', state.questionId)) return;
+    const { questionText, replyTo } = this.record();
+    await this.chatroom.append(state.roomId, { id: state.questionId, content: questionText || question(state.step), replyTo, sourceRefs: [guideSource] }, state.bot.id);
   }
 
   async guide(state = this.state()) {
     if (state.status !== 'guiding') return null;
     const { step, questionId, error } = state;
-    const setup = this.record().setup;
+    const { setup, questionText } = this.record();
     const work = setup?.questionId === questionId && await this.manager.readState(state.bot.id, db => db?.getRecord('works', setup.workId));
     let options, localControl;
     if (step === 'engine') options = [...engines].map(([action, { name }]) => option(name, action));
@@ -107,7 +110,7 @@ export class OnboardingService {
       localControl = { provider: step, origin: !entry?.pending && entry?.origin || null };
       options = localControl.origin ? [option('完成引导', 'next')] : [option('继续配置', 'check'), localOnly];
     } else return null;
-    return { step, text: question(step), options, localControl, messageId: questionId, error,
+    return { step, text: questionText || question(step), engine: engines.get(step), options, localControl, messageId: questionId, error,
       setup: setup?.questionId === questionId ? { workId: setup.workId, status: error ? 'blocked' : work?.status || 'queued', progress: work?.progress || '' } : null };
   }
 
@@ -150,13 +153,13 @@ export class OnboardingService {
       const room = state.roomId && this.chatroom.store.get('rooms', state.roomId) ||
         await this.chatroom.createRoom({ id: 'room-onboarding', kind: 'dm', name: '与 ' + bot.name + ' 的私聊', members: ['user', bot.id] });
       this.save({ status: 'guiding', roomId: room.id, step: state.status === 'paused' && state.step || 'engine',
-        questionId: state.status === 'paused' && state.questionId || randomUUID(), error: null, script: null });
+        questionId: state.status === 'paused' && state.questionId || randomUUID(), questionText: null, replyTo: null, error: null, script: null });
     }
     await this.ensureQuestion();
     return this.state();
   }
 
-  async move(step, { cancelSetup = true } = {}) {
+  async move(step, { cancelSetup = true, replyTo = null, confirmation = '' } = {}) {
     const setup = this.record().setup;
     if (setup && cancelSetup) {
       const botId = this.state().bot.id;
@@ -165,8 +168,14 @@ export class OnboardingService {
         '/works/' + encodeURIComponent(work.id), { method: 'PATCH', body: JSON.stringify({ status: 'cancelled' }) });
       await stopRemoteBridge(JSON.parse(await readFile(join(this.models.dataRoot, 'config', 'deployment.json'), 'utf8')), setup.workId);
     }
-    this.save({ status: step === 'done' ? 'complete' : 'guiding', step,
-      questionId: step === 'done' ? null : randomUUID(), error: null, setup: null });
+    const complete = step === 'done';
+    let questionText = null;
+    if (complete) {
+      const lobby = this.chatroom.store.get('rooms', 'room-lobby');
+      const group = lobby?.members?.includes('user') ? `左侧「${lobby.name}」` : '左侧的群聊';
+      questionText = `配置结束。${confirmation}\n\n${group}可以和伙伴一起讨论项目。在群里用 @ 指定一位伙伴，也可以从左侧点选伙伴单独私聊。左下角的「工作」可以看委托进度，「知识」里能找到已保存的资料。`;
+    } else if (confirmation) questionText = `${confirmation}\n\n${question(step)}`;
+    this.save({ status: complete ? 'complete' : 'guiding', step, questionId: randomUUID(), questionText, replyTo, error: null, setup: null });
     await this.ensureQuestion();
   }
 
@@ -185,7 +194,7 @@ export class OnboardingService {
       + '当前配置工作的完成状态只由 workspace_setup 核实成功后写入，不自行调用 work_update completed 或 cancelled。尚缺条件时使用 work_wait，后续沿同一工作接续。'
       + '报错不会扩大用户授权。用户若限定供应商、内置入口、命令或禁止事项，重试和诊断仍须遵守；不能擅自替换供应商、绕过指定入口或另起临时 HTTP 服务。确需改变用户限定的方法时，在同一工作中说明所缺条件并用 work_wait 等待用户补充。没有这类限制时，继续自主完成已授权的安装和桥接。'
       + 'run_command 用于有期限的前台诊断，其子进程会随命令结束回收。需要持续运行的远程桥一律交给 workspace_setup start-remote 管理。'
-      + '不要索要普通聊天中的密钥。已有成功或未知结果先查状态，避免重复操作。workspace_setup 成功会标记当前配置工作完成并自动推进下一条引导问题，直接结束当前工作，不追加已接通或询问想做什么的消息。';
+      + '不要索要普通聊天中的密钥。已有成功或未知结果先查状态，避免重复操作。workspace_setup 会统一发布接入结果和下一步引导，成功后直接结束当前工作。';
     const sourceIds = new Set(this.record().setup.sourceIds);
     const requests = this.chatroom.messages(state.roomId).filter(item => item.senderId === 'user' && sourceIds.has(item.id));
     const requirements = instruction + '\n当前步骤的用户原始要求（按时间顺序，后续补充持续生效）：\n'
@@ -211,6 +220,10 @@ export class OnboardingService {
       const state = this.state(), setup = this.record().setup, { actor, task, work, source } = context;
       const completed = work && this.store.get('setup-completions', work.id);
       if (completed?.botId === actor && completed.sourceIds.includes(source?.replyTo) && source?.actor === 'user') {
+        if (state.status === 'guiding' && setup?.workId === work.id) await this.move(completed.nextStep, {
+          cancelSetup: false, replyTo: completed.replyTo || source.replyTo, confirmation: setupConfirmation(state.step),
+        });
+        else await this.ensureQuestion(state);
         return { completed: true, nextStep: completed.nextStep, questionAlreadyPublished: true };
       }
       if (state.status !== 'guiding' || actor !== state.bot.id || work?.id !== setup?.workId || work?.executor?.kind !== 'pi'
@@ -234,8 +247,8 @@ export class OnboardingService {
           signal.throwIfAborted();
           await this.manager.request(actor, '/works/' + encodeURIComponent(work.id), { method: 'PATCH', body: JSON.stringify({
             status: 'completed', executionOutcome: { ...work.executionOutcome, onboardingCompletedTaskId: task.id } }) });
-          this.store.save('setup-completions', { id: work.id, botId: actor, sourceIds: setup.sourceIds, nextStep: next });
-          await this.move(next, { cancelSetup: false });
+          this.store.save('setup-completions', { id: work.id, botId: actor, sourceIds: setup.sourceIds, nextStep: next, replyTo: source.replyTo });
+          await this.move(next, { cancelSetup: false, replyTo: source.replyTo, confirmation: setupConfirmation(state.step) });
           return { completed: true, nextStep: next, questionAlreadyPublished: true };
         };
         if (input.action === 'status') return { step: state.step, engineId: engine?.id, workId: work.id,
@@ -293,14 +306,16 @@ export class OnboardingService {
     const preferred = engines.get(action);
     if (preferred && this.models.summary().executors.some(item => item.id === preferred.id && item.enabled)) {
       await this.models.selectWorkExecutor(preferred.id);
-      return this.move('remote');
+      return this.move('remote', { replyTo: message?.id, confirmation: `已选用 ${preferred.name} 执行工作。` });
     }
     if (action === 'connect-engine') return this.startSetup(guide, message);
     if (action === 'use-pi') {
       await this.models.selectWorkExecutor('pi');
-      return this.move('remote');
+      return this.move('remote', { replyTo: message?.id, confirmation: '接下来用内置 Pi 执行工作。' });
     }
-    await this.move(action === 'local-only' || action === 'next' ? 'done' : action);
+    if (action === 'local-only' || action === 'next') return this.move('done', { replyTo: message?.id,
+      confirmation: action === 'local-only' ? '这次先跳过远程访问。' : '可以在设置中查看已保存的远程入口。' });
+    await this.move(action);
     if (remoteProviders.has(action)) return this.startSetup(await this.guide(), message);
   }
 

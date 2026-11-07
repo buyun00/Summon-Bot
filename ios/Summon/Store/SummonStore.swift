@@ -197,6 +197,7 @@ final class SummonStore {
             acceptEpoch(snapshot.historyEpoch)
             bots = snapshot.bots
             onboarding = snapshot.onboarding ?? .null
+            if let modelSettings = snapshot.modelSettings { modelSummary = modelSettings }
             rooms = snapshot.rooms.map { room in
                 var updated = room
                 if let latest = messageHistory[room.id]?.last,

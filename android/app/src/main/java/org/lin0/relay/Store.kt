@@ -205,6 +205,7 @@ class SummonStore(private val app: Context) {
             acceptEpoch(snapshot.historyEpoch)
             bots = snapshot.bots
             onboarding = snapshot.onboarding
+            if (snapshot.modelSettings is SummonJson.Obj) modelSummary = snapshot.modelSettings
             rooms = snapshot.rooms.map { room ->
                 val latest = messageHistory[room.id]?.lastOrNull()
                 if (latest != null && (latest.createdAt ?: "") > (room.lastMessage?.createdAt ?: "")) room.copy(lastMessage = latest) else room

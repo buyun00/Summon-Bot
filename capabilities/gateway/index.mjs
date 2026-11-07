@@ -100,15 +100,21 @@ export async function startGateway(options={}) {
     return manager.readState(botId,db=>{const work=db?.getRecord('works',workId);return work?{...publicWork(botId,work),events:db.listEvents({workId,limit:200})}:null;});
   }
   const sync=new IncrementalSync(store('gateway'));
+  function runRoom(task, botId, guide, guideBotId) {
+    if (guide?.status === 'guiding' && task.workId && task.workId === guide.setup?.workId && botId === guideBotId) return guide.roomId;
+    return task.sessionId?.replace(/^room:/,'');
+  }
   async function ownRun(id) {
+    const guide=onboarding.record(),guideBotId=onboarding.bot()?.id;
     for(const bot of manager.list()){
       const full=await manager.readState(bot.id,db=>{const task=db?.getTask(id);return task?{...task,tools:db.listTools(id)}:null;});
-      if(full)return {id,...full,botId:bot.id,summary:full.result?.content||full.summary||'',sessionId:full.sessionId,roomId:full.sessionId?.replace(/^room:/,'')};
+      if(full)return {id,...full,botId:bot.id,summary:full.result?.content||full.summary||'',sessionId:full.sessionId,roomId:runRoom(full,bot.id,guide,guideBotId)};
     }return null;
   }
   const downloads=new RunArtifactDownloads({getRun:ownRun,resolveRoot:run=>({dataRoot,artifactRoot:join(manager.directory(run.botId),'artifacts')}),tempRoot:join(dataRoot,'capabilities','gateway','tmp','downloads')});
   async function state() {
     const agentRuns=[],providers=[],botActivities=new Map();
+    const guide=onboarding.record(),guideBotId=onboarding.bot()?.id;
     await Promise.all(manager.list().map(async bot=>{
       // A single durable snapshot per Bot avoids reopening its database for every
       // historical task and reading every full tool result on every UI refresh.
@@ -125,7 +131,7 @@ export async function startGateway(options={}) {
             FROM tools WHERE rowid IN (SELECT MAX(rowid) FROM tools GROUP BY task_id)`)
             .all().map(row=>[row.task_id,toolActivity(row)]))};
       });
-      for(const task of snapshot.tasks)agentRuns.push({id:task.id||task.taskId,...task,botId:bot.id,summary:task.result?.content||task.summary||'',toolCount:task.result?.toolsCalled??snapshot.counts[task.id||task.taskId]??0,lastTool:snapshot.lastTools[task.id||task.taskId]||null,roomId:task.sessionId?.replace(/^room:/,'')});
+      for(const task of snapshot.tasks)agentRuns.push({id:task.id||task.taskId,...task,botId:bot.id,summary:task.result?.content||task.summary||'',toolCount:task.result?.toolsCalled??snapshot.counts[task.id||task.taskId]??0,lastTool:snapshot.lastTools[task.id||task.taskId]||null,roomId:runRoom(task,bot.id,guide,guideBotId)});
       const active=snapshot.tasks.filter(task=>['accepted','queued','running','waiting'].includes(task.status)).sort((a,b)=>String(a.updatedAt).localeCompare(String(b.updatedAt))).at(-1);
       const maintenance=snapshot.maintenance?.at(-1);
       const recent=snapshot.tasks.at(-1),fresh=recent&&Date.now()-Date.parse(recent.finishedAt||'')<8000;
@@ -137,7 +143,10 @@ export async function startGateway(options={}) {
     const messages=chatroom.store.list('messages'),jobs=chatroom.jobs(),runtime={started:true,fast:{running:jobs.filter(job=>['running','accepted'].includes(job.status)).length,queued:jobs.filter(job=>job.status==='queued').length},deep:{running:0,queued:0},jobs:jobs.slice(-80)};
     const selection=modelConnections.runtimeModel();
     const latestProvider=selection?providers.filter(provider=>provider.connectionId===selection.id).sort((a,b)=>String(b.lastSuccessAt||'').localeCompare(String(a.lastSuccessAt||'')))[0]||{}:{};
-    return {historyEpoch,onboarding:await onboarding.publicState(),bots:manager.list().map(bot=>({...bot,activity:botActivities.get(bot.id)})),rooms:chatroom.rooms(),routines:manager.store.list('routines'),knowledge:knowledge.graph(),runtime,activity:messages.filter(message=>message.returnTo||message.peerReplyId||['event','work'].includes(message.kind)).slice(-100),works:[...await localWorks(),...codex.list().filter(work=>work.backend!=='desktop').map(work=>({...work,historical:true}))],agentRuns:agentRuns.slice(-100),provider:{configured:Boolean(selection&&((await modelConnections.credentials.read(selection.id).catch(()=>null))||selection.allowNoKey)),model:selection?.model||null,...latestProvider},defaultCwd};
+    const configured=Boolean(selection&&((await modelConnections.credentials.read(selection.id).catch(()=>null))||selection.allowNoKey));
+    const modelSettings=modelConnections.summary();
+    modelSettings.chat.configured=configured;
+    return {historyEpoch,onboarding:await onboarding.publicState(),modelSettings,bots:manager.list().map(bot=>({...bot,activity:botActivities.get(bot.id)})),rooms:chatroom.rooms(),routines:manager.store.list('routines'),knowledge:knowledge.graph(),runtime,activity:messages.filter(message=>message.returnTo||message.peerReplyId||['event','work'].includes(message.kind)).slice(-100),works:[...await localWorks(),...codex.list().filter(work=>work.backend!=='desktop').map(work=>({...work,historical:true}))],agentRuns:agentRuns.slice(-100),provider:{configured,model:selection?.model||null,...latestProvider},defaultCwd};
   }
   function visibleTools(actor) {
     const allowed=actor==='controller'?null:manager.get(actor).allowedTools||[];

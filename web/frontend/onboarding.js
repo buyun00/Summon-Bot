@@ -1,8 +1,8 @@
 'use strict';
 globalThis.SummonOnboarding = (() => {
   const endpoint = '/api/model-settings/onboarding';
-  const view = { open: false, dismissed: false, busy: false, reply: null, messages: [], revision: 0, error: '' };
-  let bindings, progress, timer, generation = 0, actionBusy = false;
+  const view = { open: false, dismissed: false, busy: false, action: null, reply: null, messages: [], revision: 0, error: '' };
+  let bindings, progress, timer, generation = 0, pendingChoice = null;
   const repaint = () => bindings?.render();
   const say = (content, sender = 'bot') => { view.messages.push({ content, sender }); view.revision++; };
   const safeError = error => String(error?.message || '暂时没有完成，请重试。')
@@ -30,6 +30,7 @@ globalThis.SummonOnboarding = (() => {
     view.open = false;
     view.dismissed = true;
     view.busy = false;
+    view.action = null;
     generation++;
     clearTimeout(timer);
   }
@@ -46,6 +47,7 @@ globalThis.SummonOnboarding = (() => {
     if (!view.open || view.busy) return;
     const current = generation, polling = ['poll', 'progress'].includes(action);
     view.busy = true;
+    view.action = action;
     view.error = '';
     if (!polling) repaint();
     try {
@@ -68,6 +70,7 @@ globalThis.SummonOnboarding = (() => {
     } finally {
       if (current === generation) {
         view.busy = false;
+        view.action = null;
         repaint();
         schedule();
       }
@@ -81,20 +84,20 @@ globalThis.SummonOnboarding = (() => {
       return window.SummonDesktop?.openWorkspaceSetup(element.dataset.provider);
     }
     if (action === 'onboarding-choice') {
-      if (actionBusy) return;
-      actionBusy = true;
+      if (pendingChoice) return;
+      pendingChoice = { step: element.dataset.step, action: element.dataset.value };
       repaint();
       try {
         await bindings.api(endpoint + '/advance', 'POST', { action: element.dataset.value, step: element.dataset.step,
           messageId: element.dataset.messageId, requestId: crypto.randomUUID() });
         await bindings.refresh();
-      } finally { actionBusy = false; repaint(); }
+      } finally { pendingChoice = null; repaint(); }
       return;
     }
     return send(element.dataset.guideAction, element.dataset.value, element.textContent.trim());
   }
 
-  function render({ esc, icon, avatar }) {
+  function render({ esc, icon, avatar, renderActivity }) {
     const reply = view.reply;
     const button = (label, action, value = '', primary = false) => `<button type="button" class="${primary ? 'primary-button' : 'secondary-button'}" data-action="onboarding-option" data-guide-action="${esc(action)}" data-value="${esc(value)}" ${view.busy ? 'disabled' : ''}>${esc(label)}</button>`;
     const options = reply?.options?.map((choice, index) => button(choice.label, choice.action, choice.value, index === 0)).join('')
@@ -106,8 +109,28 @@ globalThis.SummonOnboarding = (() => {
     const isKey = reply?.input === 'password', disabled = view.busy || !reply || reply.input === 'none';
     const bot = progress?.bot || { id: 'bot-entry', name: '主 Bot' };
     const messages = view.messages.map(message => `<article class="onboarding-message ${message.sender === 'user' ? 'from-user' : ''}">${message.sender === 'bot' ? avatar(bot.id, 36, '') : ''}<div class="onboarding-message-body"><span class="onboarding-sender">${message.sender === 'user' ? '你' : esc(bot.name)}</span><div class="onboarding-bubble">${esc(message.content).replace(/\n/g, '<br>')}</div></div></article>`).join('');
-    const activity = view.busy && !reply ? '<p class="onboarding-working" role="status">正在准备…</p>' : '';
-    return `<div class="chat-layout onboarding-chat" data-room-id="onboarding" data-ready="true"><section class="conversation"><div class="floating-header"><button class="icon-button" data-action="onboarding-close" aria-label="稍后继续">${icon('back', 22)}</button><div class="chat-title-pill">${avatar(bot.id, 32, '')}<span class="chat-title-copy"><strong>${esc(bot.name)}</strong><small>新手引导</small></span></div></div><div class="messages onboarding-messages" role="log" aria-label="新手引导对话"><div class="date-divider">从一次对话开始</div>${messages}<div class="onboarding-response">${activity}${authorization}${view.error ? `<p class="onboarding-error" role="alert">${esc(view.error)}</p>` : ''}<div class="onboarding-choices">${options}</div></div></div><div class="composer-wrap"><form id="onboarding-message-form" class="composer" autocomplete="off"><input id="onboarding-input" type="${isKey ? 'password' : 'text'}" aria-label="${isKey ? 'API Key' : '引导消息'}" placeholder="${esc(reply?.placeholder || '请选择当前步骤')}" autocomplete="${isKey ? 'new-password' : 'off'}" autocapitalize="off" spellcheck="false" maxlength="${isKey ? 16000 : 2000}" ${disabled ? 'disabled' : ''}><button class="composer-send" type="submit" aria-label="发送" ${disabled ? 'disabled' : ''}>${icon('send', 22)}</button></form><div class="composer-hint">${isKey ? '密钥只用于模型连接' : reply?.phase === 'ready' ? '下一条对话由你选择的模型回复' : '主 Bot · 欢迎引导'}</div></div></section></div>`;
+    const waiting = login?.status === 'waiting';
+    const label = waiting ? '等待你完成订阅授权' : chatConnecting() ? '正在配置聊天模型' : '正在准备下一步';
+    const activity = view.busy || waiting ? renderActivity({ id: 'onboarding-model', botId: bot.id, status: waiting ? 'waiting' : 'running', label }) : '';
+    return `<div class="chat-layout onboarding-chat" data-room-id="onboarding" data-ready="true"><section class="conversation"><div class="floating-header"><button class="icon-button" data-action="onboarding-close" aria-label="稍后继续">${icon('back', 22)}</button><div class="chat-title-pill">${avatar(bot.id, 32, '')}<span class="chat-title-copy"><strong>${esc(bot.name)}</strong><small>新手引导</small></span></div></div><div class="messages onboarding-messages" role="log" aria-label="新手引导对话"><div class="date-divider">从一次对话开始</div>${messages}<div class="onboarding-response">${authorization}${view.error ? `<p class="onboarding-error" role="alert">${esc(view.error)}</p>` : ''}<div class="onboarding-choices">${options}</div></div></div><div class="composer-wrap">${activity}<form id="onboarding-message-form" class="composer" autocomplete="off"><input id="onboarding-input" type="${isKey ? 'password' : 'text'}" aria-label="${isKey ? 'API Key' : '引导消息'}" placeholder="${esc(reply?.placeholder || '请选择当前步骤')}" autocomplete="${isKey ? 'new-password' : 'off'}" autocapitalize="off" spellcheck="false" maxlength="${isKey ? 16000 : 2000}" ${disabled ? 'disabled' : ''}><button class="composer-send" type="submit" aria-label="发送" ${disabled ? 'disabled' : ''}>${icon('send', 22)}</button></form><div class="composer-hint">${isKey ? '密钥只用于模型连接' : reply?.phase === 'ready' ? '下一条对话由你选择的模型回复' : '主 Bot · 欢迎引导'}</div></div></section></div>`;
+  }
+
+  function chatConnecting() {
+    return view.open && view.busy && ['authorize', 'key', 'no-key', 'import', 'use'].includes(view.action);
+  }
+
+  function setupActivity(roomId) {
+    const guide = progress?.guide;
+    if (!guide || progress.roomId !== roomId) return null;
+    const pending = pendingChoice && pendingChoice.step === guide.step && ['connect-engine', 'check', 'tailscale', 'cloudflare', 'custom'].includes(pendingChoice.action);
+    if (!guide.setup && !pending) return null;
+    const status = pending ? 'queued' : guide.setup.status;
+    if (['completed', 'cancelled'].includes(status)) return null;
+    const label = status === 'waiting' ? '等待你补充配置所需的信息'
+      : ['blocked', 'paused'].includes(status) ? '配置等待继续'
+        : guide.engine ? `正在接入 ${guide.engine.name}` : '正在配置远程访问';
+    return { id: guide.setup?.workId || guide.messageId, workId: guide.setup?.workId, botId: progress.bot.id,
+      engineId: guide.engine?.id, status: status === 'active' ? 'running' : status, label };
   }
 
   function renderFollowup(message, esc) {
@@ -122,10 +145,9 @@ globalThis.SummonOnboarding = (() => {
         : local ? '<small>主 Bot 会在这里继续处理远程配置，需要你授权时会提示。</small>' : '';
     const install = { codex: 'https://developers.openai.com/codex/cli', grok: 'https://docs.x.ai/build/overview', 'claude-code': 'https://code.claude.com/docs/en/setup' }[guide.step];
     const working = guide.setup && ['queued', 'active'].includes(guide.setup.status);
-    const setupStatus = guide.setup ? `<p class="onboarding-working" role="status">${esc(working ? 'Pi 正在配置，有问题我会继续处理…' : guide.setup.status === 'waiting' ? '正在等待当前配置所需的授权或信息，可以直接在聊天中继续。' : '可以直接在聊天中补充信息，让我接着处理。')}</p>` : '';
-    const options = guide.options.map(choice => `<button type="button" class="secondary-button" data-action="onboarding-choice" data-step="${esc(guide.step)}" data-message-id="${esc(message.id)}" data-value="${esc(choice.action)}" ${actionBusy || working && ['connect-engine', 'check'].includes(choice.action) ? 'disabled' : ''}>${esc(choice.label)}</button>`).join('');
+    const options = guide.options.map(choice => `<button type="button" class="secondary-button" data-action="onboarding-choice" data-step="${esc(guide.step)}" data-message-id="${esc(message.id)}" data-value="${esc(choice.action)}" ${pendingChoice || working && ['connect-engine', 'check'].includes(choice.action) ? 'disabled' : ''}>${esc(choice.label)}</button>`).join('');
     return `<div class="onboarding-followup">${guide.error ? `<p class="onboarding-error" role="alert">${esc(guide.error)}</p>` : ''}
-      ${setupStatus}<div class="onboarding-choices">${setup}${options}${install ? `<a href="${esc(install)}" target="_blank" rel="noopener noreferrer">官方安装指引</a>` : ''}</div></div>`;
+      <div class="onboarding-choices">${setup}${options}${install ? `<a href="${esc(install)}" target="_blank" rel="noopener noreferrer">官方安装指引</a>` : ''}</div></div>`;
   }
 
   function visibleMessages(messages) {
@@ -144,5 +166,5 @@ globalThis.SummonOnboarding = (() => {
     if (value) void send(view.reply.phase === 'ready' ? 'handoff' : view.reply.phase, value);
   });
 
-  return { sync, open, close, act, render, renderFollowup, visibleMessages, visible: () => view.open, key: () => `${view.reply?.phase}:${view.revision}` };
+  return { sync, open, close, act, render, renderFollowup, setupActivity, chatConnecting, visibleMessages, visible: () => view.open, key: () => `${view.reply?.phase}:${view.revision}` };
 })();

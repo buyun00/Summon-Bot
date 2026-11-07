@@ -12,6 +12,8 @@
 .quota-signal-progress[stroke-dasharray="0 100"]{visibility:hidden}
 .quota-signal-brand{position:absolute;top:16px;left:20px;display:grid;place-items:center;width:24px;height:24px;color:inherit}
 .quota-signal-brand .model-brand-icon{width:24px;height:24px}
+.quota-signal-spinner{box-sizing:border-box;width:20px;height:20px;border:2px solid #d5dfd8;border-top-color:#778e80;border-radius:50%;animation:quota-signal-spin .85s linear infinite}
+@keyframes quota-signal-spin{to{transform:rotate(360deg)}}
 .quota-signal-value{position:absolute;top:44px;left:50%;transform:translateX(-50%);width:max-content;max-width:94px;text-align:center;white-space:nowrap;color:#6f8478;font-size:11px;line-height:15px;font-weight:500;font-variant-numeric:tabular-nums;letter-spacing:-.2px}
 .quota-signal-value.is-money{top:45px;font-size:10.5px;line-height:14px}
 .quota-signal-dot{fill:#d5dfd8;transition:fill .16s ease}
@@ -29,7 +31,7 @@
 .quota-popover header>div{min-width:0;flex:1}.quota-popover header small{display:block;font-size:var(--text-caption);letter-spacing:.5px;color:#91a18d;margin-bottom:3px;white-space:nowrap}.quota-popover header strong{display:block;font-size:var(--text-body);font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.quota-popover header button{width:28px;height:28px;min-width:28px;border-radius:50%;color:#8c9b87;align-self:flex-start}.quota-popover header button:hover{background:#edf3e9}
 .quota-popover-model{font-size:var(--text-caption);color:#91a08c;overflow-wrap:anywhere;margin-bottom:14px}.quota-popover .model-balances{margin:5px 0 14px}.quota-popover .model-balances strong{font-size:var(--text-heading);font-weight:500;letter-spacing:-.5px}.quota-popover .model-balances small{font-size:var(--text-caption);letter-spacing:0}.quota-popover .model-usage-note{font-size:var(--text-caption)}.quota-popover .models-inline-error{font-size:var(--text-caption);padding:9px;margin:9px 0}
 .quota-popover-usage{padding-bottom:15px}.quota-popover footer{border-top:1px solid #e7ece2;padding:11px 0}.quota-popover footer button{display:flex;align-items:center;justify-content:space-between;width:100%;color:#71886b;font-size:var(--text-caption);padding:3px 0}
-@media(prefers-reduced-motion:reduce){.quota-signal,.quota-signal-progress,.quota-signal-dot{transition:none}}
+@media(prefers-reduced-motion:reduce){.quota-signal,.quota-signal-progress,.quota-signal-dot{transition:none}.quota-signal-spinner{animation:none}}
 .models-executor-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid var(--line)}
 .models-executor-row strong{font-size:var(--text-meta)}
 .models-executor-row p{color:var(--muted);font-size:var(--text-caption);margin:3px 0 0}

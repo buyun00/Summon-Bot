@@ -57,7 +57,7 @@ async function executableFor(id, bridgePath) {
   throw workError('部署机没有找到 ' + cliExecutorNames[id] + '，请安装后重试。', 'WORK_ENGINE_MISSING');
 }
 
-async function runCli(file, args, { id, cwd, input = '', signal, timeout, onLine, captureStderr = false }) {
+async function runCli(file, args, { id, cwd, input = '', signal, timeout, onLine, keepInputOpen = false, captureStderr = false }) {
   signal?.throwIfAborted();
   const env = cleanEnvironment();
   for (const key of credentialNames(id)) if (process.env[key]) env[key] = process.env[key];
@@ -83,12 +83,13 @@ async function runCli(file, args, { id, cwd, input = '', signal, timeout, onLine
     if (!onLine || failure) return;
     const lines = (pending + chunk).split('\n');
     pending = lines.pop();
-    try { for (const line of lines) if (line.trim()) onLine(line); }
+    try { for (const line of lines) if (line.trim()) onLine(line, child.stdin); }
     catch (error) { stop(error); }
   });
   if (captureStderr) { child.stderr.setEncoding('utf8'); child.stderr.on('data', capture); }
   child.stdin.on('error', () => {});
-  child.stdin.end(input);
+  if (keepInputOpen) child.stdin.write(input);
+  else child.stdin.end(input);
   try {
     const exitCode = await new Promise((resolve, reject) => {
       child.once('error', reject);
@@ -96,7 +97,7 @@ async function runCli(file, args, { id, cwd, input = '', signal, timeout, onLine
       if (signal?.aborted) abort();
     });
     if (onLine && pending.trim() && !failure) {
-      try { onLine(pending); } catch (error) { stop(error); }
+      try { onLine(pending, child.stdin); } catch (error) { stop(error); }
     }
     if (killing) await killing;
     if (failure) throw failure;
@@ -105,6 +106,29 @@ async function runCli(file, args, { id, cwd, input = '', signal, timeout, onLine
     clearTimeout(timer);
     signal?.removeEventListener('abort', abort);
   }
+}
+
+export async function readCodexCliRateLimits({ bridgePath, signal } = {}) {
+  const id = 'codex-cli', file = await executableFor(id, bridgePath);
+  const line = value => JSON.stringify(value) + '\n';
+  const unavailable = () => workError('暂时无法读取 Codex 订阅额度。', 'CODEX_QUOTA_UNAVAILABLE');
+  let limits;
+  const { exitCode } = await runCli(file, ['app-server'], { id, cwd: homedir(), timeout: 12000, signal, keepInputOpen: true,
+    input: line({ id: 0, method: 'initialize', params: { clientInfo: { name: 'summon-bot', title: 'Summon Bot', version: '1' } } }),
+    onLine(value, stdin) {
+      const response = JSON.parse(value);
+      if (response.id !== 0 && response.id !== 1) return;
+      if (!response.result || response.error) throw unavailable();
+      if (response.id === 0 && !stdin.writableEnded) {
+        stdin.write(line({ method: 'initialized' }) + line({ id: 1, method: 'account/rateLimits/read' }));
+      } else if (response.id === 1) {
+        limits = response.result;
+        stdin.end();
+      }
+    },
+  }).catch(() => { throw unavailable(); });
+  if (exitCode !== 0 || !limits) throw unavailable();
+  return limits;
 }
 
 export async function confirmWorkCli(id, { bridgePath, signal } = {}) {

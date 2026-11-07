@@ -59,5 +59,5 @@ export function requireCliExecutor(source, id) {
 }
 
 export function requireDesktopExecutor(dataRoot) {
-  if (!desktopExecutorState({ dataRoot }).enabled) throw Object.assign(new Error('Codex 尚未接入，请在“模型与引擎”中手动接入后再使用。'), { code: 'CODEX_NOT_CONNECTED', status: 409 });
+  if (!desktopExecutorState({ dataRoot }).enabled) throw Object.assign(new Error('Codex 桌面会话接口尚未授权。工作引擎的连接状态可在「模型与引擎」中查看。'), { code: 'CODEX_NOT_CONNECTED', status: 409 });
 }

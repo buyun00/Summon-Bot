@@ -64,17 +64,21 @@ private class ModelBrandCatalog(context: android.content.Context) {
     val resource = remember(brand) { context.resources.getIdentifier("ai_$brand", "drawable", context.packageName) }
     Image(painterResource(if (resource != 0) resource else R.drawable.ai_ai), null, modifier, colorFilter = ColorFilter.tint(modelGreen))
 }
-private data class ModelGaugeData(val ring: Double?, val dots: Int?, val value: String)
+private data class ModelGaugeData(val ring: Double?, val dots: Int?, val value: String, val loading: Boolean = false, val showsBrand: Boolean = true)
 private fun modelGauge(item: SummonJson): ModelGaugeData {
-    if (item["role"].stringValue == "executor" && item["enabled"].bool != true) return ModelGaugeData(null, null, item["label"].stringValue.ifBlank { "待接入" })
+    val executor = item["role"].stringValue == "executor"
     val usage = item["usage"]
+    if (executor && item["enabled"].bool != true) return ModelGaugeData(null, null, item["label"].stringValue.ifBlank { "待接入" }, showsBrand = false)
+    if (!executor && (item["configured"].bool == false || item["id"].string == null || usage["status"].string == "unconfigured")) return ModelGaugeData(null, null, "待配置", showsBrand = false)
+    if (usage !is SummonJson.Obj || usage["status"].string == "loading") return ModelGaugeData(null, null, "读取中", loading = true)
     val windows = usage["windows"].array.orEmpty().filter { it["remainingPercent"].modelNumber() != null }
-    val main = windows.firstOrNull { it["durationMinutes"].int == 10080 } ?: windows.firstOrNull()
-    val short = windows.firstOrNull { it["durationMinutes"].int == 300 && it != main }
+    val primary = windows.filter { it["limitId"].string == "codex" }.ifEmpty { windows }
+    val main = primary.firstOrNull { it["durationMinutes"].int == 10080 } ?: primary.firstOrNull()
+    val short = primary.firstOrNull { it["durationMinutes"].int == 300 && it != main }
     val money = usage["balances"].array.orEmpty() + listOfNotNull(usage["balance"].takeIf { it is SummonJson.Obj })
     if (item["kind"].stringValue == "api") return ModelGaugeData(100.0, null, money.firstOrNull { it["currency"].stringValue == "CNY" }?.let(::modelMoney) ?: money.firstOrNull()?.let(::modelMoney) ?: "—")
     val percent = main?.get("remainingPercent")?.modelNumber()?.coerceIn(0.0, 100.0)
-    return ModelGaugeData(percent, short?.let { ceil((it["remainingPercent"].modelNumber() ?: 0.0).coerceIn(0.0, 100.0) / 25).toInt() }, if (short != null) "" else percent?.let { "${it.roundToInt()}%" } ?: "—")
+    return ModelGaugeData(percent, short?.let { ceil((it["remainingPercent"].modelNumber() ?: 0.0).coerceIn(0.0, 100.0) / 25).toInt() }, if (short != null) "" else percent?.let { "${it.roundToInt()}%" } ?: if (executor) "已接入" else "—")
 }
 @Composable fun ModelQuotaSignal(item: SummonJson, label: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val gauge = modelGauge(item)
@@ -89,7 +93,8 @@ private fun modelGauge(item: SummonJson): ModelGaugeData {
                 gauge.ring?.let { drawArc(if (it < 10) Color(0xFFD3A074) else modelGreen, 135f, (270 * it / 100).toFloat(), false, top, circle, style = stroke) }
                 gauge.dots?.let { dots -> listOf(21f to 49f, 28.5f to 51.5f, 35.5f to 51.5f, 43f to 49f).forEachIndexed { index, (x, y) -> drawCircle(if (index < dots) modelGreen else Color(0xFF3B443D), 1.9f * scale, androidx.compose.ui.geometry.Offset(x * scale, y * scale)) } }
             }
-            ModelBrand(item, Modifier.align(Alignment.TopCenter).padding(top = 16.dp).size(24.dp))
+            if (gauge.loading) CircularProgressIndicator(Modifier.align(Alignment.TopCenter).padding(top = 18.dp).size(20.dp), color = modelGreen, strokeWidth = 2.dp)
+            else if (gauge.showsBrand) ModelBrand(item, Modifier.align(Alignment.TopCenter).padding(top = 16.dp).size(24.dp))
             if (gauge.value.isNotEmpty()) Text(gauge.value, modifier = Modifier.align(Alignment.TopCenter).padding(top = 43.dp), color = modelGreen, fontSize = 11.sp)
         }
         Text(label, color = modelGreen, fontSize = 10.sp, letterSpacing = 1.sp)
@@ -112,6 +117,8 @@ private fun modelGauge(item: SummonJson): ModelGaugeData {
     if (usage["unlimited"].bool == true) Text("额外额度不设限", color = modelGreen)
     if (usage["status"].stringValue == "not_connected") Text(usage["note"].stringValue, color = Color.Gray, style = MaterialTheme.typography.bodySmall)
     else if (usage["status"].stringValue == "unconfigured") Text("选择聊天模型后读取额度", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+    else if (usage["status"].stringValue == "loading") Text("正在读取额度…", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+    else if (usage["status"].stringValue in listOf("shared", "unsupported")) Text(usage["note"].stringValue, color = Color.Gray, style = MaterialTheme.typography.bodySmall)
     else if (usage["status"].stringValue == "error") Text(if (usage["stale"].bool == true) "上次读取 · 当前暂未更新" else usage["error"].stringValue, color = Color(0xFFD3A074))
     else if (usage["windows"].array.orEmpty().isEmpty() && usage["balances"].array.orEmpty().isEmpty() && usage["balance"] !is SummonJson.Obj) Text("供应商未返回额度数值", color = Color.Gray)
     if (usage["checkedAt"].stringValue.isNotBlank()) Text("更新于 ${usage["checkedAt"].stringValue}", color = Color.Gray, style = MaterialTheme.typography.bodySmall)

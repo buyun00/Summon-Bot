@@ -35,17 +35,25 @@ private struct ModelGaugeData {
     var ring: Double?
     var dots: Int?
     var value = "—"
+    var loading = false
+    var showsBrand = true
     init(_ item: SummonJSONValue) {
-        if item["role"].stringValue == "executor" && item["enabled"].bool != true { value = item["label"].stringValue.isEmpty ? "待接入" : item["label"].stringValue; return }
+        let executor = item["role"].stringValue == "executor"
         let usage = item["usage"]
+        if executor && item["enabled"].bool != true { value = item["label"].string ?? "待接入"; showsBrand = false; return }
+        if !executor && (item["configured"].bool == false || item["id"].string == nil || usage["status"].string == "unconfigured") { value = "待配置"; showsBrand = false; return }
+        if usage.object == nil || usage["status"].string == "loading" { value = "读取中"; loading = true; return }
         let windows = (usage["windows"].array ?? []).filter { $0["remainingPercent"].modelNumber != nil }
-        let main = windows.first { $0["durationMinutes"].int == 10080 } ?? windows.first
-        let short = windows.first { $0["durationMinutes"].int == 300 && $0 != main }
+        let codex = windows.filter { $0["limitId"].string == "codex" }
+        let primary = codex.isEmpty ? windows : codex
+        let main = primary.first { $0["durationMinutes"].int == 10080 } ?? primary.first
+        let short = primary.first { $0["durationMinutes"].int == 300 && $0 != main }
         let money = (usage["balances"].array ?? []) + (usage["balance"].object != nil ? [usage["balance"]] : [])
         if item["kind"].stringValue == "api" { ring = 100; if let balance = money.first(where: { $0["currency"].stringValue == "CNY" }) ?? money.first { value = modelMoney(balance) }; return }
         if let main, let remaining = main["remainingPercent"].modelNumber { ring = min(100, max(0, remaining)) }
         if let short, let remaining = short["remainingPercent"].modelNumber { dots = Int(ceil(min(100, max(0, remaining)) / 25)); value = "" }
         else if let ring { value = "\(Int(ring.rounded()))%" }
+        else if executor { value = "已接入" }
     }
 }
 struct ModelQuotaSignal: View {
@@ -63,7 +71,8 @@ struct ModelQuotaSignal: View {
                         if let remaining = gauge.ring, remaining > 0 { var progress = Path(); progress.addArc(center: CGPoint(x: 32, y: 29), radius: 23, startAngle: .degrees(135), endAngle: .degrees(135 + 270 * remaining / 100), clockwise: false); context.stroke(progress, with: .color(remaining < 10 ? .orange : modelTint), style: StrokeStyle(lineWidth: 3.2, lineCap: .round)) }
                         if let dots = gauge.dots { for (index, point) in [CGPoint(x: 21, y: 49), CGPoint(x: 28.5, y: 51.5), CGPoint(x: 35.5, y: 51.5), CGPoint(x: 43, y: 49)].enumerated() { context.fill(Path(ellipseIn: CGRect(x: point.x - 1.9, y: point.y - 1.9, width: 3.8, height: 3.8)), with: .color(index < dots ? modelTint : Color.white.opacity(0.13))) } }
                     }
-                    ModelBrandImage(item: item).padding(.top, 16)
+                    if gauge.loading { ProgressView().controlSize(.small).tint(modelTint).frame(width: 24, height: 24).padding(.top, 16) }
+                    else if gauge.showsBrand { ModelBrandImage(item: item).padding(.top, 16) }
                     if !gauge.value.isEmpty { Text(gauge.value).font(.system(size: 11)).foregroundStyle(modelTint).padding(.top, 44) }
                 }.frame(width: 64, height: 59)
                 Text(label).font(.system(size: 10, weight: .semibold)).kerning(1).foregroundStyle(modelTint)
@@ -89,6 +98,8 @@ private struct ModelUsageDetails: View {
             if usage["unlimited"].bool == true { Text("额外额度不设限").foregroundStyle(modelTint) }
             if usage["status"].stringValue == "not_connected" { Text(usage["note"].stringValue).summonFont(.caption).foregroundStyle(.secondary) }
             else if usage["status"].stringValue == "unconfigured" { Text("选择聊天模型后读取额度").summonFont(.caption).foregroundStyle(.secondary) }
+            else if usage["status"].stringValue == "loading" { Text("正在读取额度…").summonFont(.caption).foregroundStyle(.secondary) }
+            else if ["shared", "unsupported"].contains(usage["status"].stringValue) { Text(usage["note"].stringValue).summonFont(.caption).foregroundStyle(.secondary) }
             else if usage["status"].stringValue == "error" { Text(usage["stale"].bool == true ? "上次读取 · 当前暂未更新" : usage["error"].stringValue).summonFont(.caption).foregroundStyle(.orange) }
             else if (usage["windows"].array ?? []).isEmpty && (usage["balances"].array ?? []).isEmpty && usage["balance"].object == nil { Text("供应商未返回额度数值").summonFont(.caption).foregroundStyle(.secondary) }
             if let checked = SummonDate.parse(usage["checkedAt"].string) { Text("更新于 \(checked.formatted(date: .abbreviated, time: .shortened))").summonFont(.caption).foregroundStyle(.secondary) }

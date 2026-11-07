@@ -338,6 +338,7 @@ data class SummonWorkspace(
     val agentRuns: List<SummonAgentRun>,
     val defaultCwd: String?,
     val onboarding: SummonJson = SummonJson.Null,
+    val modelSettings: SummonJson = SummonJson.Null,
 ) {
     companion object {
         fun parse(json: SummonJson): SummonWorkspace = SummonWorkspace(
@@ -347,6 +348,7 @@ data class SummonWorkspace(
             agentRuns = json["agentRuns"].array.orEmpty().map(SummonAgentRun::parse),
             defaultCwd = json["defaultCwd"].string,
             onboarding = json["onboarding"],
+            modelSettings = json["modelSettings"],
         )
     }
 }
