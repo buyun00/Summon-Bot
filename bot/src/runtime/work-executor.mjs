@@ -1,4 +1,5 @@
 import { workInput } from '../capabilities/task-policy.mjs';
+import { assertExternalReviewCurrent } from '../capabilities/task-policy.mjs';
 
 const at = () => new Date().toISOString();
 const stopped = new Set(['paused', 'cancelled']);
@@ -32,9 +33,9 @@ export function workExecutor({ store, services, emit }) {
       store.saveSession({ ...session, lastTaskId: task.id, messages: [...session.messages, { role: 'user', runtimeEntryId: entryId,
         content: [{ type: 'text', text: JSON.stringify(message) }], source: { actor: message.author || 'runtime', taskId: task.id }, timestamp: Date.now() }] });
     },
-    async execute(task) {
+    async execute(task, options = {}) {
       const work = services.works.get(task.workId);
-      if (task.metadata?.sourceType === 'external') return this.observe(task);
+      if (task.metadata?.sourceType === 'external') return this.observe(task, options);
       this.record(task, { kind: 'work_input', author: 'accepted-request', input: task.input });
       const eventId = task.metadata?.resumeEventId || task.metadata?.workEventId || `${work.id}:task:${task.id}`;
       let event = store.getRecord('work-events', eventId);
@@ -63,7 +64,32 @@ export function workExecutor({ store, services, emit }) {
       emit('work.execution_submitted', { workId: work.id, operationId: event.id, status: receipt.status });
       return { content: '', suspended: true, waiting: 'external', executor: 'codex', operationId: event.id };
     },
-    async observe(task) {
+    async review(task, binding, content, running, options) {
+      const work = services.works.get(task.workId), operation = store.getRecord('work-events', content.operationId);
+      const reviewTask = { ...task, metadata: { ...task.metadata, externalReview: {
+        bindingId: binding.id, threadId: binding.externalThreadId, operationId: content.operationId, turnId: content.turnId, running, confirmedFinal: Boolean(content.final?.confirmed) } },
+        input: { ...content, type: 'external_work_review', acceptedStep: workInput(operation?.content),
+          workState: { goal: work.goal, requirements: work.requirements, project: work.project, target: work.executor?.target,
+            status: work.status, waiting: work.waiting, progress: work.progress, checkpoint: work.checkpoint },
+          instruction: 'Review this real external observation in the original work. Compare against the saved accepted step and latest requirements. The executor is already bound; do not start it again.' } };
+      try {
+        assertExternalReviewCurrent(reviewTask, store);
+        const result = await services.reviewExternal(reviewTask, options);
+        const text = result.content?.trim();
+        const published = store.listRecords('work-notifications').some(item => item.workId === work.id && item.taskId === task.id);
+        if (running && text && text !== 'PASS' && !published) {
+          assertExternalReviewCurrent(reviewTask, store);
+          await services.notify({ id: work.id, notificationId: `review:${task.id}`, publication: 'progress', resultKind: 'progress', content: text,
+            sourceRefs: [{ type: 'codex', threadId: binding.externalThreadId, turnId: content.turnId, operationId: content.operationId }] }, reviewTask, {});
+        }
+        return { reviewed: true, reviewTaskId: task.id };
+      } catch (error) {
+        store.putRecord('external-reviews', { id: task.id, workId: work.id, observationId: content.operationId, status: 'unconfirmed', error: error.message, recordedAt: at() });
+        emit('work.review_unconfirmed', { workId: work.id, taskId: task.id, error: error.message });
+        return { reviewed: false, reviewError: error.message };
+      }
+    },
+    async observe(task, options = {}) {
       const work = services.works.get(task.workId), content = task.input;
       const binding = work.bindings?.find(item => item.id === task.metadata.externalBindingId && item.type === 'codex-desktop');
       if (!binding || content.source !== 'codex-desktop-connector' || (content.externalThreadId && binding.externalThreadId !== content.externalThreadId))
@@ -72,10 +98,23 @@ export function workExecutor({ store, services, emit }) {
       const operation = content.operationId && store.getRecord('work-events', content.operationId);
       const superseded = Boolean(content.operationId && binding.operationId !== content.operationId);
       const knownOperation = operation?.workId === work.id && operation.transport;
-      const late = stopped.has(work.status) || superseded && !knownOperation;
+      const progress = content.type === 'external_progress';
+      const late = stopped.has(work.status) || progress && work.status === 'completed' || superseded && (!knownOperation || progress) ||
+        progress && (content.turnId !== binding.turnId || content.progress?.threadId !== binding.externalThreadId || content.progress?.turnId !== content.turnId);
       store.putRecord('work-observations', { id: eventId, workId: work.id, taskId: task.id, late, content, observedAt: at() });
       this.record(task, { kind: 'external_observation', author: 'codex', late, ...content });
       if (late) return { content: '', observed: true, late: true, suspended: true, waiting: work.status, executor: 'codex' };
+      if (progress) {
+        if (!content.progress?.confirmed || !Array.isArray(content.progress.items) || !content.progress.items.length)
+          return { content: '', observed: true, suspended: true, waiting: 'external', executor: 'codex' };
+        const text = content.progress.items.map(item => item.text).filter(Boolean).join('\n\n');
+        services.works.update(work.id, { progress: text.slice(-1200), checkpoint: { ...work.checkpoint,
+          progress: text.slice(-6000), taskId: task.id, sessionId: task.sessionId, outcome: 'in-progress',
+          evidence: { observationId: eventId, threadId: binding.externalThreadId, turnId: content.turnId, operationId: content.operationId,
+            itemIds: content.progress.items.map(item => item.itemId) }, recordedAt: at() } });
+        const review = await this.review(task, binding, content, true, options);
+        return { content: '', observed: true, ...review, suspended: true, waiting: 'external', executor: 'codex' };
+      }
       const expectedTurn = superseded ? operation?.executionReceipt?.turnId : binding.turnId;
       const final = content.final?.confirmed && content.final.threadId === binding.externalThreadId && content.final.turnId === content.turnId &&
         (!expectedTurn || expectedTurn === content.turnId) ? content.final : null;
@@ -83,7 +122,8 @@ export function workExecutor({ store, services, emit }) {
       const outcome = status === 'completed' ? 'execution-ended' : status === 'waiting_for_input' ? 'needs-input' :
         ['failed', 'interrupted', 'cancelled'].includes(status) ? status : 'result-unknown';
       if (!superseded) services.works.update(work.id, { status: outcome === 'failed' ? 'blocked' : 'waiting',
-        waiting: { kind: outcome === 'execution-ended' ? 'user-input' : 'external', outcome, since: at() },
+        waiting: { kind: outcome === 'execution-ended' ? 'review' : outcome === 'needs-input' ? 'user-input' : 'external', outcome,
+          ...(outcome === 'needs-input' ? { question: final?.text || `Codex 待处理请求：${JSON.stringify(content.state?.pendingRequests || [])}` } : {}), since: at() },
         executionOutcome: { kind: outcome, turnId: content.turnId, operationId: content.operationId, finalConfirmed: Boolean(final) },
         progress: final?.text ? final.text.slice(0, 1200) : `Codex：${outcome}` });
       const label = ({ 'execution-ended': 'Codex 本次执行已结束', 'needs-input': 'Codex 需要你补充信息或处理请求', failed: 'Codex 本次执行失败',
@@ -93,7 +133,8 @@ export function workExecutor({ store, services, emit }) {
         (final?.artifacts?.length ? `\n产物引用：\n${JSON.stringify(final.artifacts)}` : '');
       await services.notify({ id: work.id, notificationId: eventId, publication: 'external', content: text, resultKind: outcome,
         sourceRefs: [{ type: 'codex', threadId: binding.externalThreadId, turnId: content.turnId, operationId: content.operationId }], late }, task, {});
-      return { content: '', observed: true, suspended: true, waiting: outcome, executor: 'codex' };
+      const review = !superseded && (final || outcome === 'needs-input') ? await this.review(task, binding, content, false, options) : {};
+      return { content: '', observed: true, ...review, suspended: true, waiting: outcome, executor: 'codex' };
     },
   };
 }

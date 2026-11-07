@@ -1266,6 +1266,15 @@
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
+                  "type": { "const": "directory" },
+                  "cwd": { "type": "string", "minLength": 1, "maxLength": 4096, "description": "Authorized absolute directory. Desktop registers it through the native project flow; folder consent may be required before any prompt is submitted." }
+                },
+                "required": ["type", "cwd"]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
                   "type": {
                     "const": "projectless"
                   },

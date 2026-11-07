@@ -16,6 +16,8 @@ const rejected = error => error.result?.error?.details?.outcome !== 'unknown' &&
   (error.status >= 400 && error.status < 500 && error.status !== 408 ||
     ['desktop_defaults_unavailable', 'unsupported_permission_default', 'permission_context_unavailable', 'unsupported_permission_host', 'caller_thread_required', 'unsupported_capability'].includes(error.code));
 const turnStatus = state => state?.status === 'waiting_for_input' ? state.status : state?.currentTurn?.status || state?.status || 'unknown';
+const progressText = item => ['agentMessage', 'assistantMessage', 'assistant'].includes(item?.type) &&
+  ['commentary', 'comment'].includes(item.phase || item.channel) ? modelText(item.text ?? item.content ?? item.message).trim() : '';
 function finalReply(state, threadId, turnId, history) {
   if (!turnId || state?.stale || state?.threadId !== threadId || state?.currentTurn?.id !== turnId) return null;
   const turn = history?.turns?.find(turn => (turn.turnId || turn.id) === turnId);
@@ -102,8 +104,11 @@ export class DesktopCodex {
   }
   async syncOwner(work) {
     const current = await this.ownerWork(work.botId, work.workId);
-    const binding = { id: work.id, type: 'codex-desktop', operationId: work.operationId, operationKey: work.operationKey, externalThreadId: work.externalThreadId || null, pendingClientThreadId: work.pendingClientThreadId || null, hostId: work.hostId || 'local', turnId: work.turnId || null, previousTurnId: work.previousTurnId || null, status: work.status, observedAt: work.observedAt || null };
-    await this.manager.request(work.botId, `/works/${encodeURIComponent(work.workId)}`, { method: 'PATCH', body: JSON.stringify({ expectedRevision: current.revision, bindings: [...(current.bindings || []).filter(item => item.id !== work.id), binding] }) });
+    const binding = { id: work.id, type: 'codex-desktop', operationId: work.operationId, operationKey: work.operationKey, externalThreadId: work.externalThreadId || null, pendingClientThreadId: work.pendingClientThreadId || null, hostId: work.hostId || 'local', turnId: work.turnId || null, previousTurnId: work.previousTurnId || null, status: work.status, observedAt: work.observedAt || null,
+      ...(work.directoryTarget ? { target: work.directoryTarget } : {}) };
+    await this.manager.request(work.botId, `/works/${encodeURIComponent(work.workId)}`, { method: 'PATCH', body: JSON.stringify({ expectedRevision: current.revision,
+      ...(work.directoryTarget ? { project: { id: work.directoryTarget.projectId, cwd: work.directoryTarget.cwd, hostId: 'local', kind: 'directory' } } : {}),
+      bindings: [...(current.bindings || []).filter(item => item.id !== work.id), binding] }) });
     this.save({ id: work.id, ownerSyncPending: false, syncError: null });
   }
   async create(input) {
@@ -117,7 +122,7 @@ export class DesktopCodex {
       if (before && before.botId !== botId) fail('External work belongs to another Bot', 403);
       if (before && before.backend !== 'desktop') fail('Historical executor records cannot be submitted again', 409);
       const prompt = requireText(input.prompt, 'prompt');
-      if (!input.target || !['project', 'projectless'].includes(input.target.type)) fail('Use an explicit existing project target or authorized projectless target');
+      if (!input.target || !['project', 'projectless', 'directory'].includes(input.target.type)) fail('Use an authorized directory or explicit Desktop project target');
       if (!before) this.save({ id, workId, botId, conversationId: owner.conversationId, goal: owner.goal, backend: 'desktop', hostId: 'local', status: 'submitting', serviceVersion: this.version, roomId: input.roomId || null });
       if (before?.externalThreadId && before.operationId !== input.operationId) fail('This work is already bound; use codex_send to continue its thread', 409);
       return this.mutate(id, 'create', input.operationId, '/v1/threads', { prompt, target: codexTarget(input.target) });
@@ -151,7 +156,7 @@ export class DesktopCodex {
       const state = await this.request(this.path(work));
       if (state.stale || !state.currentTurn?.id) fail('Current turn is not confirmed; query before sending', 409);
       return this.mutate(id, 'send', operationId, `/v1/threads/${encodeURIComponent(work.externalThreadId)}/messages`, { message, hostId: work.hostId },
-        { previousTurnId: state.currentTurn.id, allowPreviousTurn: state.currentTurn.status === 'inProgress', turnId: null, result: null, finishedAt: null });
+        { previousTurnId: state.currentTurn.id, allowPreviousTurn: state.currentTurn.status === 'inProgress', turnId: null, result: null, finishedAt: null, pendingProgress: null });
     });
   }
   async interrupt(id, input) {
@@ -230,6 +235,7 @@ export class DesktopCodex {
       } else {
         const result = operation.result || {}, threadId = result.threadId || result.thread?.id || work.externalThreadId;
         this.save({ id: work.id, externalThreadId: threadId || null, pendingClientThreadId: result.clientThreadId || null,
+          ...(result.directoryTarget ? { directoryTarget: result.directoryTarget } : {}),
           ...(result.turnId ? { turnId: result.turnId } : {}), status: threadId ? (operation.action === 'interrupt' ? 'interrupt_requested' : 'watching') : 'unknown', receipt: result, error: null });
         if (!threadId) this.queue(work.id, `operation:${operation.operationKey}:binding`, { type: 'binding_unconfirmed', operationKey: operation.operationKey, receipt: result });
       }
@@ -244,6 +250,43 @@ export class DesktopCodex {
     if (!this.store.get('workEvents', eventId)) this.store.save('workEvents', { id: eventId, workId: id, botId: work.botId, content: { ...content, operationId: work.operationId,
       operationKey: work.operationKey, workId: work.workId, externalThreadId: work.externalThreadId, hostId: work.hostId, source: 'codex-desktop-connector', authority: 'external-result' }, status: 'pending' });
     return this.store.get('workEvents', eventId);
+  }
+  collectProgress(id, turnId, items) {
+    const work = this.require(id);
+    if (!turnId || work.snapshot?.stale || work.snapshot?.currentTurn?.id !== turnId || turnStatus(work.snapshot) !== 'inProgress') return;
+    const prior = work.pendingProgress?.operationId === work.operationId && work.pendingProgress.turnId === turnId ? work.pendingProgress : null;
+    const messages = new Map((prior?.items || []).map(item => [item.itemId, item]));
+    let changed = false;
+    for (const item of items) {
+      const raw = progressText(item), text = raw.slice(-6000);
+      if (!item.id || text.length < 32 || work.deliveredProgress?.[`${turnId}:${item.id}`] === text || messages.get(item.id)?.text === text) continue;
+      messages.set(item.id, { itemId: item.id, text, truncated: Boolean(item.text?.truncated || raw.length > 6000) }); changed = true;
+    }
+    if (changed) this.save({ id, pendingProgress: { operationId: work.operationId, turnId, items: [...messages.values()].slice(-4), changedAt: now() } });
+  }
+  async flushProgress(id) {
+    const work = this.require(id), pending = work.pendingProgress;
+    if (!pending || Date.now() - Date.parse(pending.changedAt) < 4000 ||
+      work.lastProgressAt && Date.now() - Date.parse(work.lastProgressAt) < 30000) return;
+    if (pending.operationId !== work.operationId || turnStatus(work.snapshot) !== 'inProgress' || pending.turnId !== work.snapshot.currentTurn?.id) {
+      this.save({ id, pendingProgress: null }); return;
+    }
+    const owner = await this.ownerWork(work.botId, work.workId);
+    if (['paused', 'cancelled', 'completed'].includes(owner.status)) { this.save({ id, pendingProgress: null }); return; }
+    const items = pending.items.filter(item => work.deliveredProgress?.[`${pending.turnId}:${item.itemId}`] !== item.text);
+    if (!items.length) { this.save({ id, pendingProgress: null }); return; }
+    // A stable native commentary item is evidence. Coalesce streaming deltas
+    // and closely spaced milestones, with no timer-only model wake-ups.
+    const revision = work.snapshot?.revision || work.eventCursor || now();
+    const queued = this.store.list('workEvents').findLast(event => event.workId === id && event.status === 'pending' &&
+      event.content?.type === 'external_progress' && event.content.operationId === work.operationId && event.content.turnId === pending.turnId);
+    if (queued) this.store.save('workEvents', { id: queued.id, content: { ...queued.content, observedAt: work.observedAt,
+      progress: { ...queued.content.progress, items: [...new Map([...queued.content.progress.items, ...items].map(item => [item.itemId, item])).values()].slice(-4) } } });
+    else this.queue(id, `${work.operationKey}:progress:${pending.turnId}:${revision}`, { type: 'external_progress', status: 'inProgress', turnId: pending.turnId,
+      progress: { confirmed: true, threadId: work.externalThreadId, turnId: pending.turnId, items }, observedAt: work.observedAt });
+    const delivered = { ...work.deliveredProgress, ...Object.fromEntries(items.map(item => [`${pending.turnId}:${item.itemId}`, item.text])) };
+    this.save({ id, pendingProgress: null, lastProgressAt: now(), deliveredProgress: Object.fromEntries(Object.entries(delivered).slice(-40)) });
+    await this.syncOwner(this.require(id));
   }
   async observe(id, state) {
     const work = this.require(id), turnId = state.currentTurn?.id || null, status = turnStatus(state);
@@ -266,6 +309,7 @@ export class DesktopCodex {
       }
     });
     if (terminal.has(effective)) this.save({ id, result: { state, history: null }, finishedAt: now() });
+    if (relevantTurn && effective === 'inProgress') this.collectProgress(id, turnId, state.items || []);
     if (changed) await this.syncOwner(this.require(id));
   }
   follow(id) {
@@ -304,13 +348,18 @@ export class DesktopCodex {
           if (event.id && event.id <= (current.eventCursor || 0)) return;
           if (event.id) this.store.save('desktopEvents', { id: `${id}:${event.id}`, workId: id, event });
           if (event.type === 'thread.snapshot') await this.observe(id, event.data);
+          else if (event.type === 'item.updated' && event.data?.turnId === current.snapshot?.currentTurn?.id && event.data.item) {
+            const item = event.data.item, items = [...(current.snapshot.items || []).filter(value => value.id !== item.id), item].slice(-50);
+            this.save({ id, snapshot: { ...current.snapshot, items, revision: event.data.revision || current.snapshot.revision }, observedAt: now() });
+            this.collectProgress(id, event.data.turnId, [item]);
+          }
           else if (['thread.status', 'thread.gap'].includes(event.type)) {
             const snapshot = event.type === 'thread.status' && event.data?.currentTurn ? { ...current.snapshot, ...event.data } : await this.request(this.path(current), { signal });
             await this.observe(id, snapshot);
           } else if (event.type?.startsWith('desktop.') && event.type !== 'desktop.connected') {
             await this.observe(id, { ...current.snapshot, stale: true, status: 'unknown' });
           }
-          // Raw events persist before the cursor; progress alone never wakes the Bot.
+          // Raw events and pending milestones persist before the cursor.
           if (event.id) this.save({ id, eventCursor: event.id });
           else if (event.type === 'stream.ready' && event.data?.cursor && !current.eventCursor) this.save({ id, eventCursor: event.data.cursor });
         });
@@ -350,6 +399,10 @@ export class DesktopCodex {
           this.store.save('workEvents', { id: event.id, content: { ...event.content, history, final }, status: 'pending' });
           if (terminal.has(event.content.status)) this.save({ id: work.id, result: { state: event.content.state, history, final } });
         });
+      }
+      for (const work of this.list().filter(value => value.backend === 'desktop' && value.pendingProgress)) {
+        try { await this.exclusive(work.id, () => this.flushProgress(work.id)); }
+        catch (error) { this.save({ id: work.id, syncError: errorView(error) }); }
       }
       for (const work of this.list().filter(value => value.backend === 'desktop' && value.ownerSyncPending)) {
         try { await this.exclusive(work.id, () => this.syncOwner(this.require(work.id))); }

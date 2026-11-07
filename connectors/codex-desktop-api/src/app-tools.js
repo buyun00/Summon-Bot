@@ -7,6 +7,7 @@ import { FramedPipe } from './framed-pipe.js';
 import { ApiError, unavailable } from './errors.js';
 import { DesktopIpc } from './desktop-ipc.js';
 import { assertExecutorConnected } from './executor-connection.js';
+import { resolveDirectoryTarget, matchesDirectoryTarget } from './directory-target.js';
 
 export const ALLOWED_TOOLS = new Set(['get_usage_limits', 'list_threads', 'list_archived_threads', 'read_thread', 'wait_threads', 'list_projects', 'create_thread', 'send_message_to_thread', 'set_thread_title', 'set_thread_archived', 'set_thread_read_state']);
 
@@ -115,14 +116,16 @@ export class AppTools {
   }
   async createWithDesktopDefaults(args) {
     await this.connect();
+    const expected = this.readPermissionDefault();
+    const context = await this.permissionContext(expected);
+    const directory = args.target?.type === 'directory' ? await resolveDirectoryTarget(args.target.cwd, () => this.callDesktopTool('list_projects')) : null;
+    if (directory) args = { ...args, target: { type: 'project', projectId: directory.projectId, environment: { type: 'local' } } };
     if (args.target?.type === 'project') {
       const projects = await this.callDesktopTool('list_projects');
       const project = projects.projects?.find(project => project.projectId === args.target.projectId);
       if (!project) throw new ApiError(400, 'unknown_project', 'Use a projectId returned by list_projects. No message was sent.');
       if (project.hostId !== 'local' || project.projectKind !== 'local') throw new ApiError(501, 'unsupported_permission_host', 'Default permission inheritance is verified for local Codex projects only. No message was sent.');
     }
-    const expected = this.readPermissionDefault();
-    const context = await this.permissionContext(expected);
     // These checks precede the one native creation request. Never send the
     // user's prompt and then try to repair permissions on an active turn.
     if (!isDeepStrictEqual(expected, this.readPermissionDefault())) throw new ApiError(409, 'desktop_defaults_changed', 'Desktop permission defaults changed during creation preflight. No message was sent.');
@@ -139,7 +142,8 @@ export class AppTools {
     catch { throw new ApiError(502, 'created_permissions_unconfirmed', 'Chat creation was accepted but permission verification is unavailable. Do not resubmit.', { outcome: 'unknown', threadId: result.threadId, firstMessageSubmitted: true }); }
     finally { if (observed) this.permissionIpc.unfollow(result.threadId, 'local', observed.owner); }
     if (!matchesPermissionDefault(observed.permissions, expected)) throw new ApiError(502, 'created_permissions_mismatch', 'Desktop did not inherit the verified context permissions. Do not resubmit or assume full access.', { outcome: 'unknown', threadId: result.threadId, firstMessageSubmitted: true });
-    return { ...result, permissionInheritance: { source: 'desktop_default', mode: expected.mode, profileId: expected.profileId, approvalPolicy: expected.approvalPolicy, approvalsReviewer: expected.approvalsReviewer, contextVerifiedBeforeFirstMessage: true, verifiedAfterCreation: true } };
+    if (directory && !await matchesDirectoryTarget(observed.cwd, directory.cwd)) throw new ApiError(502, 'created_directory_mismatch', 'The created chat did not confirm the authorized directory. Inspect this thread; do not resubmit.', { outcome: 'unknown', threadId: result.threadId, firstMessageSubmitted: true });
+    return { ...result, ...(directory ? { directoryTarget: directory } : {}), permissionInheritance: { source: 'desktop_default', mode: expected.mode, profileId: expected.profileId, approvalPolicy: expected.approvalPolicy, approvalsReviewer: expected.approvalsReviewer, contextVerifiedBeforeFirstMessage: true, verifiedAfterCreation: true } };
   }
   releasePermissionContext() {
     const context = this.heldPermissionContext;

@@ -1,9 +1,9 @@
 import { jsonToolResult } from './registry.mjs';
-import { taskMode, compactWork, compactTask } from './task-policy.mjs';
+import { taskMode, compactWork, compactTask, assertExternalReviewCurrent } from './task-policy.mjs';
 import { randomUUID } from 'node:crypto';
 import { taskSource } from '../context/sources.mjs';
 import { modelArgs, modelText, looseSchema, boundedNumber } from '../context/model-input.mjs';
-import { codexTarget } from './codex-target.mjs';
+import { resolveCodexTarget } from './codex-target.mjs';
 
 const string = { type: 'string' };
 const object = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
@@ -66,7 +66,8 @@ export function coreTools(services, task) {
     tool('work_get', 'Read accessible work status and its existing executor/session binding. The current/replied-to work is the default. Read selected evidence through read_session_history.', object({ id: string }, ['id']), 'read', async args => workView(await services.sources.requireWork(workId(args), task))),
     tool('work_create', 'Create and start independent work. Omit executor to use the user’s default engine. Give the goal, evidence, handoff prose and any explicitly selected target. The program supplies source and operation IDs. Temporary assignments use work, not a cloned Bot.',
       object({ id: string, operationId: string, goal: string, requirements: string, responsibility: string, ...handoffFields,
-        executor: object({ kind: { type: 'string', enum: ['pi', 'codex', 'codex-cli', 'grok', 'claude-code'] }, connectionId: string, target: { type: 'object' } }, ['kind']) }), 'write', async (args, ctx) => {
+        executor: object({ kind: { type: 'string', enum: ['pi', 'codex', 'codex-cli', 'grok', 'claude-code'] }, connectionId: string,
+          target: { type: 'object', description: 'Use {type:"directory",cwd:"absolute authorized path"} for an existing directory, including one not registered in Desktop. Use project only for the actual selected project; never borrow another project ID.' } }, ['kind']) }), 'write', async (args, ctx) => {
         const content = await services.sources.handoff(task, args);
         const id = typeof args.id === 'string' && /^[\w.-]{1,160}$/.test(args.id) ? args.id : randomUUID();
         const existing = services.works.get(id);
@@ -75,10 +76,13 @@ export function coreTools(services, task) {
           if (['paused', 'cancelled'].includes(existing.status) && !userRequest) throw new Error('这项工作已停止；当前事件不包含用户新的继续要求。其他动作可以继续。');
         }
         const suppliedExecutor = typeof args.executor === 'string' ? { kind: args.executor } : modelArgs(args.executor);
-        const selectedTarget = suppliedExecutor.target || args.target || (args.projectId ? { type: 'project', projectId: args.projectId } : null);
+        const selectedTarget = suppliedExecutor.target || args.target || (args.cwd ? { type: 'directory', cwd: args.cwd } : args.projectId ? { type: 'project', projectId: args.projectId } : null);
         const kind = modelText(suppliedExecutor.kind || suppliedExecutor.type || (selectedTarget ? 'codex' : '')).toLowerCase();
-        const executor = kind ? { kind, ...(suppliedExecutor.connectionId ? { connectionId: suppliedExecutor.connectionId } : {}),
-          ...(selectedTarget ? { target: codexTarget(selectedTarget) } : {}) } : undefined;
+        const choices = services.executors();
+        const executorKind = kind || choices.executors?.find(item => item.id === choices.defaultId)?.kind;
+        const target = (selectedTarget || executorKind === 'codex') ? await resolveCodexTarget(selectedTarget, services, task) : null;
+        const executor = kind || target ? { kind: kind || 'codex', ...(suppliedExecutor.connectionId ? { connectionId: suppliedExecutor.connectionId } : {}),
+          ...(target ? { target } : {}) } : undefined;
         const operationId = actionId(args, ctx, 'operationId');
         const work = services.works.create({ id, operationId, goal: modelText(args.goal || args.instruction || args.content || content.originalRequest.content),
           requirements: modelText(args.requirements), responsibility: modelText(args.responsibility), executor, initialHandoff: content }, task);
@@ -86,10 +90,20 @@ export function coreTools(services, task) {
         return { ...compactWork(work), ...receipt, handedOff: true, acceptance: modelText(args.acceptance), evidenceWarnings: content.evidenceWarnings };
       }),
     tool('work_update', frontend ? 'Pause or cancel existing work. Send requirements with work_dispatch; only the worker records progress and completion.' : 'Record actual progress and status of the current work. Its identity and revision are supplied by the program.',
-      object({ id: string, ...(!frontend ? { goal: string, requirements: string, progress: string } : {}), status: { type: 'string', enum: frontend ? ['paused', 'cancelled'] : ['active', 'waiting', 'paused', 'blocked', 'completed', 'cancelled'] } }), 'write', async args => {
+      object({ id: string, ...(!frontend ? { goal: string, requirements: string, progress: string,
+        waiting: object({ kind: { type: 'string', enum: ['review', 'user-input', 'external'] }, question: string, reason: string }, ['kind']) } : {}), status: { type: 'string', enum: frontend ? ['paused', 'cancelled'] : ['active', 'waiting', 'paused', 'blocked', 'completed', 'cancelled'] } }), 'write', async args => {
         const work = await services.sources.requireWork(workId(args), task);
+        assertExternalReviewCurrent(task, store);
+        const review = task.metadata?.externalReview;
+        if (review && (args.goal !== undefined || args.requirements !== undefined)) throw new Error('External evidence cannot rewrite the accepted work goal or requirements.');
+        if (review && args.status === 'completed' && !review.confirmedFinal) throw new Error('The external result is not a confirmed final answer; it cannot establish completion.');
+        if (review && (args.status === 'active' || review.running && (args.waiting || args.status && args.status !== work.status)))
+          throw new Error('The external executor is still running; record its evidence and checkpoint without changing its lifecycle.');
+        if (args.waiting?.kind === 'user-input' && !modelText(args.waiting.question).trim()) throw new Error('Waiting for user input requires the actual unanswered question.');
         if (['paused', 'cancelled'].includes(args.status) && work.id !== task.workId) return services.stopWork(work.id, args.status, task);
         const patch = Object.fromEntries((frontend ? ['status'] : ['goal', 'requirements', 'progress', 'status']).filter(key => args[key] !== undefined).map(key => [key, modelText(args[key])]));
+        if (!frontend && args.waiting && args.status === 'waiting') patch.waiting = { kind: args.waiting.kind,
+          question: modelText(args.waiting.question), reason: modelText(args.waiting.reason), since: new Date().toISOString() };
         const statuses = new Set(['active', 'waiting', 'paused', 'blocked', 'completed', 'cancelled']);
         if (!frontend && patch.status === 'done') patch.status = 'completed';
         const ignoredStatus = patch.status !== undefined && !statuses.has(patch.status) ? patch.status : undefined;
@@ -142,6 +156,7 @@ export function coreTools(services, task) {
     tool('work_notify', 'Save and publish this work’s useful result text directly. The program supplies the original recipient, reply association and notification ID; peer FYI does not demand another reply.',
       object({ id: string, content: string }), 'external', async (args, ctx) => {
         const work = await services.sources.requireWork(workId(args), task);
+        assertExternalReviewCurrent(task, store);
         return services.notify({ id: work.id, notificationId: actionId(args, ctx, 'notificationId'), publication: 'explicit', content: modelText(args.content ?? args.message ?? args.text, work.progress) }, task, ctx);
       }),
     tool('contacts_list', 'List configured direct Bot contacts. Direct messages and task queries do not use the gateway or chatroom.', object({}), 'read', () => services.contacts()),

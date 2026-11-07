@@ -83,7 +83,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
     const frontendScheduler = new ConversationScheduler(1);
     let wakeTimer;
     const services = {
-      store,
+      store, workspace: config.workspace,
       async capability(name, args, task, context = {}) {
         const tool = engine.configured.tools.find(tool => tool.name === name);
         if (!tool) throw failure(409, `This Bot has no ${name} capability`);
@@ -156,7 +156,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
             start();
             result = await executeCliWork({ store, services, config, task, signal: controller.signal, clean });
           } else if (currentWork && (external || executor === 'codex')) {
-            start(); result = await services.executor.execute(task); engine.maintenance.enqueue(task);
+            start(); result = await services.executor.execute(task, { signal: controller.signal }); engine.maintenance.enqueue(task);
           }
           else result = await engine.run(task, { signal: controller.signal, onStart: start });
           store.updateTask(task.id, { status: 'completed', result, finishedAt: at(), activity: {
@@ -259,6 +259,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       return { connectionId: selected.id, modelId: selected.model, thinkingLevel: selected.thinkingLevel };
     } });
     services.executor = workExecutor({ store, services, emit });
+    services.reviewExternal = (task, options) => engine.run(task, options);
     services.stopWork = async (id, status, task) => {
       const work = services.works.stop(id, status);
       return { ...work, externalStop: await services.executor.stop(work, task) };
@@ -268,6 +269,9 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
     };
     const deliverNotification = async (record, context = {}) => {
       const task = store.getTask(record.taskId), work = services.works.get(record.workId);
+      if (record.resultKind === 'progress' && (['paused', 'cancelled', 'completed'].includes(work?.status) ||
+        !work?.bindings?.some(binding => binding.operationId === record.operationId)))
+        return store.putRecord('work-notifications', { ...record, status: 'superseded', suppressedAt: at() });
       const source = task && work && services.resultSource(work, task);
       const target = source?.roomId && source.replyTo ? { roomId: source.roomId, replyTo: source.replyTo, botId: undefined } :
         source && config.contacts.some(contact => contact.botId === source.source) ?
@@ -288,6 +292,9 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       store.putRecord('work-notifications', saved); return saved;
     };
     services.notify = async (input, task, context) => {
+      if (task.metadata?.externalReview?.running) input = { ...input, publication: 'progress', resultKind: 'progress' };
+      if (task.metadata?.externalReview && !input.sourceRefs) input = { ...input, sourceRefs: [{ type: 'codex',
+        threadId: task.metadata.externalReview.threadId, turnId: task.metadata.externalReview.turnId, operationId: task.metadata.externalReview.operationId }] };
       const work = services.works.get(input.id); if (!work) throw failure(404, 'Unknown work');
       const authorizedSource = services.resultSource(work, task);
       if (!input.botId && !input.roomId) {
@@ -325,7 +332,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       if (ticking || state !== 'ready' || config.accepting === false) return;
       ticking = true;
       try {
-        for (const notification of store.listRecords('work-notifications').filter(item => item.status !== 'delivered' && (!item.retryAt || item.retryAt <= Date.now()))) {
+        for (const notification of store.listRecords('work-notifications').filter(item => ['pending', 'unknown'].includes(item.status) && (!item.retryAt || item.retryAt <= Date.now()))) {
           try { await deliverNotification(notification); }
           catch (error) { store.putRecord('work-notifications', { ...notification, status: 'unknown', error: clean(error.message), retryAt: Date.now() + 60000 }); }
         }
@@ -337,7 +344,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
             let observation;
             if (wait.dependencyWorkId) {
               observation = store.listRecords('work-results').find(item => item.workId === wait.dependencyWorkId && !item.late &&
-                (wait.dependencyEventId ? item.executionEventId === wait.dependencyEventId || item.operationId === wait.dependencyEventId :
+                item.kind !== 'progress' && (wait.dependencyEventId ? item.executionEventId === wait.dependencyEventId || item.operationId === wait.dependencyEventId :
                   wait.taskId ? item.taskId === wait.taskId || item.executionTaskId === wait.taskId : false) && item.kind !== 'result-unknown' &&
                 (!wait.event || wait.event === 'result' || item.kind === wait.event || ['failed', 'cancelled', 'interrupted', 'needs-input'].includes(item.kind)));
               if (!observation && wait.taskId) {

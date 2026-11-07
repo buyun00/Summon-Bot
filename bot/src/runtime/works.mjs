@@ -28,13 +28,15 @@ export class WorkService {
     const previous = this.get(id); if (previous) return previous;
     const executor = input.executor || this.selectExecutor?.() || { kind: 'pi' };
     if (!['pi', 'codex'].includes(executor.kind) && !isCliExecutor(executor.kind)) fail('Unknown work executor');
-    if (executor.kind === 'codex' && !['project', 'projectless'].includes(executor.target?.type)) fail('Codex requires the selected authorized project target');
+    if (executor.kind === 'codex' && !['project', 'projectless', 'directory'].includes(executor.target?.type)) fail('Codex requires an authorized directory or selected project target');
     if (isCliExecutor(executor.kind) && executor.target) fail('这个工作引擎使用 Bot 的本机工作目录。');
     const binding = executor.kind === 'pi' ? { kind: 'pi', ...this.selectModel?.(executor.connectionId) } : executor;
     const record = this.clean({ id, botId: this.botId, conversationId: `work:${id}`, goal: input.goal,
       requirements: input.requirements || '', executor: binding, progress: '', status: 'active', waiting: null, bindings: [], notifications: [],
       sources: input.sources || (task.id ? [this.source(task)] : []),
       responsibility: input.responsibility || null, revision: 1, createdAt: now(), updatedAt: now() });
+    if (executor.target?.type === 'directory') record.project = { id: `directory:${executor.target.cwd.replaceAll('\\', '/').toLowerCase()}`,
+      cwd: executor.target.cwd, hostId: 'local', kind: 'directory' };
     this.store.transaction(() => {
       this.store.putRecord('works', record);
       if (sourceKey) this.store.putRecord('work-handoffs', { id: sourceKey, workId: id, createdAt: now() });
@@ -65,6 +67,7 @@ export class WorkService {
       if (input.expectedRevision !== undefined && input.expectedRevision !== previous.revision) fail('Work changed; read current state', 409);
       if (input.status !== undefined && !statuses.has(input.status)) fail('Invalid work status');
       const patch = Object.fromEntries(Object.entries(input).filter(([key]) => ['goal', 'requirements', 'progress', 'status', 'waiting', 'bindings', 'notifications', 'sources', 'responsibility', 'lastTaskId', 'lastError', 'owner', 'notificationCursor', 'executionOutcome', 'executor'].includes(key)));
+      for (const key of ['checkpoint', 'project']) if (Object.hasOwn(input, key)) patch[key] = input[key];
       for (const key of ['bindings', 'notifications', 'sources']) if (patch[key] !== undefined && !Array.isArray(patch[key])) fail(`${key} must be an array`);
       const record = this.clean({ ...previous, ...patch, id, revision: previous.revision + 1, updatedAt: now() });
       if (['completed', 'cancelled'].includes(record.status)) record.waiting = null;

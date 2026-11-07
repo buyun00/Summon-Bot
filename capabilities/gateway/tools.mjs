@@ -14,7 +14,7 @@ const definitions=[
  ['knowledge_search','Search shared sourced knowledge',{query:string},'read'],
  ['knowledge_save_node','Add/revise a sourced shared knowledge record',{id:string,title:string,content:string,type:string,source:string,expectedRevision:number},'write'],
  ['knowledge_save_edge','Connect two shared knowledge records',{from:string,to:string,relation:string,source:string},'write'],
- ['list_files','List files inside the configured workspace/project',{path:string,recursive:boolean,maxEntries:number,maxDepth:number},'read'],
+ ['list_files','List allowed workspace files; dependency directories have no listed contents, protected paths are omitted. Omission is not proof of absence.',{path:string,recursive:boolean,maxEntries:number,maxDepth:number},'read'],
  ['read_file','Read UTF-8 file with output limits',{path:string,startLine:number,maxLines:number},'read'],
  ['search_files','Search literal text in allowed files',{path:string,query:string,caseSensitive:boolean,maxResults:number},'read'],
  ['web_search','Search the public web; return titles, URLs and short snippets without commands',{query:string,limit:number},'read'],

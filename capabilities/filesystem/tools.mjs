@@ -231,14 +231,16 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
       for (const entry of await readdir(current.path, { withFileTypes: true })) {
         cancelled(signal);
         if (++count > maxVisited) { yield { limitReached: true }; return; }
-        if (SKIP_DIRECTORIES.has(entry.name.toLowerCase())) continue;
+        const dependencyDirectory = entry.name.toLowerCase() === 'node_modules';
+        if (SKIP_DIRECTORIES.has(entry.name.toLowerCase()) && !dependencyDirectory) continue;
         const requested = join(current.path, entry.name);
         let path, info;
         try { path = await checkedPath(requested); info = await stat(path); }
         catch (error) { if (error.name === 'AbortError') throw error; continue; }
         if (!info.isFile() && !info.isDirectory()) continue;
-        yield { path, type: info.isDirectory() ? 'directory' : 'file', size: info.size };
-        if (recursive && info.isDirectory() && current.depth < maxDepth) pending.push({ path, depth: current.depth + 1 });
+        yield { path, type: info.isDirectory() ? 'directory' : 'file', size: info.size,
+          ...(dependencyDirectory && info.isDirectory() ? { contentsExcluded: true } : {}) };
+        if (recursive && info.isDirectory() && !dependencyDirectory && current.depth < maxDepth) pending.push({ path, depth: current.depth + 1 });
       }
     }
   }
@@ -263,7 +265,7 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
 
   return [
     ...createWebTools(),
-    tool('list_files', 'List allowed files and directories. Relative paths start in your workspace. Protected files and dependency folders are excluded.', objectSchema({ path: stringSchema('Directory; defaults to workspace'), recursive: { type: 'boolean' }, maxEntries: integerSchema('Maximum entries, default 200', 1, 500), maxDepth: integerSchema('Recursion depth, default 4', 0, 12) }), async (args, signal) => {
+    tool('list_files', 'List allowed files and directories. Dependency directories are shown without their contents; protected paths are omitted. An omitted entry is not proof of absence. Relative paths start in your workspace.', objectSchema({ path: stringSchema('Directory; defaults to workspace'), recursive: { type: 'boolean' }, maxEntries: integerSchema('Maximum entries, default 200', 1, 500), maxDepth: integerSchema('Recursion depth, default 4', 0, 12) }), async (args, signal) => {
       const path = await checkedPath(args.path, { directory: true });
       const maxEntries = boundedInteger(args.maxEntries, 200, 1, 500, 'maxEntries');
       const maxDepth = boundedInteger(args.maxDepth, 4, 0, 12, 'maxDepth');
@@ -275,7 +277,8 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
         outputBytes += size;
         entries.push(entry);
       }
-      return { path, entries, truncated };
+      return { path, entries, truncated, listingPolicy: { protectedPathsOmitted: true, dependencyContentsExcluded: true,
+        absenceIsNotConfirmed: true } };
     }),
     tool('read_file', 'Read a UTF-8 text file, at most 1 MiB. Output is limited to 1000 lines and 64 KiB. Relative paths start in your workspace.', objectSchema({ path: stringSchema('File path'), startLine: integerSchema('First line, 1 based', 1, 10000000), maxLines: integerSchema('Maximum lines, default 300', 1, 1000) }, ['path']), async (args, signal) => {
       const path = await checkedPath(args.path);

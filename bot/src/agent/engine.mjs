@@ -14,7 +14,7 @@ import { ToolRegistry } from '../capabilities/registry.mjs';
 import { registerSdkTools } from '../capabilities/sdk.mjs';
 import { loadConfiguredTools } from '../capabilities/remote-tools.mjs';
 import { teamGuidance } from './team-guidance.mjs';
-import { permitsTool, assertToolPolicy, taskMode, conversationPrompt, CHAT_WORK_POLICY, frontendObservation, workInput } from '../capabilities/task-policy.mjs';
+import { permitsTool, assertToolPolicy, assertExternalReviewCurrent, taskMode, conversationPrompt, CHAT_WORK_POLICY, frontendObservation, workInput } from '../capabilities/task-policy.mjs';
 import { usageRoomId, UsageLedger } from './usage.mjs';
 import { modelArgs, modelText, looseSchema } from '../context/model-input.mjs';
 import { taskSource, publicMessage } from '../context/sources.mjs';
@@ -162,6 +162,7 @@ export class BotEngine {
       const registry = new ToolRegistry({
         authorize: (tool, args) => {
           assertToolPolicy(task, tool, task.workId && tool.name.startsWith('codex_') ? { ...args, workId: task.workId } : args);
+          if (tool.effect !== 'read') assertExternalReviewCurrent(task, this.store);
         },
         context: ({ toolCallId }) => ({ ...this.services.toolContext(task), ...refs, botId: this.config.botId, instanceId: this.config.botId,
           requestId: task.id, allowedEffects: task.metadata?.toolPolicy?.allowedEffects, recordId: `${runId}:${turns}:${toolCallId}`, cwd: this.config.workspace }),
@@ -399,7 +400,7 @@ export class BotEngine {
         const execution = task.workId && this.services.works.execution(originalTask);
         const boundary = execution ? userMessage({ type: 'current_work_boundary', workId: task.workId, taskId: task.id,
           actionId: execution.actionId, requestTaskId: execution.requestTaskId, executionEventId: execution.executionEventId,
-          instruction: 'The preceding work_input is the current accepted step. Use its currentStep and any deliveredObservation now. All earlier session turns are saved history for their own actions; do not replay them. Frontend dispatch and wait registration have already happened. Execute this step, handle its actual prerequisites, publish its useful result, and record completion or a real unmet condition.' }) : publicView && !publicView.runtimeEvent ? userMessage({ type: 'current_request_boundary', taskId: task.id,
+          instruction: task.metadata?.externalReview ? 'Review the delivered external evidence within this existing action. Its executor is already bound. Apply the supervisor policy, preserve the exact source and do not execute the accepted step again.' : 'The preceding work_input is the current accepted step. Use its currentStep and any deliveredObservation now. All earlier session turns are saved history for their own actions; do not replay them. Frontend dispatch and wait registration have already happened. Execute this step, handle its actual prerequisites, publish its useful result, and record completion or a real unmet condition.' }) : publicView && !publicView.runtimeEvent ? userMessage({ type: 'current_request_boundary', taskId: task.id,
           reference: { type: 'room', roomId: source.roomId, messageId: source.replyTo }, author: source.actor,
           instruction: 'Only this identified accepted source is the current trigger. All earlier published messages are history, including requests without a visible answer yet. Use them to understand references, never to replay their actions or reminders. Read request_actions for saved receipts if needed. Complete independent actions belonging to this current request.' }) : null;
         const prompts = [prompt, ...(boundary ? [boundary] : []), ...(publicView?.runtimeInstruction && !publicView.runtimeEvent ? [userMessage({ type: 'delivery_context', instruction: publicView.runtimeInstruction, authority: 'runtime-context' })] : []),

@@ -1,4 +1,5 @@
 import { ApiError } from './errors.js';
+import path from 'node:path';
 export const bad = message => { throw new ApiError(400, 'invalid_request', message); };
 export function object(value, allowed) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) bad('Expected a JSON object.');
@@ -25,7 +26,10 @@ export function createBody(body) {
   if (body.title !== undefined) string(body.title, 'title', 200);
   modelOptions(body);
   body.target ??= { type: 'projectless' };
-  if (body.target.type === 'projectless') {
+  if (body.target.type === 'directory') {
+    object(body.target, ['type', 'cwd']); string(body.target.cwd, 'cwd', 4096);
+    if (!path.isAbsolute(body.target.cwd) || body.target.cwd.includes('\0')) bad('cwd must be an absolute directory path.');
+  } else if (body.target.type === 'projectless') {
     object(body.target, ['type', 'directoryName']);
     if (body.target.directoryName !== undefined) {
       string(body.target.directoryName, 'directoryName', 100);
@@ -36,6 +40,6 @@ export function createBody(body) {
     body.target.environment ??= { type: 'local' };
     object(body.target.environment, ['type']);
     if (body.target.environment.type !== 'local') bad('V1 creates tasks in existing projects or projectless folders; worktree creation is not exposed.');
-  } else bad('target.type must be project or projectless.');
+  } else bad('target.type must be directory, project or projectless.');
   return body;
 }
