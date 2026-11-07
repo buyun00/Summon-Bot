@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdir, readFile, writeFile, rename, readdir } from 'node:fs/promises';
 import { resolve, join, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { acquireIdentityLock, inspectInstanceIdentity } from '../../bot/src/runtime/identity-lock.mjs';
 import { validateServiceIdentity } from './host.mjs';
 
@@ -81,7 +81,6 @@ export class CapabilityServiceSupervisor {
   async startVersion({ id, version, stateVersion = '1', module, options = {} }) {
     if (typeof module !== 'string' || !module) throw new Error('Capability module path is required');
     const modulePath = module.startsWith('file:') ? fileURLToPath(module) : isAbsolute(module) ? resolve(module) : resolve(this.releaseRoot, module);
-    const moduleDigest = createHash('sha256').update(await readFile(modulePath)).digest('hex');
     const paths = this.paths(id, version);
     await Promise.all([mkdir(paths.run, { recursive: true }), mkdir(paths.launch, { recursive: true })]);
     const deadline = Date.now() + this.startupTimeoutMs;
@@ -95,8 +94,8 @@ export class CapabilityServiceSupervisor {
     }
     try {
       const previous = await readJson(paths.config);
-      if (previous && (previous.module !== modulePath || previous.stateVersion !== stateVersion || previous.moduleDigest && previous.moduleDigest !== moduleDigest)) {
-        throw failure('A capability version is immutable; publish a new version for different module content or state format', 'SERVICE_VERSION_IMMUTABLE', 409);
+      if (previous && (previous.module !== modulePath || previous.stateVersion !== stateVersion)) {
+        throw failure('A capability version cannot switch module paths or state format; publish a new version', 'SERVICE_VERSION_IMMUTABLE', 409);
       }
       let descriptor = await this.descriptor(id, version);
       if (descriptor?.state !== 'stopped' && descriptor) {
@@ -111,7 +110,7 @@ export class CapabilityServiceSupervisor {
         return { ...descriptor, manifest, reused: true };
       }
       const savedOptions = previous ? { ...previous.options, ...Object.fromEntries(['gatewayUrl', 'gatewayToken', 'deferStart'].filter(field => options[field] !== undefined).map(field => [field, options[field]])) } : options;
-      const config = { id, version, stateVersion, module: modulePath, moduleDigest, options: savedOptions, dataRoot: this.dataRoot, releaseRoot: previous?.releaseRoot || options.releaseRoot || this.releaseRoot,
+      const config = { id, version, stateVersion, module: modulePath, options: savedOptions, dataRoot: this.dataRoot, releaseRoot: previous?.releaseRoot || options.releaseRoot || this.releaseRoot,
         serviceRoot: paths.root, token: previous?.token || randomBytes(32).toString('hex') };
       await writePrivateJson(paths.config, config);
       const child = spawn(this.nodePath, [join(this.releaseRoot, 'capabilities/services/cli.mjs'), '--config', paths.config], {

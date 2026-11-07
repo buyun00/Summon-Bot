@@ -1,7 +1,7 @@
 import { readFile, mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { acquireIdentityLock } from '../../bot/src/runtime/identity-lock.mjs';
 import { installProcessLog } from '../../bot/src/runtime/process-log.mjs';
 import { startCapabilityService, validateServiceIdentity } from './host.mjs';
@@ -33,9 +33,6 @@ try {
   record = { serviceId: config.id, version: config.version, stateVersion: config.stateVersion, pid: process.pid, bootId, state: 'starting', startedAt: new Date().toISOString() };
   ownership = await acquireIdentityLock(join(config.serviceRoot, 'run'), () => record);
   processLog = installProcessLog(join(config.serviceRoot, 'logs'), config.options?.logs, { tee: false });
-  if (!config.moduleDigest || createHash('sha256').update(await readFile(config.module)).digest('hex') !== config.moduleDigest) {
-    throw Object.assign(new Error('Capability entry module content no longer matches its immutable version'), { code: 'SERVICE_MODULE_DIGEST_MISMATCH' });
-  }
   if (config.options?.packageRoot || config.options?.contentHash) {
     const checked = config.options.packageRoot ? await verifyCapabilityPackage(config.options.packageRoot) : await verifyRelease(config.options.releaseRoot || config.releaseRoot);
     if (checked.contentHash !== config.options.contentHash) throw Object.assign(new Error('Capability package integrity no longer matches its deployed version'), { code: 'SERVICE_PACKAGE_DIGEST_MISMATCH' });
