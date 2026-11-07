@@ -5,6 +5,7 @@ import { fail } from '../shared/validation.mjs';
 import { desktopExecutorState, requireDesktopExecutor } from '../../bot/src/capabilities/executor-connections.mjs';
 import { modelText } from '../../bot/src/context/model-input.mjs';
 import { codexTarget } from '../../bot/src/capabilities/codex-target.mjs';
+import { directoryProject } from '../../bot/src/context/project-scope.mjs';
 
 const now = () => new Date().toISOString();
 const terminal = new Set(['completed', 'failed', 'interrupted', 'cancelled']);
@@ -105,9 +106,11 @@ export class DesktopCodex {
   async syncOwner(work) {
     const current = await this.ownerWork(work.botId, work.workId);
     const binding = { id: work.id, type: 'codex-desktop', operationId: work.operationId, operationKey: work.operationKey, externalThreadId: work.externalThreadId || null, pendingClientThreadId: work.pendingClientThreadId || null, hostId: work.hostId || 'local', turnId: work.turnId || null, previousTurnId: work.previousTurnId || null, status: work.status, observedAt: work.observedAt || null,
+      observation: work.executionObservation || null,
       ...(work.directoryTarget ? { target: work.directoryTarget } : {}) };
     await this.manager.request(work.botId, `/works/${encodeURIComponent(work.workId)}`, { method: 'PATCH', body: JSON.stringify({ expectedRevision: current.revision,
-      ...(work.directoryTarget ? { project: { id: work.directoryTarget.projectId, cwd: work.directoryTarget.cwd, hostId: 'local', kind: 'directory' } } : {}),
+      ...(work.directoryTarget ? { project: { ...directoryProject(work.directoryTarget.cwd), nativeProjectId: work.directoryTarget.projectId,
+        nativeRegistration: 'confirmed' } } : {}),
       bindings: [...(current.bindings || []).filter(item => item.id !== work.id), binding] }) });
     this.save({ id: work.id, ownerSyncPending: false, syncError: null });
   }
@@ -187,7 +190,8 @@ export class DesktopCodex {
     if (action === 'create' && this.store.list('desktopOperations').some(item => item.workId === id && item.action === 'create' && item.status !== 'failed')) fail('This work already has a create attempt; inspect or explicitly attach its actual thread instead of creating again', 409);
     const operation = this.store.transaction(() => {
       const operation = this.store.save('desktopOperations', { id: `${work.botId}:${id}:${operationId}`, workId: id, action, operationId, operationKey: randomUUID(), path, body, status: 'unknown', attemptedAt: null });
-      this.save({ id, ...patch, operationId, operationKey: operation.operationKey, status: action === 'interrupt' ? 'interrupt_requested' : 'submitting' });
+      this.save({ id, ...patch, operationId, operationKey: operation.operationKey, executionObservation: null,
+        status: action === 'interrupt' ? 'interrupt_requested' : 'submitting' });
       return operation;
     });
     return this.perform(operation);
@@ -290,6 +294,7 @@ export class DesktopCodex {
   }
   async observe(id, state) {
     const work = this.require(id), turnId = state.currentTurn?.id || null, status = turnStatus(state);
+    const operation = work.operationId && this.operation(work, work.operationId);
     if (state.threadId && state.threadId !== work.externalThreadId) fail('Observation belongs to another Desktop thread', 409);
     if (!state.stale && state.observedAt && work.snapshot?.observedAt && Date.parse(state.observedAt) < Date.parse(work.snapshot.observedAt)) return;
     const stale = Boolean(state.stale || status === 'unknown');
@@ -301,7 +306,11 @@ export class DesktopCodex {
     const shouldNotify = changed && (terminal.has(effective) || effective === 'waiting_for_input' || state.pendingRequests?.length || effective === 'unknown');
     let event;
     this.store.transaction(() => {
-      const saved = this.save({ id, snapshot: state, observedAt: now(), observationSignature: signature, ownerSyncPending: changed || work.ownerSyncPending, status: terminal.has(effective) || effective === 'waiting_for_input' ? effective : work.status === 'interrupt_requested' ? 'interrupt_requested' : effective === 'unknown' ? 'unknown' : 'running', ...(relevantTurn ? { turnId } : {}) });
+      const saved = this.save({ id, snapshot: state, observedAt: now(), observationSignature: signature,
+        executionObservation: { operationId: work.operationId, threadId: state.threadId || null, turnId,
+          status, stale: stale || !relevantTurn, observedAt: state.observedAt || now(),
+          submissionConfirmed: Boolean(operation?.appliedAt && operation.status === 'received' && !operation.result?.error) },
+        ownerSyncPending: changed || work.ownerSyncPending, status: terminal.has(effective) || effective === 'waiting_for_input' ? effective : work.status === 'interrupt_requested' ? 'interrupt_requested' : effective === 'unknown' ? 'unknown' : 'running', ...(relevantTurn ? { turnId } : {}) });
       if (shouldNotify) {
         event = this.queue(id, `${work.operationKey || 'attach'}:${turnId || 'unknown'}:${effective}`, { type: 'external_status', status: effective, turnId: relevantTurn ? turnId : null, state,
           final: relevantTurn ? finalReply(state, work.externalThreadId, turnId) : null, history: null });

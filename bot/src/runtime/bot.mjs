@@ -127,11 +127,14 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         store.saveArtifact(artifact); emit('artifact.created', { artifact }, { taskId: task.id }); return artifact;
       } }; },
     };
-    services.sources = new RuntimeSources({ store, call: (...args) => services.capability(...args) });
+    services.sources = new RuntimeSources({ store, workspace: config.workspace, call: (...args) => services.capability(...args) });
     engine = new BotEngine({ config, store, emit, services, clean });
+    services.memory = engine.maintenance;
+    services.sources.readKnowledge = (...args) => engine.maintenance.read(...args);
     updates = new CapabilityUpdates({ config, store, engine, emit, clean, persist: persistConfig });
     const schedule = task => {
       if (jobs.has(task.id) || task.status !== 'accepted') return;
+      engine.maintenance.activity(task);
       const work = task.workId && services.works.get(task.workId);
       const external = task.metadata?.sourceType === 'external';
       if (!external && work && ['paused', 'cancelled', 'blocked'].includes(work.status)) return;
@@ -149,14 +152,14 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         // Keep each accepted request and its publication route intact in the work queue.
         if (currentWork) services.works.update(currentWork.id, { lastTaskId: task.id });
         try {
-          const start = () => store.updateTask(task.id, { status: 'running', startedAt: at() });
+          const start = () => { engine.maintenance.activity(task); return store.updateTask(task.id, { status: 'running', startedAt: at() }); };
           let result;
           const executor = currentWork && services.works.executor(currentWork).kind;
           if (!external && isCliExecutor(executor)) {
             start();
             result = await executeCliWork({ store, services, config, task, signal: controller.signal, clean });
           } else if (currentWork && (external || executor === 'codex')) {
-            start(); result = await services.executor.execute(task, { signal: controller.signal }); engine.maintenance.enqueue(task);
+            start(); result = await services.executor.execute(task, { signal: controller.signal });
           }
           else result = await engine.run(task, { signal: controller.signal, onStart: start });
           store.updateTask(task.id, { status: 'completed', result, finishedAt: at(), activity: {
@@ -204,7 +207,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         }
       }, { signal: controller.signal, priority: task.metadata?.priority }).catch(error => {
         if (state !== 'stopping' && store.getTask(task.id)?.status === 'accepted') store.updateTask(task.id, { status: 'cancelled', error: { message: error.message }, finishedAt: at() });
-      }).finally(() => jobs.delete(task.id));
+      }).finally(() => { if (!store.closed) engine.maintenance.activity(task); jobs.delete(task.id); });
       jobs.set(task.id, { controller, promise });
     };
     const cancel = id => {
@@ -309,7 +312,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         const published = store.listRecords('work-notifications').findLast(item => item.workId === work.id &&
           item.executionEventId === execution.executionEventId && item.publication === 'explicit');
         const newAction = published && store.listTools().some(record => record.workId === work.id && record.startedAt > published.createdAt &&
-          record.status === 'completed' && record.effect !== 'read' && !['work_update', 'work_wait', 'work_notify'].includes(record.name) &&
+          record.status === 'completed' && record.effect !== 'read' && !['work_update', 'work_wait', 'work_notify', 'knowledge_remember'].includes(record.name) &&
           services.works.execution(store.getTask(record.taskId) || {}).executionEventId === execution.executionEventId);
         if (published && !newAction) return { ...published, duplicate: true };
       }

@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { taskSource, workExecution } from '../context/sources.mjs';
 import { modelText, boundedNumber, durationSeconds } from '../context/model-input.mjs';
 import { isCliExecutor } from '../capabilities/executor-connections.mjs';
+import { directoryProject } from '../context/project-scope.mjs';
+import { externalExecution } from '../context/execution-evidence.mjs';
 
 const now = () => new Date().toISOString();
 const statuses = new Set(['active', 'waiting', 'paused', 'blocked', 'completed', 'cancelled']);
@@ -30,13 +32,12 @@ export class WorkService {
     if (!['pi', 'codex'].includes(executor.kind) && !isCliExecutor(executor.kind)) fail('Unknown work executor');
     if (executor.kind === 'codex' && !['project', 'projectless', 'directory'].includes(executor.target?.type)) fail('Codex requires an authorized directory or selected project target');
     if (isCliExecutor(executor.kind) && executor.target) fail('这个工作引擎使用 Bot 的本机工作目录。');
-    const binding = executor.kind === 'pi' ? { kind: 'pi', ...this.selectModel?.(executor.connectionId) } : executor;
+    const binding = executor.kind === 'pi' ? { kind: 'pi', ...this.selectModel?.(executor.connectionId), ...(executor.target ? { target: executor.target } : {}) } : executor;
     const record = this.clean({ id, botId: this.botId, conversationId: `work:${id}`, goal: input.goal,
-      requirements: input.requirements || '', executor: binding, progress: '', status: 'active', waiting: null, bindings: [], notifications: [],
+      requirements: input.requirements || '', executor: binding, project: input.project || null, progress: '', status: 'active', waiting: null, bindings: [], notifications: [],
       sources: input.sources || (task.id ? [this.source(task)] : []),
       responsibility: input.responsibility || null, revision: 1, createdAt: now(), updatedAt: now() });
-    if (executor.target?.type === 'directory') record.project = { id: `directory:${executor.target.cwd.replaceAll('\\', '/').toLowerCase()}`,
-      cwd: executor.target.cwd, hostId: 'local', kind: 'directory' };
+    if (executor.target?.type === 'directory') record.project = directoryProject(executor.target.cwd);
     this.store.transaction(() => {
       this.store.putRecord('works', record);
       if (sourceKey) this.store.putRecord('work-handoffs', { id: sourceKey, workId: id, createdAt: now() });
@@ -66,7 +67,7 @@ export class WorkService {
       const previous = this.get(id); if (!previous) fail('Unknown work', 404);
       if (input.expectedRevision !== undefined && input.expectedRevision !== previous.revision) fail('Work changed; read current state', 409);
       if (input.status !== undefined && !statuses.has(input.status)) fail('Invalid work status');
-      const patch = Object.fromEntries(Object.entries(input).filter(([key]) => ['goal', 'requirements', 'progress', 'status', 'waiting', 'bindings', 'notifications', 'sources', 'responsibility', 'lastTaskId', 'lastError', 'owner', 'notificationCursor', 'executionOutcome', 'executor'].includes(key)));
+      const patch = Object.fromEntries(Object.entries(input).filter(([key]) => ['goal', 'requirements', 'progress', 'checkpoint', 'status', 'waiting', 'bindings', 'notifications', 'sources', 'responsibility', 'lastTaskId', 'lastError', 'owner', 'notificationCursor', 'executionOutcome', 'executor'].includes(key)));
       for (const key of ['checkpoint', 'project']) if (Object.hasOwn(input, key)) patch[key] = input[key];
       for (const key of ['bindings', 'notifications', 'sources']) if (patch[key] !== undefined && !Array.isArray(patch[key])) fail(`${key} must be an array`);
       const record = this.clean({ ...previous, ...patch, id, revision: previous.revision + 1, updatedAt: now() });
@@ -110,7 +111,9 @@ export class WorkService {
         workEventId: intent.id, origin: intent.authorization?.source, priority: intent.metadata?.priority || 'background' } };
     if (envelope.content === undefined) fail('Work event requires content');
     const result = await this.accept(envelope, task.source || 'controller');
-    const receipt = { accepted: true, duplicate: result.duplicate, workId: id, taskId: result.task.id, status: result.task.status, executor: this.executor(work).kind };
+    const receipt = { accepted: true, duplicate: result.duplicate, workId: id, operationId: intent.id, taskId: result.task.id,
+      status: result.task.status, localTaskStatus: result.task.status, receiptLayer: 'local-dispatch', executor: this.executor(work).kind,
+      execution: externalExecution(this.get(id), intent.id) };
     this.store.putRecord('work-events', { ...this.store.getRecord('work-events', intent.id), receipt, status: 'accepted' });
     return receipt;
   }

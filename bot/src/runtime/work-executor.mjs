@@ -44,9 +44,13 @@ export function workExecutor({ store, services, emit }) {
       const binding = work.bindings?.find(item => item.type === 'codex-desktop');
       if (!event.transport) {
         const execution = services.works.execution(task);
+        let currentKnowledge;
+        try { currentKnowledge = await services.memory.forRequest(task, services.sources.project(work)); }
+        catch (error) { currentKnowledge = { unavailable: error.message, instruction: 'Do not treat stale handoff prose as the latest saved rule.' }; }
         const prompt = JSON.stringify({ type: 'work_input', workId: work.id, input: workInput(services.works.executionInput(task)),
+          currentKnowledge,
           currentAction: { actionId: execution.actionId, requestTaskId: execution.requestTaskId,
-            instruction: 'Execute only the current accepted step. Earlier session requests are history. Frontend dispatch and waiting registration have already happened; any deliveredObservation is actual dependency evidence ready to use now. Honor the original request’s prerequisites without repeating other work or coordination. Return this step’s useful result.' } });
+            instruction: 'Execute only the current accepted step. Earlier session requests are history. Frontend dispatch and waiting registration have already happened; any deliveredObservation is actual dependency evidence ready to use now. Honor the original request’s prerequisites without repeating other work or coordination. Prefer the newest applicable explicit user rules in currentKnowledge by original time over old summaries, templates and coordinating handoff prose. Keep checkpoints with done/next/constraints and evidence in the original executor history; the existing receipts preserve continuation state. Return this step’s useful result.' } });
         const executor = services.works.executor(work);
         const name = binding?.externalThreadId ? 'codex_send' : 'codex_create';
         const args = binding?.externalThreadId ? { workId: work.id, operationId: event.id, message: prompt } :
@@ -125,6 +129,9 @@ export function workExecutor({ store, services, emit }) {
         waiting: { kind: outcome === 'execution-ended' ? 'review' : outcome === 'needs-input' ? 'user-input' : 'external', outcome,
           ...(outcome === 'needs-input' ? { question: final?.text || `Codex 待处理请求：${JSON.stringify(content.state?.pendingRequests || [])}` } : {}), since: at() },
         executionOutcome: { kind: outcome, turnId: content.turnId, operationId: content.operationId, finalConfirmed: Boolean(final) },
+        checkpoint: { taskId: task.id, sessionId: task.sessionId, outcome, progress: final?.text?.slice(0, 4000) || `Codex：${outcome}`,
+          evidence: { observationId: eventId, threadId: binding.externalThreadId, turnId: content.turnId, operationId: content.operationId },
+          finalConfirmed: Boolean(final), recordedAt: at() },
         progress: final?.text ? final.text.slice(0, 1200) : `Codex：${outcome}` });
       const label = ({ 'execution-ended': 'Codex 本次执行已结束', 'needs-input': 'Codex 需要你补充信息或处理请求', failed: 'Codex 本次执行失败',
         interrupted: 'Codex 本次执行已中断', cancelled: 'Codex 本次执行已取消', 'result-unknown': 'Codex 当前结果尚未确认' })[outcome];

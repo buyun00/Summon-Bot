@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { modelText, modelArgs, boundedNumber } from './model-input.mjs';
+import { directoryProject } from './project-scope.mjs';
+import { externalExecution } from './execution-evidence.mjs';
 
 const denied = message => { throw Object.assign(new Error(message), { status: 403, code: 'SOURCE_SCOPE_DENIED' }); };
 
@@ -62,12 +64,96 @@ export function publicMessage(message) {
 }
 
 export class RuntimeSources {
-  constructor({ store, call }) { Object.assign(this, { store, call }); }
+  constructor({ store, call, workspace }) { Object.assign(this, { store, call, workspace }); }
+  originTask(task) {
+    const id = task.workId ? workExecution(task, this.store).requestTaskId : task.id;
+    return id ? this.store.getTask(id) || (!task.workId ? task : null) : null;
+  }
+  project(work) {
+    // A model's scopeRefs/name never establishes a project association. New
+    // works use the resolved project; older bindings already accepted by the
+    // Desktop connector retain their real selected target.
+    return work?.project || (work?.bindings?.some(item => item.type === 'codex-desktop' && item.externalThreadId) &&
+      work.executor?.target?.type === 'project' ? { id: work.executor.target.projectId } : null);
+  }
+  async contextProject(task) {
+    const work = task.workId && this.store.getRecord('works', task.workId);
+    const selected = this.project(work);
+    if (selected) return selected;
+    return this.workspace ? this.authorizeProject({ type: 'directory', cwd: this.workspace }, task) : null;
+  }
+  async authorizeProject(target, task) {
+    if (target?.type === 'directory') {
+      directoryProject(target.cwd);
+      const current = task.workId && this.project(this.store.getRecord('works', task.workId));
+      if (current && current.id !== directoryProject(target.cwd).id) denied('Directory is outside this work binding');
+      const directory = await this.callForSource('list_files', { path: target.cwd, maxEntries: 1, maxDepth: 0 }, task);
+      if (!directory.path) denied('The authorized directory could not be resolved');
+      const project = directoryProject(directory.path);
+      if (current && current.id !== project.id) denied('Resolved directory is outside this work binding');
+      return project;
+    }
+    if (target?.type !== 'project') return null;
+    const current = task.workId && this.project(this.store.getRecord('works', task.workId));
+    if (task.workId) {
+      if (current?.id !== target.projectId) denied('Project is outside this work binding');
+      return current;
+    }
+    const page = await this.call('codex_projects', {}, task);
+    const items = Array.isArray(page) ? page : page.projects || page.items || [];
+    const matches = items.filter(item => (item.projectId || item.id) === target.projectId || (item.label || item.name) === target.projectId);
+    if (matches.length !== 1) denied('Choose one existing accessible project; the supplied name is not an authorization');
+    const item = matches[0];
+    return { id: item.projectId || item.id, name: item.label || item.name, hostId: item.hostId || 'local' };
+  }
+  async memoryAccess(task) {
+    const origin = this.originTask(task);
+    if (!origin) return { rooms: [], works: [], projects: [], source: {} };
+    const source = taskSource(origin, this.store);
+    const rooms = source.roomId ? (task.workId ? await this.scopedCall('chatroom_list', {}, task, origin) :
+      await this.callForSource('chatroom_list', {}, origin)).map(room => room.id) : [];
+    const works = [];
+    for (const work of this.store.listRecords('works')) {
+      if (task.workId && work.id !== task.workId) continue;
+      if (await this.canReadWork(work, origin, rooms)) works.push(work);
+    }
+    let currentProject, projectError;
+    try { currentProject = await this.contextProject(task); } catch (error) { projectError = error.message; }
+    return { rooms, works, projects: [...works.map(work => this.project(work)).filter(Boolean), ...(currentProject ? [currentProject] : [])],
+      currentProject, projectError, source };
+  }
+  async memoryTarget(task, input = {}) {
+    const args = modelArgs(input), access = await this.memoryAccess(task);
+    const supplied = args.scopeId || (typeof args.scope === 'string' && /^(?:work|conversation|project):/.test(args.scope) ? args.scope : null);
+    if (supplied) {
+      const scope = this.store.getRecord('knowledge_scope', supplied);
+      if (!scope || !(await this.knowledge(task, [scope], access)).length) denied('Knowledge belongs to another source scope');
+      return scope;
+    }
+    const hint = args.workId || task.workId || taskSource(task, this.store).metadata?.referencedWorkId;
+    const work = access.works.find(item => item.id === hint);
+    if (args.workId && !work) denied('Work is outside this request');
+    let project = args.projectId ? access.projects.find(item => item.id === args.projectId || item.name === args.projectId) : this.project(work) || access.currentProject;
+    if (args.projectId && !project) project = await this.authorizeProject(args.projectId.startsWith('directory:') ?
+      { type: 'directory', cwd: args.projectId.slice(10) } : { type: 'project', projectId: args.projectId }, task);
+    if (project && args.scope !== 'work' && args.scope !== 'room' && args.scope !== 'conversation')
+      return { id: `project:${project.id}`, projectId: project.id, title: project.name || project.id,
+        authorizations: [access.source], originConversationId: access.source.conversationId };
+    if (args.scope === 'project') throw new Error(access.projectError || 'No authorized project directory is associated with this request.');
+    if (work && (task.workId || args.workId || args.scope === 'work')) return { workId: work.id, conversationId: work.conversationId };
+    const source = access.source;
+    if (source.roomId && !access.rooms.includes(source.roomId)) denied('The original room is no longer accessible');
+    if (!source.conversationId) denied('No authenticated conversation scope is available');
+    return { conversationId: source.conversationId, roomId: source.roomId };
+  }
+  async callForSource(name, args, task) {
+    return this.store.getTask(task.id)?.status === 'running' ? this.call(name, args, task) : this.scopedCall(name, args, task, task);
+  }
   async rooms(task) {
     if (task.workId) return [];
     const source = taskSource(task, this.store);
     if (!source.roomId) return [];
-    const rooms = await this.call('chatroom_list', {}, task);
+    const rooms = await this.callForSource('chatroom_list', {}, task);
     return rooms.map(room => room.id);
   }
   async canReadWork(work, task, rooms) {
@@ -92,16 +178,21 @@ export class RuntimeSources {
     }
     return [...allowed];
   }
-  async knowledge(task, directory) {
-    const sessions = new Set(await this.sessions(task));
-    return directory.filter(item => task.workId ? item.workId === task.workId :
-      sessions.has(item.workId ? `work:${item.workId}` : item.conversationId));
+  async knowledge(task, directory, access) {
+    access ||= await this.memoryAccess(task);
+    const permittedSource = source => source?.roomId ? access.rooms.includes(source.roomId) :
+      source?.source === access.source.source && source?.conversationId === access.source.conversationId;
+    return directory.filter(item => item.projectId ? access.projects.some(project => project.id === item.projectId) ||
+      !task.workId && item.authorizations?.some(permittedSource) : item.workId ? access.works.some(work => work.id === item.workId) :
+      item.conversationId === access.source.conversationId || !task.workId && access.rooms.includes(item.roomId || item.conversationId?.replace(/^room:/, '')));
   }
   grant(task, reference) {
     if (!task.workId) return null;
     const same = candidate => candidate?.type === reference.type && (reference.type === 'room' ?
       candidate.roomId === reference.roomId && candidate.messageId === reference.messageId : reference.type === 'session' ?
-        candidate.sessionId === reference.sessionId && candidate.entryId === reference.entryId : candidate.id === reference.id);
+        candidate.sessionId === reference.sessionId && candidate.entryId === reference.entryId : reference.type === 'knowledge' ?
+          candidate.scopeId === reference.scopeId : reference.type === 'work' ? candidate.workId === reference.workId &&
+            candidate.operationId === reference.operationId : candidate.id === reference.id);
     return this.store.listRecords('work-events').findLast(event => event.workId === task.workId && event.requestTaskId &&
       [event.content?.originalRequest?.reference, ...(event.content?.evidence || []).map(item => item.reference)].some(same));
   }
@@ -153,10 +244,38 @@ export class RuntimeSources {
     if (task.workId && reference.type === 'room' && !origin) denied('Workers read only explicitly handed-off source messages');
     if (reference.type === 'room') {
       const args = { roomId: reference.roomId, messageId: reference.messageId, offset, length };
-      const page = origin ? await this.scopedCall('chatroom_read', args, task, origin) : await this.call('chatroom_read', args, task);
-      const message = page.messages?.[0]; if (!message) throw new Error('Evidence message not found');
+      const page = origin ? await this.scopedCall('chatroom_read', args, task, origin) : await this.callForSource('chatroom_read', args, task);
+      const message = page.messages?.find(item => item.id === reference.messageId);
+      if (!message) throw new Error('Evidence message not found');
       return { reference: message.reference, author: message.senderId, content: message.content, attachments: message.attachments,
         replyTo: message.replyTo, nextOffset: message.nextOffset, fullCharacters: message.fullCharacters, authority: 'evidence' };
+    }
+    if (reference.type === 'knowledge') {
+      const scope = this.store.getRecord('knowledge_scope', reference.scopeId);
+      if (!scope || !(await this.knowledge(origin || task, [scope])).length) denied('Knowledge belongs to another source scope');
+      return { reference, ...(await this.readKnowledge(scope.id, { offset, length })), authority: 'sourced-memory' };
+    }
+    if (reference.type === 'work') {
+      const work = await this.requireWork(reference.workId, origin || task);
+      const events = this.store.listRecords('work-events').filter(item => item.workId === work.id && item.kind === 'request');
+      const operationId = reference.operationId || work.waiting?.operationId || work.bindings?.find(item => item.type === 'codex-desktop')?.operationId || events.at(-1)?.id;
+      const operation = operationId && this.store.getRecord('work-events', operationId);
+      if (operationId && operation?.workId !== work.id) denied('Operation belongs to another work');
+      return { reference: { type: 'work', workId: work.id, ...(operationId ? { operationId } : {}) }, author: 'runtime', authority: 'owning-work-state',
+        content: { workId: work.id, goal: work.goal, status: work.status, waiting: work.waiting, project: work.project,
+          executor: work.executor, execution: externalExecution(work, operationId),
+          operation: operation && { id: operation.id, createdAt: operation.createdAt, status: operation.status,
+            requestTaskId: operation.requestTaskId, receipt: operation.receipt, executionReceipt: operation.executionReceipt },
+          bindings: work.bindings, observedAt: new Date().toISOString() } };
+    }
+    if (reference.type === 'tool') {
+      const record = this.store.listTools().find(item => item.id === reference.id);
+      const owner = record && this.store.getTask(record.taskId);
+      if (!owner || record.status !== 'completed') throw new Error('Completed source tool receipt not found');
+      if (owner.workId) await this.requireWork(owner.workId, origin || task);
+      else if (!(await this.sessions(origin || task)).includes(owner.sessionId)) denied('Tool receipt is outside this request');
+      return { reference: { type: 'tool', id: record.id }, author: 'runtime', authority: 'tool-observation',
+        content: { tool: record.name, args: record.args, output: record.output?.details, observedAt: record.finishedAt } };
     }
     const permittedSession = async id => {
       if (!origin) return (await this.sessions(task)).includes(id);
@@ -183,6 +302,8 @@ export class RuntimeSources {
     if (value?.reference) return this.reference(value.reference, task);
     if (typeof value === 'string') {
       try { return this.reference(JSON.parse(value), task); } catch {}
+      const room = /^room:(.+):([\w.-]+)$/.exec(value);
+      if (room) return { type: 'room', roomId: room[1], messageId: room[2] };
       for (const tool of this.store.listTools(task.id).reverse()) {
         const messages = Array.isArray(tool.output?.details?.messages) ? tool.output.details.messages : [];
         const match = messages.find(item => item.id === value || item.reference?.messageId === value || `${item.reference?.sessionId}#${item.index}` === value);
@@ -197,7 +318,7 @@ export class RuntimeSources {
     const sessionId = value.sessionId || (value.workId ? this.store.getRecord('works', value.workId)?.conversationId :
       value.entryId !== undefined || value.index !== undefined ? task.sessionId : undefined);
     return { ...value, ...(roomId ? { roomId } : {}), ...(sessionId ? { sessionId } : {}),
-      type: value.type || (roomId ? 'room' : sessionId ? 'session' : value.id ? 'artifact' : undefined),
+      type: value.type || (value.scopeId ? 'knowledge' : roomId ? 'room' : sessionId ? 'session' : value.id ? 'artifact' : undefined),
       ...(value.entryId === undefined && value.index !== undefined ? { entryId: `m:${value.index}` } : {}) };
   }
   references(value, task) {
@@ -220,7 +341,8 @@ export class RuntimeSources {
   }
   async handoff(task, input = {}) {
     const args = modelArgs(input), supplied = args.evidence ?? args.references ?? args.sourceRefs ?? [];
-    const evidence = this.references(supplied, task);
+    const evidence = [...this.references(supplied, task), ...this.references(args.knowledgeScopes, task).map(scopeId =>
+      typeof scopeId === 'string' ? { type: 'knowledge', scopeId } : scopeId)];
     const warnings = [];
     const source = taskSource(task, this.store);
     let original = { reference: source.roomId && source.replyTo ? { type: 'room', roomId: source.roomId, messageId: source.replyTo } : { type: 'message', messageId: source.messageId },

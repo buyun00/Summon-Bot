@@ -51,7 +51,7 @@ export async function startGateway(options={}) {
   const emit=(type,payload={})=>{const line=`data: ${JSON.stringify({type,...payload})}\n\n`;for(const client of clients)client.write(line);};
   const modelConnections=await new ModelConnections({dataRoot,model:options.model,emit}).initialize();
   options.model={connectionStore:modelConnections.path};
-  const botToolNames=[...coreTools({},{}).map(tool=>tool.name),'read_resource','read_session_history','context_assemble','knowledge_list','knowledge_read','knowledge_write','skills_list','skill_write'];
+  const botToolNames=[...coreTools({},{}).map(tool=>tool.name),'read_resource','read_session_history','context_assemble','knowledge_list','knowledge_read','knowledge_remember','knowledge_write','skills_list','skill_write'];
   const registry=new CapabilityRegistry({store:store('registry'),emit,reservedTools:[...botToolNames,...controlTools.map(tool=>tool.name),...catalogTools.map(tool=>tool.name)]});
   const supervisor=new CapabilityServiceSupervisor({dataRoot,releaseRoot});
   let control;

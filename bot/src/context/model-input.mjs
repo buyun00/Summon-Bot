@@ -43,16 +43,20 @@ export function looseSchema(schema) {
 }
 export function maintenanceOutput(raw) {
   const text = String(raw || '').trim();
+  if (!text) return { markdown: '', context: '', noChange: false };
+  const unchanged = value => /^(?:无需(?:调整|变更|修改|更新)|没有(?:需要的)?变更|no\s+(?:changes?|updates?)(?:\s+(?:are\s+|is\s+)?(?:needed|required))?|unchanged)(?:[。.!，,:：\s]|$)/i.test(String(value).trim());
   let value;
   try { value = JSON.parse(text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')); }
   catch {
     try { value = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1)); } catch {}
   }
-  if (value === null) return { markdown: null, context: '' };
+  if (value === null || unchanged(text))
+    return { markdown: null, context: '', noChange: true };
   if (value === undefined || typeof value !== 'object' || Array.isArray(value)) {
-    const body = modelText(value, text); return { markdown: body || null, context: body };
+    const body = modelText(value, text); return { markdown: unchanged(body) ? null : body, context: body, noChange: unchanged(body) };
   }
   const body = value.markdown === null ? null : modelText(value.markdown ?? value.context ?? value.summary ?? value.content ?? value.text ?? value.message, '');
-  return { ...value, markdown: body || null, context: modelText(value.context ?? body),
+  return { ...value, markdown: body, context: modelText(value.context ?? body),
+    noChange: value.markdown === null || value.noChange === true || value.unchanged === true || value.status === 'unchanged' || unchanged(body),
     skills: Array.isArray(value.skills) ? value.skills : value.skills && typeof value.skills === 'object' ? [value.skills] : [] };
 }

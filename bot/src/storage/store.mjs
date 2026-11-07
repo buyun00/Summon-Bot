@@ -174,6 +174,7 @@ export class BotStore {
     this.db.prepare('INSERT INTO records(kind,id,data) VALUES(?,?,?) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data').run(kind, record.id, encode(record)); return record;
   }
   getRecord(kind, id) { return decode(this.db.prepare('SELECT data FROM records WHERE kind=? AND id=?').get(kind, id)); }
+  deleteRecord(kind, id) { return this.db.prepare('DELETE FROM records WHERE kind=? AND id=?').run(kind, id); }
   listRecords(kind) { return this.db.prepare('SELECT data FROM records WHERE kind=? ORDER BY rowid').all(kind).map(decode); }
   appendEvent(type, payload, refs = {}) {
     const event = { type, payload, ...refs, createdAt: now() };

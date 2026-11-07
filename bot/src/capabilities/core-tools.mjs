@@ -11,11 +11,11 @@ const flexible = name => name.startsWith('work') || ['evidence_read', 'tasks_get
 const tool = (name, description, inputSchema, effect, execute) => ({ name, description, inputSchema: flexible(name) ? looseSchema(inputSchema) : inputSchema, effect,
   execute: async (args, context) => jsonToolResult(await execute(modelArgs(args), context)) });
 const pageFields = { offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 20 } };
-const reference = object({ type: { type: 'string', enum: ['room', 'session', 'artifact'] }, roomId: string,
+const reference = object({ type: { type: 'string', enum: ['room', 'session', 'artifact', 'knowledge', 'work', 'tool'] }, roomId: string, scopeId: string, workId: string, operationId: string,
   messageId: string, sessionId: string, entryId: string, id: string, offset: { type: 'integer', minimum: 0 }, length: { type: 'integer', minimum: 1, maximum: 16000 } }, ['type']);
 const evidence = { type: 'array', maxItems: 20, items: reference,
   description: 'Selected exact references from source reads, e.g. [{type:"room",roomId:"...",messageId:"..."}]. Pass the array itself; a JSON array string is also readable. Prose is guidance, not a source grant.' };
-const handoffFields = { evidence, instruction: string, acceptance: string };
+const handoffFields = { evidence, knowledgeScopes: { type: 'array', items: string }, instruction: string, acceptance: string };
 const preview = value => { const text = typeof value === 'string' ? value : JSON.stringify(value ?? null); return { text: text.slice(0, 1600), truncated: text.length > 1600 }; };
 function page(items, args, project) {
   const offset = boundedNumber(args.offset, 0), limit = boundedNumber(args.limit, 10, 1, 20);
@@ -27,6 +27,8 @@ export function coreTools(services, task) {
   const store = services.store;
   const frontend = taskMode(task) !== 'work';
   const workView = work => frontend ? compactWork(work) : work;
+  const taskView = value => compactTask(value, value?.workId && services.works.get(value.workId),
+    value && services.works.execution(value).executionEventId);
   const source = taskSource(task, store);
   const userRequest = source.actor === 'user' && store.getMessage(task.messageId)?.kind === 'request';
   const workId = args => {
@@ -54,7 +56,8 @@ export function coreTools(services, task) {
           status: item.status, actions: store.listTools(item.id).filter(record => record.effect !== 'read').map(record => {
             const receipt = record.output?.details || {};
             return { actionId: record.id, tool: record.name, status: record.status, id: receipt.id, workId: receipt.workId,
-              taskId: receipt.taskId, waitId: receipt.waitId, accepted: receipt.accepted, savedStatus: receipt.status, recordedAt: record.finishedAt, dueAt: receipt.dueAt,
+              taskId: receipt.taskId, operationId: receipt.operationId, execution: receipt.execution, receiptLayer: receipt.receiptLayer,
+              waitId: receipt.waitId, accepted: receipt.accepted, savedStatus: receipt.status, recordedAt: record.finishedAt, dueAt: receipt.dueAt,
               ...(receipt.workId && services.works.get(receipt.workId) ? { workStatus: services.works.get(receipt.workId).status } : {}) };
           }) }));
       }),
@@ -63,8 +66,8 @@ export function coreTools(services, task) {
       for (const work of services.works.list(args)) if (await services.sources.canReadWork(work, task, rooms)) values.push(workView(work));
       return values;
     }),
-    tool('work_get', 'Read accessible work status and its existing executor/session binding. The current/replied-to work is the default. Read selected evidence through read_session_history.', object({ id: string }, ['id']), 'read', async args => workView(await services.sources.requireWork(workId(args), task))),
-    tool('work_create', 'Create and start independent work. Omit executor to use the user’s default engine. Give the goal, evidence, handoff prose and any explicitly selected target. The program supplies source and operation IDs. Temporary assignments use work, not a cloned Bot.',
+    tool('work_get', 'Read the owning work, operation and actual executor binding. Local active/submitting is not an external start. Only execution.startedConfirmed with matching non-stale observation proves that turn ran. A directory project is a local authorization scope, not native registration. Read exact work/operation evidence before evaluating a peer execution claim.', object({ id: string }, ['id']), 'read', async args => workView(await services.sources.requireWork(workId(args), task))),
+    tool('work_create', 'Accept and asynchronously dispatch independent work. The receipt confirms local scheduling only, not Pi/Codex execution, native registration or completion. Omit executor for the default engine. Give goal, evidence, handoff prose and an authorized target; the program supplies operation IDs and refreshes current project rules. Do not repeat or wait on this frontend call to strengthen the acknowledgment.',
       object({ id: string, operationId: string, goal: string, requirements: string, responsibility: string, ...handoffFields,
         executor: object({ kind: { type: 'string', enum: ['pi', 'codex', 'codex-cli', 'grok', 'claude-code'] }, connectionId: string,
           target: { type: 'object', description: 'Use {type:"directory",cwd:"absolute authorized path"} for an existing directory, including one not registered in Desktop. Use project only for the actual selected project; never borrow another project ID.' } }, ['kind']) }), 'write', async (args, ctx) => {
@@ -83,14 +86,24 @@ export function coreTools(services, task) {
         const target = (selectedTarget || executorKind === 'codex') ? await resolveCodexTarget(selectedTarget, services, task) : null;
         const executor = kind || target ? { kind: kind || 'codex', ...(suppliedExecutor.connectionId ? { connectionId: suppliedExecutor.connectionId } : {}),
           ...(target ? { target } : {}) } : undefined;
+        let project;
+        try { project = target ? await services.sources.authorizeProject(target, task) : await services.sources.contextProject(task); }
+        catch (error) { if (target) throw error; content.evidenceWarnings.push({ message: `Project scope is unavailable: ${error.message}` }); }
+        if (project) {
+          if (executor?.target?.type === 'project') executor.target = { ...executor.target, projectId: project.id };
+          try { content.projectKnowledge = await services.memory.forProject(task, project); }
+          catch (error) { content.evidenceWarnings.push({ message: `Project knowledge is unavailable: ${error.message}` }); }
+        }
+        try { content.currentKnowledge = await services.memory.forRequest(task, project); }
+        catch (error) { content.evidenceWarnings.push({ message: `Current project rules are unavailable: ${error.message}` }); }
         const operationId = actionId(args, ctx, 'operationId');
         const work = services.works.create({ id, operationId, goal: modelText(args.goal || args.instruction || args.content || content.originalRequest.content),
-          requirements: modelText(args.requirements), responsibility: modelText(args.responsibility), executor, initialHandoff: content }, task);
+          requirements: modelText(args.requirements), responsibility: modelText(args.responsibility), executor, project, initialHandoff: content }, task);
         const receipt = await services.works.dispatch(work.id, { id: operationId, kind: 'request', content, metadata: { priority: 'background', resume: userRequest } }, task);
         return { ...compactWork(work), ...receipt, handedOff: true, acceptance: modelText(args.acceptance), evidenceWarnings: content.evidenceWarnings };
       }),
     tool('work_update', frontend ? 'Pause or cancel existing work. Send requirements with work_dispatch; only the worker records progress and completion.' : 'Record actual progress and status of the current work. Its identity and revision are supplied by the program.',
-      object({ id: string, ...(!frontend ? { goal: string, requirements: string, progress: string,
+      object({ id: string, ...(!frontend ? { goal: string, requirements: string, progress: string, checkpoint: {}, next: string, constraints: string, evidence: {},
         waiting: object({ kind: { type: 'string', enum: ['review', 'user-input', 'external'] }, question: string, reason: string }, ['kind']) } : {}), status: { type: 'string', enum: frontend ? ['paused', 'cancelled'] : ['active', 'waiting', 'paused', 'blocked', 'completed', 'cancelled'] } }), 'write', async args => {
         const work = await services.sources.requireWork(workId(args), task);
         assertExternalReviewCurrent(task, store);
@@ -104,6 +117,10 @@ export function coreTools(services, task) {
         const patch = Object.fromEntries((frontend ? ['status'] : ['goal', 'requirements', 'progress', 'status']).filter(key => args[key] !== undefined).map(key => [key, modelText(args[key])]));
         if (!frontend && args.waiting && args.status === 'waiting') patch.waiting = { kind: args.waiting.kind,
           question: modelText(args.waiting.question), reason: modelText(args.waiting.reason), since: new Date().toISOString() };
+        if (!frontend) patch.checkpoint = { ...work.checkpoint, ...(args.checkpoint ? { note: modelText(args.checkpoint) } : {}),
+          ...(args.progress !== undefined ? { progress: modelText(args.progress) } : {}), ...(args.next !== undefined ? { next: modelText(args.next) } : {}),
+          ...(args.constraints !== undefined ? { constraints: modelText(args.constraints) } : {}), ...(args.evidence !== undefined ? { evidence: args.evidence } : {}),
+          taskId: task.id, sessionId: task.sessionId, recordedAt: new Date().toISOString() };
         const statuses = new Set(['active', 'waiting', 'paused', 'blocked', 'completed', 'cancelled']);
         if (!frontend && patch.status === 'done') patch.status = 'completed';
         const ignoredStatus = patch.status !== undefined && !statuses.has(patch.status) ? patch.status : undefined;
@@ -117,6 +134,10 @@ export function coreTools(services, task) {
         const work = await services.sources.requireWork(workId(args), task);
         if (['paused', 'cancelled'].includes(work.status) && !userRequest) throw new Error('这项工作已停止；当前事件不包含用户新的继续要求。其他动作可以继续。');
         const content = await services.sources.handoff(task, { ...args, instruction: args.instruction || args.content || '' });
+        try { content.projectKnowledge = await services.memory.forProject(task, services.sources.project(work)); }
+        catch (error) { content.evidenceWarnings.push({ message: `Project knowledge is unavailable: ${error.message}` }); }
+        try { content.currentKnowledge = await services.memory.forRequest(task, services.sources.project(work)); }
+        catch (error) { content.evidenceWarnings.push({ message: `Current project rules are unavailable: ${error.message}` }); }
         const receipt = await services.works.dispatch(work.id, { id: actionId(args, ctx, 'eventId'), kind: frontend ? 'request' : 'event', content, metadata: { correction: args.correction === true, resume: frontend && userRequest, priority: 'foreground' } }, task);
         return { ...receipt, acceptance: modelText(args.acceptance), evidenceWarnings: content.evidenceWarnings };
       }),
@@ -164,7 +185,7 @@ export function coreTools(services, task) {
       object({ to: string, id: string, content: {}, sessionId: string, replyTo: string, correlationId: string, kind: { type: 'string', enum: ['request', 'event'] }, workId: string, metadata: { type: 'object' } }, ['to', 'content']), 'external',
       (args, ctx) => services.send(args.to || args.botId, { ...args, id: typeof args.id === 'string' && args.id || actionId(args, ctx, 'id'), content: args.content ?? args.message ?? args.text }, { signal: ctx.signal, taskId: task.id })),
     tool('messages_list', 'Read received message previews and correlated task IDs, newest first. Content previews may be truncated; use the source chatroom_read or session history for full content.', object({ ...pageFields }), 'read', args => page(store.listMessages(), args, m => ({ id: m.id, from: m.from, sessionId: m.sessionId, taskId: m.taskId, replyTo: m.replyTo, correlationId: m.correlationId, createdAt: m.createdAt, content: preview(m.content) }))),
-    tool('tasks_get', 'Read a local task or a previously contacted Bot task; completed, failed, cancelled and interrupted are terminal.',
+    tool('tasks_get', 'Read local task processing or a previously contacted Bot task. For external work this task is transport only: running is not an external turn, completed may only mean submission ended. Use the exact work/operation execution observation. Frontend reads are non-blocking.',
       object({ id: string, botId: string, waitMs:{type:'integer',minimum:0,maximum:60000} }, ['id']), 'read', async (args, ctx) => {
         args = { ...args, id: args.id || args.taskId };
         if (args.botId && args.botId !== services.works.botId && !store.listOutbox().some(item => item.to === args.botId && item.receipt?.taskId === args.id && item.taskId &&
@@ -173,7 +194,7 @@ export function coreTools(services, task) {
         if (frontend && value && (!args.botId || args.botId === services.works.botId) && value.conversationId !== task.conversationId)
           await services.sources.requireWork(value.workId, task);
         if (!frontend && (!args.botId || args.botId === services.works.botId) && value && value.workId !== task.workId) throw new Error('Task belongs to another execution context');
-        return frontend ? compactTask(value) : value;
+        return frontend ? args.botId && args.botId !== services.works.botId ? compactTask(value) : taskView(value) : value;
       }),
     tool('tasks_cancel', 'Cancel an accessible local task or peer task submitted by this conversation. Unknown external effects are not replayed.', object({id:string,botId:string},['id']), 'external', async (args,ctx) => {
       if (args.botId && args.botId !== services.works.botId) {
@@ -184,7 +205,7 @@ export function coreTools(services, task) {
     tool('tasks_list', 'List concise task status within accessible work and this conversation.', object({ status: string, ...pageFields }), 'read', async args => {
       const rooms = await services.sources.rooms(task), values = [];
       for (const value of store.listTasks({ status: args.status })) if (value.conversationId === task.conversationId || value.workId && await services.sources.canReadWork(services.works.get(value.workId), task, rooms)) values.push(value);
-      return page(values, args, compactTask);
+      return page(values, args, taskView);
     }),
     tool('state_get', 'Read local durable state.', object({ scope: string, key: string }, ['scope', 'key']), 'read', args => store.getState(args.scope, args.key)),
     tool('state_set', 'Write local durable state; optional expectedRevision prevents lost updates.',
