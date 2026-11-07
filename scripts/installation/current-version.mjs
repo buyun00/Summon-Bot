@@ -32,7 +32,7 @@ const activeBuild = name => {
 
 /** Full installs stop every writer first, replace operational configuration, and
  * retain only the current release. Business history and user files are retained. */
-export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, releaseRoot, buildId }) {
+export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, releaseRoot, buildId, deferredCleanupPaths = [] }) {
   appRoot = resolve(appRoot); dataRoot = resolve(dataRoot); releaseRoot = resolve(releaseRoot);
   if (!inside(join(appRoot, 'releases'), releaseRoot)) throw new Error('Current release must belong to the installation');
   if (sourceRoot) {
@@ -40,6 +40,9 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
     const pkg = await readJson(join(sourceRoot, 'package.json'));
     if (pkg.name !== 'summon-bot' || !existsSync(join(sourceRoot, 'AGENTS.md'))) throw new Error('Invalid Summon Bot source root for build cleanup');
   }
+  if (!Array.isArray(deferredCleanupPaths) || deferredCleanupPaths.some(path => typeof path !== 'string' || !isAbsolute(path) || !sourceRoot || !inside(join(sourceRoot, 'dist/releases'), resolve(path))))
+    throw new Error('Deferred cleanup requires exact absolute source build paths');
+  const deferred = new Set(deferredCleanupPaths.map(path => resolve(path).toLowerCase())), cleanupDeferred = [];
   const { RecordStore } = await import(pathToFileURL(join(releaseRoot, 'capabilities/shared/store.mjs')));
   const { BotStore } = await import(pathToFileURL(join(releaseRoot, 'bot/src/storage/store.mjs')));
   const { BUILTIN_CAPABILITIES, capabilityForTool } = await import(pathToFileURL(join(releaseRoot, 'capabilities/services/builtin.mjs')));
@@ -148,8 +151,11 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
     const dist = join(sourceRoot, 'dist');
     for (const directory of await entries(dist)) if (directory.name !== 'releases') await removeWithin(sourceRoot, join(dist, directory.name));
     // A concurrent build is still writing its staging directory; it is not an obsolete release.
-    for (const directory of await entries(join(dist, 'releases'))) if (directory.name !== buildId && !activeBuild(directory.name)) await removeWithin(sourceRoot, join(dist, 'releases', directory.name));
+    for (const directory of await entries(join(dist, 'releases'))) if (directory.name !== buildId && !activeBuild(directory.name)) {
+      const path = join(dist, 'releases', directory.name);
+      if (deferred.has(resolve(path).toLowerCase())) cleanupDeferred.push(path); else await removeWithin(sourceRoot, path);
+    }
     await removeWithin(sourceRoot, join(sourceRoot, 'scripts/migration'));
   }
-  return { currentOnly: true, bots, releaseRoot };
+  return { currentOnly: !cleanupDeferred.length, bots, releaseRoot, ...(cleanupDeferred.length ? { cleanupDeferred } : {}) };
 }

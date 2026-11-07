@@ -174,10 +174,10 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
     if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, sanitizeResult(item)]));
     return value;
   };
-  async function checkedPath(input = '.', { directory = false } = {}) {
+  async function checkedPath(input = '.', { directory = false, operations = ['read'], alternative = false } = {}) {
     textValue(input, 'path');
     const requested = resolve(workspaceRoot, input);
-    assertPathPolicy(requested, accessPolicy);
+    assertPathPolicy(requested, accessPolicy, { operations, alternative });
     if (![workspaceRoot, project].some(root => within(root, requested))) throw fileAccessDenied(requested, 'outside_allowed_roots');
     if (sensitivePath(requested, workspaceRoot) || (protectedDirectories.some(root => within(root, requested)) && !within(workspaceRoot, requested)))
       throw fileAccessDenied(requested, 'protected_path');
@@ -185,7 +185,7 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
       physicalPath(requested), realpath(workspaceRoot), realpath(project), Promise.all(protectedDirectories.map(physicalPath)),
     ]);
     const actualDenied = await Promise.all((accessPolicy.deniedPaths || []).map(async item => ({ ...item, path: await physicalPath(item.path) })));
-    assertPathPolicy(actual, { deniedPaths: actualDenied });
+    assertPathPolicy(actual, { deniedPaths: actualDenied }, { operations, alternative });
     if (![actualWorkspace, actualProject].some(root => within(root, actual))) throw fileAccessDenied(requested, 'resolved_outside_allowed_roots');
     if (sensitivePath(actual, actualWorkspace) || (actualProtected.some(root => within(root, actual)) && !within(actualWorkspace, actual)))
       throw fileAccessDenied(requested, 'resolved_protected_path');
@@ -334,17 +334,17 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
       const content = textValue(args.content, 'content', true);
       const bytes = Buffer.from(content);
       if (bytes.length > MAX_FILE_BYTES) throw new Error('Content exceeds 1 MiB');
-      let path = await checkedPath(args.path);
+      let path = await checkedPath(args.path, { operations: ['write'] });
       cancelled(signal);
       await mkdir(dirname(path), { recursive: true });
-      path = await checkedPath(args.path);
+      path = await checkedPath(args.path, { operations: ['write'] });
       return saveVerified(path, bytes, signal, { overwrite: args.overwrite === true });
     }, true),
     tool('edit_file', 'Replace exactly one occurrence of oldText in a UTF-8 file. Fails on missing or ambiguous matches, then re-reads and verifies the saved bytes.', objectSchema({ path: stringSchema('Existing file'), oldText: stringSchema('Exact text that occurs once'), newText: stringSchema('Replacement text; may be empty') }, ['path', 'oldText', 'newText']), async (args, signal) => {
       const oldText = textValue(args.oldText, 'oldText', true);
       if (!oldText.length) throw new Error('oldText must not be empty');
       const newText = textValue(args.newText, 'newText', true);
-      let path = await checkedPath(args.path);
+      let path = await checkedPath(args.path, { operations: ['read', 'write'] });
       const original = await readText(path, signal);
       const index = original.indexOf(oldText);
       if (index < 0) throw new Error('oldText was not found; read the file before editing');
@@ -352,18 +352,14 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
       const bytes = Buffer.from(original.slice(0, index) + newText + original.slice(index + oldText.length));
       if (bytes.length > MAX_FILE_BYTES) throw new Error('Edited content exceeds 1 MiB');
       cancelled(signal);
-      path = await checkedPath(args.path);
+      path = await checkedPath(args.path, { operations: ['read', 'write'] });
       return { ...await saveVerified(path, bytes, signal, { overwrite: true, expected: original }), replacements: 1 };
     }, true),
     tool('run_command', 'Execute a non-interactive shell command (PowerShell on Windows), with a timeout and capped output. File access refusals and explicit user file restrictions apply across tools, including shell/.NET, copies and renames. cwd is not an OS sandbox; commands run with host-user privileges. Do not access credentials or delete unrelated files.', objectSchema({ command: stringSchema('Shell command'), cwd: stringSchema('Allowed working directory; defaults to workspace'), timeoutMs: integerSchema('Timeout in milliseconds, default 30000', 100, 120000) }, ['command']), async (args, signal) => {
       const command = textValue(args.command, 'command');
       if (command.length > 20000) throw new Error('command is too long');
       const cwd = await checkedPath(args.cwd, { directory: true });
-      await assertCommandPolicy(command, cwd, accessPolicy, async path => {
-        // Executables installed outside the project are legitimate command
-        // operands. File operands still use the actual filesystem boundary.
-        if (!/\.(?:exe|dll)$/i.test(path)) await checkedPath(path);
-      });
+      await assertCommandPolicy(command, cwd, accessPolicy, (path, operations) => checkedPath(path, { operations, alternative: true }));
       const timeoutMs = boundedInteger(args.timeoutMs, 30000, 100, 120000, 'timeoutMs');
       return runCommand(command, cwd, timeoutMs, signal, sanitize, saveArtifact, onArtifacts, tempRoot, containProcesses);
     }, true),

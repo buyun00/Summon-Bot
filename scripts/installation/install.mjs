@@ -10,7 +10,7 @@ import { migratePublicOrigin } from './remote-config.mjs';
 import { removeInside } from '../release/repository.mjs';
 
 /** Install a selected build; development packages use manifest metadata only. */
-export async function installRelease({releaseRoot,appRoot,dataRoot,sourceRoot,defaultCwd,publicOrigin='',port=8787,onCopyProgress}={}) {
+export async function installRelease({releaseRoot,appRoot,dataRoot,sourceRoot,defaultCwd,publicOrigin='',port=8787,onCopyProgress,deferredCleanupPaths=[]}={}) {
   releaseRoot=resolve(releaseRoot);appRoot=resolve(appRoot);dataRoot=resolve(dataRoot);
   if(within(appRoot,dataRoot)||within(dataRoot,appRoot))throw new Error('Application and data roots must be disjoint');
   const verified=await verifyRelease(releaseRoot),destination=join(appRoot,'releases',verified.buildId);
@@ -51,7 +51,7 @@ export async function installRelease({releaseRoot,appRoot,dataRoot,sourceRoot,de
   for(const name of ['Start.ps1','Start-Hidden.vbs','Stop.ps1','Run.cmd'])await copyFile(join(destination,name),join(appRoot,name));
   const selection={schemaVersion:1,releaseRoot:destination,buildId:verified.buildId,dataRoot,selectedAt:new Date().toISOString()};
   await writeJson(join(appRoot,'current.json'),selection);
-  const cleanup=await selectCurrentVersion({appRoot,dataRoot,sourceRoot,releaseRoot:destination,buildId:verified.buildId});
+  const cleanup=await selectCurrentVersion({appRoot,dataRoot,sourceRoot,releaseRoot:destination,buildId:verified.buildId,deferredCleanupPaths});
   return {...selection,cleanup};
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){

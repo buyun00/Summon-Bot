@@ -136,10 +136,11 @@ async function deployWeb() {
   await run('pwsh.exe', ['-NoProfile', '-File', join(appRoot, 'Stop.ps1'), '-DataRoot', dataRoot]);
   await run('pwsh.exe', ['-NoProfile', '-File', join(sourceRoot, 'connectors/codex-desktop-api/Stop.ps1')]);
   const { installRelease } = await import('../installation/install.mjs');
-  const installed = await installRelease({ releaseRoot: built.releaseRoot, appRoot, dataRoot, sourceRoot });
+  const deferredCleanupPaths = options['defer-build-cleanup-path'] === undefined ? [] : [options['defer-build-cleanup-path']];
+  const installed = await installRelease({ releaseRoot: built.releaseRoot, appRoot, dataRoot, sourceRoot, deferredCleanupPaths });
   await run('pwsh.exe', ['-NoProfile', '-File', join(appRoot, 'Start.ps1'), '-DataRoot', dataRoot]);
   await run('wscript.exe', ['//B', '//NoLogo', join(sourceRoot, 'connectors/codex-desktop-api/Start-Hidden.vbs')]);
-  console.log(JSON.stringify({ deployed: true, buildId: built.buildId, sourceCommit: built.sourceCommit }));
+  console.log(JSON.stringify({ deployed: true, buildId: built.buildId, sourceCommit: built.sourceCommit, ...(installed.cleanup?.cleanupDeferred ? { cleanupDeferred: installed.cleanup.cleanupDeferred } : {}) }));
 }
 async function setVersion() {
   const current = await readJson(join(sourceRoot, 'release.json'));

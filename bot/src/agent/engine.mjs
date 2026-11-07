@@ -306,7 +306,8 @@ export class BotEngine {
           markdownRevision: assembledRevision, context: background, authority: 'derived-evidence' }) }], timestamp: system.timestamp }] : []),
           ...(publicView ? publicView.messages.slice(publicStart, publicView.runtimeEvent ? undefined : -1) : []),
           ...(currentKnowledge ? [userMessage({ type: 'current_project_knowledge', ...currentKnowledge, authority: 'scoped-current-memory' })] : []),
-          ...(filePolicy.deniedPaths.length ? [userMessage({ type: 'current_file_access_constraints', ...filePolicy, instruction: FILE_ACCESS_GUIDANCE })] : []),
+          ...(filePolicy.deniedPaths.length ? [userMessage({ type: 'current_file_access_constraints', ...filePolicy,
+            instruction: `${FILE_ACCESS_GUIDANCE} Explicit user restrictions bind the listed operations. alternativesOnly records a previous underlying refusal: the original permission-enforcing file tool may recheck under current user authorization; another tool cannot lift it. Only an actual successful canonical recheck releases that operation's alternate-channel guard.` })] : []),
           ...currentInputs, ...tail, ...(resume ? [resume] : [])];
       };
       const fitRecent = (force = false) => {
