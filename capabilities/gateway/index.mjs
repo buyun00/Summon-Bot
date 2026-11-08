@@ -133,7 +133,14 @@ export async function startGateway(options={}) {
             FROM tools WHERE rowid IN (SELECT MAX(rowid) FROM tools GROUP BY task_id)`)
             .all().map(row=>[row.task_id,toolActivity(row)]))};
       });
-      for(const task of snapshot.tasks)agentRuns.push({id:task.id||task.taskId,...task,botId:bot.id,summary:task.result?.content||task.summary||'',toolCount:task.result?.toolsCalled??snapshot.counts[task.id||task.taskId]??0,lastTool:snapshot.lastTools[task.id||task.taskId]||null,roomId:runRoom(task,bot.id,guide,guideBotId)});
+      for(const task of snapshot.tasks)agentRuns.push({id:task.id||task.taskId,taskId:task.taskId||task.id,runId:task.runId,
+        status:task.status,workId:task.workId,sessionId:task.sessionId,conversationId:task.conversationId,
+        createdAt:task.createdAt,startedAt:task.startedAt,updatedAt:task.updatedAt,finishedAt:task.finishedAt,
+        activity:task.activity,model:task.result?.model,error:task.error&&{code:task.error.code,message:String(task.error.message||'').slice(0,2000)},
+        input:{trigger:{id:task.input?.trigger?.id||task.input?.current?.trigger?.id}},
+        botId:bot.id,summary:String(task.result?.content||task.summary||'').slice(0,2400),
+        toolCount:task.result?.toolsCalled??snapshot.counts[task.id||task.taskId]??0,lastTool:snapshot.lastTools[task.id||task.taskId]||null,
+        roomId:runRoom(task,bot.id,guide,guideBotId)});
       const active=snapshot.tasks.filter(task=>['accepted','queued','running','waiting'].includes(task.status)).sort((a,b)=>String(a.updatedAt).localeCompare(String(b.updatedAt))).at(-1);
       const maintenance=snapshot.maintenance?.at(-1);
       const recent=snapshot.tasks.at(-1),fresh=recent&&Date.now()-Date.parse(recent.finishedAt||'')<8000;
@@ -142,7 +149,8 @@ export async function startGateway(options={}) {
       try{const health=await manager.request(bot.id,'/health',{signal:AbortSignal.timeout(2000)});if(health.engine?.provider)providers.push(health.engine.provider);}catch{}
     }));
     agentRuns.sort((a,b)=>String(a.createdAt||'').localeCompare(String(b.createdAt||'')));
-    const messages=chatroom.store.list('messages'),jobs=chatroom.jobs(),runtime={started:true,fast:{running:jobs.filter(job=>['running','accepted'].includes(job.status)).length,queued:jobs.filter(job=>job.status==='queued').length},deep:{running:0,queued:0},jobs:jobs.slice(-80)};
+    const messages=chatroom.store.list('messages'),jobs=chatroom.jobs(),runtime={started:true,fast:{running:jobs.filter(job=>['running','accepted'].includes(job.status)).length,queued:jobs.filter(job=>job.status==='queued').length},deep:{running:0,queued:0},jobs:jobs.slice(-80).map(job=>Object.fromEntries(
+      ['id','roomId','botId','messageId','taskId','agentRunId','status','lane','label','retryOf','createdAt','updatedAt','finishedAt','error'].filter(key=>job[key]!==undefined).map(key=>[key,job[key]])))};
     const selection=modelConnections.runtimeModel();
     const latestProvider=selection?providers.filter(provider=>provider.connectionId===selection.id).sort((a,b)=>String(b.lastSuccessAt||'').localeCompare(String(a.lastSuccessAt||'')))[0]||{}:{};
     const configured=Boolean(selection&&((await modelConnections.credentials.read(selection.id).catch(()=>null))||selection.allowNoKey));

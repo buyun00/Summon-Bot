@@ -332,7 +332,7 @@ async function api(path, method = 'GET', body) {
   try { data = await response.json(); } catch (error) {
     console.warn('Summon response could not be decoded', {status:response.status,type:response.headers.get('content-type'),encoding:response.headers.get('content-encoding'),errorType:error.name,
       transportError:error.name==='TypeError'?error.message:undefined});
-    throw new Error(`${error.name === 'TypeError' ? '响应传输未完成' : '响应内容无法读取'}（${response.status}），请重新连接`);
+    throw new Error(`${/Timeout|Abort/.test(error.name) ? '同步超时' : error.name === 'TypeError' ? '响应传输未完成' : '响应内容无法读取'}（${response.status}），请重新连接`);
   }
   if (response.status === 401) { location.replace('/'); throw new Error('请重新输入访问 Token'); }
   if (!response.ok) throw new Error(data.error?.message || data.error || `请求失败（${response.status}）`);
