@@ -80,12 +80,17 @@ export function workExecutor({ store, services, emit }) {
       const reviewTask = { ...task, metadata: { ...task.metadata, externalReview: {
         bindingId: binding.id, threadId: binding.externalThreadId, operationId: content.operationId, supervisionOperationId: binding.operationId,
         turnId: content.turnId, running, confirmedFinal: Boolean(content.final?.confirmed) } },
-        input: { ...content, type: 'external_work_review', acceptedStep: workInput(operation?.content),
+        input: { ...content, delivery: store.getRecord('executor-deliveries', content.operationId) || content.delivery,
+          publications: store.listRecords('work-notifications').filter(item => item.workId === work.id && item.executionEventId === content.operationId)
+            .map(item => ({ notificationId: item.id, status: item.status, deliveredAt: item.deliveredAt, attachments: item.attachments,
+              receipts: (Array.isArray(item.receipt) ? item.receipt : [item.receipt]).filter(Boolean).map(receipt => ({ id: receipt.id,
+                roomId: receipt.roomId, createdAt: receipt.createdAt, attachments: receipt.attachments?.map(({ id, name }) => ({ id, name })) })) })),
+          type: 'external_work_review', acceptedStep: workInput(operation?.content),
           latestAcceptedStep: workInput(currentStep?.content),
           workState: { goal: work.goal, requirements: work.requirements, project: work.project, target: work.executor?.target,
             status: work.status, waiting: work.waiting, progress: work.progress, checkpoint: work.checkpoint },
           instruction: 'Review this real external observation in the original work. Compare against the saved accepted step and latest requirements. The executor is already bound; do not start it again.' +
-            (task.metadata?.finalizationOnly ? ' This is recovery of an already ended execution. Reconcile actual state and remaining boundaries only; do not reopen production, correct files or resubmit executor work.' : '') } };
+            (task.metadata?.finalizationOnly ? ' This is recovery of an already ended execution. Reconcile actual state and remaining boundaries only; do not reopen production, correct files, publish another message or resubmit executor work. The current saved publication receipts override old unknown-delivery statements in the final text or session. An actual attached message already returns the complete file; do not demand duplicate text parts for that same file. Preserve user acceptance and unverified business boundaries separately.' : '') } };
       reviewTask.metadata.externalReview.finalizationOnly = task.metadata?.finalizationOnly === true;
       try {
         assertExternalReviewCurrent(reviewTask, store);

@@ -16,7 +16,7 @@ export function taskMode(task = {}) {
 }
 export function permitsTool(task, tool) {
   const mode = taskMode(task);
-  if (task.metadata?.externalReview?.finalizationOnly) return tool.effect === 'read' && !['codex_projects', 'codex_threads', 'messages_list', 'contacts_list', 'bots_list'].includes(tool.name) || ['work_update', 'work_notify'].includes(tool.name);
+  if (task.metadata?.externalReview?.finalizationOnly) return tool.effect === 'read' && !['codex_projects', 'codex_threads', 'messages_list', 'contacts_list', 'bots_list'].includes(tool.name) || tool.name === 'work_update';
   if (task.metadata?.externalReview) return tool.effect === 'read' && !['codex_projects', 'codex_threads', 'messages_list', 'contacts_list', 'bots_list'].includes(tool.name) ||
     ['work_update', 'work_notify', 'publish_file', 'codex_send', 'codex_interrupt'].includes(tool.name);
   if (mode === 'routing') return tool.effect === 'read' && !chatHidden.has(tool.name);

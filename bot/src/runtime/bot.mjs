@@ -448,6 +448,19 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
           return work;
         }
         if (method === 'POST' && parts[2] === 'events') return services.works.dispatch(id, await readBody(request));
+        if (method === 'POST' && parts[2] === 'review') {
+          const work = services.works.get(id);
+          if (!work || work.status !== 'waiting' || work.waiting?.kind !== 'review') throw failure(409, 'Only an existing result waiting for review can be reconciled');
+          const binding = work.bindings?.findLast(item => item.type === 'codex-desktop');
+          const observation = store.listRecords('work-observations').findLast(item => item.workId === id && !item.late &&
+            item.content?.operationId === binding?.operationId && item.content?.turnId === binding?.turnId && item.content?.final?.confirmed);
+          const original = observation && store.getTask(observation.taskId);
+          if (!original || binding.status !== 'completed') throw failure(409, 'No exact confirmed final observation is available');
+          const accepted = accept({ id: `reconcile:review:${observation.id}:${work.revision}`, to: config.botId, kind: 'event', workId: id,
+            content: observation.content, metadata: { sourceType: 'external', authority: 'external-result', externalBindingId: binding.id,
+              observationMessageId: original.metadata?.observationMessageId || original.messageId, reviewRecovery: original.id, finalizationOnly: true } }, 'controller');
+          return { accepted: true, workId: id, taskId: accepted.task.id, sourceObservationId: observation.id, finalizationOnly: true };
+        }
       }
       if (parts[0] === 'availability' && parts.length === 1 && method === 'PATCH') {
         const body=await readBody(request);if(typeof body.accepting!=='boolean')throw failure(400,'accepting must be boolean');
