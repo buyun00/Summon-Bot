@@ -692,9 +692,9 @@ export class ContextMaintenance {
       return { context: this.safeText(output.context, budget), revision: fresh.revision };
     });
   }
-  async compact(task, { signal } = {}) {
+  async compact(task, { signal, fromIndex, previousSummary } = {}) {
     const scope = this.scope(task), session = this.store.getSession(task.sessionId);
-    const start = session?.contextPrefix?.historyStart || session?.isolationBoundary || 0;
+    const start = Math.max(fromIndex ?? session?.contextPrefix?.historyStart ?? 0, session?.isolationBoundary || 0);
     const selected = []; let cost = 0, through = start;
     const budget = Math.max(2048, Math.min(this.store.getRecord('compaction-budget', task.sessionId)?.tokens || 16000,
       this.model.maxTokens * 2, Math.floor(this.model.contextWindow / 4)));
@@ -707,7 +707,7 @@ export class ContextMaintenance {
     }
     if (!selected.length) throw new Error('No execution history is available to compact');
     return this.lane(async () => {
-      const previous = await this.readContext(task);
+      const previous = previousSummary ?? await this.readContext(task);
       let output;
       try {
         output = await this.shortDialogue('compact', scope, { previousSummary: previous, work: this.work(scope), executionHistory: selected,

@@ -300,6 +300,14 @@ export class RuntimeSources {
       const operationId = reference.operationId || work.waiting?.operationId || work.bindings?.find(item => item.type === 'codex-desktop')?.operationId || events.at(-1)?.id;
       const operation = operationId && this.store.getRecord('work-events', operationId);
       if (operationId && operation?.workId !== work.id) denied('Operation belongs to another work');
+      if (reference.section === 'acceptedStep') {
+        if (!operation?.content) throw new Error('Accepted operation source is unavailable');
+        const text = JSON.stringify(operation.content);
+        return { reference: { type: 'work', workId: work.id, operationId, section: 'acceptedStep', offset, length },
+          author: operation.authorization?.source?.actor || 'runtime', authority: 'accepted-step-material',
+          content: text.slice(offset, offset + length), fullCharacters: text.length,
+          truncated: offset > 0 || offset + length < text.length, nextOffset: offset + length < text.length ? offset + length : null };
+      }
       return { reference: { type: 'work', workId: work.id, ...(operationId ? { operationId } : {}) }, author: 'runtime', authority: 'owning-work-state',
         content: { workId: work.id, goal: work.goal, requirements: work.requirements, status: work.status, waiting: work.waiting, project: work.project,
           progress: work.progress, checkpoint: work.checkpoint, revision: work.revision, updatedAt: work.updatedAt, executionOutcome: work.executionOutcome,

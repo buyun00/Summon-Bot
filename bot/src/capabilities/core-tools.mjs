@@ -15,7 +15,7 @@ const tool = (name, description, inputSchema, effect, execute) => ({ name, descr
   execute: async (args, context) => jsonToolResult(await execute(modelArgs(args), context)) });
 const pageFields = { offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 20 } };
 const reference = object({ type: { type: 'string', enum: ['room', 'session', 'artifact', 'knowledge', 'work', 'tool'] }, roomId: string, scopeId: string, workId: string, operationId: string,
-  messageId: string, sessionId: string, entryId: string, id: string, offset: { type: 'integer', minimum: 0 }, length: { type: 'integer', minimum: 1, maximum: 16000 } }, ['type']);
+  messageId: string, sessionId: string, entryId: string, id: string, section: { type: 'string', enum: ['acceptedStep'] }, offset: { type: 'integer', minimum: 0 }, length: { type: 'integer', minimum: 1, maximum: 16000 } }, ['type']);
 const evidence = { type: 'array', maxItems: 20, items: reference,
   description: 'Selected exact references from source reads, e.g. [{type:"room",roomId:"...",messageId:"..."}]. Pass the array itself; a JSON array string is also readable. Prose is guidance, not a source grant.' };
 const handoffFields = { evidence, knowledgeScopes: { type: 'array', items: string }, instruction: string, acceptance: string };

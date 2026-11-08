@@ -1,4 +1,3 @@
-import { workInput } from '../capabilities/task-policy.mjs';
 import { assertExternalReviewCurrent } from '../capabilities/task-policy.mjs';
 import { executorHandoff } from '../context/executor-handoff.mjs';
 import { publishExecutorResult } from './executor-delivery.mjs';
@@ -85,11 +84,13 @@ export function workExecutor({ store, services, emit }) {
             .map(item => ({ notificationId: item.id, status: item.status, deliveredAt: item.deliveredAt, attachments: item.attachments,
               receipts: (Array.isArray(item.receipt) ? item.receipt : [item.receipt]).filter(Boolean).map(receipt => ({ id: receipt.id,
                 roomId: receipt.roomId, createdAt: receipt.createdAt, attachments: receipt.attachments?.map(({ id, name }) => ({ id, name })) })) })),
-          type: 'external_work_review', acceptedStep: workInput(operation?.content),
-          latestAcceptedStep: workInput(currentStep?.content),
+          type: 'external_work_review',
+          acceptedStep: operation ? { reference: { type: 'work', workId: work.id, operationId: operation.id, section: 'acceptedStep' } } : null,
+          latestAcceptedStep: currentStep?.id === operation?.id ? { sameAs: 'acceptedStep' } : currentStep ?
+            { reference: { type: 'work', workId: work.id, operationId: currentStep.id, section: 'acceptedStep' } } : null,
           workState: { goal: work.goal, requirements: work.requirements, project: work.project, target: work.executor?.target,
             status: work.status, waiting: work.waiting, progress: work.progress, checkpoint: work.checkpoint },
-          instruction: 'Review this real external observation in the original work. Compare against the saved accepted step and latest requirements. The executor is already bound; do not start it again.' +
+          instruction: 'Review this real external observation in the original work. Accepted steps are retained once in this work session and by exact work/operation references; use evidence_read section=acceptedStep with offsets for any missing original. Compare against those originals and latest requirements. Same identity means unchanged material, not a new dispatch. The executor is already bound; do not start it again.' +
             (task.metadata?.finalizationOnly ? ' This is recovery of an already ended execution. Reconcile actual state and remaining boundaries only; do not reopen production, correct files, publish another message or resubmit executor work. The current saved publication receipts override old unknown-delivery statements in the final text or session. An actual attached message already returns the complete file; do not demand duplicate text parts for that same file. Preserve user acceptance and unverified business boundaries separately.' : '') } };
       reviewTask.metadata.externalReview.finalizationOnly = task.metadata?.finalizationOnly === true;
       try {
