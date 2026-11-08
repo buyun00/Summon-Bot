@@ -166,7 +166,7 @@ export function coreTools(services, task) {
         if (args.waiting?.kind === 'user-input' && !modelText(args.waiting.question).trim()) throw new Error('Waiting for user input requires the actual unanswered question.');
         if (['paused', 'cancelled'].includes(args.status) && work.id !== task.workId) return services.stopWork(work.id, args.status, task);
         const patch = Object.fromEntries((frontend ? ['status'] : ['goal', 'requirements', 'progress', 'status']).filter(key => args[key] !== undefined).map(key => [key, modelText(args[key])]));
-        if (!frontend && args.waiting && args.status === 'waiting') patch.waiting = { kind: args.waiting.kind,
+        if (!frontend && args.waiting && (args.status || work.status) === 'waiting') patch.waiting = { kind: args.waiting.kind,
           question: modelText(args.waiting.question), reason: modelText(args.waiting.reason), since: new Date().toISOString() };
         if (!frontend) patch.checkpoint = { ...work.checkpoint, ...(args.checkpoint ? { note: modelText(args.checkpoint) } : {}),
           ...(args.progress !== undefined ? { progress: modelText(args.progress) } : {}), ...(args.next !== undefined ? { next: modelText(args.next) } : {}),
