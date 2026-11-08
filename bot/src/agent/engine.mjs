@@ -21,6 +21,7 @@ import { taskSource, publicMessage } from '../context/sources.mjs';
 import { codexTarget } from '../capabilities/codex-target.mjs';
 import { assertFileToolAccess, taskFileAccessPolicy } from '../capabilities/file-access.mjs';
 import { FILE_ACCESS_GUIDANCE } from '../capabilities/file-policy.mjs';
+import { formalDocumentRequest } from '../capabilities/document-work.mjs';
 
 const emptyUsage = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 });
 const userMessage = (content, source) => ({ role: 'user', content: [{ type: 'text', text: typeof content === 'string' ? content : JSON.stringify(content) }], timestamp: Date.now(), ...(source ? { source } : {}) });
@@ -407,6 +408,28 @@ export class BotEngine {
       const abort = () => agent.abort(); combined.addEventListener('abort', abort, { once: true });
       try {
         combined.throwIfAborted();
+        if (formalDocumentRequest(originalTask, this.store)) {
+          const source = taskSource(originalTask, this.store);
+          const candidates = [];
+          for (const work of this.services.works.list({ limit: 100 }))
+            if (work.productionStage === 'document-review' && work.executor?.kind === 'codex' &&
+              work.sources?.every(item => source.roomId ? item.roomId === source.roomId : item.conversationId === source.conversationId) &&
+              await this.services.sources.canReadWork(work, originalTask)) candidates.push(work);
+          const existing = candidates.at(-1);
+          const evidence = (publicView?.messages || []).slice(-20, -1).map(message => {
+            const ref = message.source; return { type: 'room', roomId: ref.roomId, messageId: ref.messageId, length: 16000 };
+          });
+          const content = source.input?.trigger?.content || source.input;
+          const receipt = await registry.invoke(existing ? 'work_dispatch' : 'work_create', {
+            ...(existing ? { id: existing.id } : { goal: '编写或修订当前用户要求评审的正式文档', executor: { kind: 'codex' } }),
+            instruction: '由 Codex 实际编写/修订正式稿，依据当前原话与所附同房间讨论、旧稿和更正。仅完成文档阶段；不恢复暂停的代码或提前实现。通过正常工作结果回流正文，并用 publish_file 交付正式文件。',
+            content, evidence,
+          }, { toolCallId: 'formal-document-routing', recordId: `${runId}:formal-document-routing`, signal: combined });
+          const accepted = receipt.details;
+          if (!accepted?.accepted) throw new Error('正式文档委派未取得本地受理回执；原工作与资料保留。');
+          return clean({ content: '正式文档工作已受理，由 Codex 编写或修订后回到这里供你评审；当前只推进文档。外部执行尚待确认。',
+            handoff: true, workId: accepted.workId, workIds: [accepted.workId], model: model.id, turns, toolsCalled: 1, usage });
+        }
         const prompt = publicView ? (publicView.runtimeEvent ? userMessage(publicView.runtimeEvent) : publicView.messages.at(-1)) : userMessage(input,
           { actor: task.metadata?.actor || task.source, sourceType: task.metadata?.sourceType || task.metadata?.authority || 'authenticated-message', messageId: task.messageId, taskId: task.id });
         const source = taskSource(originalTask, this.store);

@@ -24,6 +24,7 @@
     "write_file",
     "edit_file",
     "run_command",
+    "publish_file",
     "codex_status",
     "knowledge_save_node",
     "capabilities_list",

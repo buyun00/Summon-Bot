@@ -157,7 +157,7 @@ function attachmentUrl(item, preview = false) {
 }
 function renderMessageAttachments(items) {
   if (!Array.isArray(items)) return '';
-  return `<div class="message-attachments">${items.filter(item => attachmentUrl(item)).map(item => `<a class="message-attachment ${item.previewUrl ? 'has-image' : ''}" href="${attachmentUrl(item)}" download="${esc(item.name)}" title="下载 ${esc(item.name)}">${item.previewUrl ? `<img src="${attachmentUrl(item, true)}" alt="${esc(item.name)}" loading="lazy">` : icon('file', 28)}<span><strong>${esc(item.name)}</strong><small>${attachmentSize(Number(item.size) || 0)} · 下载</small></span></a>`).join('')}</div>`;
+  return `<div class="message-attachments">${items.filter(item => attachmentUrl(item)).map(item => `<div><a class="message-attachment ${item.previewUrl ? 'has-image' : ''}" href="${attachmentUrl(item)}" download="${esc(item.name)}" title="下载 ${esc(item.name)}">${item.previewUrl ? `<img src="${attachmentUrl(item, true)}" alt="${esc(item.name)}" loading="lazy">` : icon('file', 28)}<span><strong>${esc(item.name)}</strong><small>${attachmentSize(Number(item.size) || 0)} · 下载</small></span></a>${item.openUrl ? `<a class="text-button" href="${attachmentUrl(item)}/view" target="_blank" rel="noopener noreferrer">打开预览</a>` : ''}</div>`).join('')}</div>`;
 }
 function renderAttachmentDrafts() {
   const items = attachmentDrafts();
@@ -329,7 +329,11 @@ function toast(message, error = false) {
 async function api(path, method = 'GET', body) {
   const response = await fetch(path, { method, headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(method === 'GET' ? 30000 : 120000) });
   let data;
-  try { data = await response.json(); } catch { throw new Error(`服务返回了无法读取的内容（${response.status}）`); }
+  try { data = await response.json(); } catch (error) {
+    console.warn('Summon response could not be decoded', {status:response.status,type:response.headers.get('content-type'),encoding:response.headers.get('content-encoding'),errorType:error.name,
+      transportError:error.name==='TypeError'?error.message:undefined});
+    throw new Error(`${error.name === 'TypeError' ? '响应传输未完成' : '响应内容无法读取'}（${response.status}），请重新连接`);
+  }
   if (response.status === 401) { location.replace('/'); throw new Error('请重新输入访问 Token'); }
   if (!response.ok) throw new Error(data.error?.message || data.error || `请求失败（${response.status}）`);
   return data;

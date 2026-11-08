@@ -17,13 +17,14 @@ const definitions=[
  ['list_files','List allowed workspace files; dependency directories have no listed contents, protected paths are omitted. Omission is not proof of absence.',{path:string,recursive:boolean,maxEntries:number,maxDepth:number},'read'],
  ['read_file','Read UTF-8 file with output limits. A FILE_ACCESS_DENIED refusal applies across tools; do not switch to shell or another path spelling to bypass it.',{path:string,startLine:number,maxLines:number},'read'],
  ['search_files','Search literal text in allowed files',{path:string,query:string,caseSensitive:boolean,maxResults:number},'read'],
+ ['publish_file','Publish an existing finished file from this authorized work/project as a durable chat attachment. Returns attachment ID, download URL and a sandboxed standalone HTML/text preview when supported. Use work_notify with attachments:[{id}] to deliver it to the original room. Never ask the user to copy source or open a private filesystem path.',{path:string,name:string,mimeType:string},'external'],
  ['web_search','Search the public web; return titles, URLs and short snippets without commands',{query:string,limit:number},'read'],
  ['web_read','Read a public webpage with bounded output; GET only, no scripts or form submission',{url:string,offset:number,length:number},'read'],
  ['write_file','Write an allowed workspace/project file',{path:string,content:string,overwrite:boolean},'write'],
  ['edit_file','Replace exact text in an allowed file',{path:string,oldText:string,newText:string,replaceAll:boolean},'write'],
  ['run_command','Execute a bounded noninteractive shell command; host privileges apply. File refusals and explicit user restrictions also bind shell/.NET reads, writes, copies and renames. Report partial/unknown effects truthfully; an error does not prove no changes.',{command:string,cwd:string,timeoutMs:number},'process'],
- ['codex_projects','List existing Desktop projects; choose the authorized project before creating work',{},'read'],
- ['codex_threads','Discover recent Desktop threads; results are not an exhaustive history',{},'read'],
+ ['codex_projects','List only Desktop projects already authorized in this Bot/source. An empty list permits using the authorized Bot directory; never borrow another project.',{},'read'],
+ ['codex_threads','List only threads bound to accessible work in this Bot and current room/work. Other Desktop chats are private; an empty list is normal for a new Bot.',{},'read'],
  ['codex_create','Bind an existing local work to a new Desktop thread. Stable operationId is persisted before submission; unknown requests are queried, never replayed. End this turn with work_wait after acceptance.',{workId:string,operationId:string,prompt:string,target:{type:'object'},roomId:string},'external'],
  ['codex_attach','Bind an explicitly identified existing Desktop thread to local work without submitting any prompt',{workId:string,threadId:string,hostId:string},'write'],
  ['codex_status','Read durable external binding, operations and results; old executor history is read-only',{workId:string},'read'],
@@ -42,4 +43,4 @@ const definitions=[
 ];
 export const toolDefinitions=definitions.map(([name,description,properties,effect])=>({name,description,inputSchema:
   name==='chatroom_read'||name.startsWith('reminders_')||name.startsWith('codex_')?looseSchema({properties}):object(properties),effect}));
-export const FILE_TOOLS=new Set(['list_files','read_file','search_files','write_file','edit_file','run_command','web_search','web_read']);
+export const FILE_TOOLS=new Set(['list_files','read_file','search_files','write_file','edit_file','run_command','publish_file','web_search','web_read']);

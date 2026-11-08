@@ -34,7 +34,7 @@ export class WorkService {
     if (isCliExecutor(executor.kind) && executor.target) fail('这个工作引擎使用 Bot 的本机工作目录。');
     const binding = executor.kind === 'pi' ? { kind: 'pi', ...this.selectModel?.(executor.connectionId), ...(executor.target ? { target: executor.target } : {}) } : executor;
     const record = this.clean({ id, botId: this.botId, conversationId: `work:${id}`, goal: input.goal,
-      requirements: input.requirements || '', executor: binding, project: input.project || null, progress: '', status: 'active', waiting: null, bindings: [], notifications: [],
+      requirements: input.requirements || '', executor: binding, project: input.project || null, productionStage: input.productionStage || null, progress: '', status: 'active', waiting: null, bindings: [], notifications: [],
       sources: input.sources || (task.id ? [this.source(task)] : []),
       responsibility: input.responsibility || null, revision: 1, createdAt: now(), updatedAt: now() });
     if (executor.target?.type === 'directory') record.project = directoryProject(executor.target.cwd);

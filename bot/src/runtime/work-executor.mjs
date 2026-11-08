@@ -1,5 +1,6 @@
 import { workInput } from '../capabilities/task-policy.mjs';
 import { assertExternalReviewCurrent } from '../capabilities/task-policy.mjs';
+import { executorHandoff } from '../context/executor-handoff.mjs';
 
 const at = () => new Date().toISOString();
 const stopped = new Set(['paused', 'cancelled']);
@@ -47,24 +48,28 @@ export function workExecutor({ store, services, emit }) {
         let currentKnowledge;
         try { currentKnowledge = await services.memory.forRequest(task, services.sources.project(work)); }
         catch (error) { currentKnowledge = { unavailable: error.message, instruction: 'Do not treat stale handoff prose as the latest saved rule.' }; }
-        const prompt = JSON.stringify({ type: 'work_input', workId: work.id, input: workInput(services.works.executionInput(task)),
-          currentKnowledge,
-          currentAction: { actionId: execution.actionId, requestTaskId: execution.requestTaskId,
-            instruction: 'Execute only the current accepted step. Earlier session requests are history. Frontend dispatch and waiting registration have already happened; any deliveredObservation is actual dependency evidence ready to use now. Honor the original request’s prerequisites without repeating other work or coordination. Prefer the newest applicable explicit user rules in currentKnowledge by original time over old summaries, templates and coordinating handoff prose. Keep checkpoints with done/next/constraints and evidence in the original executor history; the existing receipts preserve continuation state. Return this step’s useful result.' } });
+        const { prompt, path, characters } = await executorHandoff({ workspace: services.workspace, work, task, event, execution, knowledge: currentKnowledge });
         const executor = services.works.executor(work);
         const name = binding?.externalThreadId ? 'codex_send' : 'codex_create';
         const args = binding?.externalThreadId ? { workId: work.id, operationId: event.id, message: prompt } :
           { workId: work.id, operationId: event.id, prompt, target: executor.target };
-        event = store.putRecord('work-events', { ...event, sourceTaskId: task.id, transport: { name, args }, status: 'submitting' });
+        event = store.putRecord('work-events', { ...event, sourceTaskId: task.id, handoffFile: path, transportCharacters: characters, transport: { name, args }, status: 'submitting' });
       }
       // Retries always use the same Desktop operation; its service queries unknown outcomes.
       const receipt = await services.capability(event.transport.name, event.transport.args, store.getTask(event.sourceTaskId), { operationId: event.id });
+      const operationReceipt = receipt.operations?.find(item => item.operationId === event.id);
+      const appendFailed = event.transport.name === 'codex_send' && operationReceipt?.status === 'failed';
+      const submissionFailed = appendFailed || receipt.status === 'failed';
       this.record(task, { kind: 'submission_receipt', operationId: event.id, status: receipt.status, bindingId: receipt.id, threadId: receipt.externalThreadId });
-      store.putRecord('work-events', { ...store.getRecord('work-events', event.id), status: receipt.status === 'failed' ? 'failed' : receipt.status === 'unknown' ? 'unknown' : 'submitted', executionReceipt: receipt, submittedAt: at() });
+      store.putRecord('work-events', { ...store.getRecord('work-events', event.id), status: submissionFailed ? 'failed' : receipt.status === 'unknown' ? 'unknown' : 'submitted', executionReceipt: receipt, submittedAt: at() });
       const current = services.works.get(work.id);
-      if (!stopped.has(current.status)) services.works.update(work.id, { status: receipt.status === 'failed' ? 'blocked' : 'waiting',
+      if (appendFailed && receipt.operationId !== event.id) {
+        if (!stopped.has(current.status)) services.works.update(work.id, { status: 'waiting',
+          waiting: { kind: 'external', operationId: receipt.operationId, bindingId: receipt.id, since: at() },
+          lastError: { kind: 'append-rejected', operationId: event.id, error: operationReceipt.error, recordedAt: at() } });
+      } else if (!stopped.has(current.status)) services.works.update(work.id, { status: submissionFailed ? 'blocked' : 'waiting',
         waiting: { kind: 'external', operationId: event.id, bindingId: receipt.id, since: at() },
-        executionOutcome: { kind: receipt.status === 'failed' ? 'failed' : receipt.status === 'unknown' ? 'result-unknown' : 'submission-accepted', operationId: event.id } });
+        executionOutcome: { kind: submissionFailed ? 'failed' : receipt.status === 'unknown' ? 'result-unknown' : 'submission-accepted', operationId: event.id } });
       emit('work.execution_submitted', { workId: work.id, operationId: event.id, status: receipt.status });
       return { content: '', suspended: true, waiting: 'external', executor: 'codex', operationId: event.id };
     },
@@ -79,13 +84,11 @@ export function workExecutor({ store, services, emit }) {
       try {
         assertExternalReviewCurrent(reviewTask, store);
         const result = await services.reviewExternal(reviewTask, options);
-        const text = result.content?.trim();
-        const published = store.listRecords('work-notifications').some(item => item.workId === work.id && item.taskId === task.id);
-        if (running && text && text !== 'PASS' && !published) {
-          assertExternalReviewCurrent(reviewTask, store);
-          await services.notify({ id: work.id, notificationId: `review:${task.id}`, publication: 'progress', resultKind: 'progress', content: text,
-            sourceRefs: [{ type: 'codex', threadId: binding.externalThreadId, turnId: content.turnId, operationId: content.operationId }] }, reviewTask, {});
-        }
+        // The supervisor's prose is an internal assessment. Only an explicit
+        // work_notify decision publishes user-facing progress, including when
+        // the assessment says PASS with an explanation or says not to publish.
+        store.putRecord('external-reviews', { id: task.id, workId: work.id, observationId: content.operationId,
+          status: 'reviewed', assessment: result.content?.trim() || '', recordedAt: at() });
         return { reviewed: true, reviewTaskId: task.id };
       } catch (error) {
         store.putRecord('external-reviews', { id: task.id, workId: work.id, observationId: content.operationId, status: 'unconfirmed', error: error.message, recordedAt: at() });
@@ -108,6 +111,14 @@ export function workExecutor({ store, services, emit }) {
       store.putRecord('work-observations', { id: eventId, workId: work.id, taskId: task.id, late, content, observedAt: at() });
       this.record(task, { kind: 'external_observation', author: 'codex', late, ...content });
       if (late) return { content: '', observed: true, late: true, suspended: true, waiting: work.status, executor: 'codex' };
+      if (content.type === 'operation_failed' && content.affectsExecution === false) {
+        services.works.update(work.id, { lastError: { kind: 'append-rejected', operationId: content.operationId,
+          error: content.error, recordedAt: at() } });
+        await services.notify({ id: work.id, notificationId: eventId, publication: 'external', resultKind: 'append-failed',
+          content: `本次追加要求未被外部执行器接收：${content.error?.message || '提交失败'}。原执行回合的状态保留，不能据此判它失败；这条追加仍待处理。`,
+          sourceRefs: [{ type: 'codex', threadId: binding.externalThreadId, operationId: content.operationId }] }, task, {});
+        return { content: '', observed: true, suspended: true, waiting: 'external', executor: 'codex' };
+      }
       if (progress) {
         if (!content.progress?.confirmed || !Array.isArray(content.progress.items) || !content.progress.items.length)
           return { content: '', observed: true, suspended: true, waiting: 'external', executor: 'codex' };

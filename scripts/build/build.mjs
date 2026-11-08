@@ -89,9 +89,11 @@ export async function buildRelease({ sourceRoot = projectRoot, releaseRoot, bund
     const records = await Promise.all(releaseFiles.slice(index, index + 64).map(async file => [file.name, integrity ? { size: file.size, sha256: digest(await readFile(file.path)) } : { size: file.size }]));
     for (const [name, record] of records) files[name] = record;
   }
-  const gitStatus = integrity ? spawnSync('git', ['-C', sourceRoot, 'status', '--porcelain'], { encoding: 'utf8', windowsHide: true }) : null;
+  const gitStatus = spawnSync('git', ['-C', sourceRoot, 'status', '--porcelain'], { encoding: 'utf8', windowsHide: true });
   const manifest = { format: 2, profile: integrity ? 'release' : 'development', application: pkg.name, version: pkg.version, buildId, builtAt: new Date().toISOString(),
-    sourceCommit: git.status === 0 ? git.stdout.trim() : null, sourceDirty: gitStatus?.status === 0 ? Boolean(gitStatus.stdout.trim()) : null,
+    sourceCommit: git.status === 0 ? git.stdout.trim() : null, sourceMode: committedOnly ? 'git-archive' : 'workspace',
+    sourceDirty: committedOnly ? false : gitStatus.status === 0 ? Boolean(gitStatus.stdout.trim()) : null,
+    workspaceDirty: gitStatus.status === 0 ? Boolean(gitStatus.stdout.trim()) : null,
     contentHash: integrity ? digest(JSON.stringify(files)) : null,
     runtime: { node: process.version, platform: process.platform, arch: process.arch, bundled: bundleNode },
     schemas: { layout: 2, bot: 1, capabilities: 1 }, workspaces, dependencies, files };

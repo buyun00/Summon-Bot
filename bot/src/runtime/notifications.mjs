@@ -8,6 +8,7 @@ export function notificationParts(record) {
     parts.push({ roomId: record.roomId, content: content.slice(offset, end), replyTo: record.replyTo,
       clientId: offset ? `${record.id}:part:${parts.length + 1}` : record.id, workId: record.workId, purpose: 'fyi', eventType: 'work_result',
       sourceRefs: record.sourceRefs || [{ type: 'work', workId: record.workId, taskId: record.taskId }] });
+    if (!offset && record.attachments?.length) parts.at(-1).attachments = record.attachments;
     offset = end;
   }
   return parts;

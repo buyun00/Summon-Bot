@@ -27,7 +27,7 @@ export class AttachmentStore {
     return join(this.root, id);
   }
 
-  async upload(input) {
+  async upload(input, origin) {
     if (typeof input.name !== 'string' || !input.name.trim() || input.name.length > 240 || /[\\/\x00-\x1f\x7f]/.test(input.name)) fail('附件文件名无效');
     if (typeof input.data !== 'string' || input.data.length > Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4) fail('附件不能超过 20 MB', 413);
     if (input.data.length % 4 !== 0 || /[^A-Za-z0-9+/=]/.test(input.data) || input.data.slice(0, -2).includes('=')) fail('附件数据必须为有效的 Base64');
@@ -37,8 +37,11 @@ export class AttachmentStore {
     const detected = rasterType(bytes);
     const declared = typeof input.mimeType === 'string' && /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i.test(input.mimeType) ? input.mimeType.toLowerCase() : 'application/octet-stream';
     const id = randomUUID();
+    const extension = extname(input.name).toLowerCase();
+    const openable = origin?.type === 'work-output' && ['.html','.htm','.txt','.md','.csv','.json'].includes(extension);
     const record = { id, name: input.name.trim(), mimeType: detected || declared, size: bytes.length,
-      url: `/api/attachments/${id}`, ...(detected ? { previewUrl: `/api/attachments/${id}/preview` } : {}), createdAt: new Date().toISOString() };
+      url: `/api/attachments/${id}`, ...(detected ? { previewUrl: `/api/attachments/${id}/preview` } : {}),
+      ...(openable ? { openUrl: `/api/attachments/${id}/view` } : {}), ...(origin ? { origin } : {}), createdAt: new Date().toISOString() };
     const directory = this.directory(id);
     await mkdir(this.root, { recursive: true });
     await mkdir(directory);
@@ -73,6 +76,17 @@ export class AttachmentStore {
 
   async read(id, preview = false) {
     const record = this.get(id);
+    if (preview === 'view') {
+      if (!record.openUrl || record.origin?.type !== 'work-output') fail('此附件没有独立预览入口',404);
+      const source = await readFile(join(this.directory(id),'data'));
+      const html = /\.html?$/i.test(record.name);
+      const escaped = html ? source : Buffer.from(`<!doctype html><meta charset="utf-8"><title>文件预览</title><style>body{margin:24px;font:16px system-ui}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style><pre>${source.toString('utf8').replace(/[&<>]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[char]))}</pre>`);
+      return { record, bytes: escaped, headers: {'Content-Type':'text/html; charset=utf-8','Content-Length':String(escaped.length),
+        'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer',
+        // Opaque sandbox origin: scripts can run offline, but cannot access
+        // Summon's cookies/storage/API or send uploaded user data elsewhere.
+        'Content-Security-Policy': "sandbox allow-scripts allow-forms allow-downloads; default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob:; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; worker-src blob:; form-action 'none'; frame-ancestors 'self'; base-uri 'none'" } };
+    }
     if (preview && !record.previewUrl) fail('此附件不支持图片预览', 404);
     const bytes = await readFile(join(this.directory(id), 'data'));
     // Recheck the bytes before granting an inline type, including after a server restart.

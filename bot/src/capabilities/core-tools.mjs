@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { taskSource } from '../context/sources.mjs';
 import { modelArgs, modelText, looseSchema, boundedNumber } from '../context/model-input.mjs';
 import { resolveCodexTarget } from './codex-target.mjs';
+import { formalDocumentRequest } from './document-work.mjs';
+import { externalExecution } from '../context/execution-evidence.mjs';
 
 const string = { type: 'string' };
 const object = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
@@ -56,7 +58,9 @@ export function coreTools(services, task) {
           status: item.status, actions: store.listTools(item.id).filter(record => record.effect !== 'read').map(record => {
             const receipt = record.output?.details || {};
             return { actionId: record.id, tool: record.name, status: record.status, id: receipt.id, workId: receipt.workId,
-              taskId: receipt.taskId, operationId: receipt.operationId, execution: receipt.execution, receiptLayer: receipt.receiptLayer,
+              taskId: receipt.taskId, operationId: receipt.operationId,
+              execution: receipt.workId && services.works.get(receipt.workId) ? externalExecution(services.works.get(receipt.workId), receipt.operationId) : receipt.execution,
+              savedExecution: receipt.execution, receiptLayer: receipt.receiptLayer,
               waitId: receipt.waitId, accepted: receipt.accepted, savedStatus: receipt.status, recordedAt: record.finishedAt, dueAt: receipt.dueAt,
               ...(receipt.workId && services.works.get(receipt.workId) ? { workStatus: services.works.get(receipt.workId).status } : {}) };
           }) }));
@@ -84,7 +88,9 @@ export function coreTools(services, task) {
         }
         const suppliedExecutor = typeof args.executor === 'string' ? { kind: args.executor } : modelArgs(args.executor);
         const selectedTarget = suppliedExecutor.target || args.target || (args.cwd ? { type: 'directory', cwd: args.cwd } : args.projectId ? { type: 'project', projectId: args.projectId } : null);
-        const kind = modelText(suppliedExecutor.kind || suppliedExecutor.type || (selectedTarget ? 'codex' : '')).toLowerCase();
+        const documentOnly = formalDocumentRequest(task, store);
+        const kind = documentOnly ? 'codex' : modelText(suppliedExecutor.kind || suppliedExecutor.type || (selectedTarget ? 'codex' : '')).toLowerCase();
+        if (documentOnly) content.stage = { kind: 'document-review', instruction: 'Produce or revise the formal review document with Codex. No implementation, testing or resumption of paused code is authorized by this step.' };
         const choices = services.executors();
         const executorKind = kind || choices.executors?.find(item => item.id === choices.defaultId)?.kind;
         const target = (selectedTarget || executorKind === 'codex') ? await resolveCodexTarget(selectedTarget, services, task) : null;
@@ -102,7 +108,8 @@ export function coreTools(services, task) {
         catch (error) { content.evidenceWarnings.push({ message: `Current project rules are unavailable: ${error.message}` }); }
         const operationId = actionId(args, ctx, 'operationId');
         const work = services.works.create({ id, operationId, goal: modelText(args.goal || args.instruction || args.content || content.originalRequest.content),
-          requirements: modelText(args.requirements), responsibility: modelText(args.responsibility), executor, project, initialHandoff: content }, task);
+          requirements: modelText(args.requirements), responsibility: modelText(args.responsibility), executor, project,
+          productionStage: documentOnly ? 'document-review' : undefined, initialHandoff: content }, task);
         const receipt = await services.works.dispatch(work.id, { id: operationId, kind: 'request', content, metadata: { priority: 'background', resume: userRequest } }, task);
         return { ...compactWork(work), ...receipt, handedOff: true, acceptance: modelText(args.acceptance), evidenceWarnings: content.evidenceWarnings };
       }),
@@ -137,7 +144,10 @@ export function coreTools(services, task) {
       object({ id: string, content: {}, ...handoffFields, correction: { type: 'boolean' } }), 'write', async (args, ctx) => {
         const work = await services.sources.requireWork(workId(args), task);
         if (['paused', 'cancelled'].includes(work.status) && !userRequest) throw new Error('这项工作已停止；当前事件不包含用户新的继续要求。其他动作可以继续。');
+        if (formalDocumentRequest(task, store) && (work.productionStage !== 'document-review' || services.works.executor(work).kind !== 'codex'))
+          throw new Error('正式文档须委派独立 Codex 文档工作；保留原实现工作暂停，不用文档请求恢复代码。');
         const content = await services.sources.handoff(task, args);
+        if (formalDocumentRequest(task, store)) content.stage = { kind: 'document-review', instruction: 'Revise the formal document only. Keep implementation paused.' };
         try { content.projectKnowledge = await services.memory.forProject(task, services.sources.project(work)); }
         catch (error) { content.evidenceWarnings.push({ message: `Project knowledge is unavailable: ${error.message}` }); }
         try { content.currentKnowledge = await services.memory.forRequest(task, services.sources.project(work)); }
@@ -179,10 +189,13 @@ export function coreTools(services, task) {
         return { ...services.works.wait(work.id, { ...waiting, unresolvedTaskId, waitId: actionId(args, ctx, 'waitId'), handoff }, task), acceptance: modelText(args.acceptance), evidenceWarnings: handoff.evidenceWarnings };
       }),
     tool('work_notify', 'Save and publish this work’s useful result text directly. The program supplies the original recipient, reply association and notification ID; peer FYI does not demand another reply.',
-      object({ id: string, content: string }), 'external', async (args, ctx) => {
+      object({ id: string, content: string, attachments: { type: 'array', maxItems: 8, items: object({ id: string }, ['id']) } }), 'external', async (args, ctx) => {
         const work = await services.sources.requireWork(workId(args), task);
         assertExternalReviewCurrent(task, store);
-        return services.notify({ id: work.id, notificationId: actionId(args, ctx, 'notificationId'), publication: 'explicit', content: modelText(args.content ?? args.message ?? args.text, work.progress) }, task, ctx);
+        const review = task.metadata?.externalReview;
+        return services.notify({ id: work.id, notificationId: actionId(args, ctx, 'notificationId'),
+          publication: review?.running ? 'progress' : 'explicit', ...(review?.running ? {resultKind:'progress'} : {}), attachments: args.attachments,
+          content: modelText(args.content ?? args.message ?? args.text, work.progress) }, task, ctx);
       }),
     tool('contacts_list', 'List configured direct Bot contacts. Direct messages and task queries do not use the gateway or chatroom.', object({}), 'read', () => services.contacts()),
     tool('messages_send', 'Send a durable message to a configured contact. The receipt only confirms acceptance; query the returned task separately. Reuse id to retry an uncertain delivery.',

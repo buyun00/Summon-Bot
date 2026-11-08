@@ -39,6 +39,7 @@
     "write_file",
     "edit_file",
     "run_command",
+    "publish_file",
     "codex_projects",
     "codex_threads",
     "codex_create",

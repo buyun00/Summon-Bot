@@ -10,6 +10,7 @@
     "write_file",
     "edit_file",
     "run_command",
+    "publish_file",
     "chatroom_list",
     "chatroom_read",
     "reminders_create",

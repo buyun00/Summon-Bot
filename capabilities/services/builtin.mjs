@@ -68,7 +68,14 @@ export async function createCapability(options) {
     if(FILE_TOOLS.has(name)) {
       if(actor==='controller')fail('Filesystem tools require an explicit Bot identity');
       const config=await manager.config(actor),artifacts=[];
-      const definitions=createFileTools({workspace:config.workspace,projectRoot:defaultCwd,protectedRoot:dataRoot,accessPolicy:context.fileAccessPolicy,redact:createRedactor(config),containProcesses:context.workId?.startsWith('onboarding-')===true,tempRoot:join(manager.directory(actor),'tmp','capability-tools'),onArtifacts:items=>artifacts.push(...items),withExecution:(fn,toolSignal)=>lockFor(defaultCwd).withLock(`bot:${actor}`,fn,toolSignal),saveArtifact:async input=>(await manager.botApi()).saveArtifact(join(manager.directory(actor),'artifacts'),input)});
+      const definitions=createFileTools({workspace:config.workspace,projectRoot:defaultCwd,protectedRoot:dataRoot,accessPolicy:context.fileAccessPolicy,redact:createRedactor(config),containProcesses:context.workId?.startsWith('onboarding-')===true,tempRoot:join(manager.directory(actor),'tmp','capability-tools'),onArtifacts:items=>artifacts.push(...items),withExecution:(fn,toolSignal)=>lockFor(defaultCwd).withLock(`bot:${actor}`,fn,toolSignal),saveArtifact:async input=>(await manager.botApi()).saveArtifact(join(manager.directory(actor),'artifacts'),input),
+        publishFile:async input=>{
+          if(context.mode!=='work'||!context.workId||!context.taskId)fail('File publication belongs to an authorized work',403);
+          const work=await manager.readState(actor,db=>db?.getRecord('works',context.workId));
+          const source=work?.sources?.find(item=>item.roomId===context.source?.roomId);
+          if(!work||!source?.roomId)fail('The original work room is unavailable; file retained',403);
+          return remote('chatroom','publishFile',[input,{type:'work-output',botId:actor,workId:work.id,taskId:context.taskId,roomId:source.roomId,sourceMessageId:source.replyTo}]);
+        }});
       const result=await definitions.find(tool=>tool.name===name).execute(randomUUID(),args,signal);
       return {...result,artifacts,isError:Boolean(result.details?.timedOut||result.details?.aborted||(result.details?.exitCode!==undefined&&result.details.exitCode!==0))};
     }
@@ -82,7 +89,14 @@ export async function createCapability(options) {
       case 'chatroom_team_read':return chatroom.teamRead(args,actor);
       case 'chatroom_team_raise':return chatroom.teamRaise(args,actor);
       case 'chatroom_team_manage':return chatroom.teamManage(args,actor);
-      case 'chatroom_send':return chatroom.post(args.roomId,args,actor==='controller'?'user':actor);
+      case 'chatroom_send':{
+        if(actor!=='controller')for(const item of args.attachments||[]){
+          const attachment=attachments.get(item.id),origin=attachment.origin;
+          if(origin?.type==='work-output'&&(origin.botId!==actor||origin.workId!==context.workId||origin.roomId!==args.roomId))
+            fail('This published file belongs to another work or room',403);
+        }
+        return chatroom.post(args.roomId,args,actor==='controller'?'user':actor);
+      }
       case 'chatroom_dm':return chatroom.dm(actor,args);
       case 'chatroom_conclude':{const room=chatroom.need('rooms',args.roomId);if(actor!=='controller'&&!room.members.includes(actor))fail('Not a room member',403);return chatroom.saveConclusion(args.roomId,args);}
       case 'knowledge_search':return knowledge.search(args.query);
@@ -108,11 +122,17 @@ export async function createCapability(options) {
       case 'reminders_create':return manager.saveReminder(args,actor,context.source);
       case 'reminders_list':return manager.store.list('reminders').filter(item=>item.botId===actor&&item.roomId===context.source?.roomId);
       case 'reminders_cancel':return manager.cancelReminder(args.id,actor,context.source);
-      case 'codex_projects':return codex.projects(signal);
-      case 'codex_threads':return codex.threads(signal);
-      case 'codex_create':case 'codex_attach':return codex[name==='codex_create'?'create':'attach']({...args,botId:actor});
-      case 'codex_status':{const id=codex.bindingId(actor,args.workId),work=codex.require(id);assertOwner(actor,work.botId);return codex.get(id);}
+      case 'codex_projects':return codex.projects(signal,context.codexScope,actor);
+      case 'codex_threads':return codex.threads(signal,context.codexScope,actor);
+      case 'codex_create':case 'codex_attach':{
+        codex.assertScope(actor,args.workId||context.workId,context.codexScope);
+        if(name==='codex_attach'&&actor!=='controller'&&!context.codexScope.threadGrants.includes(args.threadId))
+          fail('Attaching an existing chat requires its exact ID in the authenticated user request. Global chat discovery is not authorization.',403);
+        return codex[name==='codex_create'?'create':'attach']({...args,botId:actor});
+      }
+      case 'codex_status':{codex.assertScope(actor,args.workId,context.codexScope);const id=codex.bindingId(actor,args.workId),work=codex.require(id);assertOwner(actor,work.botId);return codex.get(id);}
       case 'codex_read':case 'codex_send':case 'codex_interrupt':{
+        codex.assertScope(actor,args.workId||context.workId,context.codexScope);
         const id=codex.bindingId(actor,args.workId||context.workId),work=codex.require(id);assertOwner(actor,work.botId);
         if(name==='codex_interrupt'&&!args.expectedTurnId){
           const operation=codex.operation(work,args.operationId);
@@ -129,6 +149,7 @@ export async function createCapability(options) {
   if(id==='bot-management')expose(manager,['create','update','start','stop','send','saveRoutine','claimReminder','settleReminder','seed','restore','monitor','quiesce','shutdownAll','connect','pauseProject','ensureCatalogMaintainer','setCatalogMaintainerState']);
   if(chatroom){
     expose(chatroom,['createRoom','updateRoom','post','append','messageReceipt','dm','conclude','saveConclusion','retry','seed','teamRead','teamRaise','teamManage']);operations.upload=(...args)=>locked(()=>attachments.upload(...args));
+    operations.publishFile=(input,origin)=>locked(()=>attachments.upload(input,origin));
     operations.pause=async()=>{await chatroom.close();return {paused:true};};
     operations.resumeService=()=>{if(chatroom.closed)chatroom.start();return {ready:true};};
   }

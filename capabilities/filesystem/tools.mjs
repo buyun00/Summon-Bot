@@ -161,7 +161,7 @@ if (-not $summonCommandSucceeded) { exit 1 }
 }
 
 /** Filesystem access is constrained here; command cwd is a convenience, not an OS sandbox. */
-export function createFileTools({ workspace, projectRoot, protectedRoot, protectedRoots = [], accessPolicy = {}, signal: defaultSignal, withExecution = async fn => fn(), redact = defaultRedact, saveArtifact, onArtifacts, tempRoot, containProcesses = false }) {
+export function createFileTools({ workspace, projectRoot, protectedRoot, protectedRoots = [], accessPolicy = {}, signal: defaultSignal, withExecution = async fn => fn(), redact = defaultRedact, saveArtifact, onArtifacts, publishFile, tempRoot, containProcesses = false }) {
   const workspaceRoot = resolve(textValue(workspace, 'workspace'));
   const project = resolve(textValue(projectRoot, 'projectRoot'));
   const protectedDirectories = [...new Set([protectedRoot, ...protectedRoots].filter(value => value != null)
@@ -276,6 +276,20 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
 
   return [
     ...createWebTools(),
+    tool('publish_file', 'Publish a verified work file as a chat attachment. Supply the returned attachment ID to work_notify. Standalone HTML/text receives an isolated browser preview.', objectSchema({path:stringSchema('Finished file in this authorized workspace/project'),name:stringSchema('Optional download filename'),mimeType:stringSchema('Optional MIME type')},['path']), async (args, signal) => {
+      if (!publishFile) throw new Error('File publication requires the installed chat attachment capability');
+      const path = await checkedPath(args.path, { alternative: true });
+      const handle = await open(path, constants.O_RDONLY);
+      try {
+        const before = await handle.stat();
+        if (!before.isFile() || before.size > 20 * 1024 * 1024) throw new Error('Publish a regular file of at most 20 MiB');
+        const bytes = await handle.readFile({ signal });
+        const after = await handle.stat();
+        if (before.size !== bytes.length || after.size !== before.size || after.mtimeMs !== before.mtimeMs || await realpath(path) !== path)
+          throw new Error('File changed while preparing publication; finish writing it before publishing');
+        return publishFile({name:basename(args.name || path),mimeType:args.mimeType,data:bytes.toString('base64')});
+      } finally { await handle.close(); }
+    }, true),
     tool('list_files', 'List allowed files and directories. Dependency directories are shown without their contents; protected paths are omitted. An omitted entry is not proof of absence. Relative paths start in your workspace.', objectSchema({ path: stringSchema('Directory; defaults to workspace'), recursive: { type: 'boolean' }, maxEntries: integerSchema('Maximum entries, default 200', 1, 500), maxDepth: integerSchema('Recursion depth, default 4', 0, 12) }), async (args, signal) => {
       const path = await checkedPath(args.path, { directory: true });
       const maxEntries = boundedInteger(args.maxEntries, 200, 1, 500, 'maxEntries');

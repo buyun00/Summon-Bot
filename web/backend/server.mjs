@@ -23,7 +23,7 @@ const assets = new Map([
 const api = /^\/api\/(?:health|state|stream|push|usage|model-settings|bots|rooms|messages|memories|knowledge|nodes|edges|routines|works|agent-runs|attachments|events|jobs|catalog|capabilities)(?:\/|$)/;
 const hopHeaders = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade']);
 const json = (res, status, value) => {
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'private, no-store, no-transform', 'X-Content-Type-Options': 'nosniff' });
   res.end(JSON.stringify(value));
 };
 
@@ -120,7 +120,9 @@ export async function startWeb({ host = '127.0.0.1', port = 8787, getRemoteOrigi
         if (body) { headers['Content-Type'] = 'application/json'; headers['Content-Length'] = body.length; }
         const outgoing = (target.protocol === 'https:' ? httpsRequest : httpRequest)(target, { method: req.method, headers }, incoming => {
           const responseHeaders = Object.fromEntries(Object.entries(incoming.headers).filter(([key]) => !hopHeaders.has(key.toLowerCase()) && key.toLowerCase() !== 'set-cookie'));
-          responseHeaders['Cache-Control'] = 'private, no-store';
+          // Preserve the upstream JSON/stream bytes through public proxies.
+          // Browser failures must not silently leave an old cached sidebar.
+          responseHeaders['Cache-Control'] = 'private, no-store, no-transform';
           responseHeaders['X-Content-Type-Options'] = 'nosniff';
           res.writeHead(incoming.statusCode || 502, responseHeaders);
           incoming.on('error', () => res.destroy());

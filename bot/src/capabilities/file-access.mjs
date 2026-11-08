@@ -114,8 +114,8 @@ export function taskFileAccessPolicy(task, store, workspace) {
 }
 
 export async function assertFileToolAccess(name, args, task, store, workspace) {
-  if (!['read_file', 'list_files', 'search_files', 'write_file', 'edit_file', 'run_command'].includes(name)) return;
+  if (!['read_file', 'list_files', 'search_files', 'write_file', 'edit_file', 'run_command', 'publish_file'].includes(name)) return;
   const policy = taskFileAccessPolicy(task, store, workspace);
   if (name === 'run_command') await assertCommandPolicy(String(args.command || ''), resolve(workspace, args.cwd || '.'), policy, () => {});
-  else assertPathPolicy(resolve(workspace, args.path || '.'), policy, { operations: fileOperations(name) });
+  else assertPathPolicy(resolve(workspace, args.path || '.'), policy, { operations: fileOperations(name), alternative: name === 'publish_file' });
 }

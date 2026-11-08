@@ -24,6 +24,7 @@ import { coreTools } from '../../bot/src/capabilities/core-tools.mjs';
 import { assertToolPolicy, permitsTool, permitsMaintenanceTool, taskMode } from '../../bot/src/capabilities/task-policy.mjs';
 import { taskSource,workExecution } from '../../bot/src/context/sources.mjs';
 import { taskFileAccessPolicy } from '../../bot/src/capabilities/file-access.mjs';
+import { codexScope } from '../../bot/src/capabilities/codex-scope.mjs';
 import { notificationParts } from '../../bot/src/runtime/notifications.mjs';
 import { CapabilityCatalog,catalogTools } from '../services/catalog.mjs';
 import { UsageLedger,readUsage,usageRange,finishUsageTotals,emptyUsageTotals,USAGE_PRICING } from '../../bot/src/agent/usage.mjs';
@@ -162,7 +163,7 @@ export async function startGateway(options={}) {
     if(actor!=='controller'){
       if(taskId){
         task=await manager.readState(actor,db=>db?.getTask(taskId));
-        const saved=await manager.readState(actor,db=>({source:task&&taskSource(task,db),
+        const saved=await manager.readState(actor,db=>({source:task&&(task.workId?workExecution(task,db).authorization?.source:taskSource(task,db)),
           notification:name==='chatroom_send'&&_context?.notificationId?db?.getRecord('work-notifications',_context.notificationId):null,
           operation:_context?.operationId?db?.getRecord('work-events',_context.operationId):null}));
         source=saved.source;
@@ -192,7 +193,16 @@ export async function startGateway(options={}) {
     if(controlTools.some(tool=>tool.name===name))return control.call(name,args,{actor});
     if(pin&&!control.permittedVersion(actor,pin.id,pin.version))fail('This capability version is not bound to the Bot',403);
     const context={actor,...(task?{taskId:task.id,workId:runtimeOperation?.workId||task.workId,mode:runtimeOperation?'work':taskMode(task),source}:{})};
-    if(task&&['list_files','read_file','search_files','write_file','edit_file','run_command'].includes(name)){
+    if(task&&name.startsWith('codex_')){
+      const config=await manager.config(actor);
+      context.codexScope=await manager.readState(actor,db=>{
+        const scopedTask=runtimeOperation?{...task,workId:runtimeOperation.workId}:task;
+        const originId=scopedTask.workId&&workExecution(scopedTask,db).requestTaskId;
+        const origin=originId&&db.getTask(originId);
+        return codexScope(actor,scopedTask,db,origin?taskSource(origin,db):source||{},config.workspace);
+      });
+    }
+    if(task&&['list_files','read_file','search_files','write_file','edit_file','run_command','publish_file'].includes(name)){
       const config=await manager.config(actor);
       context.fileAccessPolicy=await manager.readState(actor,db=>taskFileAccessPolicy(task,db,config.workspace));
     }
@@ -334,7 +344,7 @@ export async function startGateway(options={}) {
       if(actor!=='controller'&&(path.startsWith('/api/')||path.startsWith('/internal/')))fail('User API requires controller authentication',403);
       if(closing&&!path.startsWith('/internal/service/'))fail('Gateway is stopping; new requests are unavailable',503);
       if(req.method==='GET'&&path==='/api/stream'){res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-store',Connection:'keep-alive'});res.write('data: {"type":"connected"}\n\n');clients.add(res);req.on('close',()=>clients.delete(res));return;}
-      let body={};if(['POST','PATCH','PUT','DELETE'].includes(req.method)){const chunks=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>(path==='/api/attachments'?MAX_ATTACHMENT_REQUEST_BYTES:2*1024*1024))fail('Request too large',413);chunks.push(chunk);}body=JSON.parse(Buffer.concat(chunks).toString()||'{}');}
+      let body={};if(['POST','PATCH','PUT','DELETE'].includes(req.method)){const chunks=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>(['/api/attachments','/internal/service/invoke'].includes(path)?MAX_ATTACHMENT_REQUEST_BYTES:2*1024*1024))fail('Request too large',413);chunks.push(chunk);}body=JSON.parse(Buffer.concat(chunks).toString()||'{}');}
       if(req.method==='POST'&&path==='/internal/bots/stop-all')return json(res,200,await stopBots(body));
       if(req.method==='POST'&&path==='/internal/service/tools')return json(res,200,control.tools(manager.get(body.botId)));
       if(req.method==='POST'&&path==='/internal/service/invoke')return json(res,200,await rpc(body.capability,body.operation,body.args||[]));
@@ -355,7 +365,7 @@ export async function startGateway(options={}) {
           else return json(res,200,{jsonrpc:'2.0',id:body.id,error:{code:-32601,message:'Method not found'}});return json(res,200,{jsonrpc:'2.0',id:body.id,result});
         }catch(error){return json(res,200,{jsonrpc:'2.0',id:body.id,error:{code:-32603,message:error.message}});}
       }
-      const attachment=path.match(/^\/api\/attachments\/([^/]+)(\/preview)?$/);if(attachment&&['GET','HEAD'].includes(req.method)){const file=await attachments.read(attachment[1],Boolean(attachment[2]));res.writeHead(200,file.headers);res.end(req.method==='HEAD'?undefined:file.bytes);return;}
+      const attachment=path.match(/^\/api\/attachments\/([^/]+)(\/(?:preview|view))?$/);if(attachment&&['GET','HEAD'].includes(req.method)){const file=await attachments.read(attachment[1],attachment[2]==='/view'?'view':Boolean(attachment[2]));res.writeHead(200,file.headers);res.end(req.method==='HEAD'?undefined:file.bytes);return;}
       const artifact=path.match(/^\/api\/agent-runs\/([^/]+)\/tools\/([^/]+)\/artifacts\/([^/]+)$/);if(artifact&&['GET','HEAD'].includes(req.method)){if(requestUrl.search)fail('Artifact IDs only',404);const file=await downloads.read(...artifact.slice(1).map(decodeURIComponent));try{res.writeHead(200,file.headers);if(req.method==='HEAD'||file.size===0)res.end();else await pipeline(file.handle.createReadStream({autoClose:false,start:0,end:file.size-1}),res);}finally{await file.close();}return;}
       const result=await handleApi(req.method,path,body,requestUrl.searchParams);if(result===undefined)fail('Not found',404);json(res,200,result);
     }catch(error){if(!res.headersSent)json(res,error.status||400,{error:catalog.clean(String(error.message)),...(error.code?{code:error.code}:{}),...(error.outcomeUnknown?{outcomeUnknown:true}:{}),...(error.accessDenial?{accessDenial:JSON.parse(catalog.clean(JSON.stringify(error.accessDenial)))}:{})});else res.end();}
