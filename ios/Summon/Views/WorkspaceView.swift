@@ -320,7 +320,9 @@ private struct WorkspaceWorkDetail: View {
             if !value["lastError"].stringValue.isEmpty {
                 Section { WorkspaceErrorRow(message: value["lastError"]["message"].string ?? value["lastError"].stringValue) }
             }
-            if !value["waiting"]["event"].stringValue.isEmpty {
+            if !value["waitingLabel"].stringValue.isEmpty {
+                Section("等待事项") { Text(value["waitingLabel"].stringValue).textSelection(.enabled) }
+            } else if !value["waiting"]["event"].stringValue.isEmpty {
                 Section("等待事项") { Text(value["waiting"]["event"].stringValue).textSelection(.enabled) }
             }
             if status == "interrupted" {

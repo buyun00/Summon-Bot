@@ -53,6 +53,9 @@ struct ChatView: View {
             if let target = pending.message.toBotId { ids.insert(target) }
             else if let directBot { ids.insert(directBot.id) }
         }
+        for bot in store.bots where bot.activity?.phase == "waiting" && bot.activity?.roomId == roomID {
+            ids.insert(bot.id)
+        }
         return store.bots.filter { ids.contains($0.id) && !$0.isPaused }
     }
 
@@ -74,9 +77,10 @@ struct ChatView: View {
         let detail = runID.flatMap { store.agentRunDetails[$0] }
         let status = detail?.status ?? run?.status ?? job?.status
         if let activity = run?.activity ?? detail?.activity { return activity.label }
+        if job == nil, let activity = bot.activity, activity.phase == "waiting", activity.roomId == roomID { return activity.label }
         if status == "queued" { return "等待执行" }
         if status == "accepted" { return "已接收，准备处理" }
-        if status == "waiting" { return "正在等待答复或外部结果" }
+        if status == "waiting" { return "正在等待已登记的工作条件" }
         return "正在分析任务并准备下一步"
     }
 

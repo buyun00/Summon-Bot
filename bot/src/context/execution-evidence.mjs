@@ -1,4 +1,24 @@
 // Work lifecycle, local transport and an observed external turn are separate.
+export function waitingLabel(work) {
+  if (!work) return '工作已保留';
+  if (work.status === 'paused') return '工作已暂停，等待明确继续';
+  if (work.status === 'cancelled') return '工作已取消';
+  const wait = work.waiting || {};
+  if (wait.kind === 'user-input') return wait.question ? `等待答复：${wait.question}` : '执行端有待处理请求';
+  if (wait.kind === 'review') return wait.reason || '本阶段执行已结束，等待结果评审';
+  if (wait.kind === 'external') {
+    const execution = externalExecution(work);
+    if (execution.startedConfirmed && execution.status === 'inProgress') return 'Codex 正在执行，等待本阶段结果';
+    if (execution.startedConfirmed && execution.status === 'waiting_for_input') return 'Codex 有待处理请求';
+    if (wait.outcome === 'interrupted') return '外部执行已中断，工作资料保留';
+    if (wait.outcome === 'result-unknown') return '正在确认外部执行结果';
+    return execution.externalReceived ? '要求已送达执行端，正在确认执行状态' : '正在等待执行端接收确认';
+  }
+  if (wait.dependencyWorkId || wait.taskId) return wait.reason || '等待已登记的依赖工作结果';
+  if (wait.until) return `等待已登记时间：${wait.until}`;
+  return wait.reason || wait.event || '工作已保留，等待已登记条件';
+}
+
 export function externalExecution(work, operationId) {
   if (!work) return null;
   const operation = operationId || work.waiting?.operationId || work.bindings?.findLast(item => item.type === 'codex-desktop')?.operationId || null;

@@ -26,6 +26,7 @@ import { taskSource,workExecution } from '../../bot/src/context/sources.mjs';
 import { taskFileAccessPolicy } from '../../bot/src/capabilities/file-access.mjs';
 import { codexScope } from '../../bot/src/capabilities/codex-scope.mjs';
 import { notificationParts } from '../../bot/src/runtime/notifications.mjs';
+import { waitingLabel } from '../../bot/src/context/execution-evidence.mjs';
 import { CapabilityCatalog,catalogTools } from '../services/catalog.mjs';
 import { UsageLedger,readUsage,usageRange,finishUsageTotals,emptyUsageTotals,USAGE_PRICING } from '../../bot/src/agent/usage.mjs';
 import { ModelConnections } from '../models/service.mjs';
@@ -91,7 +92,8 @@ export async function startGateway(options={}) {
     create:input=>rpc('codex','create',[input])};
   for(const operation of ['send','interrupt','read'])codex[operation]=(id,args)=>rpc('codex',operation,[id,args||{}]);
   codex.attach=input=>rpc('codex','attach',[input]);
-  const publicWork=(botId,work)=>({...work,id:`${botId}~${work.id}`,workId:work.id,botId,summary:work.progress,roomId:work.sources?.find(source=>source.roomId)?.roomId});
+  const publicWork=(botId,work)=>({...work,id:`${botId}~${work.id}`,workId:work.id,botId,summary:work.progress,
+    waitingLabel:work.status==='waiting'||work.status==='paused'?waitingLabel(work):null,roomId:work.sources?.find(source=>source.roomId)?.roomId});
   async function localWorks() {
     const groups=await Promise.all(manager.list().map(async bot=>manager.readState(bot.id,db=>(db?.listRecords('works')||[]).map(work=>publicWork(bot.id,work)))));
     return groups.flat();
@@ -123,6 +125,7 @@ export async function startGateway(options={}) {
       const snapshot=await manager.readState(bot.id,db=>{
         if(!db)return {tasks:[],counts:{},lastTools:{}};
         return {tasks:db.listTasks().slice(-100),maintenance:db.getState('runtime','maintenanceActivities')?.value||[],
+          waitingWork:db.listRecords('works').findLast(work=>work.status==='waiting'),
           counts:Object.fromEntries(db.db.prepare('SELECT task_id,COUNT(*) AS count FROM tools GROUP BY task_id').all().map(row=>[row.task_id,row.count])),
           lastTools:Object.fromEntries(db.db.prepare(`SELECT task_id,
             COALESCE(json_extract(data,'$.name'),json_extract(data,'$.toolName')) AS name,
@@ -145,7 +148,8 @@ export async function startGateway(options={}) {
       const maintenance=snapshot.maintenance?.at(-1);
       const recent=snapshot.tasks.at(-1),fresh=recent&&Date.now()-Date.parse(recent.finishedAt||'')<8000;
       const terminal=fresh?{phase:recent.status,label:recent.status==='completed'?'已完成本次任务':recent.status==='failed'?'任务遇到问题':recent.status==='cancelled'?'任务已取消':'任务已中断',motion:recent.status==='completed'?'burst':recent.status==='failed'?'alert':'confused',source:'execution',updatedAt:recent.finishedAt}:null;
-      botActivities.set(bot.id,bot.status==='paused'?{phase:'paused',label:'已暂停',motion:'sleep',source:'execution'}:active?(active.activity||{phase:active.status,label:active.status==='running'?'正在准备任务':'等待执行',motion:'thinking',source:'execution'}):maintenance||(fresh?recent.activity||terminal:null)||{phase:'idle',label:'空闲',motion:'idle',source:'execution'});
+      const waitingActivity=snapshot.waitingWork?{phase:'waiting',label:waitingLabel(snapshot.waitingWork),roomId:snapshot.waitingWork.sources?.find(source=>source.roomId)?.roomId,motion:'notify',source:'execution'}:null;
+      botActivities.set(bot.id,bot.status==='paused'?{phase:'paused',label:'已暂停',motion:'sleep',source:'execution'}:active?(active.activity||{phase:active.status,label:active.status==='running'?'正在准备任务':'等待执行',motion:'thinking',source:'execution'}):waitingActivity||maintenance||(fresh?recent.activity||terminal:null)||{phase:'idle',label:'空闲',motion:'idle',source:'execution'});
       try{const health=await manager.request(bot.id,'/health',{signal:AbortSignal.timeout(2000)});if(health.engine?.provider)providers.push(health.engine.provider);}catch{}
     }));
     agentRuns.sort((a,b)=>String(a.createdAt||'').localeCompare(String(b.createdAt||'')));
@@ -340,7 +344,7 @@ export async function startGateway(options={}) {
     return undefined;
   }
   const authenticate=req=>{const supplied=req.headers.authorization?.replace(/^Bearer /,'');if(same(supplied,token))return 'controller';for(const bot of manager.store.list('bots'))if(same(supplied,bot.capabilityToken))return bot.id;fail('Unauthorized',401);};
-  const json=(res,status,value)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(value));};
+  const json=(res,status,value)=>{const body=Buffer.from(JSON.stringify(value));res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Content-Length':body.length,'Cache-Control':'private, no-store, no-transform'});res.end(body);};
   const server=createServer((req,res)=>{
     // A disconnected streaming client must not terminate the shared gateway.
     res.on('error',()=>{clients.delete(res);res.destroy();});

@@ -17,6 +17,7 @@ struct SummonActivity: Codable, Equatable, Sendable {
     var label: String
     var motion: String
     var phase: String
+    var roomId: String? = nil
 }
 
 struct SummonBot: Codable, Identifiable, Equatable, Sendable {

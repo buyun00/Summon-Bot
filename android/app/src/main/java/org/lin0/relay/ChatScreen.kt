@@ -271,6 +271,9 @@ private fun workingBots(store: SummonStore, roomID: String, room: SummonRoom?, m
         val chosen = pending.message.toBotId
         if (chosen != null) ids += chosen else ids += room?.members.orEmpty()
     }
+    for (bot in store.bots) {
+        if (bot.activity?.get("phase")?.string == "waiting" && bot.activity?.get("roomId")?.string == roomID) ids += bot.id
+    }
     return store.bots.filter { it.id in ids && !it.isPaused }
 }
 
@@ -283,9 +286,12 @@ private fun workingStatus(store: SummonStore, roomID: String, bot: SummonBot, no
     val detail = runID?.let { store.agentRunDetails[it] }
     val status = detail?.status ?: run?.status ?: job?.status
     (run?.activity ?: detail?.activity)?.get("label")?.string?.let { return it }
+    if (job == null && bot.activity?.get("phase")?.string == "waiting" && bot.activity?.get("roomId")?.string == roomID) {
+        bot.activity?.get("label")?.string?.let { return it }
+    }
     if (status == "queued") return "等待执行"
     if (status == "accepted") return "已接收，准备处理"
-    if (status == "waiting") return "正在等待答复或外部结果"
+    if (status == "waiting") return "正在等待已登记的工作条件"
     return "正在分析任务并准备下一步"
 }
 

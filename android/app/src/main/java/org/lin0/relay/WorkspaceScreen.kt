@@ -288,7 +288,8 @@ private fun WorkDetail(store: SummonStore, initial: WorkspaceRecord, snapshot: S
         if (!value["inputRefs"].array.isNullOrEmpty()) { Text("输入资料"); Text(value["inputRefs"].stringValue) }
         if (value["error"].stringValue.isNotEmpty()) Text(value["error"].stringValue, color = Color(0xFFFF9F0A))
         if (value["lastError"].stringValue.isNotEmpty()) Text(value["lastError"]["message"].string ?: value["lastError"].stringValue, color = Color(0xFFFF9F0A))
-        if (value["waiting"]["event"].stringValue.isNotEmpty()) { Text("等待事项"); Text(value["waiting"]["event"].stringValue) }
+        if (value["waitingLabel"].stringValue.isNotEmpty()) { Text("等待事项"); Text(value["waitingLabel"].stringValue) }
+        else if (value["waiting"]["event"].stringValue.isNotEmpty()) { Text("等待事项"); Text(value["waiting"]["event"].stringValue) }
         if (status == "interrupted") Text("上次执行已中断。恢复会继续已有工作对话，已进行的操作仍然保留。", color = Color(0xFF8E8E93))
         if (value["historical"].bool != true && status in setOf("active", "waiting", "blocked")) {
             Text("补充要求")
