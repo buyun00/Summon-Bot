@@ -17,7 +17,7 @@ import { WorkService } from './works.mjs';
 import { ConversationScheduler } from './scheduler.mjs';
 import { writeKnowledgeDocument } from '../context/knowledge-api.mjs';
 import { RuntimeSources, taskSource } from '../context/sources.mjs';
-import { notificationParts } from './notifications.mjs';
+import { notificationParts, notificationSupersession } from './notifications.mjs';
 import { workExecutor } from './work-executor.mjs';
 import { selectedConnection } from '../agent/model.mjs';
 import { modelConnection } from '../agent/connections.mjs';
@@ -276,7 +276,12 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       return task.workId === work.id ? services.works.execution(task).authorization?.source : undefined;
     };
     const deliverNotification = async (record, context = {}) => {
+      if (['delivered', 'superseded'].includes(record.status)) return record;
       const task = store.getTask(record.taskId), work = services.works.get(record.workId);
+      const supersededBy = notificationSupersession(record, work, store.listRecords('work-notifications'),
+        store.getRecord('work-observations', record.notificationId));
+      if (supersededBy) return store.putRecord('work-notifications', { ...record, status: 'superseded',
+        supersededBy, suppressedAt: at(), waiting: undefined, retryAt: undefined });
       if (record.resultKind === 'progress' && (['paused', 'cancelled', 'completed'].includes(work?.status) ||
         !work?.bindings?.some(binding => binding.operationId === record.operationId)))
         return store.putRecord('work-notifications', { ...record, status: 'superseded', suppressedAt: at() });
@@ -322,7 +327,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         if (published && !newAction) return { ...published, duplicate: true };
       }
       const id = `${work.id}:${input.notificationId}`, prior = store.getRecord('work-notifications', id);
-      if (prior?.status === 'delivered') return prior;
+      if (['delivered', 'superseded'].includes(prior?.status)) return prior;
       const targetWorkId = authorizedSource?.metadata?.sourceWorkId;
       if (typeof input.content !== 'string' || !input.content.trim()) throw failure(400, 'Notification requires publishable text');
       const source = authorizedSource;

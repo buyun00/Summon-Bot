@@ -44,6 +44,18 @@ export function workExecution(task = {}, store, visited = new Set()) {
     task.metadata?.executionEventId || task.metadata?.resumeEventId || task.metadata?.workEventId;
   let event = eventId && store.getRecord('work-events', eventId);
   if (event?.workId !== task.workId) event = null;
+  // A supervisor's direct send has a durable tool ID, rather than a dispatch
+  // event. Follow that exact tool's owning task; never use the latest work source.
+  const sent = !event && task.metadata?.sourceType === 'external' && eventId && store.getTool?.(eventId);
+  if (sent?.name === 'codex_send' && sent.workId === task.workId && sent.effect === 'external' &&
+    !sent.executionRejected && !sent.executionReused) {
+    const origin = store.getTask(sent.taskId);
+    if (origin?.workId === task.workId && origin.id !== task.id) {
+      const inherited = workExecution(origin, store, visited);
+      if (inherited.authorization?.source) return { ...inherited, executionEventId: eventId,
+        executionTaskId: origin.id, operationId: eventId, turnId: input?.turnId };
+    }
+  }
   const events = new Set();
   while (event && !events.has(event.id)) {
     events.add(event.id);
