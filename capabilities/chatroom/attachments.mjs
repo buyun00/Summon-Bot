@@ -36,7 +36,17 @@ export class AttachmentStore {
     if (bytes.length > MAX_ATTACHMENT_BYTES) fail('附件不能超过 20 MB', 413);
     const detected = rasterType(bytes);
     const declared = typeof input.mimeType === 'string' && /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i.test(input.mimeType) ? input.mimeType.toLowerCase() : 'application/octet-stream';
-    const id = randomUUID();
+    const id = origin?.publicationId || randomUUID();
+    this.directory(id);
+    if (origin?.publicationId) {
+      const previous = this.publication(id);
+      if (previous.status === 'published') {
+        const saved = previous.attachment.origin;
+        if (saved?.botId !== origin.botId || saved?.workId !== origin.workId || saved?.roomId !== origin.roomId)
+          fail('Publication identity belongs to another source', 409);
+        return previous.attachment;
+      }
+    }
     const extension = extname(input.name).toLowerCase();
     const openable = origin?.type === 'work-output' && ['.html','.htm','.txt','.md','.csv','.json'].includes(extension);
     const record = { id, name: input.name.trim(), mimeType: detected || declared, size: bytes.length,
@@ -59,6 +69,11 @@ export class AttachmentStore {
       if (record.id !== id || !statSync(join(directory, 'data')).isFile()) fail('附件不存在', 404);
       return record;
     } catch (error) { if (error.status) throw error; fail('附件不存在，请重新选择文件', 404); }
+  }
+
+  publication(id) {
+    try { return { status: 'published', attachment: this.get(id) }; }
+    catch (error) { if (error.status !== 404) throw error; return { status: 'unconfirmed', publicationId: id }; }
   }
 
   resolve(input) {

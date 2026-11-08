@@ -1,3 +1,4 @@
+import { factTime } from './fact-time.mjs';
 // Work lifecycle, local transport and an observed external turn are separate.
 export function waitingLabel(work) {
   if (!work) return '工作已保留';
@@ -39,5 +40,6 @@ export function externalExecution(work, operationId) {
     receiptRecordedAt: receipt?.recordedAt || null, currentOperation, currentOperationId: owning?.operationId || null,
     executorAcknowledged: null, requirementAdopted: null, startedConfirmed: matching,
     status: matching ? observation.status : 'unconfirmed', observation: observation || null,
+    facts: factTime({ receiptAt: receipt?.recordedAt, attemptedAt: receipt?.attemptedAt, turnObservedAt: observation?.observedAt }),
     instruction: 'Use this exact operation and its recorded time. An older local not-submitted snapshot cannot negate a later external received receipt. Received confirms transport only. A matching active turn confirms that turn is running, never that a new requirement was read, adopted or completed. Cite new executor items/tools for those claims, preserving item IDs and original times. A directory scope is not native registration.' };
 }

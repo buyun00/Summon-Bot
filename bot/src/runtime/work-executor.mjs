@@ -84,7 +84,9 @@ export function workExecutor({ store, services, emit }) {
           latestAcceptedStep: workInput(currentStep?.content),
           workState: { goal: work.goal, requirements: work.requirements, project: work.project, target: work.executor?.target,
             status: work.status, waiting: work.waiting, progress: work.progress, checkpoint: work.checkpoint },
-          instruction: 'Review this real external observation in the original work. Compare against the saved accepted step and latest requirements. The executor is already bound; do not start it again.' } };
+          instruction: 'Review this real external observation in the original work. Compare against the saved accepted step and latest requirements. The executor is already bound; do not start it again.' +
+            (task.metadata?.finalizationOnly ? ' This is recovery of an already ended execution. Reconcile actual state and remaining boundaries only; do not reopen production, correct files or resubmit executor work.' : '') } };
+      reviewTask.metadata.externalReview.finalizationOnly = task.metadata?.finalizationOnly === true;
       try {
         assertExternalReviewCurrent(reviewTask, store);
         const result = await services.reviewExternal(reviewTask, options);
@@ -93,6 +95,10 @@ export function workExecutor({ store, services, emit }) {
         // the assessment says PASS with an explanation or says not to publish.
         store.putRecord('external-reviews', { id: task.id, workId: work.id, observationId: content.operationId,
           status: 'reviewed', assessment: result.content?.trim() || '', recordedAt: at() });
+        if (task.metadata?.reviewRecovery) {
+          const original = store.getRecord('external-reviews', task.metadata.reviewRecovery);
+          if (original) store.putRecord('external-reviews', { ...original, resolvedBy: task.id, resolvedAt: at() });
+        }
         return { reviewed: true, reviewTaskId: task.id };
       } catch (error) {
         store.putRecord('external-reviews', { id: task.id, workId: work.id, observationId: content.operationId, status: 'unconfirmed', error: error.message, recordedAt: at() });
@@ -106,6 +112,8 @@ export function workExecutor({ store, services, emit }) {
       if (!binding || content.source !== 'codex-desktop-connector' || (content.externalThreadId && binding.externalThreadId !== content.externalThreadId))
         throw new Error('External result does not match this work binding');
       const eventId = `external:${task.metadata?.observationMessageId || task.messageId}`;
+      if (task.metadata?.reviewRecovery) return { content: '', observed: true,
+        ...await this.review(task, binding, content, false, options), suspended: true, waiting: 'review' };
       const operation = content.operationId && store.getRecord('work-events', content.operationId);
       const superseded = Boolean(content.operationId && binding.operationId !== content.operationId);
       const knownOperation = operation?.workId === work.id && operation.transport;

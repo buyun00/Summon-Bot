@@ -267,7 +267,7 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
           if (['EACCES', 'EPERM'].includes(error.code)) error = fileAccessDenied(resolve(workspaceRoot, args?.path || args?.cwd || '.'), 'os_permission_denied');
           const safe = new Error(sanitize(error.message || String(error)));
           safe.name = error.name || 'Error';
-          for (const key of ['code', 'status', 'accessDenial']) if (error[key] !== undefined) safe[key] = sanitizeResult(error[key]);
+          for (const key of ['code', 'status', 'accessDenial', 'outcomeUnknown']) if (error[key] !== undefined) safe[key] = sanitizeResult(error[key]);
           throw safe;
         }
       },
@@ -287,7 +287,10 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
         const after = await handle.stat();
         if (before.size !== bytes.length || after.size !== before.size || after.mtimeMs !== before.mtimeMs || await realpath(path) !== path)
           throw new Error('File changed while preparing publication; finish writing it before publishing');
-        return publishFile({name:basename(args.name || path),mimeType:args.mimeType,data:bytes.toString('base64')});
+        // Await before closing the handle: a quick rejection must stay inside
+        // this try/catch rather than become unhandled during async close().
+        return await publishFile({name:basename(args.name || path),mimeType:args.mimeType,data:bytes.toString('base64')},
+          {path,size:before.size,mtimeMs:before.mtimeMs,ctimeMs:before.ctimeMs});
       } finally { await handle.close(); }
     }, true),
     tool('list_files', 'List allowed files and directories. Dependency directories are shown without their contents; protected paths are omitted. An omitted entry is not proof of absence. Relative paths start in your workspace.', objectSchema({ path: stringSchema('Directory; defaults to workspace'), recursive: { type: 'boolean' }, maxEntries: integerSchema('Maximum entries, default 200', 1, 500), maxDepth: integerSchema('Recursion depth, default 4', 0, 12) }), async (args, signal) => {

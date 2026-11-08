@@ -1,6 +1,7 @@
 import { jsonToolResult } from './registry.mjs';
 import { taskMode, compactWork, compactTask, assertExternalReviewCurrent } from './task-policy.mjs';
 import { randomUUID } from 'node:crypto';
+import { factTime } from '../context/fact-time.mjs';
 import { taskSource } from '../context/sources.mjs';
 import { modelArgs, modelText, looseSchema, boundedNumber } from '../context/model-input.mjs';
 import { resolveCodexTarget } from './codex-target.mjs';
@@ -48,17 +49,38 @@ export function coreTools(services, task) {
   const actionId = (args, ctx, field) => ctx.recordId || `${task.id}:${ctx.toolCallId}`;
   return [
     tool('request_decide', 'Classify the CURRENT authenticated user request by meaning and conversation stage before acting. produce/revise means actual new or changed content; status means inspect progress; deliver means return EXISTING output; control includes pause/stop/cancel. Control takes priority over mentioned artifacts. Never infer production from document keywords, quoted past requests or a request to deliver an existing draft. This saved model decision is not extra authorization. Use document-review for formal requirements/design/review documents, implementation for code, other for other execution.',
-      object({ intent: { type: 'string', enum: requestIntents }, productionStage: { type: 'string', enum: productionStages }, reason: string }, ['intent', 'reason']), 'write', async args => {
+      object({ intent: { type: 'string', enum: requestIntents }, productionStage: { type: 'string', enum: productionStages },
+        workRelation: { type: 'string', enum: ['new', 'continue'] }, workId: string, reason: string }, ['intent', 'reason']), 'write', async args => {
         if (!frontend || !userRequest) throw new Error('Request decisions belong to the current authenticated frontend user request.');
         if (!requestIntents.includes(args.intent)) throw new Error('Choose a supported request intent.');
         if (['produce', 'revise'].includes(args.intent) && !productionStages.includes(args.productionStage)) throw new Error('Production requires its actual stage.');
+        const production = ['produce', 'revise'].includes(args.intent);
+        if (production && !['new', 'continue'].includes(args.workRelation)) throw new Error('Decide whether this is an independent new task or a continuation of an existing deliverable. Use workRelation=new or continue; continue also needs its canonical workId.');
+        if (production && args.workRelation === 'continue') await services.sources.requireWork(args.workId, task);
         return store.putRecord('request-routing', { id: task.id, messageId: source.replyTo || source.messageId,
-          intent: args.intent, productionStage: ['produce', 'revise'].includes(args.intent) ? args.productionStage : null,
+          intent: args.intent, productionStage: production ? args.productionStage : null,
+          workRelation: production ? args.workRelation : null, workId: production && args.workRelation === 'continue' ? args.workId : null,
           reason: modelText(args.reason), authority: 'model-routing-decision' });
       }),
     tool('evidence_read', 'Read a bounded original fragment by exact reference. Workers may follow only handed-off references, never browse another room/session feed. Current source access is rechecked.',
       object({ reference }, ['reference']), 'read', args => services.sources.resolve(services.sources.reference(args.reference ?? args, task), task)),
     tool('executors_status', 'Read the current default work engine and saved host executor consent. Authorized onboarding Pi work can connect with workspace_setup. Execution runs as independent work.', object({}), 'read', () => services.executors()),
+    tool('runtime_status', 'Read the current source room/work snapshot. Local tasks, external turn status, pending connector events and S3 waits are separate. Unknown connector state never counts as zero.', object({}), 'read', async () => {
+      const rooms = await services.sources.rooms(task), works = [];
+      for (const work of services.works.list({ limit: 500 })) if (await services.sources.canReadWork(work, task, rooms)) works.push(work);
+      const ids = new Set(works.map(work => work.id));
+      const local = store.listTasks({ limit: 10000 }).filter(item => ids.has(item.workId) || !item.workId && taskSource(item, store).roomId === source.roomId);
+      const connectors = [];
+      for (const work of works.filter(item => item.bindings?.some(binding => binding.type === 'codex-desktop'))) {
+        try { const state = await services.capability('codex_status', { workId: work.id }, task);
+          connectors.push({ workId: work.id, status: state.status, turnId: state.turnId, eventDelivery: state.eventDelivery }); }
+        catch (error) { connectors.push({ workId: work.id, unavailable: error.message, eventDelivery: null }); }
+      }
+      return { scope: { roomId: source.roomId, workIds: [...ids], global: false }, facts: factTime(),
+        localTasks: Object.fromEntries(['accepted', 'queued', 'running', 'waiting'].map(status => [status, local.filter(item => item.status === status).length])),
+        works: works.map(work => ({ id: work.id, status: work.status, waiting: work.waiting, executionOutcome: work.executionOutcome,
+          execution: externalExecution(work), updatedAt: work.updatedAt })), connectors };
+    }),
     tool('request_actions', 'Read saved action receipts for an original message in this conversation (messageId defaults to the current trigger). Use this when older published user instructions lack a visible reply: history is not permission to repeat them. Returns saved action identity/status without replaying anything.',
       object({ messageId: string }), 'read', args => {
         const messageId = args.messageId || source.replyTo || source.messageId;
@@ -82,7 +104,14 @@ export function coreTools(services, task) {
     tool('work_get', 'Read owning work, operation and actual binding by full ID. A UUID prefix resolves only when exactly one actually accessible work matches; use the returned canonicalId in later actions. An unresolved/ambiguous/not-accessible lookup is not evidence that an established work or binding disappeared. Use works_list or a known full reference. Local active/submitting is not external start; only a matching non-stale execution.startedConfirmed proves the turn ran.', object({ id: string }, ['id']), 'read', async args => {
       const id = args.id ?? args.workId ?? task.workId ?? source.metadata?.referencedWorkId ?? source.input?.trigger?.replyWorkId;
       const result = await services.sources.lookupWork(id, task);
-      return result.work ? { ...workView(result.work), lookup: result.lookup } : { unresolved: true, lookup: result.lookup };
+      if (!result.work) return { unresolved: true, lookup: result.lookup };
+      let connector;
+      if (result.work.bindings?.some(binding => binding.type === 'codex-desktop')) {
+        try { const state = await services.capability('codex_status', { workId: result.work.id }, task); connector = {
+          status: state.status, turnId: state.turnId, observedAt: state.observedAt, eventDelivery: state.eventDelivery }; }
+        catch (error) { connector = { unavailable: error.message, eventDelivery: null }; }
+      }
+      return { ...workView(result.work), lookup: result.lookup, ...(connector ? { connector } : {}) };
     }),
     tool('work_create', 'Accept and asynchronously dispatch independent work. The receipt confirms local scheduling only, not Pi/Codex execution, native registration or completion. Omit executor for the default engine. Give goal, evidence, handoff prose and an authorized target; the program supplies operation IDs and refreshes current project rules. Do not repeat or wait on this frontend call to strengthen the acknowledgment.',
       object({ id: string, operationId: string, goal: string, requirements: string, responsibility: string, ...handoffFields,
@@ -98,6 +127,7 @@ export function coreTools(services, task) {
         const suppliedExecutor = typeof args.executor === 'string' ? { kind: args.executor } : modelArgs(args.executor);
         const selectedTarget = suppliedExecutor.target || args.target || (args.cwd ? { type: 'directory', cwd: args.cwd } : args.projectId ? { type: 'project', projectId: args.projectId } : null);
         const decision = productionDecision(task, store);
+        if (decision?.workRelation === 'continue') throw new Error(`Continue the existing deliverable with work_dispatch workId=${decision.workId}; this request does not authorize another work.`);
         const documentOnly = decision?.productionStage === 'document-review';
         const kind = documentOnly ? 'codex' : modelText(suppliedExecutor.kind || suppliedExecutor.type || (selectedTarget ? 'codex' : '')).toLowerCase();
         if (documentOnly) content.stage = { kind: 'document-review', instruction: 'Produce or revise the formal review document with Codex. No implementation, testing or resumption of paused code is authorized by this step.' };
@@ -155,9 +185,11 @@ export function coreTools(services, task) {
         const work = await services.sources.requireWork(workId(args), task);
         if (['paused', 'cancelled'].includes(work.status) && !userRequest) throw new Error('这项工作已停止；当前事件不包含用户新的继续要求。其他动作可以继续。');
         const decision = productionDecision(task, store);
+        if (decision?.workRelation === 'new') throw new Error('This is an independent new task. Use work_create and the applicable saved project rules; do not reuse the old work merely because it shares the project or materials.');
+        if (decision?.workId && decision.workId !== work.id) throw new Error('Dispatch must use the canonical continuation work selected for this request.');
         const documentOnly = decision?.productionStage === 'document-review';
-        if (documentOnly && (work.productionStage !== 'document-review' || services.works.executor(work).kind !== 'codex'))
-          throw new Error('正式文档须委派独立 Codex 文档工作；保留原实现工作暂停，不用文档请求恢复代码。');
+        if (documentOnly && services.works.executor(work).kind !== 'codex')
+          throw new Error('正式文档修订需要 Codex 执行器。选择已有的对应 Codex 工作；没有时明确登记独立新文档工作。');
         const content = await services.sources.handoff(task, args);
         if (documentOnly) content.stage = { kind: 'document-review', instruction: 'Revise the formal document only. Keep implementation paused.' };
         try { content.projectKnowledge = await services.memory.forProject(task, services.sources.project(work)); }

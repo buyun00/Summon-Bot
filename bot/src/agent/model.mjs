@@ -2,9 +2,11 @@ import { modelConnection, connectionModel, readConnectionCatalog } from './conne
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 export function selectedConnection(config, { work, fast = false } = {}) {
-  const id = work?.executor?.connectionId;
-  if (id) return { ...modelConnection(config.model, id), ...(work.executor.modelId ? { model: work.executor.modelId } : {}),
-    ...(work.executor.thinkingLevel ? { thinkingLevel: work.executor.thinkingLevel } : {}) };
+  const selection = work?.supervisor;
+  const id = selection?.connectionId;
+  if (work && !id) throw new Error('This work has no saved supervisor chat model; record the actual model selection before reviewing it.');
+  if (id) return { ...modelConnection(config.model, id), ...(selection.modelId ? { model: selection.modelId } : {}),
+    ...(selection.thinkingLevel ? { thinkingLevel: selection.thinkingLevel } : {}) };
   if (fast && config.model.connectionStore) {
     const catalog = readConnectionCatalog(config.model.connectionStore);
     let saved = {}, environment = '';

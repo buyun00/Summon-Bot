@@ -155,6 +155,7 @@ export async function startCapabilityService(options) {
       json(res, 404, { error: 'Not found', code: 'NOT_FOUND' });
     } catch (error) {
       json(res, Number.isInteger(error.status) ? error.status : 500, { error: error.message || 'Capability request failed', code: error.code || 'CAPABILITY_ERROR',
+        ...(error.outcomeUnknown ? { outcomeUnknown: true } : {}),
         ...(error.accessDenial ? { accessDenial: error.accessDenial } : {}) });
     }
   });

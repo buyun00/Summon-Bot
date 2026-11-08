@@ -189,8 +189,12 @@ export class ChatroomService {
           this.enqueue(this.need('messages',item.messageId),recipient.id,{workId:null,referencedWorkId:workId,routedBy:item.botId,routeReason:String(parsed.reason||text).slice(0,1000)});
         }else if(!task.workId){
           try{const parsed=JSON.parse(text);if(typeof parsed.reply==='string'){text=parsed.reply;passed=parsed.pass||!text;}}catch{}
-          if(this.messages(item.roomId).some(message=>message.senderId===item.botId&&message.replyTo===item.messageId&&!message.jobId))passed=true;
-          if(text&&!passed){const reply=this.append(item.roomId,{id:`reply:${item.id}`,content:text.slice(0,16000),replyTo:item.messageId,rootId:item.rootId,hop:item.hop+1,jobId:item.id,workId:item.workId,usage:task.result?.usage,model:task.result?.model},item.botId);if(!task.result?.handoff)this.returnReply(reply);}
+          const alreadyReplied=this.messages(item.roomId).some(message=>message.senderId===item.botId&&message.replyTo===item.messageId&&!message.jobId);
+          if(alreadyReplied)passed=true;
+          const attachments=this.attachments.resolve(task.result?.attachments);
+          if(attachments.length&&!alreadyReplied){passed=false;if(/^PASS(?:\s*$|\s*\n)/i.test(text))text='';}
+          for(const attachment of attachments)if(attachment.origin?.type!=='work-output'||attachment.origin.botId!==item.botId||attachment.origin.roomId!==item.roomId)fail('Reply attachment is outside this authenticated Bot/room',403);
+          if((text||attachments.length)&&!passed){const reply=this.append(item.roomId,{id:`reply:${item.id}`,content:text.slice(0,16000),attachments,replyTo:item.messageId,rootId:item.rootId,hop:item.hop+1,jobId:item.id,workId:item.workId,usage:task.result?.usage,model:task.result?.model},item.botId);if(!task.result?.handoff)this.returnReply(reply);}
         }
       }else {
         const reply=this.append(item.roomId,{id:`error:${item.id}`,content:`任务${status}：${task.error?.message||task.error||'执行未完成'}`,kind:'error',jobId:item.id,replyTo:item.messageId,workId:item.workId},'system');

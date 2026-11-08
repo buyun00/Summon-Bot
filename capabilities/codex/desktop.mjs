@@ -12,6 +12,21 @@ const terminal = new Set(['completed', 'failed', 'interrupted', 'cancelled']);
 const active = work => work.backend === 'desktop' && !terminal.has(work.status);
 const requireText = (value, name) => { if (typeof value !== 'string' || !value.trim()) fail(`${name} is required`); return value; };
 const errorView = error => ({ code: error.code || 'CONNECTOR_UNAVAILABLE', message: error.code ? error.message : 'Codex Desktop connector did not return a confirmed response.' });
+const deliveryErrorView = error => ({ code: error.code || 'EVENT_DELIVERY_FAILED', status: error.status || null,
+  message: String(error.message || 'Event delivery was not confirmed').slice(0, 700) });
+const stateHeader = state => state && ({ threadId: state.threadId, status: state.status, stale: state.stale,
+  observedAt: state.observedAt, currentTurn: state.currentTurn && { id: state.currentTurn.id, status: state.currentTurn.status,
+    startedAt: state.currentTurn.startedAt, completedAt: state.currentTurn.completedAt, error: state.currentTurn.error },
+  pendingRequests: (state.pendingRequests || []).slice(0, 8) });
+// Raw snapshots/history stay in the connector store. The event is a bounded
+// observation with exact pointers, not another copy of every tool output.
+export function deliveryContent(event) {
+  const { state, history, final, ...content } = event.content;
+  return { ...content, state: stateHeader(state), ...(final ? { final: { ...final, text: String(final.text || '').slice(0, 24000),
+    truncated: final.truncated || String(final.text || '').length > 24000 } } : {}),
+    evidence: { eventId: event.id, workBindingId: event.workId, observedAt: content.observedAt || state?.observedAt,
+      rawStored: true, historyAvailable: Boolean(history && !history.unavailable) } };
+}
 const rejected = error => error.result?.error?.details?.outcome !== 'unknown' &&
   !['operation_uncertain', 'idempotency_conflict'].includes(error.code) && Boolean(error.code) &&
   (error.status >= 400 && error.status < 500 && error.status !== 408 ||
@@ -46,7 +61,14 @@ export class DesktopCodex {
   require(id) { const work = this.store.get('works', id); if (!work) fail('External work binding not found', 404); return work; }
   get(id) {
     const work = this.require(id), operations = this.store.list('desktopOperations').filter(item => item.workId === id);
-    return { ...work, operationCount: operations.length, operations: operations.slice(-20).map(({ body, previousExecution, ...operation }) => operation), events: this.store.list('workEvents').filter(item => item.workId === id).slice(-10) };
+    const events = this.store.list('workEvents').filter(item => item.workId === id);
+    const { snapshot, result, ...record } = work;
+    return { ...record, snapshot: stateHeader(snapshot), result: result && { state: stateHeader(result.state), final: result.final },
+      operationCount: operations.length, operations: operations.slice(-20).map(({ body, previousExecution, ...operation }) => operation),
+      eventDelivery: { observedAt: now(), pending: events.filter(item => item.status === 'pending').length,
+        preparing: events.filter(item => item.status === 'preparing').length, delivered: events.filter(item => item.status === 'delivered').length,
+        lastError: events.findLast(item => item.status !== 'delivered' && item.deliveryError)?.deliveryError || null },
+      events: events.slice(-10).map(event => ({ ...event, content: deliveryContent(event) })) };
   }
   assertScope(actor, workId, scope) {
     if (actor !== 'controller' && (scope?.botId !== actor || !scope.workIds?.includes(workId)))
@@ -482,14 +504,16 @@ export class DesktopCodex {
           const work = this.require(event.workId);
           const owner = this.manager.get(work.botId);
           if (owner.status !== 'active' || owner.runIntent === 'stopped') continue;
-          const receipt = await this.manager.send(work.botId, { id: event.id, kind: 'event', workId: work.workId, conversationId: work.conversationId, sessionId: work.conversationId, metadata: { sourceType: 'external', externalBindingId: work.id, authority: 'external-result' }, content: event.content });
+          const receipt = await this.manager.send(work.botId, { id: event.id, kind: 'event', workId: work.workId, conversationId: work.conversationId, sessionId: work.conversationId,
+            metadata: { sourceType: 'external', externalBindingId: work.id, authority: 'external-result',
+              finalizationOnly: terminal.has(event.content.status) && Date.parse(event.createdAt) < Date.parse(this.startedAt) }, content: deliveryContent(event) });
           this.store.save('workEvents', { id: event.id, status: 'delivered', receipt, deliveredAt: now() });
-        } catch (error) { this.store.save('workEvents', { id: event.id, deliveryError: errorView(error) }); }
+        } catch (error) { this.store.save('workEvents', { id: event.id, deliveryError: deliveryErrorView(error) }); }
       }
     } finally { this.ticking = false; }
   }
   async start() {
-    if (!this.closed) return; this.closed = false;
+    if (!this.closed) return; this.closed = false; this.startedAt = now();
     const tick = () => { if (!this.ticking && !this.closed) this.tickPromise = this.tick().catch(error => this.emit('codex.connector.error', errorView(error))); };
     this.timer = setInterval(tick, 15000); this.timer.unref(); tick();
   }

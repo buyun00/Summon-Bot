@@ -520,7 +520,19 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
     // Resume the same accepted event if shutdown interrupted that processing.
     for (const task of store.listTasks({ status: 'interrupted', limit: 10000 })) if (task.metadata?.sourceType === 'external')
       accept({ id: `recover:external:${task.id}`, to: config.botId, kind: 'event', workId: task.workId, content: task.input,
-        metadata: { ...task.metadata, observationMessageId: task.metadata.observationMessageId || task.messageId } }, 'controller');
+        metadata: { ...task.metadata, finalizationOnly: true, observationMessageId: task.metadata.observationMessageId || task.messageId } }, 'controller');
+    // Retry only a real final observation whose supervisor failed. This lane
+    // may reconcile S3/notify; it cannot submit another product execution.
+    for (const work of services.works.list({ status: 'waiting', limit: 500 }).filter(work => work.waiting?.kind === 'review')) {
+      const failed = store.listRecords('external-reviews').findLast(review => review.workId === work.id && review.status === 'unconfirmed' && !review.resolvedBy);
+      const original = failed && store.getTask(failed.id);
+      if (!original?.input?.final?.confirmed || original.input.status !== 'completed') continue;
+      const binding = work.bindings?.find(item => item.id === original.metadata?.externalBindingId);
+      if (binding?.operationId !== original.input.operationId || binding.turnId !== original.input.turnId || binding.status !== 'completed') continue;
+      accept({ id: `recover:review:${original.id}`, to: config.botId, kind: 'event', workId: work.id, content: original.input,
+        metadata: { ...original.metadata, reviewRecovery: failed.id, finalizationOnly: true,
+          observationMessageId: original.metadata.observationMessageId || original.messageId } }, 'controller');
+    }
     for (const work of services.works.list({ status: 'active', limit: 500 })) {
       const last = work.lastTaskId && store.getTask(work.lastTaskId);
       if (last?.status === 'interrupted' && last.metadata?.sourceType !== 'external') try {
