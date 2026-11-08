@@ -339,6 +339,7 @@ export class DesktopCodex {
       if (provenance.snapshot && work.progressFloor?.itemIds.includes(item.id)) continue;
       if (!item.id || text.length < 32 || work.deliveredProgress?.[`${turnId}:${item.id}`] === text || messages.get(item.id)?.text === text) continue;
       messages.set(item.id, { itemId: item.id, threadId: item.threadId, turnId: item.turnId, text, ...provenance,
+        evidenceKind: 'executor-commentary', completionConfirmed: false,
         occurredAt: item.occurredAt || null, observedAt: provenance.occurredAt || now(), firstObservedAt: item.firstObservedAt || null,
         requirementAdoptionConfirmed: false, truncated: Boolean(item.text?.truncated || raw.length > 6000) }); changed = true;
     }

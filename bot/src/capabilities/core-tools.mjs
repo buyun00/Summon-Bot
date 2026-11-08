@@ -21,6 +21,9 @@ const evidence = { type: 'array', maxItems: 20, items: reference,
   description: 'Selected exact references from source reads, e.g. [{type:"room",roomId:"...",messageId:"..."}]. Pass the array itself; a JSON array string is also readable. Prose is guidance, not a source grant.' };
 const handoffFields = { evidence, knowledgeScopes: { type: 'array', items: string }, instruction: string, acceptance: string };
 const preview = value => { const text = typeof value === 'string' ? value : JSON.stringify(value ?? null); return { text: text.slice(0, 1600), truncated: text.length > 1600 }; };
+const roomPublicationIds = (store, workId, operationId, roomId) => new Set(store.listRecords('work-notifications')
+  .filter(item => item.workId === workId && item.executionEventId === operationId && item.roomId === roomId && item.status === 'delivered')
+  .flatMap(item => (item.attachments || []).map(attachment => attachment.id)));
 function page(items, args, project) {
   const offset = boundedNumber(args.offset, 0), limit = boundedNumber(args.limit, 10, 1, 20);
   const values = [...items].reverse();
@@ -50,16 +53,29 @@ export function coreTools(services, task) {
   // keeps its saved tool record; another accepted source gets another record.
   const actionId = (args, ctx, field) => ctx.recordId || `${task.id}:${ctx.toolCallId}`;
   return [
-    tool('request_decide', 'Classify the CURRENT authenticated user request by meaning before acting. produce/revise means actual new or changed content; status means inspect progress; deliver means return EXISTING output; accept means the user explicitly accepts a finished scoped result, retaining stated limitations; control includes pause/stop/cancel. Inspect work_outputs for available files before treating a missing attachment as new production. New rendering, screenshots, conversions or revisions are production when not already available. Decide from the requested change, never from attachment/document keywords. This saved model decision is not extra authorization. Use document-review for formal documents, implementation for code, other for other execution.',
+    tool('request_decide', 'Classify the CURRENT authenticated user request by meaning before acting. produce/revise means actual new or changed content; status means inspect progress; deliver means return EXISTING output; accept means explicit scoped acceptance; control includes pause/stop/cancel. For explicit acceptance, select acceptances with each canonical workId and exact ended operationId from work_get. A request may accept a document AND request independent implementation: select produce, its production stage/relation, AND those acceptances; call work_accept for each BEFORE work_create/work_dispatch. Production alone never implies acceptance. For existing files call request_decide intent=deliver, work_outputs, then work_deliver with its replyDelivery IDs. New rendering/screenshots/revisions are production only when missing. Decide semantically from the authenticated source, never keywords. This decision grants no extra authority.',
       object({ intent: { type: 'string', enum: requestIntents }, productionStage: { type: 'string', enum: productionStages },
-        workRelation: { type: 'string', enum: ['new', 'continue'] }, workId: string, reason: string }, ['intent', 'reason']), 'write', async args => {
+        workRelation: { type: 'string', enum: ['new', 'continue'] }, workId: string,
+        acceptances: { type: 'array', maxItems: 8, items: object({ workId: string, operationId: string }, ['workId', 'operationId']),
+          description: 'Only results explicitly accepted by THIS user request; use exact canonical work and ended operation IDs. Complete these scoped acceptances before the production action.' }, reason: string }, ['intent', 'reason']), 'write', async args => {
         if (!frontend || !userRequest) throw new Error('Request decisions belong to the current authenticated frontend user request.');
         if (!requestIntents.includes(args.intent)) throw new Error('Choose a supported request intent.');
         if (['produce', 'revise'].includes(args.intent) && !productionStages.includes(args.productionStage)) throw new Error('Production requires its actual stage.');
         const production = ['produce', 'revise'].includes(args.intent);
         if (production && !['new', 'continue'].includes(args.workRelation)) throw new Error('Decide whether this is an independent new task or a continuation of an existing deliverable. Use workRelation=new or continue; continue also needs its canonical workId.');
         if (production && args.workRelation === 'continue') await services.sources.requireWork(args.workId, task);
+        const acceptances = args.acceptances ?? [];
+        if (!Array.isArray(acceptances) || acceptances.length > 8 || args.intent === 'accept' && !acceptances.length ||
+          acceptances.length && !['accept', 'produce', 'revise'].includes(args.intent))
+          throw new Error('Explicit acceptance requires exact work/operation targets; combine it only with accept or an independently authorized production/revision.');
+        for (const target of acceptances) {
+          const work = await services.sources.requireWork(target.workId, task);
+          if (!target.operationId || work.executionOutcome?.operationId !== target.operationId ||
+            externalExecution(work).operationId !== target.operationId)
+            throw new Error('Acceptance must select the exact current result operation from work_get; never infer it from another work or older result.');
+        }
         return store.putRecord('request-routing', { id: task.id, messageId: source.replyTo || source.messageId,
+          roomId: source.roomId, acceptances: acceptances.map(({ workId, operationId }) => ({ workId, operationId })),
           intent: args.intent, productionStage: production ? args.productionStage : null,
           workRelation: production ? args.workRelation : null, workId: production && args.workRelation === 'continue' ? args.workId : null,
           reason: modelText(args.reason), authority: 'model-routing-decision' });
@@ -115,21 +131,28 @@ export function coreTools(services, task) {
       }
       return { ...workView(result.work), lookup: result.lookup, ...(connector ? { connector } : {}) };
     }),
-    tool('work_outputs', 'Read an existing work’s exact operation output manifest and saved publication receipts. Does not run the worker, render files or publish. Use work_deliver for already published attachments; publish_file can publish an existing declared path. Missing or unconfirmed output is not permission to start production.',
+    tool('work_outputs', 'Read an exact operation manifest and publication receipts. artifacts contain FILE PATHS, never attachment IDs. replyDelivery gives only confirmed attachment IDs usable by work_deliver in THIS room. Select request_decide intent=deliver before work_deliver; read/publish an existing path only if never submitted, preserving uncertain receipts. Does not execute, render or publish. Missing/unconfirmed output alone never authorizes production.',
       object({ id: string, operationId: string }), 'read', async args => {
         const work = await services.sources.requireWork(workId(args), task);
         const operationId = args.operationId || work.waiting?.operationId || work.bindings?.findLast(item => item.type === 'codex-desktop')?.operationId;
         const operation = operationId && store.getRecord('work-events', operationId);
         if (!operation || operation.workId !== work.id) throw new Error('No matching output operation; read work_get for its exact identity.');
         const delivery = store.getRecord('executor-deliveries', operation.id);
+        const publishedIds = roomPublicationIds(store, work.id, operation.id, source.roomId);
+        const available = delivery?.status === 'published' ? (delivery.attachments || []).filter(item => publishedIds.has(item.id)) : [];
+        const ready = available.length > 0;
         let manifest, unavailable;
         try { manifest = await readExecutorManifest({ workspace: services.workspace, workId: work.id, operation }); }
         catch (error) { unavailable = error.code === 'ENOENT' ? 'No existing result manifest' : error.message; }
         return { workId: work.id, operationId: operation.id, delivery, artifacts: manifest?.artifacts || [], unavailable,
-          instruction: 'These are existing outputs and actual saved receipts, not a new execution or user acceptance. Reuse available attachments; only a genuinely new output/change needs production authorization.' };
+          replyDelivery: { ready, attachmentIds: available.map(item => item.id),
+            next: ready ? 'request_decide intent=deliver (unless already selected for this request), then work_deliver with id=workId, operationId and these attachmentIds'
+              : 'No confirmed operation publication in this room. Preserve any uncertain upload; do not guess attachment IDs or repeat production.' },
+          instruction: 'artifacts.path is an existing file path; delivery.id is an operation ID; only replyDelivery.attachmentIds are selectable attachment IDs. Published receipts are not user acceptance. A new render/screenshot/revision still needs real production.' };
       }),
-    tool('work_deliver', 'Select this exact operation’s already published attachments for the current frontend reply. Does not call the executor, render, rewrite or re-upload. The saved receipt means ready for this reply, not that the user has received or accepted it.',
-      object({ id: string, operationId: string, attachmentIds: { type: 'array', maxItems: 8, items: string } }), 'write', async args => {
+    tool('work_deliver', 'FIRST select request_decide intent=deliver for THIS request (produce/revise also allows returning its existing files). THEN read work_outputs and pass its workId as id, exact operationId, and only replyDelivery.attachmentIds; omit attachmentIds for all confirmed attachments. Manifest/file/message/operation IDs are not attachment IDs. Refuse unpublished or other-room receipts. Does not execute/render/re-upload. This selects files for the current reply, not user receipt or acceptance.',
+      object({ id: string, operationId: string, attachmentIds: { type: 'array', minItems: 1, maxItems: 8, items: string,
+        description: 'Only IDs from work_outputs.replyDelivery.attachmentIds for this exact operation and room. Omit to select all.' } }, ['id', 'operationId']), 'write', async args => {
         if (!frontend || !userRequest || !['deliver', 'produce', 'revise'].includes(store.getRecord('request-routing', task.id)?.intent))
           throw new Error('Select existing-output delivery with request_decide for this authenticated request first.');
         const work = await services.sources.requireWork(workId(args), task);
@@ -138,18 +161,26 @@ export function coreTools(services, task) {
         if (!operation || operation.workId !== work.id) throw new Error('Output operation does not belong to this work.');
         const delivery = store.getRecord('executor-deliveries', operation.id);
         if (delivery?.status !== 'published' || !delivery.attachments?.length) throw new Error('No confirmed published attachments for this operation; use work_outputs for existing paths and the actual delivery gap.');
-        if (!store.listRecords('work-notifications').some(item => item.workId === work.id && item.executionEventId === operation.id && item.roomId === source.roomId))
+        const publishedIds = roomPublicationIds(store, work.id, operation.id, source.roomId);
+        const available = delivery.attachments.filter(item => publishedIds.has(item.id));
+        if (!available.length)
           throw new Error('These saved attachments have no publication in this source room. Use work_outputs and publish_file for an authorized existing path in the current room.');
         const selected = args.attachmentIds;
-        if (selected && (!Array.isArray(selected) || selected.some(id => !delivery.attachments.some(item => item.id === id)))) throw new Error('Select only attachment IDs from this operation’s saved publication.');
-        return { workId: work.id, operationId, status: 'ready-for-current-reply', attachments: delivery.attachments.filter(item => !selected || selected.includes(item.id)) };
+        if (selected && (!Array.isArray(selected) || !selected.length || selected.some(id => !available.some(item => item.id === id)))) throw new Error('Select only nonempty attachment IDs from work_outputs.replyDelivery for this exact operation; file/manifest/message/operation IDs cannot be selected.');
+        return { workId: work.id, operationId, status: 'ready-for-current-reply', attachments: available.filter(item => !selected || selected.includes(item.id)) };
       }),
-    tool('work_accept', 'Record a current user’s explicit acceptance of an ended work within the stated scope. Preserve every unverified boundary in remainingBoundaries. Does not execute or reopen work, and cannot accept running, stopped or unknown results.',
-      object({ id: string, scope: string, remainingBoundaries: string }, ['scope', 'remainingBoundaries']), 'write', async args => {
-        if (!frontend || !userRequest || store.getRecord('request-routing', task.id)?.intent !== 'accept') throw new Error('Explicit current user acceptance must be selected with request_decide first.');
+    tool('work_accept', 'Record THIS user’s explicit scoped acceptance. FIRST select the exact workId/operationId in request_decide.acceptances, with intent=accept or a separately authorized produce/revise combination. THEN accept it before starting that next production. Copy the operationId from work_get.execution; preserve all unverified boundaries. Never accept running/stopped/unknown results or infer acceptance from a development request alone.',
+      object({ id: string, operationId: string, scope: string, remainingBoundaries: string }, ['id', 'operationId', 'scope', 'remainingBoundaries']), 'write', async args => {
+        const decision = store.getRecord('request-routing', task.id);
+        if (!frontend || !userRequest || !['accept', 'produce', 'revise'].includes(decision?.intent) ||
+          decision.messageId !== (source.replyTo || source.messageId) || decision.roomId !== source.roomId ||
+          !decision.acceptances?.some(item => item.workId === workId(args) && item.operationId === args.operationId))
+          throw new Error('Explicit current user acceptance of this exact work/operation must be selected in request_decide.acceptances first; production intent alone cannot accept a result.');
         const work = await services.sources.requireWork(workId(args), task);
         if (!modelText(args.scope).trim() || args.remainingBoundaries === undefined) throw new Error('Record the actual accepted scope and the remaining unverified boundaries.');
         const execution = externalExecution(work);
+        if (args.operationId !== execution.operationId || args.operationId !== work.executionOutcome?.operationId)
+          throw new Error('The selected acceptance no longer matches the current result operation; read work_get before acting.');
         const pending = store.listTasks({ limit: 10000 }).some(item => item.workId === work.id && ['accepted', 'queued', 'running'].includes(item.status));
         if (!['waiting', 'completed'].includes(work.status) || work.status === 'waiting' && work.waiting?.kind !== 'review' || pending ||
           work.executionOutcome?.kind !== 'execution-ended' || !work.executionOutcome.finalConfirmed || !execution.startedConfirmed || execution.status !== 'completed')

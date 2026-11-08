@@ -124,7 +124,8 @@ export function workExecutor({ store, services, emit }) {
       const superseded = Boolean(content.operationId && binding.operationId !== content.operationId);
       const knownOperation = operation?.workId === work.id && operation.transport;
       const progress = content.type === 'external_progress';
-      const late = stopped.has(work.status) || progress && work.status === 'completed' || superseded && !knownOperation ||
+      const late = stopped.has(work.status) || work.status === 'completed' && work.acceptance?.operationId && work.acceptance.operationId === content.operationId ||
+        progress && work.status === 'completed' || superseded && !knownOperation ||
         progress && (content.turnId !== binding.turnId || content.progress?.threadId !== binding.externalThreadId || content.progress?.turnId !== content.turnId);
       store.putRecord('work-observations', { id: eventId, workId: work.id, taskId: task.id, late, content, observedAt: at() });
       this.record(task, { kind: 'external_observation', author: 'codex', late, ...content });
@@ -143,7 +144,8 @@ export function workExecutor({ store, services, emit }) {
         const text = content.progress.items.map(item => item.text).filter(Boolean).join('\n\n');
         services.works.update(work.id, { progress: text.slice(-1200), checkpoint: { ...work.checkpoint,
           progress: text.slice(-6000), taskId: task.id, sessionId: task.sessionId, outcome: 'in-progress',
-          evidence: { observationId: eventId, threadId: binding.externalThreadId, turnId: content.turnId, operationId: content.operationId,
+          evidence: { kind: 'executor-commentary', completionConfirmed: false,
+            observationId: eventId, threadId: binding.externalThreadId, turnId: content.turnId, operationId: content.operationId,
             itemIds: content.progress.items.map(item => item.itemId) }, recordedAt: at() } });
         const review = await this.review(task, binding, content, true, options);
         return { content: '', observed: true, ...review, suspended: true, waiting: 'external', executor: 'codex' };
