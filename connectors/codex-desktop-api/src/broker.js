@@ -93,7 +93,8 @@ export class Broker extends EventEmitter {
       }
       slot.revision = change.revision; slot.observedAt = new Date().toISOString(); slot.stale = false;
       this.protocolVersion = message.version;
-      slot.normalized = normalizeState(slot.state, { revision: slot.revision, observedAt: slot.observedAt });
+      slot.itemOrigins ||= new Map();
+      slot.normalized = normalizeState(slot.state, { revision: slot.revision, observedAt: slot.observedAt, itemOrigins: slot.itemOrigins });
       const current = slot.normalized;
       if (!previous || change.type === 'snapshot') this.publish('thread.snapshot', current, conversationId, hostId);
       else {

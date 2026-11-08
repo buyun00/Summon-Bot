@@ -53,7 +53,7 @@ export function normalizeItem(item) {
   return result;
 }
 
-export function normalizeState(state, { revision, observedAt, connected = true } = {}) {
+export function normalizeState(state, { revision, observedAt, connected = true, itemOrigins = new Map() } = {}) {
   const turns = conversationTurns(state);
   const current = turns.findLast(turn => turn.status === 'inProgress') ?? turns.at(-1);
   const runtime = state.threadRuntimeStatus ?? { type: current?.status === 'inProgress' ? 'active' : 'unknown' };
@@ -61,7 +61,20 @@ export function normalizeState(state, { revision, observedAt, connected = true }
   let status = runtime.type;
   if (flags.some(flag => /approval|input/i.test(String(flag))) || state.requests?.length) status = 'waiting_for_input';
   if (!connected) status = 'unknown';
-  const items = (current?.items || []).map(normalizeItem).filter(Boolean);
+  // A native snapshot can contain old items in a resumed turn. First known
+  // turn ownership is immutable; snapshots never manufacture a new item time.
+  for (const turn of turns) for (const item of turn.items || []) {
+    if (!item?.id || itemOrigins.has(item.id)) continue;
+    const rawTime = item.createdAt ?? item.timestamp ?? item.startedAt;
+    const parsed = typeof rawTime === 'number' ? new Date(rawTime) : typeof rawTime === 'string' ? new Date(rawTime) : null;
+    itemOrigins.set(item.id, { threadId: state.id, turnId: item.turnId || turn.turnId || turn.id,
+      occurredAt: parsed && Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null, firstObservedAt: observedAt || null });
+  }
+  const currentId = current?.turnId ?? current?.id;
+  const items = (current?.items || []).map(item => {
+    const normalized = normalizeItem(item), origin = itemOrigins.get(item?.id);
+    return normalized && origin?.turnId === currentId ? { ...normalized, ...origin } : null;
+  }).filter(Boolean);
   return {
     threadId: state.id, hostId: state.hostId || 'local', title: state.title, cwd: state.cwd,
     status, runtimeStatus: runtime, observedAt, revision, source: 'desktop_ipc', stale: !connected,

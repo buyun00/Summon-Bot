@@ -68,10 +68,14 @@ export async function createCapability(options) {
     if(FILE_TOOLS.has(name)) {
       if(actor==='controller')fail('Filesystem tools require an explicit Bot identity');
       const config=await manager.config(actor),artifacts=[];
-      const definitions=createFileTools({workspace:config.workspace,projectRoot:defaultCwd,protectedRoot:dataRoot,accessPolicy:context.fileAccessPolicy,redact:createRedactor(config),containProcesses:context.workId?.startsWith('onboarding-')===true,tempRoot:join(manager.directory(actor),'tmp','capability-tools'),onArtifacts:items=>artifacts.push(...items),withExecution:(fn,toolSignal)=>lockFor(defaultCwd).withLock(`bot:${actor}`,fn,toolSignal),saveArtifact:async input=>(await manager.botApi()).saveArtifact(join(manager.directory(actor),'artifacts'),input),
+      const definitions=createFileTools({workspace:config.workspace,projectRoot:config.workspace,protectedRoot:dataRoot,accessPolicy:context.fileAccessPolicy,redact:createRedactor(config),containProcesses:context.workId?.startsWith('onboarding-')===true,tempRoot:join(manager.directory(actor),'tmp','capability-tools'),onArtifacts:items=>artifacts.push(...items),withExecution:(fn,toolSignal)=>lockFor(defaultCwd).withLock(`bot:${actor}`,fn,toolSignal),saveArtifact:async input=>(await manager.botApi()).saveArtifact(join(manager.directory(actor),'artifacts'),input),
         publishFile:async input=>{
-          if(context.mode!=='work'||!context.workId||!context.taskId)fail('File publication belongs to an authorized work',403);
-          const work=await manager.readState(actor,db=>db?.getRecord('works',context.workId));
+          const workId=context.workId||(context.mode==='chat'?args.workId:null);
+          if(!workId||!context.taskId)fail('File publication requires an authorized work ID',403);
+          const work=await manager.readState(actor,db=>{
+            if(context.mode==='chat'&&db?.getRecord('request-routing',context.taskId)?.intent!=='deliver')fail('Frontend publication requires an existing-output delivery decision',403);
+            return db?.getRecord('works',workId);
+          });
           const source=work?.sources?.find(item=>item.roomId===context.source?.roomId);
           if(!work||!source?.roomId)fail('The original work room is unavailable; file retained',403);
           return remote('chatroom','publishFile',[input,{type:'work-output',botId:actor,workId:work.id,taskId:context.taskId,roomId:source.roomId,sourceMessageId:source.replyTo}]);

@@ -22,7 +22,8 @@ const progressText = item => ['agentMessage', 'assistantMessage', 'assistant'].i
 function finalReply(state, threadId, turnId, history) {
   if (!turnId || state?.stale || state?.threadId !== threadId || state?.currentTurn?.id !== turnId) return null;
   const turn = history?.turns?.find(turn => (turn.turnId || turn.id) === turnId);
-  const items = [...(state.items || []), ...(turn?.items || [])];
+  const items = [...(state.items || []).filter(item => item.turnId === turnId && item.threadId === threadId),
+    ...(turn?.items || []).filter(item => !item.turnId || item.turnId === turnId)];
   const replies = items.filter(item => ['agentMessage', 'assistantMessage', 'assistant'].includes(item.type) || item.role === 'assistant');
   const item = replies.findLast(item => ['final', 'final_answer'].includes(item.phase || item.channel)) ||
     (terminal.has(turnStatus(state)) || turnStatus(state) === 'waiting_for_input' ? replies.at(-1) : null);
@@ -128,7 +129,8 @@ export class DesktopCodex {
   }
   async syncOwner(work) {
     const current = await this.ownerWork(work.botId, work.workId);
-    const binding = { id: work.id, type: 'codex-desktop', operationId: work.operationId, operationKey: work.operationKey, externalThreadId: work.externalThreadId || null, pendingClientThreadId: work.pendingClientThreadId || null, hostId: work.hostId || 'local', turnId: work.turnId || null, previousTurnId: work.previousTurnId || null, status: work.status, observedAt: work.observedAt || null,
+    const binding = { id: work.id, type: 'codex-desktop', operationId: work.operationId, operationKey: work.operationKey,
+      executionOperationId: work.executionOperationId || null, externalThreadId: work.externalThreadId || null, pendingClientThreadId: work.pendingClientThreadId || null, hostId: work.hostId || 'local', turnId: work.turnId || null, previousTurnId: work.previousTurnId || null, status: work.status, observedAt: work.observedAt || null,
       observation: work.executionObservation || null,
       operations: this.store.list('desktopOperations').filter(item => item.workId === work.id).slice(-30).map(item => ({
         operationId: item.operationId, operationKey: item.operationKey, action: item.action, status: item.status,
@@ -190,8 +192,11 @@ export class DesktopCodex {
       if (state.stale || !state.currentTurn?.id) fail('Current turn is not confirmed; query before sending', 409);
       await this.observe(id, state);
       const oldItems = [...(state.items || []), ...(work.snapshot?.items || [])];
+      const inFlight = state.currentTurn.status === 'inProgress';
       return this.mutate(id, 'send', operationId, `/v1/threads/${encodeURIComponent(work.externalThreadId)}/messages`, { message, hostId: work.hostId },
-        { previousTurnId: state.currentTurn.id, allowPreviousTurn: state.currentTurn.status === 'inProgress', turnId: null, result: null, finishedAt: null, pendingProgress: null,
+        { previousTurnId: state.currentTurn.id, allowPreviousTurn: inFlight, turnId: inFlight ? state.currentTurn.id : null,
+          executionOperationId: inFlight ? work.executionOperationId || work.operationId : null,
+          result: null, finishedAt: null, pendingProgress: inFlight ? this.require(id).pendingProgress : null,
           progressFloor: { turnId: state.currentTurn.id, itemIds: [...new Set(oldItems.map(item => item.id).filter(Boolean))],
             eventCursor: work.eventCursor || null, acceptedAfter: now() } });
     });
@@ -224,7 +229,7 @@ export class DesktopCodex {
     if (action === 'create' && this.store.list('desktopOperations').some(item => item.workId === id && item.action === 'create' && item.status !== 'failed')) fail('This work already has a create attempt; inspect or explicitly attach its actual thread instead of creating again', 409);
     const operation = this.store.transaction(() => {
       const operation = this.store.save('desktopOperations', { id: `${work.botId}:${id}:${operationId}`, workId: id, action, operationId, operationKey: randomUUID(), path, body, status: 'unknown', attemptedAt: null,
-        previousExecution: action === 'send' ? Object.fromEntries(['operationId','operationKey','turnId','previousTurnId','allowPreviousTurn','status','executionObservation','observationSignature','result','finishedAt','progressFloor'].map(key => [key,work[key]??null])) : null });
+        previousExecution: action === 'send' ? Object.fromEntries(['operationId','operationKey','executionOperationId','turnId','previousTurnId','allowPreviousTurn','status','executionObservation','observationSignature','result','finishedAt','progressFloor','pendingProgress'].map(key => [key,work[key]??null])) : null });
       this.save({ id, ...patch, operationId, operationKey: operation.operationKey, executionObservation: null,
         status: action === 'interrupt' ? 'interrupt_requested' : 'submitting' });
       return operation;
@@ -306,12 +311,13 @@ export class DesktopCodex {
       const raw = progressText(item), text = raw.slice(-6000);
       // An append in the same active turn cannot adopt commentary which
       // already existed when that append was submitted, even after a replay.
-      if (work.progressFloor?.turnId === turnId && work.progressFloor.itemIds.includes(item.id)) continue;
-      if (work.progressFloor?.turnId === turnId && provenance.snapshot) continue;
-      if (provenance.eventId && provenance.eventId <= (work.progressFloor?.eventCursor || 0)) continue;
-      if (provenance.occurredAt && Date.parse(provenance.occurredAt) <= Date.parse(work.progressFloor?.acceptedAfter || 0)) continue;
+      if (item.turnId !== turnId || item.threadId !== work.externalThreadId) continue;
+      // Snapshots may restore a known item, but never make it new evidence for
+      // an append. Source time/turn and first observation survive unchanged.
+      if (provenance.snapshot && work.progressFloor?.itemIds.includes(item.id)) continue;
       if (!item.id || text.length < 32 || work.deliveredProgress?.[`${turnId}:${item.id}`] === text || messages.get(item.id)?.text === text) continue;
-      messages.set(item.id, { itemId: item.id, text, ...provenance, firstObservedAt: provenance.occurredAt || now(),
+      messages.set(item.id, { itemId: item.id, threadId: item.threadId, turnId: item.turnId, text, ...provenance,
+        occurredAt: item.occurredAt || null, observedAt: provenance.occurredAt || now(), firstObservedAt: item.firstObservedAt || null,
         requirementAdoptionConfirmed: false, truncated: Boolean(item.text?.truncated || raw.length > 6000) }); changed = true;
     }
     if (changed) this.save({ id, pendingProgress: { operationId: work.operationId, turnId, items: [...messages.values()].slice(-4), changedAt: now() } });
@@ -320,7 +326,7 @@ export class DesktopCodex {
     const work = this.require(id), pending = work.pendingProgress;
     if (!pending || Date.now() - Date.parse(pending.changedAt) < 4000 ||
       work.lastProgressAt && Date.now() - Date.parse(work.lastProgressAt) < 30000) return;
-    if (pending.operationId !== work.operationId || turnStatus(work.snapshot) !== 'inProgress' || pending.turnId !== work.snapshot.currentTurn?.id) {
+    if (turnStatus(work.snapshot) !== 'inProgress' || pending.turnId !== work.snapshot.currentTurn?.id) {
       this.save({ id, pendingProgress: null }); return;
     }
     const owner = await this.ownerWork(work.botId, work.workId);
@@ -355,6 +361,7 @@ export class DesktopCodex {
     let event;
     this.store.transaction(() => {
       const saved = this.save({ id, snapshot: state, observedAt: now(), observationSignature: signature,
+        executionOperationId: relevantTurn ? (work.turnId === turnId ? work.executionOperationId || work.operationId : work.operationId) : work.executionOperationId,
         executionObservation: { operationId: work.operationId, threadId: state.threadId || null, turnId,
           status, stale: stale || !relevantTurn, observedAt: state.observedAt || now(),
           submissionConfirmed: Boolean(operation?.appliedAt && operation.status === 'received' && !operation.result?.error) },
@@ -406,12 +413,17 @@ export class DesktopCodex {
           if (event.id) this.store.save('desktopEvents', { id: `${id}:${event.id}`, workId: id, event });
           if (event.type === 'thread.snapshot') await this.observe(id, event.data);
           else if (event.type === 'item.updated' && event.data?.turnId === current.snapshot?.currentTurn?.id && event.data.item) {
-            const item = event.data.item, items = [...(current.snapshot.items || []).filter(value => value.id !== item.id), item].slice(-50);
+            const item = event.data.item;
+            if (item.turnId !== event.data.turnId || item.threadId !== current.externalThreadId) return;
+            const items = [...(current.snapshot.items || []).filter(value => value.id !== item.id), item].slice(-50);
             this.save({ id, snapshot: { ...current.snapshot, items, revision: event.data.revision || current.snapshot.revision }, observedAt: now() });
             this.collectProgress(id, event.data.turnId, [item], { eventId: event.id, occurredAt: event.at || event.createdAt || event.timestamp || null });
           }
           else if (['thread.status', 'thread.gap'].includes(event.type)) {
-            const snapshot = event.type === 'thread.status' && event.data?.currentTurn ? { ...current.snapshot, ...event.data } : await this.request(this.path(current), { signal });
+            // A turn change must obtain that turn's own items. Merging a new
+            // currentTurn onto the previous turn's item array relabels history.
+            const snapshot = event.type === 'thread.status' && event.data?.currentTurn?.id === current.snapshot?.currentTurn?.id
+              ? { ...current.snapshot, ...event.data } : await this.request(this.path(current), { signal });
             await this.observe(id, snapshot);
           } else if (event.type?.startsWith('desktop.') && event.type !== 'desktop.connected') {
             await this.observe(id, { ...current.snapshot, stale: true, status: 'unknown' });

@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { taskSource } from '../context/sources.mjs';
 import { modelArgs, modelText, looseSchema, boundedNumber } from '../context/model-input.mjs';
 import { resolveCodexTarget } from './codex-target.mjs';
-import { formalDocumentRequest } from './document-work.mjs';
+import { productionDecision, requestIntents, productionStages } from './request-routing.mjs';
 import { externalExecution } from '../context/execution-evidence.mjs';
 
 const string = { type: 'string' };
@@ -47,6 +47,15 @@ export function coreTools(services, task) {
   // keeps its saved tool record; another accepted source gets another record.
   const actionId = (args, ctx, field) => ctx.recordId || `${task.id}:${ctx.toolCallId}`;
   return [
+    tool('request_decide', 'Classify the CURRENT authenticated user request by meaning and conversation stage before acting. produce/revise means actual new or changed content; status means inspect progress; deliver means return EXISTING output; control includes pause/stop/cancel. Control takes priority over mentioned artifacts. Never infer production from document keywords, quoted past requests or a request to deliver an existing draft. This saved model decision is not extra authorization. Use document-review for formal requirements/design/review documents, implementation for code, other for other execution.',
+      object({ intent: { type: 'string', enum: requestIntents }, productionStage: { type: 'string', enum: productionStages }, reason: string }, ['intent', 'reason']), 'write', async args => {
+        if (!frontend || !userRequest) throw new Error('Request decisions belong to the current authenticated frontend user request.');
+        if (!requestIntents.includes(args.intent)) throw new Error('Choose a supported request intent.');
+        if (['produce', 'revise'].includes(args.intent) && !productionStages.includes(args.productionStage)) throw new Error('Production requires its actual stage.');
+        return store.putRecord('request-routing', { id: task.id, messageId: source.replyTo || source.messageId,
+          intent: args.intent, productionStage: ['produce', 'revise'].includes(args.intent) ? args.productionStage : null,
+          reason: modelText(args.reason), authority: 'model-routing-decision' });
+      }),
     tool('evidence_read', 'Read a bounded original fragment by exact reference. Workers may follow only handed-off references, never browse another room/session feed. Current source access is rechecked.',
       object({ reference }, ['reference']), 'read', args => services.sources.resolve(services.sources.reference(args.reference ?? args, task), task)),
     tool('executors_status', 'Read the current default work engine and saved host executor consent. Authorized onboarding Pi work can connect with workspace_setup. Execution runs as independent work.', object({}), 'read', () => services.executors()),
@@ -88,7 +97,8 @@ export function coreTools(services, task) {
         }
         const suppliedExecutor = typeof args.executor === 'string' ? { kind: args.executor } : modelArgs(args.executor);
         const selectedTarget = suppliedExecutor.target || args.target || (args.cwd ? { type: 'directory', cwd: args.cwd } : args.projectId ? { type: 'project', projectId: args.projectId } : null);
-        const documentOnly = formalDocumentRequest(task, store);
+        const decision = productionDecision(task, store);
+        const documentOnly = decision?.productionStage === 'document-review';
         const kind = documentOnly ? 'codex' : modelText(suppliedExecutor.kind || suppliedExecutor.type || (selectedTarget ? 'codex' : '')).toLowerCase();
         if (documentOnly) content.stage = { kind: 'document-review', instruction: 'Produce or revise the formal review document with Codex. No implementation, testing or resumption of paused code is authorized by this step.' };
         const choices = services.executors();
@@ -144,10 +154,12 @@ export function coreTools(services, task) {
       object({ id: string, content: {}, ...handoffFields, correction: { type: 'boolean' } }), 'write', async (args, ctx) => {
         const work = await services.sources.requireWork(workId(args), task);
         if (['paused', 'cancelled'].includes(work.status) && !userRequest) throw new Error('这项工作已停止；当前事件不包含用户新的继续要求。其他动作可以继续。');
-        if (formalDocumentRequest(task, store) && (work.productionStage !== 'document-review' || services.works.executor(work).kind !== 'codex'))
+        const decision = productionDecision(task, store);
+        const documentOnly = decision?.productionStage === 'document-review';
+        if (documentOnly && (work.productionStage !== 'document-review' || services.works.executor(work).kind !== 'codex'))
           throw new Error('正式文档须委派独立 Codex 文档工作；保留原实现工作暂停，不用文档请求恢复代码。');
         const content = await services.sources.handoff(task, args);
-        if (formalDocumentRequest(task, store)) content.stage = { kind: 'document-review', instruction: 'Revise the formal document only. Keep implementation paused.' };
+        if (documentOnly) content.stage = { kind: 'document-review', instruction: 'Revise the formal document only. Keep implementation paused.' };
         try { content.projectKnowledge = await services.memory.forProject(task, services.sources.project(work)); }
         catch (error) { content.evidenceWarnings.push({ message: `Project knowledge is unavailable: ${error.message}` }); }
         try { content.currentKnowledge = await services.memory.forRequest(task, services.sources.project(work)); }

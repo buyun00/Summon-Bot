@@ -18,24 +18,35 @@ export async function executorHandoff({ workspace, work, task, event, execution,
   const materials = input?.materials || input || {};
   const additionalRequests = [...(event.content?.accumulated || []), ...(task.input?.accumulated || [])].map(item => ({
     taskId: item.taskId, source: item.source, input: item.input }));
-  const bundle = { type: 'executor_handoff', workId: work.id, operationId: event.id,
-    originalRequest: materials.originalRequest || { content: materials.trigger?.content || input },
-    handoff: materials.handoff || {}, stage: materials.stage, evidence: materials.evidence || [], evidenceWarnings: materials.evidenceWarnings || [],
-    ...(materials.observation ? { deliveredObservation: materials.observation } : {}),
-    work: { goal: work.goal, requirements: work.requirements, project: work.project, target: work.executor?.target },
-    additionalRequests, currentKnowledge: knowledge,
-    authorization: { actionId: execution.actionId, requestTaskId: execution.requestTaskId,
-      instruction: 'Only this accepted step is authorized. Original authenticated user requirements and their latest explicit corrections outrank coordinating prose. Previous steps and dispatch/wait instructions are history. A documentation-only step does not authorize implementation or resuming paused code.' } };
   const root = await realpath(workspace), directory = join(root, '.summon-handoffs');
   await mkdir(directory, { recursive: true });
   const part = relative(root, await realpath(directory));
   if (isAbsolute(part) || part === '..' || part.startsWith('..\\') || part.startsWith('../'))
     throw new Error('Executor handoff directory is outside the authorized workspace');
-  const path = join(directory, `${randomUUID()}.json`);
+  const path = join(directory, `${randomUUID()}.json`), resultFile = path.replace(/\.json$/, '.result.json');
+  const executionPolicy = {
+    workspace: root,
+    scope: 'Work only in the authorized project and supplied sources. Do not search/read Summon source, installation, production data/configuration, other projects, credentials, tokens or private API routes. A missing publication tool does not grant access to infrastructure. Do not enumerate processes, application data or authentication routes to compensate.',
+    delivery: 'You produce artifacts; Summon/Pi owns authenticated publication and chat delivery. You do not call publish_file, gateway/internal APIs or send chat messages. When this accepted step is finished, write the result manifest below, then end with a concise factual result. Do not keep working to discover a publishing route. If a file cannot be produced, report the actual error and stop that action.',
+    verification: 'Do not calculate or compare file/directory/artifact hashes, add integrity scans, extra evidence reports or repeat acceptance. Do not add/run tests unless the authenticated user explicitly requested them for this step. Perform only necessary build/configuration/start operations and handle their actual failures. Preserve applicable user constraints from all complete sources.',
+    enforcement: 'Summon capability calls enforce project/source access. Native Codex tools inherit the actual desktop permission profile; this scope instruction and cwd are not an OS read sandbox. Do not claim otherwise.',
+  };
+  const delivery = { resultFile, schema: { workId: work.id, operationId: event.id, status: 'ready',
+    summary: 'Actual result and remaining limitations; no secrets.', artifacts: [{ path: 'absolute finished output path within workspace', name: 'download filename (optional)' }] },
+    instruction: 'Write this JSON only after output files are finished. Supply at most 8 actual deliverable files. No digest fields. Summon reads this exact per-operation manifest, checks identity/scope and publishes attachments to the original room. Never claim published until Summon returns the real attachment receipt.' };
+  const bundle = { type: 'executor_handoff', workId: work.id, operationId: event.id,
+    originalRequest: materials.originalRequest || { content: materials.trigger?.content || input },
+    handoff: materials.handoff || {}, stage: materials.stage, evidence: materials.evidence || [], evidenceWarnings: materials.evidenceWarnings || [],
+    ...(materials.observation ? { deliveredObservation: materials.observation } : {}),
+    work: { goal: work.goal, requirements: work.requirements, project: work.project, target: work.executor?.target },
+    additionalRequests, currentKnowledge: knowledge, executionPolicy, delivery,
+    authorization: { actionId: execution.actionId, requestTaskId: execution.requestTaskId,
+      instruction: 'Only this accepted step is authorized. Original authenticated user requirements and their latest explicit corrections outrank coordinating prose. Previous steps and dispatch/wait instructions are history. A documentation-only step does not authorize implementation or resuming paused code.' } };
   await writeFile(path, JSON.stringify(bundle, null, 2), { flag: 'wx', mode: 0o600 });
   const message = { type: bundle.type, workId: work.id, operationId: event.id,
     sourceFile: path,
-    instruction: 'Read sourceFile before acting. It contains the complete original request, constraints, selected evidence and current sourced rules for this step. Excerpts below are an index, never permission to discard omitted constraints. Do not recursively resend this package or old tool receipts. Continue the same bound task; report actual received/adopted/completed separately. Publish finished files through Summon, not as filesystem paths or source code for the user to save.',
+    instruction: 'Read sourceFile before acting. It contains the complete original request, constraints, selected evidence and current sourced rules for this step. Excerpts below are an index, never permission to discard omitted constraints. Do not recursively resend this package or old tool receipts. Continue the same bound task; report actual received/adopted/completed separately. Produce files and write delivery.resultFile, then finish; Summon/Pi performs publication. Never seek private infrastructure or credentials to publish.',
+    executionPolicy, delivery,
     originalRequest: excerpt(bundle.originalRequest, 16000, `${path}#originalRequest`),
     handoff: excerpt(bundle.handoff, 16000, `${path}#handoff`),
     stage: bundle.stage, additionalRequests: excerpt(additionalRequests, 2000, `${path}#additionalRequests`),
@@ -46,5 +57,5 @@ export async function executorHandoff({ workspace, work, task, event, execution,
     authorization: bundle.authorization };
   const prompt = JSON.stringify(message);
   if (prompt.length > 90000) throw new Error('Executor handoff index exceeds its transport budget; complete sources remain saved');
-  return { prompt, path, characters: prompt.length };
+  return { prompt, path, resultFile, characters: prompt.length };
 }
