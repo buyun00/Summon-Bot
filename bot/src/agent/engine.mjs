@@ -147,7 +147,8 @@ export class BotEngine {
       let session = this.store.getSession(task.sessionId) || this.store.saveSession({ id: task.sessionId, conversationId: active.conversationId,
         workId: task.workId, kind: routeOnly ? 'routing' : task.workId ? 'work' : 'chat', contextKey: task.sessionId, messages: [], checkpoints: [] });
       session = this.repairSession(session);
-      if (session.isolationPolicy !== CHAT_WORK_POLICY) session = this.store.saveSession({ ...session,
+      const isolationChanged = session.isolationPolicy !== CHAT_WORK_POLICY;
+      if (isolationChanged) session = this.store.saveSession({ ...session,
         isolationPolicy: CHAT_WORK_POLICY, isolationBoundary: session.messages.length });
       const historyFloor = session.isolationBoundary || 0;
       const resources = await loadResources({ config: this.config, workspace: this.config.workspace, signal: combined, store: this.store });
@@ -266,7 +267,7 @@ export class BotEngine {
         // Model/tool/system changes do not undo already summarized history.
         // Only a changed source-access boundary invalidates that coverage.
         let sameAccess = false;
-        if (prefix) try { sameAccess = canonical(JSON.parse(prefix.key).access) === canonical(publicView?.access); } catch {}
+        if (prefix && !isolationChanged) try { sameAccess = canonical(JSON.parse(prefix.key).access) === canonical(publicView?.access); } catch {}
         prefix = { ...(sameAccess ? prefix : { historyStart: historyFloor, publicStart: 0 }),
           key: prefixKey, system: { role: 'system', content: systemPrompt, toolsAdded: declarations, timestamp: Date.now() },
           generation: (session.contextGeneration || 0) + 1 };

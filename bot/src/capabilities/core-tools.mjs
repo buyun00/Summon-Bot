@@ -155,7 +155,7 @@ export function coreTools(services, task) {
           work.executionOutcome?.kind !== 'execution-ended' || !work.executionOutcome.finalConfirmed || !execution.startedConfirmed || execution.status !== 'completed')
           throw new Error('This work has no confirmed ended result ready for acceptance; preserve its actual lifecycle.');
         return services.works.update(work.id, { status: 'completed', expectedRevision: work.revision,
-          acceptance: { scope: modelText(args.scope), remainingBoundaries: modelText(args.remainingBoundaries),
+          acceptance: { scope: modelText(args.scope), remainingBoundaries: modelText(args.remainingBoundaries), operationId: execution.operationId,
             source: { type: 'room', roomId: source.roomId, messageId: source.replyTo || source.messageId }, recordedAt: new Date().toISOString() } });
       }),
     tool('work_create', 'Accept and asynchronously dispatch independent work. The receipt confirms local scheduling only, not Pi/Codex execution, native registration or completion. Omit executor for the default engine. Give goal, evidence, handoff prose and an authorized target; the program supplies operation IDs and refreshes current project rules. Do not repeat or wait on this frontend call to strengthen the acknowledgment.',
@@ -204,6 +204,8 @@ export function coreTools(services, task) {
         const work = await services.sources.requireWork(workId(args), task);
         assertExternalReviewCurrent(task, store);
         const review = task.metadata?.externalReview;
+        if (review && work.status === 'completed' && work.acceptance?.operationId === review.operationId &&
+          (args.waiting || args.status && args.status !== 'completed')) throw new Error('This exact result was explicitly accepted by the user; retain its accepted scope and unverified boundaries without reopening it from external evidence.');
         if (review && (args.goal !== undefined || args.requirements !== undefined)) throw new Error('External evidence cannot rewrite the accepted work goal or requirements.');
         if (review && args.status === 'completed' && !review.confirmedFinal) throw new Error('The external result is not a confirmed final answer; it cannot establish completion.');
         if (review && (args.status === 'active' || review.running && (args.waiting || args.status && args.status !== work.status)))

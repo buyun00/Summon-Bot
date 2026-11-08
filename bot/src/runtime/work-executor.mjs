@@ -89,7 +89,7 @@ export function workExecutor({ store, services, emit }) {
           latestAcceptedStep: currentStep?.id === operation?.id ? { sameAs: 'acceptedStep' } : currentStep ?
             { reference: { type: 'work', workId: work.id, operationId: currentStep.id, section: 'acceptedStep' } } : null,
           workState: { goal: work.goal, requirements: work.requirements, project: work.project, target: work.executor?.target,
-            status: work.status, waiting: work.waiting, progress: work.progress, checkpoint: work.checkpoint },
+            status: work.status, waiting: work.waiting, progress: work.progress, checkpoint: work.checkpoint, acceptance: work.acceptance },
           instruction: 'Review this real external observation in the original work. Accepted steps are retained once in this work session and by exact work/operation references; use evidence_read section=acceptedStep with offsets for any missing original. Compare against those originals and latest requirements. Same identity means unchanged material, not a new dispatch. The executor is already bound; do not start it again.' +
             (task.metadata?.finalizationOnly ? ' This is recovery of an already ended execution. Reconcile actual state and remaining boundaries only; do not reopen production, correct files, publish another message or resubmit executor work. The current saved publication receipts override old unknown-delivery statements in the final text or session. An actual attached message already returns the complete file; do not demand duplicate text parts for that same file. Preserve user acceptance and unverified business boundaries separately.' : '') } };
       reviewTask.metadata.externalReview.finalizationOnly = task.metadata?.finalizationOnly === true;
