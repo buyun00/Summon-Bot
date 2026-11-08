@@ -7,6 +7,7 @@ import { modelArgs, modelText, looseSchema, boundedNumber } from '../context/mod
 import { resolveCodexTarget } from './codex-target.mjs';
 import { productionDecision, requestIntents, productionStages } from './request-routing.mjs';
 import { externalExecution } from '../context/execution-evidence.mjs';
+import { readExecutorManifest } from '../runtime/executor-delivery.mjs';
 
 const string = { type: 'string' };
 const object = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
@@ -29,6 +30,7 @@ function page(items, args, project) {
 export function coreTools(services, task) {
   const store = services.store;
   const frontend = taskMode(task) !== 'work';
+  const review = task.metadata?.externalReview;
   const workView = work => frontend ? compactWork(work) : work;
   const taskView = value => compactTask(value, value?.workId && services.works.get(value.workId),
     value && services.works.execution(value).executionEventId);
@@ -48,7 +50,7 @@ export function coreTools(services, task) {
   // keeps its saved tool record; another accepted source gets another record.
   const actionId = (args, ctx, field) => ctx.recordId || `${task.id}:${ctx.toolCallId}`;
   return [
-    tool('request_decide', 'Classify the CURRENT authenticated user request by meaning and conversation stage before acting. produce/revise means actual new or changed content; status means inspect progress; deliver means return EXISTING output; control includes pause/stop/cancel. Control takes priority over mentioned artifacts. Never infer production from document keywords, quoted past requests or a request to deliver an existing draft. This saved model decision is not extra authorization. Use document-review for formal requirements/design/review documents, implementation for code, other for other execution.',
+    tool('request_decide', 'Classify the CURRENT authenticated user request by meaning before acting. produce/revise means actual new or changed content; status means inspect progress; deliver means return EXISTING output; accept means the user explicitly accepts a finished scoped result, retaining stated limitations; control includes pause/stop/cancel. Inspect work_outputs for available files before treating a missing attachment as new production. New rendering, screenshots, conversions or revisions are production when not already available. Decide from the requested change, never from attachment/document keywords. This saved model decision is not extra authorization. Use document-review for formal documents, implementation for code, other for other execution.',
       object({ intent: { type: 'string', enum: requestIntents }, productionStage: { type: 'string', enum: productionStages },
         workRelation: { type: 'string', enum: ['new', 'continue'] }, workId: string, reason: string }, ['intent', 'reason']), 'write', async args => {
         if (!frontend || !userRequest) throw new Error('Request decisions belong to the current authenticated frontend user request.');
@@ -113,6 +115,49 @@ export function coreTools(services, task) {
       }
       return { ...workView(result.work), lookup: result.lookup, ...(connector ? { connector } : {}) };
     }),
+    tool('work_outputs', 'Read an existing work’s exact operation output manifest and saved publication receipts. Does not run the worker, render files or publish. Use work_deliver for already published attachments; publish_file can publish an existing declared path. Missing or unconfirmed output is not permission to start production.',
+      object({ id: string, operationId: string }), 'read', async args => {
+        const work = await services.sources.requireWork(workId(args), task);
+        const operationId = args.operationId || work.waiting?.operationId || work.bindings?.findLast(item => item.type === 'codex-desktop')?.operationId;
+        const operation = operationId && store.getRecord('work-events', operationId);
+        if (!operation || operation.workId !== work.id) throw new Error('No matching output operation; read work_get for its exact identity.');
+        const delivery = store.getRecord('executor-deliveries', operation.id);
+        let manifest, unavailable;
+        try { manifest = await readExecutorManifest({ workspace: services.workspace, workId: work.id, operation }); }
+        catch (error) { unavailable = error.code === 'ENOENT' ? 'No existing result manifest' : error.message; }
+        return { workId: work.id, operationId: operation.id, delivery, artifacts: manifest?.artifacts || [], unavailable,
+          instruction: 'These are existing outputs and actual saved receipts, not a new execution or user acceptance. Reuse available attachments; only a genuinely new output/change needs production authorization.' };
+      }),
+    tool('work_deliver', 'Select this exact operation’s already published attachments for the current frontend reply. Does not call the executor, render, rewrite or re-upload. The saved receipt means ready for this reply, not that the user has received or accepted it.',
+      object({ id: string, operationId: string, attachmentIds: { type: 'array', maxItems: 8, items: string } }), 'write', async args => {
+        if (!frontend || !userRequest || !['deliver', 'produce', 'revise'].includes(store.getRecord('request-routing', task.id)?.intent))
+          throw new Error('Select existing-output delivery with request_decide for this authenticated request first.');
+        const work = await services.sources.requireWork(workId(args), task);
+        const operationId = args.operationId || work.waiting?.operationId || work.bindings?.findLast(item => item.type === 'codex-desktop')?.operationId;
+        const operation = operationId && store.getRecord('work-events', operationId);
+        if (!operation || operation.workId !== work.id) throw new Error('Output operation does not belong to this work.');
+        const delivery = store.getRecord('executor-deliveries', operation.id);
+        if (delivery?.status !== 'published' || !delivery.attachments?.length) throw new Error('No confirmed published attachments for this operation; use work_outputs for existing paths and the actual delivery gap.');
+        if (!store.listRecords('work-notifications').some(item => item.workId === work.id && item.executionEventId === operation.id && item.roomId === source.roomId))
+          throw new Error('These saved attachments have no publication in this source room. Use work_outputs and publish_file for an authorized existing path in the current room.');
+        const selected = args.attachmentIds;
+        if (selected && (!Array.isArray(selected) || selected.some(id => !delivery.attachments.some(item => item.id === id)))) throw new Error('Select only attachment IDs from this operation’s saved publication.');
+        return { workId: work.id, operationId, status: 'ready-for-current-reply', attachments: delivery.attachments.filter(item => !selected || selected.includes(item.id)) };
+      }),
+    tool('work_accept', 'Record a current user’s explicit acceptance of an ended work within the stated scope. Preserve every unverified boundary in remainingBoundaries. Does not execute or reopen work, and cannot accept running, stopped or unknown results.',
+      object({ id: string, scope: string, remainingBoundaries: string }, ['scope', 'remainingBoundaries']), 'write', async args => {
+        if (!frontend || !userRequest || store.getRecord('request-routing', task.id)?.intent !== 'accept') throw new Error('Explicit current user acceptance must be selected with request_decide first.');
+        const work = await services.sources.requireWork(workId(args), task);
+        if (!modelText(args.scope).trim() || args.remainingBoundaries === undefined) throw new Error('Record the actual accepted scope and the remaining unverified boundaries.');
+        const execution = externalExecution(work);
+        const pending = store.listTasks({ limit: 10000 }).some(item => item.workId === work.id && ['accepted', 'queued', 'running'].includes(item.status));
+        if (!['waiting', 'completed'].includes(work.status) || work.status === 'waiting' && work.waiting?.kind !== 'review' || pending ||
+          work.executionOutcome?.kind !== 'execution-ended' || !work.executionOutcome.finalConfirmed || !execution.startedConfirmed || execution.status !== 'completed')
+          throw new Error('This work has no confirmed ended result ready for acceptance; preserve its actual lifecycle.');
+        return services.works.update(work.id, { status: 'completed', expectedRevision: work.revision,
+          acceptance: { scope: modelText(args.scope), remainingBoundaries: modelText(args.remainingBoundaries),
+            source: { type: 'room', roomId: source.roomId, messageId: source.replyTo || source.messageId }, recordedAt: new Date().toISOString() } });
+      }),
     tool('work_create', 'Accept and asynchronously dispatch independent work. The receipt confirms local scheduling only, not Pi/Codex execution, native registration or completion. Omit executor for the default engine. Give goal, evidence, handoff prose and an authorized target; the program supplies operation IDs and refreshes current project rules. Do not repeat or wait on this frontend call to strengthen the acknowledgment.',
       object({ id: string, operationId: string, goal: string, requirements: string, responsibility: string, ...handoffFields,
         executor: object({ kind: { type: 'string', enum: ['pi', 'codex', 'codex-cli', 'grok', 'claude-code'] }, connectionId: string,
@@ -153,7 +198,7 @@ export function coreTools(services, task) {
         const receipt = await services.works.dispatch(work.id, { id: operationId, kind: 'request', content, metadata: { priority: 'background', resume: userRequest } }, task);
         return { ...compactWork(work), ...receipt, handedOff: true, acceptance: modelText(args.acceptance), evidenceWarnings: content.evidenceWarnings };
       }),
-    tool('work_update', frontend ? 'Pause or cancel existing work. Send requirements with work_dispatch; only the worker records progress and completion.' : 'Record actual progress and status of the current work. Its identity and revision are supplied by the program.',
+    tool('work_update', frontend ? 'Pause or cancel existing work. Send requirements with work_dispatch; only the worker records progress and completion.' : review?.running ? 'Record this running external turn’s progress/checkpoint, next steps and evidence ONLY. Omit status, waiting, goal and requirements; the runtime owns its lifecycle. Use codex_send for a concrete correction to the bound thread.' : review ? 'Review a confirmed ended external turn. Record progress/checkpoint and completed only for a satisfied scoped goal, or waiting/review with its concrete remainder. Never rewrite accepted goal/requirements.' : 'Record actual progress and status of the current work. Its identity and revision are supplied by the program.',
       object({ id: string, ...(!frontend ? { goal: string, requirements: string, progress: string, checkpoint: {}, next: string, constraints: string, evidence: {},
         waiting: object({ kind: { type: 'string', enum: ['review', 'user-input', 'external'] }, question: string, reason: string }, ['kind']) } : {}), status: { type: 'string', enum: frontend ? ['paused', 'cancelled'] : ['active', 'waiting', 'paused', 'blocked', 'completed', 'cancelled'] } }), 'write', async args => {
         const work = await services.sources.requireWork(workId(args), task);
@@ -180,7 +225,7 @@ export function coreTools(services, task) {
           warning: `未识别可选状态 ${ignoredStatus}；有效进展已保留，工作状态未改动。` };
         return services.works.update(work.id, { ...patch, expectedRevision: work.revision });
       }),
-    tool('work_dispatch', 'Continue an existing work with new instructions and available evidence. Detailed content and concise instruction are complementary derived guidance; both are retained. The program supplies the event ID and original binding. Stopped work resumes only for a fresh user request; peer observations add no authority.',
+    tool('work_dispatch', 'Continue an existing work ONLY after request_decide saved produce/revise with workRelation=continue and its canonical workId for THIS request. Status, acceptance and returning existing files use reads/work_accept/work_deliver; never fix a refusal by relabeling a delivery request as production. New rendering, screenshots or revisions may be genuine production. Put prose in JSON strings. Detailed content and concise instruction are complementary derived guidance. The program supplies event ID/binding. Stopped work resumes only for a fresh user request.',
       object({ id: string, content: {}, ...handoffFields, correction: { type: 'boolean' } }), 'write', async (args, ctx) => {
         const work = await services.sources.requireWork(workId(args), task);
         if (['paused', 'cancelled'].includes(work.status) && !userRequest) throw new Error('这项工作已停止；当前事件不包含用户新的继续要求。其他动作可以继续。');
@@ -274,5 +319,8 @@ export function coreTools(services, task) {
       args => store.setState(args.scope, args.key, args.value, args)),
     tool('artifact_save', 'Save task output as a durable artifact and return its receipt.',
       object({ name: string, mimeType: string, content: string }, ['name', 'content']), 'write', (args, ctx) => ctx.saveArtifact(args)),
-  ];
+  ].map(definition => definition.name === 'work_update' && review ? { ...definition,
+    inputSchema: object({ id: string, progress: string, checkpoint: {}, next: string, constraints: string, evidence: {},
+      ...(!review.running ? { status: { type: 'string', enum: ['waiting', 'blocked', 'completed'] },
+        waiting: object({ kind: { type: 'string', enum: ['review', 'user-input', 'external'] }, question: string, reason: string }, ['kind']) } : {}) }) } : definition);
 }

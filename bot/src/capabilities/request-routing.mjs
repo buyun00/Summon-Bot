@@ -1,6 +1,6 @@
 // A frontend semantic decision is a coordination record, never user authority.
 // Document words alone must not start production or resume a stopped work.
-export const requestIntents = ['discuss', 'status', 'deliver', 'produce', 'revise', 'control'];
+export const requestIntents = ['discuss', 'status', 'deliver', 'accept', 'produce', 'revise', 'control'];
 export const productionStages = ['document-review', 'implementation', 'other'];
 
 export function productionDecision(task, store) {

@@ -3,6 +3,29 @@ import { relative, isAbsolute, resolve } from 'node:path';
 
 const within = (root, path) => { const part = relative(root, path); return !isAbsolute(part) && part !== '..' && !part.startsWith('../') && !part.startsWith('..\\'); };
 
+export async function readExecutorManifest({ workspace, workId, operation }) {
+  if (!operation?.resultFile) throw Object.assign(new Error('No existing result manifest'), { code: 'ENOENT' });
+  const root = await realpath(workspace), path = await realpath(operation.resultFile);
+  if (!within(root, path)) throw new Error('Executor result manifest is outside its workspace');
+  const handle = await open(path, 'r');
+  let manifest;
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.size > 65536) throw new Error('Executor result manifest must be a JSON file of at most 64 KiB');
+    manifest = JSON.parse(await handle.readFile('utf8'));
+  } finally { await handle.close(); }
+  if (manifest.workId !== workId || manifest.operationId !== operation.id || manifest.status !== 'ready' ||
+    !Array.isArray(manifest.artifacts) || manifest.artifacts.length > 8) throw new Error('Executor result manifest does not match this accepted work/operation');
+  const artifacts = [];
+  for (const artifact of manifest.artifacts) {
+    if (typeof artifact.path !== 'string' || !isAbsolute(artifact.path)) throw new Error('Deliverable requires its absolute output path');
+    const output = await realpath(artifact.path);
+    if (!within(root, output) || within(resolve(root, '.summon-handoffs'), output)) throw new Error('Deliverable is outside the product output scope');
+    artifacts.push({ path: output, ...(artifact.name ? { name: artifact.name } : {}) });
+  }
+  return { ...manifest, artifacts };
+}
+
 // Native workers never receive publication credentials. This bridge consumes
 // only their exact accepted operation's manifest and uses existing scoped tools.
 export async function publishExecutorResult({ store, services, task, operation }) {
@@ -12,16 +35,7 @@ export async function publishExecutorResult({ store, services, task, operation }
   const root = await realpath(services.workspace);
   let manifest;
   try {
-    const path = await realpath(operation.resultFile);
-    if (!within(root, path)) throw new Error('Executor result manifest is outside its workspace');
-    const handle = await open(path, 'r');
-    try {
-      const info = await handle.stat();
-      if (!info.isFile() || info.size > 65536) throw new Error('Executor result manifest must be a JSON file of at most 64 KiB');
-      manifest = JSON.parse(await handle.readFile('utf8'));
-    } finally { await handle.close(); }
-    if (manifest.workId !== task.workId || manifest.operationId !== operation.id || manifest.status !== 'ready' ||
-      !Array.isArray(manifest.artifacts) || manifest.artifacts.length > 8) throw new Error('Executor result manifest does not match this accepted work/operation');
+    manifest = await readExecutorManifest({ workspace: services.workspace, workId: task.workId, operation });
   } catch (error) {
     if (error.code === 'ENOENT') return { attachments: [], status: 'not-declared' };
     return store.putRecord('executor-deliveries', { id: key, attachments: [], status: 'rejected', error: error.message });

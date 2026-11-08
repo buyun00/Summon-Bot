@@ -443,7 +443,7 @@ export class BotEngine {
           } catch {}
           knowledgeMessage = unchanged ? userMessage({ type: 'current_project_knowledge', unchanged: true,
             reference: { type: 'session', sessionId: task.sessionId, entryId: `m:${previousIndex}` },
-            instruction: 'The scoped rules were refreshed and are unchanged. Read this original entry with read_session_history if its content is outside the live window. Current user corrections still take precedence.' }) :
+            instruction: 'The scoped rules were refreshed and are unchanged. Read this original entry with evidence_read if its content is outside the live window. Current user corrections still take precedence.' }) :
             { ...userMessage({ type: 'current_project_knowledge', value: currentKnowledge, authority: 'scoped-current-memory' }), contextMaterial: 'project-knowledge' };
         }
         const prompts = [prompt, ...(boundary ? [boundary] : []),
@@ -470,8 +470,9 @@ export class BotEngine {
       const partialText = lastOutcome?.content?.filter(value => value.type === 'text').map(value => value.text).join('\n') || '';
       const partial = !suspended && (!lastOutcome || ['error', 'aborted', 'length'].includes(lastOutcome.stopReason));
       const roomId = taskSource(originalTask, this.store).roomId;
-      const attachments = !task.workId ? [...new Set(this.store.listTools(task.id).filter(record => record.name === 'publish_file' && record.status === 'completed')
-        .map(record => record.output?.details).filter(item => item?.id && item.origin?.botId === this.config.botId && item.origin?.roomId === roomId).map(item => item.id))].map(id => ({ id })) : [];
+      const attachments = !task.workId ? [...new Set(this.store.listTools(task.id).filter(record => record.status === 'completed').flatMap(record =>
+        record.name === 'work_deliver' ? (record.output?.details?.attachments || []).map(item => item.id) :
+        record.name === 'publish_file' && record.output?.details?.origin?.botId === this.config.botId && record.output.details.origin.roomId === roomId ? [record.output.details.id] : []))].map(id => ({ id })) : [];
       if (partial && !partialText && !handoffs.length) throw Object.assign(new Error(lastOutcome?.errorMessage || `Agent ended with ${lastOutcome?.stopReason || 'no result'}`), { code: 'MODEL_ERROR' });
       return clean({ content: (partialText || (handoffs.length ? handoffs.map(item => `工作 ${item.workId} 已受理，后续执行结果尚未确认。`).join('\n') : '')) +
         (partial ? `\n本轮答复未完整结束：${lastOutcome?.errorMessage || lastOutcome?.stopReason || '未取得完整答复'}。已保存的动作和内容仍然保留。` : ''),

@@ -69,7 +69,7 @@ export class WorkService {
       if (input.expectedRevision !== undefined && input.expectedRevision !== previous.revision) fail('Work changed; read current state', 409);
       if (input.status !== undefined && !statuses.has(input.status)) fail('Invalid work status');
       const patch = Object.fromEntries(Object.entries(input).filter(([key]) => ['goal', 'requirements', 'progress', 'checkpoint', 'status', 'waiting', 'bindings', 'notifications', 'sources', 'responsibility', 'lastTaskId', 'lastError', 'owner', 'notificationCursor', 'executionOutcome', 'executor', 'supervisor'].includes(key)));
-      for (const key of ['checkpoint', 'project']) if (Object.hasOwn(input, key)) patch[key] = input[key];
+      for (const key of ['checkpoint', 'project', 'acceptance']) if (Object.hasOwn(input, key)) patch[key] = input[key];
       for (const key of ['bindings', 'notifications', 'sources']) if (patch[key] !== undefined && !Array.isArray(patch[key])) fail(`${key} must be an array`);
       const record = this.clean({ ...previous, ...patch, id, revision: previous.revision + 1, updatedAt: now() });
       if (['completed', 'cancelled'].includes(record.status)) record.waiting = null;
