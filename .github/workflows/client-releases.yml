@@ -36,6 +36,16 @@ jobs:
           node-version: 24
       - run: npm ci --prefix desktop --no-audit --no-fund
       - run: npm ci --omit=dev --no-audit --no-fund
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+          key: summon-client-deps-v1-macos-arm64-electron-45.2.1-builder-26.18.1
+      - name: Prepare official desktop dependencies through GitHub asset API
+        run: node scripts/release/prepare-ci-dependencies.mjs desktop
+        env:
+          GH_TOKEN: ${{ github.token }}
       - name: Prepare Developer ID and notarization credentials
         env:
           SUMMON_MACOS_P12_BASE64: ${{ secrets.SUMMON_MACOS_P12_BASE64 }}
@@ -98,6 +108,14 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.tool_cache }}/summon-ci-dependencies
+          key: summon-client-deps-v1-gradle-8.11.1
+      - name: Prepare official Gradle distribution through GitHub asset API
+        run: node scripts/release/prepare-ci-dependencies.mjs android
+        env:
+          GH_TOKEN: ${{ github.token }}
       - name: Prepare existing Android signing identity
         shell: bash
         env:
@@ -144,6 +162,16 @@ jobs:
           node-version: 24
       - run: npm ci --prefix desktop --no-audit --no-fund
       - run: npm ci --omit=dev --no-audit --no-fund
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+          key: summon-client-deps-v1-windows-x64-electron-45.2.1-builder-26.18.1
+      - name: Prepare official desktop dependencies through GitHub asset API
+        run: node scripts/release/prepare-ci-dependencies.mjs desktop
+        env:
+          GH_TOKEN: ${{ github.token }}
       - name: Build Windows x64
         run: |
           if ($env:CANDIDATE -eq 'true') {
