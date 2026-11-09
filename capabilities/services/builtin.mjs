@@ -175,7 +175,7 @@ export async function createCapability(options) {
           if(operation)args={...args,expectedTurnId:operation.body.expectedTurnId};
           else{const observed=await codex.read(id,{signal});args={...args,expectedTurnId:observed.observed?.currentTurn?.id};}
         }
-        return codex[{codex_read:'read',codex_send:'send',codex_interrupt:'interrupt'}[name]](id,{...args,signal});
+        return codex[{codex_read:'read',codex_send:'send',codex_interrupt:'interrupt'}[name]](id,{...args,verification:context.codexVerification,signal});
       }
       default:fail('Unknown capability tool',404);
     }

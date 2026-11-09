@@ -3,6 +3,40 @@ import { relative, isAbsolute, resolve } from 'node:path';
 
 const within = (root, path) => { const part = relative(root, path); return !isAbsolute(part) && part !== '..' && !part.startsWith('../') && !part.startsWith('..\\'); };
 
+export function executorManifestOperation(store, work, binding, observation, source) {
+  const { operationId, turnId } = observation;
+  const current = store.getRecord('work-events', operationId);
+  if (current) return current.workId === work.id ? current : null;
+  if (!work.project?.id || !source?.roomId || !source.replyTo || !turnId || turnId !== binding.turnId) return null;
+
+  // Only a received supervisor send can inherit the immediately preceding
+  // accepted step. The native turn opener can predate a later user dispatch.
+  const receipts = new Map(binding.operations?.filter(item => item.status === 'received' &&
+    item.threadId === binding.externalThreadId).map(item => [item.operationId, item]));
+  const visited = new Set();
+  let id = operationId;
+  while (id && !visited.has(id)) {
+    visited.add(id);
+    const receipt = receipts.get(id), previous = receipt?.precedingTurn;
+    if (receipt?.action !== 'send' || previous?.status !== 'inProgress' || previous.turnId !== turnId ||
+      !receipts.has(previous.operationId)) return null;
+    const send = store.getTool(id), origin = send && store.getTask(send.taskId);
+    if (send?.name !== 'codex_send' || send.workId !== work.id || send.effect !== 'external' ||
+      send.executionRejected || send.executionReused || origin?.workId !== work.id ||
+      origin.metadata?.sourceType !== 'external' || origin.metadata.externalBindingId !== binding.id ||
+      origin.input?.type !== 'external_progress' || origin.input.externalThreadId !== binding.externalThreadId ||
+      origin.input.turnId !== turnId || origin.input.operationId !== previous.operationId) return null;
+    id = previous.operationId;
+    const step = store.getRecord('work-events', id);
+    if (step) {
+      const accepted = step.authorization?.source;
+      return step.workId === work.id && step.kind === 'request' && step.resultFile &&
+        accepted?.roomId === source.roomId && accepted.replyTo === source.replyTo && accepted.actor === source.actor ? step : null;
+    }
+  }
+  return null;
+}
+
 export async function readExecutorManifest({ workspace, workId, operation }) {
   if (!operation?.resultFile) throw Object.assign(new Error('No existing result manifest'), { code: 'ENOENT' });
   const root = await realpath(workspace), path = await realpath(operation.resultFile);
@@ -28,7 +62,7 @@ export async function readExecutorManifest({ workspace, workId, operation }) {
 
 // Native workers never receive publication credentials. This bridge consumes
 // only their exact accepted operation's manifest and uses existing scoped tools.
-export async function publishExecutorResult({ store, services, task, operation }) {
+export async function publishExecutorResult({ store, services, task, operation, isCurrent }) {
   if (!operation?.resultFile) return { attachments: [], status: 'not-declared' };
   const key = operation.id, saved = store.getRecord('executor-deliveries', key);
   if (saved) return saved;
@@ -40,13 +74,14 @@ export async function publishExecutorResult({ store, services, task, operation }
     if (error.code === 'ENOENT') return { attachments: [], status: 'not-declared' };
     return store.putRecord('executor-deliveries', { id: key, attachments: [], status: 'rejected', error: error.message });
   }
+  if (!isCurrent()) return { attachments: [], status: 'superseded' };
   let delivery = store.putRecord('executor-deliveries', { id: key, attachments: [], status: 'publishing', summary: String(manifest.summary || '').slice(0, 6000) });
   try {
     for (const [index, artifact] of manifest.artifacts.entries()) {
       if (typeof artifact.path !== 'string' || !isAbsolute(artifact.path)) throw new Error('Deliverable requires its absolute output path');
       const path = await realpath(artifact.path);
       if (!within(root, path) || within(resolve(root, '.summon-handoffs'), path)) throw new Error('Deliverable is outside the product output scope');
-      if (['paused', 'cancelled'].includes(services.works.get(task.workId)?.status)) throw new Error('Work stopped before publication');
+      if (!isCurrent()) throw new Error('The execution changed or stopped before publication');
       const published = await services.capability('publish_file', { path, ...(artifact.name ? { name: artifact.name } : {}) }, task,
         { operationId: `${key}:publish:${index}` });
       if (!published?.id) throw new Error('Attachment publication did not return an attachment ID');

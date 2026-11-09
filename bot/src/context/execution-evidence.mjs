@@ -1,4 +1,8 @@
 import { factTime } from './fact-time.mjs';
+
+export function isAcceptedOperation(work, operationId) {
+  return Boolean(operationId && (work.acceptance?.operationId === operationId || work.acceptance?.throughOperationId === operationId));
+}
 // Work lifecycle, local transport and an observed external turn are separate.
 export function waitingLabel(work) {
   if (!work) return '工作已保留';

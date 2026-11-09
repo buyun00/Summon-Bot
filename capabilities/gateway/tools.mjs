@@ -29,7 +29,7 @@ const definitions=[
  ['codex_attach','Bind an explicitly identified existing Desktop thread to local work without submitting any prompt',{workId:string,threadId:string,hostId:string},'write'],
  ['codex_status','Read durable external binding, operations and results; old executor history is read-only',{workId:string},'read'],
  ['codex_read','Read the bound Desktop state or recent visible history; summarized output may be incomplete',{workId:string,history:boolean},'read'],
- ['codex_send','Continue the same bound Desktop thread with a new explicit operationId; receipt is not completion',{workId:string,operationId:string,message:string},'external'],
+ ['codex_send','Continue the same bound Desktop thread with a new explicit operationId. From a confirmed final review, set verificationOnly=true only for a read-only check of the existing result. Corrective production uses the normal send. A receipt is not completion.',{workId:string,operationId:string,message:string,verificationOnly:boolean},'external'],
  ['codex_interrupt','Request an authorized stop of the observed turn; read state first and supply its expectedTurnId',{workId:string,operationId:string,expectedTurnId:string},'external'],
  ['bots_list','List peer identities and roles',{},'read'],
  ['bots_create','Create an ordinary Bot from a role',{name:string,roleId:string,prompt:string,cwd:string},'external'],

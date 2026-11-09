@@ -1,6 +1,7 @@
 import { assertExternalReviewCurrent } from '../capabilities/task-policy.mjs';
 import { executorHandoff } from '../context/executor-handoff.mjs';
-import { publishExecutorResult } from './executor-delivery.mjs';
+import { isAcceptedOperation } from '../context/execution-evidence.mjs';
+import { executorManifestOperation, publishExecutorResult } from './executor-delivery.mjs';
 
 const at = () => new Date().toISOString();
 const stopped = new Set(['paused', 'cancelled']);
@@ -126,7 +127,7 @@ export function workExecutor({ store, services, emit }) {
       const superseded = Boolean(content.operationId && binding.operationId !== content.operationId);
       const knownOperation = operation?.workId === work.id && operation.transport;
       const progress = content.type === 'external_progress';
-      const late = stopped.has(work.status) || work.status === 'completed' && work.acceptance?.operationId && work.acceptance.operationId === content.operationId ||
+      const late = stopped.has(work.status) || work.status === 'completed' && isAcceptedOperation(work, content.operationId) ||
         progress && work.status === 'completed' || superseded && !knownOperation ||
         progress && (content.turnId !== binding.turnId || content.progress?.threadId !== binding.externalThreadId || content.progress?.turnId !== content.turnId);
       store.putRecord('work-observations', { id: eventId, workId: work.id, taskId: task.id, late, content, observedAt: at() });
@@ -168,13 +169,24 @@ export function workExecutor({ store, services, emit }) {
         progress: final?.text ? final.text.slice(0, 1200) : `Codex：${outcome}` });
       const label = ({ 'execution-ended': 'Codex 本次执行已结束', 'needs-input': 'Codex 需要你补充信息或处理请求', failed: 'Codex 本次执行失败',
         interrupted: 'Codex 本次执行已中断', cancelled: 'Codex 本次执行已取消', 'result-unknown': 'Codex 当前结果尚未确认' })[outcome];
-      const delivery = outcome === 'execution-ended' && final && !superseded ? await publishExecutorResult({ store, services, task, operation }) : null;
+      let delivery;
+      if (outcome === 'execution-ended' && final && !superseded) {
+        const manifestOperation = executorManifestOperation(store, work, binding, content, services.resultSource(work, task));
+        const isCurrent = () => {
+          const current = services.works.get(work.id), currentBinding = current?.bindings?.find(item => item.id === binding.id);
+          return current && !stopped.has(current.status) && !isAcceptedOperation(current, content.operationId) &&
+            current.project?.id === work.project?.id && currentBinding?.operationId === content.operationId &&
+            currentBinding?.externalThreadId === binding.externalThreadId && (!currentBinding?.turnId || currentBinding.turnId === content.turnId);
+        };
+        delivery = await publishExecutorResult({ store, services, task, operation: manifestOperation, isCurrent });
+      }
       const text = (final?.text || `${label}。${content.error?.message || content.result?.error?.message || content.state?.currentTurn?.error?.message || ''}\n来源：${binding.externalThreadId || '线程尚未确认'}${content.turnId ? ` / ${content.turnId}` : ''}。${outcome === 'execution-ended' ? '未取得可确认归属的最终文本，尚未据此判定整个工作完成。' : ''}`) +
         (delivery?.attachments?.length ? '\n已将本次完成的文件附在此消息，供打开、下载和评审。' : '') +
         (delivery?.error ? `\n文件发布尚未完成：${delivery.error}。现有产物保留，不能据此宣称已交付。` : '') +
         (final?.truncated ? '\n（以上为已取得的答复片段；完整内容保留在原 Codex 线程。）' : '') +
         (final?.artifacts?.length ? `\n产物引用：\n${JSON.stringify(final.artifacts)}` : '');
-      await services.notify({ id: work.id, notificationId: eventId, publication: 'external', content: text, attachments: delivery?.attachments, resultKind: outcome,
+      await services.notify({ id: work.id, notificationId: eventId, publication: 'external', content: text, attachments: delivery?.attachments,
+        ...(delivery?.id && delivery.id !== content.operationId ? { manifestOperationId: delivery.id } : {}), resultKind: outcome,
         sourceRefs: [{ type: 'codex', threadId: binding.externalThreadId, turnId: content.turnId, operationId: content.operationId }], late }, task, {});
       const review = !superseded && (final || outcome === 'needs-input') ? await this.review(task, binding, { ...content, delivery }, false, options) : {};
       return { content: '', observed: true, ...review, suspended: true, waiting: outcome, executor: 'codex' };

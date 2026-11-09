@@ -30,8 +30,14 @@ export function deliveryContent(event) {
 const rejected = error => error.result?.error?.details?.outcome !== 'unknown' &&
   !['operation_uncertain', 'idempotency_conflict'].includes(error.code) && Boolean(error.code) &&
   (error.status >= 400 && error.status < 500 && error.status !== 408 ||
-    ['desktop_defaults_unavailable', 'unsupported_permission_default', 'permission_context_unavailable', 'unsupported_permission_host', 'caller_thread_required', 'unsupported_capability'].includes(error.code));
+    ['desktop_defaults_unavailable', 'unsupported_permission_default', 'permission_context_unavailable', 'unsupported_permission_host', 'caller_thread_required', 'unsupported_capability', 'desktop_model_preflight_unavailable'].includes(error.code));
 const turnStatus = state => state?.status === 'waiting_for_input' ? state.status : state?.currentTurn?.status || state?.status || 'unknown';
+function precedingTurn(operation, threadId) {
+  const previous = operation.previousExecution, observation = previous?.executionObservation;
+  if (!observation?.submissionConfirmed || observation.stale || observation.threadId !== threadId ||
+    !observation.turnId || observation.turnId !== previous.turnId || observation.operationId !== previous.operationId) return null;
+  return { operationId: observation.operationId, turnId: observation.turnId, status: observation.status };
+}
 const progressText = item => ['agentMessage', 'assistantMessage', 'assistant'].includes(item?.type) &&
   ['commentary', 'comment'].includes(item.phase || item.channel) ? modelText(item.text ?? item.content ?? item.message).trim() : '';
 function finalReply(state, threadId, turnId, history) {
@@ -158,7 +164,8 @@ export class DesktopCodex {
         operationId: item.operationId, operationKey: item.operationKey, action: item.action, status: item.status,
         attemptedAt: item.attemptedAt, appliedAt: item.appliedAt || item.resultAppliedAt,
         threadId: item.result?.threadId || item.result?.thread?.id || work.externalThreadId,
-        turnId: item.result?.turnId || null, error: item.error || item.result?.error,
+        turnId: item.result?.turnId || null, precedingTurn: precedingTurn(item, work.externalThreadId),
+        ...(item.verificationOnly ? { verificationOnly: true } : {}), error: item.error || item.result?.error,
         recordedAt: item.checkedAt || item.resultAppliedAt || item.attemptedAt })),
       ...(work.directoryTarget ? { target: work.directoryTarget } : {}) };
     await this.manager.request(work.botId, `/works/${encodeURIComponent(work.workId)}`, { method: 'PATCH', body: JSON.stringify({ expectedRevision: current.revision,
@@ -203,15 +210,21 @@ export class DesktopCodex {
       const work = this.require(id); this.assertDesktop(work);
       const owner = await this.ownerWork(work.botId, work.workId);
       if (['cancelled', 'paused', 'archived'].includes(owner.status)) fail('The owning work is stopped', 409);
-      const operationId = requireText(input.operationId, 'operationId'), message = requireText(input.message, 'message'), previous = this.operation(work, operationId);
+      const operationId = requireText(input.operationId, 'operationId'), requested = requireText(input.message, 'message');
+      const verification = input.verification;
+      const message = verification ? `Read-only verification of the existing result. Inspect the named check only. Leave files and services as they are. Use the already authorized publication if available. If a tool denies access by policy, report the gap and stop that check. Report the exact observed evidence and any unresolved limits.\n\nCheck requested by the supervisor:\n${requested}` : requested;
+      const previous = this.operation(work, operationId);
       if (previous) {
-        if (previous.action !== 'send' || previous.body.message !== input.message) fail('operationId already belongs to another request', 409);
+        if (previous.action !== 'send' || previous.body.message !== message || Boolean(previous.verificationOnly) !== Boolean(verification)) fail('operationId already belongs to another request', 409);
         return this.reconcile(previous);
       }
       if (this.store.list('desktopOperations').some(item => item.workId === id && !item.appliedAt)) fail('An earlier write is still unconfirmed; inspect its original operation before another write', 409);
       if (['submitting', 'unknown'].includes(work.status)) fail('Resolve the existing unknown operation before sending another message', 409);
       const state = await this.request(this.path(work));
       if (state.stale || !state.currentTurn?.id) fail('Current turn is not confirmed; query before sending', 409);
+      if (verification && (work.operationId !== verification.operationId || state.threadId !== work.externalThreadId || state.threadId !== verification.threadId ||
+        state.currentTurn.id !== verification.turnId || turnStatus(state) !== 'completed'))
+        fail('Read-only verification requires the exact current completed turn', 409);
       await this.observe(id, state);
       const oldItems = [...(state.items || []), ...(work.snapshot?.items || [])];
       const inFlight = state.currentTurn.status === 'inProgress';
@@ -220,7 +233,7 @@ export class DesktopCodex {
           executionOperationId: inFlight ? work.executionOperationId || work.operationId : null,
           result: null, finishedAt: null, pendingProgress: inFlight ? this.require(id).pendingProgress : null,
           progressFloor: { turnId: state.currentTurn.id, itemIds: [...new Set(oldItems.map(item => item.id).filter(Boolean))],
-            eventCursor: work.eventCursor || null, acceptedAfter: now() } });
+            eventCursor: work.eventCursor || null, acceptedAfter: now() } }, Boolean(verification));
     });
   }
   async interrupt(id, input) {
@@ -240,7 +253,7 @@ export class DesktopCodex {
   }
   assertDesktop(work) { if (work.backend !== 'desktop' || !work.externalThreadId) fail('This binding has no confirmed Desktop thread; inspect its original operation', 409); }
   operation(work, operationId) { return this.store.get('desktopOperations', `${work.botId}:${work.id}:${operationId}`); }
-  async mutate(id, action, operationId, path, body, patch = {}) {
+  async mutate(id, action, operationId, path, body, patch = {}, verificationOnly = false) {
     const work = this.require(id); requireText(operationId, 'operationId');
     const previous = this.operation(work, operationId);
     if (previous) {
@@ -251,6 +264,7 @@ export class DesktopCodex {
     if (action === 'create' && this.store.list('desktopOperations').some(item => item.workId === id && item.action === 'create' && item.status !== 'failed')) fail('This work already has a create attempt; inspect or explicitly attach its actual thread instead of creating again', 409);
     const operation = this.store.transaction(() => {
       const operation = this.store.save('desktopOperations', { id: `${work.botId}:${id}:${operationId}`, workId: id, action, operationId, operationKey: randomUUID(), path, body, status: 'unknown', attemptedAt: null,
+        ...(verificationOnly ? { verificationOnly: true } : {}),
         previousExecution: action === 'send' ? Object.fromEntries(['operationId','operationKey','executionOperationId','turnId','previousTurnId','allowPreviousTurn','status','executionObservation','observationSignature','result','finishedAt','progressFloor','pendingProgress'].map(key => [key,work[key]??null])) : null });
       this.save({ id, ...patch, operationId, operationKey: operation.operationKey, executionObservation: null,
         status: action === 'interrupt' ? 'interrupt_requested' : 'submitting' });

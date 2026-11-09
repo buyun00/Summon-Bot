@@ -205,6 +205,14 @@ export async function startGateway(options={}) {
     if(controlTools.some(tool=>tool.name===name))return control.call(name,args,{actor});
     if(pin&&!control.permittedVersion(actor,pin.id,pin.version))fail('This capability version is not bound to the Bot',403);
     const context={actor,...(task?{taskId:task.id,workId:runtimeOperation?.workId||task.workId,mode:runtimeOperation?'work':taskMode(task),source}:{})};
+    if(name==='codex_send'&&args.verificationOnly===true){
+      const observation=task?.input;
+      if(task?.metadata?.sourceType!=='external'||task.metadata.finalizationOnly||observation?.source!=='codex-desktop-connector'||
+        observation.type!=='external_status'||observation.status!=='completed'||!observation.final?.confirmed||
+        !observation.operationId||!observation.turnId||!observation.externalThreadId)
+        fail('Read-only verification requires a confirmed final review of the bound work',409);
+      context.codexVerification={operationId:observation.operationId,turnId:observation.turnId,threadId:observation.externalThreadId};
+    }
     if(task&&name.startsWith('codex_')){
       const config=await manager.config(actor);
       context.codexScope=await manager.readState(actor,db=>{

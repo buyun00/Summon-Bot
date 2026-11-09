@@ -158,14 +158,35 @@ export class AppTools {
     if (!this.catalog.some(entry => entry.namespace === 'codex_app' && entry.name === tool)) throw new ApiError(501, 'unsupported_capability', `Desktop does not advertise ${tool}.`);
     if (!callerThreadId) throw new ApiError(503, 'caller_thread_required', 'Set callerThreadId to an existing local Codex chat for desktop tool context.');
     const id = randomUUID();
-    const response = await this.pipe.request({ jsonrpc: '2.0', id, method: 'tools/call', params: {
-      namespace: 'codex_app', tool, arguments: args, callerSource: 'codex', hostId: 'local',
-      threadId: callerThreadId, turnId: `desktop-api-${id}`, callId: `desktop-api-${id}`,
-    } }, this.config.requestTimeoutMs);
+    let response;
+    try {
+      response = await this.pipe.request({ jsonrpc: '2.0', id, method: 'tools/call', params: {
+        namespace: 'codex_app', tool, arguments: args, callerSource: 'codex', hostId: 'local',
+        threadId: callerThreadId, turnId: `desktop-api-${id}`, callId: `desktop-api-${id}`,
+      } }, this.config.requestTimeoutMs);
+    } catch (error) {
+      if (tool === 'create_thread' && error.code === 'desktop_error')
+        throw new ApiError(error.status, error.code, error.message, { outcome: 'unknown' });
+      throw error;
+    }
     const result = response.result;
     if (!result || result.success !== true) {
       const detail = result?.contentItems?.filter(item => typeof item.text === 'string').map(item => item.text).join('\n') || 'Desktop tool reported failure.';
-      throw new ApiError(/invalid arguments/.test(detail) ? 400 : 502, 'desktop_tool_failed', detail.slice(0, 4000));
+      if (tool === 'create_thread' && args.model) {
+        const catalogFailure = args.thinking ?
+          `create_thread could not validate reasoning effort "${args.thinking}" for model "${args.model}". Use a model and reasoning combination listed in the tool description, or omit thinking.` :
+          `create_thread could not validate model "${args.model}". Use a model listed in the tool description, or omit model.`;
+        // These native guards return before the creation routine is invoked.
+        if (detail === catalogFailure) throw new ApiError(503, 'desktop_model_preflight_unavailable',
+          `Desktop could not validate the requested model settings against its current catalog. Creation stopped during preflight. ${args.model}${args.thinking ? ` / ${args.thinking}` : ''}`);
+        const unsupported = `create_thread rejected unsupported model/reasoning combination: "${args.model}" does not support "${args.thinking}". `;
+        if (args.thinking && detail.startsWith(unsupported) &&
+          /^(This model supports no reasoning effort overrides\.|Supported reasoning efforts: [a-z, ]+\.)$/.test(detail.slice(unsupported.length)))
+          throw new ApiError(400, 'desktop_model_reasoning_unsupported', detail);
+      }
+      const invalid = tool === 'create_thread' ? detail.startsWith('create_thread invalid arguments') : /invalid arguments/.test(detail);
+      throw new ApiError(invalid ? 400 : 502, 'desktop_tool_failed', detail.slice(0, 4000),
+        tool === 'create_thread' && !invalid ? { outcome: 'unknown' } : undefined);
     }
     const content = result.contentItems ?? [];
     const texts = content.filter(item => item.type === 'inputText' || item.type === 'text').map(item => item.text);
