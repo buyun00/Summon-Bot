@@ -10,7 +10,7 @@ import { AttachmentStore,MAX_ATTACHMENT_REQUEST_BYTES } from '../chatroom/attach
 import { KnowledgeService } from '../knowledge/service.mjs';
 import { MemoryManagement } from '../memory-management/service.mjs';
 import { DesktopCodex } from '../codex/desktop.mjs';
-import { createFileTools } from '../filesystem/tools.mjs';
+import { createFileTools, MAX_FILE_REQUEST_BYTES } from '../filesystem/tools.mjs';
 import { createRedactor } from '../../bot/src/runtime/config.mjs';
 import { toolDefinitions, FILE_TOOLS } from '../gateway/tools.mjs';
 import { fail } from '../shared/validation.mjs';
@@ -198,7 +198,8 @@ export async function createCapability(options) {
     operations.resumeService=async()=>{await codex.start();return {ready:true};};
   }
   if(id==='bot-management')operations.resumeService=()=>{manager.quiescing=false;return {ready:true};};
-  return {tools,stateVersion:'1',operations,...(chatroom?{maxRequestBytes:MAX_ATTACHMENT_REQUEST_BYTES}:{}),
+  return {tools,stateVersion:'1',operations,...(chatroom?{maxRequestBytes:MAX_ATTACHMENT_REQUEST_BYTES}:
+    id==='filesystem'?{maxRequestBytes:MAX_FILE_REQUEST_BYTES}:{}),
     callTool:(name,args,context,signal)=>id==='filesystem'?invoke(name,args,context,signal):locked(()=>invoke(name,args,context,signal)),
     pendingWork:()=>chatroom?(chatroom.closed?0:Math.max(Number(chatroom.busy),chatroom.jobs().filter(job=>job.serviceVersion===version&&unfinished(job)).length)):codex?Number(Boolean(codex.active)):0,
     close:async()=>{await chatroom?.close();await codex?.stop();for(const db of stores.values())db.close();}

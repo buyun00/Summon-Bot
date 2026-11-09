@@ -88,7 +88,10 @@ export class BotStore {
   listMessages() { return this.list('messages'); }
   getTask(id) { return this.get('tasks', id); }
   listTasks({ status, limit = 100 } = {}) {
-    return this.list('tasks').filter(task => !status || task.status === status).slice(-Math.max(1, Math.min(10000, limit)));
+    const count = Math.max(1, Math.min(10000, Math.floor(Number(limit) || 100)));
+    const rows = status ? this.db.prepare('SELECT data FROM tasks WHERE status=? ORDER BY rowid DESC LIMIT ?').all(status, count) :
+      this.db.prepare('SELECT data FROM tasks ORDER BY rowid DESC LIMIT ?').all(count);
+    return rows.reverse().map(decode);
   }
   listUnfinishedTasks() {
     return this.db.prepare("SELECT data FROM tasks WHERE status NOT IN ('completed','failed','cancelled') ORDER BY rowid").all().map(decode);

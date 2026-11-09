@@ -7,13 +7,15 @@ import { createWebTools } from './web-tools.mjs';
 import { StringDecoder } from 'node:string_decoder';
 import { tmpdir } from 'node:os';
 import { finished } from 'node:stream/promises';
-import { truncateHead } from '../shared/truncate.mjs';
+import { MAX_ATTACHMENT_BYTES } from '../chatroom/attachments.mjs';
 import { cleanEnvironment, terminateTree, windowsProcessJob } from '../../bot/src/runtime/process-tools.mjs';
 import { assertPathPolicy, assertCommandPolicy, fileAccessDenied } from '../../bot/src/capabilities/file-policy.mjs';
 
-const MAX_FILE_BYTES = 1024 * 1024;
+const MAX_FILE_BYTES = 8 * 1024 * 1024;
+export const MAX_FILE_REQUEST_BYTES = 24 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 64 * 1024;
-const DEFAULT_LINES = 300;
+const READ_PAGE_BYTES = 128 * 1024;
+const DEFAULT_LINES = 600;
 const SKIP_DIRECTORIES = new Set(['node_modules', '.git', '.hg', '.svn']);
 const WINDOWS = process.platform === 'win32';
 const within = (root, path) => { const part = relative(root, path); return part === '' || (!part.startsWith(`..${WINDOWS ? '\\' : '/'}`) && part !== '..' && !isAbsolute(part)); };
@@ -37,6 +39,32 @@ function boundedInteger(value, fallback, minimum, maximum, name) {
 function textValue(value, name, allowEmpty = false) {
   if (typeof value !== 'string' || (!allowEmpty && !value.trim()) || value.includes('\0')) throw new Error(`${name} must be ${allowEmpty ? 'a' : 'a non-empty'} string without NUL`);
   return value;
+}
+
+function textPage(text, startLine, startColumn, maxLines) {
+  const lines = text.split(/\r?\n/), parts = [];
+  let line = startLine, column = startColumn, bytes = 0, endLine = Math.min(lines.length, startLine - 1), byteLimited = false;
+  for (; line <= lines.length && parts.length < maxLines; line++, column = 1) {
+    const row = lines[line - 1], part = row.slice(column - 1);
+    if (column > row.length + 1 || /^[\uDC00-\uDFFF]/.test(part)) throw new Error('Invalid UTF-16 column for this line');
+    const size = Buffer.byteLength(part);
+    if (bytes + size + (parts.length ? 1 : 0) > READ_PAGE_BYTES) {
+      byteLimited = true;
+      if (!parts.length) {
+        const buffer = Buffer.from(part);
+        let end = READ_PAGE_BYTES;
+        while ((buffer[end] & 0xc0) === 0x80) end--;
+        const fragment = buffer.subarray(0, end).toString('utf8');
+        parts.push(fragment); endLine = line; column += fragment.length;
+      }
+      break;
+    }
+    bytes += size + (parts.length ? 1 : 0);
+    parts.push(part); endLine = line;
+  }
+  const next = line <= lines.length ? { startLine: line, startColumn: column } : null;
+  return { content: parts.join('\n'), startLine, startColumn, endLine, totalLines: lines.length, truncated: Boolean(next), next,
+    ...(next ? { truncation: { by: byteLimited ? 'bytes' : 'lines', maxBytes: READ_PAGE_BYTES, maxLines } } : {}) };
 }
 
 function defaultRedact(value) {
@@ -282,7 +310,7 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
       const handle = await open(path, constants.O_RDONLY);
       try {
         const before = await handle.stat();
-        if (!before.isFile() || before.size > 20 * 1024 * 1024) throw new Error('Publish a regular file of at most 20 MiB');
+        if (!before.isFile() || before.size > MAX_ATTACHMENT_BYTES) throw new Error('Publish a regular file of at most 20 MiB');
         const bytes = await handle.readFile({ signal });
         const after = await handle.stat();
         if (before.size !== bytes.length || after.size !== before.size || after.mtimeMs !== before.mtimeMs || await realpath(path) !== path)
@@ -308,15 +336,13 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
       return { path, entries, truncated, listingPolicy: { protectedPathsOmitted: true, dependencyContentsExcluded: true,
         absenceIsNotConfirmed: true } };
     }),
-    tool('read_file', 'Read a UTF-8 text file, at most 1 MiB. Output is limited to 1000 lines and 64 KiB. Relative paths start in your workspace.', objectSchema({ path: stringSchema('File path'), startLine: integerSchema('First line, 1 based', 1, 10000000), maxLines: integerSchema('Maximum lines, default 300', 1, 1000) }, ['path']), async (args, signal) => {
+    tool('read_file', 'Read a page of an allowed UTF-8 text file up to 8 MiB. Use the returned next line and column to continue, including within a single long line. Relative paths start in your workspace.', objectSchema({ path: stringSchema('File path'), startLine: integerSchema('First line, 1 based', 1, 10000000), startColumn: integerSchema('First UTF-16 column, 1 based; use next.startColumn when paging', 1, MAX_FILE_BYTES + 1), maxLines: integerSchema('Maximum lines per page, default 600', 1, 2000) }, ['path']), async (args, signal) => {
       const path = await checkedPath(args.path);
       const startLine = boundedInteger(args.startLine, 1, 1, 10000000, 'startLine');
-      const maxLines = boundedInteger(args.maxLines, DEFAULT_LINES, 1, 1000, 'maxLines');
+      const startColumn = boundedInteger(args.startColumn, 1, 1, MAX_FILE_BYTES + 1, 'startColumn');
+      const maxLines = boundedInteger(args.maxLines, DEFAULT_LINES, 1, 2000, 'maxLines');
       const text = await readText(path, signal);
-      const lines = text.split(/\r?\n/);
-      const output = truncateHead(lines.slice(startLine - 1).join('\n'), { maxBytes: MAX_OUTPUT_BYTES, maxLines });
-      return { path, content: output.content, startLine, endLine: Math.min(lines.length, startLine + output.outputLines - 1), totalLines: lines.length,
-        truncated: output.truncated, ...(output.truncated ? { truncation: { by: output.truncatedBy, firstLineExceedsLimit: output.firstLineExceedsLimit, maxBytes: MAX_OUTPUT_BYTES, maxLines } } : {}) };
+      return { path, ...textPage(text, startLine, startColumn, maxLines) };
     }),
     tool('search_files', 'Search plain text in allowed UTF-8 files recursively without external commands; protected files and dependencies are excluded. Large and binary files are skipped.', objectSchema({ query: stringSchema('Literal text to find'), path: stringSchema('File or directory; defaults to workspace'), caseSensitive: { type: 'boolean' }, maxResults: integerSchema('Maximum matches, default 100', 1, 200) }, ['query']), async (args, signal) => {
       const query = textValue(args.query, 'query');
@@ -349,7 +375,7 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
     tool('write_file', 'Write a UTF-8 file atomically, creating parent directories. Existing files require overwrite:true. Returns the saved path and byte count after read-back.', objectSchema({ path: stringSchema('Destination file path'), content: stringSchema('Complete UTF-8 content, at most 1 MiB'), overwrite: { type: 'boolean', description: 'Explicitly allow replacing an existing file; default false' } }, ['path', 'content']), async (args, signal) => {
       const content = textValue(args.content, 'content', true);
       const bytes = Buffer.from(content);
-      if (bytes.length > MAX_FILE_BYTES) throw new Error('Content exceeds 1 MiB');
+      if (bytes.length > MAX_FILE_BYTES) throw new Error('Content exceeds 8 MiB');
       let path = await checkedPath(args.path, { operations: ['write'] });
       cancelled(signal);
       await mkdir(dirname(path), { recursive: true });
@@ -366,17 +392,17 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
       if (index < 0) throw new Error('oldText was not found; read the file before editing');
       if (original.indexOf(oldText, index + 1) >= 0) throw new Error('oldText is ambiguous; provide enough context for a unique match');
       const bytes = Buffer.from(original.slice(0, index) + newText + original.slice(index + oldText.length));
-      if (bytes.length > MAX_FILE_BYTES) throw new Error('Edited content exceeds 1 MiB');
+      if (bytes.length > MAX_FILE_BYTES) throw new Error('Edited content exceeds 8 MiB');
       cancelled(signal);
       path = await checkedPath(args.path, { operations: ['read', 'write'] });
       return { ...await saveVerified(path, bytes, signal, { overwrite: true, expected: original }), replacements: 1 };
     }, true),
-    tool('run_command', 'Execute a non-interactive shell command (PowerShell on Windows), with a timeout and capped output. File access refusals and explicit user file restrictions apply across tools, including shell/.NET, copies and renames. cwd is not an OS sandbox; commands run with host-user privileges. Do not access credentials or delete unrelated files.', objectSchema({ command: stringSchema('Shell command'), cwd: stringSchema('Allowed working directory; defaults to workspace'), timeoutMs: integerSchema('Timeout in milliseconds, default 30000', 100, 120000) }, ['command']), async (args, signal) => {
+    tool('run_command', 'Execute a non-interactive shell command (PowerShell on Windows), with a timeout and capped output. File access refusals and explicit user file restrictions apply across tools, including shell/.NET, copies and renames. cwd is not an OS sandbox; commands run with host-user privileges. Do not access credentials or delete unrelated files.', objectSchema({ command: stringSchema('Shell command'), cwd: stringSchema('Allowed working directory; defaults to workspace'), timeoutMs: integerSchema('Timeout in milliseconds, default 90000', 100, 240000) }, ['command']), async (args, signal) => {
       const command = textValue(args.command, 'command');
       if (command.length > 20000) throw new Error('command is too long');
       const cwd = await checkedPath(args.cwd, { directory: true });
       await assertCommandPolicy(command, cwd, accessPolicy, (path, operations) => checkedPath(path, { operations, alternative: true }));
-      const timeoutMs = boundedInteger(args.timeoutMs, 30000, 100, 120000, 'timeoutMs');
+      const timeoutMs = boundedInteger(args.timeoutMs, 90000, 100, 240000, 'timeoutMs');
       return runCommand(command, cwd, timeoutMs, signal, sanitize, saveArtifact, onArtifacts, tempRoot, containProcesses);
     }, true),
   ];

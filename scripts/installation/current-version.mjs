@@ -47,7 +47,7 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
   const { BotStore } = await import(pathToFileURL(join(releaseRoot, 'bot/src/storage/store.mjs')));
   const { BUILTIN_CAPABILITIES, capabilityForTool } = await import(pathToFileURL(join(releaseRoot, 'capabilities/services/builtin.mjs')));
   const { toolDefinitions } = await import(pathToFileURL(join(releaseRoot, 'capabilities/gateway/tools.mjs')));
-  const { controlTools } = await import(pathToFileURL(join(releaseRoot, 'capabilities/services/control.mjs')));
+  const { controlTools, bundledToolTimeout } = await import(pathToFileURL(join(releaseRoot, 'capabilities/services/control.mjs')));
   const { catalogTools } = await import(pathToFileURL(join(releaseRoot, 'capabilities/services/catalog.mjs')));
   const { CATALOG_MAINTAINER_TOOLS } = await import(pathToFileURL(join(releaseRoot, 'capabilities/bot-management/service.mjs')));
   const deployment = await readJson(join(dataRoot, 'config/deployment.json'));
@@ -117,7 +117,7 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
       config.tools = [...bundled.map(tool => {
         const owner = capabilityForTool(tool.name);
         return { ...tool, taskContext: true, type: 'http', method: 'POST', url: owner ? `${gatewayUrl}/capabilities/${owner}/versions/${buildId}/tools/${tool.name}` : `${gatewayUrl}/tools/${tool.name}`,
-          headers: { Authorization: `Bearer ${record.capabilityToken}` }, timeoutMs: tool.name === 'run_command' ? 130000 : 150000 };
+          headers: { Authorization: `Bearer ${record.capabilityToken}` }, timeoutMs: bundledToolTimeout(tool.name) };
       }), ...(record.maintenanceFor ? [] : config.tools.filter(tool => !names.has(tool.name)))];
       config.bundledToolNames = bundled.map(tool => tool.name);
     }

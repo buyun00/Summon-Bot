@@ -3,15 +3,17 @@ import { randomBytes,timingSafeEqual,randomUUID } from 'node:crypto';
 import { mkdir,writeFile,readFile } from 'node:fs/promises';
 import { join,resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
+import { Readable } from 'node:stream';
 import { setTimeout as pause } from 'node:timers/promises';
 import { PushService } from './push.mjs';
 import { RecordStore } from '../shared/store.mjs';
-import { IncrementalSync } from '../shared/sync.mjs';
+import { IncrementalSync, syncPages } from '../shared/sync.mjs';
 import { RunArtifactDownloads,projectRunArtifacts } from '../shared/run-artifacts.mjs';
 import { BotManager } from '../bot-management/service.mjs';
 import { tickRoutines } from '../bot-management/routines.mjs';
 import { ChatroomService } from '../chatroom/service.mjs';
 import { AttachmentStore,MAX_ATTACHMENT_REQUEST_BYTES } from '../chatroom/attachments.mjs';
+import { MAX_FILE_REQUEST_BYTES } from '../filesystem/tools.mjs';
 import { KnowledgeService } from '../knowledge/service.mjs';
 import { MemoryManagement } from '../memory-management/service.mjs';
 import { fail,required,now } from '../shared/validation.mjs';
@@ -116,7 +118,7 @@ export async function startGateway(options={}) {
     }return null;
   }
   const downloads=new RunArtifactDownloads({getRun:ownRun,resolveRoot:run=>({dataRoot,artifactRoot:join(manager.directory(run.botId),'artifacts')}),tempRoot:join(dataRoot,'capabilities','gateway','tmp','downloads')});
-  async function state() {
+  async function state({ previews = false } = {}) {
     const agentRuns=[],providers=[],botActivities=new Map();
     const guide=onboarding.record(),guideBotId=onboarding.bot()?.id;
     await Promise.all(manager.list().map(async bot=>{
@@ -124,16 +126,16 @@ export async function startGateway(options={}) {
       // historical task and reading every full tool result on every UI refresh.
       const snapshot=await manager.readState(bot.id,db=>{
         if(!db)return {tasks:[],counts:{},lastTools:{}};
-        return {tasks:db.listTasks().slice(-100),maintenance:db.getState('runtime','maintenanceActivities')?.value||[],
+        return {tasks:db.listTasks(),maintenance:db.getState('runtime','maintenanceActivities')?.value||[],
           waitingWork:db.listRecords('works').findLast(work=>work.status==='waiting'),
-          counts:Object.fromEntries(db.db.prepare('SELECT task_id,COUNT(*) AS count FROM tools GROUP BY task_id').all().map(row=>[row.task_id,row.count])),
+          counts:Object.fromEntries(db.db.prepare('SELECT task_id,COUNT(*) AS count FROM tools WHERE task_id IN (SELECT id FROM tasks ORDER BY rowid DESC LIMIT 100) GROUP BY task_id').all().map(row=>[row.task_id,row.count])),
           lastTools:Object.fromEntries(db.db.prepare(`SELECT task_id,
             COALESCE(json_extract(data,'$.name'),json_extract(data,'$.toolName')) AS name,
             json_extract(data,'$.status') AS status,
             COALESCE(json_extract(data,'$.args.path'),json_extract(data,'$.args.filePath')) AS path,
             COALESCE(json_extract(data,'$.args.to'),json_extract(data,'$.args.targetBotId'),json_extract(data,'$.args.toBotId'),json_extract(data,'$.args.botId'),json_extract(data,'$.args.childId')) AS targetBotId,
             json_extract(data,'$.startedAt') AS startedAt,json_extract(data,'$.finishedAt') AS finishedAt
-            FROM tools WHERE rowid IN (SELECT MAX(rowid) FROM tools GROUP BY task_id)`)
+            FROM tools WHERE rowid IN (SELECT MAX(rowid) FROM tools WHERE task_id IN (SELECT id FROM tasks ORDER BY rowid DESC LIMIT 100) GROUP BY task_id)`)
             .all().map(row=>[row.task_id,toolActivity(row)]))};
       });
       for(const task of snapshot.tasks)agentRuns.push({id:task.id||task.taskId,taskId:task.taskId||task.id,runId:task.runId,
@@ -153,14 +155,20 @@ export async function startGateway(options={}) {
       try{const health=await manager.request(bot.id,'/health',{signal:AbortSignal.timeout(2000)});if(health.engine?.provider)providers.push(health.engine.provider);}catch{}
     }));
     agentRuns.sort((a,b)=>String(a.createdAt||'').localeCompare(String(b.createdAt||'')));
-    const messages=chatroom.store.list('messages'),jobs=chatroom.jobs(),runtime={started:true,fast:{running:jobs.filter(job=>['running','accepted'].includes(job.status)).length,queued:jobs.filter(job=>job.status==='queued').length},deep:{running:0,queued:0},jobs:jobs.slice(-80).map(job=>Object.fromEntries(
+    const activity=chatroom.store.db.prepare(`SELECT data FROM records WHERE kind='messages' AND
+      (json_extract(data,'$.returnTo') IS NOT NULL OR json_extract(data,'$.peerReplyId') IS NOT NULL OR json_extract(data,'$.kind') IN ('event','work'))
+      ORDER BY created_at DESC,rowid DESC LIMIT 100`).all().reverse().map(row=>JSON.parse(row.data));
+    const jobs=chatroom.jobs(),runtime={started:true,fast:{running:jobs.filter(job=>['running','accepted'].includes(job.status)).length,queued:jobs.filter(job=>job.status==='queued').length},deep:{running:0,queued:0},jobs:jobs.slice(-80).map(job=>Object.fromEntries(
       ['id','roomId','botId','messageId','taskId','agentRunId','status','lane','label','retryOf','createdAt','updatedAt','finishedAt','error'].filter(key=>job[key]!==undefined).map(key=>[key,job[key]])))};
     const selection=modelConnections.runtimeModel();
     const latestProvider=selection?providers.filter(provider=>provider.connectionId===selection.id).sort((a,b)=>String(b.lastSuccessAt||'').localeCompare(String(a.lastSuccessAt||'')))[0]||{}:{};
     const configured=Boolean(selection&&((await modelConnections.credentials.read(selection.id).catch(()=>null))||selection.allowNoKey));
     const modelSettings=modelConnections.summary();
     modelSettings.chat.configured=configured;
-    return {historyEpoch,onboarding:await onboarding.publicState(),modelSettings,bots:manager.list().map(bot=>({...bot,activity:botActivities.get(bot.id)})),rooms:chatroom.rooms(),routines:manager.store.list('routines'),knowledge:knowledge.graph(),runtime,activity:messages.filter(message=>message.returnTo||message.peerReplyId||['event','work'].includes(message.kind)).slice(-100),works:[...await localWorks(),...codex.list().filter(work=>work.backend!=='desktop').map(work=>({...work,historical:true}))],agentRuns:agentRuns.slice(-100),provider:{configured,model:selection?.model||null,...latestProvider},defaultCwd};
+    const works=[...await localWorks(),...codex.list().filter(work=>work.backend!=='desktop').map(work=>({...work,historical:true}))];
+    const rows=previews?works.map(({id,workId,botId,roomId,goal,status,waitingLabel,createdAt,updatedAt,historical})=>
+      ({id,workId,botId,roomId,goal,status,waitingLabel,createdAt,updatedAt,historical})):works;
+    return {historyEpoch,onboarding:await onboarding.publicState(),modelSettings,bots:manager.list().map(bot=>({...bot,activity:botActivities.get(bot.id)})),rooms:chatroom.rooms(),routines:manager.store.list('routines'),knowledge:knowledge.graph(),runtime,activity,works:rows,agentRuns:agentRuns.slice(-100),provider:{configured,model:selection?.model||null,...latestProvider},defaultCwd};
   }
   function visibleTools(actor) {
     const allowed=actor==='controller'?null:manager.get(actor).allowedTools||[];
@@ -295,7 +303,7 @@ export async function startGateway(options={}) {
     if(method==='POST'&&(match=path.match(/^\/api\/catalog\/([^/]+)\/requests\/([^/]+)\/reconcile$/)))return catalog.reconcile(decodeURIComponent(match[1]),decodeURIComponent(match[2]),body);
     if(method==='GET'&&path==='/api/capabilities')return control.inventory();
     if(method==='POST'&&(match=path.match(/^\/api\/capabilities\/(register|deploy|activate|unload|grant|retire|retry|reconcile)$/)))return control.call(`capabilities_${match[1]}`,body);
-    if(method==='GET'&&path==='/api/state'){const value=await state();return params.get('sync')==='1'?{...sync.respond('workspace',value,params.get('since')),historyEpoch}:value;}
+    if(method==='GET'&&path==='/api/state'){const value=await state({previews:params.get('sync')==='1'});return params.get('sync')==='1'?{...sync.respond('workspace',value,params.get('since')),historyEpoch}:value;}
     if(method==='GET'&&path==='/api/bots')return {bots:manager.list()};
     if(method==='POST'&&path==='/api/bots')return manager.create(body);
     if((match=path.match(/^\/api\/bots\/([^/]+)\/contacts$/))){const id=decodeURIComponent(match[1]);if(method==='GET')return manager.contacts(id);if(method==='POST')return manager.connect(id,body.botId,{enabled:body.enabled??true});}
@@ -364,7 +372,13 @@ export async function startGateway(options={}) {
       if(actor!=='controller'&&(path.startsWith('/api/')||path.startsWith('/internal/')))fail('User API requires controller authentication',403);
       if(closing&&!path.startsWith('/internal/service/'))fail('Gateway is stopping; new requests are unavailable',503);
       if(req.method==='GET'&&path==='/api/stream'){res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-store',Connection:'keep-alive'});res.write('data: {"type":"connected"}\n\n');clients.add(res);req.on('close',()=>clients.delete(res));return;}
-      let body={};if(['POST','PATCH','PUT','DELETE'].includes(req.method)){const chunks=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>(['/api/attachments','/internal/service/invoke'].includes(path)?MAX_ATTACHMENT_REQUEST_BYTES:2*1024*1024))fail('Request too large',413);chunks.push(chunk);}body=JSON.parse(Buffer.concat(chunks).toString()||'{}');}
+      let body={};if(['POST','PATCH','PUT','DELETE'].includes(req.method)){
+        const limit=['/api/attachments','/internal/service/invoke'].includes(path)?MAX_ATTACHMENT_REQUEST_BYTES:
+          /^(?:\/capabilities\/[^/]+\/versions\/[^/]+)?\/tools\/(?:write_file|edit_file)$/.test(path)?MAX_FILE_REQUEST_BYTES:2*1024*1024;
+        const chunks=[];let size=0;
+        for await(const chunk of req){size+=chunk.length;if(size>limit)fail('Request too large',413);chunks.push(chunk);}
+        body=JSON.parse(Buffer.concat(chunks).toString()||'{}');
+      }
       if(req.method==='POST'&&path==='/internal/bots/stop-all')return json(res,200,await stopBots(body));
       if(req.method==='POST'&&path==='/internal/service/tools')return json(res,200,control.tools(manager.get(body.botId)));
       if(req.method==='POST'&&path==='/internal/service/invoke')return json(res,200,await rpc(body.capability,body.operation,body.args||[]));
@@ -387,7 +401,11 @@ export async function startGateway(options={}) {
       }
       const attachment=path.match(/^\/api\/attachments\/([^/]+)(\/(?:preview|view))?$/);if(attachment&&['GET','HEAD'].includes(req.method)){const file=await attachments.read(attachment[1],attachment[2]==='/view'?'view':Boolean(attachment[2]));res.writeHead(200,file.headers);res.end(req.method==='HEAD'?undefined:file.bytes);return;}
       const artifact=path.match(/^\/api\/agent-runs\/([^/]+)\/tools\/([^/]+)\/artifacts\/([^/]+)$/);if(artifact&&['GET','HEAD'].includes(req.method)){if(requestUrl.search)fail('Artifact IDs only',404);const file=await downloads.read(...artifact.slice(1).map(decodeURIComponent));try{res.writeHead(200,file.headers);if(req.method==='HEAD'||file.size===0)res.end();else await pipeline(file.handle.createReadStream({autoClose:false,start:0,end:file.size-1}),res);}finally{await file.close();}return;}
-      const result=await handleApi(req.method,path,body,requestUrl.searchParams);if(result===undefined)fail('Not found',404);json(res,200,result);
+      const result=await handleApi(req.method,path,body,requestUrl.searchParams);if(result===undefined)fail('Not found',404);
+      if(req.method==='GET'&&result.sync&&requestUrl.searchParams.get('pages')==='1'){
+        res.writeHead(200,{'Content-Type':'application/x-ndjson; charset=utf-8','Cache-Control':'private, no-store, no-transform'});
+        await pipeline(Readable.from(syncPages(result)),res);
+      }else json(res,200,result);
     }catch(error){if(!res.headersSent)json(res,error.status||400,{error:catalog.clean(String(error.message)),...(error.code?{code:error.code}:{}),...(error.outcomeUnknown?{outcomeUnknown:true}:{}),...(error.accessDenial?{accessDenial:JSON.parse(catalog.clean(JSON.stringify(error.accessDenial)))}:{})});else res.end();}
   })();pending.add(work);void work.catch(error=>console.error('Gateway request failed:',error.stack||error.message)).finally(()=>pending.delete(work));});
   async function stopIdleWorkers() {

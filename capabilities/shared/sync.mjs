@@ -7,6 +7,28 @@ const emptyPatch = () => ({ values: {}, collections: {} });
 const equal = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 const atPath = (value, path) => path.split('.').reduce((parent, key) => parent?.[key], value);
 
+// A transport page belongs to one captured snapshot or patch. A client only
+// advances its existing cursor after it has received the matching end frame.
+export function* syncPages(value) {
+  const { snapshot, patch, ...header } = value;
+  const field = snapshot ? 'snapshot' : 'patch';
+  const line = item => JSON.stringify(item) + '\n';
+  function* branch(path, data, depth = 0) {
+    if (Array.isArray(data) && data.length) {
+      for (let index = 0; index < data.length; index += 64)
+        yield line({ path, append: data.slice(index, index + 64) });
+    } else if (data && typeof data === 'object' && !Array.isArray(data) && depth > 0 && Object.keys(data).length) {
+      for (const [key, child] of Object.entries(data)) yield* branch([...path, key], child, depth - 1);
+    } else yield line({ path, value: data });
+  }
+  yield line({ header, field });
+  for (const [key, data] of Object.entries(snapshot || patch)) {
+    const depth = field === 'patch' && key === 'collections' ? 2 : field === 'snapshot' && ['knowledge', 'runtime'].includes(key) ? 1 : 0;
+    yield* branch([key], data, depth);
+  }
+  yield line({ end: value.sync.cursor });
+}
+
 // Group scalar/object branches separately from record collections. In particular,
 // changing a lane counter never resends runtime.jobs or the entire workspace.
 function valuesOf(snapshot, collectionPaths) {
@@ -84,9 +106,9 @@ function readCursor(cursor) {
 
 /** Durable transport cache; never modifies the underlying business records. */
 export class IncrementalSync {
-  constructor(store, { historyLimit = 256 } = {}) {
+  constructor(store, { historyLimit = 1024 } = {}) {
     this.store = store;
-    this.historyLimit = Math.max(1, Math.min(4096, Math.floor(Number(historyLimit) || 256)));
+    this.historyLimit = Math.max(1, Math.min(4096, Math.floor(Number(historyLimit) || 1024)));
     store.db.exec(`
       CREATE TABLE IF NOT EXISTS sync_scopes_v1 (
         scope TEXT PRIMARY KEY, epoch TEXT NOT NULL, revision INTEGER NOT NULL, snapshot TEXT NOT NULL

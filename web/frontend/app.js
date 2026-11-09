@@ -289,7 +289,7 @@ async function sendLocalMessage(entry, scrollToEnd = false) {
     render(); scheduleRefresh();
   }
 }
-let refreshTimer;
+let refreshTimer, syncRetryAt = 0, syncRetryDelay = 0;
 const avatarSaves = new Map();
 let avatarSaveEpoch = 0;
 ui.avatarSelectionRevision = 0;
@@ -326,22 +326,71 @@ function toast(message, error = false) {
   while ($('#toasts').children.length > 3) $('#toasts').firstElementChild.remove();
   setTimeout(() => node.remove(), error ? 10000 : 4000);
 }
-async function api(path, method = 'GET', body) {
+async function readSyncBody(response, progress) {
+  if (!response.body) return response.json();
+  const reader = response.body.getReader(), decoder = new TextDecoder(), chunks = [];
+  const paged = response.headers.get('content-type')?.includes('application/x-ndjson');
+  let line = '', data, payload, ended = false;
+  const frame = value => {
+    const part = JSON.parse(value);
+    if (ended) throw new SyntaxError('Unexpected page after sync cursor');
+    if (!data) {
+      if (!part.header?.sync?.cursor || !['snapshot', 'patch'].includes(part.field)) throw new SyntaxError('Missing sync header');
+      payload = {}; data = { ...part.header, [part.field]: payload }; return;
+    }
+    if (part.end) {
+      if (part.end !== data.sync.cursor) throw new SyntaxError('Sync cursor changed during read');
+      ended = true; return;
+    }
+    if (!Array.isArray(part.path) || !part.path.length || part.path.some(key =>
+      typeof key !== 'string' || ['__proto__', 'prototype', 'constructor'].includes(key))) throw new SyntaxError('Invalid sync page');
+    const key = part.path.at(-1);
+    const parent = part.path.slice(0, -1).reduce((item, child) => item[child] ||= {}, payload);
+    if (Array.isArray(part.append)) (parent[key] ||= []).push(...part.append);
+    else parent[key] = part.value;
+  };
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      progress();
+      const text = decoder.decode(value, { stream: true });
+      if (!paged) { chunks.push(text); continue; }
+      const lines = (line + text).split('\n');
+      line = lines.pop();
+      for (const value of lines) if (value) frame(value);
+    }
+    const tail = decoder.decode();
+    if (!paged) { chunks.push(tail); return JSON.parse(chunks.join('')); }
+    if ((line + tail).trim() || !ended) throw new SyntaxError('Incomplete sync snapshot');
+    return data;
+  } finally { reader.releaseLock(); }
+}
+async function api(path, method = 'GET', body, { sync = false } = {}) {
   for (let attempt = 0; ; attempt++) {
     let response, data;
+    const controller = new AbortController();
+    let timer;
+    const deadline = ms => {
+      clearTimeout(timer);
+      timer = setTimeout(() => controller.abort(new DOMException('Read timed out', 'TimeoutError')), ms);
+    };
     try {
-      response = await fetch(path, { method, headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(method === 'GET' ? 30000 : 120000) });
+      deadline(sync ? 90000 : method === 'GET' ? 60000 : 120000);
+      response = await fetch(path, { method, headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), signal: controller.signal });
       if (response.status === 401) { location.replace('/'); throw new Error('请重新输入访问 Token'); }
-      data = await response.json();
+      if (sync) { deadline(90000); data = await readSyncBody(response, () => deadline(90000)); }
+      else data = await response.json();
     } catch (error) {
+      const timedOut = controller.signal.reason?.name === 'TimeoutError' || /Timeout|Abort/.test(error.name);
+      controller.abort();
       const transportFailure = ['TimeoutError', 'AbortError', 'TypeError', 'SyntaxError'].includes(error.name);
       console.warn('Summon response could not be read', {path:path.split('?')[0],status:response?.status,errorType:error.name,attempt});
-      // Only retry an idempotent read of the same cursor. A failed response
-      // body is not evidence that a submitted message/write was rejected.
-      if (method === 'GET' && attempt === 0 && transportFailure && (!response || response.ok)) continue;
+      // Snapshot retries are scheduled separately using the last applied cursor.
+      if (!sync && method === 'GET' && attempt === 0 && transportFailure && (!response || response.ok)) continue;
       if (!transportFailure) throw error;
-      throw new Error(`${/Timeout|Abort/.test(error.name) ? '同步超时' : error.name === 'TypeError' ? '响应传输未完成' : '响应内容无法读取'}${response ? `（${response.status}）` : ''}，请重新连接`);
-    }
+      throw new Error(`${timedOut ? '同步超时' : error.name === 'TypeError' ? '响应传输未完成' : '响应内容无法读取'}${response ? `（${response.status}）` : ''}，请重新连接`);
+    } finally { clearTimeout(timer); }
     if (!response.ok) throw new Error(data.error?.message || data.error || `请求失败（${response.status}）`);
     return data;
   }
@@ -601,6 +650,7 @@ function renderAgentRun(run, { showBot = false } = {}) {
 }
 async function refresh(force = false) {
   if (ui.cacheBootPromise && !ui.cacheReady) await ui.cacheBootPromise;
+  if (force) { clearTimeout(refreshTimer); refreshTimer = null; syncRetryAt = 0; }
   if (ui.refreshing) { ui.refreshAgain = true; return; }
   ui.refreshing = true;
   try {
@@ -622,8 +672,14 @@ async function refresh(force = false) {
     // Publish the workspace immediately; a slow room GET must not blank the list.
     ui.loading = false; render();
     await loadCurrent();
+    syncRetryAt = syncRetryDelay = 0;
     ui.loading = false; showConnection(ui.streamConnected ? '' : '正在通过定时刷新同步工作区。'); render();
-  } catch (error) { showConnection(`无法读取最新状态：${error.message}。正在自动重连，已显示的消息与草稿会保留。`); if (ui.loading) $('#main-content').innerHTML = emptyState('暂时无法打开工作空间', error.message, '<button class="primary-button" data-action="refresh">重新连接</button>', 'info'); }
+  } catch (error) {
+    syncRetryDelay = Math.min(30000, syncRetryDelay ? syncRetryDelay * 2 : 2000); syncRetryAt = Date.now() + syncRetryDelay;
+    clearTimeout(refreshTimer); refreshTimer = null; scheduleRefresh();
+    showConnection(`无法读取最新状态：${error.message}。正在自动重连，已显示的消息与草稿会保留。`);
+    if (ui.loading) $('#main-content').innerHTML = emptyState('暂时无法打开工作空间', error.message, '<button class="primary-button" data-action="refresh">重新连接</button>', 'info');
+  }
   finally { ui.refreshing = false; if (ui.refreshAgain) { ui.refreshAgain = false; scheduleRefresh(); } }
 }
 async function loadCurrent() {
@@ -725,7 +781,7 @@ async function requestSyncedSnapshot(path, previous) {
   const cache = globalThis.SummonCache;
   const read = async cursor => {
     const generation = ui.historyGeneration || 0;
-    const response = await api(cache ? `${path}?sync=1${cursor ? `&since=${encodeURIComponent(cursor)}` : ''}` : path);
+    const response = await api(cache ? `${path}?sync=1&pages=1${cursor ? `&since=${encodeURIComponent(cursor)}` : ''}` : path, 'GET', undefined, { sync: true });
     if (!await acceptHistoryEpoch(response, generation)) return null;
     return response;
   };
@@ -791,7 +847,7 @@ async function restoreCachedWorkspace() {
   } catch { /* An unreadable local cache must not prevent network recovery. */ }
   finally { ui.cacheReady = true; if (!ui.loading) render(); else renderTopbar(); }
 }
-function scheduleRefresh() { if (refreshTimer) return; refreshTimer = setTimeout(() => { refreshTimer = null; void refresh(); }, 230); }
+function scheduleRefresh() { if (refreshTimer || !navigator.onLine) return; refreshTimer = setTimeout(() => { refreshTimer = null; void refresh(); }, Math.max(230, syncRetryAt - Date.now())); }
 function onboardingBindings() {
   return { api, render, refresh,
     show() { ui.menu = null; ui.view = 'chat'; ui.mobileRoom = true; ui.detailOpen = false; location.hash = 'chat'; },
