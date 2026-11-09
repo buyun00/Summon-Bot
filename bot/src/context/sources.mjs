@@ -362,6 +362,11 @@ export class RuntimeSources {
         const item = savedWorkEvidence(message, reference.index);
         if (!item?.reference) throw new Error('Saved work evidence item not found');
         raw = JSON.stringify(item); author = item.author; source = item.reference;
+      } else if (reference.section === 'toolContent') {
+        const block = message.content?.[0];
+        if (message.role !== 'toolResult' || message.toolName !== 'codex_read' || message.isError || block?.type !== 'text')
+          throw new Error('Saved Desktop history tool content not found');
+        raw = block.text; author = 'runtime'; source = { tool: message.toolName, toolCallId: message.toolCallId };
       } else {
         raw = JSON.stringify(message); author = message.source?.actor || message.role; source = message.source;
       }

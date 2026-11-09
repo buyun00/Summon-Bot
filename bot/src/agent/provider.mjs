@@ -118,7 +118,8 @@ export class ModelProvider {
           if (deadline.signal.aborted) throw deadline.signal.reason;
           if (signal.aborted && event.type !== 'error') signal.throwIfAborted();
           if (event.type.endsWith('_delta') && event.delta?.length) {
-            record.firstProgressAt ||= new Date().toISOString();
+            record.lastProgressAt = new Date().toISOString();
+            record.firstProgressAt ||= record.lastProgressAt;
             waitFor('stream-idle', idleWaitMs);
           }
           if (event.type === 'done' || event.type === 'error') {
