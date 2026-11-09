@@ -27,9 +27,9 @@ export class FrameDecoder {
 }
 
 export class FramedPipe extends EventEmitter {
-  constructor(path, { maxBytes, timeoutMs = 15000 } = {}) {
+  constructor(path, { maxBytes, timeoutMs = 15000, connectTimeoutMs = timeoutMs } = {}) {
     super();
-    this.path = path; this.timeoutMs = timeoutMs; this.decoder = new FrameDecoder(maxBytes);
+    this.path = path; this.timeoutMs = timeoutMs; this.connectTimeoutMs = connectTimeoutMs; this.decoder = new FrameDecoder(maxBytes);
     this.pending = new Map(); this.connected = false;
   }
   async connect() {
@@ -38,7 +38,7 @@ export class FramedPipe extends EventEmitter {
     this.connecting = new Promise((resolve, reject) => {
       this.decoder.buffer = Buffer.alloc(0);
       const socket = this.socket = net.createConnection(this.path);
-      const timer = setTimeout(() => socket.destroy(new Error('Connection timed out.')), this.timeoutMs);
+      const timer = setTimeout(() => socket.destroy(new Error('Connection timed out.')), this.connectTimeoutMs);
       socket.once('connect', () => { clearTimeout(timer); this.connected = true; resolve(); });
       socket.on('data', chunk => {
         try { for (const message of this.decoder.push(chunk)) this.receive(message); }

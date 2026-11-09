@@ -14,7 +14,8 @@ export class DesktopIpc extends EventEmitter {
     this.connecting = (async () => {
       if (process.platform !== 'win32' && !this.config.ipcPipe) throw unavailable('Configure the running Codex desktop IPC socket (ipcPipe).');
       this.clientId = 'initializing-client';
-      const pipe = new FramedPipe(this.config.ipcPipe || '\\\\.\\pipe\\codex-ipc', { timeoutMs: this.config.requestTimeoutMs });
+      const pipe = new FramedPipe(this.config.ipcPipe || '\\\\.\\pipe\\codex-ipc',
+        { timeoutMs: this.config.requestTimeoutMs, connectTimeoutMs: this.config.connectTimeoutMs });
       this.pipe?.close(); this.pipe = pipe;
       pipe.on('message', message => {
         if (message.type === 'client-discovery-request') pipe.send({ type: 'client-discovery-response', requestId: message.requestId, response: { canHandle: false } });
@@ -35,7 +36,7 @@ export class DesktopIpc extends EventEmitter {
   }
   async owner(threadId, hostId = 'local') {
     await this.connect();
-    return (await this.request('thread-owner-discovery', { hostId, conversationId: threadId }, undefined, 'local', 6000)).handledByClientId;
+    return (await this.request('thread-owner-discovery', { hostId, conversationId: threadId }, undefined, 'local', 15000)).handledByClientId;
   }
   broadcast(method, params, targetClientIds) {
     this.pipe.send({ type: 'broadcast', method, sourceClientId: this.clientId, version: IPC_VERSIONS[method] || 0, params, ...(targetClientIds ? { targetClientIds } : {}) });
@@ -48,7 +49,7 @@ export class DesktopIpc extends EventEmitter {
   unfollow(threadId, hostId, owner) {
     if (this.pipe?.connected) this.broadcast('thread-stream-following-changed', { conversationId: threadId, hostId, following: false, targetClientIds: [owner] }, [owner]);
   }
-  async permissionSnapshot(threadId, timeoutMs = 3000) {
+  async permissionSnapshot(threadId, timeoutMs = 12000) {
     const owner = await this.owner(threadId);
     // Keep the selected context loaded while the bridge uses it. A new follow
     // requests a fresh snapshot; cached history is not permission evidence.
@@ -69,7 +70,7 @@ export class DesktopIpc extends EventEmitter {
         if (state?.id !== threadId || !state.currentPermissions) return finish(new ApiError(502, 'permissions_unavailable', 'Desktop did not supply current permissions.'));
         finish(null, { threadId, owner, cwd: state.cwd, permissions: state.currentPermissions });
       };
-      const timer = setTimeout(() => finish(new ApiError(503, 'permissions_unavailable', 'Desktop did not provide a fresh permission snapshot. No message was sent.')), timeoutMs);
+      const timer = setTimeout(() => finish(new ApiError(503, 'permissions_unavailable', 'Desktop did not provide a fresh permission snapshot.')), timeoutMs);
       this.on('broadcast', onMessage); this.on('disconnected', onDisconnect);
       try {
         this.unfollow(threadId, 'local', owner);

@@ -130,11 +130,11 @@ export function createServer({ config, tools, broker, store, openapi }) {
       let action;
       if (request.method === 'POST' && url.pathname === '/v1/threads') {
         query(url, []); const body = v.createBody(await readBody(request));
-        action = { body, run: async () => ({ status: 201, body: await tools.call('create_thread', body) }) };
+        action = { body, laterReceipt: true, run: async phase => ({ status: 201, body: await tools.call('create_thread', body, phase) }) };
       } else if (id && request.method === 'POST' && suffix === 'messages') {
         query(url, []); const body = v.object(await readBody(request), ['message', 'hostId', 'model', 'thinking']);
         v.string(body.message, 'message', 100000); const hostId = v.hostId(body.hostId); v.modelOptions(body);
-        action = { body, lock: `${hostId}:${id}`, run: async () => ({ status: 202, body: await tools.call('send_message_to_thread', { threadId: id, hostId, prompt: body.message, ...(body.model ? { model: body.model } : {}), ...(body.thinking ? { thinking: body.thinking } : {}) }) }) };
+        action = { body, laterReceipt: true, lock: `${hostId}:${id}`, run: async phase => ({ status: 202, body: await tools.call('send_message_to_thread', { threadId: id, hostId, prompt: body.message, ...(body.model ? { model: body.model } : {}), ...(body.thinking ? { thinking: body.thinking } : {}) }, phase) }) };
       } else if (id && request.method === 'POST' && suffix === 'interrupt') {
         query(url, []); const body = v.object(await readBody(request), ['hostId', 'expectedTurnId']);
         v.string(body.expectedTurnId, 'expectedTurnId', 128); const hostId = v.hostId(body.hostId);
@@ -148,16 +148,42 @@ export function createServer({ config, tools, broker, store, openapi }) {
         action = { body, lock: `${hostId}:${id}`, run: async () => ({ status: 200, body: await tools.call(suffix === 'read-state' ? 'set_thread_read_state' : 'set_thread_archived', { threadId: id, hostId, ...(suffix === 'read-state' ? { read: body.read } : { archived: suffix === 'archive' }) }) }) };
       }
       if (!action) throw new ApiError(404, 'not_found', 'API route not found.');
-      const operation = store.mutate(request.headers['idempotency-key'], { method: request.method, path: url.pathname, body: action.body }, async () => {
+      let posted = false, preflightExpired = false, acknowledgement;
+      const beforeWriteTimeout = () => new ApiError(503, 'desktop_preflight_timeout', 'Desktop preflight did not finish in time. The bridge stopped before sending the native write.');
+      const operation = store.mutate(request.headers['idempotency-key'], { method: request.method, path: url.pathname, body: action.body }, async report => {
         if (action.lock && inFlight.has(action.lock)) throw new ApiError(409, 'thread_busy', 'Another API operation is in flight for this thread.');
         if (action.lock) inFlight.add(action.lock);
-        try { return await action.run(); } finally { if (action.lock) inFlight.delete(action.lock); }
+        try {
+          return await action.run((phase, detail) => {
+            if (preflightExpired) throw beforeWriteTimeout();
+            report(phase, detail);
+            if (phase === 'desktop-write') posted = true;
+          });
+        } catch (error) {
+          if (preflightExpired) throw beforeWriteTimeout();
+          if (action.laterReceipt && !posted) {
+            if (error.details?.outcome === 'unknown')
+              throw new ApiError(503, 'desktop_preflight_unavailable', 'Desktop preflight was interrupted before the native write was sent.');
+            if (error.status === 503)
+              throw new ApiError(error.status, error.code, error.message, { ...error.details, outcome: 'not-submitted' });
+          }
+          throw error;
+        } finally { if (action.lock) inFlight.delete(action.lock); }
       });
       pendingOperations.add(operation);
-      let result;
-      try { result = await operation; } finally { pendingOperations.delete(operation); }
-      json(response, result.status, result.body, { 'Idempotency-Replayed': String(result.replayed) });
+      const forget = () => pendingOperations.delete(operation);
+      operation.then(forget, forget);
+      try {
+        const result = !action.laterReceipt ? await operation : await Promise.race([operation, new Promise((_, reject) => {
+          acknowledgement = setTimeout(() => {
+            if (!posted) { preflightExpired = true; reject(beforeWriteTimeout()); return; }
+            reject(new ApiError(504, 'desktop_ack_pending', 'Desktop confirmation is pending. Check this original operation key; do not submit again.', { outcome: 'unknown' }));
+          }, config.acknowledgementTimeoutMs);
+        })]);
+        if (!response.destroyed) json(response, result.status, result.body, { 'Idempotency-Replayed': String(result.replayed) });
+      } finally { clearTimeout(acknowledgement); }
     } catch (error) {
+      if (response.destroyed) return;
       if (!response.headersSent) json(response, error.status || 500, { error: publicError(error), requestId });
       else response.destroy();
       if (!error.status) console.error(JSON.stringify({ level: 'error', requestId, message: error.message }));

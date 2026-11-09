@@ -46,9 +46,17 @@ export class Store {
     }
     const now = new Date().toISOString();
     this.db.prepare('INSERT INTO operations VALUES(?,?,?,?,?,?,?)').run(key, hash, 'pending', null, null, now, now);
-    let status, body, state;
-    try { const result = await action(); status = result.status ?? 200; body = result.body; state = 'completed'; }
-    catch (error) { status = error.status || 500; body = { error: publicError(error) }; state = error.details?.outcome === 'unknown' ? 'unknown' : 'failed'; }
+    let status, body, state, progress;
+    const report = (phase, detail) => {
+      progress = { phase, ...detail, at: new Date().toISOString() };
+      this.db.prepare("UPDATE operations SET result=?,updated_at=? WHERE key=? AND state='pending'")
+        .run(JSON.stringify({ progress }), progress.at, key);
+    };
+    try { const result = await action(report); status = result.status ?? 200; body = result.body; state = 'completed'; }
+    catch (error) {
+      status = error.status || 500; body = { error: publicError(error), ...(progress ? { progress } : {}) };
+      state = error.details?.outcome === 'unknown' ? 'unknown' : 'failed';
+    }
     this.db.prepare('UPDATE operations SET state=?,status=?,result=?,updated_at=? WHERE key=?').run(state, status, JSON.stringify(body), new Date().toISOString(), key);
     return { status, body, replayed: false };
   }

@@ -59,7 +59,8 @@ export class AppTools {
     if (this.pipe?.connected && this.catalog.length) return;
     if (this.connecting) return this.connecting;
     this.connecting = (async () => {
-      const pipe = new FramedPipe(discoverToolsPipe(this.config.toolsPipe), { maxBytes: 8 * 1024 * 1024, timeoutMs: this.config.requestTimeoutMs });
+      const pipe = new FramedPipe(discoverToolsPipe(this.config.toolsPipe), { maxBytes: 8 * 1024 * 1024,
+        timeoutMs: this.config.requestTimeoutMs, connectTimeoutMs: this.config.connectTimeoutMs });
       this.pipe?.close(); this.pipe = pipe;
       await pipe.connect();
       const response = await pipe.request({ jsonrpc: '2.0', id: randomUUID(), method: 'tools/list', params: { threadStartKind: 'all' } });
@@ -68,14 +69,22 @@ export class AppTools {
     })().finally(() => { this.connecting = null; });
     return this.connecting;
   }
-  async call(tool, args = {}) {
+  async call(tool, args = {}, phase) {
     assertExecutorConnected(this.config);
     if (tool === 'create_thread') {
-      const operation = this.createQueue.then(() => this.createWithDesktopDefaults(args));
-      this.createQueue = operation.catch(() => {});
-      return operation;
+      phase?.('queued');
+      let release;
+      const prior = this.createQueue;
+      this.createQueue = new Promise(resolve => { release = resolve; });
+      // Serialize the shared permission context until the native call is
+      // posted. Each submitted RPC owns its own later response and readback.
+      return prior.then(() => this.createWithDesktopDefaults(args, (stage, detail) => {
+        phase?.(stage, detail);
+        if (stage === 'desktop-write') release();
+      })).finally(release);
     }
-    return this.callDesktopTool(tool, args);
+    phase?.('connect');
+    return this.callDesktopTool(tool, args, this.config.callerThreadId, phase);
   }
   async verifyPermissions() {
     if (!this.config.callerThreadId) throw unavailable('请填写一个使用当前默认权限的本机 Codex 会话 ID。');
@@ -109,15 +118,20 @@ export class AppTools {
     const threads = [...(catalog.threads || []), ...(catalog.pinnedThreads || [])]
       .filter(thread => (thread.hostId ?? 'local') === 'local' && (thread.kind ?? 'codex') === 'codex')
       .sort((a, b) => Number(b.status === 'active') - Number(a.status === 'active'));
-    for (const thread of threads.slice(0, 12)) {
+    const deadline = Date.now() + 120000;
+    for (const thread of threads) {
+      if (Date.now() >= deadline) break;
       const context = await tryContext(thread.id); if (context) return context;
     }
     throw new ApiError(503, 'permission_context_unavailable', 'No loaded desktop context matches the desktop default permissions. Open a local Codex chat using those defaults and try again. No chat or message was created.');
   }
-  async createWithDesktopDefaults(args) {
+  async createWithDesktopDefaults(args, phase) {
+    phase?.('connect');
     await this.connect();
+    phase?.('permission-context');
     const expected = this.readPermissionDefault();
     const context = await this.permissionContext(expected);
+    phase?.('project');
     const directory = args.target?.type === 'directory' ? await resolveDirectoryTarget(args.target.cwd, () => this.callDesktopTool('list_projects')) : null;
     if (directory) args = { ...args, target: { type: 'project', projectId: directory.projectId, environment: { type: 'local' } } };
     if (args.target?.type === 'project') {
@@ -128,6 +142,7 @@ export class AppTools {
     }
     // These checks precede the one native creation request. Never send the
     // user's prompt and then try to repair permissions on an active turn.
+    phase?.('permission-before-write');
     if (!isDeepStrictEqual(expected, this.readPermissionDefault())) throw new ApiError(409, 'desktop_defaults_changed', 'Desktop permission defaults changed during creation preflight. No message was sent.');
     const fresh = await this.permissionIpc.permissionSnapshot(context.threadId);
     if (!matchesPermissionDefault(fresh.permissions, expected)) {
@@ -135,14 +150,18 @@ export class AppTools {
       throw new ApiError(409, 'permission_context_changed', 'Desktop context permissions changed before creation. No message was sent.');
     }
     this.heldPermissionContext = fresh;
-    const result = await this.callDesktopTool('create_thread', args, context.threadId);
+    const result = await this.callDesktopTool('create_thread', args, context.threadId, phase);
     if (!result.threadId || (result.hostId ?? 'local') !== 'local') throw new ApiError(502, 'creation_unconfirmed', 'Desktop did not confirm a local chat id. Inspect the operation before any further write.', { outcome: 'unknown', desktopResult: result });
     let observed;
-    try { observed = await this.permissionIpc.permissionSnapshot(result.threadId); }
+    phase?.('permission-readback', { threadId: result.threadId });
+    try { observed = await this.permissionIpc.permissionSnapshot(result.threadId, 60000); }
     catch { throw new ApiError(502, 'created_permissions_unconfirmed', 'Chat creation was accepted but permission verification is unavailable. Do not resubmit.', { outcome: 'unknown', threadId: result.threadId, firstMessageSubmitted: true }); }
     finally { if (observed) this.permissionIpc.unfollow(result.threadId, 'local', observed.owner); }
     if (!matchesPermissionDefault(observed.permissions, expected)) throw new ApiError(502, 'created_permissions_mismatch', 'Desktop did not inherit the verified context permissions. Do not resubmit or assume full access.', { outcome: 'unknown', threadId: result.threadId, firstMessageSubmitted: true });
-    if (directory && !await matchesDirectoryTarget(observed.cwd, directory.cwd)) throw new ApiError(502, 'created_directory_mismatch', 'The created chat did not confirm the authorized directory. Inspect this thread; do not resubmit.', { outcome: 'unknown', threadId: result.threadId, firstMessageSubmitted: true });
+    if (directory) {
+      phase?.('directory-readback', { threadId: result.threadId });
+      if (!await matchesDirectoryTarget(observed.cwd, directory.cwd)) throw new ApiError(502, 'created_directory_mismatch', 'The created chat did not confirm the authorized directory. Inspect this thread; do not resubmit.', { outcome: 'unknown', threadId: result.threadId, firstMessageSubmitted: true });
+    }
     return { ...result, ...(directory ? { directoryTarget: directory } : {}), permissionInheritance: { source: 'desktop_default', mode: expected.mode, profileId: expected.profileId, approvalPolicy: expected.approvalPolicy, approvalsReviewer: expected.approvalsReviewer, contextVerifiedBeforeFirstMessage: true, verifiedAfterCreation: true } };
   }
   releasePermissionContext() {
@@ -150,7 +169,7 @@ export class AppTools {
     if (context) this.permissionIpc.unfollow(context.threadId, 'local', context.owner);
     this.heldPermissionContext = null;
   }
-  async callDesktopTool(tool, args = {}, callerThreadId = this.config.callerThreadId) {
+  async callDesktopTool(tool, args = {}, callerThreadId = this.config.callerThreadId, phase) {
     assertExecutorConnected(this.config);
     if (!ALLOWED_TOOLS.has(tool)) throw new ApiError(403, 'tool_not_allowed', 'This tool is not exposed by the API.');
     await this.connect();
@@ -158,14 +177,16 @@ export class AppTools {
     if (!this.catalog.some(entry => entry.namespace === 'codex_app' && entry.name === tool)) throw new ApiError(501, 'unsupported_capability', `Desktop does not advertise ${tool}.`);
     if (!callerThreadId) throw new ApiError(503, 'caller_thread_required', 'Set callerThreadId to an existing local Codex chat for desktop tool context.');
     const id = randomUUID();
+    const mutation = ['create_thread', 'send_message_to_thread'].includes(tool);
+    if (mutation) phase?.('desktop-write', { requestId: id });
     let response;
     try {
       response = await this.pipe.request({ jsonrpc: '2.0', id, method: 'tools/call', params: {
         namespace: 'codex_app', tool, arguments: args, callerSource: 'codex', hostId: 'local',
         threadId: callerThreadId, turnId: `desktop-api-${id}`, callId: `desktop-api-${id}`,
-      } }, this.config.requestTimeoutMs);
+      } }, mutation ? this.config.mutationTimeoutMs : this.config.requestTimeoutMs);
     } catch (error) {
-      if (tool === 'create_thread' && error.code === 'desktop_error')
+      if (mutation && error.code === 'desktop_error')
         throw new ApiError(error.status, error.code, error.message, { outcome: 'unknown' });
       throw error;
     }
@@ -186,7 +207,7 @@ export class AppTools {
       }
       const invalid = tool === 'create_thread' ? detail.startsWith('create_thread invalid arguments') : /invalid arguments/.test(detail);
       throw new ApiError(invalid ? 400 : 502, 'desktop_tool_failed', detail.slice(0, 4000),
-        tool === 'create_thread' && !invalid ? { outcome: 'unknown' } : undefined);
+        mutation && !invalid ? { outcome: 'unknown' } : undefined);
     }
     const content = result.contentItems ?? [];
     const texts = content.filter(item => item.type === 'inputText' || item.type === 'text').map(item => item.text);

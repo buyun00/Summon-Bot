@@ -12,7 +12,8 @@ export function loadConfig(env = process.env) {
     ? path.join(env.SUMMON_DATA_ROOT, 'connectors', 'codex-desktop-api', 'config.json') : CONFIG_FILE));
   const saved = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
   const config = {
-    host: '127.0.0.1', port: 47831, requestTimeoutMs: 45000, pollIntervalMs: 5000,
+    host: '127.0.0.1', port: 47831, connectTimeoutMs: 30000, requestTimeoutMs: 90000,
+    acknowledgementTimeoutMs: 120000, mutationTimeoutMs: 900000, pollIntervalMs: 5000,
     discoveryLimit: 50, maxSubscriptions: 128, eventRetention: 10000,
     dataDir: path.dirname(file), callerThreadId: env.CODEX_THREAD_ID || null,
     ...saved,
@@ -20,7 +21,9 @@ export function loadConfig(env = process.env) {
     ...(env.CODEX_DESKTOP_API_PORT ? { port: Number(env.CODEX_DESKTOP_API_PORT) } : {}),
     ...(env.CODEX_DESKTOP_API_CALLER_THREAD_ID ? { callerThreadId: env.CODEX_DESKTOP_API_CALLER_THREAD_ID } : {}),
   };
-  for (const [key, min, max] of [['port', 1, 65535], ['requestTimeoutMs', 1000, 180000], ['pollIntervalMs', 1000, 60000], ['discoveryLimit', 1, 50], ['maxSubscriptions', 1, 1024], ['eventRetention', 100, 100000]]) {
+  for (const [key, min, max] of [['port', 1, 65535], ['connectTimeoutMs', 1000, 180000], ['requestTimeoutMs', 1000, 180000],
+    ['acknowledgementTimeoutMs', 1000, 180000], ['mutationTimeoutMs', 1000, 1800000], ['pollIntervalMs', 1000, 60000],
+    ['discoveryLimit', 1, 50], ['maxSubscriptions', 1, 1024], ['eventRetention', 100, 100000]]) {
     if (!Number.isInteger(config[key]) || config[key] < min || config[key] > max) throw new Error(`Invalid config ${key}: expected ${min}..${max}.`);
   }
   config.auth = { enabled: false, localhostBypass: true, ...saved.auth };

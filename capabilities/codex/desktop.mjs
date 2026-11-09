@@ -29,8 +29,9 @@ export function deliveryContent(event) {
 }
 const rejected = error => error.result?.error?.details?.outcome !== 'unknown' &&
   !['operation_uncertain', 'idempotency_conflict'].includes(error.code) && Boolean(error.code) &&
-  (error.status >= 400 && error.status < 500 && error.status !== 408 ||
-    ['desktop_defaults_unavailable', 'unsupported_permission_default', 'permission_context_unavailable', 'unsupported_permission_host', 'caller_thread_required', 'unsupported_capability', 'desktop_model_preflight_unavailable'].includes(error.code));
+  (error.result?.error?.details?.outcome === 'not-submitted' || error.status >= 400 && error.status < 500 && error.status !== 408 ||
+    ['desktop_defaults_unavailable', 'unsupported_permission_default', 'permission_context_unavailable', 'unsupported_permission_host', 'caller_thread_required', 'unsupported_capability',
+      'desktop_model_preflight_unavailable', 'desktop_preflight_timeout', 'desktop_preflight_unavailable'].includes(error.code));
 const turnStatus = state => state?.status === 'waiting_for_input' ? state.status : state?.currentTurn?.status || state?.status || 'unknown';
 function precedingTurn(operation, threadId) {
   const previous = operation.previousExecution, observation = previous?.executionObservation;
@@ -106,7 +107,7 @@ export class DesktopCodex {
     return this.connectorRequest(connection, path, { method, body, operationKey, signal });
   }
   async connectorRequest(connection, path, { method = 'GET', body, operationKey, signal } = {}) {
-    const response = await fetch(`${connection.url}${path}`, { method, headers: { ...connection.headers, ...(operationKey ? { 'Idempotency-Key': operationKey } : {}) }, redirect: 'error', signal: signal || AbortSignal.timeout(65000), ...(body ? { body: JSON.stringify(body) } : {}) });
+    const response = await fetch(`${connection.url}${path}`, { method, headers: { ...connection.headers, ...(operationKey ? { 'Idempotency-Key': operationKey } : {}) }, redirect: 'error', signal: signal || AbortSignal.timeout(140000), ...(body ? { body: JSON.stringify(body) } : {}) });
     const data = await response.json();
     if (!response.ok) throw Object.assign(new Error(data.error?.message || 'Desktop API request failed'), { status: response.status, code: data.error?.code, result: data });
     return data;
@@ -301,7 +302,9 @@ export class DesktopCodex {
     try {
       const result = await this.request(`/v1/operations/${encodeURIComponent(operation.operationKey)}`);
       if (['completed', 'failed'].includes(result.state)) return this.applyOperation(this.store.save('desktopOperations', { id: operation.id, status: result.state === 'completed' ? 'received' : 'failed', result: result.result, httpStatus: result.status }));
-      this.store.save('desktopOperations', { id: operation.id, remoteState: result.state, checkedAt: now() });
+      const progress = result.result?.progress;
+      this.store.save('desktopOperations', { id: operation.id, remoteState: result.state, checkedAt: now(),
+        ...(progress ? { remotePhase: progress.phase, remotePhaseAt: progress.at } : {}) });
     } catch (error) { this.store.save('desktopOperations', { id: operation.id, reconcileError: errorView(error), checkedAt: now() }); }
     return this.get(operation.workId);
   }
