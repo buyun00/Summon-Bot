@@ -95,7 +95,28 @@ export function coreTools(services, task) {
   // A model hint is never the identity of a durable action. A recovered call
   // keeps its saved tool record; another accepted source gets another record.
   const actionId = (args, ctx, field) => ctx.recordId || `${task.id}:${ctx.toolCallId}`;
-  const authorize = (decision, ctx, proposed) => authorizeProduction({ task, store, decision, proposed, verify: ctx.verifyProduction, signal: ctx.signal });
+  const authorizationFailures = new Map();
+  const authorize = async (decision, ctx, proposed) => {
+    if (!decision) return null;
+    ctx.signal?.throwIfAborted();
+    const stage = decision.productionStage;
+    const proposalKey = JSON.stringify([stage, proposed]);
+    // An unavailable receipt stays unavailable for this action in this request.
+    // Rewording its handoff is not a new action. Separate targets, stages and
+    // dependent steps still need their own check and never reuse a grant.
+    const actionKey = JSON.stringify(proposed.relation === 'continue'
+      ? [stage, 'continue', proposed.work.id, proposed.work.operationId, proposed.after]
+      : [stage, 'new', proposed.project?.id, proposed.target, proposed.goal]);
+    const previous = authorizationFailures.get(actionKey) || authorizationFailures.get(proposalKey);
+    if (previous) throw previous;
+    try {
+      return await authorizeProduction({ task, store, decision, proposed, verify: ctx.verifyProduction, signal: ctx.signal });
+    } catch (error) {
+      if (['PRODUCTION_CHECK_UNAVAILABLE', 'PRODUCTION_RECEIPT_INVALID'].includes(error.code)) authorizationFailures.set(actionKey, error);
+      if (['PRODUCTION_NOT_AUTHORIZED', 'PRODUCTION_STAGE_MISMATCH'].includes(error.code)) authorizationFailures.set(proposalKey, error);
+      throw error;
+    }
+  };
   const currentStepStage = work => {
     const operationId = externalExecution(work)?.operationId;
     const event = operationId && store.getRecord('work-events', operationId);
@@ -278,7 +299,7 @@ export function coreTools(services, task) {
         try { project = target ? await services.sources.authorizeProject(target, task) : await services.sources.contextProject(task); }
         catch (error) { if (target) throw error; content.evidenceWarnings.push({ message: `Project scope is unavailable: ${error.message}` }); }
         const goal = modelText(args.goal || args.instruction || args.content || content.originalRequest.content);
-        const grant = await authorize(decision, ctx, { relation: 'new', project, goal, handoff: content.handoff });
+        const grant = await authorize(decision, ctx, { relation: 'new', project, target, goal, handoff: content.handoff });
         if (grant) content.stage = productionStage(grant);
         if (project) {
           if (executor?.target?.type === 'project') executor.target = { ...executor.target, projectId: project.id };
