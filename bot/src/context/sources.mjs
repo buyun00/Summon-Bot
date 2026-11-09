@@ -5,6 +5,7 @@ import { externalExecution } from './execution-evidence.mjs';
 import { savedWorkEvidence } from './work-context.mjs';
 
 const denied = message => { throw Object.assign(new Error(message), { status: 403, code: 'SOURCE_SCOPE_DENIED' }); };
+export const HANDOFF_REFERENCES = 48;
 
 // Expand only the exact saved observation named by this work's checkpoint.
 // Derived progress and a transport receipt's older final remain separate.
@@ -288,14 +289,14 @@ export class RuntimeSources {
     return { messages: saved.messages.slice(0, through + 1).map(publicMessage),
       access: boundary.access, roomId: source.roomId, runtimeEvent, runtimeInstruction: source.input?.runtimeInstruction };
   }
-  async resolve(reference, task) {
+  async resolve(reference, task, { fullToolReceipt = false } = {}) {
     if (!reference || typeof reference !== 'object') throw new Error('Evidence requires a structured source reference');
-    const offset = boundedNumber(reference.offset, 0), length = boundedNumber(reference.length, 6000, 1, 16000);
+    const offset = boundedNumber(reference.offset, 0), length = boundedNumber(reference.length, 12000, 1, 64000);
     let raw, author, source;
     const grant = this.grant(task, reference), origin = grant?.requestTaskId && this.store.getTask(grant.requestTaskId);
     if (task.workId && reference.type === 'room' && !origin) denied('Workers read only explicitly handed-off source messages');
     if (reference.type === 'room') {
-      const args = { roomId: reference.roomId, messageId: reference.messageId, offset, length };
+      const args = { roomId: reference.roomId, messageId: reference.messageId, offset, length: Math.min(16000, length) };
       const page = origin ? await this.scopedCall('chatroom_read', args, task, origin) : await this.callForSource('chatroom_read', args, task);
       const message = page.messages?.find(item => item.id === reference.messageId);
       if (!message) throw new Error('Evidence message not found');
@@ -331,13 +332,18 @@ export class RuntimeSources {
           instruction: 'Status/revision/updatedAt describe the current owning work. updatedAt is a local state mutation time, not an external turn time. Progress/checkpoint are derived state with their own recordedAt and evidence pointer. An operation executionReceipt is a saved transport receipt whose final may describe an earlier turn than the current binding. Use the matching externalResult original when available, retaining all earlier turn results under their own IDs; otherwise preserve the gap without promoting progress to original text.' } };
     }
     if (reference.type === 'tool') {
-      const record = this.store.listTools().find(item => item.id === reference.id);
+      const record = this.store.getTool(reference.id);
       const owner = record && this.store.getTask(record.taskId);
       if (!owner || record.status !== 'completed') throw new Error('Completed source tool receipt not found');
       if (owner.workId) await this.requireWork(owner.workId, origin || task);
       else if (!(await this.sessions(origin || task)).includes(owner.sessionId)) denied('Tool receipt is outside this request');
-      return { reference: { type: 'tool', id: record.id }, author: 'runtime', authority: 'tool-observation',
-        content: { tool: record.name, args: record.args, output: record.output?.details, observedAt: record.finishedAt } };
+      const content = { tool: record.name, args: record.args, output: record.output?.details, observedAt: record.finishedAt };
+      if (fullToolReceipt && reference.offset === undefined && reference.length === undefined)
+        return { reference: { type: 'tool', id: record.id }, author: 'runtime', authority: 'tool-observation', content };
+      const text = JSON.stringify(content), end = offset + length;
+      return { reference: { type: 'tool', id: record.id, offset, length }, author: 'runtime', authority: 'tool-observation',
+        content: offset || text.length > length ? text.slice(offset, end) : content, fullCharacters: text.length,
+        nextOffset: end < text.length ? end : null };
     }
     const permittedSession = async id => {
       if (!origin) return (await this.sessions(task)).includes(id);
@@ -430,11 +436,11 @@ export class RuntimeSources {
       } catch (error) { warnings.push({ source: original.reference, message: error.message, retainedAcceptedOriginal: true }); }
     }
     const selected = [];
-    for (const item of evidence.slice(0, 20)) {
-      try { selected.push(await this.resolve(this.reference(item, task), task)); }
+    for (const item of evidence.slice(0, HANDOFF_REFERENCES)) {
+      try { selected.push(await this.resolve(this.reference(item, task), task, { fullToolReceipt: true })); }
       catch (error) { warnings.push({ reference: item, message: error.message }); }
     }
-    if (evidence.length > 20) warnings.push({ message: 'Additional references remain in the saved source request.', remaining: evidence.slice(20) });
+    if (evidence.length > HANDOFF_REFERENCES) warnings.push({ message: 'Additional references remain in the saved source request.', remaining: evidence.slice(HANDOFF_REFERENCES) });
     return { type: 'work_handoff', originalRequest: original, evidence: selected, evidenceWarnings: warnings,
       ...(source.input?.peerAnswer ? { observation: { author: source.input.peerAnswer.senderId, ...source.input.peerAnswer, authority: 'peer-evidence' } } : {}),
       handoff: { author: 'coordinating-model', instruction: modelText(args.instruction),

@@ -62,7 +62,7 @@ export async function guideReply(onboarding, input = {}) {
   if (action === 'provider') {
     const snapshot = await models.snapshot(), preset = snapshot.presets.find(entry => entry.id === value);
     if (!preset) throw new Error('请选择一个模型服务商');
-    Object.assign(draft, { kind: 'api', id: `onboarding-api-${preset.id}`, name: preset.name, provider: preset.id, api: preset.api, baseUrl: preset.baseUrl, contextWindow: 128000, maxTokens: 8192 });
+    Object.assign(draft, { kind: 'api', id: `onboarding-api-${preset.id}`, name: preset.name, provider: preset.id, api: preset.api, baseUrl: preset.baseUrl });
     return preset.baseUrl ? modelPrompt() : reply('endpoint', '把这个服务的 API 地址告诉我，例如 https://api.example.com/v1。', [back], { placeholder: '输入 API 地址…' });
   }
   if (action === 'endpoint') {
@@ -95,10 +95,13 @@ export async function guideReply(onboarding, input = {}) {
   }
   if (action === 'model') {
     if (!value || value.length > 200 || /[\u0000-\u001f]/.test(value)) throw new Error('请填写有效的模型 ID');
+    const current = models.catalog().connections.find(entry => entry.id === draft.id);
+    // The wizard only chooses a model. Existing overrides of that same model
+    // stay saved; a different model starts with its own budget.
+    delete draft.contextWindow;
+    delete draft.maxTokens;
+    if (current && current.model !== value) Object.assign(draft, { contextWindow: null, maxTokens: null });
     draft.model = value;
-    const model = modelChoices(draft.kind, draft.provider).find(entry => entry.id === value);
-    if (model?.contextWindow) draft.contextWindow = model.contextWindow;
-    if (model?.maxTokens) draft.maxTokens = Math.min(8192, model.maxTokens);
     if (draft.kind !== 'api') { await models.save(draft); return select(draft.id); }
     return reply('key', '最后，粘贴这个服务的 API Key。输入会隐藏，只用于保存连接，不进入聊天或草稿。',
       [choice('这是无需 Key 的本地服务', 'no-key'), back], { input: 'password', placeholder: '粘贴 API Key…' });

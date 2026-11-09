@@ -1,7 +1,11 @@
-import { AssistantMessageEventStream, getCurrentTools, normalizeContext } from '@earendil-works/pi-ai';
+import { AssistantMessageEventStream, clampThinkingLevel, getCurrentTools, normalizeContext } from '@earendil-works/pi-ai';
 import { randomUUID } from 'node:crypto';
-import { modelConnection, connectionRuntime, modelError } from './connections.mjs';
+import { modelConnection, connectionModel, connectionRuntime, modelError, officialDeepSeekCompletions } from './connections.mjs';
 import { reportedUsage, referenceCost } from './usage.mjs';
+
+const connectionWaitMs = 180000;
+const authorizationOutput = { off: 2048, thinking: 16384 };
+const timeoutError = phase => Object.assign(new Error(`Model request timed out during ${phase}`), { code: 'MODEL_DEADLINE' });
 
 const rawUsage = usage => ({ prompt_tokens: usage.input + usage.cacheRead + usage.cacheWrite,
   completion_tokens: usage.output, total_tokens: usage.totalTokens,
@@ -29,10 +33,19 @@ export class ModelProvider {
   stream(model, context, options = {}) {
     const output = new AssistantMessageEventStream(), controller = new AbortController();
     const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
+    const deadline = new AbortController(), requestSignal = AbortSignal.any([signal, deadline.signal]);
+    const { timeoutMs: totalWaitMs, onPayload, ...streamOptions } = options;
     this.controllers.add(controller);
     const started = Date.now(), secrets = new Set();
     const tracksConnection = options.usageContext?.purpose !== 'activity';
-    let record, selectedModel = model, received, ended = false, wireUsage;
+    let record, selectedModel = model, received, ended = false, wireUsage, stageTimer, totalTimer;
+    const waitFor = (phase, ms) => {
+      clearTimeout(stageTimer);
+      stageTimer = setTimeout(() => {
+        if (record) record.timeoutPhase = phase;
+        deadline.abort(timeoutError(phase));
+      }, ms);
+    };
     const cleanError = error => {
       let message = String(error?.message || error);
       for (const secret of secrets) if (secret) message = message.split(secret).join('[redacted]');
@@ -42,34 +55,48 @@ export class ModelProvider {
       try {
         const connection = modelConnection(this.config, this.config.connectionStore ? model.provider : undefined);
         // A dialogue keeps its captured connection when the global default changes.
-        const runtime = connectionRuntime({ ...connection, model: model.id, maxTokens: model.maxTokens, contextWindow: model.contextWindow });
-        selectedModel = runtime.model;
-        // Pi's native DeepSeek Completions adapter sends thinking.type=disabled for off.
-        const shortAuthorization = options.usageContext?.requestKind === 'production-authorization' &&
-          connection.kind === 'api' && connection.provider === 'deepseek' && selectedModel.api === 'openai-completions' &&
-          selectedModel.reasoning && selectedModel.thinkingLevelMap?.off !== null &&
-          new URL(selectedModel.baseUrl).hostname === 'api.deepseek.com';
-        const requestedReasoning = shortAuthorization ? 'off' : options.reasoning;
-        const maxTokens = shortAuthorization ? Math.min(options.maxTokens || model.maxTokens, 1024) : options.maxTokens;
+        const runtime = connectionRuntime(connection, undefined, model);
+        const authorization = options.usageContext?.requestKind === 'production-authorization';
+        const deepseek = officialDeepSeekCompletions({ ...connection, model: model.id }, model.api, model.baseUrl);
+        // For official DeepSeek, a short structured check uses the native off path.
+        const requestedReasoning = authorization && deepseek ? 'off' : options.reasoning || 'off';
+        const fastest = model.thinkingLevelMap?.off === null ? ['low', 'medium', 'high'].find(level => model.thinkingLevelMap[level] != null) : null;
+        const reasoning = clampThinkingLevel(model, requestedReasoning === 'off' && fastest ? fastest : requestedReasoning);
+        const thinking = reasoning !== 'off', idleWaitMs = thinking ? 300000 : 180000;
+        const maxTokens = authorization ? Math.min(model.outputTokenLimit ?? model.maxTokens, authorizationOutput[thinking ? 'thinking' : 'off']) :
+          Math.min(options.maxTokens ?? model.maxTokens, model.outputTokenLimit ?? model.maxTokens);
         record = { id: randomUUID(), botId: this.config.botId, ...options.usageContext,
           purpose: options.usageContext?.purpose || 'other', provider: connection.kind === 'api' ? connection.provider : connection.kind,
           connectionId: connection.id, billingMode: connection.kind === 'api' ? 'api' : 'subscription',
           model: model.id, requestedModel: model.id, startedAt: new Date(started).toISOString(), status: 'pending', ...reportedUsage(null),
-          thinking: Boolean(requestedReasoning && requestedReasoning !== 'off'), thinkingLevel: requestedReasoning || 'off',
-          messageCount: context.messages?.length || 0, toolCount: getCurrentTools(normalizeContext(context).messages).length, maxOutputTokens: maxTokens || model.maxTokens };
+          thinking, thinkingLevel: reasoning, api: model.api, contextWindow: model.contextWindow, requestedOutputTokens: maxTokens,
+          messageCount: context.messages?.length || 0, toolCount: getCurrentTools(normalizeContext(context).messages).length, maxOutputTokens: null };
         const persist = () => this.config.recordUsage?.(record); persist();
-        const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(options.timeoutMs || (record.thinking ? 180000 : 60000))]);
-        const fastest = selectedModel.thinkingLevelMap?.off === null ? ['low', 'medium', 'high'].find(level => selectedModel.thinkingLevelMap[level] != null) : null;
-        const reasoning = (!requestedReasoning || requestedReasoning === 'off') && fastest ? fastest : requestedReasoning;
-        const stream = runtime.models.streamSimple(selectedModel, context, { ...options, reasoning, maxTokens, signal: requestSignal,
+        waitFor('connection', connectionWaitMs);
+        if (totalWaitMs) totalTimer = setTimeout(() => {
+          record.timeoutPhase = 'total-budget'; deadline.abort(timeoutError('total-budget'));
+        }, totalWaitMs);
+        const stream = runtime.models.streamSimple(selectedModel, context, { ...streamOptions, reasoning, maxTokens, signal: requestSignal,
+          // The SDK uses this for its HTTP header wait. Stream lifetime is
+          // governed separately by meaningful deltas and the caller's stop.
+          timeoutMs: connectionWaitMs + 1000,
           sessionId: options.usageContext?.sessionId || options.sessionId, maxRetries: 0,
           ...(connection.kind === 'codex' ? { transport: 'sse' } : {}),
+          onPayload: async (payload, model) => {
+            const replacement = await onPayload?.(payload, model);
+            const sent = replacement ?? payload;
+            const limit = sent?.max_tokens ?? sent?.max_completion_tokens ?? sent?.max_output_tokens;
+            record.maxOutputTokens = Number.isSafeInteger(limit) ? limit : null;
+            persist();
+            return replacement;
+          },
           fetch: async (input, init) => {
             const headers = new Headers(init?.headers);
             const bearer = headers.get('authorization'); if (bearer) secrets.add(bearer.replace(/^Bearer\s+/i, ''));
             if (headers.get('x-api-key')) secrets.add(headers.get('x-api-key'));
             const response = await fetch(input, { ...init, redirect: 'error' });
             record.httpStatus = response.status;
+            waitFor('first-progress', idleWaitMs);
             if (!response.body || !response.headers.get('content-type')?.includes('text/event-stream')) return response;
             let tail = ''; const decoder = new TextDecoder();
             // Observe billing fields while forwarding bytes; missing usage stays unknown.
@@ -88,15 +115,23 @@ export class ModelProvider {
             return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
           } });
         for await (const event of stream) {
+          if (deadline.signal.aborted) throw deadline.signal.reason;
+          if (signal.aborted && event.type !== 'error') signal.throwIfAborted();
+          if (event.type.endsWith('_delta') && event.delta?.length) {
+            record.firstProgressAt ||= new Date().toISOString();
+            waitFor('stream-idle', idleWaitMs);
+          }
           if (event.type === 'done' || event.type === 'error') {
             received = event.type === 'done' ? event.message : event.error;
             if (wireUsage) {
               Object.assign(record, reportedUsage(providerUsage(wireUsage, selectedModel.api)));
               record.cost = connection.kind === 'api' ? referenceCost(record, model.id,
-                connection.provider === 'deepseek' && new URL(connection.baseUrl).hostname === 'api.deepseek.com') : null;
+                connection.provider === 'deepseek' && new URL(selectedModel.baseUrl).hostname === 'api.deepseek.com') : null;
               if (!record.cost && connection.kind === 'api' && received.usage.cost?.total > 0) record.cost = {
                 min: received.usage.cost.total, max: received.usage.cost.total, currency: 'USD', pricingSource: 'Pi model catalog' };
             }
+            received.generationBudget = { requested: maxTokens, sent: record.maxOutputTokens, contextWindow: model.contextWindow,
+              input: record.inputTokens, output: record.outputTokens, reasoning: record.reasoningTokens };
             Object.assign(record, { finishReason: received.stopReason, responseId: received.responseId || null,
               status: event.type === 'done' ? 'succeeded' : signal.aborted ? 'cancelled' : 'failed',
               finishedAt: new Date().toISOString(), latencyMs: Date.now() - started });
@@ -114,27 +149,33 @@ export class ModelProvider {
           }
           output.push(event);
         }
-        if (!ended) throw new Error('模型连接在完整响应前结束');
+        if (!ended) throw deadline.signal.reason || new Error('模型连接在完整响应前结束');
       } catch (error) {
         if (!ended) {
           const message = cleanError(error), cancelled = signal.aborted;
           if (tracksConnection) { this.status.failures += 1; Object.assign(this.status, { connected: false, lastError: message }); }
-          if (record) { Object.assign(record, { status: cancelled ? 'cancelled' : 'failed', error: message, finishedAt: new Date().toISOString(), latencyMs: Date.now() - started }); this.config.recordUsage?.(record); }
+          if (record) {
+            if (wireUsage) Object.assign(record, reportedUsage(providerUsage(wireUsage, selectedModel.api)));
+            Object.assign(record, { status: cancelled ? 'cancelled' : 'failed', finishReason: cancelled ? 'aborted' : 'error',
+              error: message, finishedAt: new Date().toISOString(), latencyMs: Date.now() - started });
+            this.config.recordUsage?.(record);
+          }
           const failure = received || { role: 'assistant', content: [], api: selectedModel.api, provider: selectedModel.provider, model: selectedModel.id,
             usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, timestamp: Date.now() };
           failure.stopReason = cancelled ? 'aborted' : 'error'; failure.errorMessage = message;
           output.push({ type: 'error', reason: failure.stopReason, error: failure });
         }
-      } finally { this.controllers.delete(controller); output.end(); }
+      } finally { clearTimeout(stageTimer); clearTimeout(totalTimer); this.controllers.delete(controller); output.end(); }
     })();
     return output;
   }
   async complete({ messages, deep = false, json = false, maxTokens, signal, usageContext } = {}) {
-    const connection = modelConnection(this.config), runtime = connectionRuntime(connection), started = Date.now();
+    const connection = modelConnection(this.config), reasoning = deep ? 'high' : 'off';
+    const model = connectionModel({ ...connection, thinkingLevel: reasoning }), started = Date.now();
     const context = { messages: messages.map(message => ({ ...message,
       content: typeof message.content === 'string' ? [{ type: 'text', text: message.content }] : message.content, timestamp: Date.now() })) };
     if (json) context.messages.unshift({ role: 'system', content: [{ type: 'text', text: 'Return valid JSON.' }] });
-    const result = await this.stream(runtime.model, context, { reasoning: deep ? 'high' : 'off', maxTokens, signal, usageContext }).result();
+    const result = await this.stream(model, context, { reasoning, maxTokens, signal, usageContext }).result();
     if (['error', 'aborted', 'length'].includes(result.stopReason)) throw new Error(result.errorMessage || '模型未完整结束');
     const content = result.content.filter(block => block.type === 'text').map(block => block.text).join('');
     if (!content.trim()) throw new Error('模型没有返回正文');

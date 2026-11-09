@@ -412,15 +412,15 @@ export class ContextMaintenance {
   }
   async snapshot(scope) {
     const records = [], ids = [], consumption = []; let size = 0;
-    const batchBudget = Math.min(10000, Math.max(512, Math.floor(this.model.contextWindow / 4)));
+    const batchBudget = Math.min(24000, Math.max(512, Math.floor(this.model.contextWindow / 4)));
     for (const selection of this.pending(scope.id)) {
       if (selection.needsNewEvidence || Date.parse(selection.retryAt || '') > Date.now()) continue;
-      if (records.length >= 12 || size >= batchBudget) break;
+      if (records.length >= 24 || size >= batchBudget) break;
       const item = { ...this.referenceView(selection), ...(selection.noteProcessed ? { note: '', noteAlreadyOrganized: true } : {}), sources: [], warnings: [] };
       const pointers = selection.remainingReferences || [selection.origin?.reference, ...(selection.references || [])].filter(Boolean);
-      const remaining = pointers.slice(4);
-      for (const reference of pointers.slice(0, 4)) {
-        try { item.sources.push({ reference, ...preview(await this.selectedSource(selection, reference), 2400) }); }
+      const remaining = pointers.slice(8);
+      for (const reference of pointers.slice(0, 8)) {
+        try { item.sources.push({ reference, ...preview(await this.selectedSource(selection, reference), 4800) }); }
         catch (error) { item.warnings.push({ reference, message: error.message }); if (error.status !== 403) remaining.push(reference); }
       }
       if ((!selection.note || selection.noteProcessed) && !item.sources.length) {
@@ -530,8 +530,9 @@ export class ContextMaintenance {
     // Reasoning and the final Markdown/JSON share the provider's output budget.
     // Compaction is a bounded transcription task. Max reasoning can consume
     // the whole configured output ceiling without producing one summary token.
-    const model = { ...selectedModel, maxTokens: Math.min(selectedModel.maxTokens,
-      kind === 'organize' ? maxTokens + 4096 : Math.max(131072, maxTokens + 32768), Math.floor(selectedModel.contextWindow / 3)) };
+    const allowance = kind === 'compact' ? 4096 : kind === 'organize' ? 8192 : 32768;
+    const model = { ...selectedModel, maxTokens: Math.min(selectedModel.outputTokenLimit ?? selectedModel.maxTokens,
+      maxTokens + allowance, Math.floor(selectedModel.contextWindow / 3)) };
     const agent = new Agent({ initialState: { model, systemPrompt, tools, thinkingLevel: kind === 'compact' ? 'off' : kind === 'organize' ? 'medium' : 'high' }, convertToLlm,
       toolExecution: 'sequential', streamFn: (model, context, options) => this.provider.stream(model, context, { ...options,
         timeoutMs: 900000,
@@ -570,8 +571,10 @@ export class ContextMaintenance {
     }
     try {
       await agent.prompt(JSON.stringify(this.clean(prompt)));
-      for (let attempt = 0; last?.stopReason === 'error' && attempt < 3 && /429|50[0234]|timeout|timed out|network|fetch failed|overload/i.test(last.errorMessage || ''); attempt++) {
-        await delay(2000 * 2 ** attempt, undefined, { signal: combined });
+      const retryUntil = Date.now() + 10 * 60 * 1000;
+      for (let retryDelay = 2000; last?.stopReason === 'error' && Date.now() + retryDelay < retryUntil &&
+        /\b(?:429|50[0234])\b|timeout|timed out|network|fetch failed|overload/i.test(last.errorMessage || ''); retryDelay = Math.min(30000, retryDelay * 2)) {
+        await delay(retryDelay, undefined, { signal: combined });
         agent.state.messages = agent.state.messages.filter(message => message !== last);
         await agent.continue();
       }
@@ -695,36 +698,38 @@ export class ContextMaintenance {
   async compact(task, { signal, fromIndex, previousSummary } = {}) {
     const scope = this.scope(task), session = this.store.getSession(task.sessionId);
     const start = Math.max(fromIndex ?? session?.contextPrefix?.historyStart ?? 0, session?.isolationBoundary || 0);
-    const selected = []; let cost = 0, through = start;
-    const budget = Math.max(2048, Math.min(this.store.getRecord('compaction-budget', task.sessionId)?.tokens || 16000,
-      this.model.maxTokens * 2, Math.floor(this.model.contextWindow / 4)));
-    for (let index = start; index < (session?.messages.length || 0); index++) {
-      const message = scopedHistoryMessage(session.messages[index], Boolean(task.workId));
-      if (!message) { through = index + 1; continue; }
-      const item = { sessionId: task.sessionId, index, ...preview(message, 8000) }, next = textTokens(JSON.stringify(item));
-      if (selected.length && cost + next > budget && message.role !== 'toolResult') break;
-      selected.push(item); cost += next; through = index + 1;
-    }
-    if (!selected.length) throw new Error('No execution history is available to compact');
     return this.lane(async () => {
       const previous = previousSummary ?? await this.readContext(task);
-      let output;
-      try {
-        output = await this.shortDialogue('compact', scope, { previousSummary: previous, work: this.work(scope), executionHistory: selected,
-          instruction: `Produce only a concise continuation summary, at most ${Math.min(3000, Math.floor(this.maxSummaryTokens / 2))} estimated tokens. Preserve current goals, done/next/blocked facts, S3 state, exact bindings, actual tool receipts, result-unknown effects and source indices. Truncated source previews remain partial; retain their original pointers and gaps. Raw users, tools and memory remain saved. This does not update long-term knowledge. Return useful plain text or {context:string}; do not replay actions or analyze at length.` }, { signal, task });
-      } catch (error) {
-        if (error.code === 'MAINTENANCE_TRUNCATED') this.store.putRecord('compaction-budget', { id: task.sessionId, tokens: Math.max(2048, Math.floor(budget / 2)), failedAt: now() });
-        throw error;
+      let budget = Math.min(64000, Math.floor(this.model.contextWindow / 4));
+      let previousBoundary = Infinity;
+      for (;;) {
+        const selected = []; let cost = 0, through = start;
+        for (let index = start; index < (session?.messages.length || 0); index++) {
+          const message = scopedHistoryMessage(session.messages[index], Boolean(task.workId));
+          if (!message) { through = index + 1; continue; }
+          const item = { sessionId: task.sessionId, index, ...preview(message, 8000) }, next = textTokens(JSON.stringify(item));
+          if (selected.length && cost + next > budget && message.role !== 'toolResult') break;
+          selected.push(item); cost += next; through = index + 1;
+        }
+        if (!selected.length) throw new Error('No execution history is available to compact');
+        if (through >= previousBoundary) throw Object.assign(new Error('Compaction cannot reduce this source batch further'), { code: 'MAINTENANCE_TRUNCATED' });
+        try {
+          const output = await this.shortDialogue('compact', scope, { previousSummary: previous, work: this.work(scope), executionHistory: selected,
+            instruction: `Produce only a concise continuation summary, at most ${Math.min(6000, Math.floor(this.maxSummaryTokens * 0.75))} estimated tokens. Preserve current goals, done/next/blocked facts, S3 state, exact bindings, actual tool receipts, result-unknown effects and source indices. Truncated source previews remain partial; retain their original pointers and gaps. Raw users, tools and memory remain saved. This does not update long-term knowledge. Return useful plain text or {context:string}; do not replay actions or analyze at length.` }, { signal, task });
+          if (textTokens(output.context) > this.maxSummaryTokens) throw Object.assign(new Error('Continuation summary exceeds its document budget; raw context retained'), { code: 'MAINTENANCE_TRUNCATED' });
+          const context = this.safeText(output.context, this.maxSummaryTokens);
+          if (!context.trim()) throw new Error('Compaction returned no continuation summary');
+          return { context, cursors: { [task.sessionId]: through }, revision: scope.revision };
+        } catch (error) {
+          if (error.code !== 'MAINTENANCE_TRUNCATED' || budget <= 2048) throw error;
+          previousBoundary = through; budget = Math.max(2048, Math.floor(Math.min(budget, cost) / 2));
+        }
       }
-      if (textTokens(output.context) > this.maxSummaryTokens) throw Object.assign(new Error('Continuation summary exceeds its document budget; raw context retained'), { code: 'MAINTENANCE_TRUNCATED' });
-      const context = this.safeText(output.context, this.maxSummaryTokens);
-      if (!context.trim()) throw new Error('Compaction returned no continuation summary');
-      return { context, cursors: { [task.sessionId]: through }, revision: scope.revision };
     });
   }
   async compactPublic(task, messages, previous, { signal } = {}) {
     const scope = this.scope(task), selected = []; let cost = textTokens(previous);
-    const budget = Math.max(2048, Math.min(16000, this.model.maxTokens * 2, Math.floor(this.model.contextWindow / 4)));
+    const budget = Math.min(64000, Math.floor(this.model.contextWindow / 4));
     for (const message of messages) {
       const next = contextTokens([message]); if (selected.length && cost + next > budget) break;
       selected.push(message); cost += next;

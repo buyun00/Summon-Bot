@@ -234,16 +234,21 @@ struct ModelQuotaDetailsView: View {
             if selected.object != nil { Button("获取模型目录") { Task { do { choices = try await discover() } catch { self.error = error.localizedDescription } } } }
             if !choices.isEmpty { Menu("选择模型") { ForEach(Array(choices.enumerated()), id: \.offset) { _, choice in Button(choice["name"].string ?? choice["id"].stringValue) { fields["model"] = choice["id"] } } } }
             Picker("思考强度", selection: binding("thinkingLevel")) { Text("关闭思考").tag("off"); Text("低").tag("low"); Text("中").tag("medium"); Text("高").tag("high"); Text("很高").tag("xhigh"); Text("最高").tag("max") }
-            TextField("上下文上限 · Token", text: binding("contextWindow")).keyboardType(.numberPad)
-            TextField("输出上限 · Token", text: binding("maxTokens")).keyboardType(.numberPad)
+            TextField("上下文上限 · Token", text: binding("contextWindow"), prompt: Text("留空使用模型默认")).keyboardType(.numberPad)
+            TextField("输出上限 · Token", text: binding("maxTokens"), prompt: Text("留空使用模型默认")).keyboardType(.numberPad)
             if kind == "api" { TextField("余额查询路径（可选）", text: binding("balancePath")).textInputAutocapitalization(.never); TextField("余额 JSON 字段（可选）", text: binding("balanceField")).textInputAutocapitalization(.never); TextField("余额币种（默认 USD）", text: binding("balanceCurrency")) }
             if let error { Text(error).foregroundStyle(.orange) }
-            Button(busy ? "正在保存…" : "保存配置") { var payload = fields; for key in ["usage", "identity", "configured", "active"] { payload.removeValue(forKey: key) }; payload["contextWindow"] = .number(Double(binding("contextWindow").wrappedValue) ?? 128000); payload["maxTokens"] = .number(Double(binding("maxTokens").wrappedValue) ?? 8192); save(.object(payload)) }
+            Button(busy ? "正在保存…" : "保存配置") {
+                var payload = fields
+                for key in ["usage", "identity", "configured", "active", "effectiveBudget"] { payload.removeValue(forKey: key) }
+                for key in ["contextWindow", "maxTokens"] { payload[key] = fields[key] ?? .null }
+                save(.object(payload))
+            }
             if selected["configured"].bool == true && selected["active"].bool != true { Button("用于 Pi 聊天", action: activate) }
             if selected.object != nil && selected["active"].bool != true { Button("移除此连接", role: .destructive, action: remove) }
         }.disabled(busy).onAppear {
             fields = entry.object ?? [:]; fields["apiKey"] = .string("")
-            for (key, value) in ["provider": SummonJSONValue.string("openai-compatible"), "api": .string("openai-completions"), "thinkingLevel": .string("high"), "contextWindow": .number(kind == "codex" ? 1050000 : kind == "grok" ? 500000 : 128000), "maxTokens": .number(8192)] { if fields[key] == nil { fields[key] = value } }
+            for (key, value) in ["provider": SummonJSONValue.string("openai-compatible"), "api": .string("openai-completions"), "thinkingLevel": .string("high")] { if fields[key] == nil { fields[key] = value } }
         }
     }
 }

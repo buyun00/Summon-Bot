@@ -46,23 +46,43 @@ export function modelConnection(config, id) {
   if (!selected) throw new Error('请先在模型与引擎设置中选择聊天模型');
   return { ...selected, connectionStore: config.connectionStore, environmentFile: catalog.environmentFile };
 }
+export function officialDeepSeekCompletions(connection, api, baseUrl) {
+  return connection.kind === 'api' && connection.provider === 'deepseek' && api === 'openai-completions' &&
+    Boolean(baseUrl) && new URL(baseUrl).hostname === 'api.deepseek.com' &&
+    ['deepseek-flash', 'deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'].includes(connection.model);
+}
 export function connectionModel(connection) {
   const native = factories[connection.kind === 'api' ? connection.provider : connection.kind]?.();
-  const known = native?.getModels().find(model => model.id === connection.model);
   const api = connection.kind === 'codex' ? 'openai-codex-responses' : connection.kind === 'grok' ? 'openai-responses' : connection.api || 'openai-completions';
-  const contextWindow = Number(connection.contextWindow || known?.contextWindow || 128000);
-  const maxTokens = Number(connection.maxTokens || known?.maxTokens || 8192);
-  if (!Number.isSafeInteger(contextWindow) || contextWindow < 4096 || !Number.isSafeInteger(maxTokens) || maxTokens < 128 || maxTokens >= contextWindow) throw new Error('模型上下文与输出上限设置不正确');
+  const baseUrl = connection.kind === 'grok' ? 'https://cli-chat-proxy.grok.com/v1' : connection.baseUrl || native?.baseUrl;
+  const deepseek = officialDeepSeekCompletions(connection, api, baseUrl);
+  const known = native?.getModels().find(model => model.api === api &&
+    (model.id === connection.model || deepseek && model.id === 'deepseek-flash' && connection.model.startsWith('deepseek-v4-flash')));
+  // The official Completions schema gives exact powers of two. Pi's bundled
+  // DeepSeek catalog uses the rounded marketing figures and sends a limit.
+  const nativeWindow = deepseek ? 1048576 : known?.contextWindow;
+  const nativeOutput = deepseek ? 393216 : known?.maxTokens;
+  const context = Number(connection.contextWindow ?? (nativeWindow || 128000));
+  const customOutput = connection.maxTokens == null ? null : Number(connection.maxTokens);
+  const contextWindow = Math.min(context, nativeWindow || Infinity);
+  if (!Number.isSafeInteger(context) || context < 4096 || customOutput !== null &&
+    (!Number.isSafeInteger(customOutput) || customOutput < 128 || customOutput >= context)) throw new Error('模型上下文与输出上限设置不正确');
+  const thinking = connection.reasoning === false ? 'off' : connection.thinkingLevel || 'high';
+  const nativeDefault = deepseek ? (thinking === 'off' ? 8192 : thinking === 'max' ? 131072 : 65536) : nativeOutput || 8192;
+  const outputTokenLimit = Math.min(customOutput ?? nativeOutput ?? nativeDefault, nativeOutput || Infinity, contextWindow - 1);
+  const maxTokens = Math.min(customOutput ?? nativeDefault, outputTokenLimit);
   return { ...known, id: connection.model, name: known?.name || connection.model, type: 'chat', api,
-    provider: connection.id || connection.provider, baseUrl: connection.kind === 'grok' ? 'https://cli-chat-proxy.grok.com/v1' : connection.baseUrl || native?.baseUrl,
+    provider: connection.id || connection.provider, baseUrl,
     ...(connection.kind === 'grok' ? { headers: { ...known?.headers, ...grokProxyHeaders(connection) } } : {}),
-    reasoning: connection.reasoning !== false, input: known?.input || ['text'], contextWindow, maxTokens,
+    reasoning: connection.reasoning !== false, input: known?.input || ['text'], contextWindow, maxTokens, outputTokenLimit,
     cost: connection.kind === 'api' ? known?.cost || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     ...(api === 'openai-completions' && !known ? { compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: false, maxTokensField: 'max_tokens' } } : {}) };
 }
 export function modelChoices(kind, provider) {
-  return (factories[kind === 'api' ? provider : kind]?.().getModels() || []).map(model => ({ id: model.id, name: model.name,
-    contextWindow: model.contextWindow, maxTokens: model.maxTokens, api: model.api }));
+  return (factories[kind === 'api' ? provider : kind]?.().getModels() || []).map(model => {
+    const budget = connectionModel({ kind, provider, model: model.id, api: model.api });
+    return { id: model.id, name: model.name, contextWindow: budget.contextWindow, maxTokens: budget.outputTokenLimit, api: model.api };
+  });
 }
 export function decodeModelToken(token) {
   try { return JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8')); } catch { return {}; }
@@ -180,8 +200,8 @@ export class ModelCredentialStore {
     return fileLock(this.path, async () => { const values = await this.saved(); delete values[id]; await saveModelJson(this.path, values); });
   }
 }
-export function connectionRuntime(connection, credentials = new ModelCredentialStore(connection.connectionStore, connection)) {
-  const model = connectionModel(connection), native = factories[connection.kind]?.();
+export function connectionRuntime(connection, credentials = new ModelCredentialStore(connection.connectionStore, connection), model = connectionModel(connection)) {
+  const native = factories[connection.kind]?.();
   const factory = apis[model.api]; if (!factory) throw new Error('不支持此模型协议');
   const provider = createProvider({ id: model.provider, name: connection.name || connection.model, baseUrl: model.baseUrl,
     auth: connection.kind === 'codex' || connection.kind === 'grok' ? { oauth: connection.authMode === 'grok-local' ? { ...native.auth.oauth, refresh: refreshLocalGrok } : native.auth.oauth } : { apiKey: { name: 'API Key', resolve: async ({ credential }) => {

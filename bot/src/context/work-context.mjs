@@ -89,8 +89,15 @@ export function projectWorkContext(entries, sessionId) {
         if (!group[i]?.reference) continue;
         const text = JSON.stringify(group[i]);
         const seen = evidence.get(text);
-        if (!seen) evidence.set(text, { ...original, section: 'evidenceItem', index });
-        else {
+        if (!seen) {
+          const saved = { ...original, section: 'evidenceItem', index };
+          evidence.set(text, saved);
+          if (text.length > 12000) {
+            group[i] = { ...fields(group[i], ['reference', 'author', 'authority', 'nextOffset', 'fullCharacters']), savedEvidence: saved,
+              instruction: 'Large saved evidence. Read its exact session entry and evidenceItem index with evidence_read; follow offsets for the complete saved material.' };
+            changed = true;
+          }
+        } else {
           const reference = { sameValueAs: seen };
           if (JSON.stringify(reference).length < text.length) { group[i] = reference; changed = true; }
         }
