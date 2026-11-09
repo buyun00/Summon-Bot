@@ -2,12 +2,13 @@ import { jsonToolResult } from './registry.mjs';
 import { taskMode, compactWork, compactTask, assertExternalReviewCurrent } from './task-policy.mjs';
 import { randomUUID } from 'node:crypto';
 import { factTime } from '../context/fact-time.mjs';
-import { taskSource } from '../context/sources.mjs';
+import { HANDOFF_REFERENCES, taskSource, workExecution } from '../context/sources.mjs';
 import { modelArgs, modelText, looseSchema, boundedNumber } from '../context/model-input.mjs';
 import { resolveCodexTarget } from './codex-target.mjs';
 import { authorizeProduction, productionDecision, productionStage, requestIntents, productionStages } from './request-routing.mjs';
 import { externalExecution, isAcceptedOperation } from '../context/execution-evidence.mjs';
 import { readExecutorManifest } from '../runtime/executor-delivery.mjs';
+import { WORK_ATTACHMENTS } from '../runtime/notifications.mjs';
 
 const string = { type: 'string' };
 const object = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
@@ -17,8 +18,8 @@ const tool = (name, description, inputSchema, effect, execute) => ({ name, descr
 const pageFields = { offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 20 } };
 const reference = object({ type: { type: 'string', enum: ['room', 'session', 'artifact', 'knowledge', 'work', 'tool'] }, roomId: string, scopeId: string, workId: string, operationId: string,
   messageId: string, sessionId: string, entryId: string, id: string, section: { type: 'string', enum: ['acceptedStep', 'evidenceItem'] },
-  index: { type: 'integer', minimum: 0 }, offset: { type: 'integer', minimum: 0 }, length: { type: 'integer', minimum: 1, maximum: 16000 } }, ['type']);
-const evidence = { type: 'array', maxItems: 20, items: reference,
+  index: { type: 'integer', minimum: 0 }, offset: { type: 'integer', minimum: 0 }, length: { type: 'integer', minimum: 1, maximum: 64000 } }, ['type']);
+const evidence = { type: 'array', maxItems: HANDOFF_REFERENCES, items: reference,
   description: 'Selected exact references from source reads, e.g. [{type:"room",roomId:"...",messageId:"..."}]. Pass the array itself; a JSON array string is also readable. Prose is guidance, not a source grant.' };
 const handoffFields = { evidence, knowledgeScopes: { type: 'array', items: string }, instruction: string, acceptance: string };
 const preview = value => { const text = typeof value === 'string' ? value : JSON.stringify(value ?? null); return { text: text.slice(0, 1600), truncated: text.length > 1600 }; };
@@ -28,7 +29,46 @@ const roomPublicationIds = (store, workId, operationId, roomId) => new Set(roomP
   .filter(item => (item.manifestOperationId || item.executionEventId) === operationId)
   .flatMap(item => (item.attachments || []).map(attachment => attachment.id)));
 
+function localPublications(store, work, operation, roomId) {
+  const source = operation?.authorization?.source;
+  if (work.executor?.kind !== 'pi' || work.bindings?.some(item => item.type === 'codex-desktop') ||
+    operation?.workId !== work.id || !roomId || source?.roomId !== roomId || !source.replyTo) return [];
+  return roomPublications(store, work.id, roomId).flatMap(item => {
+    if (item.executionEventId !== operation.id || item.replyTo !== source.replyTo || item.publication !== 'explicit' ||
+      item.late || item.resultKind === 'progress') return [];
+    const task = store.getTask(item.taskId);
+    if (task?.workId !== work.id || workExecution(task, store).executionEventId !== operation.id) return [];
+    return (Array.isArray(item.receipt) ? item.receipt : [item.receipt]).flatMap(receipt => {
+      if (!receipt?.id || receipt.roomId !== roomId || receipt.workId !== work.id ||
+        receipt.senderId !== work.botId || receipt.replyTo !== source.replyTo) return [];
+      const attachments = (receipt.attachments || []).filter(attachment =>
+        attachment.id && attachment.origin?.type === 'work-output' && attachment.origin.publicationId === attachment.id &&
+        attachment.origin.workId === work.id && attachment.origin.roomId === roomId && attachment.origin.botId === work.botId &&
+        item.attachments?.some(selected => selected.id === attachment.id));
+      return attachments.length ? [{ task, messageId: receipt.id, attachments }] : [];
+    });
+  });
+}
+
+function availableOutputs(store, work, operation, roomId, delivery) {
+  const nativeIds = roomPublicationIds(store, work.id, operation.id, roomId);
+  const native = delivery?.status === 'published' ? (delivery.attachments || []).filter(item => nativeIds.has(item.id)) : [];
+  const local = localPublications(store, work, operation, roomId).flatMap(item => item.attachments);
+  return [...new Set([...native, ...local].map(item => item.id))].map(id => ({ id }));
+}
+
 function acceptanceTarget(store, work, roomId) {
+  if (work.executor?.kind === 'pi' && !work.bindings?.some(item => item.type === 'codex-desktop')) {
+    const last = work.lastTaskId && store.getTask(work.lastTaskId);
+    if (work.status !== 'completed' || last?.workId !== work.id || last.status !== 'completed' ||
+      !last.finishedAt || last.result?.partial || last.result?.suspended || last.metadata?.sourceType === 'external') return null;
+    const { executionEventId } = workExecution(last, store);
+    const operation = executionEventId && store.getRecord('work-events', executionEventId);
+    if (operation?.authorization?.source?.actor !== 'user') return null;
+    const publications = localPublications(store, work, operation, roomId)
+      .filter(item => item.task.status === 'completed' && item.task.finishedAt && !item.task.result?.partial);
+    return publications.length ? { operationId: operation.id, publicationMessageIds: [...new Set(publications.map(item => item.messageId))] } : null;
+  }
   const execution = externalExecution(work), outcome = work.executionOutcome;
   if (!['waiting', 'completed'].includes(work.status) || work.status === 'waiting' && work.waiting?.kind !== 'review' ||
     !execution.startedConfirmed || execution.status !== 'completed' || outcome?.kind !== 'execution-ended' || !outcome.finalConfirmed ||
@@ -62,7 +102,8 @@ function acceptanceTarget(store, work, roomId) {
 
 function outputOperationId(store, work, roomId, requestedId) {
   const id = requestedId || acceptanceTarget(store, work, roomId)?.operationId || work.waiting?.operationId ||
-    work.bindings?.findLast(item => item.type === 'codex-desktop')?.operationId;
+    work.bindings?.findLast(item => item.type === 'codex-desktop')?.operationId ||
+    (work.executor?.kind === 'pi' && work.lastTaskId && workExecution(store.getTask(work.lastTaskId), store).executionEventId);
   if (!id || store.getRecord('work-events', id)) return id;
   return roomPublications(store, work.id, roomId).find(item => item.executionEventId === id &&
     item.manifestOperationId && item.attachments?.length)?.manifestOperationId || id;
@@ -223,8 +264,7 @@ export function coreTools(services, task) {
         const operation = operationId && store.getRecord('work-events', operationId);
         if (!operation || operation.workId !== work.id) throw new Error('No matching output operation; read work_get for its exact identity.');
         const delivery = store.getRecord('executor-deliveries', operation.id);
-        const publishedIds = roomPublicationIds(store, work.id, operation.id, source.roomId);
-        const available = delivery?.status === 'published' ? (delivery.attachments || []).filter(item => publishedIds.has(item.id)) : [];
+        const available = availableOutputs(store, work, operation, source.roomId, delivery);
         const ready = available.length > 0;
         let manifest, unavailable;
         try { manifest = await readExecutorManifest({ workspace: services.workspace, workId: work.id, operation }); }
@@ -236,7 +276,7 @@ export function coreTools(services, task) {
           instruction: 'artifacts.path is an existing file path; delivery.id is an operation ID; only replyDelivery.attachmentIds are selectable attachment IDs. Published receipts are not user acceptance. A new render/screenshot/revision still needs real production.' };
       }),
     tool('work_deliver', 'FIRST select request_decide intent=deliver for THIS request (produce/revise also allows returning its existing files). THEN read work_outputs and pass its workId as id, exact operationId, and only replyDelivery.attachmentIds; omit attachmentIds for all confirmed attachments. Manifest/file/message/operation IDs are not attachment IDs. Refuse unpublished or other-room receipts. Does not execute/render/re-upload. This selects files for the current reply, not user receipt or acceptance.',
-      object({ id: string, operationId: string, attachmentIds: { type: 'array', minItems: 1, maxItems: 8, items: string,
+      object({ id: string, operationId: string, attachmentIds: { type: 'array', minItems: 1, maxItems: WORK_ATTACHMENTS, items: string,
         description: 'Only IDs from work_outputs.replyDelivery.attachmentIds for this exact operation and room. Omit to select all.' } }, ['id', 'operationId']), 'write', async args => {
         if (!frontend || !userRequest || !['deliver', 'produce', 'revise'].includes(store.getRecord('request-routing', task.id)?.intent))
           throw new Error('Select existing-output delivery with request_decide for this authenticated request first.');
@@ -245,9 +285,7 @@ export function coreTools(services, task) {
         const operation = operationId && store.getRecord('work-events', operationId);
         if (!operation || operation.workId !== work.id) throw new Error('Output operation does not belong to this work.');
         const delivery = store.getRecord('executor-deliveries', operation.id);
-        if (delivery?.status !== 'published' || !delivery.attachments?.length) throw new Error('No confirmed published attachments for this operation; use work_outputs for existing paths and the actual delivery gap.');
-        const publishedIds = roomPublicationIds(store, work.id, operation.id, source.roomId);
-        const available = delivery.attachments.filter(item => publishedIds.has(item.id));
+        const available = availableOutputs(store, work, operation, source.roomId, delivery);
         if (!available.length)
           throw new Error('These saved attachments have no publication in this source room. Use work_outputs and publish_file for an authorized existing path in the current room.');
         const selected = args.attachmentIds;
@@ -264,11 +302,14 @@ export function coreTools(services, task) {
         const work = await services.sources.requireWork(workId(args), task);
         if (!modelText(args.scope).trim() || args.remainingBoundaries === undefined) throw new Error('Record the actual accepted scope and the remaining unverified boundaries.');
         const target = acceptanceTarget(store, work, source.roomId);
-        const pending = store.listTasks({ limit: 10000 }).some(item => item.workId === work.id && ['accepted', 'queued', 'running'].includes(item.status));
+        const pending = store.listUnfinishedTasks().some(item => item.workId === work.id && ['accepted', 'queued', 'running'].includes(item.status));
         if (!target || target.operationId !== args.operationId || pending)
           throw new Error('This work has no matching ended result ready for acceptance; read work_get before acting.');
+        if (work.acceptance?.operationId === args.operationId && work.acceptance.source?.roomId === source.roomId &&
+          work.acceptance.source?.messageId === (source.replyTo || source.messageId)) return work;
         return services.works.update(work.id, { status: 'completed', expectedRevision: work.revision,
           acceptance: { scope: modelText(args.scope), remainingBoundaries: modelText(args.remainingBoundaries), operationId: target.operationId,
+            ...(target.publicationMessageIds ? { publicationMessageIds: target.publicationMessageIds } : {}),
             ...(target.throughOperationId ? { throughOperationId: target.throughOperationId } : {}),
             source: { type: 'room', roomId: source.roomId, messageId: source.replyTo || source.messageId }, recordedAt: new Date().toISOString() } });
       }),
@@ -408,7 +449,7 @@ export function coreTools(services, task) {
           acceptance: modelText(args.acceptance), evidenceWarnings: handoff.evidenceWarnings };
       }),
     tool('work_notify', 'Save and publish this work’s useful result text directly. The program supplies the original recipient, reply association and notification ID; peer FYI does not demand another reply.',
-      object({ id: string, content: string, attachments: { type: 'array', maxItems: 8, items: object({ id: string }, ['id']) } }), 'external', async (args, ctx) => {
+      object({ id: string, content: string, attachments: { type: 'array', maxItems: WORK_ATTACHMENTS, items: object({ id: string }, ['id']) } }), 'external', async (args, ctx) => {
         const work = await services.sources.requireWork(workId(args), task);
         assertExternalReviewCurrent(task, store);
         const review = task.metadata?.externalReview;

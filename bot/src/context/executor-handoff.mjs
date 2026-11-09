@@ -1,6 +1,7 @@
 import { mkdir, realpath, writeFile } from 'node:fs/promises';
 import { join, relative, isAbsolute } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { WORK_ATTACHMENTS } from '../runtime/notifications.mjs';
 
 const text = value => typeof value === 'string' ? value : JSON.stringify(value ?? null);
 const excerpt = (value, limit, pointer) => {
@@ -33,7 +34,7 @@ export async function executorHandoff({ workspace, work, task, event, execution,
   };
   const delivery = { resultFile, schema: { workId: work.id, operationId: event.id, status: 'ready',
     summary: 'Actual result and remaining limitations; no secrets.', artifacts: [{ path: 'absolute finished output path within workspace', name: 'download filename (optional)' }] },
-    instruction: 'Write this JSON only after output files are finished. Supply at most 8 actual deliverable files. No digest fields. Summon reads this exact per-operation manifest, checks identity/scope and publishes attachments to the original room. Never claim published until Summon returns the real attachment receipt.' };
+    instruction: `Write this JSON only after output files are finished. Supply up to ${WORK_ATTACHMENTS} actual deliverable files. No digest fields. Summon reads this exact per-operation manifest, checks identity and scope, and publishes attachments to the original room in parts. Never claim published until Summon returns the real attachment receipt.` };
   const bundle = { type: 'executor_handoff', workId: work.id, operationId: event.id,
     originalRequest: materials.originalRequest || { content: materials.trigger?.content || input },
     handoff: materials.handoff || {}, stage: materials.stage, evidence: materials.evidence || [], evidenceWarnings: materials.evidenceWarnings || [],
@@ -55,7 +56,11 @@ export async function executorHandoff({ workspace, work, task, event, execution,
     evidence: bundle.evidence.map((item, index) => ({ reference: item.reference, author: item.author,
       authority: item.authority, completeSource: `${path}#evidence/${index}` })),
     authorization: bundle.authorization };
-  const prompt = JSON.stringify(message);
-  if (prompt.length > 90000) throw new Error('Executor handoff index exceeds its transport budget; complete sources remain saved');
+  let prompt = JSON.stringify(message);
+  if (prompt.length > 90000) {
+    const { originalRequest, handoff, additionalRequests, work: workExcerpt, currentKnowledge, evidence, ...header } = message;
+    prompt = JSON.stringify({ ...header, index: ['originalRequest', 'handoff', 'additionalRequests', 'work', 'currentKnowledge', 'evidence'],
+      originalRequest: excerpt(bundle.originalRequest, 16000, `${path}#originalRequest`), evidenceCount: bundle.evidence.length });
+  }
   return { prompt, path, resultFile, characters: prompt.length };
 }

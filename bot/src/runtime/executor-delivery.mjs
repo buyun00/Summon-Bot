@@ -1,5 +1,6 @@
 import { open, realpath } from 'node:fs/promises';
 import { relative, isAbsolute, resolve } from 'node:path';
+import { WORK_ATTACHMENTS } from './notifications.mjs';
 
 const within = (root, path) => { const part = relative(root, path); return !isAbsolute(part) && part !== '..' && !part.startsWith('../') && !part.startsWith('..\\'); };
 
@@ -45,11 +46,11 @@ export async function readExecutorManifest({ workspace, workId, operation }) {
   let manifest;
   try {
     const info = await handle.stat();
-    if (!info.isFile() || info.size > 65536) throw new Error('Executor result manifest must be a JSON file of at most 64 KiB');
+    if (!info.isFile() || info.size > 262144) throw new Error('Executor result manifest must be a JSON file of at most 256 KiB');
     manifest = JSON.parse(await handle.readFile('utf8'));
   } finally { await handle.close(); }
   if (manifest.workId !== workId || manifest.operationId !== operation.id || manifest.status !== 'ready' ||
-    !Array.isArray(manifest.artifacts) || manifest.artifacts.length > 8) throw new Error('Executor result manifest does not match this accepted work/operation');
+    !Array.isArray(manifest.artifacts) || manifest.artifacts.length > WORK_ATTACHMENTS) throw new Error('Executor result manifest does not match this accepted work/operation');
   const artifacts = [];
   for (const artifact of manifest.artifacts) {
     if (typeof artifact.path !== 'string' || !isAbsolute(artifact.path)) throw new Error('Deliverable requires its absolute output path');

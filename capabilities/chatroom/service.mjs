@@ -2,17 +2,23 @@ import { randomUUID } from 'node:crypto';
 import { required,fail,pick,now } from '../shared/validation.mjs';
 import { TeamService, groupTeam } from './team.mjs';
 import { boundedNumber } from '../../bot/src/context/model-input.mjs';
+import { publicationParts } from '../../bot/src/runtime/notifications.mjs';
 const TERMINAL=new Set(['completed','failed','cancelled','interrupted']);
 const foreground=item=>item.priority!=='background';
 const normalized=text=>String(text||'').trim().replace(/\s+/g,' ');
 const isAcknowledgement=text=>/^(?:收到|谢谢|谢谢你|感谢|好的|好|明白|了解|已收到|知悉|辛苦了|不客气|thanks|thank you|ack|acknowledged|noted|ok|okay)[。！!,.\s]*$/i.test(String(text||'').replace(/@[^\s，。！？:：,!?]+/g,'').trim());
 const routeInstruction='这是一次临时语义路由，不是执行任务。只根据本条用户原文、明确引用和成员职责选择最适合承担的一个现有成员；不得群发、执行或代替用户授权。能确定已有工作才填写其真实 workId，不按最近活跃猜归属。可以用普通文字选择成员，也可输出 JSON：{"recipientBotId":"已有成员ID或null","workId":"已知工作ID或null","reason":"简短依据"}。无法确定时 recipientBotId 设为你自己，由你的普通聊天对话作最小澄清或回答。';
 export class ChatroomService {
-  constructor({store,manager,attachments,emit=()=>{},version=null,invoke}) { Object.assign(this,{store,manager,attachments,emit,version});this.teamService=new TeamService(this,{invoke});this.busy=false;this.closed=false; }
+  constructor({store,manager,attachments,emit=()=>{},version=null,invoke}) {
+    Object.assign(this,{store,manager,attachments,emit,version});this.teamService=new TeamService(this,{invoke});this.busy=false;this.closed=false;
+    store.db.exec("CREATE INDEX IF NOT EXISTS records_room ON records(kind,json_extract(data,'$.roomId'),created_at)");
+    this.roomRows=store.db.prepare("SELECT data FROM records WHERE kind=? AND json_extract(data,'$.roomId')=? ORDER BY created_at,rowid");
+    this.latestRoomMessage=store.db.prepare("SELECT data FROM records WHERE kind='messages' AND json_extract(data,'$.roomId')=? ORDER BY created_at DESC,rowid DESC LIMIT 1");
+  }
   seed() { if(!this.store.get('rooms','room-lobby'))this.createRoom({id:'room-lobby',name:'项目大群',kind:'group',members:['user','bot-entry','bot-eggbot']}); }
   need(kind,id) { const value=this.store.get(kind,id);if(!value)fail(`${kind} not found`,404);return value; }
-  rooms() { return this.store.list('rooms').map(room=>({...room,lastMessage:this.messages(room.id).at(-1)||null})); }
-  messages(id) { return this.store.list('messages').filter(message=>message.roomId===id); }
+  rooms() { return this.store.list('rooms').map(room=>({...room,lastMessage:JSON.parse(this.latestRoomMessage.get(room.id)?.data||'null')})); }
+  messages(id) { return this.roomRows.all('messages',id).map(row=>JSON.parse(row.data)); }
   read(input, actor, source) {
     const room=this.need('rooms',input.roomId||source?.roomId),accessActor=source?.accessActor||source?.actor;
     if(actor!=='controller'&&(!room.members.includes(actor)||(accessActor&&accessActor!=='system'&&!room.members.includes(accessActor))))fail('Source cannot access this room',403);
@@ -38,7 +44,7 @@ export class ChatroomService {
     return {room:pick(room,['id','name','kind','members']),access:{roomId:room.id,members:room.members,actor:accessActor||actor},messages,
       hasMore:candidates.length>messages.length,firstMessageId:messages[0]?.id||null,lastMessageId:messages.at(-1)?.id||null};
   }
-  jobs(id) { return this.store.list('deliveries').filter(item=>!id||item.roomId===id); }
+  jobs(id) { return id?this.roomRows.all('deliveries',id).map(row=>JSON.parse(row.data)):this.store.list('deliveries'); }
   messageReceipt(id) { const message=this.store.get('messages',id);return message?pick(message,['id','roomId','senderId','createdAt']):null; }
   createRoom(input) {
     const members=[...new Set(input.members||[])],kind=input.kind||'group';if(!['group','dm','deep'].includes(kind)||!members.length)fail('Invalid room');
@@ -191,10 +197,15 @@ export class ChatroomService {
           try{const parsed=JSON.parse(text);if(typeof parsed.reply==='string'){text=parsed.reply;passed=parsed.pass||!text;}}catch{}
           const alreadyReplied=this.messages(item.roomId).some(message=>message.senderId===item.botId&&message.replyTo===item.messageId&&!message.jobId);
           if(alreadyReplied)passed=true;
-          const attachments=this.attachments.resolve(task.result?.attachments);
+          const attachments=(task.result?.attachments||[]).map(attachment=>this.attachments.get(attachment.id));
           if(attachments.length&&!alreadyReplied){passed=false;if(/^PASS(?:\s*$|\s*\n)/i.test(text))text='';}
           for(const attachment of attachments)if(attachment.origin?.type!=='work-output'||attachment.origin.botId!==item.botId||attachment.origin.roomId!==item.roomId)fail('Reply attachment is outside this authenticated Bot/room',403);
-          if((text||attachments.length)&&!passed){const reply=this.append(item.roomId,{id:`reply:${item.id}`,content:text.slice(0,16000),attachments,replyTo:item.messageId,rootId:item.rootId,hop:item.hop+1,jobId:item.id,workId:item.workId,usage:task.result?.usage,model:task.result?.model},item.botId);if(!task.result?.handoff)this.returnReply(reply);}
+          if((text||attachments.length)&&!passed){
+            const parts=publicationParts(text,attachments);
+            const replies=parts.map((part,index)=>this.append(item.roomId,{...part,id:index?`reply:${item.id}:part:${index+1}`:`reply:${item.id}`,
+              replyTo:item.messageId,rootId:item.rootId,hop:item.hop+1,jobId:item.id,workId:item.workId,usage:index?undefined:task.result?.usage,model:task.result?.model},item.botId));
+            if(replies.length&&!task.result?.handoff)this.returnReply(replies[0]);
+          }
         }
       }else {
         const reply=this.append(item.roomId,{id:`error:${item.id}`,content:`任务${status}：${task.error?.message||task.error||'执行未完成'}`,kind:'error',jobId:item.id,replyTo:item.messageId,workId:item.workId},'system');

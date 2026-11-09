@@ -1,5 +1,8 @@
 import { externalExecution } from '../context/execution-evidence.mjs';
 
+export const MESSAGE_ATTACHMENTS = 8;
+export const WORK_ATTACHMENTS = 64;
+
 // Retain an old observation without replaying it after a newer, confirmed
 // result from this same bound thread has actually been published.
 export function notificationSupersession(record, work, publications, observation) {
@@ -29,18 +32,27 @@ export function notificationSupersession(record, work, publications, observation
   return published ? { notificationId: published.id, operationId: current.operationId, turnId: current.turnId } : null;
 }
 
-export function notificationParts(record) {
-  const content = String(record.content || ''), parts = [];
+export function publicationParts(content, attachments = []) {
+  const parts = [];
   for (let offset = 0; offset < content.length;) {
     let end = Math.min(content.length, offset + 15000);
     const line = content.lastIndexOf('\n', end);
     if (end < content.length && line > offset + 7500) end = line + 1;
     if (end < content.length && /[\uD800-\uDBFF]/.test(content[end - 1])) end--;
-    parts.push({ roomId: record.roomId, content: content.slice(offset, end), replyTo: record.replyTo,
-      clientId: offset ? `${record.id}:part:${parts.length + 1}` : record.id, workId: record.workId, purpose: 'fyi', eventType: 'work_result',
-      sourceRefs: record.sourceRefs || [{ type: 'work', workId: record.workId, taskId: record.taskId }] });
-    if (!offset && record.attachments?.length) parts.at(-1).attachments = record.attachments;
+    parts.push({ content: content.slice(offset, end) });
     offset = end;
   }
-  return parts;
+  for (let start = 0; start < attachments.length; start += MESSAGE_ATTACHMENTS) {
+    const part = parts[start / MESSAGE_ATTACHMENTS] ||= { content: '' };
+    part.attachments = attachments.slice(start, start + MESSAGE_ATTACHMENTS);
+  }
+  return parts.filter(part => part.content.trim() || part.attachments?.length);
+}
+
+export function notificationParts(record) {
+  return publicationParts(String(record.content || ''), record.attachments).map((part, index) => ({
+    ...part, roomId: record.roomId, replyTo: record.replyTo,
+    clientId: index ? `${record.id}:part:${index + 1}` : record.id, workId: record.workId, purpose: 'fyi', eventType: 'work_result',
+    sourceRefs: record.sourceRefs || [{ type: 'work', workId: record.workId, taskId: record.taskId }],
+  }));
 }

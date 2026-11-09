@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 import { mkdir, readFile, writeFile, rm, realpath, lstat, rename } from 'node:fs/promises';
 import { join, resolve, relative, isAbsolute, extname } from 'node:path';
+import { MESSAGE_ATTACHMENTS } from '../../bot/src/runtime/notifications.mjs';
 
 export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
-export const MAX_MESSAGE_ATTACHMENTS = 8;
 export const MAX_ATTACHMENT_REQUEST_BYTES = Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4 + 4096;
 const validId = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), { status }); };
@@ -78,7 +78,7 @@ export class AttachmentStore {
 
   resolve(input) {
     if (input === undefined) return [];
-    if (!Array.isArray(input) || input.length > MAX_MESSAGE_ATTACHMENTS) fail('每条消息最多附加 8 个文件');
+    if (!Array.isArray(input) || input.length > MESSAGE_ATTACHMENTS) fail(`每条消息最多附加 ${MESSAGE_ATTACHMENTS} 个文件`);
     const ids = new Set();
     return input.map(item => {
       if (!item || typeof item !== 'object' || Array.isArray(item)) fail('附件格式无效');

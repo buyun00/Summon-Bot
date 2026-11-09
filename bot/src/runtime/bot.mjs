@@ -305,6 +305,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       store.putRecord('work-notifications', saved); return saved;
     };
     services.notify = async (input, task, context) => {
+      if (Array.isArray(input.attachments)) input = { ...input, attachments: [...new Map(input.attachments.map(item => [item?.id, item])).values()] };
       if (task.metadata?.externalReview?.running) input = { ...input, publication: 'progress', resultKind: 'progress' };
       if (task.metadata?.externalReview && !input.sourceRefs) input = { ...input, sourceRefs: [{ type: 'codex',
         threadId: task.metadata.externalReview.threadId, turnId: task.metadata.externalReview.turnId, operationId: task.metadata.externalReview.operationId }] };
