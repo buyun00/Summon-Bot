@@ -64,11 +64,33 @@ function notificationReceipt(notification, original) {
     })), original };
 }
 
+function projectReviewScope(review, workId, anchors, original) {
+  const state = review.workState;
+  if (!state || !Object.hasOwn(state, 'goal') || !Object.hasOwn(state, 'requirements')) {
+    anchors.delete(workId);
+    return false;
+  }
+  const { goal, requirements, ...current } = state;
+  const text = JSON.stringify({ goal, requirements });
+  const grant = JSON.stringify(review.authorizedProduction);
+  const anchor = anchors.get(workId);
+  // Start a fresh anchor on a scope or grant change, including a return to
+  // an older value. An anchor is always an earlier full entry in this window.
+  if (!anchor || anchor.text !== text || anchor.grant !== grant) {
+    anchors.set(workId, { text, grant, original });
+    return false;
+  }
+  const reference = { goalAndRequirementsSameAs: anchor.original };
+  if (JSON.stringify(reference).length >= text.length) return false;
+  review.workState = { ...current, ...reference };
+  return true;
+}
+
 /** Only the live work transcript is projected. S1, S3, the tool audit and the
  * executor's complete handoff stay intact. Appending a message never rewrites
  * the projection of an earlier message in the same visible window. */
 export function projectWorkContext(entries, sessionId) {
-  const evidence = new Map(), updates = new Map();
+  const evidence = new Map(), updates = new Map(), reviewScopes = new Map();
   return entries.map(({ message, entryId }) => {
     if (!entryId || message.isError || !['user', 'toolResult'].includes(message.role)) return message;
     if (message.role === 'toolResult' && !['work_update', 'work_notify'].includes(message.toolName)) return message;
@@ -84,7 +106,8 @@ export function projectWorkContext(entries, sessionId) {
         updates.set(value.id, value);
       } else if (message.toolName === 'work_notify' && value.workId && value.id) view = notificationReceipt(value, original);
     } else {
-      let index = 0, changed = false;
+      let index = 0, changed = value.type === 'work_input' && typeof value.workId === 'string' &&
+        value.input?.type === 'external_work_review' && projectReviewScope(value.input, value.workId, reviewScopes, original);
       for (const group of evidenceGroups(message, value)) for (let i = 0; i < group.length; i++, index++) {
         if (!group[i]?.reference) continue;
         const text = JSON.stringify(group[i]);
