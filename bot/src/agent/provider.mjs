@@ -44,17 +44,24 @@ export class ModelProvider {
         // A dialogue keeps its captured connection when the global default changes.
         const runtime = connectionRuntime({ ...connection, model: model.id, maxTokens: model.maxTokens, contextWindow: model.contextWindow });
         selectedModel = runtime.model;
+        // Pi's native DeepSeek Completions adapter sends thinking.type=disabled for off.
+        const shortAuthorization = options.usageContext?.requestKind === 'production-authorization' &&
+          connection.kind === 'api' && connection.provider === 'deepseek' && selectedModel.api === 'openai-completions' &&
+          selectedModel.reasoning && selectedModel.thinkingLevelMap?.off !== null &&
+          new URL(selectedModel.baseUrl).hostname === 'api.deepseek.com';
+        const requestedReasoning = shortAuthorization ? 'off' : options.reasoning;
+        const maxTokens = shortAuthorization ? Math.min(options.maxTokens || model.maxTokens, 1024) : options.maxTokens;
         record = { id: randomUUID(), botId: this.config.botId, ...options.usageContext,
           purpose: options.usageContext?.purpose || 'other', provider: connection.kind === 'api' ? connection.provider : connection.kind,
           connectionId: connection.id, billingMode: connection.kind === 'api' ? 'api' : 'subscription',
           model: model.id, requestedModel: model.id, startedAt: new Date(started).toISOString(), status: 'pending', ...reportedUsage(null),
-          thinking: Boolean(options.reasoning && options.reasoning !== 'off'), thinkingLevel: options.reasoning || 'off',
-          messageCount: context.messages?.length || 0, toolCount: getCurrentTools(normalizeContext(context).messages).length, maxOutputTokens: options.maxTokens || model.maxTokens };
+          thinking: Boolean(requestedReasoning && requestedReasoning !== 'off'), thinkingLevel: requestedReasoning || 'off',
+          messageCount: context.messages?.length || 0, toolCount: getCurrentTools(normalizeContext(context).messages).length, maxOutputTokens: maxTokens || model.maxTokens };
         const persist = () => this.config.recordUsage?.(record); persist();
         const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(options.timeoutMs || (record.thinking ? 180000 : 60000))]);
         const fastest = selectedModel.thinkingLevelMap?.off === null ? ['low', 'medium', 'high'].find(level => selectedModel.thinkingLevelMap[level] != null) : null;
-        const reasoning = (!options.reasoning || options.reasoning === 'off') && fastest ? fastest : options.reasoning;
-        const stream = runtime.models.streamSimple(selectedModel, context, { ...options, reasoning, signal: requestSignal,
+        const reasoning = (!requestedReasoning || requestedReasoning === 'off') && fastest ? fastest : requestedReasoning;
+        const stream = runtime.models.streamSimple(selectedModel, context, { ...options, reasoning, maxTokens, signal: requestSignal,
           sessionId: options.usageContext?.sessionId || options.sessionId, maxRetries: 0,
           ...(connection.kind === 'codex' ? { transport: 'sse' } : {}),
           fetch: async (input, init) => {
