@@ -53,7 +53,7 @@ export function coreTools(services, task) {
   // keeps its saved tool record; another accepted source gets another record.
   const actionId = (args, ctx, field) => ctx.recordId || `${task.id}:${ctx.toolCallId}`;
   return [
-    tool('request_decide', 'Classify the CURRENT authenticated user request by meaning before acting. produce/revise means actual new or changed content; status means inspect progress; deliver means return EXISTING output; accept means explicit scoped acceptance; control includes pause/stop/cancel. For explicit acceptance, select acceptances with each canonical workId and exact ended operationId from work_get. A request may accept a document AND request independent implementation: select produce, its production stage/relation, AND those acceptances; call work_accept for each BEFORE work_create/work_dispatch. Production alone never implies acceptance. For existing files call request_decide intent=deliver, work_outputs, then work_deliver with its replyDelivery IDs. New rendering/screenshots/revisions are production only when missing. Decide semantically from the authenticated source, never keywords. This decision grants no extra authority.',
+    tool('request_decide', 'Classify the CURRENT authenticated user request by meaning before acting. produce/revise means actual new or changed content; status means inspect progress; deliver means return EXISTING output; accept means explicit scoped acceptance; control includes pause/stop/cancel. For explicit acceptance, select acceptances with each canonical workId and exact ended operationId from work_get. If the user explicitly accepts the current result within a stated scope and also corrects the closeout summary, select accept and call work_accept before replying. Preserve the stated limits and keep the existing files when the user only corrects the summary. A request may accept a document AND request independent implementation: select produce, its production stage/relation, AND those acceptances; call work_accept for each BEFORE work_create/work_dispatch. Production alone never implies acceptance. For existing files call request_decide intent=deliver, work_outputs, then work_deliver with its replyDelivery IDs. New rendering/screenshots/revisions are production only when missing. Decide semantically from the authenticated source, never keywords. This decision grants no extra authority.',
       object({ intent: { type: 'string', enum: requestIntents }, productionStage: { type: 'string', enum: productionStages },
         workRelation: { type: 'string', enum: ['new', 'continue'] }, workId: string,
         acceptances: { type: 'array', maxItems: 8, items: object({ workId: string, operationId: string }, ['workId', 'operationId']),
@@ -229,7 +229,7 @@ export function coreTools(services, task) {
         const receipt = await services.works.dispatch(work.id, { id: operationId, kind: 'request', content, metadata: { priority: 'background', resume: userRequest } }, task);
         return { ...compactWork(work), ...receipt, handedOff: true, acceptance: modelText(args.acceptance), evidenceWarnings: content.evidenceWarnings };
       }),
-    tool('work_update', frontend ? 'Pause or cancel existing work. Send requirements with work_dispatch; only the worker records progress and completion.' : review?.running ? 'Record this running external turn’s progress/checkpoint, next steps and evidence ONLY. Omit status, waiting, goal and requirements; the runtime owns its lifecycle. Use codex_send for a concrete correction to the bound thread.' : review ? 'Review a confirmed ended external turn. Record progress/checkpoint and completed only for a satisfied scoped goal, or waiting/review with its concrete remainder. Never rewrite accepted goal/requirements.' : 'Record actual progress and status of the current work. Its identity and revision are supplied by the program.',
+    tool('work_update', frontend ? 'Pause or cancel existing work. Send requirements with work_dispatch; only the worker records progress and completion.' : review ? 'Record progress, checkpoints, next steps and evidence for the current external review. Follow the current external_work_review to determine whether status and waiting can be updated. Preserve the accepted goal and requirements.' : 'Record actual progress and status of the current work. Its identity and revision are supplied by the program.',
       object({ id: string, ...(!frontend ? { goal: string, requirements: string, progress: string, checkpoint: {}, next: string, constraints: string, evidence: {},
         waiting: object({ kind: { type: 'string', enum: ['review', 'user-input', 'external'] }, question: string, reason: string }, ['kind']) } : {}), status: { type: 'string', enum: frontend ? ['paused', 'cancelled'] : ['active', 'waiting', 'paused', 'blocked', 'completed', 'cancelled'] } }), 'write', async args => {
         const work = await services.sources.requireWork(workId(args), task);
@@ -239,7 +239,7 @@ export function coreTools(services, task) {
           (args.waiting || args.status && args.status !== 'completed')) throw new Error('This exact result was explicitly accepted by the user; retain its accepted scope and unverified boundaries without reopening it from external evidence.');
         if (review && (args.goal !== undefined || args.requirements !== undefined)) throw new Error('External evidence cannot rewrite the accepted work goal or requirements.');
         if (review && args.status === 'completed' && !review.confirmedFinal) throw new Error('The external result is not a confirmed final answer; it cannot establish completion.');
-        if (review && (args.status === 'active' || review.running && (args.waiting || args.status && args.status !== work.status)))
+        if (review && (args.status === 'active' || review.running && (args.waiting !== undefined || args.status !== undefined)))
           throw new Error('The external executor is still running; record its evidence and checkpoint without changing its lifecycle.');
         if (args.waiting?.kind === 'user-input' && !modelText(args.waiting.question).trim()) throw new Error('Waiting for user input requires the actual unanswered question.');
         if (['paused', 'cancelled'].includes(args.status) && work.id !== task.workId) return services.stopWork(work.id, args.status, task);
@@ -353,7 +353,8 @@ export function coreTools(services, task) {
     tool('artifact_save', 'Save task output as a durable artifact and return its receipt.',
       object({ name: string, mimeType: string, content: string }, ['name', 'content']), 'write', (args, ctx) => ctx.saveArtifact(args)),
   ].map(definition => definition.name === 'work_update' && review ? { ...definition,
+    // Keep the declaration stable across review phases. The handler enforces live lifecycle restrictions.
     inputSchema: object({ id: string, progress: string, checkpoint: {}, next: string, constraints: string, evidence: {},
-      ...(!review.running ? { status: { type: 'string', enum: ['waiting', 'blocked', 'completed'] },
-        waiting: object({ kind: { type: 'string', enum: ['review', 'user-input', 'external'] }, question: string, reason: string }, ['kind']) } : {}) }) } : definition);
+      status: { type: 'string', enum: ['waiting', 'blocked', 'completed'] },
+      waiting: object({ kind: { type: 'string', enum: ['review', 'user-input', 'external'] }, question: string, reason: string }, ['kind']) }) } : definition);
 }
