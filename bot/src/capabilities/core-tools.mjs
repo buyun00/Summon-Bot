@@ -17,11 +17,13 @@ const tool = (name, description, inputSchema, effect, execute) => ({ name, descr
   execute: async (args, context) => jsonToolResult(await execute(modelArgs(args), context)) });
 const pageFields = { offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 20 } };
 const reference = object({ type: { type: 'string', enum: ['room', 'session', 'artifact', 'knowledge', 'work', 'tool'] }, roomId: string, scopeId: string, workId: string, operationId: string,
-  messageId: string, sessionId: string, entryId: string, id: string, section: { type: 'string', enum: ['acceptedStep', 'evidenceItem'] },
+  messageId: string, sessionId: string, entryId: string, id: string, section: { type: 'string', enum: ['acceptedStep', 'evidenceItem', 'toolContent'] },
   index: { type: 'integer', minimum: 0 }, offset: { type: 'integer', minimum: 0 }, length: { type: 'integer', minimum: 1, maximum: 64000 } }, ['type']);
 const evidence = { type: 'array', maxItems: HANDOFF_REFERENCES, items: reference,
   description: 'Selected exact references from source reads, e.g. [{type:"room",roomId:"...",messageId:"..."}]. Pass the array itself; a JSON array string is also readable. Prose is guidance, not a source grant.' };
 const handoffFields = { evidence, knowledgeScopes: { type: 'array', items: string }, instruction: string, acceptance: string };
+const waitingFields = object({ kind: { type: 'string', enum: ['review', 'user-input', 'external'] }, question: string, reason: string,
+  blockingRequirement: { type: 'string', description: 'For user-input after a confirmed final, name the unmet requirement of this same work that needs the answer. Review of a delivered result and permission for separate next work belong to review.' } }, ['kind']);
 const preview = value => { const text = typeof value === 'string' ? value : JSON.stringify(value ?? null); return { text: text.slice(0, 1600), truncated: text.length > 1600 }; };
 const roomPublications = (store, workId, roomId) => store.listRecords('work-notifications')
   .filter(item => item.workId === workId && item.roomId === roomId && item.status === 'delivered');
@@ -70,17 +72,15 @@ function acceptanceTarget(store, work, roomId) {
     return publications.length ? { operationId: operation.id, publicationMessageIds: [...new Set(publications.map(item => item.messageId))] } : null;
   }
   const execution = externalExecution(work), outcome = work.executionOutcome;
-  if (!['waiting', 'completed'].includes(work.status) || work.status === 'waiting' && work.waiting?.kind !== 'review' ||
-    !execution.startedConfirmed || execution.status !== 'completed' || outcome?.kind !== 'execution-ended' || !outcome.finalConfirmed ||
+  if (!roomId || !['waiting', 'completed'].includes(work.status) || work.status === 'waiting' && work.waiting?.kind !== 'review' ||
+    !execution.startedConfirmed || !execution.externalReceived || execution.operationId !== execution.currentOperationId ||
+    execution.status !== 'completed' || outcome?.kind !== 'execution-ended' || !outcome.finalConfirmed ||
     outcome.operationId !== execution.operationId || outcome.turnId !== execution.turnId) return null;
 
   const binding = work.bindings.find(item => item.id === execution.bindingId);
   const receipts = new Map(binding.operations?.filter(item => item.status === 'received' &&
     item.threadId === execution.threadId).map(item => [item.operationId, item]));
   let { operationId, turnId } = execution;
-  if (!receipts.get(operationId)?.verificationOnly) return { operationId, turnId };
-  if (!roomId) return null;
-
   const notifications = store.listRecords('work-notifications').filter(item => item.workId === work.id);
   const visited = new Set();
   while (receipts.get(operationId)?.verificationOnly) {
@@ -90,14 +90,22 @@ function acceptanceTarget(store, work, roomId) {
     visited.add(operationId);
     ({ operationId, turnId } = previous);
   }
-  // A verification receipt only preserves an actual publication in this room.
-  const publication = notifications.find(item => item.roomId === roomId && item.status === 'delivered' &&
-    item.executionEventId === operationId && item.resultKind === 'execution-ended' && item.attachments?.length &&
-    item.sourceRefs?.some(ref => ref.type === 'codex' && ref.operationId === operationId &&
-      ref.threadId === execution.threadId && ref.turnId === turnId) &&
-    (Array.isArray(item.receipt) ? item.receipt : [item.receipt]).some(receipt => receipt?.roomId === roomId &&
-      receipt.attachments?.some(attachment => item.attachments.some(published => published.id === attachment.id))));
-  return publication ? { operationId, turnId, throughOperationId: execution.operationId } : null;
+  // A read-only verification can preserve a previously published file, but is never itself the result.
+  const throughVerification = operationId !== execution.operationId;
+  const publicationMessageIds = notifications.flatMap(item => {
+    if (item.roomId !== roomId || item.status !== 'delivered' || item.late || !item.replyTo ||
+      item.publication !== 'external' || item.executionEventId !== operationId || item.resultKind !== 'execution-ended' ||
+      !item.sourceRefs?.some(ref => ref.type === 'codex' && ref.operationId === operationId &&
+        ref.threadId === execution.threadId && ref.turnId === turnId)) return [];
+    return (Array.isArray(item.receipt) ? item.receipt : [item.receipt]).flatMap(receipt => {
+      if (!receipt?.id || receipt.roomId !== roomId || receipt.workId !== work.id || receipt.senderId !== work.botId ||
+        receipt.replyTo !== item.replyTo || (throughVerification || item.attachments?.length) &&
+        !receipt.attachments?.some(attachment => item.attachments?.some(published => published.id === attachment.id))) return [];
+      return [receipt.id];
+    });
+  });
+  return publicationMessageIds.length ? { operationId, turnId, publicationMessageIds: [...new Set(publicationMessageIds)],
+    ...(throughVerification ? { throughOperationId: execution.operationId } : {}) } : null;
 }
 
 function outputOperationId(store, work, roomId, requestedId) {
@@ -149,7 +157,11 @@ export function coreTools(services, task) {
       ? [stage, 'continue', proposed.work.id, proposed.work.operationId, proposed.after]
       : [stage, 'new', proposed.project?.id, proposed.target, proposed.goal]);
     const previous = authorizationFailures.get(actionKey) || authorizationFailures.get(proposalKey);
-    if (previous) throw previous;
+    if (previous) {
+      if (['PRODUCTION_CHECK_UNAVAILABLE', 'PRODUCTION_RECEIPT_INVALID'].includes(previous.code))
+        throw Object.assign(new Error('This exact action is already blocked by the saved authorization failure for this user message. No new check or dispatch ran. Tell the user the action was not dispatched; continue only with other independently authorized actions. Rewording this handoff will not help.'), { code: 'PRODUCTION_CHECK_ALREADY_FAILED' });
+      throw previous;
+    }
     try {
       return await authorizeProduction({ task, store, decision, proposed, verify: ctx.verifyProduction, signal: ctx.signal });
     } catch (error) {
@@ -309,6 +321,7 @@ export function coreTools(services, task) {
           work.acceptance.source?.messageId === (source.replyTo || source.messageId)) return work;
         return services.works.update(work.id, { status: 'completed', expectedRevision: work.revision,
           acceptance: { scope: modelText(args.scope), remainingBoundaries: modelText(args.remainingBoundaries), operationId: target.operationId,
+            ...(target.turnId ? { turnId: target.turnId } : {}),
             ...(target.publicationMessageIds ? { publicationMessageIds: target.publicationMessageIds } : {}),
             ...(target.throughOperationId ? { throughOperationId: target.throughOperationId } : {}),
             source: { type: 'room', roomId: source.roomId, messageId: source.replyTo || source.messageId }, recordedAt: new Date().toISOString() } });
@@ -359,21 +372,32 @@ export function coreTools(services, task) {
       }),
     tool('work_update', frontend ? 'Pause or cancel existing work. Send requirements with work_dispatch; only the worker records progress and completion.' : review ? 'Record progress, checkpoints, next steps and evidence for the current external review. Follow the current external_work_review to determine whether status and waiting can be updated. Preserve the accepted goal and requirements.' : 'Record actual progress and status of the current work. Its identity and revision are supplied by the program.',
       object({ id: string, ...(!frontend ? { goal: string, requirements: string, progress: string, checkpoint: {}, next: string, constraints: string, evidence: {},
-        waiting: object({ kind: { type: 'string', enum: ['review', 'user-input', 'external'] }, question: string, reason: string }, ['kind']) } : {}), status: { type: 'string', enum: frontend ? ['paused', 'cancelled'] : ['active', 'waiting', 'paused', 'blocked', 'completed', 'cancelled'] } }), 'write', async args => {
+        waiting: waitingFields } : {}), status: { type: 'string', enum: frontend ? ['paused', 'cancelled'] : ['active', 'waiting', 'paused', 'blocked', 'completed', 'cancelled'] } }), 'write', async args => {
         const work = await services.sources.requireWork(workId(args), task);
         assertExternalReviewCurrent(task, store);
         const review = task.metadata?.externalReview;
         if (review && work.status === 'completed' && isAcceptedOperation(work, review.operationId) &&
           (args.waiting || args.status && args.status !== 'completed')) throw new Error('This exact result was explicitly accepted by the user; retain its accepted scope and unverified boundaries without reopening it from external evidence.');
         if (review && (args.goal !== undefined || args.requirements !== undefined)) throw new Error('External evidence cannot rewrite the accepted work goal or requirements.');
-        if (review && args.status === 'completed' && !review.confirmedFinal) throw new Error('The external result is not a confirmed final answer; it cannot establish completion.');
+        const outcome = work.executionOutcome;
+        const currentOutcome = review && outcome && outcome.operationId === review.operationId && outcome.turnId === review.turnId ? outcome : null;
+        const confirmedFinal = review?.confirmedFinal && currentOutcome?.kind === 'execution-ended' && currentOutcome.finalConfirmed;
+        if (review && ['completed', 'done'].includes(args.status) && !confirmedFinal)
+          throw new Error('Completion requires the confirmed final of this exact ended operation.');
         if (review && (args.status === 'active' || review.running && (args.waiting !== undefined || args.status !== undefined)))
           throw new Error('The external executor is still running; record its evidence and checkpoint without changing its lifecycle.');
-        if (args.waiting?.kind === 'user-input' && !modelText(args.waiting.question).trim()) throw new Error('Waiting for user input requires the actual unanswered question.');
+        if (currentOutcome?.kind === 'needs-input' && args.waiting && args.waiting.kind !== 'user-input')
+          throw new Error('Keep the current native request as a user-input wait while its answer is outstanding.');
+        const question = modelText(args.waiting?.question).trim(), blockingRequirement = modelText(args.waiting?.blockingRequirement).trim();
+        if (args.waiting?.kind === 'user-input' && !question) throw new Error('Waiting for user input requires the actual unanswered question.');
+        if (confirmedFinal && args.waiting?.kind === 'user-input' && !blockingRequirement)
+          throw new Error('After a confirmed final, user-input requires a blockingRequirement of this same accepted work. For acceptance of the result or authorization of separate next work, use waiting/review or complete the finished scope.');
         if (['paused', 'cancelled'].includes(args.status) && work.id !== task.workId) return services.stopWork(work.id, args.status, task);
         const patch = Object.fromEntries((frontend ? ['status'] : ['goal', 'requirements', 'progress', 'status']).filter(key => args[key] !== undefined).map(key => [key, modelText(args[key])]));
         if (!frontend && args.waiting && (args.status || work.status) === 'waiting') patch.waiting = { kind: args.waiting.kind,
-          question: modelText(args.waiting.question), reason: modelText(args.waiting.reason), since: new Date().toISOString() };
+          question, reason: modelText(args.waiting.reason), since: new Date().toISOString(),
+          ...(args.waiting.kind === 'user-input' && blockingRequirement ? { blockingRequirement } : {}),
+          ...(currentOutcome ? { operationId: review.operationId, bindingId: review.bindingId, outcome: currentOutcome.kind } : {}) };
         if (!frontend) patch.checkpoint = { ...work.checkpoint, ...(args.checkpoint ? { note: modelText(args.checkpoint) } : {}),
           ...(args.progress !== undefined ? { progress: modelText(args.progress) } : {}), ...(args.next !== undefined ? { next: modelText(args.next) } : {}),
           ...(args.constraints !== undefined ? { constraints: modelText(args.constraints) } : {}), ...(args.evidence !== undefined ? { evidence: args.evidence } : {}),
@@ -494,5 +518,5 @@ export function coreTools(services, task) {
     // Keep the declaration stable across review phases. The handler enforces live lifecycle restrictions.
     inputSchema: object({ id: string, progress: string, checkpoint: {}, next: string, constraints: string, evidence: {},
       status: { type: 'string', enum: ['waiting', 'blocked', 'completed'] },
-      waiting: object({ kind: { type: 'string', enum: ['review', 'user-input', 'external'] }, question: string, reason: string }, ['kind']) }) } : definition);
+      waiting: waitingFields }) } : definition);
 }
