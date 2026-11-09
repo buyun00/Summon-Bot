@@ -164,7 +164,7 @@ export async function createCapability(options) {
         codex.assertScope(actor,args.workId||context.workId,context.codexScope);
         if(name==='codex_attach'&&actor!=='controller'&&!context.codexScope.threadGrants.includes(args.threadId))
           fail('Attaching an existing chat requires its exact ID in the authenticated user request. Global chat discovery is not authorization.',403);
-        return codex[name==='codex_create'?'create':'attach']({...args,botId:actor});
+        return codex[name==='codex_create'?'create':'attach']({...args,botId:actor},signal);
       }
       case 'codex_status':{codex.assertScope(actor,args.workId,context.codexScope);const id=codex.bindingId(actor,args.workId),work=codex.require(id);assertOwner(actor,work.botId);return codex.get(id);}
       case 'codex_read':case 'codex_send':case 'codex_interrupt':{

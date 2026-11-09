@@ -130,7 +130,8 @@ export function createServer({ config, tools, broker, store, openapi }) {
       let action;
       if (request.method === 'POST' && url.pathname === '/v1/threads') {
         query(url, []); const body = v.createBody(await readBody(request));
-        action = { body, laterReceipt: true, run: async phase => ({ status: 201, body: await tools.call('create_thread', body, phase) }) };
+        action = { body, laterReceipt: true, retryCreatePreflight: request.headers['x-summon-preflight-recovery'] === '1',
+          run: async (phase, recovery) => ({ status: 201, body: await tools.call('create_thread', body, phase, recovery) }) };
       } else if (id && request.method === 'POST' && suffix === 'messages') {
         query(url, []); const body = v.object(await readBody(request), ['message', 'hostId', 'model', 'thinking']);
         v.string(body.message, 'message', 100000); const hostId = v.hostId(body.hostId); v.modelOptions(body);
@@ -150,15 +151,17 @@ export function createServer({ config, tools, broker, store, openapi }) {
       if (!action) throw new ApiError(404, 'not_found', 'API route not found.');
       let posted = false, preflightExpired = false, acknowledgement;
       const beforeWriteTimeout = () => new ApiError(503, 'desktop_preflight_timeout', 'Desktop preflight did not finish in time. The bridge stopped before sending the native write.');
-      const operation = store.mutate(request.headers['idempotency-key'], { method: request.method, path: url.pathname, body: action.body }, async report => {
+      const operation = store.mutate(request.headers['idempotency-key'], { method: request.method, path: url.pathname, body: action.body }, async (report, recovery) => {
         if (action.lock && inFlight.has(action.lock)) throw new ApiError(409, 'thread_busy', 'Another API operation is in flight for this thread.');
         if (action.lock) inFlight.add(action.lock);
         try {
           return await action.run((phase, detail) => {
             if (preflightExpired) throw beforeWriteTimeout();
+            if (recovery && !posted && response.destroyed)
+              throw new ApiError(409, 'create_recovery_stopped', 'The caller ended create recovery before the native write.', { outcome: 'not-submitted' });
             report(phase, detail);
             if (phase === 'desktop-write') posted = true;
-          });
+          }, recovery);
         } catch (error) {
           if (preflightExpired) throw beforeWriteTimeout();
           if (action.laterReceipt && !posted) {
@@ -169,7 +172,7 @@ export function createServer({ config, tools, broker, store, openapi }) {
           }
           throw error;
         } finally { if (action.lock) inFlight.delete(action.lock); }
-      });
+      }, action.retryCreatePreflight);
       pendingOperations.add(operation);
       const forget = () => pendingOperations.delete(operation);
       operation.then(forget, forget);

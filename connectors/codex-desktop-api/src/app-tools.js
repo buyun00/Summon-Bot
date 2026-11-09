@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { FramedPipe } from './framed-pipe.js';
-import { ApiError, unavailable } from './errors.js';
+import { ApiError, modelPreflightUnavailable, unavailable } from './errors.js';
 import { DesktopIpc } from './desktop-ipc.js';
 import { assertExecutorConnected } from './executor-connection.js';
 import { resolveDirectoryTarget, matchesDirectoryTarget } from './directory-target.js';
@@ -63,13 +63,16 @@ export class AppTools {
         timeoutMs: this.config.requestTimeoutMs, connectTimeoutMs: this.config.connectTimeoutMs });
       this.pipe?.close(); this.pipe = pipe;
       await pipe.connect();
-      const response = await pipe.request({ jsonrpc: '2.0', id: randomUUID(), method: 'tools/list', params: { threadStartKind: 'all' } });
-      if (!Array.isArray(response.result?.tools)) throw new ApiError(502, 'protocol_mismatch', 'Desktop tool catalog is incompatible.');
-      this.catalog = response.result.tools;
+      await this.refreshCatalog(pipe);
     })().finally(() => { this.connecting = null; });
     return this.connecting;
   }
-  async call(tool, args = {}, phase) {
+  async refreshCatalog(pipe) {
+    const response = await pipe.request({ jsonrpc: '2.0', id: randomUUID(), method: 'tools/list', params: { threadStartKind: 'all' } });
+    if (!Array.isArray(response.result?.tools)) throw new ApiError(502, 'protocol_mismatch', 'Desktop tool catalog is incompatible.');
+    if (this.pipe === pipe) this.catalog = response.result.tools;
+  }
+  async call(tool, args = {}, phase, recovery) {
     assertExecutorConnected(this.config);
     if (tool === 'create_thread') {
       phase?.('queued');
@@ -81,7 +84,7 @@ export class AppTools {
       return prior.then(() => this.createWithDesktopDefaults(args, (stage, detail) => {
         phase?.(stage, detail);
         if (stage === 'desktop-write') release();
-      })).finally(release);
+      }, recovery)).finally(release);
     }
     phase?.('connect');
     return this.callDesktopTool(tool, args, this.config.callerThreadId, phase);
@@ -125,11 +128,14 @@ export class AppTools {
     }
     throw new ApiError(503, 'permission_context_unavailable', 'No loaded desktop context matches the desktop default permissions. Open a local Codex chat using those defaults and try again. No chat or message was created.');
   }
-  async createWithDesktopDefaults(args, phase) {
+  async createWithDesktopDefaults(args, phase, recovery) {
     phase?.('connect');
     await this.connect();
+    if (recovery) await this.refreshCatalog(this.pipe);
     phase?.('permission-context');
     const expected = this.readPermissionDefault();
+    if (recovery && recovery.permissionMode !== expected.mode)
+      throw new ApiError(409, 'desktop_defaults_changed', 'Desktop permission defaults changed since the original create preflight. No message was sent.');
     const context = await this.permissionContext(expected);
     phase?.('project');
     const directory = args.target?.type === 'directory' ? await resolveDirectoryTarget(args.target.cwd, () => this.callDesktopTool('list_projects')) : null;
@@ -150,7 +156,13 @@ export class AppTools {
       throw new ApiError(409, 'permission_context_changed', 'Desktop context permissions changed before creation. No message was sent.');
     }
     this.heldPermissionContext = fresh;
-    const result = await this.callDesktopTool('create_thread', args, context.threadId, phase);
+    let result;
+    try { result = await this.callDesktopTool('create_thread', args, context.threadId, phase); }
+    catch (error) {
+      if (error.code === modelPreflightUnavailable && error.details?.outcome === 'not-submitted')
+        error.details.permissionMode = expected.mode;
+      throw error;
+    }
     if (!result.threadId || (result.hostId ?? 'local') !== 'local') throw new ApiError(502, 'creation_unconfirmed', 'Desktop did not confirm a local chat id. Inspect the operation before any further write.', { outcome: 'unknown', desktopResult: result });
     let observed;
     phase?.('permission-readback', { threadId: result.threadId });
@@ -198,8 +210,9 @@ export class AppTools {
           `create_thread could not validate reasoning effort "${args.thinking}" for model "${args.model}". Use a model and reasoning combination listed in the tool description, or omit thinking.` :
           `create_thread could not validate model "${args.model}". Use a model listed in the tool description, or omit model.`;
         // These native guards return before the creation routine is invoked.
-        if (detail === catalogFailure) throw new ApiError(503, 'desktop_model_preflight_unavailable',
-          `Desktop could not validate the requested model settings against its current catalog. Creation stopped during preflight. ${args.model}${args.thinking ? ` / ${args.thinking}` : ''}`);
+        if (detail === catalogFailure) throw new ApiError(503, modelPreflightUnavailable,
+          `Desktop could not validate the requested model settings against its current catalog. Creation stopped during preflight. ${args.model}${args.thinking ? ` / ${args.thinking}` : ''}`,
+          { outcome: 'not-submitted' });
         const unsupported = `create_thread rejected unsupported model/reasoning combination: "${args.model}" does not support "${args.thinking}". `;
         if (args.thinking && detail.startsWith(unsupported) &&
           /^(This model supports no reasoning effort overrides\.|Supported reasoning efforts: [a-z, ]+\.)$/.test(detail.slice(unsupported.length)))

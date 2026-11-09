@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fail } from '../shared/validation.mjs';
 import { desktopExecutorState, requireDesktopExecutor } from '../../bot/src/capabilities/executor-connections.mjs';
 import { modelText } from '../../bot/src/context/model-input.mjs';
@@ -33,6 +34,8 @@ const rejected = error => error.result?.error?.details?.outcome !== 'unknown' &&
     ['desktop_defaults_unavailable', 'unsupported_permission_default', 'permission_context_unavailable', 'unsupported_permission_host', 'caller_thread_required', 'unsupported_capability',
       'desktop_model_preflight_unavailable', 'desktop_preflight_timeout', 'desktop_preflight_unavailable'].includes(error.code));
 const turnStatus = state => state?.status === 'waiting_for_input' ? state.status : state?.currentTurn?.status || state?.status || 'unknown';
+const createPreflightUnavailable = error => error.status === 503 && error.code === 'desktop_model_preflight_unavailable' &&
+  error.result?.error?.details?.outcome === 'not-submitted' && Boolean(error.result.error.details.permissionMode);
 function precedingTurn(operation, threadId) {
   const previous = operation.previousExecution, observation = previous?.executionObservation;
   if (!observation?.submissionConfirmed || observation.stale || observation.threadId !== threadId ||
@@ -102,12 +105,14 @@ export class DesktopCodex {
     if (!['127.0.0.1', 'localhost', '::1'].includes(host)) fail('The installed Desktop connector must use its configured local endpoint');
     return { url: `http://${host === '::1' ? '[::1]' : host}:${config.port || 47831}`, headers: { 'Content-Type': 'application/json', ...(config.auth?.bearerToken ? { Authorization: `Bearer ${config.auth.bearerToken}` } : {}) } };
   }
-  async request(path, { method = 'GET', body, operationKey, signal } = {}) {
+  async request(path, options) {
     const connection = await this.connection();
-    return this.connectorRequest(connection, path, { method, body, operationKey, signal });
+    return this.connectorRequest(connection, path, options);
   }
-  async connectorRequest(connection, path, { method = 'GET', body, operationKey, signal } = {}) {
-    const response = await fetch(`${connection.url}${path}`, { method, headers: { ...connection.headers, ...(operationKey ? { 'Idempotency-Key': operationKey } : {}) }, redirect: 'error', signal: signal || AbortSignal.timeout(140000), ...(body ? { body: JSON.stringify(body) } : {}) });
+  async connectorRequest(connection, path, { method = 'GET', body, operationKey, signal, retryCreatePreflight } = {}) {
+    const response = await fetch(`${connection.url}${path}`, { method, headers: { ...connection.headers, ...(operationKey ? { 'Idempotency-Key': operationKey } : {}),
+      ...(retryCreatePreflight ? { 'X-Summon-Preflight-Recovery': '1' } : {}) }, redirect: 'error',
+      signal: signal || AbortSignal.timeout(140000), ...(body ? { body: JSON.stringify(body) } : {}) });
     const data = await response.json();
     if (!response.ok) throw Object.assign(new Error(data.error?.message || 'Desktop API request failed'), { status: response.status, code: data.error?.code, result: data });
     return data;
@@ -169,13 +174,14 @@ export class DesktopCodex {
         ...(item.verificationOnly ? { verificationOnly: true } : {}), error: item.error || item.result?.error,
         recordedAt: item.checkedAt || item.resultAppliedAt || item.attemptedAt })),
       ...(work.directoryTarget ? { target: work.directoryTarget } : {}) };
-    await this.manager.request(work.botId, `/works/${encodeURIComponent(work.workId)}`, { method: 'PATCH', body: JSON.stringify({ expectedRevision: current.revision,
+    const synchronized = await this.manager.request(work.botId, `/works/${encodeURIComponent(work.workId)}`, { method: 'PATCH', body: JSON.stringify({ expectedRevision: current.revision,
       ...(work.directoryTarget ? { project: { ...directoryProject(work.directoryTarget.cwd), nativeProjectId: work.directoryTarget.projectId,
         nativeRegistration: 'confirmed' } } : {}),
       bindings: [...(current.bindings || []).filter(item => item.id !== work.id), binding] }) });
     this.save({ id: work.id, ownerSyncPending: false, syncError: null });
+    return synchronized;
   }
-  async create(input) {
+  async create(input, signal) {
     requireDesktopExecutor(this.dataRoot);
     const workId = requireText(input.workId, 'workId'), botId = requireText(input.botId, 'botId');
     const id = `${botId}:${workId}`;
@@ -190,7 +196,7 @@ export class DesktopCodex {
       if (!before) this.save({ id, workId, botId, conversationId: owner.conversationId, goal: owner.goal, backend: 'desktop', hostId: 'local', status: 'submitting', serviceVersion: this.version, roomId: input.roomId || null });
       if (before?.externalThreadId && before.operationId !== input.operationId) fail('This work is already bound; use codex_send to continue its thread', 409);
       return this.mutate(id, 'create', input.operationId, '/v1/threads', { prompt, target: codexTarget(input.target),
-        model: owner.executor?.model || 'gpt-6.1-sol', thinking: owner.executor?.thinking || 'max' });
+        model: owner.executor?.model || 'gpt-6.1-sol', thinking: owner.executor?.thinking || 'max' }, {}, false, signal);
     });
   }
   async attach(input) {
@@ -254,7 +260,7 @@ export class DesktopCodex {
   }
   assertDesktop(work) { if (work.backend !== 'desktop' || !work.externalThreadId) fail('This binding has no confirmed Desktop thread; inspect its original operation', 409); }
   operation(work, operationId) { return this.store.get('desktopOperations', `${work.botId}:${work.id}:${operationId}`); }
-  async mutate(id, action, operationId, path, body, patch = {}, verificationOnly = false) {
+  async mutate(id, action, operationId, path, body, patch = {}, verificationOnly = false, signal) {
     const work = this.require(id); requireText(operationId, 'operationId');
     const previous = this.operation(work, operationId);
     if (previous) {
@@ -271,19 +277,34 @@ export class DesktopCodex {
         status: action === 'interrupt' ? 'interrupt_requested' : 'submitting' });
       return operation;
     });
-    return this.perform(operation);
+    return this.perform(operation, signal);
   }
-  async perform(operation) {
+  async perform(operation, signal) {
     const id = operation.workId;
     const work = this.require(id), owner = await this.ownerWork(work.botId, work.workId);
     if (operation.action !== 'interrupt' && ['cancelled', 'paused', 'archived'].includes(owner.status)) return this.get(id);
     // A pending intent with no attemptedAt has never crossed the transport boundary.
     // Persist both transport intent and the Bot binding before the first write.
-    await this.syncOwner(work);
+    const synchronized = await this.syncOwner(work);
     this.store.save('desktopOperations', { id: operation.id, attemptedAt: now() });
+    const request = { method: 'POST', body: operation.body, operationKey: operation.operationKey };
     let result;
     try {
-      result = await this.request(operation.path, { method: 'POST', body: operation.body, operationKey: operation.operationKey });
+      result = await this.request(operation.path, request).catch(async error => {
+        if (operation.action !== 'create' || !signal || signal.aborted || !createPreflightUnavailable(error) ||
+          owner.status !== 'active' || !owner.lastTaskId) throw error;
+        let current;
+        try {
+          await delay(2000, undefined, { signal });
+          current = await this.ownerWork(work.botId, work.workId);
+        } catch { throw error; }
+        if (signal.aborted || current?.status !== 'active' || current.lastTaskId !== owner.lastTaskId || current.revision !== synchronized?.revision ||
+          !current.bindings?.some(binding => binding.id === id && binding.operationId === operation.operationId &&
+            binding.operationKey === operation.operationKey && !binding.externalThreadId)) throw error;
+        this.store.save('desktopOperations', { id: operation.id, preflightRecovery: { code: error.code, attemptedAt: now() } });
+        return this.request(operation.path, { ...request, retryCreatePreflight: true,
+          signal: AbortSignal.any([signal, AbortSignal.timeout(140000)]) });
+      });
     } catch (error) {
       if (rejected(error)) return this.applyOperation(this.store.save('desktopOperations', {
         id: operation.id, status: 'failed', httpStatus: error.status, error: errorView(error),

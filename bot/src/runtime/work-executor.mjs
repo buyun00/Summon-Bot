@@ -57,7 +57,9 @@ export function workExecutor({ store, services, emit }) {
         event = store.putRecord('work-events', { ...event, sourceTaskId: task.id, handoffFile: path, resultFile, transportCharacters: characters, transport: { name, args }, status: 'submitting' });
       }
       // Retries always use the same Desktop operation; its service queries unknown outcomes.
-      const receipt = await services.capability(event.transport.name, event.transport.args, store.getTask(event.sourceTaskId), { operationId: event.id });
+      const receipt = await services.capability(event.transport.name, event.transport.args, store.getTask(event.sourceTaskId), {
+        operationId: event.id, ...(event.transport.name === 'codex_create' ? { signal: options.signal } : {}),
+      });
       const operationReceipt = receipt.operations?.find(item => item.operationId === event.id);
       const appendFailed = event.transport.name === 'codex_send' && operationReceipt?.status === 'failed';
       const submissionFailed = appendFailed || receipt.status === 'failed';
