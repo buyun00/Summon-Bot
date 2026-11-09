@@ -4,6 +4,7 @@ import { modelText, boundedNumber, durationSeconds } from '../context/model-inpu
 import { isCliExecutor } from '../capabilities/executor-connections.mjs';
 import { directoryProject } from '../context/project-scope.mjs';
 import { externalExecution } from '../context/execution-evidence.mjs';
+import { productionStage } from '../capabilities/request-routing.mjs';
 
 const now = () => new Date().toISOString();
 const statuses = new Set(['active', 'waiting', 'paused', 'blocked', 'completed', 'cancelled']);
@@ -44,7 +45,7 @@ export class WorkService {
       if (sourceKey) this.store.putRecord('work-handoffs', { id: sourceKey, workId: id, createdAt: now() });
       if (input.initialHandoff) this.store.putRecord('work-events', { id: `${id}:${input.operationId || 'initial'}`, workId: id,
         kind: 'request', content: input.initialHandoff, requestTaskId: task.id, sourceTaskId: task.id,
-        authorization: this.authorization(task, `${id}:${input.operationId || 'initial'}`), status: 'pending', createdAt: now() });
+        authorization: this.authorization(task, `${id}:${input.operationId || 'initial'}`, input.productionAuthorization), status: 'pending', createdAt: now() });
       this.store.appendEvent('work.created', { work: record }, { workId: id, conversationId: record.conversationId });
     });
     return record;
@@ -52,10 +53,10 @@ export class WorkService {
   source(task) { const { input, ...source } = taskSource(task, this.store); return source; }
   executor(work) { return work.bindings?.some(binding => binding.type === 'codex-desktop') ? { ...work.executor, kind: 'codex' } : work.executor || { kind: 'pi' }; }
   execution(task = {}) { return workExecution(task, this.store); }
-  authorization(task, actionId) {
+  authorization(task, actionId, production) {
     if (task.workId) return this.execution(task).authorization;
     const accepted = task.id && this.store.getTask(task.id);
-    return accepted ? { actionId, requestTaskId: accepted.id, source: this.source(accepted) } : undefined;
+    return accepted ? { actionId, requestTaskId: accepted.id, source: this.source(accepted), ...(production ? { production } : {}) } : undefined;
   }
   executionInput(task) {
     const execution = this.execution(task);
@@ -96,7 +97,7 @@ export class WorkService {
     }
     const inherited = task.workId ? this.execution(task) : null;
     const wait = input.metadata?.waitId && this.store.getRecord('work-waits', input.metadata.waitId);
-    const authorization = (wait?.targetWorkId === id && wait.authorization) || this.authorization(task, `${id}:${eventId}`);
+    const authorization = (wait?.targetWorkId === id && wait.authorization) || this.authorization(task, `${id}:${eventId}`, input.productionAuthorization);
     let intent = prior || this.store.putRecord('work-events', this.clean({ id: `${id}:${eventId}`, workId: id,
       kind: input.kind || 'event', content: input.content, requestTaskId: authorization?.requestTaskId, sourceTaskId: task.id, authorization,
       metadata: { ...input.metadata, ...(inherited?.executionEventId ? { executionEventId: inherited.executionEventId } : {}) }, status: 'pending', createdAt: now() }));
@@ -118,7 +119,7 @@ export class WorkService {
     this.store.putRecord('work-events', { ...this.store.getRecord('work-events', intent.id), receipt, status: 'accepted' });
     return receipt;
   }
-  wait(id, input = {}, task = {}) {
+  async wait(id, input = {}, task = {}, verifyFollowUp) {
     const work = this.get(id); if (!work) fail('Unknown work', 404);
     const bound = work.bindings?.some(binding => binding.type === 'codex-desktop') || work.waiting?.kind === 'external';
     const events = this.store.listRecords('work-events').filter(event => event.requestTaskId === task.id && event.receipt?.accepted);
@@ -161,7 +162,8 @@ export class WorkService {
     const previous = this.store.getRecord('work-waits', waitId);
     if (previous) return { accepted: true, workId: id, waitId, status: previous.status };
     const targetWorkId = input.targetWorkId || id;
-    if (!this.get(targetWorkId)) fail('Unknown follow-up work', 404);
+    const target = this.get(targetWorkId);
+    if (!target) fail('Unknown follow-up work', 404);
     const handoff = input.handoff?.handoff;
     const instruction = ['instruction', 'content', 'message', 'handoff', 'goal'].map(key => modelText(handoff?.[key]).trim()).filter(Boolean).join('\n');
     const crossWorkStep = input.dependencyWorkId && input.dependencyWorkId !== targetWorkId && instruction;
@@ -169,8 +171,11 @@ export class WorkService {
     // to explain partial output. A mode hint cannot discard that accepted step.
     // Merely observing the same execution never creates another send.
     const mode = crossWorkStep || task.workId && input.mode !== 'observe' || instruction && input.mode === 'follow_up' ? 'follow_up' : 'observe';
+    const grant = mode === 'follow_up' && verifyFollowUp ? await verifyFollowUp(target, { workId: input.dependencyWorkId,
+      taskId: input.taskId, until: input.until, event: input.event }) : null;
     const waiting = this.clean({ ...input, mode, id: waitId, workId: id, targetWorkId, sourceTaskId: task.id,
-      authorization: this.authorization(task, waitId),
+      ...(grant ? { handoff: { ...input.handoff, stage: productionStage(grant) } } : {}),
+      authorization: this.authorization(task, waitId, grant),
       since: task.createdAt || now(), status: 'pending', createdAt: now() });
     this.store.putRecord('work-waits', waiting);
     if (task.id && !task.workId) {

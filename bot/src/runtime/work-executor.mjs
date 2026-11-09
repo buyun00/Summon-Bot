@@ -77,6 +77,7 @@ export function workExecutor({ store, services, emit }) {
     async review(task, binding, content, running, options) {
       const work = services.works.get(task.workId), operation = store.getRecord('work-events', content.operationId);
       const currentStep = store.getRecord('work-events', binding.operationId);
+      const grant = services.works.execution(task).authorization?.production;
       const reviewTask = { ...task, metadata: { ...task.metadata, externalReview: {
         bindingId: binding.id, threadId: binding.externalThreadId, operationId: content.operationId, supervisionOperationId: binding.operationId,
         turnId: content.turnId, running, confirmedFinal: Boolean(content.final?.confirmed) } },
@@ -86,6 +87,7 @@ export function workExecutor({ store, services, emit }) {
               receipts: (Array.isArray(item.receipt) ? item.receipt : [item.receipt]).filter(Boolean).map(receipt => ({ id: receipt.id,
                 roomId: receipt.roomId, createdAt: receipt.createdAt, attachments: receipt.attachments?.map(({ id, name }) => ({ id, name })) })) })),
           type: 'external_work_review',
+          authorizedProduction: grant && { stage: grant.stage, scope: grant.scope, roomId: grant.roomId, messageId: grant.messageId },
           acceptedStep: operation ? { reference: { type: 'work', workId: work.id, operationId: operation.id, section: 'acceptedStep' } } : null,
           latestAcceptedStep: currentStep?.id === operation?.id ? { sameAs: 'acceptedStep' } : currentStep ?
             { reference: { type: 'work', workId: work.id, operationId: currentStep.id, section: 'acceptedStep' } } : null,

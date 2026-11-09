@@ -5,7 +5,7 @@ import { factTime } from '../context/fact-time.mjs';
 import { taskSource } from '../context/sources.mjs';
 import { modelArgs, modelText, looseSchema, boundedNumber } from '../context/model-input.mjs';
 import { resolveCodexTarget } from './codex-target.mjs';
-import { productionDecision, requestIntents, productionStages } from './request-routing.mjs';
+import { authorizeProduction, productionDecision, productionStage, requestIntents, productionStages } from './request-routing.mjs';
 import { externalExecution, isAcceptedOperation } from '../context/execution-evidence.mjs';
 import { readExecutorManifest } from '../runtime/executor-delivery.mjs';
 
@@ -16,7 +16,8 @@ const tool = (name, description, inputSchema, effect, execute) => ({ name, descr
   execute: async (args, context) => jsonToolResult(await execute(modelArgs(args), context)) });
 const pageFields = { offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 20 } };
 const reference = object({ type: { type: 'string', enum: ['room', 'session', 'artifact', 'knowledge', 'work', 'tool'] }, roomId: string, scopeId: string, workId: string, operationId: string,
-  messageId: string, sessionId: string, entryId: string, id: string, section: { type: 'string', enum: ['acceptedStep'] }, offset: { type: 'integer', minimum: 0 }, length: { type: 'integer', minimum: 1, maximum: 16000 } }, ['type']);
+  messageId: string, sessionId: string, entryId: string, id: string, section: { type: 'string', enum: ['acceptedStep', 'evidenceItem'] },
+  index: { type: 'integer', minimum: 0 }, offset: { type: 'integer', minimum: 0 }, length: { type: 'integer', minimum: 1, maximum: 16000 } }, ['type']);
 const evidence = { type: 'array', maxItems: 20, items: reference,
   description: 'Selected exact references from source reads, e.g. [{type:"room",roomId:"...",messageId:"..."}]. Pass the array itself; a JSON array string is also readable. Prose is guidance, not a source grant.' };
 const handoffFields = { evidence, knowledgeScopes: { type: 'array', items: string }, instruction: string, acceptance: string };
@@ -94,8 +95,28 @@ export function coreTools(services, task) {
   // A model hint is never the identity of a durable action. A recovered call
   // keeps its saved tool record; another accepted source gets another record.
   const actionId = (args, ctx, field) => ctx.recordId || `${task.id}:${ctx.toolCallId}`;
+  const authorize = (decision, ctx, proposed) => authorizeProduction({ task, store, decision, proposed, verify: ctx.verifyProduction, signal: ctx.signal });
+  const currentStepStage = work => {
+    const operationId = externalExecution(work)?.operationId;
+    const event = operationId && store.getRecord('work-events', operationId);
+    const sent = operationId && store.getTool(operationId);
+    const ownerId = sent?.taskId || work.lastTaskId;
+    const owner = ownerId && store.getTask(ownerId);
+    return (event?.workId === work.id && event.content?.stage?.kind) ||
+      (owner?.workId === work.id && services.works.execution(owner).authorization?.production?.stage) || work.productionStage;
+  };
+  const selectedWork = work => ({ id: work.id, goal: work.goal, requirements: work.requirements, status: work.status,
+    project: work.project, priorStage: currentStepStage(work), operationId: externalExecution(work)?.operationId });
+  const documentBoundary = (work, decision) => {
+    if (decision?.productionStage !== 'document-review') return;
+    if (services.works.executor(work).kind !== 'codex')
+      throw new Error('正式文档修订需要 Codex 执行器。请选择对应的 Codex 文档工作，或登记独立新文档工作。');
+    if ((['active', 'paused', 'cancelled'].includes(work.status) || work.status === 'waiting' && work.waiting?.kind === 'external') &&
+      currentStepStage(work) !== 'document-review')
+      throw new Error('仅文稿授权不会追加到正在实施的回合或恢复已停止的实施工作。请使用对应的文档工作，或登记独立新文档工作。');
+  };
   return [
-    tool('request_decide', 'Classify the CURRENT authenticated user request by meaning before acting. produce/revise means actual new or changed content; status means inspect progress; deliver means return EXISTING output; accept means explicit scoped acceptance; control includes pause/stop/cancel. If the user explicitly accepts the current result within a stated scope, select accept and call work_accept before replying even when they also ask for status, what evidence or saved rules were used, or a closeout correction. Use the canonical workId and operationId from work_get.acceptanceTarget. Preserve all stated limits. A request may accept a document AND request independent implementation: select produce, its production stage/relation, AND those acceptances; call work_accept for each BEFORE work_create/work_dispatch. Production alone never implies acceptance. For existing files call request_decide intent=deliver, work_outputs, then work_deliver with its replyDelivery IDs. New rendering/screenshots/revisions are production only when missing. Decide semantically from the authenticated source, never keywords. This decision grants no extra authority.',
+    tool('request_decide', 'Classify the CURRENT authenticated user request by meaning before acting. produce/revise requires a current request to execute new or changed work. Confirming requirements, discussing a design, or asking for a document does not authorize implementing it. The proposed action and stage are separately checked against the current source before dispatch. status means inspect progress; deliver means return EXISTING output; accept means explicit scoped acceptance; control includes pause/stop/cancel. If the user explicitly accepts the current result within a stated scope, select accept and call work_accept before replying even when they also ask for status, what evidence or saved rules were used, or a closeout correction. Use the canonical workId and operationId from work_get.acceptanceTarget. Preserve all stated limits. A request may accept a document AND explicitly request independent implementation: select produce, its production stage/relation, AND those acceptances; call work_accept for each BEFORE work_create/work_dispatch. Production alone never implies acceptance. For existing files call request_decide intent=deliver, work_outputs, then work_deliver with its replyDelivery IDs. New rendering/screenshots/revisions are production only when missing. Decide semantically from the authenticated source, never keywords. This decision grants no extra authority.',
       object({ intent: { type: 'string', enum: requestIntents }, productionStage: { type: 'string', enum: productionStages },
         workRelation: { type: 'string', enum: ['new', 'continue'] }, workId: string,
         acceptances: { type: 'array', maxItems: 8, items: object({ workId: string, operationId: string }, ['workId', 'operationId']),
@@ -233,28 +254,32 @@ export function coreTools(services, task) {
       object({ id: string, operationId: string, goal: string, requirements: string, responsibility: string, ...handoffFields,
         executor: object({ kind: { type: 'string', enum: ['pi', 'codex', 'codex-cli', 'grok', 'claude-code'] }, connectionId: string,
           target: { type: 'object', description: 'Use {type:"directory",cwd:"absolute authorized path"} for an existing directory, including one not registered in Desktop. Use project only for the actual selected project; never borrow another project ID.' } }, ['kind']) }), 'write', async (args, ctx) => {
-        const content = await services.sources.handoff(task, args);
+        const decision = productionDecision(task, store);
+        if (decision?.workRelation === 'continue') throw new Error(`Continue the existing deliverable with work_dispatch workId=${decision.workId}; this request does not authorize another work.`);
         const id = typeof args.id === 'string' && /^[\w.-]{1,160}$/.test(args.id) ? args.id : randomUUID();
+        const operationId = actionId(args, ctx, 'operationId');
         const existing = services.works.get(id);
         if (existing) {
           await services.sources.requireWork(id, task);
-          if (['paused', 'cancelled'].includes(existing.status) && !userRequest) throw new Error('这项工作已停止；当前事件不包含用户新的继续要求。其他动作可以继续。');
+          if (store.getRecord('work-handoffs', `task:${task.id}:action:${operationId}`)?.workId !== id)
+            throw new Error('This ID already belongs to an existing work. Use its canonical continuation only if the current request authorizes it; otherwise omit the ID for independent work.');
         }
         const suppliedExecutor = typeof args.executor === 'string' ? { kind: args.executor } : modelArgs(args.executor);
         const selectedTarget = suppliedExecutor.target || args.target || (args.cwd ? { type: 'directory', cwd: args.cwd } : args.projectId ? { type: 'project', projectId: args.projectId } : null);
-        const decision = productionDecision(task, store);
-        if (decision?.workRelation === 'continue') throw new Error(`Continue the existing deliverable with work_dispatch workId=${decision.workId}; this request does not authorize another work.`);
         const documentOnly = decision?.productionStage === 'document-review';
         const kind = documentOnly ? 'codex' : modelText(suppliedExecutor.kind || suppliedExecutor.type || (selectedTarget ? 'codex' : '')).toLowerCase();
-        if (documentOnly) content.stage = { kind: 'document-review', instruction: 'Produce or revise the formal review document with Codex. No implementation, testing or resumption of paused code is authorized by this step.' };
         const choices = services.executors();
         const executorKind = kind || choices.executors?.find(item => item.id === choices.defaultId)?.kind;
         const target = (selectedTarget || executorKind === 'codex') ? await resolveCodexTarget(selectedTarget, services, task) : null;
         const executor = kind || target ? { kind: kind || 'codex', ...(suppliedExecutor.connectionId ? { connectionId: suppliedExecutor.connectionId } : {}),
           ...(target ? { target } : {}) } : undefined;
+        const content = await services.sources.handoff(task, args);
         let project;
         try { project = target ? await services.sources.authorizeProject(target, task) : await services.sources.contextProject(task); }
         catch (error) { if (target) throw error; content.evidenceWarnings.push({ message: `Project scope is unavailable: ${error.message}` }); }
+        const goal = modelText(args.goal || args.instruction || args.content || content.originalRequest.content);
+        const grant = await authorize(decision, ctx, { relation: 'new', project, goal, handoff: content.handoff });
+        if (grant) content.stage = productionStage(grant);
         if (project) {
           if (executor?.target?.type === 'project') executor.target = { ...executor.target, projectId: project.id };
           try { content.projectKnowledge = await services.memory.forProject(task, project); }
@@ -262,11 +287,11 @@ export function coreTools(services, task) {
         }
         try { content.currentKnowledge = await services.memory.forRequest(task, project); }
         catch (error) { content.evidenceWarnings.push({ message: `Current project rules are unavailable: ${error.message}` }); }
-        const operationId = actionId(args, ctx, 'operationId');
-        const work = services.works.create({ id, operationId, goal: modelText(args.goal || args.instruction || args.content || content.originalRequest.content),
+        ctx.signal?.throwIfAborted();
+        const work = services.works.create({ id, operationId, goal,
           requirements: modelText(args.requirements), responsibility: modelText(args.responsibility), executor, project,
-          productionStage: documentOnly ? 'document-review' : undefined, initialHandoff: content }, task);
-        const receipt = await services.works.dispatch(work.id, { id: operationId, kind: 'request', content, metadata: { priority: 'background', resume: userRequest } }, task);
+          productionStage: grant?.stage, productionAuthorization: grant, initialHandoff: content }, task);
+        const receipt = await services.works.dispatch(work.id, { id: operationId, kind: 'request', content, metadata: { priority: 'background' } }, task);
         return { ...compactWork(work), ...receipt, handedOff: true, acceptance: modelText(args.acceptance), evidenceWarnings: content.evidenceWarnings };
       }),
     tool('work_update', frontend ? 'Pause or cancel existing work. Send requirements with work_dispatch; only the worker records progress and completion.' : review ? 'Record progress, checkpoints, next steps and evidence for the current external review. Follow the current external_work_review to determine whether status and waiting can be updated. Preserve the accepted goal and requirements.' : 'Record actual progress and status of the current work. Its identity and revision are supplied by the program.',
@@ -305,16 +330,18 @@ export function coreTools(services, task) {
         const decision = productionDecision(task, store);
         if (decision?.workRelation === 'new') throw new Error('This is an independent new task. Use work_create and the applicable saved project rules; do not reuse the old work merely because it shares the project or materials.');
         if (decision?.workId && decision.workId !== work.id) throw new Error('Dispatch must use the canonical continuation work selected for this request.');
-        const documentOnly = decision?.productionStage === 'document-review';
-        if (documentOnly && services.works.executor(work).kind !== 'codex')
-          throw new Error('正式文档修订需要 Codex 执行器。选择已有的对应 Codex 工作；没有时明确登记独立新文档工作。');
+        documentBoundary(work, decision);
         const content = await services.sources.handoff(task, args);
-        if (documentOnly) content.stage = { kind: 'document-review', instruction: 'Revise the formal document only. Keep implementation paused.' };
+        const grant = await authorize(decision, ctx, { relation: 'continue', work: selectedWork(work), handoff: content.handoff });
+        if (grant) content.stage = productionStage(grant);
         try { content.projectKnowledge = await services.memory.forProject(task, services.sources.project(work)); }
         catch (error) { content.evidenceWarnings.push({ message: `Project knowledge is unavailable: ${error.message}` }); }
         try { content.currentKnowledge = await services.memory.forRequest(task, services.sources.project(work)); }
         catch (error) { content.evidenceWarnings.push({ message: `Current project rules are unavailable: ${error.message}` }); }
-        const receipt = await services.works.dispatch(work.id, { id: actionId(args, ctx, 'eventId'), kind: frontend ? 'request' : 'event', content, metadata: { correction: args.correction === true, resume: frontend && userRequest, priority: 'foreground' } }, task);
+        ctx.signal?.throwIfAborted();
+        documentBoundary(services.works.get(work.id), decision);
+        const receipt = await services.works.dispatch(work.id, { id: actionId(args, ctx, 'eventId'), kind: frontend ? 'request' : 'event', content, productionAuthorization: grant,
+          metadata: { correction: args.correction === true, resume: Boolean(grant), priority: 'foreground' } }, task);
         return { ...receipt, acceptance: modelText(args.acceptance), evidenceWarnings: content.evidenceWarnings };
       }),
     tool('work_wait', 'Save a wait for a precise execution result or deadline. For “wait for B, then let A use B’s output”, set targetWorkId=A, dependencyWorkId=B, taskId=B’s accepted task and instruction=the step A should perform. This includes A explaining partial output after B fails; keep success-only prerequisites in the instruction. The runtime derives follow_up for this cross-work step even if an optional mode conflicts. Waiting only to receive the same action’s already published result is observe and never sends another prompt. Supply no new step unless the user authorized one. Missing IDs can be recovered from unique accepted actions; explicit invalid work IDs are rejected. Finish other independent actions and reminders in this turn.',
@@ -348,7 +375,15 @@ export function coreTools(services, task) {
         }
         const handoff = await services.sources.handoff(task, args);
         const waiting = Object.fromEntries(['taskId', 'botId', 'until', 'event', 'mode', 'dependencyWorkId', 'targetWorkId'].filter(key => typeof args[key] === 'string').map(key => [key, args[key]]));
-        return { ...services.works.wait(work.id, { ...waiting, unresolvedTaskId, waitId: actionId(args, ctx, 'waitId'), handoff }, task), acceptance: modelText(args.acceptance), evidenceWarnings: handoff.evidenceWarnings };
+        const verifyFollowUp = frontend ? async (target, dependency) => {
+          const decision = productionDecision(task, store);
+          if (decision?.workRelation !== 'continue' || decision.workId !== target.id)
+            throw new Error('A wait that starts more work needs the current request’s continuation decision for its exact target. An observe-only wait does not start another action.');
+          documentBoundary(target, decision);
+          return authorize(decision, ctx, { relation: 'continue', work: selectedWork(target), handoff: handoff.handoff, after: dependency });
+        } : undefined;
+        return { ...await services.works.wait(work.id, { ...waiting, unresolvedTaskId, waitId: actionId(args, ctx, 'waitId'), handoff }, task, verifyFollowUp),
+          acceptance: modelText(args.acceptance), evidenceWarnings: handoff.evidenceWarnings };
       }),
     tool('work_notify', 'Save and publish this work’s useful result text directly. The program supplies the original recipient, reply association and notification ID; peer FYI does not demand another reply.',
       object({ id: string, content: string, attachments: { type: 'array', maxItems: 8, items: object({ id: string }, ['id']) } }), 'external', async (args, ctx) => {

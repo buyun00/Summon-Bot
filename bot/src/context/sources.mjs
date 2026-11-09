@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { modelText, modelArgs, boundedNumber } from './model-input.mjs';
 import { directoryProject } from './project-scope.mjs';
 import { externalExecution } from './execution-evidence.mjs';
+import { savedWorkEvidence } from './work-context.mjs';
 
 const denied = message => { throw Object.assign(new Error(message), { status: 403, code: 'SOURCE_SCOPE_DENIED' }); };
 
@@ -350,7 +351,14 @@ export class RuntimeSources {
       const index = Number(String(reference.entryId).replace(/^m:/, ''));
       const session = this.store.getSession(reference.sessionId);
       if (!Number.isInteger(index) || index < 0 || !session?.messages[index] || session.messages[index].role === 'system') throw new Error('Evidence entry not found');
-      const message = session.messages[index]; raw = JSON.stringify(message); author = message.source?.actor || message.role; source = message.source;
+      const message = session.messages[index];
+      if (reference.section === 'evidenceItem') {
+        const item = savedWorkEvidence(message, reference.index);
+        if (!item?.reference) throw new Error('Saved work evidence item not found');
+        raw = JSON.stringify(item); author = item.author; source = item.reference;
+      } else {
+        raw = JSON.stringify(message); author = message.source?.actor || message.role; source = message.source;
+      }
     } else if (reference.type === 'artifact') {
       const artifact = this.store.getArtifact(reference.id);
       if (!artifact || !artifact.workId || !await permittedSession(`work:${artifact.workId}`)) denied('Artifact is outside the current source scope');
