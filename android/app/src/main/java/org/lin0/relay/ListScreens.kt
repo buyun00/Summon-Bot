@@ -467,17 +467,32 @@ private fun CrewColorField(label:String,value:String,onChange:(String)->Unit) {
     }
 }
 
+@Composable
+fun RoomProjectModePicker(value: String, onChange: (String) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    val modes = mapOf("auto" to "自动识别持续项目", "project" to "持续项目 · 定期协作复核", "chat" to "日常交流")
+    Box {
+        TextButton(onClick = { expanded = true }) { Text("群聊用途 · ${modes[value] ?: modes.getValue("auto")}") }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            modes.forEach { (mode, label) ->
+                DropdownMenuItem(text = { Text(label) }, onClick = { expanded = false; onChange(mode) })
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CreateRoomSheet(store: SummonStore, initialKind: String, onOpenRoom: (String) -> Unit, onDismiss: () -> Unit) {
     val scope = rememberCoroutineScope()
     var name by remember { mutableStateOf("") }
     var goal by remember { mutableStateOf("") }
+    var projectMode by remember { mutableStateOf("auto") }
     var kind by remember { mutableStateOf(initialKind) }
     var members by remember { mutableStateOf(setOf<String>()) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    val canCreate = name.isNotBlank() && members.isNotEmpty() && (kind != "deep" || goal.isNotBlank())
+    val canCreate = name.isNotBlank() && members.isNotEmpty() && (kind != "deep" && projectMode != "project" || goal.isNotBlank())
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Color(0xFF1C1C1E)) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp)) {
             Text(if (kind == "deep") "发起深聊" else "创建群聊", style = MaterialTheme.typography.titleMedium)
@@ -486,7 +501,8 @@ fun CreateRoomSheet(store: SummonStore, initialKind: String, onOpenRoom: (String
                 TextButton(onClick = { kind = "group" }) { Text(if (kind == "group") "群聊 ✓" else "群聊") }
                 TextButton(onClick = { kind = "deep" }) { Text(if (kind == "deep") "深聊 ✓" else "深聊") }
             }
-            OutlinedTextField(goal, { goal = it }, label = { Text("讨论目标") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
+            OutlinedTextField(goal, { goal = it }, label = { Text("会话说明或目标") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
+            if (kind == "group") RoomProjectModePicker(projectMode) { projectMode = it }
             Text("选择成员", modifier = Modifier.padding(vertical = 8.dp))
             store.bots.forEach { bot ->
                 Row(Modifier.fillMaxWidth().clickable {
@@ -505,7 +521,7 @@ fun CreateRoomSheet(store: SummonStore, initialKind: String, onOpenRoom: (String
                     scope.launch {
                         busy = true; error = null
                         try {
-                            val room = store.createGroup(name, listOf("user") + members.sorted(), goal, kind)
+                            val room = store.createGroup(name, listOf("user") + members.sorted(), goal, kind, projectMode)
                             onDismiss(); onOpenRoom(room.id)
                         } catch (exception: Exception) { error = exception.message }
                         finally { busy = false }

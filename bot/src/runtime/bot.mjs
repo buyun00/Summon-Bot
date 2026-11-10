@@ -223,6 +223,8 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       return store.getTask(id);
     };
     const accept = (envelope, source, { deferSchedule = false } = {}) => {
+      if (envelope.metadata?.groupObservation && (source !== 'controller' || envelope.kind !== 'event' || envelope.workId))
+        throw failure(403, 'Group observation requires an authenticated room delivery');
       if (source !== 'controller' && envelope.kind === 'request' && !envelope.workId && envelope.metadata?.executionMode === 'work') {
         const key = JSON.stringify([source, envelope.id]);
         let binding = store.getRecord('peer-work', key);
@@ -573,7 +575,9 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
     server.on('error', () => {}); server.requestTimeout = 30000;
     url = `http://${config.listen.host === '::1' ? '[::1]' : config.listen.host}:${server.address().port}`;
     emit('bot.loading', identity()); await atomicJson(join(config.dataDir, 'run', 'current.json'), identity());
-    await engine.initialize(); updates.recover(); state = 'ready'; readyAt = at(); emit('bot.ready', identity()); await atomicJson(join(config.dataDir, 'run', 'current.json'), identity());
+    await engine.initialize(); updates.recover();
+    const restoredExecutionStates = services.executor.restoreExecutionStates();
+    state = 'ready'; readyAt = at(); emit('bot.ready', identity()); await atomicJson(join(config.dataDir, 'run', 'current.json'), identity());
     // External observations only update saved facts and idempotent publications.
     // Resume the same accepted event if shutdown interrupted that processing.
     for (const task of store.listTasks({ status: 'interrupted', limit: 10000 })) if (task.metadata?.sourceType === 'external')
@@ -582,6 +586,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
     // Retry only a real final observation whose supervisor failed. This lane
     // may reconcile S3/notify; it cannot submit another product execution.
     for (const work of services.works.list({ status: 'waiting', limit: 500 }).filter(work => work.waiting?.kind === 'review')) {
+      if (restoredExecutionStates.has(work.id)) continue;
       const failed = store.listRecords('external-reviews').findLast(review => review.workId === work.id && review.status === 'unconfirmed' && !review.resolvedBy);
       const original = failed && store.getTask(failed.id);
       if (!original?.input?.final?.confirmed || original.input.status !== 'completed') continue;

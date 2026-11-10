@@ -269,6 +269,13 @@ export class RuntimeSources {
   async publicHistory(task) {
     const source = taskSource(task, this.store);
     if (!source.roomId || !source.replyTo) return null;
+    if (source.metadata?.groupObservation) {
+      const page = await this.call('chatroom_read', { roomId: source.roomId, messageId: source.replyTo, length: 1 }, task);
+      if (!page.messages?.length) throw new Error('The group observation source is unavailable');
+      return { messages: [], access: page.access, roomId: source.roomId, runtimeEvent: { type: 'group_observation',
+        room: source.input.room, observer: source.input.observer, contextRange: source.input.contextRange,
+        messages: source.input.messages, triggerMessageId: source.replyTo } };
+    }
     const throughMessageId = source.metadata?.historyThroughMessageId || source.replyTo;
     const key = task.conversationId || task.sessionId;
     let saved = this.store.getRecord('public-history', key) || { id: key, roomId: source.roomId, messages: [] };

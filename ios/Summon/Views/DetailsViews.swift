@@ -183,6 +183,8 @@ struct RoomDetailsView: View {
     let roomID: String
     @State private var name = ""
     @State private var goal = ""
+    @State private var projectMode = "auto"
+    @State private var initialProjectMode = "auto"
     @State private var members: Set<String> = []
     @State private var busy = false
     @State private var errorMessage: String?
@@ -199,7 +201,8 @@ struct RoomDetailsView: View {
                         LabeledContent("名称", value: room.name)
                     } else {
                         TextField("会话名称", text: $name)
-                        TextField("讨论目标", text: $goal, axis: .vertical).lineLimit(3...7)
+                        TextField("会话说明或目标", text: $goal, axis: .vertical).lineLimit(3...7)
+                        if room.kind == "group" { RoomProjectModePicker(selection: $projectMode) }
                     }
                 }
                 Section("成员") {
@@ -234,7 +237,11 @@ struct RoomDetailsView: View {
         .navigationTitle("会话详情").navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         .onAppear {
-            if let room { name = room.name; goal = room.goal; members = Set(room.members.filter { $0 != "user" }) }
+            if let room {
+                name = room.name; goal = room.goal; members = Set(room.members.filter { $0 != "user" })
+                initialProjectMode = room.projectMode ?? "auto"
+                projectMode = initialProjectMode
+            }
         }
         .confirmationDialog("结束这段深聊？", isPresented: $confirmConclude, titleVisibility: .visible) {
             Button("结束并保留结论", role: .destructive) { Task { await conclude() } }
@@ -245,7 +252,8 @@ struct RoomDetailsView: View {
         busy = true; defer { busy = false }
         do {
             let ids = (room?.members.contains("user") == true ? ["user"] : []) + members.sorted()
-            _ = try await store.updateRoom(id: roomID, name: name, members: ids, goal: goal)
+            _ = try await store.updateRoom(id: roomID, name: name, members: ids, goal: goal,
+                                           projectMode: room?.kind == "group" && projectMode != initialProjectMode ? projectMode : nil)
             dismiss()
         } catch { errorMessage = error.localizedDescription }
     }

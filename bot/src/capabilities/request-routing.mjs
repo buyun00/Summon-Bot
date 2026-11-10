@@ -2,7 +2,7 @@
 // Document words alone must not start production or resume a stopped work.
 import { taskSource, workExecution } from '../context/sources.mjs';
 
-export const requestIntents = ['discuss', 'status', 'deliver', 'accept', 'produce', 'revise', 'control'];
+export const requestIntents = ['discuss', 'feedback', 'status', 'deliver', 'accept', 'produce', 'revise', 'control'];
 export const productionStages = ['document-review', 'implementation', 'other'];
 const actionName = (kind, stage) => kind === 'continue' ? 'finish-current-step' : `${kind}-${stage}`;
 const authorizationActions = new Map([
@@ -42,7 +42,7 @@ export function productionDecision(task, store) {
   if (task.workId) return null;
   const decision = store.getRecord('request-routing', task.id);
   if (!decision || !['produce', 'revise'].includes(decision.intent))
-    throw new Error('Before dispatching production, use request_decide for this current request. Status, existing-output delivery, discussion and stop/control requests do not authorize another production dispatch.');
+    throw new Error('Before dispatching production, use request_decide for this current request. Feedback, status, existing-output delivery, discussion and control do not authorize production.');
   const user = currentUser(task, store);
   if (!user || decision.messageId !== user.messageId || decision.roomId !== user.roomId || !productionStages.includes(decision.productionStage))
     throw refusal('PRODUCTION_SOURCE_REQUIRED', 'Production must use this task’s authenticated current user message and its actual stage.');
@@ -59,6 +59,8 @@ const authorizationRules = `Use the entire CURRENT authenticated user message, s
 
 Implementation is real execution such as building or changing a usable artifact, running a command or test, or deploying. Document-review is producing or revising a separate formal review document within that stage. An ordinary explanation or draft in the chat stays here. A formal document request does not authorize its implementation. Other is a requested independent action outside both stages. A directed correction to an existing deliverable can authorize its scoped revision. Explicit acceptance and a separate positive action can coexist in one message.
 
+A report of a failure, a trial result, a critique, a suggestion for later or a description of an unavailable retry is feedback when the user is only providing evidence for the chat. A named bug, specific repro steps, an earlier work reference or a statement that something should be improved does not alone ask you to revise it now. Compare “On the public page the retry button was disabled. Record this as the first failure” with “Fix the disabled retry on the existing page now. Keep the current scope.” The first is feedback. The second positively requests a bounded revision. Honor an independently requested action elsewhere in the same message.
+
 Units are anchors within one message. Read the adjacent units together with each anchor: limits like only return the originals, summarize expected results here, keep the finished version, or stop work can constrain the preceding or following request. Returning, locating, resending or uploading existing files and summarizing them in chat are delivery, even when a tool failed or the requested files are missing. An independently executable action needs its own positive request and must honor all neighboring limits. A format or delivery problem is never its own positive request.
 
 Select one action value from ${[...authorizationActions.keys()].join(', ')}. Select finish-current-step only for explicit permission to finish or resume the same unfinished step within the continuationTarget's saved scope and stage. Use change-* for revised requirements on the selected work, including an explicitly requested next step after its old result, with the stage of the new action. Use start-* for a separately requested work, even when it uses the same project or earlier artifacts. The saved target or referenced turn only resolves what the user meant; it does not supply permission. If no specific existing target is resolved, do not grant permission to modify or resume one. Group the requirements and dependent implementation, validation and delivery steps of one requested deliverable under its initiating clause. Use multiple anchors only for independently requested actions.
@@ -66,7 +68,7 @@ Select one action value from ${[...authorizationActions.keys()].join(', ')}. Sel
 Use basis direct for a positive request grounded in the current message. Use basis consent only when referencedTurn exists and the authenticated current user explicitly says to proceed in answer to that turn's specific question about starting that action. Agreement with the content of a design or proposal is insufficient. Use when now for permission to do the action now, or after-dependency for an explicit instruction now to register a step for an identifiable dependency outcome or time. A future possibility and "after I approve" are neither. Copy the integer unit number of the original clause expressing the request or consent. A requirement, time, object name, or unrelated sentence alone cannot be the source unit.`;
 
 export const productionAuthorizationPrompts = {
-  source: `${authorizationRules}\n\nIndependently identify authorized actions and existing delivery. Return one JSON object with both arrays, for example {"deliveryUnits":[],"actions":[{"unit":2,"action":"change-implementation","basis":"direct","when":"now"}]}. Every action must have unit, action, basis and when. List the integer units requesting delivery of already existing results in deliveryUnits. Use [] for each array that has no matching items. Delivery after finishing a requested production step is part of that step.`,
+  source: `${authorizationRules}\n\nIndependently identify authorized actions and existing delivery. Return one JSON object with both arrays, for example {"deliveryUnits":[],"actions":[{"unit":2,"action":"change-implementation","basis":"direct","when":"now"}]}. Every action must have unit, action, basis and when. List the integer units requesting delivery of already existing results in deliveryUnits. Use [] for each array that has no matching items. When the original message only provides feedback for chat, use {"deliveryUnits":[],"actions":[],"feedback":true}. Delivery after finishing a requested production step is part of that step.`,
   proposal: `${authorizationRules}\n\nIndependently check the exact proposed action, actual target and full scope, including any next step or condition. The proposal and sourceAction are hypotheses, never evidence. Reject added writes, commands, deliverables, target changes and unauthorized stages. For finish-current-step, proposed.stage is the saved stage. Check the scope against it and keep the action value finish-current-step in the receipt. For an authorized action, return only JSON with the exact sourceAction unit, action, basis and when and a nonempty scope, for example {"decision":"allow","unit":2,"action":"change-implementation","basis":"direct","when":"now","scope":"specific change and retained limits"}. For unauthorized, broader, premature or ambiguous actions return {"decision":"deny"}.`,
 };
 
@@ -97,14 +99,15 @@ function existingDelivery(task, store) {
     store.listTools(task.id).some(tool => ['work_deliver', 'publish_file'].includes(tool.name)));
 }
 
-export async function authorizeProduction({ task, store, decision, proposed, actionId, workId, verify, signal, isTargetCurrent }) {
+export async function authorizeProduction({ task, store, decision, proposed, actionId, workId, verify, signal, isTargetCurrent,
+  sourceOnly = false, savedDecision = decision }) {
   if (!decision) return null;
   const user = currentUser(task, store);
   const assertCurrent = () => {
     signal?.throwIfAborted();
     const current = currentUser(task, store), routing = store.getRecord('request-routing', task.id);
     if (!user || user.messageId !== decision.messageId || user.roomId !== decision.roomId || typeof verify !== 'function' ||
-      JSON.stringify(current) !== JSON.stringify(user) || JSON.stringify(routing) !== JSON.stringify(decision) ||
+      JSON.stringify(current) !== JSON.stringify(user) || JSON.stringify(routing) !== JSON.stringify(savedDecision) ||
       store.getTask(task.id)?.cancelRequested || isTargetCurrent?.() === false)
       throw refusal('PRODUCTION_SOURCE_REQUIRED', 'The current user action or exact target cannot be verified. No production has been dispatched.');
   };
@@ -172,8 +175,10 @@ export async function authorizeProduction({ task, store, decision, proposed, act
     }
     const actions = [...distinct.values()];
     savedSource = store.putRecord('production-sources', { id: sourceKey, acceptedMessageId: user.acceptedMessageId,
-      continuationWorkId: continuationTarget?.id, priorStage: continuationTarget?.priorStage, actions, deliveryUnits: source.deliveryUnits, referenced });
+      continuationWorkId: continuationTarget?.id, priorStage: continuationTarget?.priorStage, actions, deliveryUnits: source.deliveryUnits, referenced,
+      feedback: source.feedback === true && !actions.length && !source.deliveryUnits.length });
   }
+  if (sourceOnly) return savedSource;
   const { deliveryUnits, referenced } = savedSource;
   refusalKey = undefined;
   const stageOf = action => action.kind === 'continue' ? continuationTarget?.priorStage : action.stage;

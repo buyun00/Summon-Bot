@@ -145,7 +145,7 @@ gh workflow run ios-testflight.yml --repo buyun00/Summon-Bot --ref main -f actio
 | Variable `SUMMON_TESTFLIGHT_GROUP` | `Personal` |
 | Variable `SUMMON_IOS_RELEASE_ENABLED` | 材料确认后设为 `true` |
 
-发布开关打开后，main 上的 iOS、发行版本或 iOS 工作流/脚本变更触发自动发布；也可以手动运行。准备材料期间开关保持关闭，避免重复失败上传。需要提前编译时可手动选择 `action=compile`，只做 iPhone SDK 无签名编译，不跑模拟器或测试、不上传。
+发布开关打开后，main 上的 `release.json` 变更触发自动发布，也可手动运行发布。iOS 源码候选使用 `Client releases` 的候选构建。需要单独编译 iPhone SDK 时，手动选择 `action=compile` 进行无签名编译。
 
 版本名称来自 `release.json`；CI 构建号为 `buildNumber.GITHUB_RUN_NUMBER.GITHUB_RUN_ATTEMPT`。例如源码 buildNumber 为 21、工作流第 1 次运行第 1 次尝试，对应构建 `21.1.1`。以实际 Actions 汇总为准，不把源码的单独数字 21 当作 TestFlight 完整构建号。
 

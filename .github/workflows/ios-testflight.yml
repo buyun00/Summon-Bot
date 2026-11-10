@@ -3,11 +3,9 @@ name: iOS TestFlight
 on:
   push:
     branches: [main]
+    # iOS source-only candidate commits build in Client releases.
     paths:
       - 'release.json'
-      - 'ios/**'
-      - 'scripts/ios/**'
-      - '.github/workflows/ios-testflight.yml'
   workflow_dispatch:
     inputs:
       action:

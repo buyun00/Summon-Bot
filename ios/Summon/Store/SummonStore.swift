@@ -325,20 +325,24 @@ final class SummonStore {
         return result
     }
 
-    func createGroup(name: String, members: [String], goal: String = "", kind: String = "group") async throws -> SummonRoom {
+    func createGroup(name: String, members: [String], goal: String = "", kind: String = "group", projectMode: String? = nil) async throws -> SummonRoom {
         let connection = connectionGeneration
-        let result = try await apiClient().request(SummonRoom.self, path: "/api/rooms", method: "POST", body: .object([
+        var body: [String: SummonJSONValue] = [
             "name": .string(name), "kind": .string(kind), "goal": .string(goal), "members": .array(members.map(SummonJSONValue.string))
-        ]))
+        ]
+        if let projectMode { body["projectMode"] = .string(projectMode) }
+        let result = try await apiClient().request(SummonRoom.self, path: "/api/rooms", method: "POST", body: .object(body))
         if connection == connectionGeneration { upsertRoom(result); schedulePersistence() }
         return result
     }
 
-    func updateRoom(id: String, name: String, members: [String], goal: String = "") async throws -> SummonRoom {
+    func updateRoom(id: String, name: String, members: [String], goal: String = "", projectMode: String? = nil) async throws -> SummonRoom {
         let connection = connectionGeneration
-        let result = try await apiClient().request(SummonRoom.self, path: "/api/rooms/\(SummonAPIClient.component(id))", method: "PATCH", body: .object([
+        var body: [String: SummonJSONValue] = [
             "name": .string(name), "members": .array(members.map(SummonJSONValue.string)), "goal": .string(goal)
-        ]))
+        ]
+        if let projectMode { body["projectMode"] = .string(projectMode) }
+        let result = try await apiClient().request(SummonRoom.self, path: "/api/rooms/\(SummonAPIClient.component(id))", method: "PATCH", body: .object(body))
         if connection == connectionGeneration { upsertRoom(result); schedulePersistence() }
         return result
     }

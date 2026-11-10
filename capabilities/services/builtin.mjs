@@ -141,7 +141,7 @@ export async function createCapability(options) {
       case 'chatroom_list':{const sourceActor=context.source?.accessActor||context.source?.actor;return chatroom.rooms().filter(room=>actor==='controller'||room.members.includes(actor)&&(!sourceActor||sourceActor==='system'||room.members.includes(sourceActor)));}
       case 'chatroom_read':{
         const page=chatroom.read(args,actor,context.source);
-        return actor==='controller'||args.outputReceipts!==undefined?page:attachments.stageContext(page,(await manager.config(actor)).workspace);
+        return actor==='controller'||args.outputReceipts!==undefined||context.source?.metadata?.groupObservation?page:attachments.stageContext(page,(await manager.config(actor)).workspace);
       }
       case 'chatroom_create':return chatroom.createRoom({...args,members:[...new Set([...(args.members||[]),...(actor==='controller'?[]:[actor])])]});
       case 'chatroom_team_read':return chatroom.teamRead(args,actor);
@@ -164,7 +164,7 @@ export async function createCapability(options) {
             args={...args,replyTo:context.source.replyTo};
           }
         }
-        return chatroom.post(args.roomId,args,actor==='controller'?'user':actor);
+        return chatroom.post(args.roomId,args,actor==='controller'?'user':actor,{sourceMessageId:context.source?.replyTo,deliveryId:context.source?.input?.metadata?.deliveryId});
       }
       case 'chatroom_dm':return chatroom.dm(actor,args);
       case 'chatroom_conclude':{const room=chatroom.need('rooms',args.roomId);if(actor!=='controller'&&!room.members.includes(actor))fail('Not a room member',403);return chatroom.saveConclusion(args.roomId,args);}

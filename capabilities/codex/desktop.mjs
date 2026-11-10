@@ -35,6 +35,11 @@ const rejected = error => error.result?.error?.details?.outcome !== 'unknown' &&
     ['desktop_defaults_unavailable', 'unsupported_permission_default', 'permission_context_unavailable', 'unsupported_permission_host', 'caller_thread_required', 'unsupported_capability',
       'desktop_model_preflight_unavailable', 'desktop_preflight_timeout', 'desktop_preflight_unavailable'].includes(error.code));
 const turnStatus = state => state?.status === 'waiting_for_input' ? state.status : state?.currentTurn?.status || state?.status || 'unknown';
+const confirmedTerminal = work => {
+  const prior = work.executionObservation;
+  return Boolean(prior?.submissionConfirmed && !prior.stale && prior.operationId && prior.operationId === work.operationId &&
+    prior.threadId === work.externalThreadId && prior.turnId && prior.turnId === work.turnId && terminal.has(prior.status));
+};
 const permissionReadPhases = new Set(['permission-ipc-connect', 'permission-ipc-initialize', 'permission-owner', 'permission-snapshot']);
 function createPreflightUnavailable(error) {
   const details = error.result?.error?.details;
@@ -247,7 +252,9 @@ export class DesktopCodex {
       if (this.store.list('desktopOperations').some(item => item.workId === id && !item.appliedAt)) fail('An earlier write is still unconfirmed; inspect its original operation before another write', 409);
       if (['submitting', 'unknown'].includes(work.status)) fail('Resolve the existing unknown operation before sending another message', 409);
       const state = await this.request(this.path(work));
-      if (state.stale || !state.currentTurn?.id) fail('Current turn is not confirmed; query before sending', 409);
+      if (state.threadId !== work.externalThreadId || state.stale || !state.currentTurn?.id ||
+        confirmedTerminal(work) && state.currentTurn.id === work.turnId && !terminal.has(turnStatus(state)))
+        fail('Current turn is not confirmed; query before sending', 409);
       const resume = input.cardResume, expected = resume?.expectedTurn;
       if (resume && (!expected || owner.controlRevision !== resume.controlRevision || owner.externalStop?.id !== expected.stopId ||
         expected.bindingId !== work.id || state.threadId !== expected.threadId || (state.hostId || 'local') !== expected.hostId ||
@@ -282,6 +289,7 @@ export class DesktopCodex {
     }
     state ||= await this.request(this.path(work));
     if (state.threadId !== work.externalThreadId || state.stale || state.currentTurn?.status !== 'inProgress' ||
+      confirmedTerminal(work) && state.currentTurn.id === work.turnId ||
       !input.expectedTurnId || input.expectedTurnId !== state.currentTurn.id)
       fail('The exact expected Desktop turn must still be current and in progress', 409);
     return this.mutate(id, 'interrupt', operationId, `/v1/threads/${encodeURIComponent(work.externalThreadId)}/interrupt`,
@@ -529,6 +537,9 @@ export class DesktopCodex {
     const stale = Boolean(state.stale || status === 'unknown');
     const relevantTurn = turnId && (work.turnId ? turnId === work.turnId :
       (!work.previousTurnId || turnId !== work.previousTurnId || work.allowPreviousTurn || work.status === 'interrupt_requested'));
+    // A transport outage or an older snapshot cannot reopen an ended turn.
+    // The stream still stores the original event and advances its cursor.
+    if (confirmedTerminal(work) && (stale || !relevantTurn || !terminal.has(status))) return;
     const effective = stale ? 'unknown' : relevantTurn ? status : 'watching';
     const signature = JSON.stringify([work.operationId, effective, relevantTurn ? turnId : null, state.pendingRequests || []]);
     const changed = signature !== work.observationSignature;

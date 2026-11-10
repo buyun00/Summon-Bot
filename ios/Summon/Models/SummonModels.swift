@@ -121,6 +121,7 @@ struct SummonRoom: Codable, Identifiable, Equatable, Sendable {
     var members: [String]
     var status: String
     var goal: String
+    var projectMode: String?
     var summary: String
     var lastMessage: SummonMessage?
     var createdAt: String?
@@ -136,6 +137,7 @@ struct SummonRoom: Codable, Identifiable, Equatable, Sendable {
         members = try c.decodeIfPresent([String].self, forKey: .members) ?? []
         status = try c.decodeIfPresent(String.self, forKey: .status) ?? "active"
         goal = try c.decodeIfPresent(String.self, forKey: .goal) ?? ""
+        projectMode = try c.decodeIfPresent(String.self, forKey: .projectMode)
         summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
         lastMessage = try c.decodeIfPresent(SummonMessage.self, forKey: .lastMessage)
         createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt)

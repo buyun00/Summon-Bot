@@ -6,10 +6,47 @@ import { externalObservationId } from './notifications.mjs';
 
 const at = () => new Date().toISOString();
 const stopped = new Set(['paused', 'cancelled']);
+const terminalStatuses = new Set(['completed', 'failed', 'interrupted', 'cancelled']);
+const terminalOutcomes = new Set(['execution-ended', 'failed', 'interrupted', 'cancelled']);
+const weakStatus = content => content.state?.stale || !terminalStatuses.has(content.status) ||
+  content.type === 'operation_failed' && content.affectsExecution !== false;
+const sameTurn = (content, binding) => Boolean(binding?.operationId && binding.turnId && content?.source === 'codex-desktop-connector' &&
+  content.operationId === binding.operationId && content.externalThreadId === binding.externalThreadId &&
+  (content.turnId || content.state?.currentTurn?.id) === binding.turnId);
 
 /** Codex transport runs in the existing work queue, without an intermediary Pi turn. */
 export function workExecutor({ store, services, emit }) {
   return {
+    restoreExecutionStates() {
+      const restored = new Set();
+      let observations;
+      for (const work of store.listRecords('works')) {
+        if (work.status !== 'waiting' || work.waiting?.kind !== 'external' || work.executionOutcome?.kind !== 'result-unknown') continue;
+        const binding = work.bindings?.findLast(item => item.type === 'codex-desktop');
+        const lost = work.checkpoint?.evidence?.observationId;
+        const regressed = lost && store.getRecord('work-observations', lost);
+        if (binding?.status !== 'completed' || regressed?.workId !== work.id || regressed.late ||
+          !sameTurn(regressed.content, binding) || regressed.content.status !== 'unknown' || !regressed.content.state?.stale) continue;
+        observations ||= store.listRecords('work-observations');
+        const final = observations.findLast(item => item.workId === work.id && !item.late && item.observedAt < regressed.observedAt &&
+          sameTurn(item.content, binding) && item.content.status === 'completed' && !item.content.state?.stale && item.content.final?.confirmed &&
+          item.content.final.threadId === binding.externalThreadId && item.content.final.turnId === binding.turnId);
+        if (!final) continue;
+        const prior = store.listEvents({ workId: work.id, limit: 1000 }).findLast(event => {
+          const saved = event.payload?.work, outcome = saved?.executionOutcome;
+          return event.type === 'work.updated' && saved && event.createdAt >= final.observedAt && event.createdAt <= regressed.observedAt &&
+            saved.revision < work.revision && (saved.controlRevision || 0) === (work.controlRevision || 0) &&
+            outcome?.kind === 'execution-ended' && outcome.finalConfirmed && outcome.operationId === binding.operationId && outcome.turnId === binding.turnId &&
+            (saved.status === 'completed' || saved.status === 'waiting' && ['review', 'user-input'].includes(saved.waiting?.kind));
+        })?.payload.work;
+        if (!prior) continue;
+        services.works.update(work.id, { status: prior.status, waiting: prior.waiting, progress: prior.progress,
+          checkpoint: prior.checkpoint, executionOutcome: prior.executionOutcome });
+        restored.add(work.id);
+        emit('work.execution_reconciled', { workId: work.id, observationId: final.id, supersededObservationId: lost, status: prior.status });
+      }
+      return restored;
+    },
     async stop(work, task) {
       const stopId = work.externalStop.id, id = `${work.id}:stop:${stopId}:${task.id}`;
       const name = 'codex_interrupt', args = { workId: work.id, operationId: stopId };
@@ -145,11 +182,18 @@ export function workExecutor({ store, services, emit }) {
       const knownOperation = operation?.workId === work.id && operation.transport;
       const progress = content.type === 'external_progress';
       const stoppedTurn = content.turnId && store.getRecord('work-stops', `${work.id}:${binding.externalThreadId}:${content.turnId}`);
+      const prior = work.executionOutcome, priorBinding = binding.observation;
+      const sameCurrentOperation = Boolean(content.operationId && content.operationId === binding.operationId && content.externalThreadId === binding.externalThreadId);
+      const sameCurrentTurn = sameTurn(content, binding);
+      const settledWork = sameCurrentTurn && prior?.operationId === content.operationId && prior.turnId === binding.turnId && terminalOutcomes.has(prior.kind);
+      const settledBinding = sameCurrentOperation && priorBinding?.operationId === content.operationId && priorBinding.threadId === binding.externalThreadId &&
+        priorBinding.turnId && priorBinding.turnId === binding.turnId && !priorBinding.stale && priorBinding.submissionConfirmed && terminalStatuses.has(priorBinding.status);
       const late = stopped.has(work.status) || Boolean(stoppedTurn) ||
         work.status === 'completed' && isAcceptedOperation(work, content.operationId) ||
+        work.status === 'completed' && settledWork || weakStatus(content) && (settledWork || settledBinding || superseded && !progress) ||
         progress && work.status === 'completed' || superseded && !knownOperation ||
         progress && (content.turnId !== binding.turnId || content.progress?.threadId !== binding.externalThreadId || content.progress?.turnId !== content.turnId);
-      store.putRecord('work-observations', { id: eventId, workId: work.id, taskId: task.id, late, content,
+      if (!store.getRecord('work-observations', eventId)) store.putRecord('work-observations', { id: eventId, workId: work.id, taskId: task.id, late, content,
         ...(progress ? { controlRevision: work.controlRevision || 0 } : {}), observedAt: at() });
       this.record(task, { kind: 'external_observation', author: 'codex', late, ...content });
       if (late) return { content: '', observed: true, late: true, suspended: true, waiting: work.status, executor: 'codex' };
@@ -174,9 +218,9 @@ export function workExecutor({ store, services, emit }) {
         return { content: '', observed: true, ...review, suspended: true, waiting: 'external', executor: 'codex' };
       }
       const expectedTurn = superseded ? operation?.executionReceipt?.turnId : binding.turnId;
-      const final = content.final?.confirmed && content.final.threadId === binding.externalThreadId && content.final.turnId === content.turnId &&
+      const final = !content.state?.stale && content.final?.confirmed && content.final.threadId === binding.externalThreadId && content.final.turnId === content.turnId &&
         (!expectedTurn || expectedTurn === content.turnId) ? content.final : null;
-      const status = content.status || (content.type === 'operation_failed' ? 'failed' : 'unknown');
+      const status = content.state?.stale ? 'unknown' : content.status || (content.type === 'operation_failed' ? 'failed' : 'unknown');
       const outcome = status === 'completed' ? 'execution-ended' : status === 'waiting_for_input' ? 'needs-input' :
         ['failed', 'interrupted', 'cancelled'].includes(status) ? status : 'result-unknown';
       if (!superseded) services.works.update(work.id, { status: outcome === 'failed' ? 'blocked' : 'waiting',

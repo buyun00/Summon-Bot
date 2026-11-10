@@ -179,21 +179,21 @@ export function coreTools(services, task) {
       throw new Error('仅文稿授权不会追加到正在实施的回合或恢复已停止的实施工作。请使用对应的文档工作，或登记独立新文档工作。');
   };
   return [
-    tool('request_decide', 'Classify the CURRENT authenticated user request by meaning before acting. produce/revise requires the user to ask to execute the specific action now or to register it for an explicit dependency. Choose discuss for planning, choosing rules, or asking for a small example or draft in this chat. A formal document request authorizes its own stage. A possible later step or one awaiting review stays out of production. The proposed action and stage are separately checked against the current source before dispatch. status means inspect progress; deliver means return EXISTING output; accept means explicit scoped acceptance; control includes pause/stop/cancel. If the user explicitly accepts the current result within a stated scope, select accept and call work_accept before replying even when they also ask for status, what evidence or saved rules were used, or a closeout correction. Use the canonical workId and operationId from work_get.acceptanceTarget. Preserve all stated limits. A request may accept a document AND explicitly request independent implementation: select produce, its production stage/relation, AND those acceptances; call work_accept for each BEFORE work_create/work_dispatch. Production alone never implies acceptance. For existing files call request_decide intent=deliver, work_outputs, then work_deliver with its replyDelivery IDs. New rendering/screenshots/revisions are production only when missing. Decide semantically from the authenticated source, never keywords. This decision grants no extra authority.',
+    tool('request_decide', 'Classify the CURRENT authenticated user request by meaning before acting. Choose feedback for a trial result, failure report, critique or observation for this chat without a current request to make a change. Record or explain it here. Choose discuss for planning, selecting rules or a small in-chat draft. produce/revise requires a positive request to execute a specific action now or register it for an explicit dependency. A formal document request authorizes its own stage. Read the saved intent returned by this tool before calling work_create/work_dispatch. The proposed action and scope are separately verified. status means inspect progress; deliver means return EXISTING output; accept means explicit scoped acceptance; control includes pause/stop/cancel. If the user explicitly accepts the current result within a stated scope, select accept and call work_accept before replying even when they also ask for status, what evidence or saved rules were used, or a closeout correction. Use the canonical workId and operationId from work_get.acceptanceTarget. Preserve all stated limits. A request may accept a document AND explicitly request independent implementation: select produce, its production stage/relation, AND those acceptances; call work_accept for each BEFORE work_create/work_dispatch. Production alone never implies acceptance. For existing files select deliver, then work_outputs and work_deliver with its replyDelivery IDs. A positive request for missing rendering, screenshots or revisions can be production. Decide by the meaning of the authenticated original, including any separately authorized action. This decision grants no extra authority.',
       object({ intent: { type: 'string', enum: requestIntents }, productionStage: { type: 'string', enum: productionStages,
         description: 'Choose by the requested outcome. Implementation includes making or changing a usable artifact (including standalone HTML or a trial version), building, running tests, and deployment. Document-review is production limited to a formal review document. Use other only for production outside both stages.' },
         workRelation: { type: 'string', enum: ['new', 'continue'] }, workId: string,
         sourceUnit: { type: 'integer', minimum: 1, description: 'Select an original action unit only when the authorization check reports several separate actions. Retain the saved stage when finishing the same existing step.' },
         acceptances: { type: 'array', maxItems: 8, items: object({ workId: string, operationId: string }, ['workId', 'operationId']),
-          description: 'Only results explicitly accepted by THIS user request; use exact canonical work and ended operation IDs. Complete these scoped acceptances before the production action.' }, reason: string }, ['intent', 'reason']), 'write', async args => {
+          description: 'Only results explicitly accepted by THIS user request; use exact canonical work and ended operation IDs. Complete these scoped acceptances before the production action.' }, reason: string }, ['intent', 'reason']), 'write', async (args, ctx) => {
         if (!frontend || !userRequest) throw new Error('Request decisions belong to the current authenticated frontend user request.');
         if (!requestIntents.includes(args.intent)) throw new Error('Choose a supported request intent.');
         if (['produce', 'revise'].includes(args.intent) && !productionStages.includes(args.productionStage)) throw new Error('Production requires its actual stage.');
-        const production = ['produce', 'revise'].includes(args.intent);
+        let intent = args.intent, production = ['produce', 'revise'].includes(intent);
         if (args.sourceUnit !== undefined && (!production || !Number.isSafeInteger(args.sourceUnit) || args.sourceUnit < 1))
           throw new Error('The original action unit must be a positive integer for production.');
         if (production && !['new', 'continue'].includes(args.workRelation)) throw new Error('Decide whether this is an independent new task or a continuation of an existing deliverable. Use workRelation=new or continue; continue also needs its canonical workId.');
-        if (production && args.workRelation === 'continue') await services.sources.requireWork(args.workId, task);
+        const work = production && args.workRelation === 'continue' ? await services.sources.requireWork(args.workId, task) : null;
         const acceptances = args.acceptances ?? [];
         if (!Array.isArray(acceptances) || acceptances.length > 8 || args.intent === 'accept' && !acceptances.length ||
           acceptances.length && !['accept', 'produce', 'revise'].includes(args.intent))
@@ -204,12 +204,27 @@ export function coreTools(services, task) {
             throw new Error('Acceptance must select the exact eligible result from work_get.acceptanceTarget. A failed, running, or superseded result cannot be accepted.');
         }
         const previous = store.getRecord('request-routing', task.id);
-        return store.putRecord('request-routing', { id: task.id, messageId: source.replyTo || source.messageId,
-          roomId: source.roomId, acceptances: acceptances.map(({ workId, operationId }) => ({ workId, operationId })),
-          intent: args.intent, productionStage: production ? args.productionStage : null,
-          existingDelivery: previous?.existingDelivery === true || args.intent === 'deliver', sourceUnit: args.sourceUnit,
+        const messageId = source.replyTo || source.messageId;
+        let confirmedFeedback = previous?.confirmedFeedback === true;
+        if (production) {
+          const selected = work && selectedWork(work);
+          const classification = !confirmedFeedback && await authorizeProduction({ task, store,
+            decision: { messageId, roomId: source.roomId }, proposed: { work: selected || undefined },
+            verify: ctx.verifyProduction, signal: ctx.signal, isTargetCurrent: selected ? () => sameWork(selected, services.works.get(work.id)) : undefined,
+            sourceOnly: true, savedDecision: previous ?? null });
+          if (confirmedFeedback || !classification.actions.length) {
+            confirmedFeedback ||= classification.feedback === true;
+            production = false;
+            intent = confirmedFeedback ? 'feedback' : acceptances.length ? 'accept' : classification.deliveryUnits.length ? 'deliver' : 'discuss';
+          }
+        }
+        const decision = store.putRecord('request-routing', { id: task.id, messageId,
+          roomId: source.roomId, acceptances: ['accept', 'produce', 'revise'].includes(intent) ? acceptances.map(({ workId, operationId }) => ({ workId, operationId })) : [],
+          intent, productionStage: production ? args.productionStage : null, confirmedFeedback,
+          existingDelivery: previous?.existingDelivery === true || intent === 'deliver', sourceUnit: production ? args.sourceUnit : null,
           workRelation: production ? args.workRelation : null, workId: production && args.workRelation === 'continue' ? args.workId : null,
-          reason: modelText(args.reason), authority: 'model-routing-decision' });
+          reason: intent !== args.intent ? 'The authenticated source contains no independent production action.' : modelText(args.reason), authority: 'model-routing-decision' });
+        return intent !== args.intent ? { ...decision, instruction: 'Follow the saved intent and respond to the original message. Do not call work_create or work_dispatch for this source classification.' } : decision;
       }),
     tool('evidence_read', 'Read a bounded original fragment by exact reference. Workers may follow only handed-off references, never browse another room/session feed. Current source access is rechecked.',
       object({ reference }, ['reference']), 'read', args => services.sources.resolve(services.sources.reference(args.reference ?? args, task), task)),

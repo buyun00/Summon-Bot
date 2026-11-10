@@ -996,6 +996,9 @@ function field(label, name, value = '', options = {}) {
   return `<div class="form-field"><label for="field-${name}">${label}</label>${control}${help ? `<small>${esc(help)}</small>` : ''}</div>`;
 }
 function selectField(label, name, options, value, help = '') { return `<div class="form-field"><label for="field-${name}">${label}</label><select id="field-${name}" name="${name}">${options.map(option => `<option value="${esc(option.value)}" ${option.value === value ? 'selected' : ''}>${esc(option.label)}</option>`).join('')}</select>${help ? `<small>${esc(help)}</small>` : ''}</div>`; }
+const roomProjectField = (value = 'auto') => selectField('群聊用途', 'projectMode', [
+  { value: 'auto', label: '自动识别持续项目' }, { value: 'project', label: '持续项目 · 定期协作复核' }, { value: 'chat', label: '日常交流' },
+], value, '持续项目需要填写目标。已暂停或完成的项目需单独恢复。');
 function botOptions() { return state.bots.map(bot => ({ value: bot.id, label: bot.name })); }
 function roomOptions() { return state.rooms.filter(room => room.status !== 'concluded').map(room => ({ value: room.id, label: room.name })); }
 function memberChoices(selected = []) { return `<div class="form-field"><label>参与成员</label>${state.bots.map(bot => `<label class="member-choice">${avatar(bot.id)}<span>${esc(bot.name)}<small>${esc(bot.role)}</small></span><input type="checkbox" name="members" value="${esc(bot.id)}" ${selected.includes(bot.id) ? 'checked' : ''}></label>`).join('')}<small>勾选需要参与会话的 Bot。</small></div>`; }
@@ -1012,12 +1015,13 @@ function openModal(title, description, content, save, submitLabel = '保存') {
 }
 function openRoomForm(kind = 'group') {
   const current = roomById(ui.roomId);
-  openModal('新建会话', '选好成员和交流方式，留出适合这个话题的空间。', `${selectField('会话方式', 'kind', [{ value: 'group', label: '群聊 · 日常交流' }, { value: 'dm', label: '私聊 · 一对一沟通' }, { value: 'deep', label: '深聊 · 围绕目标深入讨论' }], kind)}${field('会话名称', 'name', '', { required: true, placeholder: kind === 'deep' ? '例如：下一版交互方案' : '给这段对话一个名字' })}${memberChoices(kind === 'deep' ? (current?.members || []).filter(id => id !== 'user') : state.bots.filter(bot => bot.status !== 'paused').map(bot => bot.id))}${field('讨论目标', 'goal', '', { type: 'textarea', placeholder: '这段对话需要解决什么？', help: '深聊需要明确目标，结束后将沉淀结论并回到来源会话。' })}${selectField('来源会话', 'originRoomId', [{ value: '', label: '无来源 · 独立会话' }, ...roomOptions()], kind === 'deep' ? ui.roomId : '')}`, async data => {
+  openModal('新建会话', '选好成员和交流方式，留出适合这个话题的空间。', `${selectField('会话方式', 'kind', [{ value: 'group', label: '群聊' }, { value: 'dm', label: '私聊 · 一对一沟通' }, { value: 'deep', label: '深聊 · 围绕目标深入讨论' }], kind)}${field('会话名称', 'name', '', { required: true, placeholder: kind === 'deep' ? '例如：下一版交互方案' : '给这段对话一个名字' })}${memberChoices(kind === 'deep' ? (current?.members || []).filter(id => id !== 'user') : state.bots.filter(bot => bot.status !== 'paused').map(bot => bot.id))}${field('会话说明或目标', 'goal', '', { type: 'textarea', placeholder: '这段对话需要解决什么？', help: '深聊需要明确目标，结束后将沉淀结论并回到来源会话。' })}<div data-room-project-field ${kind === 'group' ? '' : 'hidden'}>${roomProjectField()}</div>${selectField('来源会话', 'originRoomId', [{ value: '', label: '无来源 · 独立会话' }, ...roomOptions()], kind === 'deep' ? ui.roomId : '')}`, async data => {
     const members = data.getAll('members'); const roomKind = data.get('kind');
     if (!members.length) throw new Error('请至少选择一位成员。');
     if (roomKind === 'dm' && members.length > 2) throw new Error('私聊最多选择两位成员；多人讨论请选择群聊。');
     if (roomKind === 'deep' && !data.get('goal').trim()) throw new Error('请填写深聊目标。');
-    const room = await api('/api/rooms', 'POST', { name: data.get('name').trim(), kind: roomKind, members: roomKind === 'dm' && members.length === 2 ? members : ['user', ...members], goal: data.get('goal').trim(), originRoomId: data.get('originRoomId') || null });
+    const room = await api('/api/rooms', 'POST', { name: data.get('name').trim(), kind: roomKind, members: roomKind === 'dm' && members.length === 2 ? members : ['user', ...members], goal: data.get('goal').trim(), originRoomId: data.get('originRoomId') || null,
+      ...(roomKind === 'group' ? { projectMode: data.get('projectMode') } : {}) });
     ui.roomChosenByUser = true; ui.navigationSeq++; ui.roomId = room.id || room.room?.id; ui.view = 'chat'; location.hash = 'chat'; ui.mobileRoom = true; ui.reply = null; ui.detailOpen = false; ui.profileBotId = null; ui.avatarEditing = false; toast('会话已创建');
   }, '创建会话');
 }
@@ -1688,13 +1692,20 @@ function updateAvatarPicker(mode) {
 }
 function openRoomEdit(membersOnly = false) {
   const room = roomById(ui.roomId); if (!room || room.kind === 'dm') return;
-  openModal(membersOnly ? '群聊成员' : '群聊详情', '', `${!membersOnly ? `${field('群聊名称', 'name', room.name, { required: true })}${field('群聊说明', 'goal', room.goal || '', { type: 'textarea' })}` : ''}${memberChoices((room.members || []).filter(id => id !== 'user'))}`, async data => {
+  const projectMode = room.projectMode || 'auto';
+  openModal(membersOnly ? '群聊成员' : '群聊详情', '', `${!membersOnly ? `${field('群聊名称', 'name', room.name, { required: true })}${field('群聊说明或目标', 'goal', room.goal || '', { type: 'textarea' })}${room.kind === 'group' ? roomProjectField(projectMode) : ''}` : ''}${memberChoices((room.members || []).filter(id => id !== 'user'))}`, async data => {
     const members = data.getAll('members'); if (!members.length) throw new Error('群聊至少需要一位 Bot。');
-    await api(`/api/rooms/${encodeURIComponent(room.id)}`, 'PATCH', { members: room.members.includes('user') ? ['user', ...members] : members, ...(!membersOnly ? { name: data.get('name').trim(), goal: data.get('goal').trim() } : {}) }); toast('群聊已更新');
+    const mode = data.get('projectMode');
+    await api(`/api/rooms/${encodeURIComponent(room.id)}`, 'PATCH', { members: room.members.includes('user') ? ['user', ...members] : members, ...(!membersOnly ? { name: data.get('name').trim(), goal: data.get('goal').trim() } : {}),
+      ...(mode && mode !== projectMode ? { projectMode: mode } : {}) }); toast('群聊已更新');
   });
 }
 
 document.addEventListener('change', async event => {
+  if (event.target.id === 'field-kind') {
+    const projectField = event.target.form?.querySelector('[data-room-project-field]');
+    if (projectField) projectField.hidden = event.target.value !== 'group';
+  }
   if (event.target.id === 'message-target') { ui.draftTargets[event.target.form.dataset.roomId] = event.target.value; persistClientSession(); }
   if (event.target.dataset.avatarCustom) { const key = event.target.dataset.avatarCustom; if (!['color','secondary','ink','paper'].includes(key)) return; ui.avatarSelectionRevision++; ui.avatarDraft = { ...ui.avatarDraft, [key]: event.target.value, image: null }; if(event.target.dataset.mode === 'create') { const root = $('#create-avatar-preview'); root.innerHTML = face(ui.avatarDraft,144,{key:'slot:create-preview',preview:true}); hydrateMotion(root); } else await persistAvatar(); return; }
   if (event.target.id !== 'avatar-upload') return;

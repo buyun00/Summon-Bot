@@ -344,13 +344,14 @@ class SummonStore(private val app: Context) {
         return result
     }
 
-    suspend fun createGroup(name: String, members: List<String>, goal: String = "", kind: String = "group"): SummonRoom {
+    suspend fun createGroup(name: String, members: List<String>, goal: String = "", kind: String = "group", projectMode: String = "auto"): SummonRoom {
         val connection = connectionGeneration
         val result = withContext(Dispatchers.IO) {
             SummonRoom.parse(apiClient().requestJson("/api/rooms", "POST", SummonJson.obj(
                 "name" to SummonJson.Str(name),
                 "kind" to SummonJson.Str(kind),
                 "goal" to SummonJson.Str(goal),
+                "projectMode" to SummonJson.Str(projectMode),
                 "members" to SummonJson.Arr(members.map(SummonJson::Str)),
             )))
         }
@@ -361,14 +362,16 @@ class SummonStore(private val app: Context) {
         return result
     }
 
-    suspend fun updateRoom(id: String, name: String, members: List<String>, goal: String = ""): SummonRoom {
+    suspend fun updateRoom(id: String, name: String, members: List<String>, goal: String = "", projectMode: String? = null): SummonRoom {
         val connection = connectionGeneration
+        val body = mutableMapOf<String, SummonJson>(
+            "name" to SummonJson.Str(name),
+            "members" to SummonJson.Arr(members.map(SummonJson::Str)),
+            "goal" to SummonJson.Str(goal),
+        )
+        if (projectMode != null) body["projectMode"] = SummonJson.Str(projectMode)
         val result = withContext(Dispatchers.IO) {
-            SummonRoom.parse(apiClient().requestJson("/api/rooms/${SummonApiClient.component(id)}", "PATCH", SummonJson.obj(
-                "name" to SummonJson.Str(name),
-                "members" to SummonJson.Arr(members.map(SummonJson::Str)),
-                "goal" to SummonJson.Str(goal),
-            )))
+            SummonRoom.parse(apiClient().requestJson("/api/rooms/${SummonApiClient.component(id)}", "PATCH", SummonJson.Obj(body)))
         }
         if (connection == connectionGeneration) {
             upsertRoom(result)

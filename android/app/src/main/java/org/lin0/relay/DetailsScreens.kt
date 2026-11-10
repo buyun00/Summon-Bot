@@ -196,6 +196,8 @@ fun RoomDetailsScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
     val room = store.rooms.firstOrNull { it.id == roomID }
     var name by remember { mutableStateOf(room?.name.orEmpty()) }
     var goal by remember { mutableStateOf(room?.goal.orEmpty()) }
+    val initialProjectMode = remember(roomID) { room?.projectMode ?: "auto" }
+    var projectMode by remember(roomID) { mutableStateOf(initialProjectMode) }
     var members by remember { mutableStateOf(room?.members?.filter { it != "user" }?.toSet() ?: emptySet()) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -211,7 +213,8 @@ fun RoomDetailsScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
             if (current.kind == "dm") Text("名称  ${current.name}")
             else {
                 OutlinedTextField(name, { name = it }, label = { Text("会话名称") }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(goal, { goal = it }, label = { Text("讨论目标") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
+                OutlinedTextField(goal, { goal = it }, label = { Text("会话说明或目标") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
+                if (current.kind == "group") RoomProjectModePicker(projectMode) { projectMode = it }
             }
             Text("成员", modifier = Modifier.padding(vertical = 8.dp))
             store.bots.filter { current.kind != "dm" || current.members.contains(it.id) }.forEach { bot ->
@@ -228,7 +231,7 @@ fun RoomDetailsScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
                         busy = true
                         try {
                             val ids = (if (current.members.contains("user")) listOf("user") else emptyList()) + members.sorted()
-                            store.updateRoom(roomID, name, ids, goal)
+                            store.updateRoom(roomID, name, ids, goal, projectMode.takeIf { current.kind == "group" && it != initialProjectMode })
                             onBack()
                         } catch (exception: Exception) { error = exception.message }
                         finally { busy = false }

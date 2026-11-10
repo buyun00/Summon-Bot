@@ -15,14 +15,14 @@ export function groupTeam(members, manager, input = {}) {
   const leadBotId = input.leadBotId || members.find(id => id !== 'user' && id !== eggBotId && manager.get(id).status === 'active') || 'bot-entry';
   if (leadBotId === eggBotId || manager.get(leadBotId).status !== 'active') fail('Choose an available project lead');
   for (const id of [leadBotId, eggBotId]) if (!members.includes(id)) members.push(id);
-  return { leadBotId, eggBotId, state: input.goal ? 'active' : 'idle', requirements: '', deadlineAt: null,
+  return { leadBotId, eggBotId, state: input.projectMode === 'project' ? 'active' : 'idle', requirements: '', deadlineAt: null,
     reviewIntervalSeconds: 900, auditIntervalSeconds: 604800, nextReviewAt: null, lastReviewAt: null,
     lastAuditAt: null, lastReviewMessageId: null, duties: [], revision: 1 };
 }
 
 /** The room owns shared project decisions. Each Bot still owns its work and history. */
 export class TeamService {
-  constructor(chatroom, { invoke } = {}) { this.chatroom = chatroom; this.invoke = invoke; }
+  constructor(chatroom, { invoke } = {}) { this.chatroom = chatroom; this.invoke = invoke; this.projectEvidenceChecked = new Map(); }
   get store() { return this.chatroom.store; }
   get manager() { return this.chatroom.manager; }
   room(id, actor) {
@@ -45,6 +45,44 @@ export class TeamService {
   }
   async works(room, botId) {
     return this.manager.readState(botId, db => (db?.listRecords('works') || []).filter(work => work.sources?.some(source => source.roomId === room.id)));
+  }
+  startReview(room, interval = room.team.reviewIntervalSeconds) {
+    return { state: 'active', reviewFromMessageId: this.chatroom.latestProjectMessage(room.id)?.id || null,
+      nextReviewAt: new Date(Date.now() + interval * 1000).toISOString() };
+  }
+  async includeProject(room) {
+    if (room.team.state !== 'idle' || room.projectMode === 'chat' || !String(room.goal || '').trim()) return room;
+    if (room.projectMode === 'project') return this.change(room, { team: this.startReview(room) }, room.team.revision);
+    const latest = this.chatroom.latestRoomMessage.get(room.id)?.data;
+    const members = room.members.filter(id => this.manager.store.get('bots', id));
+    const marker = JSON.stringify([room.goal, room.team.revision, latest && JSON.parse(latest).id, members]);
+    if (this.projectEvidenceChecked.get(room.id) === marker) return room;
+    const sourcesByProject = new Map();
+    for (const id of members) {
+      const actions = await this.manager.readState(id, db => {
+        if (!db) return [];
+        const projects = new Map(db.listRecords('works').filter(work => work.project?.id)
+          .map(work => [work.id, work.project.nativeProjectId || work.project.id]));
+        return db.listRecords('work-events').flatMap(event => {
+          const { source, production } = event.authorization || {}, project = projects.get(event.workId);
+          return project && event.kind === 'request' && event.receipt?.accepted && source?.actor === 'user' &&
+            source.roomId === room.id && production?.roomId === room.id && production.messageId === source.replyTo ? [{ project, messageId: source.replyTo }] : [];
+        });
+      });
+      for (const { project, messageId } of actions) {
+        const message = this.store.get('messages', messageId);
+        if (message?.roomId !== room.id || message.senderId !== 'user') continue;
+        if (!sourcesByProject.has(project)) sourcesByProject.set(project, new Set());
+        sourcesByProject.get(project).add(messageId);
+      }
+    }
+    this.projectEvidenceChecked.set(room.id, marker);
+    const current = this.chatroom.need('rooms', room.id);
+    if (current.team.revision !== room.team.revision || current.goal !== room.goal || current.projectMode !== room.projectMode ||
+      current.members.length !== room.members.length || current.members.some(id => !room.members.includes(id))) return current;
+    if ([...sourcesByProject.values()].some(sources => sources.size >= 2))
+      return this.change(current, { team: this.startReview(current) }, current.team.revision);
+    return current;
   }
   async read(input, actor) {
     const room = this.room(input.roomId, actor);
@@ -207,7 +245,11 @@ export class TeamService {
       if (input.status !== undefined) { if (!['idle', 'active', 'paused', 'completed'].includes(input.status)) fail('Invalid project state'); patch.state = input.status; }
       for (const name of ['deadlineAt', 'nextReviewAt']) if (patch[name] !== undefined && patch[name] !== null && !Number.isFinite(Date.parse(patch[name]))) fail(`Invalid ${name}`);
       for (const name of ['reviewIntervalSeconds', 'auditIntervalSeconds']) if (patch[name] !== undefined && (!Number.isFinite(patch[name]) || patch[name] < 60)) fail(`${name} must be at least 60 seconds`);
-      room = this.change(room, { ...(input.goal !== undefined ? { goal: required(input.goal, 'goal') } : {}), team: patch });
+      const startsReview = room.team.state !== 'active' && (input.status === 'active' || input.status === undefined &&
+        input.goal !== undefined && room.team.state === 'idle' && room.projectMode !== 'chat');
+      const mode = input.status === 'idle' ? 'chat' : startsReview || input.status === 'active' ? 'project' : room.projectMode;
+      room = this.change(room, { ...(input.goal !== undefined ? { goal: required(input.goal, 'goal') } : {}), projectMode: mode,
+        team: { ...(startsReview ? this.startReview(room, patch.reviewIntervalSeconds) : {}), ...patch } });
       result = { room };
     } else if (action === 'resolve') {
       const issue = this.store.get('team-issues', input.issueId);
@@ -230,22 +272,22 @@ export class TeamService {
         if (needsReview) await this.chatroom.post(room.id, { clientId: `handoff-review:${operation.id}`, toBotId: room.team.eggBotId, kind: 'event', purpose: 'request', content: `主控交接需要重新判断：${error.message}\n原操作：${operation.id}。请读取当前工作与用户最新要求，不能自动重放停止。` }, 'system');
       }
     }
-    for (const room of this.store.list('rooms').filter(room => room.kind === 'group' && room.team?.state === 'active')) {
+    for (const group of this.store.list('rooms').filter(room => room.kind === 'group' && room.team)) {
+      const room = await this.includeProject(group);
+      if (room.team.state !== 'active') continue;
       const team = room.team, bot = this.manager.get(team.eggBotId), jobs = this.chatroom.jobs(room.id);
       if (bot.status !== 'active' || bot.runIntent === 'stopped' || jobs.some(job => job.teamReview && !terminal.has(job.status))) continue;
       const time = Date.now(), due = team.nextReviewAt ? Date.parse(team.nextReviewAt) : Date.parse(team.lastReviewAt || room.createdAt) + team.reviewIntervalSeconds * 1000;
       const deadlineDue = team.deadlineAt && Date.parse(team.deadlineAt) <= time && team.reviewedDeadline !== team.deadlineAt;
       if (!deadlineDue && due > time) continue;
-      const latest = this.chatroom.messages(room.id).findLast(message => message.senderId === 'user' || message.senderId !== 'system' && !jobs.find(job => job.id === message.jobId)?.teamReview);
-      const changed = latest && latest.id !== team.lastReviewMessageId;
-      let ongoing = jobs.some(job => job.botId !== team.eggBotId && !terminal.has(job.status));
-      if (!changed && !ongoing && !deadlineDue) for (const id of room.members.filter(id => !['user', team.eggBotId].includes(id))) if ((await this.works(room, id)).some(activeWork)) { ongoing = true; break; }
-      if (!changed && !ongoing && !deadlineDue) continue;
+      const latest = this.chatroom.latestProjectMessage(room.id);
+      const changed = latest && latest.id !== (team.reviewFromMessageId || team.lastReviewMessageId);
+      if (!changed && !deadlineDue) continue;
       const audit = time - Date.parse(team.lastAuditAt || room.createdAt) >= team.auditIntervalSeconds * 1000;
       const message = this.chatroom.append(room.id, { clientId: `team-review:${room.id}:${team.revision}:${due}`, kind: 'event', purpose: 'request', toBotId: team.eggBotId,
         content: `项目协作复核。目标：${room.goal}\n期限：${team.deadlineAt || '未指定'}。${deadlineDue ? '期限已到，需要按原要求处理剩余工作。' : ''}\n从 chatroom_team_read 和必要原文检查：真正交付缺口是否减少，现有分工与依赖是否仍合理，是否需要同伴讨论、补充方法、邀请/孵化成员或交接。活动、日志增长和进程存活不等于进展，不按时间直接杀任务。${audit ? '本次同时检查反复用户纠正与定时职责的实际价值/调用浪费。' : ''}没有新贡献返回 PASS，不复述进度，不为反思制造工作。` }, 'system');
       this.chatroom.enqueue(message, team.eggBotId, { teamReview: true, priority: 'background' });
-      this.change(room, { team: { lastReviewAt: now(), nextReviewAt: new Date(time + team.reviewIntervalSeconds * 1000).toISOString(), lastReviewMessageId: latest?.id || null,
+      this.change(room, { team: { lastReviewAt: now(), nextReviewAt: new Date(time + team.reviewIntervalSeconds * 1000).toISOString(), lastReviewMessageId: latest?.id || null, reviewFromMessageId: null,
         ...(deadlineDue ? { reviewedDeadline: team.deadlineAt } : {}), ...(audit ? { lastAuditAt: now() } : {}) } });
     }
   }

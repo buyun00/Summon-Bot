@@ -152,6 +152,18 @@ struct AvatarPicker: View {
     }
 }
 
+struct RoomProjectModePicker: View {
+    @Binding var selection: String
+
+    var body: some View {
+        Picker("群聊用途", selection: $selection) {
+            Text("自动识别持续项目").tag("auto")
+            Text("持续项目 · 定期协作复核").tag("project")
+            Text("日常交流").tag("chat")
+        }
+    }
+}
+
 struct CreateRoomView: View {
     @Environment(SummonStore.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -159,6 +171,7 @@ struct CreateRoomView: View {
     let onCreated: (SummonRoom) -> Void
     @State private var name = ""
     @State private var goal = ""
+    @State private var projectMode = "auto"
     @State private var kind = "group"
     @State private var members: Set<String> = []
     @State private var busy = false
@@ -173,7 +186,8 @@ struct CreateRoomView: View {
                         Text("群聊").tag("group")
                         Text("深聊").tag("deep")
                     }
-                    TextField("讨论目标", text: $goal, axis: .vertical).lineLimit(3...6)
+                    TextField("会话说明或目标", text: $goal, axis: .vertical).lineLimit(3...6)
+                    if kind == "group" { RoomProjectModePicker(selection: $projectMode) }
                 }
                 Section("选择成员") {
                     ForEach(store.bots) { bot in
@@ -197,7 +211,7 @@ struct CreateRoomView: View {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("创建") { Task { await create() } }
-                        .disabled(busy || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || members.isEmpty || (kind == "deep" && goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+                        .disabled(busy || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || members.isEmpty || ((kind == "deep" || projectMode == "project") && goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
                 }
             }
             .overlay { if busy { ProgressView() } }
@@ -209,7 +223,8 @@ struct CreateRoomView: View {
         busy = true; errorMessage = nil
         defer { busy = false }
         do {
-            let room = try await store.createGroup(name: name, members: ["user"] + members.sorted(), goal: goal, kind: kind)
+            let room = try await store.createGroup(name: name, members: ["user"] + members.sorted(), goal: goal, kind: kind,
+                                                   projectMode: kind == "group" ? projectMode : nil)
             dismiss(); onCreated(room)
         } catch { errorMessage = error.localizedDescription }
     }

@@ -176,6 +176,7 @@ data class SummonRoom(
     val summary: String,
     val lastMessage: SummonMessage?,
     val createdAt: String?,
+    val projectMode: String? = null,
 ) {
     val isGroup: Boolean get() = kind != "dm"
     val isConcluded: Boolean get() = status == "concluded"
@@ -187,6 +188,7 @@ data class SummonRoom(
         "members" to SummonJson.Arr(members.map(SummonJson::Str)),
         "status" to SummonJson.Str(status),
         "goal" to SummonJson.Str(goal),
+        "projectMode" to (projectMode?.let(SummonJson::Str) ?: SummonJson.Null),
         "summary" to SummonJson.Str(summary),
         "lastMessage" to (lastMessage?.toJson() ?: SummonJson.Null),
         "createdAt" to (createdAt?.let(SummonJson::Str) ?: SummonJson.Null),
@@ -200,6 +202,7 @@ data class SummonRoom(
             members = json["members"].array.orEmpty().map { it.stringValue }.filter { it.isNotEmpty() },
             status = json["status"].string ?: "active",
             goal = json["goal"].string ?: "",
+            projectMode = json["projectMode"].string,
             summary = json["summary"].string ?: "",
             lastMessage = if (json["lastMessage"] is SummonJson.Obj) SummonMessage.parse(json["lastMessage"]) else null,
             createdAt = json["createdAt"].string,
