@@ -23,6 +23,7 @@ const within = (root, path) => { const part = relative(root, path); return part 
 const objectSchema = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const stringSchema = description => ({ type: 'string', description });
 const integerSchema = (description, minimum, maximum) => ({ type: 'integer', description, minimum, maximum });
+const publicationRejected = (message, status) => Object.assign(new Error(message), { code: 'FILE_PUBLICATION_REJECTED', status });
 
 function cancelled(signal) {
   if (!signal?.aborted) return;
@@ -306,21 +307,22 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
   return [
     ...createWebTools(),
     tool('publish_file', 'Publish a verified work file as a chat attachment. Supply the returned attachment ID to work_notify. Standalone HTML/text receives an isolated browser preview.', objectSchema({path:stringSchema('Finished file in this authorized workspace/project'),name:stringSchema('Optional download filename'),mimeType:stringSchema('Optional MIME type')},['path']), async (args, signal) => {
-      if (!publishFile) throw new Error('File publication requires the installed chat attachment capability');
+      if (!publishFile) throw publicationRejected('File publication requires the installed chat attachment capability', 409);
       const path = await checkedPath(args.path, { alternative: true });
       const handle = await open(path, constants.O_RDONLY);
+      let bytes, before;
       try {
-        const before = await handle.stat();
-        if (!before.isFile() || before.size > MAX_ATTACHMENT_BYTES) throw new Error('Publish a regular file of at most 20 MiB');
-        const bytes = await handle.readFile({ signal });
+        before = await handle.stat();
+        if (!before.isFile()) throw publicationRejected('Chat publication requires a regular file', 400);
+        if (before.size > MAX_ATTACHMENT_BYTES) throw publicationRejected(
+          `File has ${before.size} bytes. Each chat attachment allows at most ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MiB (${MAX_ATTACHMENT_BYTES} bytes)`, 413);
+        bytes = await handle.readFile({ signal });
         const after = await handle.stat();
         if (before.size !== bytes.length || after.size !== before.size || after.mtimeMs !== before.mtimeMs || await realpath(path) !== path)
-          throw new Error('File changed while preparing publication; finish writing it before publishing');
-        // Await before closing the handle: a quick rejection must stay inside
-        // this try/catch rather than become unhandled during async close().
-        return await publishFile({name:basename(args.name || path),mimeType:args.mimeType,data:bytes.toString('base64')},
-          {path,size:before.size,mtimeMs:before.mtimeMs,ctimeMs:before.ctimeMs});
+          throw publicationRejected('File changed while preparing publication; finish writing it before publishing', 409);
       } finally { await handle.close(); }
+      return publishFile({name:basename(args.name || path),mimeType:args.mimeType,data:bytes.toString('base64')},
+        {path,size:before.size,mtimeMs:before.mtimeMs,ctimeMs:before.ctimeMs});
     }, true),
     tool('list_files', 'List allowed files and directories. Dependency directories are shown without their contents; protected paths are omitted. An omitted entry is not proof of absence. Relative paths start in your workspace.', objectSchema({ path: stringSchema('Directory; defaults to workspace'), recursive: { type: 'boolean' }, maxEntries: integerSchema('Maximum entries, default 200', 1, 500), maxDepth: integerSchema('Recursion depth, default 4', 0, 12) }), async (args, signal) => {
       const path = await checkedPath(args.path, { directory: true });

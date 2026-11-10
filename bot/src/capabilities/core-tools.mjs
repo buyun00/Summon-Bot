@@ -277,11 +277,14 @@ export function coreTools(services, task) {
         try { manifest = await readExecutorManifest({ workspace: services.workspace, workId: work.id, operation }); }
         catch (error) { unavailable = error.code === 'ENOENT' ? 'No existing result manifest' : error.message; }
         const artifacts = manifest?.artifacts || [], total = Math.max(available.length, artifacts.length);
+        const missing = delivery?.status === 'rejected' && delivery.httpStatus === 413 ?
+          'The file exceeded the chat attachment limit and was not uploaded. Use the existing file through authorized local project access, or return another requested, already existing file within the chat limit.' :
+          'No currently readable confirmed attachment for this operation in this room. Preserve uncertain uploads and report gaps.';
         return { workId: work.id, operationId: operation.id,
           replyDelivery: { ready, total: available.length, candidates: available.slice(offset, offset + limit),
             next: ready ? 'Use work_deliver with this workId and operationId. Supply candidate IDs for a subset or omit them to return all confirmed attachments.' :
-              'No currently readable confirmed attachment for this operation in this room. Preserve uncertain uploads and report gaps.' },
-          delivery: delivery && { id: delivery.id, status: delivery.status, error: delivery.error }, unavailable,
+              missing },
+          delivery: delivery && { id: delivery.id, status: delivery.status, error: delivery.error, errorCode: delivery.errorCode, httpStatus: delivery.httpStatus }, unavailable,
           artifacts: operation.authorization?.source?.roomId === source.roomId ? artifacts.slice(offset, offset + limit) : [],
           offset, nextOffset: offset + limit < total ? offset + limit : null };
       }),

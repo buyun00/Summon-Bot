@@ -188,9 +188,11 @@ export function workExecutor({ store, services, emit }) {
         };
         delivery = await publishExecutorResult({ store, services, task, operation: manifestOperation, isCurrent });
       }
+      const publicationNote = delivery?.status === 'rejected' ? `\n文件上传前被拒绝。${delivery.error}。${delivery.httpStatus === 413 ? '有本机项目访问权限时可从原项目取现有文件。原群仍可返回符合限额的现有文件。' : ''}` :
+        delivery?.status === 'unconfirmed' ? `\n文件上传回执未确认。${delivery.error}。按原操作查询。` : '';
       const text = (final?.text || `${label}。${content.error?.message || content.result?.error?.message || content.state?.currentTurn?.error?.message || ''}\n来源：${binding.externalThreadId || '线程尚未确认'}${content.turnId ? ` / ${content.turnId}` : ''}。${outcome === 'execution-ended' ? '未取得可确认归属的最终文本，尚未据此判定整个工作完成。' : ''}`) +
         (delivery?.attachments?.length ? '\n已将本次完成的文件附在此消息，供打开、下载和评审。' : '') +
-        (delivery?.error ? `\n文件发布尚未完成：${delivery.error}。现有产物保留，不能据此宣称已交付。` : '') +
+        publicationNote +
         (final?.truncated ? '\n（以上为已取得的答复片段；完整内容保留在原 Codex 线程。）' : '') +
         (final?.artifacts?.length ? `\n产物引用：\n${JSON.stringify(final.artifacts)}` : '');
       await services.notify({ id: work.id, notificationId: eventId, publication: 'external', content: text, attachments: delivery?.attachments,

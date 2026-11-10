@@ -67,7 +67,8 @@ export async function readExecutorManifest({ workspace, workId, operation }) {
 export async function publishExecutorResult({ store, services, task, operation, isCurrent }) {
   if (!operation?.resultFile) return { attachments: [], status: 'not-declared' };
   const key = operation.id, saved = store.getRecord('executor-deliveries', key);
-  if (saved) return saved;
+  if (saved) return saved.status === 'publishing' ? { ...saved, status: 'unconfirmed',
+    error: 'The earlier publication has no terminal receipt. Keep its original operation identity' } : saved;
   const root = await realpath(services.workspace);
   let manifest;
   try {
@@ -78,12 +79,14 @@ export async function publishExecutorResult({ store, services, task, operation, 
   }
   if (!isCurrent()) return { attachments: [], status: 'superseded' };
   let delivery = store.putRecord('executor-deliveries', { id: key, attachments: [], status: 'publishing', summary: String(manifest.summary || '').slice(0, 6000) });
+  let attempted = false;
   try {
     for (const [index, artifact] of manifest.artifacts.entries()) {
-      if (typeof artifact.path !== 'string' || !isAbsolute(artifact.path)) throw new Error('Deliverable requires its absolute output path');
+      attempted = false;
       const path = await realpath(artifact.path);
       if (!within(root, path) || within(resolve(root, '.summon-handoffs'), path)) throw new Error('Deliverable is outside the product output scope');
-      if (!isCurrent()) throw new Error('The execution changed or stopped before publication');
+      if (!isCurrent()) return store.putRecord('executor-deliveries', { ...delivery, status: 'superseded' });
+      attempted = true;
       const published = await services.capability('publish_file', { path, ...(artifact.name ? { name: artifact.name } : {}) }, task,
         { operationId: `${key}:publish:${index}` });
       if (!published?.id) throw new Error('Attachment publication did not return an attachment ID');
@@ -91,7 +94,10 @@ export async function publishExecutorResult({ store, services, task, operation, 
     }
     return store.putRecord('executor-deliveries', { ...delivery, status: 'published' });
   } catch (error) {
-    // Keep obtained receipts. Never replay an uncertain upload on task recovery.
-    return store.putRecord('executor-deliveries', { ...delivery, status: 'unconfirmed', error: error.message });
+    // A filesystem rejection proves no upload for this file. A missing or
+    // uncertain remote receipt keeps its original operation and prior IDs.
+    const rejected = !attempted || !error.outcomeUnknown && ['FILE_PUBLICATION_REJECTED', 'FILE_ACCESS_DENIED'].includes(error.code);
+    return store.putRecord('executor-deliveries', { ...delivery, status: rejected ? 'rejected' : 'unconfirmed',
+      error: error.message, errorCode: error.code, httpStatus: error.status });
   }
 }

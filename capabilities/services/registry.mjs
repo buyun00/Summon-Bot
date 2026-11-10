@@ -296,7 +296,9 @@ export class CapabilityRegistry {
       if (!response.ok) {
         const detail = plain(payload) ? payload.error?.message || payload.error || payload.message : undefined;
         const denial = payload?.code === 'FILE_ACCESS_DENIED' && payload.accessDenial;
-        const error = fail(`Capability service returned HTTP ${response.status}${typeof detail === 'string' ? `: ${this._redact(detail).slice(0, 1200)}` : ''}`, response.status, denial ? 'FILE_ACCESS_DENIED' : 'CAPABILITY_REMOTE_ERROR');
+        const publishRejected = name === 'publish_file' && payload?.code === 'FILE_PUBLICATION_REJECTED';
+        const code = denial || publishRejected ? payload.code : 'CAPABILITY_REMOTE_ERROR';
+        const error = fail(`Capability service returned HTTP ${response.status}${typeof detail === 'string' ? `: ${this._redact(detail).slice(0, 1200)}` : ''}`, response.status, code);
         if (denial && typeof denial.path === 'string' && typeof denial.reason === 'string') error.accessDenial = JSON.parse(this._redact(JSON.stringify(denial)));
         if (payload?.outcomeUnknown) error.outcomeUnknown = true;
         throw error;
