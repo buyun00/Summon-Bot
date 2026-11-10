@@ -113,6 +113,12 @@ iframe{display:block}
       const [version, ticket, ...parts] = url.pathname.slice(bundlePrefix.length).split('/');
       const mime = assetType(parts);
       if (!mime || !versionName.test(version) || !validTicket(version, ticket) || req.url.split('?', 1)[0] !== url.pathname) return status(res, 404);
+      // Keep game code out of the Electron main frame, which receives the desktop preload bridge.
+      if (req.headers['sec-fetch-dest'] === 'document') {
+        res.writeHead(303, { ...headers, Location: `${prefix}${version}/` });
+        res.end();
+        return;
+      }
       const asset = await openExportFile(join(root, version, ...parts));
       if (!asset) return status(res, 404);
 
