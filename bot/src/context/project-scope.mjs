@@ -8,3 +8,6 @@ export function directoryProject(cwd) {
   const key = /^(?:[A-Za-z]:|\/\/)/.test(path) ? path.toLowerCase() : path;
   return { id: `directory:${key}`, cwd, hostId: 'local', kind: 'directory', nativeRegistration: 'unconfirmed' };
 }
+
+// cwd is populated only after the physical directory passed the file boundary.
+export const knowledgeProjectId = project => project?.hostId === 'local' && project.cwd ? directoryProject(project.cwd).id : project?.id;

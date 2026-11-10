@@ -299,7 +299,9 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         return store.putRecord('work-notifications', { ...record, status: 'superseded', suppressedAt: at(),
           ...(record.status === 'unknown' ? { deliveryUnconfirmed: true } : {}) });
       const source = task && work && services.resultSource(work, task);
-      const target = source?.roomId && source.replyTo ? { roomId: source.roomId, replyTo: source.replyTo, botId: undefined } :
+      if (source?.formId === work?.id && source?.formId && !source.roomId)
+        return store.putRecord('work-notifications', { ...record, status: 'local-only', waiting: undefined });
+      const target = source?.roomId && (source.replyTo || source.formId === work.id) ? { roomId: source.roomId, replyTo: source.replyTo, botId: undefined } :
         source && config.contacts.some(contact => contact.botId === source.source) ?
           { botId: source.source, roomId: undefined, replyTo: source.messageId, targetWorkId: source.metadata?.sourceWorkId } : null;
       if (!target) return store.putRecord('work-notifications', { ...record, status: 'pending', waiting: 'source', retryAt: Date.now() + 60000,
@@ -341,7 +343,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         if (observation?.taskId !== task.id || observation.workId !== work.id || observation.late ||
           observed.source !== 'codex-desktop-connector' || observed.type !== 'external_progress' || !observed.progress?.confirmed ||
           !review.operationId || observed.operationId !== review.operationId || observed.externalThreadId !== review.threadId || observed.turnId !== review.turnId ||
-          !authorizedSource.replyTo || !itemIds?.length) return { status: 'superseded', workId: work.id };
+          !(authorizedSource.replyTo || authorizedSource.formId === work.id) || !itemIds?.length) return { status: 'superseded', workId: work.id };
         const scope = { bindingId: review.bindingId, threadId: review.threadId, turnId: review.turnId, operationId: review.operationId,
           controlRevision: observation.controlRevision, itemIds };
         const id = `${work.id}:${observation.id}`, prior = store.getRecord('work-notifications', id);
@@ -485,6 +487,17 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       if (parts[0] === 'works') {
         const id = parts[1];
         if (method === 'GET') return id ? services.works.get(id) : services.works.list({ status: parsed.searchParams.get('status'), query: parsed.searchParams.get('query') });
+        if (method === 'POST' && id === 'form' && parts.length === 2) {
+          if (state !== 'ready' || config.accepting === false) throw failure(503, '当前成员无法接收工作。');
+          const body = await readBody(request);
+          const executor = selectedWorkExecutor(config.model);
+          if (executor.kind !== body.executor?.kind)
+            throw failure(409, '工作引擎已变化，请按当前选择重试。');
+          if (!isCliExecutor(executor.kind) && !engine.health().configured)
+            throw failure(503, 'Model credential is not configured', 'MODEL_UNCONFIGURED');
+          response.statusCode = 202;
+          return services.works.submitForm(body);
+        }
         if (method === 'POST' && !id) return services.works.create(await readBody(request));
         if (method === 'PATCH' && id) {
           const body = await readBody(request);

@@ -3,6 +3,7 @@ import { required,fail,pick,now } from '../shared/validation.mjs';
 import { TeamService, groupTeam } from './team.mjs';
 import { boundedNumber } from '../../bot/src/context/model-input.mjs';
 import { publicationParts, WORK_ATTACHMENTS } from '../../bot/src/runtime/notifications.mjs';
+import { localTime } from '../../bot/src/context/fact-time.mjs';
 const TERMINAL=new Set(['completed','failed','cancelled','interrupted']);
 const foreground=item=>item.priority!=='background';
 const normalized=text=>String(text||'').trim().replace(/\s+/g,' ');
@@ -13,6 +14,8 @@ const observable=message=>!message.observationReply&&!message.routineId&&message
 const observationMessage=message=>({ ...pick(message,['id','roomId','senderId','content','kind','workId','createdAt','rootId','replyTo']),
   attachments:(message.attachments||[]).filter(item=>!item.origin?.roomId||item.origin.roomId===message.roomId).map(item=>pick(item,['id','name','size','mimeType'])),
   sourceRefs:(message.sourceRefs||[]).filter(ref=>!ref?.roomId||ref.roomId===message.roomId) });
+const firstPosition={at:'',row:0};
+const comparePosition=(a,b)=>a.at.localeCompare(b.at)||a.row-b.row;
 const routeInstruction='这是一次临时语义路由，不是执行任务。只根据本条用户原文、明确引用和成员职责选择最适合承担的一个现有成员；不得群发、执行或代替用户授权。能确定已有工作才填写其真实 workId，不按最近活跃猜归属。可以用普通文字选择成员，也可输出 JSON：{"recipientBotId":"已有成员ID或null","workId":"已知工作ID或null","reason":"简短依据"}。无法确定时 recipientBotId 设为你自己，由你的普通聊天对话作最小澄清或回答。';
 function projectMode(value,goal){
   if(!['auto','project','chat'].includes(value))fail('请选择有效的群聊用途');
@@ -23,10 +26,24 @@ export class ChatroomService {
   constructor({store,manager,attachments,emit=()=>{},version=null,invoke}) {
     Object.assign(this,{store,manager,attachments,emit,version});this.teamService=new TeamService(this,{invoke});this.busy=false;this.closed=false;
     store.db.exec("CREATE INDEX IF NOT EXISTS records_room ON records(kind,json_extract(data,'$.roomId'),created_at)");
+    store.db.exec(`CREATE INDEX IF NOT EXISTS records_message_reply ON records(json_extract(data,'$.roomId'),
+      json_extract(data,'$.replyTo'),json_extract(data,'$.senderId'),created_at) WHERE kind='messages'`);
     this.roomRows=store.db.prepare("SELECT data FROM records WHERE kind=? AND json_extract(data,'$.roomId')=? ORDER BY created_at,rowid");
+    this.messagePosition=store.db.prepare("SELECT created_at AS at,rowid AS row FROM records WHERE kind='messages' AND id=? AND json_extract(data,'$.roomId')=?");
+    const observedRows=`FROM records m JOIN records d ON d.kind='deliveries' AND d.id='delivery:'||m.id||':'||?
+      WHERE m.kind='messages' AND json_extract(m.data,'$.roomId')=? AND json_extract(d.data,'$.observation')=1
+      AND (m.created_at,m.rowid)>(?,?)`;
+    this.observationDelta=store.db.prepare(`SELECT m.data,count(*) OVER () AS total,
+      first_value(m.id) OVER (ORDER BY m.created_at,m.rowid) AS firstId ${observedRows}
+      AND (m.created_at,m.rowid)<=(?,?) AND (?=0 OR json_extract(d.data,'$.status') NOT IN ('completed','failed','cancelled','interrupted'))
+      ORDER BY m.created_at DESC,m.rowid DESC LIMIT 64`);
+    this.observationPage=store.db.prepare(`SELECT m.data ${observedRows} AND (m.created_at,m.rowid)<(?,?)
+      AND (?='' OR instr(json_extract(m.data,'$.content'),?)>0) ORDER BY m.created_at,m.rowid LIMIT ?`);
     this.latestRoomMessage=store.db.prepare("SELECT data FROM records WHERE kind='messages' AND json_extract(data,'$.roomId')=? ORDER BY created_at DESC,rowid DESC LIMIT 1");
     this.sourceReplies=store.db.prepare(`SELECT data FROM records WHERE kind='messages' AND json_extract(data,'$.roomId')=?
-      AND json_extract(data,'$.replyTo')=? AND json_extract(data,'$.senderId')=?`);
+      AND json_extract(data,'$.replyTo')=? AND json_extract(data,'$.senderId')=? ORDER BY created_at,rowid`);
+    this.workReplies=store.db.prepare(`SELECT data FROM records WHERE kind='messages' AND json_extract(data,'$.roomId')=?
+      AND json_extract(data,'$.workId')=? AND json_extract(data,'$.senderId')=? AND created_at>? ORDER BY created_at,rowid`);
     this.rootReplies=store.db.prepare(`SELECT data FROM records WHERE kind='messages' AND json_extract(data,'$.roomId')=?
       AND json_extract(data,'$.rootId')=? AND json_extract(data,'$.senderId')=?`);
   }
@@ -34,6 +51,7 @@ export class ChatroomService {
   need(kind,id) { const value=this.store.get(kind,id);if(!value)fail(`${kind} not found`,404);return value; }
   rooms() { return this.store.list('rooms').map(room=>({...room,lastMessage:JSON.parse(this.latestRoomMessage.get(room.id)?.data||'null')})); }
   messages(id) { return this.roomRows.all('messages',id).map(row=>JSON.parse(row.data)); }
+  position(roomId,id) { return id?this.messagePosition.get(id,roomId):undefined; }
   latestProjectMessage(id) { return this.messages(id).findLast(message=>message.senderId!=='system'&&observable(message)); }
   read(input, actor, source) {
     const room=this.need('rooms',input.roomId||source?.roomId),accessActor=source?.accessActor||source?.actor;
@@ -59,29 +77,65 @@ export class ChatroomService {
       }
       return {attachments:[...found.values()]};
     }
+    if(observation)return this.readObservation(input,actor,source,room);
+    if(input.messageId&&!input.afterMessageId&&!input.beforeMessageId&&!input.throughMessageId){
+      const message=this.store.get('messages',input.messageId);
+      const selected=message?.roomId===room.id&&(!input.query||message.content.includes(input.query))?[message]:[];
+      return this.messagePage(room,accessActor||actor,input,selected);
+    }
     const all=this.messages(room.id),limit=Math.max(1,Math.min(100,Math.trunc(Number(input.limit)||20)));
-    const offset=boundedNumber(input.offset,0),length=boundedNumber(input.length,6000,1,16000);
     const after=input.afterMessageId?all.findIndex(message=>message.id===input.afterMessageId):-1;
     const before=input.beforeMessageId?all.findIndex(message=>message.id===input.beforeMessageId):all.length;
     const requestedThrough=input.throughMessageId?all.findIndex(message=>message.id===input.throughMessageId):all.length-1;
-    const observationEnd=observation?all.findIndex(message=>message.id===source.replyTo):all.length-1;
-    if((input.afterMessageId&&after<0)||(input.beforeMessageId&&before<0)||(input.throughMessageId&&requestedThrough<0)||observation&&observationEnd<0)fail('Message cursor not found',404);
-    const through=Math.min(requestedThrough,observationEnd);
-    const candidates=(input.messageId?all.filter((message,index)=>index<=observationEnd&&message.id===input.messageId):all.slice(after+1,Math.min(before,through+1)))
+    if((input.afterMessageId&&after<0)||(input.beforeMessageId&&before<0)||(input.throughMessageId&&requestedThrough<0))fail('Message cursor not found',404);
+    const candidates=(input.messageId?all.filter(message=>message.id===input.messageId):all.slice(after+1,Math.min(before,requestedThrough+1)))
       .filter(message=>!input.query||message.content.includes(input.query));
     const forward=input.oldestFirst||input.afterMessageId||input.messageId;
     const selected=forward?candidates.slice(0,limit):candidates.slice(-limit);
+    return this.messagePage(room,accessActor||actor,input,selected,{reverse:!forward,total:candidates.length});
+  }
+  readObservation(input,actor,source,room) {
+    const boundary=this.position(room.id,source.replyTo);
+    if(!boundary)fail('Observation source not found',404);
+    const reader=source.accessActor||source.actor||actor;
+    if(input.messageId){
+      const position=this.position(room.id,input.messageId);
+      const message=position&&comparePosition(position,boundary)<=0&&this.store.get('messages',input.messageId);
+      return this.messagePage(room,reader,input,message?[message]:[],{observation:true});
+    }
+    const range=source.input?.contextRange,firstIncluded=this.position(room.id,source.input?.messages?.[0]?.id);
+    const after=this.position(room.id,range?.afterMessageId),first=this.position(room.id,range?.firstMessageId);
+    let start=after||(first&&{at:first.at,row:first.row-1});
+    if(!range?.omitted||!start||!firstIncluded)return this.messagePage(room,reader,input,[],{observation:true});
+    let end=firstIncluded;
+    for(const [field,id] of Object.entries({afterMessageId:input.afterMessageId,beforeMessageId:input.beforeMessageId,throughMessageId:input.throughMessageId})){
+      if(!id)continue;
+      const position=this.position(room.id,id);
+      if(!position)fail('Message cursor not found',404);
+      if(field==='afterMessageId'){if(comparePosition(position,start)>0)start=position;}
+      else{
+        const upper=field==='throughMessageId'?{...position,row:position.row+1}:position;
+        if(comparePosition(upper,end)<0)end=upper;
+      }
+    }
+    const limit=Math.trunc(boundedNumber(input.limit,6,1,8)),query=String(input.query||'').slice(0,256);
+    const rows=comparePosition(start,end)<0?this.observationPage.all(actor,room.id,start.at,start.row,end.at,end.row,query,query,limit+1):[];
+    return this.messagePage(room,reader,{...input,query,length:boundedNumber(input.length,1200,1,2000)},
+      rows.slice(0,limit).map(row=>JSON.parse(row.data)),{observation:true,total:rows.length});
+  }
+  messagePage(room,actor,input,selected,{observation=false,reverse=false,total=selected.length}={}) {
+    const offset=boundedNumber(input.offset,0),length=boundedNumber(input.length,6000,1,16000);
     const messages=[];let size=0;
-    for(const message of (forward?selected:[...selected].reverse())){
+    for(const message of (reverse?[...selected].reverse():selected)){
       const start=input.offset===undefined&&input.query?Math.max(0,message.content.indexOf(input.query)-1000):offset;
       const reply=message.replyTo&&this.store.get('messages',message.replyTo);
       const value={...(observation?observationMessage(message):message),replyWorkId:reply?.roomId===room.id?reply.workId||null:null,content:message.content.slice(start,start+length),reference:{type:'room',roomId:room.id,messageId:message.id,offset:start,length},
         offset:start,nextOffset:start+length<message.content.length?start+length:null,fullCharacters:message.content.length,truncated:start>0||start+length<message.content.length};
       const cost=JSON.stringify(value).length;if(messages.length&&size+cost>64000)break;size+=cost;messages.push(value);
     }
-    if(!forward)messages.reverse();
-    return {room:pick(room,['id','name','kind','members']),access:{roomId:room.id,members:room.members,actor:accessActor||actor},messages,
-      hasMore:candidates.length>messages.length,firstMessageId:messages[0]?.id||null,lastMessageId:messages.at(-1)?.id||null};
+    if(reverse)messages.reverse();
+    return {room:pick(room,['id','name','kind','members']),access:{roomId:room.id,members:room.members,actor},messages,
+      hasMore:total>messages.length,firstMessageId:messages[0]?.id||null,lastMessageId:messages.at(-1)?.id||null};
   }
   jobs(id) { return id?this.roomRows.all('deliveries',id).map(row=>JSON.parse(row.data)):this.store.list('deliveries'); }
   messageReceipt(id) { const message=this.store.get('messages',id);return message?pick(message,['id','roomId','senderId','createdAt']):null; }
@@ -245,15 +299,17 @@ export class ChatroomService {
       for(const item of observations)this.store.save('deliveries',{id:item.id,status:'cancelled',finishedAt:now()});
       return;
     }
-    const positions=new Map(this.messages(roomId).map((message,index)=>[message.id,index]));
     const cursor=this.store.get('delivery-cursors',`${botId}:${roomId}:chat`);
-    let latest;
+    const through=this.position(roomId,cursor?.messageId)||firstPosition;
+    let latest,latestPosition=through;
     for(const item of observations){
       const route=this.store.get('deliveries',`route:${item.messageId}`);
       if(route&&!TERMINAL.has(route.status))continue;
-      if(cursor&&positions.get(item.messageId)<=positions.get(cursor.messageId)){
+      const position=this.position(roomId,item.messageId);
+      if(!position)continue;
+      if(cursor&&comparePosition(position,through)<=0){
         this.emit('job',this.store.save('deliveries',{id:item.id,status:'completed',coalesced:true,coveredThroughMessageId:cursor.messageId,finishedAt:now()}));
-      }else if(!latest||positions.get(item.messageId)>positions.get(latest.messageId))latest=item;
+      }else if(comparePosition(position,latestPosition)>0){latest=item;latestPosition=position;}
     }
     if(latest&&due(latest))await this.deliver(latest);
   }
@@ -280,10 +336,19 @@ export class ChatroomService {
         content:{type:'work_event',message:trigger.content,attachments,peerAnswer:item.peerAnswer,
           instruction:'This is a sourced input for the existing work, not a chat turn. Execute only that work. Do not answer the room; return concise results through work_notify.'}}}).input;
     }
-    const all=this.messages(room.id),cursor=this.store.get('delivery-cursors',`${item.botId}:${room.id}:${item.workId||'chat'}`),after=cursor?all.findIndex(message=>message.id===cursor.messageId):-1,end=all.findIndex(message=>message.id===trigger.id);
-    const unread=after<end?all.slice(after+1,end+1):[trigger];
-    const delta=item.observation?unread.filter(message=>message.senderId!==item.botId&&observable(message)&&
-      this.store.get('deliveries',`delivery:${message.id}:${item.botId}`)?.observation).map(observationMessage):unread;
+    const cursor=this.store.get('delivery-cursors',`${item.botId}:${room.id}:${item.workId||'chat'}`);
+    let delta,total,firstMessageId,latest;
+    if(item.observation){
+      const after=this.position(room.id,cursor?.messageId),start=after||firstPosition,end=this.position(room.id,trigger.id);
+      const rows=this.observationDelta.all(item.botId,room.id,start.at,start.row,end.at,end.row,after?0:1);
+      delta=rows.length?rows.map(row=>observationMessage(JSON.parse(row.data))).reverse():[observationMessage(trigger)];
+      total=rows[0]?.total||delta.length;
+      firstMessageId=rows[0]?.firstId||trigger.id;
+    }else{
+      const all=this.messages(room.id),after=cursor?all.findIndex(message=>message.id===cursor.messageId):-1,end=all.findIndex(message=>message.id===trigger.id);
+      delta=after<end?all.slice(after+1,end+1):[trigger];
+      total=delta.length;latest=all.at(-1)?.id;
+    }
     // Keep input bounded by bytes, with the current trigger always present. Earlier raw messages stay available through chatroom_read.
     let size=0;const included=[];for(const message of [...delta].reverse()){const length=JSON.stringify(message).length;if(included.length&&size+length>24000)break;included.unshift(message);size+=length;}
     const context=item.observation?{messages:included,trigger:observationMessage(trigger)}:
@@ -292,8 +357,28 @@ export class ChatroomService {
     const actor=item.peerAnswer?.senderId||trigger.senderId;
     const observedRoom={...pick(room,['id','name','kind','goal','members']),duty:room.team?.duties?.find(duty=>duty.botId===item.botId)?.responsibility};
     const input={id:item.id,kind:!item.peerAnswer&&!item.observation&&!item.teamIntroduction&&trigger.senderId==='user'?'request':'event',sessionId:item.routeOnly?`route:${trigger.id}`:`room:${room.id}`,conversationId:item.routeOnly?`route:${trigger.id}`:item.workId?`work:${item.workId}`:`room:${room.id}`,workId:item.routeOnly?undefined:item.workId,correlationId:trigger.rootId,replyTo:trigger.id,metadata:{kind:item.workId?'work':'chat',routeOnly:!!item.routeOnly,priority:item.priority,actor,accessActor:trigger.senderId,
-      ...(item.observation?{groupObservation:true,authority:'published-observation'}:{referencedWorkId:item.referencedWorkId||this.store.get('messages',trigger.replyTo)?.workId}),historyThroughMessageId:item.peerAnswer?all.at(-1)?.id:trigger.id,...(item.peerAnswer?{authority:'peer-observation',sourceType:'peer-result'}:{}),...(item.routeOnly?{toolPolicy:{allowedEffects:['read']}}:{})},content:{text:instruction,...(item.instruction?{runtimeInstruction:item.instruction}:{}),room:item.observation?observedRoom:pick(room,['id','name','kind','goal','members','team']),...context,contextRange:{afterMessageId:cursor?.messageId||null,throughMessageId:trigger.id,omitted:Math.max(0,delta.length-included.length),readMore:'chatroom_read'},...(item.observation?{observer:pick(this.manager.get(item.botId),['name','role','expertise'])}:{}),...(item.routeOnly?{directory:await this.directory(room)}:{}),...(item.peerAnswer?{peerAnswer:item.peerAnswer}:{}),metadata:{actor,roomId:room.id,deliveryId:item.id,sourceRefs:item.observation?context.trigger.sourceRefs:trigger.sourceRefs||[]}}};
+      ...(item.observation?{groupObservation:true,authority:'published-observation'}:{referencedWorkId:item.referencedWorkId||this.store.get('messages',trigger.replyTo)?.workId}),historyThroughMessageId:item.peerAnswer?latest:trigger.id,...(item.peerAnswer?{authority:'peer-observation',sourceType:'peer-result'}:{}),...(item.routeOnly?{toolPolicy:{allowedEffects:['read']}}:{})},content:{text:instruction,...(item.instruction?{runtimeInstruction:item.instruction}:{}),room:item.observation?observedRoom:pick(room,['id','name','kind','goal','members','team']),...context,contextRange:{afterMessageId:cursor?.messageId||null,throughMessageId:trigger.id,omitted:Math.max(0,total-included.length),...(firstMessageId?{firstMessageId}:{}),readMore:'chatroom_read'},...(item.observation?{observer:pick(this.manager.get(item.botId),['name','role','expertise'])}:{}),...(item.routeOnly?{directory:await this.directory(room)}:{}),...(item.peerAnswer?{peerAnswer:item.peerAnswer}:{}),metadata:{actor,roomId:room.id,deliveryId:item.id,sourceRefs:item.observation?context.trigger.sourceRefs:trigger.sourceRefs||[]}}};
     this.store.save('deliveries',{id:item.id,input,throughMessageId:trigger.id});return input;
+  }
+  newerDeliveries(item, tools) {
+    const snapshots=new Map();
+    for(const record of tools||[]){
+      const view=record.output?.details,scope=view?.deliveryScope;
+      if(record.name==='work_get'&&record.status==='completed'&&scope?.roomId===item.roomId&&scope.operationId&&
+        view.id&&view.facts?.observedAt)snapshots.set(scope.operationId,view);
+    }
+    const newer=[];
+    for(const {id:workId,status,facts:{observedAt},deliveryScope:scope} of snapshots.values()){
+      if(!['active','waiting'].includes(status))continue;
+      const rows=scope.messageId?this.sourceReplies.all(item.roomId,scope.messageId,item.botId):
+        this.workReplies.all(item.roomId,workId,item.botId,observedAt);
+      const matches=rows.map(row=>JSON.parse(row.data)).filter(message=>message.createdAt>observedAt&&message.workId===workId&&
+        message.eventType==='work_result'&&(message.replyTo||null)===(scope.messageId||null)&&
+        message.attachments?.some(({id,origin})=>origin?.type==='work-output'&&origin.publicationId===id&&origin.workId===workId&&
+          origin.botId===item.botId&&origin.roomId===item.roomId&&origin.operationId===scope.operationId));
+      if(matches.length)newer.push({observedAt,message:matches.at(-1)});
+    }
+    return newer;
   }
   async deliver(item) {
     if(this.version&&item.serviceVersion!==this.version)fail('This capability version does not own the delivery',409);
@@ -310,12 +395,18 @@ export class ChatroomService {
         item=this.store.transaction(()=>{
           const accepted=this.store.save('deliveries',{...item,input,status:'accepted',taskId:receipt.taskId,startedAt:now(),attempts:0,error:null});
           // Unknown sends retain the exact input and leave the cursor in place.
-          if(!item.routeOnly){const key=`${item.botId}:${item.roomId}:${item.workId||'chat'}`,all=this.messages(item.roomId),previous=this.store.get('delivery-cursors',key);if(all.findIndex(message=>message.id===item.messageId)>all.findIndex(message=>message.id===previous?.messageId))this.store.save('delivery-cursors',{id:key,messageId:item.messageId});}
+          if(!item.routeOnly){
+            const key=`${item.botId}:${item.roomId}:${item.workId||'chat'}`,previous=this.store.get('delivery-cursors',key);
+            const position=this.position(item.roomId,item.messageId),through=this.position(item.roomId,previous?.messageId)||firstPosition;
+            if(position&&comparePosition(position,through)>0)this.store.save('delivery-cursors',{id:key,messageId:item.messageId});
+          }
           return accepted;
         });this.emit('job',item);
       }
       if(!item.taskId)return;
-      let task;try{task=await this.manager.request(item.botId,`/tasks/${encodeURIComponent(item.taskId)}`);}catch(error){if(error.status!==503)throw error;task=await this.manager.readState(item.botId,db=>db?.getTask(item.taskId));if(!task)throw error;}
+      let task;try{task=await this.manager.request(item.botId,`/tasks/${encodeURIComponent(item.taskId)}`);}catch(error){if(error.status!==503)throw error;task=await this.manager.readState(item.botId,db=>{
+        const saved=db?.getTask(item.taskId);return saved&&{...saved,tools:db.listTools(saved.id)};
+      });if(!task)throw error;}
       const status=task.status;
       if(!TERMINAL.has(status)){if(item.status!==status){item=this.store.save('deliveries',{...item,status});this.emit('job',item);}return;}
       item=this.store.save('deliveries',{...item,workId:task.workId||task.result?.workId||item.workId});
@@ -332,15 +423,21 @@ export class ChatroomService {
         }else if(!task.workId&&(!item.observation||this.need('rooms',item.roomId).members.includes(item.botId))){
           try{const parsed=JSON.parse(text);if(typeof parsed.reply==='string'){text=parsed.reply;passed=parsed.pass||!text;}}catch{}
           if(item.observation&&isAcknowledgement(text))passed=true;
-          const alreadyReplied=this.messages(item.roomId).some(message=>message.senderId===item.botId&&message.replyTo===item.messageId&&!message.jobId);
+          const alreadyReplied=this.sourceReplies.all(item.roomId,item.messageId,item.botId).some(row=>!JSON.parse(row.data).jobId);
           if(alreadyReplied)passed=true;
           const attachments=(task.result?.attachments||[]).map(attachment=>this.attachments.get(attachment.id));
           if(attachments.length){passed=false;if(alreadyReplied||/^PASS(?:\s*$|\s*\n)/i.test(text))text='';}
           for(const attachment of attachments)if(attachment.origin?.type!=='work-output'||attachment.origin.botId!==item.botId||attachment.origin.roomId!==item.roomId)fail('Reply attachment is outside this authenticated Bot/room',403);
           if((text||attachments.length)&&!passed){
+            const newer=text&&!item.observation?this.newerDeliveries(item,task.tools):[];
+            if(newer.length){
+              const facts=newer.map(({observedAt,message})=>`本次回复读取的是 ${localTime(observedAt)} 的工作快照。此后同一步骤已于 ${localTime(message.createdAt)} 将附件发到本群（消息 ${message.id}）。`);
+              text=`${facts.join('\n')}\n以下说明按上述时间理解，交付状态以已发附件为准。\n\n${text}`;
+            }
             const parts=publicationParts(text,attachments);
             const replies=parts.map((part,index)=>this.append(item.roomId,{...part,id:index?`reply:${item.id}:part:${index+1}`:`reply:${item.id}`,
               replyTo:item.messageId,rootId:item.rootId,hop:item.hop+1,jobId:item.id,workId:item.workId,observationReply:item.observation||item.teamReview,
+              ...(index===0&&newer.length?{sourceRefs:newer.map(({message})=>({type:'room',roomId:item.roomId,messageId:message.id}))}:{}),
               usage:index?undefined:task.result?.usage,model:task.result?.model},item.botId));
             if(replies.length&&!item.observation&&!task.result?.handoff)this.returnReply(replies[0]);
           }

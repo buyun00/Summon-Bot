@@ -75,7 +75,9 @@ export function taskFileAccessPolicy(task, store, workspace) {
   for (const request of requests) {
     const source = taskSource(request, store);
     if (source.actor !== 'user') continue;
-    const content = typeof source.input === 'string' ? source.input : source.input?.trigger?.content;
+    const form = source.formId && source.input?.originalRequest?.content;
+    const content = form ? [form.goal, form.constraints].filter(Boolean).join('\n') :
+      typeof source.input === 'string' ? source.input : source.input?.trigger?.content;
     if (typeof content !== 'string') continue;
     originals.push(content);
     for (const directive of fileDirectives(content)) for (const path of directive.targets) {

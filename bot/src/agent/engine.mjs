@@ -10,13 +10,13 @@ import { ContextMaintenance, contextTokens, repeatsObservation } from '../contex
 import { convertToLlm } from '../pi/core/messages.mjs';
 import { repairTranscript } from '../context/recovery.mjs';
 import { loadResources } from '../context/resources.mjs';
-import { ToolRegistry } from '../capabilities/registry.mjs';
+import { ToolRegistry, jsonToolResult } from '../capabilities/registry.mjs';
 import { registerSdkTools } from '../capabilities/sdk.mjs';
 import { loadConfiguredTools } from '../capabilities/remote-tools.mjs';
 import { teamGuidance } from './team-guidance.mjs';
 import { permitsTool, assertToolPolicy, assertExternalReviewCurrent, taskMode, conversationPrompt, CHAT_WORK_POLICY, frontendObservation, workInput } from '../capabilities/task-policy.mjs';
 import { usageRoomId, UsageLedger } from './usage.mjs';
-import { modelArgs, modelText, looseSchema } from '../context/model-input.mjs';
+import { boundedNumber, modelArgs, modelText, looseSchema } from '../context/model-input.mjs';
 import { taskSource, publicMessage } from '../context/sources.mjs';
 import { codexTarget } from '../capabilities/codex-target.mjs';
 import { assertFileToolAccess, taskFileAccessPolicy } from '../capabilities/file-access.mjs';
@@ -212,11 +212,36 @@ export class BotEngine {
           });
         },
       });
+      const observationReads = new Set(), observedFragments = new Set();
       const flexibleTools = new Set(['chatroom_read', 'reminders_create', 'reminders_cancel', 'codex_create', 'codex_attach', 'codex_send', 'codex_interrupt', 'codex_status', 'codex_read']);
       const configuredTools = this.configured.tools.map(tool => flexibleTools.has(tool.name) ? { ...tool, inputSchema: looseSchema(tool.inputSchema),
+        ...(observation && tool.name === 'chatroom_read' ? { description: 'Read one exact published messageId in this group, or page over omitted new messages when contextRange.omitted is positive. Use the supplied delta first and follow replyTo, rootId or sourceRefs for specific evidence.' } : {}),
         execute: async (input, context) => {
           const args = modelArgs(input), source = taskSource(originalTask, this.store);
-          if (tool.name === 'chatroom_read') return tool.execute({ ...args, roomId: args.roomId || source.roomId }, context);
+          if (tool.name === 'chatroom_read') {
+            const roomId = args.roomId || source.roomId;
+            if (!observation || roomId !== source.roomId) return tool.execute({ ...args, roomId }, context);
+            const exact = typeof args.messageId === 'string' && args.messageId.trim();
+            if (!exact && !source.input?.contextRange?.omitted)
+              return jsonToolResult({ messages: [], hasMore: false, instruction: 'The delivered delta contains all new messages for this observation. Follow an exact same-room messageId for a specific correction, or finish with PASS.' });
+            const read = { roomId, offset: boundedNumber(args.offset, 0), length: boundedNumber(args.length, exact ? 6000 : 1200, 1, exact ? 16000 : 2000),
+              ...(exact ? { messageId: exact } : { afterMessageId: args.afterMessageId || undefined, beforeMessageId: args.beforeMessageId || undefined,
+                throughMessageId: args.throughMessageId || undefined, query: String(args.query || '').slice(0, 256), limit: boundedNumber(args.limit, 6, 1, 8) }) };
+            const key = canonical(read);
+            if (observationReads.has(key)) return jsonToolResult({ reused: true, instruction: 'This exact read was already requested in this observation. Use its earlier receipt and finish the observation.' });
+            observationReads.add(key);
+            const output = await tool.execute(read, context), page = output.details ?? output.structuredContent;
+            if (!Array.isArray(page?.messages)) return output;
+            const messages = page.messages.filter(message => {
+              const fragment = canonical([message.id, message.offset, message.content.length]);
+              if (observedFragments.has(fragment)) return false;
+              observedFragments.add(fragment);
+              return true;
+            });
+            return messages.length === page.messages.length ? output : jsonToolResult({ ...page, messages,
+              repeatedFragments: page.messages.length - messages.length,
+              instruction: 'Earlier receipts contain the omitted duplicate fragments. The page cursor still applies to this selection.' });
+          }
           if (tool.name === 'reminders_create') return tool.execute({ ...args, id: context.recordId,
             content: modelText(args.content ?? args.message ?? args.text ?? args.reminder, modelText(source.input?.trigger?.content)) }, context);
           if (tool.name === 'reminders_cancel') return tool.execute(args, context);

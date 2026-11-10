@@ -524,6 +524,9 @@ private fun WorkspaceEditor(store: SummonStore, kind: EditorKind, snapshot: Summ
                 }
                 try {
                     val response = store.request(path, method, SummonJson.Obj(payload))
+                    check(kind != EditorKind.Work || response["dispatch"]["accepted"].bool == true) {
+                        "工作尚无受理回执，请保留本次表单并重试。"
+                    }
                     if (embedded) {
                         content = ""
                         val eventID = response["event"]["id"].string ?: response["id"].string

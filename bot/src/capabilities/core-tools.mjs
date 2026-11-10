@@ -181,7 +181,7 @@ export function coreTools(services, task) {
   return [
     tool('request_decide', 'Classify the CURRENT authenticated user request by meaning before acting. Choose feedback for a trial result, failure report, critique or observation for this chat without a current request to make a change. Record or explain it here. Choose discuss for planning, selecting rules or a small in-chat draft. produce/revise requires a positive request to execute a specific action now or register it for an explicit dependency. A formal document request authorizes its own stage. Read the saved intent returned by this tool before calling work_create/work_dispatch. The proposed action and scope are separately verified. status means inspect progress; deliver means return EXISTING output; accept means explicit scoped acceptance; control includes pause/stop/cancel. If the user explicitly accepts the current result within a stated scope, select accept and call work_accept before replying even when they also ask for status, what evidence or saved rules were used, or a closeout correction. Use the canonical workId and operationId from work_get.acceptanceTarget. Preserve all stated limits. A request may accept a document AND explicitly request independent implementation: select produce, its production stage/relation, AND those acceptances; call work_accept for each BEFORE work_create/work_dispatch. Production alone never implies acceptance. For existing files select deliver, then work_outputs and work_deliver with its replyDelivery IDs. A positive request for missing rendering, screenshots or revisions can be production. Decide by the meaning of the authenticated original, including any separately authorized action. This decision grants no extra authority.',
       object({ intent: { type: 'string', enum: requestIntents }, productionStage: { type: 'string', enum: productionStages,
-        description: 'Choose by the requested outcome. Implementation includes making or changing a usable artifact (including standalone HTML or a trial version), building, running tests, and deployment. Document-review is production limited to a formal review document. Use other only for production outside both stages.' },
+        description: 'Classify the requested outcome. A standalone formal Markdown review document, its revision and returning the resulting file are one document-review action. Implementation means making or changing the working product, building, testing or deploying it. Other is an independent action outside both stages.' },
         workRelation: { type: 'string', enum: ['new', 'continue'] }, workId: string,
         sourceUnit: { type: 'integer', minimum: 1, description: 'Select an original action unit only when the authorization check reports several separate actions. Retain the saved stage when finishing the same existing step.' },
         acceptances: { type: 'array', maxItems: 8, items: object({ workId: string, operationId: string }, ['workId', 'operationId']),
@@ -206,6 +206,7 @@ export function coreTools(services, task) {
         const previous = store.getRecord('request-routing', task.id);
         const messageId = source.replyTo || source.messageId;
         let confirmedFeedback = previous?.confirmedFeedback === true;
+        let sourceActions;
         if (production) {
           const selected = work && selectedWork(work);
           const classification = !confirmedFeedback && await authorizeProduction({ task, store,
@@ -216,7 +217,7 @@ export function coreTools(services, task) {
             confirmedFeedback ||= classification.feedback === true;
             production = false;
             intent = confirmedFeedback ? 'feedback' : acceptances.length ? 'accept' : classification.deliveryUnits.length ? 'deliver' : 'discuss';
-          }
+          } else sourceActions = classification.actions;
         }
         const decision = store.putRecord('request-routing', { id: task.id, messageId,
           roomId: source.roomId, acceptances: ['accept', 'produce', 'revise'].includes(intent) ? acceptances.map(({ workId, operationId }) => ({ workId, operationId })) : [],
@@ -224,7 +225,9 @@ export function coreTools(services, task) {
           existingDelivery: previous?.existingDelivery === true || intent === 'deliver', sourceUnit: production ? args.sourceUnit : null,
           workRelation: production ? args.workRelation : null, workId: production && args.workRelation === 'continue' ? args.workId : null,
           reason: intent !== args.intent ? 'The authenticated source contains no independent production action.' : modelText(args.reason), authority: 'model-routing-decision' });
-        return intent !== args.intent ? { ...decision, instruction: 'Follow the saved intent and respond to the original message. Do not call work_create or work_dispatch for this source classification.' } : decision;
+        if (intent !== args.intent) return { ...decision, instruction: 'Follow the saved intent and respond to the original message. Do not call work_create or work_dispatch for this source classification.' };
+        return sourceActions ? { ...decision, sourceActions,
+          instruction: 'These are the saved independent source actions. Submit only an action grounded in the original and consistent with this decision. Correct an actual routing mismatch once. If the saved classification disagrees with the original, report the gap without relabeling the original request or trying alternate targets.' } : decision;
       }),
     tool('evidence_read', 'Read a bounded original fragment by exact reference. Workers may follow only handed-off references, never browse another room/session feed. Current source access is rechecked.',
       object({ reference }, ['reference']), 'read', args => services.sources.resolve(services.sources.reference(args.reference ?? args, task), task)),
@@ -275,7 +278,13 @@ export function coreTools(services, task) {
           status: state.status, turnId: state.turnId, observedAt: state.observedAt, eventDelivery: state.eventDelivery }; }
         catch (error) { connector = { unavailable: error.message, eventDelivery: null }; }
       }
-      return { ...workView(result.work), lookup: result.lookup,
+      const view = workView(result.work), operationId = view.execution?.operationId;
+      const operation = operationId && store.getRecord('work-events', operationId);
+      const origin = operation?.authorization?.source;
+      const deliveryScope = frontend && source.roomId && origin?.roomId === source.roomId && operation.workId === view.id &&
+        operation.receipt?.accepted && (origin.replyTo || origin.formId === view.id) ?
+        { operationId, roomId: origin.roomId, messageId: origin.replyTo, formId: origin.formId } : undefined;
+      return { ...view, lookup: result.lookup, deliveryScope,
         ...(frontend ? { currentStage: currentProductionStage(result.work, store) } : {}),
         ...(frontend ? { acceptanceTarget: acceptanceTarget(store, result.work, source.roomId) } : {}), ...(connector ? { connector } : {}) };
     }),
@@ -380,11 +389,10 @@ export function coreTools(services, task) {
         const grant = await authorize(decision, ctx, { relation: 'new', project, target: executor?.target || target, executor: executorKind,
           goal, requirements, handoff: content.handoff }, { workId: id, actionId: `${id}:${operationId}` });
         if (grant) content.stage = productionStage(grant);
-        if (project) {
-          try { content.projectKnowledge = await services.memory.forProject(task, project); }
-          catch (error) { content.evidenceWarnings.push({ message: `Project knowledge is unavailable: ${error.message}` }); }
+        try {
+          content.currentKnowledge = await services.memory.forRequest(task, project);
+          content.projectKnowledge = content.currentKnowledge?.projectKnowledge;
         }
-        try { content.currentKnowledge = await services.memory.forRequest(task, project); }
         catch (error) { content.evidenceWarnings.push({ message: `Current project rules are unavailable: ${error.message}` }); }
         ctx.signal?.throwIfAborted();
         const work = services.works.create({ id, operationId, goal,
@@ -450,9 +458,10 @@ export function coreTools(services, task) {
         const grant = await authorize(decision, ctx, { relation: 'continue', work: selected, handoff: content.handoff },
           { workId: work.id, actionId: `${work.id}:${eventId}` });
         if (grant) content.stage = productionStage(grant);
-        try { content.projectKnowledge = await services.memory.forProject(task, services.sources.project(work)); }
-        catch (error) { content.evidenceWarnings.push({ message: `Project knowledge is unavailable: ${error.message}` }); }
-        try { content.currentKnowledge = await services.memory.forRequest(task, services.sources.project(work)); }
+        try {
+          content.currentKnowledge = await services.memory.forRequest(task, services.sources.project(work));
+          content.projectKnowledge = content.currentKnowledge?.projectKnowledge;
+        }
         catch (error) { content.evidenceWarnings.push({ message: `Current project rules are unavailable: ${error.message}` }); }
         ctx.signal?.throwIfAborted();
         const current = services.works.get(work.id);

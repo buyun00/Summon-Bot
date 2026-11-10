@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { randomBytes,timingSafeEqual,randomUUID } from 'node:crypto';
-import { mkdir,writeFile,readFile } from 'node:fs/promises';
-import { join,resolve } from 'node:path';
+import { mkdir,writeFile,readFile,realpath } from 'node:fs/promises';
+import { isAbsolute,join,relative,resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { setTimeout as pause } from 'node:timers/promises';
@@ -25,6 +25,10 @@ import { deployCapability } from '../services/publish.mjs';
 import { coreTools } from '../../bot/src/capabilities/core-tools.mjs';
 import { assertToolPolicy, permitsTool, permitsMaintenanceTool, taskMode } from '../../bot/src/capabilities/task-policy.mjs';
 import { taskSource,workExecution } from '../../bot/src/context/sources.mjs';
+import { directoryProject } from '../../bot/src/context/project-scope.mjs';
+import { selectedWorkExecutor } from '../../bot/src/capabilities/executor-connections.mjs';
+import { createRedactor } from '../../bot/src/runtime/config.mjs';
+import { workFormReceipt } from '../../bot/src/runtime/works.mjs';
 import { taskFileAccessPolicy } from '../../bot/src/capabilities/file-access.mjs';
 import { codexScope } from '../../bot/src/capabilities/codex-scope.mjs';
 import { notificationParts,progressNotificationCurrent } from '../../bot/src/runtime/notifications.mjs';
@@ -95,7 +99,7 @@ export async function startGateway(options={}) {
   for(const operation of ['send','interrupt','read'])codex[operation]=(id,args)=>rpc('codex',operation,[id,args||{}]);
   codex.stopWork=(botId,workId,stopId)=>rpc('codex','stopWork',[botId,workId,stopId]);
   codex.attach=input=>rpc('codex','attach',[input]);
-  const publicWork=(botId,work)=>({...work,id:`${botId}~${work.id}`,workId:work.id,botId,summary:work.progress,
+  const publicWork=(botId,work)=>({...work,id:`${botId}~${work.id}`,workId:work.id,botId,summary:work.progress,cwd:work.project?.cwd||work.executor?.target?.cwd,
     controlRevision:work.controlRevision||0,
     waitingLabel:['waiting','paused','cancelled'].includes(work.status)?waitingLabel(work):null,roomId:work.sources?.find(source=>source.roomId)?.roomId});
   async function localWorks() {
@@ -339,10 +343,43 @@ export async function startGateway(options={}) {
     if(method==='GET'&&path==='/api/jobs')return {jobs:chatroom.jobs()};
     if((match=path.match(/^\/api\/jobs\/([^/]+)\/retry$/))&&method==='POST')return chatroom.retry(decodeURIComponent(match[1]));
     if(method==='POST'&&path==='/api/works'){
-      manager.get(body.botId);await manager.start(body.botId);
-      const work=await manager.request(body.botId,'/works',{method:'POST',body:JSON.stringify({id:body.id||randomUUID(),goal:body.goal,requirements:[body.constraints,body.cwd?`工作目录：${body.cwd}`:'',...(body.inputRefs||[])].filter(Boolean).join('\n'),sources:[{source:'controller',roomId:body.roomId}]})});
-      await manager.request(body.botId,`/works/${encodeURIComponent(work.id)}/events`,{method:'POST',body:JSON.stringify({id:'initial',kind:'request',content:{goal:work.goal,requirements:work.requirements,authority:'user',instruction:'推进此工作，按当前要求记录进度、等待和完成状态。仅在需要时使用Codex等外部能力。'},metadata:{actor:'user',priority:'foreground'}})});
-      return publicWork(body.botId,work);
+      const bot=manager.get(body.botId),id=body.id??randomUUID();
+      if(typeof id!=='string'||!(/^[\w.-]{1,160}$/).test(id)||['.','..'].includes(id)||typeof body.goal!=='string'||
+        [body.cwd,body.constraints,body.roomId].some(value=>value!=null&&typeof value!=='string')||
+        body.inputRefs!=null&&(!Array.isArray(body.inputRefs)||body.inputRefs.some(value=>typeof value!=='string')))
+        fail('工作表单的标识、目标或输入资料无效。');
+      const request={goal:required(body.goal,'工作目标'),constraints:body.constraints||'',cwd:body.cwd?.trim()||'',
+        roomId:body.roomId||null,inputRefs:body.inputRefs||[]};
+      const prior=await manager.readState(bot.id,db=>db?.getRecord('work-form-submissions',id));
+      if(prior){
+        const original=createRedactor(await manager.config(bot.id))(request);
+        const saved=await manager.readState(bot.id,db=>workFormReceipt(db,id,original));
+        if(saved)return {...publicWork(bot.id,saved.work),dispatch:saved.dispatch};
+      }
+      if(bot.status!=='active')fail('当前成员不可用，工作未受理。',409);
+      if(request.roomId){
+        const room=chatroom.need('rooms',request.roomId);
+        if(room.status==='concluded'||!room.members.includes('user')||!room.members.includes(bot.id))
+          fail('请选择用户和委托成员均可进入的有效会话。',403);
+      }
+      await manager.start(bot.id);
+      const config=await manager.config(bot.id),executor=selectedWorkExecutor(config.model);
+      if(executor.kind==='codex'&&!manager.get(bot.id).allowedTools?.includes('codex_create'))
+        fail('此成员没有 Codex 桌面执行权限，工作未受理。',403);
+      let project;
+      if(request.cwd){
+        if(!isAbsolute(request.cwd)||!(/^(?:[A-Za-z]:[\\/]|\/|\\\\)/).test(request.cwd)||request.cwd.includes('\0'))
+          fail('请填写服务器上明确的绝对工作目录。');
+        const result=await registry.call(bot.id,'list_files',{path:request.cwd,maxEntries:1,maxDepth:0});
+        if(result.isError||!result.details?.path)fail('所选目录无法按当前成员权限解析，工作未受理。',403);
+        const cwd=result.details.path;
+        project=directoryProject(cwd);
+        if(executor.kind==='codex')executor.target={type:'directory',cwd};
+        else if(relative(await realpath(config.workspace),cwd))
+          fail('当前工作引擎使用成员固定工作目录。请选择该目录或将目录留空。',409);
+      }
+      const {work,dispatch}=await manager.request(bot.id,'/works/form',{method:'POST',body:JSON.stringify({id,request,executor,project})});
+      return {...publicWork(bot.id,work),dispatch};
     }
     if((match=path.match(/^\/api\/works\/([^/]+)(?:\/(send|pause|cancel|resume))?$/))){
       const id=decodeURIComponent(match[1]),work=await localWork(id);
@@ -410,7 +447,7 @@ export async function startGateway(options={}) {
       if(req.method==='GET'&&result.sync&&requestUrl.searchParams.get('pages')==='1'){
         res.writeHead(200,{'Content-Type':'application/x-ndjson; charset=utf-8','Cache-Control':'private, no-store, no-transform'});
         await pipeline(Readable.from(syncPages(result)),res);
-      }else json(res,200,result);
+      }else json(res,req.method==='POST'&&path==='/api/works'&&!result.dispatch?.duplicate?202:200,result);
     }catch(error){if(!res.headersSent)json(res,error.status||400,{error:catalog.clean(String(error.message)),...(error.code?{code:error.code}:{}),...(error.outcomeUnknown?{outcomeUnknown:true}:{}),...(error.accessDenial?{accessDenial:JSON.parse(catalog.clean(JSON.stringify(error.accessDenial)))}:{})});else res.end();}
   })();pending.add(work);void work.catch(error=>console.error('Gateway request failed:',error.stack||error.message)).finally(()=>pending.delete(work));});
   async function stopIdleWorkers() {

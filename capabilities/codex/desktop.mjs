@@ -154,12 +154,14 @@ export class DesktopCodex {
     if (scope?.botId !== actor) fail('Authenticated Codex scope is required', 403);
     const page = await this.request('/v1/projects', { signal });
     const items = Array.isArray(page) ? page : page.projects || page.items || [];
-    const key = path => typeof path === 'string' ? resolve(path).toLowerCase() : null;
+    const key = path => process.platform === 'win32' ? resolve(path).toLowerCase() : resolve(path);
     const paths = new Set(scope.directories.map(key));
     const projects = items.filter(item => scope.projectIds.includes(item.projectId || item.id) ||
-      [item.cwd, item.path, item.rootPath, ...(Array.isArray(item.roots) ? item.roots : []).map(root => typeof root === 'string' ? root : root.path)].some(path => path && paths.has(key(path))));
+      item.hostId === 'local' && item.projectKind === 'local' &&
+      [item.cwd, item.path, item.rootPath, ...(Array.isArray(item.roots) ? item.roots : []).map(root => typeof root === 'string' ? root : root?.path)]
+        .some(path => typeof path === 'string' && paths.has(key(path))));
     return { projects: projects.map(item => ({projectId:item.projectId||item.id,label:item.label||item.name,
-      path:item.path||item.cwd,hostId:item.hostId||'local',projectKind:item.projectKind})), scope: 'authorized-bot-source', exhaustive: false };
+      path:item.path||item.cwd,hostId:item.hostId,projectKind:item.projectKind})), scope: 'authorized-bot-source', exhaustive: false };
   }
   threads(signal, scope, actor = 'controller') {
     if (actor === 'controller') return this.request('/v1/threads?limit=50', { signal });
@@ -215,9 +217,12 @@ export class DesktopCodex {
       if (before && before.backend !== 'desktop') fail('Historical executor records cannot be submitted again', 409);
       const prompt = requireText(input.prompt, 'prompt');
       if (!input.target || !['project', 'projectless', 'directory'].includes(input.target.type)) fail('Use an authorized directory or explicit Desktop project target');
+      const target = codexTarget(input.target);
+      if (owner.executor?.kind === 'codex' && JSON.stringify(target) !== JSON.stringify(codexTarget(owner.executor.target)))
+        fail('The executor target must match the owning work’s saved target', 403);
       if (!before) this.save({ id, workId, botId, conversationId: owner.conversationId, goal: owner.goal, backend: 'desktop', hostId: 'local', status: 'submitting', serviceVersion: this.version, roomId: input.roomId || null });
       if (before?.externalThreadId && before.operationId !== input.operationId) fail('This work is already bound; use codex_send to continue its thread', 409);
-      return this.mutate(id, 'create', input.operationId, '/v1/threads', { prompt, target: codexTarget(input.target),
+      return this.mutate(id, 'create', input.operationId, '/v1/threads', { prompt, target,
         model: owner.executor?.model || 'gpt-6.1-sol', thinking: owner.executor?.thinking || 'max' }, {}, false, signal,
       { ownerControlRevision: owner.controlRevision || 0 });
     });

@@ -14,6 +14,20 @@ const fail = (message, status = 400) => { throw Object.assign(new Error(message)
 const productionTarget = work => ({ projectId: work.project?.id ?? null, target: JSON.stringify(work.executor?.target || null),
   bindingId: work.bindings?.findLast(item => item.type === 'codex-desktop')?.id });
 
+export function workFormReceipt(store, id, request) {
+  const submission = store?.getRecord('work-form-submissions', id);
+  if (!submission) return null;
+  const work = store.getRecord('works', id), task = store.getTask(submission.taskId);
+  const event = store.getRecord('work-events', submission.operationId);
+  if (!work || task?.workId !== id || event?.receipt?.taskId !== task.id || !event.receipt.accepted)
+    fail('工作表单已保存，但原派发回执当前不可读。请保留原工作标识。', 409);
+  const original = store.getMessage(task.messageId)?.content?.originalRequest?.content;
+  if (JSON.stringify(original) !== JSON.stringify(request))
+    fail('本次表单标识已有受理记录，请打开原工作查看。', 409);
+  return { work, dispatch: { ...event.receipt, operationId: event.id, receiptLayer: 'local-dispatch',
+    status: task.status, duplicate: true } };
+}
+
 /** S3 is state and pointers only. Knowledge正文 lives in Markdown, never here. */
 export class WorkService {
   constructor({ store, botId, accept, schedule, cancel, selectModel, selectExecutor, clean = value => value }) {
@@ -61,6 +75,27 @@ export class WorkService {
       this.store.appendEvent('work.created', { work: record }, { workId: id, conversationId: record.conversationId });
     });
     return record;
+  }
+  submitForm({ id, request, executor, project }) {
+    const receipt = this.store.transaction(() => {
+      const original = this.clean(request), prior = workFormReceipt(this.store, id, original);
+      if (prior) return prior;
+      if (this.get(id)) fail('此标识已属于已有工作，请查看原工作。', 409);
+      const work = this.create({ id, goal: request.goal, requirements: [request.constraints, ...request.inputRefs].filter(Boolean).join('\n'),
+        executor, project });
+      const accepted = this.accept({ id: `work-form:${id}`, to: this.botId, kind: 'request', workId: id,
+        metadata: { actor: 'user', sourceType: 'work-form', roomId: request.roomId || undefined, priority: 'foreground' },
+        content: { originalRequest: { author: 'user', reference: { type: 'form', id }, content: original },
+          handoff: { instruction: 'Execute only the explicit goal and constraints of this authenticated form. A formal document request authorizes its document and return, and implementation requires its own explicit request.' } } },
+      'controller', { deferSchedule: true });
+      const execution = this.execution(accepted.task);
+      if (accepted.duplicate || !execution.authorization?.source?.formId) fail('工作表单的原始授权未能持久受理。', 409);
+      this.store.putRecord('work-form-submissions', { id, taskId: accepted.task.id, operationId: execution.executionEventId });
+      const saved = workFormReceipt(this.store, id, original);
+      return { ...saved, dispatch: { ...saved.dispatch, duplicate: false } };
+    });
+    if (!receipt.dispatch.duplicate) this.schedule(this.store.getTask(receipt.dispatch.taskId));
+    return receipt;
   }
   source(task) { const { input, ...source } = taskSource(task, this.store); return source; }
   executor(work) { return work.bindings?.some(binding => binding.type === 'codex-desktop') ? { ...work.executor, kind: 'codex' } : work.executor || { kind: 'pi' }; }

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { modelText, modelArgs, boundedNumber } from './model-input.mjs';
-import { directoryProject } from './project-scope.mjs';
+import { directoryProject, knowledgeProjectId } from './project-scope.mjs';
 import { externalExecution } from './execution-evidence.mjs';
 import { savedWorkEvidence } from './work-context.mjs';
 
@@ -27,13 +27,20 @@ function checkpointExternalResult(store, work, operationId) {
 export function taskSource(task, store) {
   const accepted = task.messageId && store.getMessage(task.messageId);
   const input = accepted?.content?.current || accepted?.content || task.input?.current || task.input;
+  const form = task.workId && accepted?.from === 'controller' && accepted.kind === 'request' &&
+    accepted.metadata?.actor === 'user' && accepted.metadata.sourceType === 'work-form' &&
+    accepted.sourceMessageId === `work-form:${task.workId}`;
   return { taskId: task.id, messageId: accepted?.id || task.messageId, source: accepted?.from || task.source,
     conversationId: task.conversationId, actor: accepted?.metadata?.actor || task.metadata?.actor || task.source,
     accessActor: accepted?.metadata?.accessActor || task.metadata?.accessActor || accepted?.metadata?.actor || task.metadata?.actor || task.source,
     roomId: input?.room?.id || accepted?.metadata?.roomId || task.metadata?.roomId,
     replyTo: input?.trigger?.id || accepted?.metadata?.originMessageId || task.metadata?.originMessageId,
-    receivedAt: accepted?.receivedAt || task.createdAt, input, metadata: accepted?.metadata || task.metadata };
+    receivedAt: accepted?.receivedAt || task.createdAt, input, metadata: accepted?.metadata || task.metadata,
+    ...(form ? { formId: task.workId } : {}) };
 }
+
+export const sameKnowledgeSource = (left, right) => Boolean(left?.conversationId && left.conversationId === right?.conversationId &&
+  (left.roomId || null) === (right.roomId || null) && left.source === right.source);
 
 export function acceptedWorkTask(event, store) {
   const id = event?.receipt?.accepted ? event.receipt.taskId : event?.sourceTaskId;
@@ -121,15 +128,33 @@ export class RuntimeSources {
     if (selected) return selected;
     return this.workspace ? this.authorizeProject({ type: 'directory', cwd: this.workspace }, task) : null;
   }
+  async registeredProject(item, task) {
+    const project = { id: item.projectId || item.id, name: item.label || item.name, hostId: item.hostId || 'local' };
+    if (item.hostId === 'local' && item.projectKind === 'local' && item.path) try {
+      directoryProject(item.path);
+      const directory = await this.callForSource('list_files', { path: item.path, maxEntries: 1, maxDepth: 0 }, task);
+      if (directory.path) project.cwd = directoryProject(directory.path).cwd;
+    } catch { /* The registered target alone does not establish directory equivalence. */ }
+    return project;
+  }
+  async projectForHandoff(task, project) {
+    if (!project?.id || project.cwd || project.id.startsWith('directory:') || project.hostId && project.hostId !== 'local') return project;
+    // Older accepted work may only carry the native ID. Resolve its exact
+    // scoped registration on a real handoff, without changing the work card.
+    const page = await this.call('codex_projects', {}, task);
+    const items = Array.isArray(page) ? page : page.projects || page.items || [];
+    const matches = items.filter(item => (item.projectId || item.id) === project.id);
+    return matches.length === 1 ? this.registeredProject(matches[0], task) : project;
+  }
   async authorizeProject(target, task) {
     if (target?.type === 'directory') {
       directoryProject(target.cwd);
       const current = task.workId && this.project(this.store.getRecord('works', task.workId));
-      if (current && current.id !== directoryProject(target.cwd).id) denied('Directory is outside this work binding');
+      if (current && knowledgeProjectId(current) !== directoryProject(target.cwd).id) denied('Directory is outside this work binding');
       const directory = await this.callForSource('list_files', { path: target.cwd, maxEntries: 1, maxDepth: 0 }, task);
       if (!directory.path) denied('The authorized directory could not be resolved');
       const project = directoryProject(directory.path);
-      if (current && current.id !== project.id) denied('Resolved directory is outside this work binding');
+      if (current && knowledgeProjectId(current) !== project.id) denied('Resolved directory is outside this work binding');
       return project;
     }
     if (target?.type !== 'project') return null;
@@ -142,8 +167,7 @@ export class RuntimeSources {
     const items = Array.isArray(page) ? page : page.projects || page.items || [];
     const matches = items.filter(item => (item.projectId || item.id) === target.projectId || (item.label || item.name) === target.projectId);
     if (matches.length !== 1) denied('Choose one existing accessible project; the supplied name is not an authorization');
-    const item = matches[0];
-    return { id: item.projectId || item.id, name: item.label || item.name, hostId: item.hostId || 'local' };
+    return this.registeredProject(matches[0], task);
   }
   async memoryAccess(task) {
     const origin = this.originTask(task);
@@ -175,8 +199,9 @@ export class RuntimeSources {
     let project = args.projectId ? access.projects.find(item => item.id === args.projectId || item.name === args.projectId) : this.project(work) || access.currentProject;
     if (args.projectId && !project) project = await this.authorizeProject(args.projectId.startsWith('directory:') ?
       { type: 'directory', cwd: args.projectId.slice(10) } : { type: 'project', projectId: args.projectId }, task);
-    if (project && args.scope !== 'work' && args.scope !== 'room' && args.scope !== 'conversation')
-      return { id: `project:${project.id}`, projectId: project.id, title: project.name || project.id,
+    const projectId = knowledgeProjectId(project);
+    if (projectId && args.scope !== 'work' && args.scope !== 'room' && args.scope !== 'conversation')
+      return { id: `project:${projectId}`, projectId, title: project.name || projectId,
         authorizations: [access.source], originConversationId: access.source.conversationId };
     if (args.scope === 'project') throw new Error(access.projectError || 'No authorized project directory is associated with this request.');
     if (work && (task.workId || args.workId || args.scope === 'work')) return { workId: work.id, conversationId: work.conversationId };
@@ -244,7 +269,8 @@ export class RuntimeSources {
     access ||= await this.memoryAccess(task);
     const permittedSource = source => source?.roomId ? access.rooms.includes(source.roomId) :
       source?.source === access.source.source && source?.conversationId === access.source.conversationId;
-    return directory.filter(item => item.projectId ? access.projects.some(project => project.id === item.projectId) ||
+    return directory.filter(item => item.projectId ? access.projects.some(project => project.id === item.projectId ||
+      knowledgeProjectId(project) === item.projectId && item.authorizations?.some(origin => sameKnowledgeSource(origin, access.source))) ||
       !task.workId && item.authorizations?.some(permittedSource) : item.workId ? access.works.some(work => work.id === item.workId) :
       item.conversationId === access.source.conversationId || !task.workId && access.rooms.includes(item.roomId || item.conversationId?.replace(/^room:/, '')));
   }

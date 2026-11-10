@@ -3,12 +3,19 @@ import { relative, isAbsolute, resolve } from 'node:path';
 import { WORK_ATTACHMENTS } from './notifications.mjs';
 
 const within = (root, path) => { const part = relative(root, path); return !isAbsolute(part) && part !== '..' && !part.startsWith('../') && !part.startsWith('..\\'); };
+async function resultRoot(workspace, operation) {
+  const workspaceRoot = await realpath(workspace);
+  if (!operation.resultRoot) return workspaceRoot;
+  const root = await realpath(operation.resultRoot);
+  if (!within(workspaceRoot, root) || relative(root, operation.resultRoot)) throw new Error('Executor output scope no longer resolves to the accepted directory');
+  return root;
+}
 
 export function executorManifestOperation(store, work, binding, observation, source) {
   const { operationId, turnId } = observation;
   const current = store.getRecord('work-events', operationId);
   if (current) return current.workId === work.id ? current : null;
-  if (!work.project?.id || !source?.roomId || !source.replyTo || !turnId || turnId !== binding.turnId) return null;
+  if (!work.project?.id || !source?.roomId || !(source.replyTo || source.formId === work.id) || !turnId || turnId !== binding.turnId) return null;
 
   // Only a received supervisor send can inherit the immediately preceding
   // accepted step. The native turn opener can predate a later user dispatch.
@@ -40,7 +47,7 @@ export function executorManifestOperation(store, work, binding, observation, sou
 
 export async function readExecutorManifest({ workspace, workId, operation }) {
   if (!operation?.resultFile) throw Object.assign(new Error('No existing result manifest'), { code: 'ENOENT' });
-  const root = await realpath(workspace), path = await realpath(operation.resultFile);
+  const root = await resultRoot(workspace, operation), path = await realpath(operation.resultFile);
   if (!within(root, path)) throw new Error('Executor result manifest is outside its workspace');
   const handle = await open(path, 'r');
   let manifest, writtenAt;
@@ -69,9 +76,9 @@ export async function publishExecutorResult({ store, services, task, operation, 
   const key = operation.id, saved = store.getRecord('executor-deliveries', key);
   if (saved) return saved.status === 'publishing' ? { ...saved, status: 'unconfirmed',
     error: 'The earlier publication has no terminal receipt. Keep its original operation identity' } : saved;
-  const root = await realpath(services.workspace);
-  let manifest;
+  let manifest, root;
   try {
+    root = await resultRoot(services.workspace, operation);
     manifest = await readExecutorManifest({ workspace: services.workspace, workId: task.workId, operation });
   } catch (error) {
     if (error.code === 'ENOENT') return { attachments: [], status: 'not-declared' };

@@ -37,6 +37,7 @@ export class BotStore {
           CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY,data TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS artifacts(id TEXT PRIMARY KEY,data TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS records(kind TEXT NOT NULL,id TEXT NOT NULL,data TEXT NOT NULL,PRIMARY KEY(kind,id));
+          CREATE INDEX IF NOT EXISTS knowledge_reference_scope ON records(json_extract(data,'$.scopeId')) WHERE kind='knowledge_reference';
           PRAGMA user_version=1;
         `);
       }
@@ -180,6 +181,9 @@ export class BotStore {
   getRecord(kind, id) { return decode(this.db.prepare('SELECT data FROM records WHERE kind=? AND id=?').get(kind, id)); }
   deleteRecord(kind, id) { return this.db.prepare('DELETE FROM records WHERE kind=? AND id=?').run(kind, id); }
   listRecords(kind) { return this.db.prepare('SELECT data FROM records WHERE kind=? ORDER BY rowid').all(kind).map(decode); }
+  knowledgeReferences(scopeId) {
+    return this.db.prepare("SELECT data FROM records WHERE kind='knowledge_reference' AND json_extract(data,'$.scopeId')=? ORDER BY rowid").all(scopeId).map(decode);
+  }
   appendEvent(type, payload, refs = {}) {
     const event = { type, payload, ...refs, createdAt: now() };
     const result = this.db.prepare('INSERT INTO events(type,task_id,data) VALUES(?,?,?)').run(type, refs.taskId || refs.requestId || null, encode(event));

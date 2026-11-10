@@ -1048,8 +1048,11 @@ async function openBotContacts(id) {
     async data=>{await api(`/api/bots/${encodeURIComponent(id)}/contacts`,'POST',{botId:data.get('botId'),enabled:data.get('enabled')==='true'});toast('直连联系人已更新');});
 }
 function openWorkForm() {
-  openModal('委托一项工作', '明确目标与边界，成员持续推进，并按需要使用已有工具与 Codex。', `${field('工作目标', 'goal', '', { type: 'textarea', required: true, placeholder: '希望完成什么？请描述可以观察的结果。', rows: 4 })}<div class="form-row">${selectField('委托成员', 'botId', botOptions(), ui.view === 'members' ? ui.botId : profileBot()?.id || state.bots[0]?.id)}${selectField('结果回到', 'roomId', roomOptions(), ui.roomId)}</div>${field('工作目录', 'cwd', state.defaultCwd || '', { required: true, placeholder: '项目的绝对路径' })}${field('约束与注意事项', 'constraints', '', { type: 'textarea', placeholder: '已有修改、操作边界、需要保留的行为…' })}${field('输入资料', 'inputRefs', '', { type: 'textarea', placeholder: '每行一项：文件路径、资料说明或链接', help: '提供已有资料的位置，方便执行端理解上下文。' })}`, async data => {
-    const work = await api('/api/works', 'POST', { ...Object.fromEntries(data), inputRefs: data.get('inputRefs').split('\n').map(text => text.trim()).filter(Boolean) }); ui.workId = work.id || work.work?.id; ui.view = 'works'; toast('工作已交给成员');
+  const id = globalThis.crypto?.randomUUID?.() || `work-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  openModal('委托一项工作', '填写要完成的目标，并选择负责成员和结果会话。', `${field('工作目标', 'goal', '', { type: 'textarea', required: true, placeholder: '希望完成什么？请描述可以观察的结果。', rows: 4 })}<div class="form-row">${selectField('委托成员', 'botId', botOptions(), ui.view === 'members' ? ui.botId : profileBot()?.id || state.bots[0]?.id)}${selectField('结果回到', 'roomId', roomOptions(), ui.roomId)}</div>${field('工作目录（选填）', 'cwd', '', { placeholder: '服务器上的项目绝对路径', help: '需要在指定项目执行时请填写实际目录。留空时沿用工作引擎的默认环境。' })}${field('约束与注意事项', 'constraints', '', { type: 'textarea', placeholder: '已有修改、操作边界、需要保留的行为…' })}${field('输入资料', 'inputRefs', '', { type: 'textarea', placeholder: '每行一项：文件路径、资料说明或链接', help: '提供已有资料的位置，方便执行端理解上下文。' })}`, async data => {
+    const work = await api('/api/works', 'POST', { id, ...Object.fromEntries(data), inputRefs: data.get('inputRefs').split('\n').map(text => text.trim()).filter(Boolean) });
+    if (work.dispatch?.accepted !== true) throw new Error('工作尚无受理回执，请保留本次表单并重试。');
+    ui.workId = work.id; ui.view = 'works'; toast('工作已受理');
   }, '开始工作');
 }
 function openNodeForm(id, message) {

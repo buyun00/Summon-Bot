@@ -77,7 +77,8 @@ export async function createCapability(options) {
           const frontend=context.mode==='chat',source=context.source;
           const {work,operation,nativeResult}=await manager.readState(actor,db=>{
             const work=db?.getRecord('works',workId),task=db?.getTask(context.taskId);
-            if(!work||task?.status!=='running'||task.cancelRequested||!source?.roomId||!source.replyTo||!work.sources?.some(item=>item.roomId===source.roomId))
+            const form=context.mode==='work'&&source?.formId===workId;
+            if(!work||task?.status!=='running'||task.cancelRequested||!source?.roomId||!(source.replyTo||form)||!work.sources?.some(item=>item.roomId===source.roomId))
               fail('The authorized publication source is unavailable',403);
             if(frontend){
               const route=db.getRecord('request-routing',task.id),operation=args.operationId&&db.getRecord('work-events',args.operationId);
@@ -138,7 +139,11 @@ export async function createCapability(options) {
       return {...result,artifacts,isError:Boolean(result.details?.timedOut||result.details?.aborted||(result.details?.exitCode!==undefined&&result.details.exitCode!==0))};
     }
     switch(name) {
-      case 'chatroom_list':{const sourceActor=context.source?.accessActor||context.source?.actor;return chatroom.rooms().filter(room=>actor==='controller'||room.members.includes(actor)&&(!sourceActor||sourceActor==='system'||room.members.includes(sourceActor)));}
+      case 'chatroom_list':{
+        const sourceActor=context.source?.accessActor||context.source?.actor;
+        const rooms=args.roomId?[chatroom.store.get('rooms',args.roomId)].filter(Boolean):chatroom.rooms();
+        return rooms.filter(room=>actor==='controller'||room.members.includes(actor)&&(!sourceActor||sourceActor==='system'||room.members.includes(sourceActor)));
+      }
       case 'chatroom_read':{
         const page=chatroom.read(args,actor,context.source);
         return actor==='controller'||args.outputReceipts!==undefined||context.source?.metadata?.groupObservation?page:attachments.stageContext(page,(await manager.config(actor)).workspace);
@@ -159,7 +164,8 @@ export async function createCapability(options) {
               return Boolean(work?.sources?.some(source=>source.roomId===args.roomId));
             });
             if(!authorized)fail('This published file requires its authorized original work',403);
-            if(!context.source.replyTo||args.replyTo&&args.replyTo!==context.source.replyTo)
+            const form=context.mode==='work'&&context.source.formId===workId;
+            if(!(context.source.replyTo||form)||args.replyTo&&args.replyTo!==context.source.replyTo)
               fail('This published file must return to the current authorized source message',403);
             args={...args,replyTo:context.source.replyTo};
           }

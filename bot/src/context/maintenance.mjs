@@ -10,7 +10,8 @@ import { loadResources } from './resources.mjs';
 import { createCatalogClient, catalogSkill, searchDirectory } from './catalog.mjs';
 import { usageRoomId } from '../agent/usage.mjs';
 import { CHAT_WORK_POLICY, scopedHistoryMessage } from '../capabilities/task-policy.mjs';
-import { taskSource } from './sources.mjs';
+import { sameKnowledgeSource, taskSource } from './sources.mjs';
+import { knowledgeProjectId } from './project-scope.mjs';
 import { maintenanceActivity } from '../agent/activity.mjs';
 import { modelText, modelArgs, looseSchema, maintenanceOutput, boundedNumber } from './model-input.mjs';
 import { knowledgeProvenance, validateSourceText } from './knowledge-provenance.mjs';
@@ -127,7 +128,7 @@ export class ContextMaintenance {
     const selections = this.pending(scopeId).reverse();
     pendingOffset = boundedNumber(pendingOffset, 0);
     const pending = selections.slice(pendingOffset, pendingOffset + 6).map(item => this.referenceView(item));
-    const recentUserRules = this.store.listRecords('knowledge_reference').filter(item => item.scopeId === scopeId && item.kind === 'user-rule')
+    const recentUserRules = this.store.knowledgeReferences(scopeId).filter(item => item.kind === 'user-rule')
       .sort((a, b) => String(b.origin?.receivedAt || b.createdAt).localeCompare(String(a.origin?.receivedAt || a.createdAt)) || String(b.createdAt).localeCompare(String(a.createdAt)))
       .slice(0, 6).map(item => this.referenceView(item));
     return { scopeId, ownerBotId: this.config.botId, scopeLocality: 'bot-local', revision: scope.revision,
@@ -267,7 +268,7 @@ export class ContextMaintenance {
     });
   }
   pending(id) {
-    return this.store.listRecords('knowledge_reference').filter(item => item.scopeId === id && item.status !== 'processed')
+    return this.store.knowledgeReferences(id).filter(item => item.status !== 'processed')
       .sort((a, b) => String(a.origin?.receivedAt || a.createdAt).localeCompare(String(b.origin?.receivedAt || b.createdAt)) || String(a.createdAt).localeCompare(String(b.createdAt)));
   }
   referenceView(item) {
@@ -295,7 +296,7 @@ export class ContextMaintenance {
     const provenance = await knowledgeProvenance(this.services.sources, task, args, note, kind);
     const scope = this.scope(await this.services.sources.memoryTarget(task, args));
     let applicableProjectId = scope.projectId;
-    if (!applicableProjectId) try { applicableProjectId = (await this.services.sources.contextProject(task))?.id; } catch {}
+    if (!applicableProjectId) try { applicableProjectId = knowledgeProjectId(await this.services.sources.contextProject(task)); } catch {}
     ctx.signal?.throwIfAborted();
     const record = this.store.transaction(() => {
       const saved = this.store.putRecord('knowledge_reference', { id, scopeId: scope.id, kind, note, origin,
@@ -314,7 +315,7 @@ export class ContextMaintenance {
     const source = origin && taskSource(origin, this.store);
     if (scope.workId) return scope.workId === task.workId || scope.workId === task.metadata?.referencedWorkId;
     if (scope.projectId) {
-      if (this.services.sources.project(work)?.id === scope.projectId) return true;
+      if (knowledgeProjectId(this.services.sources.project(work)) === scope.projectId) return true;
       return !task.workId && (scope.authorizations || []).some(item => item.conversationId === task.conversationId);
     }
     return scope.conversationId === task.conversationId || scope.conversationId === source?.conversationId;
@@ -331,7 +332,7 @@ export class ContextMaintenance {
       (!task.workId || task.status === 'running' || this.store.getRecord('works', task.workId)?.status === 'active'))) return quiet;
     for (const work of this.store.listRecords('works')) {
       if (!work.bindings?.some(binding => binding.type === 'codex-desktop' && ['running', 'watching', 'submitting', 'interrupt_requested'].includes(binding.status))) continue;
-      if (scope.workId === work.id || scope.projectId && this.services.sources.project(work)?.id === scope.projectId ||
+      if (scope.workId === work.id || scope.projectId && knowledgeProjectId(this.services.sources.project(work)) === scope.projectId ||
         !scope.projectId && !scope.workId && work.sources?.some(source => source.conversationId === scope.conversationId)) return quiet;
     }
     return Math.max(0, Date.parse(scope.lastActivityAt || scope.pendingAt || '') + quiet - Date.now() || 0);
@@ -754,54 +755,43 @@ export class ContextMaintenance {
     await this.writeFile(join(this.root, `${scope.file}.context.md`), content, signal);
     return `${scope.file}.context.md`;
   }
-  async forProject(task, project) {
-    if (!project) return null;
-    const scope = this.store.getRecord('knowledge_scope', `project:${project.id}`);
-    if (!scope) return null;
-    // The caller resolved this actual project before selecting the handoff.
-    const selected = this.scope({ projectId: project.id, title: project.name,
-      authorizations: [taskSource(this.services.sources.originTask(task) || task, this.store)] });
-    return { reference: { type: 'knowledge', scopeId: selected.id }, ...(await this.read(selected.id)), authority: 'sourced-memory' };
-  }
   async forRequest(task, project) {
-    const access = await this.services.sources.memoryAccess(task);
-    if (project && !access.projects.some(item => item.id === project.id)) access.projects.push(project);
-    project ||= access.currentProject;
-    const source = access.source, projectScope = project && this.store.getRecord('knowledge_scope', `project:${project.id}`);
-    const conversations = new Set([source.conversationId]);
-    // Only exact project associations whose original rooms are still readable
-    // may contribute rules. No private conversation body is copied to a group.
-    const associate = item => {
-      if (item?.roomId && access.rooms.includes(item.roomId)) conversations.add(item.conversationId || `room:${item.roomId}`);
-    };
-    for (const item of projectScope?.authorizations || []) associate(item);
-    for (const work of access.works) if (this.services.sources.project(work)?.id === project?.id) for (const item of work.sources || []) associate(item);
-    const allowed = await this.services.sources.knowledge(task, this.directory(), access);
-    const scopes = this.directory().filter(item => item.id === projectScope?.id && allowed.some(value => value.id === item.id) ||
-      !item.workId && !item.projectId && conversations.has(item.conversationId) &&
-      (item.conversationId === source.conversationId || access.rooms.includes(item.roomId || item.conversationId?.replace(/^room:/, ''))));
-    const allowedIds = new Set(scopes.map(item => item.id));
-    const applies = item => {
-      if (item.applicableProjectId) return item.applicableProjectId === project?.id;
-      if (item.scopeId === projectScope?.id || item.origin?.conversationId === source.conversationId) return true;
-      // Older explicit selections have no project field. Cross-conversation
-      // reuse requires the exact directory in their original room metadata,
-      // not a matching title, current Bot workspace or an old model summary.
-      const original = this.store.getTask(item.sourceTaskId), room = original && taskSource(this.services.sources.originTask(original) || original, this.store).input?.room;
-      if (room?.projectId === project?.id && project?.id) return true;
-      if (!project?.cwd || !room?.goal) return false;
-      const normalize = value => String(value).replaceAll('\\', '/').toLowerCase();
-      const goal = normalize(room.goal), path = normalize(project.cwd).replace(/\/+$/, '');
-      const index = goal.indexOf(path), after = goal[index + path.length];
-      return index >= 0 && (!after || /[\s"'，。；,;)]/.test(after));
-    };
-    const rules = this.store.listRecords('knowledge_reference').filter(item => allowedIds.has(item.scopeId) && item.kind === 'user-rule' && item.origin?.author === 'user' && applies(item))
-      .sort((a, b) => String(b.origin.receivedAt || b.createdAt).localeCompare(String(a.origin.receivedAt || a.createdAt)))
-      .slice(0, 8).map(item => ({ scopeId: item.scopeId, revision: this.store.getRecord('knowledge_scope', item.scopeId)?.revision,
-        ...this.referenceView(item) }));
-    const knowledge = projectScope && allowedIds.has(projectScope.id) ? await this.forProject(task, project) : null;
+    const origin = this.services.sources.originTask(task);
+    if (!origin) return null;
+    const source = taskSource(origin, this.store);
+    let projectError;
+    try {
+      project ||= await this.services.sources.contextProject(task);
+      project = await this.services.sources.projectForHandoff(task, project);
+    } catch (error) { projectError = error.message; }
+    const projectIds = [...new Set([knowledgeProjectId(project), project?.id].filter(Boolean))];
+    const projectScopes = projectIds.map(id => this.store.getRecord('knowledge_scope', `project:${id}`)).filter(Boolean);
+    const conversationScope = this.store.getRecord('knowledge_scope', `conversation:${source.conversationId}`);
+    const scopes = [...projectScopes, ...(conversationScope ? [conversationScope] : [])];
+    if (scopes.length && source.roomId) {
+      const args = { roomId: source.roomId };
+      const rooms = task.workId ? await this.services.sources.scopedCall('chatroom_list', args, task, origin) :
+        await this.services.sources.callForSource('chatroom_list', args, task);
+      if (!rooms.some(room => room.id === source.roomId)) throw new Error('The project knowledge source room is unavailable');
+    }
+    const entries = scopes.map(scope => ({ scope, records: this.store.knowledgeReferences(scope.id) }));
+    const sameOrigin = item => sameKnowledgeSource(item.origin, source) &&
+      (item.references || []).every(ref => ref.type !== 'room' || ref.roomId === source.roomId);
+    const rules = entries.flatMap(({ scope, records }) => records.filter(item =>
+      item.kind === 'user-rule' && item.origin?.author === 'user' && sameOrigin(item) &&
+      (!item.applicableProjectId || projectIds.includes(item.applicableProjectId)))
+      .map(item => ({ scopeId: scope.id, revision: scope.revision, ...this.referenceView(item) })))
+      .sort((a, b) => String(b.origin.receivedAt || b.createdAt).localeCompare(String(a.origin.receivedAt || a.createdAt)) ||
+        String(b.createdAt).localeCompare(String(a.createdAt))).slice(0, 8);
+    // Markdown is a whole scope. Project equivalence never transfers a private
+    // conversation or another work's history into this handoff.
+    const selected = entries.find(({ scope, records }) => scope.projectId && scope.revision > 0 &&
+      scope.authorizations?.length && scope.authorizations.every(item => sameKnowledgeSource(item, source)) &&
+      records.every(sameOrigin))?.scope;
+    const knowledge = selected ? { reference: { type: 'knowledge', scopeId: selected.id },
+      ...(await this.read(selected.id)), authority: 'sourced-memory' } : null;
     return { ownerBotId: this.config.botId, scopeLocality: 'bot-local', project, latestUserRules: rules, projectKnowledge: knowledge,
-      ...(access.projectError ? { projectError: access.projectError } : {}),
+      ...(projectError ? { projectError } : {}),
       instruction: 'These are the owner Bot\'s accessible local scopes, not a global project knowledge inventory. Empty/unavailable local knowledge does not disprove saved sources in another Bot; preserve that access gap without expanding access. Use the newest applicable authenticated user rule by original receivedAt. It overrides an older rule, template, summary or coordinating handoff immediately, before background organization. Rules remain limited to their stated scope. Knowledge findings are derived claims: verify owning work/operation before relying on current execution or completion, and follow exact primary references for consequential facts.' };
   }
   tools(task) {

@@ -743,6 +743,10 @@ private struct WorkspaceEditor: View {
         }
         do {
             let response = try await store.request(path: path, method: method, body: .object(payload))
+            if case .work = kind, response["dispatch"]["accepted"].bool != true {
+                error = "工作尚无受理回执，请保留本次表单并重试。"
+                return
+            }
             if embedded {
                 content = ""
                 let eventID = response["event"]["id"].string ?? response["id"].string

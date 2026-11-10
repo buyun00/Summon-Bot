@@ -1,5 +1,6 @@
 import { assertExternalReviewCurrent } from '../capabilities/task-policy.mjs';
 import { executorHandoff } from '../context/executor-handoff.mjs';
+import { directoryProject } from '../context/project-scope.mjs';
 import { isAcceptedOperation } from '../context/execution-evidence.mjs';
 import { executorManifestOperation, publishExecutorResult } from './executor-delivery.mjs';
 import { externalObservationId } from './notifications.mjs';
@@ -77,16 +78,23 @@ export function workExecutor({ store, services, emit }) {
       const binding = work.bindings?.find(item => item.type === 'codex-desktop');
       if (!event.transport) {
         const execution = services.works.execution(task);
+        const executor = services.works.executor(work);
+        let workspace = services.workspace, resultRoot;
+        if (execution.authorization?.source?.formId === work.id && executor.target?.type === 'directory') {
+          const directory = await services.capability('list_files', { path: executor.target.cwd, maxEntries: 1, maxDepth: 0 }, task);
+          if (!directory.path || directoryProject(directory.path).id !== directoryProject(executor.target.cwd).id)
+            throw new Error('表单授权的实际工作目录已变化，未派发到 Codex。');
+          workspace = resultRoot = directory.path;
+        }
         let currentKnowledge;
         try { currentKnowledge = await services.memory.forRequest(task, services.sources.project(work)); }
         catch (error) { currentKnowledge = { unavailable: error.message, instruction: 'Do not treat stale handoff prose as the latest saved rule.' }; }
-        const { prompt, path, resultFile, characters } = await executorHandoff({ workspace: services.workspace, work, task, event, execution, knowledge: currentKnowledge });
-        const executor = services.works.executor(work);
+        const { prompt, path, resultFile, characters } = await executorHandoff({ workspace, work, task, event, execution, knowledge: currentKnowledge });
         const name = binding?.externalThreadId ? 'codex_send' : 'codex_create';
         const args = binding?.externalThreadId ? { workId: work.id, operationId: event.id, message: prompt } :
           { workId: work.id, operationId: event.id, prompt, target: executor.target };
         event = store.putRecord('work-events', { ...store.getRecord('work-events', event.id), sourceTaskId: task.id, handoffFile: path,
-          resultFile, transportCharacters: characters, transport: { name, args }, status: 'submitting' });
+          resultFile, resultRoot, transportCharacters: characters, transport: { name, args }, status: 'submitting' });
       }
       // Retries always use the same Desktop operation; its service queries unknown outcomes.
       options.signal?.throwIfAborted();
