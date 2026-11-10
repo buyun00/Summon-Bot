@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
-import { ApiError, modelPreflightUnavailable, publicError } from './errors.js';
+import { ApiError, modelPreflightUnavailable, permissionPreflightUnavailable, permissionReadPhases, publicError } from './errors.js';
 
 export class Store {
   constructor(file, retention = 10000) {
@@ -44,8 +44,10 @@ export class Store {
       if (existing.hash !== hash) throw new ApiError(409, 'idempotency_conflict', 'This key has already been used for a different request.');
       if (['pending', 'unknown'].includes(existing.state)) throw new ApiError(409, 'operation_uncertain', 'Check the operation and desktop before retrying; the original action is never submitted again.', { operationKey: key, state: existing.state });
       const body = JSON.parse(existing.result), error = body?.error;
+      const permissionReadFailed = error?.code === permissionPreflightUnavailable && permissionReadPhases.has(error.details?.phase) &&
+        !body.progress?.requestId;
       if (!retryCreatePreflight || existing.state !== 'failed' || existing.status !== 503 || body.preflightRecovery ||
-        error?.code !== modelPreflightUnavailable || error.details?.outcome !== 'not-submitted' || !error.details.permissionMode)
+        !(error?.code === modelPreflightUnavailable || permissionReadFailed) || error.details?.outcome !== 'not-submitted' || !error.details.permissionMode)
         return { status: existing.status, body, replayed: true };
       preflightRecovery = { code: error.code, failedAt: existing.updated_at, permissionMode: error.details.permissionMode };
     } else if (retryCreatePreflight) {

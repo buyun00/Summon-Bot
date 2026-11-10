@@ -30,7 +30,7 @@ async function openDirectory(cwd) {
   catch { throw new ApiError(503, 'directory_registration_unconfirmed', 'Desktop did not confirm its native directory-open request. No message was sent.'); }
 }
 
-export async function resolveDirectoryTarget(value, listProjects) {
+export async function resolveDirectoryTarget(value, listProjects, beforeOpen) {
   const cwd = await directoryPath(value);
   const find = async () => {
     const { projects = [] } = await listProjects();
@@ -43,6 +43,7 @@ export async function resolveDirectoryTarget(value, listProjects) {
   };
   let target = await find();
   if (target) return target;
+  beforeOpen?.();
   await openDirectory(cwd);
   const deadline = Date.now() + 10000;
   do { await delay(400); target = await find(); if (target) return target; } while (Date.now() < deadline);

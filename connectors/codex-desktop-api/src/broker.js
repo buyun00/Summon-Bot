@@ -130,6 +130,18 @@ export class Broker extends EventEmitter {
     }, 1000);
     slot.resyncing.unref();
   }
+  permissionCandidates(matches) {
+    // These identities are hints from the existing broker, never permission
+    // evidence. Creation requests obtain a new exact-owner snapshot.
+    const loaded = [...this.subscriptions.values()].filter(slot => slot.hostId === 'local' && !slot.stale &&
+      slot.owner && matches(slot.state?.currentPermissions));
+    const active = ['active', 'running', 'waiting', 'needs_attention'];
+    const recent = [...(this.lastCatalog?.threads || []), ...(this.lastCatalog?.pinnedThreads || [])]
+      .filter(item => (item.hostId ?? 'local') === 'local' && (item.kind ?? 'codex') === 'codex')
+      .sort((a, b) => Number(active.includes(b.status)) - Number(active.includes(a.status)));
+    return [...loaded.map(slot => ({ threadId: slot.threadId, source: 'loaded' })),
+      ...recent.map(item => ({ threadId: item.id, source: 'recent' }))];
+  }
   async poll() {
     if (this.polling || this.closed) return;
     if (!executorState(this.config).enabled) {

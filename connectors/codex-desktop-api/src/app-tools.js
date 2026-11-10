@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { FramedPipe } from './framed-pipe.js';
-import { ApiError, modelPreflightUnavailable, unavailable } from './errors.js';
+import { ApiError, modelPreflightUnavailable, permissionPreflightUnavailable, readBefore, unavailable } from './errors.js';
 import { DesktopIpc } from './desktop-ipc.js';
 import { assertExecutorConnected } from './executor-connection.js';
 import { resolveDirectoryTarget, matchesDirectoryTarget } from './directory-target.js';
@@ -19,6 +19,8 @@ const PERMISSION_MODES = {
   auto: { profileId: ':workspace', sandboxType: 'workspaceWrite', approvalPolicy: 'on-request', approvalsReviewer: 'user' },
   granular: { profileId: ':workspace', sandboxType: 'workspaceWrite', approvalPolicy: { granular: { sandbox_approval: false, rules: false, skill_approval: false, request_permissions: true, mcp_elicitations: true } }, approvalsReviewer: 'user' },
 };
+const transientPermissionReads = new Set(['desktop_unavailable', 'desktop_timeout', 'connection_lost', 'desktop_error',
+  'permission_owner_unavailable', 'permissions_unavailable', 'preflight_read_timeout']);
 
 export function readDesktopPermissionDefault(file = path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), '.codex-global-state.json')) {
   let atoms;
@@ -48,10 +50,11 @@ export function discoverToolsPipe(explicit) {
 }
 
 export class AppTools {
-  constructor(config, { ipc, readPermissionDefault = readDesktopPermissionDefault } = {}) {
+  constructor(config, { ipc, readPermissionDefault = readDesktopPermissionDefault, permissionCandidates = () => [] } = {}) {
     this.config = config; this.catalog = [];
     this.permissionIpc = ipc || new DesktopIpc(config);
     this.readPermissionDefault = readPermissionDefault;
+    this.permissionCandidates = permissionCandidates;
     this.createQueue = Promise.resolve();
   }
   async connect() {
@@ -72,7 +75,7 @@ export class AppTools {
     if (!Array.isArray(response.result?.tools)) throw new ApiError(502, 'protocol_mismatch', 'Desktop tool catalog is incompatible.');
     if (this.pipe === pipe) this.catalog = response.result.tools;
   }
-  async call(tool, args = {}, phase, recovery) {
+  async call(tool, args = {}, phase, recovery, deadline) {
     assertExecutorConnected(this.config);
     if (tool === 'create_thread') {
       phase?.('queued');
@@ -84,7 +87,7 @@ export class AppTools {
       return prior.then(() => this.createWithDesktopDefaults(args, (stage, detail) => {
         phase?.(stage, detail);
         if (stage === 'desktop-write') release();
-      }, recovery)).finally(release);
+      }, recovery, deadline)).finally(release);
     }
     phase?.('connect');
     return this.callDesktopTool(tool, args, this.config.callerThreadId, phase);
@@ -98,50 +101,66 @@ export class AppTools {
       return true;
     } finally { this.permissionIpc.unfollow(context.threadId, 'local', context.owner); }
   }
-  async permissionContext(expected) {
+  async readPermissionContext(threadId, expected, deadline, phase, contextSource, step) {
+    let readPhase;
+    try {
+      return await this.permissionIpc.permissionSnapshot(threadId, 12000, { deadline, phase: stage => {
+        readPhase = stage;
+        phase?.(stage, { contextSource, step });
+      } });
+    } catch (error) {
+      if (!readPhase || !transientPermissionReads.has(error.code)) throw error;
+      throw new ApiError(503, permissionPreflightUnavailable, 'Desktop could not read the current permission context before creation.',
+        { outcome: 'not-submitted', permissionMode: expected.mode, phase: readPhase, contextSource, step, reason: error.code });
+    }
+  }
+  async permissionContext(expected, deadline, phase) {
+    phase?.('permission-candidates');
     const checked = new Set();
-    const tryContext = async threadId => {
-      if (!threadId || checked.has(threadId)) return null;
+    let failure;
+    const candidates = [{ threadId: this.heldPermissionContext?.threadId, source: 'held' },
+      { threadId: this.config.callerThreadId, source: 'configured' }, ...this.permissionCandidates(expected)];
+    for (const { threadId, source } of candidates) {
+      if (Date.now() >= deadline) break;
+      if (!threadId || checked.has(threadId)) continue;
       checked.add(threadId);
       let context;
-      try { context = await this.permissionIpc.permissionSnapshot(threadId); }
-      catch (error) { if (error.code === 'protocol_mismatch') throw error; return null; }
+      try { context = await this.readPermissionContext(threadId, expected, deadline, phase, source, 'select'); }
+      catch (error) {
+        if (error.code !== permissionPreflightUnavailable) throw error;
+        failure = error;
+        continue;
+      }
       if (!matchesPermissionDefault(context.permissions, expected)) {
         this.permissionIpc.unfollow(threadId, 'local', context.owner);
-        return null;
+        continue;
       }
       if (this.heldPermissionContext?.threadId !== threadId) this.releasePermissionContext();
       this.heldPermissionContext = context;
-      return context;
-    };
-    for (const id of [this.heldPermissionContext?.threadId, this.config.callerThreadId]) {
-      const context = await tryContext(id); if (context) return context;
+      return { ...context, source };
     }
-    const catalog = await this.callDesktopTool('list_threads', { limit: this.config.discoveryLimit || 50 });
-    const threads = [...(catalog.threads || []), ...(catalog.pinnedThreads || [])]
-      .filter(thread => (thread.hostId ?? 'local') === 'local' && (thread.kind ?? 'codex') === 'codex')
-      .sort((a, b) => Number(b.status === 'active') - Number(a.status === 'active'));
-    const deadline = Date.now() + 120000;
-    for (const thread of threads) {
-      if (Date.now() >= deadline) break;
-      const context = await tryContext(thread.id); if (context) return context;
-    }
+    if (failure) throw failure;
     throw new ApiError(503, 'permission_context_unavailable', 'No loaded desktop context matches the desktop default permissions. Open a local Codex chat using those defaults and try again. No chat or message was created.');
   }
-  async createWithDesktopDefaults(args, phase, recovery) {
-    phase?.('connect');
-    await this.connect();
-    if (recovery) await this.refreshCatalog(this.pipe);
-    phase?.('permission-context');
+  async createWithDesktopDefaults(args, phase, recovery, deadline = Date.now() + this.config.acknowledgementTimeoutMs) {
+    phase?.('permission-defaults');
     const expected = this.readPermissionDefault();
     if (recovery && recovery.permissionMode !== expected.mode)
       throw new ApiError(409, 'desktop_defaults_changed', 'Desktop permission defaults changed since the original create preflight. No message was sent.');
-    const context = await this.permissionContext(expected);
-    phase?.('project');
-    const directory = args.target?.type === 'directory' ? await resolveDirectoryTarget(args.target.cwd, () => this.callDesktopTool('list_projects')) : null;
+    const selectionDeadline = Math.min(deadline, Date.now() + Math.min(this.config.requestTimeoutMs, this.config.acknowledgementTimeoutMs / 2));
+    const context = await this.permissionContext(expected, selectionDeadline, phase);
+    phase?.('tool-catalog');
+    await readBefore(deadline, () => this.connect());
+    if (recovery?.code === modelPreflightUnavailable) await readBefore(deadline, () => this.refreshCatalog(this.pipe));
+    const listProjects = () => {
+      phase?.('project-catalog');
+      return this.callDesktopTool('list_projects', {}, context.threadId);
+    };
+    const directory = args.target?.type === 'directory' ? await readBefore(deadline, () =>
+      resolveDirectoryTarget(args.target.cwd, listProjects, () => phase?.('directory-registration'))) : null;
     if (directory) args = { ...args, target: { type: 'project', projectId: directory.projectId, environment: { type: 'local' } } };
-    if (args.target?.type === 'project') {
-      const projects = await this.callDesktopTool('list_projects');
+    else if (args.target?.type === 'project') {
+      const projects = await readBefore(deadline, listProjects);
       const project = projects.projects?.find(project => project.projectId === args.target.projectId);
       if (!project) throw new ApiError(400, 'unknown_project', 'Use a projectId returned by list_projects. No message was sent.');
       if (project.hostId !== 'local' || project.projectKind !== 'local') throw new ApiError(501, 'unsupported_permission_host', 'Default permission inheritance is verified for local Codex projects only. No message was sent.');
@@ -150,8 +169,8 @@ export class AppTools {
     // user's prompt and then try to repair permissions on an active turn.
     phase?.('permission-before-write');
     if (!isDeepStrictEqual(expected, this.readPermissionDefault())) throw new ApiError(409, 'desktop_defaults_changed', 'Desktop permission defaults changed during creation preflight. No message was sent.');
-    const fresh = await this.permissionIpc.permissionSnapshot(context.threadId);
-    if (!matchesPermissionDefault(fresh.permissions, expected)) {
+    const fresh = await this.readPermissionContext(context.threadId, expected, deadline, phase, context.source, 'before-write');
+    if (fresh.owner !== context.owner || !matchesPermissionDefault(fresh.permissions, expected) || !isDeepStrictEqual(expected, this.readPermissionDefault())) {
       this.permissionIpc.unfollow(fresh.threadId, 'local', fresh.owner); this.releasePermissionContext();
       throw new ApiError(409, 'permission_context_changed', 'Desktop context permissions changed before creation. No message was sent.');
     }

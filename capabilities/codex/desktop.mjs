@@ -35,8 +35,24 @@ const rejected = error => error.result?.error?.details?.outcome !== 'unknown' &&
     ['desktop_defaults_unavailable', 'unsupported_permission_default', 'permission_context_unavailable', 'unsupported_permission_host', 'caller_thread_required', 'unsupported_capability',
       'desktop_model_preflight_unavailable', 'desktop_preflight_timeout', 'desktop_preflight_unavailable'].includes(error.code));
 const turnStatus = state => state?.status === 'waiting_for_input' ? state.status : state?.currentTurn?.status || state?.status || 'unknown';
-const createPreflightUnavailable = error => error.status === 503 && error.code === 'desktop_model_preflight_unavailable' &&
-  error.result?.error?.details?.outcome === 'not-submitted' && Boolean(error.result.error.details.permissionMode);
+const permissionReadPhases = new Set(['permission-ipc-connect', 'permission-ipc-initialize', 'permission-owner', 'permission-snapshot']);
+function createPreflightUnavailable(error) {
+  const details = error.result?.error?.details;
+  return error.status === 503 && details?.outcome === 'not-submitted' && Boolean(details.permissionMode) &&
+    (error.code === 'desktop_model_preflight_unavailable' || error.code === 'desktop_permission_preflight_unavailable' &&
+      permissionReadPhases.has(details.phase) && !error.result?.progress?.requestId);
+}
+function confirmedCreateRejection(operation) {
+  if (operation.action !== 'create' || operation.status !== 'failed') return false;
+  const { result } = operation;
+  const details = result?.error?.details, progress = result?.progress;
+  if ([result, details, progress].some(value => value?.threadId || value?.thread?.id || value?.turnId ||
+    value?.clientThreadId || value?.firstMessageSubmitted)) return false;
+  if (details?.outcome === 'not-submitted') return true;
+  // The previous bridge explicitly emitted this code in the !posted branch.
+  return !details?.outcome && operation.httpStatus === 503 && result?.error?.code === 'desktop_preflight_unavailable' &&
+    progress?.phase === 'permission-context' && !progress.requestId;
+}
 function precedingTurn(operation, threadId) {
   const previous = operation.previousExecution, observation = previous?.executionObservation;
   if (!observation?.submissionConfirmed || observation.stale || observation.threadId !== threadId ||
@@ -243,7 +259,7 @@ export class DesktopCodex {
           executionOperationId: inFlight ? work.executionOperationId || work.operationId : null,
           result: null, finishedAt: null, pendingProgress: inFlight ? this.require(id).pendingProgress : null,
           progressFloor: { turnId: state.currentTurn.id, itemIds: [...new Set(oldItems.map(item => item.id).filter(Boolean))],
-            eventCursor: work.eventCursor || null, acceptedAfter: now() } }, Boolean(verification), undefined,
+          eventCursor: work.eventCursor || null, acceptedAfter: now() } }, Boolean(verification), input.signal,
       { ownerControlRevision: owner.controlRevision || 0 });
     });
   }
@@ -290,11 +306,11 @@ export class DesktopCodex {
         if (result.applied) this.emit('work.updated', { work: { id, botId, workId, status: owner.status } });
         return { status: result.applied ? status : 'superseded', turnId: turn?.id };
       };
-      if (!work) return binding ? { status: 'pending' } : settle('local-stopped');
+      if (!work) return binding || stop.threadId || stop.turnId ? { status: 'pending' } : settle('local-stopped');
       if (!work.externalThreadId) {
         const couldHaveCreated = this.store.list('desktopOperations').some(item => item.workId === id && item.action === 'create' &&
-          item.attemptedAt && !(item.status === 'failed' && item.result?.rejected));
-        return couldHaveCreated || work.pendingClientThreadId || stop.threadId || binding?.externalThreadId ?
+          item.attemptedAt && !confirmedCreateRejection(item));
+        return couldHaveCreated || work.pendingClientThreadId || work.turnId || stop.threadId || stop.turnId || binding?.externalThreadId || binding?.turnId ?
           { status: 'pending' } : settle('local-stopped');
       }
       if (binding?.externalThreadId !== work.externalThreadId || (binding.hostId || 'local') !== (work.hostId || 'local') ||
@@ -365,17 +381,18 @@ export class DesktopCodex {
       (operation.ownerControlRevision === undefined || (current.controlRevision || 0) === operation.ownerControlRevision);
     const abandon = () => this.applyOperation(this.store.save('desktopOperations', { id: operation.id, status: 'failed',
       result: { rejected: true, error: { code: 'work_control_changed', message: 'Work control changed before this Desktop write was submitted.' } } }));
-    if (!permitted(owner)) return abandon();
+    if (signal?.aborted || !permitted(owner)) return abandon();
     // A pending intent with no attemptedAt has never crossed the transport boundary.
     // Persist both transport intent and the Bot binding before the first write.
     const synchronized = await this.syncOwner(work);
-    if (!permitted(synchronized)) return abandon();
+    if (signal?.aborted || !permitted(synchronized)) return abandon();
     this.store.save('desktopOperations', { id: operation.id, attemptedAt: now() });
-    const request = { method: 'POST', body: operation.body, operationKey: operation.operationKey };
+    const request = { method: 'POST', body: operation.body, operationKey: operation.operationKey,
+      ...(signal ? { signal: AbortSignal.any([signal, AbortSignal.timeout(140000)]) } : {}) };
     let result;
     try {
       result = await this.request(operation.path, request).catch(async error => {
-        if (operation.action !== 'create' || !signal || signal.aborted || !createPreflightUnavailable(error) ||
+        if (operation.action !== 'create' || operation.preflightRecovery || !signal || signal.aborted || !createPreflightUnavailable(error) ||
           owner.status !== 'active' || !owner.lastTaskId) throw error;
         let current;
         try {
@@ -392,7 +409,8 @@ export class DesktopCodex {
     } catch (error) {
       if (rejected(error)) return this.applyOperation(this.store.save('desktopOperations', {
         id: operation.id, status: 'failed', httpStatus: error.status, error: errorView(error),
-        result: { error: error.result?.error || errorView(error), rejected: true } }));
+        result: { error: error.result?.error || errorView(error), progress: error.result?.progress,
+          preflightRecovery: error.result?.preflightRecovery, rejected: true } }));
       this.store.save('desktopOperations', { id: operation.id, status: 'unknown', error: errorView(error) });
       this.save({ id, status: 'unknown', error: errorView(error) });
       await this.queue(id, `operation:${operation.operationKey}:unknown`, { type: 'operation_unknown', operationKey: operation.operationKey, error: errorView(error) });
@@ -406,7 +424,13 @@ export class DesktopCodex {
     // Even a missing remote key is not evidence that an earlier write is safe to replay.
     try {
       const result = await this.request(`/v1/operations/${encodeURIComponent(operation.operationKey)}`);
-      if (['completed', 'failed'].includes(result.state)) return this.applyOperation(this.store.save('desktopOperations', { id: operation.id, status: result.state === 'completed' ? 'received' : 'failed', result: result.result, httpStatus: result.status }));
+      if (result.key !== operation.operationKey) fail('Desktop operation readback did not match the original key', 502);
+      if (['completed', 'failed'].includes(result.state)) {
+        const status = result.state === 'completed' ? 'received' : 'failed';
+        const terminal = { ...operation, status, result: result.result, httpStatus: result.status };
+        const saved = confirmedCreateRejection(terminal) ? { ...result.result, rejected: true } : result.result;
+        return this.applyOperation(this.store.save('desktopOperations', { id: operation.id, status, result: saved, httpStatus: result.status }));
+      }
       const progress = result.result?.progress;
       this.store.save('desktopOperations', { id: operation.id, remoteState: result.state, checkedAt: now(),
         ...(progress ? { remotePhase: progress.phase, remotePhaseAt: progress.at } : {}) });

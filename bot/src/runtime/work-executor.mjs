@@ -53,7 +53,7 @@ export function workExecutor({ store, services, emit }) {
       if (stopped.has(beforeSubmit.status) || (beforeSubmit.controlRevision || 0) !== (work.controlRevision || 0))
         return { content: '', suspended: true, waiting: beforeSubmit.status, executor: 'codex' };
       const receipt = await services.capability(event.transport.name, event.transport.args, store.getTask(event.sourceTaskId), {
-        operationId: event.id, ...(event.transport.name === 'codex_create' ? { signal: options.signal } : {}),
+        operationId: event.id, signal: options.signal,
       });
       const operationReceipt = receipt.operations?.find(item => item.operationId === event.id);
       const appendFailed = event.transport.name === 'codex_send' && operationReceipt?.status === 'failed';

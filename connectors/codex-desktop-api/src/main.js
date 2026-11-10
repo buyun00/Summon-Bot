@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig, ROOT } from './config.js';
-import { AppTools } from './app-tools.js';
+import { AppTools, matchesPermissionDefault } from './app-tools.js';
 import { DesktopIpc } from './desktop-ipc.js';
 import { Store } from './store.js';
 import { Broker } from './broker.js';
@@ -11,7 +11,8 @@ import { Webhook, webhookConfig } from './webhook.js';
 const config = loadConfig();
 config.webhook = webhookConfig(config.webhook);
 const store = new Store(path.join(config.dataDir, 'bridge.sqlite'), config.eventRetention);
-const tools = new AppTools(config), ipc = new DesktopIpc(config);
+const tools = new AppTools(config, { permissionCandidates: expected => broker.permissionCandidates(value => matchesPermissionDefault(value, expected)) });
+const ipc = new DesktopIpc(config);
 const broker = new Broker(config, tools, ipc, store);
 const webhook = new Webhook(broker, config.webhook, config.dataDir);
 const openapi = JSON.parse(fs.readFileSync(path.join(ROOT, 'docs', 'openapi.json'), 'utf8'));

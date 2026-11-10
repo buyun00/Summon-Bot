@@ -11,7 +11,11 @@ import { CATALOG_MAINTAINER_TOOLS } from '../bot-management/service.mjs';
 
 const object = (properties = {}, required = []) => ({ type: 'object', properties, ...(required.length ? { required } : {}), additionalProperties: true });
 const text = { type: 'string' }, names = { type: 'array', items: text };
-export const bundledToolTimeout = name => name === 'run_command' ? 270000 : 150000;
+export function bundledToolTimeout(name) {
+  // Create can use two bounded connector calls under one live authorization.
+  if (name === 'codex_create') return 290000;
+  return name === 'run_command' ? 270000 : 150000;
+}
 export const controlTools = [
   ['workspace_setup', 'Inspect and complete the current user-authorized onboarding step from its Pi work. Read status.userInstructions before changing the approach. Failures never expand authorization: respect provider, route and command restrictions during diagnosis and retries. Within the authorized scope, use file, command and web tools, install missing components, or write a Node CLI bridge in the Bot workspace. Reuse saved configuration and report only verified results. Secrets stay in private files; pass tokenFile, never a token value.', 'external', object({
     action: { type: 'string', enum: ['status', 'connect-engine', 'prepare-remote', 'apply-remote', 'check-remote', 'start-remote', 'register-remote'] },
