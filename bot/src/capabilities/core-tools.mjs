@@ -5,7 +5,7 @@ import { factTime } from '../context/fact-time.mjs';
 import { HANDOFF_REFERENCES, taskSource, workExecution } from '../context/sources.mjs';
 import { modelArgs, modelText, looseSchema, boundedNumber } from '../context/model-input.mjs';
 import { resolveCodexTarget } from './codex-target.mjs';
-import { authorizeProduction, currentProductionStage, productionDecision, productionStage, requestIntents, productionStages } from './request-routing.mjs';
+import { authorizeProduction, currentProductionStage, currentUserRequest, productionDecision, productionStage, requestIntents, productionStages } from './request-routing.mjs';
 import { externalExecution, isAcceptedOperation } from '../context/execution-evidence.mjs';
 import { readExecutorManifest } from '../runtime/executor-delivery.mjs';
 import { WORK_ATTACHMENTS } from '../runtime/notifications.mjs';
@@ -27,12 +27,13 @@ const waitingFields = object({ kind: { type: 'string', enum: ['review', 'user-in
 const preview = value => { const text = typeof value === 'string' ? value : JSON.stringify(value ?? null); return { text: text.slice(0, 1600), truncated: text.length > 1600 }; };
 const roomPublications = (store, workId, roomId) => store.listRecords('work-notifications')
   .filter(item => item.workId === workId && item.roomId === roomId && item.status === 'delivered');
-function localPublications(store, work, operation, roomId) {
+function localPublications(store, work, operation, roomId, notifications = roomPublications(store, work.id, roomId)) {
   const source = operation?.authorization?.source;
   if (work.executor?.kind !== 'pi' || work.bindings?.some(item => item.type === 'codex-desktop') ||
     operation?.workId !== work.id || !roomId || source?.roomId !== roomId || !source.replyTo) return [];
-  return roomPublications(store, work.id, roomId).flatMap(item => {
-    if (item.executionEventId !== operation.id || item.replyTo !== source.replyTo || item.publication !== 'explicit' ||
+  return notifications.flatMap(item => {
+    if (item.roomId !== roomId || item.status !== 'delivered' ||
+      item.executionEventId !== operation.id || item.replyTo !== source.replyTo || item.publication !== 'explicit' ||
       item.late || item.resultKind === 'progress') return [];
     const task = store.getTask(item.taskId);
     if (task?.workId !== work.id || workExecution(task, store).executionEventId !== operation.id) return [];
@@ -43,7 +44,7 @@ function localPublications(store, work, operation, roomId) {
         attachment.id && attachment.origin?.type === 'work-output' && attachment.origin.publicationId === attachment.id &&
         attachment.origin.workId === work.id && attachment.origin.roomId === roomId && attachment.origin.botId === work.botId &&
         item.attachments?.some(selected => selected.id === attachment.id));
-      return attachments.length ? [{ task, messageId: receipt.id, attachments }] : [];
+      return attachments.length ? [{ task, messageId: receipt.id, attachments, replyTo: receipt.replyTo, publishedAt: receipt.createdAt }] : [];
     });
   });
 }
@@ -64,7 +65,12 @@ function outputReceipts(store, work, operation, roomId, delivery) {
   return [...new Map([...native, ...local].map(item => [item.id, item])).values()];
 }
 
-function acceptanceTarget(store, work, roomId) {
+const acceptancePublication = ({ messageId, replyTo, publishedAt, attachments, observationId, manifestOperationId }) =>
+  ({ messageId, replyTo, publishedAt, observationId, manifestOperationId, attachments: attachments.map(({ id, name }) => ({ id, name })) });
+const withPublications = (target, publications) => publications.length ? { ...target,
+  publicationMessageIds: [...new Set(publications.map(item => item.messageId))], publications } : null;
+
+function acceptanceTarget(store, work, roomId, notifications = store.listRecords('work-notifications').filter(item => item.workId === work.id)) {
   if (work.executor?.kind === 'pi' && !work.bindings?.some(item => item.type === 'codex-desktop')) {
     const last = work.lastTaskId && store.getTask(work.lastTaskId);
     if (work.status !== 'completed' || last?.workId !== work.id || last.status !== 'completed' ||
@@ -72,12 +78,14 @@ function acceptanceTarget(store, work, roomId) {
     const { executionEventId } = workExecution(last, store);
     const operation = executionEventId && store.getRecord('work-events', executionEventId);
     if (operation?.authorization?.source?.actor !== 'user') return null;
-    const publications = localPublications(store, work, operation, roomId)
-      .filter(item => item.task.status === 'completed' && item.task.finishedAt && !item.task.result?.partial);
-    return publications.length ? { operationId: operation.id, publicationMessageIds: [...new Set(publications.map(item => item.messageId))] } : null;
+    const publications = localPublications(store, work, operation, roomId, notifications)
+      .filter(item => item.task.status === 'completed' && item.task.finishedAt && !item.task.result?.partial)
+      .map(acceptancePublication);
+    return withPublications({ operationId: operation.id }, publications);
   }
   const execution = externalExecution(work), outcome = work.executionOutcome;
-  if (!roomId || !['waiting', 'completed'].includes(work.status) || work.status === 'waiting' && work.waiting?.kind !== 'review' ||
+  if (!roomId || !['waiting', 'completed'].includes(work.status) ||
+    work.status === 'waiting' && !['review', 'user-input'].includes(work.waiting?.kind) ||
     !execution.startedConfirmed || !execution.externalReceived || execution.operationId !== execution.currentOperationId ||
     execution.status !== 'completed' || outcome?.kind !== 'execution-ended' || !outcome.finalConfirmed ||
     outcome.operationId !== execution.operationId || outcome.turnId !== execution.turnId) return null;
@@ -86,31 +94,126 @@ function acceptanceTarget(store, work, roomId) {
   const receipts = new Map(binding.operations?.filter(item => item.status === 'received' &&
     item.threadId === execution.threadId).map(item => [item.operationId, item]));
   let { operationId, turnId } = execution;
-  const notifications = store.listRecords('work-notifications').filter(item => item.workId === work.id);
   const visited = new Set();
   while (receipts.get(operationId)?.verificationOnly) {
     const previous = receipts.get(operationId).precedingTurn;
-    if (visited.has(operationId) || previous?.status !== 'completed' || previous.turnId === turnId || !receipts.has(previous.operationId) ||
+    if (visited.has(operationId) || previous?.status !== 'completed' || !previous.turnId || previous.turnId === turnId || !receipts.has(previous.operationId) ||
       notifications.some(item => item.executionEventId === operationId && item.attachments?.length)) return null;
     visited.add(operationId);
     ({ operationId, turnId } = previous);
   }
   // A read-only verification can preserve a previously published file, but is never itself the result.
   const throughVerification = operationId !== execution.operationId;
-  const publicationMessageIds = notifications.flatMap(item => {
+  if (work.status === 'waiting' && work.waiting.kind === 'user-input' &&
+    (!throughVerification || work.waiting.operationId !== execution.operationId || work.waiting.bindingId !== execution.bindingId ||
+      work.waiting.outcome !== 'execution-ended')) return null;
+
+  const publications = notifications.flatMap(item => {
     if (item.roomId !== roomId || item.status !== 'delivered' || item.late || !item.replyTo ||
       item.publication !== 'external' || item.executionEventId !== operationId || item.resultKind !== 'execution-ended' ||
+      item.authorization?.source?.actor !== 'user' || item.authorization.source.roomId !== roomId ||
+      item.authorization.source.replyTo !== item.replyTo ||
       !item.sourceRefs?.some(ref => ref.type === 'codex' && ref.operationId === operationId &&
         ref.threadId === execution.threadId && ref.turnId === turnId)) return [];
+    const observation = store.getRecord('work-observations', item.notificationId);
+    const observed = observation?.content;
+    if (observation?.workId !== work.id || observation.taskId !== item.taskId || observation.late ||
+      observed?.source !== 'codex-desktop-connector' || observed.operationId !== operationId ||
+      observed.externalThreadId !== execution.threadId || observed.turnId !== turnId || observed.status !== 'completed' ||
+      observed.state?.stale || !observed.final?.confirmed || observed.final.threadId !== execution.threadId || observed.final.turnId !== turnId) return [];
     return (Array.isArray(item.receipt) ? item.receipt : [item.receipt]).flatMap(receipt => {
       if (!receipt?.id || receipt.roomId !== roomId || receipt.workId !== work.id || receipt.senderId !== work.botId ||
-        receipt.replyTo !== item.replyTo || (throughVerification || item.attachments?.length) &&
-        !receipt.attachments?.some(attachment => item.attachments?.some(published => published.id === attachment.id))) return [];
-      return [receipt.id];
+        receipt.replyTo !== item.replyTo) return [];
+      const attachments = (receipt.attachments || []).filter(attachment => attachment.id &&
+        item.attachments?.some(published => published.id === attachment.id));
+      if ((throughVerification || item.attachments?.length) && !attachments.length) return [];
+      return [acceptancePublication({ messageId: receipt.id, replyTo: item.replyTo, publishedAt: receipt.createdAt, attachments,
+        observationId: observation.id, manifestOperationId: item.manifestOperationId })];
     });
   });
-  return publicationMessageIds.length ? { operationId, turnId, publicationMessageIds: [...new Set(publicationMessageIds)],
-    ...(throughVerification ? { throughOperationId: execution.operationId } : {}) } : null;
+  return withPublications({ operationId, turnId, threadId: execution.threadId,
+    ...(throughVerification ? { throughOperationId: execution.operationId, verificationOperationIds: [...visited] } : {}) }, publications);
+}
+
+const publishedBeforeRequest = (publication, user) => Date.parse(publication.publishedAt) <= Date.parse(user.roomMessageAt);
+const runnableWorkIds = store => new Set(store.listUnfinishedTasks().filter(item =>
+  ['accepted', 'queued', 'running'].includes(item.status)).map(item => item.workId));
+const acceptanceIdentity = ['operationId', 'threadId', 'turnId', 'throughOperationId'];
+
+async function requestAcceptanceContext(services, task, user) {
+  if (!user?.roomId || !Number.isFinite(Date.parse(user.roomMessageAt))) return { results: [] };
+  const { store } = services, byWork = new Map();
+  const notifications = store.listRecords('work-notifications');
+  const roomResults = notifications.filter(item => item.roomId === user.roomId && item.status === 'delivered');
+  if (!roomResults.length) return { results: [] };
+  const workIds = new Set(roomResults.map(item => item.workId));
+  let repliedResult;
+  for (const item of notifications) {
+    if (!workIds.has(item.workId)) continue;
+    if (!byWork.has(item.workId)) byWork.set(item.workId, []);
+    byWork.get(item.workId).push(item);
+    if (user.replyTo && item.roomId === user.roomId && item.status === 'delivered' &&
+      (item.resultKind === 'execution-ended' || item.publication === 'explicit' && item.attachments?.length) &&
+      [item.receipt].flat().some(receipt => receipt?.id === user.replyTo && receipt.workId === item.workId))
+      repliedResult = { workId: item.workId, operationId: item.executionEventId, messageId: user.replyTo };
+  }
+  const rooms = await services.sources.rooms(task);
+  if (!rooms.includes(user.roomId)) return { results: [] };
+  const pending = runnableWorkIds(store), results = [];
+  for (const [workId, notifications] of byWork) {
+    const work = services.works.get(workId);
+    if (!work || pending.has(workId)) continue;
+    const target = acceptanceTarget(store, work, user.roomId, notifications);
+    if (!target || !await services.sources.canReadWork(work, task, rooms)) continue;
+    if (repliedResult?.workId === workId && target.operationId !== repliedResult.operationId &&
+      !target.verificationOperationIds?.includes(repliedResult.operationId)) continue;
+    for (const publication of target.publications.filter(item => publishedBeforeRequest(item, user))) {
+      results.push({ workId, goal: work.goal?.slice(0, 400),
+        ...Object.fromEntries(acceptanceIdentity.map(key => [key, target[key]])), ...publication });
+    }
+  }
+  results.sort((a, b) => Number(b.messageId === user.replyTo) - Number(a.messageId === user.replyTo) ||
+    Date.parse(b.publishedAt) - Date.parse(a.publishedAt));
+  return { replyTo: user.replyTo, repliedResult, results: results.slice(0, 24) };
+}
+
+function saveRequestAcceptances(services, user, matches, readable) {
+  const { store } = services, pending = runnableWorkIds(store), records = [], unresolvedAcceptances = [], grouped = new Map();
+  for (const { item, candidate } of matches) {
+    if (!candidate) { unresolvedAcceptances.push(item); continue; }
+    if (!grouped.has(candidate.workId)) grouped.set(candidate.workId, []);
+    grouped.get(candidate.workId).push({ item, candidate });
+  }
+  for (const [workId, group] of grouped) {
+    const work = services.works.get(workId);
+    const target = work && readable.get(workId) === work.revision && !pending.has(workId) ? acceptanceTarget(store, work, user.roomId) : null;
+    const accepted = [];
+    for (const { item, candidate } of group) {
+      const publication = target?.publications.find(value => value.messageId === candidate.messageId && publishedBeforeRequest(value, user));
+      if (publication && acceptanceIdentity.every(key => target[key] === candidate[key])) accepted.push({ item, publication });
+      else unresolvedAcceptances.push(item);
+    }
+    if (!accepted.length) continue;
+    const prior = work.acceptance;
+    let saved = work;
+    if (prior?.source?.acceptedMessageId !== user.acceptedMessageId || prior.operationId !== target.operationId) {
+      const clauses = accepted.map(({ item }) => ({ unit: item.unit, userClause: item.userClause, clauseStart: item.clauseStart }));
+      const scopes = key => [...new Set(accepted.map(({ item }) => item[key]).filter(Boolean))].join('\n');
+      const remainingBoundaries = scopes('remainingBoundaries');
+      const publications = [...new Map(accepted.map(({ publication }) => [publication.messageId, publication])).values()];
+      const fullScope = accepted.every(({ item }) => item.fullScope) && !remainingBoundaries;
+      const canCloseReview = work.status === 'waiting' && work.waiting.kind === 'review' && fullScope && !work.waiting.blockingRequirement &&
+        !store.listRecords('work-waits').some(wait => wait.status === 'pending' && wait.targetWorkId === work.id);
+      saved = services.works.update(work.id, { ...(canCloseReview ? { status: 'completed' } : {}), expectedRevision: work.revision,
+        acceptance: { scope: scopes('scope'), remainingBoundaries, fullScope, operationId: target.operationId, turnId: target.turnId, threadId: target.threadId,
+          throughOperationId: target.throughOperationId, publicationMessageIds: publications.map(item => item.messageId), publications,
+          source: { type: 'room', userId: user.actor, roomId: user.roomId, messageId: user.messageId, acceptedMessageId: user.acceptedMessageId, clauses },
+          recordedAt: new Date().toISOString() } });
+    }
+    const { operationId, scope, remainingBoundaries, publicationMessageIds } = saved.acceptance;
+    records.push({ workId, operationId, workStatus: saved.status, scope, remainingBoundaries, publicationMessageIds });
+  }
+  return { records, unresolvedAcceptances };
 }
 
 function outputOperationId(store, work, roomId, requestedId) {
@@ -179,13 +282,12 @@ export function coreTools(services, task) {
       throw new Error('仅文稿授权不会追加到正在实施的回合或恢复已停止的实施工作。请使用对应的文档工作，或登记独立新文档工作。');
   };
   return [
-    tool('request_decide', 'Classify the CURRENT authenticated user request by meaning before acting. Choose feedback for a trial result, failure report, critique or observation for this chat without a current request to make a change. Record or explain it here. Choose discuss for planning, selecting rules or a small in-chat draft. produce/revise requires a positive request to execute a specific action now or register it for an explicit dependency. A formal document request authorizes its own stage. Read the saved intent returned by this tool before calling work_create/work_dispatch. The proposed action and scope are separately verified. status means inspect progress; deliver means return EXISTING output; accept means explicit scoped acceptance; control includes pause/stop/cancel. If the user explicitly accepts the current result within a stated scope, select accept and call work_accept before replying even when they also ask for status, what evidence or saved rules were used, or a closeout correction. Use the canonical workId and operationId from work_get.acceptanceTarget. Preserve all stated limits. A request may accept a document AND explicitly request independent implementation: select produce, its production stage/relation, AND those acceptances; call work_accept for each BEFORE work_create/work_dispatch. Production alone never implies acceptance. For existing files select deliver, then work_outputs and work_deliver with its replyDelivery IDs. A positive request for missing rendering, screenshots or revisions can be production. Decide by the meaning of the authenticated original, including any separately authorized action. This decision grants no extra authority.',
+    tool('request_decide', 'Classify the CURRENT authenticated user request before acting. Use feedback for observations or trial reports without explicit approval or a current change request; discuss for planning or a small draft in chat; status for progress; deliver for existing outputs; control for pause/stop/cancel. Use accept for explicit scoped approval of a delivered result, including when it accompanies a status question. Use produce/revise for an independently authorized action, including when the same message explicitly accepts earlier work. This tool independently checks the original and records any exact, confirmed acceptance before dispatch. Read the returned acceptances and unresolvedAcceptances; only recorded scopes count. A development request alone never accepts earlier work. Read the saved intent and source actions before work_create/work_dispatch; the actual production proposal still requires its own check. For existing files use work_outputs and work_deliver.',
       object({ intent: { type: 'string', enum: requestIntents }, productionStage: { type: 'string', enum: productionStages,
         description: 'Classify the requested outcome. A standalone formal Markdown review document, its revision and returning the resulting file are one document-review action. Implementation means making or changing the working product, building, testing or deploying it. Other is an independent action outside both stages.' },
         workRelation: { type: 'string', enum: ['new', 'continue'] }, workId: string,
         sourceUnit: { type: 'integer', minimum: 1, description: 'Select an original action unit only when the authorization check reports several separate actions. Retain the saved stage when finishing the same existing step.' },
-        acceptances: { type: 'array', maxItems: 8, items: object({ workId: string, operationId: string }, ['workId', 'operationId']),
-          description: 'Only results explicitly accepted by THIS user request; use exact canonical work and ended operation IDs. Complete these scoped acceptances before the production action.' }, reason: string }, ['intent', 'reason']), 'write', async (args, ctx) => {
+        reason: string }, ['intent', 'reason']), 'write', async (args, ctx) => {
         if (!frontend || !userRequest) throw new Error('Request decisions belong to the current authenticated frontend user request.');
         if (!requestIntents.includes(args.intent)) throw new Error('Choose a supported request intent.');
         if (['produce', 'revise'].includes(args.intent) && !productionStages.includes(args.productionStage)) throw new Error('Production requires its actual stage.');
@@ -194,40 +296,59 @@ export function coreTools(services, task) {
           throw new Error('The original action unit must be a positive integer for production.');
         if (production && !['new', 'continue'].includes(args.workRelation)) throw new Error('Decide whether this is an independent new task or a continuation of an existing deliverable. Use workRelation=new or continue; continue also needs its canonical workId.');
         const work = production && args.workRelation === 'continue' ? await services.sources.requireWork(args.workId, task) : null;
-        const acceptances = args.acceptances ?? [];
-        if (!Array.isArray(acceptances) || acceptances.length > 8 || args.intent === 'accept' && !acceptances.length ||
-          acceptances.length && !['accept', 'produce', 'revise'].includes(args.intent))
-          throw new Error('Explicit acceptance requires exact work/operation targets; combine it only with accept or an independently authorized production/revision.');
-        for (const target of acceptances) {
-          const work = await services.sources.requireWork(target.workId, task);
-          if (!target.operationId || acceptanceTarget(store, work, source.roomId)?.operationId !== target.operationId)
-            throw new Error('Acceptance must select the exact eligible result from work_get.acceptanceTarget. A failed, running, or superseded result cannot be accepted.');
-        }
         const previous = store.getRecord('request-routing', task.id);
         const messageId = source.replyTo || source.messageId;
         let confirmedFeedback = previous?.confirmedFeedback === true;
-        let sourceActions;
-        if (production) {
+        const user = currentUserRequest(task, store);
+        let classification, acceptanceContext;
+        if ((production && !confirmedFeedback) || intent === 'accept') {
           const selected = work && selectedWork(work);
-          const classification = !confirmedFeedback && await authorizeProduction({ task, store,
+          acceptanceContext = await requestAcceptanceContext(services, task, user).catch(() => ({ results: [], unavailable: true }));
+          classification = await authorizeProduction({ task, store,
             decision: { messageId, roomId: source.roomId }, proposed: { work: selected || undefined },
             verify: ctx.verifyProduction, signal: ctx.signal, isTargetCurrent: selected ? () => sameWork(selected, services.works.get(work.id)) : undefined,
-            sourceOnly: true, savedDecision: previous ?? null });
-          if (confirmedFeedback || !classification.actions.length) {
-            confirmedFeedback ||= classification.feedback === true;
-            production = false;
-            intent = confirmedFeedback ? 'feedback' : acceptances.length ? 'accept' : classification.deliveryUnits.length ? 'deliver' : 'discuss';
-          } else sourceActions = classification.actions;
+            sourceOnly: true, savedDecision: previous ?? null, acceptanceContext });
         }
-        const decision = store.putRecord('request-routing', { id: task.id, messageId,
-          roomId: source.roomId, acceptances: ['accept', 'produce', 'revise'].includes(intent) ? acceptances.map(({ workId, operationId }) => ({ workId, operationId })) : [],
-          intent, productionStage: production ? args.productionStage : null, confirmedFeedback,
-          existingDelivery: previous?.existingDelivery === true || intent === 'deliver', sourceUnit: production ? args.sourceUnit : null,
-          workRelation: production ? args.workRelation : null, workId: production && args.workRelation === 'continue' ? args.workId : null,
-          reason: intent !== args.intent ? 'The authenticated source contains no independent production action.' : modelText(args.reason), authority: 'model-routing-decision' });
+        const matches = (classification?.acceptances || []).map(item => ({ item,
+          candidate: acceptanceContext.results.find(result => result.messageId === item.publicationMessageId) }));
+        const readable = new Map();
+        const selectedWorks = new Set(matches.flatMap(({ candidate }) => candidate ? [candidate.workId] : []));
+        if (selectedWorks.size) {
+          const rooms = await services.sources.rooms(task).catch(() => []);
+          if (rooms.includes(user.roomId)) for (const id of selectedWorks) {
+            const current = services.works.get(id);
+            if (await services.sources.canReadWork(current, task, rooms)) readable.set(id, current.revision);
+          }
+        }
+        ctx.signal?.throwIfAborted();
+        if (classification && (store.getTask(task.id)?.cancelRequested ||
+          JSON.stringify(currentUserRequest(task, store)) !== JSON.stringify(user) ||
+          JSON.stringify(store.getRecord('request-routing', task.id)) !== JSON.stringify(previous)))
+          throw new Error('The authenticated source changed before its decision could be saved.');
+        confirmedFeedback ||= classification?.feedback === true;
+        const sourceActions = classification?.actions;
+        if (production && (confirmedFeedback || !sourceActions?.length)) {
+          production = false;
+          intent = matches.length || previous?.acceptances?.length ? 'accept' :
+            confirmedFeedback ? 'feedback' : classification?.deliveryUnits.length ? 'deliver' : 'discuss';
+        }
+        // A production decision becomes visible only after its verified acceptances are saved.
+        const decision = store.transaction(() => {
+          const { records, unresolvedAcceptances } = matches.length ? saveRequestAcceptances(services, user, matches, readable) :
+            { records: [], unresolvedAcceptances: [] };
+          const acceptances = [...new Map([...(previous?.acceptances || []), ...records]
+            .map(item => [item.workId, item])).values()];
+          return store.putRecord('request-routing', { id: task.id, messageId, roomId: source.roomId, acceptances,
+            unresolvedAcceptances: classification ? unresolvedAcceptances : previous?.unresolvedAcceptances || [],
+            acceptanceUnconfirmed: classification ? Boolean(classification.acceptanceUnconfirmed || acceptanceContext.unavailable) : previous?.acceptanceUnconfirmed,
+            intent, productionStage: production ? args.productionStage : null, confirmedFeedback,
+            existingDelivery: previous?.existingDelivery === true || intent === 'deliver', sourceUnit: production ? args.sourceUnit : null,
+            workRelation: production ? args.workRelation : null, workId: production && args.workRelation === 'continue' ? args.workId : null,
+            reason: intent !== args.intent ? 'The authenticated source contains no independent production action.' : modelText(args.reason), authority: 'model-routing-decision' });
+        });
         if (intent !== args.intent) return { ...decision, instruction: 'Follow the saved intent and respond to the original message. Do not call work_create or work_dispatch for this source classification.' };
-        return sourceActions ? { ...decision, sourceActions,
-          instruction: 'These are the saved independent source actions. Submit only an action grounded in the original and consistent with this decision. Correct an actual routing mismatch once. If the saved classification disagrees with the original, report the gap without relabeling the original request or trying alternate targets.' } : decision;
+        return sourceActions?.length ? { ...decision, sourceActions,
+          instruction: 'Only recorded acceptances were saved. For a separately authorized production action, use the matching production decision and submit its exact proposal. Correct an actual routing mismatch once. Report any unresolved acceptance without guessing another result.' } : decision;
       }),
     tool('evidence_read', 'Read a bounded original fragment by exact reference. Workers may follow only handed-off references, never browse another room/session feed. Current source access is rechecked.',
       object({ reference }, ['reference']), 'read', args => services.sources.resolve(services.sources.reference(args.reference ?? args, task), task)),
@@ -334,28 +455,6 @@ export function coreTools(services, task) {
         return { workId: work.id, operationId, status: 'ready-for-current-reply',
           attachments: available.filter(item => !selected || selected.includes(item.id)).map(({ id }) => ({ id })) };
       }),
-    tool('work_accept', 'Record THIS user’s explicit scoped acceptance. FIRST select the exact workId/operationId in request_decide.acceptances, with intent=accept or a separately authorized produce/revise combination. THEN accept it before starting that next production. Copy the operationId from work_get.acceptanceTarget and preserve all unverified boundaries. A status question can accompany explicit acceptance. Never accept running/stopped/unknown results or infer acceptance from a development request alone.',
-      object({ id: string, operationId: string, scope: string, remainingBoundaries: string }, ['id', 'operationId', 'scope', 'remainingBoundaries']), 'write', async args => {
-        const decision = store.getRecord('request-routing', task.id);
-        if (!frontend || !userRequest || !['accept', 'produce', 'revise'].includes(decision?.intent) ||
-          decision.messageId !== (source.replyTo || source.messageId) || decision.roomId !== source.roomId ||
-          !decision.acceptances?.some(item => item.workId === workId(args) && item.operationId === args.operationId))
-          throw new Error('Explicit current user acceptance of this exact work/operation must be selected in request_decide.acceptances first; production intent alone cannot accept a result.');
-        const work = await services.sources.requireWork(workId(args), task);
-        if (!modelText(args.scope).trim() || args.remainingBoundaries === undefined) throw new Error('Record the actual accepted scope and the remaining unverified boundaries.');
-        const target = acceptanceTarget(store, work, source.roomId);
-        const pending = store.listUnfinishedTasks().some(item => item.workId === work.id && ['accepted', 'queued', 'running'].includes(item.status));
-        if (!target || target.operationId !== args.operationId || pending)
-          throw new Error('This work has no matching ended result ready for acceptance; read work_get before acting.');
-        if (work.acceptance?.operationId === args.operationId && work.acceptance.source?.roomId === source.roomId &&
-          work.acceptance.source?.messageId === (source.replyTo || source.messageId)) return work;
-        return services.works.update(work.id, { status: 'completed', expectedRevision: work.revision,
-          acceptance: { scope: modelText(args.scope), remainingBoundaries: modelText(args.remainingBoundaries), operationId: target.operationId,
-            ...(target.turnId ? { turnId: target.turnId } : {}),
-            ...(target.publicationMessageIds ? { publicationMessageIds: target.publicationMessageIds } : {}),
-            ...(target.throughOperationId ? { throughOperationId: target.throughOperationId } : {}),
-            source: { type: 'room', roomId: source.roomId, messageId: source.replyTo || source.messageId }, recordedAt: new Date().toISOString() } });
-      }),
     tool('work_create', 'Accept and asynchronously dispatch independent work. The receipt confirms local scheduling only, not Pi/Codex execution, native registration or completion. Omit executor for the default engine. Give goal, evidence, handoff prose and an authorized target; the program supplies operation IDs and refreshes current project rules. Do not repeat or wait on this frontend call to strengthen the acknowledgment.',
       object({ id: string, operationId: string, goal: string, requirements: string, responsibility: string, ...handoffFields,
         executor: object({ kind: { type: 'string', enum: ['pi', 'codex', 'codex-cli', 'grok', 'claude-code'] }, connectionId: string,
@@ -446,7 +545,7 @@ export function coreTools(services, task) {
           warning: `未识别可选状态 ${ignoredStatus}；有效进展已保留，工作状态未改动。` };
         return services.works.update(work.id, { ...patch, expectedRevision: work.revision });
       }),
-    tool('work_dispatch', 'Continue an existing work ONLY after request_decide saved produce/revise with workRelation=continue and its canonical workId for THIS request. Status, acceptance and returning existing files use reads/work_accept/work_deliver; never fix a refusal by relabeling a delivery request as production. New rendering, screenshots or revisions may be genuine production. Put prose in JSON strings. Detailed content and concise instruction are complementary derived guidance. The program supplies event ID/binding. Stopped work resumes only for a fresh user request.',
+    tool('work_dispatch', 'Continue an existing work ONLY after request_decide saved produce/revise with workRelation=continue and its canonical workId for THIS request. Status uses reads, acceptance uses request_decide, and returning existing files uses work_deliver. Never fix a refusal by relabeling a delivery request as production. New rendering, screenshots or revisions may be genuine production. Put prose in JSON strings. Detailed content and concise instruction are complementary derived guidance. The program supplies event ID/binding. Stopped work resumes only for a fresh user request.',
       object({ id: string, content: {}, ...handoffFields, correction: { type: 'boolean' } }), 'write', async (args, ctx) => {
         const work = await services.sources.requireWork(workId(args), task);
         if (['paused', 'cancelled'].includes(work.status) && !userRequest) throw new Error('这项工作已停止；当前事件不包含用户新的继续要求。其他动作可以继续。');

@@ -170,7 +170,7 @@ export class BotEngine {
       }
       if (observation && !publicView?.runtimeEvent) throw new Error('Group observation requires an authorized public room source');
       const handoffs = [];
-      const verifyProduction = async ({ user, units, continuationTarget, existingDelivery, sourceAction, proposed, step }, signal) => {
+      const verifyProduction = async ({ user, units, continuationTarget, existingDelivery, sourceAction, proposed, step, acceptanceContext }, signal) => {
         const prior = publicView?.messages.filter(message => message.source?.roomId === user.roomId) || [];
         const current = prior.findIndex(message => message.source?.messageId === user.messageId);
         const related = user.replyTo ? prior.slice(0, Math.max(0, current)).find(message => message.source?.messageId === user.replyTo) :
@@ -179,7 +179,7 @@ export class BotEngine {
         const result = await this.provider.stream(model, { messages: [
           { role: 'system', content: productionAuthorizationPrompts[step], timestamp: Date.now() },
           userMessage({ currentUser: units, referencedTurn: previous && { content: previous.content },
-            continuationTarget, existingDelivery, ...(proposed ? { sourceAction, proposed } : {}) }),
+            continuationTarget, existingDelivery, acceptanceContext, ...(proposed ? { sourceAction, proposed } : {}) }),
         ], tools: [] }, { signal, reasoning: thinkingLevel,
           usageContext: { ...usageContext, requestKind: 'production-authorization', authorizationStep: step } }).result();
         signal?.throwIfAborted();

@@ -13,7 +13,7 @@ const assetSegment = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
 const reservedName = /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i;
 const exportFiles = new Map([
   [entry, 'text/html; charset=utf-8'], ['index.js', 'text/javascript; charset=utf-8'],
-  ['index.wasm', 'application/wasm'], ['index.pck', 'application/octet-stream'],
+  ['index.wasm', 'application/wasm'], ['index.wasm.gz', 'application/gzip'], ['index.pck', 'application/octet-stream'],
   ['index.audio.worklet.js', 'text/javascript; charset=utf-8'],
   ['index.audio.position.worklet.js', 'text/javascript; charset=utf-8'],
   ['index.png', 'image/png'], ['index.icon.png', 'image/png'], ['index.apple-touch-icon.png', 'image/png'],
