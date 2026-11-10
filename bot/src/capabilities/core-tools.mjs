@@ -191,7 +191,18 @@ function acceptanceContextView(bindings, user) {
   return { replyTo: user?.replyTo, units, results: [...results.values()] };
 }
 
-const approvalScopeKey = ({ unit, scope }) => JSON.stringify([unit, scope]);
+function acceptanceScopes(items, bindings) {
+  const byUnit = new Map(bindings.map(binding => [binding.unit, binding]));
+  const anchored = items.map(item => {
+    const binding = byUnit.get(item.unit);
+    const anchor = JSON.stringify([item.unit, item.clauseStart, binding?.workId, binding?.publication?.messageId,
+      ...acceptanceIdentity.map(key => binding?.target?.[key])]);
+    return { item, anchor };
+  });
+  // Different summaries cannot distinguish scopes of the same original approval and delivery.
+  const restricted = new Set(anchored.filter(({ item }) => item.recordIn !== 'work').map(({ anchor }) => anchor));
+  return anchored.map(({ item, anchor }) => item.recordIn === 'work' && restricted.has(anchor) ? { ...item, recordIn: 'unconfirmed' } : item);
+}
 
 function saveRequestAcceptances(services, user, items, before, current) {
   const { store } = services, records = [], roomOnlyAcceptances = [], unresolvedAcceptances = [], grouped = new Map();
@@ -338,8 +349,14 @@ export function coreTools(services, task) {
         const messageId = source.replyTo || source.messageId;
         let confirmedFeedback = previous?.confirmedFeedback === true;
         const user = currentUserRequest(task, store);
+        // Room retries create new task and accepted-message IDs for the same original message.
+        const acceptanceId = user && `acceptance:${JSON.stringify([user.actor, user.roomId, user.messageId])}`;
+        const readAcceptance = () => acceptanceId && store.getRecord('production-sources', acceptanceId);
+        let acceptance = readAcceptance();
         let classification, acceptanceContext, bindingSnapshot = [];
-        if ((production && !confirmedFeedback) || intent === 'accept') {
+        const checkProduction = production && !confirmedFeedback;
+        const processAcceptance = checkProduction || intent === 'accept';
+        if (checkProduction || intent === 'accept' && !acceptance) {
           const selected = work && selectedWork(work);
           try {
             const rooms = user?.roomId ? await services.sources.rooms(task) : [];
@@ -351,17 +368,22 @@ export function coreTools(services, task) {
             verify: ctx.verifyProduction, signal: ctx.signal, isTargetCurrent: selected ? () => sameWork(selected, services.works.get(work.id)) : undefined,
             sourceOnly: true, savedDecision: previous ?? null, acceptanceContext });
         }
-        const approvals = classification?.acceptances || [];
-        const previousRoomOnly = previous?.roomOnlyAcceptances || [];
-        const previousRoomOnlyScopes = new Set(previousRoomOnly.map(approvalScopeKey));
-        const roomOnlyScopes = new Set(approvals.filter(item => item.recordIn === 'room-only').map(approvalScopeKey));
-        const newApprovals = approvals.filter(item => !previousRoomOnlyScopes.has(approvalScopeKey(item)) &&
-          (item.recordIn === 'room-only' || !roomOnlyScopes.has(approvalScopeKey(item))));
-        const canRecord = newApprovals.some(item => item.recordIn === 'work' && item.publicationMessageId &&
-          bindingSnapshot.some(value => value.unit === item.unit && value.publication?.messageId === item.publicationMessageId));
+        // Freeze acceptance scope and its exact delivery before refreshing permissions. A routing
+        // correction or retry may verify production separately but cannot reclassify this approval.
+        if (!acceptance && (classification?.acceptances?.length || classification?.acceptanceUnconfirmed)) {
+          const approvals = acceptanceScopes(classification.acceptances || [], bindingSnapshot);
+          const bindings = bindingSnapshot.filter(binding => binding.publication && approvals.some(item => item.recordIn === 'work' &&
+            item.unit === binding.unit && item.publicationMessageId === binding.publication.messageId));
+          acceptance = store.transaction(() => readAcceptance() || store.putRecord('production-sources', {
+            id: acceptanceId, acceptedMessageId: user.acceptedMessageId, roomId: user.roomId, messageId: user.messageId,
+            approvals, bindings, unconfirmed: classification.acceptanceUnconfirmed ||
+              approvals.some(item => item.recordIn === 'unconfirmed' || item.recordIn === 'work' && acceptanceContext?.unavailable),
+          }));
+        }
+        const canRecord = processAcceptance && !acceptance?.receipt && acceptance?.bindings.length > 0;
         const rooms = canRecord ? await services.sources.rooms(task).catch(() => []) : [];
         ctx.signal?.throwIfAborted();
-        if (classification && (store.getTask(task.id)?.cancelRequested ||
+        if ((classification || acceptance) && (store.getTask(task.id)?.cancelRequested ||
           JSON.stringify(currentUserRequest(task, store)) !== JSON.stringify(user) ||
           JSON.stringify(store.getRecord('request-routing', task.id)) !== JSON.stringify(previous)))
           throw new Error('The authenticated source changed before its decision could be saved.');
@@ -369,23 +391,29 @@ export function coreTools(services, task) {
         const sourceActions = classification?.actions;
         if (production && (confirmedFeedback || !sourceActions?.length)) {
           production = false;
-          intent = approvals.length || previous?.acceptances?.length || previousRoomOnly.length ? 'accept' :
+          intent = acceptance || previous?.acceptances?.length ? 'accept' :
             confirmedFeedback ? 'feedback' : classification?.deliveryUnits.length ? 'deliver' : 'discuss';
         }
         // Persist the actual acceptance outcomes with the routing decision, before any separate dispatch.
         const decision = store.transaction(() => {
-          let current = [], unavailable = acceptanceContext?.unavailable;
-          if (canRecord) try { current = requestAcceptanceBindings(services, task, user, rooms); }
-          catch { unavailable = true; }
-          const { records, roomOnlyAcceptances, unresolvedAcceptances } = saveRequestAcceptances(services, user, newApprovals, bindingSnapshot, current);
-          const acceptances = [...new Map([...(previous?.acceptances || []), ...records]
+          let receipt = readAcceptance()?.receipt;
+          if (processAcceptance && acceptance && !receipt) {
+            let current = [], unavailable = false;
+            if (canRecord) try { current = requestAcceptanceBindings(services, task, user, rooms); }
+            catch { unavailable = true; }
+            const { records, roomOnlyAcceptances, unresolvedAcceptances } =
+              saveRequestAcceptances(services, user, acceptance.approvals, acceptance.bindings, current);
+            receipt = { taskId: task.id, acceptances: records, roomOnlyAcceptances, unresolvedAcceptances,
+              acceptanceUnconfirmed: acceptance.unconfirmed || unavailable };
+            store.putRecord('production-sources', { ...acceptance, receipt });
+          }
+          const acceptances = [...new Map([...(previous?.acceptances || []), ...(receipt?.acceptances || [])]
             .map(item => [item.workId, item])).values()];
-          const recordedScopes = new Set(acceptances.flatMap(item => (item.scopes || []).map(approvalScopeKey)));
           return store.putRecord('request-routing', { id: task.id, messageId, roomId: source.roomId, acceptances,
-            roomOnlyAcceptances: [...previousRoomOnly, ...roomOnlyAcceptances].filter(item => !recordedScopes.has(approvalScopeKey(item))),
-            unresolvedAcceptances: classification ? unresolvedAcceptances.filter(item => !recordedScopes.has(approvalScopeKey(item))) : previous?.unresolvedAcceptances || [],
-            acceptanceUnconfirmed: classification ? Boolean(classification.acceptanceUnconfirmed ||
-              unavailable && newApprovals.some(item => item.recordIn === 'work')) : previous?.acceptanceUnconfirmed,
+            acceptanceReceiptTaskId: receipt?.taskId ?? previous?.acceptanceReceiptTaskId,
+            roomOnlyAcceptances: receipt?.roomOnlyAcceptances ?? previous?.roomOnlyAcceptances ?? [],
+            unresolvedAcceptances: receipt?.unresolvedAcceptances ?? previous?.unresolvedAcceptances ?? [],
+            acceptanceUnconfirmed: receipt?.acceptanceUnconfirmed ?? previous?.acceptanceUnconfirmed,
             intent, productionStage: production ? args.productionStage : null, confirmedFeedback,
             existingDelivery: previous?.existingDelivery === true || intent === 'deliver', sourceUnit: production ? args.sourceUnit : null,
             workRelation: production ? args.workRelation : null, workId: production && args.workRelation === 'continue' ? args.workId : null,
@@ -421,7 +449,8 @@ export function coreTools(services, task) {
           [taskSource(item, store).replyTo, item.messageId].includes(messageId)).map(item => {
           const routing = store.getRecord('request-routing', item.id);
           const acceptanceReceipt = routing?.roomId && routing.roomId === source.roomId && routing.messageId === messageId ? {
-            messageId: routing.messageId, acceptances: routing.acceptances, roomOnlyAcceptances: routing.roomOnlyAcceptances,
+            messageId: routing.messageId, receiptTaskId: routing.acceptanceReceiptTaskId,
+            acceptances: routing.acceptances, roomOnlyAcceptances: routing.roomOnlyAcceptances,
             unresolvedAcceptances: routing.unresolvedAcceptances, acceptanceUnconfirmed: routing.acceptanceUnconfirmed } : undefined;
           return { taskId: item.id, messageId, status: item.status, acceptanceReceipt,
             actions: store.listTools(item.id).filter(record => record.effect !== 'read').map(record => {
