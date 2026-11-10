@@ -6,8 +6,12 @@ export function isAcceptedOperation(work, operationId) {
 // Work lifecycle, local transport and an observed external turn are separate.
 export function waitingLabel(work) {
   if (!work) return '工作已保留';
-  if (work.status === 'paused') return '工作已暂停，等待明确继续';
-  if (work.status === 'cancelled') return '工作已取消';
+  if (['paused', 'cancelled'].includes(work.status)) {
+    const local = work.status === 'paused' ? '本地工作已暂停' : '本地工作已取消';
+    const external = { pending: '执行端停止待确认', interrupted: work.externalStop?.alreadyEnded ? '原执行回合此前已中断' : '原执行回合已中断', completed: '原执行回合已完成',
+      failed: '原执行回合已失败结束', cancelled: '原执行回合已取消', 'local-stopped': '没有在途 Desktop 回合' }[work.externalStop?.status];
+    return external ? `${local}；${external}` : work.status === 'paused' ? '工作已暂停，等待明确继续' : '工作已取消';
+  }
   const wait = work.waiting || {};
   if (wait.kind === 'user-input') return wait.question ? `等待答复：${wait.question}` : '执行端有待处理请求';
   if (wait.kind === 'review') return wait.reason || '本阶段执行已结束，等待结果评审';

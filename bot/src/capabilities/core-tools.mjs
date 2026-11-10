@@ -392,7 +392,12 @@ export function coreTools(services, task) {
         if (args.waiting?.kind === 'user-input' && !question) throw new Error('Waiting for user input requires the actual unanswered question.');
         if (confirmedFinal && args.waiting?.kind === 'user-input' && !blockingRequirement)
           throw new Error('After a confirmed final, user-input requires a blockingRequirement of this same accepted work. For acceptance of the result or authorization of separate next work, use waiting/review or complete the finished scope.');
-        if (['paused', 'cancelled'].includes(args.status) && work.id !== task.workId) return services.stopWork(work.id, args.status, task);
+        if (['paused', 'cancelled'].includes(args.status) && work.id !== task.workId) {
+          if (!userRequest) throw new Error('只能依据当前用户的停止要求控制这项工作。');
+          if (source.roomId && (!work.sources?.length || work.sources.some(item => item.roomId !== source.roomId)))
+            throw new Error('请在这项工作的来源会话停止，或使用它的工作卡。');
+          return compactWork(await services.stopWork(work, args.status, task));
+        }
         const patch = Object.fromEntries((frontend ? ['status'] : ['goal', 'requirements', 'progress', 'status']).filter(key => args[key] !== undefined).map(key => [key, modelText(args[key])]));
         if (!frontend && args.waiting && (args.status || work.status) === 'waiting') patch.waiting = { kind: args.waiting.kind,
           question, reason: modelText(args.waiting.reason), since: new Date().toISOString(),
@@ -426,7 +431,9 @@ export function coreTools(services, task) {
         try { content.currentKnowledge = await services.memory.forRequest(task, services.sources.project(work)); }
         catch (error) { content.evidenceWarnings.push({ message: `Current project rules are unavailable: ${error.message}` }); }
         ctx.signal?.throwIfAborted();
-        documentBoundary(services.works.get(work.id), decision);
+        const current = services.works.get(work.id);
+        if ((current.controlRevision || 0) !== (work.controlRevision || 0)) throw new Error('工作控制状态已变化；请重新读取并依据新的用户要求处理。');
+        documentBoundary(current, decision);
         const receipt = await services.works.dispatch(work.id, { id: actionId(args, ctx, 'eventId'), kind: frontend ? 'request' : 'event', content, productionAuthorization: grant,
           metadata: { correction: args.correction === true, resume: Boolean(grant), priority: 'foreground' } }, task);
         return { ...receipt, acceptance: modelText(args.acceptance), evidenceWarnings: content.evidenceWarnings };

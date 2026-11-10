@@ -345,6 +345,8 @@ private struct WorkspaceWorkDetail: View {
             if value["historical"].bool != true && ["active", "waiting"].contains(status) {
                 Section { Button("暂停工作", systemImage: "pause") { Task { await perform("pause") } }.disabled(busy) }
                 Section { Button("取消工作", role: .destructive) { Task { await perform("cancel") } }.disabled(busy) }
+            } else if value["historical"].bool != true && ["paused", "cancelled"].contains(status) && value["externalStop"]["status"].string == "pending" {
+                Section { Button("重新确认执行端停止", systemImage: "arrow.clockwise") { Task { await perform(status == "paused" ? "pause" : "cancel") } }.disabled(busy) }
             } else if value["historical"].bool != true && ["paused", "blocked", "cancelled"].contains(status) {
                 Section { Button("恢复工作", systemImage: "play") { Task { await perform("resume") } }.disabled(busy) }
             }
@@ -391,7 +393,8 @@ private struct WorkspaceWorkDetail: View {
         busy = true
         defer { busy = false }
         do {
-            _ = try await store.request(path: "/api/works/\(workspaceEscaped(initial.id))/\(action)", method: "POST", body: body)
+            let requestBody: SummonJSONValue = action == "send" ? body : .object(["controlRevision": .number(Double(value["controlRevision"].int ?? 0))])
+            _ = try await store.request(path: "/api/works/\(workspaceEscaped(initial.id))/\(action)", method: "POST", body: requestBody)
             if action == "send" { answer = "" }
             await load()
         } catch { self.error = error.localizedDescription }

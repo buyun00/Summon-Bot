@@ -169,12 +169,9 @@ export async function createCapability(options) {
       case 'codex_status':{codex.assertScope(actor,args.workId,context.codexScope);const id=codex.bindingId(actor,args.workId),work=codex.require(id);assertOwner(actor,work.botId);return codex.get(id);}
       case 'codex_read':case 'codex_send':case 'codex_interrupt':{
         codex.assertScope(actor,args.workId||context.workId,context.codexScope);
+        if(name==='codex_interrupt'&&context.stopId&&context.workId===args.workId)
+          return codex.stopWork(actor,args.workId,context.stopId);
         const id=codex.bindingId(actor,args.workId||context.workId),work=codex.require(id);assertOwner(actor,work.botId);
-        if(name==='codex_interrupt'&&!args.expectedTurnId){
-          const operation=codex.operation(work,args.operationId);
-          if(operation)args={...args,expectedTurnId:operation.body.expectedTurnId};
-          else{const observed=await codex.read(id,{signal});args={...args,expectedTurnId:observed.observed?.currentTurn?.id};}
-        }
         return codex[{codex_read:'read',codex_send:'send',codex_interrupt:'interrupt'}[name]](id,{...args,verification:context.codexVerification,signal});
       }
       default:fail('Unknown capability tool',404);
@@ -193,7 +190,7 @@ export async function createCapability(options) {
   if(knowledge)expose(knowledge,['saveNode','saveEdge']);
   if(memories)expose(memories,['write']);
   if(codex){
-    expose(codex,['create','attach','send','interrupt','read']);
+    expose(codex,['create','attach','send','interrupt','read','stopWork']);
     operations.pause=async()=>{await codex.stop();return {paused:true};};
     operations.resumeService=async()=>{await codex.start();return {ready:true};};
   }

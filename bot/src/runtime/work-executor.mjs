@@ -10,23 +10,14 @@ const stopped = new Set(['paused', 'cancelled']);
 export function workExecutor({ store, services, emit }) {
   return {
     async stop(work, task) {
-      if (!work.bindings?.some(binding => binding.type === 'codex-desktop')) return { status: 'local-stopped' };
-      const invoke = async (suffix, name, args) => {
-        const id = `${work.id}:stop:${task.id}:${suffix}`;
-        let event = store.getRecord('work-events', id);
-        event ||= store.putRecord('work-events', { id, workId: work.id, sourceTaskId: task.id, status: 'submitting', transport: { name, args } });
-        const receipt = await services.capability(event.transport.name, event.transport.args, task, { operationId: id });
-        store.putRecord('work-events', { ...event, status: 'submitted', executionReceipt: receipt });
-        return receipt;
-      };
+      const stopId = work.externalStop.id, id = `${work.id}:stop:${stopId}:${task.id}`;
+      const name = 'codex_interrupt', args = { workId: work.id, operationId: stopId };
+      const event = store.putRecord('work-events', { id, workId: work.id, sourceTaskId: task.id, stopId,
+        status: 'submitting', transport: { name, args } });
       try {
-        const observed = await invoke('read', 'codex_read', { workId: work.id });
-        const state = observed.observed;
-        if (!state?.currentTurn?.id || state.stale) return { status: 'unknown', reason: 'Current external turn is unconfirmed' };
-        if (['completed', 'failed', 'cancelled', 'interrupted'].includes(state.currentTurn.status)) return { status: state.currentTurn.status, turnId: state.currentTurn.id };
-        const receipt = await invoke('interrupt', 'codex_interrupt', { workId: work.id, operationId: `stop:${task.id}`, expectedTurnId: state.currentTurn.id });
-        return { status: receipt.status, turnId: state.currentTurn.id };
-      } catch (error) { return { status: 'unknown', error: error.message }; }
+        const receipt = await services.capability(name, args, task, { operationId: id });
+        store.putRecord('work-events', { ...event, status: 'submitted', executionReceipt: receipt });
+      } catch { store.putRecord('work-events', { ...event, status: 'unknown', executionReceipt: { status: 'pending' } }); }
     },
     record(task, message) {
       const session = store.getSession(task.sessionId) || { id: task.sessionId, workId: task.workId, conversationId: task.conversationId, kind: 'work', messages: [] };
@@ -57,6 +48,10 @@ export function workExecutor({ store, services, emit }) {
         event = store.putRecord('work-events', { ...event, sourceTaskId: task.id, handoffFile: path, resultFile, transportCharacters: characters, transport: { name, args }, status: 'submitting' });
       }
       // Retries always use the same Desktop operation; its service queries unknown outcomes.
+      options.signal?.throwIfAborted();
+      const beforeSubmit = services.works.get(work.id);
+      if (stopped.has(beforeSubmit.status) || (beforeSubmit.controlRevision || 0) !== (work.controlRevision || 0))
+        return { content: '', suspended: true, waiting: beforeSubmit.status, executor: 'codex' };
       const receipt = await services.capability(event.transport.name, event.transport.args, store.getTask(event.sourceTaskId), {
         operationId: event.id, ...(event.transport.name === 'codex_create' ? { signal: options.signal } : {}),
       });
@@ -131,7 +126,9 @@ export function workExecutor({ store, services, emit }) {
       const superseded = Boolean(content.operationId && binding.operationId !== content.operationId);
       const knownOperation = operation?.workId === work.id && operation.transport;
       const progress = content.type === 'external_progress';
-      const late = stopped.has(work.status) || work.status === 'completed' && isAcceptedOperation(work, content.operationId) ||
+      const stoppedTurn = content.turnId && store.getRecord('work-stops', `${work.id}:${binding.externalThreadId}:${content.turnId}`);
+      const late = stopped.has(work.status) || Boolean(stoppedTurn) ||
+        work.status === 'completed' && isAcceptedOperation(work, content.operationId) ||
         progress && work.status === 'completed' || superseded && !knownOperation ||
         progress && (content.turnId !== binding.turnId || content.progress?.threadId !== binding.externalThreadId || content.progress?.turnId !== content.turnId);
       store.putRecord('work-observations', { id: eventId, workId: work.id, taskId: task.id, late, content, observedAt: at() });

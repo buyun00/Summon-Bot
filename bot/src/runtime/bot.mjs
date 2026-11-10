@@ -256,8 +256,18 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         accepted.task = store.updateTask(task.id, { status: 'completed', result: { content: '', observed: true }, finishedAt: at() });
         return accepted;
       }
-      if (envelope.metadata?.sourceType !== 'external' && work && (['waiting', 'blocked'].includes(work.status) || (work.status === 'completed' && envelope.kind === 'request') ||
-        (['paused', 'cancelled'].includes(work.status) && envelope.kind === 'request' && source === 'controller' && envelope.metadata?.resume === true))) services.works.update(work.id, { status: 'active', waiting: null, lastError: null });
+      if (envelope.metadata?.sourceType !== 'external' && work) {
+        if (['paused', 'cancelled'].includes(work.status)) {
+          const event = envelope.metadata?.workEventId && store.getRecord('work-events', envelope.metadata.workEventId);
+          if (envelope.kind === 'request' && source === 'controller' && envelope.metadata?.resume === true &&
+            event?.workId === work.id && event.authorization?.production?.workId === work.id) {
+            services.works.requireResume(work, event.authorization.source.receivedAt || null);
+            services.works.activate(work);
+          }
+        } else if (['waiting', 'blocked'].includes(work.status) || work.status === 'completed' && envelope.kind === 'request') {
+          services.works.update(work.id, { status: 'active', waiting: null, lastError: null });
+        }
+      }
       schedule(task);
       return accepted;
     };
@@ -268,9 +278,10 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
     } });
     services.executor = workExecutor({ store, services, emit });
     services.reviewExternal = (task, options) => engine.run(task, options);
-    services.stopWork = async (id, status, task) => {
-      const work = services.works.stop(id, status);
-      return { ...work, externalStop: await services.executor.stop(work, task) };
+    services.stopWork = async (target, status, task) => {
+      const work = services.works.stop(target.id, status, target.controlRevision || 0, taskSource(task, store).receivedAt);
+      if (work.externalStop?.status === 'pending' && ['paused', 'cancelled'].includes(work.status)) await services.executor.stop(work, task);
+      return services.works.get(work.id);
     };
     services.resultSource = (work, task) => {
       return task.workId === work.id ? services.works.execution(task).authorization?.source : undefined;
@@ -449,10 +460,12 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         if (method === 'POST' && !id) return services.works.create(await readBody(request));
         if (method === 'PATCH' && id) {
           const body = await readBody(request);
-          const work = ['paused', 'cancelled'].includes(body.status) ? services.works.stop(id, body.status) : services.works.update(id, body);
-          if (body.status === 'active') await wake();
+          const work = ['paused', 'cancelled'].includes(body.status) ? services.works.stop(id, body.status, body.controlRevision) :
+            body.status === 'active' && body.controlRevision !== undefined ? await services.works.resume(id, body.controlRevision) : services.works.update(id, body);
+          if (body.status === 'active') void wake().catch(() => {});
           return work;
         }
+        if (method === 'POST' && parts[2] === 'stop-result' && parts.length === 3) return services.works.settleStop(id, await readBody(request));
         if (method === 'POST' && parts[2] === 'events') return services.works.dispatch(id, await readBody(request));
         if (method === 'POST' && parts[2] === 'review') {
           const work = services.works.get(id);

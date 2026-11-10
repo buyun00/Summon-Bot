@@ -8,6 +8,8 @@ import { productionStage } from '../capabilities/request-routing.mjs';
 
 const now = () => new Date().toISOString();
 const statuses = new Set(['active', 'waiting', 'paused', 'blocked', 'completed', 'cancelled']);
+const stopped = new Set(['paused', 'cancelled']);
+const stopOutcomes = new Set(['local-stopped', 'interrupted', 'completed', 'failed', 'cancelled']);
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), { status }); };
 
 /** S3 is state and pointers only. Knowledge正文 lives in Markdown, never here. */
@@ -64,12 +66,15 @@ export class WorkService {
     return task.metadata?.automaticContinuation || task.metadata?.resumeEventId ?
       { type: 'work_continuation', acceptedStep: original, continuation: task.input } : task.input;
   }
-  update(id, input) {
+  update(id, input, { control = false } = {}) {
     return this.store.transaction(() => {
       const previous = this.get(id); if (!previous) fail('Unknown work', 404);
       if (input.expectedRevision !== undefined && input.expectedRevision !== previous.revision) fail('Work changed; read current state', 409);
       if (input.status !== undefined && !statuses.has(input.status)) fail('Invalid work status');
+      if (!control && stopped.has(previous.status) && input.status !== undefined && input.status !== previous.status)
+        fail('工作已停止，只能由用户明确继续。', 409);
       const patch = Object.fromEntries(Object.entries(input).filter(([key]) => ['goal', 'requirements', 'progress', 'checkpoint', 'status', 'waiting', 'bindings', 'notifications', 'sources', 'responsibility', 'lastTaskId', 'lastError', 'owner', 'notificationCursor', 'executionOutcome', 'executor', 'supervisor'].includes(key)));
+      if (control) for (const key of ['controlRevision', 'externalStop']) if (Object.hasOwn(input, key)) patch[key] = input[key];
       for (const key of ['checkpoint', 'project', 'acceptance']) if (Object.hasOwn(input, key)) patch[key] = input[key];
       for (const key of ['bindings', 'notifications', 'sources']) if (patch[key] !== undefined && !Array.isArray(patch[key])) fail(`${key} must be an array`);
       const record = this.clean({ ...previous, ...patch, id, revision: previous.revision + 1, updatedAt: now() });
@@ -98,6 +103,7 @@ export class WorkService {
     const inherited = task.workId ? this.execution(task) : null;
     const wait = input.metadata?.waitId && this.store.getRecord('work-waits', input.metadata.waitId);
     const authorization = (wait?.targetWorkId === id && wait.authorization) || this.authorization(task, `${id}:${eventId}`, input.productionAuthorization);
+    if (input.metadata?.resume && stopped.has(work.status)) this.requireResume(work, authorization?.source?.receivedAt || null);
     let intent = prior || this.store.putRecord('work-events', this.clean({ id: `${id}:${eventId}`, workId: id,
       kind: input.kind || 'event', content: input.content, requestTaskId: authorization?.requestTaskId, sourceTaskId: task.id, authorization,
       metadata: { ...input.metadata, ...(inherited?.executionEventId ? { executionEventId: inherited.executionEventId } : {}) }, status: 'pending', createdAt: now() }));
@@ -173,6 +179,9 @@ export class WorkService {
     const mode = crossWorkStep || task.workId && input.mode !== 'observe' || instruction && input.mode === 'follow_up' ? 'follow_up' : 'observe';
     const grant = mode === 'follow_up' && verifyFollowUp ? await verifyFollowUp(target, { workId: input.dependencyWorkId,
       taskId: input.taskId, until: input.until, event: input.event }) : null;
+    const current = this.get(target.id);
+    if (mode === 'follow_up' && (stopped.has(current.status) || (current.controlRevision || 0) !== (target.controlRevision || 0)))
+      fail('工作已停止或控制状态已变化，未登记后续派发。', 409);
     const waiting = this.clean({ ...input, mode, id: waitId, workId: id, targetWorkId, sourceTaskId: task.id,
       ...(grant ? { handoff: { ...input.handoff, stage: productionStage(grant) } } : {}),
       authorization: this.authorization(task, waitId, grant),
@@ -188,12 +197,81 @@ export class WorkService {
       taskId: waiting.taskId, dependencyEventId: waiting.dependencyEventId,
       ...(waiting.unresolvedTaskId ? { unresolved: true, warning: '等待已保留，但尚未确定对应执行回合；请补充确切 taskId。不会消费其他回合的结果。' } : {}) };
   }
-  stop(id, status = 'paused') {
-    if (!['paused', 'cancelled'].includes(status)) fail('Stop status must be paused or cancelled');
-    const work = this.update(id, { status });
-    for (const wait of this.store.listRecords('work-waits')) if (wait.status === 'pending' && (wait.workId === id || wait.targetWorkId === id))
-      this.store.putRecord('work-waits', { ...wait, status, stoppedAt: now() });
+  stop(id, status, expectedControlRevision, receivedAt) {
+    if (!stopped.has(status)) fail('Stop status must be paused or cancelled');
+    const work = this.store.transaction(() => {
+      const previous = this.get(id); if (!previous) fail('Unknown work', 404);
+      if (previous.status === 'completed') return previous;
+      const revision = previous.controlRevision || 0;
+      const holding = stopped.has(previous.status) && previous.externalStop;
+      if (expectedControlRevision !== undefined && expectedControlRevision !== revision &&
+        !(holding && previous.status === status && expectedControlRevision === previous.externalStop.fromRevision))
+        fail('工作控制状态已变化，请刷新后重新操作。', 409);
+      if (holding && (previous.status === status || previous.status === 'cancelled')) return previous;
+      if (!holding && receivedAt && previous.externalStop && receivedAt <= previous.externalStop.requestedAt)
+        fail('该停止请求早于上一次停止或恢复，请使用新的用户请求。', 409);
+      const binding = previous.bindings?.find(item => item.type === 'codex-desktop');
+      const externalStop = holding || { id: randomUUID(), fromRevision: revision, requestedAt: now(),
+        status: binding || previous.executor?.kind === 'codex' ? 'pending' : 'local-stopped',
+        bindingId: binding?.id, threadId: binding?.externalThreadId, hostId: binding?.hostId };
+      const saved = this.update(id, { status, externalStop, controlRevision: revision + 1 }, { control: true });
+      for (const wait of this.store.listRecords('work-waits')) if (wait.status === 'pending' && (wait.workId === id || wait.targetWorkId === id))
+        this.store.putRecord('work-waits', { ...wait, status, stoppedAt: externalStop.requestedAt });
+      return saved;
+    });
+    if (!stopped.has(work.status)) return work;
     for (const task of this.store.listTasks({ limit: 10000 })) if (task.workId === id && task.status === 'running') this.cancel(task.id);
     return work;
+  }
+  settleStop(id, { stopId, status, bindingId, threadId, turnId, observedAt, alreadyEnded }) {
+    const work = this.get(id), stop = work?.externalStop;
+    if (!stop || stop.id !== stopId || !stopped.has(work.status) || stop.status !== 'pending') return { applied: false };
+    if (!stopOutcomes.has(status)) fail('Invalid external stop outcome');
+    if (status !== 'local-stopped' && (!turnId || !threadId || !observedAt ||
+      !work.bindings?.some(binding => binding.id === bindingId && binding.externalThreadId === threadId) ||
+      stop.bindingId && stop.bindingId !== bindingId || stop.threadId && stop.threadId !== threadId))
+      fail('Stop evidence does not match this binding', 409);
+    const receipt = { ...stop, status, bindingId: bindingId || stop.bindingId,
+      threadId: threadId || stop.threadId, turnId, observedAt, alreadyEnded: Boolean(alreadyEnded) };
+    this.store.transaction(() => {
+      this.update(id, { externalStop: receipt }, { control: true });
+      if (turnId) this.store.putRecord('work-stops', { ...receipt, stopId, id: `${id}:${threadId}:${turnId}`, workId: id });
+    });
+    return { applied: true };
+  }
+  requireResume(work, receivedAt) {
+    if (work.externalStop?.status === 'pending') fail('本地已停止；请先确认执行端的原回合已结束。', 409);
+    if (receivedAt !== undefined && work.externalStop && (!receivedAt || receivedAt <= work.externalStop.requestedAt))
+      fail('只能由停止之后的新用户请求继续工作。', 409);
+  }
+  activate(work) {
+    return this.update(work.id, { status: 'active', waiting: null, lastError: null,
+      controlRevision: (work.controlRevision || 0) + 1 }, { control: true });
+  }
+  async resume(id, expectedControlRevision) {
+    const work = this.get(id); if (!work) fail('Unknown work', 404);
+    if ((work.controlRevision || 0) !== expectedControlRevision || !['paused', 'cancelled', 'blocked'].includes(work.status))
+      fail('工作控制状态已变化，请刷新后重新操作。', 409);
+    this.requireResume(work);
+    const queued = this.store.listTasks({ status: 'accepted', limit: 10000 }).some(task =>
+      task.workId === id && task.metadata?.sourceType !== 'external');
+    if (queued) return this.activate(work);
+    if (work.externalStop?.status === 'completed' && stopped.has(work.status))
+      fail('原执行回合已经完成。请在来源会话核对结果或明确提出追加要求。', 409);
+    const binding = work.bindings?.find(item => item.type === 'codex-desktop');
+    const events = this.store.listRecords('work-events').filter(event => event.workId === id && event.kind === 'request' && event.authorization?.source && event.content !== undefined);
+    const operationId = binding?.executionOperationId || binding?.operationId;
+    const supervision = operationId && this.store.getTool(operationId);
+    const origin = supervision?.name === 'codex_send' && supervision.workId === id && this.store.getTask(supervision.taskId);
+    const event = events.find(item => item.id === operationId || origin && this.execution(origin).executionEventId === item.id) ||
+      (!binding?.externalThreadId ? events.at(-1) : null);
+    const source = event && this.store.getTask(event.receipt?.taskId || event.requestTaskId);
+    if (!source || !this.authorization(source, event.id, event.authorization.production)?.source)
+      fail('没有可继续的原始工作步骤，请在来源会话明确提出继续要求。', 409);
+    const active = this.activate(work);
+    await this.dispatch(id, { id: `card-resume:${active.controlRevision}`, kind: 'request',
+      content: { type: 'work_continuation', acceptedStep: event.content, continuation: { instruction: '用户要求继续原工作。先核对已完成的步骤与未知结果，沿原绑定继续。' } },
+      metadata: { priority: 'foreground' }, productionAuthorization: event.authorization.production }, source);
+    return this.get(id);
   }
 }

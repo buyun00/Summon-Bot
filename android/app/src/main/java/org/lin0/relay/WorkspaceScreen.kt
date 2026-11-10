@@ -262,7 +262,8 @@ private fun WorkDetail(store: SummonStore, initial: WorkspaceRecord, snapshot: S
         if (busy) return
         busy = true
         try {
-            store.request("/api/works/${SummonApiClient.component(initial.id)}/$action", "POST", body)
+            val requestBody = if (action == "send") body else SummonJson.Obj(mapOf("controlRevision" to SummonJson.Num((value["controlRevision"].int ?: 0).toDouble())))
+            store.request("/api/works/${SummonApiClient.component(initial.id)}/$action", "POST", requestBody)
             if (action == "send") answer = ""
             load()
         } catch (exception: Exception) { error = exception.message }
@@ -302,6 +303,8 @@ private fun WorkDetail(store: SummonStore, initial: WorkspaceRecord, snapshot: S
         if (value["historical"].bool != true && status in setOf("active", "waiting")) {
             Button(enabled = !busy, onClick = { scope.launch { perform("pause") } }) { Text("暂停工作") }
             Button(enabled = !busy, onClick = { scope.launch { perform("cancel") } }) { Text("取消工作") }
+        } else if (value["historical"].bool != true && status in setOf("paused", "cancelled") && value["externalStop"]["status"].string == "pending") {
+            Button(enabled = !busy, onClick = { scope.launch { perform(if (status == "paused") "pause" else "cancel") } }) { Text("重新确认执行端停止") }
         } else if (value["historical"].bool != true && status in setOf("paused", "blocked", "cancelled")) Button(enabled = !busy, onClick = { scope.launch { perform("resume") } }) { Text("恢复工作") }
         Text("进度记录", modifier = Modifier.padding(top = 8.dp))
         val events = mergeWorkEvents(value["events"].array.orEmpty())

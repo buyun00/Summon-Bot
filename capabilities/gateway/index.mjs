@@ -93,9 +93,11 @@ export async function startGateway(options={}) {
     get:id=>{const work=store('codex').get('works',id);return work?{...work,events:store('codex').list('workEvents').filter(event=>event.workId===id)}:null;},
     create:input=>rpc('codex','create',[input])};
   for(const operation of ['send','interrupt','read'])codex[operation]=(id,args)=>rpc('codex',operation,[id,args||{}]);
+  codex.stopWork=(botId,workId,stopId)=>rpc('codex','stopWork',[botId,workId,stopId]);
   codex.attach=input=>rpc('codex','attach',[input]);
   const publicWork=(botId,work)=>({...work,id:`${botId}~${work.id}`,workId:work.id,botId,summary:work.progress,
-    waitingLabel:work.status==='waiting'||work.status==='paused'?waitingLabel(work):null,roomId:work.sources?.find(source=>source.roomId)?.roomId});
+    controlRevision:work.controlRevision||0,
+    waitingLabel:['waiting','paused','cancelled'].includes(work.status)?waitingLabel(work):null,roomId:work.sources?.find(source=>source.roomId)?.roomId});
   async function localWorks() {
     const groups=await Promise.all(manager.list().map(async bot=>manager.readState(bot.id,db=>(db?.listRecords('works')||[]).map(work=>publicWork(bot.id,work)))));
     return groups.flat();
@@ -213,6 +215,7 @@ export async function startGateway(options={}) {
     if(controlTools.some(tool=>tool.name===name))return control.call(name,args,{actor});
     if(pin&&!control.permittedVersion(actor,pin.id,pin.version))fail('This capability version is not bound to the Bot',403);
     const context={actor,...(task?{taskId:task.id,workId:runtimeOperation?.workId||task.workId,mode:runtimeOperation?'work':taskMode(task),source}:{})};
+    if(name==='codex_interrupt'&&runtimeOperation?.stopId&&runtimeOperation.stopId===args.operationId)context.stopId=runtimeOperation.stopId;
     if(name==='codex_send'&&args.verificationOnly===true){
       const observation=task?.input;
       if(task?.metadata?.sourceType!=='external'||task.metadata.finalizationOnly||observation?.source!=='codex-desktop-connector'||
@@ -342,16 +345,12 @@ export async function startGateway(options={}) {
         if(!work)fail('Historical external work is read-only',409);await manager.start(work.botId);
         const endpoint=`/works/${encodeURIComponent(work.workId)}`;
         if(match[2]==='send')return manager.request(work.botId,`${endpoint}/events`,{method:'POST',body:JSON.stringify({id:body.id||randomUUID(),kind:'request',content:body.message,metadata:{actor:'user',priority:'foreground',correction:true}})});
+        if(!Number.isSafeInteger(body.controlRevision)||body.controlRevision<0)fail('请刷新工作详情后重新操作。',409);
         const status={pause:'paused',cancel:'cancelled',resume:'active'}[match[2]];
-        const changed=await manager.request(work.botId,endpoint,{method:'PATCH',body:JSON.stringify({status})});
-        if(match[2]==='cancel'){
-          for(const binding of work.bindings||[])if(binding.type==='codex-desktop'&&binding.externalThreadId){
-            try { const observed=await codex.read(binding.id,{}),turn=observed.observed?.currentTurn;
-              if(turn?.id&&turn.status==='inProgress')await codex.interrupt(binding.id,{operationId:`cancel:${work.revision}`,expectedTurnId:turn.id});
-            }catch(error){changed.lastError={message:`本地工作已取消；外部停止尚未确认：${error.message}`};await manager.request(work.botId,endpoint,{method:'PATCH',body:JSON.stringify({lastError:changed.lastError})});}
-          }
-        }
-        if(match[2]==='resume')await manager.request(work.botId,`${endpoint}/events`,{method:'POST',body:JSON.stringify({id:body.id||randomUUID(),kind:'request',content:'用户要求继续此工作。先核对既有执行和未知结果，沿原绑定继续。',metadata:{actor:'user',priority:'foreground'}})});
+        const changed=await manager.request(work.botId,endpoint,{method:'PATCH',body:JSON.stringify({status,controlRevision:body.controlRevision})});
+        if(['paused','cancelled'].includes(changed.status)&&changed.externalStop?.status==='pending')
+          void Promise.resolve().then(()=>codex.stopWork(work.botId,work.workId,changed.externalStop.id)).catch(()=>{});
+        emit('work.updated',{work:{id:work.id,workId:work.workId,botId:work.botId,status:changed.status}});
         return publicWork(work.botId,changed);
       }
     }

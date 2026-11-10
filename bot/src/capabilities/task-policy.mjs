@@ -1,5 +1,5 @@
 import { modelArgs, modelText } from '../context/model-input.mjs';
-import { externalExecution } from '../context/execution-evidence.mjs';
+import { externalExecution, waitingLabel } from '../context/execution-evidence.mjs';
 import { factTime } from '../context/fact-time.mjs';
 
 // Conversation authority is derived from durable task ownership, never model arguments.
@@ -121,6 +121,7 @@ export const compactWork = work => work && ({ id: work.id, goal: String(work.goa
     instruction: 'Executor commentary records what was said. Preserve plans and in-progress tense; inspect exact operation/tool receipts before reporting a check or change as verified.' } : undefined,
   waiting: work.waiting && { kind: work.waiting.kind, until: work.waiting.until,
     operationId: work.waiting.operationId, outcome: work.waiting.outcome, question: work.waiting.question },
+  ...(['paused', 'cancelled'].includes(work.status) ? { waitingLabel: waitingLabel(work), externalStop: work.externalStop } : {}),
   responsibility: work.responsibility, sessionId: work.conversationId, executor: work.executor, supervisor: work.supervisor, project: work.project,
   bindings: work.bindings?.map(({ id, type, externalThreadId, turnId, operationId, status, observedAt, operations }) => ({
     id, type, externalThreadId, turnId, operationId, status, observedAt,

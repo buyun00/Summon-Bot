@@ -10,6 +10,7 @@ import { directoryProject } from '../../bot/src/context/project-scope.mjs';
 
 const now = () => new Date().toISOString();
 const terminal = new Set(['completed', 'failed', 'interrupted', 'cancelled']);
+const stopped = new Set(['paused', 'cancelled', 'archived']);
 const active = work => work.backend === 'desktop' && !terminal.has(work.status);
 const requireText = (value, name) => { if (typeof value !== 'string' || !value.trim()) fail(`${name} is required`); return value; };
 const errorView = error => ({ code: error.code || 'CONNECTOR_UNAVAILABLE', message: error.code ? error.message : 'Codex Desktop connector did not return a confirmed response.' });
@@ -196,7 +197,8 @@ export class DesktopCodex {
       if (!before) this.save({ id, workId, botId, conversationId: owner.conversationId, goal: owner.goal, backend: 'desktop', hostId: 'local', status: 'submitting', serviceVersion: this.version, roomId: input.roomId || null });
       if (before?.externalThreadId && before.operationId !== input.operationId) fail('This work is already bound; use codex_send to continue its thread', 409);
       return this.mutate(id, 'create', input.operationId, '/v1/threads', { prompt, target: codexTarget(input.target),
-        model: owner.executor?.model || 'gpt-6.1-sol', thinking: owner.executor?.thinking || 'max' }, {}, false, signal);
+        model: owner.executor?.model || 'gpt-6.1-sol', thinking: owner.executor?.thinking || 'max' }, {}, false, signal,
+      { ownerControlRevision: owner.controlRevision || 0 });
     });
   }
   async attach(input) {
@@ -204,6 +206,7 @@ export class DesktopCodex {
     const id = `${requireText(input.botId, 'botId')}:${requireText(input.workId, 'workId')}`;
     return this.exclusive(id, async () => {
       const owner = await this.ownerWork(input.botId, input.workId), prior = this.store.get('works', id);
+      if (stopped.has(owner.status)) fail('The owning work is stopped', 409);
       if (prior && (prior.botId !== input.botId || prior.externalThreadId !== input.threadId)) fail('This work already has a different external binding', 409);
       const threadId = requireText(input.threadId, 'threadId'), hostId = input.hostId || 'local';
       const state = await this.request(`/v1/threads/${encodeURIComponent(threadId)}/state?hostId=${encodeURIComponent(hostId)}`);
@@ -240,27 +243,101 @@ export class DesktopCodex {
           executionOperationId: inFlight ? work.executionOperationId || work.operationId : null,
           result: null, finishedAt: null, pendingProgress: inFlight ? this.require(id).pendingProgress : null,
           progressFloor: { turnId: state.currentTurn.id, itemIds: [...new Set(oldItems.map(item => item.id).filter(Boolean))],
-            eventCursor: work.eventCursor || null, acceptedAfter: now() } }, Boolean(verification));
+            eventCursor: work.eventCursor || null, acceptedAfter: now() } }, Boolean(verification), undefined,
+      { ownerControlRevision: owner.controlRevision || 0 });
     });
   }
   async interrupt(id, input) {
     requireDesktopExecutor(this.dataRoot);
+    return this.exclusive(id, () => this.interruptCurrent(id, input));
+  }
+  async interruptCurrent(id, input, state, stopId) {
+    const work = this.require(id); this.assertDesktop(work);
+    const operationId = requireText(input.operationId, 'operationId'), previous = this.operation(work, operationId);
+    if (previous) {
+      if (previous.action !== 'interrupt' || previous.body.expectedTurnId !== input.expectedTurnId) fail('operationId already belongs to another request', 409);
+      return this.reconcile(previous);
+    }
+    state ||= await this.request(this.path(work));
+    if (state.threadId !== work.externalThreadId || state.stale || state.currentTurn?.status !== 'inProgress' ||
+      !input.expectedTurnId || input.expectedTurnId !== state.currentTurn.id)
+      fail('The exact expected Desktop turn must still be current and in progress', 409);
+    return this.mutate(id, 'interrupt', operationId, `/v1/threads/${encodeURIComponent(work.externalThreadId)}/interrupt`,
+      { expectedTurnId: input.expectedTurnId, hostId: work.hostId },
+      { executionOperationId: work.executionOperationId || work.operationId }, false, undefined, { stopId });
+  }
+  async stopWork(botId, workId, stopId) {
+    const old = this.store.get('works', workId);
+    const canonical = `${botId}:${workId}`;
+    const id = !this.store.get('works', canonical) && old?.botId === botId && old.workId === workId ? old.id : canonical;
     return this.exclusive(id, async () => {
-      const work = this.require(id); this.assertDesktop(work);
-      const operationId = requireText(input.operationId, 'operationId'), previous = this.operation(work, operationId);
-      if (previous) {
-        if (previous.action !== 'interrupt' || previous.body.expectedTurnId !== input.expectedTurnId) fail('operationId already belongs to another request', 409);
-        return this.reconcile(previous);
+      const owner = await this.ownerWork(botId, workId), stop = owner?.externalStop;
+      let work = this.store.get('works', id);
+      if (work && (work.botId !== botId || work.workId !== workId || work.backend !== 'desktop')) fail('Stop is outside the owning work binding', 403);
+      if (!stop || stop.id !== stopId || !stopped.has(owner.status) || stop.status !== 'pending') {
+        if (work?.stopIntent?.id === stopId) this.save({ id, stopIntent: null });
+        return { status: stop?.id === stopId ? stop.status : 'superseded' };
       }
-      const state = await this.request(this.path(work));
-      if (!state.currentTurn?.id || state.stale) fail('Current turn must be known before interrupting', 409);
-      if (input.expectedTurnId !== state.currentTurn.id) fail('expectedTurnId does not match the current Desktop turn', 409);
-      return this.mutate(id, 'interrupt', operationId, `/v1/threads/${encodeURIComponent(work.externalThreadId)}/interrupt`, { expectedTurnId: input.expectedTurnId, hostId: work.hostId });
-    });
+      const binding = owner.bindings?.find(item => item.type === 'codex-desktop');
+      if (stop.bindingId && stop.bindingId !== id || binding && binding.id !== id) return { status: 'pending' };
+      let intent = work?.stopIntent?.id === stopId ? work.stopIntent : { id: stopId };
+      if (work) this.save({ id, stopIntent: intent });
+      const settle = async (status, turn, observedAt, alreadyEnded) => {
+        const result = await this.manager.request(botId, `/works/${encodeURIComponent(workId)}/stop-result`, {
+          method: 'POST', body: JSON.stringify({ stopId, status, bindingId: work?.id, threadId: work?.externalThreadId,
+            turnId: turn?.id, observedAt, alreadyEnded }) });
+        if (work) this.save({ id, stopIntent: null });
+        if (result.applied) this.emit('work.updated', { work: { id, botId, workId, status: owner.status } });
+        return { status: result.applied ? status : 'superseded', turnId: turn?.id };
+      };
+      if (!work) return binding ? { status: 'pending' } : settle('local-stopped');
+      if (!work.externalThreadId) {
+        const couldHaveCreated = this.store.list('desktopOperations').some(item => item.workId === id && item.action === 'create' &&
+          item.attemptedAt && !(item.status === 'failed' && item.result?.rejected));
+        return couldHaveCreated || work.pendingClientThreadId || stop.threadId || binding?.externalThreadId ?
+          { status: 'pending' } : settle('local-stopped');
+      }
+      if (binding?.externalThreadId !== work.externalThreadId || (binding.hostId || 'local') !== (work.hostId || 'local') ||
+        stop.threadId && stop.threadId !== work.externalThreadId || stop.hostId && stop.hostId !== work.hostId ||
+        intent.threadId && intent.threadId !== work.externalThreadId) return { status: 'pending' };
+      const read = () => this.request(this.path(work));
+      const exactState = state => state?.threadId === work.externalThreadId && (state.hostId || 'local') === (work.hostId || 'local') &&
+        !state.stale && state.currentTurn?.id && state.observedAt && (!work.snapshot?.observedAt || state.observedAt >= work.snapshot.observedAt);
+      let state = await read();
+      if (!exactState(state)) return { status: 'pending' };
+      const previous = this.operation(work, stopId);
+      const expected = intent.turnId || previous?.body.expectedTurnId || work.turnId;
+      if (expected && expected !== state.currentTurn.id) return { status: 'pending' };
+      if (!expected) {
+        const operation = work.operationId && this.operation(work, work.operationId);
+        if (!operation?.appliedAt || operation.status !== 'received' || !['create', 'send'].includes(operation.action) ||
+          work.previousTurnId === state.currentTurn.id && !work.allowPreviousTurn) return { status: 'pending' };
+        await this.observe(id, state);
+        work = this.require(id);
+        if (work.turnId !== state.currentTurn.id || work.executionObservation?.stale) return { status: 'pending' };
+      }
+      intent = { ...intent, threadId: work.externalThreadId, turnId: state.currentTurn.id };
+      this.save({ id, stopIntent: intent });
+      if (terminal.has(state.currentTurn.status)) {
+        await this.observe(id, state);
+        return settle(state.currentTurn.status, state.currentTurn, state.observedAt, !previous?.attemptedAt);
+      }
+      if (state.currentTurn.status !== 'inProgress' || previous?.attemptedAt || previous?.appliedAt) return { status: 'pending', turnId: intent.turnId };
+      // A prior send/create may still be reconciling. Wait on its original key.
+      if (this.store.list('desktopOperations').some(item => item.workId === id && item.operationId !== stopId && !item.appliedAt))
+        return { status: 'pending', turnId: intent.turnId };
+      await this.interruptCurrent(id, { operationId: stopId, expectedTurnId: intent.turnId }, state, stopId);
+      state = await read();
+      if (exactState(state) && state.currentTurn.id === intent.turnId && terminal.has(state.currentTurn.status)) {
+        await this.observe(id, state);
+        return settle(state.currentTurn.status, state.currentTurn, state.observedAt);
+      }
+      return { status: 'pending', turnId: intent.turnId };
+    }).catch(() => ({ status: 'pending' }));
   }
   assertDesktop(work) { if (work.backend !== 'desktop' || !work.externalThreadId) fail('This binding has no confirmed Desktop thread; inspect its original operation', 409); }
   operation(work, operationId) { return this.store.get('desktopOperations', `${work.botId}:${work.id}:${operationId}`); }
-  async mutate(id, action, operationId, path, body, patch = {}, verificationOnly = false, signal) {
+  async mutate(id, action, operationId, path, body, patch = {}, verificationOnly = false, signal, control = {}) {
     const work = this.require(id); requireText(operationId, 'operationId');
     const previous = this.operation(work, operationId);
     if (previous) {
@@ -271,8 +348,9 @@ export class DesktopCodex {
     if (action === 'create' && this.store.list('desktopOperations').some(item => item.workId === id && item.action === 'create' && item.status !== 'failed')) fail('This work already has a create attempt; inspect or explicitly attach its actual thread instead of creating again', 409);
     const operation = this.store.transaction(() => {
       const operation = this.store.save('desktopOperations', { id: `${work.botId}:${id}:${operationId}`, workId: id, action, operationId, operationKey: randomUUID(), path, body, status: 'unknown', attemptedAt: null,
+        ...control,
         ...(verificationOnly ? { verificationOnly: true } : {}),
-        previousExecution: action === 'send' ? Object.fromEntries(['operationId','operationKey','executionOperationId','turnId','previousTurnId','allowPreviousTurn','status','executionObservation','observationSignature','result','finishedAt','progressFloor','pendingProgress'].map(key => [key,work[key]??null])) : null });
+        previousExecution: ['send', 'interrupt'].includes(action) ? Object.fromEntries(['operationId','operationKey','executionOperationId','turnId','previousTurnId','allowPreviousTurn','status','executionObservation','observationSignature','result','finishedAt','progressFloor','pendingProgress'].map(key => [key,work[key]??null])) : null });
       this.save({ id, ...patch, operationId, operationKey: operation.operationKey, executionObservation: null,
         status: action === 'interrupt' ? 'interrupt_requested' : 'submitting' });
       return operation;
@@ -282,10 +360,16 @@ export class DesktopCodex {
   async perform(operation, signal) {
     const id = operation.workId;
     const work = this.require(id), owner = await this.ownerWork(work.botId, work.workId);
-    if (operation.action !== 'interrupt' && ['cancelled', 'paused', 'archived'].includes(owner.status)) return this.get(id);
+    const permitted = current => operation.stopId ? stopped.has(current.status) && current.externalStop?.id === operation.stopId && current.externalStop.status === 'pending' :
+      operation.action === 'interrupt' || !stopped.has(current.status) &&
+      (operation.ownerControlRevision === undefined || (current.controlRevision || 0) === operation.ownerControlRevision);
+    const abandon = () => this.applyOperation(this.store.save('desktopOperations', { id: operation.id, status: 'failed',
+      result: { rejected: true, error: { code: 'work_control_changed', message: 'Work control changed before this Desktop write was submitted.' } } }));
+    if (!permitted(owner)) return abandon();
     // A pending intent with no attemptedAt has never crossed the transport boundary.
     // Persist both transport intent and the Bot binding before the first write.
     const synchronized = await this.syncOwner(work);
+    if (!permitted(synchronized)) return abandon();
     this.store.save('desktopOperations', { id: operation.id, attemptedAt: now() });
     const request = { method: 'POST', body: operation.body, operationKey: operation.operationKey };
     let result;
@@ -334,11 +418,11 @@ export class DesktopCodex {
     if (operation.appliedAt) return this.get(work.id);
     if (!operation.resultAppliedAt) this.store.transaction(() => {
       if (operation.status === 'failed' || operation.result?.error) {
-        const preserved = operation.action === 'send' && operation.previousExecution?.turnId;
+        const preserved = ['send', 'interrupt'].includes(operation.action) && operation.previousExecution?.turnId;
         this.save({ id: work.id, ...(preserved ? operation.previousExecution : { status: 'failed', finishedAt: now() }),
           error: preserved ? null : operation.result?.error || { message: 'Desktop operation failed' },
           lastSubmissionError: { operationId: operation.operationId, error: operation.result?.error, recordedAt: now() } });
-        this.queue(work.id, `operation:${operation.operationKey}:failed`, { type: 'operation_failed', operationId: operation.operationId,
+        if (!operation.stopId) this.queue(work.id, `operation:${operation.operationKey}:failed`, { type: 'operation_failed', operationId: operation.operationId,
           operationKey: operation.operationKey, status: 'failed', affectsExecution: !preserved,
           preservedOperationId: preserved ? operation.previousExecution.operationId : null,
           turnId: preserved ? operation.previousExecution.turnId : null, error: operation.result?.error, result: operation.result });
@@ -509,6 +593,7 @@ export class DesktopCodex {
         try { await this.exclusive(operation.workId, () => this.reconcile(operation)); }
         catch (error) { this.store.save('desktopOperations', { id: operation.id, error: errorView(error), checkedAt: now() }); }
       }
+      for (const work of this.list()) if (work.stopIntent) await this.stopWork(work.botId, work.workId, work.stopIntent.id);
       for (const work of this.list().filter(active)) {
         if (!work.externalThreadId) continue;
         if (!this.streams.has(work.id) && (!work.streamRetryAt || Date.parse(work.streamRetryAt) <= Date.now())) this.follow(work.id);
