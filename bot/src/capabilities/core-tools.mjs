@@ -163,7 +163,12 @@ export function coreTools(services, task) {
       throw previous;
     }
     try {
-      return await authorizeProduction({ task, store, decision, proposed, verify: ctx.verifyProduction, signal: ctx.signal });
+      return await authorizeProduction({ task, store, decision, proposed, verify: ctx.verifyProduction, signal: ctx.signal,
+        isTargetCurrent: proposed.relation === 'continue' ? () => {
+          const current = services.works.get(proposed.work.id);
+          return Boolean(current && JSON.stringify({ ...selectedWork(current), status: undefined }) ===
+            JSON.stringify({ ...proposed.work, status: undefined }));
+        } : undefined });
     } catch (error) {
       if (['PRODUCTION_CHECK_UNAVAILABLE', 'PRODUCTION_RECEIPT_INVALID'].includes(error.code)) authorizationFailures.set(actionKey, error);
       if (['PRODUCTION_NOT_AUTHORIZED', 'PRODUCTION_STAGE_MISMATCH'].includes(error.code)) authorizationFailures.set(proposalKey, error);
@@ -180,7 +185,8 @@ export function coreTools(services, task) {
       (owner?.workId === work.id && services.works.execution(owner).authorization?.production?.stage) || work.productionStage;
   };
   const selectedWork = work => ({ id: work.id, goal: work.goal, requirements: work.requirements, status: work.status,
-    project: work.project, priorStage: currentStepStage(work), operationId: externalExecution(work)?.operationId });
+    project: work.project, target: work.executor?.target, controlRevision: work.controlRevision || 0,
+    priorStage: currentStepStage(work), operationId: externalExecution(work)?.operationId });
   const documentBoundary = (work, decision) => {
     if (decision?.productionStage !== 'document-review') return;
     if (services.works.executor(work).kind !== 'codex')
