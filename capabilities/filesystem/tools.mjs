@@ -14,6 +14,7 @@ import { assertPathPolicy, assertCommandPolicy, fileAccessDenied } from '../../b
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 export const MAX_FILE_REQUEST_BYTES = 24 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 64 * 1024;
+export const commandTimeout = { minimum: 100, maximum: 240000, default: 90000 };
 const READ_PAGE_BYTES = 128 * 1024;
 const DEFAULT_LINES = 600;
 const SKIP_DIRECTORIES = new Set(['node_modules', '.git', '.hg', '.svn']);
@@ -397,12 +398,12 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
       path = await checkedPath(args.path, { operations: ['read', 'write'] });
       return { ...await saveVerified(path, bytes, signal, { overwrite: true, expected: original }), replacements: 1 };
     }, true),
-    tool('run_command', 'Execute a non-interactive shell command (PowerShell on Windows), with a timeout and capped output. File access refusals and explicit user file restrictions apply across tools, including shell/.NET, copies and renames. cwd is not an OS sandbox; commands run with host-user privileges. Do not access credentials or delete unrelated files.', objectSchema({ command: stringSchema('Shell command'), cwd: stringSchema('Allowed working directory; defaults to workspace'), timeoutMs: integerSchema('Timeout in milliseconds, default 90000', 100, 240000) }, ['command']), async (args, signal) => {
+    tool('run_command', 'Execute a non-interactive shell command (PowerShell on Windows), with a timeout and capped output. File access refusals and explicit user file restrictions apply across tools, including shell/.NET, copies and renames. cwd is not an OS sandbox; commands run with host-user privileges. Do not access credentials or delete unrelated files.', objectSchema({ command: stringSchema('Shell command'), cwd: stringSchema('Allowed working directory; defaults to workspace'), timeoutMs: integerSchema(`Timeout in milliseconds, default ${commandTimeout.default}`, commandTimeout.minimum, commandTimeout.maximum) }, ['command']), async (args, signal) => {
       const command = textValue(args.command, 'command');
       if (command.length > 20000) throw new Error('command is too long');
       const cwd = await checkedPath(args.cwd, { directory: true });
       await assertCommandPolicy(command, cwd, accessPolicy, (path, operations) => checkedPath(path, { operations, alternative: true }));
-      const timeoutMs = boundedInteger(args.timeoutMs, 90000, 100, 240000, 'timeoutMs');
+      const timeoutMs = boundedInteger(args.timeoutMs, commandTimeout.default, commandTimeout.minimum, commandTimeout.maximum, 'timeoutMs');
       return runCommand(command, cwd, timeoutMs, signal, sanitize, saveArtifact, onArtifacts, tempRoot, containProcesses);
     }, true),
   ];

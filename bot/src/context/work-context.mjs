@@ -127,6 +127,12 @@ export function projectWorkContext(entries, sessionId, onCodexHistory) {
     } else {
       let index = 0, changed = value.type === 'work_input' && typeof value.workId === 'string' &&
         value.input?.type === 'external_work_review' && projectReviewScope(value.input, value.workId, reviewScopes, original);
+      const context = value.input?.type === 'accepted_work_step' ? value.input.materials?.context : null;
+      if (context?.projectKnowledge && JSON.stringify(context.projectKnowledge) === JSON.stringify(context.currentKnowledge?.projectKnowledge)) {
+        // Keep the full refreshed copy under currentKnowledge, along with its source and limits.
+        delete context.projectKnowledge;
+        changed = true;
+      }
       for (const group of evidenceGroups(message, value)) for (let i = 0; i < group.length; i++, index++) {
         if (!group[i]?.reference) continue;
         const text = JSON.stringify(group[i]);
