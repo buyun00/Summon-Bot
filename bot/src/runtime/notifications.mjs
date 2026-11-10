@@ -3,6 +3,17 @@ import { externalExecution } from '../context/execution-evidence.mjs';
 export const MESSAGE_ATTACHMENTS = 8;
 export const WORK_ATTACHMENTS = 64;
 
+export const externalObservationId = task => `external:${task.metadata?.observationMessageId || task.messageId}`;
+
+export function progressNotificationCurrent(record, work) {
+  if (!work || ['paused', 'cancelled', 'completed'].includes(work.status)) return false;
+  const scope = record.progressScope;
+  if (!scope) return work.bindings?.some(binding => binding.operationId === record.operationId);
+  const execution = externalExecution(work, scope.operationId);
+  return (work.controlRevision || 0) === scope.controlRevision && execution.currentOperation && execution.startedConfirmed &&
+    execution.bindingId === scope.bindingId && execution.threadId === scope.threadId && execution.turnId === scope.turnId && execution.status === 'inProgress';
+}
+
 // Retain an old observation without replaying it after a newer, confirmed
 // result from this same bound thread has actually been published.
 export function notificationSupersession(record, work, publications, observation) {
@@ -52,7 +63,8 @@ export function publicationParts(content, attachments = []) {
 export function notificationParts(record) {
   return publicationParts(String(record.content || ''), record.attachments).map((part, index) => ({
     ...part, roomId: record.roomId, replyTo: record.replyTo,
-    clientId: index ? `${record.id}:part:${index + 1}` : record.id, workId: record.workId, purpose: 'fyi', eventType: 'work_result',
+    clientId: index ? `${record.id}:part:${index + 1}` : record.id, workId: record.workId, purpose: 'fyi',
+    eventType: record.resultKind === 'progress' ? 'work_progress' : 'work_result',
     sourceRefs: record.sourceRefs || [{ type: 'work', workId: record.workId, taskId: record.taskId }],
   }));
 }

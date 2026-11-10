@@ -2,6 +2,7 @@ import { assertExternalReviewCurrent } from '../capabilities/task-policy.mjs';
 import { executorHandoff } from '../context/executor-handoff.mjs';
 import { isAcceptedOperation } from '../context/execution-evidence.mjs';
 import { executorManifestOperation, publishExecutorResult } from './executor-delivery.mjs';
+import { externalObservationId } from './notifications.mjs';
 
 const at = () => new Date().toISOString();
 const stopped = new Set(['paused', 'cancelled']);
@@ -82,11 +83,13 @@ export function workExecutor({ store, services, emit }) {
       const work = services.works.get(task.workId), operation = store.getRecord('work-events', content.operationId);
       const currentStep = store.getRecord('work-events', binding.operationId);
       const grant = services.works.execution(task).authorization?.production;
+      const publications = store.listRecords('work-notifications').filter(item => item.workId === work.id && item.executionEventId === content.operationId);
       const reviewTask = { ...task, metadata: { ...task.metadata, externalReview: {
         bindingId: binding.id, threadId: binding.externalThreadId, operationId: content.operationId, supervisionOperationId: binding.operationId,
         turnId: content.turnId, running, confirmedFinal: Boolean(content.final?.confirmed) } },
         input: { ...content, delivery: store.getRecord('executor-deliveries', content.operationId) || content.delivery,
-          publications: store.listRecords('work-notifications').filter(item => item.workId === work.id && item.executionEventId === content.operationId)
+          lastPublishedProgress: running ? publications.findLast(item => item.resultKind === 'progress' && item.status === 'delivered')?.content?.slice(0, 1200) : undefined,
+          publications: publications.filter(item => item.resultKind !== 'progress')
             .map(item => ({ notificationId: item.id, status: item.status, deliveredAt: item.deliveredAt, attachments: item.attachments,
               receipts: (Array.isArray(item.receipt) ? item.receipt : [item.receipt]).filter(Boolean).map(receipt => ({ id: receipt.id,
                 roomId: receipt.roomId, createdAt: receipt.createdAt, attachments: receipt.attachments?.map(({ id, name }) => ({ id, name })) })) })),
@@ -105,11 +108,19 @@ export function workExecutor({ store, services, emit }) {
       try {
         assertExternalReviewCurrent(reviewTask, store);
         const result = await services.reviewExternal(reviewTask, options);
-        // The supervisor's prose is an internal assessment. Only an explicit
-        // work_notify decision publishes user-facing progress, including when
-        // the assessment says PASS with an explanation or says not to publish.
+        // Only a saved public work-card milestone can flow to the original room.
+        // The supervisor's assessment and the raw native commentary stay private.
         store.putRecord('external-reviews', { id: task.id, workId: work.id, observationId: content.operationId,
           status: 'reviewed', assessment: result.content?.trim() || '', recordedAt: at() });
+        if (running && services.resultSource(work, task)?.roomId) {
+          const update = store.listTools(task.id).findLast(tool => tool.name === 'work_update' && tool.status === 'completed' &&
+            typeof tool.args?.progress === 'string' && !tool.executionRejected && !tool.executionReused);
+          const milestone = update?.output?.details?.progress?.trim();
+          if (milestone) {
+            const next = update.args.next && update.output.details.checkpoint?.next?.trim();
+            await services.notify({ id: work.id, content: `Codex 进展（监督记录）\n${milestone.slice(0, 1200)}${next ? `\n下一步 ${next.slice(0, 600)}` : ''}` }, reviewTask, options);
+          }
+        }
         if (task.metadata?.reviewRecovery) {
           const original = store.getRecord('external-reviews', task.metadata.reviewRecovery);
           if (original) store.putRecord('external-reviews', { ...original, resolvedBy: task.id, resolvedAt: at() });
@@ -126,7 +137,7 @@ export function workExecutor({ store, services, emit }) {
       const binding = work.bindings?.find(item => item.id === task.metadata.externalBindingId && item.type === 'codex-desktop');
       if (!binding || content.source !== 'codex-desktop-connector' || (content.externalThreadId && binding.externalThreadId !== content.externalThreadId))
         throw new Error('External result does not match this work binding');
-      const eventId = `external:${task.metadata?.observationMessageId || task.messageId}`;
+      const eventId = externalObservationId(task);
       if (task.metadata?.reviewRecovery) return { content: '', observed: true,
         ...await this.review(task, binding, content, false, options), suspended: true, waiting: 'review' };
       const operation = content.operationId && store.getRecord('work-events', content.operationId);
@@ -138,7 +149,8 @@ export function workExecutor({ store, services, emit }) {
         work.status === 'completed' && isAcceptedOperation(work, content.operationId) ||
         progress && work.status === 'completed' || superseded && !knownOperation ||
         progress && (content.turnId !== binding.turnId || content.progress?.threadId !== binding.externalThreadId || content.progress?.turnId !== content.turnId);
-      store.putRecord('work-observations', { id: eventId, workId: work.id, taskId: task.id, late, content, observedAt: at() });
+      store.putRecord('work-observations', { id: eventId, workId: work.id, taskId: task.id, late, content,
+        ...(progress ? { controlRevision: work.controlRevision || 0 } : {}), observedAt: at() });
       this.record(task, { kind: 'external_observation', author: 'codex', late, ...content });
       if (late) return { content: '', observed: true, late: true, suspended: true, waiting: work.status, executor: 'codex' };
       if (content.type === 'operation_failed' && content.affectsExecution === false) {

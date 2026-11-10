@@ -17,7 +17,7 @@ import { WorkService } from './works.mjs';
 import { ConversationScheduler } from './scheduler.mjs';
 import { writeKnowledgeDocument } from '../context/knowledge-api.mjs';
 import { RuntimeSources, taskSource } from '../context/sources.mjs';
-import { notificationParts, notificationSupersession } from './notifications.mjs';
+import { externalObservationId, notificationParts, notificationSupersession, progressNotificationCurrent } from './notifications.mjs';
 import { workExecutor } from './work-executor.mjs';
 import { selectedConnection } from '../agent/model.mjs';
 import { modelConnection } from '../agent/connections.mjs';
@@ -293,9 +293,9 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         store.getRecord('work-observations', record.notificationId));
       if (supersededBy) return store.putRecord('work-notifications', { ...record, status: 'superseded',
         supersededBy, suppressedAt: at(), waiting: undefined, retryAt: undefined });
-      if (record.resultKind === 'progress' && (['paused', 'cancelled', 'completed'].includes(work?.status) ||
-        !work?.bindings?.some(binding => binding.operationId === record.operationId)))
-        return store.putRecord('work-notifications', { ...record, status: 'superseded', suppressedAt: at() });
+      if (record.resultKind === 'progress' && !progressNotificationCurrent(record, work))
+        return store.putRecord('work-notifications', { ...record, status: 'superseded', suppressedAt: at(),
+          ...(record.status === 'unknown' ? { deliveryUnconfirmed: true } : {}) });
       const source = task && work && services.resultSource(work, task);
       const target = source?.roomId && source.replyTo ? { roomId: source.roomId, replyTo: source.replyTo, botId: undefined } :
         source && config.contacts.some(contact => contact.botId === source.source) ?
@@ -330,6 +330,31 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       if (authorizedSource && (input.roomId ? authorizedSource.roomId !== input.roomId || input.replyTo && authorizedSource.replyTo !== input.replyTo :
         input.botId && authorizedSource.source !== input.botId)) throw failure(403, 'Results return to the exact source of this action; another request is not a publication target');
       const execution = services.works.execution(task);
+      if (task.metadata?.externalReview?.running && authorizedSource?.roomId) {
+        const review = task.metadata.externalReview;
+        const observation = store.getRecord('work-observations', externalObservationId(task));
+        const observed = observation?.content;
+        const itemIds = observed?.progress?.items?.filter(item => item.itemId && item.threadId === review.threadId && item.turnId === review.turnId)
+          .map(item => item.itemId);
+        if (observation?.taskId !== task.id || observation.workId !== work.id || observation.late ||
+          observed.source !== 'codex-desktop-connector' || observed.type !== 'external_progress' || !observed.progress?.confirmed ||
+          !review.operationId || observed.operationId !== review.operationId || observed.externalThreadId !== review.threadId || observed.turnId !== review.turnId ||
+          !authorizedSource.replyTo || !itemIds?.length) return { status: 'superseded', workId: work.id };
+        const scope = { bindingId: review.bindingId, threadId: review.threadId, turnId: review.turnId, operationId: review.operationId,
+          controlRevision: observation.controlRevision, itemIds };
+        const id = `${work.id}:${observation.id}`, prior = store.getRecord('work-notifications', id);
+        if (prior) return prior;
+        if (!progressNotificationCurrent({ progressScope: scope }, work)) return { status: 'superseded', workId: work.id };
+        const previous = store.listRecords('work-notifications').filter(item => item.workId === work.id && item.resultKind === 'progress' &&
+          item.roomId === authorizedSource.roomId && item.replyTo === authorizedSource.replyTo && (item.status !== 'superseded' || item.deliveryUnconfirmed) &&
+          item.progressScope?.threadId === scope.threadId && item.progressScope.turnId === scope.turnId);
+        const seen = new Set(previous.flatMap(item => item.progressScope.itemIds));
+        const normalize = text => String(text || '').trim().replace(/\s+/g, ' ');
+        if (itemIds.every(item => seen.has(item)) || previous.some(item => normalize(item.content) === normalize(input.content)))
+          return { status: 'duplicate', workId: work.id };
+        input = { ...input, notificationId: observation.id, progressScope: scope, sourceRefs: [{ type: 'codex',
+          threadId: scope.threadId, turnId: scope.turnId, operationId: scope.operationId, observationId: observation.id, itemIds }] };
+      }
       if (input.publication === 'explicit') {
         const published = store.listRecords('work-notifications').findLast(item => item.workId === work.id &&
           item.executionEventId === execution.executionEventId && item.publication === 'explicit');

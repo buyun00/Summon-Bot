@@ -27,7 +27,7 @@ import { assertToolPolicy, permitsTool, permitsMaintenanceTool, taskMode } from 
 import { taskSource,workExecution } from '../../bot/src/context/sources.mjs';
 import { taskFileAccessPolicy } from '../../bot/src/capabilities/file-access.mjs';
 import { codexScope } from '../../bot/src/capabilities/codex-scope.mjs';
-import { notificationParts } from '../../bot/src/runtime/notifications.mjs';
+import { notificationParts,progressNotificationCurrent } from '../../bot/src/runtime/notifications.mjs';
 import { waitingLabel } from '../../bot/src/context/execution-evidence.mjs';
 import { CapabilityCatalog,catalogTools } from '../services/catalog.mjs';
 import { UsageLedger,readUsage,usageRange,finishUsageTotals,emptyUsageTotals,USAGE_PRICING } from '../../bot/src/agent/usage.mjs';
@@ -186,12 +186,16 @@ export async function startGateway(options={}) {
     if(actor!=='controller'){
       if(taskId){
         task=await manager.readState(actor,db=>db?.getTask(taskId));
-        const saved=await manager.readState(actor,db=>({source:task&&(task.workId?workExecution(task,db).authorization?.source:taskSource(task,db)),
-          notification:name==='chatroom_send'&&_context?.notificationId?db?.getRecord('work-notifications',_context.notificationId):null,
-          operation:_context?.operationId?db?.getRecord('work-events',_context.operationId):null}));
+        const saved=await manager.readState(actor,db=>{
+          const notification=name==='chatroom_send'&&_context?.notificationId?db?.getRecord('work-notifications',_context.notificationId):null;
+          return {source:task&&(task.workId?workExecution(task,db).authorization?.source:taskSource(task,db)),notification,
+            progressCurrent:!notification?.progressScope||progressNotificationCurrent(notification,db.getRecord('works',notification.workId)),
+            operation:_context?.operationId?db?.getRecord('work-events',_context.operationId):null};
+        });
         source=saved.source;
         const publishing=saved.notification&&saved.notification.status!=='delivered'&&saved.notification.taskId===taskId&&
           notificationParts(saved.notification).some(part=>Object.entries(part).every(([key,value])=>JSON.stringify(args[key])===JSON.stringify(value)));
+        if(publishing&&!saved.progressCurrent)fail('The Codex progress observation is no longer current',409);
         runtimeOperation=saved.operation?.sourceTaskId===taskId&&saved.operation.transport?.name===name&&
           JSON.stringify(saved.operation.transport.args)===JSON.stringify(args)?saved.operation:null;
         if(runtimeOperation?.requestTaskId&&['chatroom_read','chatroom_list'].includes(name)) source=await manager.readState(actor,db=>{
