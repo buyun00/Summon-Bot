@@ -117,8 +117,9 @@ export class WorkService {
         stage: (prior?.content || input.content)?.stage?.kind, when: registered ? 'after-dependency' : 'now',
         ...productionTarget(work), controlRevision: initial ? undefined : work.controlRevision || 0,
       });
-      if (authorization.production.kind === 'continue' && currentProductionStage(work, this.store) !== authorization.production.stage)
-        fail('原步骤阶段已变化，未继续执行。', 409);
+      if (authorization.production.kind === 'continue' &&
+        (work.status === 'completed' || currentProductionStage(work, this.store) !== authorization.production.stage))
+        fail('原步骤已完成或阶段已变化，未继续执行。', 409);
       if (stopped.has(work.status) && !input.metadata?.resume) fail('工作已停止，未派发此步骤。', 409);
     }
     if (input.metadata?.resume && stopped.has(work.status)) this.requireResume(work, authorization?.source?.receivedAt || null);

@@ -156,15 +156,20 @@ export function coreTools(services, task) {
   // A model hint is never the identity of a durable action. A recovered call
   // keeps its saved tool record; another accepted source gets another record.
   const actionId = (args, ctx, field) => ctx.recordId || `${task.id}:${ctx.toolCallId}`;
-  const sameWork = (expected, current) => Boolean(current && JSON.stringify({ ...selectedWork(current), status: undefined }) ===
-    JSON.stringify({ ...expected, status: undefined }));
+  const targetIdentity = work => ({ ...work, status: undefined, executionStatus: undefined });
+  const sameWork = (expected, current) => Boolean(current && JSON.stringify(targetIdentity(selectedWork(current))) ===
+    JSON.stringify(targetIdentity(expected)));
   const authorize = (decision, ctx, proposed, { workId, actionId }) => authorizeProduction({ task, store, decision, proposed,
     workId, actionId, verify: ctx.verifyProduction, signal: ctx.signal,
     isTargetCurrent: proposed.work ? () => sameWork(proposed.work, services.works.get(workId)) : undefined });
-  const selectedWork = work => ({ id: work.id, goal: work.goal, requirements: work.requirements, status: work.status,
-    project: work.project, target: work.executor?.target, controlRevision: work.controlRevision || 0,
-    priorStage: currentProductionStage(work, store), operationId: externalExecution(work)?.operationId,
-    bindingId: work.bindings?.findLast(item => item.type === 'codex-desktop')?.id });
+  const selectedWork = work => {
+    const binding = work.bindings?.findLast(item => item.type === 'codex-desktop');
+    const execution = externalExecution(work, binding?.operationId);
+    return { id: work.id, goal: work.goal, requirements: work.requirements, status: work.status,
+      project: work.project, target: work.executor?.target, controlRevision: work.controlRevision || 0,
+      priorStage: currentProductionStage(work, store), operationId: execution?.operationId,
+      executionStatus: execution?.status, bindingId: binding?.id };
+  };
   const documentBoundary = (work, grant) => {
     if (grant?.stage !== 'document-review') return;
     if (services.works.executor(work).kind !== 'codex')

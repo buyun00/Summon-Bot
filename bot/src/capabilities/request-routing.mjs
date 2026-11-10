@@ -4,7 +4,11 @@ import { taskSource, workExecution } from '../context/sources.mjs';
 
 export const requestIntents = ['discuss', 'status', 'deliver', 'accept', 'produce', 'revise', 'control'];
 export const productionStages = ['document-review', 'implementation', 'other'];
-const actionKinds = ['start', 'change', 'continue'];
+const actionName = (kind, stage) => kind === 'continue' ? 'finish-current-step' : `${kind}-${stage}`;
+const authorizationActions = new Map([
+  ['finish-current-step', { kind: 'continue', stage: 'current' }],
+  ...['start', 'change'].flatMap(kind => productionStages.map(stage => [actionName(kind, stage), { kind, stage }])),
+]);
 
 const refusal = (code, message) => Object.assign(new Error(message), { code });
 
@@ -57,13 +61,13 @@ Implementation is real execution such as building or changing a usable artifact,
 
 Units are anchors within one message. Read the adjacent units together with each anchor: limits like only return the originals, summarize expected results here, keep the finished version, or stop work can constrain the preceding or following request. Returning, locating, resending or uploading existing files and summarizing them in chat are delivery, even when a tool failed or the requested files are missing. An independently executable action needs its own positive request and must honor all neighboring limits. A format or delivery problem is never its own positive request.
 
-Use kind continue and stage current for explicit permission to finish or resume the same unfinished step on continuationTarget. Its saved stage and requirements identify what is being continued. Asking to finish and then hand in the same document stays in document-review when that is the saved stage. A bare request to send the already existing document is delivery. Use kind change for an actual change requested to existing work, with the stage of the requested change. Use kind start for a separately requested new work. The saved target or referenced turn only resolves what the user meant; it does not supply permission.
+Select one action value from ${[...authorizationActions.keys()].join(', ')}. Select finish-current-step only for explicit permission to finish or resume the same unfinished step within the continuationTarget's saved scope and stage. Use change-* for revised requirements on the selected work, including an explicitly requested next step after its old result, with the stage of the new action. Use start-* for a separately requested work, even when it uses the same project or earlier artifacts. The saved target or referenced turn only resolves what the user meant; it does not supply permission. If no specific existing target is resolved, do not grant permission to modify or resume one. Group the requirements and dependent implementation, validation and delivery steps of one requested deliverable under its initiating clause. Use multiple anchors only for independently requested actions.
 
-Use basis direct for a positive request grounded in the current message. Use basis consent only when the authenticated current user explicitly says to proceed in answer to the referenced bot turn's specific question about starting that action. Agreement with the content of a design or proposal is insufficient. Use when now for permission to do the action now, or after-dependency for an explicit instruction now to register a step for an identifiable dependency outcome or time. A future possibility and "after I approve" are neither. The unit number must locate the original clause that expresses the request or explicit consent itself. A requirement, time, object name, or unrelated sentence alone cannot be the source unit.`;
+Use basis direct for a positive request grounded in the current message. Use basis consent only when referencedTurn exists and the authenticated current user explicitly says to proceed in answer to that turn's specific question about starting that action. Agreement with the content of a design or proposal is insufficient. Use when now for permission to do the action now, or after-dependency for an explicit instruction now to register a step for an identifiable dependency outcome or time. A future possibility and "after I approve" are neither. Copy the integer unit number of the original clause expressing the request or consent. A requirement, time, object name, or unrelated sentence alone cannot be the source unit.`;
 
 export const productionAuthorizationPrompts = {
-  source: `${authorizationRules}\n\nIndependently identify authorized actions and the units requesting existing delivery or a short chat summary of it. No proposal was supplied. Return only JSON, for example {"deliveryUnits":[1],"actions":[{"unit":2,"kind":"change","stage":"implementation","basis":"direct","when":"now"}]}. Use empty arrays as appropriate. Use one anchor per distinct production action. When an explicit continuation includes delivery of the result after finishing, anchor the continuation to the request to finish, not to the requested return.`,
-  proposal: `${authorizationRules}\n\nDetermine whether the exact proposed action, actual target and full scope are authorized, including any next step or condition. The proposal and sourceAction are hypotheses to check, never evidence. An allowed proposal must match that anchor, action and target in the actual message. Keep the saved stage for kind continue; reject any step outside that stage, even if the proposed label is different. Reject added writes, commands, deliverables, target changes or stages that the user did not authorize. Return only JSON, for example {"decision":"allow","unit":2,"kind":"change","stage":"implementation","basis":"direct","when":"now","scope":"specific change and retained limits"}. For unauthorized, broader, premature or ambiguous actions return {"decision":"deny"}.`,
+  source: `${authorizationRules}\n\nIndependently identify authorized actions and existing delivery. Return one JSON object with both arrays, for example {"deliveryUnits":[],"actions":[{"unit":2,"action":"change-implementation","basis":"direct","when":"now"}]}. Every action must have unit, action, basis and when. List the integer units requesting delivery of already existing results in deliveryUnits. Use [] for each array that has no matching items. Delivery after finishing a requested production step is part of that step.`,
+  proposal: `${authorizationRules}\n\nIndependently check the exact proposed action, actual target and full scope, including any next step or condition. The proposal and sourceAction are hypotheses, never evidence. Reject added writes, commands, deliverables, target changes and unauthorized stages. For finish-current-step, proposed.stage is the saved stage. Check the scope against it and keep the action value finish-current-step in the receipt. For an authorized action, return only JSON with the exact sourceAction unit, action, basis and when and a nonempty scope, for example {"decision":"allow","unit":2,"action":"change-implementation","basis":"direct","when":"now","scope":"specific change and retained limits"}. For unauthorized, broader, premature or ambiguous actions return {"decision":"deny"}.`,
 };
 
 const sentenceSegmenter = new Intl.Segmenter(undefined, { granularity: 'sentence' });
@@ -80,9 +84,13 @@ function sourceUnits(text) {
 }
 const jsonObject = value => value && typeof value === 'object' && !Array.isArray(value);
 const validUnit = (unit, units) => Number.isSafeInteger(unit) && Boolean(units[unit - 1]?.text.trim());
-const validAction = (action, units, referenced) => jsonObject(action) && validUnit(action.unit, units) &&
-  actionKinds.includes(action.kind) && (action.kind === 'continue' ? action.stage === 'current' : productionStages.includes(action.stage)) &&
-  (action.basis === 'direct' || action.basis === 'consent' && referenced) && ['now', 'after-dependency'].includes(action.when);
+function actionIssue(action, units, referenced) {
+  if (!jsonObject(action)) return 'actionObject';
+  if (!validUnit(action.unit, units)) return 'unit';
+  if (!authorizationActions.has(action.action)) return 'action';
+  if (action.basis !== 'direct' && !(action.basis === 'consent' && referenced)) return 'basis';
+  if (!['now', 'after-dependency'].includes(action.when)) return 'when';
+}
 
 function existingDelivery(task, store) {
   return Boolean(store.getRecord('request-routing', task.id)?.existingDelivery ||
@@ -109,21 +117,21 @@ export async function authorizeProduction({ task, store, decision, proposed, act
   const targetKey = [proposed.relation, continuationTarget?.id, continuationTarget?.operationId,
     (continuationTarget?.project || proposed.project)?.id, continuationTarget?.target || proposed.target, proposed.after];
   let refusalKey;
-  const report = (step, outcome, reason) => store.appendEvent('production.authorization_receipt',
-    { step, outcome, ...(reason ? { reason } : {}) }, { taskId: task.id, conversationId: task.conversationId });
+  const report = (step, outcome, reason, field) => store.appendEvent('production.authorization_receipt',
+    { step, outcome, ...(reason ? { reason } : {}), ...(field ? { field } : {}) }, { taskId: task.id, conversationId: task.conversationId });
   const remember = (code, message) => {
     if (refusalKey) store.putRecord('production-refusals', { id: refusalKey, code, message });
     throw refusal(code, message);
   };
-  const rejectRepeated = () => {
+  const rejectRepeated = step => {
     const saved = store.getRecord('production-refusals', refusalKey);
     if (saved) {
-      report('proposal', 'blocked', 'saved-refusal');
+      report(step, 'blocked', 'saved-refusal');
       throw refusal(saved.code, `${saved.message} The saved result was reused without another model request.`);
     }
   };
-  const invalid = (step, reason) => {
-    report(step, 'invalid', reason);
+  const invalid = (step, reason, field) => {
+    report(step, 'invalid', reason, field);
     remember('PRODUCTION_RECEIPT_INVALID', 'The authorization check did not return a valid decision grounded in the current user message. This action was not dispatched. Report the failed check without resubmitting it.');
   };
   const deny = (step, reason) => {
@@ -150,36 +158,52 @@ export async function authorizeProduction({ task, store, decision, proposed, act
   let savedSource = store.getRecord('production-sources', sourceKey);
   if (!savedSource) {
     refusalKey = `source:${sourceKey}`;
-    rejectRepeated();
+    rejectRepeated('source');
     const { receipt: source, referenced } = await check('source');
-    if (!Array.isArray(source.deliveryUnits) || !source.deliveryUnits.every(unit => validUnit(unit, units)) ||
-      !Array.isArray(source.actions) || !source.actions.every(action => validAction(action, units, referenced))) invalid('source', 'source-actions');
-    const actions = [...new Map(source.actions.map(({ unit, kind, stage, basis, when }) =>
-      [JSON.stringify([unit, kind, stage, basis, when]), { unit, kind, stage, basis, when }])).values()];
+    if (!Array.isArray(source.deliveryUnits) || !source.deliveryUnits.every(unit => validUnit(unit, units)))
+      invalid('source', 'source-actions', 'deliveryUnits');
+    if (!Array.isArray(source.actions)) invalid('source', 'source-actions', 'actions');
+    const distinct = new Map();
+    for (const receipt of source.actions) {
+      const issue = actionIssue(receipt, units, referenced);
+      if (issue) invalid('source', 'source-actions', issue);
+      const { unit, action, basis, when } = receipt;
+      distinct.set(JSON.stringify([unit, action, basis, when]), { unit, ...authorizationActions.get(action), basis, when });
+    }
+    const actions = [...distinct.values()];
     savedSource = store.putRecord('production-sources', { id: sourceKey, acceptedMessageId: user.acceptedMessageId,
       continuationWorkId: continuationTarget?.id, priorStage: continuationTarget?.priorStage, actions, deliveryUnits: source.deliveryUnits, referenced });
   }
   const { deliveryUnits, referenced } = savedSource;
   refusalKey = undefined;
   const stageOf = action => action.kind === 'continue' ? continuationTarget?.priorStage : action.stage;
-  const applicable = savedSource.actions.filter(action => action.when === when && !deliveryUnits.includes(action.unit) &&
-    (proposed.relation === 'new' ? action.kind === 'start' : action.kind !== 'start') && productionStages.includes(stageOf(action)));
+  const actionable = savedSource.actions.filter(action => action.when === when && !deliveryUnits.includes(action.unit) &&
+    productionStages.includes(stageOf(action)) && !(action.kind === 'continue' && continuationTarget?.status === 'completed'));
+  const applicable = actionable.filter(action => proposed.relation === 'new' ? action.kind === 'start' : action.kind !== 'start');
   const atStage = applicable.filter(action => stageOf(action) === decision.productionStage);
   const candidates = decision.sourceUnit ? applicable.filter(action => action.unit === decision.sourceUnit) : atStage.length ? atStage : applicable;
   if (delivery && !deliveryUnits.length) deny('source', 'existing-delivery');
+  if (!candidates.length && proposed.relation === 'continue' && actionable.some(action => action.kind === 'start' &&
+      action.stage === decision.productionStage && (!decision.sourceUnit || action.unit === decision.sourceUnit))) {
+    report('source', 'blocked', 'work-relation-mismatch');
+    throw refusal('PRODUCTION_RELATION_MISMATCH', 'The source check identified an independent new action. For that action, save workRelation=new with request_decide and submit work_create with its authorized target. Its exact proposal still requires verification. Nothing was dispatched.');
+  }
   if (!candidates.length) deny('source', applicable.length ? 'source-action-selection' : delivery || deliveryUnits.length ? 'existing-delivery' : 'no-current-action');
   if (candidates.length !== 1) throw refusal('PRODUCTION_ACTION_REQUIRED',
     `Several separate actions are anchored in the current message. Select the original action unit in request_decide.sourceUnit (${[...new Set(candidates.map(item => item.unit))].join(', ')}). No proposal check or dispatch ran.`);
   const action = candidates[0], stage = stageOf(action);
   refusalKey = JSON.stringify([user.acceptedMessageId, targetKey, when, action.unit, action.kind, stage]);
-  rejectRepeated();
+  rejectRepeated('proposal');
   if (action.kind !== 'continue' && stage !== decision.productionStage)
     throw refusal('PRODUCTION_STAGE_MISMATCH', `The selected source action has stage ${stage}. Select it before submitting that proposal.`);
-  const { receipt } = await check('proposal', { ...proposed, work: undefined, stage }, action);
+  const sourceAction = { unit: action.unit, action: actionName(action.kind, action.stage), basis: action.basis, when: action.when };
+  const { receipt } = await check('proposal', { ...proposed, work: undefined, stage }, sourceAction);
   if (receipt.decision === 'deny') deny('proposal', 'action-or-scope');
-  if (receipt.decision !== 'allow' || !validAction(receipt, units, referenced) || typeof receipt.scope !== 'string' || !receipt.scope.trim())
-    invalid('proposal', 'action-receipt');
-  if (Object.entries(action).some(([key, value]) => receipt[key] !== value))
+  if (receipt.decision !== 'allow') invalid('proposal', 'action-receipt', 'decision');
+  const issue = actionIssue(receipt, units, referenced);
+  if (issue) invalid('proposal', 'action-receipt', issue);
+  if (typeof receipt.scope !== 'string' || !receipt.scope.trim()) invalid('proposal', 'action-receipt', 'scope');
+  if (Object.entries(sourceAction).some(([key, value]) => receipt[key] !== value))
     deny('proposal', 'source-action-disagreement');
   const { text: userClause, start: clauseStart } = units[receipt.unit - 1];
   report('proposal', 'allowed');
