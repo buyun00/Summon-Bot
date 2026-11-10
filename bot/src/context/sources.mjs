@@ -35,6 +35,15 @@ export function taskSource(task, store) {
     receivedAt: accepted?.receivedAt || task.createdAt, input, metadata: accepted?.metadata || task.metadata };
 }
 
+export function acceptedWorkTask(event, store) {
+  const id = event?.receipt?.accepted ? event.receipt.taskId : event?.sourceTaskId;
+  const task = id && store.getTask(id), message = task?.messageId && store.getMessage(task.messageId);
+  if (!task || task.workId !== event.workId || message?.taskId !== task.id || message.workId !== event.workId || message.kind !== 'request') return null;
+  if (event.receipt?.accepted) return task;
+  return message.sourceMessageId === `work:${event.id}` && message.metadata?.authority === 'internal-event' &&
+    message.metadata?.workEventId === event.id ? task : null;
+}
+
 // Follow only saved causal edges. A work's most recent source is never the
 // authority for another action, even when both actions share a work/session.
 export function workExecution(task = {}, store, visited = new Set()) {

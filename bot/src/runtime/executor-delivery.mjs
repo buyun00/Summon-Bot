@@ -43,11 +43,12 @@ export async function readExecutorManifest({ workspace, workId, operation }) {
   const root = await realpath(workspace), path = await realpath(operation.resultFile);
   if (!within(root, path)) throw new Error('Executor result manifest is outside its workspace');
   const handle = await open(path, 'r');
-  let manifest;
+  let manifest, writtenAt;
   try {
     const info = await handle.stat();
     if (!info.isFile() || info.size > 262144) throw new Error('Executor result manifest must be a JSON file of at most 256 KiB');
     manifest = JSON.parse(await handle.readFile('utf8'));
+    writtenAt = info.mtimeMs;
   } finally { await handle.close(); }
   if (manifest.workId !== workId || manifest.operationId !== operation.id || manifest.status !== 'ready' ||
     !Array.isArray(manifest.artifacts) || manifest.artifacts.length > WORK_ATTACHMENTS) throw new Error('Executor result manifest does not match this accepted work/operation');
@@ -58,7 +59,7 @@ export async function readExecutorManifest({ workspace, workId, operation }) {
     if (!within(root, output) || within(resolve(root, '.summon-handoffs'), output)) throw new Error('Deliverable is outside the product output scope');
     artifacts.push({ path: output, ...(artifact.name ? { name: artifact.name } : {}) });
   }
-  return { ...manifest, artifacts };
+  return { ...manifest, artifacts, writtenAt };
 }
 
 // Native workers never receive publication credentials. This bridge consumes

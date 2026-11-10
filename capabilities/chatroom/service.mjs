@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { required,fail,pick,now } from '../shared/validation.mjs';
 import { TeamService, groupTeam } from './team.mjs';
 import { boundedNumber } from '../../bot/src/context/model-input.mjs';
-import { publicationParts } from '../../bot/src/runtime/notifications.mjs';
+import { publicationParts, WORK_ATTACHMENTS } from '../../bot/src/runtime/notifications.mjs';
 const TERMINAL=new Set(['completed','failed','cancelled','interrupted']);
 const foreground=item=>item.priority!=='background';
 const normalized=text=>String(text||'').trim().replace(/\s+/g,' ');
@@ -14,6 +14,8 @@ export class ChatroomService {
     store.db.exec("CREATE INDEX IF NOT EXISTS records_room ON records(kind,json_extract(data,'$.roomId'),created_at)");
     this.roomRows=store.db.prepare("SELECT data FROM records WHERE kind=? AND json_extract(data,'$.roomId')=? ORDER BY created_at,rowid");
     this.latestRoomMessage=store.db.prepare("SELECT data FROM records WHERE kind='messages' AND json_extract(data,'$.roomId')=? ORDER BY created_at DESC,rowid DESC LIMIT 1");
+    this.sourceReplies=store.db.prepare(`SELECT data FROM records WHERE kind='messages' AND json_extract(data,'$.roomId')=?
+      AND json_extract(data,'$.replyTo')=? AND json_extract(data,'$.senderId')=?`);
   }
   seed() { if(!this.store.get('rooms','room-lobby'))this.createRoom({id:'room-lobby',name:'项目大群',kind:'group',members:['user','bot-entry','bot-eggbot']}); }
   need(kind,id) { const value=this.store.get(kind,id);if(!value)fail(`${kind} not found`,404);return value; }
@@ -22,6 +24,25 @@ export class ChatroomService {
   read(input, actor, source) {
     const room=this.need('rooms',input.roomId||source?.roomId),accessActor=source?.accessActor||source?.actor;
     if(actor!=='controller'&&(!room.members.includes(actor)||(accessActor&&accessActor!=='system'&&!room.members.includes(accessActor))))fail('Source cannot access this room',403);
+    if(input.outputReceipts!==undefined){
+      if(actor==='controller'||source?.roomId!==room.id||typeof input.workId!=='string'||typeof input.operationId!=='string'||
+        !Array.isArray(input.outputReceipts)||input.outputReceipts.length>WORK_ATTACHMENTS)
+        fail('Output receipts require the exact work and current room',403);
+      const receipts=new Map(input.outputReceipts.filter(item=>typeof item?.id==='string'&&typeof item.messageId==='string')
+        .map(({id,messageId})=>[id,messageId]));
+      const matches=origin=>origin?.type==='work-output'&&origin.botId===actor&&origin.roomId===room.id&&origin.workId===input.workId;
+      const found=new Map();
+      for(const message of this.messages(room.id))if(message.senderId===actor){
+        for(const {id,origin} of message.attachments||[]){
+          if(!matches(origin)||origin.operationId!==input.operationId&&receipts.get(id)!==message.id||found.has(id))continue;
+          const attachment=this.attachments.publication(id).attachment;
+          if(matches(attachment?.origin)&&attachment.origin.publicationId===id&&
+            (attachment.origin.operationId===input.operationId||receipts.get(id)===message.id))
+            found.set(id,{id,messageId:message.id,name:attachment.name,size:attachment.size});
+        }
+      }
+      return {attachments:[...found.values()]};
+    }
     const all=this.messages(room.id),limit=Math.max(1,Math.min(100,Math.trunc(Number(input.limit)||20)));
     const offset=boundedNumber(input.offset,0),length=boundedNumber(input.length,6000,1,16000);
     const after=input.afterMessageId?all.findIndex(message=>message.id===input.afterMessageId):-1;
@@ -64,7 +85,19 @@ export class ChatroomService {
     const room=this.need('rooms',roomId);if(!room.members.includes(senderId)&&senderId!=='system')fail('Sender is not a room member',403);
     if(input.id&&this.store.get('messages',input.id)){const old=this.store.get('messages',input.id);if(old.roomId!==roomId||old.senderId!==senderId)fail('Message ID already belongs to another source',409);return old;}
     if(input.clientId){const existing=this.messages(roomId).find(item=>item.clientId===input.clientId&&item.senderId===senderId);if(existing)return existing;}
-    const attachments=this.attachments.resolve(input.attachments),content=String(input.content||'').trim();if(!content&&!attachments.length)fail('Message cannot be empty');if(content.length>16000)fail('Message is too long');
+    let attachments=this.attachments.resolve(input.attachments);
+    const content=String(input.content||'').trim(),source=input.replyTo&&this.store.get('messages',input.replyTo);
+    if(source?.roomId===roomId&&attachments.some(item=>item.origin?.type==='work-output'&&item.origin.botId===senderId&&item.origin.roomId===roomId)){
+      const previous=new Map();
+      for(const row of this.sourceReplies.all(roomId,input.replyTo,senderId)){
+        const message=JSON.parse(row.data);
+        for(const item of message.attachments||[])previous.set(item.id,message);
+      }
+      const duplicate=attachments.find(item=>item.origin?.type==='work-output'&&item.origin.botId===senderId&&item.origin.roomId===roomId&&previous.has(item.id));
+      attachments=attachments.filter(item=>item.origin?.type!=='work-output'||item.origin.botId!==senderId||item.origin.roomId!==roomId||!previous.has(item.id));
+      if(!content&&!attachments.length&&duplicate)return previous.get(duplicate.id);
+    }
+    if(!content&&!attachments.length)fail('Message cannot be empty');if(content.length>16000)fail('Message is too long');
     const id=input.id||randomUUID(),message=this.store.save('messages',{...pick(input,['replyTo','clientId','toBotId','eventType','routineId','workId','targetWorkId','jobId','usage','model','returnTo','peerReplyId','discussionBatch','purpose','sourceRefs','priority']),id,roomId,senderId,content,attachments,kind:input.kind||'message',rootId:input.rootId||id,hop:Math.max(0,Number(input.hop)||0)});this.emit('message',message);return message;
   }
   async knownOwner(room,message,active) {
@@ -198,7 +231,7 @@ export class ChatroomService {
           const alreadyReplied=this.messages(item.roomId).some(message=>message.senderId===item.botId&&message.replyTo===item.messageId&&!message.jobId);
           if(alreadyReplied)passed=true;
           const attachments=(task.result?.attachments||[]).map(attachment=>this.attachments.get(attachment.id));
-          if(attachments.length&&!alreadyReplied){passed=false;if(/^PASS(?:\s*$|\s*\n)/i.test(text))text='';}
+          if(attachments.length){passed=false;if(alreadyReplied||/^PASS(?:\s*$|\s*\n)/i.test(text))text='';}
           for(const attachment of attachments)if(attachment.origin?.type!=='work-output'||attachment.origin.botId!==item.botId||attachment.origin.roomId!==item.roomId)fail('Reply attachment is outside this authenticated Bot/room',403);
           if((text||attachments.length)&&!passed){
             const parts=publicationParts(text,attachments);

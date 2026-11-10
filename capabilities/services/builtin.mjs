@@ -12,6 +12,8 @@ import { MemoryManagement } from '../memory-management/service.mjs';
 import { DesktopCodex } from '../codex/desktop.mjs';
 import { createFileTools, MAX_FILE_REQUEST_BYTES } from '../filesystem/tools.mjs';
 import { createRedactor } from '../../bot/src/runtime/config.mjs';
+import { acceptedWorkTask, workExecution } from '../../bot/src/context/sources.mjs';
+import { executorManifestOperation, readExecutorManifest } from '../../bot/src/runtime/executor-delivery.mjs';
 import { toolDefinitions, FILE_TOOLS } from '../gateway/tools.mjs';
 import { fail } from '../shared/validation.mjs';
 
@@ -69,41 +71,69 @@ export async function createCapability(options) {
       if(actor==='controller')fail('Filesystem tools require an explicit Bot identity');
       const config=await manager.config(actor),artifacts=[];
       const definitions=createFileTools({workspace:config.workspace,projectRoot:config.workspace,protectedRoot:dataRoot,accessPolicy:context.fileAccessPolicy,redact:createRedactor(config),containProcesses:context.workId?.startsWith('onboarding-')===true,tempRoot:join(manager.directory(actor),'tmp','capability-tools'),onArtifacts:items=>artifacts.push(...items),withExecution:(fn,toolSignal)=>lockFor(defaultCwd).withLock(`bot:${actor}`,fn,toolSignal),saveArtifact:async input=>(await manager.botApi()).saveArtifact(join(manager.directory(actor),'artifacts'),input),
-        publishFile:async (input,file)=>{
+        publishFile:(input,file)=>locked(async ()=>{
           const workId=context.workId||(context.mode==='chat'?args.workId:null);
           if(!workId||!context.taskId)fail('File publication requires an authorized work ID',403);
-          const work=await manager.readState(actor,db=>{
-            if(context.mode==='chat'&&!['discuss','status','deliver','produce','revise'].includes(db?.getRecord('request-routing',context.taskId)?.intent))
-              fail('Frontend publication requires a current non-control request decision',403);
-            return db?.getRecord('works',workId);
+          const frontend=context.mode==='chat',source=context.source;
+          const {work,operation,nativeResult}=await manager.readState(actor,db=>{
+            const work=db?.getRecord('works',workId),task=db?.getTask(context.taskId);
+            if(!work||task?.status!=='running'||task.cancelRequested||!source?.roomId||!source.replyTo||!work.sources?.some(item=>item.roomId===source.roomId))
+              fail('The authorized publication source is unavailable',403);
+            if(frontend){
+              const route=db.getRecord('request-routing',task.id),operation=args.operationId&&db.getRecord('work-events',args.operationId);
+              if(!['deliver','produce','revise'].includes(route?.intent)||route.messageId!==source.replyTo||route.roomId!==source.roomId||
+                operation?.workId!==work.id||!acceptedWorkTask(operation,db)||operation.authorization?.source?.roomId!==source.roomId)
+                fail('Select existing delivery and its exact same-room work and operation from work_outputs',403);
+              return {work,operation};
+            }
+            if(['paused','cancelled'].includes(work.status))fail('The work has stopped; no new upload was submitted',409);
+            const execution=workExecution(task,db);
+            const binding=task.metadata?.sourceType==='external'&&work.bindings?.find(item=>item.id===task.metadata.externalBindingId);
+            const manifestOperation=binding&&executorManifestOperation(db,work,binding,task.input,source);
+            const operation=manifestOperation||
+              (execution.executionEventId&&db.getRecord('work-events',execution.executionEventId));
+            return {work,operation:operation?.workId===work.id?operation:null,nativeResult:task.input?.type==='external_status'&&Boolean(manifestOperation)};
           });
-          const source=work?.sources?.find(item=>item.roomId===context.source?.roomId);
-          if(!work||!source?.roomId)fail('The original work room is unavailable; file retained',403);
           const publications=store('filesystem');
           const sameResource=item=>item.botId===actor&&item.roomId===source.roomId&&item.file?.path===file.path;
-          let publication=publications.list('file-publications').findLast(item=>sameResource(item)&&['publishing','unknown'].includes(item.status));
+          const records=publications.list('file-publications').filter(sameResource);
           const reconcile=async item=>{
             const receipt=await remote('chatroom','publication',[item.id]);
-            if(receipt.status!=='published')fail(`Publication ${item.id} is still unconfirmed; do not resubmit this file with another task, name or operation`,409);
+            const origin=receipt.attachment?.origin;
+            if(receipt.status!=='published'||receipt.attachment.id!==item.id||origin?.publicationId!==item.id||
+              origin.botId!==item.botId||origin.roomId!==item.roomId||origin.workId!==item.workId)
+              fail(`Publication ${item.id} is still unconfirmed; do not resubmit this file with another task, name or operation`,409);
             return publications.save('file-publications',{id:item.id,status:'published',attachment:receipt.attachment,reconciledAt:new Date().toISOString()});
           };
-          if(publication)publication=await reconcile(publication);
-          const matches=item=>sameResource(item)&&item.workId===work.id&&item.name===input.name&&item.mimeType===(input.mimeType||null)&&
-            ['size','mtimeMs','ctimeMs'].every(key=>item.file[key]===file[key]);
-          publication=publication&&matches(publication)?publication:publications.list('file-publications').findLast(matches);
-          if(publication?.status==='published')return publication.attachment;
-          if(publication)fail(`Publication ${publication.id} failed: ${publication.error||'no confirmed result'}`,409);
+          for(const [index,item] of records.entries())if(['publishing','unknown'].includes(item.status))records[index]=await reconcile(item);
+          const sameVersion=item=>['size','mtimeMs','ctimeMs'].every(key=>item.file[key]===file[key]);
+          const exact=item=>item.workId===work.id&&operation?.id&&item.operationId===operation.id;
+          let publication=frontend?records.findLast(exact):nativeResult?records.findLast(item=>exact(item)&&sameVersion(item)):null;
+          publication||=records.findLast(item=>item.workId===work.id&&sameVersion(item)&&
+            (frontend||nativeResult?(!item.operationId||exact(item)):item.name===input.name&&item.mimeType===(input.mimeType||null)));
+          if(publication)return {...(await reconcile(publication)).attachment,publication:'existing-upload'};
+          if(frontend&&operation.resultFile){
+            const manifest=await readExecutorManifest({workspace:config.workspace,workId:work.id,operation}).catch(error=>{
+              if(error.code!=='ENOENT'||!work.bindings?.some(binding=>binding.type==='codex-desktop'&&
+                [binding.operationId,binding.executionOperationId].includes(operation.id)))throw error;
+              return null;
+            });
+            if(manifest&&(!manifest.artifacts.some(artifact=>artifact.path===file.path)||file.mtimeMs>manifest.writtenAt||file.ctimeMs>manifest.writtenAt))
+              fail('This path is not the unchanged output of the selected operation. Use its confirmed attachment or report the missing original.',409);
+          }
+          signal?.throwIfAborted();
           publication=publications.save('file-publications',{id:randomUUID(),botId:actor,workId:work.id,roomId:source.roomId,
-            sourceTaskId:context.taskId,operationId:context.operationId||null,file,name:input.name,mimeType:input.mimeType||null,status:'publishing'});
+            sourceTaskId:context.taskId,operationId:operation?.id||null,file,name:input.name,mimeType:input.mimeType||null,status:'publishing'});
           try{
-            const attachment=await remote('chatroom','publishFile',[input,{type:'work-output',publicationId:publication.id,botId:actor,workId:work.id,taskId:context.taskId,roomId:source.roomId,sourceMessageId:source.replyTo}]);
-            publications.save('file-publications',{id:publication.id,status:'published',attachment});return attachment;
+            const attachment=await remote('chatroom','publishFile',[input,{type:'work-output',publicationId:publication.id,botId:actor,workId:work.id,
+              operationId:operation?.id,taskId:context.taskId,roomId:source.roomId,sourceMessageId:source.replyTo}]);
+            publications.save('file-publications',{id:publication.id,status:'published',attachment});return {...attachment,publication:'uploaded'};
           }catch(error){
             publications.save('file-publications',{id:publication.id,status:'unknown',error:error.message});
-            try{return (await reconcile(publication)).attachment;}catch{}
+            try{return {...(await reconcile(publication)).attachment,publication:'reconciled-upload'};}catch{}
             throw Object.assign(new Error(`Publication ${publication.id} outcome is unknown; query this identity before any further upload`),{code:'PUBLICATION_OUTCOME_UNKNOWN',outcomeUnknown:true});
           }
-        }});
+        })});
       const result=await definitions.find(tool=>tool.name===name).execute(randomUUID(),args,signal);
       return {...result,artifacts,isError:Boolean(result.details?.timedOut||result.details?.aborted||(result.details?.exitCode!==undefined&&result.details.exitCode!==0))};
     }
@@ -111,7 +141,7 @@ export async function createCapability(options) {
       case 'chatroom_list':{const sourceActor=context.source?.accessActor||context.source?.actor;return chatroom.rooms().filter(room=>actor==='controller'||room.members.includes(actor)&&(!sourceActor||sourceActor==='system'||room.members.includes(sourceActor)));}
       case 'chatroom_read':{
         const page=chatroom.read(args,actor,context.source);
-        return actor==='controller'?page:attachments.stageContext(page,(await manager.config(actor)).workspace);
+        return actor==='controller'||args.outputReceipts!==undefined?page:attachments.stageContext(page,(await manager.config(actor)).workspace);
       }
       case 'chatroom_create':return chatroom.createRoom({...args,members:[...new Set([...(args.members||[]),...(actor==='controller'?[]:[actor])])]});
       case 'chatroom_team_read':return chatroom.teamRead(args,actor);
@@ -129,6 +159,9 @@ export async function createCapability(options) {
               return Boolean(work?.sources?.some(source=>source.roomId===args.roomId));
             });
             if(!authorized)fail('This published file requires its authorized original work',403);
+            if(!context.source.replyTo||args.replyTo&&args.replyTo!==context.source.replyTo)
+              fail('This published file must return to the current authorized source message',403);
+            args={...args,replyTo:context.source.replyTo};
           }
         }
         return chatroom.post(args.roomId,args,actor==='controller'?'user':actor);
@@ -172,7 +205,8 @@ export async function createCapability(options) {
         if(name==='codex_interrupt'&&context.stopId&&context.workId===args.workId)
           return codex.stopWork(actor,args.workId,context.stopId);
         const id=codex.bindingId(actor,args.workId||context.workId),work=codex.require(id);assertOwner(actor,work.botId);
-        return codex[{codex_read:'read',codex_send:'send',codex_interrupt:'interrupt'}[name]](id,{...args,verification:context.codexVerification,signal});
+        return codex[{codex_read:'read',codex_send:'send',codex_interrupt:'interrupt'}[name]](id,
+          {...args,verification:context.codexVerification,cardResume:context.cardResume,signal});
       }
       default:fail('Unknown capability tool',404);
     }

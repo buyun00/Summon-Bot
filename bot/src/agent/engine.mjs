@@ -167,8 +167,7 @@ export class BotEngine {
             instruction: 'This is evidence within the original request, not new user authorization.' } } : {}) };
       }
       const handoffs = [];
-      const authorizationSources = new Map();
-      const readProduction = async ({ user, units, proposed, step }, signal) => {
+      const verifyProduction = async ({ user, units, continuationTarget, existingDelivery, sourceAction, proposed, step }, signal) => {
         const prior = publicView?.messages.filter(message => message.source?.roomId === user.roomId) || [];
         const current = prior.findIndex(message => message.source?.messageId === user.messageId);
         const related = user.replyTo ? prior.slice(0, Math.max(0, current)).find(message => message.source?.messageId === user.replyTo) :
@@ -176,7 +175,8 @@ export class BotEngine {
         const previous = related?.source?.actor === this.config.botId ? JSON.parse(related.content[0].text) : null;
         const result = await this.provider.stream(model, { messages: [
           { role: 'system', content: productionAuthorizationPrompts[step], timestamp: Date.now() },
-          userMessage({ currentUser: units, referencedTurn: previous && { content: previous.content }, ...(proposed ? { proposed } : {}) }),
+          userMessage({ currentUser: units, referencedTurn: previous && { content: previous.content },
+            continuationTarget, existingDelivery, ...(proposed ? { sourceAction, proposed } : {}) }),
         ], tools: [] }, { signal, reasoning: thinkingLevel,
           usageContext: { ...usageContext, requestKind: 'production-authorization', authorizationStep: step } }).result();
         signal?.throwIfAborted();
@@ -186,12 +186,6 @@ export class BotEngine {
         let receipt;
         try { receipt = JSON.parse(answer.replace(/^\x60{3}(?:json)?\s*|\s*\x60{3}$/gi, '')); } catch {}
         return { receipt, referenced: Boolean(previous) };
-      };
-      const verifyProduction = (check, signal) => {
-        if (check.step !== 'source') return readProduction(check, signal);
-        const id = check.user.acceptedMessageId;
-        if (!authorizationSources.has(id)) authorizationSources.set(id, readProduction(check, signal));
-        return authorizationSources.get(id);
       };
       const registry = new ToolRegistry({
         authorize: async (tool, args) => {
