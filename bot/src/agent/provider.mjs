@@ -63,7 +63,8 @@ export class ModelProvider {
         const fastest = model.thinkingLevelMap?.off === null ? ['low', 'medium', 'high'].find(level => model.thinkingLevelMap[level] != null) : null;
         const reasoning = clampThinkingLevel(model, requestedReasoning === 'off' && fastest ? fastest : requestedReasoning);
         const thinking = reasoning !== 'off', idleWaitMs = thinking ? 300000 : 180000;
-        const maxTokens = authorization ? Math.min(model.outputTokenLimit ?? model.maxTokens, authorizationOutput[thinking ? 'thinking' : 'off']) :
+        // The source and proposal checks share the former single-check ceiling.
+        const maxTokens = authorization ? Math.min(model.outputTokenLimit ?? model.maxTokens, authorizationOutput[thinking ? 'thinking' : 'off'] / 2) :
           Math.min(options.maxTokens ?? model.maxTokens, model.outputTokenLimit ?? model.maxTokens);
         record = { id: randomUUID(), botId: this.config.botId, ...options.usageContext,
           purpose: options.usageContext?.purpose || 'other', provider: connection.kind === 'api' ? connection.provider : connection.kind,
@@ -83,7 +84,8 @@ export class ModelProvider {
           sessionId: options.usageContext?.sessionId || options.sessionId, maxRetries: 0,
           ...(connection.kind === 'codex' ? { transport: 'sse' } : {}),
           onPayload: async (payload, model) => {
-            const replacement = await onPayload?.(payload, model);
+            const replacement = await onPayload?.(payload, model) ??
+              (authorization && deepseek ? { ...payload, response_format: { type: 'json_object' } } : undefined);
             const sent = replacement ?? payload;
             const limit = sent?.max_tokens ?? sent?.max_completion_tokens ?? sent?.max_output_tokens;
             record.maxOutputTokens = Number.isSafeInteger(limit) ? limit : null;

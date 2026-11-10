@@ -23,7 +23,7 @@ import { assertFileToolAccess, taskFileAccessPolicy } from '../capabilities/file
 import { FILE_ACCESS_GUIDANCE } from '../capabilities/file-policy.mjs';
 import { factTime } from '../context/fact-time.mjs';
 import { projectWorkContext } from '../context/work-context.mjs';
-import { productionAuthorizationPrompt } from '../capabilities/request-routing.mjs';
+import { productionAuthorizationPrompts } from '../capabilities/request-routing.mjs';
 
 const emptyUsage = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 });
 const userMessage = (content, source) => ({ role: 'user', content: [{ type: 'text', text: typeof content === 'string' ? content : JSON.stringify(content) }], timestamp: Date.now(), ...(source ? { source } : {}) });
@@ -167,24 +167,31 @@ export class BotEngine {
             instruction: 'This is evidence within the original request, not new user authorization.' } } : {}) };
       }
       const handoffs = [];
-      const verifyProduction = async ({ user, proposed, attempt }, signal) => {
+      const authorizationSources = new Map();
+      const readProduction = async ({ user, units, proposed, step }, signal) => {
         const prior = publicView?.messages.filter(message => message.source?.roomId === user.roomId) || [];
         const current = prior.findIndex(message => message.source?.messageId === user.messageId);
         const related = user.replyTo ? prior.slice(0, Math.max(0, current)).find(message => message.source?.messageId === user.replyTo) :
-          current > 0 && prior[current - 1].source?.actor === this.config.botId ? prior[current - 1] : null;
-        const previous = related ? JSON.parse(related.content[0].text) : null;
+          current > 0 ? prior[current - 1] : null;
+        const previous = related?.source?.actor === this.config.botId ? JSON.parse(related.content[0].text) : null;
         const result = await this.provider.stream(model, { messages: [
-          { role: 'system', content: productionAuthorizationPrompt + (attempt === 2 ? '\nBefore returning a positive decision, check that the decoded quotation occurs character for character in currentUser.' : ''), timestamp: Date.now() },
-          userMessage({ currentUser: user.text, referencedTurn: previous && { author: previous.author, content: previous.content }, proposed }),
+          { role: 'system', content: productionAuthorizationPrompts[step], timestamp: Date.now() },
+          userMessage({ currentUser: units, referencedTurn: previous && { content: previous.content }, ...(proposed ? { proposed } : {}) }),
         ], tools: [] }, { signal, reasoning: thinkingLevel,
-          usageContext: { ...usageContext, requestKind: 'production-authorization' } }).result();
+          usageContext: { ...usageContext, requestKind: 'production-authorization', authorizationStep: step } }).result();
         signal?.throwIfAborted();
         if (result.stopReason !== 'stop') throw Object.assign(new Error(
           'The authorization check did not complete with a decision. The action was not dispatched. Report the failure and wait for a fresh request for this action. Do not resubmit it with reworded instructions.'), { code: 'PRODUCTION_CHECK_UNAVAILABLE' });
         const answer = result.content.filter(block => block.type === 'text').map(block => block.text).join('').trim();
-        let verdict;
-        try { verdict = JSON.parse(answer.replace(/^\x60{3}(?:json)?\s*|\s*\x60{3}$/gi, '')); } catch {}
-        return verdict;
+        let receipt;
+        try { receipt = JSON.parse(answer.replace(/^\x60{3}(?:json)?\s*|\s*\x60{3}$/gi, '')); } catch {}
+        return { receipt, referenced: Boolean(previous) };
+      };
+      const verifyProduction = (check, signal) => {
+        if (check.step !== 'source') return readProduction(check, signal);
+        const id = check.user.acceptedMessageId;
+        if (!authorizationSources.has(id)) authorizationSources.set(id, readProduction(check, signal));
+        return authorizationSources.get(id);
       };
       const registry = new ToolRegistry({
         authorize: async (tool, args) => {
@@ -427,10 +434,11 @@ export class BotEngine {
       const observations = [];
       agent.beforeToolCall = () => { combined.throwIfAborted(); toolsCalled++; };
       agent.afterToolCall = ({ toolCall, result, isError }) => {
-        if (!isError && taskMode(task) === 'chat' && ['work_create', 'work_dispatch', 'work_wait'].includes(toolCall.name)) {
-          const receipt = result.details || {};
-          handoffs.push({ workId: receipt.workId || receipt.id || toolCall.arguments.id, status: receipt.status || 'accepted', acceptance: receipt.acceptance || receipt.warning });
-          activity?.update({ phase: 'accepted', label: '工作要求已保存', motion: 'exclaim', source: 'execution' });
+        const receipt = result.details;
+        if (!isError && receipt?.accepted === true && taskMode(task) === 'chat' && ['work_create', 'work_dispatch', 'work_wait'].includes(toolCall.name)) {
+          const label = receipt.receiptLayer === 'local-dispatch' ? '已提交到本机工作队列' : '等待已登记';
+          handoffs.push({ workId: receipt.workId, label });
+          activity?.update({ phase: 'accepted', label, motion: 'exclaim', source: 'execution' });
         }
         const definition = registry.definitions.get(toolCall.name), observation = JSON.stringify([toolCall.name, toolCall.arguments, result.content]);
         if (definition?.effect === 'read' || isError) {
@@ -573,7 +581,7 @@ export class BotEngine {
         record.name === 'work_deliver' ? (record.output?.details?.attachments || []).map(item => item.id) :
         record.name === 'publish_file' && record.output?.details?.origin?.botId === this.config.botId && record.output.details.origin.roomId === roomId ? [record.output.details.id] : []))].map(id => ({ id })) : [];
       if (partial && (task.workId || !partialText && !handoffs.length)) throw Object.assign(new Error(lastOutcome?.errorMessage || `Agent ended with ${lastOutcome?.stopReason || 'no result'}`), { code: 'MODEL_ERROR' });
-      return clean({ content: (partialText || (handoffs.length ? handoffs.map(item => `工作 ${item.workId} 已受理，后续执行结果尚未确认。`).join('\n') : '')) +
+      return clean({ content: (partialText || handoffs.map(item => `工作 ${item.workId}：${item.label}。`).join('\n')) +
         (partial ? `\n本轮答复未完整结束：${lastOutcome?.errorMessage || lastOutcome?.stopReason || '未取得完整答复'}。已保存的动作和内容仍然保留。` : ''),
         ...(partial ? { partial: true, error: lastOutcome?.errorMessage || lastOutcome?.stopReason || 'no result' } : {}),
         ...(handoffs.length ? { handoff: true, workId: handoffs.length === 1 ? handoffs[0].workId : undefined, workIds: handoffs.map(item => item.workId) } : {}),

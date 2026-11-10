@@ -145,7 +145,9 @@ export function coreTools(services, task) {
   // keeps its saved tool record; another accepted source gets another record.
   const actionId = (args, ctx, field) => ctx.recordId || `${task.id}:${ctx.toolCallId}`;
   const authorizationFailures = new Map();
-  const authorize = async (decision, ctx, proposed) => {
+  const sameWork = (expected, current) => Boolean(current && JSON.stringify({ ...selectedWork(current), status: undefined }) ===
+    JSON.stringify({ ...expected, status: undefined }));
+  const authorize = async (decision, ctx, proposed, { workId, actionId }) => {
     if (!decision) return null;
     ctx.signal?.throwIfAborted();
     const stage = decision.productionStage;
@@ -163,12 +165,8 @@ export function coreTools(services, task) {
       throw previous;
     }
     try {
-      return await authorizeProduction({ task, store, decision, proposed, verify: ctx.verifyProduction, signal: ctx.signal,
-        isTargetCurrent: proposed.relation === 'continue' ? () => {
-          const current = services.works.get(proposed.work.id);
-          return Boolean(current && JSON.stringify({ ...selectedWork(current), status: undefined }) ===
-            JSON.stringify({ ...proposed.work, status: undefined }));
-        } : undefined });
+      return await authorizeProduction({ task, store, decision, proposed, workId, actionId, verify: ctx.verifyProduction, signal: ctx.signal,
+        isTargetCurrent: proposed.relation === 'continue' ? () => sameWork(proposed.work, services.works.get(workId)) : undefined });
     } catch (error) {
       if (['PRODUCTION_CHECK_UNAVAILABLE', 'PRODUCTION_RECEIPT_INVALID'].includes(error.code)) authorizationFailures.set(actionKey, error);
       if (['PRODUCTION_NOT_AUTHORIZED', 'PRODUCTION_STAGE_MISMATCH'].includes(error.code)) authorizationFailures.set(proposalKey, error);
@@ -186,7 +184,8 @@ export function coreTools(services, task) {
   };
   const selectedWork = work => ({ id: work.id, goal: work.goal, requirements: work.requirements, status: work.status,
     project: work.project, target: work.executor?.target, controlRevision: work.controlRevision || 0,
-    priorStage: currentStepStage(work), operationId: externalExecution(work)?.operationId });
+    priorStage: currentStepStage(work), operationId: externalExecution(work)?.operationId,
+    bindingId: work.bindings?.findLast(item => item.type === 'codex-desktop')?.id });
   const documentBoundary = (work, decision) => {
     if (decision?.productionStage !== 'document-review') return;
     if (services.works.executor(work).kind !== 'codex')
@@ -196,7 +195,7 @@ export function coreTools(services, task) {
       throw new Error('仅文稿授权不会追加到正在实施的回合或恢复已停止的实施工作。请使用对应的文档工作，或登记独立新文档工作。');
   };
   return [
-    tool('request_decide', 'Classify the CURRENT authenticated user request by meaning before acting. produce/revise requires a current request to execute new or changed work. Confirming requirements, discussing a design, or asking for a document does not authorize implementing it. The proposed action and stage are separately checked against the current source before dispatch. status means inspect progress; deliver means return EXISTING output; accept means explicit scoped acceptance; control includes pause/stop/cancel. If the user explicitly accepts the current result within a stated scope, select accept and call work_accept before replying even when they also ask for status, what evidence or saved rules were used, or a closeout correction. Use the canonical workId and operationId from work_get.acceptanceTarget. Preserve all stated limits. A request may accept a document AND explicitly request independent implementation: select produce, its production stage/relation, AND those acceptances; call work_accept for each BEFORE work_create/work_dispatch. Production alone never implies acceptance. For existing files call request_decide intent=deliver, work_outputs, then work_deliver with its replyDelivery IDs. New rendering/screenshots/revisions are production only when missing. Decide semantically from the authenticated source, never keywords. This decision grants no extra authority.',
+    tool('request_decide', 'Classify the CURRENT authenticated user request by meaning before acting. produce/revise requires the user to ask to execute the specific action now or to register it for an explicit dependency. Choose discuss for planning, choosing rules, or asking for a small example or draft in this chat. A formal document request authorizes its own stage. A possible later step or one awaiting review stays out of production. The proposed action and stage are separately checked against the current source before dispatch. status means inspect progress; deliver means return EXISTING output; accept means explicit scoped acceptance; control includes pause/stop/cancel. If the user explicitly accepts the current result within a stated scope, select accept and call work_accept before replying even when they also ask for status, what evidence or saved rules were used, or a closeout correction. Use the canonical workId and operationId from work_get.acceptanceTarget. Preserve all stated limits. A request may accept a document AND explicitly request independent implementation: select produce, its production stage/relation, AND those acceptances; call work_accept for each BEFORE work_create/work_dispatch. Production alone never implies acceptance. For existing files call request_decide intent=deliver, work_outputs, then work_deliver with its replyDelivery IDs. New rendering/screenshots/revisions are production only when missing. Decide semantically from the authenticated source, never keywords. This decision grants no extra authority.',
       object({ intent: { type: 'string', enum: requestIntents }, productionStage: { type: 'string', enum: productionStages,
         description: 'Choose by the requested outcome. Implementation includes making or changing a usable artifact (including standalone HTML or a trial version), building, running tests, and deployment. Document-review is production limited to a formal review document. Use other only for production outside both stages.' },
         workRelation: { type: 'string', enum: ['new', 'continue'] }, workId: string,
@@ -359,11 +358,13 @@ export function coreTools(services, task) {
         let project;
         try { project = target ? await services.sources.authorizeProject(target, task) : await services.sources.contextProject(task); }
         catch (error) { if (target) throw error; content.evidenceWarnings.push({ message: `Project scope is unavailable: ${error.message}` }); }
+        if (project && executor?.target?.type === 'project') executor.target = { ...executor.target, projectId: project.id };
         const goal = modelText(args.goal || args.instruction || args.content || content.originalRequest.content);
-        const grant = await authorize(decision, ctx, { relation: 'new', project, target, goal, handoff: content.handoff });
+        const requirements = modelText(args.requirements);
+        const grant = await authorize(decision, ctx, { relation: 'new', project, target: executor?.target || target, executor: executorKind,
+          goal, requirements, handoff: content.handoff }, { workId: id, actionId: `${id}:${operationId}` });
         if (grant) content.stage = productionStage(grant);
         if (project) {
-          if (executor?.target?.type === 'project') executor.target = { ...executor.target, projectId: project.id };
           try { content.projectKnowledge = await services.memory.forProject(task, project); }
           catch (error) { content.evidenceWarnings.push({ message: `Project knowledge is unavailable: ${error.message}` }); }
         }
@@ -371,10 +372,10 @@ export function coreTools(services, task) {
         catch (error) { content.evidenceWarnings.push({ message: `Current project rules are unavailable: ${error.message}` }); }
         ctx.signal?.throwIfAborted();
         const work = services.works.create({ id, operationId, goal,
-          requirements: modelText(args.requirements), responsibility: modelText(args.responsibility), executor, project,
+          requirements, responsibility: modelText(args.responsibility), executor, project,
           productionStage: grant?.stage, productionAuthorization: grant, initialHandoff: content }, task);
         const receipt = await services.works.dispatch(work.id, { id: operationId, kind: 'request', content, metadata: { priority: 'background' } }, task);
-        return { ...compactWork(work), ...receipt, handedOff: true, acceptance: modelText(args.acceptance), evidenceWarnings: content.evidenceWarnings };
+        return { ...compactWork(work), ...receipt, handedOff: receipt.accepted === true, acceptance: modelText(args.acceptance), evidenceWarnings: content.evidenceWarnings };
       }),
     tool('work_update', frontend ? 'Pause or cancel existing work. Send requirements with work_dispatch; only the worker records progress and completion.' : review ? 'Record progress, checkpoints, next steps and evidence for the current external review. Follow the current external_work_review to determine whether status and waiting can be updated. Preserve the accepted goal and requirements.' : 'Record actual progress and status of the current work. Its identity and revision are supplied by the program.',
       object({ id: string, ...(!frontend ? { goal: string, requirements: string, progress: string, checkpoint: {}, next: string, constraints: string, evidence: {},
@@ -430,7 +431,9 @@ export function coreTools(services, task) {
         if (decision?.workId && decision.workId !== work.id) throw new Error('Dispatch must use the canonical continuation work selected for this request.');
         documentBoundary(work, decision);
         const content = await services.sources.handoff(task, args);
-        const grant = await authorize(decision, ctx, { relation: 'continue', work: selectedWork(work), handoff: content.handoff });
+        const eventId = actionId(args, ctx, 'eventId'), selected = selectedWork(work);
+        const grant = await authorize(decision, ctx, { relation: 'continue', work: selected, handoff: content.handoff },
+          { workId: work.id, actionId: `${work.id}:${eventId}` });
         if (grant) content.stage = productionStage(grant);
         try { content.projectKnowledge = await services.memory.forProject(task, services.sources.project(work)); }
         catch (error) { content.evidenceWarnings.push({ message: `Project knowledge is unavailable: ${error.message}` }); }
@@ -438,9 +441,9 @@ export function coreTools(services, task) {
         catch (error) { content.evidenceWarnings.push({ message: `Current project rules are unavailable: ${error.message}` }); }
         ctx.signal?.throwIfAborted();
         const current = services.works.get(work.id);
-        if ((current.controlRevision || 0) !== (work.controlRevision || 0)) throw new Error('工作控制状态已变化；请重新读取并依据新的用户要求处理。');
+        if (!sameWork(selected, current)) throw new Error('工作目标或控制状态已变化；请重新读取并依据新的用户要求处理。');
         documentBoundary(current, decision);
-        const receipt = await services.works.dispatch(work.id, { id: actionId(args, ctx, 'eventId'), kind: frontend ? 'request' : 'event', content, productionAuthorization: grant,
+        const receipt = await services.works.dispatch(work.id, { id: eventId, kind: frontend ? 'request' : 'event', content, productionAuthorization: grant,
           metadata: { correction: args.correction === true, resume: Boolean(grant), priority: 'foreground' } }, task);
         return { ...receipt, acceptance: modelText(args.acceptance), evidenceWarnings: content.evidenceWarnings };
       }),
@@ -475,12 +478,13 @@ export function coreTools(services, task) {
         }
         const handoff = await services.sources.handoff(task, args);
         const waiting = Object.fromEntries(['taskId', 'botId', 'until', 'event', 'mode', 'dependencyWorkId', 'targetWorkId'].filter(key => typeof args[key] === 'string').map(key => [key, args[key]]));
-        const verifyFollowUp = frontend ? async (target, dependency) => {
+        const verifyFollowUp = frontend ? async (target, dependency, waitId) => {
           const decision = productionDecision(task, store);
           if (decision?.workRelation !== 'continue' || decision.workId !== target.id)
             throw new Error('A wait that starts more work needs the current request’s continuation decision for its exact target. An observe-only wait does not start another action.');
           documentBoundary(target, decision);
-          return authorize(decision, ctx, { relation: 'continue', work: selectedWork(target), handoff: handoff.handoff, after: dependency });
+          return authorize(decision, ctx, { relation: 'continue', work: selectedWork(target), handoff: handoff.handoff, after: dependency },
+            { workId: target.id, actionId: waitId });
         } : undefined;
         return { ...await services.works.wait(work.id, { ...waiting, unresolvedTaskId, waitId: actionId(args, ctx, 'waitId'), handoff }, task, verifyFollowUp),
           acceptance: modelText(args.acceptance), evidenceWarnings: handoff.evidenceWarnings };

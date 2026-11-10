@@ -4,13 +4,15 @@ import { modelText, boundedNumber, durationSeconds } from '../context/model-inpu
 import { isCliExecutor } from '../capabilities/executor-connections.mjs';
 import { directoryProject } from '../context/project-scope.mjs';
 import { externalExecution } from '../context/execution-evidence.mjs';
-import { productionStage } from '../capabilities/request-routing.mjs';
+import { productionStage, requireProductionGrant } from '../capabilities/request-routing.mjs';
 
 const now = () => new Date().toISOString();
 const statuses = new Set(['active', 'waiting', 'paused', 'blocked', 'completed', 'cancelled']);
 const stopped = new Set(['paused', 'cancelled']);
 const stopOutcomes = new Set(['local-stopped', 'interrupted', 'completed', 'failed', 'cancelled']);
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), { status }); };
+const productionTarget = work => ({ projectId: work.project?.id ?? null, target: JSON.stringify(work.executor?.target || null),
+  bindingId: work.bindings?.findLast(item => item.type === 'codex-desktop')?.id });
 
 /** S3 is state and pointers only. Knowledge正文 lives in Markdown, never here. */
 export class WorkService {
@@ -25,23 +27,31 @@ export class WorkService {
   }
   create(input, task = {}) {
     if (typeof input.goal !== 'string' || !input.goal.trim()) fail('Work requires a goal');
+    const id = input.id || randomUUID();
+    if (!/^[\w.-]{1,160}$/.test(id)) fail('Invalid work id');
     const sourceKey = task.id && !task.workId ? `task:${task.id}:action:${input.operationId || input.id}` : null;
     const handedOff = sourceKey && this.store.getRecord('work-handoffs', sourceKey);
     if (handedOff) return this.get(handedOff.workId);
-    const id = input.id || randomUUID();
-    if (!/^[\w.-]{1,160}$/.test(id)) fail('Invalid work id');
-    const previous = this.get(id); if (previous) return previous;
+    const previous = this.get(id);
+    if (previous) {
+      if (sourceKey) fail('This work ID belongs to a different action', 409);
+      return previous;
+    }
     const executor = input.executor || this.selectExecutor?.() || { kind: 'pi' };
     if (!['pi', 'codex'].includes(executor.kind) && !isCliExecutor(executor.kind)) fail('Unknown work executor');
     if (executor.kind === 'codex' && !['project', 'projectless', 'directory'].includes(executor.target?.type)) fail('Codex requires an authorized directory or selected project target');
     if (isCliExecutor(executor.kind) && executor.target) fail('这个工作引擎使用 Bot 的本机工作目录。');
+    const project = executor.target?.type === 'directory' ? directoryProject(executor.target.cwd) : input.project || null;
+    if (sourceKey) requireProductionGrant(task, this.store, input.productionAuthorization, {
+      workId: id, actionId: `${id}:${input.operationId || 'initial'}`, relation: 'new', stage: input.productionStage,
+      when: 'now', ...productionTarget({ project, executor }),
+    });
     const supervisor = this.selectModel?.(executor.kind === 'pi' ? executor.connectionId : undefined);
     const binding = executor.kind === 'pi' ? { kind: 'pi', ...(executor.target ? { target: executor.target } : {}) } : executor;
     const record = this.clean({ id, botId: this.botId, conversationId: `work:${id}`, goal: input.goal,
-      requirements: input.requirements || '', executor: binding, supervisor, project: input.project || null, productionStage: input.productionStage || null, progress: '', status: 'active', waiting: null, bindings: [], notifications: [],
+      requirements: input.requirements || '', executor: binding, supervisor, project, productionStage: input.productionStage || null, progress: '', status: 'active', waiting: null, bindings: [], notifications: [],
       sources: input.sources || (task.id ? [this.source(task)] : []),
       responsibility: input.responsibility || null, revision: 1, createdAt: now(), updatedAt: now() });
-    if (executor.target?.type === 'directory') record.project = directoryProject(executor.target.cwd);
     this.store.transaction(() => {
       this.store.putRecord('works', record);
       if (sourceKey) this.store.putRecord('work-handoffs', { id: sourceKey, workId: id, createdAt: now() });
@@ -93,18 +103,30 @@ export class WorkService {
   }
   async dispatchEvent(id, input, task = {}) {
     const work = this.get(id); if (!work) fail('Unknown work', 404);
-    if (!work.executor) this.update(id, { executor: this.executor(work).kind === 'codex' ? { kind: 'codex' } : { kind: 'pi', ...this.selectModel?.() } });
-    const eventId = input.id || randomUUID(), prior = this.store.getRecord('work-events', `${id}:${eventId}`);
+    const eventId = input.id || randomUUID(), key = `${id}:${eventId}`, prior = this.store.getRecord('work-events', key);
     if (prior?.receipt) return { ...prior.receipt, duplicate: true };
+    const wait = input.metadata?.waitId && this.store.getRecord('work-waits', input.metadata.waitId);
+    const registered = wait?.targetWorkId === id && eventId === `wait:${wait.id}` && wait.status === 'pending' && !wait.unresolvedTaskId;
+    if (!task.id && (prior?.kind === 'request' && prior.sourceTaskId || registered && wait.sourceTaskId))
+      fail('The original request task is unavailable. This action was not dispatched.', 409);
+    const authorization = prior?.authorization || (registered ? wait.authorization : this.authorization(task, key, input.productionAuthorization));
+    if (task.id && !task.workId && (prior?.kind || input.kind) === 'request') {
+      const initial = this.store.getRecord('work-handoffs', `task:${task.id}:action:${eventId}`)?.workId === id;
+      requireProductionGrant(task, this.store, authorization?.production, {
+        workId: id, actionId: registered ? wait.id : key, relation: initial ? 'new' : 'continue',
+        stage: (prior?.content || input.content)?.stage?.kind, when: registered ? 'after-dependency' : 'now',
+        ...productionTarget(work), controlRevision: initial ? undefined : work.controlRevision || 0,
+      });
+      if (stopped.has(work.status) && !input.metadata?.resume) fail('工作已停止，未派发此步骤。', 409);
+    }
+    if (input.metadata?.resume && stopped.has(work.status)) this.requireResume(work, authorization?.source?.receivedAt || null);
+    if (!work.executor) this.update(id, { executor: this.executor(work).kind === 'codex' ? { kind: 'codex' } : { kind: 'pi', ...this.selectModel?.() } });
     if (task.id && !task.workId && input.kind === 'request') {
       const source = this.source(task);
       if (!work.sources.some(item => item.taskId === source.taskId)) this.update(id, { sources: [...work.sources, source] });
     }
     const inherited = task.workId ? this.execution(task) : null;
-    const wait = input.metadata?.waitId && this.store.getRecord('work-waits', input.metadata.waitId);
-    const authorization = (wait?.targetWorkId === id && wait.authorization) || this.authorization(task, `${id}:${eventId}`, input.productionAuthorization);
-    if (input.metadata?.resume && stopped.has(work.status)) this.requireResume(work, authorization?.source?.receivedAt || null);
-    let intent = prior || this.store.putRecord('work-events', this.clean({ id: `${id}:${eventId}`, workId: id,
+    let intent = prior || this.store.putRecord('work-events', this.clean({ id: key, workId: id,
       kind: input.kind || 'event', content: input.content, requestTaskId: authorization?.requestTaskId, sourceTaskId: task.id, authorization,
       metadata: { ...input.metadata, ...(inherited?.executionEventId ? { executionEventId: inherited.executionEventId } : {}) }, status: 'pending', createdAt: now() }));
     if (!intent.authorization && intent.requestTaskId) {
@@ -178,10 +200,14 @@ export class WorkService {
     // Merely observing the same execution never creates another send.
     const mode = crossWorkStep || task.workId && input.mode !== 'observe' || instruction && input.mode === 'follow_up' ? 'follow_up' : 'observe';
     const grant = mode === 'follow_up' && verifyFollowUp ? await verifyFollowUp(target, { workId: input.dependencyWorkId,
-      taskId: input.taskId, until: input.until, event: input.event }) : null;
+      taskId: input.taskId, until: input.until, event: input.event }, waitId) : null;
     const current = this.get(target.id);
     if (mode === 'follow_up' && (stopped.has(current.status) || (current.controlRevision || 0) !== (target.controlRevision || 0)))
       fail('工作已停止或控制状态已变化，未登记后续派发。', 409);
+    if (mode === 'follow_up' && task.id && !task.workId) requireProductionGrant(task, this.store, grant, {
+      workId: target.id, actionId: waitId, relation: 'continue', when: 'after-dependency',
+      ...productionTarget(current), controlRevision: current.controlRevision || 0,
+    });
     const waiting = this.clean({ ...input, mode, id: waitId, workId: id, targetWorkId, sourceTaskId: task.id,
       ...(grant ? { handoff: { ...input.handoff, stage: productionStage(grant) } } : {}),
       authorization: this.authorization(task, waitId, grant),
@@ -259,7 +285,8 @@ export class WorkService {
     if (work.externalStop?.status === 'completed' && stopped.has(work.status))
       fail('原执行回合已经完成。请在来源会话核对结果或明确提出追加要求。', 409);
     const binding = work.bindings?.find(item => item.type === 'codex-desktop');
-    const events = this.store.listRecords('work-events').filter(event => event.workId === id && event.kind === 'request' && event.authorization?.source && event.content !== undefined);
+    const events = this.store.listRecords('work-events').filter(event => event.workId === id && event.kind === 'request' && event.receipt?.accepted &&
+      event.authorization?.source && event.content !== undefined);
     const operationId = binding?.executionOperationId || binding?.operationId;
     const supervision = operationId && this.store.getTool(operationId);
     const origin = supervision?.name === 'codex_send' && supervision.workId === id && this.store.getTask(supervision.taskId);

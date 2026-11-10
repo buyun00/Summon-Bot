@@ -401,7 +401,8 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         }
         for (const task of store.listTasks({ status: 'accepted', limit: 10000 })) schedule(task);
         for (const event of store.listRecords('work-events').filter(event => event.status === 'pending' && !event.receipt)) {
-          const source = event.requestTaskId && store.getTask(event.requestTaskId);
+          const sourceId = event.sourceTaskId || event.requestTaskId;
+          const source = sourceId && store.getTask(sourceId);
           try { await services.works.dispatch(event.workId, { id: event.id.slice(event.workId.length + 1), kind: event.kind, content: event.content, metadata: event.metadata }, source || {}); }
           catch (error) { store.putRecord('work-events', { ...store.getRecord('work-events', event.id), lastError: clean(error.message) }); }
         }
