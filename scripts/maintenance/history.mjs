@@ -18,7 +18,7 @@ const domains = Object.freeze({
   chatroom: ['messages', 'deliveries'],
   codex: ['works', 'workEvents', 'agentRuns', 'toolRuns', 'jobs', 'requests', 'sessions', 'events'],
   'memory-management': ['proposals', 'deliveries', 'merges', 'mergeEvents'],
-  gateway: ['event-cursors', 'imported-events', 'imported-kv_state', 'imported-requests', 'imported-sessions'],
+  gateway: ['event-cursors', 'work-form-owners', 'imported-events', 'imported-kv_state', 'imported-requests', 'imported-sessions'],
   registry: ['capability-requests', 'capability-reconciliations'],
 });
 const normalize = value => process.platform === 'win32' ? value.toLowerCase() : value;

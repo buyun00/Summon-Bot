@@ -119,7 +119,7 @@ export function frontendObservation(output) {
     instruction: 'Narrow the query or read a bounded fragment. Production details stay in independent work.' };
   return { content: [{ type: 'text', text: JSON.stringify(details) }], details, ...(output.isError ? { isError: true } : {}) };
 }
-export const compactWork = work => work && ({ id: work.id, goal: String(work.goal || '').slice(0, 600), status: work.status,
+export const compactWork = (work, observedAt) => work && ({ id: work.id, goal: String(work.goal || '').slice(0, 600), status: work.status,
   progress: String(work.progress || '').slice(0, 1200),
   progressEvidence: work.checkpoint?.evidence?.kind === 'executor-commentary' ? { kind: 'executor-commentary', completionConfirmed: false,
     instruction: 'Executor commentary records what was said. Preserve plans and in-progress tense; inspect exact operation/tool receipts before reporting a check or change as verified.' } : undefined,
@@ -131,7 +131,7 @@ export const compactWork = work => work && ({ id: work.id, goal: String(work.goa
     id, type, externalThreadId, turnId, operationId, status, observedAt,
     operations: operations?.slice(-3).map(({ operationId, action, status, threadId, turnId, attemptedAt, recordedAt }) => ({ operationId, action, status, threadId, turnId, attemptedAt, recordedAt })) })),
   execution: externalExecution(work), acceptance: work.acceptance,
-  facts: factTime({ createdAt: work.createdAt, updatedAt: work.updatedAt, checkpointAt: work.checkpoint?.recordedAt }),
+  facts: factTime({ createdAt: work.createdAt, updatedAt: work.updatedAt, checkpointAt: work.checkpoint?.recordedAt }, observedAt),
   checkpoint: work.checkpoint && { ...work.checkpoint, progress: String(work.checkpoint.progress || '').slice(0, 1600), note: String(work.checkpoint.note || '').slice(0, 1000) }, executionOutcome: work.executionOutcome,
   lastTaskId: work.lastTaskId, updatedAt: work.updatedAt, revision: work.revision });
 export const compactTask = (task, work, operationId) => task && ({ id: task.id, workId: task.workId, status: task.status, localTaskStatus: task.status,

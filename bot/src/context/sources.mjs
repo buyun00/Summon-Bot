@@ -235,15 +235,16 @@ export class RuntimeSources {
   }
   async lookupWork(id, task) {
     const suppliedId = typeof id === 'string' ? id.trim() : '';
-    const exact = suppliedId && this.store.getRecord('works', suppliedId);
-    if (exact && await this.canReadWork(exact, task)) return { work: exact,
+    const exact = suppliedId && this.store.getRecord('works', suppliedId), observedAt = new Date().toISOString();
+    if (exact && await this.canReadWork(exact, task)) return { work: exact, observedAt,
       lookup: { suppliedId, canonicalId: exact.id, match: 'exact', found: true } };
     const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const prefix = !uuid.test(suppliedId) && /^[0-9a-f]{8}(?:[0-9a-f-]{0,27})$/i.test(suppliedId);
     if (prefix) {
       const rooms = await this.rooms(task), candidates = [];
-      for (const work of this.store.listRecords('works')) if (uuid.test(work.id) && work.id.toLowerCase().startsWith(suppliedId.toLowerCase()) && await this.canReadWork(work, task, rooms)) candidates.push(work);
-      if (candidates.length === 1) return { work: candidates[0], lookup: {
+      const works = this.store.listRecords('works'), observedAt = new Date().toISOString();
+      for (const work of works) if (uuid.test(work.id) && work.id.toLowerCase().startsWith(suppliedId.toLowerCase()) && await this.canReadWork(work, task, rooms)) candidates.push(work);
+      if (candidates.length === 1) return { work: candidates[0], observedAt, lookup: {
         suppliedId, canonicalId: candidates[0].id, match: 'unique-accessible-prefix', found: true,
         instruction: 'This canonical ID came from an actual readable work, not a guessed UUID. Copy the full ID into subsequent references and actions.',
       } };

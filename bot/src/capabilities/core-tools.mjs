@@ -131,7 +131,7 @@ export function coreTools(services, task) {
   const store = services.store;
   const frontend = taskMode(task) !== 'work';
   const review = task.metadata?.externalReview;
-  const workView = work => frontend ? compactWork(work) : work;
+  const workView = (work, observedAt) => frontend ? compactWork(work, observedAt) : work;
   const taskView = value => compactTask(value, value?.workId && services.works.get(value.workId),
     value && services.works.execution(value).executionEventId);
   const source = taskSource(task, store);
@@ -278,7 +278,7 @@ export function coreTools(services, task) {
           status: state.status, turnId: state.turnId, observedAt: state.observedAt, eventDelivery: state.eventDelivery }; }
         catch (error) { connector = { unavailable: error.message, eventDelivery: null }; }
       }
-      const view = workView(result.work), operationId = view.execution?.operationId;
+      const view = workView(result.work, result.observedAt), operationId = view.execution?.operationId;
       const operation = operationId && store.getRecord('work-events', operationId);
       const origin = operation?.authorization?.source;
       const deliveryScope = frontend && source.roomId && origin?.roomId === source.roomId && operation.workId === view.id &&

@@ -217,6 +217,8 @@ export class DesktopCodex {
       if (before && before.backend !== 'desktop') fail('Historical executor records cannot be submitted again', 409);
       const prompt = requireText(input.prompt, 'prompt');
       if (!input.target || !['project', 'projectless', 'directory'].includes(input.target.type)) fail('Use an authorized directory or explicit Desktop project target');
+      if (owner.executor?.kind !== 'codex' && owner.sources?.some(source => source.formId === owner.id))
+        fail('The authenticated form uses its saved work engine', 403);
       const target = codexTarget(input.target);
       if (owner.executor?.kind === 'codex' && JSON.stringify(target) !== JSON.stringify(codexTarget(owner.executor.target)))
         fail('The executor target must match the owning work’s saved target', 403);

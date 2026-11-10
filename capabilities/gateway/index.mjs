@@ -350,6 +350,14 @@ export async function startGateway(options={}) {
         fail('工作表单的标识、目标或输入资料无效。');
       const request={goal:required(body.goal,'工作目标'),constraints:body.constraints||'',cwd:body.cwd?.trim()||'',
         roomId:body.roomId||null,inputRefs:body.inputRefs||[]};
+      if(body.projectId||body.target)fail('请使用登记项目的实际目录指定工作目标。');
+      const intake=store('gateway');
+      const assertFormOwner=()=>{
+        const owner=intake.get('work-form-owners',id);
+        if(owner&&owner.botId!==bot.id)fail('本次表单标识已绑定原委托成员，请保留原成员重试或查看原工作。',409);
+        return owner;
+      };
+      assertFormOwner();
       const prior=await manager.readState(bot.id,db=>db?.getRecord('work-form-submissions',id));
       if(prior){
         const original=createRedactor(await manager.config(bot.id))(request);
@@ -378,6 +386,7 @@ export async function startGateway(options={}) {
         else if(relative(await realpath(config.workspace),cwd))
           fail('当前工作引擎使用成员固定工作目录。请选择该目录或将目录留空。',409);
       }
+      intake.transaction(()=>{if(!assertFormOwner())intake.save('work-form-owners',{id,botId:bot.id});});
       const {work,dispatch}=await manager.request(bot.id,'/works/form',{method:'POST',body:JSON.stringify({id,request,executor,project})});
       return {...publicWork(bot.id,work),dispatch};
     }
