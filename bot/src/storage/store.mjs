@@ -9,7 +9,8 @@ const decode = row => row ? JSON.parse(row.data) : null;
 export const terminalTaskStates = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
 const historyTables = ['messages', 'tasks', 'sessions', 'tools', 'events', 'outbox'];
 const historyRecordKinds = new Set(['messages', 'tasks', 'sessions', 'tools', 'events', 'outbox', 'receipts', 'requests',
-  'agentSessions', 'agentRuns', 'toolRuns', 'jobs', 'works', 'work-events', 'conversations', 'imported-events', 'imported-requests', 'imported-sessions', 'imported-tool_runs', 'imported-kv_state']);
+  'agentSessions', 'agentRuns', 'toolRuns', 'jobs', 'works', 'work-events', 'work-controls', 'production-sources', 'production-refusals',
+  'conversations', 'imported-events', 'imported-requests', 'imported-sessions', 'imported-tool_runs', 'imported-kv_state']);
 const conflict = message => Object.assign(new Error(message), { code: 'REVISION_CONFLICT', status: 409 });
 
 /** SQLite is the sole authority for transcripts, task receipts and state. */

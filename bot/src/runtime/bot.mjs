@@ -222,7 +222,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       if (task.status === 'accepted') store.updateTask(id, { status: 'cancelled', finishedAt: at() });
       return store.getTask(id);
     };
-    const accept = (envelope, source) => {
+    const accept = (envelope, source, { deferSchedule = false } = {}) => {
       if (source !== 'controller' && envelope.kind === 'request' && !envelope.workId && envelope.metadata?.executionMode === 'work') {
         const key = JSON.stringify([source, envelope.id]);
         let binding = store.getRecord('peer-work', key);
@@ -268,10 +268,10 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
           services.works.update(work.id, { status: 'active', waiting: null, lastError: null });
         }
       }
-      schedule(task);
+      if (!deferSchedule) schedule(task);
       return accepted;
     };
-    services.works = new WorkService({ store, botId: config.botId, accept, cancel, clean,
+    services.works = new WorkService({ store, botId: config.botId, accept, schedule, cancel, clean,
       selectExecutor: () => selectedWorkExecutor(config.model), selectModel: id => {
       const selected = id ? modelConnection(config.model, id) : selectedConnection(config);
       return { connectionId: selected.id, modelId: selected.model, thinkingLevel: selected.thinkingLevel };

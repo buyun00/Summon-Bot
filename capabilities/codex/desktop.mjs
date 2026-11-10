@@ -248,13 +248,19 @@ export class DesktopCodex {
       if (['submitting', 'unknown'].includes(work.status)) fail('Resolve the existing unknown operation before sending another message', 409);
       const state = await this.request(this.path(work));
       if (state.stale || !state.currentTurn?.id) fail('Current turn is not confirmed; query before sending', 409);
+      const resume = input.cardResume, expected = resume?.expectedTurn;
+      if (resume && (!expected || owner.controlRevision !== resume.controlRevision || owner.externalStop?.id !== expected.stopId ||
+        expected.bindingId !== work.id || state.threadId !== expected.threadId || (state.hostId || 'local') !== expected.hostId ||
+        state.currentTurn.id !== expected.turnId || turnStatus(state) !== expected.status || state.pendingRequests?.length))
+        fail('执行端的原回合或工作控制状态已变化，未提交恢复。', 409);
       if (verification && (work.operationId !== verification.operationId || state.threadId !== work.externalThreadId || state.threadId !== verification.threadId ||
         state.currentTurn.id !== verification.turnId || turnStatus(state) !== 'completed'))
         fail('Read-only verification requires the exact current completed turn', 409);
       await this.observe(id, state);
       const oldItems = [...(state.items || []), ...(work.snapshot?.items || [])];
       const inFlight = state.currentTurn.status === 'inProgress';
-      return this.mutate(id, 'send', operationId, `/v1/threads/${encodeURIComponent(work.externalThreadId)}/messages`, { message, hostId: work.hostId },
+      return this.mutate(id, 'send', operationId, `/v1/threads/${encodeURIComponent(work.externalThreadId)}/messages`, { message, hostId: work.hostId,
+        ...(expected ? { expectedTurnId: expected.turnId, expectedTurnStatus: expected.status } : {}) },
         { previousTurnId: state.currentTurn.id, allowPreviousTurn: inFlight, turnId: inFlight ? state.currentTurn.id : null,
           executionOperationId: inFlight ? work.executionOperationId || work.operationId : null,
           result: null, finishedAt: null, pendingProgress: inFlight ? this.require(id).pendingProgress : null,

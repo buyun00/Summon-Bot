@@ -168,8 +168,9 @@ export async function startGateway(options={}) {
     const modelSettings=modelConnections.summary();
     modelSettings.chat.configured=configured;
     const works=[...await localWorks(),...codex.list().filter(work=>work.backend!=='desktop').map(work=>({...work,historical:true}))];
-    const rows=previews?works.map(({id,workId,botId,roomId,goal,status,waitingLabel,createdAt,updatedAt,historical})=>
-      ({id,workId,botId,roomId,goal,status,waitingLabel,createdAt,updatedAt,historical})):works;
+    const rows=previews?works.map(({id,workId,botId,roomId,goal,status,waitingLabel,createdAt,updatedAt,historical,revision,controlRevision,externalStop})=>
+      ({id,workId,botId,roomId,goal,status,waitingLabel,createdAt,updatedAt,historical,revision,controlRevision,
+        ...(externalStop?{externalStop:{status:externalStop.status}}:{})})):works;
     return {historyEpoch,onboarding:await onboarding.publicState(),modelSettings,bots:manager.list().map(bot=>({...bot,activity:botActivities.get(bot.id)})),rooms:chatroom.rooms(),routines:manager.store.list('routines'),knowledge:knowledge.graph(),runtime,activity,works:rows,agentRuns:agentRuns.slice(-100),provider:{configured,model:selection?.model||null,...latestProvider},defaultCwd};
   }
   function visibleTools(actor) {
@@ -216,6 +217,7 @@ export async function startGateway(options={}) {
     if(pin&&!control.permittedVersion(actor,pin.id,pin.version))fail('This capability version is not bound to the Bot',403);
     const context={actor,...(task?{taskId:task.id,workId:runtimeOperation?.workId||task.workId,mode:runtimeOperation?'work':taskMode(task),source}:{})};
     if(name==='codex_interrupt'&&runtimeOperation?.stopId&&runtimeOperation.stopId===args.operationId)context.stopId=runtimeOperation.stopId;
+    if(name==='codex_send'&&runtimeOperation?.cardResume&&runtimeOperation.id===args.operationId)context.cardResume=runtimeOperation.cardResume;
     if(name==='codex_send'&&args.verificationOnly===true){
       const observation=task?.input;
       if(task?.metadata?.sourceType!=='external'||task.metadata.finalizationOnly||observation?.source!=='codex-desktop-connector'||

@@ -34,6 +34,8 @@ export function workExecutor({ store, services, emit }) {
       let event = store.getRecord('work-events', eventId);
       if (!event) event = store.putRecord('work-events', { id: eventId, workId: work.id, content: task.input,
         kind: 'request', status: 'accepted', createdAt: task.createdAt });
+      if (event.cardResume && event.cardResume.controlRevision !== (work.controlRevision || 0))
+        return { content: '', suspended: true, waiting: 'work-control-changed', executor: 'codex' };
       const binding = work.bindings?.find(item => item.type === 'codex-desktop');
       if (!event.transport) {
         const execution = services.works.execution(task);
@@ -45,7 +47,8 @@ export function workExecutor({ store, services, emit }) {
         const name = binding?.externalThreadId ? 'codex_send' : 'codex_create';
         const args = binding?.externalThreadId ? { workId: work.id, operationId: event.id, message: prompt } :
           { workId: work.id, operationId: event.id, prompt, target: executor.target };
-        event = store.putRecord('work-events', { ...event, sourceTaskId: task.id, handoffFile: path, resultFile, transportCharacters: characters, transport: { name, args }, status: 'submitting' });
+        event = store.putRecord('work-events', { ...store.getRecord('work-events', event.id), sourceTaskId: task.id, handoffFile: path,
+          resultFile, transportCharacters: characters, transport: { name, args }, status: 'submitting' });
       }
       // Retries always use the same Desktop operation; its service queries unknown outcomes.
       options.signal?.throwIfAborted();
@@ -61,7 +64,11 @@ export function workExecutor({ store, services, emit }) {
       this.record(task, { kind: 'submission_receipt', operationId: event.id, status: receipt.status, bindingId: receipt.id, threadId: receipt.externalThreadId });
       store.putRecord('work-events', { ...store.getRecord('work-events', event.id), status: submissionFailed ? 'failed' : receipt.status === 'unknown' ? 'unknown' : 'submitted', executionReceipt: receipt, submittedAt: at() });
       const current = services.works.get(work.id);
-      if (appendFailed && receipt.operationId !== event.id) {
+      if (submissionFailed && event.cardResume) {
+        if (!stopped.has(current.status)) services.works.update(work.id, { status: 'blocked', waiting: null,
+          lastError: { code: 'CARD_RESUME_FAILED', message: operationReceipt?.error?.message || '执行端未接收原步骤的恢复请求。' },
+          executionOutcome: { kind: 'failed', operationId: event.id } });
+      } else if (appendFailed && receipt.operationId !== event.id) {
         if (!stopped.has(current.status)) services.works.update(work.id, { status: 'waiting',
           waiting: { kind: 'external', operationId: receipt.operationId, bindingId: receipt.id, since: at() },
           lastError: { kind: 'append-rejected', operationId: event.id, error: operationReceipt.error, recordedAt: at() } });

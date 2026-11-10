@@ -342,12 +342,15 @@ private struct WorkspaceWorkDetail: View {
             if !value["summary"].stringValue.isEmpty {
                 Section("当前进度与结果") { Text(value["summary"].stringValue).textSelection(.enabled) }
             }
-            if value["historical"].bool != true && ["active", "waiting"].contains(status) {
+            if status == "blocked", let detail = value["lastError"]["message"].string, !detail.isEmpty {
+                Section { Text(detail).foregroundStyle(.red) }
+            }
+            if value["historical"].bool != true && value["controlRevision"].int != nil && ["active", "waiting"].contains(status) {
                 Section { Button("暂停工作", systemImage: "pause") { Task { await perform("pause") } }.disabled(busy) }
                 Section { Button("取消工作", role: .destructive) { Task { await perform("cancel") } }.disabled(busy) }
-            } else if value["historical"].bool != true && ["paused", "cancelled"].contains(status) && value["externalStop"]["status"].string == "pending" {
+            } else if value["historical"].bool != true && value["controlRevision"].int != nil && ["paused", "cancelled"].contains(status) && value["externalStop"]["status"].string == "pending" {
                 Section { Button("重新确认执行端停止", systemImage: "arrow.clockwise") { Task { await perform(status == "paused" ? "pause" : "cancel") } }.disabled(busy) }
-            } else if value["historical"].bool != true && ["paused", "blocked", "cancelled"].contains(status) {
+            } else if value["historical"].bool != true && value["controlRevision"].int != nil && value["externalStop"]["status"].string != "completed" && ["paused", "blocked", "cancelled"].contains(status) {
                 Section { Button("恢复工作", systemImage: "play") { Task { await perform("resume") } }.disabled(busy) }
             }
             Section("进度记录") {
@@ -393,9 +396,18 @@ private struct WorkspaceWorkDetail: View {
         busy = true
         defer { busy = false }
         do {
-            let requestBody: SummonJSONValue = action == "send" ? body : .object(["controlRevision": .number(Double(value["controlRevision"].int ?? 0))])
-            _ = try await store.request(path: "/api/works/\(workspaceEscaped(initial.id))/\(action)", method: "POST", body: requestBody)
+            let requestBody: SummonJSONValue
+            if action == "send" { requestBody = body }
+            else {
+                guard let revision = value["controlRevision"].int else { throw WorkspaceFormError(message: "请刷新工作详情后重新操作。") }
+                requestBody = .object(["controlRevision": .number(Double(revision))])
+            }
+            let response = try await store.request(path: "/api/works/\(workspaceEscaped(initial.id))/\(action)", method: "POST", body: requestBody)
             if action == "send" { answer = "" }
+            else if var fields = response.object, response["id"].string == initial.id {
+                fields["events"] = value["events"]
+                work = .object(fields)
+            }
             await load()
         } catch { self.error = error.localizedDescription }
     }

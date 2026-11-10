@@ -248,6 +248,7 @@ private fun WorkDetail(store: SummonStore, initial: WorkspaceRecord, snapshot: S
     val answerRequestID = remember(answer) { java.util.UUID.randomUUID().toString() }
     val value = if (work.obj == null) initial.value else work
     val status = value["status"].stringValue
+    val canControl = value["historical"].bool != true && value["controlRevision"].int != null
     suspend fun load() {
         try {
             val response = store.request("/api/works/${SummonApiClient.component(initial.id)}")
@@ -262,9 +263,13 @@ private fun WorkDetail(store: SummonStore, initial: WorkspaceRecord, snapshot: S
         if (busy) return
         busy = true
         try {
-            val requestBody = if (action == "send") body else SummonJson.Obj(mapOf("controlRevision" to SummonJson.Num((value["controlRevision"].int ?: 0).toDouble())))
-            store.request("/api/works/${SummonApiClient.component(initial.id)}/$action", "POST", requestBody)
+            val requestBody = if (action == "send") body else {
+                val revision = value["controlRevision"].int ?: throw SummonApiException("请刷新工作详情后重新操作。")
+                SummonJson.obj("controlRevision" to SummonJson.Num(revision.toDouble()))
+            }
+            val response = store.request("/api/works/${SummonApiClient.component(initial.id)}/$action", "POST", requestBody)
             if (action == "send") answer = ""
+            else if (response["id"].string == initial.id) response.obj?.let { work = SummonJson.Obj(it + ("events" to value["events"])) }
             load()
         } catch (exception: Exception) { error = exception.message }
         finally { busy = false }
@@ -300,12 +305,13 @@ private fun WorkDetail(store: SummonStore, initial: WorkspaceRecord, snapshot: S
             }) { Text("发送给负责成员") }
         }
         if (value["summary"].stringValue.isNotEmpty()) { Text("当前进度与结果"); Text(value["summary"].stringValue) }
-        if (value["historical"].bool != true && status in setOf("active", "waiting")) {
+        if (status == "blocked") value["lastError"]["message"].string?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        if (canControl && status in setOf("active", "waiting")) {
             Button(enabled = !busy, onClick = { scope.launch { perform("pause") } }) { Text("暂停工作") }
             Button(enabled = !busy, onClick = { scope.launch { perform("cancel") } }) { Text("取消工作") }
-        } else if (value["historical"].bool != true && status in setOf("paused", "cancelled") && value["externalStop"]["status"].string == "pending") {
+        } else if (canControl && status in setOf("paused", "cancelled") && value["externalStop"]["status"].string == "pending") {
             Button(enabled = !busy, onClick = { scope.launch { perform(if (status == "paused") "pause" else "cancel") } }) { Text("重新确认执行端停止") }
-        } else if (value["historical"].bool != true && status in setOf("paused", "blocked", "cancelled")) Button(enabled = !busy, onClick = { scope.launch { perform("resume") } }) { Text("恢复工作") }
+        } else if (canControl && value["externalStop"]["status"].string != "completed" && status in setOf("paused", "blocked", "cancelled")) Button(enabled = !busy, onClick = { scope.launch { perform("resume") } }) { Text("恢复工作") }
         Text("进度记录", modifier = Modifier.padding(top = 8.dp))
         val events = mergeWorkEvents(value["events"].array.orEmpty())
         if (events.isEmpty()) Text("暂无详细进度", color = Color(0xFF8E8E93))

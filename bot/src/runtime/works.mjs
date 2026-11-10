@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { taskSource, workExecution } from '../context/sources.mjs';
+import { acceptedWorkTask, taskSource, workExecution } from '../context/sources.mjs';
 import { modelText, boundedNumber, durationSeconds } from '../context/model-input.mjs';
 import { isCliExecutor } from '../capabilities/executor-connections.mjs';
 import { directoryProject } from '../context/project-scope.mjs';
 import { externalExecution } from '../context/execution-evidence.mjs';
-import { productionStage, requireProductionGrant } from '../capabilities/request-routing.mjs';
+import { currentProductionStage, productionStage, requireProductionGrant } from '../capabilities/request-routing.mjs';
 
 const now = () => new Date().toISOString();
 const statuses = new Set(['active', 'waiting', 'paused', 'blocked', 'completed', 'cancelled']);
@@ -16,8 +16,8 @@ const productionTarget = work => ({ projectId: work.project?.id ?? null, target:
 
 /** S3 is state and pointers only. Knowledge正文 lives in Markdown, never here. */
 export class WorkService {
-  constructor({ store, botId, accept, cancel, selectModel, selectExecutor, clean = value => value }) {
-    Object.assign(this, { store, botId, accept, cancel, selectModel, selectExecutor, clean }); this.dispatches = new Map();
+  constructor({ store, botId, accept, schedule, cancel, selectModel, selectExecutor, clean = value => value }) {
+    Object.assign(this, { store, botId, accept, schedule, cancel, selectModel, selectExecutor, clean }); this.dispatches = new Map();
   }
   get(id) { return this.store.getRecord('works', id); }
   list({ status, query, limit = 100 } = {}) {
@@ -117,6 +117,8 @@ export class WorkService {
         stage: (prior?.content || input.content)?.stage?.kind, when: registered ? 'after-dependency' : 'now',
         ...productionTarget(work), controlRevision: initial ? undefined : work.controlRevision || 0,
       });
+      if (authorization.production.kind === 'continue' && currentProductionStage(work, this.store) !== authorization.production.stage)
+        fail('原步骤阶段已变化，未继续执行。', 409);
       if (stopped.has(work.status) && !input.metadata?.resume) fail('工作已停止，未派发此步骤。', 409);
     }
     if (input.metadata?.resume && stopped.has(work.status)) this.requireResume(work, authorization?.source?.receivedAt || null);
@@ -140,11 +142,15 @@ export class WorkService {
       conversationId: work.conversationId, content: intent.content, metadata: { authority: 'internal-event', sourceType: 'internal', actor: this.botId, ...intent.metadata,
         workEventId: intent.id, origin: intent.authorization?.source, priority: intent.metadata?.priority || 'background' } };
     if (envelope.content === undefined) fail('Work event requires content');
-    const result = await this.accept(envelope, task.source || 'controller');
-    const receipt = { accepted: true, duplicate: result.duplicate, workId: id, operationId: intent.id, taskId: result.task.id,
-      status: result.task.status, localTaskStatus: result.task.status, receiptLayer: 'local-dispatch', executor: this.executor(work).kind,
-      execution: externalExecution(this.get(id), intent.id) };
-    this.store.putRecord('work-events', { ...this.store.getRecord('work-events', intent.id), receipt, status: 'accepted' });
+    const receipt = this.store.transaction(() => {
+      const result = this.accept(envelope, task.source || 'controller', { deferSchedule: true });
+      const saved = { accepted: true, duplicate: result.duplicate, workId: id, operationId: intent.id, taskId: result.task.id,
+        status: result.task.status, localTaskStatus: result.task.status, receiptLayer: 'local-dispatch', executor: this.executor(work).kind,
+        execution: externalExecution(this.get(id), intent.id) };
+      this.store.putRecord('work-events', { ...this.store.getRecord('work-events', intent.id), receipt: saved, status: 'accepted' });
+      return saved;
+    });
+    this.schedule(this.store.getTask(receipt.taskId));
     return receipt;
   }
   async wait(id, input = {}, task = {}, verifyFollowUp) {
@@ -274,31 +280,81 @@ export class WorkService {
     return this.update(work.id, { status: 'active', waiting: null, lastError: null,
       controlRevision: (work.controlRevision || 0) + 1 }, { control: true });
   }
-  async resume(id, expectedControlRevision) {
-    const work = this.get(id); if (!work) fail('Unknown work', 404);
-    if ((work.controlRevision || 0) !== expectedControlRevision || !['paused', 'cancelled', 'blocked'].includes(work.status))
-      fail('工作控制状态已变化，请刷新后重新操作。', 409);
-    this.requireResume(work);
-    const queued = this.store.listTasks({ status: 'accepted', limit: 10000 }).some(task =>
-      task.workId === id && task.metadata?.sourceType !== 'external');
-    if (queued) return this.activate(work);
-    if (work.externalStop?.status === 'completed' && stopped.has(work.status))
-      fail('原执行回合已经完成。请在来源会话核对结果或明确提出追加要求。', 409);
-    const binding = work.bindings?.find(item => item.type === 'codex-desktop');
-    const events = this.store.listRecords('work-events').filter(event => event.workId === id && event.kind === 'request' && event.receipt?.accepted &&
-      event.authorization?.source && event.content !== undefined);
-    const operationId = binding?.executionOperationId || binding?.operationId;
-    const supervision = operationId && this.store.getTool(operationId);
-    const origin = supervision?.name === 'codex_send' && supervision.workId === id && this.store.getTask(supervision.taskId);
-    const event = events.find(item => item.id === operationId || origin && this.execution(origin).executionEventId === item.id) ||
-      (!binding?.externalThreadId ? events.at(-1) : null);
-    const source = event && this.store.getTask(event.receipt?.taskId || event.requestTaskId);
-    if (!source || !this.authorization(source, event.id, event.authorization.production)?.source)
-      fail('没有可继续的原始工作步骤，请在来源会话明确提出继续要求。', 409);
-    const active = this.activate(work);
-    await this.dispatch(id, { id: `card-resume:${active.controlRevision}`, kind: 'request',
-      content: { type: 'work_continuation', acceptedStep: event.content, continuation: { instruction: '用户要求继续原工作。先核对已完成的步骤与未知结果，沿原绑定继续。' } },
-      metadata: { priority: 'foreground' }, productionAuthorization: event.authorization.production }, source);
-    return this.get(id);
+  resume(id, expectedControlRevision) {
+    return this.store.transaction(() => {
+      const work = this.get(id); if (!work) fail('Unknown work', 404);
+      const revision = expectedControlRevision + 1, key = `${id}:card-resume:${revision}`;
+      const previous = this.store.getRecord('work-controls', key);
+      if (work.controlRevision === revision && previous?.resumeReceipt) return { ...work, resumeReceipt: previous.resumeReceipt };
+      if ((work.controlRevision || 0) !== expectedControlRevision || !['paused', 'cancelled', 'blocked'].includes(work.status))
+        fail('工作控制状态已变化，请刷新后重新操作。', 409);
+      this.requireResume(work);
+      const stop = work.externalStop;
+      if (stop?.status === 'completed') fail('原执行回合已经完成。请在来源会话核对结果或明确提出追加要求。', 409);
+      const tasks = this.store.listUnfinishedTasks().filter(task => task.workId === id && task.metadata?.sourceType !== 'external');
+      if (tasks.some(task => task.status === 'running')) fail('原工作步骤仍在收尾，请稍后从当前卡片恢复。', 409);
+      const queued = tasks.filter(task => task.status === 'accepted' && !task.cancelRequested);
+      if (queued.length > 1) fail('有多项待处理步骤。请在来源会话明确要继续哪一步。', 409);
+      const last = work.lastTaskId && this.store.getTask(work.lastTaskId);
+      const binding = work.bindings?.findLast(item => item.type === 'codex-desktop');
+      let originalId, expectedTurn;
+      if (binding?.externalThreadId) {
+        const current = binding.operations?.find(item => item.operationId === binding.operationId);
+        const operationId = current?.action === 'interrupt' ? binding.executionOperationId : binding.operationId;
+        const operation = binding.operations?.find(item => item.operationId === operationId);
+        if (!['interrupted', 'cancelled', 'failed'].includes(stop?.status) || stop.bindingId !== binding.id ||
+          stop.threadId !== binding.externalThreadId || !stop.turnId || stop.turnId !== binding.turnId ||
+          !operationId || operation?.status !== 'received' || operation.threadId !== stop.threadId || operation.verificationOnly ||
+          binding.pendingClientThreadId || binding.operations.some(item => !item.appliedAt))
+          fail('无法确认当前绑定的原步骤已中断或失败。请在来源会话查看原回合。', 409);
+        const sent = this.store.getTool(operationId);
+        const owner = sent?.name === 'codex_send' && sent.workId === id && !sent.executionRejected && !sent.executionReused && this.store.getTask(sent.taskId);
+        originalId = owner ? this.execution(owner).executionEventId : operationId;
+        expectedTurn = { stopId: stop.id, bindingId: binding.id, threadId: stop.threadId,
+          hostId: binding.hostId || 'local', turnId: stop.turnId, status: stop.status };
+      } else {
+        if (this.executor(work).kind === 'codex' && (binding?.pendingClientThreadId || stop?.status !== 'local-stopped' && binding?.operationId))
+          fail('原执行操作尚未确认，请先核对它的结果。', 409);
+        if (last?.workId === id && ['cancelled', 'interrupted', 'failed'].includes(last.status)) originalId = this.execution(last).executionEventId;
+      }
+      const ready = queued[0];
+      const eventId = ready ? ready.metadata?.workEventId : originalId;
+      const event = eventId && this.store.getRecord('work-events', eventId);
+      const auth = event?.authorization, source = auth?.requestTaskId && this.store.getTask(auth.requestTaskId);
+      const originalTask = acceptedWorkTask(event, this.store);
+      const savedSource = source && this.source(source);
+      if (event?.workId !== id || event.kind !== 'request' || !originalTask ||
+        event.content === undefined || !savedSource || !auth.source || source.cancelRequested ||
+        ['taskId', 'messageId', 'actor', 'roomId', 'replyTo'].some(field => auth.source[field] !== savedSource[field]) ||
+        ready && (originalTask.id !== ready.id || event.transport) ||
+        !ready && !expectedTurn && originalTask.status === 'completed' && last?.id === originalTask.id)
+        fail('没有可继续的原始工作步骤，请在来源会话明确提出继续要求。', 409);
+      if (auth.production) {
+        if (auth.production.bindingId && auth.production.bindingId !== binding?.id) fail('原步骤的执行绑定已变化。', 409);
+        requireProductionGrant(source, this.store, auth.production, { ...productionTarget(work), workId: id,
+          bindingId: auth.production.bindingId, actionId: auth.actionId });
+      }
+      const cardResume = { originalEventId: event.id, controlRevision: revision, expectedTurn };
+      let task;
+      if (ready) {
+        this.store.putRecord('work-events', { ...event, cardResume });
+        task = ready;
+      } else {
+        const content = { type: 'work_continuation', acceptedStep: event.content, continuation: {
+          instruction: '继续这个已授权的原步骤。核对原回合和已保留的进展，只完成剩余事项。保留原有要求、范围和绑定。查询未知结果，避免重复已完成的操作。' } };
+        this.store.putRecord('work-events', { id: key, workId: id, kind: 'request', content, authorization: auth,
+          requestTaskId: auth.requestTaskId, cardResume, status: 'pending', createdAt: now() });
+        const accepted = this.accept({ id: `work:${key}`, to: this.botId, kind: 'request', workId: id, content,
+          metadata: { authority: 'internal-event', sourceType: 'internal', actor: this.botId,
+            workEventId: key, origin: auth.source, priority: 'foreground' } }, auth.source.source || 'controller', { deferSchedule: true });
+        task = accepted.task;
+        if (accepted.duplicate || task?.workId !== id || task.status !== 'accepted') fail('未能登记原工作步骤。', 409);
+      }
+      const resumeReceipt = { accepted: true, operationId: ready ? event.id : key, taskId: task.id, status: task.status };
+      if (!ready) this.store.putRecord('work-events', { ...this.store.getRecord('work-events', key), sourceTaskId: task.id,
+        receipt: { ...resumeReceipt, workId: id }, status: 'accepted' });
+      this.store.putRecord('work-controls', { id: key, workId: id, resumeReceipt, createdAt: now() });
+      return { ...this.activate(work), resumeReceipt };
+    });
   }
 }

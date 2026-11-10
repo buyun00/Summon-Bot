@@ -133,9 +133,22 @@ export function createServer({ config, tools, broker, store, openapi }) {
         action = { body, laterReceipt: true, retryCreatePreflight: request.headers['x-summon-preflight-recovery'] === '1',
           run: async (phase, recovery, deadline) => ({ status: 201, body: await tools.call('create_thread', body, phase, recovery, deadline) }) };
       } else if (id && request.method === 'POST' && suffix === 'messages') {
-        query(url, []); const body = v.object(await readBody(request), ['message', 'hostId', 'model', 'thinking']);
+        query(url, []); const body = v.object(await readBody(request), ['message', 'hostId', 'model', 'thinking', 'expectedTurnId', 'expectedTurnStatus']);
         v.string(body.message, 'message', 100000); const hostId = v.hostId(body.hostId); v.modelOptions(body);
-        action = { body, laterReceipt: true, lock: `${hostId}:${id}`, run: async phase => ({ status: 202, body: await tools.call('send_message_to_thread', { threadId: id, hostId, prompt: body.message, ...(body.model ? { model: body.model } : {}), ...(body.thinking ? { thinking: body.thinking } : {}) }, phase) }) };
+        if (body.expectedTurnId !== undefined || body.expectedTurnStatus !== undefined) {
+          v.string(body.expectedTurnId, 'expectedTurnId', 128);
+          if (!['interrupted', 'cancelled', 'failed'].includes(body.expectedTurnStatus)) v.bad('Invalid resumable turn status.');
+        }
+        action = { body, laterReceipt: true, lock: `${hostId}:${id}`, run: async phase => {
+          if (body.expectedTurnId) {
+            const state = await broker.state(id, hostId);
+            if (state.stale || state.threadId !== id || state.currentTurn?.id !== body.expectedTurnId ||
+              state.currentTurn.status !== body.expectedTurnStatus || state.pendingRequests?.length)
+              throw new ApiError(409, 'turn_changed', 'The original unfinished turn is no longer current. No continuation was sent.', { outcome: 'not-submitted' });
+          }
+          return { status: 202, body: await tools.call('send_message_to_thread', { threadId: id, hostId, prompt: body.message,
+            ...(body.model ? { model: body.model } : {}), ...(body.thinking ? { thinking: body.thinking } : {}) }, phase) };
+        } };
       } else if (id && request.method === 'POST' && suffix === 'interrupt') {
         query(url, []); const body = v.object(await readBody(request), ['hostId', 'expectedTurnId']);
         v.string(body.expectedTurnId, 'expectedTurnId', 128); const hostId = v.hostId(body.hostId);
