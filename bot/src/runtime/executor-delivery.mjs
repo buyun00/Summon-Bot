@@ -3,6 +3,16 @@ import { relative, isAbsolute, resolve } from 'node:path';
 import { WORK_ATTACHMENTS } from './notifications.mjs';
 
 const within = (root, path) => { const part = relative(root, path); return !isAbsolute(part) && part !== '..' && !part.startsWith('../') && !part.startsWith('..\\'); };
+const missingArtifact = 'RESULT_ARTIFACT_MISSING';
+
+async function artifactPath(path) {
+  try { return await realpath(path); }
+  catch (error) {
+    if (error.code === 'ENOENT') throw Object.assign(new Error('A file named in the result manifest is missing', { cause: error }), { code: missingArtifact });
+    throw error;
+  }
+}
+
 async function resultRoot(workspace, operation) {
   const workspaceRoot = await realpath(workspace);
   if (!operation.resultRoot) return workspaceRoot;
@@ -62,7 +72,7 @@ export async function readExecutorManifest({ workspace, workId, operation }) {
   const artifacts = [];
   for (const artifact of manifest.artifacts) {
     if (typeof artifact.path !== 'string' || !isAbsolute(artifact.path)) throw new Error('Deliverable requires its absolute output path');
-    const output = await realpath(artifact.path);
+    const output = await artifactPath(artifact.path);
     if (!within(root, output) || within(resolve(root, '.summon-handoffs'), output)) throw new Error('Deliverable is outside the product output scope');
     artifacts.push({ path: output, ...(artifact.name ? { name: artifact.name } : {}) });
   }
@@ -82,15 +92,16 @@ export async function publishExecutorResult({ store, services, task, operation, 
     manifest = await readExecutorManifest({ workspace: services.workspace, workId: task.workId, operation });
   } catch (error) {
     if (error.code === 'ENOENT') return { attachments: [], status: 'not-declared' };
-    return store.putRecord('executor-deliveries', { id: key, attachments: [], status: 'rejected', error: error.message });
+    return store.putRecord('executor-deliveries', { id: key, attachments: [], status: 'rejected', error: error.message, errorCode: error.code });
   }
   if (!isCurrent()) return { attachments: [], status: 'superseded' };
-  let delivery = store.putRecord('executor-deliveries', { id: key, attachments: [], status: 'publishing', summary: String(manifest.summary || '').slice(0, 6000) });
+  let delivery = store.putRecord('executor-deliveries', { id: key, attachments: [], status: 'publishing', artifactCount: manifest.artifacts.length,
+    summary: String(manifest.summary || '').slice(0, 6000) });
   let attempted = false;
   try {
     for (const [index, artifact] of manifest.artifacts.entries()) {
       attempted = false;
-      const path = await realpath(artifact.path);
+      const path = await artifactPath(artifact.path);
       if (!within(root, path) || within(resolve(root, '.summon-handoffs'), path)) throw new Error('Deliverable is outside the product output scope');
       if (!isCurrent()) return store.putRecord('executor-deliveries', { ...delivery, status: 'superseded' });
       attempted = true;
@@ -107,4 +118,33 @@ export async function publishExecutorResult({ store, services, task, operation, 
     return store.putRecord('executor-deliveries', { ...delivery, status: rejected ? 'rejected' : 'unconfirmed',
       error: error.message, errorCode: error.code, httpStatus: error.status });
   }
+}
+
+export function executorDeliveryText(delivery) {
+  if (!delivery) return '';
+  const { status, attachments, artifactCount, error, errorCode, httpStatus } = delivery;
+  const confirmed = new Set(attachments.map(item => item.id)).size;
+  const count = artifactCount > confirmed && status !== 'published' ? `${confirmed}/${artifactCount}` : confirmed;
+  const receipt = confirmed ? `本次文件上传已取得 ${count} 份确认回执。可在本次结果回复中查看实际返回的附件。` : '';
+  const errorDetail = error ? `\n${error}` : '';
+  let detail;
+  switch (status) {
+    case 'published':
+      detail = confirmed ? '' : '本次结果清单未声明附件。';
+      break;
+    case 'not-declared':
+      detail = '未找到本次操作可用的结果清单，当前没有附件回执。';
+      break;
+    case 'rejected':
+      detail = errorCode === missingArtifact ? '结果清单中有文件缺失，未完成附件上传。' :
+        `本次附件上传被拒绝。${confirmed ? '余下附件未上传。' : ''}${errorDetail}`;
+      if (httpStatus === 413) detail += '\n有本机项目访问权限时可从原项目取现有文件。';
+      break;
+    case 'superseded':
+      detail = '工作状态已变化，附件上传没有继续。';
+      break;
+    default:
+      detail = `本次${confirmed ? '其余' : ''}附件上传回执尚未确认。请按原操作查询。${errorDetail}`;
+  }
+  return ['**Summon 当前附件回执**', receipt, detail].filter(Boolean).join('\n');
 }

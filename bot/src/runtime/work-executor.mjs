@@ -2,7 +2,7 @@ import { assertExternalReviewCurrent } from '../capabilities/task-policy.mjs';
 import { executorHandoff } from '../context/executor-handoff.mjs';
 import { directoryProject } from '../context/project-scope.mjs';
 import { isAcceptedOperation } from '../context/execution-evidence.mjs';
-import { executorManifestOperation, publishExecutorResult } from './executor-delivery.mjs';
+import { executorDeliveryText, executorManifestOperation, publishExecutorResult } from './executor-delivery.mjs';
 import { externalObservationId } from './notifications.mjs';
 
 const at = () => new Date().toISOString();
@@ -252,13 +252,12 @@ export function workExecutor({ store, services, emit }) {
         };
         delivery = await publishExecutorResult({ store, services, task, operation: manifestOperation, isCurrent });
       }
-      const publicationNote = delivery?.status === 'rejected' ? `\n文件上传前被拒绝。${delivery.error}。${delivery.httpStatus === 413 ? '有本机项目访问权限时可从原项目取现有文件。原群仍可返回符合限额的现有文件。' : ''}` :
-        delivery?.status === 'unconfirmed' ? `\n文件上传回执未确认。${delivery.error}。按原操作查询。` : '';
-      const text = (final?.text || `${label}。${content.error?.message || content.result?.error?.message || content.state?.currentTurn?.error?.message || ''}\n来源：${binding.externalThreadId || '线程尚未确认'}${content.turnId ? ` / ${content.turnId}` : ''}。${outcome === 'execution-ended' ? '未取得可确认归属的最终文本，尚未据此判定整个工作完成。' : ''}`) +
-        (delivery?.attachments?.length ? '\n已将本次完成的文件附在此消息，供打开、下载和评审。' : '') +
-        publicationNote +
-        (final?.truncated ? '\n（以上为已取得的答复片段；完整内容保留在原 Codex 线程。）' : '') +
-        (final?.artifacts?.length ? `\n产物引用：\n${JSON.stringify(final.artifacts)}` : '');
+      const publication = executorDeliveryText(delivery);
+      const report = final?.text || `${label}。${content.error?.message || content.result?.error?.message || content.state?.currentTurn?.error?.message || ''}\n来源：${binding.externalThreadId || '线程尚未确认'}${content.turnId ? ` / ${content.turnId}` : ''}。${outcome === 'execution-ended' ? '未取得可确认归属的最终文本，尚未据此判定整个工作完成。' : ''}`;
+      const text = [publication,
+        publication && final?.text ? `**Codex 交接前的报告（发布安排记录于制作结束时）**\n\n${report}` : report,
+        final?.truncated && '（以上为已取得的答复片段。完整内容保留在原 Codex 线程。）',
+        final?.artifacts?.length && `产物引用\n${JSON.stringify(final.artifacts)}`].filter(Boolean).join('\n\n');
       await services.notify({ id: work.id, notificationId: eventId, publication: 'external', content: text, attachments: delivery?.attachments,
         ...(delivery?.id && delivery.id !== content.operationId ? { manifestOperationId: delivery.id } : {}), resultKind: outcome,
         sourceRefs: [{ type: 'codex', threadId: binding.externalThreadId, turnId: content.turnId, operationId: content.operationId }], late }, task, {});
