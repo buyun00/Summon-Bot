@@ -24,10 +24,14 @@ const stateHeader = state => state && ({ threadId: state.threadId, status: state
 // observation with exact pointers, not another copy of every tool output.
 export function deliveryContent(event) {
   const { state, history, final, ...content } = event.content;
+  const turnId = content.turnId;
+  const turn = turnId && history?.turns?.find(turn => (turn.turnId || turn.id) === turnId);
+  const fileChangesObserved = turnId && [...(state?.items || []).filter(item => item.turnId === turnId), ...(turn?.items || [])]
+    .some(item => /^(?:file.?change|patch.?apply|apply.?patch)$/i.test(item.type));
   return { ...content, state: stateHeader(state), ...(final ? { final: { ...final, text: String(final.text || '').slice(0, 24000),
     truncated: final.truncated || String(final.text || '').length > 24000 } } : {}),
     evidence: { eventId: event.id, workBindingId: event.workId, observedAt: content.observedAt || state?.observedAt,
-      rawStored: true, historyAvailable: Boolean(history && !history.unavailable) } };
+      rawStored: true, historyAvailable: Boolean(history && !history.unavailable), ...(fileChangesObserved ? { fileChangesObserved: true } : {}) } };
 }
 const rejected = error => error.result?.error?.details?.outcome !== 'unknown' &&
   !['operation_uncertain', 'idempotency_conflict'].includes(error.code) && Boolean(error.code) &&

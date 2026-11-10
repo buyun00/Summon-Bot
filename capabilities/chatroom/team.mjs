@@ -163,13 +163,22 @@ export class TeamService {
     const coordinator = actor === 'controller' || actor === room.team.eggBotId;
     if (!coordinator && !(actor === room.team.leadBotId && ['project', 'assign', 'resolve'].includes(action))) fail('Ask this room’s EggBot to manage its members', 403);
     const operationId = required(input.operationId, 'operationId', 128), key = JSON.stringify([room.id, actor, operationId]);
+    const body = canonical(input);
     let operation = this.store.get('team-operations', key);
-    if (operation && operation.input !== canonical(input)) fail('operationId belongs to another team action', 409);
+    if (operation && operation.input !== body) fail('operationId belongs to another team action', 409);
     if (operation?.result) return operation.result;
+    if (operation?.rejection) fail(operation.rejection.message, operation.rejection.status);
+    const issue = action === 'resolve' ? this.store.get('team-issues', input.issueId) : null;
     if (!operation) {
       if (input.expectedRevision !== undefined && input.expectedRevision !== room.team.revision) fail('Team changed; read current state', 409);
-      operation = this.store.save('team-operations', { id: key, action, actor, roomId: room.id, input: canonical(input), source: this.source(room, input.sourceMessageId),
-        fromBotId: room.team.leadBotId, botId: input.botId || (action === 'create' ? `bot-${randomUUID()}` : null), status: 'pending' });
+      const record = { id: key, action, actor, roomId: room.id, input: body, source: this.source(room, input.sourceMessageId),
+        fromBotId: room.team.leadBotId, botId: input.botId || (action === 'create' ? `bot-${randomUUID()}` : null) };
+      if (action === 'resolve' && issue?.roomId !== room.id) {
+        const rejection = { status: 404, message: 'Unknown room issue' };
+        this.store.save('team-operations', { ...record, status: 'rejected', rejection });
+        fail(rejection.message, rejection.status);
+      }
+      operation = this.store.save('team-operations', { ...record, status: 'pending' });
     }
     let result;
     const botId = operation.botId;
@@ -252,7 +261,6 @@ export class TeamService {
         team: { ...(startsReview ? this.startReview(room, patch.reviewIntervalSeconds) : {}), ...patch } });
       result = { room };
     } else if (action === 'resolve') {
-      const issue = this.store.get('team-issues', input.issueId);
       if (issue?.roomId !== room.id) fail('Unknown room issue', 404);
       result = { issue: this.store.save('team-issues', { id: issue.id, status: 'resolved', resolution: reason, resolvedBy: actor, resolvedAt: now() }) };
     } else fail('Unknown team action');

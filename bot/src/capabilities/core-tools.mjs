@@ -5,7 +5,8 @@ import { factTime } from '../context/fact-time.mjs';
 import { HANDOFF_REFERENCES, taskSource, workExecution } from '../context/sources.mjs';
 import { modelArgs, modelText, looseSchema, boundedNumber } from '../context/model-input.mjs';
 import { resolveCodexTarget } from './codex-target.mjs';
-import { authorizeProduction, currentProductionStage, currentUserRequest, productionDecision, productionStage, requestIntents, productionStages } from './request-routing.mjs';
+import { authorizeProduction, currentProductionStage, currentUserRequest, productionDecision, productionStage, requestIntents, productionStages, sourceUnits } from './request-routing.mjs';
+import { acceptanceBindings, acceptanceLinks } from './acceptance-identity.mjs';
 import { externalExecution, isAcceptedOperation } from '../context/execution-evidence.mjs';
 import { readExecutorManifest } from '../runtime/executor-delivery.mjs';
 import { WORK_ATTACHMENTS } from '../runtime/notifications.mjs';
@@ -98,7 +99,8 @@ function acceptanceTarget(store, work, roomId, notifications = store.listRecords
   while (receipts.get(operationId)?.verificationOnly) {
     const previous = receipts.get(operationId).precedingTurn;
     if (visited.has(operationId) || previous?.status !== 'completed' || !previous.turnId || previous.turnId === turnId || !receipts.has(previous.operationId) ||
-      notifications.some(item => item.executionEventId === operationId && item.attachments?.length)) return null;
+      notifications.some(item => item.executionEventId === operationId && (item.attachments?.length ||
+        store.getRecord('work-observations', item.notificationId)?.content?.evidence?.fileChangesObserved))) return null;
     visited.add(operationId);
     ({ operationId, turnId } = previous);
   }
@@ -135,79 +137,101 @@ function acceptanceTarget(store, work, roomId, notifications = store.listRecords
     ...(throughVerification ? { throughOperationId: execution.operationId, verificationOperationIds: [...visited] } : {}) }, publications);
 }
 
-const publishedBeforeRequest = (publication, user) => Date.parse(publication.publishedAt) <= Date.parse(user.roomMessageAt);
+const publishedBeforeRequest = (publication, user) => Date.parse(publication.publishedAt) < Date.parse(user.roomMessageAt);
 const runnableWorkIds = store => new Set(store.listUnfinishedTasks().filter(item =>
   ['accepted', 'queued', 'running'].includes(item.status)).map(item => item.workId));
-const acceptanceIdentity = ['operationId', 'threadId', 'turnId', 'throughOperationId'];
+const acceptanceIdentity = ['operationId', 'threadId', 'turnId', 'throughOperationId', 'verificationOperationIds'];
 
-async function requestAcceptanceContext(services, task, user) {
-  if (!user?.roomId || !Number.isFinite(Date.parse(user.roomMessageAt))) return { results: [] };
+function requestAcceptanceBindings(services, task, user, rooms) {
+  if (!user?.roomId || !rooms.includes(user.roomId) || !Number.isFinite(Date.parse(user.roomMessageAt))) return [];
   const { store } = services, byWork = new Map();
-  const notifications = store.listRecords('work-notifications');
-  const roomResults = notifications.filter(item => item.roomId === user.roomId && item.status === 'delivered');
-  if (!roomResults.length) return { results: [] };
-  const workIds = new Set(roomResults.map(item => item.workId));
-  let repliedResult;
-  for (const item of notifications) {
-    if (!workIds.has(item.workId)) continue;
+  for (const item of store.listRecords('work-notifications')) {
     if (!byWork.has(item.workId)) byWork.set(item.workId, []);
     byWork.get(item.workId).push(item);
-    if (user.replyTo && item.roomId === user.roomId && item.status === 'delivered' &&
-      (item.resultKind === 'execution-ended' || item.publication === 'explicit' && item.attachments?.length) &&
-      [item.receipt].flat().some(receipt => receipt?.id === user.replyTo && receipt.workId === item.workId))
-      repliedResult = { workId: item.workId, operationId: item.executionEventId, messageId: user.replyTo };
   }
-  const rooms = await services.sources.rooms(task);
-  if (!rooms.includes(user.roomId)) return { results: [] };
-  const pending = runnableWorkIds(store), results = [];
+  const pending = runnableWorkIds(store), entries = new Map();
   for (const [workId, notifications] of byWork) {
+    const delivered = notifications.filter(item => item.roomId === user.roomId && item.status === 'delivered' && item.executionEventId &&
+      (item.publication === 'external' && item.resultKind === 'execution-ended' ||
+        item.publication === 'explicit' && item.resultKind !== 'progress' && item.attachments?.length));
+    if (!delivered.length) continue;
     const work = services.works.get(workId);
-    if (!work || pending.has(workId)) continue;
-    const target = acceptanceTarget(store, work, user.roomId, notifications);
-    if (!target || !await services.sources.canReadWork(work, task, rooms)) continue;
-    if (repliedResult?.workId === workId && target.operationId !== repliedResult.operationId &&
-      !target.verificationOperationIds?.includes(repliedResult.operationId)) continue;
-    for (const publication of target.publications.filter(item => publishedBeforeRequest(item, user))) {
-      results.push({ workId, goal: work.goal?.slice(0, 400),
-        ...Object.fromEntries(acceptanceIdentity.map(key => [key, target[key]])), ...publication });
+    if (!services.sources.canReadWorkInRooms(work, task, rooms)) continue;
+    const target = !pending.has(workId) && acceptanceTarget(store, work, user.roomId, notifications);
+    const current = new Map((target?.publications || []).map(item => [item.messageId, item]));
+    const verifications = new Set(work.bindings?.flatMap(binding => (binding.operations || []).filter(item => item.verificationOnly &&
+      item.status === 'received' && item.threadId === binding.externalThreadId).map(item => item.operationId)));
+    for (const item of delivered) for (const receipt of [item.receipt].flat()) {
+      if (!receipt?.id || receipt.roomId !== user.roomId || receipt.workId !== workId || receipt.senderId !== work.botId || receipt.replyTo !== item.replyTo) continue;
+      const verified = item.executionEventId === target?.operationId && current.get(receipt.id);
+      // Keep historical receipts as identity evidence even when the current
+      // work is paused, superseded, still running, or has an unknown result.
+      const publication = verified || acceptancePublication({ messageId: receipt.id, replyTo: receipt.replyTo, publishedAt: receipt.createdAt,
+        manifestOperationId: item.manifestOperationId, attachments: (receipt.attachments || []).filter(attachment => attachment.id &&
+          item.attachments?.some(selected => selected.id === attachment.id)) });
+      if (!publishedBeforeRequest(publication, user)) continue;
+      const key = JSON.stringify([workId, item.executionEventId, receipt.id]);
+      if (entries.has(key) && !verified) continue;
+      entries.set(key, { workId, operationId: item.executionEventId, publication, links: acceptanceLinks(receipt.content),
+        verification: verifications.has(item.executionEventId) && !publication.attachments.length,
+        target: verified ? target : null });
     }
   }
-  results.sort((a, b) => Number(b.messageId === user.replyTo) - Number(a.messageId === user.replyTo) ||
-    Date.parse(b.publishedAt) - Date.parse(a.publishedAt));
-  return { replyTo: user.replyTo, repliedResult, results: results.slice(0, 24) };
+  return acceptanceBindings(sourceUnits(user.text), [...entries.values()], user.replyTo);
 }
 
-function saveRequestAcceptances(services, user, matches, readable) {
-  const { store } = services, pending = runnableWorkIds(store), records = [], unresolvedAcceptances = [], grouped = new Map();
-  for (const { item, candidate } of matches) {
-    if (!candidate) { unresolvedAcceptances.push(item); continue; }
-    if (!grouped.has(candidate.workId)) grouped.set(candidate.workId, []);
-    grouped.get(candidate.workId).push({ item, candidate });
-  }
-  for (const [workId, group] of grouped) {
-    const work = services.works.get(workId);
-    const target = work && readable.get(workId) === work.revision && !pending.has(workId) ? acceptanceTarget(store, work, user.roomId) : null;
-    const accepted = [];
-    for (const { item, candidate } of group) {
-      const publication = target?.publications.find(value => value.messageId === candidate.messageId && publishedBeforeRequest(value, user));
-      if (publication && acceptanceIdentity.every(key => target[key] === candidate[key])) accepted.push({ item, publication });
-      else unresolvedAcceptances.push(item);
+function acceptanceContextView(bindings, user) {
+  const results = new Map();
+  const units = bindings.map(({ unit, identityUnit, workId, target, publication, reason, identified }) => {
+    if (!publication) return { unit, reason, ...(identified.length ? { identified } : {}) };
+    const { messageId } = publication;
+    results.set(messageId, { workId, operationId: target.operationId, ...target.publications.find(item => item.messageId === messageId) });
+    return { unit, identityUnit, publicationMessageId: messageId, attachmentIds: publication.attachments.map(item => item.id) };
+  });
+  return { replyTo: user?.replyTo, units, results: [...results.values()] };
+}
+
+function saveRequestAcceptances(services, user, items, before, current) {
+  const { store } = services, records = [], unresolvedAcceptances = [], grouped = new Map();
+  for (const item of items) {
+    const prior = before.find(value => value.unit === item.unit);
+    const selected = current.find(value => value.unit === item.unit);
+    const same = prior?.publication && selected?.publication && selected.workId === prior.workId && selected.identityUnit === prior.identityUnit &&
+      item.publicationMessageId === selected.publication.messageId && JSON.stringify(prior.publication) === JSON.stringify(selected.publication) &&
+      acceptanceIdentity.every(key => JSON.stringify(prior.target[key]) === JSON.stringify(selected.target[key]));
+    if (!same) {
+      const { publicationMessageId, ...unresolved } = item;
+      unresolvedAcceptances.push({ ...unresolved, publicationMessageId: null, reason: selected?.reason || item.reason ||
+        'The exact delivery could not be confirmed at the time of recording. No other result was selected.' });
+      continue;
     }
-    if (!accepted.length) continue;
+    if (!grouped.has(selected.workId)) grouped.set(selected.workId, []);
+    grouped.get(selected.workId).push({ item, identityUnit: selected.identityUnit, publication: selected.publication, target: selected.target });
+  }
+  for (const [workId, accepted] of grouped) {
+    const work = services.works.get(workId), { target } = accepted[0];
     const prior = work.acceptance;
     let saved = work;
     if (prior?.source?.acceptedMessageId !== user.acceptedMessageId || prior.operationId !== target.operationId) {
-      const clauses = accepted.map(({ item }) => ({ unit: item.unit, userClause: item.userClause, clauseStart: item.clauseStart }));
+      const clauses = accepted.map(({ item, identityUnit }) => ({ unit: item.unit, userClause: item.userClause, clauseStart: item.clauseStart, identityUnit }));
       const scopes = key => [...new Set(accepted.map(({ item }) => item[key]).filter(Boolean))].join('\n');
       const remainingBoundaries = scopes('remainingBoundaries');
-      const publications = [...new Map(accepted.map(({ publication }) => [publication.messageId, publication])).values()];
-      const fullScope = accepted.every(({ item }) => item.fullScope) && !remainingBoundaries;
+      const selected = new Map();
+      for (const { publication } of accepted) {
+        const attachments = [...(selected.get(publication.messageId)?.attachments || []), ...publication.attachments];
+        selected.set(publication.messageId, { ...publication, attachments: [...new Map(attachments.map(item => [item.id, item])).values()] });
+      }
+      const publications = [...selected.values()];
+      const attachmentIds = new Set(publications.flatMap(item => item.attachments.map(attachment => attachment.id)));
+      const fullScope = accepted.every(({ item }) => item.fullScope) && !remainingBoundaries &&
+        target.publications.every(item => item.attachments.every(attachment => attachmentIds.has(attachment.id)));
       const canCloseReview = work.status === 'waiting' && work.waiting.kind === 'review' && fullScope && !work.waiting.blockingRequirement &&
         !store.listRecords('work-waits').some(wait => wait.status === 'pending' && wait.targetWorkId === work.id);
       saved = services.works.update(work.id, { ...(canCloseReview ? { status: 'completed' } : {}), expectedRevision: work.revision,
         acceptance: { scope: scopes('scope'), remainingBoundaries, fullScope, operationId: target.operationId, turnId: target.turnId, threadId: target.threadId,
           throughOperationId: target.throughOperationId, publicationMessageIds: publications.map(item => item.messageId), publications,
-          source: { type: 'room', userId: user.actor, roomId: user.roomId, messageId: user.messageId, acceptedMessageId: user.acceptedMessageId, clauses },
+          source: { type: 'room', userId: user.actor, roomId: user.roomId, messageId: user.messageId, acceptedMessageId: user.acceptedMessageId,
+            replyTo: user.replyTo, clauses },
           recordedAt: new Date().toISOString() } });
     }
     const { operationId, scope, remainingBoundaries, publicationMessageIds } = saved.acceptance;
@@ -300,26 +324,23 @@ export function coreTools(services, task) {
         const messageId = source.replyTo || source.messageId;
         let confirmedFeedback = previous?.confirmedFeedback === true;
         const user = currentUserRequest(task, store);
-        let classification, acceptanceContext;
+        let classification, acceptanceContext, bindingSnapshot = [];
         if ((production && !confirmedFeedback) || intent === 'accept') {
           const selected = work && selectedWork(work);
-          acceptanceContext = await requestAcceptanceContext(services, task, user).catch(() => ({ results: [], unavailable: true }));
+          try {
+            const rooms = user?.roomId ? await services.sources.rooms(task) : [];
+            bindingSnapshot = requestAcceptanceBindings(services, task, user, rooms);
+            acceptanceContext = acceptanceContextView(bindingSnapshot, user);
+          } catch { acceptanceContext = { units: [], results: [], unavailable: true }; }
           classification = await authorizeProduction({ task, store,
             decision: { messageId, roomId: source.roomId }, proposed: { work: selected || undefined },
             verify: ctx.verifyProduction, signal: ctx.signal, isTargetCurrent: selected ? () => sameWork(selected, services.works.get(work.id)) : undefined,
             sourceOnly: true, savedDecision: previous ?? null, acceptanceContext });
         }
-        const matches = (classification?.acceptances || []).map(item => ({ item,
-          candidate: acceptanceContext.results.find(result => result.messageId === item.publicationMessageId) }));
-        const readable = new Map();
-        const selectedWorks = new Set(matches.flatMap(({ candidate }) => candidate ? [candidate.workId] : []));
-        if (selectedWorks.size) {
-          const rooms = await services.sources.rooms(task).catch(() => []);
-          if (rooms.includes(user.roomId)) for (const id of selectedWorks) {
-            const current = services.works.get(id);
-            if (await services.sources.canReadWork(current, task, rooms)) readable.set(id, current.revision);
-          }
-        }
+        const approvals = classification?.acceptances || [];
+        const canRecord = approvals.some(item => item.publicationMessageId &&
+          bindingSnapshot.some(value => value.unit === item.unit && value.publication?.messageId === item.publicationMessageId));
+        const rooms = canRecord ? await services.sources.rooms(task).catch(() => []) : [];
         ctx.signal?.throwIfAborted();
         if (classification && (store.getTask(task.id)?.cancelRequested ||
           JSON.stringify(currentUserRequest(task, store)) !== JSON.stringify(user) ||
@@ -329,18 +350,21 @@ export function coreTools(services, task) {
         const sourceActions = classification?.actions;
         if (production && (confirmedFeedback || !sourceActions?.length)) {
           production = false;
-          intent = matches.length || previous?.acceptances?.length ? 'accept' :
+          intent = approvals.length || previous?.acceptances?.length ? 'accept' :
             confirmedFeedback ? 'feedback' : classification?.deliveryUnits.length ? 'deliver' : 'discuss';
         }
         // A production decision becomes visible only after its verified acceptances are saved.
         const decision = store.transaction(() => {
-          const { records, unresolvedAcceptances } = matches.length ? saveRequestAcceptances(services, user, matches, readable) :
+          let current = [], unavailable = acceptanceContext?.unavailable;
+          if (canRecord) try { current = requestAcceptanceBindings(services, task, user, rooms); }
+          catch { unavailable = true; }
+          const { records, unresolvedAcceptances } = approvals.length ? saveRequestAcceptances(services, user, approvals, bindingSnapshot, current) :
             { records: [], unresolvedAcceptances: [] };
           const acceptances = [...new Map([...(previous?.acceptances || []), ...records]
             .map(item => [item.workId, item])).values()];
           return store.putRecord('request-routing', { id: task.id, messageId, roomId: source.roomId, acceptances,
             unresolvedAcceptances: classification ? unresolvedAcceptances : previous?.unresolvedAcceptances || [],
-            acceptanceUnconfirmed: classification ? Boolean(classification.acceptanceUnconfirmed || acceptanceContext.unavailable) : previous?.acceptanceUnconfirmed,
+            acceptanceUnconfirmed: classification ? Boolean(classification.acceptanceUnconfirmed || unavailable) : previous?.acceptanceUnconfirmed,
             intent, productionStage: production ? args.productionStage : null, confirmedFeedback,
             existingDelivery: previous?.existingDelivery === true || intent === 'deliver', sourceUnit: production ? args.sourceUnit : null,
             workRelation: production ? args.workRelation : null, workId: production && args.workRelation === 'continue' ? args.workId : null,

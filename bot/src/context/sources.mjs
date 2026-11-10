@@ -221,10 +221,12 @@ export class RuntimeSources {
     return rooms.map(room => room.id);
   }
   async canReadWork(work, task, rooms) {
+    return this.canReadWorkInRooms(work, task, rooms || (work && !task.workId ? await this.rooms(task) : []));
+  }
+  canReadWorkInRooms(work, task, rooms) {
     if (!work) return false;
     if (task.workId) return task.workId === work.id;
     const source = taskSource(task, this.store);
-    if (!rooms) rooms = await this.rooms(task);
     const permitted = item => item.roomId ? rooms.includes(item.roomId) : item.source === source.source && item.conversationId === source.conversationId;
     return Boolean(work.sources?.length && work.sources.every(permitted));
   }
