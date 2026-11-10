@@ -1,6 +1,6 @@
 {
   "name": "@summon/capabilities",
-  "version": "0.3.70",
+  "version": "0.3.71",
   "private": true,
   "type": "module",
   "exports": {
