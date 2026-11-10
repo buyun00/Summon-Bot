@@ -7,6 +7,7 @@ import { serveClientReleases } from './releases.mjs';
 import { createWebAuth } from './auth.mjs';
 import { matchesOrigin, originForHost } from './origins.mjs';
 import { workspaceProof } from './workspace-probe.mjs';
+import { createTest21Game } from './test21-game.mjs';
 
 const defaultFrontend = fileURLToPath(new URL('../frontend/', import.meta.url));
 const assets = new Map([
@@ -37,8 +38,9 @@ const showcaseMime = new Map([
 
 /** The Web process owns only HTTP/static assets. Business state and Agents stay outside. */
 export async function startWeb({ host = '127.0.0.1', port = 8787, getRemoteOrigins = async () => [], frontendRoot = defaultFrontend,
-  gatewayUrl, gatewayToken, accessToken, clientReleaseRoot, webRelease, requestTimeoutMs = 120000 } = {}) {
+  gatewayUrl, gatewayToken, accessToken, clientReleaseRoot, webRelease, test21WebExportRoot, requestTimeoutMs = 120000 } = {}) {
   const authorize = createWebAuth(accessToken);
+  const game = createTest21Game(test21WebExportRoot);
   const upstream = new URL(gatewayUrl);
   if (!['http:', 'https:'].includes(upstream.protocol) || upstream.username || upstream.password) throw new Error('Invalid gateway URL');
   if (!gatewayToken) throw new Error('gatewayToken is required');
@@ -63,6 +65,9 @@ export async function startWeb({ host = '127.0.0.1', port = 8787, getRemoteOrigi
       const releaseRequest = url.pathname === '/api/releases' || url.pathname.startsWith('/api/releases/');
       const localRelease = releaseRequest && local && (!origin || [requestOrigin, ...remote].some(item => matchesOrigin(origin, item)));
       if (localRelease && await serveClientReleases(req, res, url, clientReleaseRoot, webRelease, { local, origin })) return;
+      const gameRequest = game && requestOrigin === game.origin && url.pathname.startsWith(game.prefix);
+      // An opaque sandbox cannot use the workspace session. Only this signed bundle route accepts its requests.
+      if (gameRequest && url.pathname.startsWith(game.bundlePrefix)) return await game.serveFile(req, res, url);
       if (origin !== undefined && !matchesOrigin(origin, requestOrigin)) return json(res, 403, { error: '只接受同源工作台请求' });
       if (req.method === 'GET' && url.pathname === '/auth/instance') {
         const challenge = url.searchParams.get('challenge') || '';
@@ -77,6 +82,7 @@ export async function startWeb({ host = '127.0.0.1', port = 8787, getRemoteOrigi
         res.end(req.method === 'HEAD' ? undefined : script); return;
       }
       if (!authorize(req, res, url, requestOrigin)) return;
+      if (gameRequest) return await game.serveLauncher(req, res, url);
       if (releaseRequest && await serveClientReleases(req, res, url, clientReleaseRoot, webRelease, { local })) return;
       if (url.pathname === showcasePrefix.slice(0, -1)) {
         res.writeHead(302, { Location: showcasePrefix }); res.end(); return;
