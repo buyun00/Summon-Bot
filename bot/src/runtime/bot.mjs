@@ -417,8 +417,9 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         return false;
       }
       const evidence = result.evidence;
+      const dutyKey = event.authorization?.production?.participant?.dutyKey;
       if (result.planId !== event.contributionPlanId || result.operationId !== event.id || result.workId !== event.workId ||
-          result.sourceMessageId !== original.replyTo || !result.dutyKey || !result.deliveryId || !result.taskId ||
+          result.sourceMessageId !== original.replyTo || !result.dutyKey || dutyKey && result.dutyKey !== dutyKey || !result.deliveryId || !result.taskId ||
           evidence?.reference?.type !== 'room' || evidence.reference.roomId !== original.roomId ||
           evidence.reference.messageId !== `reply:${result.deliveryId}` || !evidence.author || !evidence.content) {
         setState('blocked', '职责交付的来源与当前制作操作不符，未开始制作。');
@@ -436,9 +437,11 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
           setState('blocked', '职责交付的标识发生变化，未开始制作。');
           return false;
         }
+        const guidance = 'The same-source owner contribution has already been delivered in evidence; do not request it again. Apply its concrete relevant decisions to the actual deliverables within the original user scope. Resolve conflicts against the exact earlier materials and original requirements. If you depart from a material recommendation, explain the specific reason in the delivery. Attribute only what you actually used and keep the owner publication reference.';
         store.putRecord('work-events', clean({ ...saved, contributionResult,
           content: { ...saved.content, evidence: [...(saved.content.evidence || []), evidence],
-            instruction: saved.content.instruction + '\nThe same-source owner contribution is available in evidence. Apply its concrete relevant decisions to the actual deliverables within the original user scope. Resolve conflicts against the exact earlier materials and original requirements. If you depart from a material recommendation, explain the specific reason in the delivery. Attribute only what you actually used and keep the owner publication reference.' } }));
+            handoff: { ...saved.content.handoff, instruction: [saved.content.handoff?.instruction, guidance].filter(Boolean).join('\n') },
+            instruction: [saved.content.instruction, guidance].filter(Boolean).join('\n') } }));
         return true;
       });
     };

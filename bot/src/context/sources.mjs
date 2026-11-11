@@ -405,6 +405,8 @@ export class RuntimeSources {
           instruction: 'Status/revision/updatedAt describe the current owning work. updatedAt is a local state mutation time, not an external turn time. Progress/checkpoint are derived state with their own recordedAt and evidence pointer. An operation executionReceipt is a saved transport receipt whose final may describe an earlier turn than the current binding. Use the matching externalResult original when available, retaining all earlier turn results under their own IDs; otherwise preserve the gap without promoting progress to original text.' } };
     }
     if (reference.type === 'tool') {
+      if (typeof reference.id !== 'string' || !reference.id.trim())
+        throw new Error('Tool evidence requires the exact tool record id. An operationId is not a tool record id.');
       const record = this.store.getTool(reference.id);
       const owner = record && this.store.getTask(record.taskId);
       if (!owner || record.status !== 'completed') throw new Error('Completed source tool receipt not found');

@@ -8,10 +8,18 @@ import { localTime } from '../../bot/src/context/fact-time.mjs';
 import { publishedText } from './published-text.mjs';
 import { RoomDutyActions } from './duty-actions.mjs';
 import { RoomTextResults } from './room-results.mjs';
+import { productionRefusal } from '../../bot/src/capabilities/request-routing.mjs';
 const TERMINAL=new Set(['completed','failed','cancelled','interrupted']);
 const foreground=item=>item.priority!=='background';
 const normalized=text=>String(text||'').trim().replace(/\s+/g,' ');
 const isAcknowledgement=text=>/^(?:收到|谢谢|谢谢你|感谢|好的|好|明白|了解|已收到|知悉|辛苦了|不客气|thanks|thank you|ack|acknowledged|noted|ok|okay)[。！!,.\s]*$/i.test(String(text||'').replace(/@[^\s，。！？:：,!?]+/g,'').trim());
+const refusalNotes=tools=>[...new Set((tools||[]).flatMap(tool=>{
+  const refusal=productionRefusal(tool);
+  if(!refusal)return [];
+  return [{PRODUCTION_NOT_AUTHORIZED:'本轮有一项制作提案被授权核验拒绝，该项未派发。',
+    PRODUCTION_RECEIPT_INVALID:'本轮有一项制作提案的授权回执无效，该项未派发。',
+    PRODUCTION_CHECK_UNAVAILABLE:'本轮有一项制作授权核验未完成，该项未派发。'}[refusal.code]];
+}))].join('\n');
 const observable=message=>!message.observationReply&&!message.routineId&&message.kind!=='error'&&
   !['team_issue','team_result'].includes(message.eventType)&&
   !(message.senderId==='system'&&message.toBotId)&&
@@ -288,7 +296,10 @@ export class ChatroomService {
       const staffing=Boolean(evidence&&this.teamService.staffingRoom(room));
       const linked=evidence?.kind==='work-result'&&activeDuties(room).some(duty=>duty.workBindings?.some(binding=>
         binding.workId===saved.workId&&binding.operationId===evidence.operationId&&binding.botId===saved.senderId));
-      if(staffing&&(evidence.kind==='user-update'||linked))this.teamService.noteStaffing(room,[evidence]);
+      if(staffing&&(evidence.kind==='user-update'||linked)){
+        const route=evidence.kind==='user-update'&&this.store.get('deliveries',`route:${saved.id}`);
+        this.teamService.noteStaffing(room,[route?.dutyRoute?{...evidence,provisional:true}:evidence]);
+      }
       if(evidence?.kind==='work-result')this.teamService.linkResult(this.need('rooms',roomId),saved);
       const specialists=this.specialists(room);
       if(room.kind==='group'&&observable(saved)&&!repeated)for(const botId of room.members){
@@ -623,7 +634,8 @@ export class ChatroomService {
       const roomResultAction=await this.roomTextResults.action(item,task,roomForPlan,triggerForPlan);
       const isUserDelivery=triggerForPlan.senderId==='user'&&!item.observation&&!item.routeOnly&&!item.teamStaffing&&!item.teamIntroduction&&!item.roomDutyAction;
       const roomAcceptances=isUserDelivery?await this.roomTextResults.record(roomForPlan,triggerForPlan,item,task):[];
-      let dutyResultMessageId;
+      const savedRefusals=isUserDelivery&&(status!=='completed'||task.result?.partial)?refusalNotes(task.tools):'';
+      let dutyResultMessageId,routeScope;
       if(status==='completed') {
         let text=String(task.result?.content||''),passed=/^PASS(?:\s*$|\s*\n)/i.test(text);
         if(item.routeOnly){
@@ -640,17 +652,19 @@ export class ChatroomService {
           const requestScope=item.dutyRoute&&(['multiple','unresolved'].includes(parsed.requestScope)||
             parsed.requestScope==='single-duty'&&duty&&recipient.id!==room.team?.leadBotId||
             parsed.requestScope==='ordinary'&&!duty&&!workId&&recipient.id===room.team?.leadBotId)?parsed.requestScope:undefined;
+          routeScope=requestScope;
           this.enqueue(this.need('messages',item.messageId),recipient.id,{workId:null,referencedWorkId:workId,
             ...(duty?{routedDutyKey:duty.dutyKey}:{}),requestScope,routedBy:item.botId,routeReason:String(parsed.reason||text).slice(0,1000)});
         }else if(!item.teamStaffing&&!task.workId&&(!item.observation||this.need('rooms',item.roomId).members.includes(item.botId))){
           let response;try{response=JSON.parse(text);if(typeof response?.reply==='string'){text=response.reply;passed=response.pass||!text;}}catch{}
+          if(savedRefusals){text=[text.replace(/^PASS(?:\s*\n|\s*$)/i,''),savedRefusals].filter(Boolean).join('\n\n');passed=false;}
           const correction=item.observationCoverage&&this.coveredCorrection(item,task,response);
           if(item.observationCoverage&&!correction)passed=true;
           if(item.observation&&isAcknowledgement(text))passed=true;
           const alreadyReplied=!item.roomDutyAction&&this.sourceReplies.all(item.roomId,item.messageId,item.botId).some(row=>!JSON.parse(row.data).jobId);
-          if(alreadyReplied)passed=true;
+          if(alreadyReplied&&!savedRefusals)passed=true;
           const attachments=(task.result?.attachments||[]).map(attachment=>this.attachments.get(attachment.id));
-          if(attachments.length){passed=false;if(alreadyReplied||/^PASS(?:\s*$|\s*\n)/i.test(text))text='';}
+          if(attachments.length){passed=false;if(alreadyReplied&&!savedRefusals||/^PASS(?:\s*$|\s*\n)/i.test(text))text='';}
           for(const attachment of attachments)if(attachment.origin?.type!=='work-output'||attachment.origin.botId!==item.botId||attachment.origin.roomId!==item.roomId)fail('Reply attachment is outside this authenticated Bot/room',403);
           if((text||attachments.length)&&!passed&&(!item.roomDutyAction||(!contribution?.gatesProduction||roomResultAction)&&
               !task.result?.partial&&!task.result?.suspended&&this.dutyActions.current(item,this.need('rooms',item.roomId)))){
@@ -675,22 +689,24 @@ export class ChatroomService {
           }
         }
       }else if(!item.observation&&!item.teamStaffing){
-        const reply=this.append(item.roomId,{id:`error:${item.id}`,content:`任务${status}：${task.error?.message||task.error||'执行未完成'}`,kind:'error',jobId:item.id,replyTo:item.messageId,workId:item.workId},'system');
+        const reply=this.append(item.roomId,{id:`error:${item.id}`,content:[`任务${status}：${task.error?.message||task.error||'执行未完成'}`,savedRefusals].filter(Boolean).join('\n\n'),kind:'error',jobId:item.id,replyTo:item.messageId,workId:item.workId},'system');
         this.returnReply(reply,{responderId:item.botId,status});
       }
       const result=this.store.transaction(()=>{
         const room=this.need('rooms',item.roomId),trigger=this.need('messages',item.messageId);
+        if(item.dutyRoute&&routeScope!=='ordinary')this.teamService.confirmStaffingSource(room,trigger.id);
         // Only a real user delivery's accepted work receipt can signal a dispatch, including a short approval.
         if(isUserDelivery&&this.teamService.staffingRoom(room)){
           if(item.requestScope==='ordinary'&&status==='completed'&&!trigger.attachments?.length&&!trigger.replyTo&&!trigger.targetWorkId&&
             !task.result?.partial&&!task.result?.handoff&&!task.result?.attachments?.length&&!roomResultAction&&!imported.length&&
             (task.tools||[]).every(tool=>tool.effect==='read'||tool.name==='request_decide'&&tool.status==='completed'&&tool.output?.details?.intent==='discuss'))
             this.teamService.skipOrdinarySource(room,trigger.id);
+          else this.teamService.confirmStaffingSource(room,trigger.id);
           const signals=(task.tools||[]).flatMap(tool=>{
             const receipt=tool.output?.details;
             if(tool.status!=='completed'||!receipt)return [];
             if(tool.name==='request_decide'&&receipt.messageId===trigger.id&&receipt.acceptanceReceiptTaskId===task.id&&Array.isArray(receipt.acceptances))
-              return receipt.acceptances.filter(item=>item.workId&&item.operationId).map(acceptance=>({key:'acceptance:'+trigger.id+':'+acceptance.workId,
+              return receipt.acceptances.filter(item=>item.workId&&item.operationId&&item.alreadyRecorded!==true).map(acceptance=>({key:'acceptance:'+trigger.id+':'+acceptance.workId,
                 kind:'work-acceptance',messageId:trigger.id,workId:acceptance.workId,operationId:acceptance.operationId}));
             return ['work_create','work_dispatch'].includes(tool.name)&&receipt.accepted===true&&!receipt.duplicate&&receipt.workId&&receipt.operationId?
                [{key:'dispatch:'+item.botId+':'+receipt.operationId,kind:'work-dispatch',messageId:trigger.id,workId:receipt.workId,operationId:receipt.operationId,ownerBotId:item.botId}]:[];
@@ -723,6 +739,8 @@ export class ChatroomService {
       const current=this.store.get('deliveries',item.id)||item,attempts=(current.attempts||0)+1;
       const terminalFailure=error.routing?'interrupted':error.status>=400&&error.status<500&&error.status!==429?'failed':null;
       const result=this.store.save('deliveries',{...current,attempts,error:error.message,retryAt:new Date(Date.now()+Math.min(60000,1000*2**Math.min(attempts,6))).toISOString(),...(terminalFailure?{status:terminalFailure,finishedAt:now()}:{} )});this.emit('job',result);
+      if(terminalFailure&&(item.dutyRoute||item.requestScope==='ordinary'))
+        this.teamService.confirmStaffingSource(this.need('rooms',item.roomId),item.messageId);
       if(terminalFailure&&item.roomDutyAction)this.dutyActions.finish(item,terminalFailure);
       if(terminalFailure&&!item.observation&&!item.teamStaffing){
         const reply=this.append(item.roomId,{id:`error:${item.id}`,content:`${error.routing?'消息路由未完成':'消息未被受理'}：${error.message}`,kind:'error',jobId:item.id,replyTo:item.messageId},'system');

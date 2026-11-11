@@ -71,6 +71,17 @@ export class TeamService {
     if (state && pending.length !== state.pending?.length) this.store.save('team-staffing', { id: room.id, pending,
       ...(pending.length ? {} : { firstAt: null, readyAt: null }) });
   }
+  confirmStaffingSource(room, messageId) {
+    const state = this.store.get('team-staffing', room.id);
+    if (!state?.pending?.some(signal => signal.messageId === messageId && signal.provisional)) return;
+    const latest = this.chatroom.position(room.id, state.latestUserMessageId), current = this.chatroom.position(room.id, messageId);
+    const newer = current && (!latest || current.at > latest.at || current.at === latest.at && current.row > latest.row);
+    const pending = state.pending.map(signal => signal.messageId === messageId && signal.provisional ? { ...signal, provisional: false } : signal);
+    this.store.save('team-staffing', { id: room.id, pending, ...(newer ? { latestUserMessageId: messageId } : {}) });
+  }
+  pendingStaffingRoute(roomId) {
+    return this.store.get('team-staffing', roomId)?.pending?.some(signal => signal.provisional);
+  }
   staffingPublications(roomId, evidence) {
     const dispatches = evidence.filter(signal => signal.kind === 'work-dispatch' && signal.ownerBotId && signal.operationId);
     if (!dispatches.length) return [];
@@ -90,7 +101,7 @@ export class TeamService {
     const pending = new Map((state?.pending || []).map(signal => [signal.key, signal]));
     for (const signal of signals) pending.set(signal.key, signal);
     const firstAt = state?.firstAt || Date.now();
-    const latestUserMessageId = signals.findLast(signal => signal.kind === 'user-update')?.messageId || state?.latestUserMessageId || null;
+    const latestUserMessageId = signals.findLast(signal => signal.kind === 'user-update' && !signal.provisional)?.messageId || state?.latestUserMessageId || null;
     this.store.save('team-staffing', { id: room.id, pending: [...pending.values()].slice(-staffingBatchSize), latestUserMessageId,
       firstAt, readyAt: Math.min(Date.now() + 2000, firstAt + 8000) });
   }
@@ -106,7 +117,7 @@ export class TeamService {
         jobs.some(job => (job.teamStaffing || job.teamReview || job.teamIntroduction) && !terminal.has(job.status))) return false;
     const scope = staffingScope(room);
     const baseline = state?.policyVersion !== staffingPolicyVersion || JSON.stringify(state?.scope) !== JSON.stringify(scope);
-    if (state?.readyAt > Date.now() || !baseline && !state?.pending?.length) return false;
+    if (state?.readyAt > Date.now() || state?.pending?.some(signal => signal.provisional) || !baseline && !state?.pending?.length) return false;
     // Read a saved project once under the current policy; subsequent tasks use
     // new material, with the bounded delivery snapshot available via team read.
     const recent = baseline ? staffingSnapshot(this.chatroom, room) : [];
@@ -509,7 +520,9 @@ export class TeamService {
       }
     }
     for (const group of this.store.list('rooms').filter(room => room.kind === 'group' && room.team)) {
-      const room = await this.includeProject(group);
+      await this.chatroom.roomTextResults.reconcile(group).catch(error =>
+        this.chatroom.emit('room-acceptance-projection-error', { roomId: group.id, error: error.message }));
+      const room = await this.includeProject(this.chatroom.need('rooms', group.id));
       await this.chatroom.dutyActions.advance(room);
       if (this.staffing.schedule(room)) continue;
       const jobs = this.staffingRoom(room) || room.team.state === 'active' ? this.chatroom.jobs(room.id) : [];

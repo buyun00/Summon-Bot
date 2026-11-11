@@ -390,6 +390,7 @@ export class Staffing {
 
   async advance(room, plan, row) {
     const key = operationKey(plan, row), operation = this.store.get('team-operations', key);
+    if (!operation?.result && this.team.pendingStaffingRoute(room.id)) return;
     let input = row.input;
     try {
       if (!operation?.result && (!staffingProject(room) || room.team.eggBotId !== plan.actor ||
@@ -405,6 +406,8 @@ export class Staffing {
       }
       if (!input) {
         const { registered, ...candidate } = await this.choose(room, row);
+        if (this.team.pendingStaffingRoute(room.id) ||
+            (this.store.get(staffState, room.id)?.latestUserMessageId || null) !== (plan.latestUserMessageId || null)) return;
         if (candidate.state) {
           if (registered) {
             const evidence = this.dutyEvidence(registered, row);

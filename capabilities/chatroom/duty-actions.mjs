@@ -36,7 +36,7 @@ export class RoomDutyActions {
   view(roomId) {
     return this.store.list(ROOM_DUTY_PLANS).filter(plan => plan.roomId === roomId).slice(-20)
       .map(plan => pick(plan, ['id', 'kind', 'status', 'messageId', 'goal', 'dutyKey', 'ownerBotId',
-        'deliveryId', 'dependency', 'resultMessageId', 'waitingFor', 'error']));
+        'deliveryId', 'workId', 'operationId', 'dependency', 'resultMessageId', 'waitingFor', 'error']));
   }
 
   async import(item, room, trigger, task) {
@@ -51,9 +51,11 @@ export class RoomDutyActions {
             plan.roomId !== room.id || plan.messageId !== trigger.id || !['independent-review', 'contribution'].includes(plan.kind) ||
             plan.id !== roomDutyPlanId({ ...plan, sourceUnit: grant.sourceUnit })) return [];
         const dependent = plan.kind === 'independent-review';
+        const relation = dependent ? 'new' : grant.relation;
+        if (!['new', 'continue'].includes(relation)) return [];
         try {
           requireProductionGrant(saved, db, grant, {
-            actionId: dependent ? plan.id : plan.operationId, workId: dependent ? null : plan.workId, relation: 'new',
+            actionId: dependent ? plan.id : plan.operationId, workId: dependent ? null : plan.workId, relation,
             when: dependent ? 'after-dependency' : 'now',
           });
         } catch { return []; }
@@ -62,6 +64,9 @@ export class RoomDutyActions {
           plan.dependency.messageId === trigger.id && plan.dependency.condition === 'successful-publication' ? [plan] : [];
         const event = db.getRecord('work-events', plan.operationId);
         const gatesProduction = event?.contributionPlanId === plan.id;
+        if (relation === 'continue' && (!gatesProduction || !plan.dutyKey || event.requestTaskId !== saved.id ||
+            event.authorization?.source?.actor !== 'user' || event.authorization.source.roomId !== room.id ||
+            event.authorization.source.replyTo !== trigger.id || !same(event.authorization.production, grant))) return [];
         return (task.status !== 'interrupted' || gatesProduction) && grant.participant?.contribution === plan.goal && event?.workId === plan.workId &&
           event.authorization?.production?.actionId === grant.actionId && (event.receipt?.accepted ||
             event.status === 'pending' && gatesProduction && event.requestTaskId === task.id) ? [{ ...plan, gatesProduction,

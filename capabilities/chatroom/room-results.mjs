@@ -2,14 +2,17 @@ import { currentUserRequest } from '../../bot/src/capabilities/request-routing.m
 import { acceptanceClockTimes } from '../../bot/src/capabilities/acceptance-identity.mjs';
 import { localTime } from '../../bot/src/context/fact-time.mjs';
 import { activeDuties } from './staffing.mjs';
-import { now, pick } from '../shared/validation.mjs';
+import { pick } from '../shared/validation.mjs';
 
 const results = 'room-text-results', acceptances = 'room-text-acceptances';
+const acceptanceId = (roomId, userMessageId, version) => JSON.stringify([roomId, userMessageId, version]);
+const userDelivery = item => !item.observation && !item.routeOnly && !item.teamStaffing && !item.teamIntroduction && !item.roomDutyAction;
+const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 
 /** A room result points at an actual owner's completed delivery, never a
  * synthetic work, attachment, user instruction, or generated receipt. */
 export class RoomTextResults {
-  constructor(chatroom) { this.chatroom = chatroom; }
+  constructor(chatroom) { this.chatroom = chatroom; this.reconciled = new Set(); }
   get store() { return this.chatroom.store; }
   get manager() { return this.chatroom.manager; }
 
@@ -70,16 +73,18 @@ export class RoomTextResults {
       deliveryId: job.id, sourceMessageId: trigger.id, version: message.id, kind: 'room-handoff', legacyCandidate: true, publishedAt: message.createdAt };
   }
 
-  async verifyLegacy(candidate, original, message) {
+  async verifyOwner(candidate, original, message, legacy = candidate.legacyCandidate === true) {
     if (!original || original.content.length > 4000 || message.content.length > 4000) return false;
     return this.manager.readState(candidate.ownerBotId, db => {
       const task = db?.getTask(candidate.taskId), user = task && currentUserRequest(task, db);
+      const accepted = task?.messageId && db.getMessage(task.messageId);
       const routing = user && db.getRecord('request-routing', task.id);
       return task?.status === 'completed' && !task.cancelRequested && !task.result?.partial && !task.result?.suspended &&
         !task.result?.attachments?.length && !task.result?.handoff && task.result?.content?.trim() === message.content &&
+        accepted?.sourceMessageId === candidate.deliveryId && accepted.content?.metadata?.deliveryId === candidate.deliveryId &&
         user?.roomId === candidate.roomId && user.messageId === candidate.sourceMessageId && user.text === original.content &&
         routing?.roomId === user.roomId && routing.messageId === user.messageId &&
-        (routing.intent === 'discuss' || routing.intent === 'room-deliver' && routing.roomDeliveryUnits?.length);
+        (legacy && routing.intent === 'discuss' || routing.intent === 'room-deliver' && routing.roomDeliveryUnits?.length);
     });
   }
 
@@ -111,7 +116,7 @@ export class RoomTextResults {
       if (candidates.length >= 12 && !times.includes(localTime(message.createdAt)?.slice(11, 16))) { complete = false; continue; }
       const source = this.store.get('messages', record.sourceMessageId);
       if (record.legacyCandidate) {
-        const verified = await this.verifyLegacy(record, source, message).catch(() => null);
+        const verified = await this.verifyOwner(record, source, message).catch(() => null);
         if (verified === null) unavailable = true;
         if (!verified) continue;
       }
@@ -120,24 +125,77 @@ export class RoomTextResults {
     return { roomResults: candidates, roomResultsComplete: complete && !unavailable, unavailable };
   }
 
+  toolDecisions(tools, taskId, roomId, messageId) {
+    return (tools || []).filter(tool => tool.name === 'request_decide' && tool.status === 'completed')
+      .map(tool => tool.output?.details).filter(receipt => receipt?.messageId === messageId && receipt.roomId === roomId &&
+        receipt.acceptanceReceiptTaskId === taskId).flatMap(receipt => receipt.roomResultAcceptances || []);
+  }
+
+  authenticatedDecisions(db, room, trigger, item) {
+    if (!item.taskId || !userDelivery(item) || item.roomId !== room.id || trigger?.roomId !== room.id ||
+        item.messageId !== trigger.id || trigger.senderId !== 'user') return [];
+    const task = db?.getTask(item.taskId), user = task && currentUserRequest(task, db);
+    const accepted = task?.messageId && db.getMessage(task.messageId);
+    if (!user || user.roomId !== room.id || user.messageId !== trigger.id || user.text !== trigger.content ||
+        (user.replyTo || null) !== (trigger.replyTo || null) || accepted.sourceMessageId !== item.id ||
+        accepted.content?.metadata?.deliveryId !== item.id) return [];
+    const routing = db.getRecord('request-routing', task.id);
+    if (routing?.acceptanceReceiptTaskId !== task.id || routing.roomId !== room.id || routing.messageId !== trigger.id) return [];
+    return this.toolDecisions(db.listTools(task.id), task.id, room.id, trigger.id).filter(decision => {
+      const id = acceptanceId(room.id, trigger.id, decision.version);
+      return decision.id === id && decision.roomId === room.id && decision.userMessageId === trigger.id &&
+        Array.isArray(decision.clauses) && decision.clauses.length && decision.clauses.every(clause =>
+          typeof clause.userClause === 'string' && clause.userClause.trim() && Number.isSafeInteger(clause.clauseStart) &&
+          clause.clauseStart >= 0 && user.text.startsWith(clause.userClause, clause.clauseStart)) &&
+        same(decision, db.getRecord('room-result-acceptances', id)) && routing.roomResultAcceptances?.some(item => same(item, decision));
+    });
+  }
+
   async record(room, trigger, item, task) {
-    const decisions = (task.tools || []).filter(tool => tool.name === 'request_decide' && tool.status === 'completed')
-      .map(tool => tool.output?.details).filter(receipt => receipt?.messageId === trigger.id && receipt.roomId === room.id &&
-        receipt.acceptanceReceiptTaskId === task.id).flatMap(receipt => receipt.roomResultAcceptances || []);
+    if (!this.toolDecisions(task.tools, task.id, room.id, trigger.id).length) return [];
+    const decisions = await this.manager.readState(item.botId, db => this.authenticatedDecisions(db, room, trigger, item));
+    return this.project(room, trigger, item, decisions);
+  }
+
+  async reconcile(room) {
+    if (this.reconciled.has(room.id)) return;
+    const byBot = Map.groupBy(this.chatroom.jobs(room.id).filter(job => job.taskId && job.status === 'completed' && userDelivery(job) &&
+      job.input?.metadata?.actor === 'user' && job.input?.kind === 'request'), job => job.botId);
+    for (const [botId, jobs] of byBot) {
+      const approvals = await this.manager.readState(botId, db => {
+        const missing = new Set((db?.listRecords('room-result-acceptances') || []).filter(decision => decision.roomId === room.id &&
+          decision.deliveryId === undefined && !this.store.get(acceptances, decision.id)).map(decision => decision.userMessageId));
+        return jobs.filter(item => missing.has(item.messageId)).flatMap(item => {
+          const trigger = this.store.get('messages', item.messageId);
+          return this.authenticatedDecisions(db, room, trigger, item).filter(decision => decision.deliveryId === undefined)
+            .map(decision => ({ item, trigger, decision }));
+        });
+      });
+      for (const { item, trigger, decision } of approvals) await this.project(room, trigger, item, [decision]);
+    }
+    this.reconciled.add(room.id);
+  }
+
+  async project(room, trigger, item, decisions) {
     const changes = [];
     for (const decision of decisions) {
+      if (this.store.get(acceptances, decision.id)) continue;
       const message = this.store.get('messages', decision.publicationMessageId);
       const candidate = this.candidate(message, room, trigger);
       if (!candidate || candidate.version !== decision.version || candidate.ownerBotId !== decision.ownerBotId ||
           candidate.dutyKey !== decision.dutyKey || candidate.sourceMessageId !== decision.sourceMessageId ||
-          candidate.taskId !== decision.taskId || candidate.deliveryId !== decision.deliveryId) continue;
-      if (candidate.legacyCandidate && (decision.legacyRoomDelivery !== true ||
-          !await this.verifyLegacy(candidate, this.store.get('messages', candidate.sourceMessageId), message))) continue;
+          candidate.taskId !== decision.taskId || decision.deliveryId !== undefined && candidate.deliveryId !== decision.deliveryId) continue;
+      if (candidate.legacyCandidate && decision.legacyRoomDelivery !== true) continue;
+      if ((candidate.legacyCandidate || decision.deliveryId === undefined) && (candidate.kind !== 'room-handoff' ||
+          !await this.verifyOwner(candidate, this.store.get('messages', candidate.sourceMessageId), message, decision.legacyRoomDelivery === true))) continue;
       this.store.transaction(() => {
-        const id = JSON.stringify([room.id, trigger.id, candidate.version]);
+        const id = decision.id;
         if (this.store.get(acceptances, id)) return;
-        const current = this.candidate(message, this.chatroom.need('rooms', room.id), trigger);
-        if (current?.version !== candidate.version || current.taskId !== candidate.taskId) return;
+        const publication = this.store.get('messages', candidate.id);
+        const current = this.candidate(publication, this.chatroom.need('rooms', room.id), trigger);
+        if (!current || current.version !== candidate.version || current.taskId !== candidate.taskId || current.deliveryId !== candidate.deliveryId ||
+            current.ownerBotId !== candidate.ownerBotId || current.sourceMessageId !== candidate.sourceMessageId ||
+            current.dutyKey !== candidate.dutyKey || publication.content !== message.content) return;
         if (current.legacyCandidate) {
           const { legacyCandidate, ...identity } = current;
           this.store.save(results, { ...identity, certifiedByAcceptance: trigger.id });
@@ -145,7 +203,8 @@ export class RoomTextResults {
         }
         const record = this.store.save(acceptances, { id, roomId: room.id, resultId: current.id, version: current.version,
           dutyKey: current.dutyKey, ownerBotId: current.ownerBotId, sourceMessageId: trigger.id, deliveryId: item.id,
-          ...pick(decision, ['scope', 'remainingBoundaries', 'fullScope', 'clauses']), recordedAt: now() });
+          resultDeliveryId: current.deliveryId, approvalTaskId: item.taskId,
+          ...pick(decision, ['scope', 'remainingBoundaries', 'fullScope', 'clauses', 'recordedAt']) });
         changes.push({ key: 'room-acceptance:' + id, kind: 'room-result-acceptance', messageId: trigger.id, resultId: record.resultId });
       });
     }

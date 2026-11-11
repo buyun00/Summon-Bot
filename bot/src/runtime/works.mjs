@@ -5,6 +5,7 @@ import { isCliExecutor } from '../capabilities/executor-connections.mjs';
 import { directoryProject } from '../context/project-scope.mjs';
 import { externalExecution } from '../context/execution-evidence.mjs';
 import { currentProductionStage, productionStage, requireProductionGrant } from '../capabilities/request-routing.mjs';
+import { ROOM_DUTY_PLANS } from '../context/duty-actions.mjs';
 
 const now = () => new Date().toISOString();
 const statuses = new Set(['active', 'waiting', 'paused', 'blocked', 'completed', 'cancelled']);
@@ -148,6 +149,46 @@ export class WorkService {
         work?.status === 'waiting' ? 'awaiting-duty-contribution' : work?.status || event.status,
       instruction: work?.waiting?.reason || 'The work uses its original registered operation and duty contribution.' };
   }
+  registerContinuationContribution(id, input, task) {
+    return this.store.transaction(() => {
+      const work = this.get(id); if (!work) fail('Unknown work', 404);
+      const key = `${id}:${input.id}`, grant = input.productionAuthorization;
+      const prior = this.store.getRecord('work-events', key);
+      if (prior && prior.contributionPlanId === input.contributionPlanId && prior.requestTaskId === task.id)
+        return { ...(prior.receipt || this.contributionReceipt(prior)), duplicate: true };
+      if (prior) fail('This operation already has another submission.', 409);
+      const revision = work.controlRevision || 0, resume = stopped.has(work.status);
+      requireProductionGrant(task, this.store, grant, { workId: id, actionId: key, relation: 'continue',
+        stage: input.content?.stage?.kind, when: 'now', ...productionTarget(work), controlRevision: revision });
+      if (grant.kind === 'continue' && (work.status === 'completed' || currentProductionStage(work, this.store) !== grant.stage))
+        fail('原步骤已完成或阶段已变化，未登记职责协作。', 409);
+      const plan = input.contributionPlanId && this.store.getRecord(ROOM_DUTY_PLANS, input.contributionPlanId);
+      if (plan?.kind !== 'contribution' || plan.workId !== id || plan.operationId !== key || plan.requestTaskId !== task.id ||
+          plan.coordinatorBotId !== this.botId || plan.roomId !== grant.roomId || plan.messageId !== grant.messageId ||
+          !plan.dutyKey || plan.dutyKey !== grant.participant?.dutyKey || plan.goal !== grant.participant?.contribution)
+        fail('The duty plan does not match this authorized continuation.', 409);
+      const authorization = this.authorization(task, key, grant);
+      if (resume) this.requireResume(work, authorization?.source?.receivedAt || null);
+      const binding = work.bindings?.findLast(item => item.type === 'codex-desktop');
+      if (this.store.listUnfinishedTasks().some(item => item.workId === id && ['accepted', 'queued', 'running'].includes(item.status)) ||
+          !resume && binding?.operationId && !['completed', 'failed', 'cancelled', 'interrupted'].includes(externalExecution(work, binding.operationId)?.status))
+        fail('原步骤仍在执行或状态未确定，当前没有替换它的等待状态。', 409);
+      const previous = work.waiting?.kind === 'room-duty-contribution' && this.store.getRecord('work-events', work.waiting.operationId);
+      if (previous?.status === 'pending') {
+        if (previous.requestTaskId === task.id) fail('同一请求的另一项职责协作仍在等待。', 409);
+        this.store.putRecord('work-events', { ...previous, status: 'superseded', supersededBy: key });
+      }
+      const event = this.store.putRecord('work-events', this.clean({ id: key, workId: id, kind: 'request', content: input.content,
+        requestTaskId: task.id, sourceTaskId: task.id, authorization, metadata: input.metadata, status: 'pending', createdAt: now(),
+        contributionPlanId: plan.id, contributionControlRevision: resume ? revision + 1 : revision }));
+      const source = authorization.source;
+      this.update(id, { status: 'waiting', waiting: { kind: 'room-duty-contribution', operationId: key,
+        reason: '等待同一请求的职责负责人交付本次修订所需部分。' }, lastError: null,
+        ...(!work.sources.some(item => item.taskId === source.taskId) ? { sources: [...work.sources, source] } : {}),
+        ...(resume ? { controlRevision: revision + 1 } : {}) }, { control: resume });
+      return this.contributionReceipt(event);
+    });
+  }
   async dispatchEvent(id, input, task = {}) {
     const work = this.get(id); if (!work) fail('Unknown work', 404);
     const eventId = input.id || randomUUID(), key = `${id}:${eventId}`, prior = this.store.getRecord('work-events', key);
@@ -161,10 +202,14 @@ export class WorkService {
     const authorization = prior?.authorization || (registered ? wait.authorization : this.authorization(task, key, input.productionAuthorization));
     if (task.id && !task.workId && (prior?.kind || input.kind) === 'request') {
       const initial = this.store.getRecord('work-handoffs', `task:${task.id}:action:${eventId}`)?.workId === id;
+      const continuationContribution = !initial && prior?.contributionPlanId;
+      if (continuationContribution && prior.contributionControlRevision !== (work.controlRevision || 0))
+        fail('工作控制状态已变化，未提交原职责协作对应的步骤。', 409);
       requireProductionGrant(task, this.store, authorization?.production, {
         workId: id, actionId: registered ? wait.id : key, relation: initial ? 'new' : 'continue',
         stage: (prior?.content || input.content)?.stage?.kind, when: registered ? 'after-dependency' : 'now',
-        ...productionTarget(work), controlRevision: initial ? undefined : work.controlRevision || 0,
+        ...productionTarget(work), controlRevision: initial ? undefined : continuationContribution ?
+          authorization?.production?.controlRevision : work.controlRevision || 0,
       });
       if (authorization.production.kind === 'continue' &&
         (work.status === 'completed' || currentProductionStage(work, this.store) !== authorization.production.stage))
@@ -300,12 +345,13 @@ export class WorkService {
       if (!holding && receivedAt && previous.externalStop && receivedAt <= previous.externalStop.requestedAt)
         fail('该停止请求早于上一次停止或恢复，请使用新的用户请求。', 409);
       const binding = previous.bindings?.find(item => item.type === 'codex-desktop');
+      const contribution = previous.waiting?.kind === 'room-duty-contribution' && this.store.getRecord('work-events', previous.waiting.operationId);
+      const awaitingContribution = contribution?.status === 'pending';
       const externalStop = holding || { id: randomUUID(), fromRevision: revision, requestedAt: now(),
-        status: binding || previous.executor?.kind === 'codex' && previous.waiting?.kind !== 'room-duty-contribution' ? 'pending' : 'local-stopped',
+        status: !awaitingContribution && (binding || previous.executor?.kind === 'codex' && previous.waiting?.kind !== 'room-duty-contribution') ? 'pending' : 'local-stopped',
         bindingId: binding?.id, threadId: binding?.externalThreadId, hostId: binding?.hostId };
       const saved = this.update(id, { status, externalStop, controlRevision: revision + 1 }, { control: true });
-      const contribution = previous.waiting?.kind === 'room-duty-contribution' && this.store.getRecord('work-events', previous.waiting.operationId);
-      if (status === 'cancelled' && contribution?.status === 'pending')
+      if (status === 'cancelled' && awaitingContribution)
         this.store.putRecord('work-events', { ...contribution, status: 'cancelled', stoppedAt: externalStop.requestedAt });
       for (const wait of this.store.listRecords('work-waits')) if (wait.status === 'pending' && (wait.workId === id || wait.targetWorkId === id))
         this.store.putRecord('work-waits', { ...wait, status, stoppedAt: externalStop.requestedAt });
@@ -354,6 +400,8 @@ export class WorkService {
       const contribution = work.waiting?.kind === 'room-duty-contribution' && this.store.getRecord('work-events', work.waiting.operationId);
       if (work.status === 'paused' && contribution?.status === 'pending' && contribution.contributionPlanId) {
         const resumeReceipt = { accepted: true, operationId: contribution.id, status: 'awaiting-duty-contribution' };
+        if (contribution.authorization?.production?.relation === 'continue') this.store.putRecord('work-events', {
+          ...contribution, contributionControlRevision: revision });
         this.store.putRecord('work-controls', { id: key, workId: id, resumeReceipt, createdAt: now() });
         return { ...this.update(id, { status: 'waiting', controlRevision: revision }, { control: true }), resumeReceipt };
       }
