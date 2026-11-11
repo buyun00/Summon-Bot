@@ -62,16 +62,21 @@ export class WorkService {
     });
     const supervisor = this.selectModel?.(executor.kind === 'pi' ? executor.connectionId : undefined);
     const binding = executor.kind === 'pi' ? { kind: 'pi', ...(executor.target ? { target: executor.target } : {}) } : executor;
+    const eventId = `${id}:${input.operationId || 'initial'}`;
+    const waiting = sourceKey && input.initialHandoff && input.contributionPlanId ? { kind: 'room-duty-contribution', operationId: eventId,
+      reason: '等待同一请求的职责负责人交付制作所需部分。' } : null;
     const record = this.clean({ id, botId: this.botId, conversationId: `work:${id}`, goal: input.goal,
-      requirements: input.requirements || '', executor: binding, supervisor, project, productionStage: input.productionStage || null, progress: '', status: 'active', waiting: null, bindings: [], notifications: [],
+      requirements: input.requirements || '', executor: binding, supervisor, project, productionStage: input.productionStage || null, progress: '',
+      status: waiting ? 'waiting' : 'active', waiting, bindings: [], notifications: [],
       sources: input.sources || (task.id ? [this.source(task)] : []),
       responsibility: input.responsibility || null, revision: 1, createdAt: now(), updatedAt: now() });
     this.store.transaction(() => {
       this.store.putRecord('works', record);
       if (sourceKey) this.store.putRecord('work-handoffs', { id: sourceKey, workId: id, createdAt: now() });
-      if (input.initialHandoff) this.store.putRecord('work-events', { id: `${id}:${input.operationId || 'initial'}`, workId: id,
+      if (input.initialHandoff) this.store.putRecord('work-events', { id: eventId, workId: id,
         kind: 'request', content: input.initialHandoff, requestTaskId: task.id, sourceTaskId: task.id,
-        authorization: this.authorization(task, `${id}:${input.operationId || 'initial'}`, input.productionAuthorization), status: 'pending', createdAt: now() });
+        authorization: this.authorization(task, eventId, input.productionAuthorization), status: 'pending', createdAt: now(),
+        ...(waiting ? { contributionPlanId: input.contributionPlanId } : {}) });
       this.store.appendEvent('work.created', { work: record }, { workId: id, conversationId: record.conversationId });
     });
     return record;
@@ -136,10 +141,19 @@ export class WorkService {
     this.dispatches.set(key, operation);
     try { return await operation; } finally { if (this.dispatches.get(key) === operation) this.dispatches.delete(key); }
   }
+  contributionReceipt(event) {
+    const work = this.get(event.workId);
+    return { accepted: false, registered: true, workId: event.workId, operationId: event.id, planId: event.contributionPlanId,
+      receiptLayer: 'room-duty-plan', status: event.status === 'superseded' ? 'superseded' :
+        work?.status === 'waiting' ? 'awaiting-duty-contribution' : work?.status || event.status,
+      instruction: work?.waiting?.reason || 'The work uses its original registered operation and duty contribution.' };
+  }
   async dispatchEvent(id, input, task = {}) {
     const work = this.get(id); if (!work) fail('Unknown work', 404);
     const eventId = input.id || randomUUID(), key = `${id}:${eventId}`, prior = this.store.getRecord('work-events', key);
     if (prior?.receipt) return { ...prior.receipt, duplicate: true };
+    if (prior?.contributionPlanId && (prior.status !== 'pending' || !prior.contributionResult || work.status !== 'waiting' ||
+        work.waiting?.operationId !== key)) return this.contributionReceipt(prior);
     const wait = input.metadata?.waitId && this.store.getRecord('work-waits', input.metadata.waitId);
     const registered = wait?.targetWorkId === id && eventId === `wait:${wait.id}` && wait.status === 'pending' && !wait.unresolvedTaskId;
     if (!task.id && (prior?.kind === 'request' && prior.sourceTaskId || registered && wait.sourceTaskId))
@@ -179,6 +193,13 @@ export class WorkService {
         workEventId: intent.id, origin: intent.authorization?.source, priority: intent.metadata?.priority || 'background' } };
     if (envelope.content === undefined) fail('Work event requires content');
     const receipt = this.store.transaction(() => {
+      const contribution = work.waiting?.kind === 'room-duty-contribution' && work.waiting.operationId !== key &&
+        this.store.getRecord('work-events', work.waiting.operationId);
+      if (contribution?.status === 'pending' && authorization?.production?.relation === 'continue' &&
+          authorization.requestTaskId !== contribution.requestTaskId) {
+        this.store.putRecord('work-events', { ...contribution, status: 'superseded', supersededBy: key });
+        this.update(id, { status: 'active', waiting: null, lastError: null });
+      }
       const result = this.accept(envelope, task.source || 'controller', { deferSchedule: true });
       const saved = { accepted: true, duplicate: result.duplicate, workId: id, operationId: intent.id, taskId: result.task.id,
         status: result.task.status, localTaskStatus: result.task.status, receiptLayer: 'local-dispatch', executor: this.executor(work).kind,
@@ -280,9 +301,12 @@ export class WorkService {
         fail('该停止请求早于上一次停止或恢复，请使用新的用户请求。', 409);
       const binding = previous.bindings?.find(item => item.type === 'codex-desktop');
       const externalStop = holding || { id: randomUUID(), fromRevision: revision, requestedAt: now(),
-        status: binding || previous.executor?.kind === 'codex' ? 'pending' : 'local-stopped',
+        status: binding || previous.executor?.kind === 'codex' && previous.waiting?.kind !== 'room-duty-contribution' ? 'pending' : 'local-stopped',
         bindingId: binding?.id, threadId: binding?.externalThreadId, hostId: binding?.hostId };
       const saved = this.update(id, { status, externalStop, controlRevision: revision + 1 }, { control: true });
+      const contribution = previous.waiting?.kind === 'room-duty-contribution' && this.store.getRecord('work-events', previous.waiting.operationId);
+      if (status === 'cancelled' && contribution?.status === 'pending')
+        this.store.putRecord('work-events', { ...contribution, status: 'cancelled', stoppedAt: externalStop.requestedAt });
       for (const wait of this.store.listRecords('work-waits')) if (wait.status === 'pending' && (wait.workId === id || wait.targetWorkId === id))
         this.store.putRecord('work-waits', { ...wait, status, stoppedAt: externalStop.requestedAt });
       return saved;
@@ -327,6 +351,12 @@ export class WorkService {
       this.requireResume(work);
       const stop = work.externalStop;
       if (stop?.status === 'completed') fail('原执行回合已经完成。请在来源会话核对结果或明确提出追加要求。', 409);
+      const contribution = work.waiting?.kind === 'room-duty-contribution' && this.store.getRecord('work-events', work.waiting.operationId);
+      if (work.status === 'paused' && contribution?.status === 'pending' && contribution.contributionPlanId) {
+        const resumeReceipt = { accepted: true, operationId: contribution.id, status: 'awaiting-duty-contribution' };
+        this.store.putRecord('work-controls', { id: key, workId: id, resumeReceipt, createdAt: now() });
+        return { ...this.update(id, { status: 'waiting', controlRevision: revision }, { control: true }), resumeReceipt };
+      }
       const tasks = this.store.listUnfinishedTasks().filter(task => task.workId === id && task.metadata?.sourceType !== 'external');
       if (tasks.some(task => task.status === 'running')) fail('原工作步骤仍在收尾，请稍后从当前卡片恢复。', 409);
       const queued = tasks.filter(task => task.status === 'accepted' && !task.cancelRequested);

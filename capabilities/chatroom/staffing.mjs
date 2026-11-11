@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { localTime } from '../../bot/src/context/fact-time.mjs';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { TEAM_DUTY_TOOLS } from '../bot-management/tool-access.mjs';
@@ -132,7 +133,7 @@ export class Staffing {
 
   view(plan) {
     return { assessmentId: plan.id, status: plan.status, assessedRevision: plan.assessedRevision,
-      ...pick(plan, ['domain', 'phase', 'deliveryChain', 'reason', 'sourceMessageId', 'finishedAt']),
+      ...pick(plan, ['domain', 'phase', 'deliveryChain', 'reason', 'sourceMessageId', 'finishedAt', 'analysisAsOf', 'currentPublications']),
       noChange: plan.status === 'completed' && !plan.candidates.some(row => ['assigned', 'closed'].includes(row.state)),
       candidates: plan.candidates.map(row => pick(row, [...Object.keys(fields), 'handling', 'dutyKey', 'state', 'botId',
         'operationId', 'sourceRefs', 'referenceWorkIds', 'referenceArtifacts', 'receipt', 'error'])) };
@@ -260,6 +261,11 @@ export class Staffing {
       domain: required(input.domain, 'domain', 180), phase: required(input.phase, 'phase', 220),
       deliveryChain: required(input.deliveryChain, 'deliveryChain', 1400), reason: required(input.reason, 'reason', 900),
     };
+    const analysisAsOf = job.input?.content?.staffing?.snapshotAt || job.createdAt;
+    const currentPublications = this.team.staffingPublications(room.id, job.teamStaffing.evidence);
+    const newer = currentPublications.filter(result => result.publishedAt > analysisAsOf);
+    if (newer.length) scope.reason = `以下判断基于 ${localTime(analysisAsOf)} 的快照。此后同源实际发布：${newer.map(result =>
+      `${localTime(result.publishedAt)}（消息 ${result.messageId}）`).join('、')}。当前交付以这些发布回执为准。\n${scope.reason}`;
     const key = sourceKey(job);
     const plan = this.store.transaction(() => {
       const replay = this.get(this.store.get(sources, key)?.assessmentId);
@@ -268,6 +274,7 @@ export class Staffing {
       if (this.get(state?.activeAssessmentId)?.status === 'applying') fail('The current assessment is still applying', 409);
       const applying = candidates.some(row => row.state === 'pending');
       const saved = this.store.save(assessments, { id: deliveryId, actor, roomId: room.id, operationId, candidates, ...scope,
+        analysisAsOf, currentPublications,
         sourceMessageId: job.messageId, policyVersion: staffingPolicyVersion, assessedRevision: room.team.revision,
         scope: job.teamStaffing.scope, latestUserMessageId: job.teamStaffing.latestUserMessageId,
         status: applying ? 'applying' : 'completed', ...(applying ? {} : { finishedAt: now() }) });

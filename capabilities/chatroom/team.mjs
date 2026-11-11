@@ -64,6 +64,24 @@ export class TeamService {
   staffingRoom(room) {
     return staffingProject(room);
   }
+  skipOrdinarySource(room, messageId) {
+    const state = this.store.get('team-staffing', room.id);
+    const pending = (state?.pending || []).filter(signal => signal.key !== 'user:' + messageId);
+    this.store.save('staffing-ordinary-sources', { id: messageId, roomId: room.id });
+    if (state && pending.length !== state.pending?.length) this.store.save('team-staffing', { id: room.id, pending,
+      ...(pending.length ? {} : { firstAt: null, readyAt: null }) });
+  }
+  staffingPublications(roomId, evidence) {
+    const dispatches = evidence.filter(signal => signal.kind === 'work-dispatch' && signal.ownerBotId && signal.operationId);
+    if (!dispatches.length) return [];
+    return this.chatroom.messages(roomId).flatMap(message => {
+      if (message.eventType !== 'work_result') return [];
+      const dispatch = dispatches.find(signal => signal.messageId === message.replyTo && signal.workId === message.workId &&
+        signal.ownerBotId === message.senderId && staffingArtifacts(message).some(item => item.operationId === signal.operationId));
+      return dispatch ? [{ messageId: message.id, sourceMessageId: message.replyTo, workId: message.workId, operationId: dispatch.operationId,
+        publishedAt: message.createdAt, attachments: staffingArtifacts(message).filter(item => item.operationId === dispatch.operationId) }] : [];
+    });
+  }
   noteStaffing(room, signals) {
     if (!this.staffingRoom(room) || !signals.length) return;
     const state = this.store.get('team-staffing', room.id);

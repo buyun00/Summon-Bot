@@ -4,11 +4,12 @@ export function roomDutyPlanId({ roomId, messageId, sourceUnit, kind }) {
   return JSON.stringify([roomId, messageId, sourceUnit, kind]);
 }
 
-export function sourceDispatches(store, { roomId, messageId, sourceUnit, workId, stage }) {
+export function sourceDispatches(store, { roomId, messageId, sourceUnit, workId, stage, includeRegistered = false }) {
   if (!store || !roomId || !messageId) return [];
   return store.listRecords('work-events').filter(event => {
     const { source, production } = event.authorization || {};
-    return event.kind === 'request' && event.receipt?.accepted && event.receipt.taskId && event.workId &&
+    const registered = includeRegistered && event.contributionPlanId;
+    return event.kind === 'request' && (event.receipt?.accepted && event.receipt.taskId || registered) && event.workId &&
       source?.actor === 'user' && source.roomId === roomId && source.replyTo === messageId &&
       production?.roomId === roomId && production.messageId === messageId && production.when === 'now' && production.relation === 'new' &&
       (sourceUnit === undefined || production.sourceUnit === sourceUnit) && (!workId || event.workId === workId) &&

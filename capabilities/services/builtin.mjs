@@ -149,6 +149,10 @@ export async function createCapability(options) {
         return rooms.filter(room=>actor==='controller'||room.members.includes(actor)&&(!sourceActor||sourceActor==='system'||room.members.includes(sourceActor)));
       }
       case 'chatroom_read':{
+        if(args.dutyContribution!==undefined){
+          if(!context.dutyContributionOperation)fail('Contribution reads require the registered production operation',403);
+          return chatroom.dutyActions.readContribution(args,actor,context.source);
+        }
         if(args.acceptanceResults===true)return chatroom.readRoomAcceptance(args,actor,context.source);
         if(args.attachmentId!==undefined)return chatroom.readPublishedAttachment(args,actor,context.source);
         const page=chatroom.read(args,actor,context.source);

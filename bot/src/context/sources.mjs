@@ -312,7 +312,7 @@ export class RuntimeSources {
       if (!page.messages?.length) throw new Error('The group observation source is unavailable');
       return { messages: [], access: page.access, roomId: source.roomId, runtimeEvent: { type: 'group_observation',
         room: source.input.room, observer: source.input.observer, contextRange: source.input.contextRange,
-        messages: source.input.messages, triggerMessageId: source.replyTo } };
+        observationCoverage: source.input.observationCoverage, messages: source.input.messages, triggerMessageId: source.replyTo } };
     }
     if (source.metadata?.teamStaffing) {
       const page = await this.call('chatroom_read', { roomId: source.roomId, messageId: source.replyTo, length: 1 }, task);

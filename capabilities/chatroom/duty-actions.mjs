@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { ROOM_DUTY_PLANS, dependencyDispatches, roomDutyPlanId } from '../../bot/src/context/duty-actions.mjs';
+import { ROOM_DUTY_PLANS, dependencyDispatches, roomDutyPlanId, sourceDispatches } from '../../bot/src/context/duty-actions.mjs';
 import { currentUserRequest, requireProductionGrant } from '../../bot/src/capabilities/request-routing.mjs';
 import { acceptedWorkTask } from '../../bot/src/context/sources.mjs';
 import { externalExecution } from '../../bot/src/context/execution-evidence.mjs';
 import { activeDuties, staffingArtifacts, staffingProject } from './staffing.mjs';
-import { now, pick } from '../shared/validation.mjs';
+import { fail, now, pick } from '../shared/validation.mjs';
 
 const stopped = new Set(['failed', 'cancelled', 'interrupted']);
 const pending = new Set(['waiting', 'queued']);
@@ -17,6 +17,22 @@ export class RoomDutyActions {
   get store() { return this.chatroom.store; }
   get manager() { return this.chatroom.manager; }
   get(id) { return id && this.store.get(ROOM_DUTY_PLANS, id); }
+  references(roomId, references = []) {
+    return references.filter(ref => {
+      const message = this.store.get('messages', ref.messageId);
+      return ref.roomId === roomId && message?.roomId === roomId &&
+        (!ref.attachmentId || staffingArtifacts(message).some(artifact => artifact.id === ref.attachmentId));
+    });
+  }
+  materials(roomId, evidence = []) {
+    return evidence.flatMap(item => {
+      const ref = item.reference;
+      const message = ref?.type === 'room' && ref.attachmentId && this.store.get('messages', ref.messageId);
+      if (ref?.roomId !== roomId || message?.roomId !== roomId || message.senderId !== item.author ||
+          !staffingArtifacts(message).some(artifact => artifact.id === ref.attachmentId) || typeof item.content !== 'string') return [];
+      return [pick(item, ['reference', 'author', 'name', 'content', 'offset', 'fullCharacters', 'nextOffset'])];
+    }).slice(0, 6);
+  }
   view(roomId) {
     return this.store.list(ROOM_DUTY_PLANS).filter(plan => plan.roomId === roomId).slice(-20)
       .map(plan => pick(plan, ['id', 'kind', 'status', 'messageId', 'goal', 'dutyKey', 'ownerBotId',
@@ -25,45 +41,85 @@ export class RoomDutyActions {
 
   async import(item, room, trigger, task) {
     if (!staffingProject(room) || item.observation || item.routeOnly || item.teamStaffing || item.roomDutyAction ||
-        item.teamIntroduction || trigger.senderId !== 'user' || task.workId || task.cancelRequested ||
-        ['cancelled', 'interrupted'].includes(task.status)) return [];
+        item.teamIntroduction || trigger.senderId !== 'user' || task.workId || task.cancelRequested || task.status === 'cancelled') return [];
     const plans = await this.manager.readState(item.botId, db => {
       const saved = db?.getTask(item.taskId), user = saved && currentUserRequest(saved, db);
       if (user?.roomId !== room.id || user.messageId !== trigger.id) return [];
-      return db.listRecords(ROOM_DUTY_PLANS).filter(plan => {
+      return db.listRecords(ROOM_DUTY_PLANS).flatMap(plan => {
         const grant = plan.grant;
         if (!grant || plan.requestTaskId !== task.id || plan.coordinatorBotId !== item.botId ||
             plan.roomId !== room.id || plan.messageId !== trigger.id || !['independent-review', 'contribution'].includes(plan.kind) ||
-            plan.id !== roomDutyPlanId({ ...plan, sourceUnit: grant.sourceUnit })) return false;
+            plan.id !== roomDutyPlanId({ ...plan, sourceUnit: grant.sourceUnit })) return [];
         const dependent = plan.kind === 'independent-review';
         try {
           requireProductionGrant(saved, db, grant, {
             actionId: dependent ? plan.id : plan.operationId, workId: dependent ? null : plan.workId, relation: 'new',
             when: dependent ? 'after-dependency' : 'now',
           });
-        } catch { return false; }
-        if (grant.participant?.dutyKey !== plan.dutyKey) return false;
-        if (dependent) return grant.participant?.independent === true && same(plan.dependency, grant.after) && plan.dependency?.roomId === room.id &&
-          plan.dependency.messageId === trigger.id && plan.dependency.condition === 'successful-publication';
+        } catch { return []; }
+        if (grant.participant?.dutyKey !== plan.dutyKey) return [];
+        if (dependent) return task.status !== 'interrupted' && grant.participant?.independent === true && same(plan.dependency, grant.after) && plan.dependency?.roomId === room.id &&
+          plan.dependency.messageId === trigger.id && plan.dependency.condition === 'successful-publication' ? [plan] : [];
         const event = db.getRecord('work-events', plan.operationId);
-        return grant.participant?.contribution === plan.goal && event?.receipt?.accepted && event.workId === plan.workId &&
-          event.authorization?.production?.actionId === grant.actionId;
+        const gatesProduction = event?.contributionPlanId === plan.id;
+        return (task.status !== 'interrupted' || gatesProduction) && grant.participant?.contribution === plan.goal && event?.workId === plan.workId &&
+          event.authorization?.production?.actionId === grant.actionId && (event.receipt?.accepted ||
+            event.status === 'pending' && gatesProduction && event.requestTaskId === task.id) ? [{ ...plan, gatesProduction,
+            referenceMaterials: this.materials(room.id, event.content?.evidence) }] : [];
       });
     });
     const imported = [];
     for (const plan of plans) {
       if (this.get(plan.id)) continue;
-      const references = (plan.references || []).filter(ref => {
-        const message = this.store.get('messages', ref.messageId);
-        return ref.roomId === room.id && message?.roomId === room.id &&
-          (!ref.attachmentId || staffingArtifacts(message).some(artifact => artifact.id === ref.attachmentId));
-      });
+      const references = this.references(room.id, plan.references);
       imported.push(this.store.save(ROOM_DUTY_PLANS, { ...plan, references, status: 'waiting',
         waitingFor: plan.kind === 'independent-review' ? 'publication' : 'responsible-member',
-        originalRoomGoal: room.goal, originalTeamRequirements: room.team.requirements,
+        originalRoomGoal: plan.gatesProduction ? plan.originalRoomGoal : room.goal,
+        originalTeamRequirements: plan.gatesProduction ? plan.originalTeamRequirements : room.team.requirements,
         deliveryId: 'duty-action:' + randomUUID() }));
     }
     return imported;
+  }
+
+  async coordinatorState(plan) {
+    if (!plan.gatesProduction) return 'waiting';
+    return this.manager.readState(plan.coordinatorBotId, db => {
+      const work = db?.getRecord('works', plan.workId), operation = db?.getRecord('work-events', plan.operationId);
+      const original = db?.getTask(plan.requestTaskId);
+      if (!work || work.waiting?.operationId !== operation?.id || operation?.contributionPlanId !== plan.id ||
+          operation.status !== 'pending' || !original || original.cancelRequested || original.status === 'cancelled') return 'stopped';
+      return work.status;
+    });
+  }
+
+  readContribution(input, actor, source) {
+    const { planId, operationId, workId } = input.dutyContribution;
+    const room = this.chatroom.need('rooms', input.roomId);
+    const trigger = this.store.get('messages', source?.replyTo);
+    if (source?.source !== 'controller' || source.actor !== 'user' || source.roomId !== room.id ||
+        trigger?.roomId !== room.id || trigger.senderId !== 'user' || !room.members.includes('user') || !room.members.includes(actor))
+      fail('Contribution is outside the authenticated production source', 403);
+    const plan = this.get(planId);
+    if (!plan) return staffingProject(room) ? { status: 'waiting', waitingFor: 'registered-room-plan' } :
+      { status: 'blocked', error: '项目群当前无法接收原请求的职责协作。' };
+    if (!plan.gatesProduction || plan.kind !== 'contribution' || plan.workId !== workId || plan.operationId !== operationId ||
+        plan.coordinatorBotId !== actor || plan.roomId !== room.id || plan.messageId !== trigger.id || plan.requestTaskId !== source.taskId)
+      fail('Contribution does not match this production operation', 403);
+    if (room.goal !== plan.originalRoomGoal || room.team?.requirements !== plan.originalTeamRequirements)
+      return { status: 'blocked', error: '项目范围已变更，原职责结果未用于制作。' };
+    if (plan.status !== 'completed') return pick(plan, ['status', 'waitingFor', 'ownerBotId', 'error']);
+    const message = this.store.get('messages', plan.resultMessageId), delivery = this.store.get('deliveries', plan.deliveryId);
+    const result = message && this.store.get('room-text-results', message.id);
+    if (message?.roomId !== room.id || message.id !== `reply:${plan.deliveryId}` || message.jobId !== plan.deliveryId ||
+        message.senderId !== plan.ownerBotId || message.replyTo !== trigger.id || !room.members.includes(plan.ownerBotId) ||
+        delivery?.status !== 'completed' || delivery.roomDutyAction !== plan.id || result?.kind !== 'contribution' || result.planId !== plan.id ||
+        result.ownerBotId !== plan.ownerBotId || result.taskId !== delivery.taskId || result.deliveryId !== delivery.id ||
+        result.dutyKey !== plan.dutyKey || result.sourceMessageId !== trigger.id || result.sourceUnit !== plan.grant.sourceUnit)
+      return { status: 'blocked', error: '职责回复与原制作操作的群内交付回执未能对上。' };
+    return { status: 'completed', planId: plan.id, operationId, workId, sourceMessageId: trigger.id,
+      dutyKey: plan.dutyKey, deliveryId: delivery.id, taskId: delivery.taskId, publishedAt: message.createdAt,
+      evidence: { reference: { type: 'room', roomId: room.id, messageId: message.id }, author: message.senderId,
+        content: message.content, sourceRefs: result.references, authority: 'published-duty-contribution' } };
   }
 
   async dependency(plan) {
@@ -72,7 +128,12 @@ export class RoomDutyActions {
       const accepted = dependencyDispatches(db, exact);
       if (accepted.length > 1) return { failure: '同一原请求对应多个先行操作，未确认本次依赖。' };
       const operation = accepted[0];
-      if (!operation) return { wait: 'accepted-operation' };
+      if (!operation) {
+        const waiting = sourceDispatches(db, { ...exact, includeRegistered: true }).find(event => event.contributionPlanId);
+        const work = waiting && db.getRecord('works', waiting.workId);
+        if (waiting?.status === 'superseded' || work?.status === 'cancelled') return { failure: '原先行制作已停止或被替代，未启动独立复核。' };
+        return { wait: 'accepted-operation' };
+      }
       if (exact.operationId && (operation.id !== exact.operationId || operation.receipt.taskId !== exact.taskId))
         return { failure: '先行操作已与登记的执行回执不符。' };
       const work = db.getRecord('works', operation.workId), task = acceptedWorkTask(operation, db);
@@ -110,7 +171,8 @@ export class RoomDutyActions {
         }
       }
       if (publications.size < selection.minimumAttachments) return { wait: 'confirmed-publication', selection };
-      return { selection, publications: [...publications.values()], makerBotId: work.botId };
+      const referenceMaterials = this.materials(plan.roomId, operation.content?.evidence);
+      return { selection, publications: [...publications.values()], referenceMaterials, makerBotId: work.botId };
     });
   }
 
@@ -124,6 +186,11 @@ export class RoomDutyActions {
         continue;
       }
       const independent = plan.kind === 'independent-review';
+      if (!independent && plan.gatesProduction) {
+        const state = await this.coordinatorState(plan).catch(() => null);
+        if (state === 'stopped' || state === 'cancelled') { this.block(plan, '原制作步骤已停止或被后续授权替代。'); continue; }
+        if (state !== 'waiting') { this.defer(plan, 'coordinator-not-ready'); continue; }
+      }
       const dependency = independent ? await this.dependency(plan).catch(() => ({ wait: 'dependency-state-unavailable' })) : {};
       if (dependency?.failure) { this.block(plan, dependency.failure); continue; }
       if (dependency?.wait) {
@@ -149,6 +216,8 @@ export class RoomDutyActions {
           routedDutyKey: duty.dutyKey, workId: null, priority: 'background' });
         this.store.save(ROOM_DUTY_PLANS, { id: plan.id, status: 'queued', ownerBotId: duty.botId, dutyKey: duty.dutyKey,
           ...(dependency?.selection ? { dependency: dependency.selection } : {}), publications: dependency?.publications || [],
+          ...(dependency?.referenceMaterials?.length ? { referenceMaterials: dependency.referenceMaterials,
+            references: [...plan.references, ...dependency.referenceMaterials.map(item => item.reference)] } : {}),
           waitingFor: null, retryAt: null, queuedAt: now() });
       });
     }

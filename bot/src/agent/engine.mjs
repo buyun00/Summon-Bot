@@ -185,6 +185,7 @@ export class BotEngine {
       }
       const hasCurrentRequest = !roomDecision && taskMode(task) === 'chat' && Boolean(currentUserRequest(task, this.store));
       const handoffs = [];
+      let formatCorrected = false;
       const verifyProduction = async ({ user, units, continuationTarget, existingDelivery, sourceAction, proposed, step, acceptanceContext }, signal) => {
         const prior = publicView?.messages.filter(message => message.source?.roomId === user.roomId) || [];
         const current = prior.findIndex(message => message.source?.messageId === user.messageId);
@@ -205,18 +206,26 @@ export class BotEngine {
         const input = step === 'acceptance' ? { currentUser: units, originalText: user.text, acceptanceContext } :
           { currentUser: units, referencedTurn: previous && { content: previous.content }, referencedUserScope,
             continuationTarget, existingDelivery, ...(proposed ? { sourceAction, proposed } : {}) };
-        signal?.throwIfAborted();
-        const result = await this.provider.stream(model, { messages: [
-          { role: 'system', content: productionAuthorizationPrompts[step], timestamp: Date.now() },
-          userMessage(input),
-        ], tools: [] }, { signal, reasoning: thinkingLevel,
-          usageContext: { ...usageContext, requestKind: 'production-authorization', authorizationStep: step } }).result();
-        signal?.throwIfAborted();
-        if (result.stopReason !== 'stop') throw Object.assign(new Error(
-          'The authorization check did not complete with a decision. The action was not dispatched. Report the failure and wait for a fresh request for this action. Do not resubmit it with reworded instructions.'), { code: 'PRODUCTION_CHECK_UNAVAILABLE' });
-        const answer = result.content.filter(block => block.type === 'text').map(block => block.text).join('').trim();
         let receipt;
-        try { receipt = JSON.parse(answer.replace(/^\x60{3}(?:json)?\s*|\s*\x60{3}$/gi, '')); } catch {}
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          signal?.throwIfAborted();
+          const correction = attempt ? '\nThe previous response had no valid JSON object at its root. Evaluate the same source and return exactly one JSON object with the requested keys, without prose, Markdown or an array. An unavailable approval or authorization must remain unavailable or denied.' : '';
+          const result = await this.provider.stream(model, { messages: [
+            { role: 'system', content: productionAuthorizationPrompts[step] + correction, timestamp: Date.now() },
+            userMessage(input),
+          ], tools: [] }, { signal, reasoning: thinkingLevel,
+            usageContext: { ...usageContext, requestKind: 'production-authorization', authorizationStep: step,
+              ...(attempt ? { formatCorrection: true } : {}) } }).result();
+          signal?.throwIfAborted();
+          if (result.stopReason !== 'stop') throw Object.assign(new Error(
+            'The authorization check did not complete with a decision. The action was not dispatched. Report the failure and wait for a fresh request for this action. Do not resubmit it with reworded instructions.'), { code: 'PRODUCTION_CHECK_UNAVAILABLE' });
+          const answer = result.content.filter(block => block.type === 'text').map(block => block.text).join('').trim();
+          try { receipt = JSON.parse(answer.replace(/^\x60{3}(?:json)?\s*|\s*\x60{3}$/gi, '')); } catch { receipt = undefined; }
+          if (receipt && typeof receipt === 'object' && !Array.isArray(receipt)) break;
+          if (attempt || step === 'proposal' || formatCorrected) break;
+          formatCorrected = true;
+          this.store.appendEvent('production.authorization_receipt', { step, outcome: 'format-retry', reason: 'json-object' }, refs);
+        }
         return { receipt, referenced: Boolean(previous) };
       };
       const registry = new ToolRegistry({

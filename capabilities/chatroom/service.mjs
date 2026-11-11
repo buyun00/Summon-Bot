@@ -26,7 +26,7 @@ const staffingMessage=message=>{
 const firstPosition={at:'',row:0};
 const comparePosition=(a,b)=>a.at.localeCompare(b.at)||a.row-b.row;
 const routeInstruction='这是一次临时语义路由，不是执行任务。只根据本条用户原文、明确引用和成员职责选择最适合承担的一个现有成员；不得群发、执行或代替用户授权。能确定已有工作才填写其真实 workId，不按最近活跃猜归属。可以用普通文字选择成员，也可输出 JSON：{"recipientBotId":"已有成员ID或null","workId":"已知工作ID或null","reason":"简短依据"}。无法确定时 recipientBotId 设为你自己，由你的普通聊天对话作最小澄清或回答。';
-const dutyRouteInstruction=routeInstruction+' 本次使用 JSON。仅当原问题直接落在一个当前成员的登记职责（duties）时选择该成员，并在 dutyKey 字段填该职责的真实键。跨领域、泛讨论、协调和不确定的消息由主控接住。';
+const dutyRouteInstruction=routeInstruction+' 本次使用 JSON。仅当原问题直接落在一个当前成员的登记职责（duties）时选择该成员，并在 dutyKey 字段填该职责的真实键。跨领域、泛讨论、协调和不确定的消息由主控接住。增加 requestScope 字段：single-duty 表示一个职责覆盖整条请求，multiple 表示用户实际要求多个范围，ordinary 仅表示与项目业务或分工无关的一次性问答，unresolved 表示其他或不确定。没有现有负责人、新的项目工作或项目范围不清楚时不要填 ordinary。';
 const cursorKey=item=>[item.botId,item.roomId,item.teamStaffing?'staffing':item.roomDutyAction?'duty-action':item.workId||'chat'].join(':');
 function projectMode(value,goal){
   if(!['auto','project','chat'].includes(value))fail('请选择有效的群聊用途');
@@ -70,7 +70,8 @@ export class ChatroomService {
   latestProjectMessage(id) { return this.messages(id).findLast(message=>message.senderId!=='system'&&observable(message)); }
   staffingEvidence(message) {
     if(!message||!observable(message))return null;
-    if(message.senderId==='user')return {key:'user:'+message.id,kind:'user-update',messageId:message.id};
+    if(message.senderId==='user')return this.store.get('staffing-ordinary-sources',message.id)?null:
+      {key:'user:'+message.id,kind:'user-update',messageId:message.id};
     const textResult=this.store.get('room-text-results',message.id);
     if(textResult?.roomId===message.roomId&&textResult.ownerBotId===message.senderId)
       return {key:'room-result:'+message.id,kind:'room-result',messageId:message.id,resultId:textResult.id};
@@ -126,12 +127,12 @@ export class ChatroomService {
     const selected=forward?candidates.slice(0,limit):candidates.slice(-limit);
     return this.messagePage(room,accessActor||actor,input,selected,{staffing,reverse:!forward,total:candidates.length});
   }
-  readRoomAcceptance(input, actor, source) {
+  async readRoomAcceptance(input, actor, source) {
     const room=this.need('rooms',input.roomId||source?.roomId),trigger=source?.replyTo&&this.store.get('messages',source.replyTo);
     if(room.id!==source?.roomId||!room.members.includes(actor)||!room.members.includes('user')||source.source!=='controller'||source.actor!=='user'||
       trigger?.roomId!==room.id||trigger.senderId!=='user'||source.metadata?.routeOnly||source.metadata?.groupObservation)
       fail('Room results can only be selected from the current authenticated user request',403);
-    return {roomResults:this.roomTextResults.before(room,trigger)};
+    return this.roomTextResults.before(room,trigger);
   }
   async readPublishedAttachment(input, actor, source) {
     const room = this.need('rooms', input.roomId || source?.roomId);
@@ -145,6 +146,12 @@ export class ChatroomService {
     if (source?.roomId !== room.id || !room.members.includes(actor) || observation ||
         !(staffing ? actor === room.team?.eggBotId : userSource || dutySource))
       fail('Published attachments require a current authorized task in their source room', 403);
+    if (dutySource) {
+      const action = job.input?.content?.dutyAction;
+      if (!this.dutyActions.current(job, room) || ![...(action?.references || []), ...(action?.publications || [])].some(ref =>
+        ref.messageId === input.messageId && (ref.attachmentId || ref.id) === input.attachmentId))
+        fail('Use the exact published attachments handed to this duty action', 403);
+    }
     const message = input.messageId && this.store.get('messages', input.messageId);
     const published = message?.attachments?.find(item => item.id === input.attachmentId);
     const matches = attachment => attachment?.origin?.type === 'work-output' &&
@@ -252,7 +259,7 @@ export class ChatroomService {
     }))];
   }
   mentions(content,members) {if(/(?:^|\s)@(?:all|everyone|所有人)(?=\s|$|[，。！？:：])/i.test(content))return members;return members.filter(id=>{const bot=this.manager.get(id);return [id,bot.name].some(name=>new RegExp(`(?:^|\\s)@${name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?=$|[\\s，。！？:：,!?])`,'i').test(content));});}
-  append(roomId,input,senderId,route,{workPublication=false}={}) {
+  append(roomId,input,senderId,route,{workPublication=false,observationCoverage}={}) {
     const room=this.need('rooms',roomId);if(!room.members.includes(senderId)&&senderId!=='system')fail('Sender is not a room member',403);
     if(input.id&&this.store.get('messages',input.id)){const old=this.store.get('messages',input.id);if(old.roomId!==roomId||old.senderId!==senderId)fail('Message ID already belongs to another source',409);return old;}
     if(input.clientId){const existing=this.messages(roomId).find(item=>item.clientId===input.clientId&&item.senderId===senderId);if(existing)return existing;}
@@ -292,7 +299,8 @@ export class ChatroomService {
           if(!relevantResult)continue;
         }
         if(botId!==senderId&&bot?.status==='active'&&bot.runIntent!=='stopped'&&bot.allowedTools?.includes('chatroom_read'))
-          this.enqueue(saved,botId,{observation:true,workId:null,priority:'background'});
+          this.enqueue(saved,botId,{observation:true,workId:null,priority:'background',
+            ...(observationCoverage?{observationCoverage}:{})});
       }
       return saved;
     });
@@ -398,7 +406,7 @@ export class ChatroomService {
     const through=this.position(roomId,cursor?.messageId)||firstPosition;
     const ownerDeliveries=room.team?.leadBotId===botId?this.jobs(roomId).filter(job=>!job.observation&&!job.routeOnly&&job.routedDutyKey&&
       job.botId!==botId&&!job.roomDutyAction&&!['failed','cancelled','interrupted'].includes(job.status)):null;
-    let latest,latestPosition=through;
+    let latest,latestOpen,latestPosition=through,latestOpenPosition=through;
     for(const item of observations){
       const route=this.store.get('deliveries',`route:${item.messageId}`);
       if(route&&!TERMINAL.has(route.status))continue;
@@ -411,9 +419,13 @@ export class ChatroomService {
       if(!position)continue;
       if(cursor&&comparePosition(position,through)<=0){
         this.emit('job',this.store.save('deliveries',{id:item.id,status:'completed',coalesced:true,coveredThroughMessageId:cursor.messageId,finishedAt:now()}));
-      }else if(comparePosition(position,latestPosition)>0){latest=item;latestPosition=position;}
+      }else{
+        if(comparePosition(position,latestPosition)>0){latest=item;latestPosition=position;}
+        if(!item.observationCoverage&&comparePosition(position,latestOpenPosition)>0){latestOpen=item;latestOpenPosition=position;}
+      }
     }
-    if(latest&&due(latest))await this.deliver(latest);
+    const next=latest?.observationCoverage&&latestOpen?latestOpen:latest;
+    if(next&&due(next))await this.deliver(next);
   }
   async directory(room,{workId,dutyRoute=false}={}) {
     const candidates=dutyRoute?[room.team?.leadBotId,...this.specialists(room)]:room.members;
@@ -445,14 +457,15 @@ export class ChatroomService {
       const content={room:pick(room,['id','name','kind','goal','members','team']),trigger:observationMessage(trigger),messages:evidence,
         dutyAction:{kind:plan.kind,goal:plan.goal,requirements:plan.requirements,scope:plan.grant.scope,limits:plan.grant.originalLimits,
           instruction:plan.instruction,sourceUnit:plan.grant.sourceUnit,dependency:plan.dependency,
-          publications:plan.publications,references},
+          publications:plan.publications,references,referenceMaterials:plan.referenceMaterials},
         metadata:{actor:'system',roomId:room.id,deliveryId:item.id}};
       const input={id:item.id,kind:'event',sessionId:item.id,conversationId:item.id,correlationId:trigger.rootId,replyTo:trigger.id,
         metadata:{kind:'chat',actor:'system',accessActor:'user',roomId:room.id,originMessageId:trigger.id,historyThroughMessageId:trigger.id,
           sourceType:'room-duty-action',roomDutyAction:plan.id,priority:'background'},content};
       this.store.save('deliveries',{id:item.id,input,throughMessageId:trigger.id});return input;
     }
-    const staffing=item.teamStaffing;
+    const staffing=item.teamStaffing&&{...item.teamStaffing,snapshotAt:now(),
+      currentPublications:this.teamService.staffingPublications(room.id,item.teamStaffing.evidence)};
     const config=item.observation||staffing?null:await this.manager.config(item.botId);
     if(item.workId&&!item.routeOnly){
       const attachments=await this.attachments.stageContext({messages:[trigger],trigger},config.workspace);
@@ -466,11 +479,15 @@ export class ChatroomService {
     if(item.observation){
       const after=this.position(room.id,cursor?.messageId),start=after||firstPosition,end=this.position(room.id,trigger.id);
       const rows=this.observationDelta.all(item.botId,room.id,start.at,start.row,end.at,end.row,after?0:1);
-      delta=rows.length?rows.map(row=>observationMessage(JSON.parse(row.data))).reverse():[observationMessage(trigger)];
+      delta=rows.length?rows.map(row=>{
+        const message=observationMessage(JSON.parse(row.data));
+        const covered=this.store.get('deliveries',`delivery:${message.id}:${item.botId}`)?.observationCoverage;
+        return covered?{...message,observationCoverage:covered}:message;
+      }).reverse():[observationMessage(trigger)];
       total=rows[0]?.total||delta.length;
       firstMessageId=rows[0]?.firstId||trigger.id;
     }else if(staffing){
-      const ids=[...new Set(staffing.evidence.map(signal=>signal.messageId))];
+      const ids=[...new Set([...staffing.evidence,...staffing.currentPublications].map(signal=>signal.messageId))];
       delta=ids.map(id=>this.store.get('messages',id)).filter(message=>message?.roomId===room.id).map(staffingMessage);
       total=delta.length;firstMessageId=delta[0]?.id;
     }else{
@@ -489,7 +506,8 @@ export class ChatroomService {
     const sessionId=item.routeOnly?`route:${trigger.id}`:staffing?`staffing:${room.id}`:`room:${room.id}`;
     const ownDuties=item.routeOnly||item.observation||staffing?[]:
       item.routedDutyKey?duties.filter(duty=>duty.dutyKey===item.routedDutyKey):duties;
-    const runtimeInstruction=staffing?instruction+' 本次来源：'+JSON.stringify(staffing.evidence):
+    const runtimeInstruction=staffing?instruction+' 本次来源：'+JSON.stringify(staffing.evidence)+
+      '。使用当前快照时间和同源实际发布件判断交付进度，保留各自的原操作和发布时间。':
       [item.instruction,ownDuties.length&&'本群登记职责：'+ownDuties.map(duty=>duty.responsibility).join('；')+
         '。用 chatroom_team_read 和原消息查本职责的来源、产物和需续用的材料。以本轮用户原话与实际授权决定工作。'].filter(Boolean).join('\n');
     const input={id:item.id,kind:!staffing&&!item.peerAnswer&&!item.observation&&!item.teamIntroduction&&trigger.senderId==='user'?'request':'event',
@@ -501,7 +519,7 @@ export class ChatroomService {
         ...(item.routeOnly?{toolPolicy:{allowedEffects:['read']}}:{})},
       content:{text:instruction,...(runtimeInstruction?{runtimeInstruction}:{}),room:item.observation?observedRoom:pick(room,['id','name','kind','goal','members','team']),...context,
         contextRange:{afterMessageId:cursor?.messageId||null,throughMessageId:trigger.id,omitted:Math.max(0,total-included.length),...(firstMessageId?{firstMessageId}:{}),readMore:'chatroom_read'},
-        ...(item.observation?{observer:pick(this.manager.get(item.botId),['name','role','expertise'])}:{}),...(staffing?{staffing}:{}),
+        ...(item.observation?{observer:pick(this.manager.get(item.botId),['name','role','expertise']),observationCoverage:item.observationCoverage}:{}),...(staffing?{staffing}:{}),
         ...(item.routeOnly?{directory:await this.directory(room,{dutyRoute:item.dutyRoute})}:{}),...(item.peerAnswer?{peerAnswer:item.peerAnswer}:{}),
         metadata:{actor,roomId:room.id,deliveryId:item.id,sourceRefs:item.observation?context.trigger.sourceRefs:trigger.sourceRefs||[]}}};
     this.store.save('deliveries',{id:item.id,input,throughMessageId:trigger.id});return input;
@@ -526,10 +544,33 @@ export class ChatroomService {
     }
     return newer;
   }
+  coveredCorrection(item, task, response) {
+    const coverage=item.observationCoverage;
+    if(!coverage)return null;
+    const result=this.store.get('messages',item.messageId),support=this.store.get('messages',response?.evidenceMessageId);
+    const matches=(quote,message)=>typeof quote==='string'&&quote.length>=6&&quote.length<=500&&message?.content.includes(quote);
+    if(response?.kind!=='correction'||typeof response.reply!=='string'||!response.reply.trim()||
+      result?.roomId!==item.roomId||result.replyTo!==coverage.sourceMessageId||result.senderId!==coverage.ownerBotId||
+      support?.roomId!==item.roomId||support.id===result.id||support.createdAt>result.createdAt||
+      !matches(response.resultQuote,result)||!matches(response.evidenceQuote,support))return null;
+    const supportKind=this.staffingEvidence(support)?.kind;
+    const sameDuty=this.store.get('room-text-results',support.id)?.dutyKey===coverage.dutyKey;
+    const evidence=support.id===coverage.sourceMessageId||['work-result','room-result'].includes(supportKind)&&
+      (sameDuty||support.replyTo===coverage.sourceMessageId||support.sourceRefs?.some(ref=>ref?.roomId===item.roomId&&ref.messageId===coverage.sourceMessageId));
+    const read=item.input?.content?.messages?.some(message=>message.id===support.id)||(task.tools||[]).some(tool=>
+      tool.name==='chatroom_read'&&tool.status==='completed'&&tool.output?.details?.messages?.some(message=>message.id===support.id));
+    if(!evidence||!read)return null;
+    return [result,support].map(message=>({type:'room',roomId:item.roomId,messageId:message.id}));
+  }
   async deliver(item) {
     if(this.version&&item.serviceVersion!==this.version)fail('This capability version does not own the delivery',409);
     try {
-      if(item.roomDutyAction&&item.status==='queued'&&!this.dutyActions.current(item,this.need('rooms',item.roomId))){
+      const contribution=item.roomDutyAction&&this.dutyActions.get(item.roomDutyAction);
+      const coordination=contribution?.gatesProduction&&(item.status==='queued'||!item.taskId)?
+        await this.dutyActions.coordinatorState(contribution):null;
+      if(coordination==='paused')return;
+      if(item.roomDutyAction&&item.status==='queued'&&(!this.dutyActions.current(item,this.need('rooms',item.roomId))||
+        coordination==='cancelled'||coordination==='stopped')){
         this.store.transaction(()=>{
           this.dutyActions.finish(item,'cancelled');
           this.emit('job',this.store.save('deliveries',{id:item.id,status:'cancelled',finishedAt:now()}));
@@ -580,6 +621,8 @@ export class ChatroomService {
       const roomForPlan=this.need('rooms',item.roomId),triggerForPlan=this.need('messages',item.messageId);
       const imported=await this.dutyActions.import(item,roomForPlan,triggerForPlan,task);
       const roomResultAction=await this.roomTextResults.action(item,task,roomForPlan,triggerForPlan);
+      const isUserDelivery=triggerForPlan.senderId==='user'&&!item.observation&&!item.routeOnly&&!item.teamStaffing&&!item.teamIntroduction&&!item.roomDutyAction;
+      const roomAcceptances=isUserDelivery?await this.roomTextResults.record(roomForPlan,triggerForPlan,item,task):[];
       let dutyResultMessageId;
       if(status==='completed') {
         let text=String(task.result?.content||''),passed=/^PASS(?:\s*$|\s*\n)/i.test(text);
@@ -594,17 +637,22 @@ export class ChatroomService {
           if(item.dutyRoute&&recipient?.id!==room.team?.leadBotId&&!duty)recipient=directory.find(bot=>bot.id===room.team?.leadBotId);
           if(!recipient)fail('The original routing Bot is no longer a member of this room',403);
           const workId=recipient.responsibilities.some(work=>work.workId===parsed.workId)?parsed.workId:null;
+          const requestScope=item.dutyRoute&&(['multiple','unresolved'].includes(parsed.requestScope)||
+            parsed.requestScope==='single-duty'&&duty&&recipient.id!==room.team?.leadBotId||
+            parsed.requestScope==='ordinary'&&!duty&&!workId&&recipient.id===room.team?.leadBotId)?parsed.requestScope:undefined;
           this.enqueue(this.need('messages',item.messageId),recipient.id,{workId:null,referencedWorkId:workId,
-            ...(duty?{routedDutyKey:duty.dutyKey}:{}),routedBy:item.botId,routeReason:String(parsed.reason||text).slice(0,1000)});
+            ...(duty?{routedDutyKey:duty.dutyKey}:{}),requestScope,routedBy:item.botId,routeReason:String(parsed.reason||text).slice(0,1000)});
         }else if(!item.teamStaffing&&!task.workId&&(!item.observation||this.need('rooms',item.roomId).members.includes(item.botId))){
-          try{const parsed=JSON.parse(text);if(typeof parsed.reply==='string'){text=parsed.reply;passed=parsed.pass||!text;}}catch{}
+          let response;try{response=JSON.parse(text);if(typeof response?.reply==='string'){text=response.reply;passed=response.pass||!text;}}catch{}
+          const correction=item.observationCoverage&&this.coveredCorrection(item,task,response);
+          if(item.observationCoverage&&!correction)passed=true;
           if(item.observation&&isAcknowledgement(text))passed=true;
           const alreadyReplied=!item.roomDutyAction&&this.sourceReplies.all(item.roomId,item.messageId,item.botId).some(row=>!JSON.parse(row.data).jobId);
           if(alreadyReplied)passed=true;
           const attachments=(task.result?.attachments||[]).map(attachment=>this.attachments.get(attachment.id));
           if(attachments.length){passed=false;if(alreadyReplied||/^PASS(?:\s*$|\s*\n)/i.test(text))text='';}
           for(const attachment of attachments)if(attachment.origin?.type!=='work-output'||attachment.origin.botId!==item.botId||attachment.origin.roomId!==item.roomId)fail('Reply attachment is outside this authenticated Bot/room',403);
-          if((text||attachments.length)&&!passed&&(!item.roomDutyAction||
+          if((text||attachments.length)&&!passed&&(!item.roomDutyAction||(!contribution?.gatesProduction||roomResultAction)&&
               !task.result?.partial&&!task.result?.suspended&&this.dutyActions.current(item,this.need('rooms',item.roomId)))){
             const newer=text&&!item.observation?this.newerDeliveries(item,task.tools):[];
             if(newer.length){
@@ -613,11 +661,15 @@ export class ChatroomService {
             }
             const parts=publicationParts(text,attachments);
             const dutySources=roomResultAction?.references;
+            const observationCoverage=roomResultAction?.kind==='room-handoff'&&roomResultAction.singleScope&&
+              (item.requestScope==='single-duty'||!item.requestScope&&item.routedBy)?
+              {sourceMessageId:item.messageId,ownerBotId:item.botId,dutyKey:item.routedDutyKey,sourceUnit:roomResultAction.sourceUnit}:undefined;
+            const references=[...(dutySources||[]),...(correction||[]),...newer.map(({message})=>({type:'room',roomId:item.roomId,messageId:message.id}))];
             const replies=parts.map((part,index)=>this.append(item.roomId,{...part,id:index?`reply:${item.id}:part:${index+1}`:`reply:${item.id}`,
               replyTo:item.messageId,rootId:item.rootId,hop:item.hop+1,jobId:item.id,workId:item.workId,observationReply:item.observation||item.teamReview,
-              ...(index===0&&(newer.length||dutySources?.length)?{sourceRefs:[...(dutySources||[]),...newer.map(({message})=>({type:'room',roomId:item.roomId,messageId:message.id}))]}:{}),
+              ...(index===0&&references.length?{sourceRefs:references}:{}),
               usage:index?undefined:task.result?.usage,model:task.result?.model},item.botId,
-              index===0&&roomResultAction?message=>this.roomTextResults.publish(item,task,message,roomResultAction):undefined));
+              index===0&&roomResultAction?message=>this.roomTextResults.publish(item,task,message,roomResultAction):undefined,{observationCoverage}));
             if(item.roomDutyAction&&this.store.get('room-text-results',replies[0]?.id))dutyResultMessageId=replies[0].id;
             if(replies.length&&!item.observation&&!task.result?.handoff)this.returnReply(replies[0]);
           }
@@ -629,7 +681,11 @@ export class ChatroomService {
       const result=this.store.transaction(()=>{
         const room=this.need('rooms',item.roomId),trigger=this.need('messages',item.messageId);
         // Only a real user delivery's accepted work receipt can signal a dispatch, including a short approval.
-        if(trigger.senderId==='user'&&!item.observation&&!item.routeOnly&&!item.teamStaffing&&!item.teamIntroduction&&!item.roomDutyAction&&this.teamService.staffingRoom(room)){
+        if(isUserDelivery&&this.teamService.staffingRoom(room)){
+          if(item.requestScope==='ordinary'&&status==='completed'&&!trigger.attachments?.length&&!trigger.replyTo&&!trigger.targetWorkId&&
+            !task.result?.partial&&!task.result?.handoff&&!task.result?.attachments?.length&&!roomResultAction&&!imported.length&&
+            (task.tools||[]).every(tool=>tool.effect==='read'||tool.name==='request_decide'&&tool.status==='completed'&&tool.output?.details?.intent==='discuss'))
+            this.teamService.skipOrdinarySource(room,trigger.id);
           const signals=(task.tools||[]).flatMap(tool=>{
             const receipt=tool.output?.details;
             if(tool.status!=='completed'||!receipt)return [];
@@ -644,7 +700,7 @@ export class ChatroomService {
           this.teamService.noteStaffing(room,signals.filter(signal=>signal.kind==='work-acceptance'||
             !item.routedDutyKey&&!(this.store.get('team-staffing',room.id)?.recentKeys||[]).includes('user:'+trigger.id)));
           this.teamService.linkWork(room,item,trigger,signals);
-          this.teamService.noteStaffing(room,this.roomTextResults.record(room,trigger,item,task));
+          this.teamService.noteStaffing(room,roomAcceptances);
           if(imported.length) this.teamService.noteStaffing(room,imported.map(plan=>({
             key:'room-duty-plan:'+plan.id,kind:'room-duty-plan',messageId:trigger.id,planId:plan.id,
           })));

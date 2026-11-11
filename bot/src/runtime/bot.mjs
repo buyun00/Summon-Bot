@@ -337,6 +337,10 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       if (authorizedSource && (input.roomId ? authorizedSource.roomId !== input.roomId || input.replyTo && authorizedSource.replyTo !== input.replyTo :
         input.botId && authorizedSource.source !== input.botId)) throw failure(403, 'Results return to the exact source of this action; another request is not a publication target');
       const execution = services.works.execution(task);
+      const contribution = execution.executionEventId && store.getRecord('work-events', execution.executionEventId)?.contributionResult;
+      if (contribution?.reference?.roomId === authorizedSource?.roomId && contribution?.reference?.messageId && input.resultKind !== 'progress')
+        input = { ...input, sourceRefs: [...(input.sourceRefs || [{ type: 'work', workId: work.id, taskId: task.id }]),
+          { ...contribution.reference, purpose: 'production-input' }] };
       if (task.metadata?.externalReview?.running && authorizedSource?.roomId) {
         const review = task.metadata.externalReview;
         const observation = store.getRecord('work-observations', externalObservationId(task));
@@ -384,6 +388,60 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       catch (error) { return store.putRecord('work-notifications', { ...record, status: 'unknown', error: clean(error.message), retryAt: Date.now() + 30000 }); }
     };
     // Durable waits consume no model or execution slot. Only a changed result wakes work.
+    const resolveDutyContribution = async (event, source) => {
+      const work = services.works.get(event.workId);
+      if (!work || work.waiting?.operationId !== event.id || !['waiting', 'blocked'].includes(work.status)) return false;
+      const original = event.authorization?.source;
+      const setState = (status, reason) => {
+        const current = services.works.get(event.workId);
+        if (current?.waiting?.operationId === event.id && ['waiting', 'blocked'].includes(current.status) &&
+            (current.status !== status || current.waiting.reason !== reason))
+          services.works.update(work.id, { status, waiting: { ...current.waiting, reason } });
+      };
+      if (!source || source.cancelRequested || source.status === 'cancelled') {
+        setState('blocked', '原请求的协调回合已停止，未开始制作。可在原工作明确继续。');
+        return false;
+      }
+      if (!terminalTaskStates.has(source.status)) return false;
+      const result = await services.capability('chatroom_read', { roomId: original.roomId,
+        dutyContribution: { planId: event.contributionPlanId, workId: event.workId, operationId: event.id } }, source, { operationId: event.id });
+      if (result.status === 'blocked') {
+        setState('blocked', result.error || '职责执行未取得可用交付。可在原工作明确继续。');
+        return false;
+      }
+      if (result.status !== 'completed') {
+        const reason = { 'responsible-member': '正在等候原请求范围内的职责负责人。',
+          'ambiguous-responsible-member': '有多个匹配职责，尚未确认唯一负责人。',
+          'responsible-member-unavailable': '已登记职责的负责人暂不可用。' }[result.waitingFor];
+        setState('waiting', reason || '等待同一请求的职责负责人交付制作所需部分。');
+        return false;
+      }
+      const evidence = result.evidence;
+      if (result.planId !== event.contributionPlanId || result.operationId !== event.id || result.workId !== event.workId ||
+          result.sourceMessageId !== original.replyTo || !result.dutyKey || !result.deliveryId || !result.taskId ||
+          evidence?.reference?.type !== 'room' || evidence.reference.roomId !== original.roomId ||
+          evidence.reference.messageId !== `reply:${result.deliveryId}` || !evidence.author || !evidence.content) {
+        setState('blocked', '职责交付的来源与当前制作操作不符，未开始制作。');
+        return false;
+      }
+      return store.transaction(() => {
+        const current = services.works.get(work.id), saved = store.getRecord('work-events', event.id);
+        if (!['waiting', 'blocked'].includes(current?.status) || current.waiting?.operationId !== event.id ||
+            saved?.status !== 'pending' || saved.receipt || store.getTask(source.id)?.cancelRequested) return false;
+        setState('waiting', '已收到同源职责交付，正在提交原制作步骤。');
+        const { evidence, status, ...identity } = result;
+        const contributionResult = { ...identity, reference: evidence.reference, author: evidence.author };
+        if (saved.contributionResult) {
+          if (JSON.stringify(saved.contributionResult) === JSON.stringify(contributionResult)) return true;
+          setState('blocked', '职责交付的标识发生变化，未开始制作。');
+          return false;
+        }
+        store.putRecord('work-events', clean({ ...saved, contributionResult,
+          content: { ...saved.content, evidence: [...(saved.content.evidence || []), evidence],
+            instruction: saved.content.instruction + '\nThe same-source owner contribution is available in evidence. Apply its concrete relevant decisions to the actual deliverables within the original user scope. Resolve conflicts against the exact earlier materials and original requirements. If you depart from a material recommendation, explain the specific reason in the delivery. Attribute only what you actually used and keep the owner publication reference.' } }));
+        return true;
+      });
+    };
     let ticking = false;
     const wake = async () => {
       if (ticking || state !== 'ready' || config.accepting === false) return;
@@ -435,7 +493,10 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         for (const event of store.listRecords('work-events').filter(event => event.status === 'pending' && !event.receipt)) {
           const sourceId = event.sourceTaskId || event.requestTaskId;
           const source = sourceId && store.getTask(sourceId);
-          try { await services.works.dispatch(event.workId, { id: event.id.slice(event.workId.length + 1), kind: event.kind, content: event.content, metadata: event.metadata }, source || {}); }
+          try {
+            if (event.contributionPlanId && !await resolveDutyContribution(event, source)) continue;
+            await services.works.dispatch(event.workId, { id: event.id.slice(event.workId.length + 1), kind: event.kind, content: event.content, metadata: event.metadata }, source || {});
+          }
           catch (error) { store.putRecord('work-events', { ...store.getRecord('work-events', event.id), lastError: clean(error.message) }); }
         }
       } finally { ticking = false; }

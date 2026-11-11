@@ -5,7 +5,7 @@ import { factTime } from '../context/fact-time.mjs';
 import { HANDOFF_REFERENCES, taskSource, workExecution } from '../context/sources.mjs';
 import { modelArgs, modelText, looseSchema, boundedNumber } from '../context/model-input.mjs';
 import { resolveCodexTarget } from './codex-target.mjs';
-import { acceptanceReply, authorizeProduction, currentProductionStage, currentUserRequest, productionDecision, productionStage, requestIntents, productionStages, selectedSourceAction, sourceUnits } from './request-routing.mjs';
+import { acceptanceReply, authorizeProduction, currentProductionStage, currentUserRequest, productionDecision, productionStage, requestIntents, productionStages, selectedSourceAction, separateActionUnits, sourceUnits } from './request-routing.mjs';
 import { ROOM_DUTY_PLANS, dependencyDispatches, roomDutyPlanId, saveRoomDutyPlan, sourceDispatches } from '../context/duty-actions.mjs';
 import { acceptanceBindings, acceptanceLinks, naturalAcceptanceMatch } from './acceptance-identity.mjs';
 import { localTime } from '../context/fact-time.mjs';
@@ -145,7 +145,7 @@ const runnableWorkIds = store => new Set(store.listUnfinishedTasks().filter(item
 const acceptanceIdentity = ['operationId', 'threadId', 'turnId', 'throughOperationId', 'verificationOperationIds',
   'roomResultId', 'ownerBotId', 'dutyKey', 'deliveryId', 'taskId', 'sourceMessageId', 'version'];
 
-function requestAcceptanceBindings(services, task, user, rooms, roomResults = []) {
+function requestAcceptanceBindings(services, task, user, rooms, page, excluded = []) {
   if (!user?.roomId || !rooms.includes(user.roomId) || !Number.isFinite(Date.parse(user.roomMessageAt))) return { bindings: [], entries: [] };
   const { store } = services, byWork = new Map();
   for (const item of store.listRecords('work-notifications')) {
@@ -177,11 +177,14 @@ function requestAcceptanceBindings(services, task, user, rooms, roomResults = []
       if (entries.has(key) && !verified) continue;
       entries.set(key, { workId, operationId: item.executionEventId, publication, links: acceptanceLinks(receipt.content),
         identityText: [localTime(publication.publishedAt), work.goal, receipt.content, ...publication.attachments.map(item => item.name)].filter(Boolean).join('\n').slice(0, 3800),
+        previouslyAccepted: work.acceptance?.source?.roomId === user.roomId && work.acceptance.operationId === item.executionEventId &&
+          work.acceptance.publicationMessageIds?.includes(publication.messageId) ? { sourceMessageId: work.acceptance.source.messageId,
+            scope: work.acceptance.scope, remainingBoundaries: work.acceptance.remainingBoundaries } : undefined,
         verification: verifications.has(item.executionEventId) && !publication.attachments.length,
         target: verified ? target : null });
     }
   }
-  for (const result of roomResults) {
+  for (const result of page.roomResults || []) {
     if (result.roomId !== user.roomId || !result.id || result.version !== result.id || !result.dutyKey || !result.taskId ||
         !result.ownerBotId || !result.sourceMessageId) continue;
     const publication = { messageId: result.id, replyTo: result.sourceMessageId, publishedAt: result.publishedAt, attachments: [] };
@@ -193,37 +196,45 @@ function requestAcceptanceBindings(services, task, user, rooms, roomResults = []
       ...(result.legacyCandidate ? { legacyCandidate: true, originalRequest: result.originalRequest } : {}) });
   }
   const values = [...entries.values()];
-  return { bindings: acceptanceBindings(sourceUnits(user.text), values, user.replyTo), entries: values };
+  const roomResultsAvailable = page.unavailable !== true;
+  return { bindings: acceptanceBindings(sourceUnits(user.text), values, user.replyTo, { excluded, roomResultsAvailable }),
+    entries: values, excluded, roomResultsAvailable, roomResultsComplete: page.roomResultsComplete === true };
 }
 
-function acceptanceContextView({ bindings, entries }, user) {
+const acceptanceCandidate = entry => ({ ...entry.publication, workId: entry.workId, operationId: entry.target?.operationId,
+  identityText: entry.identityText, previouslyAccepted: entry.previouslyAccepted,
+  ...(entry.target?.roomResultId ? { ownerBotId: entry.target.ownerBotId, dutyKey: entry.target.dutyKey } : {}),
+  ...(entry.legacyCandidate ? { legacyCandidate: true, originalRequest: entry.originalRequest } : {}) });
+
+function acceptanceContextView({ bindings, entries, roomResultsComplete }, user) {
   const results = new Map();
   const candidates = entries.filter(entry => entry.target && !entry.verification);
-  const candidateView = entry => ({ ...entry.publication, workId: entry.workId, operationId: entry.target.operationId,
-    identityText: entry.identityText, ...(entry.target.roomResultId ? { ownerBotId: entry.target.ownerBotId, dutyKey: entry.target.dutyKey } : {}),
-    ...(entry.legacyCandidate ? { legacyCandidate: true, originalRequest: entry.originalRequest } : {}) });
-  const units = bindings.map(({ unit, identityUnit, workId, target, publication, reason, identified, allowNatural }) => {
-    if (!publication) return { unit, reason, allowNatural, ...(identified?.length ? { identified } : {}) };
+  const units = bindings.map(({ unit, identityUnits, target, publication, reason, identified, allowNatural, clockTimes }) => {
+    if (!publication) return { unit, reason, allowNatural: allowNatural && (roomResultsComplete || Boolean(clockTimes?.length)), clockTimes,
+      ...(identified?.length ? { identified } : {}) };
     const { messageId } = publication;
     const selected = candidates.find(entry => entry.publication.messageId === messageId && entry.target.operationId === target.operationId);
-    if (selected) results.set(messageId, candidateView(selected));
-    return { unit, identityUnit, publicationMessageId: messageId, attachmentIds: publication.attachments.map(item => item.id) };
+    if (selected) results.set(messageId, acceptanceCandidate(selected));
+    return { unit, identityUnits, publicationMessageId: messageId, attachmentIds: publication.attachments.map(item => item.id) };
   });
   const naturalCandidates = units.some(unit => unit.allowNatural) ? candidates.sort((a, b) =>
-    String(a.publication.publishedAt).localeCompare(String(b.publication.publishedAt))).slice(-18).map(candidateView) : [];
+    String(a.publication.publishedAt).localeCompare(String(b.publication.publishedAt))).slice(-18).map(acceptanceCandidate) : [];
   return { replyTo: user?.replyTo, units, results: [...results.values()], naturalCandidates };
 }
 
 function selectedAcceptanceBindings(snapshot, approvals, user) {
-  const view = acceptanceContextView(snapshot, user);
-  return snapshot.bindings.map(binding => {
-    const approval = approvals.find(item => item.unit === binding.unit && item.naturalIdentity && item.publicationMessageId);
-    if (!approval || !binding.allowNatural) return binding;
-    const matched = naturalAcceptanceMatch({ units: sourceUnits(user.text), identityUnits: approval.naturalIdentity.units,
-      anchors: approval.naturalIdentity.anchors, candidates: view.naturalCandidates });
-    if (matched?.messageId !== approval.publicationMessageId) return binding;
-    const entry = snapshot.entries.find(item => item.target?.operationId === matched.operationId && item.publication.messageId === matched.messageId);
-    return entry ? { unit: binding.unit, identityUnit: approval.naturalIdentity.units[0], workId: entry.workId,
+  const units = sourceUnits(user.text);
+  return approvals.map(approval => {
+    const { unit, publicationMessageId, naturalIdentity } = approval;
+    const [binding] = acceptanceBindings(units, snapshot.entries, user.replyTo, { excluded: snapshot.excluded, approval,
+      roomResultsAvailable: snapshot.roomResultsAvailable });
+    if (!binding || !publicationMessageId || !naturalIdentity || !binding.allowNatural ||
+        !snapshot.roomResultsComplete && !binding.clockTimes?.length) return binding || { unit };
+    const matched = naturalAcceptanceMatch({ units, identityUnits: naturalIdentity.units, anchors: naturalIdentity.anchors,
+      candidates: snapshot.entries.filter(entry => !entry.verification).map(acceptanceCandidate), clockTimes: binding.clockTimes });
+    if (matched?.messageId !== publicationMessageId) return binding;
+    const entry = snapshot.entries.find(item => item.target && item.target.operationId === matched.operationId && item.publication.messageId === matched.messageId);
+    return entry ? { unit, identityUnit: naturalIdentity.units[0], identityUnits: naturalIdentity.units, workId: entry.workId,
       target: entry.target, publication: entry.publication } : binding;
   });
 }
@@ -257,7 +268,8 @@ function saveRequestAcceptances(services, user, items, before, current) {
     }
     const prior = before.find(value => value.unit === item.unit);
     const selected = current.find(value => value.unit === item.unit);
-    const same = prior?.publication && selected?.publication && selected.workId === prior.workId && selected.identityUnit === prior.identityUnit &&
+    const same = prior?.publication && selected?.publication && selected.workId === prior.workId &&
+      JSON.stringify(prior.identityUnits) === JSON.stringify(selected.identityUnits) &&
       item.publicationMessageId === selected.publication.messageId && JSON.stringify(prior.publication) === JSON.stringify(selected.publication) &&
       acceptanceIdentity.every(key => JSON.stringify(prior.target[key]) === JSON.stringify(selected.target[key]));
     if (!same) {
@@ -283,6 +295,7 @@ function saveRequestAcceptances(services, user, items, before, current) {
     const work = services.works.get(workId), { target } = accepted[0];
     const prior = work.acceptance;
     let saved = work;
+    let alreadyRecorded = false;
     if (prior?.source?.acceptedMessageId !== user.acceptedMessageId || prior.operationId !== target.operationId) {
       const clauses = accepted.map(({ item, identityUnit }) => ({ unit: item.unit, userClause: item.userClause,
         clauseStart: item.clauseStart, identityUnit, scope: item.scope }));
@@ -297,17 +310,22 @@ function saveRequestAcceptances(services, user, items, before, current) {
       const attachmentIds = new Set(publications.flatMap(item => item.attachments.map(attachment => attachment.id)));
       const fullScope = accepted.every(({ item }) => item.fullScope) && !remainingBoundaries &&
         target.publications.every(item => item.attachments.every(attachment => attachmentIds.has(attachment.id)));
+      const scope = scopes('scope');
+      const publicationMessageIds = publications.map(item => item.messageId);
+      alreadyRecorded = prior?.source?.roomId === user.roomId && prior.operationId === target.operationId && prior.scope === scope &&
+        prior.remainingBoundaries === remainingBoundaries && prior.fullScope === fullScope &&
+        JSON.stringify(prior.publications) === JSON.stringify(publications);
       const canCloseReview = work.status === 'waiting' && work.waiting.kind === 'review' && fullScope && !work.waiting.blockingRequirement &&
         !store.listRecords('work-waits').some(wait => wait.status === 'pending' && wait.targetWorkId === work.id);
-      saved = services.works.update(work.id, { ...(canCloseReview ? { status: 'completed' } : {}), expectedRevision: work.revision,
-        acceptance: { scope: scopes('scope'), remainingBoundaries, fullScope, operationId: target.operationId, turnId: target.turnId, threadId: target.threadId,
-          throughOperationId: target.throughOperationId, publicationMessageIds: publications.map(item => item.messageId), publications,
+      if (!alreadyRecorded) saved = services.works.update(work.id, { ...(canCloseReview ? { status: 'completed' } : {}), expectedRevision: work.revision,
+        acceptance: { scope, remainingBoundaries, fullScope, operationId: target.operationId, turnId: target.turnId, threadId: target.threadId,
+          throughOperationId: target.throughOperationId, publicationMessageIds, publications,
           source: { type: 'room', userId: user.actor, roomId: user.roomId, messageId: user.messageId, acceptedMessageId: user.acceptedMessageId,
             replyTo: user.replyTo, clauses },
           recordedAt: new Date().toISOString() } });
     }
     const { operationId, scope, remainingBoundaries, publicationMessageIds, source, recordedAt } = saved.acceptance;
-    records.push({ workId, operationId, workStatus: saved.status, scope, remainingBoundaries, publicationMessageIds,
+    records.push({ workId, operationId, workStatus: saved.status, scope, remainingBoundaries, publicationMessageIds, alreadyRecorded,
       scopes: source.clauses?.map(clause => ({ unit: clause.unit, scope: clause.scope })), recordedAt });
   }
   for (const { target, approvals } of groupedRoomResults.values()) {
@@ -382,6 +400,21 @@ export function coreTools(services, task) {
       .filter(item => item.reference?.type === 'room' && item.reference.roomId === source.roomId)
       .map(item => [JSON.stringify([item.reference.messageId, item.reference.attachmentId]), item])).values()];
   };
+  const readSelectedPublications = async content => {
+    const alreadyRead = roomMaterials(content).filter(item => item.reference.attachmentId && !item.offset);
+    const selected = content.evidence.filter(item => item.reference?.type === 'room' && item.reference.roomId === source.roomId &&
+      !item.reference.attachmentId && item.reference.messageId !== source.replyTo);
+    const candidates = selected.flatMap(item => (item.attachments || []).flatMap(attachment =>
+      /\.(?:md|txt|csv|tsv|json|docx)$/i.test(attachment.name) && attachment.origin?.type === 'work-output' &&
+      attachment.origin.roomId === source.roomId && attachment.origin.botId === item.author ?
+        [{ type: 'room', roomId: source.roomId, messageId: item.reference.messageId, attachmentId: attachment.id }] : []));
+    for (const ref of candidates.slice(0, Math.min(6, HANDOFF_REFERENCES - content.evidence.length))) {
+      const existing = alreadyRead.find(item => item.reference.messageId === ref.messageId && item.reference.attachmentId === ref.attachmentId);
+      if (content.evidence.some(item => item.reference?.messageId === ref.messageId && item.reference.attachmentId === ref.attachmentId)) continue;
+      try { content.evidence.push(existing || await services.sources.resolve(ref, task)); }
+      catch (error) { content.evidenceWarnings.push({ reference: ref, message: error.message }); }
+    }
+  };
   const proposalMaterials = content => roomMaterials(content).slice(0, 6).map(item => ({ reference: item.reference, author: item.author,
     content: typeof item.content === 'string' ? item.content.slice(0, 2400) : undefined }));
   const proposalHandoff = handoff => Object.fromEntries(['instruction', 'content', 'message', 'handoff'].filter(key => handoff[key])
@@ -411,7 +444,8 @@ export function coreTools(services, task) {
     return { id: work.id, goal: work.goal, requirements: work.requirements, status: work.status,
       project: work.project, target: work.executor?.target, controlRevision: work.controlRevision || 0,
       priorStage: currentProductionStage(work, store), operationId: execution?.operationId,
-      executionStatus: execution?.status, bindingId: binding?.id };
+      executionStatus: execution?.status, bindingId: binding?.id,
+      ...(work.waiting?.kind === 'room-duty-contribution' ? { pendingContribution: work.waiting.operationId } : {}) };
   };
   const documentBoundary = (work, grant) => {
     if (grant?.stage !== 'document-review') return;
@@ -444,28 +478,28 @@ export function coreTools(services, task) {
         const originalAcceptanceId = user && `acceptance:${JSON.stringify([user.actor, user.roomId, user.messageId])}`;
         const oldAcceptance = originalAcceptanceId && store.getRecord('production-sources', originalAcceptanceId);
         const mayResolveLegacy = oldAcceptance?.identityVersion !== 2 && oldAcceptance?.receipt?.unresolvedAcceptances?.length &&
-          !oldAcceptance.receipt.acceptances?.length && !oldAcceptance.receipt.roomOnlyAcceptances?.length;
+          !oldAcceptance.receipt.acceptances?.length && !oldAcceptance.receipt.roomOnlyAcceptances?.length && !oldAcceptance.receipt.roomResultAcceptances?.length;
         const acceptanceId = mayResolveLegacy ? originalAcceptanceId + ':delivered-result-identity' : originalAcceptanceId;
         const readAcceptance = () => acceptanceId && store.getRecord('production-sources', acceptanceId);
         let acceptance = readAcceptance();
         let classification, acceptanceContext, bindingSnapshot = { bindings: [], entries: [] };
-        const readBindings = async () => {
+        const readBindings = async excluded => {
           if (!user?.roomId) return { bindings: [], entries: [] };
           const [rooms, page] = await Promise.all([
             services.sources.rooms(task),
             services.sources.callForSource('chatroom_read', { roomId: user.roomId, acceptanceResults: true }, task)
-              .catch(() => ({ roomResults: [] })),
+              .catch(() => ({ roomResults: [], unavailable: true })),
           ]);
-          return requestAcceptanceBindings(services, task, user, rooms, page.roomResults);
+          return requestAcceptanceBindings(services, task, user, rooms, page, excluded);
         };
         const checkProduction = production && !confirmedFeedback;
         const checkRoomDelivery = intent === 'room-deliver';
         const processAcceptance = checkProduction || intent === 'accept' || checkRoomDelivery;
         if (checkProduction || checkRoomDelivery || intent === 'accept' && !acceptance) {
           const selected = work && selectedWork(work);
-          const loadAcceptanceContext = async () => {
+          const loadAcceptanceContext = async savedSource => {
             try {
-              bindingSnapshot = await readBindings();
+              bindingSnapshot = await readBindings(separateActionUnits(savedSource));
               acceptanceContext = acceptanceContextView(bindingSnapshot, user);
             } catch { acceptanceContext = { units: [], results: [], unavailable: true }; }
             return acceptanceContext;
@@ -488,13 +522,13 @@ export function coreTools(services, task) {
           acceptance = store.transaction(() => readAcceptance() || store.putRecord('production-sources', {
             id: acceptanceId, acceptedMessageId: user.acceptedMessageId, roomId: user.roomId, messageId: user.messageId,
             identityVersion: 2,
-            approvals, bindings, acknowledgmentOnly: approval.acknowledgmentOnly, issue: approval.issue,
+            approvals, bindings, excluded: bindingSnapshot.excluded, acknowledgmentOnly: approval.acknowledgmentOnly, issue: approval.issue,
             unconfirmed: approval.acceptanceUnconfirmed ||
               approvals.some(item => item.recordIn === 'unconfirmed' || item.recordIn === 'work' && acceptanceContext?.unavailable),
           }));
         }
         const canRecord = processAcceptance && !acceptance?.receipt && acceptance?.bindings.length > 0;
-        const currentBindings = canRecord ? await readBindings().catch(() => null) : null;
+        const currentBindings = canRecord ? await readBindings(acceptance.excluded).catch(() => null) : null;
         ctx.signal?.throwIfAborted();
         if ((classification || acceptance) && (store.getTask(task.id)?.cancelRequested ||
           JSON.stringify(currentUserRequest(task, store)) !== JSON.stringify(user) ||
@@ -659,7 +693,7 @@ export function coreTools(services, task) {
         return { workId: work.id, operationId, status: 'ready-for-current-reply',
           attachments: available.filter(item => !selected || selected.includes(item.id)).map(({ id }) => ({ id })) };
       }),
-    tool('work_create', 'Submit one selected source action. An immediate action schedules actual work; omit executor for the default engine. For a separately authorized independent text review after the current source’s work is published, select its after-dependency action with request_decide and call work_create without an executor. The runtime registers a durable prerequisite and picks the assigned independent duty owner when the real result is published. For in-scope assistance on the immediate action, optionally provide participant with the responsible dutyKey and just their contribution. Pass exact same-room evidence (including attachmentId when relevant), keep scope and handoff separate, and do not include another action. Neither receipt proves execution.',
+    tool('work_create', 'Submit one selected source action. An immediate action schedules actual work; omit executor for the default engine. For a separately authorized independent text review after publication, select its after-dependency action and omit executor. When this action needs a concrete part from a relevant assigned duty, provide participant with its dutyKey and only that in-scope contribution. Work waits for the actual owner result on this action; leave out participant for unrelated advice or maintenance. Pass exact same-room evidence, including the specific attachmentId when known. Recheck a cited old publication within current access before treating an earlier read failure as current. Keep scope and handoff separate. A registered wait does not prove execution.',
       object({ id: string, operationId: string, goal: string, requirements: string, responsibility: string, ...handoffFields,
         participant: object({ dutyKey: string, contribution: string }, ['contribution']),
         afterDependency: object({ workId: string, minimumAttachments: { type: 'integer', minimum: 1, maximum: WORK_ATTACHMENTS } }),
@@ -670,6 +704,7 @@ export function coreTools(services, task) {
         const selected = selectedSourceAction(decision);
         if (!selected) throw new Error('Choose the matching original action from request_decide.sourceActions before submitting a proposal.');
         const content = await services.sources.handoff(task, args);
+        await readSelectedPublications(content);
         const goal = modelText(args.goal || args.instruction || args.content || content.originalRequest.content);
         const requirements = modelText(args.requirements);
         if (selected.when === 'after-dependency') {
@@ -689,13 +724,16 @@ export function coreTools(services, task) {
           const binding = { roomId: base.roomId, messageId: base.messageId, sourceUnit: dependencyUnit, stage: dependencyAction.stage,
             soleSourceAction: nowActions.filter(action => action.stage === dependencyAction.stage).length === 1 };
           const dispatches = dependencyDispatches(store, binding, args.afterDependency?.workId);
-          if (dispatches.length > 1 || args.afterDependency?.workId && !dispatches.length)
+          const registered = !dispatches.length && args.afterDependency?.workId && sourceDispatches(store, { ...binding,
+            workId: args.afterDependency.workId, includeRegistered: true }).length === 1;
+          if (dispatches.length > 1 || args.afterDependency?.workId && !dispatches.length && !registered)
             throw new Error('The selected dependency does not resolve to one accepted operation from this original request.');
           const dependency = dispatches[0];
           const minimumAttachments = Math.max(1, dependencyAction.requiredAttachments || 0,
             Number.isSafeInteger(args.afterDependency?.minimumAttachments) ? Math.min(WORK_ATTACHMENTS, args.afterDependency.minimumAttachments) : 0);
           const after = { ...binding, condition: 'successful-publication',
-            minimumAttachments, ...(dependency ? { workId: dependency.workId, operationId: dependency.id, taskId: dependency.receipt.taskId } : {}) };
+            minimumAttachments, ...(dependency ? { workId: dependency.workId, operationId: dependency.id, taskId: dependency.receipt.taskId } :
+              registered ? { workId: args.afterDependency.workId } : {}) };
           const dutyKey = modelText(args.participant?.dutyKey).trim() || undefined;
           const grant = await authorize(decision, ctx, { relation: 'new', goal, requirements,
             handoff: proposalHandoff(content.handoff), sourceMaterials: proposalMaterials(content),
@@ -708,10 +746,12 @@ export function coreTools(services, task) {
         if (args.afterDependency) throw new Error('The selected source action is immediate. Select the separate after-dependency source action to register its wait.');
         const nowSteps = decision.sourceActions.filter(action => action.when === 'now' && action.kind === 'start' &&
           action.stage === selected.stage);
-        const already = () => sourceDispatches(store, { roomId: source.roomId, messageId: source.replyTo, stage: selected.stage,
+        const already = () => sourceDispatches(store, { roomId: source.roomId, messageId: source.replyTo, stage: selected.stage, includeRegistered: true,
           ...(nowSteps.length === 1 ? {} : { sourceUnit: selected.unit }) });
+        const dispatchReceipt = event => event.receipt ? { ...event.receipt, duplicate: true } : {
+          ...services.works.contributionReceipt(event), duplicate: true };
         const replay = already();
-        if (replay.length === 1) return { ...replay[0].receipt, duplicate: true };
+        if (replay.length === 1) return dispatchReceipt(replay[0]);
         if (replay.length > 1) throw new Error('More than one previously submitted work has this source action. No additional work was submitted.');
         const id = typeof args.id === 'string' && /^[\w.-]{1,160}$/.test(args.id) ? args.id : randomUUID();
         const operationId = actionId(args, ctx, 'operationId');
@@ -750,16 +790,19 @@ export function coreTools(services, task) {
         catch (error) { content.evidenceWarnings.push({ message: `Current project rules are unavailable: ${error.message}` }); }
         ctx.signal?.throwIfAborted();
         const concurrent = already();
-        if (concurrent.length === 1) return { ...concurrent[0].receipt, duplicate: true };
+        if (concurrent.length === 1) return dispatchReceipt(concurrent[0]);
         if (concurrent.length > 1) throw new Error('More than one previously submitted work has this source action. No additional work was submitted.');
-        const work = services.works.create({ id, operationId, goal,
-          requirements, responsibility: modelText(args.responsibility), executor, project,
-          productionStage: grant?.stage, productionAuthorization: grant, initialHandoff: content }, task);
+        let participantPlan;
+        const work = store.transaction(() => {
+          if (participant) participantPlan = saveRoomDutyPlan(store, { kind: 'contribution', roomId: source.roomId, messageId: source.replyTo,
+            grant, coordinatorBotId: services.works.botId, requestTaskId: task.id, dutyKey: participant.dutyKey,
+            goal: participant.contribution, references: participantRefs, workId: id, operationId: `${id}:${operationId}`,
+            originalRoomGoal: source.input.room.goal, originalTeamRequirements: source.input.room.team.requirements });
+          return services.works.create({ id, operationId, goal, requirements, responsibility: modelText(args.responsibility), executor, project,
+            productionStage: grant?.stage, productionAuthorization: grant, initialHandoff: content,
+            contributionPlanId: participantPlan?.id }, task);
+        });
         const receipt = await services.works.dispatch(work.id, { id: operationId, kind: 'request', content, metadata: { priority: 'background' } }, task);
-        const participantPlan = participant && receipt.accepted && saveRoomDutyPlan(store, { kind: 'contribution', roomId: source.roomId, messageId: source.replyTo,
-          grant, coordinatorBotId: services.works.botId, requestTaskId: task.id, dutyKey: participant.dutyKey,
-          goal: participant.contribution, references: participantRefs,
-          workId: work.id, operationId: receipt.operationId });
         return { ...compactWork(work), ...receipt, handedOff: receipt.accepted === true, acceptance: modelText(args.acceptance),
           ...(participantPlan ? { participantPlan: planReceipt(participantPlan) } : {}), evidenceWarnings: content.evidenceWarnings };
       }),
@@ -816,8 +859,10 @@ export function coreTools(services, task) {
         if (decision?.workRelation === 'new') throw new Error('This is an independent new task. Use work_create and the applicable saved project rules; do not reuse the old work merely because it shares the project or materials.');
         if (decision?.workId && decision.workId !== work.id) throw new Error('Dispatch must use the canonical continuation work selected for this request.');
         const content = await services.sources.handoff(task, args);
+        await readSelectedPublications(content);
         const eventId = actionId(args, ctx, 'eventId'), selected = selectedWork(work);
-        const grant = await authorize(decision, ctx, { relation: 'continue', work: selected, handoff: content.handoff },
+        const grant = await authorize(decision, ctx, { relation: 'continue', work: selected, handoff: content.handoff,
+          sourceMaterials: proposalMaterials(content) },
           { workId: work.id, actionId: `${work.id}:${eventId}` });
         if (grant) content.stage = productionStage(grant);
         try {

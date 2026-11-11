@@ -1,3 +1,5 @@
+import { localTime } from '../context/fact-time.mjs';
+
 const normal = value => String(value ?? '').normalize('NFKC').toLowerCase();
 const unique = values => [...new Set(values)];
 const versions = text => {
@@ -49,51 +51,92 @@ function matchPublication(entry, ref) {
   return { ...publication, attachments };
 }
 
-export function acceptanceBindings(units, entries, replyTo) {
+export function acceptanceClockTimes(text) {
+  return unique([...normal(text).matchAll(/(?<![\d:+-])([01]?\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?(?![\d:])/gu)]
+    .map(([, hour, minute]) => `${hour.padStart(2, '0')}:${minute}`));
+}
+
+function publicationMatchesTime(publication, times) {
+  return !times.length || times.every(time => time === localTime(publication.publishedAt)?.slice(11, 16));
+}
+
+const natural = value => normal(value).replace(/[\s*_‘’“”'"《》]/gu, '').replace(/[−–—]/gu, '-');
+
+function hasContentClue(source, delivered) {
+  const body = natural(delivered);
+  return natural(source).split(/[^\p{L}\p{N}-]+/u).some(part => {
+    for (let index = 0; index + 6 <= part.length; index += 1) {
+      const clue = part.slice(index, index + 6);
+      if (/\p{L}/u.test(clue) && body.includes(clue)) return true;
+    }
+    return false;
+  });
+}
+
+export function acceptanceBindings(units, entries, replyTo, { excluded = [], approval, roomResultsAvailable = true } = {}) {
   const names = unique(entries.flatMap(entry => entry.publication.attachments.map(item => normal(item.name))).filter(Boolean));
   const workIds = unique(entries.map(entry => normal(entry.workId)));
   const replies = replyTo ? entries.filter(entry => entry.publication.messageId === replyTo) : [];
   const replied = replies.length === 1 ? replies[0] : null;
   const publicEntries = entries.filter(entry => !entry.verification);
-  const referenceOf = units.map(unit => references(unit.text, names, workIds));
-  return units.map(({ unit, sentenceStart }, index) => {
-    // A comma can separate “I read v2” from “approved”. Do not take a target
-    // from a different sentence or a subsequent instruction.
-    const own = referenceOf[index];
-    const previous = !hasReferences(own) && index > 0 && units[index - 1].sentenceStart === sentenceStart && /[,，]\s*$/u.test(units[index - 1].text);
-    const ref = previous ? referenceOf[index - 1] : own;
+  const referenceOf = new Map(units.map(unit => [unit.unit, references(unit.text, names, workIds)]));
+  const clockOf = new Map(units.map(unit => [unit.unit, acceptanceClockTimes(unit.text)]));
+  const bySentence = Map.groupBy(units, unit => unit.sentenceStart);
+  const sentences = [...bySentence.keys()];
+  const sentenceIndex = new Map(sentences.map((start, index) => [start, index]));
+  const excludedUnits = new Set(excluded);
+  const scope = approval?.scopeUnits && new Set(approval.scopeUnits);
+  return (approval ? units.slice(approval.unit - 1, approval.unit) : units).map(({ unit, sentenceStart }) => {
+    const sentence = sentenceIndex.get(sentenceStart);
+    const adjacent = sentences.slice(Math.max(0, sentence - 1), sentence + 2).flatMap(start => bySentence.get(start));
+    const inSource = adjacent.filter(item => !excludedUnits.has(item.unit));
+    const nearby = inSource.filter(item => item.unit === unit || (scope ? scope.has(item.unit) : item.unit <= unit));
+    if (!scope && !nearby.some(item => hasReferences(referenceOf.get(item.unit)) || clockOf.get(item.unit).length))
+      nearby.push(...inSource.filter(item => item.unit > unit));
+    const referenced = nearby.filter(item => hasReferences(referenceOf.get(item.unit)));
     const fail = (reason, matches = []) => ({ unit, reason, identified: matches.slice(0, 3).map(({ workId, publication }) => ({ workId, ...publication })) });
-    if (!replied && !hasReferences(ref)) return { ...fail('No exact delivery, file, work or version was identified in the approval.'),
-      allowNatural: !replyTo };
-    if (replyTo && !replied) return fail('The replied-to message could not be verified as a delivery from this work source.');
+    if (replyTo && !replied) return fail('未能确认所回复的消息是本群的有效交付。');
     const pool = replied ? publicEntries.filter(entry => entry === replied || replied.verification && entry.workId === replied.workId &&
       entry.target?.verificationOperationIds?.includes(replied.operationId)) : publicEntries;
+    const timed = nearby.filter(item => clockOf.get(item.unit).length);
+    const timedSource = nearby.map(item => item.text).join('\n');
+    if (!replied && !referenced.length && !timed.length) return {
+      ...fail('本条确认没有指明可唯一核对的交付、文件或版本。'), allowNatural: roomResultsAvailable };
+    if (!replied && !referenced.length && !roomResultsAvailable) return fail('当前未能核对同群的交付来源。');
+    const refs = referenced.map(item => referenceOf.get(item.unit));
+    const combined = Object.fromEntries(['ids', 'files', 'urls', 'versions'].map(key => [key, unique(refs.flatMap(ref => ref[key]))]));
+    combined.unknownFile = refs.some(ref => ref.unknownFile);
+    const times = unique((referenced.length ? referenced : timed).flatMap(item => clockOf.get(item.unit)));
     const matches = pool.flatMap(entry => {
-      const publication = matchPublication(entry, ref);
+      if (!publicationMatchesTime(entry.publication, times)) return [];
+      if (!replied && !referenced.length && !hasContentClue(timedSource, entry.identityText)) return [];
+      const publication = matchPublication(entry, combined);
       return publication ? [{ ...entry, publication }] : [];
     });
-    if (!matches.length) return fail(replied ? 'The replied-to delivery is unavailable or conflicts with the stated identity.' :
-      'No delivered result matches the exact identity in the approval.');
-    if (matches.length !== 1) return fail('Several delivered results match the approval; the exact delivery is ambiguous.', matches);
+    if (!matches.length) return { ...fail(replied ? '所回复的交付不可用，或与本条确认里的标识冲突。' :
+      '未找到与本条确认中标识相符的交付。'), allowNatural: !replied && !referenced.length && times.length === 1,
+      clockTimes: times };
+    if (matches.length !== 1) return fail('有多个交付符合本条线索，请回复要验收的原交付。', matches);
     const [{ target, publication, workId }] = matches;
-    return target ? { unit, identityUnit: previous && hasReferences(ref) ? units[index - 1].unit : unit, workId, target, publication } :
-      fail('The identified delivery is no longer current or is still awaiting a confirmed result.', matches);
+    const identityUnits = (referenced.length ? referenced : timed).map(item => item.unit);
+    return target ? { unit, identityUnit: identityUnits[0] ?? unit, identityUnits, workId, target, publication } :
+      fail('所指交付已不是当前版本，或仍在等待实际结果确认。', matches);
   });
 }
 
 export { links as acceptanceLinks };
 
-const natural = value => normal(value).replace(/[\s*_‘’“”'"《》]/gu, '').replace(/[−–—]/gu, '-');
-
 // A model can select markers, but an actual source unit and a uniquely
 // matching delivered candidate are required before an identity can be bound.
-export function naturalAcceptanceMatch({ units, identityUnits, anchors, candidates }) {
+export function naturalAcceptanceMatch({ units, identityUnits, anchors, candidates, clockTimes = [] }) {
   if (!Array.isArray(identityUnits) || !Array.isArray(anchors) || !anchors.length || anchors.length > 6) return null;
   const source = natural(units.filter(item => identityUnits.includes(item.unit)).map(item => item.text).join('\n'));
   if (anchors.some(anchor => typeof anchor !== 'string' || anchor.length > 120)) return null;
   const markers = unique(anchors.map(natural)).filter(marker => marker.length >= 2 && /[\p{L}\p{N}]/u.test(marker));
   if (!markers.length || markers.some(marker => !source.includes(marker)) ||
-      markers.length < 2 && !/\d{4}[-/]\d{1,2}[-/]\d{1,2}.*\d{1,2}:\d{2}/.test(markers[0])) return null;
-  const matches = candidates.filter(candidate => markers.every(marker => natural(candidate.identityText).includes(marker)));
+      markers.length < 2 && !/\d{4}[-/]\d{1,2}[-/]\d{1,2}.*\d{1,2}:\d{2}/.test(markers[0]) ||
+      !clockTimes.length && !markers.some(marker => marker.length >= 8)) return null;
+  const matches = candidates.filter(candidate => publicationMatchesTime(candidate, clockTimes) &&
+    markers.every(marker => natural(candidate.identityText).includes(marker)));
   return matches.length === 1 ? matches[0] : null;
 }
