@@ -79,6 +79,19 @@ function publicationMatchesTime(publication, times) {
   return !times.length || times.every(time => time === localTime(publication.publishedAt)?.slice(11, 16));
 }
 
+function timedAttachmentTitles(text, times) {
+  if (!times.length || !/(?:附件|\battachments?\b)/iu.test(text)) return [];
+  return [...normal(text).matchAll(/《([^《》]+)》/gu)].map(([, title]) => title.trim()).filter(title => /[\p{L}\p{N}]/u.test(title));
+}
+
+function attachmentHasTitle(attachment, title) {
+  const name = normal(attachment.name).replace(/\.[^.]+$/u, '');
+  for (let start = name.indexOf(title); start !== -1; start = name.indexOf(title, start + 1)) {
+    if (!/[\p{L}\p{N}]/u.test(name[start - 1] || '') && !/^[\p{L}\p{N}]/u.test(name.slice(start + title.length))) return true;
+  }
+  return false;
+}
+
 const natural = value => normal(value).replace(/[\s*_‘’“”'"《》]/gu, '').replace(/[−–—]/gu, '-');
 
 function hasContentClue(source, delivered) {
@@ -92,7 +105,9 @@ function hasContentClue(source, delivered) {
   });
 }
 
-export function acceptanceBindings(units, entries, replyTo, { excluded = [], approval, roomResultsAvailable = true } = {}) {
+export function acceptanceBindings(units, entries, replyTo, {
+  excluded = [], sharedScopeUnits = [], attachmentPublications = [], approval, roomResultsAvailable = true,
+} = {}) {
   const names = unique(entries.flatMap(entry => entry.publication.attachments.map(item => normal(item.name))).filter(Boolean));
   const workIds = unique(entries.map(entry => normal(entry.workId)));
   const replies = replyTo ? entries.filter(entry => entry.publication.messageId === replyTo) : [];
@@ -105,6 +120,7 @@ export function acceptanceBindings(units, entries, replyTo, { excluded = [], app
   const sentences = [...bySentence.keys()];
   const sentenceIndex = new Map(sentences.map((start, index) => [start, index]));
   const excludedUnits = new Set(excluded);
+  const sharedTitles = new Map(sharedScopeUnits.map(unit => [unit, timedAttachmentTitles(units[unit - 1].text, clockOf.get(unit))]));
   const scope = approval?.scopeUnits && new Set(approval.scopeUnits);
   const identity = approval?.identityUnits && new Set(approval.identityUnits);
   return (approval ? units.slice(approval.unit - 1, approval.unit) : units).map(({ unit, sentenceStart }) => {
@@ -117,6 +133,12 @@ export function acceptanceBindings(units, entries, replyTo, { excluded = [], app
     const referenced = nearby.filter(item => hasReferences(referenceOf.get(item.unit)));
     const fail = (reason, matches = []) => ({ unit, reason, identified: matches.slice(0, 3).map(({ workId, publication }) => ({ workId, ...publication })) });
     if (replyTo && !replied) return fail('未能确认所回复的消息是本群的有效交付。');
+    // The same clause can identify an earlier attachment and supply input to
+    // new production. Only share a timed, named attachment reference, never
+    // the separate action clause or its other scope details.
+    const shared = !replied && !referenced.length ? adjacent.filter(item => item.unit <= unit &&
+      (!scope || scope.has(item.unit)) && sharedTitles.get(item.unit)?.length) : [];
+    const titles = unique(shared.flatMap(item => sharedTitles.get(item.unit)));
     const pool = replied ? publicEntries.filter(entry => entry === replied || replied.verification && entry.workId === replied.workId &&
       entry.target?.verificationOperationIds?.includes(replied.operationId)) : publicEntries;
     // A scope can cite the time of a separate check without changing the
@@ -128,29 +150,44 @@ export function acceptanceBindings(units, entries, replyTo, { excluded = [], app
     // never the version of the enclosing text delivery or attachment.
     const labelUnits = nearby.filter(item => labelsOf.get(item.unit).length);
     const labels = unique(labelUnits.flatMap(item => labelsOf.get(item.unit)));
-    if (!replied && !referenced.length && !timed.length) return {
+    if (!replied && !referenced.length && !timed.length && !shared.length) return {
       ...fail('本条确认没有指明可唯一核对的交付、文件或版本。'), allowNatural: roomResultsAvailable, contentLabels: labels };
     if (!replied && !referenced.length && !roomResultsAvailable) return fail('当前未能核对同群的交付来源。');
-    const refs = referenced.map(item => referenceOf.get(item.unit));
+    const refs = [...referenced, ...shared].map(item => referenceOf.get(item.unit));
     const combined = Object.fromEntries(['ids', 'files', 'urls', 'versions'].map(key => [key, unique(refs.flatMap(ref => ref[key]))]));
     combined.unknownFile = refs.some(ref => ref.unknownFile);
-    const times = unique(timed.flatMap(item => clockOf.get(item.unit)));
+    const times = unique([...timed, ...shared].flatMap(item => clockOf.get(item.unit)));
+    let namedAttachment;
+    if (titles.length) {
+      const named = attachmentPublications.filter(publication => publicationMatchesTime(publication, times)).flatMap(publication =>
+        publication.attachments.filter(item => item.id && titles.every(title => attachmentHasTitle(item, title)))
+          .map(attachment => ({ messageId: publication.messageId, id: attachment.id })));
+      if (named.length > 1) return fail('本群有多个附件符合本条线索，请指出要验收的原附件。');
+      if (!named.length) return fail('本群未找到与确认中时间和题名相符的附件。');
+      [namedAttachment] = named;
+    }
     const matches = pool.flatMap(entry => {
       if (!publicationMatchesTime(entry.publication, times)) return [];
       const exactBodyLabel = entry.target?.roomResultId && labels.length;
       if (exactBodyLabel && !matchesContentLabels(entry.identityText, labels)) return [];
-      if (!replied && !referenced.length && !exactBodyLabel && !hasContentClue(timedSource, entry.identityText)) return [];
+      if (!replied && !referenced.length && !titles.length && !exactBodyLabel && !hasContentClue(timedSource, entry.identityText)) return [];
       const publication = matchPublication(entry, combined);
-      return publication ? [{ ...entry, publication }] : [];
+      if (!publication) return [];
+      if (!namedAttachment) return [{ ...entry, publication }];
+      if (publication.messageId !== namedAttachment.messageId) return [];
+      const attachment = publication.attachments.find(item => item.id === namedAttachment.id);
+      return attachment ? [{ ...entry, publication: { ...publication, attachments: [attachment] } }] : [];
     });
     if (!matches.length) return { ...fail(replied ? '所回复的交付不可用，或与本条确认里的标识冲突。' :
-      '未找到与本条确认中标识相符的交付。'), allowNatural: !replied && !referenced.length && times.length === 1,
+      '未找到与本条确认中标识相符的交付。'), allowNatural: !replied && !referenced.length && !titles.length && times.length === 1,
       clockTimes: times, contentLabels: labels };
     if (matches.length !== 1) return fail('有多个交付符合本条线索，请回复要验收的原交付。', matches);
     const [{ target, publication, workId }] = matches;
-    const identityUnits = nearby.filter(item => referenced.includes(item) || timed.includes(item) ||
+    const sharedIdentityUnits = shared.map(item => item.unit);
+    const identityUnits = [...nearby, ...shared].filter(item => referenced.includes(item) || timed.includes(item) || shared.includes(item) ||
       target?.roomResultId && labelUnits.includes(item)).map(item => item.unit);
-    return target ? { unit, identityUnit: identityUnits[0] ?? unit, identityUnits, workId, target, publication } :
+    identityUnits.sort((left, right) => left - right);
+    return target ? { unit, identityUnit: identityUnits[0] ?? unit, identityUnits, sharedIdentityUnits, workId, target, publication } :
       fail('所指交付已不是当前版本，或仍在等待实际结果确认。', matches);
   });
 }

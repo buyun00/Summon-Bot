@@ -88,7 +88,7 @@ Return only one JSON object {"approvalCandidate":false,"deliveryUnits":[],"roomD
 
 Return JSON {"state":"none","acknowledgmentOnly":false,"acceptances":[]}. Use state=none when no approval is performed, including when the message only refers to earlier approval. Use state=unconfirmed if a current approval cannot be distinguished from a condition, reference, quotation or other unclear meaning. Use state=current with an entry for each distinct current approval. Set acknowledgmentOnly=true when the complete message needs only an acceptance acknowledgment. Directions for recording or acknowledging that approval, limits and work the user may authorize later are part of that acknowledgment. Use false for a separate action, question or requested reply.
 
-Each entry is {"unit":1,"declaration":"complete original unit text, trimmed","publicationMessageId":null,"scopeUnits":[1],"remainingUnits":[],"fullScope":false,"recording":{"kind":"ordinary","units":[]}}. Select the unit that performs the approval and copy it verbatim, including qualifiers. Use acceptanceContext.units to select only the exact eligible publicationMessageId for that unit, or null. Include the identityUnits about this same approval in scopeUnits, including a preceding explanatory sentence when the approval refers to it. A binding supplies identity, not approval. Do not borrow identity from a separate action. A time that describes a distinct review or other evidence can stay in scopeUnits without changing the publication time. If the original gives conflicting identities or publication times for the same result or does not identify one result, use null.
+Each entry is {"unit":1,"declaration":"complete original unit text, trimmed","publicationMessageId":null,"scopeUnits":[1],"remainingUnits":[],"fullScope":false,"recording":{"kind":"ordinary","units":[]}}. Select the unit that performs the approval and copy it verbatim, including qualifiers. Use acceptanceContext.units to select only the exact eligible publicationMessageId for that unit, or null. Include the identityUnits about this same approval in scopeUnits, including a preceding explanatory sentence when the approval refers to it. A binding supplies identity, not approval. An earlier attachment reference can identify what is approved and also supply input for separately authorized work. Include such a reference when it identifies this approval; do not borrow identity from the separate action itself. A time that describes a distinct review or other evidence can stay in scopeUnits without changing the publication time. If the original gives conflicting identities or publication times for the same result or does not identify one result, use null.
 
 If the approval unit allows natural identification and has no bound publication ID, compare the authenticated delivered candidates with explicit clues in the approval. A publication can be identified by its text, title and exact local time, including adjacent original clauses about the same approval. Only when they identify one actual result, return its publicationMessageId and add "naturalIdentity":{"units":[1],"anchors":["exact time or content copied from the original","another exact distinguishing clue"]}. Copy overlapping fragments independently when words between them differ in the delivery. Never pick the latest result just because it is latest.
 
@@ -143,9 +143,11 @@ function reviewReferenceScope(dependency, approvals, units) {
 const noApproval = { acceptances: [], acceptanceUnconfirmed: false, acknowledgmentOnly: false };
 const unknownApproval = { ...noApproval, acceptanceUnconfirmed: true, issue: '验收来源核验返回的依据不完整。' };
 
-export function separateActionUnits(source) {
-  return [...new Set([...(source?.actions || []).flatMap(action => [action.unit, ...(action.scopeUnits || [])]),
-    ...(source?.deliveryUnits || []), ...(source?.roomDeliveryUnits || [])])];
+export function acceptanceActionScope(source) {
+  const actions = source?.actions || [];
+  const actionUnits = new Set([...actions.map(action => action.unit), ...(source?.deliveryUnits || []), ...(source?.roomDeliveryUnits || [])]);
+  const sharedScopeUnits = [...new Set(actions.flatMap(action => action.scopeUnits || []))].filter(unit => !actionUnits.has(unit));
+  return { excluded: [...actionUnits, ...sharedScopeUnits], sharedScopeUnits };
 }
 
 function sourceExcerpts(text, units, numbers) {
@@ -169,7 +171,7 @@ function sourceAcceptances(receipt, text, units, context, source) {
     return { ...unknownApproval, issue: '当前原文是否作出了新的验收确认，仍有歧义。' };
   if (receipt.state !== 'current' || !receipt.acceptances.length || receipt.acceptances.length > 8) return unknownApproval;
   const acceptances = [];
-  const excluded = separateActionUnits(source);
+  const { excluded } = acceptanceActionScope(source);
   let acceptanceUnconfirmed = false;
   for (const item of receipt.acceptances) {
     if (!validUnit(item?.unit, units) || !validUnits(item.scopeUnits, units) || !item.scopeUnits.includes(item.unit) ||
@@ -180,8 +182,10 @@ function sourceAcceptances(receipt, text, units, context, source) {
     const remainingBoundaries = sourceExcerpts(text, units, item.remainingUnits);
     if (scope.length > 6000 || remainingBoundaries.length > 6000) return unknownApproval;
     const binding = context?.units?.find(value => value.unit === item.unit);
-    const inScope = number => (number === item.unit || item.scopeUnits.includes(number)) && !excluded.includes(number);
-    const exact = binding?.identityUnits?.every(inScope);
+    const inApprovalScope = number => number === item.unit || item.scopeUnits.includes(number);
+    const inScope = number => inApprovalScope(number) && !excluded.includes(number);
+    const exact = binding?.identityUnits?.every(number => inScope(number) ||
+      inApprovalScope(number) && binding.sharedIdentityUnits?.includes(number));
     let publicationMessageId = exact && binding?.publicationMessageId === item.publicationMessageId ? binding.publicationMessageId : null;
     let naturalIdentity;
     if (!publicationMessageId && binding?.allowNatural && !context.replyTo && item.publicationMessageId) {

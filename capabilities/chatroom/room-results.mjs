@@ -169,10 +169,17 @@ export class RoomTextResults {
   async before(room, trigger) {
     const messages = trigger.replyTo ? [this.store.get('messages', trigger.replyTo)] : this.chatroom.messages(room.id).reverse();
     const times = acceptanceClockTimes(trigger.content);
-    const candidates = [];
+    const candidates = [], attachmentPublications = [];
     let complete = true;
     let unavailable = false;
     for (const message of messages) {
+      // Include other senders' attachments in the ambiguity check. Only the
+      // owning work's separately verified receipt can authorize a write.
+      if (!trigger.replyTo && message?.attachments?.length && Date.parse(message.createdAt) < Date.parse(trigger.createdAt) &&
+          times.includes(localTime(message.createdAt)?.slice(11, 16))) {
+        attachmentPublications.push({ messageId: message.id, publishedAt: message.createdAt,
+          attachments: message.attachments.map(({ id, name }) => ({ id, name })) });
+      }
       const record = this.candidate(message, room, trigger);
       if (!record) continue;
       if (candidates.length >= 12 && !times.includes(localTime(message.createdAt)?.slice(11, 16))) { complete = false; continue; }
@@ -184,7 +191,7 @@ export class RoomTextResults {
       }
       candidates.push({ ...record, content: message.content.slice(0, 4000), originalRequest: source.content.slice(0, 4000) });
     }
-    return { roomResults: candidates, roomResultsComplete: complete && !unavailable, unavailable };
+    return { roomResults: candidates, roomResultsComplete: complete && !unavailable, attachmentPublications, unavailable };
   }
 
   toolDecisions(tools, taskId, roomId, messageId) {

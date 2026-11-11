@@ -5,7 +5,7 @@ import { factTime } from '../context/fact-time.mjs';
 import { HANDOFF_REFERENCES, taskSource, workExecution } from '../context/sources.mjs';
 import { modelArgs, modelText, looseSchema, boundedNumber } from '../context/model-input.mjs';
 import { resolveCodexTarget } from './codex-target.mjs';
-import { acceptanceReply, authorizeProduction, currentProductionStage, currentUserRequest, productionDecision, productionRefusal, productionStage, requestIntents, productionStages, selectedSourceAction, separateActionUnits, sourceUnits } from './request-routing.mjs';
+import { acceptanceActionScope, acceptanceReply, authorizeProduction, currentProductionStage, currentUserRequest, productionDecision, productionRefusal, productionStage, requestIntents, productionStages, selectedSourceAction, sourceUnits } from './request-routing.mjs';
 import { EXISTING_PUBLICATION, OWNER_DELIVERY, ROOM_DUTY_PLANS, dependencyDispatches, publishedReviewTarget, roomDutyPlanId, saveRoomDutyPlan, sourceDispatches } from '../context/duty-actions.mjs';
 import { acceptanceBindings, acceptanceLinks, naturalAcceptanceMatch, sameRoomResultAcceptance } from './acceptance-identity.mjs';
 import { localTime } from '../context/fact-time.mjs';
@@ -177,7 +177,7 @@ const runnableWorkIds = store => new Set(store.listUnfinishedTasks().filter(item
 const acceptanceIdentity = ['operationId', 'threadId', 'turnId', 'throughOperationId', 'verificationOperationIds',
   'roomResultId', 'ownerBotId', 'dutyKey', 'deliveryId', 'taskId', 'sourceMessageId', 'version'];
 
-function requestAcceptanceBindings(services, task, user, rooms, page, excluded = []) {
+function requestAcceptanceBindings(services, task, user, rooms, page, { excluded = [], sharedScopeUnits = [] } = {}) {
   if (!user?.roomId || !rooms.includes(user.roomId) || !Number.isFinite(Date.parse(user.roomMessageAt))) return { bindings: [], entries: [] };
   const { store } = services, byWork = new Map();
   for (const item of store.listRecords('work-notifications')) {
@@ -229,8 +229,10 @@ function requestAcceptanceBindings(services, task, user, rooms, page, excluded =
   }
   const values = [...entries.values()];
   const roomResultsAvailable = page.unavailable !== true;
-  return { bindings: acceptanceBindings(sourceUnits(user.text), values, user.replyTo, { excluded, roomResultsAvailable }),
-    entries: values, excluded, roomResultsAvailable, roomResultsComplete: page.roomResultsComplete === true };
+  const { attachmentPublications } = page;
+  return { bindings: acceptanceBindings(sourceUnits(user.text), values, user.replyTo, {
+    excluded, sharedScopeUnits, attachmentPublications, roomResultsAvailable }),
+    entries: values, excluded, sharedScopeUnits, attachmentPublications, roomResultsAvailable, roomResultsComplete: page.roomResultsComplete === true };
 }
 
 const acceptanceCandidate = entry => ({ ...entry.publication, workId: entry.workId, operationId: entry.target?.operationId,
@@ -241,13 +243,14 @@ const acceptanceCandidate = entry => ({ ...entry.publication, workId: entry.work
 function acceptanceContextView({ bindings, entries, roomResultsComplete }, user) {
   const results = new Map();
   const candidates = entries.filter(entry => entry.target && !entry.verification);
-  const units = bindings.map(({ unit, identityUnits, target, publication, reason, identified, allowNatural, clockTimes, contentLabels }) => {
+  const units = bindings.map(({ unit, identityUnits, sharedIdentityUnits, target, publication, reason, identified, allowNatural, clockTimes, contentLabels }) => {
     if (!publication) return { unit, reason, allowNatural: allowNatural && (roomResultsComplete || Boolean(clockTimes?.length)), clockTimes, contentLabels,
       ...(identified?.length ? { identified } : {}) };
     const { messageId } = publication;
     const selected = candidates.find(entry => entry.publication.messageId === messageId && entry.target.operationId === target.operationId);
     if (selected) results.set(messageId, acceptanceCandidate(selected));
-    return { unit, identityUnits, publicationMessageId: messageId, attachmentIds: publication.attachments.map(item => item.id) };
+    return { unit, identityUnits, ...(sharedIdentityUnits?.length ? { sharedIdentityUnits } : {}),
+      publicationMessageId: messageId, attachmentIds: publication.attachments.map(item => item.id) };
   });
   const naturalCandidates = units.some(unit => unit.allowNatural) ? candidates.sort((a, b) =>
     String(a.publication.publishedAt).localeCompare(String(b.publication.publishedAt))).slice(-18).map(acceptanceCandidate) : [];
@@ -260,6 +263,7 @@ function selectedAcceptanceBindings(snapshot, approvals, user) {
     const { unit, publicationMessageId, naturalIdentity } = approval;
     const initial = snapshot.bindings.find(binding => binding.unit === unit && binding.publication?.messageId === publicationMessageId);
     const [binding] = acceptanceBindings(units, snapshot.entries, user.replyTo, { excluded: snapshot.excluded,
+      sharedScopeUnits: snapshot.sharedScopeUnits, attachmentPublications: snapshot.attachmentPublications,
       approval: initial ? { ...approval, identityUnits: initial.identityUnits } : approval,
       roomResultsAvailable: snapshot.roomResultsAvailable });
     if (!binding || !publicationMessageId || !naturalIdentity || !binding.allowNatural ||
@@ -610,14 +614,14 @@ export function coreTools(services, task) {
         const readAcceptance = () => acceptanceId && store.getRecord('production-sources', acceptanceId);
         let acceptance = readAcceptance();
         let classification, acceptanceContext, bindingSnapshot = { bindings: [], entries: [] };
-        const readBindings = async excluded => {
+        const readBindings = async actionScope => {
           if (!user?.roomId) return { bindings: [], entries: [] };
           const [rooms, page] = await Promise.all([
             services.sources.rooms(task),
             services.sources.callForSource('chatroom_read', { roomId: user.roomId, acceptanceResults: true }, task)
               .catch(() => ({ roomResults: [], unavailable: true })),
           ]);
-          return requestAcceptanceBindings(services, task, user, rooms, page, excluded);
+          return requestAcceptanceBindings(services, task, user, rooms, page, actionScope);
         };
         const checkProduction = production && !confirmedFeedback;
         const checkRoomDelivery = intent === 'room-deliver';
@@ -631,7 +635,7 @@ export function coreTools(services, task) {
               .map(({ dutyKey, responsibility, dutyProfile }) => ({ dutyKey, responsibility, boundary: dutyProfile?.boundary })) : undefined;
           const loadAcceptanceContext = async savedSource => {
             try {
-              bindingSnapshot = await readBindings(separateActionUnits(savedSource));
+              bindingSnapshot = await readBindings(acceptanceActionScope(savedSource));
               acceptanceContext = acceptanceContextView(bindingSnapshot, user);
             } catch { acceptanceContext = { units: [], results: [], unavailable: true }; }
             return acceptanceContext;
@@ -654,13 +658,15 @@ export function coreTools(services, task) {
           acceptance = store.transaction(() => readAcceptance() || store.putRecord('production-sources', {
             id: acceptanceId, acceptedMessageId: user.acceptedMessageId, roomId: user.roomId, messageId: user.messageId,
             identityVersion: 3,
-            approvals, bindings, excluded: bindingSnapshot.excluded, acknowledgmentOnly: approval.acknowledgmentOnly, issue: approval.issue,
+            approvals, bindings, excluded: bindingSnapshot.excluded, sharedScopeUnits: bindingSnapshot.sharedScopeUnits,
+            acknowledgmentOnly: approval.acknowledgmentOnly, issue: approval.issue,
             unconfirmed: approval.acceptanceUnconfirmed ||
               approvals.some(item => item.recordIn === 'unconfirmed' || item.recordIn === 'work' && acceptanceContext?.unavailable),
           }));
         }
         const canRecord = processAcceptance && !acceptance?.receipt && acceptance?.bindings.length > 0;
-        const currentBindings = canRecord ? await readBindings(acceptance.excluded).catch(() => null) : null;
+        const currentBindings = canRecord ? await readBindings({ excluded: acceptance.excluded,
+          sharedScopeUnits: acceptance.sharedScopeUnits }).catch(() => null) : null;
         ctx.signal?.throwIfAborted();
         if ((classification || acceptance) && (store.getTask(task.id)?.cancelRequested ||
           JSON.stringify(currentUserRequest(task, store)) !== JSON.stringify(user) ||
