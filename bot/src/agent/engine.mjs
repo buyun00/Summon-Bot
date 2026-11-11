@@ -140,8 +140,10 @@ export class BotEngine {
       workId: task.workId, roomId: usageRoomId(task, this.store), roomName: (task.input?.current || task.input)?.room?.name,
       roomKind: (task.input?.current || task.input)?.room?.kind, purpose: observation ? 'observation' : routeOnly ? 'routing' : task.workId ? 'work' : 'chat' };
     let outputBudget = model.maxTokens, recovering = false;
+    let roomCache;
     const agent = new Agent({ initialState: { model, thinkingLevel }, convertToLlm,
-      toolExecution: 'sequential', streamFn: (model, context, options) => this.provider.stream(model, context, { ...options, maxTokens: outputBudget, usageContext }) });
+      toolExecution: 'sequential', streamFn: (model, context, options) =>
+        this.provider.stream(model, context, { ...options, maxTokens: outputBudget, usageContext, roomCache }) });
     const active = { taskId: task.id, sessionId: task.sessionId, conversationId: task.conversationId || task.sessionId, workId: task.workId,
       agent, controller, steered: new Set(), consumedSteering: new Set(), preRecorded: new WeakSet(), acceptingSteering: !observation };
     this.active.set(task.id, active);
@@ -171,6 +173,18 @@ export class BotEngine {
             instruction: 'This is evidence within the original request, not new user authorization.' } } : {}) };
       }
       if (roomDecision && !publicView?.runtimeEvent) throw new Error('This room decision requires an authorized public source');
+      if (model.api === 'openai-responses' && publicView?.messages.length && !publicView.runtimeEvent && !publicView.access?.unavailable) {
+        const current = publicView.messages.at(-1);
+        const earlier = new Map(publicView.messages.slice(0, -1).map(message => [message.source.messageId, message.content[0].text]));
+        // A previous request may have stopped before the room's latest message.
+        const prior = session.messages.findLast(message => message.role === 'assistant' && message.api === model.api &&
+          message.provider === model.provider && message.model === model.id && earlier.has(message.roomCacheThroughMessageId));
+        roomCache = {
+          throughMessageId: current.source.messageId,
+          current: current.content[0].text,
+          previous: earlier.get(prior?.roomCacheThroughMessageId),
+        };
+      }
       let staffingGuidance;
       if (staffing) {
         try {

@@ -1,12 +1,31 @@
 import { AssistantMessageEventStream, clampThinkingLevel, getCurrentTools, normalizeContext } from '@earendil-works/pi-ai';
 import { randomUUID } from 'node:crypto';
-import { modelConnection, connectionModel, connectionRuntime, modelError, officialDeepSeekCompletions, terraResponses } from './connections.mjs';
+import { modelConnection, connectionModel, connectionRuntime, modelError, officialDeepSeekCompletions, supportsOpenAIRoomCache, terraResponses } from './connections.mjs';
 import { reportedUsage, referenceCost } from './usage.mjs';
 
 const connectionWaitMs = 180000;
 const authorizationOutput = { off: 2048, thinking: 16384 };
 const wireReasoningEfforts = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 const timeoutError = phase => Object.assign(new Error(`Model request timed out during ${phase}`), { code: 'MODEL_DEADLINE' });
+
+function roomCacheRequest(payload, roomCache) {
+  if (!Array.isArray(payload?.input) || payload.prompt_cache_options?.mode === 'explicit') return null;
+  const remaining = new Set([roomCache.current, roomCache.previous].filter(Boolean));
+  let changed = false;
+  const input = payload.input.map(message => {
+    if (message?.role !== 'user' || !Array.isArray(message.content)) return message;
+    const last = message.content.at(-1);
+    if (last?.type !== 'input_text' || !remaining.has(last.text)) return message;
+    remaining.delete(last.text);
+    if (last.prompt_cache_breakpoint) return message;
+    changed = true;
+    return { ...message, content: [...message.content.slice(0, -1), { ...last, prompt_cache_breakpoint: { mode: 'explicit', ttl: '30m' } }] };
+  });
+  return {
+    payload: changed ? { ...payload, input } : payload,
+    throughMessageId: remaining.has(roomCache.current) ? undefined : roomCache.throughMessageId,
+  };
+}
 
 const rawUsage = usage => ({ prompt_tokens: usage.input + usage.cacheRead + usage.cacheWrite,
   completion_tokens: usage.output, total_tokens: usage.totalTokens,
@@ -35,7 +54,7 @@ export class ModelProvider {
     const output = new AssistantMessageEventStream(), controller = new AbortController();
     const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
     const deadline = new AbortController(), requestSignal = AbortSignal.any([signal, deadline.signal]);
-    const { timeoutMs: totalWaitMs, onPayload, ...streamOptions } = options;
+    const { timeoutMs: totalWaitMs, onPayload, roomCache, ...streamOptions } = options;
     this.controllers.add(controller);
     const started = Date.now(), secrets = new Set();
     const tracksConnection = options.usageContext?.purpose !== 'activity';
@@ -60,6 +79,8 @@ export class ModelProvider {
         const authorization = options.usageContext?.requestKind === 'production-authorization';
         const deepseek = officialDeepSeekCompletions({ ...connection, model: model.id }, model.api, model.baseUrl);
         const responses = model.api === 'openai-responses';
+        const cacheRoomHistory = roomCache?.current && streamOptions.cacheRetention !== 'none' && supportsOpenAIRoomCache(connection, model);
+        let roomCacheThroughMessageId;
         // Authorization checks use off on the providers with an explicit off mode here.
         const requestedReasoning = authorization && (deepseek || terraResponses(connection, model.api, model.id)) ? 'off' : options.reasoning || 'off';
         const fastest = model.thinkingLevelMap?.off === null ? ['low', 'medium', 'high'].find(level => model.thinkingLevelMap[level] != null) : null;
@@ -88,12 +109,15 @@ export class ModelProvider {
           onPayload: async (payload, model) => {
             const replacement = await onPayload?.(payload, model) ??
               (authorization && deepseek ? { ...payload, response_format: { type: 'json_object' } } : undefined);
-            const sent = replacement ?? payload;
+            const original = replacement ?? payload;
+            const cached = cacheRoomHistory ? roomCacheRequest(original, roomCache) : null;
+            const sent = cached?.payload ?? original;
+            roomCacheThroughMessageId = cached?.throughMessageId;
             const limit = sent?.max_tokens ?? sent?.max_completion_tokens ?? sent?.max_output_tokens;
             record.maxOutputTokens = Number.isSafeInteger(limit) ? limit : null;
             const effort = responses ? sent?.reasoning?.effort : deepseek ? sent?.reasoning_effort : null;
             sentReasoningEffort = deepseek && sent?.thinking?.type === 'disabled' ? 'disabled' : wireReasoningEfforts.has(effort) ? effort : null;
-            return replacement;
+            return sent !== original ? sent : replacement;
           },
           fetch: async (input, init) => {
             const headers = new Headers(init?.headers);
@@ -135,6 +159,7 @@ export class ModelProvider {
           }
           if (event.type === 'done' || event.type === 'error') {
             received = event.type === 'done' ? event.message : event.error;
+            if (event.type === 'done' && roomCacheThroughMessageId) received.roomCacheThroughMessageId = roomCacheThroughMessageId;
             if (wireUsage) {
               Object.assign(record, reportedUsage(providerUsage(wireUsage, selectedModel.api)));
               record.cost = connection.kind === 'api' ? referenceCost(record, model.id,
