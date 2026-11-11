@@ -1,4 +1,5 @@
-import { isAbsolute, relative, resolve } from 'node:path';
+import { realpath, stat } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, parse, relative, resolve } from 'node:path';
 
 export const FILE_ACCESS_GUIDANCE = 'A file access refusal is a permission/protection boundary, not a missing tool or an ordinary command error. Do not switch to shell, another API, a copy or a renamed path to perform the refused file operation. Report the exact attempted operation and refusal reason. A refused read does not establish that a write was attempted or refused; distinguish an original user prohibition from an observed tool denial. Preserve the restriction and report the actual result; other authorized paths and operations may continue.';
 
@@ -8,19 +9,70 @@ export function fileAccessDenied(path, reason, extra = {}) {
   });
 }
 
-const contains = (root, path) => {
+export const pathWithin = (root, path) => {
   const part = relative(root, path);
   return !part || part !== '..' && !part.startsWith('../') && !part.startsWith('..\\') && !isAbsolute(part);
 };
 
 export function assertPathPolicy(path, policy = {}, { operations = ['read', 'write'], alternative = false } = {}) {
   for (const constraint of policy.deniedPaths || []) if ((!constraint.alternativesOnly || alternative) &&
-    operations.some(operation => (constraint.operations || ['read', 'write']).includes(operation)) && contains(resolve(constraint.path), path))
+    operations.some(operation => (constraint.operations || ['read', 'write']).includes(operation)) && pathWithin(resolve(constraint.path), path))
     throw fileAccessDenied(path, constraint.reason || 'prior_access_refusal', {
       sourceMessageId: constraint.sourceMessageId, originalPath: constraint.path, operations,
       blockedOperations: operations.filter(operation => (constraint.operations || ['read', 'write']).includes(operation)),
       originReason: constraint.originReason || constraint.reason,
     });
+}
+
+function sensitivePath(path, workspace) {
+  const parts = path.slice(parse(path).root.length).split(/[\\/]+/).map(part => part.toLowerCase());
+  for (const [index, part] of parts.entries()) {
+    if (part === '.git' || part === '.ssh' || part === '.aws' || part === '.azure' || part === 'gcloud') return true;
+    if (part === '.relay' && !pathWithin(workspace, path)) return true;
+    if (/^\.env(?:[.-]|$)/.test(part) || /^\.(?:npmrc|pypirc|netrc|git-credentials)$/.test(part)) return true;
+    // Explicit review documents can share a prefix with credential containers.
+    const credentialDocument = index === parts.length - 1 && /^credentials?[_-](?:[a-z0-9]+[_-])*(?:readme|guide|manual|design|spec|plan|report|brief|review(?:[_-]card)?)\.md$/.test(part);
+    if (/^(?:id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|credentials?(?:[._-].*)?|secrets?(?:[._-].*)?|ds\.txt|summon\.sqlite(?:[.-].*)?)$/.test(part) && !credentialDocument) return true;
+    if (/\.(?:pem|p12|pfx|key)$/.test(part) || part.includes(':')) return true;
+  }
+  return false;
+}
+
+// Resolve the closest existing ancestor, including junctions and symlinks.
+async function physicalPath(path) {
+  const missing = [];
+  let current = path;
+  while (true) {
+    try { return resolve(await realpath(current), ...missing.reverse()); }
+    catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      const parent = dirname(current);
+      if (parent === current) throw error;
+      missing.push(basename(current));
+      current = parent;
+    }
+  }
+}
+
+export function createPathAccess({ workspace, project = workspace, protectedDirectories = [], accessPolicy = {} }) {
+  return async function checkedPath(input = '.', { directory = false, operations = ['read'], alternative = false } = {}) {
+    if (typeof input !== 'string' || !input.trim() || input.includes('\0')) throw new Error('path must be a non-empty string without NUL');
+    const requested = resolve(workspace, input);
+    assertPathPolicy(requested, accessPolicy, { operations, alternative });
+    if (![workspace, project].some(root => pathWithin(root, requested))) throw fileAccessDenied(requested, 'outside_allowed_roots', { operations });
+    if (sensitivePath(requested, workspace) || (protectedDirectories.some(root => pathWithin(root, requested)) && !pathWithin(workspace, requested)))
+      throw fileAccessDenied(requested, 'protected_path', { operations });
+    const [actual, actualWorkspace, actualProject, actualProtected] = await Promise.all([
+      physicalPath(requested), realpath(workspace), realpath(project), Promise.all(protectedDirectories.map(physicalPath)),
+    ]);
+    const actualDenied = await Promise.all((accessPolicy.deniedPaths || []).map(async item => ({ ...item, path: await physicalPath(item.path) })));
+    assertPathPolicy(actual, { deniedPaths: actualDenied }, { operations, alternative });
+    if (![actualWorkspace, actualProject].some(root => pathWithin(root, actual))) throw fileAccessDenied(requested, 'resolved_outside_allowed_roots', { operations });
+    if (sensitivePath(actual, actualWorkspace) || (actualProtected.some(root => pathWithin(root, actual)) && !pathWithin(actualWorkspace, actual)))
+      throw fileAccessDenied(requested, 'resolved_protected_path', { operations });
+    if (directory && !(await stat(actual)).isDirectory()) throw new Error('Path is not a directory');
+    return actual;
+  };
 }
 
 // A bounded lexer keeps quoted document data out of command recognition. This

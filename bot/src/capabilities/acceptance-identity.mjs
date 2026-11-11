@@ -1,4 +1,6 @@
+import { basename } from 'node:path';
 import { localTime } from '../context/fact-time.mjs';
+import { localPackagePaths, localPathKey } from '../runtime/local-delivery.mjs';
 
 const normalizedScope = text => String(text ?? '').normalize('NFC').replace(/\s+/gu, ' ').trim();
 
@@ -49,8 +51,9 @@ function references(text, names, workIds) {
 
 const hasReferences = ref => ref.ids.length || ref.files.length || ref.urls.length || ref.versions.length || ref.unknownFile;
 
-function matchPublication(entry, ref) {
-  const { publication, workId, operationId } = entry;
+function matchPublication(entry, ref, timedAttachment) {
+  const { workId, operationId } = entry;
+  const { localFiles, ...publication } = entry.publication;
   const artifactIds = publication.attachments.map(item => normal(item.id));
   const ids = [workId, operationId, publication.messageId, publication.replyTo, publication.manifestOperationId].map(normal);
   if (ref.unknownFile || ref.ids.some(id => !ids.includes(id) && !artifactIds.includes(id)) ||
@@ -58,6 +61,7 @@ function matchPublication(entry, ref) {
     ref.urls.some(url => !entry.links.includes(url))) return null;
 
   const named = publication.attachments.filter(item => ref.ids.includes(normal(item.id)) || ref.files.includes(normal(item.name)));
+  if (localFiles?.length && !named.length && !timedAttachment) return null;
   let attachments = named.length ? named : publication.attachments;
   if (ref.versions.length) {
     const attachmentVersions = item => versions(item.name, { published: true });
@@ -68,6 +72,20 @@ function matchPublication(entry, ref) {
     if (labeled.length) attachments = labeled;
   }
   return { ...publication, attachments };
+}
+
+function matchLocalPublication(entry, ref) {
+  const { publication, workId, operationId } = entry;
+  if (!publication.localFiles?.length || (!ref.files.length && !ref.paths.length) || ref.unknownFile) return [];
+  const ids = [workId, operationId, publication.messageId, publication.replyTo, publication.manifestOperationId].map(normal);
+  if (ref.ids.some(id => !ids.includes(id)) || ref.urls.some(url => !entry.links.includes(url))) return [];
+  return publication.localFiles.filter(file => ref.files.every(name => name === normal(file.name)) &&
+    ref.paths.every(path => path === localPathKey(file.path)) &&
+    ref.versions.every(version => versions(file.name, { published: true }).includes(version))).map(file => {
+    const available = Number.isFinite(file.mtimeMs);
+    return { ...entry, target: available ? entry.target : null, localUnavailable: !available,
+      publication: { ...publication, attachments: [], localFiles: [file] } };
+  });
 }
 
 export function acceptanceClockTimes(text) {
@@ -106,31 +124,47 @@ function hasContentClue(source, delivered) {
 }
 
 export function acceptanceBindings(units, entries, replyTo, {
-  excluded = [], sharedScopeUnits = [], attachmentPublications = [], approval, roomResultsAvailable = true,
+  excluded = [], sharedScopeUnits = [], attachmentPublications = [], roomWorkPublications = [], approval, roomResultsAvailable = true,
 } = {}) {
-  const names = unique(entries.flatMap(entry => entry.publication.attachments.map(item => normal(item.name))).filter(Boolean));
+  const localNames = new Set(entries.flatMap(entry => (entry.publication.localFiles || []).map(file => normal(file.name))));
+  const names = unique([...entries.flatMap(entry => entry.publication.attachments.map(item => normal(item.name))), ...localNames].filter(Boolean));
   const workIds = unique(entries.map(entry => normal(entry.workId)));
   const replies = replyTo ? entries.filter(entry => entry.publication.messageId === replyTo) : [];
   const replied = replies.length === 1 ? replies[0] : null;
   const publicEntries = entries.filter(entry => !entry.verification);
   const referenceOf = new Map(units.map(unit => [unit.unit, references(unit.text, names, workIds)]));
+  const pathsOf = new Map(units.map(unit => [unit.unit, localPackagePaths(unit.text)]));
   const clockOf = new Map(units.map(unit => [unit.unit, acceptanceClockTimes(unit.text)]));
   const labelsOf = new Map(units.map(unit => [unit.unit, contentLabels(unit.text)]));
   const bySentence = Map.groupBy(units, unit => unit.sentenceStart);
   const sentences = [...bySentence.keys()];
   const sentenceIndex = new Map(sentences.map((start, index) => [start, index]));
   const excludedUnits = new Set(excluded);
+  const sharedUnits = new Set(sharedScopeUnits);
   const sharedTitles = new Map(sharedScopeUnits.map(unit => [unit, timedAttachmentTitles(units[unit - 1].text, clockOf.get(unit))]));
   const scope = approval?.scopeUnits && new Set(approval.scopeUnits);
   const identity = approval?.identityUnits && new Set(approval.identityUnits);
   return (approval ? units.slice(approval.unit - 1, approval.unit) : units).map(({ unit, sentenceStart }) => {
     const sentence = sentenceIndex.get(sentenceStart);
     const adjacent = sentences.slice(Math.max(0, sentence - 1), sentence + 2).flatMap(start => bySentence.get(start));
-    const inSource = adjacent.filter(item => !excludedUnits.has(item.unit));
+    const namedLocalFiles = referenceOf.get(unit).files.filter(name => localNames.has(name));
+    // A recording instruction can share approval scope. Share only the named
+    // local file in the approval itself and a path that identifies that file.
+    const sharedLocal = adjacent.filter(item => sharedUnits.has(item.unit) && namedLocalFiles.length &&
+      (item.unit === unit || pathsOf.get(item.unit).some(path => namedLocalFiles.includes(normal(basename(path))))));
+    const inSource = adjacent.filter(item => !excludedUnits.has(item.unit) || sharedLocal.includes(item));
     const nearby = inSource.filter(item => item.unit === unit || (scope ? scope.has(item.unit) : item.unit <= unit));
     if (!scope && !nearby.some(item => hasReferences(referenceOf.get(item.unit)) || clockOf.get(item.unit).length))
       nearby.push(...inSource.filter(item => item.unit > unit));
-    const referenced = nearby.filter(item => hasReferences(referenceOf.get(item.unit)));
+    if (!scope && localNames.size) {
+      const named = nearby.flatMap(item => referenceOf.get(item.unit).files);
+      // The adjacent takeout path can qualify the package named in the approval.
+      for (const item of inSource) if (item.unit > unit && !nearby.includes(item) && pathsOf.get(item.unit).some(path => {
+        const name = normal(basename(path));
+        return localNames.has(name) && (!named.length || named.includes(name));
+      })) nearby.push(item);
+    }
+    const referenced = nearby.filter(item => hasReferences(referenceOf.get(item.unit)) || pathsOf.get(item.unit).length);
     const fail = (reason, matches = []) => ({ unit, reason, identified: matches.slice(0, 3).map(({ workId, publication }) => ({ workId, ...publication })) });
     if (replyTo && !replied) return fail('未能确认所回复的消息是本群的有效交付。');
     // The same clause can identify an earlier attachment and supply input to
@@ -156,6 +190,7 @@ export function acceptanceBindings(units, entries, replyTo, {
     const refs = [...referenced, ...shared].map(item => referenceOf.get(item.unit));
     const combined = Object.fromEntries(['ids', 'files', 'urls', 'versions'].map(key => [key, unique(refs.flatMap(ref => ref[key]))]));
     combined.unknownFile = refs.some(ref => ref.unknownFile);
+    combined.paths = unique(referenced.flatMap(item => pathsOf.get(item.unit).map(localPathKey)));
     const times = unique([...timed, ...shared].flatMap(item => clockOf.get(item.unit)));
     let namedAttachment;
     if (titles.length) {
@@ -171,24 +206,38 @@ export function acceptanceBindings(units, entries, replyTo, {
       const exactBodyLabel = entry.target?.roomResultId && labels.length;
       if (exactBodyLabel && !matchesContentLabels(entry.identityText, labels)) return [];
       if (!replied && !referenced.length && !titles.length && !exactBodyLabel && !hasContentClue(timedSource, entry.identityText)) return [];
-      const publication = matchPublication(entry, combined);
-      if (!publication) return [];
-      if (!namedAttachment) return [{ ...entry, publication }];
-      if (publication.messageId !== namedAttachment.messageId) return [];
-      const attachment = publication.attachments.find(item => item.id === namedAttachment.id);
-      return attachment ? [{ ...entry, publication: { ...publication, attachments: [attachment] } }] : [];
+      const publication = !combined.paths.length && matchPublication(entry, combined, namedAttachment);
+      if (namedAttachment) {
+        const attachment = publication?.messageId === namedAttachment.messageId &&
+          publication.attachments.find(item => item.id === namedAttachment.id);
+        return attachment ? [{ ...entry, publication: { ...publication, attachments: [attachment] } }] : [];
+      }
+      const local = matchLocalPublication(entry, combined);
+      return publication ? [{ ...entry, publication }, ...local] : local;
     });
     if (!matches.length) return { ...fail(replied ? '所回复的交付不可用，或与本条确认里的标识冲突。' :
       '未找到与本条确认中标识相符的交付。'), allowNatural: !replied && !referenced.length && !titles.length && times.length === 1,
       clockTimes: times, contentLabels: labels };
     if (matches.length !== 1) return fail('有多个交付符合本条线索，请回复要验收的原交付。', matches);
-    const [{ target, publication, workId }] = matches;
-    const sharedIdentityUnits = shared.map(item => item.unit);
+    const [{ target, publication, workId, senderId, operationId, localUnavailable }] = matches;
+    if (publication.localFiles?.length) {
+      const [file] = publication.localFiles;
+      const roomMatches = roomWorkPublications.filter(item => (!replyTo || item.messageId === replyTo) &&
+        publicationMatchesTime(item, times) && combined.ids.every(id =>
+          [item.messageId, item.workId, item.replyTo, ...item.operationIds].map(normal).includes(id)) &&
+        item.paths.some(path => combined.paths.length ? localPathKey(path) === localPathKey(file.path) : normal(basename(path)) === normal(file.name)));
+      if (roomMatches.length > 1) return fail('本群有多个工作交付符合该本机文件线索，请回复对应的原交付。', matches);
+      if (!roomMatches.some(item => item.messageId === publication.messageId && item.workId === workId &&
+        item.senderId === senderId && item.replyTo === publication.replyTo && item.operationIds.includes(operationId)))
+        return fail('未能核对本机文件所在的原群交付。', matches);
+    }
+    const sharedIdentityUnits = [...shared, ...sharedLocal.filter(item => referenced.includes(item))].map(item => item.unit);
     const identityUnits = [...nearby, ...shared].filter(item => referenced.includes(item) || timed.includes(item) || shared.includes(item) ||
       target?.roomResultId && labelUnits.includes(item)).map(item => item.unit);
     identityUnits.sort((left, right) => left - right);
     return target ? { unit, identityUnit: identityUnits[0] ?? unit, identityUnits, sharedIdentityUnits, workId, target, publication } :
-      fail('所指交付已不是当前版本，或仍在等待实际结果确认。', matches);
+      fail(localUnavailable ? '所指本机文件的项目权限或原交付时的文件状态未能核对。' :
+        '所指交付已不是当前版本，或仍在等待实际结果确认。', matches);
   });
 }
 
@@ -204,7 +253,7 @@ export function naturalAcceptanceMatch({ units, identityUnits, anchors, candidat
   if (!markers.length || markers.some(marker => !source.includes(marker)) ||
       markers.length < 2 && !/\d{4}[-/]\d{1,2}[-/]\d{1,2}.*\d{1,2}:\d{2}/.test(markers[0]) ||
       !clockTimes.length && !markers.some(marker => marker.length >= 8)) return null;
-  const matches = candidates.filter(candidate => publicationMatchesTime(candidate, clockTimes) &&
+  const matches = candidates.filter(candidate => !candidate.localFiles?.length && publicationMatchesTime(candidate, clockTimes) &&
     (!candidate.ownerBotId || matchesContentLabels(candidate.identityText, labels)) &&
     markers.every(marker => natural(candidate.identityText).includes(marker)));
   return matches.length === 1 ? matches[0] : null;

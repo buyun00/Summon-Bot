@@ -1,7 +1,9 @@
+import { basename } from 'node:path';
 import { currentUserRequest } from '../../bot/src/capabilities/request-routing.mjs';
 import { acceptanceClockTimes, sameRoomResultAcceptance } from '../../bot/src/capabilities/acceptance-identity.mjs';
 import { EXISTING_PUBLICATION, OWNER_DELIVERY, reviewReferenceAttachments } from '../../bot/src/context/duty-actions.mjs';
 import { localTime } from '../../bot/src/context/fact-time.mjs';
+import { localPackagePaths, namesLocalPackage } from '../../bot/src/runtime/local-delivery.mjs';
 import { activeDuties } from './staffing.mjs';
 import { pick } from '../shared/validation.mjs';
 
@@ -169,10 +171,17 @@ export class RoomTextResults {
   async before(room, trigger) {
     const messages = trigger.replyTo ? [this.store.get('messages', trigger.replyTo)] : this.chatroom.messages(room.id).reverse();
     const times = acceptanceClockTimes(trigger.content);
-    const candidates = [], attachmentPublications = [];
+    const candidates = [], attachmentPublications = [], roomWorkPublications = [];
     let complete = true;
     let unavailable = false;
     for (const message of messages) {
+      if (message?.workPublication && message.eventType === 'work_result' && message.roomId === room.id && message.workId &&
+          Date.parse(message.createdAt) < Date.parse(trigger.createdAt)) {
+        const paths = localPackagePaths(message.content).filter(path => namesLocalPackage(trigger.content, basename(path)));
+        const operationIds = (message.sourceRefs || []).filter(ref => ref.type === 'codex').map(ref => ref.operationId);
+        if (paths.length && operationIds.length) roomWorkPublications.push({ messageId: message.id, publishedAt: message.createdAt,
+          workId: message.workId, senderId: message.senderId, replyTo: message.replyTo, operationIds, paths });
+      }
       // Include other senders' attachments in the ambiguity check. Only the
       // owning work's separately verified receipt can authorize a write.
       if (!trigger.replyTo && message?.attachments?.length && Date.parse(message.createdAt) < Date.parse(trigger.createdAt) &&
@@ -191,7 +200,7 @@ export class RoomTextResults {
       }
       candidates.push({ ...record, content: message.content.slice(0, 4000), originalRequest: source.content.slice(0, 4000) });
     }
-    return { roomResults: candidates, roomResultsComplete: complete && !unavailable, attachmentPublications, unavailable };
+    return { roomResults: candidates, roomResultsComplete: complete && !unavailable, attachmentPublications, roomWorkPublications, unavailable };
   }
 
   toolDecisions(tools, taskId, roomId, messageId) {

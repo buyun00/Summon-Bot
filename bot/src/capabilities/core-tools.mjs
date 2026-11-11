@@ -11,6 +11,7 @@ import { acceptanceBindings, acceptanceLinks, naturalAcceptanceMatch, sameRoomRe
 import { localTime } from '../context/fact-time.mjs';
 import { externalExecution, isAcceptedOperation } from '../context/execution-evidence.mjs';
 import { readExecutorManifest } from '../runtime/executor-delivery.mjs';
+import { deliveredLocalFiles } from '../runtime/local-delivery.mjs';
 import { MESSAGE_ATTACHMENTS, WORK_ATTACHMENTS } from '../runtime/notifications.mjs';
 
 const string = { type: 'string' };
@@ -177,14 +178,14 @@ const runnableWorkIds = store => new Set(store.listUnfinishedTasks().filter(item
 const acceptanceIdentity = ['operationId', 'threadId', 'turnId', 'throughOperationId', 'verificationOperationIds',
   'roomResultId', 'ownerBotId', 'dutyKey', 'deliveryId', 'taskId', 'sourceMessageId', 'version'];
 
-function requestAcceptanceBindings(services, task, user, rooms, page, { excluded = [], sharedScopeUnits = [] } = {}) {
+async function requestAcceptanceBindings(services, task, user, rooms, page, { excluded = [], sharedScopeUnits = [] } = {}) {
   if (!user?.roomId || !rooms.includes(user.roomId) || !Number.isFinite(Date.parse(user.roomMessageAt))) return { bindings: [], entries: [] };
   const { store } = services, byWork = new Map();
   for (const item of store.listRecords('work-notifications')) {
     if (!byWork.has(item.workId)) byWork.set(item.workId, []);
     byWork.get(item.workId).push(item);
   }
-  const pending = runnableWorkIds(store), entries = new Map();
+  const pending = runnableWorkIds(store), entries = new Map(), localReads = [];
   for (const [workId, notifications] of byWork) {
     const delivered = notifications.filter(item => item.roomId === user.roomId && item.status === 'delivered' && item.executionEventId &&
       (item.publication === 'external' && item.resultKind === 'execution-ended' ||
@@ -193,6 +194,7 @@ function requestAcceptanceBindings(services, task, user, rooms, page, { excluded
     const work = services.works.get(workId);
     if (!services.sources.canReadWorkInRooms(work, task, rooms)) continue;
     const target = !pending.has(workId) && acceptanceTarget(store, work, user.roomId, notifications);
+    if (target) target.workRevision = work.revision;
     const current = new Map((target?.publications || []).map(item => [item.messageId, item]));
     const verifications = new Set(work.bindings?.flatMap(binding => (binding.operations || []).filter(item => item.verificationOnly &&
       item.status === 'received' && item.threadId === binding.externalThreadId).map(item => item.operationId)));
@@ -207,7 +209,11 @@ function requestAcceptanceBindings(services, task, user, rooms, page, { excluded
       if (!publishedBeforeRequest(publication, user)) continue;
       const key = JSON.stringify([workId, item.executionEventId, receipt.id]);
       if (entries.has(key) && !verified) continue;
-      entries.set(key, { workId, operationId: item.executionEventId, publication, links: acceptanceLinks(receipt.content),
+      if (item.publication === 'external') localReads.push(deliveredLocalFiles({ store, workspace: services.workspace, task, work,
+        notification: item, receipt, requestText: user.text }).then(files => {
+        if (files.length) publication.localFiles = files;
+      }));
+      entries.set(key, { workId, senderId: work.botId, operationId: item.executionEventId, publication, links: acceptanceLinks(receipt.content),
         identityText: [localTime(publication.publishedAt), work.goal, receipt.content, ...publication.attachments.map(item => item.name)].filter(Boolean).join('\n').slice(0, 3800),
         previouslyAccepted: work.acceptance?.source?.roomId === user.roomId && work.acceptance.operationId === item.executionEventId &&
           work.acceptance.publicationMessageIds?.includes(publication.messageId) ? { sourceMessageId: work.acceptance.source.messageId,
@@ -227,16 +233,22 @@ function requestAcceptanceBindings(services, task, user, rooms, page, { excluded
       identityText: [localTime(result.publishedAt), result.content].filter(Boolean).join('\n'),
       ...(result.legacyCandidate ? { legacyCandidate: true, originalRequest: result.originalRequest } : {}) });
   }
+  await Promise.all(localReads);
+  const currentPending = runnableWorkIds(store);
+  for (const entry of entries.values()) if (entry.workId && entry.target &&
+    (currentPending.has(entry.workId) || entry.target.workRevision !== services.works.get(entry.workId)?.revision)) entry.target = null;
   const values = [...entries.values()];
   const roomResultsAvailable = page.unavailable !== true;
-  const { attachmentPublications } = page;
+  const { attachmentPublications, roomWorkPublications } = page;
   return { bindings: acceptanceBindings(sourceUnits(user.text), values, user.replyTo, {
-    excluded, sharedScopeUnits, attachmentPublications, roomResultsAvailable }),
-    entries: values, excluded, sharedScopeUnits, attachmentPublications, roomResultsAvailable, roomResultsComplete: page.roomResultsComplete === true };
+    excluded, sharedScopeUnits, attachmentPublications, roomWorkPublications, roomResultsAvailable }),
+    entries: values, excluded, sharedScopeUnits, attachmentPublications, roomWorkPublications,
+    roomResultsAvailable, roomResultsComplete: page.roomResultsComplete === true };
 }
 
 const acceptanceCandidate = entry => ({ ...entry.publication, workId: entry.workId, operationId: entry.target?.operationId,
   identityText: entry.identityText, previouslyAccepted: entry.previouslyAccepted,
+  ...(entry.publication.localFiles?.length ? { localFiles: entry.publication.localFiles.map(({ path, name, size }) => ({ path, name, size })) } : {}),
   ...(entry.target?.roomResultId ? { ownerBotId: entry.target.ownerBotId, dutyKey: entry.target.dutyKey } : {}),
   ...(entry.legacyCandidate ? { legacyCandidate: true, originalRequest: entry.originalRequest } : {}) });
 
@@ -250,9 +262,10 @@ function acceptanceContextView({ bindings, entries, roomResultsComplete }, user)
     const selected = candidates.find(entry => entry.publication.messageId === messageId && entry.target.operationId === target.operationId);
     if (selected) results.set(messageId, acceptanceCandidate(selected));
     return { unit, identityUnits, ...(sharedIdentityUnits?.length ? { sharedIdentityUnits } : {}),
-      publicationMessageId: messageId, attachmentIds: publication.attachments.map(item => item.id) };
+      publicationMessageId: messageId, attachmentIds: publication.attachments.map(item => item.id),
+      ...(publication.localFiles?.length ? { localFiles: publication.localFiles.map(({ path, name, size }) => ({ path, name, size })) } : {}) };
   });
-  const naturalCandidates = units.some(unit => unit.allowNatural) ? candidates.sort((a, b) =>
+  const naturalCandidates = units.some(unit => unit.allowNatural) ? candidates.filter(entry => !entry.publication.localFiles?.length).sort((a, b) =>
     String(a.publication.publishedAt).localeCompare(String(b.publication.publishedAt))).slice(-18).map(acceptanceCandidate) : [];
   return { replyTo: user?.replyTo, units, results: [...results.values()], naturalCandidates };
 }
@@ -264,7 +277,7 @@ function selectedAcceptanceBindings(snapshot, approvals, user) {
     const initial = snapshot.bindings.find(binding => binding.unit === unit && binding.publication?.messageId === publicationMessageId);
     const [binding] = acceptanceBindings(units, snapshot.entries, user.replyTo, { excluded: snapshot.excluded,
       sharedScopeUnits: snapshot.sharedScopeUnits, attachmentPublications: snapshot.attachmentPublications,
-      approval: initial ? { ...approval, identityUnits: initial.identityUnits } : approval,
+      roomWorkPublications: snapshot.roomWorkPublications, approval: initial ? { ...approval, identityUnits: initial.identityUnits } : approval,
       roomResultsAvailable: snapshot.roomResultsAvailable });
     if (!binding || !publicationMessageId || !naturalIdentity || !binding.allowNatural ||
         !snapshot.roomResultsComplete && !binding.clockTimes?.length) return binding || { unit };
@@ -322,6 +335,7 @@ function saveRequestAcceptances(services, user, items, before, current) {
     const same = prior?.publication && selected?.publication && selected.workId === prior.workId &&
       JSON.stringify(prior.identityUnits) === JSON.stringify(selected.identityUnits) &&
       item.publicationMessageId === selected.publication.messageId && JSON.stringify(prior.publication) === JSON.stringify(selected.publication) &&
+      (!selected.workId || selected.target.workRevision === services.works.get(selected.workId)?.revision) &&
       acceptanceIdentity.every(key => JSON.stringify(prior.target[key]) === JSON.stringify(selected.target[key]));
     if (!same) {
       const { publicationMessageId, ...unresolved } = item;
@@ -354,13 +368,17 @@ function saveRequestAcceptances(services, user, items, before, current) {
       const remainingBoundaries = scopes('remainingBoundaries');
       const selected = new Map();
       for (const { publication } of accepted) {
-        const attachments = [...(selected.get(publication.messageId)?.attachments || []), ...publication.attachments];
-        selected.set(publication.messageId, { ...publication, attachments: [...new Map(attachments.map(item => [item.id, item])).values()] });
+        const earlier = selected.get(publication.messageId);
+        const attachments = [...(earlier?.attachments || []), ...publication.attachments];
+        const localFiles = [...(earlier?.localFiles || []), ...(publication.localFiles || [])];
+        selected.set(publication.messageId, { ...publication, attachments: [...new Map(attachments.map(item => [item.id, item])).values()],
+          ...(localFiles.length ? { localFiles: [...new Map(localFiles.map(file => [file.path, file])).values()] } : {}) });
       }
       const publications = [...selected.values()];
       const attachmentIds = new Set(publications.flatMap(item => item.attachments.map(attachment => attachment.id)));
       const fullScope = accepted.every(({ item }) => item.fullScope) && !remainingBoundaries &&
-        target.publications.every(item => item.attachments.every(attachment => attachmentIds.has(attachment.id)));
+        target.publications.every(item => item.attachments.every(attachment => attachmentIds.has(attachment.id)) &&
+          (item.localFiles || []).every(file => selected.get(item.messageId)?.localFiles?.some(acceptedFile => acceptedFile.path === file.path)));
       const scope = scopes('scope');
       const publicationMessageIds = publications.map(item => item.messageId);
       alreadyRecorded = prior?.source?.roomId === user.roomId && prior.operationId === target.operationId && prior.scope === scope &&

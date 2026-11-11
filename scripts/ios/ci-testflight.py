@@ -14,7 +14,7 @@ import urllib.request
 
 
 class AppleAPI:
-    def __call__(self, path, body=None):
+    def __call__(self, path, body=None, *, allow_missing=False):
         import jwt
         now = int(time.time())
         token = jwt.encode(dict(iss=os.environ['ASC_ISSUER_ID'], iat=now, exp=now + 600,
@@ -28,6 +28,8 @@ class AppleAPI:
                 raw = response.read()
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as error:
+            if allow_missing and error.code == 404:
+                return {}
             if error.code == 429 or error.code >= 500:
                 raise ConnectionError(f'Apple temporarily unavailable (HTTP {error.code})') from None
             raise RuntimeError(f'Apple API HTTP {error.code} for {path.split("?")[0]}; '
@@ -40,14 +42,21 @@ def query(path, **params):
     return path + '?' + urllib.parse.urlencode(params)
 
 
+def relationship_id(resource, name):
+    relationships = resource.get('relationships') or {}
+    relationship = relationships.get(name) or {}
+    return (relationship.get('data') or {}).get('id')
+
+
 def check_build(api, app_id, group, version, build_number):
     response = api(query('/v1/builds', **{'filter[app]': app_id, 'filter[version]': build_number,
                                          'include': 'preReleaseVersion,buildBetaDetail', 'limit': 100}))
-    included = {x['id']: x for x in response.get('included', [])}
+    included = {(x['type'], x['id']): x for x in (response.get('included') or [])}
     builds = []
     for build in response.get('data', []):
-        release_id = build.get('relationships', {}).get('preReleaseVersion', {}).get('data', {}).get('id')
-        if included.get(release_id, {}).get('attributes', {}).get('version') == version:
+        release_id = relationship_id(build, 'preReleaseVersion')
+        release = included.get(('preReleaseVersions', release_id), {})
+        if release.get('attributes', {}).get('version') == version and build['attributes']['version'] == build_number:
             builds.append(build)
     if not builds:
         return 'Waiting for Apple to register the uploaded build', None
@@ -62,8 +71,14 @@ def check_build(api, app_id, group, version, build_number):
         return 'Apple processing: ' + state, None
     if attrs.get('usesNonExemptEncryption') is not False:
         raise RuntimeError('Export compliance is not resolved; inspect the submitted Info.plist and App Store Connect')
-    detail_id = build.get('relationships', {}).get('buildBetaDetail', {}).get('data', {}).get('id')
-    beta = included.get(detail_id, {}).get('attributes', {}).get('internalBuildState')
+    detail_id = relationship_id(build, 'buildBetaDetail')
+    detail = included.get(('buildBetaDetails', detail_id))
+    if not detail:
+        path = '/v1/builds/' + urllib.parse.quote(build['id'], safe='') + '/buildBetaDetail'
+        detail = api(path, allow_missing=True).get('data')
+    beta = ((detail or {}).get('attributes') or {}).get('internalBuildState')
+    if not beta:
+        return 'Waiting for Apple to report this build’s internal beta state', None
     if beta == 'MISSING_EXPORT_COMPLIANCE':
         raise RuntimeError('Apple requires export compliance information')
     if beta not in ('READY_FOR_BETA_TESTING', 'IN_BETA_TESTING'):

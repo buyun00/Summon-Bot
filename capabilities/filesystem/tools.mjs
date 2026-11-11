@@ -1,6 +1,6 @@
 import { open, readdir, stat, realpath, mkdir, readFile, rename, link, unlink, mkdtemp, rm } from 'node:fs/promises';
 import { constants, existsSync, createWriteStream } from 'node:fs';
-import { resolve, relative, isAbsolute, dirname, basename, join, parse, delimiter } from 'node:path';
+import { resolve, isAbsolute, dirname, basename, join, delimiter } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createWebTools } from './web-tools.mjs';
@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { finished } from 'node:stream/promises';
 import { MAX_ATTACHMENT_BYTES } from '../chatroom/attachments.mjs';
 import { cleanEnvironment, terminateTree, windowsProcessJob } from '../../bot/src/runtime/process-tools.mjs';
-import { assertPathPolicy, assertCommandPolicy, fileAccessDenied } from '../../bot/src/capabilities/file-policy.mjs';
+import { createPathAccess, assertCommandPolicy, fileAccessDenied } from '../../bot/src/capabilities/file-policy.mjs';
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 export const MAX_FILE_REQUEST_BYTES = 24 * 1024 * 1024;
@@ -19,7 +19,6 @@ const READ_PAGE_BYTES = 128 * 1024;
 const DEFAULT_LINES = 600;
 const SKIP_DIRECTORIES = new Set(['node_modules', '.git', '.hg', '.svn']);
 const WINDOWS = process.platform === 'win32';
-const within = (root, path) => { const part = relative(root, path); return part === '' || (!part.startsWith(`..${WINDOWS ? '\\' : '/'}`) && part !== '..' && !isAbsolute(part)); };
 const objectSchema = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const stringSchema = description => ({ type: 'string', description });
 const integerSchema = (description, minimum, maximum) => ({ type: 'integer', description, minimum, maximum });
@@ -71,39 +70,6 @@ function textPage(text, startLine, startColumn, maxLines) {
 
 function defaultRedact(value) {
   return String(value).replace(/\bsk-[a-zA-Z0-9_-]{12,}\b/g, '[redacted]');
-}
-
-function sensitivePath(path, workspace) {
-  const parts = path.slice(parse(path).root.length).split(/[\\/]+/).map(part => part.toLowerCase());
-  for (const [index, part] of parts.entries()) {
-    if (part === '.git' || part === '.ssh' || part === '.aws' || part === '.azure' || part === 'gcloud') return true;
-    if (part === '.relay' && !within(workspace, path)) return true;
-    if (/^\.env(?:[.-]|$)/.test(part) || /^\.(?:npmrc|pypirc|netrc|git-credentials)$/.test(part)) return true;
-    // A credential-themed review/guide is not a credential container. Keep
-    // exact credential names and data/export formats protected; only explicit
-    // documentation suffixes distinguish the overbroad prefix match here.
-    const credentialDocument = index === parts.length - 1 && /^credentials?[_-](?:[a-z0-9]+[_-])*(?:readme|guide|manual|design|spec|plan|report|brief|review(?:[_-]card)?)\.md$/.test(part);
-    if (/^(?:id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|credentials?(?:[._-].*)?|secrets?(?:[._-].*)?|ds\.txt|summon\.sqlite(?:[.-].*)?)$/.test(part) && !credentialDocument) return true;
-    if (/\.(?:pem|p12|pfx|key)$/.test(part) || part.includes(':')) return true;
-  }
-  return false;
-}
-
-// Resolve the closest existing ancestor, then append missing components. This also
-// catches directory junctions and symlinks when the destination does not exist yet.
-async function physicalPath(path) {
-  const missing = [];
-  let current = path;
-  while (true) {
-    try { return resolve(await realpath(current), ...missing.reverse()); }
-    catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-      const parent = dirname(current);
-      if (parent === current) throw error;
-      missing.push(basename(current));
-      current = parent;
-    }
-  }
 }
 
 async function runCommand(command, cwd, timeoutMs, signal, redact, saveArtifact, onArtifacts, tempRoot, containProcesses) {
@@ -203,24 +169,7 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
     if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, sanitizeResult(item)]));
     return value;
   };
-  async function checkedPath(input = '.', { directory = false, operations = ['read'], alternative = false } = {}) {
-    textValue(input, 'path');
-    const requested = resolve(workspaceRoot, input);
-    assertPathPolicy(requested, accessPolicy, { operations, alternative });
-    if (![workspaceRoot, project].some(root => within(root, requested))) throw fileAccessDenied(requested, 'outside_allowed_roots', { operations });
-    if (sensitivePath(requested, workspaceRoot) || (protectedDirectories.some(root => within(root, requested)) && !within(workspaceRoot, requested)))
-      throw fileAccessDenied(requested, 'protected_path', { operations });
-    const [actual, actualWorkspace, actualProject, actualProtected] = await Promise.all([
-      physicalPath(requested), realpath(workspaceRoot), realpath(project), Promise.all(protectedDirectories.map(physicalPath)),
-    ]);
-    const actualDenied = await Promise.all((accessPolicy.deniedPaths || []).map(async item => ({ ...item, path: await physicalPath(item.path) })));
-    assertPathPolicy(actual, { deniedPaths: actualDenied }, { operations, alternative });
-    if (![actualWorkspace, actualProject].some(root => within(root, actual))) throw fileAccessDenied(requested, 'resolved_outside_allowed_roots', { operations });
-    if (sensitivePath(actual, actualWorkspace) || (actualProtected.some(root => within(root, actual)) && !within(actualWorkspace, actual)))
-      throw fileAccessDenied(requested, 'resolved_protected_path', { operations });
-    if (directory && !(await stat(actual)).isDirectory()) throw new Error('Path is not a directory');
-    return actual;
-  }
+  const checkedPath = createPathAccess({ workspace: workspaceRoot, project, protectedDirectories, accessPolicy });
 
   async function readText(path, signal) {
     cancelled(signal);
