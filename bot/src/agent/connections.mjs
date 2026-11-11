@@ -32,9 +32,12 @@ export function grokProxyHeaders(connection = {}) {
 const factories = { codex: openaiCodexProvider, grok: xaiProvider, deepseek: deepseekProvider, openai: openaiProvider, anthropic: anthropicProvider, xai: xaiProvider };
 const apis = { 'openai-completions': openAICompletionsApi, 'openai-responses': openAIResponsesApi,
   'openai-codex-responses': openAICodexResponsesApi, 'anthropic-messages': anthropicMessagesApi };
-// The direct API window includes input and output. Pi's catalog still uses
-// the 272K pricing threshold for these Responses models and omits Terra.
-const openAILongContextModels = new Set(['gpt-6-astra', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-luna']);
+// The direct API window includes input and output. The bundled Responses
+// catalog reports 272K for these entries and omits GPT-6.1 Terra.
+const openAILongContextModels = new Set([
+  'gpt-5.4', 'gpt-5.5', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra',
+  'gpt-6-astra', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-luna',
+]);
 const openAILongContextBudget = { contextWindow: 1050000, maxTokens: 128000 };
 const terraModel = { id: 'gpt-6.1-terra', name: 'GPT-6.1 Terra', api: 'openai-responses', type: 'chat', input: ['text', 'image'] };
 export const readConnectionCatalog = path => JSON.parse(readFileSync(path, 'utf8'));
