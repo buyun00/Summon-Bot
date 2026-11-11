@@ -17,26 +17,30 @@ function wordBody(bytes) {
   const directory = at;
   const limit = at + bytes.readUInt32LE(end + 12), count = bytes.readUInt16LE(end + 10);
   if (limit !== end || count > 4096) zipError();
+  let bodyEntry = -1;
   for (let i = 0; i < count; i++) {
     if (at + 46 > limit || bytes.readUInt32LE(at) !== 0x02014b50) zipError();
     const nameSize = bytes.readUInt16LE(at + 28);
     const next = at + 46 + nameSize + bytes.readUInt16LE(at + 30) + bytes.readUInt16LE(at + 32);
     if (next > limit) zipError();
-    if (bytes.toString('ascii', at + 46, at + 46 + nameSize) === 'word/document.xml') {
-      const method = bytes.readUInt16LE(at + 10), compressed = bytes.readUInt32LE(at + 20);
-      const size = bytes.readUInt32LE(at + 24), header = bytes.readUInt32LE(at + 42);
-      if (bytes.readUInt16LE(at + 8) & 1 || size > xmlLimit || header + 30 > directory ||
-          bytes.readUInt32LE(header) !== 0x04034b50 || ![0, 8].includes(method)) zipError();
-      const start = header + 30 + bytes.readUInt16LE(header + 26) + bytes.readUInt16LE(header + 28);
-      if (start + compressed > directory || method === 0 && compressed !== size) zipError();
-      const data = bytes.subarray(start, start + compressed);
-      const result = method === 8 ? inflateRawSync(data, { maxOutputLength: xmlLimit }) : data;
-      if (result.length !== size) zipError();
-      return decode(result);
+    const partName = bytes.toString('latin1', at + 46, at + 46 + nameSize).replaceAll('\\', '/');
+    if (partName === 'word/document.xml') {
+      if (bodyEntry !== -1) zipError();
+      bodyEntry = at;
     }
     at = next;
   }
-  zipError();
+  if (bodyEntry === -1) zipError();
+  const method = bytes.readUInt16LE(bodyEntry + 10), compressed = bytes.readUInt32LE(bodyEntry + 20);
+  const size = bytes.readUInt32LE(bodyEntry + 24), header = bytes.readUInt32LE(bodyEntry + 42);
+  if (bytes.readUInt16LE(bodyEntry + 8) & 1 || size > xmlLimit || header + 30 > directory ||
+      bytes.readUInt32LE(header) !== 0x04034b50 || ![0, 8].includes(method)) zipError();
+  const start = header + 30 + bytes.readUInt16LE(header + 26) + bytes.readUInt16LE(header + 28);
+  if (start + compressed > directory || method === 0 && compressed !== size) zipError();
+  const data = bytes.subarray(start, start + compressed);
+  const result = method === 8 ? inflateRawSync(data, { maxOutputLength: xmlLimit }) : data;
+  if (result.length !== size) zipError();
+  return decode(result);
 }
 
 const entities = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
