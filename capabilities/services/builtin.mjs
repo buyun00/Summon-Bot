@@ -15,7 +15,7 @@ import { createRedactor } from '../../bot/src/runtime/config.mjs';
 import { acceptedWorkTask, workExecution } from '../../bot/src/context/sources.mjs';
 import { executorManifestOperation, readExecutorManifest } from '../../bot/src/runtime/executor-delivery.mjs';
 import { toolDefinitions, FILE_TOOLS } from '../gateway/tools.mjs';
-import { fail } from '../shared/validation.mjs';
+import { fail, pick } from '../shared/validation.mjs';
 
 export const BUILTIN_CAPABILITIES = ['bot-management', 'chatroom', 'knowledge', 'memory-management', 'codex', 'filesystem'];
 export function capabilityForTool(name) {
@@ -145,12 +145,13 @@ export async function createCapability(options) {
         return rooms.filter(room=>actor==='controller'||room.members.includes(actor)&&(!sourceActor||sourceActor==='system'||room.members.includes(sourceActor)));
       }
       case 'chatroom_read':{
+        if(args.attachmentId!==undefined)return chatroom.readStaffingAttachment(args,actor,context.source);
         const page=chatroom.read(args,actor,context.source);
         return actor==='controller'||args.outputReceipts!==undefined||context.source?.metadata?.groupObservation||context.source?.metadata?.teamStaffing?
           page:attachments.stageContext(page,(await manager.config(actor)).workspace);
       }
       case 'chatroom_create':return chatroom.createRoom({...args,members:[...new Set([...(args.members||[]),...(actor==='controller'?[]:[actor])])]});
-      case 'chatroom_team_read':return chatroom.teamRead(args,actor);
+      case 'chatroom_team_read':return chatroom.teamRead(args,actor,context.source);
       case 'chatroom_team_raise':return chatroom.teamRaise(args,actor);
       case 'chatroom_team_manage':return chatroom.teamManage(args,actor,context.source);
       case 'chatroom_send':{
@@ -180,6 +181,8 @@ export async function createCapability(options) {
       case 'knowledge_save_node':return knowledge.saveNode(args);
       case 'knowledge_save_edge':return knowledge.saveEdge(args);
       case 'bots_list':{
+        if(context.source?.metadata?.teamStaffing)return manager.list().map(bot=>
+          pick(bot,['id','name','roleId','role','expertise','status','runIntent','lifecycle','skills','allowedTools']));
         const sharedRooms=new Set(store('chatroom').list('rooms').filter(room=>actor==='controller'||room.members.includes(actor)).map(room=>room.id));
         return Promise.all(manager.list().map(async bot=>{
           const works=await manager.readState(bot.id,db=>db?.listRecords('works')||[]);
@@ -240,7 +243,8 @@ export async function createCapability(options) {
   return {tools,stateVersion:'1',operations,...(chatroom?{maxRequestBytes:MAX_ATTACHMENT_REQUEST_BYTES}:
     id==='filesystem'?{maxRequestBytes:MAX_FILE_REQUEST_BYTES}:{}),
     callTool:(name,args,context,signal)=>id==='filesystem'?invoke(name,args,context,signal):locked(()=>invoke(name,args,context,signal)),
-    pendingWork:()=>chatroom?(chatroom.closed?0:Math.max(Number(chatroom.busy),chatroom.jobs().filter(job=>job.serviceVersion===version&&unfinished(job)).length)):codex?Number(Boolean(codex.active)):0,
+    pendingWork:()=>chatroom?(chatroom.closed?0:Math.max(Number(chatroom.busy),chatroom.teamService.staffing.running.size,
+      chatroom.jobs().filter(job=>job.serviceVersion===version&&unfinished(job)).length)):codex?Number(Boolean(codex.active)):0,
     close:async()=>{await chatroom?.close();await codex?.stop();for(const db of stores.values())db.close();}
   };
 }

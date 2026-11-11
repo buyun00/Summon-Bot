@@ -1,14 +1,44 @@
 import { looseSchema } from '../../bot/src/context/model-input.mjs';
 import { commandTimeout } from '../filesystem/tools.mjs';
+import { staffingAreas } from '../chatroom/staffing.mjs';
 const object = properties => ({type:'object',properties,additionalProperties:true});
 const string={type:'string'},number={type:'number'},boolean={type:'boolean'},array={type:'array',items:{type:'string'}};
+const itemQuestions={
+  input:{type:'string',description:'Real inputs needed to hand this item over.'},
+  output:{type:'string',description:'Concrete output or contribution.'},
+  done:{type:'string',description:'Observable completion condition.'},
+  independence:{type:'string',description:'Evidence of independent judgment, acceptance or clean context needed, or why none.'},
+  knowledge:{type:'string',description:'What another work will reuse and who needs it, or why none.'},
+  maintenance:{type:'string',description:'What will need future changes and downstream regression, or why none.'},
+  capacity:{type:'string',description:'Actual queue, competing work, repeated context reads or missed rules, or unavailable evidence.'},
+  availableOwner:{type:'string',description:'Named possible owner and actual capability, availability and assignment evidence, or what is missing.'},
+};
+const staffingItem={type:'object',additionalProperties:false,
+  required:['title','basis','sourceMessageId','handling',...Object.keys(itemQuestions)],properties:{
+    title:string,basis:{type:'string',enum:['confirmed','near-term']},sourceMessageId:string,
+    handling:{type:'string',enum:['specialist','independent-work','project-knowledge','current-work','deferred']},
+    ...itemQuestions,
+  }};
+const coverage={type:'array',minItems:staffingAreas.length,maxItems:staffingAreas.length,items:{
+  type:'object',required:['area','decision','reason','sourceMessageIds','items'],additionalProperties:false,properties:{
+    area:{type:'string',enum:staffingAreas.map(item=>item.area)},
+    decision:{type:'string',enum:['needed','not-needed','deferred']},
+    reason:{type:'string',description:'Concrete benefit of dedicated ownership, or the evidence and missing condition for deferring or passing.'},
+    sourceMessageIds:array,items:{type:'array',maxItems:4,items:staffingItem},
+    roleId:{type:'string',enum:staffingAreas.flatMap(item=>item.roles.map(role=>role.id)),description:'Choose the matching domain role from the assessment areas.'},
+    dependencySourceMessageId:{type:'string',description:'For component maintenance, cite the confirmed downstream dependency in the original user scope if distinct work receipts are unavailable.'},
+    responsibility:{type:'string',description:'For needed, name the actual responsibility, expected result and authorized boundary.'},
+    existingOwnerId:{type:'string',description:'A current member with the exact responsibility already recorded and a matching specialty.'},
+    candidateBotId:{type:'string',description:'An available specialist whose actual role and capability fit this responsibility.'},
+  },
+}};
 const definitions=[
  ['chatroom_list','List shared conversations',{},'read'],
- ['chatroom_read','Read bounded original room messages with author, exact reference and fragment cursor. Query selects evidence; follow message and character cursors for more.',{roomId:string,messageId:string,afterMessageId:string,beforeMessageId:string,throughMessageId:string,oldestFirst:boolean,query:string,offset:number,length:number,limit:number},'read'],
+ ['chatroom_read','Read bounded original room messages with author, exact reference and fragment cursor. In a staffing task, messageId and attachmentId read an exact published Markdown or text file from this room.',{roomId:string,messageId:string,attachmentId:string,afterMessageId:string,beforeMessageId:string,throughMessageId:string,oldestFirst:boolean,query:string,offset:number,length:number,limit:number},'read'],
  ['chatroom_create','Create a group, DM or discussion. Group projectMode=project explicitly enables continuing project reviews and requires a goal. Use chat for ordinary chat or auto for evidence-based enrollment.',{name:string,kind:string,members:array,goal:string,leadBotId:string,projectMode:{type:'string',enum:['auto','project','chat']}},'write'],
  ['chatroom_team_read','Read shared project goals, lead/EggBot, member responsibilities, open concerns, real work states and routine costs; private conversations stay private.',{roomId:string},'read'],
  ['chatroom_team_raise','Raise a sourced collaboration, staffing, lifecycle, scope, dependency, timing, handoff or improvement question in this group. Stable operationId deduplicates; the responsible member is notified.',{roomId:string,operationId:string,kind:string,title:string,message:string,sourceMessageId:string,targetBotId:string},'external'],
- ['chatroom_team_manage','Room EggBot manages create/invite/assign/promote/resume/leave/retire/handoff; lead may assign/project/resolve. Reuse operationId, give reason and original source. In a staffing decision read the current revision and use the same dutyKey for the same responsibility. Temporary retirement retains history. Handoff stays pending until actual stop is known.',{roomId:string,operationId:string,action:{type:'string',enum:['create','invite','assign','promote','resume','leave','retire','handoff','project','resolve']},botId:string,name:string,roleId:string,prompt:string,cwd:string,responsibility:string,dutyKey:string,reason:string,sourceMessageId:string,issueId:string,workId:string,stopCurrent:boolean,goal:string,requirements:string,status:{type:'string',enum:['idle','active','paused','completed']},deadlineAt:{type:['string','null']},nextReviewAt:{type:['string','null']},reviewIntervalSeconds:number,auditIntervalSeconds:number,expectedRevision:number},'external'],
+ ['chatroom_team_manage','Room EggBot manages create/invite/assign/promote/resume/leave/retire/handoff; lead may assign/project/resolve. In a coverage staffing delivery use assess with its triggerMessageId, current revision and five evidence-backed decisions. The team service applies needed duties through the normal management actions. Reuse operationId and original source. Temporary retirement retains history. Handoff stays pending until actual stop is known.',{roomId:string,operationId:string,action:{type:'string',enum:['assess','create','invite','assign','promote','resume','leave','retire','handoff','project','resolve']},coverage,botId:string,name:string,roleId:string,prompt:string,cwd:string,responsibility:string,dutyKey:string,reason:string,sourceMessageId:string,issueId:string,workId:string,stopCurrent:boolean,goal:string,requirements:string,status:{type:'string',enum:['idle','active','paused','completed']},deadlineAt:{type:['string','null']},nextReviewAt:{type:['string','null']},reviewIntervalSeconds:number,auditIntervalSeconds:number,expectedRevision:number},'external'],
  ['chatroom_send','Post sourced information to a room. Requests and corrections can reach their owner. FYI is published for group observation without directing a task.',{roomId:string,content:string,toBotId:string,replyTo:string,clientId:string,workId:string,purpose:string,sourceRefs:array},'external'],
  ['chatroom_dm','Ask a peer about an explicit work; keep original source references and authorization.',{targetBotId:string,message:string,originRoomId:string,originMessageId:string,clientId:string,workId:string,targetWorkId:string,purpose:string,sourceRefs:array},'external'],
  ['chatroom_conclude','Save an evidence-based discussion conclusion',{roomId:string,summary:string},'write'],

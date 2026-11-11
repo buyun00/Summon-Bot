@@ -130,6 +130,7 @@ export class BotEngine {
     const routeOnly = originalTask.metadata?.routeOnly === true;
     const observation = originalTask.metadata?.groupObservation === true;
     const staffing = originalTask.metadata?.teamStaffing === true, roomDecision = observation || staffing;
+    const coverageReview = staffing && Boolean((originalTask.input?.current || originalTask.input)?.staffing?.coverageVersion);
     const task = routeOnly ? { ...originalTask, sessionId: `route:${originalTask.id}` }
       : originalTask.workId ? { ...originalTask, input: { type: 'work_input', workId: originalTask.workId,
         input: workInput(this.services.works.executionInput(originalTask)) } } : originalTask;
@@ -316,7 +317,8 @@ export class BotEngine {
           ['completed', 'running', 'unknown'].includes(record.status) && canonical(record.args) === canonical(args));
         if (!prior) {
           const output = await tool.execute(toolCallId, args, toolSignal, onUpdate);
-          return taskMode(task) === 'chat' ? frontendObservation(output) : output;
+          const coverageTool = coverageReview && ['chatroom_team_read', 'chatroom_team_manage'].includes(tool.name);
+          return taskMode(task) === 'chat' && !coverageTool ? frontendObservation(output) : output;
         }
         toolSignal?.throwIfAborted();
         const recovered = { recovered: true, executed: false, resultKnown: prior.status === 'completed', originalReceipt: receiptPreview(prior),
@@ -487,9 +489,12 @@ export class BotEngine {
         return { context: { ...request.context, messages, tools: agent.state.tools.slice() } };
       };
       const observations = [];
+      let staffingAssessment;
       agent.beforeToolCall = () => { combined.throwIfAborted(); toolsCalled++; };
       agent.afterToolCall = ({ toolCall, result, isError }) => {
         const receipt = result.details;
+        if (coverageReview && !isError && toolCall.name === 'chatroom_team_manage' && receipt?.assessmentId)
+          staffingAssessment = receipt;
         if (!isError && receipt?.accepted === true && taskMode(task) === 'chat' && ['work_create', 'work_dispatch', 'work_wait'].includes(toolCall.name)) {
           const label = receipt.receiptLayer === 'local-dispatch' ? '已提交到本机工作队列' : '等待已登记';
           handoffs.push({ workId: receipt.workId, label });
@@ -505,6 +510,7 @@ export class BotEngine {
       };
       agent.finishTurn = turn => {
         if (suspended || ['error', 'length', 'aborted'].includes(turn.message.stopReason)) return { action: 'end' };
+        if (staffingAssessment) return { action: 'end' };
         outputBudget = model.maxTokens;
         retryStartedAt = 0; retryDelayMs = 2000; lastContextRetry = undefined;
         const work = currentWork();
@@ -642,7 +648,11 @@ export class BotEngine {
         !attachments.length && !handoffs.length && recordedTools.every(record => record.effect === 'read' || record.name === 'request_decide');
       const partial = !acknowledgmentOnly && !suspended && (!lastOutcome || ['error', 'aborted', 'length'].includes(lastOutcome.stopReason));
       if (partial && (task.workId || !partialText && !handoffs.length && !receipt)) throw Object.assign(new Error(lastOutcome?.errorMessage || `Agent ended with ${lastOutcome?.stopReason || 'no result'}`), { code: 'MODEL_ERROR' });
-      const answer = partialText || handoffs.map(item => `工作 ${item.workId}：${item.label}。`).join('\n');
+      const assessmentAnswer = staffingAssessment && [
+        staffingAssessment.noChange ? 'PASS' : '已保存分工评估，后续状态以团队管理回执为准。',
+        ...staffingAssessment.areas.map(row => `${row.area} · ${row.state}：${row.reason}`),
+      ].join('\n');
+      const answer = assessmentAnswer || partialText || handoffs.map(item => `工作 ${item.workId}：${item.label}。`).join('\n');
       const content = acknowledgmentOnly ? receipt : [receipt, receipt && /^PASS\s*$/i.test(answer) ? '' : answer].filter(Boolean).join('\n\n');
       return clean({ content: content +
         (partial ? `\n本轮答复未完整结束：${lastOutcome?.errorMessage || lastOutcome?.stopReason || '未取得完整答复'}。已保存的动作和内容仍然保留。` : ''),
