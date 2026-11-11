@@ -177,9 +177,21 @@ export class BotEngine {
         const related = user.replyTo ? prior.slice(0, Math.max(0, current)).find(message => message.source?.messageId === user.replyTo) :
           current > 0 ? prior[current - 1] : null;
         const previous = step !== 'acceptance' && related?.source?.actor === this.config.botId ? JSON.parse(related.content[0].text) : null;
+        let referencedUserScope;
+        if (step === 'proposal' && user.roomId && user.replyTo &&
+          prior[current]?.source?.actor === user.actor && related?.source?.actor === user.actor) {
+          const reference = { type: 'room', roomId: user.roomId, messageId: user.replyTo };
+          const original = await this.services.sources.resolve({ ...reference, length: 16000 }, task).catch(() => null);
+          if (original?.reference?.roomId === reference.roomId && original.reference.messageId === reference.messageId &&
+            original.author === user.actor && typeof original.content === 'string' && original.content.trim() &&
+            original.nextOffset === null && original.fullCharacters === original.content.length) {
+            referencedUserScope = { reference, author: original.author, content: original.content };
+          }
+        }
         const input = step === 'acceptance' ? { currentUser: units, originalText: user.text, acceptanceContext } :
-          { currentUser: units, referencedTurn: previous && { content: previous.content },
+          { currentUser: units, referencedTurn: previous && { content: previous.content }, referencedUserScope,
             continuationTarget, existingDelivery, ...(proposed ? { sourceAction, proposed } : {}) };
+        signal?.throwIfAborted();
         const result = await this.provider.stream(model, { messages: [
           { role: 'system', content: productionAuthorizationPrompts[step], timestamp: Date.now() },
           userMessage(input),
