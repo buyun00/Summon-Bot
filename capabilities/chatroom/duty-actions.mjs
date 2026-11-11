@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { OWNER_DELIVERY, ROOM_DUTY_PLANS, dependencyDispatches, matchesContributionGrant, roomDutyPlanId, sourceDispatches } from '../../bot/src/context/duty-actions.mjs';
+import { EXISTING_PUBLICATION, OWNER_DELIVERY, ROOM_DUTY_PLANS, dependencyDispatches, matchesContributionGrant, publishedReviewTarget, roomDutyPlanId, sourceDispatches } from '../../bot/src/context/duty-actions.mjs';
 import { currentUserRequest, requireProductionGrant } from '../../bot/src/capabilities/request-routing.mjs';
 import { acceptedWorkTask } from '../../bot/src/context/sources.mjs';
 import { externalExecution } from '../../bot/src/context/execution-evidence.mjs';
@@ -9,6 +9,7 @@ import { fail, now, pick } from '../shared/validation.mjs';
 const stopped = new Set(['failed', 'cancelled', 'interrupted']);
 const pending = new Set(['waiting', 'queued']);
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+const sameOwnerAssignment = (plan, duty) => !plan.dependency?.ownerAssignedAt || duty.assignedAt === plan.dependency.ownerAssignedAt;
 
 // This ledger owns a room handoff. It is neither a work card nor evidence
 // that an owner has acted. Only the delivery and its final publication are.
@@ -44,8 +45,10 @@ export class RoomDutyActions {
         item.teamIntroduction || trigger.senderId !== 'user' || task.workId || task.cancelRequested || task.status === 'cancelled') return [];
     const plans = await this.manager.readState(item.botId, db => {
       const saved = db?.getTask(item.taskId), user = saved && currentUserRequest(saved, db);
-      if (user?.roomId !== room.id || user.messageId !== trigger.id) return [];
-      const accepted = db.getMessage(user.acceptedMessageId);
+      const accepted = user && db.getMessage(user.acceptedMessageId);
+      if (user?.roomId !== room.id || user.messageId !== trigger.id || user.text !== trigger.content ||
+          (user.replyTo || null) !== (trigger.replyTo || null) || accepted?.sourceMessageId !== item.id ||
+          accepted.content?.metadata?.deliveryId !== item.id) return [];
       return db.listRecords(ROOM_DUTY_PLANS).flatMap(plan => {
         const grant = plan.grant;
         if (!grant || plan.requestTaskId !== task.id || plan.coordinatorBotId !== item.botId ||
@@ -54,27 +57,25 @@ export class RoomDutyActions {
         const dependent = plan.kind === 'independent-review';
         const relation = dependent ? 'new' : grant.relation;
         const ownerDelivery = plan.dependency?.condition === OWNER_DELIVERY;
+        const existingPublication = plan.dependency?.condition === EXISTING_PUBLICATION;
         if (!['new', 'continue'].includes(relation)) return [];
-        if (ownerDelivery && (user.text !== trigger.content || accepted?.sourceMessageId !== item.id ||
-            accepted.content?.metadata?.deliveryId !== item.id)) return [];
         try {
           requireProductionGrant(saved, db, grant, {
             actionId: dependent ? plan.id : plan.operationId, workId: dependent ? null : plan.workId, relation,
-            when: dependent || ownerDelivery ? 'after-dependency' : 'now',
+            when: dependent && !existingPublication || ownerDelivery ? 'after-dependency' : 'now',
           });
         } catch { return []; }
         if (grant.participant?.dutyKey !== plan.dutyKey) return [];
-        if (dependent) return task.status !== 'interrupted' && grant.participant?.independent === true && same(plan.dependency, grant.after) && plan.dependency?.roomId === room.id &&
-          plan.dependency.messageId === trigger.id && plan.dependency.condition === 'successful-publication' ? [plan] : [];
+        if (dependent) return task.status !== 'interrupted' && grant.participant?.independent === true &&
+          same(plan.dependency, grant.after) && plan.dependency?.roomId === room.id && plan.dependency.messageId === trigger.id &&
+          (existingPublication || plan.dependency.condition === 'successful-publication') ? [plan] : [];
         const event = db.getRecord('work-events', plan.operationId);
         const gatesProduction = event?.contributionPlanId === plan.id;
-        if (relation === 'continue' && (!gatesProduction || !plan.dutyKey || !matchesContributionGrant(plan, grant) ||
+        if (!gatesProduction || (ownerDelivery || relation === 'continue') && !plan.dutyKey || !matchesContributionGrant(plan, grant) ||
             event.requestTaskId !== saved.id || event.content?.stage?.kind !== grant.stage ||
             event.authorization?.source?.actor !== 'user' || event.authorization.source.roomId !== room.id ||
-            event.authorization.source.replyTo !== trigger.id || !same(event.authorization.production, grant))) return [];
-        return (task.status !== 'interrupted' || gatesProduction) && grant.participant?.contribution === plan.goal && event?.workId === plan.workId &&
-          event.authorization?.production?.actionId === grant.actionId && (event.receipt?.accepted ||
-            event.status === 'pending' && gatesProduction && event.requestTaskId === task.id) ? [{ ...plan, gatesProduction,
+            event.authorization.source.replyTo !== trigger.id || !same(event.authorization.production, grant)) return [];
+        return event.workId === plan.workId && (event.receipt?.accepted || event.status === 'pending') ? [{ ...plan, gatesProduction,
             referenceMaterials: this.materials(room.id, event.content?.evidence) }] : [];
       });
     });
@@ -82,10 +83,11 @@ export class RoomDutyActions {
     for (const plan of plans) {
       if (this.get(plan.id)) continue;
       const references = this.references(room.id, plan.references);
+      const scoped = plan.gatesProduction || plan.dependency?.condition === EXISTING_PUBLICATION;
       imported.push(this.store.save(ROOM_DUTY_PLANS, { ...plan, references, status: 'waiting',
-        waitingFor: plan.kind === 'independent-review' ? 'publication' : 'responsible-member',
-        originalRoomGoal: plan.gatesProduction ? plan.originalRoomGoal : room.goal,
-        originalTeamRequirements: plan.gatesProduction ? plan.originalTeamRequirements : room.team.requirements,
+        waitingFor: plan.dependency?.condition === 'successful-publication' ? 'publication' : 'responsible-member',
+        originalRoomGoal: scoped ? plan.originalRoomGoal : room.goal,
+        originalTeamRequirements: scoped ? plan.originalTeamRequirements : room.team.requirements,
         deliveryId: 'duty-action:' + randomUUID() }));
     }
     return imported;
@@ -132,7 +134,7 @@ export class RoomDutyActions {
         ownerDelivery && (!message.content?.trim() || result.workId !== workId || result.operationId !== operationId ||
           !same(result.dependency, plan.dependency) || delivery.routedDutyKey !== plan.dutyKey || delivery.messageId !== trigger.id ||
           delivery.botId !== plan.ownerBotId || !activeDuties(room, plan.ownerBotId).some(duty =>
-            duty.dutyKey === plan.dutyKey && !duty.dutyProfile?.independentReview)))
+            duty.dutyKey === plan.dutyKey && !duty.dutyProfile?.independentReview && sameOwnerAssignment(plan, duty))))
       return { status: 'blocked', error: '职责回复与原制作操作的群内交付回执未能对上。' };
     return { status: 'completed', planId: plan.id, operationId, workId, sourceMessageId: trigger.id,
       dutyKey: plan.dutyKey, deliveryId: delivery.id, taskId: delivery.taskId, publishedAt: message.createdAt,
@@ -141,7 +143,28 @@ export class RoomDutyActions {
         content: message.content, sourceRefs: result.references, authority: 'published-duty-contribution' } };
   }
 
+  existingPublication(plan) {
+    const target = plan.dependency.publication;
+    const message = target && this.store.get('messages', target.messageId);
+    const original = target && this.store.get('messages', target.sourceMessageId);
+    const trigger = this.store.get('messages', plan.messageId);
+    if (!target || !same(publishedReviewTarget(message, plan.roomId, target.attachmentIds), target) ||
+        original?.roomId !== plan.roomId || original.senderId !== 'user' || trigger?.roomId !== plan.roomId ||
+        trigger.senderId !== 'user' || !(Date.parse(message.createdAt) < Date.parse(trigger.createdAt))) return null;
+    return { makerBotId: target.makerBotId, publications: staffingArtifacts(message).filter(file => target.attachmentIds.includes(file.id)) };
+  }
+
   async dependency(plan) {
+    if (plan.dependency.condition === EXISTING_PUBLICATION) {
+      const current = this.existingPublication(plan);
+      if (!current) return { failure: '原群已发布的复核材料无法确认，未启动独立复核。' };
+      if (current.publications.some(file => {
+        const origin = this.chatroom.attachments.publication(file.id).attachment?.origin;
+        return origin?.publicationId !== file.id || origin.botId !== current.makerBotId || origin.roomId !== plan.roomId ||
+          origin.workId !== file.workId || origin.operationId !== file.operationId;
+      })) return { failure: '原发布附件已不可用，未启动独立复核。' };
+      return current;
+    }
     const exact = plan.dependency;
     return this.manager.readState(plan.coordinatorBotId, db => {
       const accepted = dependencyDispatches(db, exact);
@@ -216,8 +239,14 @@ export class RoomDutyActions {
         this.defer(plan, dependency.wait, dependency.selection);
         continue;
       }
-      const duties = activeDuties(room).filter(duty => duty.botId !== (dependency?.makerBotId || plan.coordinatorBotId) &&
-        duty.botId !== room.team.eggBotId && Boolean(duty.dutyProfile?.independentReview) === independent &&
+      const currentRoom = this.chatroom.need('rooms', room.id);
+      if (!staffingProject(currentRoom) || currentRoom.goal !== plan.originalRoomGoal ||
+          currentRoom.team.requirements !== plan.originalTeamRequirements || this.get(plan.id)?.status !== 'waiting') continue;
+      const excludedOwner = independent ? dependency.makerBotId :
+        plan.dependency?.condition === OWNER_DELIVERY && plan.grant.relation === 'new' ? null : plan.coordinatorBotId;
+      const duties = activeDuties(currentRoom).filter(duty => duty.botId !== excludedOwner &&
+        duty.botId !== currentRoom.team.eggBotId && Boolean(duty.dutyProfile?.independentReview) === independent &&
+        sameOwnerAssignment(plan, duty) &&
         (!plan.ownerBotId || duty.botId === plan.ownerBotId) &&
         (plan.dutyKey ? plan.dutyKey === duty.dutyKey :
           (duty.sourceRefs || []).some(ref => ref.roomId === room.id && ref.messageId === plan.messageId)));
@@ -226,7 +255,7 @@ export class RoomDutyActions {
         continue;
       }
       const duty = duties[0], bot = this.manager.get(duty.botId);
-      if (bot.status !== 'active' || bot.runIntent !== 'running' || bot.archivedAt) {
+      if (bot.status !== 'active' || bot.runIntent !== 'running' || bot.archivedAt || !bot.allowedTools?.includes('chatroom_read')) {
         this.defer(plan, 'responsible-member-unavailable', dependency?.selection);
         continue;
       }
@@ -256,15 +285,20 @@ export class RoomDutyActions {
   }
   current(item, room) {
     const plan = this.get(item.roomDutyAction);
+    const independent = plan?.kind === 'independent-review';
     return plan?.status === 'queued' && plan.deliveryId === item.id && plan.roomId === item.roomId &&
-      plan.messageId === item.messageId && plan.ownerBotId === item.botId &&
+      plan.messageId === item.messageId && plan.ownerBotId === item.botId && plan.dutyKey === item.routedDutyKey &&
       staffingProject(room) && room.goal === plan.originalRoomGoal && room.team.requirements === plan.originalTeamRequirements &&
       activeDuties(room, item.botId).some(duty => duty.dutyKey === plan.dutyKey &&
-        (plan.dependency?.condition !== OWNER_DELIVERY || !duty.dutyProfile?.independentReview)) ? plan : null;
+        Boolean(duty.dutyProfile?.independentReview) === independent && sameOwnerAssignment(plan, duty)) &&
+      (plan.dependency?.condition !== EXISTING_PUBLICATION || this.existingPublication(plan) &&
+        item.botId !== plan.dependency.publication.makerBotId) ? plan : null;
   }
   finish(item, status, resultMessageId, reason) {
     const plan = this.get(item.roomDutyAction);
     if (plan?.status !== 'queued' || plan.deliveryId !== item.id) return;
+    if (!resultMessageId && status === 'completed' && plan.dependency?.condition === EXISTING_PUBLICATION)
+      return this.block(plan, '独立复核未取得与原发布附件对应的可用结果。');
     this.store.save(ROOM_DUTY_PLANS, { id: plan.id, status: resultMessageId ? 'completed' : 'blocked',
       resultMessageId: resultMessageId || null, finishedAt: now(),
       ...(resultMessageId ? {} : { error: reason || (status === 'completed' ? '职责执行没有发出可用结果。' : '职责执行未完成。') }) });

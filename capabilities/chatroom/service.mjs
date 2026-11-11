@@ -9,7 +9,8 @@ import { publishedText } from './published-text.mjs';
 import { RoomDutyActions } from './duty-actions.mjs';
 import { RoomTextResults } from './room-results.mjs';
 import { productionRefusal } from '../../bot/src/capabilities/request-routing.mjs';
-import { OWNER_DELIVERY } from '../../bot/src/context/duty-actions.mjs';
+import { EXISTING_PUBLICATION, OWNER_DELIVERY } from '../../bot/src/context/duty-actions.mjs';
+import { dutyOrigin } from '../bot-management/tool-access.mjs';
 const TERMINAL=new Set(['completed','failed','cancelled','interrupted']);
 const foreground=item=>item.priority!=='background';
 const normalized=text=>String(text||'').trim().replace(/\s+/g,' ');
@@ -35,7 +36,7 @@ const staffingMessage=message=>{
 const firstPosition={at:'',row:0};
 const comparePosition=(a,b)=>a.at.localeCompare(b.at)||a.row-b.row;
 const routeInstruction='这是一次临时语义路由，不是执行任务。只根据本条用户原文、明确引用和成员职责选择最适合承担的一个现有成员；不得群发、执行或代替用户授权。能确定已有工作才填写其真实 workId，不按最近活跃猜归属。可以用普通文字选择成员，也可输出 JSON：{"recipientBotId":"已有成员ID或null","workId":"已知工作ID或null","reason":"简短依据"}。无法确定时 recipientBotId 设为你自己，由你的普通聊天对话作最小澄清或回答。';
-const dutyRouteInstruction=routeInstruction+' 本次使用 JSON。仅当原问题直接落在一个当前成员的登记职责（duties）时选择该成员，并在 dutyKey 字段填该职责的真实键。跨领域、泛讨论、协调和不确定的消息由主控接住。增加 requestScope 字段：single-duty 表示一个职责覆盖整条请求，multiple 表示用户实际要求多个范围，ordinary 仅表示与项目业务或分工无关的一次性问答，unresolved 表示其他或不确定。没有现有负责人、新的项目工作或项目范围不清楚时不要填 ordinary。';
+const dutyRouteInstruction=routeInstruction+' 本次使用 JSON。仅当原问题直接落在一个当前成员的登记职责（duties）时选择该成员，并在 dutyKey 字段填该职责的真实键，主控兼任的职责也适用。跨领域、泛讨论、协调和不确定的消息由主控接住。需要独立于制作者核读已发布成果或登记发布后的独立复核时，交给主控绑定原发布和同群职责。增加 requestScope 字段：single-duty 表示一个职责覆盖整条请求，multiple 表示用户实际要求多个范围，ordinary 仅表示与项目业务或分工无关的一次性问答，unresolved 表示其他或不确定。没有现有负责人、新的项目工作或项目范围不清楚时不要填 ordinary。';
 const cursorKey=item=>[item.botId,item.roomId,item.teamStaffing?'staffing':item.roomDutyAction?'duty-action':item.workId||'chat'].join(':');
 function projectMode(value,goal){
   if(!['auto','project','chat'].includes(value))fail('请选择有效的群聊用途');
@@ -267,6 +268,9 @@ export class ChatroomService {
         bot.runIntent==='running'&&!bot.archivedAt?[botId]:[];
     }))];
   }
+  inactiveDutyMember(room, bot) {
+    return dutyOrigin(bot)?.originRoomId === room.id && !activeDuties(room, bot.id).length;
+  }
   mentions(content,members) {if(/(?:^|\s)@(?:all|everyone|所有人)(?=\s|$|[，。！？:：])/i.test(content))return members;return members.filter(id=>{const bot=this.manager.get(id);return [id,bot.name].some(name=>new RegExp(`(?:^|\\s)@${name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}(?=$|[\\s，。！？:：,!?])`,'i').test(content));});}
   append(roomId,input,senderId,route,{workPublication=false,observationCoverage}={}) {
     const room=this.need('rooms',roomId);if(!room.members.includes(senderId)&&senderId!=='system')fail('Sender is not a room member',403);
@@ -306,6 +310,7 @@ export class ChatroomService {
       if(room.kind==='group'&&observable(saved)&&!repeated)for(const botId of room.members){
         const bot=this.manager.store.get('bots',botId);
         if(this.teamService.staffingRoom(room)&&botId===room.team.eggBotId)continue;
+        if(this.inactiveDutyMember(room,bot))continue;
         if(specialists.includes(botId)&&saved.toBotId!==botId&&parent?.senderId!==botId){
           const relevantResult=linked&&activeDuties(room,botId).some(duty=>duty.workIds?.includes(saved.workId));
           if(!relevantResult)continue;
@@ -410,7 +415,7 @@ export class ChatroomService {
     if(inFlight){if(due(inFlight))await this.deliver(inFlight);return;}
     if(direct.some(item=>!item.routeOnly&&!TERMINAL.has(this.store.get('deliveries',item.id)?.status)))return;
     const {botId,roomId}=observations[0],room=this.need('rooms',roomId);
-    if(!room.members.includes(botId)){
+    if(!room.members.includes(botId)||this.inactiveDutyMember(room,this.manager.store.get('bots',botId))){
       for(const item of observations)this.store.save('deliveries',{id:item.id,status:'cancelled',finishedAt:now()});
       return;
     }
@@ -462,7 +467,7 @@ export class ChatroomService {
       const duty=activeDuties(room,item.botId).find(candidate=>candidate.dutyKey===plan.dutyKey);
       const previous=(duty?.referenceArtifacts||[]).slice(-8).filter(ref=>staffingArtifacts(this.store.get('messages',ref.messageId)||{})
         .some(item=>item.id===ref.id&&item.messageId===ref.messageId));
-      const retained=plan.dependency?.condition===OWNER_DELIVERY?[]:previous;
+      const retained=[OWNER_DELIVERY,EXISTING_PUBLICATION].includes(plan.dependency?.condition)?[]:previous;
       const references=[...new Map([...(plan.references||[]),...retained.map(ref=>({type:'room',roomId:room.id,
         messageId:ref.messageId,attachmentId:ref.id}))].map(ref=>[ref.messageId+':'+(ref.attachmentId||''),ref])).values()];
       const ids=[...new Set([...references.map(ref=>ref.messageId),...(plan.publications||[]).map(ref=>ref.messageId)])];
@@ -642,12 +647,15 @@ export class ChatroomService {
         }catch{}
       }
       const roomResultAction=await this.roomTextResults.action(item,task,roomForPlan,triggerForPlan,ownerReply);
+      if(roomResultAction?.kind==='room-handoff'&&roomResultAction.dutyKey!==item.routedDutyKey)
+        item=this.store.save('deliveries',{...item,routedDutyKey:roomResultAction.dutyKey,requestScope:'single-duty'});
       const isUserDelivery=triggerForPlan.senderId==='user'&&!item.observation&&!item.routeOnly&&!item.teamStaffing&&!item.teamIntroduction&&!item.roomDutyAction;
       const roomAcceptances=isUserDelivery?await this.roomTextResults.record(roomForPlan,triggerForPlan,item,task):[];
       const peerRequest=isUserDelivery&&(task.tools||[]).some(tool=>tool.name==='chatroom_send'&&tool.status==='completed'&&
         tool.args?.roomId===item.roomId&&tool.args.toBotId&&tool.args.purpose==='request'&&(tool.args.replyTo||item.messageId)===item.messageId);
       const savedRefusals=isUserDelivery&&(status!=='completed'||task.result?.partial||peerRequest)?refusalNotes(task.tools):'';
-      const registeredContinuation=imported.some(plan=>plan.dependency?.condition===OWNER_DELIVERY);
+      const registeredOwnerDelivery=imported.some(plan=>plan.dependency?.condition===OWNER_DELIVERY);
+      const registeredReview=imported.some(plan=>plan.kind==='independent-review');
       let dutyResultMessageId,routeScope;
       if(status==='completed') {
         let text=String(task.result?.content||''),passed=/^PASS(?:\s*$|\s*\n)/i.test(text);
@@ -657,21 +665,26 @@ export class ChatroomService {
           const named=directory.filter(bot=>text.includes(bot.id)||(bot.name&&text.includes(bot.name)));
           let recipient=directory.find(bot=>bot.id===parsed.recipientBotId)||(item.dutyRoute?
             directory.find(bot=>bot.id===room.team?.leadBotId):named.length===1?named[0]:directory.find(bot=>bot.id===item.botId));
-          const duty=recipient?.duties?.find(item=>item.dutyKey===parsed.dutyKey)||
+          let duty=recipient?.duties?.find(item=>item.dutyKey===parsed.dutyKey)||
             (recipient?.id!==room.team?.leadBotId&&recipient?.duties?.length===1?recipient.duties[0]:null);
-          if(item.dutyRoute&&recipient?.id!==room.team?.leadBotId&&!duty)recipient=directory.find(bot=>bot.id===room.team?.leadBotId);
+          if(item.dutyRoute&&recipient?.id!==room.team?.leadBotId&&(!duty||parsed.requestScope==='multiple')){
+            recipient=directory.find(bot=>bot.id===room.team?.leadBotId);
+            duty=null;
+          }
+          if(recipient?.id===room.team?.leadBotId&&(parsed.recipientBotId!==recipient.id||parsed.requestScope!=='single-duty'))duty=null;
           if(!recipient)fail('The original routing Bot is no longer a member of this room',403);
           const workId=recipient.responsibilities.some(work=>work.workId===parsed.workId)?parsed.workId:null;
           const requestScope=item.dutyRoute&&(['multiple','unresolved'].includes(parsed.requestScope)||
-            parsed.requestScope==='single-duty'&&duty&&recipient.id!==room.team?.leadBotId||
+            parsed.requestScope==='single-duty'&&duty||
             parsed.requestScope==='ordinary'&&!duty&&!workId&&recipient.id===room.team?.leadBotId)?parsed.requestScope:undefined;
           routeScope=requestScope;
           this.enqueue(this.need('messages',item.messageId),recipient.id,{workId:null,referencedWorkId:workId,
             ...(duty?{routedDutyKey:duty.dutyKey}:{}),requestScope,routedBy:item.botId,routeReason:String(parsed.reason||text).slice(0,1000)});
         }else if(!item.teamStaffing&&!task.workId&&(!item.observation||this.need('rooms',item.roomId).members.includes(item.botId))){
           let response;try{response=ownerReply||JSON.parse(text);if(typeof response?.reply==='string'){text=response.reply;passed=response.pass||!text;}}catch{}
-          if(registeredContinuation&&(passed||!text.trim())){
-            text='原工作已登记本次修订，正在等待职责负责人在本群交付协作结果。';passed=false;
+          if((registeredOwnerDelivery||registeredReview)&&(passed||!text.trim())){
+            text=registeredOwnerDelivery?'本次制作已登记，正在等待职责负责人在本群交付先行结果。':'本次独立复核已在原群登记，等待对应的发布与独立复核负责人。';
+            passed=false;
           }
           if(savedRefusals){text=[text.replace(/^PASS(?:\s*\n|\s*$)/i,''),savedRefusals].filter(Boolean).join('\n\n');passed=false;}
           const correction=item.observationCoverage&&this.coveredCorrection(item,task,response);
@@ -685,7 +698,8 @@ export class ChatroomService {
           const attachments=(task.result?.attachments||[]).map(attachment=>this.attachments.get(attachment.id));
           if(attachments.length){passed=false;if(alreadyReplied&&!savedRefusals||/^PASS(?:\s*$|\s*\n)/i.test(text))text='';}
           for(const attachment of attachments)if(attachment.origin?.type!=='work-output'||attachment.origin.botId!==item.botId||attachment.origin.roomId!==item.roomId)fail('Reply attachment is outside this authenticated Bot/room',403);
-          if((text||attachments.length)&&!passed&&(!item.roomDutyAction||(!contribution?.gatesProduction||roomResultAction)&&
+          const certifiedOnly=contribution?.gatesProduction||contribution?.dependency?.condition===EXISTING_PUBLICATION;
+          if((text||attachments.length)&&!passed&&(!item.roomDutyAction||(!certifiedOnly||roomResultAction)&&
               !task.result?.partial&&!task.result?.suspended&&this.dutyActions.current(item,this.need('rooms',item.roomId)))){
             const newer=text&&!item.observation?this.newerDeliveries(item,task.tools):[];
             if(newer.length){
@@ -694,7 +708,8 @@ export class ChatroomService {
             }
             const parts=publicationParts(text,attachments);
             const dutySources=roomResultAction?.references;
-            const observationCoverage=roomResultAction?.kind==='room-handoff'&&roomResultAction.singleScope&&
+            const observationCoverage=roomResultAction?.kind==='room-handoff'&&roomResultAction.singleScope&&parts.length===1&&
+              parts[0].content.trim()===task.result?.content?.trim()&&
               (item.requestScope==='single-duty'||!item.requestScope&&item.routedBy)?
               {sourceMessageId:item.messageId,ownerBotId:item.botId,dutyKey:item.routedDutyKey,sourceUnit:roomResultAction.sourceUnit}:undefined;
             const references=[...(dutySources||[]),...(correction||[]),...newer.map(({message})=>({type:'room',roomId:item.roomId,messageId:message.id}))];
@@ -740,7 +755,13 @@ export class ChatroomService {
             key:'room-duty-plan:'+plan.id,kind:'room-duty-plan',messageId:trigger.id,planId:plan.id,
           })));
         }
-        if(item.roomDutyAction)this.dutyActions.finish(item,status,dutyResultMessageId,ownerReply?.kind==='blocked'?ownerReply.reply:undefined);
+        if(item.roomDutyAction){
+          this.dutyActions.finish(item,status,dutyResultMessageId,ownerReply?.kind==='blocked'?ownerReply.reply:undefined);
+          if(dutyResultMessageId&&contribution?.dependency?.condition===EXISTING_PUBLICATION){
+            const signal=this.staffingEvidence(this.store.get('messages',dutyResultMessageId));
+            if(signal)this.teamService.noteStaffing(room,[signal]);
+          }
+        }
         const state=this.store.get('team-staffing',room.id);
         let assessment=this.teamService.staffing.forDelivery(item);
         if(!assessment&&item.teamStaffing?.policyVersion===staffingPolicyVersion&&

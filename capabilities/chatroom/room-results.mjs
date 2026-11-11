@@ -1,6 +1,6 @@
 import { currentUserRequest } from '../../bot/src/capabilities/request-routing.mjs';
 import { acceptanceClockTimes, sameRoomResultAcceptance } from '../../bot/src/capabilities/acceptance-identity.mjs';
-import { OWNER_DELIVERY } from '../../bot/src/context/duty-actions.mjs';
+import { EXISTING_PUBLICATION, OWNER_DELIVERY } from '../../bot/src/context/duty-actions.mjs';
 import { localTime } from '../../bot/src/context/fact-time.mjs';
 import { activeDuties } from './staffing.mjs';
 import { pick } from '../shared/validation.mjs';
@@ -19,16 +19,22 @@ export class RoomTextResults {
 
   async action(item, task, room, trigger, ownerReply) {
     if (task.status !== 'completed' || task.workId || task.cancelRequested || task.result?.partial ||
-        task.result?.suspended || item.observation || item.routeOnly || item.teamStaffing ||
-        !item.routedDutyKey || trigger.senderId !== 'user') return null;
-    const duty = activeDuties(room, item.botId).find(duty => duty.dutyKey === item.routedDutyKey);
-    if (!duty) return null;
+        task.result?.suspended || item.observation || item.routeOnly || item.teamStaffing || item.teamIntroduction ||
+        trigger.roomId !== room.id || trigger.senderId !== 'user' || !room.members.includes('user')) return null;
     if (item.roomDutyAction) {
       const plan = this.chatroom.dutyActions.current(item, room);
       if (!plan) return null;
       if (plan.gatesProduction && !['waiting', 'paused'].includes(await this.chatroom.dutyActions.coordinatorState(plan))) return null;
       const ownerDelivery = plan.dependency?.condition === OWNER_DELIVERY;
+      const existingPublication = plan.dependency?.condition === EXISTING_PUBLICATION;
       if (ownerDelivery && (ownerReply?.kind !== 'contribution' || !ownerReply.reply)) return null;
+      if ((ownerDelivery || existingPublication) && !await this.manager.readState(item.botId, db => {
+        const saved = db?.getTask(task.id), accepted = saved?.messageId && db.getMessage(saved.messageId);
+        return saved?.status === 'completed' && !saved.cancelRequested && saved.result?.content === task.result?.content &&
+          accepted?.taskId === saved.id && accepted.from === 'controller' && accepted.kind === 'event' &&
+          accepted.metadata?.roomDutyAction === plan.id && accepted.metadata.originMessageId === trigger.id &&
+          accepted.sourceMessageId === item.id && accepted.content?.metadata?.deliveryId === item.id;
+      })) return null;
       const used = new Map();
       const publications = plan.publications || [];
       for (const tool of task.tools || []) {
@@ -40,17 +46,37 @@ export class RoomTextResults {
           used.set(ref.attachmentId, ref);
       }
       if (plan.kind === 'independent-review' && !publications.some(file => used.has(file.id))) return null;
+      if (existingPublication && publications.some(file => !used.has(file.id)) ||
+          ownerDelivery && plan.grant.relation === 'new' && plan.references?.some(ref =>
+            ref.attachmentId && !used.has(ref.attachmentId))) return null;
       return { kind: plan.kind, sourceUnit: plan.grant.sourceUnit, dependency: plan.dependency, planId: plan.id,
         ...(ownerDelivery ? { workId: plan.workId, operationId: plan.operationId } : {}),
-        references: [{ type: 'room', roomId: room.id, messageId: trigger.id }, ...used.values()] };
+        references: [{ type: 'room', roomId: room.id, messageId: trigger.id },
+          ...(existingPublication ? [{ type: 'room', roomId: room.id, messageId: plan.dependency.publication.sourceMessageId }] : []),
+          ...used.values()] };
     }
+    const lead = room.team?.leadBotId === item.botId;
+    if (task.result?.attachments?.length || task.result?.handoff || !item.routedDutyKey && !(lead && task.tools?.some(tool =>
+      tool.name === 'request_decide' && tool.status === 'completed' && tool.output?.details?.roomDeliveryDutyKey))) return null;
     return this.manager.readState(item.botId, db => {
       const saved = db?.getTask(task.id), user = saved && currentUserRequest(saved, db);
+      const accepted = user && db.getMessage(user.acceptedMessageId);
       const routing = user && db.getRecord('request-routing', task.id);
-      return routing?.intent === 'room-deliver' && routing.roomDeliveryUnits?.length &&
-        user.roomId === room.id && user.messageId === trigger.id && routing.messageId === trigger.id &&
-        routing.roomId === room.id ? { kind: 'room-handoff', sourceUnit: routing.roomDeliveryUnits[0],
-          singleScope: routing.roomDeliveryUnits.length === 1 && !routing.sourceActions?.length } : null;
+      if (saved?.status !== 'completed' || saved.cancelRequested || saved.result?.content !== task.result?.content ||
+          routing?.intent !== 'room-deliver' || !routing.roomDeliveryUnits?.length ||
+          user.roomId !== room.id || user.messageId !== trigger.id || user.text !== trigger.content ||
+          (user.replyTo || null) !== (trigger.replyTo || null) || routing.messageId !== trigger.id || routing.roomId !== room.id ||
+          accepted?.sourceMessageId !== item.id || accepted.content?.metadata?.deliveryId !== item.id) return null;
+      const singleScope = routing.roomDeliveryUnits.length === 1 && !routing.sourceActions?.length;
+      if (lead && (!singleScope || ['ordinary', 'multiple'].includes(item.requestScope))) return null;
+      const dutyKey = lead ? routing.roomDeliveryDutyKey : item.routedDutyKey;
+      if (lead && item.routedBy && item.requestScope === 'single-duty' && item.routedDutyKey !== dutyKey) return null;
+      const duty = activeDuties(room, item.botId).find(duty => duty.dutyKey === dutyKey);
+      const originalDuty = item.input?.content?.room?.team?.duties?.find(duty => duty.dutyKey === dutyKey &&
+        duty.botId === item.botId && duty.state === 'active');
+      if (!duty || lead && (!originalDuty || duty.assignedAt !== originalDuty.assignedAt ||
+          Date.parse(duty.assignedAt) > Date.parse(trigger.createdAt))) return null;
+      return { kind: 'room-handoff', sourceUnit: routing.roomDeliveryUnits[0], singleScope, dutyKey };
     });
   }
 
@@ -71,7 +97,8 @@ export class RoomTextResults {
     // Older versions did not distinguish an explicit text handoff from a
     // discussion. Offer only the completed routed owner delivery as a
     // candidate. Its original request and text must pass semantic checking.
-    if (job.roomDutyAction || job.input?.kind !== 'request' || job.input?.metadata?.actor !== 'user' ||
+    if (job.roomDutyAction || job.botId === room.team?.leadBotId && job.requestScope === 'single-duty' ||
+        job.input?.kind !== 'request' || job.input?.metadata?.actor !== 'user' ||
         job.input?.replyTo !== trigger.id || job.input?.content?.trigger?.id !== trigger.id) return null;
     return { id: message.id, roomId: room.id, ownerBotId: job.botId, dutyKey: duty.dutyKey, taskId: job.taskId,
       deliveryId: job.id, sourceMessageId: trigger.id, version: message.id, kind: 'room-handoff', legacyCandidate: true, publishedAt: message.createdAt };
@@ -94,6 +121,8 @@ export class RoomTextResults {
 
   publish(item, task, message, action) {
     if (!action || message.id !== 'reply:' + item.id || message.attachments?.length || message.workId || !message.content) return null;
+    if (action.kind === 'room-handoff' && (task.result?.content?.trim() !== message.content ||
+        !activeDuties(this.chatroom.need('rooms', item.roomId), item.botId).some(duty => duty.dutyKey === action.dutyKey))) return null;
     const record = this.store.save(results, { id: message.id, roomId: item.roomId, ownerBotId: item.botId, dutyKey: item.routedDutyKey,
       taskId: task.id, deliveryId: item.id, sourceMessageId: item.messageId, version: message.id, publishedAt: message.createdAt, ...action });
     this.link(record);

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { localTime } from '../../bot/src/context/fact-time.mjs';
+import { EXISTING_PUBLICATION } from '../../bot/src/context/duty-actions.mjs';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { TEAM_DUTY_TOOLS } from '../bot-management/tool-access.mjs';
@@ -166,8 +167,12 @@ export class Staffing {
       if (scopedTextOnly) return { ...common, handling: 'defer', state: 'recorded', dutyKey: existing.dutyKey,
         name: existing.dutyProfile?.name || existing.responsibility.slice(0, 100),
         benefit: '本次验收只结清这条文字交付，原持续职责仍保留。' };
-      if (!cited.some(id => job.teamStaffing.evidence.some(signal => signal.messageId === id &&
-          job.teamStaffing.changeKeys.includes(signal.key) && ['user-update', 'work-result', 'work-acceptance'].includes(signal.kind))))
+      if (!signals.some(signal => {
+        if (!job.teamStaffing.changeKeys.includes(signal.key)) return false;
+        if (['user-update', 'work-result', 'work-acceptance'].includes(signal.kind)) return true;
+        const result = signal.kind === 'room-result' && this.store.get('room-text-results', signal.resultId);
+        return result?.kind === 'independent-review' && result.dutyKey === existing.dutyKey && result.ownerBotId === existing.botId;
+      }))
         fail('Closing a duty requires current user or work evidence that its phase ended');
       return { ...common, name: existing.dutyProfile?.name || existing.responsibility.slice(0, 100),
         dutyKey: existing.dutyKey, benefit: required(raw.benefit, 'reason for closing', 550),
@@ -186,7 +191,10 @@ export class Staffing {
       fail('Use actual duty keys for related but separate responsibilities');
     const candidateBotIds = ids(raw.candidateBotIds ?? [], 'candidateBotIds');
     if (candidateBotIds.some(id => !this.manager.store.get('bots', id))) fail('Use actual Bot IDs from the team or Bot list');
+    const reviewPublications = signals.filter(signal => signal.kind === 'room-duty-plan').map(signal =>
+      this.chatroom.dutyActions.get(signal.planId)?.dependency).filter(dependency => dependency?.condition === EXISTING_PUBLICATION);
     const makerBotIds = unique([...results.map(message => [message.senderId, message.workId]),
+      ...reviewPublications.map(({ publication }) => [publication.makerBotId, publication.workId]),
       ...signals.filter(item => item.kind === 'work-dispatch').map(signal => [signal.ownerBotId, signal.workId])]
       .filter(([botId, workId]) => botId && !room.team.duties.some(duty => duty.botId === botId &&
         duty.dutyProfile?.independentReview && duty.workIds?.includes(workId))).map(([botId]) => botId));

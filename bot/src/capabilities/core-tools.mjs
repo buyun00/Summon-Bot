@@ -6,7 +6,7 @@ import { HANDOFF_REFERENCES, taskSource, workExecution } from '../context/source
 import { modelArgs, modelText, looseSchema, boundedNumber } from '../context/model-input.mjs';
 import { resolveCodexTarget } from './codex-target.mjs';
 import { acceptanceReply, authorizeProduction, currentProductionStage, currentUserRequest, productionDecision, productionRefusal, productionStage, requestIntents, productionStages, selectedSourceAction, separateActionUnits, sourceUnits } from './request-routing.mjs';
-import { OWNER_DELIVERY, ROOM_DUTY_PLANS, dependencyDispatches, roomDutyPlanId, saveRoomDutyPlan, sourceDispatches } from '../context/duty-actions.mjs';
+import { EXISTING_PUBLICATION, OWNER_DELIVERY, ROOM_DUTY_PLANS, dependencyDispatches, publishedReviewTarget, roomDutyPlanId, saveRoomDutyPlan, sourceDispatches } from '../context/duty-actions.mjs';
 import { acceptanceBindings, acceptanceLinks, naturalAcceptanceMatch, sameRoomResultAcceptance } from './acceptance-identity.mjs';
 import { localTime } from '../context/fact-time.mjs';
 import { externalExecution, isAcceptedOperation } from '../context/execution-evidence.mjs';
@@ -226,7 +226,9 @@ function selectedAcceptanceBindings(snapshot, approvals, user) {
   const units = sourceUnits(user.text);
   return approvals.map(approval => {
     const { unit, publicationMessageId, naturalIdentity } = approval;
-    const [binding] = acceptanceBindings(units, snapshot.entries, user.replyTo, { excluded: snapshot.excluded, approval,
+    const initial = snapshot.bindings.find(binding => binding.unit === unit && binding.publication?.messageId === publicationMessageId);
+    const [binding] = acceptanceBindings(units, snapshot.entries, user.replyTo, { excluded: snapshot.excluded,
+      approval: initial ? { ...approval, identityUnits: initial.identityUnits } : approval,
       roomResultsAvailable: snapshot.roomResultsAvailable });
     if (!binding || !publicationMessageId || !naturalIdentity || !binding.allowNatural ||
         !snapshot.roomResultsComplete && !binding.clockTimes?.length) return binding || { unit };
@@ -425,7 +427,7 @@ export function coreTools(services, task) {
     const selected = content.evidence.filter(item => item.reference?.type === 'room' && item.reference.roomId === source.roomId &&
       !item.reference.attachmentId && item.reference.messageId !== source.replyTo);
     const candidates = selected.flatMap(item => (item.attachments || []).flatMap(attachment =>
-      /\.(?:md|txt|csv|tsv|json|docx)$/i.test(attachment.name) && attachment.origin?.type === 'work-output' &&
+      /\.(?:md|txt|csv|tsv|json|html?|docx)$/i.test(attachment.name) && attachment.origin?.type === 'work-output' &&
       attachment.origin.roomId === source.roomId && attachment.origin.botId === item.author ?
         [{ type: 'room', roomId: source.roomId, messageId: item.reference.messageId, attachmentId: attachment.id }] : []));
     for (const ref of candidates.slice(0, Math.min(6, HANDOFF_REFERENCES - content.evidence.length))) {
@@ -439,7 +441,8 @@ export function coreTools(services, task) {
     content: typeof item.content === 'string' ? item.content.slice(0, 2400) : undefined }));
   const proposalHandoff = handoff => Object.fromEntries(['instruction', 'content', 'message', 'handoff'].filter(key => handoff[key])
     .map(key => [key, handoff[key]]));
-  const planReceipt = plan => ({ planId: plan.id, status: plan.kind === 'independent-review' ? 'waiting-for-publication' : 'awaiting-owner-delivery',
+  const planReceipt = plan => ({ planId: plan.id, status: plan.kind !== 'independent-review' ? 'awaiting-owner-delivery' :
+    plan.dependency?.condition === EXISTING_PUBLICATION ? 'waiting-for-independent-owner' : 'waiting-for-publication',
     registered: true, receiptLayer: 'room-duty-plan', sourceUnit: plan.grant.sourceUnit,
     ...(plan.workId ? { workId: plan.workId, operationId: plan.operationId } : {}),
     ...(plan.dependency?.operationId ? { dependencyOperationId: plan.dependency.operationId } : {}),
@@ -450,13 +453,63 @@ export function coreTools(services, task) {
     if (!userRequest || room?.kind !== 'group' || !room.team || !source.roomId) throw new Error('A room duty action requires a current authenticated project group request.');
     return roomMaterials(content).slice(0, 16).map(item => ({ ...item.reference }));
   };
-  const dutyProposal = (dutyKey, independent, room = source.input?.room) => {
+  const dutyProposal = (dutyKey, independent, room = source.input?.room, allowSelf = false) => {
     if (!dutyKey) return undefined;
     const duty = room?.team?.duties?.find(item => item.dutyKey === dutyKey && item.state === 'active' &&
-      room.members.includes(item.botId) && item.botId !== services.works.botId && item.botId !== room.team.eggBotId &&
+      room.members.includes(item.botId) && (allowSelf || item.botId !== services.works.botId) && item.botId !== room.team.eggBotId &&
       Boolean(item.dutyProfile?.independentReview) === independent);
     if (!duty) throw new Error('Choose the currently assigned duty for this part, or omit dutyKey so the project can resolve its owner.');
-    return { botId: duty.botId, responsibility: duty.responsibility, boundary: duty.dutyProfile?.boundary };
+    return { botId: duty.botId, responsibility: duty.responsibility, boundary: duty.dutyProfile?.boundary, assignedAt: duty.assignedAt };
+  };
+  const currentDutyRoom = async () => {
+    const originalRoom = source.input?.room;
+    const rooms = await services.sources.callForSource('chatroom_list', { roomId: source.roomId }, task);
+    const room = rooms.find(item => item.id === source.roomId);
+    if (room?.kind !== 'group' || room.status !== 'active' || room.projectMode === 'chat' ||
+        !['idle', 'active'].includes(room.team?.state) || room.goal !== originalRoom?.goal ||
+        room.team.requirements !== originalRoom?.team?.requirements)
+      throw new Error('The original project group is unavailable or its scope has changed.');
+    return room;
+  };
+  const ownerPrerequisite = async ({ decision, action, participant, duty, workId, operationId, projectId, work }) => {
+    const user = currentUserRequest(task, store), originalRoom = source.input?.room;
+    const dependency = user && sourceUnits(user.text)[action.dependencyUnit - 1];
+    if (!participant?.dutyKey || !duty || !dependency || dependency.unit === action.unit || originalRoom?.id !== user.roomId ||
+        work && !work.sources.some(item => item.actor === user.actor && item.roomId === user.roomId))
+      throw new Error('A conditional production action needs the exact original prerequisite and a currently assigned participant in its source project group.');
+    const current = dutyProposal(participant.dutyKey, false, await currentDutyRoom(), !work);
+    if (current.botId !== duty.botId || current.assignedAt !== duty.assignedAt)
+      throw new Error('The assigned owner changed before the conditional production action was registered.');
+    const planId = roomDutyPlanId({ roomId: user.roomId, messageId: user.messageId, sourceUnit: action.unit, kind: 'contribution' });
+    return { condition: OWNER_DELIVERY, roomId: user.roomId, messageId: user.messageId, requestTaskId: user.taskId,
+      acceptedMessageId: user.acceptedMessageId, sourceUnit: dependency.unit, originalClause: dependency.text,
+      actionUnit: action.unit, stage: decision.productionStage, projectId, workId, operationId, planId,
+      ownerBotId: duty.botId, ...(work ? {} : { ownerAssignedAt: duty.assignedAt }), ...participant };
+  };
+  const reviewPublication = async (args, content) => {
+    const user = currentUserRequest(task, store);
+    const selected = services.sources.references(args.evidence, task).slice(0, HANDOFF_REFERENCES)
+      .map(item => services.sources.reference(item, task))
+      .filter(ref => ref?.type === 'room' && ref.roomId === user.roomId && ref.attachmentId);
+    const references = selected.length ? selected : roomMaterials(content).map(item => item.reference).filter(ref => ref.attachmentId);
+    const explicit = modelText(args.reviewPublicationMessageId).trim();
+    const groups = Map.groupBy(references, ref => ref.messageId);
+    const messageId = explicit || (groups.has(user.replyTo) ? user.replyTo : groups.size === 1 ? [...groups.keys()][0] : null);
+    const attachmentIds = (groups.get(messageId) || []).map(ref => ref.attachmentId);
+    if (!messageId || !attachmentIds.length || selected.some(ref => ref.messageId !== messageId))
+      throw new Error('Select one exact same-room publication and the specific published attachments the independent review needs.');
+    const readMessage = async id => (await services.sources.callForSource('chatroom_read', { roomId: user.roomId, messageId: id }, task)).messages?.[0];
+    const message = await readMessage(messageId);
+    const quoted = user.replyTo && user.replyTo !== messageId && await readMessage(user.replyTo);
+    const publication = publishedReviewTarget(message, user.roomId, attachmentIds);
+    if (!publication || !(Date.parse(publication.publishedAt) < Date.parse(user.roomMessageAt)) || quoted?.workPublication)
+      throw new Error('The selected attachments do not match the exact publication already present in this source room.');
+    const original = await readMessage(publication.sourceMessageId);
+    if (original?.roomId !== user.roomId || original.senderId !== user.actor)
+      throw new Error('The publication’s original request is unavailable in this room.');
+    return { publication, original: { reference: original.reference, author: original.senderId, content: original.content },
+      publicationEvidence: { publishedAt: localTime(message.createdAt), content: message.content.slice(0, 2400),
+        attachments: message.attachments.filter(file => publication.attachmentIds.includes(file.id)).map(({ id, name }) => ({ id, name })) } };
   };
   const saveContribution = (participant, references, grant, id, operationId) => saveRoomDutyPlan(store, {
     kind: 'contribution', roomId: source.roomId, messageId: source.replyTo,
@@ -525,6 +578,11 @@ export function coreTools(services, task) {
         const processAcceptance = checkProduction || intent === 'accept' || checkRoomDelivery;
         if (checkProduction || checkRoomDelivery || intent === 'accept' && !acceptance) {
           const selected = work && selectedWork(work);
+          const room = source.input?.room;
+          const roomDuties = room?.kind === 'group' && room.team?.leadBotId === services.works.botId &&
+            room.team.duties?.some(duty => duty.state === 'active' && duty.botId === services.works.botId) ?
+            room.team.duties.filter(duty => duty.state === 'active' && room.members.includes(duty.botId))
+              .map(({ dutyKey, responsibility, dutyProfile }) => ({ dutyKey, responsibility, boundary: dutyProfile?.boundary })) : undefined;
           const loadAcceptanceContext = async savedSource => {
             try {
               bindingSnapshot = await readBindings(separateActionUnits(savedSource));
@@ -537,7 +595,7 @@ export function coreTools(services, task) {
               productionStage: args.productionStage, workRelation: args.workRelation, sourceUnit: args.sourceUnit,
             } : {}) }, proposed: { work: selected || undefined },
             verify: ctx.verifyProduction, signal: ctx.signal, isTargetCurrent: selected ? () => sameWork(selected, services.works.get(work.id)) : undefined,
-            sourceOnly: true, savedDecision: previous ?? null, acceptanceContext: loadAcceptanceContext,
+            sourceOnly: true, savedDecision: previous ?? null, acceptanceContext: loadAcceptanceContext, roomDuties,
             acceptanceMode: acceptance ? undefined : intent === 'accept' ? 'required' : 'candidate' });
         }
         // Freeze positive, negative and unresolved decisions for the original message before refreshing permissions.
@@ -565,12 +623,16 @@ export function coreTools(services, task) {
         confirmedFeedback ||= classification?.feedback === true && !acceptance?.approvals.length && !acceptance?.unconfirmed;
         const sourceActions = classification?.actions;
         const roomDeliveryUnits = classification?.roomDeliveryUnits || [];
+        const directReview = checkRoomDelivery && !roomDeliveryUnits.length && sourceActions?.length === 1 &&
+          sourceActions[0].kind === 'start' && sourceActions[0].stage === 'other' && sourceActions[0].when === 'now' &&
+          sourceActions[0].separateOwner === true ? sourceActions[0] : null;
+        if (directReview) { production = true; intent = 'produce'; }
         if (production && (confirmedFeedback || !sourceActions?.length)) {
           production = false;
           intent = acceptance?.approvals.length || acceptance?.unconfirmed || previous?.acceptances?.length ? 'accept' :
             roomDeliveryUnits.length ? 'room-deliver' : confirmedFeedback ? 'feedback' : classification?.deliveryUnits.length ? 'deliver' : 'discuss';
         }
-        if (checkRoomDelivery && !roomDeliveryUnits.length) intent = acceptance?.approvals.length ? 'accept' : 'discuss';
+        if (checkRoomDelivery && !roomDeliveryUnits.length && !directReview) intent = acceptance?.approvals.length ? 'accept' : 'discuss';
         // Persist the actual acceptance outcomes with the routing decision, before any separate dispatch.
         const decision = store.transaction(() => {
           let receipt = readAcceptance()?.receipt;
@@ -592,20 +654,23 @@ export function coreTools(services, task) {
             unresolvedAcceptances: receipt?.unresolvedAcceptances ?? previous?.unresolvedAcceptances ?? [],
             acceptanceUnconfirmed: receipt?.acceptanceUnconfirmed ?? previous?.acceptanceUnconfirmed,
             acceptanceIssue: acceptance?.issue ?? previous?.acceptanceIssue,
-            intent, productionStage: production ? args.productionStage : null, confirmedFeedback,
+            intent, productionStage: directReview?.stage || (production ? args.productionStage : null), confirmedFeedback,
             existingDelivery: previous?.existingDelivery === true || intent === 'deliver',
-            sourceUnit: production ? classification?.resolvedSourceUnit ?? args.sourceUnit : null,
+            sourceUnit: production ? directReview?.unit ?? classification?.resolvedSourceUnit ?? args.sourceUnit : null,
             sourceUnitInferred: production && classification?.resolvedSourceUnit !== undefined,
             sourceActions: production ? sourceActions || [] : [],
             roomDeliveryUnits: intent === 'room-deliver' ? roomDeliveryUnits : [],
-            workRelation: production ? args.workRelation : null, workId: production && args.workRelation === 'continue' ? args.workId : null,
-            reason: intent !== args.intent ? 'The authenticated source contains no independent production action.' : modelText(args.reason), authority: 'model-routing-decision' });
+            roomDeliveryDutyKey: intent === 'room-deliver' ? classification?.roomDeliveryDutyKey : undefined,
+            workRelation: directReview ? 'new' : production ? args.workRelation : null,
+            workId: production && args.workRelation === 'continue' ? args.workId : null,
+            reason: directReview ? 'The authenticated source requests a separate independent review of an existing publication.' :
+              intent !== args.intent ? 'The authenticated source contains no independent production action.' : modelText(args.reason), authority: 'model-routing-decision' });
         });
         const reply = acceptanceReply(decision, user?.text);
         const result = reply ? { ...decision, acceptanceReply: reply } : decision;
-        if (intent !== args.intent || intent === 'room-deliver') return { ...result, instruction: 'Follow the saved intent and respond to the original message. Do not call an executor or dispatch independent work for this source classification.' };
+        if (!production && (intent !== args.intent || intent === 'room-deliver')) return { ...result, instruction: 'Follow the saved intent and respond to the original message. Do not call an executor or dispatch independent work for this source classification.' };
         return sourceActions?.length ? { ...result, sourceActions,
-          instruction: 'Submit only the selected source action and its explicit limits. For a continuation after a named room owner’s contribution, select the continuation unit and call work_dispatch on the existing work with participant. For a separate independent review after publication, submit the immediate action first, then select the review unit and register it through work_create.' } : result;
+          instruction: 'Submit only the selected source action and its explicit limits. For production after an assigned room owner contributes, select the production unit and pass participant with its dutyKey and exact prerequisite to work_create for new work or work_dispatch for an existing work. For separateOwner, use work_create without an executor. Provide the exact earlier publication and selected attachments when the review is immediate. If the original request authorizes new production followed by independent review, submit the immediate production first, then register the review unit.' } : result;
       }),
     tool('evidence_read', 'Read a bounded original fragment by exact reference. Workers may follow only handed-off references, never browse another room/session feed. Current source access is rechecked.',
       object({ reference }, ['reference']), 'read', args => services.sources.resolve(services.sources.reference(args.reference ?? args, task), task)),
@@ -723,9 +788,10 @@ export function coreTools(services, task) {
         return { workId: work.id, operationId, status: 'ready-for-current-reply',
           attachments: available.filter(item => !selected || selected.includes(item.id)).map(({ id }) => ({ id })) };
       }),
-    tool('work_create', 'Submit one selected source action. An immediate action schedules actual work; omit executor for the default engine. For a separately authorized independent text review after publication, select its after-dependency action and omit executor. When this action needs a concrete part from a relevant assigned duty, provide participant with its dutyKey and only that in-scope contribution. Work waits for the actual owner result on this action; leave out participant for unrelated advice or maintenance. Pass exact same-room evidence, including the specific attachmentId when known. Recheck a cited old publication within current access before treating an earlier read failure as current. Keep scope and handoff separate. A registered wait does not prove execution.',
+    tool('work_create', 'Submit one selected source action. An immediate production action schedules actual work; omit executor for the default engine. For new production after an assigned room owner contributes, select the production unit and pass participant with the active dutyKey and exact prerequisite contribution. This can be your own assigned duty; the runtime delivers that portion separately before starting the new work. For a separateOwner review, omit executor and target. For an already published result, include its exact same-room attachment references and original material in evidence. For a review after new production, register the selected after-dependency review unit. A registered wait does not prove execution.',
       object({ id: string, operationId: string, goal: string, requirements: string, responsibility: string, ...handoffFields,
-        participant: object({ dutyKey: string, contribution: string }, ['contribution']),
+        participant: object({ dutyKey: string, contribution: string }),
+        reviewPublicationMessageId: string,
         afterDependency: object({ workId: string, minimumAttachments: { type: 'integer', minimum: 1, maximum: WORK_ATTACHMENTS } }),
         executor: object({ kind: { type: 'string', enum: ['pi', 'codex', 'codex-cli', 'grok', 'claude-code'] }, connectionId: string,
           target: { type: 'object', description: 'Use {type:"directory",cwd:"absolute authorized path"} for an existing directory, including one not registered in Desktop. Use project only for the actual selected project; never borrow another project ID.' } }, ['kind']) }), 'write', async (args, ctx) => {
@@ -737,15 +803,39 @@ export function coreTools(services, task) {
         await readSelectedPublications(content);
         const goal = modelText(args.goal || args.instruction || args.content || content.originalRequest.content);
         const requirements = modelText(args.requirements);
-        if (selected.when === 'after-dependency') {
+        const conditional = selected.when === 'after-dependency';
+        const nowActions = decision.sourceActions.filter(action => action.when === 'now' && action.kind === 'start');
+        const ownerFirst = conditional && !selected.separateOwner && selected.dependencyUnit &&
+          !nowActions.some(action => action.unit === selected.dependencyUnit);
+        if (selected.separateOwner || conditional && !ownerFirst) {
           if (decision.productionStage !== 'other' || args.executor || args.target || args.cwd || args.projectId)
-            throw new Error('A new dependent room review can only use its assigned owner in the project group. A continuation after a room owner’s contribution uses work_dispatch with participant on the exact saved work.');
-          const references = await dutyContext(content);
+            throw new Error('An independent room review uses a distinct assigned room owner. Omit the executor and production target.');
+          let references = await dutyContext(content);
           const base = { roomId: source.roomId, messageId: source.replyTo, kind: 'independent-review' };
           const planId = roomDutyPlanId({ ...base, sourceUnit: selected.unit });
           const prior = store.getRecord(ROOM_DUTY_PLANS, planId);
           if (prior) return planReceipt({ ...prior, duplicate: true });
-          const nowActions = decision.sourceActions.filter(action => action.when === 'now' && action.kind === 'start');
+          const dutyKey = modelText(args.participant?.dutyKey).trim() || undefined;
+          if (!conditional) {
+            if (args.afterDependency) throw new Error('This review needs the existing exact publication, with attachment references.');
+            const { publication, original, publicationEvidence } = await reviewPublication(args, content);
+            const duty = dutyProposal(dutyKey, true, await currentDutyRoom(), true);
+            if (duty?.botId === publication.makerBotId)
+              throw new Error('Select an independent owner who did not make this publication, or let the project assign one.');
+            references = [original.reference, ...publication.attachmentIds.map(attachmentId =>
+              ({ type: 'room', roomId: base.roomId, messageId: publication.messageId, attachmentId }))];
+            const after = { condition: EXISTING_PUBLICATION, roomId: base.roomId, messageId: base.messageId, publication };
+            const grant = await authorize(decision, ctx, { relation: 'new', goal, requirements,
+              handoff: proposalHandoff(content.handoff), sourceMaterials: [original, ...proposalMaterials(content).filter(item =>
+                item.reference.messageId === publication.messageId && publication.attachmentIds.includes(item.reference.attachmentId))],
+              executor: 'room-duty-owner', participant: { independent: true, ...(dutyKey ? { dutyKey, duty } : {}) },
+              after, publicationEvidence,
+            }, { workId: null, actionId: planId });
+            ctx.signal?.throwIfAborted();
+            return planReceipt(saveRoomDutyPlan(store, { ...base, grant, dependency: after, coordinatorBotId: services.works.botId,
+              requestTaskId: task.id, dutyKey, ownerBotId: duty?.botId, goal, requirements, instruction: content.handoff.instruction, references,
+              originalRoomGoal: source.input.room.goal, originalTeamRequirements: source.input.room.team.requirements }));
+          }
           const dependencyUnit = selected.dependencyUnit || (nowActions.length === 1 ? nowActions[0].unit : undefined);
           const candidates = nowActions.filter(action => action.unit === dependencyUnit);
           if (candidates.length !== 1)
@@ -764,7 +854,6 @@ export function coreTools(services, task) {
           const after = { ...binding, condition: 'successful-publication',
             minimumAttachments, ...(dependency ? { workId: dependency.workId, operationId: dependency.id, taskId: dependency.receipt.taskId } :
               registered ? { workId: args.afterDependency.workId } : {}) };
-          const dutyKey = modelText(args.participant?.dutyKey).trim() || undefined;
           const grant = await authorize(decision, ctx, { relation: 'new', goal, requirements,
             handoff: proposalHandoff(content.handoff), sourceMaterials: proposalMaterials(content),
             executor: 'room-duty-owner', participant: { independent: true, ...(dutyKey ? { dutyKey, duty: dutyProposal(dutyKey, true) } : {}) }, after,
@@ -773,11 +862,10 @@ export function coreTools(services, task) {
           return planReceipt(saveRoomDutyPlan(store, { ...base, grant, dependency: after, coordinatorBotId: services.works.botId,
             requestTaskId: task.id, dutyKey, goal, requirements, instruction: content.handoff.instruction, references }));
         }
-        if (args.afterDependency) throw new Error('The selected source action is immediate. Select the separate after-dependency source action to register its wait.');
-        const nowSteps = decision.sourceActions.filter(action => action.when === 'now' && action.kind === 'start' &&
-          action.stage === selected.stage);
+        if (args.afterDependency) throw new Error('afterDependency applies to a separate independent review after new production.');
+        const nowSteps = nowActions.filter(action => action.stage === selected.stage);
         const already = () => sourceDispatches(store, { roomId: source.roomId, messageId: source.replyTo, stage: selected.stage, includeRegistered: true,
-          ...(nowSteps.length === 1 ? {} : { sourceUnit: selected.unit }) });
+          when: selected.when, ...(selected.when === 'now' && nowSteps.length === 1 ? {} : { sourceUnit: selected.unit }) });
         const dispatchReceipt = event => event.receipt ? { ...event.receipt, duplicate: true } : {
           ...services.works.contributionReceipt(event), duplicate: true };
         const replay = already();
@@ -807,10 +895,15 @@ export function coreTools(services, task) {
         const participant = modelText(args.participant?.contribution).trim() ? {
           contribution: modelText(args.participant.contribution).trim().slice(0, 4000),
           dutyKey: modelText(args.participant.dutyKey).trim() || undefined } : null;
+        if (ownerFirst && !participant?.dutyKey)
+          throw new Error('Select the active room duty and its specific first contribution with participant. Production has not been dispatched.');
         const participantRefs = participant && await dutyContext(content);
+        const duty = participant && dutyProposal(participant.dutyKey, false, source.input?.room, ownerFirst);
+        const after = ownerFirst && await ownerPrerequisite({ decision, action: selected, participant, duty, workId: id,
+          operationId: `${id}:${operationId}`, projectId: project?.id ?? null });
         const grant = await authorize(decision, ctx, { relation: 'new', project, target: executor?.target || target, executor: executorKind,
           goal, requirements, handoff: proposalHandoff(content.handoff), sourceMaterials: proposalMaterials(content),
-          ...(participant ? { participant: { ...participant, duty: dutyProposal(participant.dutyKey, false) } } : {}) },
+          ...(participant ? { participant: { ...participant, duty } } : {}), ...(after ? { after } : {}) },
         { workId: id, actionId: `${id}:${operationId}` });
         if (grant) content.stage = productionStage(grant);
         try {
@@ -912,25 +1005,8 @@ export function coreTools(services, task) {
           participantRefs = await dutyContext(content);
           duty = dutyProposal(dutyKey, false);
         }
-        let after;
-        if (sourceAction?.when === 'after-dependency') {
-          const user = currentUserRequest(task, store), originalRoom = source.input?.room;
-          const dependency = user && sourceUnits(user.text)[sourceAction.dependencyUnit - 1];
-          if (!participant || !dependency || dependency.unit === sourceAction.unit || originalRoom?.id !== user.roomId ||
-              !work.sources.some(item => item.actor === user.actor && item.roomId === user.roomId))
-            throw new Error('A conditional continuation needs the exact original prerequisite, an active assigned participant and an existing work from this project group. Nothing was registered.');
-          const rooms = await services.sources.callForSource('chatroom_list', {}, task);
-          const room = rooms.find(item => item.id === user.roomId);
-          if (room?.kind !== 'group' || room.status !== 'active' || room.projectMode === 'chat' ||
-              !['idle', 'active'].includes(room.team?.state) || room.goal !== originalRoom.goal ||
-              room.team.requirements !== originalRoom.team.requirements || dutyProposal(participant.dutyKey, false, room).botId !== duty.botId)
-            throw new Error('The project group or assigned owner changed before the conditional continuation was registered.');
-          const planId = roomDutyPlanId({ roomId: user.roomId, messageId: user.messageId, sourceUnit: sourceAction.unit, kind: 'contribution' });
-          after = { condition: OWNER_DELIVERY, roomId: user.roomId, messageId: user.messageId, requestTaskId: user.taskId,
-            acceptedMessageId: user.acceptedMessageId, sourceUnit: dependency.unit, originalClause: dependency.text,
-            actionUnit: sourceAction.unit, stage: decision.productionStage, projectId: selected.project?.id ?? null,
-            workId: work.id, operationId, planId, ownerBotId: duty.botId, ...participant };
-        }
+        const after = sourceAction?.when === 'after-dependency' ? await ownerPrerequisite({ decision, action: sourceAction,
+          participant, duty, workId: work.id, operationId, projectId: selected.project?.id ?? null, work }) : undefined;
         const grant = await authorize(decision, ctx, { relation: 'continue', work: selected, handoff: content.handoff,
           sourceMaterials: proposalMaterials(content), ...(participant ? { participant: { ...participant, duty } } : {}),
           ...(after ? { after } : {}) }, { workId: work.id, actionId: operationId });

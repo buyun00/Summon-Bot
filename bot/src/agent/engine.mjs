@@ -23,7 +23,7 @@ import { assertFileToolAccess, taskFileAccessPolicy } from '../capabilities/file
 import { FILE_ACCESS_GUIDANCE } from '../capabilities/file-policy.mjs';
 import { factTime } from '../context/fact-time.mjs';
 import { projectWorkContext } from '../context/work-context.mjs';
-import { acceptanceReply, currentUserRequest, productionAuthorizationPrompts } from '../capabilities/request-routing.mjs';
+import { acceptanceReply, currentUserRequest, productionAuthorizationPrompts, selectedSourceAction } from '../capabilities/request-routing.mjs';
 
 const emptyUsage = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 });
 const userMessage = (content, source) => ({ role: 'user', content: [{ type: 'text', text: typeof content === 'string' ? content : JSON.stringify(content) }], timestamp: Date.now(), ...(source ? { source } : {}) });
@@ -186,7 +186,7 @@ export class BotEngine {
       const hasCurrentRequest = !roomDecision && taskMode(task) === 'chat' && Boolean(currentUserRequest(task, this.store));
       const handoffs = [];
       let formatCorrected = false;
-      const verifyProduction = async ({ user, units, continuationTarget, existingDelivery, sourceAction, proposed, step, acceptanceContext }, signal) => {
+      const verifyProduction = async ({ user, units, continuationTarget, existingDelivery, sourceAction, proposed, step, acceptanceContext, roomDuties }, signal) => {
         const prior = publicView?.messages.filter(message => message.source?.roomId === user.roomId) || [];
         const current = prior.findIndex(message => message.source?.messageId === user.messageId);
         const related = user.replyTo ? prior.slice(0, Math.max(0, current)).find(message => message.source?.messageId === user.replyTo) :
@@ -205,7 +205,7 @@ export class BotEngine {
         }
         const input = step === 'acceptance' ? { currentUser: units, originalText: user.text, acceptanceContext } :
           { currentUser: units, referencedTurn: previous && { content: previous.content }, referencedUserScope,
-            continuationTarget, existingDelivery, ...(proposed ? { sourceAction, proposed } : {}) };
+            continuationTarget, existingDelivery, roomDuties, ...(proposed ? { sourceAction, proposed } : {}) };
         let receipt;
         for (let attempt = 0; attempt < 2; attempt += 1) {
           signal?.throwIfAborted();
@@ -231,6 +231,12 @@ export class BotEngine {
       const registry = new ToolRegistry({
         authorize: async (tool, args) => {
           assertToolPolicy(task, tool, task.workId && tool.name.startsWith('codex_') ? { ...args, workId: task.workId } : args);
+          if (hasCurrentRequest && (['chatroom_dm', 'messages_send'].includes(tool.name) ||
+              tool.name === 'chatroom_send' && (args.toBotId || args.purpose === 'request'))) {
+            const routing = this.store.getRecord('request-routing', task.id);
+            if (routing?.sourceActions?.length && selectedSourceAction(routing)?.separateOwner)
+              throw new Error('Register the independent review through work_create in the original project room.');
+          }
           if (hasCurrentRequest && ['codex_projects', 'codex_threads'].includes(tool.name) &&
               !['produce', 'revise', 'status'].includes(this.store.getRecord('request-routing', task.id)?.intent))
             throw new Error('Classify the current request before looking up external projects or threads. A room-only text result uses the current conversation.');

@@ -56,7 +56,7 @@ function wordText(xml) {
 
 export function publishedText(name, bytes, { office = true } = {}) {
   const text = office && /\.docx$/i.test(name) ? wordText(wordBody(bytes)) :
-    /\.(?:md|txt|csv|tsv|json)$/i.test(name) && bytes.length <= textLimit && !bytes.includes(0) ? decode(bytes) : null;
+    /\.(?:md|txt|csv|tsv|json|html?)$/i.test(name) && bytes.length <= textLimit && !bytes.includes(0) ? decode(bytes) : null;
   if (text === null || Buffer.byteLength(text) > textLimit)
     throw new Error('This publication is not a supported bounded text document');
   return text;

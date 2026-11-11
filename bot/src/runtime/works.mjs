@@ -57,13 +57,19 @@ export class WorkService {
     if (executor.kind === 'codex' && !['project', 'projectless', 'directory'].includes(executor.target?.type)) fail('Codex requires an authorized directory or selected project target');
     if (isCliExecutor(executor.kind) && executor.target) fail('这个工作引擎使用 Bot 的本机工作目录。');
     const project = executor.target?.type === 'directory' ? directoryProject(executor.target.cwd) : input.project || null;
+    const eventId = `${id}:${input.operationId || 'initial'}`;
+    const grant = input.productionAuthorization;
+    const plan = input.contributionPlanId && this.store.getRecord(ROOM_DUTY_PLANS, input.contributionPlanId);
+    const ownerDelivery = grant?.after?.condition === OWNER_DELIVERY;
+    if (ownerDelivery && (!sourceKey || !input.initialHandoff || !matchesContributionGrant(plan, grant) ||
+        plan.coordinatorBotId !== this.botId || !plan.dutyKey))
+      fail('The duty plan does not match the authorized prerequisite for this new work.', 409);
     if (sourceKey) requireProductionGrant(task, this.store, input.productionAuthorization, {
-      workId: id, actionId: `${id}:${input.operationId || 'initial'}`, relation: 'new', stage: input.productionStage,
-      when: 'now', ...productionTarget({ project, executor }),
+      workId: id, actionId: eventId, relation: 'new', stage: input.productionStage,
+      when: ownerDelivery ? 'after-dependency' : 'now', ...productionTarget({ project, executor }),
     });
     const supervisor = this.selectModel?.(executor.kind === 'pi' ? executor.connectionId : undefined);
     const binding = executor.kind === 'pi' ? { kind: 'pi', ...(executor.target ? { target: executor.target } : {}) } : executor;
-    const eventId = `${id}:${input.operationId || 'initial'}`;
     const waiting = sourceKey && input.initialHandoff && input.contributionPlanId ? { kind: 'room-duty-contribution', operationId: eventId,
       reason: '等待同一请求的职责负责人交付制作所需部分。' } : null;
     const record = this.clean({ id, botId: this.botId, conversationId: `work:${id}`, goal: input.goal,
@@ -77,7 +83,7 @@ export class WorkService {
       if (input.initialHandoff) this.store.putRecord('work-events', { id: eventId, workId: id,
         kind: 'request', content: input.initialHandoff, requestTaskId: task.id, sourceTaskId: task.id,
         authorization: this.authorization(task, eventId, input.productionAuthorization), status: 'pending', createdAt: now(),
-        ...(waiting ? { contributionPlanId: input.contributionPlanId } : {}) });
+        ...(waiting ? { contributionPlanId: input.contributionPlanId, contributionControlRevision: record.controlRevision || 0 } : {}) });
       this.store.appendEvent('work.created', { work: record }, { workId: id, conversationId: record.conversationId });
     });
     return record;
@@ -201,12 +207,13 @@ export class WorkService {
     const authorization = prior?.authorization || (registered ? wait.authorization : this.authorization(task, key, input.productionAuthorization));
     if (task.id && !task.workId && (prior?.kind || input.kind) === 'request') {
       const initial = this.store.getRecord('work-handoffs', `task:${task.id}:action:${eventId}`)?.workId === id;
-      const continuationContribution = !initial && prior?.contributionPlanId;
-      const plan = continuationContribution && this.store.getRecord(ROOM_DUTY_PLANS, continuationContribution);
+      const contributionPlanId = prior?.contributionPlanId;
+      const continuationContribution = !initial && contributionPlanId;
+      const plan = contributionPlanId && this.store.getRecord(ROOM_DUTY_PLANS, contributionPlanId);
       const ownerDelivery = plan?.dependency?.condition === OWNER_DELIVERY;
-      if (continuationContribution && prior.contributionControlRevision !== (work.controlRevision || 0))
+      if ((continuationContribution || ownerDelivery) && prior.contributionControlRevision !== (work.controlRevision || 0))
         fail('工作控制状态已变化，未提交原职责协作对应的步骤。', 409);
-      if (ownerDelivery && (!matchesContributionGrant(plan, authorization?.production) ||
+      if (authorization?.production?.after?.condition === OWNER_DELIVERY && (!matchesContributionGrant(plan, authorization.production) ||
           JSON.stringify(prior.contributionResult.dependency) !== JSON.stringify(plan.dependency) ||
           prior.contributionResult.author !== plan.ownerBotId))
         fail('职责交付与原授权的先行条件不符，未提交制作步骤。', 409);

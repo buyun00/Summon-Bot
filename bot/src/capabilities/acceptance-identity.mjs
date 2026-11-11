@@ -106,6 +106,7 @@ export function acceptanceBindings(units, entries, replyTo, { excluded = [], app
   const sentenceIndex = new Map(sentences.map((start, index) => [start, index]));
   const excludedUnits = new Set(excluded);
   const scope = approval?.scopeUnits && new Set(approval.scopeUnits);
+  const identity = approval?.identityUnits && new Set(approval.identityUnits);
   return (approval ? units.slice(approval.unit - 1, approval.unit) : units).map(({ unit, sentenceStart }) => {
     const sentence = sentenceIndex.get(sentenceStart);
     const adjacent = sentences.slice(Math.max(0, sentence - 1), sentence + 2).flatMap(start => bySentence.get(start));
@@ -118,7 +119,10 @@ export function acceptanceBindings(units, entries, replyTo, { excluded = [], app
     if (replyTo && !replied) return fail('未能确认所回复的消息是本群的有效交付。');
     const pool = replied ? publicEntries.filter(entry => entry === replied || replied.verification && entry.workId === replied.workId &&
       entry.target?.verificationOperationIds?.includes(replied.operationId)) : publicEntries;
-    const timed = nearby.filter(item => clockOf.get(item.unit).length);
+    // A scope can cite the time of a separate check without changing the
+    // publication already identified by the original approval.
+    const timed = nearby.filter(item => clockOf.get(item.unit).length &&
+      (!identity || identity.has(item.unit) || referenced.includes(item)));
     const timedSource = nearby.map(item => item.text).join('\n');
     // A compound label identifies a material mentioned in the body. It is
     // never the version of the enclosing text delivery or attachment.
