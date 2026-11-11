@@ -23,7 +23,7 @@ import { assertFileToolAccess, taskFileAccessPolicy } from '../capabilities/file
 import { FILE_ACCESS_GUIDANCE } from '../capabilities/file-policy.mjs';
 import { factTime } from '../context/fact-time.mjs';
 import { projectWorkContext } from '../context/work-context.mjs';
-import { productionAuthorizationPrompts } from '../capabilities/request-routing.mjs';
+import { acceptanceReply, productionAuthorizationPrompts } from '../capabilities/request-routing.mjs';
 
 const emptyUsage = () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 });
 const userMessage = (content, source) => ({ role: 'user', content: [{ type: 'text', text: typeof content === 'string' ? content : JSON.stringify(content) }], timestamp: Date.now(), ...(source ? { source } : {}) });
@@ -175,11 +175,13 @@ export class BotEngine {
         const current = prior.findIndex(message => message.source?.messageId === user.messageId);
         const related = user.replyTo ? prior.slice(0, Math.max(0, current)).find(message => message.source?.messageId === user.replyTo) :
           current > 0 ? prior[current - 1] : null;
-        const previous = related?.source?.actor === this.config.botId ? JSON.parse(related.content[0].text) : null;
+        const previous = step !== 'acceptance' && related?.source?.actor === this.config.botId ? JSON.parse(related.content[0].text) : null;
+        const input = step === 'acceptance' ? { currentUser: units, originalText: user.text, acceptanceContext } :
+          { currentUser: units, referencedTurn: previous && { content: previous.content },
+            continuationTarget, existingDelivery, ...(proposed ? { sourceAction, proposed } : {}) };
         const result = await this.provider.stream(model, { messages: [
           { role: 'system', content: productionAuthorizationPrompts[step], timestamp: Date.now() },
-          userMessage({ currentUser: units, referencedTurn: previous && { content: previous.content },
-            continuationTarget, existingDelivery, acceptanceContext, ...(proposed ? { sourceAction, proposed } : {}) }),
+          userMessage(input),
         ], tools: [] }, { signal, reasoning: thinkingLevel,
           usageContext: { ...usageContext, requestKind: 'production-authorization', authorizationStep: step } }).result();
         signal?.throwIfAborted();
@@ -597,13 +599,20 @@ export class BotEngine {
         combined.throwIfAborted();
       } finally { combined.removeEventListener('abort', abort); }
       const partialText = lastOutcome?.content?.filter(value => value.type === 'text').map(value => value.text).join('\n') || '';
-      const partial = !suspended && (!lastOutcome || ['error', 'aborted', 'length'].includes(lastOutcome.stopReason));
-      const roomId = taskSource(originalTask, this.store).roomId;
-      const attachments = !task.workId ? [...new Set(this.store.listTools(task.id).filter(record => record.status === 'completed').flatMap(record =>
+      const originalSource = taskSource(originalTask, this.store), { roomId } = originalSource;
+      const tools = !task.workId ? this.store.listTools(task.id) : [];
+      const attachments = !task.workId ? [...new Set(tools.filter(record => record.status === 'completed').flatMap(record =>
         record.name === 'work_deliver' ? (record.output?.details?.attachments || []).map(item => item.id) :
         record.name === 'publish_file' && record.output?.details?.origin?.botId === this.config.botId && record.output.details.origin.roomId === roomId ? [record.output.details.id] : []))].map(id => ({ id })) : [];
-      if (partial && (task.workId || !partialText && !handoffs.length)) throw Object.assign(new Error(lastOutcome?.errorMessage || `Agent ended with ${lastOutcome?.stopReason || 'no result'}`), { code: 'MODEL_ERROR' });
-      return clean({ content: (partialText || handoffs.map(item => `工作 ${item.workId}：${item.label}。`).join('\n')) +
+      const routing = !routeOnly && !observation && !task.workId && roomId ? this.store.getRecord('request-routing', task.id) : null;
+      const receipt = routing?.roomId === roomId ? acceptanceReply(routing, originalSource.input?.trigger?.content) : '';
+      const acknowledgmentOnly = receipt && routing.intent === 'accept' && routing.acceptanceAcknowledgmentOnly &&
+        !attachments.length && !handoffs.length && tools.every(record => record.effect === 'read' || record.name === 'request_decide');
+      const partial = !acknowledgmentOnly && !suspended && (!lastOutcome || ['error', 'aborted', 'length'].includes(lastOutcome.stopReason));
+      if (partial && (task.workId || !partialText && !handoffs.length && !receipt)) throw Object.assign(new Error(lastOutcome?.errorMessage || `Agent ended with ${lastOutcome?.stopReason || 'no result'}`), { code: 'MODEL_ERROR' });
+      const answer = partialText || handoffs.map(item => `工作 ${item.workId}：${item.label}。`).join('\n');
+      const content = acknowledgmentOnly ? receipt : [receipt, receipt && /^PASS\s*$/i.test(answer) ? '' : answer].filter(Boolean).join('\n\n');
+      return clean({ content: content +
         (partial ? `\n本轮答复未完整结束：${lastOutcome?.errorMessage || lastOutcome?.stopReason || '未取得完整答复'}。已保存的动作和内容仍然保留。` : ''),
         ...(partial ? { partial: true, error: lastOutcome?.errorMessage || lastOutcome?.stopReason || 'no result' } : {}),
         ...(handoffs.length ? { handoff: true, workId: handoffs.length === 1 ? handoffs[0].workId : undefined, workIds: handoffs.map(item => item.workId) } : {}),

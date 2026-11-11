@@ -5,7 +5,7 @@ import { factTime } from '../context/fact-time.mjs';
 import { HANDOFF_REFERENCES, taskSource, workExecution } from '../context/sources.mjs';
 import { modelArgs, modelText, looseSchema, boundedNumber } from '../context/model-input.mjs';
 import { resolveCodexTarget } from './codex-target.mjs';
-import { authorizeProduction, currentProductionStage, currentUserRequest, productionDecision, productionStage, requestIntents, productionStages, sourceUnits } from './request-routing.mjs';
+import { acceptanceReply, authorizeProduction, currentProductionStage, currentUserRequest, productionDecision, productionStage, requestIntents, productionStages, sourceUnits } from './request-routing.mjs';
 import { acceptanceBindings, acceptanceLinks } from './acceptance-identity.mjs';
 import { externalExecution, isAcceptedOperation } from '../context/execution-evidence.mjs';
 import { readExecutorManifest } from '../runtime/executor-delivery.mjs';
@@ -208,13 +208,13 @@ function saveRequestAcceptances(services, user, items, before, current) {
   const { store } = services, records = [], roomOnlyAcceptances = [], unresolvedAcceptances = [], grouped = new Map();
   for (const item of items) {
     if (item.recordIn === 'room-only') {
-      const { unit, scope, remainingBoundaries, recordingLimitUnits } = item;
-      roomOnlyAcceptances.push({ unit, scope, remainingBoundaries, recordingLimitUnits });
+      const { unit, scope, remainingBoundaries, publicationMessageId, recordingLimitUnits, recordingDirective } = item;
+      roomOnlyAcceptances.push({ unit, scope, remainingBoundaries, publicationMessageId, recordingLimitUnits, recordingDirective });
       continue;
     }
     if (item.recordIn !== 'work') {
       const { unit, scope, remainingBoundaries } = item;
-      unresolvedAcceptances.push({ unit, scope, remainingBoundaries, reason: 'The scope for recording this approval on the work was not confirmed.' });
+      unresolvedAcceptances.push({ unit, scope, remainingBoundaries, reason: '当前原文中这项验收的记录渠道未能确认。' });
       continue;
     }
     const prior = before.find(value => value.unit === item.unit);
@@ -331,7 +331,7 @@ export function coreTools(services, task) {
       throw new Error('仅文稿授权不会追加到正在实施的回合或恢复已停止的实施工作。请使用对应的文档工作，或登记独立新文档工作。');
   };
   return [
-    tool('request_decide', 'Classify the CURRENT authenticated user request before acting. Use feedback for observations or trial reports without explicit approval or a current change request; discuss for planning or a small draft in chat; status for progress; deliver for existing outputs; control for pause/stop/cancel. Use accept for explicit scoped approval of a delivered result, including a room-only acknowledgment or a status question. Use produce/revise for an independently authorized action, including when the same message explicitly accepts earlier work. The tool checks the entire original and saves only exact, confirmed approvals whose scope permits writing to the work. Use acceptances as work-write receipts, roomOnlyAcceptances as scopes to acknowledge here, and unresolvedAcceptances for scopes that could not be confirmed. A development request alone never accepts earlier work. Read the saved intent and source actions before work_create/work_dispatch; the actual production proposal still requires its own check. For existing files use work_outputs and work_deliver.',
+    tool('request_decide', 'Classify the CURRENT authenticated user request before acting. Use feedback for observations or trial reports without explicit approval or a current change request; discuss for planning or a small draft in chat; status for progress; deliver for existing outputs; control for pause/stop/cancel. Use accept for explicit scoped approval of a delivered result, including a room-only acknowledgment or a status question. Use produce/revise for an independently authorized action, including when the same message explicitly accepts earlier work. References to earlier approval supply context for the new action. The tool checks the original and saves only exact, confirmed current approvals whose scope permits writing to the work. When acceptanceReply is present, the runtime includes that receipt in the room reply. Answer additional requests without restating or reinterpreting that receipt. Read the saved intent and source actions before work_create/work_dispatch; the actual production proposal still requires its own check. For existing files use work_outputs and work_deliver.',
       object({ intent: { type: 'string', enum: requestIntents }, productionStage: { type: 'string', enum: productionStages,
         description: 'Classify the requested outcome. A standalone formal Markdown review document, its revision and returning the resulting file are one document-review action. Implementation means making or changing the working product, building, testing or deploying it. Other is an independent action outside both stages.' },
         workRelation: { type: 'string', enum: ['new', 'continue'] }, workId: string,
@@ -358,25 +358,29 @@ export function coreTools(services, task) {
         const processAcceptance = checkProduction || intent === 'accept';
         if (checkProduction || intent === 'accept' && !acceptance) {
           const selected = work && selectedWork(work);
-          try {
-            const rooms = user?.roomId ? await services.sources.rooms(task) : [];
-            bindingSnapshot = requestAcceptanceBindings(services, task, user, rooms);
-            acceptanceContext = acceptanceContextView(bindingSnapshot, user);
-          } catch { acceptanceContext = { units: [], results: [], unavailable: true }; }
+          if (!acceptance) {
+            try {
+              const rooms = user?.roomId ? await services.sources.rooms(task) : [];
+              bindingSnapshot = requestAcceptanceBindings(services, task, user, rooms);
+              acceptanceContext = acceptanceContextView(bindingSnapshot, user);
+            } catch { acceptanceContext = { units: [], results: [], unavailable: true }; }
+          }
           classification = await authorizeProduction({ task, store,
             decision: { messageId, roomId: source.roomId }, proposed: { work: selected || undefined },
             verify: ctx.verifyProduction, signal: ctx.signal, isTargetCurrent: selected ? () => sameWork(selected, services.works.get(work.id)) : undefined,
-            sourceOnly: true, savedDecision: previous ?? null, acceptanceContext });
+            sourceOnly: true, savedDecision: previous ?? null, acceptanceContext,
+            acceptanceMode: acceptance ? undefined : intent === 'accept' ? 'required' : 'candidate' });
         }
-        // Freeze acceptance scope and its exact delivery before refreshing permissions. A routing
-        // correction or retry may verify production separately but cannot reclassify this approval.
-        if (!acceptance && (classification?.acceptances?.length || classification?.acceptanceUnconfirmed)) {
-          const approvals = acceptanceScopes(classification.acceptances || [], bindingSnapshot);
+        // Freeze positive, negative and unresolved decisions for the original message before refreshing permissions.
+        const approval = classification?.approval;
+        if (!acceptance && approval) {
+          const approvals = acceptanceScopes(approval.acceptances, bindingSnapshot);
           const bindings = bindingSnapshot.filter(binding => binding.publication && approvals.some(item => item.recordIn === 'work' &&
             item.unit === binding.unit && item.publicationMessageId === binding.publication.messageId));
           acceptance = store.transaction(() => readAcceptance() || store.putRecord('production-sources', {
             id: acceptanceId, acceptedMessageId: user.acceptedMessageId, roomId: user.roomId, messageId: user.messageId,
-            approvals, bindings, unconfirmed: classification.acceptanceUnconfirmed ||
+            approvals, bindings, acknowledgmentOnly: approval.acknowledgmentOnly, issue: approval.issue,
+            unconfirmed: approval.acceptanceUnconfirmed ||
               approvals.some(item => item.recordIn === 'unconfirmed' || item.recordIn === 'work' && acceptanceContext?.unavailable),
           }));
         }
@@ -387,11 +391,11 @@ export function coreTools(services, task) {
           JSON.stringify(currentUserRequest(task, store)) !== JSON.stringify(user) ||
           JSON.stringify(store.getRecord('request-routing', task.id)) !== JSON.stringify(previous)))
           throw new Error('The authenticated source changed before its decision could be saved.');
-        confirmedFeedback ||= classification?.feedback === true;
+        confirmedFeedback ||= classification?.feedback === true && !acceptance?.approvals.length && !acceptance?.unconfirmed;
         const sourceActions = classification?.actions;
         if (production && (confirmedFeedback || !sourceActions?.length)) {
           production = false;
-          intent = acceptance || previous?.acceptances?.length ? 'accept' :
+          intent = acceptance?.approvals.length || acceptance?.unconfirmed || previous?.acceptances?.length ? 'accept' :
             confirmedFeedback ? 'feedback' : classification?.deliveryUnits.length ? 'deliver' : 'discuss';
         }
         // Persist the actual acceptance outcomes with the routing decision, before any separate dispatch.
@@ -411,17 +415,21 @@ export function coreTools(services, task) {
             .map(item => [item.workId, item])).values()];
           return store.putRecord('request-routing', { id: task.id, messageId, roomId: source.roomId, acceptances,
             acceptanceReceiptTaskId: receipt?.taskId ?? previous?.acceptanceReceiptTaskId,
+            acceptanceAcknowledgmentOnly: acceptance?.acknowledgmentOnly ?? previous?.acceptanceAcknowledgmentOnly,
             roomOnlyAcceptances: receipt?.roomOnlyAcceptances ?? previous?.roomOnlyAcceptances ?? [],
             unresolvedAcceptances: receipt?.unresolvedAcceptances ?? previous?.unresolvedAcceptances ?? [],
             acceptanceUnconfirmed: receipt?.acceptanceUnconfirmed ?? previous?.acceptanceUnconfirmed,
+            acceptanceIssue: acceptance?.issue ?? previous?.acceptanceIssue,
             intent, productionStage: production ? args.productionStage : null, confirmedFeedback,
             existingDelivery: previous?.existingDelivery === true || intent === 'deliver', sourceUnit: production ? args.sourceUnit : null,
             workRelation: production ? args.workRelation : null, workId: production && args.workRelation === 'continue' ? args.workId : null,
             reason: intent !== args.intent ? 'The authenticated source contains no independent production action.' : modelText(args.reason), authority: 'model-routing-decision' });
         });
-        if (intent !== args.intent) return { ...decision, instruction: 'Follow the saved intent and respond to the original message. Do not call work_create or work_dispatch for this source classification.' };
-        return sourceActions?.length ? { ...decision, sourceActions,
-          instruction: 'Use the actual acceptance receipt for each scope. For a separately authorized production action, use the matching production decision and submit its exact proposal. Correct an actual routing mismatch once.' } : decision;
+        const reply = acceptanceReply(decision, user?.text);
+        const result = reply ? { ...decision, acceptanceReply: reply } : decision;
+        if (intent !== args.intent) return { ...result, instruction: 'Follow the saved intent and respond to the original message. Do not call work_create or work_dispatch for this source classification.' };
+        return sourceActions?.length ? { ...result, sourceActions,
+          instruction: 'For a separately authorized production action, use the matching production decision and submit its exact proposal. Correct an actual routing mismatch once.' } : result;
       }),
     tool('evidence_read', 'Read a bounded original fragment by exact reference. Workers may follow only handed-off references, never browse another room/session feed. Current source access is rechecked.',
       object({ reference }, ['reference']), 'read', args => services.sources.resolve(services.sources.reference(args.reference ?? args, task), task)),
@@ -451,7 +459,8 @@ export function coreTools(services, task) {
           const acceptanceReceipt = routing?.roomId && routing.roomId === source.roomId && routing.messageId === messageId ? {
             messageId: routing.messageId, receiptTaskId: routing.acceptanceReceiptTaskId,
             acceptances: routing.acceptances, roomOnlyAcceptances: routing.roomOnlyAcceptances,
-            unresolvedAcceptances: routing.unresolvedAcceptances, acceptanceUnconfirmed: routing.acceptanceUnconfirmed } : undefined;
+            unresolvedAcceptances: routing.unresolvedAcceptances, acceptanceUnconfirmed: routing.acceptanceUnconfirmed,
+            issue: routing.acceptanceIssue } : undefined;
           return { taskId: item.id, messageId, status: item.status, acceptanceReceipt,
             actions: store.listTools(item.id).filter(record => record.effect !== 'read').map(record => {
               const receipt = record.output?.details || {};
