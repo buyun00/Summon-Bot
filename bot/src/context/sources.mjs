@@ -10,6 +10,7 @@ const PROPOSAL_ATTACHMENT_CHARACTERS = 24000;
 
 const completeRoomText = item => item?.reference?.type === 'room' && !item.reference.attachmentId && item.reference.offset === 0 &&
   typeof item.content === 'string' && item.content.trim() && item.nextOffset === null && item.fullCharacters === item.content.length;
+const attachmentPageKey = ({ attachmentId, offset }) => JSON.stringify([attachmentId, offset]);
 
 // Expand only the exact saved observation named by this work's checkpoint.
 // Derived progress and a transport receipt's older final remain separate.
@@ -367,7 +368,7 @@ export class RuntimeSources {
     }
 
     // Attachment reads already return the canonical publication, including for a re-delivery.
-    const publications = new Map();
+    const publications = new Map(), selectedMessages = new Set();
     for (const { reference, author, content, fullCharacters } of cited) {
       const { message } = history.get(reference.messageId);
       if (author !== message.source.actor || author === user.actor) continue;
@@ -381,8 +382,9 @@ export class RuntimeSources {
         reference: referenceFor(reference.messageId), author, workId, publishedAt: new Date(message.timestamp).toISOString(),
         attachments: outputs.map(({ id, name, origin }) => ({ id, name, operationId: origin.operationId })),
       } });
+      if (!reference.attachmentId) selectedMessages.add(reference.messageId);
       if (attachment && typeof content === 'string' && content.length) {
-        const pages = publications.get(reference.messageId).pages, key = JSON.stringify([attachment.id, reference.offset]);
+        const pages = publications.get(reference.messageId).pages, key = attachmentPageKey(reference);
         if (!pages.has(key) || pages.get(key).content.length < content.length) pages.set(key, {
           reference: { ...reference, length: content.length }, fullCharacters, content,
         });
@@ -395,15 +397,41 @@ export class RuntimeSources {
       return [{ review: { reference: referenceFor(review.reference.messageId), author: review.author,
         receivedAt: new Date(message.timestamp).toISOString(), content: review.content }, publication }];
     }).slice(0, 4);
+    // A selected original message can recover pages actually read by this task.
+    // Neither a saved receipt nor a matching attachment ID alone grants access.
+    if (selectedMessages.size) for (const tool of this.store.listTools(task.id)) {
+      if (tool.taskId !== task.id || tool.status !== 'completed' || tool.effect !== 'read' || tool.output?.isError ||
+        tool.executionReused || tool.executionRejected || !['chatroom_read', 'evidence_read'].includes(tool.name)) continue;
+      const page = tool.output?.details, ref = page?.reference;
+      if (ref?.type !== 'room' || ref.roomId !== user.roomId || !selectedMessages.has(ref.messageId) ||
+        page.via && (page.via.roomId !== user.roomId || !history.has(page.via.messageId)) ||
+        !ref.attachmentId || !Number.isSafeInteger(ref.offset) || ref.offset < 0 ||
+        typeof page.content !== 'string' || !page.content.length || !Number.isSafeInteger(page.fullCharacters) ||
+        ref.offset + page.content.length > page.fullCharacters) continue;
+      const { publication, pages } = publications.get(ref.messageId);
+      if (page.author !== publication.author || !publication.attachments.some(item => item.id === ref.attachmentId)) continue;
+      const key = attachmentPageKey(ref), previous = pages.get(key);
+      if (!previous || previous.recheck && previous.content.length < page.content.length)
+        pages.set(key, { reference: { ...ref, length: page.content.length }, fullCharacters: page.fullCharacters, content: page.content, recheck: true });
+    }
     let remaining = PROPOSAL_ATTACHMENT_CHARACTERS;
-    const citedPublicationMaterials = [...publications.values()].flatMap(({ publication, pages }) => {
-      const excerpts = [...pages.values()].sort((a, b) => a.reference.offset - b.reference.offset).filter(page => {
-        if (page.content.length > remaining) return false;
-        remaining -= page.content.length;
-        return true;
-      });
-      return excerpts.length ? [{ publication, pages: excerpts }] : [];
-    });
+    const materials = [...publications.values()].map(({ publication, pages }) => ({ publication,
+      candidates: [...pages.values()].sort((a, b) => a.reference.offset - b.reference.offset), pages: [] }));
+    // Reserve the existing budget for explicit pages first. Re-resolve only
+    // recovered pages that could fit, and never extend the saved page window.
+    for (const recover of [false, true]) for (const { publication, candidates, pages } of materials) for (const { recheck, ...page } of candidates) {
+      if (Boolean(recheck) !== recover || page.content.length > remaining) continue;
+      if (recover) {
+        const ref = page.reference, read = await this.resolve(ref, task).catch(() => null), actual = read?.reference;
+        if (actual?.type !== 'room' || actual.roomId !== ref.roomId || actual.messageId !== ref.messageId ||
+          actual.attachmentId !== ref.attachmentId || actual.offset !== ref.offset || read.author !== publication.author || read.content !== page.content ||
+          read.fullCharacters !== page.fullCharacters) continue;
+      }
+      remaining -= page.content.length;
+      pages.push(page);
+    }
+    const citedPublicationMaterials = materials.filter(item => item.pages.length).map(({ publication, pages }) => ({ publication,
+      pages: pages.sort((a, b) => a.reference.offset - b.reference.offset) }));
     return { currentReplyTo, referencedUserScope, ...(citedReviewScopes.length ? { citedReviewScopes } : {}),
       ...(citedPublicationMaterials.length ? { citedPublicationMaterials } : {}) };
   }

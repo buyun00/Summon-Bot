@@ -18,10 +18,11 @@ const tool = (name, description, inputSchema, effect, execute) => ({ name, descr
   execute: async (args, context) => jsonToolResult(await execute(modelArgs(args), context)) });
 const pageFields = { offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 20 } };
 const reference = object({ type: { type: 'string', enum: ['room', 'session', 'artifact', 'knowledge', 'work', 'tool'] }, roomId: string, scopeId: string, workId: string, operationId: string,
-  messageId: string, sessionId: string, entryId: string, id: string, section: { type: 'string', enum: ['acceptedStep', 'evidenceItem', 'toolContent'] },
+  messageId: string, attachmentId: { type: 'string', description: 'For a room attachment page, use the exact attachmentId from chatroom_read, not an executor artifact ID.' },
+  sessionId: string, entryId: string, id: string, section: { type: 'string', enum: ['acceptedStep', 'evidenceItem', 'toolContent'] },
   index: { type: 'integer', minimum: 0 }, offset: { type: 'integer', minimum: 0 }, length: { type: 'integer', minimum: 1, maximum: 64000 } }, ['type']);
 const evidence = { type: 'array', maxItems: HANDOFF_REFERENCES, items: reference,
-  description: 'Selected exact references from source reads, e.g. [{type:"room",roomId:"...",messageId:"..."}]. Pass the array itself; a JSON array string is also readable. Prose is guidance, not a source grant.' };
+  description: 'Select exact references from source reads. For published text, pass the room page reference returned by chatroom_read, including roomId, original messageId, attachmentId, offset and length for each selected page. Pass the array itself; a JSON array string is also readable. Prose is guidance, not a source grant.' };
 const handoffFields = { evidence, knowledgeScopes: { type: 'array', items: string }, instruction: string, acceptance: string };
 const waitingFields = object({ kind: { type: 'string', enum: ['review', 'user-input', 'external'] }, question: string, reason: string,
   blockingRequirement: { type: 'string', description: 'For user-input after a confirmed final, name the unmet requirement of this same work that needs the answer. Review of a delivered result and permission for separate next work belong to review.' } }, ['kind']);
