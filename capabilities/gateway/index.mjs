@@ -31,6 +31,7 @@ import { createRedactor } from '../../bot/src/runtime/config.mjs';
 import { workFormReceipt } from '../../bot/src/runtime/works.mjs';
 import { taskFileAccessPolicy } from '../../bot/src/capabilities/file-access.mjs';
 import { codexScope } from '../../bot/src/capabilities/codex-scope.mjs';
+import { currentUserRequest } from '../../bot/src/capabilities/request-routing.mjs';
 import { notificationParts,progressNotificationCurrent } from '../../bot/src/runtime/notifications.mjs';
 import { waitingLabel } from '../../bot/src/context/execution-evidence.mjs';
 import { CapabilityCatalog,catalogTools } from '../services/catalog.mjs';
@@ -238,12 +239,21 @@ export async function startGateway(options={}) {
     }
     if(task&&name.startsWith('codex_')){
       const config=await manager.config(actor);
-      context.codexScope=await manager.readState(actor,db=>{
+      const {scope,projectRequest}=await manager.readState(actor,db=>{
         const scopedTask=runtimeOperation?{...task,workId:runtimeOperation.workId}:task;
         const originId=scopedTask.workId&&workExecution(scopedTask,db).requestTaskId;
         const origin=originId&&db.getTask(originId);
-        return codexScope(actor,scopedTask,db,origin?taskSource(origin,db):source||{},config.workspace);
+        const scope=codexScope(actor,scopedTask,db,origin?taskSource(origin,db):source||{},config.workspace);
+        const user=name==='codex_projects'&&taskMode(scopedTask)==='chat'&&currentUserRequest(task,db);
+        const route=user?.roomId&&db.getRecord('request-routing',task.id);
+        const verified=route?.intent==='produce'&&route.workRelation==='new'&&route.messageId===user.messageId&&route.roomId===user.roomId&&
+          db.listRecords('production-sources').some(item=>item.acceptedMessageId===user.acceptedMessageId&&!item.continuationWorkId&&
+            item.actions?.some(action=>action.unit===route.sourceUnit&&action.stage===route.productionStage&&
+              action.kind==='start'&&action.basis==='direct'&&action.when==='now'));
+        return {scope,projectRequest:verified?user:null};
       });
+      if(projectRequest)scope.requestProject=await chatroom.specialistProject(actor,projectRequest);
+      context.codexScope=scope;
     }
     if(task&&['list_files','read_file','search_files','write_file','edit_file','run_command','publish_file'].includes(name)){
       const config=await manager.config(actor);

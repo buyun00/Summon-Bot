@@ -185,7 +185,7 @@ export class BotEngine {
       }
       const hasCurrentRequest = !roomDecision && taskMode(task) === 'chat' && Boolean(currentUserRequest(task, this.store));
       const handoffs = [];
-      const verifyProduction = async ({ user, units, continuationTarget, existingDelivery, sourceAction, proposed, step, acceptanceContext }, signal) => {
+      const verifyProduction = async ({ user, units, continuationTarget, existingDelivery, sourceAction, proposed, step, acceptanceContext, scopeEvidence }, signal) => {
         const prior = publicView?.messages.filter(message => message.source?.roomId === user.roomId) || [];
         const current = prior.findIndex(message => message.source?.messageId === user.messageId);
         const related = user.replyTo ? prior.slice(0, Math.max(0, current)).find(message => message.source?.messageId === user.replyTo) :
@@ -202,9 +202,29 @@ export class BotEngine {
             referencedUserScope = { reference, author: original.author, content: original.content };
           }
         }
+        let citedReviewScopes;
+        if (step === 'proposal' && user.roomId && scopeEvidence?.length && current > 0) {
+          const earlier = new Map(prior.slice(0, current).map(message => [message.source.messageId, message]));
+          const cited = new Map(scopeEvidence.filter(item => item.reference?.type === 'room' && item.reference.roomId === user.roomId &&
+            !item.reference.attachmentId && earlier.has(item.reference.messageId)).map(item => [item.reference.messageId, item]));
+          citedReviewScopes = [...cited.values()].flatMap(review => {
+            if (review.author !== user.actor || earlier.get(review.reference.messageId)?.source.actor !== user.actor ||
+                typeof review.content !== 'string' || !review.content.trim() || review.nextOffset !== null ||
+                review.fullCharacters !== review.content.length) return [];
+            const result = cited.get(review.replyTo), message = result && earlier.get(result.reference.messageId);
+            const publication = message && JSON.parse(message.content[0].text);
+            const attachments = publication?.attachments.filter(({ id, origin }) => origin?.type === 'work-output' &&
+              origin.roomId === user.roomId && origin.botId === publication.author && origin.workId === publication.workId &&
+              origin.publicationId === id && origin.operationId).map(({ id, name }) => ({ id, name }));
+            if (!attachments?.length) return [];
+            return [{ review: { reference: review.reference, receivedAt: new Date(earlier.get(review.reference.messageId).timestamp).toISOString(),
+              author: review.author, content: review.content }, publication: { reference: result.reference, author: publication.author,
+              publishedAt: new Date(message.timestamp).toISOString(), attachments } }];
+          }).slice(0, 4);
+        }
         const input = step === 'acceptance' ? { currentUser: units, originalText: user.text, acceptanceContext } :
           { currentUser: units, referencedTurn: previous && { content: previous.content }, referencedUserScope,
-            continuationTarget, existingDelivery, ...(proposed ? { sourceAction, proposed } : {}) };
+            ...(citedReviewScopes?.length ? { citedReviewScopes } : {}), continuationTarget, existingDelivery, ...(proposed ? { sourceAction, proposed } : {}) };
         signal?.throwIfAborted();
         const result = await this.provider.stream(model, { messages: [
           { role: 'system', content: productionAuthorizationPrompts[step], timestamp: Date.now() },
@@ -460,7 +480,8 @@ export class BotEngine {
             const contextFile = await this.maintenance.saveContext(task, background, combined);
             prefix = { ...prefix, historyStart: startIndex, publicStart, contextFile, markdownRevision: assembledRevision, generation };
             this.store.saveSession({ ...current, contextPrefix: prefix, contextGeneration: generation, contextBoundary: startIndex, lastContextRunId: runId });
-            messages = buildMessages(); this.emit('engine.compaction', { contextGeneration: generation, fromIndex: startIndex, tokensBefore: previousTokens, tokensAfter: contextTokens(messages) }, refs);
+            messages = buildMessages(); this.emit('engine.compaction', { model: model.id, contextWindow: model.contextWindow,
+              contextGeneration: generation, fromIndex: startIndex, tokensBefore: previousTokens, tokensAfter: contextTokens(messages) }, refs);
           } catch (error) {
             startIndex = previousStart; publicStart = previousPublicStart; background = previousBackground; assembledRevision = previousRevision;
             combined.throwIfAborted(); this.emit('engine.compaction_failed', { error: clean(error.message), retainedPreviousContext: true }, refs);
@@ -484,7 +505,7 @@ export class BotEngine {
         }
         preparedHistoryThrough = this.store.getSession(task.sessionId).messages.length;
         lastContextSize = contextTokens(messages);
-        this.emit('engine.request', { model: request.model.id, contextTokens: lastContextSize,
+        this.emit('engine.request', { model: request.model.id, contextWindow: model.contextWindow, contextTokens: lastContextSize,
           contextBytes: Buffer.byteLength(JSON.stringify(messages)), requestedOutputTokens: outputBudget }, refs);
         return { context: { ...request.context, messages, tools: agent.state.tools.slice() } };
       };

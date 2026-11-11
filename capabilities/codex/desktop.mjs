@@ -160,10 +160,17 @@ export class DesktopCodex {
     const items = Array.isArray(page) ? page : page.projects || page.items || [];
     const key = path => process.platform === 'win32' ? resolve(path).toLowerCase() : resolve(path);
     const paths = new Set(scope.directories.map(key));
-    const projects = items.filter(item => scope.projectIds.includes(item.projectId || item.id) ||
-      item.hostId === 'local' && item.projectKind === 'local' &&
-      [item.cwd, item.path, item.rootPath, ...(Array.isArray(item.roots) ? item.roots : []).map(root => typeof root === 'string' ? root : root?.path)]
-        .some(path => typeof path === 'string' && paths.has(key(path))));
+    const projects = items.filter(item => {
+      const id = item.projectId || item.id;
+      if (scope.projectIds.includes(id)) return true;
+      if (item.hostId !== 'local' || item.projectKind !== 'local') return false;
+      const localPaths = [item.cwd, item.path, item.rootPath, ...(Array.isArray(item.roots) ? item.roots : [])
+        .map(root => typeof root === 'string' ? root : root?.path)].filter(path => typeof path === 'string');
+      if (localPaths.some(path => paths.has(key(path)))) return true;
+      const path = item.path || item.cwd || item.rootPath;
+      return scope.requestProject?.id === id && typeof path === 'string' &&
+        /^(?:[A-Za-z]:[\\/]|\/|\\\\)/.test(path) && directoryProject(path).id === scope.requestProject.directory;
+    });
     return { projects: projects.map(item => ({projectId:item.projectId||item.id,label:item.label||item.name,
       path:item.path||item.cwd,hostId:item.hostId,projectKind:item.projectKind})), scope: 'authorized-bot-source', exhaustive: false };
   }

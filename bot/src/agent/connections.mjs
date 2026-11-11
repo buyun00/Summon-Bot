@@ -32,6 +32,11 @@ export function grokProxyHeaders(connection = {}) {
 const factories = { codex: openaiCodexProvider, grok: xaiProvider, deepseek: deepseekProvider, openai: openaiProvider, anthropic: anthropicProvider, xai: xaiProvider };
 const apis = { 'openai-completions': openAICompletionsApi, 'openai-responses': openAIResponsesApi,
   'openai-codex-responses': openAICodexResponsesApi, 'anthropic-messages': anthropicMessagesApi };
+// The direct API window includes input and output. Pi's catalog still uses
+// the 272K pricing threshold for these Responses models and omits Terra.
+const openAILongContextModels = new Set(['gpt-6-astra', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-luna']);
+const openAILongContextBudget = { contextWindow: 1050000, maxTokens: 128000 };
+const terraModel = { id: 'gpt-6.1-terra', name: 'GPT-6.1 Terra', api: 'openai-responses', type: 'chat', input: ['text', 'image'] };
 export const readConnectionCatalog = path => JSON.parse(readFileSync(path, 'utf8'));
 export async function saveModelJson(path, value) {
   await mkdir(dirname(path), { recursive: true });
@@ -59,12 +64,15 @@ export function connectionModel(connection) {
   const api = connection.kind === 'codex' ? 'openai-codex-responses' : connection.kind === 'grok' ? 'openai-responses' : connection.api || 'openai-completions';
   const baseUrl = connection.kind === 'grok' ? 'https://cli-chat-proxy.grok.com/v1' : connection.baseUrl || native?.baseUrl;
   const deepseek = officialDeepSeekCompletions(connection, api, baseUrl);
+  const directOpenAI = connection.kind === 'api' && connection.provider === 'openai' && api === 'openai-responses' &&
+    baseUrl?.replace(/\/+$/, '') === 'https://api.openai.com/v1' && openAILongContextModels.has(connection.model);
   const known = native?.getModels().find(model => model.api === api &&
-    (model.id === connection.model || deepseek && model.id === 'deepseek-flash' && connection.model.startsWith('deepseek-v4-flash')));
+    (model.id === connection.model || deepseek && model.id === 'deepseek-flash' && connection.model.startsWith('deepseek-v4-flash'))) ||
+    (directOpenAI && connection.model === terraModel.id ? terraModel : undefined);
   // The official Completions schema gives exact powers of two. Pi's bundled
   // DeepSeek catalog uses the rounded marketing figures and sends a limit.
-  const nativeWindow = deepseek ? 1048576 : known?.contextWindow;
-  const nativeOutput = deepseek ? 393216 : known?.maxTokens;
+  const nativeWindow = deepseek ? 1048576 : directOpenAI ? openAILongContextBudget.contextWindow : known?.contextWindow;
+  const nativeOutput = deepseek ? 393216 : directOpenAI ? openAILongContextBudget.maxTokens : known?.maxTokens;
   const context = Number(connection.contextWindow ?? (nativeWindow || 128000));
   const customOutput = connection.maxTokens == null ? null : Number(connection.maxTokens);
   const contextWindow = Math.min(context, nativeWindow || Infinity);
@@ -84,7 +92,10 @@ export function connectionModel(connection) {
     ...(api === 'openai-completions' && !known ? { compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: false, maxTokensField: 'max_tokens' } } : {}) };
 }
 export function modelChoices(kind, provider) {
-  return (factories[kind === 'api' ? provider : kind]?.().getModels() || []).map(model => {
+  const models = factories[kind === 'api' ? provider : kind]?.().getModels() || [];
+  const catalog = kind === 'api' && provider === 'openai' && !models.some(model => model.id === terraModel.id && model.api === terraModel.api) ?
+    [...models, terraModel] : models;
+  return catalog.map(model => {
     const budget = connectionModel({ kind, provider, model: model.id, api: model.api });
     return { id: model.id, name: model.name, contextWindow: budget.contextWindow, maxTokens: budget.outputTokenLimit, api: model.api };
   });

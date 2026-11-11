@@ -138,6 +138,37 @@ function acceptanceTarget(store, work, roomId, notifications = store.listRecords
 }
 
 const publishedBeforeRequest = (publication, user) => Date.parse(publication.publishedAt) < Date.parse(user.roomMessageAt);
+const normalizeQuestion = value => String(value || '').trim().replace(/\s+/g, ' ');
+
+function returnedAfterAnswer(store, work, question) {
+  const exactQuestion = normalizeQuestion(question);
+  const asked = new Map();
+  for (const notification of store.listRecords('work-notifications')) {
+    if (notification.workId !== work.id || notification.publication !== 'explicit' || notification.status !== 'delivered') continue;
+    for (const receipt of [notification.receipt].flat()) {
+      if (receipt?.id && receipt.senderId === work.botId && receipt.workId === work.id && receipt.roomId === notification.roomId &&
+          normalizeQuestion(receipt.content).includes(exactQuestion)) asked.set(receipt.id, receipt);
+    }
+  }
+  if (!asked.size) return null;
+  for (const routing of store.listRecords('request-routing').reverse()) {
+    if (routing.intent !== 'deliver') continue;
+    const answerTask = store.getTask(routing.id);
+    if (answerTask?.status !== 'completed' || !answerTask.result?.attachments?.length) continue;
+    const user = currentUserRequest(answerTask, store), publication = asked.get(user?.replyTo);
+    if (!publication || user.messageId !== routing.messageId || user.roomId !== publication.roomId ||
+        user.roomId !== routing.roomId || !(Date.parse(user.roomMessageAt) > Date.parse(publication.createdAt))) continue;
+    const attached = new Set(answerTask.result.attachments.map(item => item.id));
+    const returned = store.listTools(answerTask.id).some(tool => {
+      const receipt = tool.output?.details;
+      return tool.name === 'work_deliver' && tool.status === 'completed' && receipt?.workId === work.id &&
+        receipt.status === 'ready-for-current-reply' && receipt.attachments?.length && receipt.attachments.every(item => attached.has(item.id));
+    });
+    if (returned) return { roomId: user.roomId, messageId: user.messageId, questionMessageId: publication.id };
+  }
+  return null;
+}
+
 const runnableWorkIds = store => new Set(store.listUnfinishedTasks().filter(item =>
   ['accepted', 'queued', 'running'].includes(item.status)).map(item => item.workId));
 const acceptanceIdentity = ['operationId', 'threadId', 'turnId', 'throughOperationId', 'verificationOperationIds'];
@@ -311,8 +342,8 @@ export function coreTools(services, task) {
   const targetIdentity = work => ({ ...work, status: undefined, executionStatus: undefined });
   const sameWork = (expected, current) => Boolean(current && JSON.stringify(targetIdentity(selectedWork(current))) ===
     JSON.stringify(targetIdentity(expected)));
-  const authorize = (decision, ctx, proposed, { workId, actionId }) => authorizeProduction({ task, store, decision, proposed,
-    workId, actionId, verify: ctx.verifyProduction, signal: ctx.signal,
+  const authorize = (decision, ctx, proposed, { workId, actionId, scopeEvidence }) => authorizeProduction({ task, store, decision, proposed,
+    workId, actionId, verify: (input, signal) => ctx.verifyProduction({ ...input, scopeEvidence }, signal), signal: ctx.signal,
     isTargetCurrent: proposed.work ? () => sameWork(proposed.work, services.works.get(workId)) : undefined });
   const selectedWork = work => {
     const binding = work.bindings?.findLast(item => item.type === 'codex-desktop');
@@ -546,7 +577,7 @@ export function coreTools(services, task) {
           selected.some(id => !available.some(item => item.id === id))))
           throw Object.assign(new Error(`Selection failed for this exact operation. Call work_outputs again for work ${work.id}, operation ${operationId}, and choose its current candidate IDs. Omit attachmentIds only if the user requested all confirmed outputs.`), { code: 'OUTPUT_SELECTION_INVALID' });
         return { workId: work.id, operationId, status: 'ready-for-current-reply',
-          attachments: available.filter(item => !selected || selected.includes(item.id)).map(({ id }) => ({ id })) };
+          attachments: available.filter(item => !selected || selected.includes(item.id)).map(({ id, messageId }) => ({ id, messageId })) };
       }),
     tool('work_create', 'Accept and asynchronously dispatch independent work. The receipt confirms local scheduling only, not Pi/Codex execution, native registration or completion. Omit executor for the default engine. Give goal, evidence, handoff prose and an authorized target; the program supplies operation IDs and refreshes current project rules. Do not repeat or wait on this frontend call to strengthen the acknowledgment.',
       object({ id: string, operationId: string, goal: string, requirements: string, responsibility: string, ...handoffFields,
@@ -579,7 +610,7 @@ export function coreTools(services, task) {
         const goal = modelText(args.goal || args.instruction || args.content || content.originalRequest.content);
         const requirements = modelText(args.requirements);
         const grant = await authorize(decision, ctx, { relation: 'new', project, target: executor?.target || target, executor: executorKind,
-          goal, requirements, handoff: content.handoff }, { workId: id, actionId: `${id}:${operationId}` });
+          goal, requirements, handoff: content.handoff }, { workId: id, actionId: `${id}:${operationId}`, scopeEvidence: content.evidence });
         if (grant) content.stage = productionStage(grant);
         try {
           content.currentKnowledge = await services.memory.forRequest(task, project);
@@ -615,6 +646,10 @@ export function coreTools(services, task) {
         if (args.waiting?.kind === 'user-input' && !question) throw new Error('Waiting for user input requires the actual unanswered question.');
         if (confirmedFinal && args.waiting?.kind === 'user-input' && !blockingRequirement)
           throw new Error('After a confirmed final, user-input requires a blockingRequirement of this same accepted work. For acceptance of the result or authorization of separate next work, use waiting/review or complete the finished scope.');
+        if (review && args.waiting?.kind === 'user-input' && currentOutcome?.kind !== 'needs-input') {
+          const answer = returnedAfterAnswer(store, work, question);
+          if (answer) throw Object.assign(new Error(`The user already answered this published work question in room ${answer.roomId}, message ${answer.messageId}, replying to ${answer.questionMessageId}. The frontend selected the confirmed original outputs for this same work. Preserve the executor’s own earlier observation and any concrete remaining gap; do not record the same unanswered question again.`), { code: 'WORK_INPUT_ALREADY_ANSWERED', status: 409 });
+        }
         if (['paused', 'cancelled'].includes(args.status) && work.id !== task.workId) {
           if (!userRequest) throw new Error('只能依据当前用户的停止要求控制这项工作。');
           if (source.roomId && (!work.sources?.length || work.sources.some(item => item.roomId !== source.roomId)))
@@ -648,7 +683,7 @@ export function coreTools(services, task) {
         const content = await services.sources.handoff(task, args);
         const eventId = actionId(args, ctx, 'eventId'), selected = selectedWork(work);
         const grant = await authorize(decision, ctx, { relation: 'continue', work: selected, handoff: content.handoff },
-          { workId: work.id, actionId: `${work.id}:${eventId}` });
+          { workId: work.id, actionId: `${work.id}:${eventId}`, scopeEvidence: content.evidence });
         if (grant) content.stage = productionStage(grant);
         try {
           content.currentKnowledge = await services.memory.forRequest(task, services.sources.project(work));

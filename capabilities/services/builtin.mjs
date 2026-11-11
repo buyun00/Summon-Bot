@@ -145,7 +145,7 @@ export async function createCapability(options) {
         return rooms.filter(room=>actor==='controller'||room.members.includes(actor)&&(!sourceActor||sourceActor==='system'||room.members.includes(sourceActor)));
       }
       case 'chatroom_read':{
-        if(args.attachmentId!==undefined)return chatroom.readStaffingAttachment(args,actor,context.source);
+        if(args.attachmentId!==undefined)return chatroom.readPublishedAttachment(args,actor,context.source);
         const page=chatroom.read(args,actor,context.source);
         return actor==='controller'||args.outputReceipts!==undefined||context.source?.metadata?.groupObservation||context.source?.metadata?.teamStaffing?
           page:attachments.stageContext(page,(await manager.config(actor)).workspace);

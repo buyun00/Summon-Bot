@@ -285,7 +285,9 @@ export class RuntimeSources {
           candidate.scopeId === reference.scopeId : reference.type === 'work' ? candidate.workId === reference.workId &&
             candidate.operationId === reference.operationId : candidate.id === reference.id);
     return this.store.listRecords('work-events').findLast(event => event.workId === task.workId && event.requestTaskId &&
-      [event.content?.originalRequest?.reference, ...(event.content?.evidence || []).map(item => item.reference)].some(same));
+      [event.content?.originalRequest, ...(event.content?.evidence || [])].some(item => same(item?.reference) &&
+        (reference.type !== 'room' || item.reference.attachmentId === reference.attachmentId ||
+          !item.reference.attachmentId && item.attachments?.some(attachment => attachment.id === reference.attachmentId))));
   }
   async scopedCall(name, args, task, sourceTask) {
     const id = `${task.workId}:source-read:${randomUUID()}`;
@@ -348,8 +350,10 @@ export class RuntimeSources {
     const grant = this.grant(task, reference), origin = grant?.requestTaskId && this.store.getTask(grant.requestTaskId);
     if (task.workId && reference.type === 'room' && !origin) denied('Workers read only explicitly handed-off source messages');
     if (reference.type === 'room') {
-      const args = { roomId: reference.roomId, messageId: reference.messageId, offset, length: Math.min(16000, length) };
+      const args = { roomId: reference.roomId, messageId: reference.messageId, offset, length: Math.min(16000, length),
+        ...(reference.attachmentId ? { attachmentId: reference.attachmentId } : {}) };
       const page = origin ? await this.scopedCall('chatroom_read', args, task, origin) : await this.callForSource('chatroom_read', args, task);
+      if (reference.attachmentId) return { ...page, authority: 'evidence' };
       const message = page.messages?.find(item => item.id === reference.messageId);
       if (!message) throw new Error('Evidence message not found');
       return { reference: message.reference, author: message.senderId, content: message.content, attachments: message.attachments,
