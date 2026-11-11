@@ -1,10 +1,11 @@
 import { AssistantMessageEventStream, clampThinkingLevel, getCurrentTools, normalizeContext } from '@earendil-works/pi-ai';
 import { randomUUID } from 'node:crypto';
-import { modelConnection, connectionModel, connectionRuntime, modelError, officialDeepSeekCompletions } from './connections.mjs';
+import { modelConnection, connectionModel, connectionRuntime, modelError, officialDeepSeekCompletions, terraResponses } from './connections.mjs';
 import { reportedUsage, referenceCost } from './usage.mjs';
 
 const connectionWaitMs = 180000;
 const authorizationOutput = { off: 2048, thinking: 16384 };
+const wireReasoningEfforts = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 const timeoutError = phase => Object.assign(new Error(`Model request timed out during ${phase}`), { code: 'MODEL_DEADLINE' });
 
 const rawUsage = usage => ({ prompt_tokens: usage.input + usage.cacheRead + usage.cacheWrite,
@@ -38,7 +39,7 @@ export class ModelProvider {
     this.controllers.add(controller);
     const started = Date.now(), secrets = new Set();
     const tracksConnection = options.usageContext?.purpose !== 'activity';
-    let record, selectedModel = model, received, ended = false, wireUsage, stageTimer, totalTimer;
+    let record, selectedModel = model, received, ended = false, wireUsage, sentReasoningEffort, stageTimer, totalTimer;
     const waitFor = (phase, ms) => {
       clearTimeout(stageTimer);
       stageTimer = setTimeout(() => {
@@ -58,8 +59,9 @@ export class ModelProvider {
         const runtime = connectionRuntime(connection, undefined, model);
         const authorization = options.usageContext?.requestKind === 'production-authorization';
         const deepseek = officialDeepSeekCompletions({ ...connection, model: model.id }, model.api, model.baseUrl);
-        // For official DeepSeek, a short structured check uses the native off path.
-        const requestedReasoning = authorization && deepseek ? 'off' : options.reasoning || 'off';
+        const responses = model.api === 'openai-responses';
+        // Authorization checks use off on the providers with an explicit off mode here.
+        const requestedReasoning = authorization && (deepseek || terraResponses(connection, model.api, model.id)) ? 'off' : options.reasoning || 'off';
         const fastest = model.thinkingLevelMap?.off === null ? ['low', 'medium', 'high'].find(level => model.thinkingLevelMap[level] != null) : null;
         const reasoning = clampThinkingLevel(model, requestedReasoning === 'off' && fastest ? fastest : requestedReasoning);
         const thinking = reasoning !== 'off', idleWaitMs = thinking ? 300000 : 180000;
@@ -69,8 +71,8 @@ export class ModelProvider {
         record = { id: randomUUID(), botId: this.config.botId, ...options.usageContext,
           purpose: options.usageContext?.purpose || 'other', provider: connection.kind === 'api' ? connection.provider : connection.kind,
           connectionId: connection.id, billingMode: connection.kind === 'api' ? 'api' : 'subscription',
-          model: model.id, requestedModel: model.id, startedAt: new Date(started).toISOString(), status: 'pending', ...reportedUsage(null),
-          thinking, thinkingLevel: reasoning, api: model.api, contextWindow: model.contextWindow, requestedOutputTokens: maxTokens,
+          model: model.id, requestedModel: model.id, responseModel: null, startedAt: new Date(started).toISOString(), status: 'pending', ...reportedUsage(null),
+          thinking, thinkingLevel: reasoning, sentReasoningEffort: null, api: model.api, contextWindow: model.contextWindow, requestedOutputTokens: maxTokens,
           messageCount: context.messages?.length || 0, toolCount: getCurrentTools(normalizeContext(context).messages).length, maxOutputTokens: null };
         const persist = () => this.config.recordUsage?.(record); persist();
         waitFor('connection', connectionWaitMs);
@@ -89,13 +91,16 @@ export class ModelProvider {
             const sent = replacement ?? payload;
             const limit = sent?.max_tokens ?? sent?.max_completion_tokens ?? sent?.max_output_tokens;
             record.maxOutputTokens = Number.isSafeInteger(limit) ? limit : null;
-            persist();
+            const effort = responses ? sent?.reasoning?.effort : deepseek ? sent?.reasoning_effort : null;
+            sentReasoningEffort = deepseek && sent?.thinking?.type === 'disabled' ? 'disabled' : wireReasoningEfforts.has(effort) ? effort : null;
             return replacement;
           },
           fetch: async (input, init) => {
             const headers = new Headers(init?.headers);
             const bearer = headers.get('authorization'); if (bearer) secrets.add(bearer.replace(/^Bearer\s+/i, ''));
             if (headers.get('x-api-key')) secrets.add(headers.get('x-api-key'));
+            record.sentReasoningEffort = sentReasoningEffort ?? null;
+            persist();
             const response = await fetch(input, { ...init, redirect: 'error' });
             record.httpStatus = response.status;
             waitFor('first-progress', idleWaitMs);
@@ -110,6 +115,10 @@ export class ModelProvider {
                 if (!line.startsWith('data:')) continue;
                 try { const event = JSON.parse(line.slice(5)); const usage = event.usage || event.response?.usage || event.message?.usage;
                   if (usage) wireUsage = { ...wireUsage, ...usage };
+                  const responseModel = responses ? event.response?.model : deepseek ? event.model : null;
+                  if (typeof responseModel === 'string' && responseModel !== record.responseModel && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(responseModel) &&
+                    !model.baseUrl?.includes(responseModel) && ![...secrets].some(secret => secret && responseModel.includes(secret)) &&
+                    modelError(responseModel) === responseModel && this.config.redact(responseModel) === responseModel) record.responseModel = responseModel;
                 } catch {}
               }
               if (tail.length > 2 * 1024 * 1024) tail = '';

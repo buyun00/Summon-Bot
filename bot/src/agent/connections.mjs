@@ -51,6 +51,9 @@ export function officialDeepSeekCompletions(connection, api, baseUrl) {
     Boolean(baseUrl) && new URL(baseUrl).hostname === 'api.deepseek.com' &&
     ['deepseek-flash', 'deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'].includes(connection.model);
 }
+export function terraResponses(connection, api, model = connection.model) {
+  return connection.kind === 'api' && connection.provider === 'openai' && api === 'openai-responses' && model === 'gpt-6.1-terra';
+}
 export function connectionModel(connection) {
   const native = factories[connection.kind === 'api' ? connection.provider : connection.kind]?.();
   const api = connection.kind === 'codex' ? 'openai-codex-responses' : connection.kind === 'grok' ? 'openai-responses' : connection.api || 'openai-completions';
@@ -75,6 +78,8 @@ export function connectionModel(connection) {
     provider: connection.id || connection.provider, baseUrl,
     ...(connection.kind === 'grok' ? { headers: { ...known?.headers, ...grokProxyHeaders(connection) } } : {}),
     reasoning: connection.reasoning !== false, input: known?.input || ['text'], contextWindow, maxTokens, outputTokenLimit,
+    // Keep the four supported levels distinct. Pi rounds medium up to high and xhigh up to max.
+    ...(terraResponses(connection, api) ? { thinkingLevelMap: { off: 'none', minimal: null, low: 'low', medium: null, high: 'high', max: 'max' } } : {}),
     cost: connection.kind === 'api' ? known?.cost || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     ...(api === 'openai-completions' && !known ? { compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: false, maxTokensField: 'max_tokens' } } : {}) };
 }
