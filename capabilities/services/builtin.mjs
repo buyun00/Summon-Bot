@@ -58,7 +58,10 @@ export async function createCapability(options) {
   }
   if (chatroom) {
     store(id).transaction(()=>{for(const job of chatroom.jobs())if(!job.serviceVersion)store(id).save('deliveries',{id:job.id,serviceVersion:version});});
-    const tick=chatroom.tick.bind(chatroom);chatroom.tick=()=>locked(tick);
+    chatroom.staffingMutation=locked;
+    const tick=chatroom.tick.bind(chatroom);
+    let ticking;
+    chatroom.tick=()=>ticking||=(locked(tick).finally(()=>{ticking=null;}));
     if(options.deferStart)chatroom.closed=true;else chatroom.start();
   }
   const assertOwner=(actor,botId)=>{if(actor!=='controller'&&actor!==botId)fail('This Bot cannot access another Bot private data',403);};
@@ -182,7 +185,7 @@ export async function createCapability(options) {
       case 'knowledge_save_edge':return knowledge.saveEdge(args);
       case 'bots_list':{
         if(context.source?.metadata?.teamStaffing)return manager.list().map(bot=>
-          pick(bot,['id','name','roleId','role','expertise','status','runIntent','lifecycle','skills','allowedTools']));
+          pick(bot,['id','name','roleId','role','expertise','status','runIntent','firstRunPending','lifecycle','skills','allowedTools','archivedAt','maintenanceFor']));
         const sharedRooms=new Set(store('chatroom').list('rooms').filter(room=>actor==='controller'||room.members.includes(actor)).map(room=>room.id));
         return Promise.all(manager.list().map(async bot=>{
           const works=await manager.readState(bot.id,db=>db?.listRecords('works')||[]);

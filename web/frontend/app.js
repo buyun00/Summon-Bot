@@ -997,8 +997,8 @@ function field(label, name, value = '', options = {}) {
 }
 function selectField(label, name, options, value, help = '') { return `<div class="form-field"><label for="field-${name}">${label}</label><select id="field-${name}" name="${name}">${options.map(option => `<option value="${esc(option.value)}" ${option.value === value ? 'selected' : ''}>${esc(option.label)}</option>`).join('')}</select>${help ? `<small>${esc(help)}</small>` : ''}</div>`; }
 const roomProjectField = (value = 'auto') => selectField('群聊用途', 'projectMode', [
-  { value: 'auto', label: '自动识别持续项目' }, { value: 'project', label: '持续项目 · 定期协作复核' }, { value: 'chat', label: '日常交流' },
-], value, '持续项目需要填写目标。已暂停或完成的项目需单独恢复。');
+  { value: 'auto', label: '自动判断项目分工' }, { value: 'project', label: '持续项目 · 定期协作复核' }, { value: 'chat', label: '日常交流' },
+], value, '持续项目需要填写目标。日常交流不会自动安排分工。');
 function botOptions() { return state.bots.map(bot => ({ value: bot.id, label: bot.name })); }
 function roomOptions() { return state.rooms.filter(room => room.status !== 'concluded').map(room => ({ value: room.id, label: room.name })); }
 function memberChoices(selected = []) { return `<div class="form-field"><label>参与成员</label>${state.bots.map(bot => `<label class="member-choice">${avatar(bot.id)}<span>${esc(bot.name)}<small>${esc(bot.role)}</small></span><input type="checkbox" name="members" value="${esc(bot.id)}" ${selected.includes(bot.id) ? 'checked' : ''}></label>`).join('')}<small>勾选需要参与会话的 Bot。</small></div>`; }
@@ -1693,13 +1693,37 @@ function updateAvatarPicker(mode) {
   if (mode === 'create') { const root = $('#modal-content'), motion = captureMotion(root); $('#create-avatar-preview').innerHTML = face(ui.avatarDraft, 144, { key: 'slot:create-preview', identity: 'create-preview', preview: true, intro: true }); $('#create-avatar-picker').innerHTML = renderAvatarPicker('create'); hydrateMotion(root, motion); }
   else return persistAvatar();
 }
-function openRoomEdit(membersOnly = false) {
+function roomDuties(team, assessment) {
+  const duties = team?.duties || [];
+  if (!duties.length && !assessment) return '';
+  const cards = duties.map(duty => {
+    const profile = duty.dutyProfile;
+    const owner = botById(duty.botId)?.name;
+    const status = duty.state === 'closed' ? '已结清' : duty.state === 'provisioning' ? '待落实' : '在任';
+    const details = [['职责', duty.responsibility], ['产出', profile?.outcome], ['完成条件', profile?.acceptance],
+      ['参与时机', profile?.participation], ['续用资料', profile?.retainedContext]]
+      .filter(([,value]) => value).map(([label,value]) => `<small>${label}：${esc(value)}</small>`).join('');
+    const artifacts = (duty.artifacts || []).map(item =>
+      `<a href="/api/attachments/${encodeURIComponent(item.id)}" target="_blank" rel="noopener">${esc(item.name || '已发产物')}</a>`).join('、');
+    return `<details class="form-field"><summary>${esc(profile?.name || duty.responsibility)} · ${esc(owner || status)}${owner ? ' · ' + status : ''}</summary>${details}${artifacts ? '<small>已发产物：' + artifacts + '</small>' : ''}</details>`;
+  }).join('');
+  const decision = assessment && `<small>最近判断：${esc(assessment.reason)}${assessment.status === 'applying' ? ' · 待落实' : assessment.status === 'blocked' ? ' · 有职责待处理' : ''}</small>`;
+  const options = (assessment?.candidates || []).map(item =>
+    `<small>${esc(item.name)}：${esc(item.benefit)}${item.workAlternativeLoss ? '；另开工作：' + esc(item.workAlternativeLoss) : ''}</small>`).join('');
+  return `<details class="form-field"><summary>项目分工${duties.length ? '（' + duties.length + '）' : ''}</summary>${decision || ''}${options}${cards}</details>`;
+}
+async function openRoomEdit(membersOnly = false) {
   const room = roomById(ui.roomId); if (!room || room.kind === 'dm') return;
   const projectMode = room.projectMode || 'auto';
-  openModal(membersOnly ? '群聊成员' : '群聊详情', '', `${!membersOnly ? `${field('群聊名称', 'name', room.name, { required: true })}${field('群聊说明或目标', 'goal', room.goal || '', { type: 'textarea' })}${room.kind === 'group' ? roomProjectField(projectMode) : ''}` : ''}${memberChoices((room.members || []).filter(id => id !== 'user'))}`, async data => {
+  const team = room.team && await api('/api/rooms/' + encodeURIComponent(room.id) + '/team').catch(() => null);
+  if (ui.roomId !== room.id) return;
+  const selected = (roomById(room.id)?.members || room.members || []).filter(id => id !== 'user');
+  openModal(membersOnly ? '群聊成员' : '群聊详情', '', `${!membersOnly ? `${field('群聊名称', 'name', room.name, { required: true })}${field('群聊说明或目标', 'goal', room.goal || '', { type: 'textarea' })}${room.kind === 'group' ? roomProjectField(projectMode) : ''}` : ''}${roomDuties(team?.room?.team || room.team, team?.staffing?.lastAssessment)}${memberChoices(selected)}`, async data => {
     const members = data.getAll('members'); if (!members.length) throw new Error('群聊至少需要一位 Bot。');
     const mode = data.get('projectMode');
-    await api(`/api/rooms/${encodeURIComponent(room.id)}`, 'PATCH', { members: room.members.includes('user') ? ['user', ...members] : members, ...(!membersOnly ? { name: data.get('name').trim(), goal: data.get('goal').trim() } : {}),
+    const membership = members.length !== selected.length || members.some(id => !selected.includes(id)) ?
+      { members: room.members.includes('user') ? ['user', ...members] : members } : {};
+    await api(`/api/rooms/${encodeURIComponent(room.id)}`, 'PATCH', { ...membership, ...(!membersOnly ? { name: data.get('name').trim(), goal: data.get('goal').trim() } : {}),
       ...(mode && mode !== projectMode ? { projectMode: mode } : {}) }); toast('群聊已更新');
   });
 }
