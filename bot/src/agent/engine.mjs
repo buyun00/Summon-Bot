@@ -191,40 +191,11 @@ export class BotEngine {
         const related = user.replyTo ? prior.slice(0, Math.max(0, current)).find(message => message.source?.messageId === user.replyTo) :
           current > 0 ? prior[current - 1] : null;
         const previous = step !== 'acceptance' && related?.source?.actor === this.config.botId ? JSON.parse(related.content[0].text) : null;
-        let referencedUserScope;
-        if (step === 'proposal' && user.roomId && user.replyTo &&
-          prior[current]?.source?.actor === user.actor && related?.source?.actor === user.actor) {
-          const reference = { type: 'room', roomId: user.roomId, messageId: user.replyTo };
-          const original = await this.services.sources.resolve({ ...reference, length: 16000 }, task).catch(() => null);
-          if (original?.reference?.roomId === reference.roomId && original.reference.messageId === reference.messageId &&
-            original.author === user.actor && typeof original.content === 'string' && original.content.trim() &&
-            original.nextOffset === null && original.fullCharacters === original.content.length) {
-            referencedUserScope = { reference, author: original.author, content: original.content };
-          }
-        }
-        let citedReviewScopes;
-        if (step === 'proposal' && user.roomId && scopeEvidence?.length && current > 0) {
-          const earlier = new Map(prior.slice(0, current).map(message => [message.source.messageId, message]));
-          const cited = new Map(scopeEvidence.filter(item => item.reference?.type === 'room' && item.reference.roomId === user.roomId &&
-            !item.reference.attachmentId && earlier.has(item.reference.messageId)).map(item => [item.reference.messageId, item]));
-          citedReviewScopes = [...cited.values()].flatMap(review => {
-            if (review.author !== user.actor || earlier.get(review.reference.messageId)?.source.actor !== user.actor ||
-                typeof review.content !== 'string' || !review.content.trim() || review.nextOffset !== null ||
-                review.fullCharacters !== review.content.length) return [];
-            const result = cited.get(review.replyTo), message = result && earlier.get(result.reference.messageId);
-            const publication = message && JSON.parse(message.content[0].text);
-            const attachments = publication?.attachments.filter(({ id, origin }) => origin?.type === 'work-output' &&
-              origin.roomId === user.roomId && origin.botId === publication.author && origin.workId === publication.workId &&
-              origin.publicationId === id && origin.operationId).map(({ id, name }) => ({ id, name }));
-            if (!attachments?.length) return [];
-            return [{ review: { reference: review.reference, receivedAt: new Date(earlier.get(review.reference.messageId).timestamp).toISOString(),
-              author: review.author, content: review.content }, publication: { reference: result.reference, author: publication.author,
-              publishedAt: new Date(message.timestamp).toISOString(), attachments } }];
-          }).slice(0, 4);
-        }
+        const scope = step === 'proposal' && user.roomId && current > 0 && prior[current].source.actor === user.actor
+          ? await this.services.sources.proposalScope(task, user, prior.slice(0, current), scopeEvidence) : {};
         const input = step === 'acceptance' ? { currentUser: units, originalText: user.text, acceptanceContext } :
-          { currentUser: units, referencedTurn: previous && { content: previous.content }, referencedUserScope,
-            ...(citedReviewScopes?.length ? { citedReviewScopes } : {}), continuationTarget, existingDelivery, ...(proposed ? { sourceAction, proposed } : {}) };
+          { currentUser: units, referencedTurn: previous && { content: previous.content }, ...scope, continuationTarget,
+            existingDelivery, ...(proposed ? { sourceAction, proposed } : {}) };
         signal?.throwIfAborted();
         const result = await this.provider.stream(model, { messages: [
           { role: 'system', content: productionAuthorizationPrompts[step], timestamp: Date.now() },
@@ -237,7 +208,12 @@ export class BotEngine {
         const answer = result.content.filter(block => block.type === 'text').map(block => block.text).join('').trim();
         let receipt;
         try { receipt = JSON.parse(answer.replace(/^\x60{3}(?:json)?\s*|\s*\x60{3}$/gi, '')); } catch {}
-        return { receipt, referenced: Boolean(previous) };
+        const scopeReferences = [scope.referencedUserScope?.reference,
+          ...(scope.citedReviewScopes || []).flatMap(({ review, publication }) => [review.reference, publication.reference]),
+          ...(scope.citedPublicationMaterials || []).flatMap(({ publication, pages }) => [publication.reference, ...pages.map(page => page.reference)]),
+        ].filter(Boolean);
+        return { receipt, referenced: Boolean(previous),
+          ...(scopeReferences.length ? { scopeReferences: [...new Map(scopeReferences.map(ref => [JSON.stringify(ref), ref])).values()] } : {}) };
       };
       const registry = new ToolRegistry({
         authorize: async (tool, args) => {

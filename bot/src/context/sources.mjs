@@ -6,6 +6,10 @@ import { savedWorkEvidence } from './work-context.mjs';
 
 const denied = message => { throw Object.assign(new Error(message), { status: 403, code: 'SOURCE_SCOPE_DENIED' }); };
 export const HANDOFF_REFERENCES = 48;
+const PROPOSAL_ATTACHMENT_CHARACTERS = 24000;
+
+const completeRoomText = item => item?.reference?.type === 'room' && !item.reference.attachmentId && item.reference.offset === 0 &&
+  typeof item.content === 'string' && item.content.trim() && item.nextOffset === null && item.fullCharacters === item.content.length;
 
 // Expand only the exact saved observation named by this work's checkpoint.
 // Derived progress and a transport receipt's older final remain separate.
@@ -342,6 +346,66 @@ export class RuntimeSources {
       instruction: source.input?.runtimeInstruction || 'Handle the available peer result within the original request. This is not a new user authorization.' } : null;
     return { messages: saved.messages.slice(0, through + 1).map(publicMessage),
       access: boundary.access, roomId: source.roomId, runtimeEvent, runtimeInstruction: source.input?.runtimeInstruction };
+  }
+  async proposalScope(task, user, earlier, scopeEvidence) {
+    const history = new Map(earlier.map((message, index) => [message.source.messageId, { message, index }]));
+    const referenceFor = messageId => ({ type: 'room', roomId: user.roomId, messageId });
+    const replied = history.get(user.replyTo)?.message;
+    const currentReplyTo = replied && referenceFor(user.replyTo);
+    const cited = (scopeEvidence || []).filter(({ reference }) => reference?.type === 'room' &&
+      reference.roomId === user.roomId && history.has(reference.messageId));
+    const reviews = new Map(cited.filter(item => completeRoomText(item) && item.author === user.actor &&
+      history.get(item.reference.messageId).message.source.actor === user.actor).map(item => [item.reference.messageId, item]));
+    let referencedUserScope;
+    if (replied?.source.actor === user.actor) {
+      const original = reviews.get(user.replyTo) || await this.resolve({ ...currentReplyTo, length: 16000 }, task).catch(() => null);
+      if (completeRoomText(original) && original.reference.roomId === user.roomId && original.reference.messageId === user.replyTo &&
+          original.author === user.actor) {
+        reviews.set(user.replyTo, original);
+        referencedUserScope = { reference: currentReplyTo, author: original.author, content: original.content };
+      }
+    }
+
+    // Attachment reads already return the canonical publication, including for a re-delivery.
+    const publications = new Map();
+    for (const { reference, author, content, fullCharacters } of cited) {
+      const { message } = history.get(reference.messageId);
+      if (author !== message.source.actor || author === user.actor) continue;
+      const { workId, attachments } = JSON.parse(message.content[0].text);
+      if (!workId) continue;
+      const outputs = attachments.filter(({ id, origin }) => origin?.type === 'work-output' && origin.publicationId === id &&
+        origin.roomId === user.roomId && origin.botId === author && origin.workId === workId && origin.operationId);
+      const attachment = reference.attachmentId && outputs.find(({ id }) => id === reference.attachmentId);
+      if (!outputs.length || (reference.attachmentId && !attachment)) continue;
+      if (!publications.has(reference.messageId)) publications.set(reference.messageId, { pages: new Map(), publication: {
+        reference: referenceFor(reference.messageId), author, workId, publishedAt: new Date(message.timestamp).toISOString(),
+        attachments: outputs.map(({ id, name, origin }) => ({ id, name, operationId: origin.operationId })),
+      } });
+      if (attachment && typeof content === 'string' && content.length) {
+        const pages = publications.get(reference.messageId).pages, key = JSON.stringify([attachment.id, reference.offset]);
+        if (!pages.has(key) || pages.get(key).content.length < content.length) pages.set(key, {
+          reference: { ...reference, length: content.length }, fullCharacters, content,
+        });
+      }
+    }
+    const citedReviewScopes = [...reviews.values()].flatMap(review => {
+      const { index, message } = history.get(review.reference.messageId);
+      const publication = publications.get(review.replyTo)?.publication;
+      if (!publication || history.get(review.replyTo).index >= index) return [];
+      return [{ review: { reference: referenceFor(review.reference.messageId), author: review.author,
+        receivedAt: new Date(message.timestamp).toISOString(), content: review.content }, publication }];
+    }).slice(0, 4);
+    let remaining = PROPOSAL_ATTACHMENT_CHARACTERS;
+    const citedPublicationMaterials = [...publications.values()].flatMap(({ publication, pages }) => {
+      const excerpts = [...pages.values()].sort((a, b) => a.reference.offset - b.reference.offset).filter(page => {
+        if (page.content.length > remaining) return false;
+        remaining -= page.content.length;
+        return true;
+      });
+      return excerpts.length ? [{ publication, pages: excerpts }] : [];
+    });
+    return { currentReplyTo, referencedUserScope, ...(citedReviewScopes.length ? { citedReviewScopes } : {}),
+      ...(citedPublicationMaterials.length ? { citedPublicationMaterials } : {}) };
   }
   async resolve(reference, task, { fullToolReceipt = false } = {}) {
     if (!reference || typeof reference !== 'object') throw new Error('Evidence requires a structured source reference');
