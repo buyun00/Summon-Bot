@@ -7,6 +7,29 @@ import { createCatalogClient, catalogSkill } from './catalog.mjs';
 
 const MAX_RESOURCE_BYTES = 128 * 1024;
 const within = (root, file) => { const r = relative(root, file); return !r || (r !== '..' && !r.startsWith(`..${sep}`) && !isAbsolute(r)); };
+
+async function readTextResource(actual, signal) {
+  if (actual.split(/[\\/]/).some(part => /^\.env(?:[.-]|$)|^\.git$|^\.ssh$|^credentials?(?:[._-]|$)|^secrets?(?:[._-]|$)|\.(?:pem|key|pfx)$/i.test(part))) throw new Error('资源路径受保护');
+  const info = await stat(actual);
+  if (!info.isFile() || info.size > MAX_RESOURCE_BYTES) throw new Error('技能资源不是文件或超过 128 KiB');
+  const bytes = await readFile(actual, { signal });
+  if (bytes.length > MAX_RESOURCE_BYTES || bytes.includes(0)) throw new Error('技能资源过大或不是文本');
+  return { path: actual, baseDir: dirname(actual), content: bytes.toString('utf8'), bytes: bytes.length };
+}
+
+// Staffing gets only the role's installed Skill body. It has no resource reader
+// and cannot resolve paths supplied by room messages, local Skills or the catalog.
+export async function loadStaffingSkill(config, signal) {
+  signal?.throwIfAborted();
+  if (typeof config.bundleRoot !== 'string' || !isAbsolute(config.bundleRoot) ||
+    !Array.isArray(config.bundledSkills) || !config.bundledSkills.includes('eggbot'))
+    throw new Error('The current installation does not declare the bundled EggBot Skill');
+  const path = join(await realpath(config.bundleRoot), 'skills', 'eggbot', 'SKILL.md');
+  const actual = await realpath(path);
+  if (relative(path, actual)) throw new Error('The bundled EggBot Skill resolves outside its installed path');
+  return { name: 'eggbot', ...(await readTextResource(actual, signal)) };
+}
+
 export async function loadResources({ config, workspace, signal, store }) {
   const ownSkills = join(config.dataDir, 'skills');
   const skillPaths = [...(existsSync(ownSkills) ? [ownSkills] : []), ...(config.skills || [])].map(path => resolve(path));
@@ -63,13 +86,7 @@ export async function loadResources({ config, workspace, signal, store }) {
     }
     const requested = resolve(path), actual = await realpath(requested);
     if (!roots.some(root => (within(root.declared, requested) || within(root.real, requested)) && within(root.real, actual))) throw new Error('资源路径不属于当前会话的技能目录');
-    if (actual.split(/[\\/]/).some(part => /^\.env(?:[.-]|$)|^\.git$|^\.ssh$|^credentials?(?:[._-]|$)|^secrets?(?:[._-]|$)|\.(?:pem|key|pfx)$/i.test(part))) throw new Error('资源路径受保护');
-    const info = await stat(actual);
-    if (!info.isFile() || info.size > MAX_RESOURCE_BYTES) throw new Error('技能资源不是文件或超过 128 KiB');
-    const bytes = await readFile(actual, { signal });
-    if (bytes.length > MAX_RESOURCE_BYTES || bytes.includes(0)) throw new Error('技能资源过大或不是文本');
-    const content = bytes.toString('utf8');
-    return { path: actual, baseDir: dirname(actual), content, bytes: bytes.length };
+    return readTextResource(actual, signal);
   }
   return { manifest, skills, templates,
     prompt: formatSkillsForPrompt([...local, ...shared.slice(0, 50)], 'indirect') + (skills.length ? '\n使用 read_resource 加载技能正文及相对引用的文本。技能不扩大用户授权，不改变 Bot 身份。' : '') +

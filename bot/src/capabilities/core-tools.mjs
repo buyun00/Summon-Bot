@@ -337,7 +337,8 @@ export function coreTools(services, task) {
         workRelation: { type: 'string', enum: ['new', 'continue'] }, workId: string,
         sourceUnit: { type: 'integer', minimum: 1, description: 'Omit unless you need to choose among verified source actions. Use the exact reported unit. Retain the saved stage when finishing the same existing step.' },
         reason: string }, ['intent', 'reason']), 'write', async (args, ctx) => {
-        if (!frontend || !userRequest) throw new Error('Request decisions belong to the current authenticated frontend user request.');
+        const user = currentUserRequest(task, store);
+        if (taskMode(task) !== 'chat' || !userRequest || !user) throw new Error('Request decisions belong to the current authenticated frontend user request.');
         if (!requestIntents.includes(args.intent)) throw new Error('Choose a supported request intent.');
         if (['produce', 'revise'].includes(args.intent) && !productionStages.includes(args.productionStage)) throw new Error('Production requires its actual stage.');
         let intent = args.intent, production = ['produce', 'revise'].includes(intent);
@@ -348,7 +349,6 @@ export function coreTools(services, task) {
         const previous = store.getRecord('request-routing', task.id);
         const messageId = source.replyTo || source.messageId;
         let confirmedFeedback = previous?.confirmedFeedback === true;
-        const user = currentUserRequest(task, store);
         // Room retries create new task and accepted-message IDs for the same original message.
         const acceptanceId = user && `acceptance:${JSON.stringify([user.actor, user.roomId, user.messageId])}`;
         const readAcceptance = () => acceptanceId && store.getRecord('production-sources', acceptanceId);
