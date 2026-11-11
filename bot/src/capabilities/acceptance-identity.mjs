@@ -157,9 +157,12 @@ function timedAttachmentTitles(text, times) {
 }
 
 function attachmentHasTitle(attachment, title) {
-  const name = normal(attachment.name).replace(/\.[^.]+$/u, '');
-  for (let start = name.indexOf(title); start !== -1; start = name.indexOf(title, start + 1)) {
-    if (!/[\p{L}\p{N}]/u.test(name[start - 1] || '') && !/^[\p{L}\p{N}]/u.test(name.slice(start + title.length))) return true;
+  const name = normal(attachment.name);
+  // A trailing numeric segment can belong to the title's version.
+  if (/\.\d*[a-z][a-z\d]*$/u.test(title)) return name === title;
+  const stem = name.replace(/\.[^.]+$/u, '');
+  for (let start = stem.indexOf(title); start !== -1; start = stem.indexOf(title, start + 1)) {
+    if (!/[\p{L}\p{N}]/u.test(stem[start - 1] || '') && !/^[\p{L}\p{N}]/u.test(stem.slice(start + title.length))) return true;
   }
   return false;
 }
