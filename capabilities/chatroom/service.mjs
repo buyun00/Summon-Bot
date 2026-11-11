@@ -100,7 +100,7 @@ export class ChatroomService {
     if(input.messageId&&!input.afterMessageId&&!input.beforeMessageId&&!input.throughMessageId){
       const message=this.store.get('messages',input.messageId);
       const selected=message?.roomId===room.id&&(!input.query||message.content.includes(input.query))?[message]:[];
-      return this.messagePage(room,accessActor||actor,input,selected);
+      return this.messagePage(room,accessActor||actor,input,selected,{staffing});
     }
     const all=this.messages(room.id),limit=Math.max(1,Math.min(100,Math.trunc(Number(input.limit)||20)));
     const after=input.afterMessageId?all.findIndex(message=>message.id===input.afterMessageId):-1;
@@ -111,7 +111,7 @@ export class ChatroomService {
       .filter(message=>!input.query||message.content.includes(input.query));
     const forward=input.oldestFirst||input.afterMessageId||input.messageId;
     const selected=forward?candidates.slice(0,limit):candidates.slice(-limit);
-    return this.messagePage(room,accessActor||actor,input,selected,{reverse:!forward,total:candidates.length});
+    return this.messagePage(room,accessActor||actor,input,selected,{staffing,reverse:!forward,total:candidates.length});
   }
   readObservation(input,actor,source,room) {
     const boundary=this.position(room.id,source.replyTo);
@@ -142,7 +142,7 @@ export class ChatroomService {
     return this.messagePage(room,reader,{...input,query,length:boundedNumber(input.length,1200,1,2000)},
       rows.slice(0,limit).map(row=>JSON.parse(row.data)),{observation:true,total:rows.length});
   }
-  messagePage(room,actor,input,selected,{observation=false,reverse=false,total=selected.length}={}) {
+  messagePage(room,actor,input,selected,{observation=false,staffing=false,reverse=false,total=selected.length}={}) {
     const offset=boundedNumber(input.offset,0),length=boundedNumber(input.length,6000,1,16000);
     const messages=[];let size=0;
     for(const message of (reverse?[...selected].reverse():selected)){
