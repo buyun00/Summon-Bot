@@ -18,6 +18,7 @@ const versionNumber = String.raw`\d+(?:\.\d+)*(?:-(?:alpha|beta|rc|preview|dev)(
 const standaloneVersion = new RegExp(String.raw`(?:(?<![\w.-])v|(?:\bversion|版本)\s*:?\s*)(${versionNumber})(?![\w-]|\.[\w])`, 'gu');
 const publishedVersion = new RegExp(String.raw`(?:(?<![a-z\d])v|(?:\bversion|版本)\s*:?\s*)(${versionNumber})(?!\d|\.\d)`, 'gu');
 const compoundLabel = new RegExp(String.raw`(?<![\w.-])[a-z\d]+(?:[_.-][a-z\d]+)*[_.-]v${versionNumber}(?![\w-]|\.[\w])`, 'gu');
+const bundledExecutableRun = /^(\s*(?:我\s*)?(?:使用|用)\s*(?:随包|包内|解包后|解出(?:来)?)的?\s*[`"'「《]?)[\p{L}\p{N}_-][\p{L}\p{N}_.-]*\.exe(?=[`"'」》]?\s*(?:跑|运行|执行))/iu;
 const contentLabels = text => unique(normal(text).match(compoundLabel) || []);
 const versions = (text, { published = false } = {}) => {
   const wording = normal(text);
@@ -187,10 +188,26 @@ export function acceptanceBindings(units, entries, replyTo, {
     if (!replied && !referenced.length && !timed.length && !shared.length) return {
       ...fail('本条确认没有指明可唯一核对的交付、文件或版本。'), allowNatural: roomResultsAvailable, contentLabels: labels };
     if (!replied && !referenced.length && !roomResultsAvailable) return fail('当前未能核对同群的交付来源。');
-    const refs = [...referenced, ...shared].map(item => referenceOf.get(item.unit));
+    const referenceUnits = [...referenced, ...shared];
+    const refs = referenceUnits.map(item => referenceOf.get(item.unit));
     const combined = Object.fromEntries(['ids', 'files', 'urls', 'versions'].map(key => [key, unique(refs.flatMap(ref => ref[key]))]));
     combined.unknownFile = refs.some(ref => ref.unknownFile);
     combined.paths = unique(referenced.flatMap(item => pathsOf.get(item.unit).map(localPathKey)));
+    const localReferences = new Map();
+    // An explicitly run member of an unpacked archive is evidence for the
+    // approval. Only omit that filename from matching an exact local archive path.
+    if (combined.paths.length === 1 && /\.(?:zip|7z|tar(?:\.gz)?|tgz)$/iu.test(combined.paths[0])) {
+      for (const item of referenced) {
+        if (item.unit >= unit) continue;
+        const wording = item.text.replace(bundledExecutableRun, '$1 ');
+        if (wording === item.text) continue;
+        const { files, unknownFile } = references(wording, names, workIds);
+        localReferences.set(item.unit, { ...referenceOf.get(item.unit), files, unknownFile });
+      }
+    }
+    const localRefs = localReferences.size ? referenceUnits.map(item => localReferences.get(item.unit) || referenceOf.get(item.unit)) : null;
+    const localIdentity = localRefs ? { ...combined, files: unique(localRefs.flatMap(ref => ref.files)),
+      unknownFile: localRefs.some(ref => ref.unknownFile) } : combined;
     const times = unique([...timed, ...shared].flatMap(item => clockOf.get(item.unit)));
     let namedAttachment;
     if (titles.length) {
@@ -212,7 +229,7 @@ export function acceptanceBindings(units, entries, replyTo, {
           publication.attachments.find(item => item.id === namedAttachment.id);
         return attachment ? [{ ...entry, publication: { ...publication, attachments: [attachment] } }] : [];
       }
-      const local = matchLocalPublication(entry, combined);
+      const local = matchLocalPublication(entry, localIdentity);
       return publication ? [{ ...entry, publication }, ...local] : local;
     });
     if (!matches.length) return { ...fail(replied ? '所回复的交付不可用，或与本条确认里的标识冲突。' :
@@ -231,8 +248,10 @@ export function acceptanceBindings(units, entries, replyTo, {
         item.senderId === senderId && item.replyTo === publication.replyTo && item.operationIds.includes(operationId)))
         return fail('未能核对本机文件所在的原群交付。', matches);
     }
-    const sharedIdentityUnits = [...shared, ...sharedLocal.filter(item => referenced.includes(item))].map(item => item.unit);
-    const identityUnits = [...nearby, ...shared].filter(item => referenced.includes(item) || timed.includes(item) || shared.includes(item) ||
+    const identityReferences = publication.localFiles?.length ? referenced.filter(item =>
+      pathsOf.get(item.unit).length || hasReferences(localReferences.get(item.unit) || referenceOf.get(item.unit))) : referenced;
+    const sharedIdentityUnits = [...shared, ...sharedLocal.filter(item => identityReferences.includes(item))].map(item => item.unit);
+    const identityUnits = [...nearby, ...shared].filter(item => identityReferences.includes(item) || timed.includes(item) || shared.includes(item) ||
       target?.roomResultId && labelUnits.includes(item)).map(item => item.unit);
     identityUnits.sort((left, right) => left - right);
     return target ? { unit, identityUnit: identityUnits[0] ?? unit, identityUnits, sharedIdentityUnits, workId, target, publication } :
