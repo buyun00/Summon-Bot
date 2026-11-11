@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { safeId,required,fail,avatarOf,pick,within,now } from '../shared/validation.mjs';
 import { normalizePaperAvatar,defaultPaperAvatar } from '../shared/avatar-style.mjs';
 import { modelText, durationSeconds } from '../../bot/src/context/model-input.mjs';
+import { TEAM_DUTY_TOOLS, dutyOrigin, effectiveBotTools } from './tool-access.mjs';
 
 const core = () => import('@summon/bot');
 const sleep = ms => new Promise(done=>setTimeout(done,ms));
@@ -18,37 +19,47 @@ export class BotManager {
     if(existsSync(connectionStore))this.model={connectionStore};
   }
   directory(id) { return join(this.dataRoot,'bots',safeId(id)); }
-  public(record) { if (!record) return record; const {capabilityToken,token,...rest}=record; return {...rest,avatar:rest.avatar?normalizePaperAvatar(rest.avatar):defaultPaperAvatar(rest.id)}; }
+  public(record) { if (!record) return record; const {capabilityToken,token,...rest}=record; return {...rest,allowedTools:effectiveBotTools(record),avatar:rest.avatar?normalizePaperAvatar(rest.avatar):defaultPaperAvatar(rest.id)}; }
   list() {
     const routines=this.store.list('routines');
     return this.store.list('bots').map(value=>({...this.public(value),responsibilities:routines.filter(item=>item.botId===value.id).map(item=>pick(item,['id','name','enabled','workId','lastStatus','nextRunAt'])),materials:value.materials||[]}));
   }
   get(id) { const bot=this.store.get('bots',id); if(!bot) fail('Bot not found',404); return this.public(bot); }
   async config(id) { this.get(id); return JSON.parse(await readFile(join(this.directory(id),'config.json'),'utf8')); }
-  async create(input={}) {
+  async create(input={},teamDuty) {
     this.assertAccepting();
     if(input.maintenanceFor!==undefined)fail('Catalog maintenance identities are created by the catalog');
     const id=safeId(input.id||`bot-${randomUUID()}`);if(this.creating.has(id))return this.creating.get(id);
-    const pending=this.createNow({...input,id}).finally(()=>this.creating.delete(id));this.creating.set(id,pending);return pending;
+    const pending=this.createNow({...input,id},undefined,teamDuty).finally(()=>this.creating.delete(id));this.creating.set(id,pending);return pending;
   }
-  async createNow(input={},maintenanceFor) {
+  async createNow(input={},maintenanceFor,teamDuty) {
     const id=safeId(input.id||`bot-${randomUUID()}`);
     const previous=this.store.get('bots',id);
-    if(previous&&(!maintenanceFor||existsSync(join(this.directory(id),'config.json')))) return this.get(id);
+    const configPath=join(this.directory(id),'config.json');
+    if(teamDuty&&previous&&(previous.lifecycle?.originRoomId!==teamDuty.roomId||previous.lifecycle?.originDutyKey!==teamDuty.dutyKey))
+      fail('Bot identity belongs to a different project duty',409);
+    if(previous&&(!maintenanceFor&&!teamDuty||existsSync(configPath))) return this.get(id);
     if(previous&&JSON.stringify(previous.maintenanceFor)!==JSON.stringify(maintenanceFor))fail('Catalog maintenance identity does not match',409);
     const roleId=safeId(input.roleId || 'default'), profile=JSON.parse(await readFile(join(this.releaseRoot,'roles',roleId,'role.json'),'utf8'));
-    const lifecycle=input.lifecycle||{kind:'permanent',state:'active'};
+    const {originRoomId:_room,originDutyKey:_duty,...lifecycleInput}=input.lifecycle||{kind:'permanent',state:'active'};
+    const lifecycle={...lifecycleInput,...(!_duty&&_room?{originRoomId:_room}:{}),
+      ...(teamDuty?{originRoomId:teamDuty.roomId,originDutyKey:teamDuty.dutyKey}:{})};
+    if(teamDuty)input={...input,cwd:undefined,modelConfig:undefined};
     if(!['temporary','permanent'].includes(lifecycle.kind)||!['active','dormant'].includes(lifecycle.state))fail('Invalid Bot lifecycle');
     const dir=this.directory(id), token=randomBytes(32).toString('hex'), capabilityToken=previous?.capabilityToken||randomBytes(32).toString('hex');
     await mkdir(dir,{recursive:true}); await mkdir(join(dir,'workspace'),{recursive:true});
     const skills=maintenanceFor?[]:profile.skills||[], basePrompt=await readFile(join(this.releaseRoot,'roles',roleId,'prompt.md'),'utf8');
     const config={schemaVersion:1,botId:id,dataDir:dir,workspace:input.cwd?resolve(input.cwd):join(dir,'workspace'),model:{...this.model,...input.modelConfig},prompt:[basePrompt,input.prompt?`\n用户设定的身份与职责：\n${input.prompt}`:''].filter(Boolean).join('\n'),skills:skills.map(skill=>join(this.releaseRoot,'skills',skill)),bundleRoot:this.releaseRoot,bundledSkills:skills,token,listen:{host:'127.0.0.1',port:0},concurrency:4,context:{maintenanceConcurrency:1},tools:[],limits:input.limits,...(maintenanceFor?{maintenanceFor}: {})};
-    const bot=this.store.save('bots',{id,name:required(input.name||profile.name,'name',100),role:input.role||profile.role,roleId,lifecycle,creationSource:maintenanceFor?'catalog':'custom',expertise:input.expertise||profile.role,prompt:input.prompt||'',status:input.status==='paused'?'paused':'active',skills,model:config.model.model||'deepseek-flash',executor:'codex',capabilityToken,allowedTools:maintenanceFor?[...CATALOG_MAINTAINER_TOOLS]:profile.tools,runIntent:'stopped',...(maintenanceFor?{maintenanceFor,createdBy:input.createdBy||'controller'}:{}),...(input.avatar?{avatar:avatarOf(input.avatar)}:{})});
+    const bot=this.store.save('bots',{id,name:required(input.name||profile.name,'name',100),role:input.role||profile.role,roleId,lifecycle,creationSource:maintenanceFor?'catalog':'custom',expertise:input.expertise||profile.role,prompt:input.prompt||'',status:input.status==='paused'?'paused':'active',skills,model:config.model.model||'deepseek-flash',executor:'codex',capabilityToken,allowedTools:maintenanceFor?[...CATALOG_MAINTAINER_TOOLS]:teamDuty?[...TEAM_DUTY_TOOLS]:profile.tools,runIntent:'stopped',
+      ...(!previous&&!maintenanceFor?{firstRunPending:true}:{}),...(maintenanceFor?{maintenanceFor,createdBy:input.createdBy||'controller'}:{}),...(input.avatar?{avatar:avatarOf(input.avatar)}:{})});
     config.usage={ledgerPath:join(this.dataRoot,'usage.sqlite'),botName:bot.name};
     config.tools=(await this.getTools(bot)).map(tool=>({...tool,headers:{Authorization:`Bearer ${capabilityToken}`}}));
     config.catalog={url:this.gatewayUrl(),token:capabilityToken};
     config.bundledToolNames=config.tools.map(tool=>tool.name);
-    await writeFile(join(dir,'config.json'),JSON.stringify(config,null,2),{mode:0o600});
+    if(teamDuty){
+      const temp=configPath+'.'+randomUUID()+'.tmp';
+      await writeFile(temp,JSON.stringify(config,null,2),{mode:0o600});await rename(temp,configPath);
+    }else await writeFile(configPath,JSON.stringify(config,null,2),{mode:0o600});
     this.emit('bot',this.public(bot)); return this.public(bot);
   }
   async ensureCatalogMaintainer(input) {
@@ -116,6 +127,8 @@ export class BotManager {
     if(input.lifecycle!==undefined){
       if(!['temporary','permanent'].includes(input.lifecycle.kind)||!['active','dormant'].includes(input.lifecycle.state))fail('Invalid Bot lifecycle');
       if((previous.presetId||previous.maintenanceFor)&&input.lifecycle.kind!=='permanent')fail('System and capability-maintenance Bots are permanent');
+      const {originRoomId:_room,originDutyKey:_duty,...lifecycle}=input.lifecycle;
+      input={...input,lifecycle:{...lifecycle,...pick(previous.lifecycle||{},['originRoomId','originDutyKey'])}};
     }
     if(input.status!==undefined) {
       const accepting=input.status==='active';
@@ -168,8 +181,12 @@ export class BotManager {
     const config=await this.config(id), response=await fetch(`${identity.url}${path}`,{...options,headers:{Authorization:`Bearer ${config.token}`,'Content-Type':'application/json',...options.headers},signal:options.signal||AbortSignal.timeout(15000)});
     const result=await response.json();if(!response.ok) fail(result.error?.message||result.error||`Bot HTTP ${response.status}`,response.status);return result;
   }
-  async start(id) {
+  async start(id,options) {
     this.assertAccepting();
+    if(options?.respectStop){
+      const bot=this.get(id);
+      if(bot.status!=='active'||bot.runIntent==='stopped'&&!bot.firstRunPending)fail('Bot is paused or explicitly stopped',409);
+    }
     if(this.launching.has(id)) return this.launching.get(id);
     const pending=this.startNow(id).finally(()=>this.launching.delete(id));this.launching.set(id,pending);return pending;
   }
@@ -180,11 +197,15 @@ export class BotManager {
     const dir=this.directory(id), config=await this.config(id), record=this.store.get('bots',id);this.assertAccepting();
     if(this.model.connectionStore)config.model={connectionStore:this.model.connectionStore};
     const profile=JSON.parse(await readFile(join(this.releaseRoot,'roles',record.roleId||'default','role.json'),'utf8'));
+    if(record.presetId==='eggbot'&&record.roleId==='eggbot'){
+      const base=await readFile(join(this.releaseRoot,'roles','eggbot','prompt.md'),'utf8');
+      config.prompt=[base,record.prompt].filter(Boolean).join('\n\n');
+    }
     if(record.maintenanceFor){record.allowedTools=[...CATALOG_MAINTAINER_TOOLS];this.store.save('bots',{id,allowedTools:record.allowedTools});profile.skills=[];config.maintenanceFor=record.maintenanceFor;}
     const priorRoot=config.bundleRoot||this.releaseRoot,oldSkills=new Set((config.bundledSkills||profile.skills||[]).map(skill=>resolve(priorRoot,'skills',skill)));
     config.skills=record.maintenanceFor?[]:[...(config.skills||[]).filter(path=>!oldSkills.has(resolve(path))),...(profile.skills||[]).map(skill=>join(this.releaseRoot,'skills',skill))];
     const previousTools=new Set(config.bundledToolNames||(record.allowedTools||[]));
-    const customTools=(config.tools||[]).filter(tool=>!previousTools.has(tool.name)).map(tool=>tool.type==='module'&&within(priorRoot,tool.module)?{...tool,module:join(this.releaseRoot,relative(priorRoot,tool.module))}:tool);
+    const customTools=dutyOrigin(record)?[]:(config.tools||[]).filter(tool=>!previousTools.has(tool.name)).map(tool=>tool.type==='module'&&within(priorRoot,tool.module)?{...tool,module:join(this.releaseRoot,relative(priorRoot,tool.module))}:tool);
     const bundledTools=await this.getTools(record);
     config.tools=[...bundledTools.map(tool=>({...tool,headers:{Authorization:`Bearer ${record.capabilityToken}`}})),...(record.maintenanceFor?[]:customTools)];
     config.catalog={url:this.gatewayUrl(),token:record.capabilityToken};
@@ -197,14 +218,14 @@ export class BotManager {
     child.once('exit',(code,signal)=>{failure ||= new Error(`Bot exited during startup (${code??signal}); inspect ${join(dir,'logs')}`);});
     child.on('message',message=>{if(message.type==='error'){failure=Object.assign(new Error(message.message),{code:message.code});}if(['ready','error'].includes(message.type)&&child.connected)child.disconnect();});
     child.unref();
-    this.store.save('bots',{id,runIntent:'running'});
+    this.store.save('bots',{id,runIntent:'running',...(record.firstRunPending?{firstRunPending:false}:{})});
     try {
       for(let i=0;i<600;i++){await sleep(100);if(failure)throw failure;const state=await this.identity(id);if(state?.state==='ready'){this.emit('bot-state',state);return state;}}
       fail('Bot startup timed out; inspect process log before retrying',504);
     } finally {if(child.connected)child.disconnect();}
   }
   async stop(id,{persistIntent=true}={}) {
-    if(persistIntent)this.store.save('bots',{id,runIntent:'stopped'});
+    if(persistIntent)this.store.save('bots',{id,runIntent:'stopped',...(this.store.get('bots',id)?.firstRunPending?{firstRunPending:false}:{})});
     if(!await this.identity(id))return {botId:id,stopped:true};
     try{await this.request(id,'/shutdown',{method:'POST',body:'{}'});}catch(error){if(await this.identity(id))throw error;}
     for(let i=0;i<300;i++){if(!await this.identity(id))return {botId:id,stopped:true};await sleep(100);}fail('Bot did not finish stopping',504);
@@ -248,7 +269,7 @@ export class BotManager {
       try{await this.start(bot.id);this.store.save('bots',{id:bot.id,restartFailures:0});}catch(error){this.store.save('bots',{id:bot.id,restartFailures:(bot.restartFailures||0)+1,lastRestartError:error.message});throw error;}
     }));
   }
-  async send(id,message) { this.assertAccepting();if(this.get(id).status!=='active')fail('Bot is paused',409);await this.start(id);this.assertAccepting();return this.request(id,'/messages',{method:'POST',body:JSON.stringify({...message,to:id})}); }
+  async send(id,message) { this.assertAccepting();if(this.get(id).status!=='active')fail('Bot is paused',409);await this.start(id,message.metadata?.teamStaffing||message.metadata?.roomDutyAction?{respectStop:true}:undefined);this.assertAccepting();return this.request(id,'/messages',{method:'POST',body:JSON.stringify({...message,to:id})}); }
   async tasks(id) { try { const result=await this.request(id,'/tasks');return Array.isArray(result)?result:result.tasks||[]; }catch(error){if(error.status!==503)throw error; const api=await this.botApi(); if(!existsSync(join(this.directory(id),'state.sqlite')))return [];const db=new api.BotStore(join(this.directory(id),'state.sqlite'),{readOnly:true});try{return db.listTasks?.()||[];}finally{db.close();}} }
   async readState(id,fn) {
     const api=await this.botApi(),path=join(this.directory(id),'state.sqlite');if(!existsSync(path))return fn(null);

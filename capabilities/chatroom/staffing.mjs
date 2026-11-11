@@ -1,31 +1,51 @@
 import { randomUUID } from 'node:crypto';
-import { fail, now, pick, required } from '../shared/validation.mjs';
+import { localTime } from '../../bot/src/context/fact-time.mjs';
+import { EXISTING_PUBLICATION } from '../../bot/src/context/duty-actions.mjs';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { TEAM_DUTY_TOOLS } from '../bot-management/tool-access.mjs';
+import { fail, now, pick, required, safeId } from '../shared/validation.mjs';
 
-export const staffingCoverageVersion = 1;
-export const staffingAreas = [
-  { area: 'design', roles: [{ id: 'designer', name: '设计策划' }, { id: 'game-designer', name: '玩法策划' }],
-    focus: '实际领域的设计规则、交互及验收判据' },
-  { area: 'visuals', roles: [{ id: 'visual-designer', name: '视觉设计' }, { id: 'game-artist', name: '项目美术' }],
-    focus: '实际领域的视觉素材、提示和可读性' },
-  { area: 'implementation', roles: [{ id: 'engineer', name: '项目程序' }], focus: '已明确的程序实现、接口和实际交付边界' },
-  { area: 'verification', roles: [{ id: 'qa', name: '独立验证' }], focus: '与制作方分开的实物或正式入口验证及证据边界' },
-  { area: 'maintenance', roles: [{ id: 'components', name: '组件维护' }], focus: '共享组件、变更影响和下游回归责任' },
-];
-const assessments = 'team-staffing-assessments';
-const staffState = 'team-staffing';
-const decided = new Set(['needed', 'not-needed', 'deferred']);
-const handling = new Set(['specialist', 'independent-work', 'project-knowledge', 'current-work', 'deferred']);
-const taskQuestions = ['input', 'output', 'done', 'independence', 'knowledge', 'maintenance', 'capacity', 'availableOwner'];
+export const staffingPolicyVersion = 3;
+const assessments = 'team-staffing-assessments', sources = 'team-staffing-sources', staffState = 'team-staffing';
+const handling = new Set(['member', 'current-work', 'independent-work', 'project-knowledge', 'defer', 'close']);
 const terminal = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
-const dutyKey = area => `staffing.${area}`;
 const operationKey = (plan, row) => JSON.stringify([plan.roomId, plan.actor, row.operationId]);
 const roomRef = message => ({ type: 'room-message', roomId: message.roomId, messageId: message.id, actor: message.senderId });
+const unique = values => [...new Set(values)];
+const mergeRefs = (left, right, key) => [...new Map([...left, ...right].map(item => [item[key], item])).values()];
+const norm = value => String(value || '').normalize('NFKC').toLowerCase().replace(/[\s\p{P}]+/gu, '');
+const similar = (left, right, minimum) => {
+  const a = norm(left), b = norm(right);
+  return a && b && (a === b || Math.min(a.length, b.length) >= minimum && (a.includes(b) || b.includes(a)));
+};
+const identity = (subject, boundary, review) => JSON.stringify([norm(subject), norm(boundary), review]);
+const sourceKey = job => JSON.stringify([job.roomId, job.teamStaffing.scope, unique(job.teamStaffing.changeKeys).sort()]);
+const ids = (value, name, limit = 16) => {
+  if (!Array.isArray(value) || value.length > limit || value.some(item => typeof item !== 'string' || !item || item.length > 128))
+    fail(name + ' must contain up to ' + limit + ' exact IDs');
+  return unique(value);
+};
+const fields = {
+  name: 100, subject: 250, boundary: 550, outcome: 420, acceptance: 420,
+  participation: 420, retainedContext: 550, benefit: 550, workAlternativeLoss: 550, ownerFit: 550,
+};
+const formatProfile = row => ({
+  ...pick(row, ['name', 'subject', 'boundary', 'outcome', 'acceptance', 'participation', 'retainedContext', 'independentReview']),
+  aliases: row.aliases,
+});
 
-export const coverageProject = room => room?.kind === 'group' && room.status === 'active' &&
-  room.team?.state === 'active' && room.projectMode !== 'chat';
+export const staffingProject = room => room?.kind === 'group' && room.status === 'active' &&
+  room.projectMode !== 'chat' && ['idle', 'active'].includes(room.team?.state);
+export const staffingScope = room => [room.goal, room.team.requirements, room.team.state];
+export const activeDuties = (room, botId) => (room.team?.duties || []).filter(duty =>
+  (!duty.state || duty.state === 'active') && room.members.includes(duty.botId) && (!botId || duty.botId === botId));
+export const staffingArtifacts = message => (message.attachments || []).flatMap(({ id, name, origin }) =>
+  origin?.type === 'work-output' && origin.roomId === message.roomId && origin.botId === message.senderId &&
+  origin.workId === message.workId && origin.publicationId === id && origin.operationId ?
+    [{ id, name, messageId: message.id, workId: message.workId, botId: message.senderId, operationId: origin.operationId }] : []);
 
-/** Select current scope and real deliveries, including an unsuccessful later
- * report and artifacts from earlier work. The selected messages are evidence. */
+/** Keep user scope, recent real results and earlier published deliverables in view. */
 export function staffingSnapshot(chatroom, room) {
   const messages = chatroom.messages(room.id).flatMap(message => {
     const signal = chatroom.staffingEvidence(message);
@@ -48,152 +68,327 @@ export function staffingSnapshot(chatroom, room) {
   return messages.filter(({ message }) => selected.has(message.id)).map(({ signal }) => signal);
 }
 
-export class StaffingCoverage {
+export class Staffing {
   constructor(team) { this.team = team; this.running = new Map(); }
   get chatroom() { return this.team.chatroom; }
   get store() { return this.team.store; }
   get manager() { return this.team.manager; }
-  get(id) { return this.store.get(assessments, id); }
+  get(id) { return id && this.store.get(assessments, id); }
+  forDelivery(job) {
+    if (job?.teamStaffing?.policyVersion !== staffingPolicyVersion) return null;
+    return this.get(this.store.get(sources, sourceKey(job))?.assessmentId);
+  }
+  latest(roomId) {
+    const plan = this.get(this.store.get(staffState, roomId)?.lastAssessmentId);
+    return plan?.policyVersion === staffingPolicyVersion ? plan : null;
+  }
+
+  upgrade() {
+    const version = this.store.get('chatroom-schema', 'staffing');
+    if (version?.version === staffingPolicyVersion) return;
+    this.store.transaction(() => {
+      for (const room of this.store.list('rooms').filter(item => item.team)) {
+        const jobs = this.chatroom.jobs(room.id).filter(job => job.routedDutyKey && job.workId && job.taskId && job.status === 'completed');
+        const duties = (room.team.duties || []).map(({ staffingArea, ...duty }) => {
+          // The old assessment stored every cited work as this duty's own work.
+          // Keep all references, and retain certification only for exact
+          // deliveries that went to this duty's actual owner.
+          const owned = jobs.filter(job => job.routedDutyKey === duty.dutyKey && job.botId === duty.botId &&
+            duty.workIds?.includes(job.workId) && this.store.get('messages', job.messageId)?.senderId === 'user');
+          const artifacts = (duty.artifacts || []).filter(artifact => owned.some(job => {
+            const result = this.store.get('messages', artifact.messageId);
+            return job.workId === artifact.workId && result?.senderId === job.botId && result.replyTo === job.messageId &&
+              staffingArtifacts(result).some(item => item.id === artifact.id && item.operationId === artifact.operationId);
+          }));
+          return { ...duty, dutyKey: duty.dutyKey || 'duty.' + randomUUID(),
+            state: room.team.state === 'completed' || !room.members.includes(duty.botId) ? 'closed' : duty.state || 'active',
+            referenceWorkIds: unique([...(duty.referenceWorkIds || []), ...(duty.workIds || [])]),
+            referenceArtifacts: mergeRefs(duty.referenceArtifacts || [], duty.artifacts || [], 'id'),
+            workIds: unique(owned.map(job => job.workId)), artifacts,
+            workBindings: mergeRefs(duty.workBindings || [], artifacts.map(artifact => ({ workId: artifact.workId, botId: artifact.botId,
+              operationId: artifact.operationId, sourceMessageId: this.store.get('messages', artifact.messageId).replyTo })), 'operationId') };
+        });
+        if (duties.length) this.store.save('rooms', { id: room.id, team: { ...room.team, duties } });
+        const state = this.store.get(staffState, room.id);
+        const old = this.get(state?.activeAssessmentId);
+        if (old && old.policyVersion !== staffingPolicyVersion) {
+          this.store.save(assessments, { id: old.id, status: 'superseded', finishedAt: now() });
+          this.store.save(staffState, { id: room.id, activeAssessmentId: null });
+        }
+        if (state && JSON.stringify(state.scope) === JSON.stringify(staffingScope(room)) && !old)
+          this.store.save(staffState, { id: room.id, policyVersion: staffingPolicyVersion });
+      }
+      for (const job of this.store.list('deliveries')) if (job.teamStaffing &&
+          job.teamStaffing.policyVersion !== staffingPolicyVersion && !terminal.has(job.status)) {
+        this.store.save('deliveries', { id: job.id, status: 'cancelled', finishedAt: now(),
+          error: { code: 'STAFFING_POLICY_CHANGED', message: 'A current project assessment replaces this obsolete delivery.' } });
+      }
+      for (const operation of this.store.list('team-operations')) if (operation.staffingDeliveryId && operation.status === 'pending' &&
+          this.store.get('deliveries', operation.staffingDeliveryId)?.teamStaffing?.policyVersion !== staffingPolicyVersion) {
+        this.store.save('team-operations', { id: operation.id, status: 'blocked',
+          error: 'Obsolete staffing operation; existing Bots, duties and actual receipts are retained.' });
+      }
+      this.store.save('chatroom-schema', { id: 'staffing', version: staffingPolicyVersion });
+    });
+  }
 
   view(plan) {
     return { assessmentId: plan.id, status: plan.status, assessedRevision: plan.assessedRevision,
-      noChange: plan.status === 'completed' && !plan.areas.some(row => row.state === 'assigned'),
-      areas: plan.areas.map(row => pick(row, ['area', 'roleId', 'dutyKey', 'decision', 'reason', 'state', 'botId', 'operationId', 'sourceRefs', 'receipt', 'error'])) };
+      ...pick(plan, ['domain', 'phase', 'deliveryChain', 'reason', 'sourceMessageId', 'finishedAt', 'analysisAsOf', 'currentPublications']),
+      noChange: plan.status === 'completed' && !plan.candidates.some(row => ['assigned', 'closed'].includes(row.state)),
+      candidates: plan.candidates.map(row => pick(row, [...Object.keys(fields), 'handling', 'dutyKey', 'state', 'botId',
+        'operationId', 'sourceRefs', 'referenceWorkIds', 'referenceArtifacts', 'receipt', 'error'])) };
+  }
+
+  candidate(raw, room, job) {
+    if (!raw || !handling.has(raw.handling)) fail('Choose how to handle each proposed responsibility');
+    const existing = raw.dutyKey && (room.team.duties || []).find(duty => duty.dutyKey === raw.dutyKey);
+    if (raw.dutyKey && !existing) fail('Use an existing dutyKey exactly as returned by chatroom_team_read');
+    if (raw.handling === 'close' && !existing) fail('Choose an existing duty to close');
+    const cited = ids(raw.sourceMessageIds ?? [job.messageId], 'sourceMessageIds');
+    const citedMessages = cited.map(id => this.store.get('messages', id));
+    if (citedMessages.some(message => message?.roomId !== room.id)) fail('A candidate source is outside this room', 403);
+    const signals = job.teamStaffing.evidence.filter(signal => cited.includes(signal.messageId));
+    const messages = citedMessages.filter(message => this.chatroom.staffingEvidence(message) || signals.some(signal => signal.messageId === message.id));
+    if (!messages.length) return { handling: 'defer', state: 'recorded',
+      name: existing?.dutyProfile?.name || String(raw.name || '未确认职责').slice(0, 100),
+      benefit: '没有可用于分工的真实来源；普通回复仅保留为讨论背景。',
+      sourceRefs: [], referenceWorkIds: [], referenceArtifacts: [] };
+    const results = messages.filter(message => this.chatroom.staffingEvidence(message)?.kind === 'work-result');
+    const artifacts = results.flatMap(staffingArtifacts);
+    const workIds = unique([...results.map(message => message.workId), ...signals.map(signal => signal.workId).filter(Boolean)]);
+    const common = { handling: raw.handling, sourceRefs: messages.map(roomRef), referenceWorkIds: workIds, referenceArtifacts: artifacts,
+      sourceAt: messages.map(message => message.createdAt).sort().at(-1) };
+    if (raw.handling === 'close') {
+      const scopedTextOnly = signals.some(signal => signal.kind === 'room-result-acceptance' &&
+        this.store.get('room-text-results', signal.resultId)?.dutyKey === existing.dutyKey &&
+        this.store.get('room-text-results', signal.resultId)?.kind === 'room-handoff') &&
+        !signals.some(signal => ['work-result', 'work-acceptance'].includes(signal.kind));
+      if (scopedTextOnly) return { ...common, handling: 'defer', state: 'recorded', dutyKey: existing.dutyKey,
+        name: existing.dutyProfile?.name || existing.responsibility.slice(0, 100),
+        benefit: '本次验收只结清这条文字交付，原持续职责仍保留。' };
+      if (!signals.some(signal => {
+        if (!job.teamStaffing.changeKeys.includes(signal.key)) return false;
+        if (['user-update', 'work-result', 'work-acceptance'].includes(signal.kind)) return true;
+        const result = signal.kind === 'room-result' && this.store.get('room-text-results', signal.resultId);
+        return result?.kind === 'independent-review' && result.dutyKey === existing.dutyKey && result.ownerBotId === existing.botId;
+      }))
+        fail('Closing a duty requires current user or work evidence that its phase ended');
+      return { ...common, name: existing.dutyProfile?.name || existing.responsibility.slice(0, 100),
+        dutyKey: existing.dutyKey, benefit: required(raw.benefit, 'reason for closing', 550),
+        state: 'pending', operationId: 'staffing:' + randomUUID() };
+    }
+    const details = Object.fromEntries(Object.entries(fields).map(([key, limit]) => [key, required(raw[key], key, limit)]));
+    const independentReview = raw.independentReview === undefined ?
+      Boolean(existing?.dutyProfile?.independentReview) : raw.independentReview === true;
+    if (existing?.dutyProfile && Boolean(existing.dutyProfile.independentReview) !== independentReview)
+      fail('Keep an existing review boundary; give a genuinely independent responsibility its own duty');
+    if (!norm(details.subject) || !norm(details.boundary)) fail('Name a real responsibility object and its boundary');
+    const roleId = raw.roleId ? safeId(raw.roleId) : 'default';
+    if (raw.roleId && !existsSync(join(this.manager.releaseRoot, 'roles', roleId, 'role.json'))) fail('Select an installed role or omit roleId');
+    const separateFromDutyKeys = ids(raw.separateFromDutyKeys ?? [], 'separateFromDutyKeys');
+    if (separateFromDutyKeys.some(key => !room.team.duties.some(duty => duty.dutyKey === key)))
+      fail('Use actual duty keys for related but separate responsibilities');
+    const candidateBotIds = ids(raw.candidateBotIds ?? [], 'candidateBotIds');
+    if (candidateBotIds.some(id => !this.manager.store.get('bots', id))) fail('Use actual Bot IDs from the team or Bot list');
+    const reviewPublications = signals.filter(signal => signal.kind === 'room-duty-plan').map(signal =>
+      this.chatroom.dutyActions.get(signal.planId)?.dependency).filter(dependency => dependency?.condition === EXISTING_PUBLICATION);
+    const makerBotIds = unique([...results.map(message => [message.senderId, message.workId]),
+      ...reviewPublications.map(({ publication }) => [publication.makerBotId, publication.workId]),
+      ...signals.filter(item => item.kind === 'work-dispatch').map(signal => [signal.ownerBotId, signal.workId])]
+      .filter(([botId, workId]) => botId && !room.team.duties.some(duty => duty.botId === botId &&
+        duty.dutyProfile?.independentReview && duty.workIds?.includes(workId))).map(([botId]) => botId));
+    return { ...common, ...details, independentReview, roleId, separateFromDutyKeys,
+      aliases: [identity(details.subject, details.boundary, independentReview)],
+      candidateBotIds,
+      requiredTools: ids(raw.requiredTools ?? [], 'requiredTools', 32),
+      makerBotIds,
+      ...(existing ? { dutyKey: existing.dutyKey } : {}),
+      state: raw.handling === 'member' ? 'pending' : 'recorded' };
+  }
+
+  match(row, existing) {
+    if (row.dutyKey && row.dutyKey === existing.dutyKey) return true;
+    if (!row.aliases) return false;
+    if (row.separateFromDutyKeys.includes(existing.dutyKey)) return false;
+    const profile = existing.dutyProfile || existing;
+    if (profile.aliases?.some(alias => row.aliases.includes(alias))) return true;
+    // The assessment can explicitly identify a real adjacent responsibility.
+    // Never collapse production and its independent review into one owner.
+    return row.independentReview === profile.independentReview &&
+      similar(row.subject, profile.subject, 4) && similar(row.boundary, profile.boundary, 6) &&
+      row.sourceRefs.some(ref => existing.sourceRefs?.some(prior => prior.messageId === ref.messageId));
   }
 
   assess(input, actor, source) {
-    const room = this.team.room(input.roomId, actor);
     const deliveryId = source?.input?.metadata?.deliveryId;
     const job = deliveryId && this.store.get('deliveries', deliveryId);
+    const room = this.team.room(input.roomId || job?.roomId, actor);
     if (source?.metadata?.teamStaffing !== true || source.roomId !== room.id || actor !== room.team.eggBotId ||
-        !coverageProject(room) || job?.roomId !== room.id || job.botId !== actor || terminal.has(job.status) ||
-        job.teamStaffing?.coverageVersion !== staffingCoverageVersion)
-      fail('A coverage assessment requires this project’s current EggBot staffing delivery', 403);
-
-    const operationId = required(input.operationId, 'operationId', 128);
-    const previous = this.get(deliveryId);
-    if (previous) {
-      if (previous.operationId !== operationId) fail('This delivery already has a saved assessment. Read the original result.', 409);
-      return this.view(previous);
-    }
-    if (input.expectedRevision !== room.team.revision) fail('Team changed; read its current revision', 409);
-    if (input.sourceMessageId !== job.messageId) fail('Use this staffing delivery’s triggerMessageId as the assessment source');
-    if (!Array.isArray(input.coverage) || input.coverage.length !== staffingAreas.length ||
-        new Set(input.coverage.map(row => row?.area)).size !== staffingAreas.length)
-      fail('Assess each of the five responsibility areas once');
-
-    const areas = staffingAreas.map(spec => {
-      const row = input.coverage.find(item => item?.area === spec.area);
-      if (!row || !decided.has(row.decision)) fail(`Choose a decision for ${spec.area}`);
-      const reason = required(row.reason, 'reason', 900);
-      if (!Array.isArray(row.sourceMessageIds) || !row.sourceMessageIds.length || row.sourceMessageIds.length > 8)
-        fail(`Cite one to eight original messages for ${spec.area}`);
-      const evidence = [...new Set(row.sourceMessageIds)].map(id => this.store.get('messages', id));
-      if (evidence.some(message => message?.roomId !== room.id || !this.chatroom.staffingEvidence(message)))
-        fail('Coverage sources must be original user messages or authenticated work results in this room', 403);
-      const publications = evidence.filter(message => this.chatroom.staffingEvidence(message)?.kind === 'work-result');
-      const citedIds = new Set(evidence.map(message => message.id));
-      const dispatched = job.teamStaffing.evidence.filter(signal => signal.kind === 'work-dispatch' && citedIds.has(signal.messageId));
-      const workIds = [...new Set([...publications, ...dispatched].map(item => item.workId))];
-      const makerBotIds = [...new Set([
-        ...publications.map(message => message.senderId),
-        ...dispatched.map(signal => signal.ownerBotId).filter(Boolean),
-      ])];
-      if (!Array.isArray(row.items) || row.items.length > 4) fail(`List up to four confirmed or near-term items for ${spec.area}`);
-      const items = row.items.map(item => {
-        if (!item || !['confirmed', 'near-term'].includes(item.basis) || !handling.has(item.handling) ||
-            !citedIds.has(item.sourceMessageId)) fail('Each item needs its scope, one of the cited sources and its proposed handling');
-        return { title: required(item.title, 'title', 180), ...pick(item, ['basis', 'sourceMessageId', 'handling']),
-          ...Object.fromEntries(taskQuestions.map(field => [field, required(item[field], field, 400)])) };
-      });
-      const dedicated = items.filter(item => item.handling === 'specialist');
-      if ((row.decision === 'needed') !== Boolean(dedicated.length)) fail('Use needed exactly when an item has a concrete specialist responsibility');
-      const core = { area: spec.area, decision: row.decision, reason, items, sourceRefs: evidence.map(roomRef), workIds, makerBotIds };
-      if (row.decision !== 'needed') return { ...core, state: row.decision };
-      const role = spec.roles.find(role => role.id === (row.roleId || (spec.roles.length === 1 && spec.roles[0].id)));
-      if (!role) fail(`Choose a matching domain role for ${spec.area}`);
-      if (spec.area === 'maintenance' && workIds.length < 2 &&
-          !evidence.some(message => message.id === row.dependencySourceMessageId && message.senderId === 'user'))
-        fail('Name the component and cite distinct actual works or an original user message defining its downstream dependency');
-      return { ...core, roleId: role.id, state: 'pending', dutyKey: dutyKey(spec.area), operationId: `staffing:${randomUUID()}`,
-        ...(row.dependencySourceMessageId ? { dependencySourceMessageId: row.dependencySourceMessageId } : {}),
-        responsibility: required(row.responsibility, 'responsibility', 1600),
-        ...(row.existingOwnerId ? { existingOwnerId: required(row.existingOwnerId, 'existingOwnerId', 128) } : {}),
-        ...(row.candidateBotId ? { candidateBotId: required(row.candidateBotId, 'candidateBotId', 128) } : {}) };
-    });
+        !staffingProject(room) || job?.roomId !== room.id || job.botId !== actor ||
+        job.teamStaffing?.policyVersion !== staffingPolicyVersion)
+      fail('An assessment requires this project’s current EggBot staffing delivery', 403);
+    const operationId = job.id;
+    const previous = this.forDelivery(job);
+    if (previous) return this.view(previous);
+    if (terminal.has(job.status)) fail('The staffing delivery already ended', 409);
     const state = this.store.get(staffState, room.id);
-    const activePlan = state?.activeAssessmentId && this.get(state.activeAssessmentId);
-    if (activePlan?.status === 'applying') fail('Read the current staffing assessment before opening another one', 409);
-    const applying = areas.some(row => row.state === 'pending');
+    if (JSON.stringify(staffingScope(room)) !== JSON.stringify(job.teamStaffing.scope) ||
+        state?.latestUserMessageId && state.latestUserMessageId !== job.teamStaffing.latestUserMessageId)
+      return this.view(this.supersede(job, room));
+    if (input.expectedRevision !== undefined && input.expectedRevision !== room.team.revision)
+      fail('Team changed; read its current revision', 409);
+    if (!Array.isArray(input.candidates)) fail('Submit zero or more concrete candidates');
+    const candidates = [];
+    for (const item of input.candidates) {
+      const row = this.candidate(item, room, job);
+      const registered = (room.team.duties || []).filter(duty => this.match(row, duty));
+      if (registered.length > 1) fail('Responsibility overlaps multiple saved duties; choose its exact boundary and saved dutyKey');
+      if (registered[0]) {
+        if (row.dutyKey && row.dutyKey !== registered[0].dutyKey) fail('Candidate conflicts with an existing responsibility');
+        row.dutyKey = registered[0].dutyKey;
+      }
+      const duplicate = candidates.find(prior => this.match(row, prior));
+      if (duplicate) {
+        if (duplicate.handling !== row.handling || row.dutyKey && duplicate.dutyKey && row.dutyKey !== duplicate.dutyKey)
+          fail('Use one decision for equivalent candidates');
+        duplicate.dutyKey ||= row.dutyKey;
+        duplicate.sourceRefs = mergeRefs(duplicate.sourceRefs, row.sourceRefs, 'messageId');
+        duplicate.referenceWorkIds = unique([...duplicate.referenceWorkIds, ...row.referenceWorkIds]);
+        duplicate.referenceArtifacts = mergeRefs(duplicate.referenceArtifacts, row.referenceArtifacts, 'id');
+        if (row.sourceAt > duplicate.sourceAt) duplicate.sourceAt = row.sourceAt;
+        for (const key of ['aliases', 'candidateBotIds', 'requiredTools', 'makerBotIds', 'separateFromDutyKeys'])
+          if (row[key]) duplicate[key] = unique([...(duplicate[key] || []), ...row[key]]);
+      } else candidates.push(row);
+    }
+    for (const row of candidates.filter(row => row.handling === 'member')) {
+      row.dutyKey ||= 'duty.' + randomUUID();
+      row.operationId = 'staffing:' + randomUUID();
+    }
+    const scope = {
+      domain: required(input.domain, 'domain', 180), phase: required(input.phase, 'phase', 220),
+      deliveryChain: required(input.deliveryChain, 'deliveryChain', 1400), reason: required(input.reason, 'reason', 900),
+    };
+    const analysisAsOf = job.input?.content?.staffing?.snapshotAt || job.createdAt;
+    const currentPublications = this.team.staffingPublications(room.id, job.teamStaffing.evidence);
+    const newer = currentPublications.filter(result => result.publishedAt > analysisAsOf);
+    if (newer.length) scope.reason = `以下判断基于 ${localTime(analysisAsOf)} 的快照。此后同源实际发布：${newer.map(result =>
+      `${localTime(result.publishedAt)}（消息 ${result.messageId}）`).join('、')}。当前交付以这些发布回执为准。\n${scope.reason}`;
+    const key = sourceKey(job);
     const plan = this.store.transaction(() => {
-      const saved = this.store.save(assessments, { id: deliveryId, actor, roomId: room.id, operationId, areas,
-        sourceMessageId: job.messageId, coverageVersion: staffingCoverageVersion, assessedRevision: room.team.revision,
-        goal: room.goal, requirements: room.team.requirements,
+      const replay = this.get(this.store.get(sources, key)?.assessmentId);
+      if (replay) return replay;
+      const state = this.store.get(staffState, room.id);
+      if (this.get(state?.activeAssessmentId)?.status === 'applying') fail('The current assessment is still applying', 409);
+      const applying = candidates.some(row => row.state === 'pending');
+      const saved = this.store.save(assessments, { id: deliveryId, actor, roomId: room.id, operationId, candidates, ...scope,
+        analysisAsOf, currentPublications,
+        sourceMessageId: job.messageId, policyVersion: staffingPolicyVersion, assessedRevision: room.team.revision,
+        scope: job.teamStaffing.scope, latestUserMessageId: job.teamStaffing.latestUserMessageId,
         status: applying ? 'applying' : 'completed', ...(applying ? {} : { finishedAt: now() }) });
-      this.store.save(staffState, { id: room.id, lastAssessmentId: deliveryId, activeAssessmentId: applying ? deliveryId : null,
-        ...(job.teamStaffing.coverageBaseline ? { coverageReviewAssessmentId: deliveryId } : {}) });
+      this.store.save(sources, { id: key, assessmentId: saved.id });
+      this.store.save(staffState, { id: room.id, lastAssessmentId: saved.id, activeAssessmentId: applying ? saved.id : null });
       return saved;
     });
     return this.view(plan);
   }
 
-  async available(botId, spec, row, room) {
-    if (!botId || (spec.area === 'verification' && (botId === room.team.leadBotId || row.makerBotIds.includes(botId)))) return false;
-    const bot = this.manager.store.get('bots', botId);
-    if (bot?.roleId !== row.roleId || bot.status !== 'active' || bot.runIntent !== 'running' ||
-        bot.archivedAt || bot.maintenanceFor || bot.lifecycle?.state === 'dormant' ||
-        !['chatroom_read', 'chatroom_team_read'].every(name => bot.allowedTools?.includes(name))) return false;
-    return (await this.manager.identity(botId))?.state === 'ready';
+  supersede(job, room) {
+    return this.store.transaction(() => {
+      const prior = this.forDelivery(job);
+      if (prior) return prior;
+      const plan = this.store.save(assessments, { id: job.id, actor: job.botId, roomId: job.roomId, operationId: job.id,
+        status: 'superseded', candidates: [], sourceMessageId: job.messageId, policyVersion: staffingPolicyVersion,
+        assessedRevision: room.team.revision, finishedAt: now(), reason: 'A newer source or project scope replaced this assessment.' });
+      this.store.save(sources, { id: sourceKey(job), assessmentId: plan.id });
+      return plan;
+    });
   }
 
-  async choose(room, spec, row) {
-    const duties = room.team.duties || [];
-    const registered = duties.find(duty => duty.dutyKey === row.dutyKey);
-    if (registered) {
-      if (room.members.includes(registered.botId) && await this.available(registered.botId, spec, row, room)) {
-        if (row.existingOwnerId === registered.botId || row.responsibility === registered.responsibility)
-          return { state: 'covered', botId: registered.botId };
-        return { action: 'assign', botId: registered.botId };
-      }
-      return { state: 'blocked', botId: registered.botId, error: 'The registered owner cannot currently cover this responsibility. Its existing assignment is retained.' };
-    }
-    const current = duties.find(duty => duty.botId === row.existingOwnerId && duty.responsibility && duty.assignedAt &&
-      !duty.staffingArea && room.members.includes(duty.botId));
-    if (current && await this.available(current.botId, spec, row, room))
-      return { state: 'covered', botId: current.botId };
+  async available(botId, row, room, { firstRun = false } = {}) {
+    const bot = this.manager.store.get('bots', botId);
+    if (!bot || botId === room.team.eggBotId || bot.status !== 'active' ||
+        bot.archivedAt || bot.maintenanceFor || bot.lifecycle?.state === 'dormant' ||
+        bot.lifecycle?.kind === 'temporary' && bot.lifecycle.originRoomId && bot.lifecycle.originRoomId !== room.id ||
+        !['chatroom_read', 'chatroom_team_read', ...row.requiredTools].every(name => bot.allowedTools?.includes(name))) return false;
+    if (row.independentReview && (botId === room.team.leadBotId || row.makerBotIds.includes(botId))) return false;
+    if (activeDuties(room, botId).some(duty => duty.dutyKey !== row.dutyKey && duty.dutyProfile &&
+        (similar(duty.dutyProfile.subject, row.subject, 4) || row.separateFromDutyKeys.includes(duty.dutyKey)) &&
+        Boolean(duty.dutyProfile.independentReview) !== row.independentReview)) return false;
+    return firstRun && bot.firstRunPending === true ||
+      bot.runIntent === 'running' && (await this.manager.identity(botId))?.state === 'ready';
+  }
 
-    for (const botId of new Set([row.candidateBotId, ...room.members])) {
-      if (!duties.some(duty => duty.botId === botId) && await this.available(botId, spec, row, room))
-        return { action: room.members.includes(botId) ? 'assign' : 'invite', botId };
+  async choose(room, row) {
+    const registered = room.team.duties.find(duty => duty.dutyKey === row.dutyKey);
+    if (row.handling === 'close') return registered?.state === 'closed' ?
+      { state: 'covered', botId: registered.botId } : { action: 'close-duty', botId: registered?.botId };
+    const create = (botId) => ({ action: 'create', roleId: row.roleId, name: row.name, ...(botId ? { botId } : {}),
+      prompt: '你在此项目担任「' + row.name + '」，关注' + row.subject + '。请按本群最新登记职责和真实来源参与。任何制作或外部操作仍以当前用户授权为准。' });
+    if (registered) {
+      if (registered.state === 'closed' && registered.closedAt && !(row.sourceAt > registered.closedAt))
+        return { state: 'covered', botId: registered.botId };
+      if (await this.available(registered.botId, row, room, { firstRun: true })) {
+        if (!room.members.includes(registered.botId)) return { action: 'invite', botId: registered.botId };
+        if (registered.state !== 'active' || this.manager.get(registered.botId).firstRunPending)
+          return { action: 'assign', botId: registered.botId };
+        return { state: 'covered', botId: registered.botId, registered };
+      }
+      const bot = this.manager.store.get('bots', registered.botId);
+      if (registered.state === 'provisioning' && row.requiredTools.every(name => TEAM_DUTY_TOOLS.includes(name)) &&
+          (!bot || bot.lifecycle?.originDutyKey === row.dutyKey && bot.status === 'active' &&
+            (bot.runIntent === 'running' || !existsSync(join(this.manager.directory(bot.id), 'config.json')))))
+        return create(registered.botId);
+      return { state: 'blocked', botId: registered.botId, error: 'The saved owner cannot cover this duty now. The responsibility and Bot are retained for explicit follow-up.' };
     }
-    const role = spec.roles.find(role => role.id === row.roleId);
-    return { action: 'create', roleId: role.id, name: role.name,
-      prompt: `你是此项目的${role.name}，负责${spec.focus}。以本群最新的正式职责和当前工作授权为准。` };
+    const ranked = [...row.candidateBotIds.filter(id => room.members.includes(id)), ...row.candidateBotIds.filter(id => !room.members.includes(id))];
+    for (const botId of ranked) if (await this.available(botId, row, room, { firstRun: true }))
+      return { action: room.members.includes(botId) ? 'assign' : 'invite', botId };
+    const missing = row.requiredTools.filter(name => !TEAM_DUTY_TOOLS.includes(name));
+    if (missing.length) return { state: 'blocked', error: 'No proposed owner has the required tools. Staffing cannot grant: ' + missing.join(', ') };
+    return create();
+  }
+
+  dutyEvidence(previous, row) {
+    const profile = row.aliases ? formatProfile(row) : previous?.dutyProfile;
+    const dutyProfile = profile && {
+      ...profile, ...(previous?.dutyProfile ? pick(previous.dutyProfile, ['name', 'subject', 'boundary', 'independentReview']) : {}),
+      aliases: unique([...(previous?.dutyProfile?.aliases || []), ...(profile.aliases || [])]),
+    };
+    return {
+      ...(dutyProfile ? { dutyProfile } : {}),
+      sourceRefs: mergeRefs(previous?.sourceRefs || (previous?.source ? [previous.source] : []), row.sourceRefs, 'messageId'),
+      referenceWorkIds: unique([...(previous?.referenceWorkIds || []), ...(row.referenceWorkIds || [])]),
+      referenceArtifacts: mergeRefs(previous?.referenceArtifacts || [], row.referenceArtifacts || [], 'id'),
+    };
   }
 
   saveRow(plan, original, update) {
-    const areas = plan.areas.map(row => row.area === original.area ? { ...row, ...update } : row);
-    const pending = areas.some(row => row.state === 'pending');
+    const current = this.get(plan.id);
+    if (current?.status !== 'applying') return;
+    const candidates = current.candidates.map(row => row.operationId === original.operationId ? { ...row, ...update } : row);
+    const pending = candidates.some(row => row.state === 'pending');
     this.store.transaction(() => {
-      this.store.save(assessments, { id: plan.id, areas,
-        status: pending ? 'applying' : areas.some(row => row.state === 'blocked') ? 'blocked' : 'completed',
+      this.store.save(assessments, { id: plan.id, candidates,
+        status: pending ? 'applying' : candidates.some(row => row.state === 'blocked') ? 'blocked' : 'completed',
         ...(pending ? {} : { finishedAt: now() }) });
       if (!pending) this.store.save(staffState, { id: plan.roomId, activeAssessmentId: null });
     });
   }
 
   schedule(room) {
-    if (!coverageProject(room)) return false;
     if (this.running.has(room.id)) return true;
-    const state = this.store.get(staffState, room.id);
-    const plan = state?.activeAssessmentId && this.get(state.activeAssessmentId);
-    if (plan?.status !== 'applying' || plan.coverageVersion !== staffingCoverageVersion || plan.actor !== room.team.eggBotId) return false;
+    const state = this.store.get(staffState, room.id), plan = this.get(state?.activeAssessmentId);
+    if (plan?.status !== 'applying' || plan.policyVersion !== staffingPolicyVersion) return false;
     const coordinator = this.manager.get(plan.actor);
-    if (coordinator.status !== 'active' || coordinator.runIntent === 'stopped') return true;
-    const row = plan.areas.find(item => item.state === 'pending' && (!item.retryAt || item.retryAt <= Date.now()));
-    if (!row) return true;
-    const run = this.advance(room, plan, row)
-      .catch(error => this.chatroom.emit('team-review-error', { roomId: room.id, error: error.message }))
+    if (staffingProject(room) && (coordinator.status !== 'active' || coordinator.runIntent === 'stopped')) return true;
+    if (!plan.candidates.some(row => row.state === 'pending' && (!row.retryAt || row.retryAt <= Date.now()))) return true;
+    const run = this.chatroom.staffingMutation(async () => {
+      const current = this.get(plan.id);
+      if (current?.status !== 'applying') return;
+      const row = current.candidates.find(item => item.state === 'pending' && (!item.retryAt || item.retryAt <= Date.now()));
+      if (row) await this.advance(this.team.room(room.id, 'controller'), current, row);
+    }).catch(error => this.chatroom.emit('team-review-error', { roomId: room.id, error: error.message }))
       .finally(() => this.running.delete(room.id));
     this.running.set(room.id, run);
     return true;
@@ -202,45 +397,62 @@ export class StaffingCoverage {
   async drain() { await Promise.allSettled(this.running.values()); }
 
   async advance(room, plan, row) {
-    const spec = staffingAreas.find(item => item.area === row.area);
-    const key = operationKey(plan, row);
-    const operation = this.store.get('team-operations', key);
+    const key = operationKey(plan, row), operation = this.store.get('team-operations', key);
+    if (!operation?.result && this.team.pendingStaffingRoute(room.id)) return;
     let input = row.input;
     try {
-      if (!operation?.result && (room.goal !== plan.goal || room.team.requirements !== plan.requirements))
-        fail('Project scope changed after this assessment. Assess the new source before assigning this responsibility.', 409);
+      if (!operation?.result && (!staffingProject(room) || room.team.eggBotId !== plan.actor ||
+          JSON.stringify(staffingScope(room)) !== JSON.stringify(plan.scope) ||
+          (this.store.get(staffState, room.id)?.latestUserMessageId || null) !== (plan.latestUserMessageId || null))) {
+        this.store.transaction(() => {
+          this.store.save(assessments, { id: plan.id, status: 'superseded', finishedAt: now(), candidates: plan.candidates
+            .map(candidate => candidate.state === 'pending' ? { ...candidate, state: 'superseded' } : candidate) });
+          this.store.save(staffState, { id: room.id, activeAssessmentId: null });
+          if (operation?.status === 'pending') this.store.save('team-operations', { id: operation.id, status: 'superseded' });
+        });
+        return;
+      }
       if (!input) {
-        const candidate = await this.choose(room, spec, row);
-        const current = this.team.room(room.id, plan.actor);
-        if (!coverageProject(current) || current.team.revision !== room.team.revision) return true;
-        if (candidate.state) { this.saveRow(plan, row, candidate); return true; }
-        input = { ...candidate, roomId: room.id, expectedRevision: current.team.revision, dutyKey: row.dutyKey,
-          operationId: row.operationId, sourceMessageId: row.sourceRefs[0].messageId, reason: row.reason, responsibility: row.responsibility };
+        const { registered, ...candidate } = await this.choose(room, row);
+        if (this.team.pendingStaffingRoute(room.id) ||
+            (this.store.get(staffState, room.id)?.latestUserMessageId || null) !== (plan.latestUserMessageId || null)) return;
+        if (candidate.state) {
+          if (registered) {
+            const evidence = this.dutyEvidence(registered, row);
+            if (Object.keys(evidence).some(field => JSON.stringify(registered[field]) !== JSON.stringify(evidence[field])))
+              this.team.change(room, { team: { duties: room.team.duties.map(item =>
+                item.dutyKey === row.dutyKey ? { ...item, ...evidence } : item) } }, room.team.revision);
+          }
+          this.saveRow(plan, row, candidate);
+          return;
+        }
+        input = { ...candidate, roomId: room.id, expectedRevision: room.team.revision, dutyKey: row.dutyKey,
+          operationId: row.operationId, sourceMessageId: row.sourceRefs[0].messageId,
+          reason: row.benefit, ...(row.handling === 'member' ? { responsibility: row.name + '：' + row.subject + '；' + row.boundary } : {}) };
         this.saveRow(plan, row, { input });
       }
       const source = { roomId: plan.roomId, metadata: { teamStaffing: true },
-        input: { metadata: { deliveryId: plan.id }, staffing: { coverageVersion: plan.coverageVersion } } };
+        input: { metadata: { deliveryId: plan.id } } };
       const receipt = operation?.result || await this.team.manage(input, plan.actor, source, {
-        assessmentId: plan.id, area: row.area, goal: plan.goal, requirements: plan.requirements,
-        sourceRefs: row.sourceRefs, workIds: row.workIds,
-        handoff: row.items.filter(item => item.handling === 'specialist').map(item =>
-          `${item.title}\n输入：${item.input}\n交付：${item.output}\n完成条件：${item.done}`).join('\n\n'),
+        assessmentId: plan.id, scope: plan.scope, row,
       });
-      const assigned = receipt.room?.team?.duties?.find(duty => duty.dutyKey === row.dutyKey && duty.operationId === row.operationId);
-      if (!assigned || !receipt.eventMessageId || !receipt.messageId) fail('Staffing action has no confirmed assignment receipt', 409);
-      this.saveRow(plan, row, { input, state: 'assigned', botId: assigned.botId, error: null,
+      const duty = receipt.room?.team?.duties?.find(item => item.dutyKey === row.dutyKey && item.operationId === row.operationId);
+      if (!duty || !receipt.eventMessageId || row.handling === 'member' && !receipt.messageId)
+        fail('Staffing action has no confirmed team receipt', 409);
+      this.saveRow(plan, row, { state: row.handling === 'close' ? 'closed' : 'assigned', botId: duty.botId, error: null,
         receipt: pick(receipt, ['operationId', 'messageId', 'eventMessageId']) });
     } catch (error) {
       const saved = this.store.get('team-operations', key);
       const current = this.chatroom.need('rooms', room.id);
-      const changedBeforeWrite = !saved && input && coverageProject(current) && input.expectedRevision !== current.team.revision;
+      const changedBeforeWrite = !saved && input && staffingProject(current) &&
+        JSON.stringify(staffingScope(current)) === JSON.stringify(plan.scope) && input.expectedRevision !== current.team.revision;
       const attempts = (row.attempts || 0) + 1;
       const retry = attempts < 4 && (changedBeforeWrite || !error.status || error.status >= 500 || error.status === 429);
       const message = String(error.message || error).slice(0, 900);
+      if (!retry && saved?.status === 'pending') this.store.save('team-operations', { id: key, status: 'blocked', error: message });
       this.saveRow(plan, row, { state: retry ? 'pending' : 'blocked', attempts,
         input: changedBeforeWrite ? null : input, retryAt: retry ? Date.now() + 5000 * attempts : null,
         firstFailure: row.firstFailure || { at: now(), message }, error: message });
     }
-    return true;
   }
 }

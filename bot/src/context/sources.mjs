@@ -127,6 +127,11 @@ export class RuntimeSources {
     return work?.project || (work?.bindings?.some(item => item.type === 'codex-desktop' && item.externalThreadId) &&
       work.executor?.target?.type === 'project' ? { id: work.executor.target.projectId } : null);
   }
+  roomProject(source) {
+    const room = source?.input?.room;
+    return room?.id && room.id === source.roomId && room.kind === 'group' && room.team ?
+      { id: `room:${room.id}`, name: room.name, kind: 'room-project' } : null;
+  }
   async contextProject(task) {
     const work = task.workId && this.store.getRecord('works', task.workId);
     const selected = this.project(work);
@@ -187,13 +192,15 @@ export class RuntimeSources {
     }
     let currentProject, projectError;
     try { currentProject = await this.contextProject(task); } catch (error) { projectError = error.message; }
-    return { rooms, works, projects: [...works.map(work => this.project(work)).filter(Boolean), ...(currentProject ? [currentProject] : [])],
-      currentProject, projectError, source };
+    const roomProject = rooms.includes(source.roomId) && this.roomProject(source);
+    return { rooms, works, projects: [...works.map(work => this.project(work)).filter(Boolean), ...[currentProject, roomProject].filter(Boolean)],
+      currentProject, roomProject, projectError, source };
   }
   async memoryTarget(task, input = {}) {
     const args = modelArgs(input), access = await this.memoryAccess(task);
     const supplied = args.scopeId || (typeof args.scope === 'string' && /^(?:work|conversation|project):/.test(args.scope) ? args.scope : null);
-    if (supplied) {
+    const sameRoomScope = supplied && supplied === access.source.roomId && access.rooms.includes(supplied);
+    if (supplied && !sameRoomScope) {
       const scope = this.store.getRecord('knowledge_scope', supplied);
       if (!scope || !(await this.knowledge(task, [scope], access)).length) denied('Knowledge belongs to another source scope');
       return scope;
@@ -201,7 +208,8 @@ export class RuntimeSources {
     const hint = args.workId || task.workId || taskSource(task, this.store).metadata?.referencedWorkId;
     const work = access.works.find(item => item.id === hint);
     if (args.workId && !work) denied('Work is outside this request');
-    let project = args.projectId ? access.projects.find(item => item.id === args.projectId || item.name === args.projectId) : this.project(work) || access.currentProject;
+    let project = args.projectId ? access.projects.find(item => item.id === args.projectId || item.name === args.projectId) :
+      this.project(work) || access.roomProject || access.currentProject;
     if (args.projectId && !project) project = await this.authorizeProject(args.projectId.startsWith('directory:') ?
       { type: 'directory', cwd: args.projectId.slice(10) } : { type: 'project', projectId: args.projectId }, task);
     const projectId = knowledgeProjectId(project);
@@ -285,7 +293,8 @@ export class RuntimeSources {
   grant(task, reference) {
     if (!task.workId) return null;
     const same = candidate => candidate?.type === reference.type && (reference.type === 'room' ?
-      candidate.roomId === reference.roomId && candidate.messageId === reference.messageId : reference.type === 'session' ?
+      candidate.roomId === reference.roomId && candidate.messageId === reference.messageId &&
+        (!reference.attachmentId || candidate.attachmentId === reference.attachmentId) : reference.type === 'session' ?
         candidate.sessionId === reference.sessionId && candidate.entryId === reference.entryId : reference.type === 'knowledge' ?
           candidate.scopeId === reference.scopeId : reference.type === 'work' ? candidate.workId === reference.workId &&
             candidate.operationId === reference.operationId : candidate.id === reference.id);
@@ -310,7 +319,7 @@ export class RuntimeSources {
       if (!page.messages?.length) throw new Error('The group observation source is unavailable');
       return { messages: [], access: page.access, roomId: source.roomId, runtimeEvent: { type: 'group_observation',
         room: source.input.room, observer: source.input.observer, contextRange: source.input.contextRange,
-        messages: source.input.messages, triggerMessageId: source.replyTo } };
+        observationCoverage: source.input.observationCoverage, messages: source.input.messages, triggerMessageId: source.replyTo } };
     }
     if (source.metadata?.teamStaffing) {
       const page = await this.call('chatroom_read', { roomId: source.roomId, messageId: source.replyTo, length: 1 }, task);
@@ -318,6 +327,12 @@ export class RuntimeSources {
       return { messages: [], access: page.access, roomId: source.roomId, runtimeEvent: { type: 'team_staffing',
         room: source.input.room, staffing: source.input.staffing, messages: source.input.messages,
         triggerMessageId: source.replyTo, instruction: source.input.runtimeInstruction } };
+    }
+    if (source.metadata?.roomDutyAction) {
+      const page = await this.call('chatroom_read', { roomId: source.roomId, messageId: source.replyTo, length: 1 }, task);
+      if (!page.messages?.length) throw new Error('The original duty action request is unavailable');
+      return { messages: [], access: page.access, roomId: source.roomId, runtimeEvent: { type: 'room_duty_action',
+        room: source.input.room, originalRequest: source.input.trigger, action: source.input.dutyAction, evidence: source.input.messages } };
     }
     const throughMessageId = source.metadata?.historyThroughMessageId || source.replyTo;
     const key = task.conversationId || task.sessionId;
@@ -445,7 +460,7 @@ export class RuntimeSources {
       const args = { roomId: reference.roomId, messageId: reference.messageId, offset, length: Math.min(16000, length),
         ...(reference.attachmentId ? { attachmentId: reference.attachmentId } : {}) };
       const page = origin ? await this.scopedCall('chatroom_read', args, task, origin) : await this.callForSource('chatroom_read', args, task);
-      if (reference.attachmentId) return { ...page, authority: 'evidence' };
+      if (reference.attachmentId) return { ...page, authority: 'published-attachment' };
       const message = page.messages?.find(item => item.id === reference.messageId);
       if (!message) throw new Error('Evidence message not found');
       return { reference: message.reference, author: message.senderId, content: message.content, attachments: message.attachments,
@@ -480,6 +495,8 @@ export class RuntimeSources {
           instruction: 'Status/revision/updatedAt describe the current owning work. updatedAt is a local state mutation time, not an external turn time. Progress/checkpoint are derived state with their own recordedAt and evidence pointer. An operation executionReceipt is a saved transport receipt whose final may describe an earlier turn than the current binding. Use the matching externalResult original when available, retaining all earlier turn results under their own IDs; otherwise preserve the gap without promoting progress to original text.' } };
     }
     if (reference.type === 'tool') {
+      if (typeof reference.id !== 'string' || !reference.id.trim())
+        throw new Error('Tool evidence requires the exact tool record id. An operationId is not a tool record id.');
       const record = this.store.getTool(reference.id);
       const owner = record && this.store.getTask(record.taskId);
       if (!owner || record.status !== 'completed') throw new Error('Completed source tool receipt not found');

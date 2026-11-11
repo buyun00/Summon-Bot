@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { RecordStore } from '../shared/store.mjs';
 import { WorkspaceExecutionLock } from '../shared/workspace-lock.mjs';
 import { BotManager } from '../bot-management/service.mjs';
+import { effectiveBotTools } from '../bot-management/tool-access.mjs';
 import { cleanTemporaryData } from '../bot-management/maintenance.mjs';
 import { ChatroomService } from '../chatroom/service.mjs';
 import { AttachmentStore,MAX_ATTACHMENT_REQUEST_BYTES } from '../chatroom/attachments.mjs';
@@ -58,7 +59,10 @@ export async function createCapability(options) {
   }
   if (chatroom) {
     store(id).transaction(()=>{for(const job of chatroom.jobs())if(!job.serviceVersion)store(id).save('deliveries',{id:job.id,serviceVersion:version});});
-    const tick=chatroom.tick.bind(chatroom);chatroom.tick=()=>locked(tick);
+    chatroom.staffingMutation=locked;
+    const tick=chatroom.tick.bind(chatroom);
+    let ticking;
+    chatroom.tick=()=>ticking||=(locked(tick).finally(()=>{ticking=null;}));
     if(options.deferStart)chatroom.closed=true;else chatroom.start();
   }
   const assertOwner=(actor,botId)=>{if(actor!=='controller'&&actor!==botId)fail('This Bot cannot access another Bot private data',403);};
@@ -66,7 +70,7 @@ export async function createCapability(options) {
   async function invoke(name,args={},context={},signal) {
     const actor=context.actor;
     if(!actor)fail('Authenticated actor context is required',403);
-    if(actor!=='controller'&&!(manager.store.get('bots',actor)?.allowedTools||[]).includes(name))fail('Tool not authorized for this Bot',403);
+    if(actor!=='controller'&&!(effectiveBotTools(manager.store.get('bots',actor))||[]).includes(name))fail('Tool not authorized for this Bot',403);
     if(FILE_TOOLS.has(name)) {
       if(actor==='controller')fail('Filesystem tools require an explicit Bot identity');
       const config=await manager.config(actor),artifacts=[];
@@ -145,9 +149,15 @@ export async function createCapability(options) {
         return rooms.filter(room=>actor==='controller'||room.members.includes(actor)&&(!sourceActor||sourceActor==='system'||room.members.includes(sourceActor)));
       }
       case 'chatroom_read':{
-        if(args.attachmentId!==undefined)return chatroom.readPublishedAttachment(args,actor,context.source);
+        if(args.dutyContribution!==undefined){
+          if(!context.dutyContributionOperation)fail('Contribution reads require the registered production operation',403);
+          return chatroom.dutyActions.readContribution(args,actor,context.source);
+        }
+        if(args.acceptanceResults===true)return chatroom.readRoomAcceptance(args,actor,context.source);
+        if(args.attachmentId!==undefined)return chatroom.readPublishedAttachment(args,actor,context.source,context.taskId);
         const page=chatroom.read(args,actor,context.source);
-        return actor==='controller'||args.outputReceipts!==undefined||context.source?.metadata?.groupObservation||context.source?.metadata?.teamStaffing?
+        return actor==='controller'||args.outputReceipts!==undefined||context.source?.metadata?.groupObservation||context.source?.metadata?.teamStaffing||
+          context.source?.metadata?.roomDutyAction?
           page:attachments.stageContext(page,(await manager.config(actor)).workspace);
       }
       case 'chatroom_create':return chatroom.createRoom({...args,members:[...new Set([...(args.members||[]),...(actor==='controller'?[]:[actor])])]});
@@ -182,7 +192,7 @@ export async function createCapability(options) {
       case 'knowledge_save_edge':return knowledge.saveEdge(args);
       case 'bots_list':{
         if(context.source?.metadata?.teamStaffing)return manager.list().map(bot=>
-          pick(bot,['id','name','roleId','role','expertise','status','runIntent','lifecycle','skills','allowedTools']));
+          pick(bot,['id','name','roleId','role','expertise','status','runIntent','firstRunPending','lifecycle','skills','allowedTools','archivedAt','maintenanceFor']));
         const sharedRooms=new Set(store('chatroom').list('rooms').filter(room=>actor==='controller'||room.members.includes(actor)).map(room=>room.id));
         return Promise.all(manager.list().map(async bot=>{
           const works=await manager.readState(bot.id,db=>db?.listRecords('works')||[]);

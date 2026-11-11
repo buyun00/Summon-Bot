@@ -10,6 +10,7 @@ import { RecordStore } from '../shared/store.mjs';
 import { IncrementalSync, syncPages } from '../shared/sync.mjs';
 import { RunArtifactDownloads,projectRunArtifacts } from '../shared/run-artifacts.mjs';
 import { BotManager } from '../bot-management/service.mjs';
+import { effectiveBotTools } from '../bot-management/tool-access.mjs';
 import { tickRoutines } from '../bot-management/routines.mjs';
 import { ChatroomService } from '../chatroom/service.mjs';
 import { AttachmentStore,MAX_ATTACHMENT_REQUEST_BYTES } from '../chatroom/attachments.mjs';
@@ -180,14 +181,14 @@ export async function startGateway(options={}) {
   }
   function visibleTools(actor) {
     const allowed=actor==='controller'?null:manager.get(actor).allowedTools||[];
-    return [...registry.toolsFor(actor,allowed),...controlTools.filter(tool=>allowed===null||allowed.includes(tool.name)),...catalogTools.filter(tool=>allowed===null||allowed.includes(tool.name))];
+    return [...registry.toolsFor(actor,allowed),...controlTools,...catalogTools].filter(tool=>allowed===null||allowed.includes(tool.name));
   }
   async function callTool(name,args={},actor='controller',signal,pin,taskId) {
     const definition=visibleTools(actor).find(tool=>tool.name===name);
     if(quiescing&&definition?.effect!=='read')fail('Gateway is stopping; new work is unavailable',503);
-    if(actor!=='controller'&&!(manager.store.get('bots',actor)?.allowedTools||[]).includes(name))fail('Tool not authorized for this Bot',403);
+    if(actor!=='controller'&&!(effectiveBotTools(manager.store.get('bots',actor))||[]).includes(name))fail('Tool not authorized for this Bot',403);
     const {_context,...input}=args;args=input;
-    let task,source,runtimeOperation,workPublication;
+    let task,source,runtimeOperation,workPublication,dutyContributionOperation;
     if(actor!=='controller'){
       if(taskId){
         task=await manager.readState(actor,db=>db?.getTask(taskId));
@@ -204,6 +205,13 @@ export async function startGateway(options={}) {
         if(publishing&&!saved.progressCurrent)fail('The Codex progress observation is no longer current',409);
         runtimeOperation=saved.operation?.sourceTaskId===taskId&&saved.operation.transport?.name===name&&
           JSON.stringify(saved.operation.transport.args)===JSON.stringify(args)?saved.operation:null;
+        const contribution=args.dutyContribution,operation=saved.operation;
+        if(name==='chatroom_read'&&operation?.contributionPlanId&&operation.status==='pending'&&operation.requestTaskId===taskId&&
+          source?.actor==='user'&&args.roomId===source.roomId&&contribution?.planId===operation.contributionPlanId&&
+          contribution.operationId===operation.id&&contribution.workId===operation.workId){
+          dutyContributionOperation=operation.id;
+          runtimeOperation=operation;
+        }
         if(runtimeOperation?.requestTaskId&&['chatroom_read','chatroom_list'].includes(name)) source=await manager.readState(actor,db=>{
           const origin=db?.getTask(runtimeOperation.requestTaskId);return origin?taskSource(origin,db):null;
         });
@@ -226,7 +234,7 @@ export async function startGateway(options={}) {
     if(controlTools.some(tool=>tool.name===name))return control.call(name,args,{actor});
     if(pin&&!control.permittedVersion(actor,pin.id,pin.version))fail('This capability version is not bound to the Bot',403);
     const context={actor,...(task?{taskId:task.id,workId:runtimeOperation?.workId||task.workId,mode:runtimeOperation?'work':taskMode(task),source}:{}),
-      ...(workPublication?{workPublication:true}:{})};
+      ...(workPublication?{workPublication:true}:{}),...(dutyContributionOperation?{dutyContributionOperation}:{})};
     if(name==='codex_interrupt'&&runtimeOperation?.stopId&&runtimeOperation.stopId===args.operationId)context.stopId=runtimeOperation.stopId;
     if(name==='codex_send'&&runtimeOperation?.cardResume&&runtimeOperation.id===args.operationId)context.cardResume=runtimeOperation.cardResume;
     if(name==='codex_send'&&args.verificationOnly===true){

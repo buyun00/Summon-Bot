@@ -8,6 +8,7 @@ import { loadConfiguredTools } from '../../bot/src/capabilities/remote-tools.mjs
 import { coreTools } from '../../bot/src/capabilities/core-tools.mjs';
 import { catalogTools } from './catalog.mjs';
 import { CATALOG_MAINTAINER_TOOLS } from '../bot-management/service.mjs';
+import { dutyOrigin, effectiveBotTools } from '../bot-management/tool-access.mjs';
 
 const object = (properties = {}, required = []) => ({ type: 'object', properties, ...(required.length ? { required } : {}), additionalProperties: true });
 const text = { type: 'string' }, names = { type: 'array', items: text };
@@ -49,14 +50,25 @@ export class CapabilityControl {
     this.running = false; this.closed = false; this.stopping = new AbortController(); this.capabilityOperations = new Map();
   }
   tools(bot, definitions = this.registry.toolsFor(bot.id, bot.allowedTools), bindings = this.registry.bindingsFor(bot.id), allowedNames) {
-    const allowed = allowedNames ?? this.registry.registerActor(bot.id, bot.allowedTools).allowedNames ?? [];
+    const restricted = Boolean(dutyOrigin(bot));
+    const allowed = effectiveBotTools(bot, allowedNames ?? this.registry.registerActor(bot.id, bot.allowedTools).allowedNames ?? [])
+      .filter(name => !restricted || bot.allowedTools?.includes(name));
     const owner = name => Object.entries(bindings).find(([id, version]) => this.registry.getVersion(id, version)?.tools.some(tool => tool.name === name));
-    return [...definitions, ...controlTools.filter(tool => allowed.includes(tool.name)), ...catalogTools.filter(tool => allowed.includes(tool.name))].map(tool => {
+    return [...definitions.filter(tool => !restricted || allowed.includes(tool.name)), ...controlTools.filter(tool => allowed.includes(tool.name)), ...catalogTools.filter(tool => allowed.includes(tool.name))].map(tool => {
       const route = owner(tool.name);
       return { ...tool, taskContext: true, type: 'http', method: 'POST', url: route ? `${this.gatewayUrl()}/capabilities/${encodeURIComponent(route[0])}/versions/${encodeURIComponent(route[1])}/tools/${encodeURIComponent(tool.name)}` : `${this.gatewayUrl()}/tools/${tool.name}`, timeoutMs: bundledToolTimeout(tool.name) };
     });
   }
-  pinExisting() { for (const bot of this.manager.list()) this.registry.registerActor(bot.id, bot.allowedTools); }
+  pinExisting() {
+    for (const bot of this.manager.list()) {
+      if (dutyOrigin(bot)) {
+        const saved = this.manager.store.get('bots', bot.id);
+        const allowedTools = effectiveBotTools(saved);
+        if (JSON.stringify(saved.allowedTools) !== JSON.stringify(allowedTools)) this.manager.store.save('bots', { id: bot.id, allowedTools });
+      }
+      this.registry.registerActor(bot.id, bot.allowedTools);
+    }
+  }
   capabilityOperation(id, action) {
     const prior = this.capabilityOperations.get(id) || Promise.resolve();
     const operation = prior.catch(() => {}).then(() => { if (this.closed) fail('Capability controller is closing', 503); return action(); });
@@ -89,6 +101,7 @@ export class CapabilityControl {
   async grant(botId, allowed) {
     if (!Array.isArray(allowed) || allowed.some(name => typeof name !== 'string')) fail('tools must be an explicit string array');
     const bot = this.manager.get(botId);
+    if (dutyOrigin(bot) && effectiveBotTools(bot, allowed).length !== new Set(allowed).size) fail('A project duty identity cannot receive tools outside its duty tool set', 403);
     if (bot.maintenanceFor && allowed.some(name => !CATALOG_MAINTAINER_TOOLS.includes(name))) fail('Dedicated catalog maintainers only receive catalog maintenance tools', 403);
     this.registry.registerActor(botId, bot.allowedTools);
     const known = new Set([...this.registry.inventory().versions.flatMap(version => version.tools.map(tool => tool.name)), ...controlTools.map(tool => tool.name), ...catalogTools.map(tool => tool.name)]);
@@ -126,7 +139,7 @@ export class CapabilityControl {
   async snapshot(bot, transition) {
     if (transition.toolSnapshot) return transition;
     const config = await this.manager.config(bot.id), priorNames = new Set(config.bundledToolNames || bot.allowedTools || []);
-    const custom = (config.tools || []).filter(tool => !priorNames.has(tool.name));
+    const custom = dutyOrigin(bot) ? [] : (config.tools || []).filter(tool => !priorNames.has(tool.name));
     const bundled = this.tools(bot, transition.definitions, transition.bindings, transition.allowedNames ?? bot.allowedTools)
       .map(tool => ({ ...tool, headers: { Authorization: `Bearer ${this.manager.store.get('bots', bot.id).capabilityToken}` } }));
     return this.save(bot.id, { toolSnapshot: { tools: [...bundled, ...custom], bundledToolNames: bundled.map(tool => tool.name) }, configuredToolNames: [...bundled, ...custom].map(tool => tool.name).filter(Boolean) });
