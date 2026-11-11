@@ -195,8 +195,9 @@ function selectSourceActions(source, decision, { relation = decision.workRelatio
     return { actionable, applicable, candidates };
   }
   const anchored = actions.some(action => action.unit === unit) || deliveryUnits.includes(unit);
-  // A guessed number can be corrected only by a unique match. Never replace a real action or delivery selection.
-  const inferred = sole && !anchored && !applicable.some(action => action !== sole && action.unit === sole.unit) ? sole : undefined;
+  // Correct a guess only for a unique immediate action. Keep explicit and dependency selections unchanged.
+  const inferred = sole?.when === 'now' && !anchored && !applicable.some(action => action !== sole && action.unit === sole.unit)
+    ? sole : undefined;
   const candidates = inferred ? [inferred] : unit ? applicable.filter(action => action.unit === unit) : atStage.length ? atStage : applicable;
   return { actionable, applicable, candidates, inferred };
 }
@@ -287,7 +288,7 @@ export async function authorizeProduction({ task, store, decision, proposed, act
     // No dispatch timing has been submitted yet. Save an inferred unit only for an unambiguous immediate step.
     const inferred = productionStages.includes(decision.productionStage) && (!delivery || savedSource.deliveryUnits.length) &&
       selectSourceActions(savedSource, decision, proposed).inferred;
-    const classification = inferred?.when === 'now' ? { ...savedSource, resolvedSourceUnit: inferred.unit } : savedSource;
+    const classification = inferred ? { ...savedSource, resolvedSourceUnit: inferred.unit } : savedSource;
     // Screening only decides whether to run the check now. An explicit accept route can still check this source.
     if (!acceptanceMode || acceptanceMode === 'candidate' && savedSource.approvalCandidate === false) return classification;
     // An unavailable acceptance check cannot refuse an independently authorized production action.
