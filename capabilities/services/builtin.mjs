@@ -154,7 +154,7 @@ export async function createCapability(options) {
           return chatroom.dutyActions.readContribution(args,actor,context.source);
         }
         if(args.acceptanceResults===true)return chatroom.readRoomAcceptance(args,actor,context.source);
-        if(args.attachmentId!==undefined)return chatroom.readPublishedAttachment(args,actor,context.source);
+        if(args.attachmentId!==undefined)return chatroom.readPublishedAttachment(args,actor,context.source,context.taskId);
         const page=chatroom.read(args,actor,context.source);
         return actor==='controller'||args.outputReceipts!==undefined||context.source?.metadata?.groupObservation||context.source?.metadata?.teamStaffing||
           context.source?.metadata?.roomDutyAction?

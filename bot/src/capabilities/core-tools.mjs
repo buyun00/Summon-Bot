@@ -11,7 +11,7 @@ import { acceptanceBindings, acceptanceLinks, naturalAcceptanceMatch, sameRoomRe
 import { localTime } from '../context/fact-time.mjs';
 import { externalExecution, isAcceptedOperation } from '../context/execution-evidence.mjs';
 import { readExecutorManifest } from '../runtime/executor-delivery.mjs';
-import { WORK_ATTACHMENTS } from '../runtime/notifications.mjs';
+import { MESSAGE_ATTACHMENTS, WORK_ATTACHMENTS } from '../runtime/notifications.mjs';
 
 const string = { type: 'string' };
 const object = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
@@ -511,6 +511,20 @@ export function coreTools(services, task) {
       publicationEvidence: { publishedAt: localTime(message.createdAt), content: message.content.slice(0, 2400),
         attachments: message.attachments.filter(file => publication.attachmentIds.includes(file.id)).map(({ id, name }) => ({ id, name })) } };
   };
+  const reviewReferencePublications = async (references, publication, roomId) => {
+    const selected = new Map(references.map(ref => [JSON.stringify([ref.messageId, ref.attachmentId]), ref]));
+    return Promise.all([...selected.values()].map(async ({ messageId, attachmentId }) => {
+      if (messageId === publication.messageId || publication.attachmentIds.includes(attachmentId))
+        throw new Error('Choose an earlier reference attachment distinct from the primary publication.');
+      const receipt = await services.sources.callForSource('chatroom_read', { roomId, messageId, attachmentId, length: 1 }, task);
+      const target = receipt.publication;
+      if (receipt.reference?.roomId !== roomId || receipt.reference.messageId !== messageId || receipt.reference.attachmentId !== attachmentId ||
+          target?.messageId !== messageId || target.attachmentIds.length !== 1 ||
+          target.attachmentIds[0] !== attachmentId || !receipt.name || !(Date.parse(target.publishedAt) < Date.parse(publication.publishedAt)))
+        throw new Error('The historical reference is not an available exact attachment on an earlier publication in this room.');
+      return { publication: target, name: receipt.name, publishedAtLocal: localTime(target.publishedAt) };
+    }));
+  };
   const saveContribution = (participant, references, grant, id, operationId) => saveRoomDutyPlan(store, {
     kind: 'contribution', roomId: source.roomId, messageId: source.replyTo,
     grant, coordinatorBotId: services.works.botId, requestTaskId: task.id, dutyKey: participant.dutyKey,
@@ -788,10 +802,12 @@ export function coreTools(services, task) {
         return { workId: work.id, operationId, status: 'ready-for-current-reply',
           attachments: available.filter(item => !selected || selected.includes(item.id)).map(({ id }) => ({ id })) };
       }),
-    tool('work_create', 'Submit one selected source action. An immediate production action schedules actual work; omit executor for the default engine. For new production after an assigned room owner contributes, select the production unit and pass participant with the active dutyKey and exact prerequisite contribution. This can be your own assigned duty; the runtime delivers that portion separately before starting the new work. For a separateOwner review, omit executor and target. For an already published result, include its exact same-room attachment references and original material in evidence. For a review after new production, register the selected after-dependency review unit. A registered wait does not prove execution.',
+    tool('work_create', 'Submit one selected source action. An immediate production action schedules actual work; omit executor for the default engine. For new production after an assigned room owner contributes, select the production unit and pass participant with the active dutyKey and exact prerequisite contribution. This can be your own assigned duty; the runtime delivers that portion separately before starting the new work. For a separateOwner review, omit executor and target. For an already published result, include its exact same-room attachment references and original material in evidence. Give separately authorized earlier comparison files in reviewReferenceAttachments. For a review after new production, register the selected after-dependency review unit. A registered wait does not prove execution.',
       object({ id: string, operationId: string, goal: string, requirements: string, responsibility: string, ...handoffFields,
         participant: object({ dutyKey: string, contribution: string }),
         reviewPublicationMessageId: string,
+        reviewReferenceAttachments: { type: 'array', maxItems: MESSAGE_ATTACHMENTS, items: object({ messageId: string, attachmentId: string }, ['messageId', 'attachmentId']),
+          description: 'Exact same-room pairs for earlier files the current user authorizes comparing with the primary publication. Keep these pairs out of evidence. Use the primary publication and its attachments for reviewPublicationMessageId and evidence.' },
         afterDependency: object({ workId: string, minimumAttachments: { type: 'integer', minimum: 1, maximum: WORK_ATTACHMENTS } }),
         executor: object({ kind: { type: 'string', enum: ['pi', 'codex', 'codex-cli', 'grok', 'claude-code'] }, connectionId: string,
           target: { type: 'object', description: 'Use {type:"directory",cwd:"absolute authorized path"} for an existing directory, including one not registered in Desktop. Use project only for the actual selected project; never borrow another project ID.' } }, ['kind']) }), 'write', async (args, ctx) => {
@@ -799,6 +815,13 @@ export function coreTools(services, task) {
         if (decision?.workRelation === 'continue') throw new Error(`Continue the existing deliverable with work_dispatch workId=${decision.workId}; this request does not authorize another work.`);
         const selected = selectedSourceAction(decision);
         if (!selected) throw new Error('Choose the matching original action from request_decide.sourceActions before submitting a proposal.');
+        const reviewReferences = args.reviewReferenceAttachments ?? [];
+        if (!Array.isArray(reviewReferences) || reviewReferences.length > MESSAGE_ATTACHMENTS || reviewReferences.some(ref =>
+          typeof ref?.messageId !== 'string' || !ref.messageId.trim() || typeof ref.attachmentId !== 'string' || !ref.attachmentId.trim() ||
+          ref.roomId !== undefined && ref.roomId !== source.roomId))
+          throw new Error('Use exact messageId and attachmentId pairs from this room in reviewReferenceAttachments.');
+        if (reviewReferences.length && (!selected.separateOwner || selected.when !== 'now'))
+          throw new Error('Historical reference attachments apply to an immediate independent review of an existing publication.');
         const content = await services.sources.handoff(task, args);
         await readSelectedPublications(content);
         const goal = modelText(args.goal || args.instruction || args.content || content.originalRequest.content);
@@ -824,7 +847,9 @@ export function coreTools(services, task) {
               throw new Error('Select an independent owner who did not make this publication, or let the project assign one.');
             references = [original.reference, ...publication.attachmentIds.map(attachmentId =>
               ({ type: 'room', roomId: base.roomId, messageId: publication.messageId, attachmentId }))];
-            const after = { condition: EXISTING_PUBLICATION, roomId: base.roomId, messageId: base.messageId, publication };
+            const historical = await reviewReferencePublications(reviewReferences, publication, base.roomId);
+            const after = { condition: EXISTING_PUBLICATION, roomId: base.roomId, messageId: base.messageId, publication,
+              ...(historical.length ? { reviewReferencePublications: historical } : {}) };
             const grant = await authorize(decision, ctx, { relation: 'new', goal, requirements,
               handoff: proposalHandoff(content.handoff), sourceMaterials: [original, ...proposalMaterials(content).filter(item =>
                 item.reference.messageId === publication.messageId && publication.attachmentIds.includes(item.reference.attachmentId))],

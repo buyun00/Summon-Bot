@@ -1,6 +1,6 @@
 import { currentUserRequest } from '../../bot/src/capabilities/request-routing.mjs';
 import { acceptanceClockTimes, sameRoomResultAcceptance } from '../../bot/src/capabilities/acceptance-identity.mjs';
-import { EXISTING_PUBLICATION, OWNER_DELIVERY } from '../../bot/src/context/duty-actions.mjs';
+import { EXISTING_PUBLICATION, OWNER_DELIVERY, reviewReferenceAttachments } from '../../bot/src/context/duty-actions.mjs';
 import { localTime } from '../../bot/src/context/fact-time.mjs';
 import { activeDuties } from './staffing.mjs';
 import { pick } from '../shared/validation.mjs';
@@ -9,6 +9,28 @@ const results = 'room-text-results', acceptances = 'room-text-acceptances';
 const acceptanceId = (roomId, userMessageId, version) => JSON.stringify([roomId, userMessageId, version]);
 const userDelivery = item => !item.observation && !item.routeOnly && !item.teamStaffing && !item.teamIntroduction && !item.roomDutyAction;
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+const attachmentReads = tools => tools.flatMap(tool => {
+  const details = tool.output?.details;
+  return tool.status === 'completed' && ['chatroom_read', 'evidence_read'].includes(tool.name) &&
+    typeof details?.content === 'string' && details.content && details.reference?.type === 'room' ? [{ ...details, toolId: tool.id }] : [];
+});
+const matchesPair = (left, right) => left.roomId === right.roomId && left.messageId === right.messageId && left.attachmentId === right.attachmentId;
+
+function completeReferenceRead(reference, reads) {
+  const pages = reads.filter(read => read.reviewReference === true && matchesPair(read.reference, reference)).sort((a, b) => a.offset - b.offset);
+  const total = pages[0]?.fullCharacters;
+  if (!Number.isSafeInteger(total) || total <= 0) return null;
+  const toolIds = [];
+  let end = 0;
+  for (const { offset, content, fullCharacters, toolId } of pages) {
+    if (fullCharacters !== total || !Number.isSafeInteger(offset) || offset < 0 || offset > end || offset + content.length > total) return null;
+    if (offset + content.length <= end) continue;
+    end = offset + content.length;
+    toolIds.push(toolId);
+    if (end === total) return { ...reference, toolIds };
+  }
+  return null;
+}
 
 /** A room result points at an actual owner's completed delivery, never a
  * synthetic work, attachment, user instruction, or generated receipt. */
@@ -27,33 +49,40 @@ export class RoomTextResults {
       if (plan.gatesProduction && !['waiting', 'paused'].includes(await this.chatroom.dutyActions.coordinatorState(plan))) return null;
       const ownerDelivery = plan.dependency?.condition === OWNER_DELIVERY;
       const existingPublication = plan.dependency?.condition === EXISTING_PUBLICATION;
+      const history = reviewReferenceAttachments(plan.dependency);
+      let tools = task.tools || [];
       if (ownerDelivery && (ownerReply?.kind !== 'contribution' || !ownerReply.reply)) return null;
-      if ((ownerDelivery || existingPublication) && !await this.manager.readState(item.botId, db => {
-        const saved = db?.getTask(task.id), accepted = saved?.messageId && db.getMessage(saved.messageId);
-        return saved?.status === 'completed' && !saved.cancelRequested && saved.result?.content === task.result?.content &&
-          accepted?.taskId === saved.id && accepted.from === 'controller' && accepted.kind === 'event' &&
-          accepted.metadata?.roomDutyAction === plan.id && accepted.metadata.originMessageId === trigger.id &&
-          accepted.sourceMessageId === item.id && accepted.content?.metadata?.deliveryId === item.id;
-      })) return null;
+      if (ownerDelivery || existingPublication) {
+        tools = await this.manager.readState(item.botId, db => {
+          const saved = db?.getTask(item.taskId), accepted = saved?.messageId && db.getMessage(saved.messageId);
+          if (!saved || saved.id !== task.id || saved.status !== 'completed' || saved.cancelRequested || saved.result?.content !== task.result?.content ||
+              accepted?.taskId !== saved.id || accepted.from !== 'controller' || accepted.kind !== 'event' ||
+              accepted.metadata?.roomDutyAction !== plan.id || accepted.metadata.originMessageId !== trigger.id ||
+              accepted.sourceMessageId !== item.id || accepted.content?.metadata?.deliveryId !== item.id) return null;
+          return history.length ? db.listTools(saved.id) : tools;
+        });
+        if (!tools) return null;
+      }
       const used = new Map();
       const publications = plan.publications || [];
-      for (const tool of task.tools || []) {
-        const details = tool.output?.details;
-        const ref = details?.reference;
-        if (tool.status === 'completed' && ['chatroom_read', 'evidence_read'].includes(tool.name) &&
-            typeof details?.content === 'string' && details.content && ref?.type === 'room' && ref.roomId === room.id &&
-            [...publications, ...(plan.references || [])].some(file => (file.attachmentId || file.id) === ref.attachmentId && file.messageId === ref.messageId))
+      const reads = attachmentReads(tools);
+      for (const { reference: ref } of reads) {
+        if (ref.roomId === room.id && [...publications, ...(plan.references || [])].some(file =>
+          (file.attachmentId || file.id) === ref.attachmentId && file.messageId === ref.messageId))
           used.set(ref.attachmentId, ref);
       }
       if (plan.kind === 'independent-review' && !publications.some(file => used.has(file.id))) return null;
       if (existingPublication && publications.some(file => !used.has(file.id)) ||
           ownerDelivery && plan.grant.relation === 'new' && plan.references?.some(ref =>
             ref.attachmentId && !used.has(ref.attachmentId))) return null;
+      const reviewedReferences = history.map(reference => completeReferenceRead(reference, reads));
+      if (reviewedReferences.some(reference => !reference)) return null;
       return { kind: plan.kind, sourceUnit: plan.grant.sourceUnit, dependency: plan.dependency, planId: plan.id,
         ...(ownerDelivery ? { workId: plan.workId, operationId: plan.operationId } : {}),
+        ...(reviewedReferences.length ? { reviewedReferences } : {}),
         references: [{ type: 'room', roomId: room.id, messageId: trigger.id },
           ...(existingPublication ? [{ type: 'room', roomId: room.id, messageId: plan.dependency.publication.sourceMessageId }] : []),
-          ...used.values()] };
+          ...used.values(), ...reviewedReferences.map(ref => pick(ref, ['type', 'roomId', 'messageId', 'attachmentId']))] };
     }
     const lead = room.team?.leadBotId === item.botId;
     if (task.result?.attachments?.length || task.result?.handoff || !item.routedDutyKey && !(lead && task.tools?.some(tool =>

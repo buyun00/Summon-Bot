@@ -1,7 +1,7 @@
 // A frontend semantic decision is a coordination record, never user authority.
 // Document words alone must not start production or resume a stopped work.
 import { taskSource, workExecution } from '../context/sources.mjs';
-import { EXISTING_PUBLICATION, OWNER_DELIVERY } from '../context/duty-actions.mjs';
+import { EXISTING_PUBLICATION, OWNER_DELIVERY, reviewReferenceAttachments } from '../context/duty-actions.mjs';
 import { naturalAcceptanceMatch } from './acceptance-identity.mjs';
 
 export const requestIntents = ['discuss', 'feedback', 'status', 'deliver', 'room-deliver', 'accept', 'produce', 'revise', 'control'];
@@ -101,9 +101,11 @@ Scope is what will be done, where, on which materials, under which conditions. T
 
 If the original requires an assigned room owner’s contribution first, the new work or continuation must carry proposed.after.condition=${OWNER_DELIVERY}. Check that its originalClause requests that contribution, the assigned duty fits it, and production will follow that owner's concrete delivery in this room under the same request. An ordinary peer answer, unrelated task, elapsed time or a guess cannot satisfy that prerequisite. For an independent review of an existing publication, check that proposed.after.publication is the exact prior publication the user asked to review, including the maker, original source and selected files. The selected scope is review in the source room by a different owner. Check the distinct publication dependency for a review of output still to be produced.
 
+An independent review of an existing publication needs proposed.after.reviewReferencePublications for any comparison with older attachments. An unresolved historical comparison stays pending. Verify every supplied older attachment separately. The CURRENT user must authorize comparison with that specific earlier material. The primary publication's original request in sourceMaterials can identify the precise earlier input when the current user asks whether that input was followed. Earlier requests or a general request to inspect the primary output alone cannot authorize comparison with other files. Resolve any cited title, time or version to the supplied publication and deny ambiguous, unrelated or excessive selections. The earlier attachments are read-only evidence for the comparison. They are outside the primary publication, requested deliverables and production prerequisites. On allow, include reviewReferenceUnits with one {"messageId":"publication.messageId","attachmentId":"publication.attachmentIds[0]","unit":1} per supplied reference. Use the actual exact IDs and the CURRENT original text unit that authorizes each comparison. Omit reviewReferenceUnits for other proposals.
+
 If the current user explicitly recommissions the selected action and adopts the scope of the exact message they replied to, use referencedUserScope to resolve the adopted deliverable, target and limits from that earlier message by the same user. Authorization, timing and the source unit must come from currentUser. An old request or approval in referencedUserScope supplies neither permission nor consent. Honor the current limits and prerequisites. Deny a proposal if the adopted scope cannot be resolved from the supplied evidence.
 
-For finish-current-step, verify explicit permission to resume or finish the same unfinished step within its saved scope and stage. For an authorized proposal, return only {"decision":"allow","scope":"specific work and retained limits for the selected action"}. The runtime supplies the action identity from sourceAction; do not return another unit, action, basis or timing. For a denied proposal, return only {"decision":"deny","field":"goal|requirements|handoff|target|executor|after|participant|source","reason":"brief, precise discrepancy between the proposal and original source"}. Do not claim a specific discrepancy unless you can identify it.`,
+For finish-current-step, verify explicit permission to resume or finish the same unfinished step within its saved scope and stage. For an authorized proposal, return {"decision":"allow","scope":"specific work and retained limits for the selected action"} and include reviewReferenceUnits only as specified above. The runtime supplies the action identity from sourceAction; do not return another unit, action, basis or timing. For a denied proposal, return only {"decision":"deny","field":"goal|requirements|handoff|target|executor|after|participant|source","reason":"brief, precise discrepancy between the proposal and original source"}. Do not claim a specific discrepancy unless you can identify it.`,
 };
 
 const sentenceSegmenter = new Intl.Segmenter(undefined, { granularity: 'sentence' });
@@ -122,6 +124,16 @@ const jsonObject = value => value && typeof value === 'object' && !Array.isArray
 const validUnit = (unit, units) => Number.isSafeInteger(unit) && Boolean(units[unit - 1]?.text.trim());
 const validUnits = (numbers, units) => Array.isArray(numbers) && numbers.length <= units.length &&
   numbers.every(number => validUnit(number, units));
+function reviewReferenceScope(dependency, approvals, units) {
+  const references = reviewReferenceAttachments(dependency);
+  if (!references.length) return approvals === undefined ? [] : null;
+  if (!Array.isArray(approvals) || approvals.length !== references.length) return null;
+  const scope = references.map(({ messageId, attachmentId }) => {
+    const approval = approvals.find(item => item?.messageId === messageId && item.attachmentId === attachmentId);
+    return validUnit(approval?.unit, units) ? { messageId, attachmentId, unit: approval.unit } : null;
+  });
+  return scope.every(Boolean) ? scope : null;
+}
 const noApproval = { acceptances: [], acceptanceUnconfirmed: false, acknowledgmentOnly: false };
 const unknownApproval = { ...noApproval, acceptanceUnconfirmed: true, issue: '验收来源核验返回的依据不完整。' };
 
@@ -448,13 +460,16 @@ export async function authorizeProduction({ task, store, decision, proposed, act
   // action. Reject any contradictory anchor the checker nonetheless returns.
   const disagreements = Object.keys(anchor).filter(key => Object.hasOwn(receipt, key) && receipt[key] !== anchor[key]);
   if (disagreements.length) deny('proposal', 'source-action-disagreement', disagreements);
-  if (Object.keys(receipt).some(key => !['decision', 'scope'].includes(key) && !Object.hasOwn(anchor, key)))
+  const reviewReferenceUnits = reviewReferenceScope(after, receipt.reviewReferenceUnits, units);
+  if (!reviewReferenceUnits) invalid('proposal', 'unverified-reference-attachments', 'reviewReferenceUnits');
+  if (Object.keys(receipt).some(key => !['decision', 'scope', 'reviewReferenceUnits'].includes(key) && !Object.hasOwn(anchor, key)))
     invalid('proposal', 'action-receipt', 'unexpected-field');
   if (typeof receipt.scope !== 'string' || !receipt.scope.trim()) invalid('proposal', 'action-receipt', 'scope');
   report('proposal', 'allowed');
   return { stage, scope: receipt.scope, userClause, clauseStart, sourceUnit: action.unit, when: action.when, basis: action.basis,
     originalLimits: sourceExcerpts(user.text, units, action.limitUnits || []), requiredAttachments: action.requiredAttachments,
     ...(proposed.after ? { after: proposed.after } : {}),
+    ...(reviewReferenceUnits.length ? { reviewReferenceUnits } : {}),
     ...(proposed.participant ? { participant: {
       ...(proposed.participant.dutyKey ? { dutyKey: proposed.participant.dutyKey } : {}),
       ...(proposed.participant.independent === true ? { independent: true } : { contribution: proposed.participant.contribution }),
@@ -484,7 +499,8 @@ export function requireProductionGrant(task, store, grant, expected) {
         units[action.dependencyUnit - 1]?.text === grant.after.originalClause));
   if (!grant || !user || !productionStages.includes(grant.stage) || !grant.scope?.trim() || !grant.userClause?.trim() ||
     !Number.isSafeInteger(grant.clauseStart) || grant.clauseStart < 0 || !user.text.startsWith(grant.userClause, grant.clauseStart) ||
-    grant.sourceKey && !validAnchor || existingDelivery(task, store) && !source?.deliveryUnits.length || store.getTask(task.id)?.cancelRequested ||
+    grant.sourceKey && !validAnchor || !reviewReferenceScope(grant.after, grant.reviewReferenceUnits, units) ||
+    existingDelivery(task, store) && !source?.deliveryUnits.length || store.getTask(task.id)?.cancelRequested ||
     grant.taskId !== user.taskId || grant.acceptedMessageId !== user.acceptedMessageId || grant.messageId !== user.messageId ||
     grant.roomId !== user.roomId || Object.entries(expected).some(([key, value]) => grant[key] !== value))
     throw refusal('PRODUCTION_SOURCE_REQUIRED', 'The saved authorization does not match this user source, work and action. This action was not dispatched.');

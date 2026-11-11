@@ -9,7 +9,7 @@ import { publishedText } from './published-text.mjs';
 import { RoomDutyActions } from './duty-actions.mjs';
 import { RoomTextResults } from './room-results.mjs';
 import { productionRefusal } from '../../bot/src/capabilities/request-routing.mjs';
-import { EXISTING_PUBLICATION, OWNER_DELIVERY } from '../../bot/src/context/duty-actions.mjs';
+import { EXISTING_PUBLICATION, OWNER_DELIVERY, publishedReviewTarget, reviewReferenceAttachments } from '../../bot/src/context/duty-actions.mjs';
 import { dutyOrigin } from '../bot-management/tool-access.mjs';
 const TERMINAL=new Set(['completed','failed','cancelled','interrupted']);
 const foreground=item=>item.priority!=='background';
@@ -144,7 +144,7 @@ export class ChatroomService {
       fail('Room results can only be selected from the current authenticated user request',403);
     return this.roomTextResults.before(room,trigger);
   }
-  async readPublishedAttachment(input, actor, source) {
+  async readPublishedAttachment(input, actor, source, taskId) {
     const room = this.need('rooms', input.roomId || source?.roomId);
     const staffing = source?.metadata?.teamStaffing === true, observation = source?.metadata?.groupObservation;
     const origin = source?.replyTo && this.store.get('messages', source.replyTo);
@@ -156,10 +156,17 @@ export class ChatroomService {
     if (source?.roomId !== room.id || !room.members.includes(actor) || observation ||
         !(staffing ? actor === room.team?.eggBotId : userSource || dutySource))
       fail('Published attachments require a current authorized task in their source room', 403);
+    let historicalReference;
     if (dutySource) {
       const action = job.input?.content?.dutyAction;
-      if (!this.dutyActions.current(job, room) || ![...(action?.references || []), ...(action?.publications || [])].some(ref =>
-        ref.messageId === input.messageId && (ref.attachmentId || ref.id) === input.attachmentId))
+      const plan = this.dutyActions.current(job, room);
+      const matchesPair = ref => ref.messageId === input.messageId && (ref.attachmentId || ref.id) === input.attachmentId;
+      if (plan?.kind === 'independent-review' && plan.dependency?.condition === EXISTING_PUBLICATION &&
+          taskId && job.taskId === taskId && source.taskId === taskId && source.source === 'controller' && source.actor === 'system' &&
+          source.metadata.originMessageId === plan.messageId && room.members.includes('user') && action?.reviewReferenceAttachments?.some(matchesPair))
+        historicalReference = plan.dependency.reviewReferencePublications?.find(({ publication }) =>
+          publication.messageId === input.messageId && publication.attachmentIds[0] === input.attachmentId);
+      if (!plan || !historicalReference && ![...(action?.references || []), ...(action?.publications || [])].some(matchesPair))
         fail('Use the exact published attachments handed to this duty action', 403);
     }
     const message = input.messageId && this.store.get('messages', input.messageId);
@@ -172,7 +179,15 @@ export class ChatroomService {
       fail('Use an exact published attachment on this room’s work result', 404);
     const record = this.attachments.get(published.id);
     if (!matches(record)) fail('Published attachment is unavailable', 404);
+    const original = message.replyTo && this.store.get('messages', message.replyTo);
+    const publication = original?.roomId === room.id && original.senderId === 'user' && record.origin.sourceMessageId === original.id &&
+      record.name === published.name ? publishedReviewTarget(message, room.id, [record.id]) : null;
+    if (historicalReference && (!publication || JSON.stringify(publication) !== JSON.stringify(historicalReference.publication) ||
+        record.name !== historicalReference.name))
+      fail('The authorized historical attachment is no longer available', 404);
     const { bytes } = await this.attachments.read(record.id);
+    if (historicalReference && !this.dutyActions.current(job, this.need('rooms', room.id)))
+      fail('The independent review and its assigned owner must still be current', 403);
     let content;
     try { content = publishedText(record.name, bytes, { office: !staffing }); }
     catch (error) { fail(error.message, 422); }
@@ -180,7 +195,8 @@ export class ChatroomService {
     const length = boundedNumber(input.length, 4000, 1, 6000);
     return { reference: { type: 'room', roomId: room.id, messageId: message.id, attachmentId: record.id },
       author: message.senderId, name: record.name, content: content.slice(offset, offset + length), offset, fullCharacters: content.length,
-      nextOffset: offset + length < content.length ? offset + length : null };
+      nextOffset: offset + length < content.length ? offset + length : null, ...(publication ? { publication } : {}),
+      ...(historicalReference ? { reviewReference: true } : {}) };
   }
   readObservation(input,actor,source,room) {
     const boundary=this.position(room.id,source.replyTo);
@@ -472,10 +488,12 @@ export class ChatroomService {
         messageId:ref.messageId,attachmentId:ref.id}))].map(ref=>[ref.messageId+':'+(ref.attachmentId||''),ref])).values()];
       const ids=[...new Set([...references.map(ref=>ref.messageId),...(plan.publications||[]).map(ref=>ref.messageId)])];
       const evidence=ids.map(id=>this.store.get('messages',id)).filter(message=>message?.roomId===room.id).map(staffingMessage);
+      const historicalReferences=reviewReferenceAttachments(plan.dependency);
       const content={room:pick(room,['id','name','kind','goal','members','team']),trigger:observationMessage(trigger),messages:evidence,
         dutyAction:{kind:plan.kind,goal:plan.goal,requirements:plan.requirements,scope:plan.grant.scope,limits:plan.grant.originalLimits,
           instruction:plan.instruction,sourceUnit:plan.grant.sourceUnit,dependency:plan.dependency,
-          publications:plan.publications,references,referenceMaterials:plan.referenceMaterials},
+          publications:plan.publications,references,referenceMaterials:plan.referenceMaterials,
+          ...(historicalReferences.length?{reviewReferenceAttachments:historicalReferences}:{})},
         metadata:{actor:'system',roomId:room.id,deliveryId:item.id}};
       const input={id:item.id,kind:'event',sessionId:item.id,conversationId:item.id,correlationId:trigger.rootId,replyTo:trigger.id,
         metadata:{kind:'chat',actor:'system',accessActor:'user',roomId:room.id,originMessageId:trigger.id,historyThroughMessageId:trigger.id,

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { EXISTING_PUBLICATION, OWNER_DELIVERY, ROOM_DUTY_PLANS, dependencyDispatches, matchesContributionGrant, publishedReviewTarget, roomDutyPlanId, sourceDispatches } from '../../bot/src/context/duty-actions.mjs';
+import { EXISTING_PUBLICATION, OWNER_DELIVERY, ROOM_DUTY_PLANS, dependencyDispatches, matchesContributionGrant, publishedReviewTarget, reviewReferenceAttachments, roomDutyPlanId, sourceDispatches } from '../../bot/src/context/duty-actions.mjs';
 import { currentUserRequest, requireProductionGrant } from '../../bot/src/capabilities/request-routing.mjs';
 import { acceptedWorkTask } from '../../bot/src/context/sources.mjs';
 import { externalExecution } from '../../bot/src/context/execution-evidence.mjs';
@@ -297,8 +297,12 @@ export class RoomDutyActions {
   finish(item, status, resultMessageId, reason) {
     const plan = this.get(item.roomDutyAction);
     if (plan?.status !== 'queued' || plan.deliveryId !== item.id) return;
-    if (!resultMessageId && status === 'completed' && plan.dependency?.condition === EXISTING_PUBLICATION)
-      return this.block(plan, '独立复核未取得与原发布附件对应的可用结果。');
+    if (!resultMessageId && status === 'completed' && plan.dependency?.condition === EXISTING_PUBLICATION) {
+      const references = reviewReferenceAttachments(plan.dependency);
+      return this.block(plan, references.length ?
+        `独立复核未形成有完整附件读取依据的结果。历史对照待查：${references.map(ref => `《${ref.name}》`).join('、')}。` :
+        '独立复核未取得与原发布附件对应的可用结果。');
+    }
     this.store.save(ROOM_DUTY_PLANS, { id: plan.id, status: resultMessageId ? 'completed' : 'blocked',
       resultMessageId: resultMessageId || null, finishedAt: now(),
       ...(resultMessageId ? {} : { error: reason || (status === 'completed' ? '职责执行没有发出可用结果。' : '职责执行未完成。') }) });

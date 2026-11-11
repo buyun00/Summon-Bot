@@ -35,6 +35,12 @@ export function publishedReviewTarget(message, roomId, attachmentIds) {
     workId: message.workId, operationId, attachmentIds: files.map(file => file.id) };
 }
 
+export function reviewReferenceAttachments(dependency) {
+  if (dependency?.condition !== EXISTING_PUBLICATION) return [];
+  return (dependency.reviewReferencePublications || []).map(({ publication, name }) => ({ type: 'room', roomId: dependency.roomId,
+    messageId: publication.messageId, attachmentId: publication.attachmentIds[0], publishedAt: publication.publishedAt, name }));
+}
+
 export function sourceDispatches(store, { roomId, messageId, sourceUnit, workId, stage, relation = 'new', when = 'now', includeRegistered = false }) {
   if (!store || !roomId || !messageId) return [];
   return store.listRecords('work-events').filter(event => {
