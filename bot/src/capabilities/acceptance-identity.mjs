@@ -18,7 +18,15 @@ const versionNumber = String.raw`\d+(?:\.\d+)*(?:-(?:alpha|beta|rc|preview|dev)(
 const standaloneVersion = new RegExp(String.raw`(?:(?<![\w.-])v|(?:\bversion|版本)\s*:?\s*)(${versionNumber})(?![\w-]|\.[\w])`, 'gu');
 const publishedVersion = new RegExp(String.raw`(?:(?<![a-z\d])v|(?:\bversion|版本)\s*:?\s*)(${versionNumber})(?!\d|\.\d)`, 'gu');
 const compoundLabel = new RegExp(String.raw`(?<![\w.-])[a-z\d]+(?:[_.-][a-z\d]+)*[_.-]v${versionNumber}(?![\w-]|\.[\w])`, 'gu');
-const bundledExecutableRun = /^(\s*(?:我\s*)?(?:使用|用)\s*(?:随包|包内|解包后|解出(?:来)?)的?\s*[`"'「《]?)[\p{L}\p{N}_-][\p{L}\p{N}_.-]*\.exe(?=[`"'」》]?\s*(?:跑|运行|执行))/iu;
+const archivePath = /\.(?:zip|7z|tar(?:\.gz)?|tgz)$/iu;
+const evidenceFile = /^(?:[\x60"'「《][^\x60"'「」《》:/\\\r\n]+\.[a-z\d]+[\x60"'」》]|[\p{L}\p{N}_-][\p{L}\p{N}_.-]*\.[a-z\d]+)(?![\w-]|\.[\w])/iu;
+const fileListJoin = /^\s*(?:以及|和|与|及|、)\s*(?:(?:随包|包内|同(?:一)?目录|解包后)的?\s*)?/u;
+const bundledUse = /^\s*(?:我\s*)?(?:实际\s*)?(?:使用|用)\s*(?:随包(?:提供)?|包内|解包后|解出(?:来)?)的?\s*/u;
+const runVerb = /^\s*(?:跑|运行|执行)/u;
+const runReport = /^\s*(?:我\s*)?(?:(?:这次|本次|实际|另)\s*)?(?:跑|运行|执行)(?:了|完(?:了)?)\s*/u;
+const browserFiles = /^\s*(?:正式)?(?:网页|浏览器)(?:端)?的?\s*(?:附件|分卷|首卷)\s*/u;
+const browserLimit = /^\s*的?\s*(?:实际\s*)?(?:下载\s*)?(?:仍|尚|还)?\s*(?:(?:未|没(?:有|能)?)\s*(?:(?:最终|成功|完整|确认)\s*)*(?:下载|落盘|保存|完成)|(?:仅|只)(?:有发布回执|(?:到|见|有)(?:未确认)?临时文件))/u;
+const deliveryOrApproval = /交付|验收|评审/u;
 const contentLabels = text => unique(normal(text).match(compoundLabel) || []);
 const versions = (text, { published = false } = {}) => {
   const wording = normal(text);
@@ -51,6 +59,51 @@ function references(text, names, workIds) {
 }
 
 const hasReferences = ref => ref.ids.length || ref.files.length || ref.urls.length || ref.versions.length || ref.unknownFile;
+
+function fileListEnd(text, start) {
+  let end = 0;
+  while (start < text.length) {
+    const file = evidenceFile.exec(text.slice(start));
+    if (!file) break;
+    end = start + file[0].length;
+    const join = fileListJoin.exec(text.slice(end));
+    if (!join) break;
+    start = end + join[0].length;
+  }
+  return end;
+}
+
+function afterLocalFileDescription(text) {
+  const use = bundledUse.exec(text);
+  const prefix = use || browserFiles.exec(text);
+  if (!prefix) return text;
+  const end = fileListEnd(text, prefix[0].length);
+  const tail = text.slice(end);
+  return end && (use ? runVerb : browserLimit).test(tail) ? tail : text;
+}
+
+function localReferenceOverrides(referenced, unit, bySentence, referenceOf, names, workIds) {
+  const overrides = new Map();
+  let previousRun;
+  for (const item of referenced) {
+    if (item.unit === unit) continue;
+    const wording = afterLocalFileDescription(item.text);
+    const continuesRun = previousRun?.unit === item.unit - 1 && previousRun.sentenceStart === item.sentenceStart;
+    const descriptiveRun = wording !== item.text || item.unit > unit &&
+      !bySentence.get(item.sentenceStart).some(clause => deliveryOrApproval.test(clause.text));
+    const run = descriptiveRun && (runReport.exec(wording) || (continuesRun && fileListJoin.exec(wording)));
+    const end = run && fileListEnd(wording, run[0].length);
+    const inputs = end && !deliveryOrApproval.test(wording.slice(end));
+    if (!inputs && wording === item.text) continue;
+    const { files, unknownFile } = references(wording, names, workIds);
+    // A run report can name inputs. Keep any named delivery and all other
+    // identity clues, and only remove unknown filenames from the operand list.
+    if (inputs) previousRun = item;
+    overrides.set(item.unit, { ...referenceOf.get(item.unit), files,
+      unknownFile: inputs ? references(wording.slice(end), names, workIds).unknownFile : unknownFile });
+  }
+  return overrides;
+}
 
 function matchPublication(entry, ref, timedAttachment) {
   const { workId, operationId } = entry;
@@ -193,18 +246,10 @@ export function acceptanceBindings(units, entries, replyTo, {
     const combined = Object.fromEntries(['ids', 'files', 'urls', 'versions'].map(key => [key, unique(refs.flatMap(ref => ref[key]))]));
     combined.unknownFile = refs.some(ref => ref.unknownFile);
     combined.paths = unique(referenced.flatMap(item => pathsOf.get(item.unit).map(localPathKey)));
-    const localReferences = new Map();
-    // An explicitly run member of an unpacked archive is evidence for the
-    // approval. Only omit that filename from matching an exact local archive path.
-    if (combined.paths.length === 1 && /\.(?:zip|7z|tar(?:\.gz)?|tgz)$/iu.test(combined.paths[0])) {
-      for (const item of referenced) {
-        if (item.unit >= unit) continue;
-        const wording = item.text.replace(bundledExecutableRun, '$1 ');
-        if (wording === item.text) continue;
-        const { files, unknownFile } = references(wording, names, workIds);
-        localReferences.set(item.unit, { ...referenceOf.get(item.unit), files, unknownFile });
-      }
-    }
+    // Limit this to one explicit local archive path. The original excerpts
+    // still supply the scope, and the room and work checks still bind the file.
+    const localReferences = combined.paths.length === 1 && archivePath.test(combined.paths[0])
+      ? localReferenceOverrides(referenced, unit, bySentence, referenceOf, names, workIds) : new Map();
     const localRefs = localReferences.size ? referenceUnits.map(item => localReferences.get(item.unit) || referenceOf.get(item.unit)) : null;
     const localIdentity = localRefs ? { ...combined, files: unique(localRefs.flatMap(ref => ref.files)),
       unknownFile: localRefs.some(ref => ref.unknownFile) } : combined;
