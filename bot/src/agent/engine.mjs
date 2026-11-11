@@ -600,14 +600,14 @@ export class BotEngine {
       } finally { combined.removeEventListener('abort', abort); }
       const partialText = lastOutcome?.content?.filter(value => value.type === 'text').map(value => value.text).join('\n') || '';
       const originalSource = taskSource(originalTask, this.store), { roomId } = originalSource;
-      const tools = !task.workId ? this.store.listTools(task.id) : [];
-      const attachments = !task.workId ? [...new Set(tools.filter(record => record.status === 'completed').flatMap(record =>
+      const recordedTools = !task.workId ? this.store.listTools(task.id) : [];
+      const attachments = !task.workId ? [...new Set(recordedTools.filter(record => record.status === 'completed').flatMap(record =>
         record.name === 'work_deliver' ? (record.output?.details?.attachments || []).map(item => item.id) :
         record.name === 'publish_file' && record.output?.details?.origin?.botId === this.config.botId && record.output.details.origin.roomId === roomId ? [record.output.details.id] : []))].map(id => ({ id })) : [];
       const routing = !routeOnly && !observation && !task.workId && roomId ? this.store.getRecord('request-routing', task.id) : null;
       const receipt = routing?.roomId === roomId ? acceptanceReply(routing, originalSource.input?.trigger?.content) : '';
       const acknowledgmentOnly = receipt && routing.intent === 'accept' && routing.acceptanceAcknowledgmentOnly &&
-        !attachments.length && !handoffs.length && tools.every(record => record.effect === 'read' || record.name === 'request_decide');
+        !attachments.length && !handoffs.length && recordedTools.every(record => record.effect === 'read' || record.name === 'request_decide');
       const partial = !acknowledgmentOnly && !suspended && (!lastOutcome || ['error', 'aborted', 'length'].includes(lastOutcome.stopReason));
       if (partial && (task.workId || !partialText && !handoffs.length && !receipt)) throw Object.assign(new Error(lastOutcome?.errorMessage || `Agent ended with ${lastOutcome?.stopReason || 'no result'}`), { code: 'MODEL_ERROR' });
       const answer = partialText || handoffs.map(item => `工作 ${item.workId}：${item.label}。`).join('\n');
