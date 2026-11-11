@@ -179,6 +179,28 @@ function existingDelivery(task, store) {
     store.listTools(task.id).some(tool => ['work_deliver', 'publish_file'].includes(tool.name)));
 }
 
+const actionStage = (action, work) => action.kind === 'continue' ? work?.priorStage : action.stage;
+
+function selectSourceActions(source, decision, { relation = decision.workRelation, work, when }) {
+  const { actions, deliveryUnits } = source;
+  const actionable = actions.filter(action => (!when || action.when === when) && !deliveryUnits.includes(action.unit) &&
+    productionStages.includes(actionStage(action, work)) && !(action.kind === 'continue' && work?.status === 'completed'));
+  const applicable = actionable.filter(action => relation === 'new' ? action.kind === 'start' : action.kind !== 'start');
+  const atStage = applicable.filter(action => actionStage(action, work) === decision.productionStage);
+  const unit = decision.sourceUnit;
+  const sole = atStage.length === 1 ? atStage[0] : undefined;
+  if (decision.sourceUnitInferred) {
+    // An inferred route cannot disambiguate a later proposal or select a different action.
+    const candidates = when !== 'now' || (sole && sole.unit !== unit) ? [] : atStage;
+    return { actionable, applicable, candidates };
+  }
+  const anchored = actions.some(action => action.unit === unit) || deliveryUnits.includes(unit);
+  // A guessed number can be corrected only by a unique match. Never replace a real action or delivery selection.
+  const inferred = sole && !anchored && !applicable.some(action => action !== sole && action.unit === sole.unit) ? sole : undefined;
+  const candidates = inferred ? [inferred] : unit ? applicable.filter(action => action.unit === unit) : atStage.length ? atStage : applicable;
+  return { actionable, applicable, candidates, inferred };
+}
+
 export async function authorizeProduction({ task, store, decision, proposed, actionId, workId, verify, signal, isTargetCurrent,
   sourceOnly = false, savedDecision = decision, acceptanceContext, acceptanceMode }) {
   if (!decision) return null;
@@ -262,8 +284,12 @@ export async function authorizeProduction({ task, store, decision, proposed, act
       feedback: source.feedback === true && !actions.length && !source.deliveryUnits.length });
   }
   if (sourceOnly) {
+    // No dispatch timing has been submitted yet. Save an inferred unit only for an unambiguous immediate step.
+    const inferred = productionStages.includes(decision.productionStage) && (!delivery || savedSource.deliveryUnits.length) &&
+      selectSourceActions(savedSource, decision, proposed).inferred;
+    const classification = inferred?.when === 'now' ? { ...savedSource, resolvedSourceUnit: inferred.unit } : savedSource;
     // Screening only decides whether to run the check now. An explicit accept route can still check this source.
-    if (!acceptanceMode || acceptanceMode === 'candidate' && savedSource.approvalCandidate === false) return savedSource;
+    if (!acceptanceMode || acceptanceMode === 'candidate' && savedSource.approvalCandidate === false) return classification;
     // An unavailable acceptance check cannot refuse an independently authorized production action.
     let result;
     try { result = await verify({ user, units: originalUnits, step: 'acceptance', acceptanceContext }, signal); }
@@ -271,16 +297,11 @@ export async function authorizeProduction({ task, store, decision, proposed, act
     assertCurrent();
     const approval = result ? sourceAcceptances(result.receipt, user.text, units, acceptanceContext, savedSource) :
       { ...unknownApproval, issue: '本次验收来源核验未取得回执。' };
-    return { ...savedSource, approval };
+    return { ...classification, approval };
   }
   const { deliveryUnits, referenced } = savedSource;
   refusalKey = undefined;
-  const stageOf = action => action.kind === 'continue' ? continuationTarget?.priorStage : action.stage;
-  const actionable = savedSource.actions.filter(action => action.when === when && !deliveryUnits.includes(action.unit) &&
-    productionStages.includes(stageOf(action)) && !(action.kind === 'continue' && continuationTarget?.status === 'completed'));
-  const applicable = actionable.filter(action => proposed.relation === 'new' ? action.kind === 'start' : action.kind !== 'start');
-  const atStage = applicable.filter(action => stageOf(action) === decision.productionStage);
-  const candidates = decision.sourceUnit ? applicable.filter(action => action.unit === decision.sourceUnit) : atStage.length ? atStage : applicable;
+  const { actionable, applicable, candidates } = selectSourceActions(savedSource, decision, { ...proposed, when });
   if (delivery && !deliveryUnits.length) deny('source', 'existing-delivery');
   if (!candidates.length && proposed.relation === 'continue' && actionable.some(action => action.kind === 'start' &&
       action.stage === decision.productionStage && (!decision.sourceUnit || action.unit === decision.sourceUnit))) {
@@ -290,7 +311,7 @@ export async function authorizeProduction({ task, store, decision, proposed, act
   if (!candidates.length) deny('source', applicable.length ? 'source-action-selection' : delivery || deliveryUnits.length ? 'existing-delivery' : 'no-current-action');
   if (candidates.length !== 1) throw refusal('PRODUCTION_ACTION_REQUIRED',
     `Several separate actions are anchored in the current message. Select the original action unit in request_decide.sourceUnit (${[...new Set(candidates.map(item => item.unit))].join(', ')}). No proposal check or dispatch ran.`);
-  const action = candidates[0], stage = stageOf(action);
+  const action = candidates[0], stage = actionStage(action, continuationTarget);
   refusalKey = JSON.stringify([user.acceptedMessageId, targetKey, when, action.unit, action.kind, stage]);
   rejectRepeated('proposal');
   if (action.kind !== 'continue' && stage !== decision.productionStage)

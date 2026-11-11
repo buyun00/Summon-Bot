@@ -335,13 +335,13 @@ export function coreTools(services, task) {
       object({ intent: { type: 'string', enum: requestIntents }, productionStage: { type: 'string', enum: productionStages,
         description: 'Classify the requested outcome. A standalone formal Markdown review document, its revision and returning the resulting file are one document-review action. Implementation means making or changing the working product, building, testing or deploying it. Other is an independent action outside both stages.' },
         workRelation: { type: 'string', enum: ['new', 'continue'] }, workId: string,
-        sourceUnit: { type: 'integer', minimum: 1, description: 'Select an original action unit only when the authorization check reports several separate actions. Retain the saved stage when finishing the same existing step.' },
+        sourceUnit: { type: 'integer', minimum: 1, description: 'Omit unless you need to choose among verified source actions. Use the exact reported unit. Retain the saved stage when finishing the same existing step.' },
         reason: string }, ['intent', 'reason']), 'write', async (args, ctx) => {
         if (!frontend || !userRequest) throw new Error('Request decisions belong to the current authenticated frontend user request.');
         if (!requestIntents.includes(args.intent)) throw new Error('Choose a supported request intent.');
         if (['produce', 'revise'].includes(args.intent) && !productionStages.includes(args.productionStage)) throw new Error('Production requires its actual stage.');
         let intent = args.intent, production = ['produce', 'revise'].includes(intent);
-        if (args.sourceUnit !== undefined && (!production || !Number.isSafeInteger(args.sourceUnit) || args.sourceUnit < 1))
+        if (production && args.sourceUnit !== undefined && (!Number.isSafeInteger(args.sourceUnit) || args.sourceUnit < 1))
           throw new Error('The original action unit must be a positive integer for production.');
         if (production && !['new', 'continue'].includes(args.workRelation)) throw new Error('Decide whether this is an independent new task or a continuation of an existing deliverable. Use workRelation=new or continue; continue also needs its canonical workId.');
         const work = production && args.workRelation === 'continue' ? await services.sources.requireWork(args.workId, task) : null;
@@ -366,7 +366,9 @@ export function coreTools(services, task) {
             } catch { acceptanceContext = { units: [], results: [], unavailable: true }; }
           }
           classification = await authorizeProduction({ task, store,
-            decision: { messageId, roomId: source.roomId }, proposed: { work: selected || undefined },
+            decision: { messageId, roomId: source.roomId, ...(production ? {
+              productionStage: args.productionStage, workRelation: args.workRelation, sourceUnit: args.sourceUnit,
+            } : {}) }, proposed: { work: selected || undefined },
             verify: ctx.verifyProduction, signal: ctx.signal, isTargetCurrent: selected ? () => sameWork(selected, services.works.get(work.id)) : undefined,
             sourceOnly: true, savedDecision: previous ?? null, acceptanceContext,
             acceptanceMode: acceptance ? undefined : intent === 'accept' ? 'required' : 'candidate' });
@@ -421,7 +423,9 @@ export function coreTools(services, task) {
             acceptanceUnconfirmed: receipt?.acceptanceUnconfirmed ?? previous?.acceptanceUnconfirmed,
             acceptanceIssue: acceptance?.issue ?? previous?.acceptanceIssue,
             intent, productionStage: production ? args.productionStage : null, confirmedFeedback,
-            existingDelivery: previous?.existingDelivery === true || intent === 'deliver', sourceUnit: production ? args.sourceUnit : null,
+            existingDelivery: previous?.existingDelivery === true || intent === 'deliver',
+            sourceUnit: production ? classification?.resolvedSourceUnit ?? args.sourceUnit : null,
+            ...(production && classification?.resolvedSourceUnit !== undefined ? { sourceUnitInferred: true } : {}),
             workRelation: production ? args.workRelation : null, workId: production && args.workRelation === 'continue' ? args.workId : null,
             reason: intent !== args.intent ? 'The authenticated source contains no independent production action.' : modelText(args.reason), authority: 'model-routing-decision' });
         });
