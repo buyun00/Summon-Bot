@@ -146,12 +146,13 @@ export async function createCapability(options) {
       }
       case 'chatroom_read':{
         const page=chatroom.read(args,actor,context.source);
-        return actor==='controller'||args.outputReceipts!==undefined||context.source?.metadata?.groupObservation?page:attachments.stageContext(page,(await manager.config(actor)).workspace);
+        return actor==='controller'||args.outputReceipts!==undefined||context.source?.metadata?.groupObservation||context.source?.metadata?.teamStaffing?
+          page:attachments.stageContext(page,(await manager.config(actor)).workspace);
       }
       case 'chatroom_create':return chatroom.createRoom({...args,members:[...new Set([...(args.members||[]),...(actor==='controller'?[]:[actor])])]});
       case 'chatroom_team_read':return chatroom.teamRead(args,actor);
       case 'chatroom_team_raise':return chatroom.teamRaise(args,actor);
-      case 'chatroom_team_manage':return chatroom.teamManage(args,actor);
+      case 'chatroom_team_manage':return chatroom.teamManage(args,actor,context.source);
       case 'chatroom_send':{
         if(actor!=='controller')for(const item of args.attachments||[]){
           const attachment=attachments.get(item.id),origin=attachment.origin;
@@ -170,7 +171,8 @@ export async function createCapability(options) {
             args={...args,replyTo:context.source.replyTo};
           }
         }
-        return chatroom.post(args.roomId,args,actor==='controller'?'user':actor,{sourceMessageId:context.source?.replyTo,deliveryId:context.source?.input?.metadata?.deliveryId});
+        return chatroom.post(args.roomId,args,actor==='controller'?'user':actor,{sourceMessageId:context.source?.replyTo,
+          deliveryId:context.source?.input?.metadata?.deliveryId,workPublication:context.workPublication===true});
       }
       case 'chatroom_dm':return chatroom.dm(actor,args);
       case 'chatroom_conclude':{const room=chatroom.need('rooms',args.roomId);if(actor!=='controller'&&!room.members.includes(actor))fail('Not a room member',403);return chatroom.saveConclusion(args.roomId,args);}

@@ -186,7 +186,7 @@ export async function startGateway(options={}) {
     if(quiescing&&definition?.effect!=='read')fail('Gateway is stopping; new work is unavailable',503);
     if(actor!=='controller'&&!(manager.store.get('bots',actor)?.allowedTools||[]).includes(name))fail('Tool not authorized for this Bot',403);
     const {_context,...input}=args;args=input;
-    let task,source,runtimeOperation;
+    let task,source,runtimeOperation,workPublication;
     if(actor!=='controller'){
       if(taskId){
         task=await manager.readState(actor,db=>db?.getTask(taskId));
@@ -199,6 +199,7 @@ export async function startGateway(options={}) {
         source=saved.source;
         const publishing=saved.notification&&saved.notification.status!=='delivered'&&saved.notification.taskId===taskId&&
           notificationParts(saved.notification).some(part=>Object.entries(part).every(([key,value])=>JSON.stringify(args[key])===JSON.stringify(value)));
+        if(publishing)workPublication=true;
         if(publishing&&!saved.progressCurrent)fail('The Codex progress observation is no longer current',409);
         runtimeOperation=saved.operation?.sourceTaskId===taskId&&saved.operation.transport?.name===name&&
           JSON.stringify(saved.operation.transport.args)===JSON.stringify(args)?saved.operation:null;
@@ -223,7 +224,8 @@ export async function startGateway(options={}) {
     }
     if(controlTools.some(tool=>tool.name===name))return control.call(name,args,{actor});
     if(pin&&!control.permittedVersion(actor,pin.id,pin.version))fail('This capability version is not bound to the Bot',403);
-    const context={actor,...(task?{taskId:task.id,workId:runtimeOperation?.workId||task.workId,mode:runtimeOperation?'work':taskMode(task),source}:{})};
+    const context={actor,...(task?{taskId:task.id,workId:runtimeOperation?.workId||task.workId,mode:runtimeOperation?'work':taskMode(task),source}:{}),
+      ...(workPublication?{workPublication:true}:{})};
     if(name==='codex_interrupt'&&runtimeOperation?.stopId&&runtimeOperation.stopId===args.operationId)context.stopId=runtimeOperation.stopId;
     if(name==='codex_send'&&runtimeOperation?.cardResume&&runtimeOperation.id===args.operationId)context.cardResume=runtimeOperation.cardResume;
     if(name==='codex_send'&&args.verificationOnly===true){

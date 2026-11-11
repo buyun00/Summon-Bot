@@ -225,6 +225,9 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
     const accept = (envelope, source, { deferSchedule = false } = {}) => {
       if (envelope.metadata?.groupObservation && (source !== 'controller' || envelope.kind !== 'event' || envelope.workId))
         throw failure(403, 'Group observation requires an authenticated room delivery');
+      if (envelope.metadata?.teamStaffing && (source !== 'controller' || envelope.kind !== 'event' || envelope.workId ||
+        envelope.metadata.actor !== 'system' || envelope.metadata.roomId !== envelope.content?.room?.id))
+        throw failure(403, 'Staffing requires an authenticated room event');
       if (source !== 'controller' && envelope.kind === 'request' && !envelope.workId && envelope.metadata?.executionMode === 'work') {
         const key = JSON.stringify([source, envelope.id]);
         let binding = store.getRecord('peer-work', key);

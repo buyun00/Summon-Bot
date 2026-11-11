@@ -305,6 +305,13 @@ export class RuntimeSources {
         room: source.input.room, observer: source.input.observer, contextRange: source.input.contextRange,
         messages: source.input.messages, triggerMessageId: source.replyTo } };
     }
+    if (source.metadata?.teamStaffing) {
+      const page = await this.call('chatroom_read', { roomId: source.roomId, messageId: source.replyTo, length: 1 }, task);
+      if (!page.messages?.length) throw new Error('The staffing source is unavailable');
+      return { messages: [], access: page.access, roomId: source.roomId, runtimeEvent: { type: 'team_staffing',
+        room: source.input.room, staffing: source.input.staffing, messages: source.input.messages,
+        triggerMessageId: source.replyTo, instruction: source.input.runtimeInstruction } };
+    }
     const throughMessageId = source.metadata?.historyThroughMessageId || source.replyTo;
     const key = task.conversationId || task.sessionId;
     let saved = this.store.getRecord('public-history', key) || { id: key, roomId: source.roomId, messages: [] };
