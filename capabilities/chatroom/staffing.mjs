@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { TEAM_DUTY_TOOLS } from '../bot-management/service.mjs';
+import { TEAM_DUTY_TOOLS } from '../bot-management/tool-access.mjs';
 import { fail, now, pick, required, safeId } from '../shared/validation.mjs';
 
-export const staffingPolicyVersion = 2;
+export const staffingPolicyVersion = 3;
 const assessments = 'team-staffing-assessments', sources = 'team-staffing-sources', staffState = 'team-staffing';
 const handling = new Set(['member', 'current-work', 'independent-work', 'project-knowledge', 'defer', 'close']);
 const terminal = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
@@ -86,10 +86,26 @@ export class Staffing {
     if (version?.version === staffingPolicyVersion) return;
     this.store.transaction(() => {
       for (const room of this.store.list('rooms').filter(item => item.team)) {
-        const duties = (room.team.duties || []).map(({ staffingArea, ...duty }) => ({
-          ...duty, dutyKey: duty.dutyKey || 'duty.' + randomUUID(),
-          state: room.team.state === 'completed' || !room.members.includes(duty.botId) ? 'closed' : duty.state || 'active',
-        }));
+        const jobs = this.chatroom.jobs(room.id).filter(job => job.routedDutyKey && job.workId && job.taskId && job.status === 'completed');
+        const duties = (room.team.duties || []).map(({ staffingArea, ...duty }) => {
+          // The old assessment stored every cited work as this duty's own work.
+          // Keep all references, and retain certification only for exact
+          // deliveries that went to this duty's actual owner.
+          const owned = jobs.filter(job => job.routedDutyKey === duty.dutyKey && job.botId === duty.botId &&
+            duty.workIds?.includes(job.workId) && this.store.get('messages', job.messageId)?.senderId === 'user');
+          const artifacts = (duty.artifacts || []).filter(artifact => owned.some(job => {
+            const result = this.store.get('messages', artifact.messageId);
+            return job.workId === artifact.workId && result?.senderId === job.botId && result.replyTo === job.messageId &&
+              staffingArtifacts(result).some(item => item.id === artifact.id && item.operationId === artifact.operationId);
+          }));
+          return { ...duty, dutyKey: duty.dutyKey || 'duty.' + randomUUID(),
+            state: room.team.state === 'completed' || !room.members.includes(duty.botId) ? 'closed' : duty.state || 'active',
+            referenceWorkIds: unique([...(duty.referenceWorkIds || []), ...(duty.workIds || [])]),
+            referenceArtifacts: mergeRefs(duty.referenceArtifacts || [], duty.artifacts || [], 'id'),
+            workIds: unique(owned.map(job => job.workId)), artifacts,
+            workBindings: mergeRefs(duty.workBindings || [], artifacts.map(artifact => ({ workId: artifact.workId, botId: artifact.botId,
+              operationId: artifact.operationId, sourceMessageId: this.store.get('messages', artifact.messageId).replyTo })), 'operationId') };
+        });
         if (duties.length) this.store.save('rooms', { id: room.id, team: { ...room.team, duties } });
         const state = this.store.get(staffState, room.id);
         const old = this.get(state?.activeAssessmentId);
@@ -97,6 +113,8 @@ export class Staffing {
           this.store.save(assessments, { id: old.id, status: 'superseded', finishedAt: now() });
           this.store.save(staffState, { id: room.id, activeAssessmentId: null });
         }
+        if (state && JSON.stringify(state.scope) === JSON.stringify(staffingScope(room)) && !old)
+          this.store.save(staffState, { id: room.id, policyVersion: staffingPolicyVersion });
       }
       for (const job of this.store.list('deliveries')) if (job.teamStaffing &&
           job.teamStaffing.policyVersion !== staffingPolicyVersion && !terminal.has(job.status)) {
@@ -117,7 +135,7 @@ export class Staffing {
       ...pick(plan, ['domain', 'phase', 'deliveryChain', 'reason', 'sourceMessageId', 'finishedAt']),
       noChange: plan.status === 'completed' && !plan.candidates.some(row => ['assigned', 'closed'].includes(row.state)),
       candidates: plan.candidates.map(row => pick(row, [...Object.keys(fields), 'handling', 'dutyKey', 'state', 'botId',
-        'operationId', 'sourceRefs', 'workIds', 'artifacts', 'receipt', 'error'])) };
+        'operationId', 'sourceRefs', 'referenceWorkIds', 'referenceArtifacts', 'receipt', 'error'])) };
   }
 
   candidate(raw, room, job) {
@@ -125,19 +143,28 @@ export class Staffing {
     const existing = raw.dutyKey && (room.team.duties || []).find(duty => duty.dutyKey === raw.dutyKey);
     if (raw.dutyKey && !existing) fail('Use an existing dutyKey exactly as returned by chatroom_team_read');
     if (raw.handling === 'close' && !existing) fail('Choose an existing duty to close');
-    const cited = ids(raw.sourceMessageIds, 'sourceMessageIds');
-    if (!cited.length) fail('Cite an original source for each candidate');
-    const messages = cited.map(id => this.store.get('messages', id));
+    const cited = ids(raw.sourceMessageIds ?? [job.messageId], 'sourceMessageIds');
+    const citedMessages = cited.map(id => this.store.get('messages', id));
+    if (citedMessages.some(message => message?.roomId !== room.id)) fail('A candidate source is outside this room', 403);
     const signals = job.teamStaffing.evidence.filter(signal => cited.includes(signal.messageId));
-    if (messages.some((message, index) => message?.roomId !== room.id ||
-        !this.chatroom.staffingEvidence(message) && !signals.some(signal => signal.messageId === cited[index])))
-      fail('Staffing needs original same-room user messages or authenticated work evidence', 403);
+    const messages = citedMessages.filter(message => this.chatroom.staffingEvidence(message) || signals.some(signal => signal.messageId === message.id));
+    if (!messages.length) return { handling: 'defer', state: 'recorded',
+      name: existing?.dutyProfile?.name || String(raw.name || '未确认职责').slice(0, 100),
+      benefit: '没有可用于分工的真实来源；普通回复仅保留为讨论背景。',
+      sourceRefs: [], referenceWorkIds: [], referenceArtifacts: [] };
     const results = messages.filter(message => this.chatroom.staffingEvidence(message)?.kind === 'work-result');
     const artifacts = results.flatMap(staffingArtifacts);
     const workIds = unique([...results.map(message => message.workId), ...signals.map(signal => signal.workId).filter(Boolean)]);
-    const common = { handling: raw.handling, sourceRefs: messages.map(roomRef), workIds, artifacts,
+    const common = { handling: raw.handling, sourceRefs: messages.map(roomRef), referenceWorkIds: workIds, referenceArtifacts: artifacts,
       sourceAt: messages.map(message => message.createdAt).sort().at(-1) };
     if (raw.handling === 'close') {
+      const scopedTextOnly = signals.some(signal => signal.kind === 'room-result-acceptance' &&
+        this.store.get('room-text-results', signal.resultId)?.dutyKey === existing.dutyKey &&
+        this.store.get('room-text-results', signal.resultId)?.kind === 'room-handoff') &&
+        !signals.some(signal => ['work-result', 'work-acceptance'].includes(signal.kind));
+      if (scopedTextOnly) return { ...common, handling: 'defer', state: 'recorded', dutyKey: existing.dutyKey,
+        name: existing.dutyProfile?.name || existing.responsibility.slice(0, 100),
+        benefit: '本次验收只结清这条文字交付，原持续职责仍保留。' };
       if (!cited.some(id => job.teamStaffing.evidence.some(signal => signal.messageId === id &&
           job.teamStaffing.changeKeys.includes(signal.key) && ['user-update', 'work-result', 'work-acceptance'].includes(signal.kind))))
         fail('Closing a duty requires current user or work evidence that its phase ended');
@@ -174,34 +201,34 @@ export class Staffing {
   match(row, existing) {
     if (row.dutyKey && row.dutyKey === existing.dutyKey) return true;
     if (!row.aliases) return false;
+    if (row.separateFromDutyKeys.includes(existing.dutyKey)) return false;
     const profile = existing.dutyProfile || existing;
     if (profile.aliases?.some(alias => row.aliases.includes(alias))) return true;
     // The assessment can explicitly identify a real adjacent responsibility.
     // Never collapse production and its independent review into one owner.
-    return !row.separateFromDutyKeys.includes(existing.dutyKey) && row.independentReview === profile.independentReview &&
+    return row.independentReview === profile.independentReview &&
       similar(row.subject, profile.subject, 4) && similar(row.boundary, profile.boundary, 6) &&
       row.sourceRefs.some(ref => existing.sourceRefs?.some(prior => prior.messageId === ref.messageId));
   }
 
   assess(input, actor, source) {
-    const room = this.team.room(input.roomId, actor);
     const deliveryId = source?.input?.metadata?.deliveryId;
     const job = deliveryId && this.store.get('deliveries', deliveryId);
+    const room = this.team.room(input.roomId || job?.roomId, actor);
     if (source?.metadata?.teamStaffing !== true || source.roomId !== room.id || actor !== room.team.eggBotId ||
         !staffingProject(room) || job?.roomId !== room.id || job.botId !== actor ||
         job.teamStaffing?.policyVersion !== staffingPolicyVersion)
       fail('An assessment requires this project’s current EggBot staffing delivery', 403);
-    const operationId = required(input.operationId, 'operationId', 128);
-    if (input.sourceMessageId !== job.messageId) fail('Use this staffing delivery’s triggerMessageId as the assessment source');
+    const operationId = job.id;
     const previous = this.forDelivery(job);
     if (previous) return this.view(previous);
     if (terminal.has(job.status)) fail('The staffing delivery already ended', 409);
-    if (input.expectedRevision !== room.team.revision) fail('Team changed; read its current revision', 409);
-    if (JSON.stringify(staffingScope(room)) !== JSON.stringify(job.teamStaffing.scope))
-      fail('Project scope changed; the new evidence will be assessed separately', 409);
     const state = this.store.get(staffState, room.id);
-    if (state?.latestUserMessageId && state.latestUserMessageId !== job.teamStaffing.latestUserMessageId)
-      fail('A newer user message has arrived; assess the new material before changing the team', 409);
+    if (JSON.stringify(staffingScope(room)) !== JSON.stringify(job.teamStaffing.scope) ||
+        state?.latestUserMessageId && state.latestUserMessageId !== job.teamStaffing.latestUserMessageId)
+      return this.view(this.supersede(job, room));
+    if (input.expectedRevision !== undefined && input.expectedRevision !== room.team.revision)
+      fail('Team changed; read its current revision', 409);
     if (!Array.isArray(input.candidates)) fail('Submit zero or more concrete candidates');
     const candidates = [];
     for (const item of input.candidates) {
@@ -218,8 +245,8 @@ export class Staffing {
           fail('Use one decision for equivalent candidates');
         duplicate.dutyKey ||= row.dutyKey;
         duplicate.sourceRefs = mergeRefs(duplicate.sourceRefs, row.sourceRefs, 'messageId');
-        duplicate.workIds = unique([...duplicate.workIds, ...row.workIds]);
-        duplicate.artifacts = mergeRefs(duplicate.artifacts, row.artifacts, 'id');
+        duplicate.referenceWorkIds = unique([...duplicate.referenceWorkIds, ...row.referenceWorkIds]);
+        duplicate.referenceArtifacts = mergeRefs(duplicate.referenceArtifacts, row.referenceArtifacts, 'id');
         if (row.sourceAt > duplicate.sourceAt) duplicate.sourceAt = row.sourceAt;
         for (const key of ['aliases', 'candidateBotIds', 'requiredTools', 'makerBotIds', 'separateFromDutyKeys'])
           if (row[key]) duplicate[key] = unique([...(duplicate[key] || []), ...row[key]]);
@@ -249,6 +276,18 @@ export class Staffing {
       return saved;
     });
     return this.view(plan);
+  }
+
+  supersede(job, room) {
+    return this.store.transaction(() => {
+      const prior = this.forDelivery(job);
+      if (prior) return prior;
+      const plan = this.store.save(assessments, { id: job.id, actor: job.botId, roomId: job.roomId, operationId: job.id,
+        status: 'superseded', candidates: [], sourceMessageId: job.messageId, policyVersion: staffingPolicyVersion,
+        assessedRevision: room.team.revision, finishedAt: now(), reason: 'A newer source or project scope replaced this assessment.' });
+      this.store.save(sources, { id: sourceKey(job), assessmentId: plan.id });
+      return plan;
+    });
   }
 
   async available(botId, row, room, { firstRun = false } = {}) {
@@ -304,8 +343,8 @@ export class Staffing {
     return {
       ...(dutyProfile ? { dutyProfile } : {}),
       sourceRefs: mergeRefs(previous?.sourceRefs || (previous?.source ? [previous.source] : []), row.sourceRefs, 'messageId'),
-      workIds: unique([...(previous?.workIds || []), ...row.workIds]),
-      artifacts: mergeRefs(previous?.artifacts || [], row.artifacts, 'id'),
+      referenceWorkIds: unique([...(previous?.referenceWorkIds || []), ...(row.referenceWorkIds || [])]),
+      referenceArtifacts: mergeRefs(previous?.referenceArtifacts || [], row.referenceArtifacts || [], 'id'),
     };
   }
 
@@ -348,8 +387,15 @@ export class Staffing {
     try {
       if (!operation?.result && (!staffingProject(room) || room.team.eggBotId !== plan.actor ||
           JSON.stringify(staffingScope(room)) !== JSON.stringify(plan.scope) ||
-          (this.store.get(staffState, room.id)?.latestUserMessageId || null) !== (plan.latestUserMessageId || null)))
-        fail('Project scope or status changed. A current assessment is needed before applying this responsibility.', 409);
+          (this.store.get(staffState, room.id)?.latestUserMessageId || null) !== (plan.latestUserMessageId || null))) {
+        this.store.transaction(() => {
+          this.store.save(assessments, { id: plan.id, status: 'superseded', finishedAt: now(), candidates: plan.candidates
+            .map(candidate => candidate.state === 'pending' ? { ...candidate, state: 'superseded' } : candidate) });
+          this.store.save(staffState, { id: room.id, activeAssessmentId: null });
+          if (operation?.status === 'pending') this.store.save('team-operations', { id: operation.id, status: 'superseded' });
+        });
+        return;
+      }
       if (!input) {
         const { registered, ...candidate } = await this.choose(room, row);
         if (candidate.state) {

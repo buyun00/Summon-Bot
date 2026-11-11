@@ -50,6 +50,7 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
   const { controlTools, bundledToolTimeout } = await import(pathToFileURL(join(releaseRoot, 'capabilities/services/control.mjs')));
   const { catalogTools } = await import(pathToFileURL(join(releaseRoot, 'capabilities/services/catalog.mjs')));
   const { CATALOG_MAINTAINER_TOOLS } = await import(pathToFileURL(join(releaseRoot, 'capabilities/bot-management/service.mjs')));
+  const { dutyOrigin, effectiveBotTools } = await import(pathToFileURL(join(releaseRoot, 'capabilities/bot-management/tool-access.mjs')));
   const deployment = await readJson(join(dataRoot, 'config/deployment.json'));
   const registryPath = join(dataRoot, 'capabilities/registry/state.sqlite');
   const retained = new Map(BUILTIN_CAPABILITIES.map(id => [id, buildId]));
@@ -82,7 +83,7 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
     try {
       for (const record of management.list('bots')) {
         const profile = await readJson(join(releaseRoot, 'roles', record.roleId || 'default', 'role.json'));
-        const allowedTools = record.maintenanceFor ? [...CATALOG_MAINTAINER_TOOLS] : [...new Set([...(record.allowedTools || []), ...(profile.tools || []), ...catalogTools.map(tool => tool.name)])];
+        const allowedTools = dutyOrigin(record) ? effectiveBotTools(record) : record.maintenanceFor ? [...CATALOG_MAINTAINER_TOOLS] : [...new Set([...(record.allowedTools || []), ...(profile.tools || []), ...catalogTools.map(tool => tool.name)])];
         const updated = management.save('bots', { ...record, allowedTools }); botRecords.set(record.id, updated);
       }
     } finally { management.close(); }
@@ -118,7 +119,7 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
         const owner = capabilityForTool(tool.name);
         return { ...tool, taskContext: true, type: 'http', method: 'POST', url: owner ? `${gatewayUrl}/capabilities/${owner}/versions/${buildId}/tools/${tool.name}` : `${gatewayUrl}/tools/${tool.name}`,
           headers: { Authorization: `Bearer ${record.capabilityToken}` }, timeoutMs: bundledToolTimeout(tool.name) };
-      }), ...(record.maintenanceFor ? [] : config.tools.filter(tool => !names.has(tool.name)))];
+      }), ...(record.maintenanceFor || dutyOrigin(record) ? [] : config.tools.filter(tool => !names.has(tool.name)))];
       config.bundledToolNames = bundled.map(tool => tool.name);
     }
     delete config.capabilityBindingRevision; delete config.capabilityUpdateId;

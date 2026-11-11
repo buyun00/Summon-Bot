@@ -1,10 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { required,fail,pick,now } from '../shared/validation.mjs';
 import { TeamService, groupTeam } from './team.mjs';
-import { activeDuties, staffingPolicyVersion, staffingScope } from './staffing.mjs';
+import { activeDuties, staffingArtifacts, staffingPolicyVersion, staffingScope } from './staffing.mjs';
 import { boundedNumber } from '../../bot/src/context/model-input.mjs';
 import { publicationParts, WORK_ATTACHMENTS } from '../../bot/src/runtime/notifications.mjs';
 import { localTime } from '../../bot/src/context/fact-time.mjs';
+import { publishedText } from './published-text.mjs';
+import { RoomDutyActions } from './duty-actions.mjs';
+import { RoomTextResults } from './room-results.mjs';
 const TERMINAL=new Set(['completed','failed','cancelled','interrupted']);
 const foreground=item=>item.priority!=='background';
 const normalized=text=>String(text||'').trim().replace(/\s+/g,' ');
@@ -24,7 +27,7 @@ const firstPosition={at:'',row:0};
 const comparePosition=(a,b)=>a.at.localeCompare(b.at)||a.row-b.row;
 const routeInstruction='这是一次临时语义路由，不是执行任务。只根据本条用户原文、明确引用和成员职责选择最适合承担的一个现有成员；不得群发、执行或代替用户授权。能确定已有工作才填写其真实 workId，不按最近活跃猜归属。可以用普通文字选择成员，也可输出 JSON：{"recipientBotId":"已有成员ID或null","workId":"已知工作ID或null","reason":"简短依据"}。无法确定时 recipientBotId 设为你自己，由你的普通聊天对话作最小澄清或回答。';
 const dutyRouteInstruction=routeInstruction+' 本次使用 JSON。仅当原问题直接落在一个当前成员的登记职责（duties）时选择该成员，并在 dutyKey 字段填该职责的真实键。跨领域、泛讨论、协调和不确定的消息由主控接住。';
-const cursorKey=item=>[item.botId,item.roomId,item.teamStaffing?'staffing':item.workId||'chat'].join(':');
+const cursorKey=item=>[item.botId,item.roomId,item.teamStaffing?'staffing':item.roomDutyAction?'duty-action':item.workId||'chat'].join(':');
 function projectMode(value,goal){
   if(!['auto','project','chat'].includes(value))fail('请选择有效的群聊用途');
   if(value==='project'&&!String(goal||'').trim())fail('请填写持续项目的目标');
@@ -33,6 +36,8 @@ function projectMode(value,goal){
 export class ChatroomService {
   constructor({store,manager,attachments,emit=()=>{},version=null,invoke}) {
     Object.assign(this,{store,manager,attachments,emit,version});this.teamService=new TeamService(this,{invoke});this.busy=false;this.closed=false;
+    this.dutyActions=new RoomDutyActions(this);
+    this.roomTextResults=new RoomTextResults(this);
     this.staffingMutation=async operation=>operation();
     store.db.exec("CREATE INDEX IF NOT EXISTS records_room ON records(kind,json_extract(data,'$.roomId'),created_at)");
     store.db.exec(`CREATE INDEX IF NOT EXISTS records_message_reply ON records(json_extract(data,'$.roomId'),
@@ -41,6 +46,7 @@ export class ChatroomService {
     this.messagePosition=store.db.prepare("SELECT created_at AS at,rowid AS row FROM records WHERE kind='messages' AND id=? AND json_extract(data,'$.roomId')=?");
     const observedRows=`FROM records m JOIN records d ON d.kind='deliveries' AND d.id='delivery:'||m.id||':'||?
       WHERE m.kind='messages' AND json_extract(m.data,'$.roomId')=? AND json_extract(d.data,'$.observation')=1
+      AND json_extract(d.data,'$.ownerCovered') IS NULL
       AND (m.created_at,m.rowid)>(?,?)`;
     this.observationDelta=store.db.prepare(`SELECT m.data,count(*) OVER () AS total,
       first_value(m.id) OVER (ORDER BY m.created_at,m.rowid) AS firstId ${observedRows}
@@ -65,11 +71,14 @@ export class ChatroomService {
   staffingEvidence(message) {
     if(!message||!observable(message))return null;
     if(message.senderId==='user')return {key:'user:'+message.id,kind:'user-update',messageId:message.id};
+    const textResult=this.store.get('room-text-results',message.id);
+    if(textResult?.roomId===message.roomId&&textResult.ownerBotId===message.senderId)
+      return {key:'room-result:'+message.id,kind:'room-result',messageId:message.id,resultId:textResult.id};
     if(message.senderId==='system'||message.eventType!=='work_result'||!message.workId)return null;
     const artifact=message.attachments?.find(({origin})=>origin?.type==='work-output'&&origin.botId===message.senderId&&
       origin.workId===message.workId&&origin.roomId===message.roomId&&origin.operationId);
-    if(!message.workPublication&&!artifact)return null;
-    return {key:'result:'+message.senderId+':'+String(message.clientId||message.id).replace(/:part:\d+$/,''),kind:'work-result',
+    if(!artifact)return null;
+    return {key:'result:'+message.senderId+':'+artifact.origin.operationId,kind:'work-result',
       messageId:message.id,workId:message.workId,...(artifact?{operationId:artifact.origin.operationId}:{})};
   }
   read(input, actor, source) {
@@ -79,6 +88,8 @@ export class ChatroomService {
     if(observation&&(room.id!==source.roomId||room.kind!=='group'||input.outputReceipts!==undefined))fail('Observation reads only this group’s published messages',403);
     const staffing=source?.metadata?.teamStaffing===true;
     if(staffing&&(room.id!==source.roomId||room.kind!=='group'||input.outputReceipts!==undefined))fail('Staffing reads only this group’s published evidence',403);
+    if(source?.metadata?.roomDutyAction&&(room.id!==source.roomId||room.kind!=='group'||input.outputReceipts!==undefined))
+      fail('This duty action reads only its own project group',403);
     if(input.outputReceipts!==undefined){
       if(actor==='controller'||source?.roomId!==room.id||typeof input.workId!=='string'||typeof input.operationId!=='string'||
         !Array.isArray(input.outputReceipts)||input.outputReceipts.length>WORK_ATTACHMENTS)
@@ -115,30 +126,43 @@ export class ChatroomService {
     const selected=forward?candidates.slice(0,limit):candidates.slice(-limit);
     return this.messagePage(room,accessActor||actor,input,selected,{staffing,reverse:!forward,total:candidates.length});
   }
-  async readStaffingAttachment(input, actor, source) {
+  readRoomAcceptance(input, actor, source) {
+    const room=this.need('rooms',input.roomId||source?.roomId),trigger=source?.replyTo&&this.store.get('messages',source.replyTo);
+    if(room.id!==source?.roomId||!room.members.includes(actor)||!room.members.includes('user')||source.source!=='controller'||source.actor!=='user'||
+      trigger?.roomId!==room.id||trigger.senderId!=='user'||source.metadata?.routeOnly||source.metadata?.groupObservation)
+      fail('Room results can only be selected from the current authenticated user request',403);
+    return {roomResults:this.roomTextResults.before(room,trigger)};
+  }
+  async readPublishedAttachment(input, actor, source) {
     const room = this.need('rooms', input.roomId || source?.roomId);
-    if (source?.metadata?.teamStaffing !== true || source.roomId !== room.id ||
-        actor !== room.team?.eggBotId || !room.members.includes(actor))
-      fail('Published text is available only to this room’s staffing task', 403);
+    const staffing = source?.metadata?.teamStaffing === true, observation = source?.metadata?.groupObservation;
+    const origin = source?.replyTo && this.store.get('messages', source.replyTo);
+    const userSource = source?.source === 'controller' && source.actor === 'user' && room.members.includes('user') &&
+      origin?.roomId === room.id && origin.senderId === 'user';
+    const job = source?.input?.metadata?.deliveryId && this.store.get('deliveries', source.input.metadata.deliveryId);
+    const dutySource = source?.metadata?.roomDutyAction && job?.roomDutyAction === source.metadata.roomDutyAction &&
+      job.roomId === room.id && job.botId === actor && job.messageId === source.replyTo;
+    if (source?.roomId !== room.id || !room.members.includes(actor) || observation ||
+        !(staffing ? actor === room.team?.eggBotId : userSource || dutySource))
+      fail('Published attachments require a current authorized task in their source room', 403);
     const message = input.messageId && this.store.get('messages', input.messageId);
     const published = message?.attachments?.find(item => item.id === input.attachmentId);
     const matches = attachment => attachment?.origin?.type === 'work-output' &&
       attachment.origin.roomId === room.id && attachment.origin.botId === message.senderId &&
-      attachment.origin.workId === message.workId && attachment.origin.publicationId === attachment.id;
+      attachment.origin.workId === message.workId && attachment.origin.publicationId === attachment.id &&
+      attachment.origin.operationId === published?.origin?.operationId;
     if (message?.roomId !== room.id || this.staffingEvidence(message)?.kind !== 'work-result' || !matches(published))
       fail('Use an exact published attachment on this room’s work result', 404);
     const record = this.attachments.get(published.id);
-    if (!matches(record) || !/\.(?:md|txt)$/i.test(record.name) || record.size > 128 * 1024)
-      fail('Staffing reads only bounded Markdown or plain text published in this room', 403);
+    if (!matches(record)) fail('Published attachment is unavailable', 404);
     const { bytes } = await this.attachments.read(record.id);
-    if (bytes.length > 128 * 1024 || bytes.includes(0)) fail('Attachment is not bounded plain text', 403);
     let content;
-    try { content = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
-    catch { fail('Attachment is not UTF-8 text', 403); }
+    try { content = publishedText(record.name, bytes, { office: !staffing }); }
+    catch (error) { fail(error.message, 422); }
     const offset = boundedNumber(input.offset, 0, 0, content.length);
     const length = boundedNumber(input.length, 4000, 1, 6000);
     return { reference: { type: 'room', roomId: room.id, messageId: message.id, attachmentId: record.id },
-      author: message.senderId, name: record.name, content: content.slice(offset, offset + length), offset,
+      author: message.senderId, name: record.name, content: content.slice(offset, offset + length), offset, fullCharacters: content.length,
       nextOffset: offset + length < content.length ? offset + length : null };
   }
   readObservation(input,actor,source,room) {
@@ -255,14 +279,16 @@ export class ChatroomService {
       route?.(saved,room,repeated);
       const evidence=room.team&&!repeated&&this.staffingEvidence(saved);
       const staffing=Boolean(evidence&&this.teamService.staffingRoom(room));
-      if(staffing)this.teamService.noteStaffing(room,[evidence]);
+      const linked=evidence?.kind==='work-result'&&activeDuties(room).some(duty=>duty.workBindings?.some(binding=>
+        binding.workId===saved.workId&&binding.operationId===evidence.operationId&&binding.botId===saved.senderId));
+      if(staffing&&(evidence.kind==='user-update'||linked))this.teamService.noteStaffing(room,[evidence]);
       if(evidence?.kind==='work-result')this.teamService.linkResult(this.need('rooms',roomId),saved);
       const specialists=this.specialists(room);
       if(room.kind==='group'&&observable(saved)&&!repeated)for(const botId of room.members){
         const bot=this.manager.store.get('bots',botId);
-        if(staffing&&botId===room.team.eggBotId)continue;
+        if(this.teamService.staffingRoom(room)&&botId===room.team.eggBotId)continue;
         if(specialists.includes(botId)&&saved.toBotId!==botId&&parent?.senderId!==botId){
-          const relevantResult=evidence?.kind==='work-result'&&activeDuties(room,botId).some(duty=>duty.workIds?.includes(saved.workId));
+          const relevantResult=linked&&activeDuties(room,botId).some(duty=>duty.workIds?.includes(saved.workId));
           if(!relevantResult)continue;
         }
         if(botId!==senderId&&bot?.status==='active'&&bot.runIntent!=='stopped'&&bot.allowedTools?.includes('chatroom_read'))
@@ -370,10 +396,17 @@ export class ChatroomService {
     }
     const cursor=this.store.get('delivery-cursors',`${botId}:${roomId}:chat`);
     const through=this.position(roomId,cursor?.messageId)||firstPosition;
+    const ownerDeliveries=room.team?.leadBotId===botId?this.jobs(roomId).filter(job=>!job.observation&&!job.routeOnly&&job.routedDutyKey&&
+      job.botId!==botId&&!job.roomDutyAction&&!['failed','cancelled','interrupted'].includes(job.status)):null;
     let latest,latestPosition=through;
     for(const item of observations){
       const route=this.store.get('deliveries',`route:${item.messageId}`);
       if(route&&!TERMINAL.has(route.status))continue;
+      const owner=ownerDeliveries?.find(job=>job.messageId===item.messageId);
+      if(owner){
+        this.emit('job',this.store.save('deliveries',{id:item.id,status:'completed',ownerCovered:owner.id,finishedAt:now()}));
+        continue;
+      }
       const position=this.position(roomId,item.messageId);
       if(!position)continue;
       if(cursor&&comparePosition(position,through)<=0){
@@ -399,6 +432,26 @@ export class ChatroomService {
   async inputFor(item) {
     if(item.input)return item.input;
     const room=this.need('rooms',item.roomId),trigger=this.need('messages',item.messageId);
+    if(item.roomDutyAction){
+      const plan=this.dutyActions.current(item,room);
+      if(!plan)fail('The authorized duty action no longer matches this project and owner',409);
+      const duty=activeDuties(room,item.botId).find(candidate=>candidate.dutyKey===plan.dutyKey);
+      const previous=(duty?.referenceArtifacts||[]).slice(-8).filter(ref=>staffingArtifacts(this.store.get('messages',ref.messageId)||{})
+        .some(item=>item.id===ref.id&&item.messageId===ref.messageId));
+      const references=[...new Map([...(plan.references||[]),...previous.map(ref=>({type:'room',roomId:room.id,
+        messageId:ref.messageId,attachmentId:ref.id}))].map(ref=>[ref.messageId+':'+(ref.attachmentId||''),ref])).values()];
+      const ids=[...new Set([...references.map(ref=>ref.messageId),...(plan.publications||[]).map(ref=>ref.messageId)])];
+      const evidence=ids.map(id=>this.store.get('messages',id)).filter(message=>message?.roomId===room.id).map(staffingMessage);
+      const content={room:pick(room,['id','name','kind','goal','members','team']),trigger:observationMessage(trigger),messages:evidence,
+        dutyAction:{kind:plan.kind,goal:plan.goal,requirements:plan.requirements,scope:plan.grant.scope,limits:plan.grant.originalLimits,
+          instruction:plan.instruction,sourceUnit:plan.grant.sourceUnit,dependency:plan.dependency,
+          publications:plan.publications,references},
+        metadata:{actor:'system',roomId:room.id,deliveryId:item.id}};
+      const input={id:item.id,kind:'event',sessionId:item.id,conversationId:item.id,correlationId:trigger.rootId,replyTo:trigger.id,
+        metadata:{kind:'chat',actor:'system',accessActor:'user',roomId:room.id,originMessageId:trigger.id,historyThroughMessageId:trigger.id,
+          sourceType:'room-duty-action',roomDutyAction:plan.id,priority:'background'},content};
+      this.store.save('deliveries',{id:item.id,input,throughMessageId:trigger.id});return input;
+    }
     const staffing=item.teamStaffing;
     const config=item.observation||staffing?null:await this.manager.config(item.botId);
     if(item.workId&&!item.routeOnly){
@@ -476,12 +529,24 @@ export class ChatroomService {
   async deliver(item) {
     if(this.version&&item.serviceVersion!==this.version)fail('This capability version does not own the delivery',409);
     try {
+      if(item.roomDutyAction&&item.status==='queued'&&!this.dutyActions.current(item,this.need('rooms',item.roomId))){
+        this.store.transaction(()=>{
+          this.dutyActions.finish(item,'cancelled');
+          this.emit('job',this.store.save('deliveries',{id:item.id,status:'cancelled',finishedAt:now()}));
+        });return;
+      }
       if(item.teamStaffing&&item.status==='queued'){
         const room=this.need('rooms',item.roomId);
         if(!this.teamService.staffingRoom(room)||room.team.eggBotId!==item.botId||
-          item.teamStaffing.policyVersion!==staffingPolicyVersion||
-          JSON.stringify(item.teamStaffing.scope)!==JSON.stringify(staffingScope(room))){
+          item.teamStaffing.policyVersion!==staffingPolicyVersion){
           this.emit('job',this.store.save('deliveries',{id:item.id,status:'cancelled',finishedAt:now()}));return;
+        }
+        const state=this.store.get('team-staffing',room.id);
+        if(JSON.stringify(item.teamStaffing.scope)!==JSON.stringify(staffingScope(room))||
+            state?.latestUserMessageId&&state.latestUserMessageId!==item.teamStaffing.latestUserMessageId){
+          const assessment=this.teamService.staffing.supersede(item,room);
+          this.emit('job',this.store.save('deliveries',{id:item.id,status:'completed',staffingAssessmentId:assessment.id,
+            staffingOutcome:'superseded',finishedAt:now()}));return;
         }
       }
       if(item.observation&&!this.need('rooms',item.roomId).members.includes(item.botId)){
@@ -490,7 +555,7 @@ export class ChatroomService {
       if(item.status==='queued'){
         const owner=this.manager.get(item.botId),trigger=this.need('messages',item.messageId);
         if(owner.status!=='active'||owner.runIntent==='stopped'&&!(item.teamStaffing&&owner.firstRunPending)&&
-          (item.teamStaffing||item.observation||trigger.senderId!=='user')){
+          (item.teamStaffing||item.observation||item.roomDutyAction||trigger.senderId!=='user')){
           this.store.save('deliveries',{id:item.id,deferredReason:'recipient-stopped',retryAt:new Date(Date.now()+30000).toISOString()});return;
         }
         const input=await this.inputFor(item),receipt=await this.manager.send(item.botId,input);
@@ -512,6 +577,10 @@ export class ChatroomService {
       const status=task.status;
       if(!TERMINAL.has(status)){if(item.status!==status){item=this.store.save('deliveries',{...item,status});this.emit('job',item);}return;}
       item=this.store.save('deliveries',{...item,workId:task.workId||task.result?.workId||item.workId});
+      const roomForPlan=this.need('rooms',item.roomId),triggerForPlan=this.need('messages',item.messageId);
+      const imported=await this.dutyActions.import(item,roomForPlan,triggerForPlan,task);
+      const roomResultAction=await this.roomTextResults.action(item,task,roomForPlan,triggerForPlan);
+      let dutyResultMessageId;
       if(status==='completed') {
         let text=String(task.result?.content||''),passed=/^PASS(?:\s*$|\s*\n)/i.test(text);
         if(item.routeOnly){
@@ -530,22 +599,26 @@ export class ChatroomService {
         }else if(!item.teamStaffing&&!task.workId&&(!item.observation||this.need('rooms',item.roomId).members.includes(item.botId))){
           try{const parsed=JSON.parse(text);if(typeof parsed.reply==='string'){text=parsed.reply;passed=parsed.pass||!text;}}catch{}
           if(item.observation&&isAcknowledgement(text))passed=true;
-          const alreadyReplied=this.sourceReplies.all(item.roomId,item.messageId,item.botId).some(row=>!JSON.parse(row.data).jobId);
+          const alreadyReplied=!item.roomDutyAction&&this.sourceReplies.all(item.roomId,item.messageId,item.botId).some(row=>!JSON.parse(row.data).jobId);
           if(alreadyReplied)passed=true;
           const attachments=(task.result?.attachments||[]).map(attachment=>this.attachments.get(attachment.id));
           if(attachments.length){passed=false;if(alreadyReplied||/^PASS(?:\s*$|\s*\n)/i.test(text))text='';}
           for(const attachment of attachments)if(attachment.origin?.type!=='work-output'||attachment.origin.botId!==item.botId||attachment.origin.roomId!==item.roomId)fail('Reply attachment is outside this authenticated Bot/room',403);
-          if((text||attachments.length)&&!passed){
+          if((text||attachments.length)&&!passed&&(!item.roomDutyAction||
+              !task.result?.partial&&!task.result?.suspended&&this.dutyActions.current(item,this.need('rooms',item.roomId)))){
             const newer=text&&!item.observation?this.newerDeliveries(item,task.tools):[];
             if(newer.length){
               const facts=newer.map(({observedAt,message})=>`本次回复读取的是 ${localTime(observedAt)} 的工作快照。此后同一步骤已于 ${localTime(message.createdAt)} 将附件发到本群（消息 ${message.id}）。`);
               text=`${facts.join('\n')}\n以下说明按上述时间理解，交付状态以已发附件为准。\n\n${text}`;
             }
             const parts=publicationParts(text,attachments);
+            const dutySources=roomResultAction?.references;
             const replies=parts.map((part,index)=>this.append(item.roomId,{...part,id:index?`reply:${item.id}:part:${index+1}`:`reply:${item.id}`,
               replyTo:item.messageId,rootId:item.rootId,hop:item.hop+1,jobId:item.id,workId:item.workId,observationReply:item.observation||item.teamReview,
-              ...(index===0&&newer.length?{sourceRefs:newer.map(({message})=>({type:'room',roomId:item.roomId,messageId:message.id}))}:{}),
-              usage:index?undefined:task.result?.usage,model:task.result?.model},item.botId));
+              ...(index===0&&(newer.length||dutySources?.length)?{sourceRefs:[...(dutySources||[]),...newer.map(({message})=>({type:'room',roomId:item.roomId,messageId:message.id}))]}:{}),
+              usage:index?undefined:task.result?.usage,model:task.result?.model},item.botId,
+              index===0&&roomResultAction?message=>this.roomTextResults.publish(item,task,message,roomResultAction):undefined));
+            if(item.roomDutyAction&&this.store.get('room-text-results',replies[0]?.id))dutyResultMessageId=replies[0].id;
             if(replies.length&&!item.observation&&!task.result?.handoff)this.returnReply(replies[0]);
           }
         }
@@ -556,7 +629,7 @@ export class ChatroomService {
       const result=this.store.transaction(()=>{
         const room=this.need('rooms',item.roomId),trigger=this.need('messages',item.messageId);
         // Only a real user delivery's accepted work receipt can signal a dispatch, including a short approval.
-        if(trigger.senderId==='user'&&!item.observation&&!item.routeOnly&&!item.teamStaffing&&!item.teamIntroduction&&this.teamService.staffingRoom(room)){
+        if(trigger.senderId==='user'&&!item.observation&&!item.routeOnly&&!item.teamStaffing&&!item.teamIntroduction&&!item.roomDutyAction&&this.teamService.staffingRoom(room)){
           const signals=(task.tools||[]).flatMap(tool=>{
             const receipt=tool.output?.details;
             if(tool.status!=='completed'||!receipt)return [];
@@ -566,13 +639,26 @@ export class ChatroomService {
             return ['work_create','work_dispatch'].includes(tool.name)&&receipt.accepted===true&&!receipt.duplicate&&receipt.workId&&receipt.operationId?
                [{key:'dispatch:'+item.botId+':'+receipt.operationId,kind:'work-dispatch',messageId:trigger.id,workId:receipt.workId,operationId:receipt.operationId,ownerBotId:item.botId}]:[];
           });
-          this.teamService.noteStaffing(room,signals);
+          // The current user source already schedules a decision. A bare
+          // dispatch never needs a second decision on the same evidence.
+          this.teamService.noteStaffing(room,signals.filter(signal=>signal.kind==='work-acceptance'||
+            !item.routedDutyKey&&!(this.store.get('team-staffing',room.id)?.recentKeys||[]).includes('user:'+trigger.id)));
           this.teamService.linkWork(room,item,trigger,signals);
+          this.teamService.noteStaffing(room,this.roomTextResults.record(room,trigger,item,task));
+          if(imported.length) this.teamService.noteStaffing(room,imported.map(plan=>({
+            key:'room-duty-plan:'+plan.id,kind:'room-duty-plan',messageId:trigger.id,planId:plan.id,
+          })));
         }
-        const assessment=this.teamService.staffing.forDelivery(item);
+        if(item.roomDutyAction)this.dutyActions.finish(item,status,dutyResultMessageId);
+        const state=this.store.get('team-staffing',room.id);
+        let assessment=this.teamService.staffing.forDelivery(item);
+        if(!assessment&&item.teamStaffing?.policyVersion===staffingPolicyVersion&&
+          (state?.latestUserMessageId&&state.latestUserMessageId!==item.teamStaffing.latestUserMessageId||
+            room.team&&JSON.stringify(staffingScope(room))!==JSON.stringify(item.teamStaffing.scope)))
+          assessment=this.teamService.staffing.supersede(item,room);
         const missing=status==='completed'&&item.teamStaffing?.policyVersion===staffingPolicyVersion&&!assessment;
         return this.store.save('deliveries',{...item,status:missing?'failed':status,finishedAt:now(),agentRunId:task.runId||item.taskId,
-          ...(assessment?{staffingAssessmentId:assessment.id}:{}),
+          ...(assessment?{staffingAssessmentId:assessment.id,staffingOutcome:assessment.status}:{}),
           error:missing?{code:'STAFFING_ASSESSMENT_REQUIRED',message:'The staffing decision ended without a saved assessment'}:task.error||null});
       });this.emit('job',result);
       if(item.routineId)await this.manager.saveRoutine({id:item.routineId,lastStatus:status,lastTaskId:item.taskId,workId:item.workId,error:task.error?.message||null});
@@ -581,6 +667,7 @@ export class ChatroomService {
       const current=this.store.get('deliveries',item.id)||item,attempts=(current.attempts||0)+1;
       const terminalFailure=error.routing?'interrupted':error.status>=400&&error.status<500&&error.status!==429?'failed':null;
       const result=this.store.save('deliveries',{...current,attempts,error:error.message,retryAt:new Date(Date.now()+Math.min(60000,1000*2**Math.min(attempts,6))).toISOString(),...(terminalFailure?{status:terminalFailure,finishedAt:now()}:{} )});this.emit('job',result);
+      if(terminalFailure&&item.roomDutyAction)this.dutyActions.finish(item,terminalFailure);
       if(terminalFailure&&!item.observation&&!item.teamStaffing){
         const reply=this.append(item.roomId,{id:`error:${item.id}`,content:`${error.routing?'消息路由未完成':'消息未被受理'}：${error.message}`,kind:'error',jobId:item.id,replyTo:item.messageId},'system');
         this.returnReply(reply,{responderId:item.botId,status:terminalFailure});
@@ -618,6 +705,7 @@ export class ChatroomService {
     const original=this.need('deliveries',id),room=this.need('rooms',original.roomId),family=[original],seen=new Set([original.id]),jobs=this.jobs(original.roomId).filter(job=>job.botId===original.botId&&job.messageId===original.messageId);
     for(let index=0;index<family.length;index++)for(const job of jobs)if(job.retryOf===family[index].id&&!seen.has(job.id)){family.push(job);seen.add(job.id);}
     const completed=family.find(job=>job.status==='completed');if(completed)return completed;const active=family.find(job=>!TERMINAL.has(job.status));if(active)return active;
+    if(original.roomDutyAction)fail('This exact duty action already ended; inspect its saved result or register a newly authorized request.',409);
     if(room.status==='concluded')fail('Discussion has concluded',409);
     if(this.messages(room.id).some(message=>seen.has(message.jobId)&&message.replyTo===original.messageId&&message.senderId===original.botId&&message.kind!=='error'))fail('This task already has a recorded reply; inspect its history instead of retrying',409);
     const item=family.at(-1);let retry;

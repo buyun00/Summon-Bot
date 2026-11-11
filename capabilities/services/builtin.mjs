@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { RecordStore } from '../shared/store.mjs';
 import { WorkspaceExecutionLock } from '../shared/workspace-lock.mjs';
 import { BotManager } from '../bot-management/service.mjs';
+import { effectiveBotTools } from '../bot-management/tool-access.mjs';
 import { cleanTemporaryData } from '../bot-management/maintenance.mjs';
 import { ChatroomService } from '../chatroom/service.mjs';
 import { AttachmentStore,MAX_ATTACHMENT_REQUEST_BYTES } from '../chatroom/attachments.mjs';
@@ -69,7 +70,7 @@ export async function createCapability(options) {
   async function invoke(name,args={},context={},signal) {
     const actor=context.actor;
     if(!actor)fail('Authenticated actor context is required',403);
-    if(actor!=='controller'&&!(manager.store.get('bots',actor)?.allowedTools||[]).includes(name))fail('Tool not authorized for this Bot',403);
+    if(actor!=='controller'&&!(effectiveBotTools(manager.store.get('bots',actor))||[]).includes(name))fail('Tool not authorized for this Bot',403);
     if(FILE_TOOLS.has(name)) {
       if(actor==='controller')fail('Filesystem tools require an explicit Bot identity');
       const config=await manager.config(actor),artifacts=[];
@@ -148,7 +149,8 @@ export async function createCapability(options) {
         return rooms.filter(room=>actor==='controller'||room.members.includes(actor)&&(!sourceActor||sourceActor==='system'||room.members.includes(sourceActor)));
       }
       case 'chatroom_read':{
-        if(args.attachmentId!==undefined)return chatroom.readStaffingAttachment(args,actor,context.source);
+        if(args.acceptanceResults===true)return chatroom.readRoomAcceptance(args,actor,context.source);
+        if(args.attachmentId!==undefined)return chatroom.readPublishedAttachment(args,actor,context.source);
         const page=chatroom.read(args,actor,context.source);
         return actor==='controller'||args.outputReceipts!==undefined||context.source?.metadata?.groupObservation||context.source?.metadata?.teamStaffing?
           page:attachments.stageContext(page,(await manager.config(actor)).workspace);

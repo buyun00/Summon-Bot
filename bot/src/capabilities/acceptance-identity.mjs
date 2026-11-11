@@ -63,7 +63,8 @@ export function acceptanceBindings(units, entries, replyTo) {
     const previous = !hasReferences(own) && index > 0 && units[index - 1].sentenceStart === sentenceStart && /[,，]\s*$/u.test(units[index - 1].text);
     const ref = previous ? referenceOf[index - 1] : own;
     const fail = (reason, matches = []) => ({ unit, reason, identified: matches.slice(0, 3).map(({ workId, publication }) => ({ workId, ...publication })) });
-    if (!replied && !hasReferences(ref)) return fail('No exact delivery, file, work or version was identified in the approval.');
+    if (!replied && !hasReferences(ref)) return { ...fail('No exact delivery, file, work or version was identified in the approval.'),
+      allowNatural: !replyTo };
     if (replyTo && !replied) return fail('The replied-to message could not be verified as a delivery from this work source.');
     const pool = replied ? publicEntries.filter(entry => entry === replied || replied.verification && entry.workId === replied.workId &&
       entry.target?.verificationOperationIds?.includes(replied.operationId)) : publicEntries;
@@ -81,3 +82,18 @@ export function acceptanceBindings(units, entries, replyTo) {
 }
 
 export { links as acceptanceLinks };
+
+const natural = value => normal(value).replace(/[\s*_‘’“”'"《》]/gu, '').replace(/[−–—]/gu, '-');
+
+// A model can select markers, but an actual source unit and a uniquely
+// matching delivered candidate are required before an identity can be bound.
+export function naturalAcceptanceMatch({ units, identityUnits, anchors, candidates }) {
+  if (!Array.isArray(identityUnits) || !Array.isArray(anchors) || !anchors.length || anchors.length > 6) return null;
+  const source = natural(units.filter(item => identityUnits.includes(item.unit)).map(item => item.text).join('\n'));
+  if (anchors.some(anchor => typeof anchor !== 'string' || anchor.length > 120)) return null;
+  const markers = unique(anchors.map(natural)).filter(marker => marker.length >= 2 && /[\p{L}\p{N}]/u.test(marker));
+  if (!markers.length || markers.some(marker => !source.includes(marker)) ||
+      markers.length < 2 && !/\d{4}[-/]\d{1,2}[-/]\d{1,2}.*\d{1,2}:\d{2}/.test(markers[0])) return null;
+  const matches = candidates.filter(candidate => markers.every(marker => natural(candidate.identityText).includes(marker)));
+  return matches.length === 1 ? matches[0] : null;
+}

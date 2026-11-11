@@ -5,8 +5,10 @@ import { factTime } from '../context/fact-time.mjs';
 import { HANDOFF_REFERENCES, taskSource, workExecution } from '../context/sources.mjs';
 import { modelArgs, modelText, looseSchema, boundedNumber } from '../context/model-input.mjs';
 import { resolveCodexTarget } from './codex-target.mjs';
-import { acceptanceReply, authorizeProduction, currentProductionStage, currentUserRequest, productionDecision, productionStage, requestIntents, productionStages, sourceUnits } from './request-routing.mjs';
-import { acceptanceBindings, acceptanceLinks } from './acceptance-identity.mjs';
+import { acceptanceReply, authorizeProduction, currentProductionStage, currentUserRequest, productionDecision, productionStage, requestIntents, productionStages, selectedSourceAction, sourceUnits } from './request-routing.mjs';
+import { ROOM_DUTY_PLANS, dependencyDispatches, roomDutyPlanId, saveRoomDutyPlan, sourceDispatches } from '../context/duty-actions.mjs';
+import { acceptanceBindings, acceptanceLinks, naturalAcceptanceMatch } from './acceptance-identity.mjs';
+import { localTime } from '../context/fact-time.mjs';
 import { externalExecution, isAcceptedOperation } from '../context/execution-evidence.mjs';
 import { readExecutorManifest } from '../runtime/executor-delivery.mjs';
 import { WORK_ATTACHMENTS } from '../runtime/notifications.mjs';
@@ -140,10 +142,11 @@ function acceptanceTarget(store, work, roomId, notifications = store.listRecords
 const publishedBeforeRequest = (publication, user) => Date.parse(publication.publishedAt) < Date.parse(user.roomMessageAt);
 const runnableWorkIds = store => new Set(store.listUnfinishedTasks().filter(item =>
   ['accepted', 'queued', 'running'].includes(item.status)).map(item => item.workId));
-const acceptanceIdentity = ['operationId', 'threadId', 'turnId', 'throughOperationId', 'verificationOperationIds'];
+const acceptanceIdentity = ['operationId', 'threadId', 'turnId', 'throughOperationId', 'verificationOperationIds',
+  'roomResultId', 'ownerBotId', 'dutyKey', 'deliveryId', 'taskId', 'sourceMessageId', 'version'];
 
-function requestAcceptanceBindings(services, task, user, rooms) {
-  if (!user?.roomId || !rooms.includes(user.roomId) || !Number.isFinite(Date.parse(user.roomMessageAt))) return [];
+function requestAcceptanceBindings(services, task, user, rooms, roomResults = []) {
+  if (!user?.roomId || !rooms.includes(user.roomId) || !Number.isFinite(Date.parse(user.roomMessageAt))) return { bindings: [], entries: [] };
   const { store } = services, byWork = new Map();
   for (const item of store.listRecords('work-notifications')) {
     if (!byWork.has(item.workId)) byWork.set(item.workId, []);
@@ -173,22 +176,56 @@ function requestAcceptanceBindings(services, task, user, rooms) {
       const key = JSON.stringify([workId, item.executionEventId, receipt.id]);
       if (entries.has(key) && !verified) continue;
       entries.set(key, { workId, operationId: item.executionEventId, publication, links: acceptanceLinks(receipt.content),
+        identityText: [localTime(publication.publishedAt), work.goal, receipt.content, ...publication.attachments.map(item => item.name)].filter(Boolean).join('\n').slice(0, 3800),
         verification: verifications.has(item.executionEventId) && !publication.attachments.length,
         target: verified ? target : null });
     }
   }
-  return acceptanceBindings(sourceUnits(user.text), [...entries.values()], user.replyTo);
+  for (const result of roomResults) {
+    if (result.roomId !== user.roomId || !result.id || result.version !== result.id || !result.dutyKey || !result.taskId ||
+        !result.ownerBotId || !result.sourceMessageId) continue;
+    const publication = { messageId: result.id, replyTo: result.sourceMessageId, publishedAt: result.publishedAt, attachments: [] };
+    if (!publishedBeforeRequest(publication, user)) continue;
+    const target = { operationId: result.version, roomResultId: result.id, ownerBotId: result.ownerBotId, dutyKey: result.dutyKey,
+      taskId: result.taskId, sourceMessageId: result.sourceMessageId, deliveryId: result.deliveryId, version: result.version, publications: [publication] };
+    entries.set(result.id, { operationId: result.version, publication, links: acceptanceLinks(result.content), target,
+      identityText: [localTime(result.publishedAt), result.content].filter(Boolean).join('\n'),
+      ...(result.legacyCandidate ? { legacyCandidate: true, originalRequest: result.originalRequest } : {}) });
+  }
+  const values = [...entries.values()];
+  return { bindings: acceptanceBindings(sourceUnits(user.text), values, user.replyTo), entries: values };
 }
 
-function acceptanceContextView(bindings, user) {
+function acceptanceContextView({ bindings, entries }, user) {
   const results = new Map();
-  const units = bindings.map(({ unit, identityUnit, workId, target, publication, reason, identified }) => {
-    if (!publication) return { unit, reason, ...(identified.length ? { identified } : {}) };
+  const candidates = entries.filter(entry => entry.target && !entry.verification);
+  const candidateView = entry => ({ ...entry.publication, workId: entry.workId, operationId: entry.target.operationId,
+    identityText: entry.identityText, ...(entry.target.roomResultId ? { ownerBotId: entry.target.ownerBotId, dutyKey: entry.target.dutyKey } : {}),
+    ...(entry.legacyCandidate ? { legacyCandidate: true, originalRequest: entry.originalRequest } : {}) });
+  const units = bindings.map(({ unit, identityUnit, workId, target, publication, reason, identified, allowNatural }) => {
+    if (!publication) return { unit, reason, allowNatural, ...(identified?.length ? { identified } : {}) };
     const { messageId } = publication;
-    results.set(messageId, { workId, operationId: target.operationId, ...target.publications.find(item => item.messageId === messageId) });
+    const selected = candidates.find(entry => entry.publication.messageId === messageId && entry.target.operationId === target.operationId);
+    if (selected) results.set(messageId, candidateView(selected));
     return { unit, identityUnit, publicationMessageId: messageId, attachmentIds: publication.attachments.map(item => item.id) };
   });
-  return { replyTo: user?.replyTo, units, results: [...results.values()] };
+  const naturalCandidates = units.some(unit => unit.allowNatural) ? candidates.sort((a, b) =>
+    String(a.publication.publishedAt).localeCompare(String(b.publication.publishedAt))).slice(-18).map(candidateView) : [];
+  return { replyTo: user?.replyTo, units, results: [...results.values()], naturalCandidates };
+}
+
+function selectedAcceptanceBindings(snapshot, approvals, user) {
+  const view = acceptanceContextView(snapshot, user);
+  return snapshot.bindings.map(binding => {
+    const approval = approvals.find(item => item.unit === binding.unit && item.naturalIdentity && item.publicationMessageId);
+    if (!approval || !binding.allowNatural) return binding;
+    const matched = naturalAcceptanceMatch({ units: sourceUnits(user.text), identityUnits: approval.naturalIdentity.units,
+      anchors: approval.naturalIdentity.anchors, candidates: view.naturalCandidates });
+    if (matched?.messageId !== approval.publicationMessageId) return binding;
+    const entry = snapshot.entries.find(item => item.target?.operationId === matched.operationId && item.publication.messageId === matched.messageId);
+    return entry ? { unit: binding.unit, identityUnit: approval.naturalIdentity.units[0], workId: entry.workId,
+      target: entry.target, publication: entry.publication } : binding;
+  });
 }
 
 function acceptanceScopes(items, bindings) {
@@ -205,7 +242,8 @@ function acceptanceScopes(items, bindings) {
 }
 
 function saveRequestAcceptances(services, user, items, before, current) {
-  const { store } = services, records = [], roomOnlyAcceptances = [], unresolvedAcceptances = [], grouped = new Map();
+  const { store } = services, records = [], roomResultAcceptances = [], roomOnlyAcceptances = [], unresolvedAcceptances = [],
+    grouped = new Map(), groupedRoomResults = new Map();
   for (const item of items) {
     if (item.recordIn === 'room-only') {
       const { unit, scope, remainingBoundaries, publicationMessageId, recordingLimitUnits, recordingDirective } = item;
@@ -226,6 +264,16 @@ function saveRequestAcceptances(services, user, items, before, current) {
       const { publicationMessageId, ...unresolved } = item;
       unresolvedAcceptances.push({ ...unresolved, publicationMessageId: null, reason: selected?.reason || item.reason ||
         'The exact delivery could not be confirmed at the time of recording. No other result was selected.' });
+      continue;
+    }
+    if (selected.target.roomResultId) {
+      if (item.recordingKind === 'work') {
+        unresolvedAcceptances.push({ ...item, reason: '这条群内文字是独立的职责交付，没有可写入的工作卡。' });
+        continue;
+      }
+      const group = groupedRoomResults.get(selected.target.roomResultId) || { target: selected.target, approvals: [] };
+      group.approvals.push(item);
+      groupedRoomResults.set(selected.target.roomResultId, group);
       continue;
     }
     if (!grouped.has(selected.workId)) grouped.set(selected.workId, []);
@@ -262,7 +310,20 @@ function saveRequestAcceptances(services, user, items, before, current) {
     records.push({ workId, operationId, workStatus: saved.status, scope, remainingBoundaries, publicationMessageIds,
       scopes: source.clauses?.map(clause => ({ unit: clause.unit, scope: clause.scope })), recordedAt });
   }
-  return { records, roomOnlyAcceptances, unresolvedAcceptances };
+  for (const { target, approvals } of groupedRoomResults.values()) {
+    const id = JSON.stringify([user.roomId, user.messageId, target.version]);
+    const joined = field => [...new Set(approvals.map(item => item[field]).filter(Boolean))].join('\n');
+    const saved = store.getRecord('room-result-acceptances', id) || store.putRecord('room-result-acceptances', {
+      id, roomId: user.roomId, userMessageId: user.messageId, publicationMessageId: target.roomResultId,
+      ownerBotId: target.ownerBotId, dutyKey: target.dutyKey, sourceMessageId: target.sourceMessageId, taskId: target.taskId,
+      version: target.version, scope: joined('scope'), remainingBoundaries: joined('remainingBoundaries'),
+      fullScope: approvals.every(item => item.fullScope) && !joined('remainingBoundaries'),
+      legacyRoomDelivery: approvals.some(item => item.legacyRoomDelivery),
+      clauses: approvals.map(({ unit, userClause, clauseStart }) => ({ unit, userClause, clauseStart })), recordedAt: new Date().toISOString(),
+    });
+    roomResultAcceptances.push(saved);
+  }
+  return { records, roomResultAcceptances, roomOnlyAcceptances, unresolvedAcceptances };
 }
 
 function outputOperationId(store, work, roomId, requestedId) {
@@ -314,6 +375,36 @@ export function coreTools(services, task) {
   const authorize = (decision, ctx, proposed, { workId, actionId }) => authorizeProduction({ task, store, decision, proposed,
     workId, actionId, verify: ctx.verifyProduction, signal: ctx.signal,
     isTargetCurrent: proposed.work ? () => sameWork(proposed.work, services.works.get(workId)) : undefined });
+  const roomMaterials = content => {
+    const readAttachments = store.listTools(task.id).flatMap(tool => tool.status === 'completed' &&
+      ['chatroom_read', 'evidence_read'].includes(tool.name) && tool.output?.details?.reference?.attachmentId ? [tool.output.details] : []);
+    return [...new Map([...readAttachments, ...content.evidence]
+      .filter(item => item.reference?.type === 'room' && item.reference.roomId === source.roomId)
+      .map(item => [JSON.stringify([item.reference.messageId, item.reference.attachmentId]), item])).values()];
+  };
+  const proposalMaterials = content => roomMaterials(content).slice(0, 6).map(item => ({ reference: item.reference, author: item.author,
+    content: typeof item.content === 'string' ? item.content.slice(0, 2400) : undefined }));
+  const proposalHandoff = handoff => Object.fromEntries(['instruction', 'content', 'message', 'handoff'].filter(key => handoff[key])
+    .map(key => [key, handoff[key]]));
+  const planReceipt = plan => ({ planId: plan.id, status: plan.kind === 'independent-review' ? 'waiting-for-publication' : 'awaiting-owner-delivery',
+    registered: true, receiptLayer: 'room-duty-plan', sourceUnit: plan.grant.sourceUnit,
+    ...(plan.dependency?.operationId ? { dependencyOperationId: plan.dependency.operationId } : {}),
+    ...(plan.duplicate ? { duplicate: true } : {}),
+    instruction: 'The original action and prerequisites are saved. A responsibility record or this receipt does not mean that a Bot has run or published the result.' });
+  const dutyContext = async content => {
+    const room = source.input?.room;
+    if (!userRequest || room?.kind !== 'group' || !room.team || !source.roomId) throw new Error('A room duty action requires a current authenticated project group request.');
+    return roomMaterials(content).slice(0, 16).map(item => ({ ...item.reference }));
+  };
+  const dutyProposal = (dutyKey, independent) => {
+    if (!dutyKey) return undefined;
+    const room = source.input?.room;
+    const duty = room?.team?.duties?.find(item => item.dutyKey === dutyKey && item.state === 'active' &&
+      room.members.includes(item.botId) && item.botId !== services.works.botId && item.botId !== room.team.eggBotId &&
+      Boolean(item.dutyProfile?.independentReview) === independent);
+    if (!duty) throw new Error('Choose the currently assigned duty for this part, or omit dutyKey so the project can resolve its owner.');
+    return { responsibility: duty.responsibility, boundary: duty.dutyProfile?.boundary };
+  };
   const selectedWork = work => {
     const binding = work.bindings?.findLast(item => item.type === 'codex-desktop');
     const execution = externalExecution(work, binding?.operationId);
@@ -331,7 +422,7 @@ export function coreTools(services, task) {
       throw new Error('仅文稿授权不会追加到正在实施的回合或恢复已停止的实施工作。请使用对应的文档工作，或登记独立新文档工作。');
   };
   return [
-    tool('request_decide', 'Classify the CURRENT authenticated user request before acting. Use feedback for observations or trial reports without explicit approval or a current change request; discuss for planning or a small draft in chat; status for progress; deliver for existing outputs; control for pause/stop/cancel. Use accept for explicit scoped approval of a delivered result, including a room-only acknowledgment or a status question. Use produce/revise for an independently authorized action, including when the same message explicitly accepts earlier work. References to earlier approval supply context for the new action. The tool checks the original and saves only exact, confirmed current approvals whose scope permits writing to the work. When acceptanceReply is present, the runtime includes that receipt in the room reply. Answer additional requests without restating or reinterpreting that receipt. Read the saved intent and source actions before work_create/work_dispatch; the actual production proposal still requires its own check. For existing files use work_outputs and work_deliver.',
+    tool('request_decide', 'Classify the CURRENT authenticated user request before acting. Use room-deliver for a requested final text handoff, note or wording to post only in this room; answer here, without executor tools. Use discuss for questions, planning or small drafts; feedback for observations; status for progress; deliver for existing outputs; control for pause/stop/cancel. Use accept for explicit scoped approval. Use produce/revise for a separately authorized production action, including an independent review after publication. The original source check can find multiple actions. Omit sourceUnit to start the sole immediate step; select the reported action unit for a later separate step. When acceptanceReply is present, the runtime includes that receipt in the room reply.',
       object({ intent: { type: 'string', enum: requestIntents }, productionStage: { type: 'string', enum: productionStages,
         description: 'Classify the requested outcome. A standalone formal Markdown review document, its revision and returning the resulting file are one document-review action. Implementation means making or changing the working product, building, testing or deploying it. Other is an independent action outside both stages.' },
         workRelation: { type: 'string', enum: ['new', 'continue'] }, workId: string,
@@ -350,44 +441,60 @@ export function coreTools(services, task) {
         const messageId = source.replyTo || source.messageId;
         let confirmedFeedback = previous?.confirmedFeedback === true;
         // Room retries create new task and accepted-message IDs for the same original message.
-        const acceptanceId = user && `acceptance:${JSON.stringify([user.actor, user.roomId, user.messageId])}`;
+        const originalAcceptanceId = user && `acceptance:${JSON.stringify([user.actor, user.roomId, user.messageId])}`;
+        const oldAcceptance = originalAcceptanceId && store.getRecord('production-sources', originalAcceptanceId);
+        const mayResolveLegacy = oldAcceptance?.identityVersion !== 2 && oldAcceptance?.receipt?.unresolvedAcceptances?.length &&
+          !oldAcceptance.receipt.acceptances?.length && !oldAcceptance.receipt.roomOnlyAcceptances?.length;
+        const acceptanceId = mayResolveLegacy ? originalAcceptanceId + ':delivered-result-identity' : originalAcceptanceId;
         const readAcceptance = () => acceptanceId && store.getRecord('production-sources', acceptanceId);
         let acceptance = readAcceptance();
-        let classification, acceptanceContext, bindingSnapshot = [];
+        let classification, acceptanceContext, bindingSnapshot = { bindings: [], entries: [] };
+        const readBindings = async () => {
+          if (!user?.roomId) return { bindings: [], entries: [] };
+          const [rooms, page] = await Promise.all([
+            services.sources.rooms(task),
+            services.sources.callForSource('chatroom_read', { roomId: user.roomId, acceptanceResults: true }, task)
+              .catch(() => ({ roomResults: [] })),
+          ]);
+          return requestAcceptanceBindings(services, task, user, rooms, page.roomResults);
+        };
         const checkProduction = production && !confirmedFeedback;
-        const processAcceptance = checkProduction || intent === 'accept';
-        if (checkProduction || intent === 'accept' && !acceptance) {
+        const checkRoomDelivery = intent === 'room-deliver';
+        const processAcceptance = checkProduction || intent === 'accept' || checkRoomDelivery;
+        if (checkProduction || checkRoomDelivery || intent === 'accept' && !acceptance) {
           const selected = work && selectedWork(work);
-          if (!acceptance) {
+          const loadAcceptanceContext = async () => {
             try {
-              const rooms = user?.roomId ? await services.sources.rooms(task) : [];
-              bindingSnapshot = requestAcceptanceBindings(services, task, user, rooms);
+              bindingSnapshot = await readBindings();
               acceptanceContext = acceptanceContextView(bindingSnapshot, user);
             } catch { acceptanceContext = { units: [], results: [], unavailable: true }; }
-          }
+            return acceptanceContext;
+          };
           classification = await authorizeProduction({ task, store,
             decision: { messageId, roomId: source.roomId, ...(production ? {
               productionStage: args.productionStage, workRelation: args.workRelation, sourceUnit: args.sourceUnit,
             } : {}) }, proposed: { work: selected || undefined },
             verify: ctx.verifyProduction, signal: ctx.signal, isTargetCurrent: selected ? () => sameWork(selected, services.works.get(work.id)) : undefined,
-            sourceOnly: true, savedDecision: previous ?? null, acceptanceContext,
+            sourceOnly: true, savedDecision: previous ?? null, acceptanceContext: loadAcceptanceContext,
             acceptanceMode: acceptance ? undefined : intent === 'accept' ? 'required' : 'candidate' });
         }
         // Freeze positive, negative and unresolved decisions for the original message before refreshing permissions.
         const approval = classification?.approval;
         if (!acceptance && approval) {
-          const approvals = acceptanceScopes(approval.acceptances, bindingSnapshot);
-          const bindings = bindingSnapshot.filter(binding => binding.publication && approvals.some(item => item.recordIn === 'work' &&
+          const selected = selectedAcceptanceBindings(bindingSnapshot, approval.acceptances, user);
+          const approvals = acceptanceScopes(approval.acceptances, selected);
+          const bindings = selected.filter(binding => binding.publication && approvals.some(item => item.recordIn === 'work' &&
             item.unit === binding.unit && item.publicationMessageId === binding.publication.messageId));
           acceptance = store.transaction(() => readAcceptance() || store.putRecord('production-sources', {
             id: acceptanceId, acceptedMessageId: user.acceptedMessageId, roomId: user.roomId, messageId: user.messageId,
+            identityVersion: 2,
             approvals, bindings, acknowledgmentOnly: approval.acknowledgmentOnly, issue: approval.issue,
             unconfirmed: approval.acceptanceUnconfirmed ||
               approvals.some(item => item.recordIn === 'unconfirmed' || item.recordIn === 'work' && acceptanceContext?.unavailable),
           }));
         }
         const canRecord = processAcceptance && !acceptance?.receipt && acceptance?.bindings.length > 0;
-        const rooms = canRecord ? await services.sources.rooms(task).catch(() => []) : [];
+        const currentBindings = canRecord ? await readBindings().catch(() => null) : null;
         ctx.signal?.throwIfAborted();
         if ((classification || acceptance) && (store.getTask(task.id)?.cancelRequested ||
           JSON.stringify(currentUserRequest(task, store)) !== JSON.stringify(user) ||
@@ -395,22 +502,22 @@ export function coreTools(services, task) {
           throw new Error('The authenticated source changed before its decision could be saved.');
         confirmedFeedback ||= classification?.feedback === true && !acceptance?.approvals.length && !acceptance?.unconfirmed;
         const sourceActions = classification?.actions;
+        const roomDeliveryUnits = classification?.roomDeliveryUnits || [];
         if (production && (confirmedFeedback || !sourceActions?.length)) {
           production = false;
           intent = acceptance?.approvals.length || acceptance?.unconfirmed || previous?.acceptances?.length ? 'accept' :
-            confirmedFeedback ? 'feedback' : classification?.deliveryUnits.length ? 'deliver' : 'discuss';
+            roomDeliveryUnits.length ? 'room-deliver' : confirmedFeedback ? 'feedback' : classification?.deliveryUnits.length ? 'deliver' : 'discuss';
         }
+        if (checkRoomDelivery && !roomDeliveryUnits.length) intent = acceptance?.approvals.length ? 'accept' : 'discuss';
         // Persist the actual acceptance outcomes with the routing decision, before any separate dispatch.
         const decision = store.transaction(() => {
           let receipt = readAcceptance()?.receipt;
           if (processAcceptance && acceptance && !receipt) {
-            let current = [], unavailable = false;
-            if (canRecord) try { current = requestAcceptanceBindings(services, task, user, rooms); }
-            catch { unavailable = true; }
-            const { records, roomOnlyAcceptances, unresolvedAcceptances } =
+            const current = currentBindings ? selectedAcceptanceBindings(currentBindings, acceptance.approvals, user) : [];
+            const { records, roomResultAcceptances, roomOnlyAcceptances, unresolvedAcceptances } =
               saveRequestAcceptances(services, user, acceptance.approvals, acceptance.bindings, current);
-            receipt = { taskId: task.id, acceptances: records, roomOnlyAcceptances, unresolvedAcceptances,
-              acceptanceUnconfirmed: acceptance.unconfirmed || unavailable };
+            receipt = { taskId: task.id, acceptances: records, roomResultAcceptances, roomOnlyAcceptances, unresolvedAcceptances,
+              acceptanceUnconfirmed: acceptance.unconfirmed || canRecord && !currentBindings };
             store.putRecord('production-sources', { ...acceptance, receipt });
           }
           const acceptances = [...new Map([...(previous?.acceptances || []), ...(receipt?.acceptances || [])]
@@ -418,6 +525,7 @@ export function coreTools(services, task) {
           return store.putRecord('request-routing', { id: task.id, messageId, roomId: source.roomId, acceptances,
             acceptanceReceiptTaskId: receipt?.taskId ?? previous?.acceptanceReceiptTaskId,
             acceptanceAcknowledgmentOnly: acceptance?.acknowledgmentOnly ?? previous?.acceptanceAcknowledgmentOnly,
+            roomResultAcceptances: receipt?.roomResultAcceptances ?? previous?.roomResultAcceptances ?? [],
             roomOnlyAcceptances: receipt?.roomOnlyAcceptances ?? previous?.roomOnlyAcceptances ?? [],
             unresolvedAcceptances: receipt?.unresolvedAcceptances ?? previous?.unresolvedAcceptances ?? [],
             acceptanceUnconfirmed: receipt?.acceptanceUnconfirmed ?? previous?.acceptanceUnconfirmed,
@@ -425,15 +533,17 @@ export function coreTools(services, task) {
             intent, productionStage: production ? args.productionStage : null, confirmedFeedback,
             existingDelivery: previous?.existingDelivery === true || intent === 'deliver',
             sourceUnit: production ? classification?.resolvedSourceUnit ?? args.sourceUnit : null,
-            ...(production && classification?.resolvedSourceUnit !== undefined ? { sourceUnitInferred: true } : {}),
+            sourceUnitInferred: production && classification?.resolvedSourceUnit !== undefined,
+            sourceActions: production ? sourceActions || [] : [],
+            roomDeliveryUnits: intent === 'room-deliver' ? roomDeliveryUnits : [],
             workRelation: production ? args.workRelation : null, workId: production && args.workRelation === 'continue' ? args.workId : null,
             reason: intent !== args.intent ? 'The authenticated source contains no independent production action.' : modelText(args.reason), authority: 'model-routing-decision' });
         });
         const reply = acceptanceReply(decision, user?.text);
         const result = reply ? { ...decision, acceptanceReply: reply } : decision;
-        if (intent !== args.intent) return { ...result, instruction: 'Follow the saved intent and respond to the original message. Do not call work_create or work_dispatch for this source classification.' };
+        if (intent !== args.intent || intent === 'room-deliver') return { ...result, instruction: 'Follow the saved intent and respond to the original message. Do not call an executor or dispatch independent work for this source classification.' };
         return sourceActions?.length ? { ...result, sourceActions,
-          instruction: 'For a separately authorized production action, use the matching production decision and submit its exact proposal. Correct an actual routing mismatch once.' } : result;
+          instruction: 'Submit only the selected source action and its explicit limits. After a prerequisite is submitted, select the reported after-dependency action unit and call work_create to register an independent room review. Do not include the next action in the immediate work proposal.' } : result;
       }),
     tool('evidence_read', 'Read a bounded original fragment by exact reference. Workers may follow only handed-off references, never browse another room/session feed. Current source access is rechecked.',
       object({ reference }, ['reference']), 'read', args => services.sources.resolve(services.sources.reference(args.reference ?? args, task), task)),
@@ -462,10 +572,11 @@ export function coreTools(services, task) {
           const routing = store.getRecord('request-routing', item.id);
           const acceptanceReceipt = routing?.roomId && routing.roomId === source.roomId && routing.messageId === messageId ? {
             messageId: routing.messageId, receiptTaskId: routing.acceptanceReceiptTaskId,
-            acceptances: routing.acceptances, roomOnlyAcceptances: routing.roomOnlyAcceptances,
+            acceptances: routing.acceptances, roomResultAcceptances: routing.roomResultAcceptances, roomOnlyAcceptances: routing.roomOnlyAcceptances,
             unresolvedAcceptances: routing.unresolvedAcceptances, acceptanceUnconfirmed: routing.acceptanceUnconfirmed,
             issue: routing.acceptanceIssue } : undefined;
           return { taskId: item.id, messageId, status: item.status, acceptanceReceipt,
+            dutyPlans: store.listRecords(ROOM_DUTY_PLANS).filter(plan => plan.requestTaskId === item.id).map(planReceipt),
             actions: store.listTools(item.id).filter(record => record.effect !== 'read').map(record => {
               const receipt = record.output?.details || {};
               return { actionId: record.id, tool: record.name, status: record.status, id: receipt.id, workId: receipt.workId,
@@ -548,12 +659,60 @@ export function coreTools(services, task) {
         return { workId: work.id, operationId, status: 'ready-for-current-reply',
           attachments: available.filter(item => !selected || selected.includes(item.id)).map(({ id }) => ({ id })) };
       }),
-    tool('work_create', 'Accept and asynchronously dispatch independent work. The receipt confirms local scheduling only, not Pi/Codex execution, native registration or completion. Omit executor for the default engine. Give goal, evidence, handoff prose and an authorized target; the program supplies operation IDs and refreshes current project rules. Do not repeat or wait on this frontend call to strengthen the acknowledgment.',
+    tool('work_create', 'Submit one selected source action. An immediate action schedules actual work; omit executor for the default engine. For a separately authorized independent text review after the current source’s work is published, select its after-dependency action with request_decide and call work_create without an executor. The runtime registers a durable prerequisite and picks the assigned independent duty owner when the real result is published. For in-scope assistance on the immediate action, optionally provide participant with the responsible dutyKey and just their contribution. Pass exact same-room evidence (including attachmentId when relevant), keep scope and handoff separate, and do not include another action. Neither receipt proves execution.',
       object({ id: string, operationId: string, goal: string, requirements: string, responsibility: string, ...handoffFields,
+        participant: object({ dutyKey: string, contribution: string }, ['contribution']),
+        afterDependency: object({ workId: string, minimumAttachments: { type: 'integer', minimum: 1, maximum: WORK_ATTACHMENTS } }),
         executor: object({ kind: { type: 'string', enum: ['pi', 'codex', 'codex-cli', 'grok', 'claude-code'] }, connectionId: string,
           target: { type: 'object', description: 'Use {type:"directory",cwd:"absolute authorized path"} for an existing directory, including one not registered in Desktop. Use project only for the actual selected project; never borrow another project ID.' } }, ['kind']) }), 'write', async (args, ctx) => {
         const decision = productionDecision(task, store);
         if (decision?.workRelation === 'continue') throw new Error(`Continue the existing deliverable with work_dispatch workId=${decision.workId}; this request does not authorize another work.`);
+        const selected = selectedSourceAction(decision);
+        if (!selected) throw new Error('Choose the matching original action from request_decide.sourceActions before submitting a proposal.');
+        const content = await services.sources.handoff(task, args);
+        const goal = modelText(args.goal || args.instruction || args.content || content.originalRequest.content);
+        const requirements = modelText(args.requirements);
+        if (selected.when === 'after-dependency') {
+          if (decision.productionStage !== 'other' || args.executor || args.target || args.cwd || args.projectId)
+            throw new Error('A new dependent room review can only use its assigned owner in the project group. An existing work continuation uses work_wait and its exact saved work.');
+          const references = await dutyContext(content);
+          const base = { roomId: source.roomId, messageId: source.replyTo, kind: 'independent-review' };
+          const planId = roomDutyPlanId({ ...base, sourceUnit: selected.unit });
+          const prior = store.getRecord(ROOM_DUTY_PLANS, planId);
+          if (prior) return planReceipt({ ...prior, duplicate: true });
+          const nowActions = decision.sourceActions.filter(action => action.when === 'now' && action.kind === 'start');
+          const dependencyUnit = selected.dependencyUnit || (nowActions.length === 1 ? nowActions[0].unit : undefined);
+          const candidates = nowActions.filter(action => action.unit === dependencyUnit);
+          if (candidates.length !== 1)
+            throw new Error('The source does not uniquely identify which immediate action must publish first. No dependent action was scheduled.');
+          const dependencyAction = candidates[0];
+          const binding = { roomId: base.roomId, messageId: base.messageId, sourceUnit: dependencyUnit, stage: dependencyAction.stage,
+            soleSourceAction: nowActions.filter(action => action.stage === dependencyAction.stage).length === 1 };
+          const dispatches = dependencyDispatches(store, binding, args.afterDependency?.workId);
+          if (dispatches.length > 1 || args.afterDependency?.workId && !dispatches.length)
+            throw new Error('The selected dependency does not resolve to one accepted operation from this original request.');
+          const dependency = dispatches[0];
+          const minimumAttachments = Math.max(1, dependencyAction.requiredAttachments || 0,
+            Number.isSafeInteger(args.afterDependency?.minimumAttachments) ? Math.min(WORK_ATTACHMENTS, args.afterDependency.minimumAttachments) : 0);
+          const after = { ...binding, condition: 'successful-publication',
+            minimumAttachments, ...(dependency ? { workId: dependency.workId, operationId: dependency.id, taskId: dependency.receipt.taskId } : {}) };
+          const dutyKey = modelText(args.participant?.dutyKey).trim() || undefined;
+          const grant = await authorize(decision, ctx, { relation: 'new', goal, requirements,
+            handoff: proposalHandoff(content.handoff), sourceMaterials: proposalMaterials(content),
+            executor: 'room-duty-owner', participant: { independent: true, ...(dutyKey ? { dutyKey, duty: dutyProposal(dutyKey, true) } : {}) }, after,
+          }, { workId: null, actionId: planId });
+          ctx.signal?.throwIfAborted();
+          return planReceipt(saveRoomDutyPlan(store, { ...base, grant, dependency: after, coordinatorBotId: services.works.botId,
+            requestTaskId: task.id, dutyKey, goal, requirements, instruction: content.handoff.instruction, references }));
+        }
+        if (args.afterDependency) throw new Error('The selected source action is immediate. Select the separate after-dependency source action to register its wait.');
+        const nowSteps = decision.sourceActions.filter(action => action.when === 'now' && action.kind === 'start' &&
+          action.stage === selected.stage);
+        const already = () => sourceDispatches(store, { roomId: source.roomId, messageId: source.replyTo, stage: selected.stage,
+          ...(nowSteps.length === 1 ? {} : { sourceUnit: selected.unit }) });
+        const replay = already();
+        if (replay.length === 1) return { ...replay[0].receipt, duplicate: true };
+        if (replay.length > 1) throw new Error('More than one previously submitted work has this source action. No additional work was submitted.');
         const id = typeof args.id === 'string' && /^[\w.-]{1,160}$/.test(args.id) ? args.id : randomUUID();
         const operationId = actionId(args, ctx, 'operationId');
         const existing = services.works.get(id);
@@ -571,15 +730,18 @@ export function coreTools(services, task) {
         const target = (selectedTarget || executorKind === 'codex') ? await resolveCodexTarget(selectedTarget, services, task) : null;
         const executor = kind || target ? { kind: kind || 'codex', ...(suppliedExecutor.connectionId ? { connectionId: suppliedExecutor.connectionId } : {}),
           ...(target ? { target } : {}) } : undefined;
-        const content = await services.sources.handoff(task, args);
         let project;
         try { project = target ? await services.sources.authorizeProject(target, task) : await services.sources.contextProject(task); }
         catch (error) { if (target) throw error; content.evidenceWarnings.push({ message: `Project scope is unavailable: ${error.message}` }); }
         if (project && executor?.target?.type === 'project') executor.target = { ...executor.target, projectId: project.id };
-        const goal = modelText(args.goal || args.instruction || args.content || content.originalRequest.content);
-        const requirements = modelText(args.requirements);
+        const participant = modelText(args.participant?.contribution).trim() ? {
+          contribution: modelText(args.participant.contribution).trim().slice(0, 4000),
+          dutyKey: modelText(args.participant.dutyKey).trim() || undefined } : null;
+        const participantRefs = participant && await dutyContext(content);
         const grant = await authorize(decision, ctx, { relation: 'new', project, target: executor?.target || target, executor: executorKind,
-          goal, requirements, handoff: content.handoff }, { workId: id, actionId: `${id}:${operationId}` });
+          goal, requirements, handoff: proposalHandoff(content.handoff), sourceMaterials: proposalMaterials(content),
+          ...(participant ? { participant: { ...participant, duty: dutyProposal(participant.dutyKey, false) } } : {}) },
+        { workId: id, actionId: `${id}:${operationId}` });
         if (grant) content.stage = productionStage(grant);
         try {
           content.currentKnowledge = await services.memory.forRequest(task, project);
@@ -587,11 +749,19 @@ export function coreTools(services, task) {
         }
         catch (error) { content.evidenceWarnings.push({ message: `Current project rules are unavailable: ${error.message}` }); }
         ctx.signal?.throwIfAborted();
+        const concurrent = already();
+        if (concurrent.length === 1) return { ...concurrent[0].receipt, duplicate: true };
+        if (concurrent.length > 1) throw new Error('More than one previously submitted work has this source action. No additional work was submitted.');
         const work = services.works.create({ id, operationId, goal,
           requirements, responsibility: modelText(args.responsibility), executor, project,
           productionStage: grant?.stage, productionAuthorization: grant, initialHandoff: content }, task);
         const receipt = await services.works.dispatch(work.id, { id: operationId, kind: 'request', content, metadata: { priority: 'background' } }, task);
-        return { ...compactWork(work), ...receipt, handedOff: receipt.accepted === true, acceptance: modelText(args.acceptance), evidenceWarnings: content.evidenceWarnings };
+        const participantPlan = participant && receipt.accepted && saveRoomDutyPlan(store, { kind: 'contribution', roomId: source.roomId, messageId: source.replyTo,
+          grant, coordinatorBotId: services.works.botId, requestTaskId: task.id, dutyKey: participant.dutyKey,
+          goal: participant.contribution, references: participantRefs,
+          workId: work.id, operationId: receipt.operationId });
+        return { ...compactWork(work), ...receipt, handedOff: receipt.accepted === true, acceptance: modelText(args.acceptance),
+          ...(participantPlan ? { participantPlan: planReceipt(participantPlan) } : {}), evidenceWarnings: content.evidenceWarnings };
       }),
     tool('work_update', frontend ? 'Pause or cancel existing work. Send requirements with work_dispatch; only the worker records progress and completion.' : review ? 'Record progress, checkpoints, next steps and evidence for the current external review. Follow the current external_work_review to determine whether status and waiting can be updated. Preserve the accepted goal and requirements.' : 'Record actual progress and status of the current work. Its identity and revision are supplied by the program.',
       object({ id: string, ...(!frontend ? { goal: string, requirements: string, progress: string, checkpoint: {}, next: string, constraints: string, evidence: {},

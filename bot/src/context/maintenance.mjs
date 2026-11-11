@@ -764,7 +764,7 @@ export class ContextMaintenance {
       project ||= await this.services.sources.contextProject(task);
       project = await this.services.sources.projectForHandoff(task, project);
     } catch (error) { projectError = error.message; }
-    const projectIds = [...new Set([knowledgeProjectId(project), project?.id].filter(Boolean))];
+    const projectIds = [...new Set([knowledgeProjectId(project), project?.id, this.services.sources.roomProject(source)?.id].filter(Boolean))];
     const projectScopes = projectIds.map(id => this.store.getRecord('knowledge_scope', `project:${id}`)).filter(Boolean);
     const conversationScope = this.store.getRecord('knowledge_scope', `conversation:${source.conversationId}`);
     const scopes = [...projectScopes, ...(conversationScope ? [conversationScope] : [])];
@@ -797,7 +797,7 @@ export class ContextMaintenance {
   tools(task) {
     const native = (name, description, inputSchema, effect, execute) => ({ name, description, inputSchema, effect, execute: async (args, ctx) => result(await execute(modelArgs(args), ctx)) });
     return [
-      native('knowledge_remember', 'Persist a clearly requested user rule/correction or a selected sourced finding. Plain user notes retain their real author. Scope defaults to the authorized project directory, independent of native registration. Copy source references exactly from reads; invented/inaccessible IDs fail the save. Peer execution claims need owning-work/operation evidence from work_get, not a thread list or another Bot opinion. Wait for saved:true. Use work_update for progress.',
+      native('knowledge_remember', 'Persist a clearly requested user rule/correction or a selected sourced finding. Omit scopeId for the authorized current work project or project group. Use an exact existing scopeId only when deliberately choosing another readable scope. Plain user notes retain their real author. Copy source references exactly from reads. Peer execution claims need owning-work/operation evidence from work_get, not a thread list or another Bot opinion. Wait for saved:true. Use work_update for progress.',
         schema({ content: string, scope: string, scopeId: string, projectId: string, workId: string, kind: string,
           references: { type: 'array', items: {} } }), 'write', (args, ctx) => this.remember(task, args, ctx)),
       native('context_assemble', 'Request a short assembly dialogue for one concrete semantic gap left by ordinary source reads. Put only that question and known source pointers in reason; current-turn source reads are supplied automatically. Parent business actions and executor handoff remain your steps. Output is temporary evidence for this turn.',
