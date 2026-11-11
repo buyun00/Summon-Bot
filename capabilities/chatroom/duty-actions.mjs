@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { ROOM_DUTY_PLANS, dependencyDispatches, roomDutyPlanId, sourceDispatches } from '../../bot/src/context/duty-actions.mjs';
+import { OWNER_DELIVERY, ROOM_DUTY_PLANS, dependencyDispatches, matchesContributionGrant, roomDutyPlanId, sourceDispatches } from '../../bot/src/context/duty-actions.mjs';
 import { currentUserRequest, requireProductionGrant } from '../../bot/src/capabilities/request-routing.mjs';
 import { acceptedWorkTask } from '../../bot/src/context/sources.mjs';
 import { externalExecution } from '../../bot/src/context/execution-evidence.mjs';
@@ -45,6 +45,7 @@ export class RoomDutyActions {
     const plans = await this.manager.readState(item.botId, db => {
       const saved = db?.getTask(item.taskId), user = saved && currentUserRequest(saved, db);
       if (user?.roomId !== room.id || user.messageId !== trigger.id) return [];
+      const accepted = db.getMessage(user.acceptedMessageId);
       return db.listRecords(ROOM_DUTY_PLANS).flatMap(plan => {
         const grant = plan.grant;
         if (!grant || plan.requestTaskId !== task.id || plan.coordinatorBotId !== item.botId ||
@@ -52,11 +53,14 @@ export class RoomDutyActions {
             plan.id !== roomDutyPlanId({ ...plan, sourceUnit: grant.sourceUnit })) return [];
         const dependent = plan.kind === 'independent-review';
         const relation = dependent ? 'new' : grant.relation;
+        const ownerDelivery = plan.dependency?.condition === OWNER_DELIVERY;
         if (!['new', 'continue'].includes(relation)) return [];
+        if (ownerDelivery && (user.text !== trigger.content || accepted?.sourceMessageId !== item.id ||
+            accepted.content?.metadata?.deliveryId !== item.id)) return [];
         try {
           requireProductionGrant(saved, db, grant, {
             actionId: dependent ? plan.id : plan.operationId, workId: dependent ? null : plan.workId, relation,
-            when: dependent ? 'after-dependency' : 'now',
+            when: dependent || ownerDelivery ? 'after-dependency' : 'now',
           });
         } catch { return []; }
         if (grant.participant?.dutyKey !== plan.dutyKey) return [];
@@ -64,7 +68,8 @@ export class RoomDutyActions {
           plan.dependency.messageId === trigger.id && plan.dependency.condition === 'successful-publication' ? [plan] : [];
         const event = db.getRecord('work-events', plan.operationId);
         const gatesProduction = event?.contributionPlanId === plan.id;
-        if (relation === 'continue' && (!gatesProduction || !plan.dutyKey || event.requestTaskId !== saved.id ||
+        if (relation === 'continue' && (!gatesProduction || !plan.dutyKey || !matchesContributionGrant(plan, grant) ||
+            event.requestTaskId !== saved.id || event.content?.stage?.kind !== grant.stage ||
             event.authorization?.source?.actor !== 'user' || event.authorization.source.roomId !== room.id ||
             event.authorization.source.replyTo !== trigger.id || !same(event.authorization.production, grant))) return [];
         return (task.status !== 'interrupted' || gatesProduction) && grant.participant?.contribution === plan.goal && event?.workId === plan.workId &&
@@ -93,6 +98,9 @@ export class RoomDutyActions {
       const original = db?.getTask(plan.requestTaskId);
       if (!work || work.waiting?.operationId !== operation?.id || operation?.contributionPlanId !== plan.id ||
           operation.status !== 'pending' || !original || original.cancelRequested || original.status === 'cancelled') return 'stopped';
+      if (plan.dependency?.condition === OWNER_DELIVERY && (!matchesContributionGrant(plan, operation.authorization?.production) ||
+          work.botId !== plan.coordinatorBotId || (work.project?.id ?? null) !== plan.dependency.projectId ||
+          work.status !== 'paused' && (work.controlRevision || 0) !== operation.contributionControlRevision)) return 'stopped';
       return work.status;
     });
   }
@@ -115,14 +123,20 @@ export class RoomDutyActions {
     if (plan.status !== 'completed') return pick(plan, ['status', 'waitingFor', 'ownerBotId', 'error']);
     const message = this.store.get('messages', plan.resultMessageId), delivery = this.store.get('deliveries', plan.deliveryId);
     const result = message && this.store.get('room-text-results', message.id);
+    const ownerDelivery = plan.dependency?.condition === OWNER_DELIVERY;
     if (message?.roomId !== room.id || message.id !== `reply:${plan.deliveryId}` || message.jobId !== plan.deliveryId ||
         message.senderId !== plan.ownerBotId || message.replyTo !== trigger.id || !room.members.includes(plan.ownerBotId) ||
         delivery?.status !== 'completed' || delivery.roomDutyAction !== plan.id || result?.kind !== 'contribution' || result.planId !== plan.id ||
         result.ownerBotId !== plan.ownerBotId || result.taskId !== delivery.taskId || result.deliveryId !== delivery.id ||
-        result.dutyKey !== plan.dutyKey || result.sourceMessageId !== trigger.id || result.sourceUnit !== plan.grant.sourceUnit)
+        result.dutyKey !== plan.dutyKey || result.sourceMessageId !== trigger.id || result.sourceUnit !== plan.grant.sourceUnit ||
+        ownerDelivery && (!message.content?.trim() || result.workId !== workId || result.operationId !== operationId ||
+          !same(result.dependency, plan.dependency) || delivery.routedDutyKey !== plan.dutyKey || delivery.messageId !== trigger.id ||
+          delivery.botId !== plan.ownerBotId || !activeDuties(room, plan.ownerBotId).some(duty =>
+            duty.dutyKey === plan.dutyKey && !duty.dutyProfile?.independentReview)))
       return { status: 'blocked', error: '职责回复与原制作操作的群内交付回执未能对上。' };
     return { status: 'completed', planId: plan.id, operationId, workId, sourceMessageId: trigger.id,
       dutyKey: plan.dutyKey, deliveryId: delivery.id, taskId: delivery.taskId, publishedAt: message.createdAt,
+      ...(ownerDelivery ? { dependency: plan.dependency } : {}),
       evidence: { reference: { type: 'room', roomId: room.id, messageId: message.id }, author: message.senderId,
         content: message.content, sourceRefs: result.references, authority: 'published-duty-contribution' } };
   }
@@ -204,6 +218,7 @@ export class RoomDutyActions {
       }
       const duties = activeDuties(room).filter(duty => duty.botId !== (dependency?.makerBotId || plan.coordinatorBotId) &&
         duty.botId !== room.team.eggBotId && Boolean(duty.dutyProfile?.independentReview) === independent &&
+        (!plan.ownerBotId || duty.botId === plan.ownerBotId) &&
         (plan.dutyKey ? plan.dutyKey === duty.dutyKey :
           (duty.sourceRefs || []).some(ref => ref.roomId === room.id && ref.messageId === plan.messageId)));
       if (duties.length !== 1) {
@@ -244,13 +259,14 @@ export class RoomDutyActions {
     return plan?.status === 'queued' && plan.deliveryId === item.id && plan.roomId === item.roomId &&
       plan.messageId === item.messageId && plan.ownerBotId === item.botId &&
       staffingProject(room) && room.goal === plan.originalRoomGoal && room.team.requirements === plan.originalTeamRequirements &&
-      activeDuties(room, item.botId).some(duty => duty.dutyKey === plan.dutyKey) ? plan : null;
+      activeDuties(room, item.botId).some(duty => duty.dutyKey === plan.dutyKey &&
+        (plan.dependency?.condition !== OWNER_DELIVERY || !duty.dutyProfile?.independentReview)) ? plan : null;
   }
-  finish(item, status, resultMessageId) {
+  finish(item, status, resultMessageId, reason) {
     const plan = this.get(item.roomDutyAction);
     if (plan?.status !== 'queued' || plan.deliveryId !== item.id) return;
     this.store.save(ROOM_DUTY_PLANS, { id: plan.id, status: resultMessageId ? 'completed' : 'blocked',
       resultMessageId: resultMessageId || null, finishedAt: now(),
-      ...(resultMessageId ? {} : { error: status === 'completed' ? '职责执行没有发出可用结果。' : '职责执行未完成。' }) });
+      ...(resultMessageId ? {} : { error: reason || (status === 'completed' ? '职责执行没有发出可用结果。' : '职责执行未完成。') }) });
   }
 }

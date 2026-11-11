@@ -6,8 +6,8 @@ import { HANDOFF_REFERENCES, taskSource, workExecution } from '../context/source
 import { modelArgs, modelText, looseSchema, boundedNumber } from '../context/model-input.mjs';
 import { resolveCodexTarget } from './codex-target.mjs';
 import { acceptanceReply, authorizeProduction, currentProductionStage, currentUserRequest, productionDecision, productionRefusal, productionStage, requestIntents, productionStages, selectedSourceAction, separateActionUnits, sourceUnits } from './request-routing.mjs';
-import { ROOM_DUTY_PLANS, dependencyDispatches, roomDutyPlanId, saveRoomDutyPlan, sourceDispatches } from '../context/duty-actions.mjs';
-import { acceptanceBindings, acceptanceLinks, naturalAcceptanceMatch } from './acceptance-identity.mjs';
+import { OWNER_DELIVERY, ROOM_DUTY_PLANS, dependencyDispatches, roomDutyPlanId, saveRoomDutyPlan, sourceDispatches } from '../context/duty-actions.mjs';
+import { acceptanceBindings, acceptanceLinks, naturalAcceptanceMatch, sameRoomResultAcceptance } from './acceptance-identity.mjs';
 import { localTime } from '../context/fact-time.mjs';
 import { externalExecution, isAcceptedOperation } from '../context/execution-evidence.mjs';
 import { readExecutorManifest } from '../runtime/executor-delivery.mjs';
@@ -20,7 +20,7 @@ const tool = (name, description, inputSchema, effect, execute) => ({ name, descr
   execute: async (args, context) => jsonToolResult(await execute(modelArgs(args), context)) });
 const pageFields = { offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 20 } };
 const reference = object({ type: { type: 'string', enum: ['room', 'session', 'artifact', 'knowledge', 'work', 'tool'] }, roomId: string, scopeId: string, workId: string, operationId: string,
-  messageId: string, sessionId: string, entryId: string, id: string, section: { type: 'string', enum: ['acceptedStep', 'evidenceItem', 'toolContent'] },
+  messageId: string, attachmentId: string, sessionId: string, entryId: string, id: string, section: { type: 'string', enum: ['acceptedStep', 'evidenceItem', 'toolContent'] },
   index: { type: 'integer', minimum: 0 }, offset: { type: 'integer', minimum: 0 }, length: { type: 'integer', minimum: 1, maximum: 64000 } }, ['type']);
 const evidence = { type: 'array', maxItems: HANDOFF_REFERENCES, items: reference,
   description: 'Selected exact references from source reads, e.g. [{type:"room",roomId:"...",messageId:"..."}]. Pass the array itself; a JSON array string is also readable. Prose is guidance, not a source grant.' };
@@ -253,6 +253,18 @@ function acceptanceScopes(items, bindings) {
   return anchored.map(({ item, anchor }) => item.recordIn === 'work' && restricted.has(anchor) ? { ...item, recordIn: 'unconfirmed' } : item);
 }
 
+function priorRoomAcceptanceUser(store, record, actor) {
+  if (record.userId) return record.userId;
+  const id = `acceptance:${JSON.stringify([actor, record.roomId, record.userMessageId])}`;
+  for (const key of [id, id + ':delivered-result-identity', id + ':standalone-delivery-version']) {
+    const source = store.getRecord('production-sources', key), taskId = source?.receipt?.taskId;
+    if (!source?.receipt?.roomResultAcceptances?.some(item => item.id === record.id && !item.alreadyRecorded)) continue;
+    const task = taskId && store.getTask(taskId), original = task && currentUserRequest(task, store);
+    if (original && original.acceptedMessageId === source.acceptedMessageId && original.roomId === record.roomId &&
+        original.messageId === record.userMessageId) return original.actor;
+  }
+}
+
 function saveRequestAcceptances(services, user, items, before, current) {
   const { store } = services, records = [], roomResultAcceptances = [], roomOnlyAcceptances = [], unresolvedAcceptances = [],
     grouped = new Map(), groupedRoomResults = new Map();
@@ -332,15 +344,22 @@ function saveRequestAcceptances(services, user, items, before, current) {
   for (const { target, approvals } of groupedRoomResults.values()) {
     const id = JSON.stringify([user.roomId, user.messageId, target.version]);
     const joined = field => [...new Set(approvals.map(item => item[field]).filter(Boolean))].join('\n');
-    const saved = store.getRecord('room-result-acceptances', id) || store.putRecord('room-result-acceptances', {
-      id, roomId: user.roomId, userMessageId: user.messageId, publicationMessageId: target.roomResultId,
+    const remainingBoundaries = joined('remainingBoundaries');
+    const approval = {
+      id, roomId: user.roomId, userMessageId: user.messageId, userId: user.actor, acceptedMessageId: user.acceptedMessageId,
+      approvalTaskId: user.taskId, publicationMessageId: target.roomResultId,
       ownerBotId: target.ownerBotId, dutyKey: target.dutyKey, sourceMessageId: target.sourceMessageId, taskId: target.taskId,
-      deliveryId: target.deliveryId, version: target.version, scope: joined('scope'), remainingBoundaries: joined('remainingBoundaries'),
-      fullScope: approvals.every(item => item.fullScope) && !joined('remainingBoundaries'),
+      deliveryId: target.deliveryId, version: target.version, scope: joined('scope'), remainingBoundaries,
+      fullScope: approvals.every(item => item.fullScope) && !remainingBoundaries,
       legacyRoomDelivery: approvals.some(item => item.legacyRoomDelivery),
       clauses: approvals.map(({ unit, userClause, clauseStart }) => ({ unit, userClause, clauseStart })), recordedAt: new Date().toISOString(),
-    });
-    roomResultAcceptances.push(saved);
+    };
+    const existing = store.getRecord('room-result-acceptances', id);
+    if (existing) { roomResultAcceptances.push(existing); continue; }
+    const prior = store.listRecords('room-result-acceptances').find(record => record.roomId === user.roomId && record.version === target.version &&
+      sameRoomResultAcceptance({ ...record, userId: priorRoomAcceptanceUser(store, record, user.actor) }, approval));
+    roomResultAcceptances.push(prior ? { ...approval, recordedAt: prior.recordedAt, alreadyRecorded: true, recordedAcceptanceId: prior.id } :
+      store.putRecord('room-result-acceptances', approval));
   }
   return { records, roomResultAcceptances, roomOnlyAcceptances, unresolvedAcceptances };
 }
@@ -431,19 +450,19 @@ export function coreTools(services, task) {
     if (!userRequest || room?.kind !== 'group' || !room.team || !source.roomId) throw new Error('A room duty action requires a current authenticated project group request.');
     return roomMaterials(content).slice(0, 16).map(item => ({ ...item.reference }));
   };
-  const dutyProposal = (dutyKey, independent) => {
+  const dutyProposal = (dutyKey, independent, room = source.input?.room) => {
     if (!dutyKey) return undefined;
-    const room = source.input?.room;
     const duty = room?.team?.duties?.find(item => item.dutyKey === dutyKey && item.state === 'active' &&
       room.members.includes(item.botId) && item.botId !== services.works.botId && item.botId !== room.team.eggBotId &&
       Boolean(item.dutyProfile?.independentReview) === independent);
     if (!duty) throw new Error('Choose the currently assigned duty for this part, or omit dutyKey so the project can resolve its owner.');
-    return { responsibility: duty.responsibility, boundary: duty.dutyProfile?.boundary };
+    return { botId: duty.botId, responsibility: duty.responsibility, boundary: duty.dutyProfile?.boundary };
   };
   const saveContribution = (participant, references, grant, id, operationId) => saveRoomDutyPlan(store, {
     kind: 'contribution', roomId: source.roomId, messageId: source.replyTo,
     grant, coordinatorBotId: services.works.botId, requestTaskId: task.id, dutyKey: participant.dutyKey,
     goal: participant.contribution, references, workId: id, operationId,
+    ...(grant.after?.condition === OWNER_DELIVERY ? { dependency: grant.after, ownerBotId: grant.after.ownerBotId } : {}),
     originalRoomGoal: source.input.room.goal, originalTeamRequirements: source.input.room.team.requirements,
   });
   const selectedWork = work => {
@@ -586,7 +605,7 @@ export function coreTools(services, task) {
         const result = reply ? { ...decision, acceptanceReply: reply } : decision;
         if (intent !== args.intent || intent === 'room-deliver') return { ...result, instruction: 'Follow the saved intent and respond to the original message. Do not call an executor or dispatch independent work for this source classification.' };
         return sourceActions?.length ? { ...result, sourceActions,
-          instruction: 'Submit only the selected source action and its explicit limits. After a prerequisite is submitted, select the reported after-dependency action unit and call work_create to register an independent room review. Do not include the next action in the immediate work proposal.' } : result;
+          instruction: 'Submit only the selected source action and its explicit limits. For a continuation after a named room owner’s contribution, select the continuation unit and call work_dispatch on the existing work with participant. For a separate independent review after publication, submit the immediate action first, then select the review unit and register it through work_create.' } : result;
       }),
     tool('evidence_read', 'Read a bounded original fragment by exact reference. Workers may follow only handed-off references, never browse another room/session feed. Current source access is rechecked.',
       object({ reference }, ['reference']), 'read', args => services.sources.resolve(services.sources.reference(args.reference ?? args, task), task)),
@@ -720,7 +739,7 @@ export function coreTools(services, task) {
         const requirements = modelText(args.requirements);
         if (selected.when === 'after-dependency') {
           if (decision.productionStage !== 'other' || args.executor || args.target || args.cwd || args.projectId)
-            throw new Error('A new dependent room review can only use its assigned owner in the project group. An existing work continuation uses work_wait and its exact saved work.');
+            throw new Error('A new dependent room review can only use its assigned owner in the project group. A continuation after a room owner’s contribution uses work_dispatch with participant on the exact saved work.');
           const references = await dutyContext(content);
           const base = { roomId: source.roomId, messageId: source.replyTo, kind: 'independent-review' };
           const planId = roomDutyPlanId({ ...base, sourceUnit: selected.unit });
@@ -859,7 +878,7 @@ export function coreTools(services, task) {
           warning: `未识别可选状态 ${ignoredStatus}；有效进展已保留，工作状态未改动。` };
         return services.works.update(work.id, { ...patch, expectedRevision: work.revision });
       }),
-    tool('work_dispatch', 'Continue an existing work ONLY after request_decide saved produce/revise with workRelation=continue and its canonical workId for THIS request. If this change needs a concrete contribution from a relevant assigned duty, pass participant with its exact dutyKey and in-scope contribution. The runtime waits for that owner’s same-source delivery before execution; do not ask the worker to contact the member. Omit participant for ordinary continuations. Status uses reads, acceptance uses request_decide, and returning existing files uses work_deliver. Never fix a refusal by relabeling a delivery request as production. The program supplies the operation and binding. Stopped work resumes only for a fresh user request.',
+    tool('work_dispatch', 'Continue an existing work after request_decide saved produce/revise with workRelation=continue and its canonical workId for this request. If the user explicitly asks for an assigned owner’s contribution first, select the reported after-dependency unit for the continuation and pass participant with its exact dutyKey and contribution. Include exact same-room evidence with attachmentIds. The runtime registers the original continuation and waits for the assigned owner’s concrete same-source room delivery. A registered receipt means waiting. Use participant for concrete needed contributions, and omit it for ordinary continuations. Use work_deliver for returning existing files. The program supplies the operation and binding. Stopped work resumes only for a fresh user request.',
       object({ id: string, content: {}, ...handoffFields, correction: { type: 'boolean' },
         participant: object({ dutyKey: string, contribution: string }, ['dutyKey', 'contribution']) }), 'write', async (args, ctx) => {
         const work = await services.sources.requireWork(workId(args), task);
@@ -871,16 +890,17 @@ export function coreTools(services, task) {
         const nowSteps = (decision?.sourceActions || []).filter(action => action.when === 'now' && action.kind !== 'start' &&
           (action.kind === 'continue' ? selected.priorStage : action.stage) === decision.productionStage);
         const previousDispatch = () => {
-          if (sourceAction?.when !== 'now') return null;
+          if (!sourceAction) return null;
           const matches = sourceDispatches(store, { roomId: source.roomId, messageId: source.replyTo, workId: work.id,
-            stage: decision.productionStage, relation: 'continue', includeRegistered: true,
-            ...(nowSteps.length === 1 ? {} : { sourceUnit: sourceAction.unit }) });
+            stage: decision.productionStage, relation: 'continue', when: sourceAction.when, includeRegistered: true,
+            ...(sourceAction.when === 'now' && nowSteps.length === 1 ? {} : { sourceUnit: sourceAction.unit }) });
           if (matches.length > 1) throw new Error('More than one continuation has this source action. No additional operation was submitted.');
           const saved = matches[0];
           return saved ? { ...(saved.receipt || services.works.contributionReceipt(saved)), duplicate: true } : null;
         };
         const replay = previousDispatch();
         if (replay) return replay;
+        const eventId = actionId(args, ctx, 'eventId'), operationId = `${work.id}:${eventId}`;
         const content = await services.sources.handoff(task, args);
         await readSelectedPublications(content);
         let participant, participantRefs, duty;
@@ -892,10 +912,28 @@ export function coreTools(services, task) {
           participantRefs = await dutyContext(content);
           duty = dutyProposal(dutyKey, false);
         }
-        const eventId = actionId(args, ctx, 'eventId');
+        let after;
+        if (sourceAction?.when === 'after-dependency') {
+          const user = currentUserRequest(task, store), originalRoom = source.input?.room;
+          const dependency = user && sourceUnits(user.text)[sourceAction.dependencyUnit - 1];
+          if (!participant || !dependency || dependency.unit === sourceAction.unit || originalRoom?.id !== user.roomId ||
+              !work.sources.some(item => item.actor === user.actor && item.roomId === user.roomId))
+            throw new Error('A conditional continuation needs the exact original prerequisite, an active assigned participant and an existing work from this project group. Nothing was registered.');
+          const rooms = await services.sources.callForSource('chatroom_list', {}, task);
+          const room = rooms.find(item => item.id === user.roomId);
+          if (room?.kind !== 'group' || room.status !== 'active' || room.projectMode === 'chat' ||
+              !['idle', 'active'].includes(room.team?.state) || room.goal !== originalRoom.goal ||
+              room.team.requirements !== originalRoom.team.requirements || dutyProposal(participant.dutyKey, false, room).botId !== duty.botId)
+            throw new Error('The project group or assigned owner changed before the conditional continuation was registered.');
+          const planId = roomDutyPlanId({ roomId: user.roomId, messageId: user.messageId, sourceUnit: sourceAction.unit, kind: 'contribution' });
+          after = { condition: OWNER_DELIVERY, roomId: user.roomId, messageId: user.messageId, requestTaskId: user.taskId,
+            acceptedMessageId: user.acceptedMessageId, sourceUnit: dependency.unit, originalClause: dependency.text,
+            actionUnit: sourceAction.unit, stage: decision.productionStage, projectId: selected.project?.id ?? null,
+            workId: work.id, operationId, planId, ownerBotId: duty.botId, ...participant };
+        }
         const grant = await authorize(decision, ctx, { relation: 'continue', work: selected, handoff: content.handoff,
-          sourceMaterials: proposalMaterials(content), ...(participant ? { participant: { ...participant, duty } } : {}) },
-          { workId: work.id, actionId: `${work.id}:${eventId}` });
+          sourceMaterials: proposalMaterials(content), ...(participant ? { participant: { ...participant, duty } } : {}),
+          ...(after ? { after } : {}) }, { workId: work.id, actionId: operationId });
         if (grant) content.stage = productionStage(grant);
         try {
           content.currentKnowledge = await services.memory.forRequest(task, services.sources.project(work));
@@ -912,13 +950,13 @@ export function coreTools(services, task) {
           metadata: { correction: args.correction === true, resume: Boolean(grant), priority: 'foreground' } };
         let participantPlan;
         const receipt = participant ? store.transaction(() => {
-          participantPlan = saveContribution(participant, participantRefs, grant, work.id, `${work.id}:${eventId}`);
+          participantPlan = saveContribution(participant, participantRefs, grant, work.id, operationId);
           return services.works.registerContinuationContribution(work.id, { ...input, contributionPlanId: participantPlan.id }, task);
         }) : await services.works.dispatch(work.id, input, task);
         return { ...receipt, ...(participantPlan ? { participantPlan: planReceipt(participantPlan) } : {}),
           acceptance: modelText(args.acceptance), evidenceWarnings: content.evidenceWarnings };
       }),
-    tool('work_wait', 'Save a wait for a precise execution result or deadline. For “wait for B, then let A use B’s output”, set targetWorkId=A, dependencyWorkId=B, taskId=B’s accepted task and instruction=the step A should perform. This includes A explaining partial output after B fails; keep success-only prerequisites in the instruction. The runtime derives follow_up for this cross-work step even if an optional mode conflicts. Waiting only to receive the same action’s already published result is observe and never sends another prompt. Supply no new step unless the user authorized one. Missing IDs can be recovered from unique accepted actions; explicit invalid work IDs are rejected. Finish other independent actions and reminders in this turn.',
+    tool('work_wait', 'Save a wait for a precise execution result or deadline. Use work_dispatch with participant for an existing work after an assigned room owner’s contribution. For “wait for B, then let A use B’s output”, set targetWorkId=A, dependencyWorkId=B, taskId=B’s accepted task and instruction=the step A should perform. This includes A explaining partial output after B fails; keep success-only prerequisites in the instruction. The runtime derives follow_up for this cross-work step even if an optional mode conflicts. Waiting only to receive the same action’s already published result is observe and never sends another prompt. Supply no new step unless the user authorized one. Missing IDs can be recovered from unique accepted actions; explicit invalid work IDs are rejected. Finish other independent actions and reminders in this turn.',
       object({ id: string, waitId: string, taskId: string, botId: string, until: string, event: string,
         mode: { type: 'string', enum: ['observe', 'follow_up'] }, dependencyWorkId: string, targetWorkId: string, ...handoffFields }), 'write', async (args, ctx) => {
         let targetArgs = args;

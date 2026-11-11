@@ -22,6 +22,7 @@ import { workExecutor } from './work-executor.mjs';
 import { selectedConnection } from '../agent/model.mjs';
 import { modelConnection } from '../agent/connections.mjs';
 import { waitingLabel } from '../context/execution-evidence.mjs';
+import { OWNER_DELIVERY } from '../context/duty-actions.mjs';
 
 const at = () => new Date().toISOString();
 const failure = (status, message, code) => Object.assign(new Error(message), { status, code });
@@ -410,25 +411,30 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         return false;
       }
       if (result.status !== 'completed') {
-        const reason = { 'responsible-member': '正在等候原请求范围内的职责负责人。',
+        const reason = { 'registered-room-plan': '等待原项目群接收已登记的职责协作。',
+          'responsible-member': '正在等候原请求范围内的职责负责人。',
           'ambiguous-responsible-member': '有多个匹配职责，尚未确认唯一负责人。',
           'responsible-member-unavailable': '已登记职责的负责人暂不可用。' }[result.waitingFor];
         setState('waiting', reason || '等待同一请求的职责负责人交付制作所需部分。');
         return false;
       }
       const evidence = result.evidence;
-      const dutyKey = event.authorization?.production?.participant?.dutyKey;
+      const production = event.authorization?.production, dutyKey = production?.participant?.dutyKey;
+      const ownerDelivery = production?.after?.condition === OWNER_DELIVERY;
       if (result.planId !== event.contributionPlanId || result.operationId !== event.id || result.workId !== event.workId ||
           result.sourceMessageId !== original.replyTo || !result.dutyKey || dutyKey && result.dutyKey !== dutyKey || !result.deliveryId || !result.taskId ||
           evidence?.reference?.type !== 'room' || evidence.reference.roomId !== original.roomId ||
-          evidence.reference.messageId !== `reply:${result.deliveryId}` || !evidence.author || !evidence.content) {
+          evidence.reference.messageId !== `reply:${result.deliveryId}` || !evidence.author || !evidence.content ||
+          ownerDelivery && (evidence.author !== production.after.ownerBotId ||
+            JSON.stringify(result.dependency) !== JSON.stringify(production.after))) {
         setState('blocked', '职责交付的来源与当前制作操作不符，未开始制作。');
         return false;
       }
       return store.transaction(() => {
         const current = services.works.get(work.id), saved = store.getRecord('work-events', event.id);
         if (!['waiting', 'blocked'].includes(current?.status) || current.waiting?.operationId !== event.id ||
-            saved?.status !== 'pending' || saved.receipt || store.getTask(source.id)?.cancelRequested) return false;
+            saved?.status !== 'pending' || saved.receipt || store.getTask(source.id)?.cancelRequested ||
+            ownerDelivery && saved.contributionControlRevision !== (current.controlRevision || 0)) return false;
         setState('waiting', '已收到同源职责交付，正在提交原制作步骤。');
         const { evidence, status, ...identity } = result;
         const contributionResult = { ...identity, reference: evidence.reference, author: evidence.author };

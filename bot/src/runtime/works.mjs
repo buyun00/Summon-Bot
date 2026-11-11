@@ -5,7 +5,7 @@ import { isCliExecutor } from '../capabilities/executor-connections.mjs';
 import { directoryProject } from '../context/project-scope.mjs';
 import { externalExecution } from '../context/execution-evidence.mjs';
 import { currentProductionStage, productionStage, requireProductionGrant } from '../capabilities/request-routing.mjs';
-import { ROOM_DUTY_PLANS } from '../context/duty-actions.mjs';
+import { OWNER_DELIVERY, ROOM_DUTY_PLANS, matchesContributionGrant } from '../context/duty-actions.mjs';
 
 const now = () => new Date().toISOString();
 const statuses = new Set(['active', 'waiting', 'paused', 'blocked', 'completed', 'cancelled']);
@@ -157,16 +157,15 @@ export class WorkService {
       if (prior && prior.contributionPlanId === input.contributionPlanId && prior.requestTaskId === task.id)
         return { ...(prior.receipt || this.contributionReceipt(prior)), duplicate: true };
       if (prior) fail('This operation already has another submission.', 409);
+      const plan = input.contributionPlanId && this.store.getRecord(ROOM_DUTY_PLANS, input.contributionPlanId);
+      if (!matchesContributionGrant(plan, grant) || plan.coordinatorBotId !== this.botId || !plan.dutyKey)
+        fail('The duty plan does not match this authorized continuation.', 409);
       const revision = work.controlRevision || 0, resume = stopped.has(work.status);
       requireProductionGrant(task, this.store, grant, { workId: id, actionId: key, relation: 'continue',
-        stage: input.content?.stage?.kind, when: 'now', ...productionTarget(work), controlRevision: revision });
+        stage: input.content?.stage?.kind, when: plan.dependency?.condition === OWNER_DELIVERY ? 'after-dependency' : 'now',
+        ...productionTarget(work), controlRevision: revision });
       if (grant.kind === 'continue' && (work.status === 'completed' || currentProductionStage(work, this.store) !== grant.stage))
         fail('原步骤已完成或阶段已变化，未登记职责协作。', 409);
-      const plan = input.contributionPlanId && this.store.getRecord(ROOM_DUTY_PLANS, input.contributionPlanId);
-      if (plan?.kind !== 'contribution' || plan.workId !== id || plan.operationId !== key || plan.requestTaskId !== task.id ||
-          plan.coordinatorBotId !== this.botId || plan.roomId !== grant.roomId || plan.messageId !== grant.messageId ||
-          !plan.dutyKey || plan.dutyKey !== grant.participant?.dutyKey || plan.goal !== grant.participant?.contribution)
-        fail('The duty plan does not match this authorized continuation.', 409);
       const authorization = this.authorization(task, key, grant);
       if (resume) this.requireResume(work, authorization?.source?.receivedAt || null);
       const binding = work.bindings?.findLast(item => item.type === 'codex-desktop');
@@ -203,11 +202,17 @@ export class WorkService {
     if (task.id && !task.workId && (prior?.kind || input.kind) === 'request') {
       const initial = this.store.getRecord('work-handoffs', `task:${task.id}:action:${eventId}`)?.workId === id;
       const continuationContribution = !initial && prior?.contributionPlanId;
+      const plan = continuationContribution && this.store.getRecord(ROOM_DUTY_PLANS, continuationContribution);
+      const ownerDelivery = plan?.dependency?.condition === OWNER_DELIVERY;
       if (continuationContribution && prior.contributionControlRevision !== (work.controlRevision || 0))
         fail('工作控制状态已变化，未提交原职责协作对应的步骤。', 409);
+      if (ownerDelivery && (!matchesContributionGrant(plan, authorization?.production) ||
+          JSON.stringify(prior.contributionResult.dependency) !== JSON.stringify(plan.dependency) ||
+          prior.contributionResult.author !== plan.ownerBotId))
+        fail('职责交付与原授权的先行条件不符，未提交制作步骤。', 409);
       requireProductionGrant(task, this.store, authorization?.production, {
         workId: id, actionId: registered ? wait.id : key, relation: initial ? 'new' : 'continue',
-        stage: (prior?.content || input.content)?.stage?.kind, when: registered ? 'after-dependency' : 'now',
+        stage: (prior?.content || input.content)?.stage?.kind, when: registered || ownerDelivery ? 'after-dependency' : 'now',
         ...productionTarget(work), controlRevision: initial ? undefined : continuationContribution ?
           authorization?.production?.controlRevision : work.controlRevision || 0,
       });

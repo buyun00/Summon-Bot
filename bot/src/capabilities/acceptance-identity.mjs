@@ -1,5 +1,15 @@
 import { localTime } from '../context/fact-time.mjs';
 
+const normalizedScope = text => String(text ?? '').normalize('NFC').replace(/\s+/gu, ' ').trim();
+
+export function sameRoomResultAcceptance(left, right) {
+  return Boolean(left.userId) && left.userId === right.userId && left.roomId === right.roomId && left.version === right.version &&
+    (left.publicationMessageId || left.resultId) === (right.publicationMessageId || right.resultId) &&
+    left.ownerBotId === right.ownerBotId && left.dutyKey === right.dutyKey && left.fullScope === right.fullScope &&
+    normalizedScope(left.scope) === normalizedScope(right.scope) &&
+    normalizedScope(left.remainingBoundaries) === normalizedScope(right.remainingBoundaries);
+}
+
 const normal = value => String(value ?? '').normalize('NFKC').toLowerCase();
 const unique = values => [...new Set(values)];
 const versionNumber = String.raw`\d+(?:\.\d+)*(?:-(?:alpha|beta|rc|preview|dev)(?:\.\d+|\d+)*)?`;

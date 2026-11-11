@@ -1,5 +1,6 @@
 import { currentUserRequest } from '../../bot/src/capabilities/request-routing.mjs';
-import { acceptanceClockTimes } from '../../bot/src/capabilities/acceptance-identity.mjs';
+import { acceptanceClockTimes, sameRoomResultAcceptance } from '../../bot/src/capabilities/acceptance-identity.mjs';
+import { OWNER_DELIVERY } from '../../bot/src/context/duty-actions.mjs';
 import { localTime } from '../../bot/src/context/fact-time.mjs';
 import { activeDuties } from './staffing.mjs';
 import { pick } from '../shared/validation.mjs';
@@ -16,7 +17,7 @@ export class RoomTextResults {
   get store() { return this.chatroom.store; }
   get manager() { return this.chatroom.manager; }
 
-  async action(item, task, room, trigger) {
+  async action(item, task, room, trigger, ownerReply) {
     if (task.status !== 'completed' || task.workId || task.cancelRequested || task.result?.partial ||
         task.result?.suspended || item.observation || item.routeOnly || item.teamStaffing ||
         !item.routedDutyKey || trigger.senderId !== 'user') return null;
@@ -26,6 +27,8 @@ export class RoomTextResults {
       const plan = this.chatroom.dutyActions.current(item, room);
       if (!plan) return null;
       if (plan.gatesProduction && !['waiting', 'paused'].includes(await this.chatroom.dutyActions.coordinatorState(plan))) return null;
+      const ownerDelivery = plan.dependency?.condition === OWNER_DELIVERY;
+      if (ownerDelivery && (ownerReply?.kind !== 'contribution' || !ownerReply.reply)) return null;
       const used = new Map();
       const publications = plan.publications || [];
       for (const tool of task.tools || []) {
@@ -38,6 +41,7 @@ export class RoomTextResults {
       }
       if (plan.kind === 'independent-review' && !publications.some(file => used.has(file.id))) return null;
       return { kind: plan.kind, sourceUnit: plan.grant.sourceUnit, dependency: plan.dependency, planId: plan.id,
+        ...(ownerDelivery ? { workId: plan.workId, operationId: plan.operationId } : {}),
         references: [{ type: 'room', roomId: room.id, messageId: trigger.id }, ...used.values()] };
     }
     return this.manager.readState(item.botId, db => {
@@ -143,7 +147,9 @@ export class RoomTextResults {
     if (routing?.acceptanceReceiptTaskId !== task.id || routing.roomId !== room.id || routing.messageId !== trigger.id) return [];
     return this.toolDecisions(db.listTools(task.id), task.id, room.id, trigger.id).filter(decision => {
       const id = acceptanceId(room.id, trigger.id, decision.version);
-      return decision.id === id && decision.roomId === room.id && decision.userMessageId === trigger.id &&
+      return !decision.alreadyRecorded && decision.id === id && decision.roomId === room.id && decision.userMessageId === trigger.id &&
+        (decision.userId === undefined || decision.userId === user.actor && decision.approvalTaskId === task.id &&
+          decision.acceptedMessageId === user.acceptedMessageId) &&
         Array.isArray(decision.clauses) && decision.clauses.length && decision.clauses.every(clause =>
           typeof clause.userClause === 'string' && clause.userClause.trim() && Number.isSafeInteger(clause.clauseStart) &&
           clause.clauseStart >= 0 && user.text.startsWith(clause.userClause, clause.clauseStart)) &&
@@ -196,13 +202,20 @@ export class RoomTextResults {
         if (!current || current.version !== candidate.version || current.taskId !== candidate.taskId || current.deliveryId !== candidate.deliveryId ||
             current.ownerBotId !== candidate.ownerBotId || current.sourceMessageId !== candidate.sourceMessageId ||
             current.dutyKey !== candidate.dutyKey || publication.content !== message.content) return;
+        const repeated = this.store.list(acceptances).some(prior => {
+          if (prior.roomId !== room.id || prior.version !== decision.version) return false;
+          const source = this.store.get('messages', prior.sourceMessageId);
+          return source?.roomId === room.id && sameRoomResultAcceptance({ ...prior, userId: source.senderId },
+            { ...decision, userId: trigger.senderId });
+        });
+        if (repeated) return;
         if (current.legacyCandidate) {
           const { legacyCandidate, ...identity } = current;
           this.store.save(results, { ...identity, certifiedByAcceptance: trigger.id });
           this.link(current);
         }
         const record = this.store.save(acceptances, { id, roomId: room.id, resultId: current.id, version: current.version,
-          dutyKey: current.dutyKey, ownerBotId: current.ownerBotId, sourceMessageId: trigger.id, deliveryId: item.id,
+          dutyKey: current.dutyKey, ownerBotId: current.ownerBotId, sourceMessageId: trigger.id, userId: trigger.senderId, deliveryId: item.id,
           resultDeliveryId: current.deliveryId, approvalTaskId: item.taskId,
           ...pick(decision, ['scope', 'remainingBoundaries', 'fullScope', 'clauses', 'recordedAt']) });
         changes.push({ key: 'room-acceptance:' + id, kind: 'room-result-acceptance', messageId: trigger.id, resultId: record.resultId });

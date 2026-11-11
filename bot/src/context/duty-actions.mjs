@@ -1,17 +1,33 @@
 export const ROOM_DUTY_PLANS = 'room-duty-plans';
+export const OWNER_DELIVERY = 'same-source-owner-delivery';
 
 export function roomDutyPlanId({ roomId, messageId, sourceUnit, kind }) {
   return JSON.stringify([roomId, messageId, sourceUnit, kind]);
 }
 
-export function sourceDispatches(store, { roomId, messageId, sourceUnit, workId, stage, relation = 'new', includeRegistered = false }) {
+export function matchesContributionGrant(plan, grant) {
+  if (plan?.kind !== 'contribution' || !grant || JSON.stringify(plan.grant) !== JSON.stringify(grant) ||
+      plan.workId !== grant.workId || plan.operationId !== grant.actionId || plan.requestTaskId !== grant.taskId ||
+      plan.roomId !== grant.roomId || plan.messageId !== grant.messageId ||
+      plan.dutyKey !== grant.participant?.dutyKey || plan.goal !== grant.participant?.contribution) return false;
+  const after = plan.dependency;
+  if (!after) return grant.when === 'now' && !grant.after;
+  return grant.when === 'after-dependency' && grant.relation === 'continue' && after.condition === OWNER_DELIVERY &&
+    JSON.stringify(after) === JSON.stringify(grant.after) && after.planId === plan.id && after.ownerBotId === plan.ownerBotId &&
+    after.dutyKey === plan.dutyKey && after.contribution === plan.goal && after.workId === plan.workId &&
+    after.operationId === plan.operationId && after.roomId === plan.roomId && after.messageId === plan.messageId &&
+    after.requestTaskId === plan.requestTaskId && after.acceptedMessageId === grant.acceptedMessageId &&
+    after.projectId === grant.projectId && after.stage === grant.stage && after.actionUnit === grant.sourceUnit;
+}
+
+export function sourceDispatches(store, { roomId, messageId, sourceUnit, workId, stage, relation = 'new', when = 'now', includeRegistered = false }) {
   if (!store || !roomId || !messageId) return [];
   return store.listRecords('work-events').filter(event => {
     const { source, production } = event.authorization || {};
     const registered = includeRegistered && event.contributionPlanId;
     return event.kind === 'request' && (event.receipt?.accepted && event.receipt.taskId || registered) && event.workId &&
       source?.actor === 'user' && source.roomId === roomId && source.replyTo === messageId &&
-      production?.roomId === roomId && production.messageId === messageId && production.when === 'now' && production.relation === relation &&
+      production?.roomId === roomId && production.messageId === messageId && production.when === when && production.relation === relation &&
       (sourceUnit === undefined || production.sourceUnit === sourceUnit) && (!workId || event.workId === workId) &&
       (!stage || stage === production.stage);
   });

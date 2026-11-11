@@ -156,7 +156,8 @@ export async function createCapability(options) {
         if(args.acceptanceResults===true)return chatroom.readRoomAcceptance(args,actor,context.source);
         if(args.attachmentId!==undefined)return chatroom.readPublishedAttachment(args,actor,context.source);
         const page=chatroom.read(args,actor,context.source);
-        return actor==='controller'||args.outputReceipts!==undefined||context.source?.metadata?.groupObservation||context.source?.metadata?.teamStaffing?
+        return actor==='controller'||args.outputReceipts!==undefined||context.source?.metadata?.groupObservation||context.source?.metadata?.teamStaffing||
+          context.source?.metadata?.roomDutyAction?
           page:attachments.stageContext(page,(await manager.config(actor)).workspace);
       }
       case 'chatroom_create':return chatroom.createRoom({...args,members:[...new Set([...(args.members||[]),...(actor==='controller'?[]:[actor])])]});

@@ -9,6 +9,7 @@ import { publishedText } from './published-text.mjs';
 import { RoomDutyActions } from './duty-actions.mjs';
 import { RoomTextResults } from './room-results.mjs';
 import { productionRefusal } from '../../bot/src/capabilities/request-routing.mjs';
+import { OWNER_DELIVERY } from '../../bot/src/context/duty-actions.mjs';
 const TERMINAL=new Set(['completed','failed','cancelled','interrupted']);
 const foreground=item=>item.priority!=='background';
 const normalized=text=>String(text||'').trim().replace(/\s+/g,' ');
@@ -461,7 +462,8 @@ export class ChatroomService {
       const duty=activeDuties(room,item.botId).find(candidate=>candidate.dutyKey===plan.dutyKey);
       const previous=(duty?.referenceArtifacts||[]).slice(-8).filter(ref=>staffingArtifacts(this.store.get('messages',ref.messageId)||{})
         .some(item=>item.id===ref.id&&item.messageId===ref.messageId));
-      const references=[...new Map([...(plan.references||[]),...previous.map(ref=>({type:'room',roomId:room.id,
+      const retained=plan.dependency?.condition===OWNER_DELIVERY?[]:previous;
+      const references=[...new Map([...(plan.references||[]),...retained.map(ref=>({type:'room',roomId:room.id,
         messageId:ref.messageId,attachmentId:ref.id}))].map(ref=>[ref.messageId+':'+(ref.attachmentId||''),ref])).values()];
       const ids=[...new Set([...references.map(ref=>ref.messageId),...(plan.publications||[]).map(ref=>ref.messageId)])];
       const evidence=ids.map(id=>this.store.get('messages',id)).filter(message=>message?.roomId===room.id).map(staffingMessage);
@@ -631,10 +633,21 @@ export class ChatroomService {
       item=this.store.save('deliveries',{...item,workId:task.workId||task.result?.workId||item.workId});
       const roomForPlan=this.need('rooms',item.roomId),triggerForPlan=this.need('messages',item.messageId);
       const imported=await this.dutyActions.import(item,roomForPlan,triggerForPlan,task);
-      const roomResultAction=await this.roomTextResults.action(item,task,roomForPlan,triggerForPlan);
+      let ownerReply;
+      if(contribution?.dependency?.condition===OWNER_DELIVERY&&status==='completed'){
+        try{
+          const value=JSON.parse(String(task.result?.content||'').trim().replace(/^```(?:json)?\s*|\s*```$/gi,''));
+          const reply=typeof value?.reply==='string'&&value.reply.trim();
+          if(reply&&reply.length<=15000&&!isAcknowledgement(reply)&&!/^PASS(?:\s*$|\s*\n)/i.test(reply))ownerReply={kind:value.kind,reply};
+        }catch{}
+      }
+      const roomResultAction=await this.roomTextResults.action(item,task,roomForPlan,triggerForPlan,ownerReply);
       const isUserDelivery=triggerForPlan.senderId==='user'&&!item.observation&&!item.routeOnly&&!item.teamStaffing&&!item.teamIntroduction&&!item.roomDutyAction;
       const roomAcceptances=isUserDelivery?await this.roomTextResults.record(roomForPlan,triggerForPlan,item,task):[];
-      const savedRefusals=isUserDelivery&&(status!=='completed'||task.result?.partial)?refusalNotes(task.tools):'';
+      const peerRequest=isUserDelivery&&(task.tools||[]).some(tool=>tool.name==='chatroom_send'&&tool.status==='completed'&&
+        tool.args?.roomId===item.roomId&&tool.args.toBotId&&tool.args.purpose==='request'&&(tool.args.replyTo||item.messageId)===item.messageId);
+      const savedRefusals=isUserDelivery&&(status!=='completed'||task.result?.partial||peerRequest)?refusalNotes(task.tools):'';
+      const registeredContinuation=imported.some(plan=>plan.dependency?.condition===OWNER_DELIVERY);
       let dutyResultMessageId,routeScope;
       if(status==='completed') {
         let text=String(task.result?.content||''),passed=/^PASS(?:\s*$|\s*\n)/i.test(text);
@@ -656,12 +669,18 @@ export class ChatroomService {
           this.enqueue(this.need('messages',item.messageId),recipient.id,{workId:null,referencedWorkId:workId,
             ...(duty?{routedDutyKey:duty.dutyKey}:{}),requestScope,routedBy:item.botId,routeReason:String(parsed.reason||text).slice(0,1000)});
         }else if(!item.teamStaffing&&!task.workId&&(!item.observation||this.need('rooms',item.roomId).members.includes(item.botId))){
-          let response;try{response=JSON.parse(text);if(typeof response?.reply==='string'){text=response.reply;passed=response.pass||!text;}}catch{}
+          let response;try{response=ownerReply||JSON.parse(text);if(typeof response?.reply==='string'){text=response.reply;passed=response.pass||!text;}}catch{}
+          if(registeredContinuation&&(passed||!text.trim())){
+            text='原工作已登记本次修订，正在等待职责负责人在本群交付协作结果。';passed=false;
+          }
           if(savedRefusals){text=[text.replace(/^PASS(?:\s*\n|\s*$)/i,''),savedRefusals].filter(Boolean).join('\n\n');passed=false;}
           const correction=item.observationCoverage&&this.coveredCorrection(item,task,response);
           if(item.observationCoverage&&!correction)passed=true;
           if(item.observation&&isAcknowledgement(text))passed=true;
-          const alreadyReplied=!item.roomDutyAction&&this.sourceReplies.all(item.roomId,item.messageId,item.botId).some(row=>!JSON.parse(row.data).jobId);
+          const alreadyReplied=!item.roomDutyAction&&this.sourceReplies.all(item.roomId,item.messageId,item.botId).some(row=>{
+            const message=JSON.parse(row.data);
+            return !message.jobId&&!(peerRequest&&message.toBotId&&message.purpose==='request');
+          });
           if(alreadyReplied&&!savedRefusals)passed=true;
           const attachments=(task.result?.attachments||[]).map(attachment=>this.attachments.get(attachment.id));
           if(attachments.length){passed=false;if(alreadyReplied&&!savedRefusals||/^PASS(?:\s*$|\s*\n)/i.test(text))text='';}
@@ -721,7 +740,7 @@ export class ChatroomService {
             key:'room-duty-plan:'+plan.id,kind:'room-duty-plan',messageId:trigger.id,planId:plan.id,
           })));
         }
-        if(item.roomDutyAction)this.dutyActions.finish(item,status,dutyResultMessageId);
+        if(item.roomDutyAction)this.dutyActions.finish(item,status,dutyResultMessageId,ownerReply?.kind==='blocked'?ownerReply.reply:undefined);
         const state=this.store.get('team-staffing',room.id);
         let assessment=this.teamService.staffing.forDelivery(item);
         if(!assessment&&item.teamStaffing?.policyVersion===staffingPolicyVersion&&
