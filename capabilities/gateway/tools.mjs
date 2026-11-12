@@ -59,6 +59,7 @@ const definitions=[
  ['web_search','Search the public web; return titles, URLs and short snippets without commands',{query:string,limit:number},'read'],
  ['web_read','Read a public webpage with bounded output; GET only, no scripts or form submission',{url:string,offset:number,length:number},'read'],
  ['write_file','Write an allowed workspace/project file',{path:string,content:string,overwrite:boolean},'write'],
+ ['copy_file','Copy one existing file byte for byte within the current work. Requires read access to sourcePath and write access to path (the destination). Creates authorized parent directories and preserves an existing file unless overwrite is true. Returns paths and byte count.',{sourcePath:string,path:string,overwrite:boolean},'write'],
  ['edit_file','Replace exact text in an allowed file',{path:string,oldText:string,newText:string,replaceAll:boolean},'write'],
  ['run_command','Execute a bounded noninteractive shell command; host privileges apply. File refusals and explicit user restrictions also bind shell/.NET reads, writes, copies and renames. Report partial/unknown effects truthfully; an error does not prove no changes.',{command:string,cwd:string,timeoutMs:{type:'integer',...commandTimeout,description:`Timeout in milliseconds (${commandTimeout.minimum}–${commandTimeout.maximum}, default ${commandTimeout.default})`}},'process'],
  ['bots_list','List peer identities and roles',{},'read'],
@@ -72,5 +73,6 @@ const definitions=[
  ['reminders_cancel','Cancel a saved reminder by its returned ID. A sending reminder returns cancellation requested until the actual delivery outcome is known.',{id:string},'write'],
 ];
 export const toolDefinitions=definitions.map(([name,description,properties,effect])=>({name,description,inputSchema:
-  name==='chatroom_read'||name.startsWith('reminders_')?looseSchema({properties}):object(properties),effect}));
-export const FILE_TOOLS=new Set(['list_files','read_file','search_files','write_file','edit_file','run_command','publish_file','web_search','web_read']);
+  name==='chatroom_read'||name.startsWith('reminders_')?looseSchema({properties}):
+    name==='copy_file'?{type:'object',properties,required:['sourcePath','path'],additionalProperties:false}:object(properties),effect}));
+export const FILE_TOOLS=new Set(['list_files','read_file','search_files','write_file','copy_file','edit_file','run_command','publish_file','web_search','web_read']);

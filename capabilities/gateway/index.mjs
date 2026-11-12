@@ -46,7 +46,7 @@ const activityText=(value,max=512)=>typeof value==='string'?value.replace(/[\u00
 function toolActivity(row) {
   const name=activityText(row.name,128),status=activityText(row.status,32);
   // Only expose display metadata, never command text, contents, results or raw arguments.
-  return {name,status,path:['read_file','write_file','edit_file'].includes(name)?activityText(row.path):null,
+  return {name,status,path:['read_file','write_file','copy_file','edit_file'].includes(name)?activityText(row.path):null,
     targetBotId:['messages_send','tasks_get','tasks_cancel','chatroom_dm','chatroom_send'].includes(name)?activityText(row.targetBotId,128):null,
     startedAt:activityText(row.startedAt,64),finishedAt:activityText(row.finishedAt,64)};
 }
@@ -295,9 +295,10 @@ export async function startGateway(options={}) {
     }
     if(controlTools.some(tool=>tool.name===name))return control.call(name,args,{actor});
     if(pin&&!control.permittedVersion(actor,pin.id,pin.version))fail('This capability version is not bound to the Bot',403);
+    if(name==='copy_file'&&(!task?.workId||task.status!=='running'))fail('File copying requires an active work task',403);
     const context={actor,...(task?{taskId:task.id,workId:runtimeOperation?.workId||task.workId,mode:runtimeOperation?'work':taskMode(task),source}:{}),
       ...(workPublication?{workPublication:true}:{}),...(dutyContributionOperation?{dutyContributionOperation}:{})};
-    if(task&&['list_files','read_file','search_files','write_file','edit_file','run_command','publish_file'].includes(name)){
+    if(task&&['list_files','read_file','search_files','write_file','copy_file','edit_file','run_command','publish_file'].includes(name)){
       const config=await manager.config(actor);
       const fileScope=await manager.readState(actor,db=>{
         if(name==='publish_file'&&!task.workId){

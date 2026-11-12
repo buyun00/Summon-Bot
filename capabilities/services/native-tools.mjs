@@ -77,7 +77,12 @@ export class NativeToolService {
     return this.store.save(entries, { ...current, ...patch, id: entry.id, native: { ...current.native, ...native } });
   }
 
-  async workContext(actor, task, args = {}, { discovery = false } = {}) {
+  ownsDelegation(entry, actor, workId) {
+    return entry?.ownerBotId === actor && this.store.list('catalog-delegations').some(record =>
+      record.entryId === entry.id && record.ownerBotId === actor && record.ownerWorkId === workId);
+  }
+
+  async workContext(actor, task, args = {}, { discovery = false, inspectionEntry } = {}) {
     if (actor === 'controller') return { cwd: this.workspace };
     const config = await this.manager.config(actor);
     const saved = task && await this.manager.readState(actor, db => {
@@ -88,7 +93,10 @@ export class NativeToolService {
     if (!discovery && (!saved?.work || !saved.execution?.authorization?.source || stopped.has(saved.work.status)))
       fail('An active original work and its accepted authority are required', 409);
     if (args.workId && args.workId !== saved?.work?.id) fail('Use the current original work', 403);
-    const project = saved?.work?.project?.cwd || config.workspace;
+    const workProject = saved?.work?.project?.cwd || config.workspace;
+    // Help and version probes use the maintainer's workspace. The work's file
+    // policy still uses its recorded project to resolve relative restrictions.
+    const project = this.ownsDelegation(inspectionEntry, actor, saved?.work?.id) ? config.workspace : workProject;
     const checkedPath = createPathAccess({ workspace: config.workspace, project, base: project,
       protectedDirectories: [this.dataRoot], accessPolicy: saved?.policy });
     const cwd = await checkedPath(args.cwd || '.', { directory: true, operations: !discovery && args.cwd ? ['read', 'write'] : ['read'], alternative: true });
@@ -105,8 +113,7 @@ export class NativeToolService {
     if (this.protectedExecutable(requested, scope.config?.workspace)) throw fileAccessDenied(requested, 'protected_path', { operations });
     assertPathPolicy(requested, scope.policy, { operations, alternative: !canonical });
     if (actor !== 'controller') {
-      const maintenance = entry?.ownerBotId === actor && this.store.list('catalog-delegations').some(record =>
-        record.entryId === entry.id && record.ownerBotId === actor && record.ownerWorkId === scope.work?.id);
+      const maintenance = this.ownsDelegation(entry, actor, scope.work?.id);
       const registered = catalogMethod && scope.work && entry?.native?.hostId === this.host.hostId &&
         entry.native.executableAuthority?.some(record => record.actor === actor &&
           samePath(record.file, requested) && samePath(record.canonicalFile, entry.config.canonicalFile));
@@ -244,7 +251,8 @@ export class NativeToolService {
   async probe(args, actor, task, signal) {
     const entry = this.owner(args.id, actor);
     if (entry.kind !== 'cli') fail('Use catalog_probe for a network or MCP connection');
-    const context = await this.workContext(actor, task), argv = nativeArgs(args.args);
+    const context = await this.workContext(actor, task, {}, { inspectionEntry: entry });
+    const argv = nativeArgs(args.args);
     inspectOnlyArgs(argv);
     return this.catalog.serial('native-resource:' + entry.id, async () => {
       let current = this.catalog.entry(entry.id);

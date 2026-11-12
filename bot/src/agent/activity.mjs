@@ -11,6 +11,7 @@ export function toolActivity(name, args = {}) {
     [/image|draw|paint|design|figma/i, '正在制作图像和设计', 'orbit'],
     [/video|audio|speech|music|tts/i, '正在处理影音内容', 'comet'],
     [/codex|execute|command|terminal|shell|build|deploy|publish/i, '正在执行工作引擎操作', 'play'],
+    [/^copy_file$/, '正在复制文件', 'hexagon'],
     [/write|edit|patch|create_file|save_file/i, '正在修改和保存内容', 'hexagon'],
     [/search|browse|fetch|web|lookup/i, '正在搜索相关资料', 'wide'],
     [/read|list|resource|get/i, '正在读取相关资料', 'wide'],

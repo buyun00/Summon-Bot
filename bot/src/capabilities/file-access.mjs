@@ -141,7 +141,7 @@ export function pendingFileScope(task, store, base, path) {
   const denial = recordedFileDenial(match);
   const operations = [...new Set(denial.blockedOperations || denial.operations || [])];
   if (!operations.length || operations.some(operation => !['read', 'write', 'execute', 'publish'].includes(operation))) return null;
-  const kind = denial.kind || (match.name === 'list_files' ? 'directory' : ['read_file', 'write_file', 'edit_file', 'publish_file'].includes(match.name) ? 'file' : null);
+  const kind = denial.kind || (match.name === 'list_files' ? 'directory' : ['read_file', 'write_file', 'copy_file', 'edit_file', 'publish_file'].includes(match.name) ? 'file' : null);
   if (!kind || operations.includes('execute') && kind !== 'file') return null;
   const explicitDenials = taskFileAccessPolicy(task, store, base).deniedPaths.filter(item => !item.alternativesOnly);
   assertPathPolicy(requested, { deniedPaths: explicitDenials }, { operations });
@@ -323,9 +323,12 @@ export function taskFileAccessPolicy(task, store, base) {
 }
 
 export async function assertFileToolAccess(name, args, task, store, workspace) {
-  if (!['read_file', 'list_files', 'search_files', 'write_file', 'edit_file', 'run_command', 'publish_file'].includes(name)) return;
+  if (!['read_file', 'list_files', 'search_files', 'write_file', 'copy_file', 'edit_file', 'run_command', 'publish_file'].includes(name)) return;
   const base = task.workId && store.getRecord('works', task.workId)?.project?.cwd || workspace;
   const policy = taskFileAccessPolicy(task, store, base);
-  if (name === 'run_command') await assertCommandPolicy(String(args.command || ''), resolveFilePath(base, args.cwd || '.'), policy, () => {});
+  if (name === 'copy_file') {
+    assertPathPolicy(resolveFilePath(base, args.sourcePath), policy, { operations: ['read'], alternative: true });
+    assertPathPolicy(resolveFilePath(base, args.path), policy, { operations: ['write'], alternative: true });
+  } else if (name === 'run_command') await assertCommandPolicy(String(args.command || ''), resolveFilePath(base, args.cwd || '.'), policy, () => {});
   else assertPathPolicy(resolveFilePath(base, args.path || '.'), policy, { operations: fileOperations(name), alternative: name === 'publish_file' });
 }

@@ -66,6 +66,7 @@ export async function createCapability(options) {
     if(actor!=='controller'&&!(effectiveBotTools(manager.store.get('bots',actor))||[]).includes(name))fail('Tool not authorized for this Bot',403);
     if(FILE_TOOLS.has(name)) {
       if(actor==='controller')fail('Filesystem tools require an explicit Bot identity');
+      if(name==='copy_file'&&(context.mode!=='work'||!context.workId||!context.taskId))fail('File copying requires an active work task',403);
       const config=await manager.config(actor),artifacts=[];
       const project=context.projectRoot||config.workspace;
       const definitions=createFileTools({workspace:config.workspace,projectRoot:project,base:project,projectOnly:true,protectedRoot:dataRoot,accessPolicy:context.fileAccessPolicy,redact:createRedactor(config),containProcesses:context.workId?.startsWith('onboarding-')===true,tempRoot:join(manager.directory(actor),'tmp','capability-tools'),onArtifacts:items=>artifacts.push(...items),withExecution:(fn,toolSignal)=>lockFor(project).withLock(`bot:${actor}`,fn,toolSignal),saveArtifact:async input=>(await manager.botApi()).saveArtifact(join(manager.directory(actor),'artifacts'),input),

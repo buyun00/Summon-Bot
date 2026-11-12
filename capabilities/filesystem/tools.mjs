@@ -1,4 +1,4 @@
-import { open, readdir, stat, realpath, mkdir, readFile, rename, link, unlink, mkdtemp, rm } from 'node:fs/promises';
+import { open, readdir, lstat, stat, realpath, mkdir, readFile, rename, link, unlink, mkdtemp, rm } from 'node:fs/promises';
 import { constants, existsSync, createWriteStream } from 'node:fs';
 import { resolve, isAbsolute, dirname, basename, join, delimiter } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { finished } from 'node:stream/promises';
 import { MAX_ATTACHMENT_BYTES } from '../chatroom/attachments.mjs';
 import { cleanEnvironment, terminateTree, windowsProcessJob } from '../../bot/src/runtime/process-tools.mjs';
-import { assertCommandPolicy, assertScopedShell, createAuthorizedDirectory, createPathAccess, fileAccessDenied } from '../../bot/src/capabilities/file-policy.mjs';
+import { assertCommandPolicy, assertScopedShell, createAuthorizedDirectory, createPathAccess, fileAccessDenied, resolveFilePath, samePath } from '../../bot/src/capabilities/file-policy.mjs';
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 export const MAX_FILE_REQUEST_BYTES = 24 * 1024 * 1024;
@@ -185,26 +185,106 @@ export function createFileTools({ workspace, projectRoot, base, projectOnly, pro
     } finally { await handle.close(); }
   }
 
-  async function saveVerified(path, bytes, signal, { overwrite = false, expected } = {}) {
+  async function saveAtomically(path, signal, stage, { overwrite = false, beforePublish } = {}) {
     const temporary = join(dirname(path), `.summon-write-${randomUUID()}.tmp`);
     let mode;
     try { mode = (await stat(path)).mode; } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    cancelled(signal);
+    const handle = await open(temporary, 'wx', mode);
+    let result, published = false, cleanupWarning;
     try {
-      const handle = await open(temporary, 'wx', mode);
-      try { await handle.writeFile(bytes, { signal }); await handle.sync(); } finally { await handle.close(); }
-      if (!(await readFile(temporary, { signal })).equals(bytes)) throw new Error('Temporary write failed read-back verification');
-      if (expected !== undefined && await readText(path, signal) !== expected) throw new Error('File changed since it was read; retry with current content');
+      try { result = await stage(handle); await handle.sync(); } finally { await handle.close(); }
+      await beforePublish?.(temporary);
       cancelled(signal);
       // Publish complete bytes atomically. link preserves the no-overwrite contract;
       // rename replaces an existing file only when explicitly authorized.
       if (overwrite) await rename(temporary, path);
       else await link(temporary, path);
-      const saved = await readFile(path);
-      if (!saved.equals(bytes)) throw new Error('Write completed but read-back verification failed');
-      return { path, bytes: saved.length, verified: true };
+      published = true;
     } finally {
-      await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; });
+      if (!published || !overwrite) await unlink(temporary).catch(error => {
+        if (error.code === 'ENOENT') return;
+        if (!published) throw error;
+        cleanupWarning = 'The destination was saved but its temporary file could not be removed.';
+      });
     }
+    return { ...result, ...(cleanupWarning ? { cleanupWarning } : {}) };
+  }
+
+  async function saveVerified(path, bytes, signal, { overwrite = false, expected } = {}) {
+    const result = await saveAtomically(path, signal, handle => handle.writeFile(bytes, { signal }), {
+      overwrite,
+      async beforePublish(temporary) {
+        if (!(await readFile(temporary, { signal })).equals(bytes)) throw new Error('Temporary write failed read-back verification');
+        if (expected !== undefined && await readText(path, signal) !== expected) throw new Error('File changed since it was read; retry with current content');
+      },
+    });
+    const saved = await readFile(path);
+    if (!saved.equals(bytes)) throw new Error('Write completed but read-back verification failed');
+    return { path, bytes: saved.length, verified: true, ...result };
+  }
+
+  async function copyOperand(path, operation, perform) {
+    try { return await perform(); }
+    catch (error) {
+      if (['EACCES', 'EPERM'].includes(error.code)) throw fileAccessDenied(path, 'os_permission_denied', { operations: [operation], kind: 'file' });
+      throw error;
+    }
+  }
+
+  async function copyFile(args, signal) {
+    const sourceInput = resolveFilePath(base ?? workspaceRoot, args.sourcePath);
+    const destinationInput = resolveFilePath(base ?? workspaceRoot, args.path);
+    const readOptions = { operations: ['read'], file: true, alternative: true };
+    const writeOptions = { operations: ['write'], file: true, exists: false, alternative: true };
+    const read = perform => copyOperand(sourceInput, 'read', perform);
+    const write = perform => copyOperand(destinationInput, 'write', perform);
+    const sourcePath = await read(() => checkedPath(sourceInput, readOptions));
+    const path = await write(() => checkedPath(destinationInput, writeOptions));
+    if (samePath(sourcePath, path)) throw new Error('Copy source and destination must be different files');
+    const overwrite = args.overwrite === true;
+    if (!overwrite) {
+      const existing = await write(() => lstat(path).catch(error => { if (error.code !== 'ENOENT') throw error; }));
+      if (existing) throw Object.assign(new Error('Copy destination already exists'), { code: 'EEXIST', status: 409 });
+    }
+    const source = await read(() => open(sourcePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)));
+    try {
+      const before = await read(() => source.stat({ bigint: true }));
+      if (!before.isFile()) throw new Error('Copy source must be a regular file');
+      const sourceChanged = () => Object.assign(new Error('The source changed while copying; use the current file'), { status: 409 });
+      const confirmSource = () => read(async () => {
+        if (!samePath(sourcePath, await checkedPath(sourceInput, readOptions))) throw sourceChanged();
+        const current = await lstat(sourcePath, { bigint: true });
+        if (!current.isFile() || ['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs'].some(key => current[key] !== before[key])) throw sourceChanged();
+      });
+      const confirmDestination = async actual => {
+        if (!samePath(path, actual) || !samePath(dirname(path), await realpath(dirname(path))))
+          throw fileAccessDenied(destinationInput, 'output_parent_changed', { operations: ['write'], kind: 'file' });
+      };
+      await confirmSource();
+      cancelled(signal);
+      return await write(async () => {
+        await confirmDestination(await createAuthorizedDirectory(destinationInput, checkedPath, { parentOfFile: true, alternative: true }));
+        const result = await saveAtomically(path, signal, async handle => {
+          let bytes = 0;
+          if (before.size > 0n) await read(async () => {
+            for await (const chunk of source.createReadStream({ autoClose: false, start: 0, end: Number(before.size) - 1, signal })) {
+              await write(() => handle.writeFile(chunk, { signal }));
+              bytes += chunk.length;
+            }
+          });
+          if (BigInt(bytes) !== before.size) throw sourceChanged();
+          return { bytes };
+        }, {
+          overwrite,
+          async beforePublish() {
+            await confirmSource();
+            await confirmDestination(await checkedPath(destinationInput, writeOptions));
+          },
+        });
+        return { sourcePath, path, ...result };
+      });
+    } finally { await source.close(); }
   }
 
   async function* walk(base, { recursive, maxDepth = 12, maxVisited = 10000, signal }) {
@@ -332,6 +412,7 @@ export function createFileTools({ workspace, projectRoot, base, projectOnly, pro
       const path = await createAuthorizedDirectory(args.path, checkedPath, { parentOfFile: true });
       return saveVerified(path, bytes, signal, { overwrite: args.overwrite === true });
     }, true),
+    tool('copy_file', 'Copy one authorized file byte for byte to an authorized destination, creating necessary parents. Existing files require overwrite:true. Returns paths and byte count.', objectSchema({ sourcePath: stringSchema('Existing source file'), path: stringSchema('Destination file path'), overwrite: { type: 'boolean', description: 'Explicitly allow replacing an existing file; default false' } }, ['sourcePath', 'path']), copyFile, true),
     tool('edit_file', 'Replace exactly one occurrence of oldText in a UTF-8 file. Fails on missing or ambiguous matches, then re-reads and verifies the saved bytes.', objectSchema({ path: stringSchema('Existing file'), oldText: stringSchema('Exact text that occurs once'), newText: stringSchema('Replacement text; may be empty') }, ['path', 'oldText', 'newText']), async (args, signal) => {
       const oldText = textValue(args.oldText, 'oldText', true);
       if (!oldText.length) throw new Error('oldText must not be empty');

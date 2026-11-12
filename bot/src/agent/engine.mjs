@@ -657,7 +657,7 @@ export class BotEngine {
         const prompts = [prompt, ...(boundary ? [boundary] : []),
           ...(knowledgeMessage ? [knowledgeMessage] : []),
           ...(filePolicy.grants.length || filePolicy.deniedPaths.length ? [userMessage({ type: 'current_file_access_constraints', ...filePolicy, cwd,
-            instruction: `${FILE_ACCESS_GUIDANCE} Local inputs, the executable entry and output destinations have different permissions. Omit a native cwd to run in the existing work directory. Use typed native path operands; write_file and native output operands can create their authorized missing parents. Use work_file_access for a genuine missing grant on this work after a refusal for that exact path and operation.` })] : []),
+            instruction: `${FILE_ACCESS_GUIDANCE} Local inputs, the executable entry and output destinations have different permissions.${registry.definitions.has('copy_file') ? ' Use copy_file to copy an allowed file into an authorized output path.' : ''} Omit a native cwd to run in the existing work directory. Use typed native path operands; write_file and native output operands can create their authorized missing parents. Use work_file_access for a genuine missing grant on this work after a refusal for that exact path and operation.` })] : []),
           ...(!routeOnly ? [userMessage({ type: 'fact_reporting', ...factTime({ requestReceivedAt: originalTask.createdAt }) })] : []),
           ...(publicView?.runtimeInstruction && !publicView.runtimeEvent ? [userMessage({ type: 'delivery_context', instruction: publicView.runtimeInstruction, authority: 'runtime-context' })] : []),
           ...(invocation ? [userMessage({ type: 'requested_skill', ...invocation })] : [])];
