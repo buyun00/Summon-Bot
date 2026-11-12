@@ -127,6 +127,7 @@ struct SummonOnboardingStepView: View {
         if store.onboarding["roomId"].string == roomID, let text = guide["text"].string {
             VStack(alignment: .leading, spacing: 6) {
                 Text(text).font(.callout)
+                if let progress = guide["setup"]["progress"].string, !progress.isEmpty { Text(progress).summonFont(.caption).foregroundStyle(.secondary) }
                 if let error = failure ?? guide["error"].string { Text(error).font(.caption).foregroundStyle(.orange) }
                 let local = guide["localControl"]
                 if let raw = local["origin"].string, let url = URL(string: raw), url.scheme == "https" { Link(raw, destination: url) }
@@ -151,7 +152,7 @@ struct SummonOnboardingStepView: View {
         defer { busy = false }
         do {
             _ = try await store.request(path: "/api/model-settings/onboarding/advance", method: "POST", body: .object([
-                "step": .string(step), "action": .string(action)
+                "step": .string(step), "action": .string(action), "messageId": store.onboarding["guide"]["messageId"]
             ]))
             await store.refresh()
         } catch { failure = error.localizedDescription }

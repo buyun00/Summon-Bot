@@ -14,11 +14,10 @@ import { ToolRegistry, jsonToolResult } from '../capabilities/registry.mjs';
 import { registerSdkTools } from '../capabilities/sdk.mjs';
 import { loadConfiguredTools } from '../capabilities/remote-tools.mjs';
 import { teamGuidance } from './team-guidance.mjs';
-import { permitsTool, assertToolPolicy, assertExternalReviewCurrent, taskMode, conversationPrompt, CHAT_WORK_POLICY, frontendObservation, workInput } from '../capabilities/task-policy.mjs';
+import { permitsTool, assertToolPolicy, taskMode, conversationPrompt, CHAT_WORK_POLICY, frontendObservation, workInput } from '../capabilities/task-policy.mjs';
 import { usageRoomId, UsageLedger } from './usage.mjs';
 import { boundedNumber, modelArgs, modelText, looseSchema } from '../context/model-input.mjs';
 import { taskSource, publicMessage } from '../context/sources.mjs';
-import { codexTarget } from '../capabilities/codex-target.mjs';
 import { assertFileToolAccess, taskFileAccessPolicy } from '../capabilities/file-access.mjs';
 import { FILE_ACCESS_GUIDANCE } from '../capabilities/file-policy.mjs';
 import { factTime, localTime } from '../context/fact-time.mjs';
@@ -290,17 +289,13 @@ export class BotEngine {
       }
       const registry = new ToolRegistry({
         authorize: async (tool, args, context) => {
-          assertToolPolicy(task, tool, task.workId && tool.name.startsWith('codex_') ? { ...args, workId: task.workId } : args);
+          assertToolPolicy(task, tool, args);
           if (hasCurrentRequest && (['chatroom_dm', 'messages_send'].includes(tool.name) ||
               tool.name === 'chatroom_send' && (args.toBotId || args.purpose === 'request'))) {
             const routing = this.store.getRecord('request-routing', task.id);
             if (routing?.sourceActions?.length && selectedSourceAction(routing)?.separateOwner)
               throw new Error('Register the independent review through work_create in the original project room.');
           }
-          if (hasCurrentRequest && ['codex_projects', 'codex_threads'].includes(tool.name) &&
-              !['produce', 'revise', 'status'].includes(this.store.getRecord('request-routing', task.id)?.intent))
-            throw new Error('Classify the current request before looking up external projects or threads. A room-only text result uses the current conversation.');
-          if (tool.effect !== 'read') assertExternalReviewCurrent(task, this.store);
           await assertFileToolAccess(tool.name, args, originalTask, this.store, this.config.workspace);
           journal.allowed(task, tool, context);
         },
@@ -322,7 +317,7 @@ export class BotEngine {
         },
       });
       const observationReads = new Set(), observedFragments = new Set();
-      const flexibleTools = new Set(['chatroom_read', 'reminders_create', 'reminders_cancel', 'codex_create', 'codex_attach', 'codex_send', 'codex_interrupt', 'codex_status', 'codex_read']);
+      const flexibleTools = new Set(['chatroom_read', 'reminders_create', 'reminders_cancel']);
       const configuredTools = this.configured.tools.map(tool => flexibleTools.has(tool.name) ? { ...tool, inputSchema: looseSchema(tool.inputSchema),
         ...(observation && tool.name === 'chatroom_read' ? { description: 'Read one exact published messageId in this group, or page over omitted new messages when contextRange.omitted is positive. Use the supplied delta first and follow replyTo, rootId or sourceRefs for specific evidence.' } : {}),
         execute: async (input, context) => {
@@ -353,12 +348,7 @@ export class BotEngine {
           }
           if (tool.name === 'reminders_create') return tool.execute({ ...args, id: context.recordId,
             content: modelText(args.content ?? args.message ?? args.text ?? args.reminder, modelText(source.input?.trigger?.content)) }, context);
-          if (tool.name === 'reminders_cancel') return tool.execute(args, context);
-          const workId = task.workId || args.workId || source.metadata?.referencedWorkId;
-          await this.services.sources.requireWork(workId, originalTask);
-          return tool.execute({ ...args, workId, operationId: context.recordId,
-            ...(tool.name === 'codex_create' ? { prompt: modelText(args.prompt ?? args.content ?? args.message, modelText(task.input)), target: codexTarget(args.target || currentWork()?.executor?.target) } : {}),
-            ...(tool.name === 'codex_send' ? { message: modelText(args.message ?? args.content ?? args.prompt, modelText(task.input)) } : {}) }, context);
+          return tool.execute(args, context);
         } } : !tool.name.startsWith('catalog_') ? tool : {
         ...tool, execute: (args, context) => {
           const input = task.input?.current || task.input;
@@ -642,7 +632,7 @@ export class BotEngine {
         const execution = task.workId && this.services.works.execution(originalTask);
         const boundary = execution ? userMessage({ type: 'current_work_boundary', workId: task.workId, taskId: task.id,
           actionId: execution.actionId, requestTaskId: execution.requestTaskId, executionEventId: execution.executionEventId,
-          instruction: task.metadata?.externalReview ? 'Review the delivered external evidence within this existing action. Its executor is already bound. Apply the supervisor policy, preserve the exact source and do not execute the accepted step again.' : 'The preceding work_input is the current accepted step. Use its currentStep and any deliveredObservation now. All earlier session turns are saved history for their own actions; do not replay them. Frontend dispatch and wait registration have already happened. Execute this step, handle its actual prerequisites, publish its useful result, and record completion or a real unmet condition.' }) : publicView && !publicView.runtimeEvent ? userMessage({ type: hasCurrentRequest ? 'current_request_boundary' : 'current_event_boundary', taskId: task.id,
+          instruction: 'The preceding work_input is the current accepted step. Use its currentStep and any deliveredObservation now. All earlier session turns are saved history for their own actions; do not replay them. Frontend dispatch and wait registration have already happened. Execute this step, handle its actual prerequisites, publish its useful result, and record completion or a real unmet condition.' }) : publicView && !publicView.runtimeEvent ? userMessage({ type: hasCurrentRequest ? 'current_request_boundary' : 'current_event_boundary', taskId: task.id,
           reference: { type: 'room', roomId: source.roomId, messageId: source.replyTo }, author: source.actor,
           instruction: hasCurrentRequest ? 'Only this identified accepted source is the current trigger. All earlier published messages are history, including requests without a visible answer yet. Use them to understand references, never to replay their actions or reminders. Read request_actions for saved receipts if needed. Complete independent actions belonging to this current request.' :
             'This event is the current trigger and carries no current user request. Earlier user messages and their saved actions are evidence. Use them to handle this event without replaying those actions.' }) : null;

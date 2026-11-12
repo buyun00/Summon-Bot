@@ -51,7 +51,7 @@ export async function verifyCapabilityPackage(root) {
 
 /** Deploy only a capability from a verified full release, or a standalone package.
  * The running gateway, Web and Bot processes are not replaced by this operation. */
-export async function deployCapability(input,{dataRoot,defaultCwd,model,codexPath,gatewayUrl,gatewayToken,supervisor,registry,control}) {
+export async function deployCapability(input,{dataRoot,defaultCwd,model,gatewayUrl,gatewayToken,supervisor,registry,control}) {
   const {id,version}=input;validateServiceIdentity(id,version);
   if(Boolean(input.packageRoot)===Boolean(input.releaseRoot))throw error('Specify exactly one packageRoot or releaseRoot');
   let module,stateVersion,sourceRoot,integrity;
@@ -64,7 +64,7 @@ export async function deployCapability(input,{dataRoot,defaultCwd,model,codexPat
     const staged=await stageCapabilityPackage({packageRoot:input.packageRoot,dataRoot,id,version});
     module=staged.module;stateVersion=staged.stateVersion;sourceRoot=staged.root;integrity={packageRoot:sourceRoot,contentHash:staged.contentHash};
   }
-  const instance=await supervisor.start({id,version,stateVersion,module,options:{...(input.options||{}),id,version,dataRoot,releaseRoot:sourceRoot,defaultCwd,model,codexPath,gatewayUrl,gatewayToken,deferStart:false,...integrity}});
+  const instance=await supervisor.start({id,version,stateVersion,module,options:{...(input.options||{}),id,version,dataRoot,releaseRoot:sourceRoot,defaultCwd,model,gatewayUrl,gatewayToken,deferStart:false,...integrity}});
   const current=registry.getVersion(id,version);
   if(current)await registry.relocate(id,version,{endpoint:instance.url,token:instance.token});
   else await registry.register({id,version,endpoint:instance.url,token:instance.token,stateVersion});

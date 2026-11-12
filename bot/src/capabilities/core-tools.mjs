@@ -1,15 +1,14 @@
 import { jsonToolResult } from './registry.mjs';
-import { taskMode, compactWork, compactTask, assertExternalReviewCurrent } from './task-policy.mjs';
+import { taskMode, compactWork, compactTask } from './task-policy.mjs';
 import { randomUUID } from 'node:crypto';
 import { factTime } from '../context/fact-time.mjs';
 import { HANDOFF_REFERENCES, taskSource, workExecution } from '../context/sources.mjs';
 import { modelArgs, modelText, looseSchema, boundedNumber } from '../context/model-input.mjs';
-import { resolveCodexTarget } from './codex-target.mjs';
 import { acceptanceActionScope, acceptanceReply, authorizeProduction, currentProductionStage, currentUserRequest, productionDecision, productionRefusal, productionStage, requestIntents, productionStages, selectedSourceAction, sourceUnits } from './request-routing.mjs';
 import { EXISTING_PUBLICATION, OWNER_DELIVERY, ROOM_DUTY_PLANS, dependencyDispatches, publishedReviewTarget, roomDutyPlanId, saveRoomDutyPlan, sourceDispatches } from '../context/duty-actions.mjs';
 import { acceptanceBindings, acceptanceLinks, naturalAcceptanceMatch, sameRoomResultAcceptance } from './acceptance-identity.mjs';
 import { localTime } from '../context/fact-time.mjs';
-import { externalExecution, isAcceptedOperation } from '../context/execution-evidence.mjs';
+import { externalExecution } from '../context/execution-evidence.mjs';
 import { readExecutorManifest } from '../runtime/executor-delivery.mjs';
 import { deliveredLocalFiles, localPathKey } from '../runtime/local-delivery.mjs';
 import { MESSAGE_ATTACHMENTS, WORK_ATTACHMENTS } from '../runtime/notifications.mjs';
@@ -145,34 +144,6 @@ function acceptanceTarget(store, work, roomId, notifications = store.listRecords
 const publishedBeforeRequest = (publication, user) => Date.parse(publication.publishedAt) < Date.parse(user.roomMessageAt);
 const normalizeQuestion = value => String(value || '').trim().replace(/\s+/g, ' ');
 
-function returnedAfterAnswer(store, work, question) {
-  const exactQuestion = normalizeQuestion(question);
-  const asked = new Map();
-  for (const notification of store.listRecords('work-notifications')) {
-    if (notification.workId !== work.id || notification.publication !== 'explicit' || notification.status !== 'delivered') continue;
-    for (const receipt of [notification.receipt].flat()) {
-      if (receipt?.id && receipt.senderId === work.botId && receipt.workId === work.id && receipt.roomId === notification.roomId &&
-          normalizeQuestion(receipt.content).includes(exactQuestion)) asked.set(receipt.id, receipt);
-    }
-  }
-  if (!asked.size) return null;
-  for (const routing of store.listRecords('request-routing').reverse()) {
-    if (routing.intent !== 'deliver') continue;
-    const answerTask = store.getTask(routing.id);
-    if (answerTask?.status !== 'completed' || !answerTask.result?.attachments?.length) continue;
-    const user = currentUserRequest(answerTask, store), publication = asked.get(user?.replyTo);
-    if (!publication || user.messageId !== routing.messageId || user.roomId !== publication.roomId ||
-        user.roomId !== routing.roomId || !(Date.parse(user.roomMessageAt) > Date.parse(publication.createdAt))) continue;
-    const attached = new Set(answerTask.result.attachments.map(item => item.id));
-    const returned = store.listTools(answerTask.id).some(tool => {
-      const receipt = tool.output?.details;
-      return tool.name === 'work_deliver' && tool.status === 'completed' && receipt?.workId === work.id &&
-        receipt.status === 'ready-for-current-reply' && receipt.attachments?.length && receipt.attachments.every(item => attached.has(item.id));
-    });
-    if (returned) return { roomId: user.roomId, messageId: user.messageId, questionMessageId: publication.id };
-  }
-  return null;
-}
 
 const runnableWorkIds = store => new Set(store.listUnfinishedTasks().filter(item =>
   ['accepted', 'queued', 'running'].includes(item.status)).map(item => item.workId));
@@ -459,7 +430,6 @@ function page(items, args, project) {
 export function coreTools(services, task) {
   const store = services.store;
   const frontend = taskMode(task) !== 'work';
-  const review = task.metadata?.externalReview;
   const workView = (work, observedAt) => frontend ? compactWork(work, observedAt) : work;
   const taskView = value => compactTask(value, value?.workId && services.works.get(value.workId),
     value && services.works.execution(value).executionEventId);
@@ -609,7 +579,7 @@ export function coreTools(services, task) {
     originalRoomGoal: source.input.room.goal, originalTeamRequirements: source.input.room.team.requirements,
   });
   const selectedWork = work => {
-    const binding = work.bindings?.findLast(item => item.type === 'codex-desktop');
+    const binding = work.bindings?.findLast(item => item.type === 'native-recovery');
     const execution = externalExecution(work, binding?.operationId);
     return { id: work.id, goal: work.goal, requirements: work.requirements, status: work.status,
       project: work.project, target: work.executor?.target, controlRevision: work.controlRevision || 0,
@@ -619,8 +589,6 @@ export function coreTools(services, task) {
   };
   const documentBoundary = (work, grant) => {
     if (grant?.stage !== 'document-review') return;
-    if (services.works.executor(work).kind !== 'codex')
-      throw new Error('正式文档修订需要 Codex 执行器。请选择对应的 Codex 文档工作，或登记独立新文档工作。');
     if ((['active', 'paused', 'cancelled'].includes(work.status) || work.status === 'waiting' && work.waiting?.kind === 'external') &&
       currentProductionStage(work, store) !== 'document-review')
       throw new Error('仅文稿授权不会追加到正在实施的回合或恢复已停止的实施工作。请使用对应的文档工作，或登记独立新文档工作。');
@@ -772,22 +740,16 @@ export function coreTools(services, task) {
       }),
     tool('evidence_read', 'Read a bounded original fragment by exact reference. Workers may follow only handed-off references, never browse another room/session feed. Current source access is rechecked.',
       object({ reference }, ['reference']), 'read', args => services.sources.resolve(services.sources.reference(args.reference ?? args, task), task)),
-    tool('executors_status', 'Read the current default work engine and saved host executor consent. Authorized onboarding Pi work can connect with workspace_setup. Execution runs as independent work.', object({}), 'read', () => services.executors()),
-    tool('runtime_status', 'Read the current source room/work snapshot. Local tasks, external turn status, pending connector events and S3 waits are separate. Unknown connector state never counts as zero.', object({}), 'read', async () => {
+    tool('executors_status', 'Read the work owner. Pi runs independent work; discover tools and applicable methods with catalog_search.', object({}), 'read', () => services.executors()),
+    tool('runtime_status', 'Read current source room/work state with local tasks, native operation bindings and S3 waits.', object({}), 'read', async () => {
       const rooms = await services.sources.rooms(task), works = [];
       for (const work of services.works.list({ limit: 500 })) if (await services.sources.canReadWork(work, task, rooms)) works.push(work);
       const ids = new Set(works.map(work => work.id));
       const local = store.listTasks({ limit: 10000 }).filter(item => ids.has(item.workId) || !item.workId && taskSource(item, store).roomId === source.roomId);
-      const connectors = [];
-      for (const work of works.filter(item => item.bindings?.some(binding => binding.type === 'codex-desktop'))) {
-        try { const state = await services.capability('codex_status', { workId: work.id }, task);
-          connectors.push({ workId: work.id, status: state.status, turnId: state.turnId, eventDelivery: state.eventDelivery }); }
-        catch (error) { connectors.push({ workId: work.id, unavailable: error.message, eventDelivery: null }); }
-      }
       return { scope: { roomId: source.roomId, workIds: [...ids], global: false }, facts: factTime(),
         localTasks: Object.fromEntries(['accepted', 'queued', 'running', 'waiting'].map(status => [status, local.filter(item => item.status === status).length])),
         works: works.map(work => ({ id: work.id, status: work.status, waiting: work.waiting, executionOutcome: work.executionOutcome,
-          execution: externalExecution(work), updatedAt: work.updatedAt })), connectors };
+          execution: externalExecution(work), bindings: work.bindings, updatedAt: work.updatedAt })) };
     }),
     tool('request_actions', 'Read saved action and acceptance receipts for an original message in this conversation (messageId defaults to the current trigger). Use these receipts to distinguish an actual work write, a room-only scope, and an unconfirmed scope. History is not permission to repeat an action.',
       object({ messageId: string }), 'read', args => {
@@ -824,12 +786,6 @@ export function coreTools(services, task) {
       const id = args.id ?? args.workId ?? task.workId ?? source.metadata?.referencedWorkId ?? source.input?.trigger?.replyWorkId;
       const result = await services.sources.lookupWork(id, task);
       if (!result.work) return { unresolved: true, lookup: result.lookup };
-      let connector;
-      if (result.work.bindings?.some(binding => binding.type === 'codex-desktop')) {
-        try { const state = await services.capability('codex_status', { workId: result.work.id }, task); connector = {
-          status: state.status, turnId: state.turnId, observedAt: state.observedAt, eventDelivery: state.eventDelivery }; }
-        catch (error) { connector = { unavailable: error.message, eventDelivery: null }; }
-      }
       const view = workView(result.work, result.observedAt), operationId = view.execution?.operationId;
       const operation = operationId && store.getRecord('work-events', operationId);
       const origin = operation?.authorization?.source;
@@ -838,7 +794,7 @@ export function coreTools(services, task) {
         { operationId, roomId: origin.roomId, messageId: origin.replyTo, formId: origin.formId } : undefined;
       return { ...view, lookup: result.lookup, deliveryScope,
         ...(frontend ? { currentStage: currentProductionStage(result.work, store) } : {}),
-        ...(frontend ? { acceptanceTarget: acceptanceTarget(store, result.work, source.roomId) } : {}), ...(connector ? { connector } : {}) };
+        ...(frontend ? { acceptanceTarget: acceptanceTarget(store, result.work, source.roomId) } : {}), bindings: result.work.bindings };
     }),
     tool('work_outputs', 'Read an exact operation manifest and confirmed same-room output receipts. replyDelivery.candidates list names, sizes, original message IDs and selectable attachment IDs. Read another page using offset. For a requested existing path with no prior upload use publish_file with this exact workId and operationId. Preserve unknown uploads and report gaps. This read never authorizes production.',
       object({ id: string, operationId: string, ...pageFields }), 'read', async args => {
@@ -893,8 +849,8 @@ export function coreTools(services, task) {
         reviewReferenceAttachments: { type: 'array', maxItems: MESSAGE_ATTACHMENTS, items: object({ messageId: string, attachmentId: string }, ['messageId', 'attachmentId']),
           description: 'Exact same-room pairs for earlier files the current user authorizes comparing with the primary publication. Keep these pairs out of evidence. Use the primary publication and its attachments for reviewPublicationMessageId and evidence.' },
         afterDependency: object({ workId: string, minimumAttachments: { type: 'integer', minimum: 1, maximum: WORK_ATTACHMENTS } }),
-        executor: object({ kind: { type: 'string', enum: ['pi', 'codex', 'codex-cli', 'grok', 'claude-code'] }, connectionId: string,
-          target: { type: 'object', description: 'Use {type:"directory",cwd:"absolute authorized path"} for an existing directory, including one not registered in Desktop. Use project only for the actual selected project; never borrow another project ID.' } }, ['kind']) }), 'write', async (args, ctx) => {
+        executor: object({ kind: { type: 'string', enum: ['pi'] }, connectionId: string,
+          target: { type: 'object', description: 'Use {type:"directory",cwd:"absolute authorized path"} for the explicitly selected directory or choose an already authorized project.' } }, ['kind']) }), 'write', async (args, ctx) => {
         const decision = productionDecision(task, store);
         if (decision?.workRelation === 'continue') throw new Error(`Continue the existing deliverable with work_dispatch workId=${decision.workId}; this request does not authorize another work.`);
         const selected = selectedSourceAction(decision);
@@ -1000,16 +956,12 @@ export function coreTools(services, task) {
         }
         const suppliedExecutor = typeof args.executor === 'string' ? { kind: args.executor } : modelArgs(args.executor);
         const selectedTarget = suppliedExecutor.target || args.target || (args.cwd ? { type: 'directory', cwd: args.cwd } : args.projectId ? { type: 'project', projectId: args.projectId } : null);
-        const documentOnly = decision?.productionStage === 'document-review';
-        const kind = documentOnly ? 'codex' : modelText(suppliedExecutor.kind || suppliedExecutor.type || (selectedTarget ? 'codex' : '')).toLowerCase();
-        const choices = services.executors();
-        const executorKind = kind || choices.executors?.find(item => item.id === choices.defaultId)?.kind;
-        const target = (selectedTarget || executorKind === 'codex') ? await resolveCodexTarget(selectedTarget, services, task) : null;
-        const executor = kind || target ? { kind: kind || 'codex', ...(suppliedExecutor.connectionId ? { connectionId: suppliedExecutor.connectionId } : {}),
-          ...(target ? { target } : {}) } : undefined;
+        const target = selectedTarget;
+        const executor = { kind: 'pi', ...(suppliedExecutor.connectionId ? { connectionId: suppliedExecutor.connectionId } : {}), ...(target ? { target } : {}) };
         let project;
         try { project = target ? await services.sources.authorizeProject(target, task) : await services.sources.contextProject(task); }
         catch (error) { if (target) throw error; content.evidenceWarnings.push({ message: `Project scope is unavailable: ${error.message}` }); }
+        if (project?.cwd && target?.type === 'directory') executor.target = { type: 'directory', cwd: project.cwd };
         if (project && executor?.target?.type === 'project') executor.target = { ...executor.target, projectId: project.id };
         const participant = modelText(args.participant?.contribution).trim() ? {
           contribution: modelText(args.participant.contribution).trim().slice(0, 4000),
@@ -1046,32 +998,12 @@ export function coreTools(services, task) {
         return { ...compactWork(work), ...receipt, handedOff: receipt.accepted === true, acceptance: modelText(args.acceptance),
           ...(participantPlan ? { participantPlan: planReceipt(participantPlan) } : {}), evidenceWarnings: content.evidenceWarnings };
       }),
-    tool('work_update', frontend ? 'Pause or cancel existing work. Send requirements with work_dispatch; only the worker records progress and completion.' : review ? 'Record progress, checkpoints, next steps and evidence for the current external review. Follow the current external_work_review to determine whether status and waiting can be updated. Preserve the accepted goal and requirements.' : 'Record actual progress and status of the current work. Its identity and revision are supplied by the program.',
+    tool('work_update', frontend ? 'Pause or cancel existing work. Send requirements with work_dispatch; only the worker records progress and completion.' : 'Record actual progress and status of the current work. Its identity and revision are supplied by the program.',
       object({ id: string, ...(!frontend ? { goal: string, requirements: string, progress: string, checkpoint: {}, next: string, constraints: string, evidence: {},
         waiting: waitingFields } : {}), status: { type: 'string', enum: frontend ? ['paused', 'cancelled'] : ['active', 'waiting', 'paused', 'blocked', 'completed', 'cancelled'] } }), 'write', async args => {
         const work = await services.sources.requireWork(workId(args), task);
-        assertExternalReviewCurrent(task, store);
-        const review = task.metadata?.externalReview;
-        if (review && work.status === 'completed' && isAcceptedOperation(work, review.operationId) &&
-          (args.waiting || args.status && args.status !== 'completed')) throw new Error('This exact result was explicitly accepted by the user; retain its accepted scope and unverified boundaries without reopening it from external evidence.');
-        if (review && (args.goal !== undefined || args.requirements !== undefined)) throw new Error('External evidence cannot rewrite the accepted work goal or requirements.');
-        const outcome = work.executionOutcome;
-        const currentOutcome = review && outcome && outcome.operationId === review.operationId && outcome.turnId === review.turnId ? outcome : null;
-        const confirmedFinal = review?.confirmedFinal && currentOutcome?.kind === 'execution-ended' && currentOutcome.finalConfirmed;
-        if (review && ['completed', 'done'].includes(args.status) && !confirmedFinal)
-          throw new Error('Completion requires the confirmed final of this exact ended operation.');
-        if (review && (args.status === 'active' || review.running && (args.waiting !== undefined || args.status !== undefined)))
-          throw new Error('The external executor is still running; record its evidence and checkpoint without changing its lifecycle.');
-        if (currentOutcome?.kind === 'needs-input' && args.waiting && args.waiting.kind !== 'user-input')
-          throw new Error('Keep the current native request as a user-input wait while its answer is outstanding.');
         const question = modelText(args.waiting?.question).trim(), blockingRequirement = modelText(args.waiting?.blockingRequirement).trim();
         if (args.waiting?.kind === 'user-input' && !question) throw new Error('Waiting for user input requires the actual unanswered question.');
-        if (confirmedFinal && args.waiting?.kind === 'user-input' && !blockingRequirement)
-          throw new Error('After a confirmed final, user-input requires a blockingRequirement of this same accepted work. For acceptance of the result or authorization of separate next work, use waiting/review or complete the finished scope.');
-        if (review && args.waiting?.kind === 'user-input' && currentOutcome?.kind !== 'needs-input') {
-          const answer = returnedAfterAnswer(store, work, question);
-          if (answer) throw Object.assign(new Error(`The user already answered this published work question in room ${answer.roomId}, message ${answer.messageId}, replying to ${answer.questionMessageId}. The frontend selected the confirmed original outputs for this same work. Preserve the executor’s own earlier observation and any concrete remaining gap; do not record the same unanswered question again.`), { code: 'WORK_INPUT_ALREADY_ANSWERED', status: 409 });
-        }
         if (['paused', 'cancelled'].includes(args.status) && work.id !== task.workId) {
           if (!userRequest) throw new Error('只能依据当前用户的停止要求控制这项工作。');
           if (source.roomId && (!work.sources?.length || work.sources.some(item => item.roomId !== source.roomId)))
@@ -1081,8 +1013,7 @@ export function coreTools(services, task) {
         const patch = Object.fromEntries((frontend ? ['status'] : ['goal', 'requirements', 'progress', 'status']).filter(key => args[key] !== undefined).map(key => [key, modelText(args[key])]));
         if (!frontend && args.waiting && (args.status || work.status) === 'waiting') patch.waiting = { kind: args.waiting.kind,
           question, reason: modelText(args.waiting.reason), since: new Date().toISOString(),
-          ...(args.waiting.kind === 'user-input' && blockingRequirement ? { blockingRequirement } : {}),
-          ...(currentOutcome ? { operationId: review.operationId, bindingId: review.bindingId, outcome: currentOutcome.kind } : {}) };
+          ...(args.waiting.kind === 'user-input' && blockingRequirement ? { blockingRequirement } : {}) };
         if (!frontend) patch.checkpoint = { ...work.checkpoint, ...(args.checkpoint ? { note: modelText(args.checkpoint) } : {}),
           ...(args.progress !== undefined ? { progress: modelText(args.progress) } : {}), ...(args.next !== undefined ? { next: modelText(args.next) } : {}),
           ...(args.constraints !== undefined ? { constraints: modelText(args.constraints) } : {}), ...(args.evidence !== undefined ? { evidence: args.evidence } : {}),
@@ -1202,10 +1133,8 @@ export function coreTools(services, task) {
     tool('work_notify', 'Save and publish this work’s useful result text directly. The program supplies the original recipient, reply association and notification ID; peer FYI does not demand another reply.',
       object({ id: string, content: string, attachments: { type: 'array', maxItems: WORK_ATTACHMENTS, items: object({ id: string }, ['id']) } }), 'external', async (args, ctx) => {
         const work = await services.sources.requireWork(workId(args), task);
-        assertExternalReviewCurrent(task, store);
-        const review = task.metadata?.externalReview;
         return services.notify({ id: work.id, notificationId: actionId(args, ctx, 'notificationId'),
-          publication: review?.running ? 'progress' : 'explicit', ...(review?.running ? {resultKind:'progress'} : {}), attachments: args.attachments,
+          publication: 'explicit', attachments: args.attachments,
           content: modelText(args.content ?? args.message ?? args.text, work.progress) }, task, ctx);
       }),
     tool('contacts_list', 'List configured direct Bot contacts. Direct messages and task queries do not use the gateway or chatroom.', object({}), 'read', () => services.contacts()),
@@ -1241,9 +1170,5 @@ export function coreTools(services, task) {
       args => store.setState(args.scope, args.key, args.value, args)),
     tool('artifact_save', 'Save task output as a durable artifact and return its receipt.',
       object({ name: string, mimeType: string, content: string }, ['name', 'content']), 'write', (args, ctx) => ctx.saveArtifact(args)),
-  ].map(definition => definition.name === 'work_update' && review ? { ...definition,
-    // Keep the declaration stable across review phases. The handler enforces live lifecycle restrictions.
-    inputSchema: object({ id: string, progress: string, checkpoint: {}, next: string, constraints: string, evidence: {},
-      status: { type: 'string', enum: ['waiting', 'blocked', 'completed'] },
-      waiting: waitingFields }) } : definition);
+  ];
 }

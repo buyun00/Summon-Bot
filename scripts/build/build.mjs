@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { copyTree, walk, readJson, writeJson, digest, within, parseArgs } from './files.mjs';
 
 export const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const directories = ['bot', 'web', 'capabilities', 'connectors', 'roles', 'skills', 'scripts/build', 'scripts/installation', 'scripts/maintenance', 'scripts/release'];
+const directories = ['bot', 'web', 'capabilities', 'roles', 'skills', 'scripts/build', 'scripts/installation', 'scripts/maintenance', 'scripts/release'];
 const rootFiles = ['package.json', 'package-lock.json', 'release.json', 'README.md', 'AGENTS.md', 'Start.ps1', 'Start-Hidden.vbs', 'Stop.ps1', 'Run.cmd'];
 const docsFiles = ['REFACTOR_PLAN.md', 'ARCHITECTURE.md', 'CHAT_WORK_ISOLATION.md', 'DEPLOYMENT.md', 'OPERATIONS.md', 'VERIFICATION.md', 'CAPABILITY_SERVICES.md', 'CAPABILITY_CATALOG.md', 'DEVELOPMENT.md', 'CLIENT_RELEASES.md', 'BOT_3_PLUS_3_DESIGN.md', 'BOT_3_PLUS_3_IMPLEMENTATION.md', 'BOT_3_PLUS_3_ACCEPTANCE.md', 'EGGBOT.md', 'DESKTOP_INSTALL_ONBOARDING_SPEC.md'];
 const include = name => !name.split('/').some(part => ['node_modules', '.git', '.relay', 'test', 'tests', 'coverage', 'dist'].includes(part)

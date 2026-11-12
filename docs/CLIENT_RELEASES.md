@@ -4,7 +4,7 @@ Summon Bot 使用普通网页、Windows/macOS Electron、Android Compose 和 iOS
 
 ## 下载来源
 
-Windows x64 EXE 和 Apple Silicon DMG 内置本机工作区运行环境，也可以连接已有工作区。iOS 和 Android 首次使用时填写自己的地址和访问令牌。桌面操作与候选构建见 [桌面端说明](../desktop/README.md)。
+Windows x64 提供 EXE，Apple Silicon macOS 提供 DMG。iOS 和 Android 首次使用时填写实例地址和访问令牌。桌面操作与候选构建见 [桌面端说明](../desktop/README.md)。
 
 客户端下载与更新按设备本机、GitHub 的顺序查找：
 
@@ -29,7 +29,7 @@ npm run release:version
 npm run release:all
 ```
 
-该命令从 Git 当前提交构建并安装正式 Web/后端，正常停止和恢复既有服务与 Codex 连接器，然后只在本地构建 Windows 桌面端，产物发布到本机发行目录后即结束。本机不上传 GitHub，也不构建 Android。首次需要桌面依赖时执行 `npm ci --prefix desktop --no-audit --no-fund`。
+该命令从 Git 当前提交构建正式 Web 和后端，正常停止现有系统，安装后恢复运行，再构建 Windows 桌面端并发布到本机发行目录。首次需要桌面依赖时执行 `npm ci --prefix desktop --no-audit --no-fund`。
 
 也可分别执行：
 
@@ -58,7 +58,9 @@ Android 使用 Linux runner、Java 17 和仓库的 Gradle wrapper 构建正式 A
 
 ## 客户端更新
 
-Windows：首次下载 EXE 安装到当前用户目录。之后应用启动及运行期间自动检查更新，下载完成后在“客户端下载与更新”选择“重启并更新”。本机探测最长 1.2 秒，本机查询或下载失败则直接转 GitHub。
+Windows EXE 安装到当前用户目录。首次从开始菜单打开 Summon Bot，在开箱页选择本机正式实例或输入远程地址并登录。新建或选择工作区后，在应用内的正式页面配置聊天模型和 API Key。
+
+Windows 应用在启动及运行期间自动检查更新，下载完成后在“客户端下载与更新”选择“重启并更新”。本机探测最长 1.2 秒，本机查询或下载失败则转到 GitHub。
 
 macOS：网页内容刷新即可更新；外壳通过 DMG 手动覆盖安装。检查版本同样先本机、再 GitHub。
 

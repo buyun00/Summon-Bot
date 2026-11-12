@@ -282,7 +282,7 @@ export class ChatroomService {
     if(kind==='deep'&&this.manager.store.get('bots','bot-chatroom')?.status==='active'&&!members.includes('bot-chatroom'))members.push('bot-chatroom');
     for(const id of members)if(id!=='user'&&!id.startsWith('executor:'))this.manager.get(id);
     if(kind==='dm'){if(members.length!==2)fail('DM requires two participants');const existing=this.store.list('rooms').find(room=>room.kind==='dm'&&room.members.length===2&&members.every(id=>room.members.includes(id)));if(existing)return existing;}
-    const draft={...pick(input,['id','originRoomId','originMessageId']),name:input.name||members.join(' ↔ '),kind,members,status:'active',goal:input.goal||'',summary:'',...(team?{team,projectMode:mode}:{})};
+    const draft={...pick(input,['id','originRoomId','originMessageId','workspaceProfileId']),name:input.name||members.join(' ↔ '),kind,members,status:'active',goal:input.goal||'',summary:'',...(team?{team,projectMode:mode}:{})};
     const room=this.store.save('rooms',{...draft,members:this.workflowReviews.members(draft)});this.emit('room',room);
     if(kind==='deep'&&room.goal)void this.post(room.id,{content:room.goal,toBotId:members.includes('bot-chatroom')?'bot-chatroom':members.find(id=>id!=='user'),kind:'event'},'system').catch(error=>this.emit('chatroom-error',{roomId:room.id,error:error.message}));return room;
   }
@@ -620,7 +620,7 @@ export class ChatroomService {
       [item.instruction,ownDuties.length&&'本群登记职责：'+ownDuties.map(duty=>duty.responsibility).join('；')+
         '。用 chatroom_team_read 和原消息查本职责的来源、产物和需续用的材料。以本轮用户原话与实际授权决定工作。',
         ownDuties.length&&trigger.senderId==='user'&&!item.peerAnswer&&
-        '用户本轮明确授权独立工作并给出登记项目完整路径或 ID 时，先用 request_decide，再用 codex_projects 核实项目。按原发布消息和附件 ID 读取并传递同群原件。'].filter(Boolean).join('\n');
+        '用户本轮明确授权独立工作并给出项目路径时，通过 request_decide 和 work_create 保留真实目录与授权。按原发布消息和附件 ID 读取并传递同群原件。'].filter(Boolean).join('\n');
     const input={id:item.id,kind:!staffing&&!item.peerAnswer&&!item.observation&&!item.teamIntroduction&&trigger.senderId==='user'?'request':'event',
       sessionId,conversationId:!item.routeOnly&&item.workId?`work:${item.workId}`:sessionId,workId:item.routeOnly?undefined:item.workId,correlationId:trigger.rootId,replyTo:trigger.id,
       metadata:{kind:item.workId?'work':'chat',routeOnly:!!item.routeOnly,priority:item.priority,actor,accessActor:staffing?'system':trigger.senderId,

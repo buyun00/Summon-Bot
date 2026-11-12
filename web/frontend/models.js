@@ -1,6 +1,6 @@
 'use strict';
 globalThis.SummonModels = (() => {
-  const view = { data: null, summary: null, editor: null, choices: [], error: '', busy: false, login: null, loadedAt: 0, quotaId: null, connectingId: null };
+  const view = { data: null, summary: null, editor: null, choices: [], error: '', busy: false, login: null, loadedAt: 0, quotaId: null };
   let bindings, loginTimer, usageTimer, loading, invalidateSidebar;
   const kinds = { codex: 'Codex 订阅', grok: 'Grok 订阅', api: '通用 API' };
   const formatMoney = balance => {
@@ -44,8 +44,7 @@ globalThis.SummonModels = (() => {
     const awaiting = executor ? !item.enabled : !item.configured;
     const usage = awaiting ? null : item.usage, windows = percents(usage), money = balances(usage);
     const loading = item.connecting || !awaiting && (!usage || usage.status === 'loading');
-    const codexWindows = windows.filter(window => window.limitId === 'codex');
-    const primaryWindows = codexWindows.length ? codexWindows : windows;
+    const primaryWindows = windows;
     const isApi = item.kind === 'api', weekly = primaryWindows.find(window => duration(window) === 10080);
     const fiveHours = primaryWindows.find(window => duration(window) === 300);
     const main = weekly || primaryWindows[0] || null;
@@ -82,24 +81,45 @@ globalThis.SummonModels = (() => {
         ${dots === null ? '' : points.map(([x, y], index) => `<circle class="quota-signal-dot ${index < dots ? 'on' : ''}" cx="${x}" cy="${y}" r="1.9"/>`).join('')}</svg><span class="quota-signal-brand">${brand}</span>${value ? `<span class="quota-signal-value ${balance && !loading ? 'is-money' : ''}" aria-hidden="true">${esc(value)}</span>` : ''}</span>
       <span class="quota-signal-role">${executor ? 'WORK' : 'CHAT'}</span></button>`;
   }
-  function executorButton(item, esc) {
-    if (!item || item.role !== 'executor' || item.id === 'pi') return '';
-    const action = item.enabled ? 'disconnect' : 'connect';
-    return `<button class="${item.enabled ? 'secondary-button' : 'primary-button'}" data-action="models-executor-${action}" data-id="${esc(item.id)}" ${view.busy || item.connecting ? 'disabled' : ''}>${esc(item.enabled ? '断开' : item.id === 'codex-cli' ? '同意并接入 Codex' : '接入')}</button>`;
+  function sourceActions(source, esc) {
+    return (source?.actions || []).map(action => `<button class="secondary-button" data-action="models-source-action"
+      data-resource="${esc(source.resourceId)}" data-source="${esc(source.sourceId)}" data-operation="${esc(action.id)}" ${view.busy ? 'disabled' : ''}>${esc(action.label)}</button>`).join('');
   }
-  function sidebar({ esc, icon, invalidate, chatConfigured, chatConnecting, setup }) {
+  function renderSourceMetrics(source, esc) {
+    const output = [];
+    for (const metric of source.metrics || []) {
+      if (metric.kind === 'quota' && metric.value !== null && (metric.limit || metric.unit === '%') || metric.kind === 'amount' && metric.value !== null && /^[A-Z]{3}$/.test(metric.unit)
+          || metric.kind === 'number' && metric.unit === 'credits') continue;
+      const label = esc(metric.label);
+      if (metric.kind === 'table') output.push(`<div class="native-metric-table"><table><caption>${label}</caption><thead><tr>${metric.columns.map(column => `<th scope="col">${esc(column)}</th>`).join('')}</tr></thead><tbody>${metric.rows.map(row => `<tr>${row.map(value => `<td>${esc(value)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`);
+      else if (metric.kind === 'progress' && metric.unit === '%' && metric.value !== null)
+        output.push(`<label>${label}<progress value="${Math.max(0, Math.min(100, metric.value))}" max="100"></progress> ${esc(metric.value)}%</label>`);
+      else if (metric.kind === 'file' && /^[a-zA-Z0-9_-]+$/.test(metric.ref || ''))
+        output.push(`<p>${label} <a href="/api/attachments/${encodeURIComponent(metric.ref)}" download>${esc(metric.text)}</a></p>`);
+      else output.push(`<p><strong>${label}</strong> ${esc(metric.text ?? (metric.value === null ? '未知' : String(metric.value) + ' ' + metric.unit))}</p>`);
+    }
+    return output.join('');
+  }
+  function renderSources(sources, esc) {
+    return sources.map(source => `<section class="models-native-source">
+      <header><strong>${esc(source.label)}</strong>${source.accountRef ? `<small>${esc(source.accountRef)}</small>` : ''}</header>
+      ${source.status === 'login-required' ? '<p class="model-usage-note">等待登录</p>' : ''}
+      ${['loading','error','login-required','stale'].includes(source.status) || (source.metrics || []).some(item => ['amount','quota'].includes(item.kind) || item.unit === 'credits') ? usageBody(source.usage, esc) : ''}
+      ${renderSourceMetrics(source, esc)}
+      ${source.actions?.length ? `<div class="profile-actions">${sourceActions(source, esc)}</div>` : ''}
+    </section>`).join('');
+  }
+  function sidebar({ esc, icon, invalidate, chatConfigured, chatConnecting, workSources = [], setup }) {
     invalidateSidebar = invalidate;
     const current = view.summary;
     const chat = { ...(current?.chat || { role: 'chat', name: '聊天引擎' }), configured: chatConfigured, connecting: chatConnecting };
     if (!chatConfigured) chat.usage = { status: 'unconfigured' };
-    const pendingId = view.connectingId || setup?.engineId;
-    const work = { ...(current?.executors?.find(item => item.id === pendingId) || current?.workExecutor || current?.executors?.[0]
-      || { role: 'executor', id: 'codex-cli', kind: 'codex-cli', name: 'Codex', enabled: false, label: '待接入', usage: { status: 'not_connected' } }) };
-    if (work.id === pendingId && (view.connectingId || ['queued', 'running'].includes(setup?.status))) work.connecting = true;
-    if (work.id === setup?.engineId && setup?.status === 'waiting' && !work.enabled) work.label = '待授权';
+    const workSource = workSources.find(item => item.usage && (item.usage.windows?.length || item.usage.balances?.length || item.usage.status === 'loading'));
+    const work = { ...(workSource || current?.workExecutor || { id: 'pi', name: 'Pi', usage: { status: 'shared', note: 'Pi 使用已连接的聊天模型。' } }),
+      role: 'executor', enabled: chatConfigured, connecting: setup?.status === 'running' && !chatConfigured };
     const rows = [chat, work];
     const selected = rows.find(item => (item.id || item.role) === view.quotaId);
-    const popover = selected ? `<aside class="quota-popover" id="model-quota-popover" role="dialog" aria-label="${esc(selected.name || '模型')}接入与额度"><header><span class="quota-popover-icon">${globalThis.SummonModelIcons.svg(selected, 28)}</span><div><small>${selected.role === 'executor' ? 'WORK · 执行引擎' : 'CHAT · 聊天引擎'}</small><strong>${esc(selected.name || '正在读取')}</strong></div><button class="icon-button" data-action="models-quota-close" aria-label="关闭额度详情">${icon('close', 16)}</button></header>${selected.model ? `<p class="quota-popover-model">${esc(selected.model)}</p>` : ''}<div class="quota-popover-usage">${usageBody(selected.usage, esc)}</div>${executorButton(selected, esc)}<footer><button data-action="navigate" data-view="models">管理模型与引擎 ${icon('arrow', 14)}</button></footer></aside>` : '';
+    const popover = selected ? `<aside class="quota-popover" id="model-quota-popover" role="dialog" aria-label="${esc(selected.name || '模型')}接入与额度"><header><span class="quota-popover-icon">${globalThis.SummonModelIcons.svg(selected, 28)}</span><div><small>${selected.role === 'executor' ? 'WORK · 执行引擎' : 'CHAT · 聊天引擎'}</small><strong>${esc(selected.name || '正在读取')}</strong></div><button class="icon-button" data-action="models-quota-close" aria-label="关闭额度详情">${icon('close', 16)}</button></header>${selected.model ? `<p class="quota-popover-model">${esc(selected.model)}</p>` : ''}<div class="quota-popover-usage">${usageBody(selected.usage, esc)}</div>${sourceActions(selected, esc)}<footer><button data-action="navigate" data-view="models">管理模型与引擎 ${icon('arrow', 14)}</button></footer></aside>` : '';
     return `<section class="sidebar-models" aria-label="模型与引擎额度">${rows.map(item => signal(item, esc)).join('')}${popover}</section>`;
   }
   function closeQuota() {
@@ -131,7 +151,7 @@ globalThis.SummonModels = (() => {
     if (!view.data) return `<div class="page models-page"><h1>模型与引擎</h1><p class="subtle">${esc(view.error || '正在读取配置…')}</p><button class="secondary-button" data-action="models-reload">重新读取</button></div>`;
     const data = view.data, editor = view.editor, active = data.connections.find(item => item.id === data.activeId), summary = view.summary || data;
     const executor = summary.workExecutor;
-    const engineRows = (summary.executors || []).map(item => `<div class="models-executor-row"><div><strong>${esc(item.name)}</strong><p>${esc(item.id === executor?.id ? '当前工作引擎' : item.note || item.label)}</p></div><div class="models-executor-actions">${item.enabled && item.id !== executor?.id ? `<button class="secondary-button" data-action="models-executor-select" data-id="${esc(item.id)}" ${view.busy ? 'disabled' : ''}>用于工作</button>` : ''}${executorButton(item, esc)}</div></div>`).join('');
+    const sourceRows = renderSources(summary.sources || [], esc);
     const input = (label, name, value, options = {}) => `<label class="models-field"><span>${label}</span><input name="${name}" ${options.type ? `type="${options.type}"` : ''} value="${esc(value ?? '')}" ${options.required ? 'required' : ''} ${options.placeholder ? `placeholder="${esc(options.placeholder)}"` : ''} ${options.list ? `list="${options.list}"` : ''} ${options.type === 'password' ? 'autocomplete="new-password"' : ''} ${options.type === 'number' ? 'min="128" step="1"' : ''}></label>`;
     const select = (label, name, values, current) => `<label class="models-field"><span>${label}</span><select name="${name}">${values.map(([value, title]) => `<option value="${esc(value)}" ${current === value ? 'selected' : ''}>${esc(title)}</option>`).join('')}</select></label>`;
     const selected = editor?.id ? data.connections.find(item => item.id === editor.id) : null;
@@ -151,8 +171,8 @@ globalThis.SummonModels = (() => {
       <div class="models-form-actions"><button class="primary-button" type="submit" ${view.busy ? 'disabled' : ''}>${view.busy ? '正在保存…' : editor.kind === 'api' ? '保存并用于聊天' : selected?.configured ? '保存配置' : '保存并授权'}</button>${selected?.configured && !selected.active ? `<button class="secondary-button" type="button" data-action="models-activate" data-id="${esc(selected.id)}" ${view.busy ? 'disabled' : ''}>用于 Pi 聊天</button>` : ''}${selected && !selected.active ? `<button class="text-button models-remove" type="button" data-action="models-remove" data-id="${esc(selected.id)}" ${view.busy ? 'disabled' : ''}>移除此连接</button>` : ''}</div></form></section>` : '';
     return `<div class="page models-page"><header class="models-header"><div><button class="text-button" data-action="navigate" data-view="chat">${icon('back', 16)}返回聊天</button><p class="models-eyebrow">SETTINGS / MODELS</p><h1>模型与引擎</h1><p>选择聊天的模型，查看干活的额度。</p></div><button class="secondary-button" data-action="models-refresh-usage" ${view.busy ? 'disabled' : ''}>${icon('refresh', 15)}刷新额度</button></header>
       ${view.error ? `<p class="models-inline-error" role="alert">${esc(view.error)}</p>` : ''}
-      <div class="models-engine-overview"><section class="models-engine-card"><div class="models-engine-title"><span class="model-source-dot"></span><h2>聊天引擎</h2><span>Pi</span></div><strong>${esc(active?.name || '尚未选择')}</strong><p>${esc(active?.model || '')}</p>${usageBody(summary.chat?.usage, esc)}</section><section class="models-engine-card"><div class="models-engine-title"><span class="model-source-dot executor"></span><h2>工作引擎</h2><span>${esc(executor?.name || '待选择')}</span></div>${engineRows}${executor?.usage ? usageBody(executor.usage, esc) : ''}${executor?.id !== 'pi' ? `<button class="text-button" data-action="models-executor-select" data-id="pi" ${view.busy ? 'disabled' : ''}>使用内置 Pi</button>` : ''}</section></div>
-      <div class="models-configuration"><section class="models-connections"><div class="models-section-heading"><h2>聊天模型连接</h2><span>${data.connections.length}</span></div><div class="models-add-types">${Object.entries(kinds).map(([kind, label]) => `<button data-action="models-new" data-kind="${kind}" ${view.busy ? 'disabled' : ''}>${icon('plus', 14)}${label}</button>`).join('')}</div><div class="models-connection-list">${data.connections.map(item => `<button class="models-connection ${editor?.id === item.id ? 'selected' : ''}" data-action="models-edit" data-id="${esc(item.id)}"><span class="models-provider-monogram ${item.kind}">${globalThis.SummonModelIcons.svg(item, 22)}</span><span><strong>${esc(item.name)}</strong><small>${esc(item.model)}</small><small>${esc(kinds[item.kind])}${item.identity ? ` · ${esc(item.identity)}` : ''}</small></span>${item.active ? '<i class="models-selected-dot" title="当前聊天模型"></i>' : !item.configured ? '<small class="models-unconfigured">待连接</small>' : ''}</button>`).join('')}</div><p class="models-list-note">聊天模型由所有 Bot 共用。额度按账号显示，同一订阅不会因接入多个引擎而增加。</p></section>${form}</div></div>`;
+      <div class="models-engine-overview"><section class="models-engine-card"><div class="models-engine-title"><span class="model-source-dot"></span><h2>聊天引擎</h2><span>Pi</span></div><strong>${esc(active?.name || '尚未选择')}</strong><p>${esc(active?.model || '')}</p>${usageBody(summary.chat?.usage, esc)}</section><section class="models-engine-card"><div class="models-engine-title"><span class="model-source-dot executor"></span><h2>工作引擎</h2><span>${esc(executor?.name || '待选择')}</span></div>${executor?.usage ? usageBody(executor.usage, esc) : ''}${sourceRows}</section></div>
+      <div class="models-configuration"><section class="models-connections"><div class="models-section-heading"><h2>聊天模型连接</h2><span>${data.connections.length}</span></div><div class="models-add-types">${Object.entries(kinds).map(([kind, label]) => `<button data-action="models-new" data-kind="${kind}" ${view.busy ? 'disabled' : ''}>${icon('plus', 14)}${label}</button>`).join('')}</div><div class="models-connection-list">${data.connections.map(item => `<button class="models-connection ${editor?.id === item.id ? 'selected' : ''}" data-action="models-edit" data-id="${esc(item.id)}"><span class="models-provider-monogram ${item.kind}">${globalThis.SummonModelIcons.svg(item, 22)}</span><span><strong>${esc(item.name)}</strong><small>${esc(item.model)}</small><small>${esc(kinds[item.kind])}${item.identity ? ` · ${esc(item.identity)}` : ''}</small></span>${item.active ? '<i class="models-selected-dot" title="当前聊天模型"></i>' : !item.configured ? '<small class="models-unconfigured">待连接</small>' : ''}</button>`).join('')}</div><p class="models-list-note">当前工作区的 Pi 使用这里选择的聊天模型。</p></section>${form}</div></div>`;
   }
   async function updateUsage(force) {
     if (!bindings) return;
@@ -206,19 +226,10 @@ globalThis.SummonModels = (() => {
     try {
       view.error = '';
       if (!view.data) await load(provided.api, provided.render, provided.toast, provided.refresh);
-      if (['models-executor-connect', 'models-executor-disconnect'].includes(action)) {
-        const enabled = action === 'models-executor-connect';
-        view.busy = true; view.connectingId = enabled ? element.dataset.id : null; provided.render();
-        view.data = await provided.api('/api/model-settings/executors/' + encodeURIComponent(element.dataset.id), 'POST', { enabled, select: enabled });
-        view.summary = view.data; view.loadedAt = Date.now();
-        const connected = view.data.executors.some(item => item.id === element.dataset.id && item.enabled);
-        provided.toast(enabled ? connected ? '工作引擎已接入' : '正在配置工作引擎' : '工作引擎已断开');
-        await provided.refresh?.();
-      }
-      if (action === 'models-executor-select') {
+      if (action === 'models-source-action') {
+        const { resource, source, operation } = element.dataset;
         view.busy = true; provided.render();
-        view.data = await provided.api('/api/model-settings/executors/active', 'POST', { id: element.dataset.id });
-        view.summary = view.data; view.loadedAt = Date.now();
+        await provided.api(`/api/model-settings/usage/${encodeURIComponent(resource)}/${encodeURIComponent(source)}/actions`, 'POST', { id: operation });
         await provided.refresh?.();
       }
       if (action === 'models-new') { view.editor = defaults(element.dataset.kind); view.choices = []; view.login = null; }
@@ -235,7 +246,7 @@ globalThis.SummonModels = (() => {
       if (action === 'models-login') await beginLogin(element.dataset.id);
       if (action === 'models-cancel-login') { clearTimeout(loginTimer); view.login = await provided.api(`/api/model-settings/connections/${encodeURIComponent(element.dataset.id)}/login`, 'DELETE', {}); }
     } catch (error) { view.error = error.message; provided.toast(error.message, true); }
-    finally { view.busy = false; view.connectingId = null; provided.render(); }
+    finally { view.busy = false; provided.render(); }
   }
   document.addEventListener('click', event => { if (view.quotaId && !event.target.closest('.quota-popover,.quota-signal')) closeQuota(); });
   document.addEventListener('keydown', event => { if (event.key === 'Escape' && view.quotaId) closeQuota(); });
@@ -255,5 +266,5 @@ globalThis.SummonModels = (() => {
       bindings.render();
     }
   });
-  return { sidebar, start, load, render, act, sync: summary => { if (summary) view.summary = summary; }, current: () => view.summary };
+  return { sidebar, start, load, render, act, sync: summary => { if (summary) view.summary = summary; }, current: () => view.summary, renderSources };
 })();

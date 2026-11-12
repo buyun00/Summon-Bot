@@ -11,7 +11,7 @@ import { terminateTree } from '../../bot/src/runtime/process-tools.mjs';
 
 const pause = milliseconds => new Promise(resolvePause => setTimeout(resolvePause, milliseconds));
 export const deploymentPath = dataRoot => join(resolve(dataRoot), 'config', 'deployment.json');
-export const serviceFolders = { web: 'web', gateway: 'capabilities/gateway', 'codex-connector': 'connectors/codex-desktop-api', cloudflared: 'connectors/cloudflared', 'remote-bridge': 'connectors/remote-bridge' };
+export const serviceFolders = { web: 'web', gateway: 'capabilities/gateway', cloudflared: 'connectors/cloudflared', 'remote-bridge': 'connectors/remote-bridge' };
 export const serviceRoot = (dataRoot, type) => join(dataRoot, serviceFolders[type]);
 export const serviceRunPath = (dataRoot, type) => join(serviceRoot(dataRoot, type), 'run', 'current.json');
 export const bundledNode = releaseRoot => join(releaseRoot, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node');
@@ -168,7 +168,7 @@ export async function stopSystem(config) {
     const supervisor = await capabilitySupervisor(config);
     if (supervisor) {
       const services = await supervisor.list();
-      for (const id of ['chatroom', 'codex', 'bot-management']) for (const service of services.filter(item => item.id === id && item.state !== 'stopped')) {
+      for (const id of ['chatroom', 'bot-management']) for (const service of services.filter(item => item.id === id && item.state !== 'stopped')) {
         await supervisor.request(service.id, service.version, `/rpc/${id === 'bot-management' ? 'quiesce' : 'pause'}`, { body: { arguments: [] }, timeoutMs: 180000 });
       }
     }
@@ -186,7 +186,7 @@ export async function stopSystem(config) {
   const supervisor = await capabilitySupervisor(config), capabilities = [];
   if (supervisor) for (const service of await supervisor.list()) capabilities.push(await supervisor.stop(service.id, service.version, { drain: true, timeoutMs: 60000 }));
   const auxiliaries = [];
-  for (const type of ['codex-connector', 'cloudflared', 'remote-bridge']) auxiliaries.push(await stopService(config, type));
+  for (const type of ['cloudflared', 'remote-bridge']) auxiliaries.push(await stopService(config, type));
   return { state: 'stopped', web, gateway: stoppedGateway, capabilities, auxiliaries };
 }
 

@@ -7,7 +7,7 @@ const $ = (selector, root = document) => {
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)].filter(node => !node.closest('[data-motion-ghost]'));
 const executorLabel = () => {
   const models = globalThis.SummonModels.current();
-  const executor = models?.workExecutor || models?.executors?.[0];
+  const executor = models?.workExecutor;
   return executor ? `${executor.name} · ${executor.label}` : '待接入';
 };
 
@@ -141,6 +141,14 @@ const icons = {
 const icon = (name, size = 18) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" aria-hidden="true">${icons[name] || icons.chat}</svg>`;
 const labels = { queued: '等待执行', running: '进行中', waiting: '等待答复', completed: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断', active: '活跃', paused: '已暂停', concluded: '已结束', fact: '事实', hypothesis: '假设', opinion: '意见', unverified: '待核查', disputed: '有争议', expired: '已过期', professional: '专业记忆', private: '私人记忆', group: '群聊', dm: '私聊', deep: '深聊' };
 const tabs = [{ id: 'chat', title: '消息', icon: 'chat' }, { id: 'members', title: '成员', icon: 'people' }, { id: 'catalog', title: '能力目录', icon: 'link' }, { id: 'works', title: '工作', icon: 'work' }, { id: 'knowledge', title: '知识', icon: 'knowledge' }, { id: 'routines', title: '定时职责', icon: 'clock' }, { id: 'models', title: '模型与引擎', icon: 'computer' }, { id: 'usage', title: 'Token 统计', icon: 'layers' }];
+const workspaceProfile = new URLSearchParams(location.search).get('workspace');
+const workspaceKey = key => workspaceProfile ? key + ':' + workspaceProfile : key;
+function workspacePath(path) {
+  if (!workspaceProfile) return path;
+  const url = new URL(path, location.origin);
+  url.searchParams.set('workspace', workspaceProfile);
+  return url.pathname + url.search;
+}
 const state = { bots: [], rooms: [], works: [], agentRuns: [], routines: [], knowledge: { nodes: [], edges: [] }, provider: {}, runtime: {} };
 const ui = { view: 'chat', roomId: 'room-lobby', botId: null, workId: null, nodeId: null, messages: [], roomJobs: [], memories: [], workDetail: null, graph: null, query: '', knowledgeResults: null, roomQuery: '', workFilter: 'all', mobileRoom: false, reply: null, drafts: {}, outbound: {}, loading: true, refreshing: false, refreshAgain: false, streamConnected: false };
 Object.assign(ui, { detailOpen: false, detailTab: 'details', profileBotId: null, avatarEditing: false, avatarDraft: null, avatarTab: 'bot', searchOpen: false, menu: null, avatarSaving: false, sendingRooms: new Set(), draftTargets: {}, navigationSeq: 0, messageCache: new Map() });
@@ -207,7 +215,7 @@ function removeAttachment(key) {
   if (item?.preview) URL.revokeObjectURL(item.preview);
   ui.draftAttachments[ui.roomId] = items.filter(item => item.key !== key); render();
 }
-const updateDraftKey = 'summon:update-drafts';
+const updateDraftKey = workspaceKey('summon:update-drafts');
 let updateDraftArmed = false;
 function preserveUpdateDrafts(persistent = false) {
   if (ui.sendingRooms.size) { toast('消息正在发送，请完成后再更新。'); return false; }
@@ -367,6 +375,7 @@ async function readSyncBody(response, progress) {
   } finally { reader.releaseLock(); }
 }
 async function api(path, method = 'GET', body, { sync = false } = {}) {
+  path = workspacePath(path);
   for (let attempt = 0; ; attempt++) {
     let response, data;
     const controller = new AbortController();
@@ -378,7 +387,7 @@ async function api(path, method = 'GET', body, { sync = false } = {}) {
     try {
       deadline(sync ? 90000 : method === 'GET' ? 60000 : 120000);
       response = await fetch(path, { method, headers: body === undefined ? {} : { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), signal: controller.signal });
-      if (response.status === 401) { location.replace('/'); throw new Error('请重新输入访问 Token'); }
+      if (response.status === 401) { location.replace(workspacePath('/')); throw new Error('请重新输入访问 Token'); }
       if (sync) { deadline(90000); data = await readSyncBody(response, () => deadline(90000)); }
       else data = await response.json();
     } catch (error) {
@@ -769,7 +778,7 @@ async function acceptHistoryEpoch(response, requestedGeneration) {
     if (state.runtime) state.runtime.jobs = [];
     for (const room of state.rooms || []) delete room.lastMessage;
   }
-  try { sessionStorage.removeItem('summon:update-drafts'); } catch { /* Storage may be blocked. */ }
+  try { sessionStorage.removeItem(updateDraftKey); } catch { /* Storage may be blocked. */ }
   const session = clientSessionSnapshot();
   ui.lastSessionSignature = JSON.stringify(session);
   // UI updates immediately; durable cache clearing is a barrier for the new
@@ -913,13 +922,57 @@ function renderWorkControls(work) {
   const error = control?.error || (work.status === 'blocked' && work.lastError?.message);
   return buttons + (error ? `<span class="error-state" role="alert">${esc(error)}</span>` : '');
 }
+const nativeOutput = new Map();
+const nativeStatusLabel = value => ({ queued:'排队',starting:'正在启动',running:'正在运行','awaiting-input':'等待答复',stopping:'正在停止',
+  completed:'已结束',failed:'执行失败',stopped:'已停止',unknown:'结果待确认',superseded:'需选择当前方法',
+  'recovery-required':'待核对原会话',resumable:'已核对，可续接',unavailable:'原会话不可用',historical:'历史记录' })[value] || value;
+function renderNativeOperations(work) {
+  const bindings = (work.bindings || []).filter(item => ['native-tool', 'native-recovery', 'native-api'].includes(item.type));
+  if (!bindings.length) return '';
+  return `<div class="profile-block"><h3>工具执行</h3>${bindings.map(operation => {
+    const key = work.id + ':' + operation.operationId, log = nativeOutput.get(key);
+    const data = `data-id="${esc(work.id)}" data-operation="${esc(operation.operationId || '')}"`;
+    const running = ['queued', 'starting', 'running', 'awaiting-input', 'stopping'].includes(operation.status);
+    return `<section class="native-work-operation">
+      <strong>${esc(operation.resourceName || '原生工具')}</strong><span class="item-meta">${esc(nativeStatusLabel(operation.status))}</span>
+      ${operation.version ? `<small>${esc(operation.version)}</small>` : ''}
+      ${operation.nativeSessionId ? `<small>会话 <code>${esc(operation.nativeSessionId)}</code></small>` : ''}
+      ${operation.error ? `<p class="error-text">${esc(operation.error)}</p>` : ''}
+      ${operation.type === 'native-tool' ? `<div class="profile-actions">
+        <button class="secondary-button" data-action="native-output" ${data} data-stream="stdout">标准输出</button>
+        <button class="secondary-button" data-action="native-output" ${data} data-stream="stderr">错误输出</button>
+        ${running && !work.historical ? `<button class="text-button" data-action="native-stop" ${data}>停止这次操作</button>` : ''}
+      </div>` : ''}
+      ${log ? `<pre class="catalog-code">${esc(log.text || '当前没有输出')}</pre><button class="text-button" data-action="native-output" ${data}
+        data-stream="${esc(log.stream)}" data-offset="${log.nextOffset}">${log.more ? '读取下一段' : '检查新输出'}</button>` : ''}
+      ${!work.historical && !['paused','cancelled'].includes(work.status) ? (operation.pending || []).map(request => `
+        <div class="work-constraints"><p>${esc(request.text)}</p>${request.choices.length
+          ? `<div class="profile-actions">${request.choices.map(choice => `<button class="secondary-button" data-action="native-answer"
+            ${data} data-request="${esc(request.id)}" data-choice="${esc(choice.id)}">${esc(choice.label)}</button>`).join('')}</div>`
+          : `<form class="native-answer-form" ${data} data-request="${esc(request.id)}"><input name="answer" aria-label="回复工具请求" autocomplete="off" required>
+            <button class="primary-button" type="submit">发送回复</button></form>`}</div>`).join('') : ''}
+    </section>`;
+  }).join('')}${globalThis.SummonModels.renderSources(work.nativeSources || [], esc)}</div>`;
+}
+async function answerNative(element, text) {
+  const { id, operation, request } = element.dataset;
+  const key = id + ':' + operation + ':' + request;
+  const attempts = ui.nativeAnswerAttempts ||= new Map();
+  const previous = attempts.get(key);
+  const input = previous?.text === text ? previous : { id: crypto.randomUUID(), requestId: request, text };
+  attempts.set(key, input);
+  const value = await api(`/api/works/${encodeURIComponent(id)}/native/${encodeURIComponent(operation)}/answer`, 'POST', input);
+  if (value.status === 'unknown' || value.status === 'rejected') throw new Error(value.error || '回复送达情况待确认');
+  toast(value.status === 'delivered' ? '回复已送达原生执行' : '回复已登记，等待原生执行接收');
+  await refresh();
+}
 function renderWorks() {
   const filters = [{ id: 'all', name: '全部' }, { id: 'active', name: '进行中' }, { id: 'waiting', name: '等待中' }, { id: 'completed', name: '已完成' }, { id: 'attention', name: '待处理' }];
   const works = state.works.filter(work => ui.workFilter === 'all' || (ui.workFilter === 'active' ? ['active', 'queued', 'running'].includes(work.status) : ui.workFilter === 'attention' ? ['blocked', 'paused', 'failed', 'interrupted', 'cancelled'].includes(work.status) : work.status === ui.workFilter));
   const row = state.works.find(item => item.id === ui.workId), detail = ui.workDetail?.id === ui.workId ? ui.workDetail : null;
   const work = detail && (row?.revision || 0) > (detail.revision || 0) ? { ...detail, ...row } : detail || row;
-  const eventLabels = { 'work.created': '工作已建立', 'work.updated': '工作进度已更新', 'engine.request': '继续处理', 'work.notification': '结果已通知', thread_started: '工作会话已建立', thread_resumed: '工作会话已恢复', message_delta: '执行端消息', command_output: '命令输出', item_started: '开始处理', item_completed: '处理完成', consult_requested: '中途咨询', consult_answer: '咨询答复', consult_failed: '咨询未完成', interrupt_acknowledged: '执行端已停止', interrupt_error: '停止请求异常', resume_queued: '等待恢复', steered: '补充要求已传递', turn_completed: '本轮执行结束', connection_lost: '执行端连接中断', result_delivery_error: '结果回传异常', created: '工作已建立', queued: '进入队列', started: '开始执行', running: '执行中', status: '状态变化', progress: '执行进度', output: '执行输出', message: '执行消息', consultation: '中途咨询', consult: '中途咨询', question: '等待答复', answer: '咨询答复', completed: '工作完成', failed: '执行失败', error: '执行异常', cancelled: '已取消', resumed: '恢复工作', interrupted: '工作中断', command: '执行命令', reasoning: '正在思考', result: '执行结果' };
-  return `<div class="page">${pageHeader('Clear goals. Real progress.', '交出去的事，有迹可循。', '专业执行独立推进，过程、咨询和结果都留在这里。', `<button class="primary-button" data-action="new-work">${icon('plus', 15)}委托工作</button>`)}<div class="filter-bar">${filters.map(filter => `<button class="filter-tab ${ui.workFilter === filter.id ? 'active' : ''}" data-action="work-filter" data-id="${filter.id}">${filter.name}</button>`).join('')}</div><div class="works-layout"><div class="works-list">${works.map(item => `<button class="work-row ${item.id === ui.workId ? 'selected' : ''}" data-action="select-work" data-id="${esc(item.id)}"><div class="work-row-top">${statusPill(item.status)}<time>${formatTime(item.createdAt, true)}</time></div><h3>${esc(item.goal)}</h3><div class="item-meta"><span>${esc(nameOf(item.botId))}</span><span>·</span><span>${esc(roomById(item.roomId)?.name || '独立工作')}</span></div></button>`).join('') || emptyState('这里暂时没有工作', '把目标交给合适的成员，执行端会独立推进。', '', 'work')}</div><section class="work-detail">${work ? `<div class="work-detail-header"><div><div class="eyebrow">WORK / ${esc(work.id.slice(-8))}</div><div class="item-meta">${statusPill(work.status)}</div></div><div class="page-tools">${renderWorkControls(work)}</div></div><h2>${esc(work.goal)}</h2>${work.waitingLabel || work.waiting ? `<div class="work-constraints">${esc(work.waitingLabel || `等待：${work.waiting.event || work.waiting.reason || work.waiting.taskId || work.waiting.until || '外部变化'}`)}</div>` : ''}${work.bindings?.length ? `<div class="item-meta">${work.bindings.map(binding => esc(`${binding.type}: ${binding.externalThreadId || '结果待查询'} · ${binding.status || 'unknown'}`)).join('<br>')}</div>` : ''}<dl class="work-facts"><dt>委托成员</dt><dd>${esc(nameOf(work.botId))}</dd><dt>来源会话</dt><dd>${esc(roomById(work.roomId)?.name || '独立工作')}</dd><dt>工作要求</dt><dd>${esc(work.requirements || work.cwd || '见来源委托')}</dd>${work.model ? `<dt>执行模型</dt><dd>${esc(work.model)}</dd>` : ''}<dt>创建时间</dt><dd>${formatTime(work.createdAt, true)}</dd></dl>${work.constraints ? `<div class="work-description"><div class="item-meta" style="margin:0 0 8px">约束与注意事项</div>${esc(listText(work.constraints))}</div>` : ''}${work.inputRefs?.length ? `<div class="work-description"><div class="item-meta" style="margin:0 0 8px">输入资料</div>${esc(listText(work.inputRefs))}</div>` : ''}${work.error ? `<div class="error-state">${esc(work.error)}</div>` : ''}${work.status === 'interrupted' ? '<div class="context-note">上次执行已中断。恢复会继续已有工作对话；已进行的操作不会被视为从未发生。</div>' : ''}${!work.historical ? `<form id="work-message-form" class="consultation" data-id="${esc(work.id)}"><h3>补充工作要求</h3>${['paused', 'cancelled'].includes(work.status) ? '<p>补充会先保存，恢复工作后处理。</p>' : ''}<textarea id="work-message" name="message" aria-label="补充工作要求" placeholder="补充信息、纠正要求或继续这项工作…" required></textarea><button class="primary-button" type="submit" ${ui.workSubmissions?.[work.id]?.sending ? 'disabled' : ''}>发送补充</button></form>` : ''}${work.summary ? `<div class="work-description"><div class="eyebrow" style="margin-bottom:10px">执行结果</div>${richText(work.summary)}</div>` : ''}<div class="log-title"><strong>进度记录</strong><span class="subtle">${(work.events || []).length} 条</span></div><div class="timeline">${visibleWorkEvents(work.events).map(event => `<article class="timeline-item ${['error', 'failed'].includes(event.type) ? 'error' : ''}"><div class="timeline-meta"><strong>${esc(eventLabels[event.type] || event.type)}</strong><time>${formatTime(event.createdAt || event.timestamp)}</time></div><div class="timeline-body">${esc(eventText(event))}</div></article>`).join('') || '<p class="subtle" style="font-size:var(--text-meta)">暂无详细进度。</p>'}</div>` : emptyState('选择一项工作', '选择一项工作查看进度，或发起你的第一份委托。', '', 'work')}</section></div></div>`;
+  const eventLabels = { 'native.started':'工具进程已启动','native.session':'原生会话已登记','native.progress':'工具进度','native.result':'工具结果','native.request':'工具请求输入','native.input':'输入已送达','native.exit':'工具进程已结束','work.native-cutover':'原工作已迁移', 'work.created': '工作已建立', 'work.updated': '工作进度已更新', 'engine.request': '继续处理', 'work.notification': '结果已通知', thread_started: '工作会话已建立', thread_resumed: '工作会话已恢复', message_delta: '执行端消息', command_output: '命令输出', item_started: '开始处理', item_completed: '处理完成', consult_requested: '中途咨询', consult_answer: '咨询答复', consult_failed: '咨询未完成', interrupt_acknowledged: '执行端已停止', interrupt_error: '停止请求异常', resume_queued: '等待恢复', steered: '补充要求已传递', turn_completed: '本轮执行结束', connection_lost: '执行端连接中断', result_delivery_error: '结果回传异常', created: '工作已建立', queued: '进入队列', started: '开始执行', running: '执行中', status: '状态变化', progress: '执行进度', output: '执行输出', message: '执行消息', consultation: '中途咨询', consult: '中途咨询', question: '等待答复', answer: '咨询答复', completed: '工作完成', failed: '执行失败', error: '执行异常', cancelled: '已取消', resumed: '恢复工作', interrupted: '工作中断', command: '执行命令', reasoning: '正在思考', result: '执行结果' };
+  return `<div class="page">${pageHeader('Clear goals. Real progress.', '交出去的事，有迹可循。', '专业执行独立推进，过程、咨询和结果都留在这里。', `<button class="primary-button" data-action="new-work">${icon('plus', 15)}委托工作</button>`)}<div class="filter-bar">${filters.map(filter => `<button class="filter-tab ${ui.workFilter === filter.id ? 'active' : ''}" data-action="work-filter" data-id="${filter.id}">${filter.name}</button>`).join('')}</div><div class="works-layout"><div class="works-list">${works.map(item => `<button class="work-row ${item.id === ui.workId ? 'selected' : ''}" data-action="select-work" data-id="${esc(item.id)}"><div class="work-row-top">${statusPill(item.status)}<time>${formatTime(item.createdAt, true)}</time></div><h3>${esc(item.goal)}</h3><div class="item-meta"><span>${esc(nameOf(item.botId))}</span><span>·</span><span>${esc(roomById(item.roomId)?.name || '独立工作')}</span></div></button>`).join('') || emptyState('这里暂时没有工作', '把目标交给合适的成员，执行端会独立推进。', '', 'work')}</div><section class="work-detail">${work ? `<div class="work-detail-header"><div><div class="eyebrow">WORK / ${esc(work.id.slice(-8))}</div><div class="item-meta">${statusPill(work.status)}</div></div><div class="page-tools">${renderWorkControls(work)}</div></div><h2>${esc(work.goal)}</h2>${work.waitingLabel || work.waiting ? `<div class="work-constraints">${esc(work.waitingLabel || `等待：${work.waiting.event || work.waiting.reason || work.waiting.taskId || work.waiting.until || '外部变化'}`)}</div>` : ''}${renderNativeOperations(work)}<dl class="work-facts"><dt>委托成员</dt><dd>${esc(nameOf(work.botId))}</dd><dt>来源会话</dt><dd>${esc(roomById(work.roomId)?.name || '独立工作')}</dd><dt>工作要求</dt><dd>${esc(work.requirements || work.cwd || '见来源委托')}</dd>${work.model ? `<dt>执行模型</dt><dd>${esc(work.model)}</dd>` : ''}<dt>创建时间</dt><dd>${formatTime(work.createdAt, true)}</dd></dl>${work.constraints ? `<div class="work-description"><div class="item-meta" style="margin:0 0 8px">约束与注意事项</div>${esc(listText(work.constraints))}</div>` : ''}${work.inputRefs?.length ? `<div class="work-description"><div class="item-meta" style="margin:0 0 8px">输入资料</div>${esc(listText(work.inputRefs))}</div>` : ''}${work.error ? `<div class="error-state">${esc(work.error)}</div>` : ''}${work.status === 'interrupted' ? '<div class="context-note">上次执行已中断。恢复会继续已有工作对话；已进行的操作不会被视为从未发生。</div>' : ''}${!work.historical ? `<form id="work-message-form" class="consultation" data-id="${esc(work.id)}"><h3>补充工作要求</h3>${['paused', 'cancelled'].includes(work.status) ? '<p>补充会先保存，恢复工作后处理。</p>' : ''}<textarea id="work-message" name="message" aria-label="补充工作要求" placeholder="补充信息、纠正要求或继续这项工作…" required></textarea><button class="primary-button" type="submit" ${ui.workSubmissions?.[work.id]?.sending ? 'disabled' : ''}>发送补充</button></form>` : ''}${work.summary ? `<div class="work-description"><div class="eyebrow" style="margin-bottom:10px">执行结果</div>${richText(work.summary)}</div>` : ''}<div class="log-title"><strong>进度记录</strong><span class="subtle">${(work.events || []).length} 条</span></div><div class="timeline">${visibleWorkEvents(work.events).map(event => `<article class="timeline-item ${['error', 'failed'].includes(event.type) ? 'error' : ''}"><div class="timeline-meta"><strong>${esc(eventLabels[event.type] || event.type)}</strong><time>${formatTime(event.createdAt || event.timestamp)}</time></div><div class="timeline-body">${esc(eventText(event))}</div></article>`).join('') || '<p class="subtle" style="font-size:var(--text-meta)">暂无详细进度。</p>'}</div>` : emptyState('选择一项工作', '选择一项工作查看进度，或发起你的第一份委托。', '', 'work')}</section></div></div>`;
 }
 
 function renderKnowledge() {
@@ -937,19 +990,32 @@ function renderRoutines() {
   return `<div class="page">${pageHeader('Make room for the recurring', '该惦记的事，按时想起。', '为成员安排持续职责，也可以随时投递一次新的事件。', `<button class="secondary-button" data-action="new-event">${icon('event', 14)}投递事件</button><button class="primary-button" data-action="new-routine">${icon('plus', 15)}新增职责</button>`)}<div class="routine-summary">${icon('clock', 27)}<div><strong>${enabled} 项职责正在运行</strong><p>到期后投递给指定成员；服务重启后继续保留安排。</p></div></div>${state.routines.length ? `<div class="table-wrap"><table class="data-table"><thead><tr><th>职责</th><th>负责成员</th><th>执行频率</th><th>下一次</th><th>状态</th><th></th></tr></thead><tbody>${state.routines.map(routine => `<tr><td><strong>${esc(routine.name || '定时职责')}</strong><p>${esc(routine.instruction)}</p>${routine.lastStatus ? `<div class="item-meta">最近：${esc(labels[routine.lastStatus] || routine.lastStatus)}</div>` : ''}</td><td><span class="routine-owner">${avatar(routine.botId)}${esc(nameOf(routine.botId))}</span><p>${esc(roomById(routine.roomId)?.name || '未指定会话')}</p></td><td style="white-space:nowrap">${interval(Number(routine.intervalSeconds) || 60)}</td><td style="white-space:nowrap">${routine.enabled ? formatTime(routine.nextRunAt, true) : '已暂停'}${routine.lastRunAt ? `<p>上次 ${formatTime(routine.lastRunAt, true)}</p>` : ''}</td><td><button class="toggle ${routine.enabled ? 'on' : ''}" data-action="toggle-routine" data-id="${esc(routine.id)}" role="switch" aria-checked="${!!routine.enabled}" aria-label="${routine.enabled ? '暂停' : '开启'}${esc(routine.name)}"></button></td><td><button class="icon-button" data-action="edit-routine" data-id="${esc(routine.id)}" aria-label="编辑职责" title="编辑职责">${icon('edit', 14)}</button></td></tr>`).join('')}</tbody></table></div>` : emptyState('还没有定时职责', '例如每天整理项目待办，或定期回顾最近讨论。你可以随时暂停和修改。', '<button class="secondary-button" data-action="new-routine">创建第一项职责</button>', 'clock')}</div>`;
 }
 
-const catalogKindLabel = kind => ({mcp:'MCP',http:'HTTP API',skill:'Skill',service:'内置服务'})[kind] || kind;
+const catalogKindLabel = kind => ({cli:'CLI',mcp:'MCP',http:'HTTP API',skill:'Skill',service:'内置服务'})[kind] || kind;
 const catalogPath = id => `/api/catalog/${encodeURIComponent(id)}`;
 function catalogAvailability(entry) {
   if (entry.enabled === false) return '已停用';
   if (entry.status === 'ready' && entry.lastProbe?.scope === 'configuration') return '配置就绪（未调用）';
   return ({ready:'可用',available:'可用',unavailable:'不可用',blocked:'依赖不可用',unknown:'待探测',unprobed:'待探测',error:'连接失败',disabled:'已停用'})[entry.status] || entry.status || (entry.kind==='skill'?'可用':'待探测');
 }
+function renderCatalogNative(detail) {
+  const native = detail.native;
+  if (!native) return '';
+  const methods = (native.methods || []).filter(method => method.current !== false);
+  return `<div class="profile-block">
+    ${detail.config?.file ? `<p class="item-meta"><code>${esc(detail.config.file)}</code></p>` : ''}
+    ${native.version ? `<p>${esc(native.version)}</p>` : ''}
+    ${native.lastCheckedAt ? `<small class="subtle">最近观察 ${formatTime(native.lastCheckedAt, true)}</small>` : ''}
+    ${methods.length ? '<h3>当前方法</h3>' : ''}
+    ${methods.map(method => `<details><summary>${esc(method.name)} · 修订 ${method.revision}</summary><p>${esc(method.description)}</p></details>`).join('')}
+    ${globalThis.SummonModels.renderSources(detail.displaySources || [], esc)}
+  </div>`;
+}
 function renderCatalog() {
   const detail=ui.catalogDetail?.entry || ui.catalogDetail;
   const tools=detail?.tools || detail?.config?.tools || [];
   const readOnly=detail?.readOnly || detail?.kind==='service';
   const header=pageHeader('', '能力目录', '', `<button class="secondary-button" data-action="catalog-new" data-kind="mcp">＋ MCP</button><button class="secondary-button" data-action="catalog-new" data-kind="http">＋ HTTP API</button><button class="primary-button" data-action="catalog-new" data-kind="skill">＋ Skill</button>`);
-  return `<div class="page catalog-page">${header}<p class="subtle">每个 MCP、HTTP API 和共享 Skill 都有独立的维护 Bot，保存时自动创建并绑定。</p><form id="catalog-search-form" class="catalog-search"><input id="catalog-query" aria-label="搜索能力目录" placeholder="搜索名称、用途或资源引用" value="${esc(ui.catalogQuery)}"><select id="catalog-kind" aria-label="能力类型">${[['','全部类型'],['mcp','MCP'],['http','HTTP API'],['skill','Skill'],['service','内置服务']].map(([value,label])=>`<option value="${value}" ${ui.catalogKind===value?'selected':''}>${label}</option>`).join('')}</select><button class="secondary-button" type="submit">搜索</button></form><div class="catalog-layout"><div class="catalog-list">${ui.catalog.map(entry=>`<button class="catalog-row ${entry.id===ui.catalogId?'selected':''}" data-action="catalog-open" data-id="${esc(entry.id)}"><span class="item-meta">${esc(catalogKindLabel(entry.kind))} · ${esc(catalogAvailability(entry))}</span><strong>${esc(entry.name || entry.id)}</strong><p>${esc(entry.description || '')}</p><span class="subtle">${entry.ownerBotId?`负责：${esc(nameOf(entry.ownerBotId))}`:'平台服务'}</span></button>`).join('') || '<p class="panel-empty">没有匹配的能力。可以添加 MCP、HTTP API 或 Skill。</p>'}</div><section class="catalog-detail">${detail?`<div class="profile-block"><div class="item-meta">${esc(catalogKindLabel(detail.kind))} · ${esc(catalogAvailability(detail))} · 修订 ${detail.revision||0}</div><h2>${esc(detail.name || detail.id)}</h2><p>${esc(detail.description)}</p>${detail.lastError?`<p class="error-text">${esc(detail.lastError)}</p>`:''}${detail.unavailableReason||detail.reason?`<p class="subtle">${esc(detail.unavailableReason||detail.reason)}</p>`:''}<div class="profile-actions">${readOnly?'':`<button class="primary-button" data-action="catalog-edit" data-id="${esc(detail.id)}">编辑</button>${detail.kind!=='skill'?`<button class="secondary-button" data-action="catalog-probe" data-id="${esc(detail.id)}">探测连接</button>`:''}<button class="secondary-button" data-action="catalog-toggle" data-id="${esc(detail.id)}">${detail.enabled===false?'启用':'停用'}</button><button class="text-button" data-action="catalog-remove" data-id="${esc(detail.id)}">移除</button>`}</div></div><div class="profile-block"><h3>责任与范围</h3><p>专属维护 Bot：${detail.ownerBotId?esc(nameOf(detail.ownerBotId)):'平台服务'}</p><p>允许使用：${(detail.allowedBotIds||[]).map(id=>id==='*'?'全部 Bot':esc(nameOf(id))).join('、')||'负责成员'}</p><p>适用引用：${esc((detail.scopeRefs||[]).join('、')||'未限定')}</p><p>依赖：${(detail.dependencies||[]).map(id=>esc(ui.catalog.find(e=>e.id===id)?.name||id)).join('、')||'无'}</p><small class="subtle">目录 ID：${esc(detail.id)}</small></div>${detail.kind==='skill'?`<div class="profile-block"><h3>当前方法</h3><div class="message-content">${richText(detail.content || '')}</div></div><div class="profile-block"><h3>附属资源</h3>${Object.entries(detail.files||{}).map(([path,content])=>`<details><summary>${esc(path)}</summary><pre class="catalog-code">${esc(content)}</pre></details>`).join('')||'<p class="subtle">无附属文件</p>'}</div>`:`<div class="profile-block"><h3>工具</h3>${tools.map(tool=>`<details><summary>${esc(tool.name)} · ${esc(tool.effect||'external')}</summary><p>${esc(tool.description)}</p><pre class="catalog-code">${esc(JSON.stringify(tool.inputSchema||{},null,2))}</pre></details>`).join('')||'<p class="subtle">探测连接后显示当前工具。</p>'}</div><div class="profile-block"><h3>执行配置</h3><pre class="catalog-code">${esc(JSON.stringify(detail.config||{},null,2))}</pre></div>`}`:'<div class="panel-empty">选择一项查看用途、负责人、工具与方法。</div>'}</section></div></div>`;
+  return `<div class="page catalog-page">${header}<p class="subtle">CLI、API、MCP 和共享 Skill 的当前方法由专属 Bot 维护。</p><form id="catalog-search-form" class="catalog-search"><input id="catalog-query" aria-label="搜索能力目录" placeholder="搜索名称、用途或资源引用" value="${esc(ui.catalogQuery)}"><select id="catalog-kind" aria-label="能力类型">${[['','全部类型'],['cli','CLI'],['mcp','MCP'],['http','HTTP API'],['skill','Skill'],['service','内置服务']].map(([value,label])=>`<option value="${value}" ${ui.catalogKind===value?'selected':''}>${label}</option>`).join('')}</select><button class="secondary-button" type="submit">搜索</button></form><div class="catalog-layout"><div class="catalog-list">${ui.catalog.map(entry=>`<button class="catalog-row ${entry.id===ui.catalogId?'selected':''}" data-action="catalog-open" data-id="${esc(entry.id)}"><span class="item-meta">${esc(catalogKindLabel(entry.kind))} · ${esc(catalogAvailability(entry))}</span><strong>${esc(entry.name || entry.id)}</strong><p>${esc(entry.description || '')}</p><span class="subtle">${entry.ownerBotId?`负责：${esc(nameOf(entry.ownerBotId))}`:'平台服务'}</span></button>`).join('') || '<p class="panel-empty">没有匹配的能力。可以添加 MCP、HTTP API 或 Skill。</p>'}</div><section class="catalog-detail">${detail?`<div class="profile-block"><div class="item-meta">${esc(catalogKindLabel(detail.kind))} · ${esc(catalogAvailability(detail))} · 修订 ${detail.revision||0}</div><h2>${esc(detail.name || detail.id)}</h2><p>${esc(detail.description)}</p>${renderCatalogNative(detail)}${detail.lastError?`<p class="error-text">${esc(detail.lastError)}</p>`:''}${detail.unavailableReason||detail.reason?`<p class="subtle">${esc(detail.unavailableReason||detail.reason)}</p>`:''}<div class="profile-actions">${readOnly?'':`${detail.kind==='cli'?'':`<button class="primary-button" data-action="catalog-edit" data-id="${esc(detail.id)}">编辑</button>`}${!['skill','cli'].includes(detail.kind)?`<button class="secondary-button" data-action="catalog-probe" data-id="${esc(detail.id)}">探测连接</button>`:''}<button class="secondary-button" data-action="catalog-toggle" data-id="${esc(detail.id)}">${detail.enabled===false?'启用':'停用'}</button><button class="text-button" data-action="catalog-remove" data-id="${esc(detail.id)}">移除</button>`}</div></div><div class="profile-block"><h3>责任与范围</h3><p>专属维护 Bot：${detail.ownerBotId?esc(nameOf(detail.ownerBotId)):'平台服务'}</p><p>允许使用：${(detail.allowedBotIds||[]).map(id=>id==='*'?'全部 Bot':esc(nameOf(id))).join('、')||'负责成员'}</p><p>适用引用：${esc((detail.scopeRefs||[]).join('、')||'未限定')}</p><p>依赖：${(detail.dependencies||[]).map(id=>esc(ui.catalog.find(e=>e.id===id)?.name||id)).join('、')||'无'}</p><small class="subtle">目录 ID：${esc(detail.id)}</small></div>${detail.kind==='skill'?`<div class="profile-block"><h3>当前方法</h3><div class="message-content">${richText(detail.content || '')}</div></div><div class="profile-block"><h3>附属资源</h3>${Object.entries(detail.files||{}).map(([path,content])=>`<details><summary>${esc(path)}</summary><pre class="catalog-code">${esc(content)}</pre></details>`).join('')||'<p class="subtle">无附属文件</p>'}</div>`:`<div class="profile-block"><h3>工具</h3>${tools.map(tool=>`<details><summary>${esc(tool.name)} · ${esc(tool.effect||'external')}</summary><p>${esc(tool.description)}</p><pre class="catalog-code">${esc(JSON.stringify(tool.inputSchema||{},null,2))}</pre></details>`).join('')||'<p class="subtle">探测连接后显示当前工具。</p>'}</div><div class="profile-block"><h3>执行配置</h3><pre class="catalog-code">${esc(JSON.stringify(detail.config||{},null,2))}</pre></div>`}`:'<div class="panel-empty">选择一项查看用途、负责人、工具与方法。</div>'}</section></div></div>`;
 }
 function catalogBotChoices(selected=[], ownerId) {
   return `<div class="form-field"><label>允许使用的 Bot</label><label class="catalog-choice"><input type="checkbox" name="allowedBotIds" value="*" ${selected.includes('*')?'checked':''}> 全部 Bot</label>${state.bots.filter(bot=>!bot.archivedAt&&bot.id!==ownerId).map(bot=>`<label class="catalog-choice"><input type="checkbox" name="allowedBotIds" value="${esc(bot.id)}" ${selected.includes(bot.id)?'checked':''}> ${esc(bot.name)}</label>`).join('')}<small>专属维护 Bot 始终可用；这里选择其他使用者。未选时仅维护 Bot 可用。</small></div>`;
@@ -1081,6 +1147,19 @@ function openEventForm() {
 }
 
 async function act(action, element) {
+  if (action === 'native-answer') return answerNative(element, element.dataset.choice);
+  if (action === 'native-stop' || action === 'native-output') {
+    const { id, operation, stream, offset } = element.dataset;
+    const path = `/api/works/${encodeURIComponent(id)}/native/${encodeURIComponent(operation)}`;
+    if (action === 'native-stop') {
+      await api(path + '/stop', 'POST', {});
+      toast('停止请求已发送'); return refresh();
+    }
+    const value = await api(path + '?stream=' + encodeURIComponent(stream) + '&offset=' + (Number(offset) || 0));
+    const key = id + ':' + operation, prior = offset ? nativeOutput.get(key) : null;
+    nativeOutput.set(key, { ...value.output, stream, text: ((prior?.text || '') + value.output.text).slice(-65_536) });
+    return render();
+  }
   if (action.startsWith('onboarding-')) { if (action === 'onboarding-open') return globalThis.SummonOnboarding.open(onboardingBindings()); return globalThis.SummonOnboarding.act(action, element); }
   if (action === 'desktop-workspace') return window.SummonDesktop?.openWorkspaceSetup();
   if (['select-room', 'dm-bot', 'room-back'].includes(action)) globalThis.SummonOnboarding.close();
@@ -1240,6 +1319,13 @@ document.addEventListener('compositionend', event => { if (event.target.id !== '
 document.addEventListener('submit', async event => {
   const form = event.target;
   if (form.id === 'modal-form') return;
+  if (form.classList.contains('native-answer-form')) {
+    event.preventDefault();
+    const field = form.elements.answer;
+    try { if (field.value.trim()) await answerNative(form, field.value.trim()); }
+    catch (error) { toast(error.message, true); }
+    return;
+  }
   if (!['message-form', 'work-message-form', 'knowledge-search-form'].includes(form.id)) return;
   event.preventDefault(); const button = $('button[type=submit]', form); button.disabled = true;
   try {
@@ -1264,10 +1350,10 @@ document.addEventListener('submit', async event => {
       if (!message || submission?.sending) return;
       const pending = submission?.message === message ? submission : { id: crypto.randomUUID(), workId: form.dataset.id, message }; submissions[form.dataset.id] = pending; pending.sending = true;
       try {
-        await api(`/api/works/${encodeURIComponent(pending.workId)}/send`, 'POST', { id: pending.id, message });
+        const receipt = await api(`/api/works/${encodeURIComponent(pending.workId)}/send`, 'POST', { id: pending.id, message });
         const current = $('#work-message-form');
         if (current?.dataset.id === pending.workId && $('#work-message', current).value.trim() === message) $('#work-message', current).value = '';
-        delete submissions[pending.workId]; toast('补充已记录'); await refresh();
+        delete submissions[pending.workId]; toast(receipt.delivered ? '补充已关联原生操作' : '补充已记录'); await refresh();
       } finally {
         pending.sending = false; const current = $('#work-message-form');
         if (current?.dataset.id === pending.workId) $('button[type=submit]', current).disabled = false;
@@ -1361,12 +1447,12 @@ function roomPreview(room) {
 function roomReadMarkers() {
   if (ui.readMarkersEpoch !== ui.historyEpoch || !ui.readMarkers) {
     ui.readMarkersEpoch = ui.historyEpoch;
-    try { const saved = JSON.parse(localStorage.getItem('summon:room-read-markers:v1')); ui.readMarkers = saved?.historyEpoch === (ui.historyEpoch ?? null) ? saved.rooms || {} : {}; }
+    try { const saved = JSON.parse(localStorage.getItem(workspaceKey('summon:room-read-markers:v1'))); ui.readMarkers = saved?.historyEpoch === (ui.historyEpoch ?? null) ? saved.rooms || {} : {}; }
     catch { ui.readMarkers = {}; }
   }
   return ui.readMarkers;
 }
-function saveRoomReadMarkers() { try { localStorage.setItem('summon:room-read-markers:v1', JSON.stringify({ historyEpoch: ui.historyEpoch ?? null, rooms: ui.readMarkers })); } catch {} }
+function saveRoomReadMarkers() { try { localStorage.setItem(workspaceKey('summon:room-read-markers:v1'), JSON.stringify({ historyEpoch: ui.historyEpoch ?? null, rooms: ui.readMarkers })); } catch {} }
 function markCurrentRoomRead() {
   if (ui.view !== 'chat' || document.hidden || displayMedia.matches && !ui.mobileRoom || ui.messagesRoomId !== ui.roomId) return;
   const last = mergedRoomMessages(ui.roomId, ui.messages).filter(message => !message._delivery).at(-1);
@@ -1428,7 +1514,7 @@ function renderTopbar() {
   const systemGroup = systemBots.length ? `<section class="system-bots ${selectedSystem ? 'has-selection' : ''}" aria-label="系统 Bot"><button class="system-bots-toggle" data-action="toggle-system-bots" aria-expanded="${systemOpen}" aria-controls="system-bot-contacts">${icon('settings', 18)}<span>系统 Bot${selectedSystem ? `<small>当前：${esc(selectedSystem.name)}</small>` : ''}</span><span class="system-bots-count">${systemBots.length}</span><span aria-hidden="true">${systemOpen ? '▾' : '▸'}</span></button>${systemOpen ? `<div id="system-bot-contacts">${systemBots.map(bot => renderBotContact(bot, selectedBot)).join('')}</div>` : '<div id="system-bot-contacts" hidden></div>'}</section>` : '';
   const activeWorks = state.works.filter(work => !work.historical && ['active', 'queued', 'running', 'waiting'].includes(work.status)).length;
   const menu = ui.menu === 'create' ? `<div class="context-menu create-menu"><button data-action="new-bot">${icon('person', 19)}创建新 Bot</button><button data-action="new-room">${icon('people', 19)}创建群聊</button><button data-action="new-deep">${icon('layers', 19)}创建深聊</button></div>` : '';
-  const appMenu = ui.menu === 'apps' ? `<div class="context-menu apps-menu"><div class="menu-title">设置</div><div class="connection-row"><span class="app-emblem flash">D</span><div><strong>${esc(globalThis.SummonModels.current()?.chat?.name || '聊天模型')}</strong><small class="${state.provider.lastError ? 'error-text' : ''}">${esc(providerLabel())}</small></div><button class="icon-button" data-action="refresh" title="刷新状态" aria-label="刷新状态">${icon('refresh', 17)}</button></div>${state.provider.lastError ? `<p class="menu-error">${esc(state.provider.lastError)}</p>` : ''}<div class="connection-row"><span class="app-emblem codex">${icon('computer', 21)}</span><div><strong>工作引擎</strong><small>${esc((globalThis.SummonModels.current()?.workExecutor || globalThis.SummonModels.current()?.executors?.[0])?.enabled ? activeWorks ? `${activeWorks} 项工作进行中` : '已接入执行端' : executorLabel())}</small></div></div><div class="menu-separator"></div>${tabs.filter(tab => tab.id !== 'chat').map(tab => `<button data-action="navigate" data-view="${tab.id}">${icon(tab.icon, 19)}${tab.id === 'members' ? '管理 Bot' : tab.title}${tab.id === 'works' && activeWorks ? `<span class="menu-count">${activeWorks}</span>` : ''}</button>`).join('')}<button data-action="new-event">${icon('event', 19)}投递事件</button><button data-action="onboarding-open">${icon('spark', 19)}新手引导</button>${window.SummonDesktop?.openWorkspaceSetup ? `<button data-action="desktop-workspace">${icon('computer', 19)}切换工作区</button>` : ''}<div class="menu-separator"></div><button data-action="display-settings">${icon('settings', 19)}显示设置</button><button data-action="client-downloads">${icon('install', 19)}客户端下载与更新</button><button data-action="update-app">${icon('refresh', 19)}刷新页面</button></div>` : '';
+  const appMenu = ui.menu === 'apps' ? `<div class="context-menu apps-menu"><div class="menu-title">设置</div><div class="connection-row"><span class="app-emblem flash">D</span><div><strong>${esc(globalThis.SummonModels.current()?.chat?.name || '聊天模型')}</strong><small class="${state.provider.lastError ? 'error-text' : ''}">${esc(providerLabel())}</small></div><button class="icon-button" data-action="refresh" title="刷新状态" aria-label="刷新状态">${icon('refresh', 17)}</button></div>${state.provider.lastError ? `<p class="menu-error">${esc(state.provider.lastError)}</p>` : ''}<div class="connection-row"><span class="app-emblem codex">${icon('computer', 21)}</span><div><strong>工作引擎</strong><small>${esc(globalThis.SummonModels.current()?.workExecutor?.enabled ? activeWorks ? `${activeWorks} 项工作进行中` : '已接入执行端' : executorLabel())}</small></div></div><div class="menu-separator"></div>${tabs.filter(tab => tab.id !== 'chat').map(tab => `<button data-action="navigate" data-view="${tab.id}">${icon(tab.icon, 19)}${tab.id === 'members' ? '管理 Bot' : tab.title}${tab.id === 'works' && activeWorks ? `<span class="menu-count">${activeWorks}</span>` : ''}</button>`).join('')}<button data-action="new-event">${icon('event', 19)}投递事件</button><button data-action="onboarding-open">${icon('spark', 19)}新手引导</button>${window.SummonDesktop?.openWorkspaceSetup ? `<button data-action="desktop-workspace">${icon('computer', 19)}切换工作区</button>` : ''}<div class="menu-separator"></div><button data-action="display-settings">${icon('settings', 19)}显示设置</button><button data-action="client-downloads">${icon('install', 19)}客户端下载与更新</button><button data-action="update-app">${icon('refresh', 19)}刷新页面</button></div>` : '';
   const sidebar = $('#contact-sidebar');
   const connected = ui.streamConnected && !ui.connectionNotice;
   const connectionLabel = navigator.onLine === false ? '离线' : connected ? '已连接' : '正在连接';
@@ -1448,7 +1534,7 @@ function renderTopbar() {
   </div>
   <div class="sidebar-controls"><nav class="sidebar-shortcuts" aria-label="常用功能"><button class="${ui.view === 'works' ? 'selected' : ''}" data-action="navigate" data-view="works">${icon('work', 17)}<span>工作</span>${activeWorks ? `<small>${activeWorks}</small>` : ''}</button><button class="${ui.view === 'knowledge' ? 'selected' : ''}" data-action="navigate" data-view="knowledge">${icon('knowledge', 17)}<span>知识</span></button></nav>
   <div class="sidebar-footer"><div class="menu-anchor sidebar-owner-anchor"><button class="sidebar-owner" data-action="toggle-apps" aria-label="${esc(ownerName())}，设置，${connectionLabel}" aria-expanded="${ui.menu === 'apps'}"><span class="sidebar-owner-visual"><span class="contact-avatar-wrap"><img class="sidebar-owner-frame" src="/icons/owner-paper-frame.png?v=20261104" width="100" height="100" alt="" aria-hidden="true" draggable="false">${avatar('user', 48)}<i class="presence-dot ${connectionKind}" aria-hidden="true"></i></span></span><span class="sidebar-owner-name">${esc(ownerName())}</span></button>${appMenu}</div>${globalThis.SummonModels.sidebar({ esc, icon, invalidate: () => { ui.lastSidebarHtml = null; }, chatConfigured: state.provider.configured,
-    chatConnecting: globalThis.SummonOnboarding.chatConnecting(), setup: globalThis.SummonOnboarding.setupActivity(state.onboarding?.roomId) })}</div></div>`;
+    chatConnecting: globalThis.SummonOnboarding.chatConnecting(), workSources: ui.workDetail?.nativeSources || [], setup: globalThis.SummonOnboarding.setupActivity(state.onboarding?.roomId) })}</div></div>`;
   const signature = renderSignature(html);
   if (ui.lastSidebarHtml !== signature) {
     const motion = captureMotion(sidebar), toolbar = sidebar.querySelector('.sidebar-toolbar');
@@ -1757,7 +1843,7 @@ const initialView = location.hash.slice(1); if (tabs.some(tab => tab.id === init
 applyDisplayPreferences(); renderTopbar();
 ui.cacheBootPromise = restoreCachedWorkspace();
 ui.cacheBootPromise.then(() => refresh());
-const stream = new EventSource('/api/stream');
+const stream = new EventSource(workspacePath('/api/stream'));
 stream.onopen = () => { const wasConnected = ui.streamConnected; ui.streamConnected = true; if (!wasConnected) scheduleRefresh(); };
 stream.onmessage = () => scheduleRefresh();
 stream.addEventListener('change', () => scheduleRefresh());

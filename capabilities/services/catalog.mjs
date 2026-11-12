@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile, rename, rm, realpath } from 'node:fs/promis
 import { join, resolve, dirname } from 'node:path';
 import { validateToolArguments } from '@earendil-works/pi-ai';
 import { loadConfiguredTools } from '../../bot/src/capabilities/remote-tools.mjs';
+import { nativeToolDefinitions } from './native-tool-definitions.mjs';
 import { taskMode } from '../../bot/src/capabilities/task-policy.mjs';
 import { fail, safeId, required, within } from '../shared/validation.mjs';
 
@@ -11,22 +12,29 @@ const string = { type: 'string' }, strings = { type: 'array', items: string }, i
 const object = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const refFields = { workId: string, conversationId: string, originRoomId: string, originMessageId: string, sourceRefs: strings };
 const entryFields = { id: string, kind: { type: 'string', enum: ['mcp', 'http'] }, name: string, description: string, config: { type: 'object' }, allowedBotIds: strings, scopeRefs: strings, dependencies: strings, enabled: { type: 'boolean' }, coordination: { type: 'object' }, source: {}, expectedRevision: integer };
-export const catalogTools = [
-  ['catalog_search', 'Find permitted MCP connections, HTTP APIs and shared Skills by purpose or actual scope references. Read only relevant entries; availability is not business authorization.', 'read', object({ query: string, kind: string, scopeRefs: strings, offset: integer, limit: { type: 'integer', minimum: 1, maximum: 80 } })],
+export const catalogTools = [...[
+  ['catalog_search', 'Find permitted CLI, MCP, API and shared methods by purpose or actual scope references. Read only relevant entries; availability is not business authorization.', 'read', object({ query: string, kind: string, scopeRefs: strings, offset: integer, limit: { type: 'integer', minimum: 1, maximum: 80 } })],
   ['catalog_get', 'Read a catalog entry, its tool schemas, owner and dependencies, or a Skill resource. Supply operationId to inspect your persisted call receipt without contacting the remote service. resource is SKILL.md or a relative scripts/references/assets path.', 'read', object({ id: string, resource: string, operationId: string }, ['id'])],
   ['catalog_probe', 'Discover an MCP connection’s current tool schemas or load an HTTP configuration. Does not call a business tool. HTTP configuration readiness alone is not a successful API request.', 'read', object({ id: string }, ['id'])],
   ['catalog_register', 'Record an explicitly introduced MCP or HTTP entry once, with credential environment references only. The platform creates its own dedicated maintenance Bot and retains your access. Registration does not authorize continuing business.', 'write', object(entryFields, ['id', 'kind', 'name', 'description', 'config', 'source'])],
   ['catalog_update', 'Update a connection you maintain after an observed change or user correction. Read its revision first. Never put secret values in config; use environment references.', 'write', object(entryFields, ['id', 'expectedRevision'])],
   ['catalog_call', 'Call an allowed catalog tool directly. Supply tool arguments exactly as its schema. Every mutation requires a stable operationId, supplied here or as arguments.operationId when that tool explicitly accepts it; the outer operationId takes precedence. Reuse it to inspect an uncertain receipt, never replace it to retry an unknown write.', 'external', object({ id: string, tool: string, arguments: { type: 'object' }, operationId: string, ...refFields }, ['id', 'tool', 'arguments'])],
   ['catalog_reconcile', 'The responsible Bot may resolve an unknown call only after obtaining concrete independent evidence of its actual outcome. Include that evidence; never infer failure from a timeout or use this to bypass an unresolved write.', 'write', object({ id: string, operationId: string, actor: string, outcome: { type: 'string', enum: ['completed', 'failed'] }, evidence: string }, ['id', 'operationId', 'outcome', 'evidence'])],
-  ['catalog_delegate', 'Ask the responsible Bot for judgment or an explicit scoped task. Include original room/message and work IDs for isolated result return. This does not authorize ongoing business.', 'external', object({ id: string, message: string, operationId: string, ...refFields }, ['id', 'message', 'operationId'])],
+  ['catalog_delegate', 'Ask the responsible Bot for judgment or an explicit scoped task. Include original room/message and work IDs for isolated result return. This does not authorize ongoing business.', 'external', object({ id: string, message: string, operationId: string, intent: { type: 'string', enum: ['consult', 'perform', 'update'] }, ...refFields }, ['id', 'message', 'operationId'])],
   ['catalog_skill_write', 'Create or revise one shared Skill from observed reusable evidence. A new Skill gets its own dedicated maintenance Bot; its creator retains access. Search and read existing Skills first. Only its maintainer can revise it; other Bots propose a correction. expectedRevision is mandatory for existing Skills. Credentials and live task state do not belong in Skills.', 'write', object({ id: string, name: string, description: string, content: string, files: { type: 'object', additionalProperties: string }, allowedBotIds: strings, scopeRefs: strings, dependencies: strings, source: {}, expectedRevision: integer, proposalId: string }, ['name', 'description', 'content', 'source'])],
   ['catalog_skill_propose', 'Submit a concrete sourced correction to the shared Skill maintainer. Keeps one shared body; does not create a private copy or overwrite it. The maintainer receives this proposal.', 'external', object({ id: string, content: string, description: string, source: {}, expectedRevision: integer, ...refFields }, ['id', 'content', 'source', 'expectedRevision'])],
-].map(([name, description, effect, inputSchema]) => ({ name, description, effect, inputSchema }));
+].map(([name, description, effect, inputSchema]) => ({ name, description, effect, inputSchema })), ...nativeToolDefinitions];
 
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const at = (value, path) => String(path).split('.').reduce((part, key) => part?.[key], value);
 const stamp = () => new Date().toISOString();
+const credentialsFor = (kind, config = {}) => {
+  const definitions = kind === 'http' ? config.tools || [config] : [config];
+  return definitions.flatMap(def => {
+    const headers = Object.entries(def.headersEnv || {}).sort(), environment = Object.entries(def.env || {}).sort();
+    return headers.length || environment.length ? [JSON.stringify([def.transport, def.url, def.command, def.args, headers, environment])] : [];
+  }).sort();
+};
 const forbidden = /(?:^|[/\\])(?:\.env(?:[.-]|$)|\.git|\.ssh|credentials?(?:[._-]|$)|secrets?(?:[._-]|$))|\.(?:pem|key|pfx)$/i;
 const resourceName = value => {
   if (typeof value !== 'string' || !/^(?:SKILL\.md|(?:scripts|references|assets)\/[A-Za-z0-9_./ -]+)$/.test(value) || value.split('/').some(part => !part || part === '.' || part === '..') || forbidden.test(value)) fail('Invalid Skill resource path');
@@ -78,6 +86,7 @@ export class CapabilityCatalog {
     let text = typeof value === 'string' ? value : JSON.stringify(value);
     const secrets = new Set();
     for (const entry of this.store.list(K.entries)) {
+      for (const ref of entry.native?.credentialRefs || []) if (process.env[ref]) secrets.add(process.env[ref]);
       const definitions = entry.kind === 'http' ? entry.config?.tools || [entry.config] : [entry.config];
       for (const def of definitions.filter(Boolean)) {
         for (const ref of Object.values(def.headersEnv || {})) if (process.env[ref]) secrets.add(process.env[ref]);
@@ -103,6 +112,7 @@ export class CapabilityCatalog {
       if (!dependency || !this.state(dependency, new Set(seen)).available) return { status: 'unavailable', available: false, unavailableReason: `Dependency unavailable: ${id}` };
     }
     if (entry.kind === 'skill') return { status: 'ready', available: true };
+    if (entry.kind === 'cli') return { status: entry.native.status, available: entry.native.status !== 'unavailable' };
     for (const def of this.definitions(entry)) {
       const refs = [...Object.values(def.headersEnv || {}), ...Object.values(def.env || {}).filter(plain).map(value => value.env)];
       if (refs.some(ref => process.env[ref] === undefined)) return { status: 'unavailable', available: false, unavailableReason: 'A referenced credential is not configured' };
@@ -111,7 +121,14 @@ export class CapabilityCatalog {
   }
   public(entry, detail = false) {
     const { config, resources, ...metadata } = entry;
-    return this.clean({ ...metadata, ...this.state(entry), ...(detail ? { config, resources: resources || [] } : { resources: undefined, tools: (entry.tools || []).map(({ name, description, effect }) => ({ name, description, effect })) }) });
+    const native = entry.native && { ...entry.native,
+      methods: (entry.native.methods || []).filter(method => detail || method.resourceRevision === entry.native.resourceRevision).map(method => detail ? { ...method, current: method.resourceRevision === entry.native.resourceRevision } : {
+        id: method.id, name: method.name, description: method.description, version: method.version, revision: method.revision, effect: method.effect,
+      }) };
+    return this.clean({ ...metadata, ...this.state(entry), native, ...(detail
+      ? { config, resources: resources || [], displaySources: this.native?.sources.list().filter(source => source.resourceId === entry.id),
+        observationSchedule: this.store.get('native-observation-schedules', entry.id) }
+      : { resources: undefined, tools: (entry.tools || []).map(({ name, description, effect }) => ({ name, description, effect })) }) });
   }
   search(input = {}, actor = 'controller') {
     const { query = '', kind, scopeRefs = [], offset = 0, limit = 40 } = input;
@@ -147,6 +164,11 @@ export class CapabilityCatalog {
   }
   checkedConfig(kind, config) {
     if (!plain(config)) fail('Connection config must be an object');
+    if (kind === 'cli') {
+      if (!['file', 'canonicalFile', 'executableName'].every(key => typeof config[key] === 'string' && config[key])) fail('A discovered CLI needs its actual executable');
+      this.safeText(JSON.stringify(config));
+      return structuredClone(config);
+    }
     const definitions = kind === 'http' ? config.tools || [config] : [config];
     if (!Array.isArray(definitions) || !definitions.length || definitions.length > 128) fail('HTTP connection needs 1–128 tool definitions');
     for (const definition of definitions) {
@@ -168,7 +190,7 @@ export class CapabilityCatalog {
     return structuredClone(config);
   }
   metadata(input, previous, actor) {
-    const kind = previous?.kind || input.kind; if (!['mcp', 'http', 'skill'].includes(kind)) fail('Catalog kind must be mcp, http or skill');
+    const kind = previous?.kind || input.kind; if (!['mcp', 'http', 'cli', 'skill'].includes(kind)) fail('Catalog kind must be mcp, http or skill');
     if (input.kind && input.kind !== kind) fail('Catalog kind cannot change');
     const id = safeId(input.id || (kind === 'skill' ? input.name : `${kind}-${randomUUID()}`));
     if (Object.hasOwn(input, 'ownerBotId')) fail('The platform assigns one dedicated maintenance Bot automatically; ownerBotId is read-only');
@@ -195,7 +217,7 @@ export class CapabilityCatalog {
     if (coordination && (!plain(coordination) || typeof coordination.scope !== 'string' || typeof coordination.argument !== 'string' || !/^[A-Za-z0-9_.]+$/.test(coordination.argument))) fail('coordination requires a stable scope and an argument path');
     return { ...previous, id, kind, name, description, ownerBotId, createdBy, creatorBotId, allowedBotIds, dependencies, scopeRefs: list('scopeRefs'), enabled: input.enabled ?? previous?.enabled ?? true, revision: (previous?.revision || 0) + 1, ...(coordination ? { coordination } : {}) };
   }
-  async save(input, actor = 'controller') {
+  async save(input, actor = 'controller', options = {}) {
     // The public Skill name and catalog identity need not be the same. A
     // maintainer may use the unique name it just read instead of repeating id.
     const namedSkill = !input.id && input.kind === 'skill' && this.store.list(K.entries).find(entry => entry.kind === 'skill' && entry.name === input.name);
@@ -206,6 +228,17 @@ export class CapabilityCatalog {
       if (previous) { this.owner(previous, actor); if (input.expectedRevision !== previous.revision) fail('Catalog entry changed; reread its current revision', 409); }
       else if (input.expectedRevision !== undefined && input.expectedRevision !== 0) fail('Catalog entry does not exist at that revision', 409);
       const entry = this.metadata({ ...input, id: requestedId }, previous, actor);
+      if (entry.kind === 'cli' && !options.native && (!previous || input.config)) fail('CLI entries come from observed host discovery');
+      if (options.native) entry.native = input.native;
+      if (Object.hasOwn(input, 'credentialRefs')) {
+        if (entry.kind !== 'cli' || actor !== 'controller') fail('Only the user configuration can bind host references to a CLI', 403);
+        if (!Array.isArray(input.credentialRefs) || input.credentialRefs.length > 32 ||
+            input.credentialRefs.some(name => typeof name !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)))
+          fail('Credential bindings require environment variable names');
+        const refs = [...new Set(input.credentialRefs)].sort();
+        if (JSON.stringify(refs) !== JSON.stringify(entry.native.credentialRefs || []))
+          entry.native = { ...entry.native, resourceRevision: entry.native.resourceRevision + 1, credentialRefs: refs, status: 'changed' };
+      }
       if (input.source !== undefined) this.safeText(JSON.stringify(input.source), 64000);
       if (input.proposalId) { const proposal = this.store.get(K.proposals, input.proposalId); if (!proposal || proposal.entryId !== entry.id || proposal.status !== 'pending') fail('Pending Skill proposal does not match'); }
       // Finish all input/resource validation before provisioning the Bot. A
@@ -222,7 +255,17 @@ export class CapabilityCatalog {
         entry.resources = ['SKILL.md', ...nextFiles]; entry.source = this.clean(input.source ?? previous?.source ?? null);
         if (input.proposalId) { const proposal = this.store.get(K.proposals, input.proposalId); if (!proposal || proposal.entryId !== entry.id) fail('Skill proposal does not match'); entry.lastProposalId = proposal.id; }
       } else {
-        entry.config = this.checkedConfig(entry.kind, input.config ?? previous?.config); entry.tools = input.config ? [] : previous?.tools || []; entry.lastProbe = input.config ? null : previous?.lastProbe || null;
+        entry.config = this.checkedConfig(entry.kind, input.config ?? previous?.config);
+        entry.tools = input.config ? [] : previous?.tools || [];
+        entry.lastProbe = input.config ? null : previous?.lastProbe || null;
+        if (entry.kind !== 'cli') {
+          if (actor !== 'controller' && JSON.stringify(credentialsFor(entry.kind, entry.config)) !== JSON.stringify(credentialsFor(entry.kind, previous?.config)))
+            fail('Only user configuration may authorize credential references and their actual destination', 403);
+          const configChanged = !previous || JSON.stringify(previous.config) !== JSON.stringify(entry.config);
+          entry.configRevision = (previous?.configRevision || 0) + Number(configChanged);
+          entry.native = { ...previous?.native, hostId: this.native?.host.hostId, configRevision: entry.configRevision,
+            resourceRevision: (previous?.native?.resourceRevision || 0) + Number(configChanged), status: configChanged ? 'configured' : previous?.native?.status || 'configured' };
+        }
         entry.source = this.clean(input.source ?? previous?.source ?? null);
       }
       if (previous) {
@@ -230,7 +273,7 @@ export class CapabilityCatalog {
         if (owner.maintenanceFor?.kind !== 'catalog' || owner.maintenanceFor.entryId !== entry.id) fail('Catalog maintainer binding is invalid; finish the installation migration before editing', 409);
       }
       const maintainer = await this.manager.ensureCatalogMaintainer({ entryId: entry.id, entryKind: entry.kind, name: entry.name, description: entry.description,
-        enabled: previous?.enabled ?? entry.enabled, createdBy: entry.createdBy });
+        enabled: previous?.enabled ?? entry.enabled, createdBy: entry.createdBy, ...(options.ownerModel?.connectionStore ? { modelConfig: { connectionStore: options.ownerModel.connectionStore } } : {}) });
       if (previous && maintainer.id !== previous.ownerBotId) fail('Catalog updates cannot replace the dedicated maintenance Bot', 409);
       entry.ownerBotId = maintainer.id;
       let committed = false;
@@ -295,23 +338,33 @@ export class CapabilityCatalog {
     for (const record of this.store.list(K.delegations)) if (record.entryId === id && !record.returnedAt) this.store.save(K.delegations, { id: record.id, cancelReason: reason, cancelledAt: stamp() });
     for (const proposal of this.store.list(K.proposals)) if (proposal.entryId === id && proposal.status === 'pending') this.store.save(K.proposals, { id: proposal.id, status: 'cancelled', reviewStatus: 'cancelled', reviewResult: reason, reviewedAt: stamp() });
   }
-  async probe(id, actor = 'controller', signal) {
+  async probe(id, actor = 'controller', signal, task) {
     const entry = this.entry(id); this.access(entry, actor); if (!entry.enabled) fail('Catalog entry is disabled', 409);
     if (entry.kind === 'skill') return this.get(id, actor);
+    if (entry.kind === 'cli') fail('Read the CLI interface with catalog_native_probe');
     try {
       const connection = await this.connection(entry, signal); const tools = connection.tools.map(({ name, description, inputSchema, effect }) => ({ name, description, inputSchema, effect }));
-      this.recordObservation(entry, { tools, lastProbe: { status: 'ready', scope: entry.kind === 'http' ? 'configuration' : 'transport', at: stamp() } }); return this.get(id, actor);
-    } catch (error) { this.recordObservation(entry, { lastProbe: { status: 'unavailable', at: stamp(), error: this.clean(error.message) } }); await this.disconnect(id); throw error; }
+      this.recordObservation(entry, { tools, lastProbe: { status: 'ready', scope: entry.kind === 'http' ? 'configuration' : 'transport', at: stamp() } });
+      this.native?.remoteObservation(entry, entry.kind === 'mcp' ? 'mcp-interface' : 'api-configuration',
+        { tools, server: connection.serverInfo, version: entry.kind === 'http' ? entry.config.apiVersion : undefined, source: entry.source }, actor, task);
+      return this.get(id, actor);
+    } catch (error) {
+      this.recordObservation(entry, { lastProbe: { status: 'unavailable', at: stamp(), error: this.clean(error.message) } });
+      this.native?.remoteObservation(entry, 'interface-failure', { error: error.message }, actor, task);
+      await this.disconnect(id); throw error;
+    }
   }
   async execute(id, input, actor = 'controller', signal, task) {
-    const entry = this.entry(id); this.access(entry, actor); if (entry.kind === 'skill') fail('Skills are methods, not a callable connector');
+    const entry = this.entry(id); this.access(entry, actor); if (entry.kind === 'skill' || entry.kind === 'cli') fail('Use catalog_native_run for CLI methods');
     if (!entry.enabled || entry.dependencies.some(dependency => !this.state(this.entry(dependency)).available)) fail('Connection or dependency is disabled or unavailable', 409);
     const connection = await this.connection(entry, signal); const tool = connection.tools.find(item => item.name === input.tool); if (!tool) fail('Catalog tool not found', 404);
     if(actor!=='controller'&&taskMode(task)!=='work'&&tool.effect!=='read')fail('Frontend catalog calls only allow read-only tools; delegate execution to work',403);
     const args = validateToolArguments({ name: tool.name, parameters: tool.inputSchema }, { id: input.operationId || randomUUID(), name: tool.name, arguments: input.arguments || {} });
     const suppliedOperationId = typeof input.operationId === 'string' && input.operationId.trim() ? input.operationId
       : typeof args.operationId === 'string' && args.operationId.trim() ? args.operationId : null;
-    const mutation = tool.effect !== 'read'; if (mutation && !suppliedOperationId) fail('A mutation needs a stable operationId at the catalog_call top level (or arguments.operationId when the selected tool accepts it)');
+    const mutation = tool.effect !== 'read';
+    if (mutation && task?.workId) this.native?.requireReconciled(await this.manager.readState(actor, db => db?.getRecord('works', task.workId)));
+    if (mutation && !suppliedOperationId) fail('A mutation needs a stable operationId at the catalog_call top level (or arguments.operationId when the selected tool accepts it)');
     const operationId = suppliedOperationId || randomUUID(); if (operationId.length > 256) fail('Invalid operationId');
     const requestId = JSON.stringify([actor, id, operationId]);
     const value = entry.coordination ? at(args, entry.coordination.argument) : null;
@@ -335,19 +388,25 @@ export class CapabilityCatalog {
       const run = async () => {
         const fresh = this.entry(id); this.access(fresh, actor); if (!fresh.enabled || fresh.revision !== entry.revision) fail('Connection changed before execution; reread it', 409);
         if (mutation && this.store.list(K.requests).some(request => request.resource === resource && request.status === 'unknown')) throw Object.assign(new Error('An earlier write to this resource has an unknown outcome; inspect and reconcile it before another mutation'), { status: 409, code: 'REMOTE_OUTCOME_UNKNOWN', outcomeUnknown: true });
-        const base = { id: requestId, entryId: id, operationId, actor, tool: tool.name, arguments: this.clean(args), resource, effect: tool.effect, workId: input.workId || null, status: 'running' };
+        const base = { id: requestId, entryId: id, operationId, actor, taskId: task?.id, tool: tool.name, arguments: this.clean(args), resource, effect: tool.effect, workId: task?.workId || input.workId || null, status: 'running', version: entry.native?.version || null, startedAt: stamp() };
         this.store.save(K.requests, base); let executing = false, received = false;
         try {
+          signal?.throwIfAborted();
+          await this.native?.projectRemote(entry, base, actor, task);
           signal?.throwIfAborted(); executing = true;
-          const result = await tool.execute(args, { signal, botId: actor, workId: input.workId }); received = true;
+          const result = await tool.execute(args, { signal, botId: actor, workId: base.workId }); received = true;
           const status = result?.isError ? 'failed' : 'completed'; const cleaned = this.clean(result);
-          this.store.save(K.requests, { ...base, status, result: cleaned, finishedAt: stamp() });
+          const saved = this.store.save(K.requests, { ...base, status, result: cleaned, receivedAt: stamp(), finishedAt: stamp() });
+          await this.native?.projectRemote(entry, saved, actor, task).catch(() => {});
+          if (this.entry(id).revision === entry.revision) this.native?.remoteObservation(entry, status === 'failed' ? 'api-call-failed' : 'api-call', { operationId, workId: base.workId, result: cleaned, server: connection.serverInfo, ...(status === 'failed' ? { error: 'Remote tool returned an error' } : {}) }, actor, task);
           this.recordObservation(entry, { lastProbe: { status: 'ready', scope: 'business-call', at: stamp() }, tools: connection.tools.map(({ name, description, inputSchema, effect }) => ({ name, description, inputSchema, effect })) });
           return { ...cleaned, catalog: { id, operationId, status, replayed: false } };
         } catch (error) {
           const unknown = mutation && executing && (error.outcomeUnknown || error.name === 'AbortError' || signal?.aborted || received);
           const status = unknown ? 'unknown' : 'failed', message = this.clean(error.message);
-          this.store.save(K.requests, { ...base, status, error: message, finishedAt: stamp() });
+          const saved = this.store.save(K.requests, { ...base, status, error: message, finishedAt: stamp() });
+          await this.native?.projectRemote(entry, saved, actor, task).catch(() => {});
+          if (this.entry(id).revision === entry.revision) this.native?.remoteObservation(entry, 'api-call-failed', { operationId, workId: base.workId, error: message, outcomeUnknown: unknown }, actor, task);
           if (error.outcomeUnknown || error.name === 'AbortError' || /fetch failed|connect|closed|transport/i.test(message)) { this.recordObservation(entry, { lastProbe: { status: 'unavailable', at: stamp(), error: message } }); await this.disconnect(id); }
           throw Object.assign(new Error(message), { status: error.status || 502, code: unknown ? 'REMOTE_OUTCOME_UNKNOWN' : error.code, outcomeUnknown: unknown });
         }
@@ -382,13 +441,14 @@ export class CapabilityCatalog {
     const message = `能力 ${entry.name} (${entry.id}) 的有界委托；仅处理下述请求，不扩大持续授权。\n${required(input.message, 'message')}`;
     // Business delegation always creates an isolated owner work, including
     // requests originating in a room. The worker never enters a chat DM.
-    if (actor !== 'controller' && !correctionOnly && (!input.workId || !await this.manager.readState(actor, db => db?.getRecord('works', input.workId)))) fail('A real source work is required for a delegation without a chatroom origin');
+    const sourceWork = actor !== 'controller' && input.workId && await this.manager.readState(actor, db => db?.getRecord('works', input.workId));
+    if (actor !== 'controller' && !correctionOnly && !sourceWork) fail('A real source work is required for a delegation');
     const operationId = required(input.operationId, 'operationId', 256), key = JSON.stringify([actor, id, operationId]);
     return this.serial(`delegation:${key}`, async () => {
       let record = this.store.get(K.delegations, key);
       if (record && (record.message !== message || record.sourceWorkId !== (input.workId || null))) fail('Delegation operationId already belongs to another request', 409);
       record ||= this.store.save(K.delegations, { id: key, entryId: id, operationId, actor, sourceWorkId: input.workId || null,
-        ownerBotId: entry.ownerBotId, ownerWorkId: `catalog-${randomUUID()}`, sourceConversationId: input.conversationId || null, proposalId: correctionOnly ? proposal.id : null, message, status: 'pending' });
+        ownerBotId: entry.ownerBotId, ownerWorkId: `catalog-${randomUUID()}`, sourceTaskId: input.sourceTaskId || null, systemMaintenance: input.systemMaintenance === true, nativeMaintenanceId: input.systemMaintenance === true ? input.nativeMaintenanceId || null : null, nativeUpdateAuthorized: input.nativeUpdateAuthorized || null, project: sourceWork?.project || null, sourceConversationId: input.conversationId || null, proposalId: correctionOnly ? proposal.id : null, message, status: 'pending' });
       record = await this.dispatchDelegation(record);
       return { entryId: id, ownerBotId: record.ownerBotId, ownerWorkId: record.ownerWorkId, taskId: record.taskId, sourceWorkId: record.sourceWorkId, status: record.status, accepted: true };
     });
@@ -398,11 +458,11 @@ export class CapabilityCatalog {
     if (!entry?.enabled || record.cancelReason) fail('Catalog entry no longer accepts maintenance or delegation work', 409);
     if (record.taskId) return record;
     await this.manager.start(record.ownerBotId);
-    await this.manager.request(record.ownerBotId, '/works', { method: 'POST', body: JSON.stringify({ id: record.ownerWorkId, goal: record.message,
+    await this.manager.request(record.ownerBotId, '/works', { method: 'POST', body: JSON.stringify({ id: record.ownerWorkId, goal: record.message, ...(record.project ? { project: record.project } : {}),
       sources: [{ source: record.actor, metadata: { sourceWorkId: record.sourceWorkId, delegationId: record.id, entryId: record.entryId } }] }) });
     const receipt = await this.manager.send(record.ownerBotId, { id: `catalog:${record.ownerWorkId}`, workId: record.ownerWorkId, kind: 'request',
       content: `${record.message}\n这是独立工作 ${record.ownerWorkId}。完成时更新该 work 的状态与实际结果；平台会把终态返回请求方的原工作。`,
-      metadata: { sourceType: 'peer', actor: record.actor, authority: record.actor === 'controller' ? 'user-request' : 'peer-request', sourceWorkId: record.sourceWorkId, delegationId: record.id } });
+      metadata: { sourceType: 'peer', actor: record.actor, authority: record.actor === 'controller' ? 'user-request' : 'peer-request', sourceWorkId: record.sourceWorkId, delegationId: record.id, ...(record.nativeUpdateAuthorized ? { nativeUpdateAuthorized: record.nativeUpdateAuthorized } : {}) } });
     return this.store.save(K.delegations, { ...record, taskId: receipt.taskId, status: 'accepted', acceptedAt: stamp() });
   }
   async tick() {
@@ -439,9 +499,9 @@ export class CapabilityCatalog {
     const stoppedMaintainer = source?.maintenanceFor?.kind === 'catalog' && source.status !== 'active';
     if (!record.proposalId && source && !source.archivedAt && !stoppedMaintainer && record.sourceWorkId) {
       await this.manager.start(record.actor);
-      await this.manager.request(record.actor, `/works/${encodeURIComponent(record.sourceWorkId)}/events`, { method: 'POST', body: JSON.stringify({
-        id: `catalog-return:${record.ownerWorkId}`, kind: 'event', content: { instruction: '这是负责 Bot 的实际终态，沿原工作处理。不要为致谢再次委托，不重放结果未知的写入。', entryId: record.entryId, ownerBotId: record.ownerBotId, ownerWorkId: record.ownerWorkId, status, content },
-        metadata: { authority: 'peer-observation', sourceType: 'catalog', actor: record.ownerBotId, purpose: 'result', sourceWorkId: record.ownerWorkId, priority: 'background' } }) });
+      await this.manager.request(record.actor, `/works/${encodeURIComponent(record.sourceWorkId)}/native-event`, { method: 'POST', body: JSON.stringify({
+        id: `catalog-return:${record.ownerWorkId}`, taskId: record.sourceTaskId, content: { instruction: '这是负责 Bot 的实际终态，沿原工作处理。不要为致谢再次委托，不重放结果未知的写入。', entryId: record.entryId, ownerBotId: record.ownerBotId, ownerWorkId: record.ownerWorkId, status, content },
+        metadata: { authority: 'peer-observation', sourceType: 'catalog', actor: record.ownerBotId, purpose: 'result', sourceWorkId: record.ownerWorkId, maintenanceId: record.nativeMaintenanceId, priority: 'background' } }) });
     }
     if (record.proposalId) this.store.save(K.proposals, { id: record.proposalId, reviewStatus: status, reviewedAt: stamp(), reviewResult: content });
     this.store.save(K.delegations, { ...record, status, result: content, returnedAt: stamp(), lastError: null, ...(source?.archivedAt || stoppedMaintainer ? { deliverySkipped: 'source-maintainer-inactive' } : {}) });
@@ -464,15 +524,20 @@ export class CapabilityCatalog {
   async call(name, args, { actor = 'controller', signal, task } = {}) {
     const { _context, ...supplied } = args;
     args = { ...supplied, ...(plain(_context) ? Object.fromEntries(['workId','conversationId','originRoomId','originMessageId','sourceRefs'].filter(key => _context[key] !== undefined).map(key => [key, _context[key]])) : {}) };
+    if (name.startsWith('catalog_native_')) return this.native.call(name.slice('catalog_native_'.length), args, { actor, signal, task });
     switch (name) {
       case 'catalog_search': return this.search(args, actor);
       case 'catalog_get': return args.operationId ? this.receipt(args.id, args.operationId, actor) : this.get(args.id, actor, args.resource);
-      case 'catalog_probe': return this.probe(args.id, actor, signal);
-      case 'catalog_register': if (this.store.get(K.entries, args.id)) fail('Catalog entry already exists; read and update it', 409); return this.save(args, actor);
+      case 'catalog_probe': return this.probe(args.id, actor, signal, task);
+      case 'catalog_register': return this.native.registerNetwork(args, actor, task);
       case 'catalog_update': this.entry(args.id); return this.save(args, actor);
       case 'catalog_call': return this.execute(args.id, args, actor, signal, task);
       case 'catalog_reconcile': return this.reconcile(args.id, args.operationId, args, actor);
-      case 'catalog_delegate': return this.handoff(args.id, args, actor);
+      case 'catalog_delegate': {
+        const update = args.intent === 'update' && await this.native.updateAuthority(actor, task, this.entry(args.id));
+        if (args.intent === 'update' && !update) fail('A direct user request for this installed resource is required', 403);
+        return this.handoff(args.id, { ...args, sourceTaskId: task?.id, systemMaintenance: false, nativeUpdateAuthorized: update }, actor);
+      }
       case 'catalog_skill_write': return this.save({ ...args, kind: 'skill' }, actor);
       case 'catalog_skill_propose': return this.propose(args, actor);
       default: fail('Unknown catalog tool', 404);

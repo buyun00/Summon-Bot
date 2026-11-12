@@ -21,7 +21,7 @@ const assets = new Map([
   ...['icon-192', 'icon-512', 'icon-maskable-192', 'icon-maskable-512', 'apple-touch-icon']
     .map(name => [`/icons/${name}.png`, [`icons/${name}.png`, 'image/png']]),
 ]);
-const api = /^\/api\/(?:health|state|stream|push|usage|model-settings|bots|rooms|messages|memories|knowledge|nodes|edges|routines|works|agent-runs|attachments|events|jobs|catalog|capabilities)(?:\/|$)/;
+const api = /^\/api\/(?:health|state|stream|push|usage|model-settings|workspace-profiles|bots|rooms|messages|memories|knowledge|nodes|edges|routines|works|agent-runs|attachments|events|jobs|catalog|capabilities)(?:\/|$)/;
 const hopHeaders = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade']);
 const json = (res, status, value) => {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'private, no-store, no-transform', 'X-Content-Type-Options': 'nosniff' });

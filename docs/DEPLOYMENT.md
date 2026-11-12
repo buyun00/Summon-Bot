@@ -71,14 +71,14 @@ docs/OPERATIONS.md 和 docs/CLIENT_RELEASES.md，再检查当前代码与已有�
 npm run release:web
 ```
 
-此入口构建当前工作区，正常停止既有服务与桌面连接器，安装后恢复运行。制作阶段的修改会出现在唯一正式网页，Electron 刷新时也会显示；本命令只更新网页和后端。执行前确认工作区内容属于当前获授权的交付范围。
+此入口构建当前工作区，正常停止现有系统，安装后恢复运行。制作阶段的修改会出现在唯一正式网页，Electron 刷新时也会显示。本命令只更新网页和后端。执行前确认工作区内容属于当前获授权的交付范围。
 
 ### 定稿后的完整发布
 
 先按 [开发流程](DEVELOPMENT.md) 同步原生端与必要的桌面代码，按 [版本说明](CLIENT_RELEASES.md#版本和-windows-发布) 更新发行版本和递增构建号，提交并推送本次负责的文件。需要准备桌面依赖时运行：
 
 ```powershell
-npm install --prefix desktop --no-audit --no-fund
+npm ci --prefix desktop --no-audit --no-fund
 ```
 
 再执行：
@@ -87,7 +87,7 @@ npm install --prefix desktop --no-audit --no-fund
 npm run release:all
 ```
 
-Windows 上的完整发布从 Git 当前提交构建网页与后端，安装后只构建 Windows 桌面端，并同步本机发行目录和 GitHub Releases。macOS 和 Android 默认由 GitHub Actions 构建发布，macOS 使用 Developer ID Application 签名和 Apple 公证，iOS 使用 GitHub Actions 签名上传并通过 TestFlight 内部测试分发，操作见 docs/IOS_TESTFLIGHT.md。具体操作见 [客户端发行与更新](CLIENT_RELEASES.md)。
+Windows 上的完整发布从 Git 当前提交构建并安装网页与后端，再构建 Windows x64 安装包并发布到本机发行目录。GitHub Actions 构建并发布 GitHub 上的 Windows、macOS 和 Android 安装包。macOS 使用 Developer ID Application 签名和 Apple 公证。iOS 使用 GitHub Actions 签名上传并通过 TestFlight 内部测试分发，操作见 docs/IOS_TESTFLIGHT.md。具体操作见 [客户端发行与更新](CLIENT_RELEASES.md)。
 
 客户端下载先查设备本机，再直接从 GitHub 获取，远程安装包不再通过正式主机转发。发布流程先就位新产物，再切换最新版元数据，清理被替代的版本与中间目录，保留有效业务资料。
 

@@ -20,12 +20,9 @@
     "catalog_get",
     "catalog_call",
     "publish_file",
-    "codex_projects",
-    "codex_status",
-    "codex_create",
-    "codex_attach",
-    "codex_read",
-    "codex_send",
-    "codex_interrupt"
+    "catalog_delegate",
+    "catalog_register",
+    "write_file",
+    "edit_file"
   ]
 }

@@ -121,11 +121,7 @@ export class RuntimeSources {
     return id ? this.store.getTask(id) || (!task.workId ? task : null) : null;
   }
   project(work) {
-    // A model's scopeRefs/name never establishes a project association. New
-    // works use the resolved project; older bindings already accepted by the
-    // Desktop connector retain their real selected target.
-    return work?.project || (work?.bindings?.some(item => item.type === 'codex-desktop' && item.externalThreadId) &&
-      work.executor?.target?.type === 'project' ? { id: work.executor.target.projectId } : null);
+    return work?.project || null;
   }
   roomProject(source) {
     const room = source?.input?.room;
@@ -137,24 +133,6 @@ export class RuntimeSources {
     const selected = this.project(work);
     if (selected) return selected;
     return this.workspace ? this.authorizeProject({ type: 'directory', cwd: this.workspace }, task) : null;
-  }
-  async registeredProject(item, task) {
-    const project = { id: item.projectId || item.id, name: item.label || item.name, hostId: item.hostId || 'local' };
-    if (item.hostId === 'local' && item.projectKind === 'local' && item.path) try {
-      directoryProject(item.path);
-      const directory = await this.callForSource('list_files', { path: item.path, maxEntries: 1, maxDepth: 0 }, task);
-      if (directory.path) project.cwd = directoryProject(directory.path).cwd;
-    } catch { /* The registered target alone does not establish directory equivalence. */ }
-    return project;
-  }
-  async projectForHandoff(task, project) {
-    if (!project?.id || project.cwd || project.id.startsWith('directory:') || project.hostId && project.hostId !== 'local') return project;
-    // Older accepted work may only carry the native ID. Resolve its exact
-    // scoped registration on a real handoff, without changing the work card.
-    const page = await this.call('codex_projects', {}, task);
-    const items = Array.isArray(page) ? page : page.projects || page.items || [];
-    const matches = items.filter(item => (item.projectId || item.id) === project.id);
-    return matches.length === 1 ? this.registeredProject(matches[0], task) : project;
   }
   async authorizeProject(target, task) {
     if (target?.type === 'directory') {
@@ -173,11 +151,14 @@ export class RuntimeSources {
       if (current?.id !== target.projectId) denied('Project is outside this work binding');
       return current;
     }
-    const page = await this.call('codex_projects', {}, task);
-    const items = Array.isArray(page) ? page : page.projects || page.items || [];
-    const matches = items.filter(item => (item.projectId || item.id) === target.projectId || (item.label || item.name) === target.projectId);
-    if (matches.length !== 1) denied('Choose one existing accessible project; the supplied name is not an authorization');
-    return this.registeredProject(matches[0], task);
+    const rooms = await this.rooms(task);
+    const matches = [];
+    for (const work of this.store.listRecords('works')) {
+      const project = this.project(work);
+      if (project?.id === target.projectId && await this.canReadWork(work, task, rooms) && !matches.some(item => item.id === project.id)) matches.push(project);
+    }
+    if (matches.length !== 1) denied('Choose an accessible project or its explicitly selected directory');
+    return matches[0];
   }
   async memoryAccess(task) {
     const origin = this.originTask(task);
@@ -622,4 +603,3 @@ export class RuntimeSources {
       instruction: 'Execute only the step handed to this work, within the original request and its explicit prerequisites. The full original request is preserved as material: its frontend coordination, dispatch, waiting registration, other work and independent reminders are not steps to repeat here. Handoff prose describes this step but cannot expand the original authorization. Use the available evidence, report actual missing prerequisites, and publish this step’s useful result directly.' };
   }
 }
-

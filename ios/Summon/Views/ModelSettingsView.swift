@@ -17,7 +17,6 @@ private enum ModelBrandLibrary {
         return value
     }()
     static func brand(_ item: SummonJSONValue) -> String {
-        if item["role"].stringValue == "executor" { return item["kind"].stringValue.contains("claude") ? "claudecode" : "codex" }
         let model = item["model"].stringValue.lowercased()
         for rule in catalog["models"].array ?? [] { let pair = rule.array ?? []; if pair.count == 2, model.range(of: pair[0].stringValue, options: .regularExpression) != nil { return pair[1].stringValue } }
         for key in ["provider", "kind"] { if let id = catalog["aliases"][item[key].stringValue.lowercased()].string { return id } }
@@ -44,8 +43,7 @@ private struct ModelGaugeData {
         if !executor && (item["configured"].bool == false || item["id"].string == nil || usage["status"].string == "unconfigured") { value = "待配置"; showsBrand = false; return }
         if usage.object == nil || usage["status"].string == "loading" { value = "读取中"; loading = true; return }
         let windows = (usage["windows"].array ?? []).filter { $0["remainingPercent"].modelNumber != nil }
-        let codex = windows.filter { $0["limitId"].string == "codex" }
-        let primary = codex.isEmpty ? windows : codex
+        let primary = windows
         let main = primary.first { $0["durationMinutes"].int == 10080 } ?? primary.first
         let short = primary.first { $0["durationMinutes"].int == 300 && $0 != main }
         let money = (usage["balances"].array ?? []) + (usage["balance"].object != nil ? [usage["balance"]] : [])
@@ -106,27 +104,50 @@ private struct ModelUsageDetails: View {
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }
-private struct ModelExecutorControl: View {
+struct SummonNativeSourceView: View {
     @Environment(SummonStore.self) private var store
-    let item: SummonJSONValue
+    let source: SummonJSONValue
     @State private var busy = false
     @State private var error: String?
+
     var body: some View {
-        if item["role"].stringValue == "executor" {
-            if let error { Text(error).summonFont(.caption).foregroundStyle(.orange) }
-            if item["enabled"].bool == true || item["detected"].bool == true {
-                Button(busy ? "正在处理…" : item["enabled"].bool == true ? "断开 Codex" : "接入 Codex 执行端") {
-                    let enabled = item["enabled"].bool != true
-                    Task { @MainActor in
-                        busy = true; error = nil; defer { busy = false }
-                        do {
-                            _ = try await store.request(path: "/api/model-settings/executors/codex-desktop", method: "POST", body: .object(["enabled": .bool(enabled)]))
-                            try await store.refreshModelUsage()
-                        } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+        VStack(alignment: .leading, spacing: 8) {
+            if let account = source["accountRef"].string { Text(account).summonFont(.caption).foregroundStyle(.secondary) }
+            if source["status"].string == "login-required" { Text("等待登录").foregroundStyle(.orange) }
+            ModelUsageDetails(item: source)
+            ForEach(Array((source["metrics"].array ?? []).enumerated()), id: \.offset) { _, metric in
+                if metric["kind"].string == "progress", metric["unit"].string == "%", let amount = metric["value"].modelNumber {
+                    ProgressView(value: min(100, max(0, amount)), total: 100) { Text(metric["label"].stringValue) }
+                } else if metric["kind"].string == "table" {
+                    VStack(alignment: .leading) {
+                        Text(metric["label"].stringValue).summonFont(.headline)
+                        Text((metric["columns"].array ?? []).map { $0.stringValue }.joined(separator: " · ")).summonFont(.caption, weight: .bold)
+                        ForEach(Array((metric["rows"].array ?? []).enumerated()), id: \.offset) { _, row in
+                            Text((row.array ?? []).map { $0.stringValue }.joined(separator: " · ")).textSelection(.enabled)
+                        }
                     }
-                }.disabled(busy)
+                } else if let text = metric["text"].string {
+                    LabeledContent(metric["label"].stringValue, value: text)
+                } else if metric["kind"].string == "number" && metric["unit"].string != "credits" {
+                    let value = metric["value"].modelNumber.map { $0.formatted() + " " + metric["unit"].stringValue } ?? "未知"
+                    LabeledContent(metric["label"].stringValue, value: value)
+                }
+            }
+            if let error { Text(error).foregroundStyle(.orange) }
+            ForEach(Array((source["actions"].array ?? []).enumerated()), id: \.offset) { _, action in
+                Button(action["label"].stringValue) { Task { await perform(action) } }.buttonStyle(.bordered).disabled(busy)
             }
         }
+    }
+
+    private func perform(_ action: SummonJSONValue) async {
+        busy = true; error = nil; defer { busy = false }
+        let resource = SummonAPIClient.component(source["resourceId"].stringValue)
+        let id = SummonAPIClient.component(source["sourceId"].stringValue)
+        do {
+            _ = try await store.request(path: "/api/model-settings/usage/\(resource)/\(id)/actions", method: "POST", body: .object(["id": action["id"]]))
+            try await store.refreshModelUsage()
+        } catch { self.error = error.localizedDescription }
     }
 }
 struct ModelQuotaDetailsView: View {
@@ -135,8 +156,8 @@ struct ModelQuotaDetailsView: View {
     let item: SummonJSONValue
     var body: some View {
         NavigationStack {
-            let current = item["role"].stringValue == "executor" ? store.modelSummary["executors"].array?.first ?? item : item
-            VStack(alignment: .leading, spacing: 22) { ModelUsageDetails(item: current); ModelExecutorControl(item: current); Divider(); NavigationLink("管理模型与引擎") { ModelSettingsView() }; Spacer(minLength: 0) }.padding(24)
+            let current = item["role"].stringValue == "executor" ? store.modelSummary["workExecutor"] : item
+            VStack(alignment: .leading, spacing: 22) { ModelUsageDetails(item: current); Divider(); NavigationLink("管理模型与引擎") { ModelSettingsView() }; Spacer(minLength: 0) }.padding(24)
                 .background(SummonTheme.background).navigationTitle("额度").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }.presentationDetents([.medium, .large]).presentationDragIndicator(.visible).presentationCornerRadius(28)
@@ -158,7 +179,10 @@ struct ModelQuotaDetailsView: View {
             Form {
                 if let error { Section { Text(error).foregroundStyle(.orange) } }
                 Section("当前额度") { ModelUsageDetails(item: store.modelSummary["chat"]) }
-                if let work = store.modelSummary["executors"].array?.first { Section("执行引擎接入") { ModelUsageDetails(item: work); ModelExecutorControl(item: work) } }
+                if store.modelSummary["workExecutor"].object != nil { Section("工作执行") { ModelUsageDetails(item: store.modelSummary["workExecutor"]) } }
+                ForEach(Array((store.modelSummary["sources"].array ?? []).enumerated()), id: \.offset) { _, source in
+                    Section(source["label"].stringValue) { SummonNativeSourceView(source: source) }
+                }
                 Section("聊天模型连接") {
                     ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in Button { draft = entry; login = .null } label: { HStack(spacing: 12) { ModelBrandImage(item: entry); VStack(alignment: .leading) { Text(entry["name"].stringValue); Text(entry["model"].stringValue).summonFont(.caption).foregroundStyle(.secondary) }; Spacer(); if entry["active"].bool == true { Text("当前").foregroundStyle(modelTint) } } } }
                     Menu("添加连接") { ForEach(["codex", "grok", "api"], id: \.self) { kind in Button(kind == "codex" ? "Codex 订阅" : kind == "grok" ? "Grok 订阅" : "通用 API") { draft = .object(["kind": .string(kind), "name": .string(kind == "codex" ? "Codex 订阅" : kind == "grok" ? "Grok 订阅" : "通用 API"), "model": .string(kind == "codex" ? "gpt-6-luna" : kind == "grok" ? "grok-4.7" : "")]); login = .null } } }
@@ -175,7 +199,7 @@ struct ModelQuotaDetailsView: View {
                 }
                 if ["starting", "waiting"].contains(login["status"].stringValue) { Section("订阅授权") { Text(login["userCode"].stringValue).summonFont(.title2).textSelection(.enabled); if let url = URL(string: login["verificationUri"].stringValue), ["https", "http"].contains(url.scheme ?? "") { Link("打开授权页面", destination: url) }; Button("取消授权") { run { login = try await store.request(path: "/api/model-settings/connections/\(component(login["id"]))/login", method: "DELETE") } } } }
                 if !login["error"].stringValue.isEmpty { Text(login["error"].stringValue).foregroundStyle(.orange) }
-                Section { Text("聊天模型由所有 Bot 共用，额度按账号显示。").summonFont(.caption).foregroundStyle(.secondary) }
+                Section { Text("当前工作区的 Pi 使用这里选择的聊天模型。").summonFont(.caption).foregroundStyle(.secondary) }
             }.navigationTitle("模型与引擎").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } }; ToolbarItem(placement: .topBarTrailing) { Button("刷新") { run { try await store.refreshModelUsage(force: true); try await reload() } }.disabled(busy) } }
                 .task { do { try await reload() } catch { if !Task.isCancelled { self.error = error.localizedDescription } } }

@@ -1,10 +1,9 @@
 {
   "id": "codex-relay",
-  "name": "Codex 中继",
-  "role": "通过本机桌面 API 操作 Codex，跟进任务并向委托者回传结果",
+  "name": "工具协作",
+  "role": "使用当前工具与维护 Bot 执行有明确范围的工作",
   "skills": [
-    "discussion",
-    "codex-desktop-api"
+    "discussion"
   ],
   "tools": [
     "read_file",
@@ -21,14 +20,6 @@
     "chatroom_dm",
     "bots_list",
     "routines_create",
-    "codex_projects",
-    "codex_threads",
-    "codex_create",
-    "codex_attach",
-    "codex_status",
-    "codex_read",
-    "codex_send",
-    "codex_interrupt",
     "catalog_search",
     "catalog_get",
     "catalog_register",

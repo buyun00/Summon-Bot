@@ -120,11 +120,14 @@ const sums = `COUNT(*) AS calls,
   SUM(COALESCE(json_extract(data,'$.latencyMs'),0)) AS latencyMs,SUM(json_extract(data,'$.latencyMs') IS NOT NULL) AS timedCalls,
   SUM(COALESCE(json_extract(data,'$.historical'),0)) AS historicalCalls`;
 
-export function readUsage(db, range, { offset = 0, limit = 25, detail = true, roomId, botId } = {}) {
+export function readUsage(db, range, { offset = 0, limit = 25, detail = true, roomId, botId, botIds, excludeBotIds } = {}) {
   const empty = { totals: finishUsageTotals(emptyUsageTotals()), purposes: [], models: [], days: [], rooms: [], bots: [], requests: [], offset, limit, hasMore: false, firstRecordAt: null };
   if (!db || !db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='model_usage'").get()) return empty;
-  const filter = (roomId !== undefined ? ' AND room_id IS ?' : '') + (botId ? ' AND bot_id=?' : '');
-  const filterArgs = [...(roomId !== undefined ? [roomId] : []), ...(botId ? [botId] : [])];
+  if (botIds?.length === 0) return empty;
+  const allowed = botIds ? ` AND bot_id IN (${botIds.map(() => '?').join(',')})`
+    : excludeBotIds?.length ? ` AND bot_id NOT IN (${excludeBotIds.map(() => '?').join(',')})` : '';
+  const filter = (roomId !== undefined ? ' AND room_id IS ?' : '') + (botId ? ' AND bot_id=?' : '') + allowed;
+  const filterArgs = [...(roomId !== undefined ? [roomId] : []), ...(botId ? [botId] : []), ...(botIds || excludeBotIds || [])];
   const where = 'started_at>=? AND started_at<?' + filter, args = [range.from, range.to, ...filterArgs];
   const normalize = row => finishUsageTotals(Object.fromEntries(Object.keys(emptyUsageTotals()).map(key => [key, Number(row[key] || 0)])));
   const totals = normalize(db.prepare(`SELECT ${sums} FROM model_usage WHERE ${where}`).get(...args));
@@ -144,4 +147,3 @@ export function readUsage(db, range, { offset = 0, limit = 25, detail = true, ro
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-

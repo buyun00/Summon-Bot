@@ -11,15 +11,12 @@ import { BotEngine } from '../agent/engine.mjs';
 import { SummonDecisionJournal } from '../agent/workflow-decision.mjs';
 import { CapabilityUpdates } from './capability-updates.mjs';
 import { coreTools } from '../capabilities/core-tools.mjs';
-import { isCliExecutor, selectedWorkExecutor, workExecutorChoices } from '../capabilities/executor-connections.mjs';
-import { executeCliWork } from './cli-work-engine.mjs';
 import { requestBot, sendMessage } from '../messaging/client.mjs';
 import { WorkService } from './works.mjs';
 import { ConversationScheduler } from './scheduler.mjs';
 import { writeKnowledgeDocument } from '../context/knowledge-api.mjs';
 import { RuntimeSources, taskSource } from '../context/sources.mjs';
-import { externalObservationId, notificationParts, notificationSupersession, progressNotificationCurrent } from './notifications.mjs';
-import { workExecutor } from './work-executor.mjs';
+import { notificationParts, notificationSupersession, progressNotificationCurrent } from './notifications.mjs';
 import { selectedConnection } from '../agent/model.mjs';
 import { modelConnection } from '../agent/connections.mjs';
 import { waitingLabel } from '../context/execution-evidence.mjs';
@@ -102,7 +99,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         if (output.isError) throw new Error(output.content?.map(item => item.text || '').join('\n') || `${name} failed`);
         return output.details ?? output.structuredContent ?? output;
       },
-      executors: () => workExecutorChoices(config.model),
+      executors: () => ({ defaultId: 'pi', executors: [{ id: 'pi', kind: 'pi', name: 'Pi' }] }),
       contacts: () => config.contacts.map(({botId,name,dataDir}) => ({botId,name,transport:dataDir?'local-direct':'http-direct'})),
       async send(to, envelope, { signal, taskId } = {}) {
         const id = envelope.id || randomUUID(), key = `${to}:${id}`;
@@ -145,11 +142,10 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       if (jobs.has(task.id) || task.status !== 'accepted') return;
       engine.maintenance.activity(task);
       const work = task.workId && services.works.get(task.workId);
-      const external = task.metadata?.sourceType === 'external';
       const hold = (reason, work) => journal.note(task, `hold:${reason}:${work?.revision || 0}`, {
         boundary: 'schedule', decision: 'skip', runtimeCheck: 'blocked', facts: { reason, status: work?.status },
         result: { status: 'not-started' } });
-      if (!external && work && ['paused', 'cancelled', 'blocked'].includes(work.status)) { hold('work-stopped', work); return; }
+      if (work && ['paused', 'cancelled', 'blocked'].includes(work.status)) { hold('work-stopped', work); return; }
       const controller = new AbortController();
       const conversationScheduler = task.workId ? scheduler : frontendScheduler;
       const promise = conversationScheduler.run(task.conversationId || task.sessionId, async () => {
@@ -157,32 +153,24 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         task = store.getTask(task.id);
         if (task.status !== 'accepted') return;
         const currentWork = task.workId && services.works.get(task.workId);
-        if (!external && currentWork && ['paused', 'cancelled', 'blocked'].includes(currentWork.status)) { hold('work-stopped', currentWork); return; }
-        if (!external && currentWork?.status === 'waiting' && currentWork.waiting?.dependencyWorkId &&
+        if (currentWork && ['paused', 'cancelled', 'blocked'].includes(currentWork.status)) { hold('work-stopped', currentWork); return; }
+        if (currentWork?.status === 'waiting' && currentWork.waiting?.dependencyWorkId &&
           store.getRecord('work-waits', currentWork.waiting.id)?.status === 'pending') { hold('dependency-pending', currentWork); return; }
         // A later request can be accepted while its predecessor is still active.
         // The predecessor may finish after acceptance, so refresh at actual
         // queue start as well; its completed state does not describe this task.
-        if (!external && currentWork && ['waiting', 'completed'].includes(currentWork.status))
+        if (currentWork && ['waiting', 'completed'].includes(currentWork.status))
           services.works.update(currentWork.id, { status: 'active', waiting: null, lastError: null, executionOutcome: null });
         // Keep each accepted request and its publication route intact in the work queue.
         if (currentWork) services.works.update(currentWork.id, { lastTaskId: task.id });
         try {
           const start = () => {
-            journal.start(task, external ? 'reconcile-external-observation' : currentWork ? 'advance-accepted-step' : 'handle-accepted-source',
+            journal.start(task, currentWork ? 'advance-accepted-step' : 'handle-accepted-source',
               { currentWorkStatus: currentWork?.status, executor: currentWork && services.works.executor(currentWork).kind,
-                externalObservation: external, routeOnly: Boolean(task.metadata?.routeOnly) });
+                routeOnly: Boolean(task.metadata?.routeOnly) });
             engine.maintenance.activity(task); return store.updateTask(task.id, { status: 'running', startedAt: at() });
           };
-          let result;
-          const executor = currentWork && services.works.executor(currentWork).kind;
-          if (!external && isCliExecutor(executor)) {
-            start();
-            result = await executeCliWork({ store, services, config, task, signal: controller.signal, clean });
-          } else if (currentWork && (external || executor === 'codex')) {
-            start(); result = await services.executor.execute(task, { signal: controller.signal });
-          }
-          else result = await engine.run(task, { signal: controller.signal, onStart: start });
+          const result = await engine.run(task, { signal: controller.signal, onStart: start });
           store.updateTask(task.id, { status: 'completed', result, finishedAt: at(), activity: {
             phase: result.suspended ? 'waiting' : 'completed', label: result.handoff ? '已交给独立工作处理' : result.suspended ? waitingLabel(task.workId && services.works.get(task.workId)) : '已完成本次任务',
             motion: result.handoff ? 'exclaim' : result.suspended ? 'notify' : 'burst', source: 'execution', updatedAt: at() } });
@@ -194,8 +182,11 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
             }
             else store.updateTask(pending.id, { steeredIntoTaskId: null });
           }
-          const latest = task.workId && services.works.get(task.workId);
-          if (!external && latest?.status === 'active' && services.works.executor(latest).kind === 'pi') {
+          let latest = task.workId && services.works.get(task.workId);
+          const native = latest?.bindings?.findLast(binding => binding.type === 'native-tool' && ['queued', 'starting', 'running', 'awaiting-input', 'stopping'].includes(binding.status));
+          if (latest?.status === 'active' && native) latest = services.works.update(latest.id, { status: 'waiting',
+            waiting: { kind: 'native-execution', operationId: native.operationId, reason: '等待 ' + native.resourceName + ' 的原生操作' } });
+          if (latest?.status === 'active' && services.works.executor(latest).kind === 'pi') {
             const execution = services.works.execution(task), continuationId = execution.actionId || execution.executionEventId;
             const prior = store.getRecord('work-continuation', continuationId);
             const observation = JSON.stringify({ progress: latest.progress, content: result.content, bindings: latest.bindings });
@@ -235,7 +226,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         const execution = services.works.execution(task);
         const alreadyPublished = settled && store.listRecords('work-notifications').some(item => item.workId === settled.id &&
           (execution.executionEventId ? item.executionEventId === execution.executionEventId : item.taskId === task.id));
-        if (!external && settled && settled.executionOutcome?.onboardingCompletedTaskId !== task.id && settledTask.result?.executor !== 'codex' && !settledTask.result?.late && state !== 'stopping' && ['completed', 'cancelled', 'blocked'].includes(settled.status) && !alreadyPublished) {
+        if (settled && settled.executionOutcome?.onboardingCompletedTaskId !== task.id && !settledTask.result?.late && state !== 'stopping' && ['completed', 'cancelled', 'blocked'].includes(settled.status) && !alreadyPublished) {
           const content = settledTask.result?.content || settledTask.error?.message || settled.progress || `工作状态：${settled.status}`;
           await services.notify({ id: settled.id, notificationId: `settled:${execution.executionEventId || task.id}`, publication: 'automatic', content }, task, {})
             .catch(error => emit('work.notification_pending', { workId: settled.id, error: error.message }));
@@ -323,17 +314,11 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       return accepted;
     };
     services.works = new WorkService({ store, botId: config.botId, accept, schedule, cancel, clean,
-      selectExecutor: () => selectedWorkExecutor(config.model), selectModel: id => {
+      selectModel: id => {
       const selected = id ? modelConnection(config.model, id) : selectedConnection(config);
       return { connectionId: selected.id, modelId: selected.model, thinkingLevel: selected.thinkingLevel };
     } });
-    services.executor = workExecutor({ store, services, emit });
-    services.reviewExternal = (task, options) => engine.run(task, options);
-    services.stopWork = async (target, status, task) => {
-      const work = services.works.stop(target.id, status, target.controlRevision || 0, taskSource(task, store).receivedAt);
-      if (work.externalStop?.status === 'pending' && ['paused', 'cancelled'].includes(work.status)) await services.executor.stop(work, task);
-      return services.works.get(work.id);
-    };
+    services.stopWork = async (target, status, task) => services.works.stop(target.id, status, target.controlRevision || 0, taskSource(task, store).receivedAt);
     services.resultSource = (work, task) => {
       return task.workId === work.id ? services.works.execution(task).authorization?.source : undefined;
     };
@@ -370,9 +355,6 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
     };
     services.notify = async (input, task, context) => {
       if (Array.isArray(input.attachments)) input = { ...input, attachments: [...new Map(input.attachments.map(item => [item?.id, item])).values()] };
-      if (task.metadata?.externalReview?.running) input = { ...input, publication: 'progress', resultKind: 'progress' };
-      if (task.metadata?.externalReview && !input.sourceRefs) input = { ...input, sourceRefs: [{ type: 'codex',
-        threadId: task.metadata.externalReview.threadId, turnId: task.metadata.externalReview.turnId, operationId: task.metadata.externalReview.operationId }] };
       const work = services.works.get(input.id); if (!work) throw failure(404, 'Unknown work');
       const authorizedSource = services.resultSource(work, task);
       if (!input.botId && !input.roomId) {
@@ -387,31 +369,6 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       if (contribution?.reference?.roomId === authorizedSource?.roomId && contribution?.reference?.messageId && input.resultKind !== 'progress')
         input = { ...input, sourceRefs: [...(input.sourceRefs || [{ type: 'work', workId: work.id, taskId: task.id }]),
           { ...contribution.reference, purpose: 'production-input' }] };
-      if (task.metadata?.externalReview?.running && authorizedSource?.roomId) {
-        const review = task.metadata.externalReview;
-        const observation = store.getRecord('work-observations', externalObservationId(task));
-        const observed = observation?.content;
-        const itemIds = observed?.progress?.items?.filter(item => item.itemId && item.threadId === review.threadId && item.turnId === review.turnId)
-          .map(item => item.itemId);
-        if (observation?.taskId !== task.id || observation.workId !== work.id || observation.late ||
-          observed.source !== 'codex-desktop-connector' || observed.type !== 'external_progress' || !observed.progress?.confirmed ||
-          !review.operationId || observed.operationId !== review.operationId || observed.externalThreadId !== review.threadId || observed.turnId !== review.turnId ||
-          !(authorizedSource.replyTo || authorizedSource.formId === work.id) || !itemIds?.length) return { status: 'superseded', workId: work.id };
-        const scope = { bindingId: review.bindingId, threadId: review.threadId, turnId: review.turnId, operationId: review.operationId,
-          controlRevision: observation.controlRevision, itemIds };
-        const id = `${work.id}:${observation.id}`, prior = store.getRecord('work-notifications', id);
-        if (prior) return prior;
-        if (!progressNotificationCurrent({ progressScope: scope }, work)) return { status: 'superseded', workId: work.id };
-        const previous = store.listRecords('work-notifications').filter(item => item.workId === work.id && item.resultKind === 'progress' &&
-          item.roomId === authorizedSource.roomId && item.replyTo === authorizedSource.replyTo && (item.status !== 'superseded' || item.deliveryUnconfirmed) &&
-          item.progressScope?.threadId === scope.threadId && item.progressScope.turnId === scope.turnId);
-        const seen = new Set(previous.flatMap(item => item.progressScope.itemIds));
-        const normalize = text => String(text || '').trim().replace(/\s+/g, ' ');
-        if (itemIds.every(item => seen.has(item)) || previous.some(item => normalize(item.content) === normalize(input.content)))
-          return { status: 'duplicate', workId: work.id };
-        input = { ...input, notificationId: observation.id, progressScope: scope, sourceRefs: [{ type: 'codex',
-          threadId: scope.threadId, turnId: scope.turnId, operationId: scope.operationId, observationId: observation.id, itemIds }] };
-      }
       if (input.publication === 'explicit') {
         const published = store.listRecords('work-notifications').findLast(item => item.workId === work.id &&
           item.executionEventId === execution.executionEventId && item.publication === 'explicit');
@@ -622,10 +579,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         if (method === 'POST' && id === 'form' && parts.length === 2) {
           if (state !== 'ready' || config.accepting === false) throw failure(503, '当前成员无法接收工作。');
           const body = await readBody(request);
-          const executor = selectedWorkExecutor(config.model);
-          if (executor.kind !== body.executor?.kind)
-            throw failure(409, '工作引擎已变化，请按当前选择重试。');
-          if (!isCliExecutor(executor.kind) && !engine.health().configured)
+          if (!engine.health().configured)
             throw failure(503, 'Model credential is not configured', 'MODEL_UNCONFIGURED');
           response.statusCode = 202;
           return services.works.submitForm(body);
@@ -638,20 +592,96 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
           if (body.status === 'active') void wake().catch(() => {});
           return work;
         }
-        if (method === 'POST' && parts[2] === 'stop-result' && parts.length === 3) return services.works.settleStop(id, await readBody(request));
         if (method === 'POST' && parts[2] === 'events') return services.works.dispatch(id, await readBody(request));
-        if (method === 'POST' && parts[2] === 'review') {
+        if (method === 'POST' && parts[2] === 'user-input') {
+          const work = services.works.get(id), body = await readBody(request);
+          if (!work) throw failure(404, 'Unknown work');
+          if (!/^[\w:.-]{1,256}$/.test(body.id || '') || typeof body.content !== 'string' || !body.content.trim()) throw failure(400, 'Invalid work input');
+          const original = work.sources.find(item => item.roomId);
+          const accepted = accept({ id: 'work-input:' + id + ':' + body.id, to: config.botId, workId: id, kind: 'request',
+            content: { type: 'user-work-input', instruction: body.content, deliveredToNativeOperation: body.delivered || null },
+            metadata: { actor: 'user', roomId: original?.roomId, originMessageId: original?.replyTo, priority: 'foreground', correction: true } }, 'controller');
+          return { accepted: true, taskId: accepted.task.id, status: accepted.task.status, delivered: body.delivered || null };
+        }
+        if (method === 'POST' && parts[2] === 'native-wait') {
+          const body = await readBody(request), work = services.works.get(id), task = store.getTask(body.taskId);
+          if (!work || task?.workId !== id) throw failure(409, 'Maintenance source work does not match');
+          if (work.status === 'active') return services.works.update(id, { status: 'waiting', waiting: {
+            kind: 'tool-maintenance', maintenanceId: body.maintenanceId, resourceId: body.resourceId, reason: '等待 ' + body.resourceName + ' 的维护 Bot',
+          } });
+          return work;
+        }
+        if (method === 'POST' && parts[2] === 'native-remote') {
+          const body = await readBody(request), work = services.works.get(id), task = store.getTask(body.taskId);
+          if (!work || task?.workId !== id) throw failure(409, 'Remote operation source does not match');
+          const binding = clean({ ...body, id: 'native-api:' + body.resourceId + ':' + body.operationId, type: 'native-api' });
+          if (!work.bindings.some(item => item.id === binding.id && item.status === binding.status))
+            services.works.update(id, { bindings: [...work.bindings.filter(item => item.id !== binding.id), binding] });
+          return { observed: true };
+        }
+        if (method === 'POST' && parts[2] === 'native-event') {
+          const work = services.works.get(id), body = await readBody(request);
+          if (!work) throw failure(404, 'Unknown work');
+          const task = store.getTask(body.taskId);
+          store.putRecord('work-observations', { id: body.id, workId: id, taskId: task?.id, content: clean(body.content), observedAt: at() });
+          if (!task || task.workId !== id || ['paused', 'cancelled', 'completed'].includes(work.status)) return { observed: true, wakeup: false };
+          if (work.waiting?.kind === 'tool-maintenance' && work.waiting.maintenanceId === body.metadata?.maintenanceId)
+            services.works.update(id, { status: 'active', waiting: null });
+          return services.works.dispatch(id, { id: body.id, kind: 'event', content: body.content,
+            metadata: { ...body.metadata, sourceType: 'native-tool', priority: 'background' } }, task);
+        }
+        if (method === 'POST' && parts[2] === 'native-recovery') {
+          const body = await readBody(request), work = services.works.get(id);
+          const binding = work?.bindings.find(item => item.id === body.bindingId && item.type === 'native-recovery');
+          if (!binding || !['resumable', 'unavailable'].includes(body.status) || !body.observationId || !body.evidence) throw failure(409, 'Original recovery binding is unavailable');
+          const settled = { ...binding, status: body.status, resourceId: body.resourceId,
+            observationId: body.observationId, evidence: body.evidence, observedAt: body.observedAt };
+          services.works.update(id, { expectedRevision: body.expectedRevision, bindings: work.bindings.map(item => item === binding ? settled : item) });
+          emit('native.recovery', settled, { workId: id });
+          return settled;
+        }
+        if (method === 'POST' && parts[2] === 'native-state') {
+          const { operation, events = [], fromOffset, toOffset } = await readBody(request);
+          const task = operation?.taskId && store.getTask(operation.taskId);
           const work = services.works.get(id);
-          if (!work || work.status !== 'waiting' || work.waiting?.kind !== 'review') throw failure(409, 'Only an existing result waiting for review can be reconciled');
-          const binding = work.bindings?.findLast(item => item.type === 'codex-desktop');
-          const observation = store.listRecords('work-observations').findLast(item => item.workId === id && !item.late &&
-            item.content?.operationId === binding?.operationId && item.content?.turnId === binding?.turnId && item.content?.final?.confirmed);
-          const original = observation && store.getTask(observation.taskId);
-          if (!original || binding.status !== 'completed') throw failure(409, 'No exact confirmed final observation is available');
-          const accepted = accept({ id: `reconcile:review:${observation.id}:${work.revision}`, to: config.botId, kind: 'event', workId: id,
-            content: observation.content, metadata: { sourceType: 'external', authority: 'external-result', externalBindingId: binding.id,
-              observationMessageId: original.metadata?.observationMessageId || original.messageId, reviewRecovery: original.id, finalizationOnly: true } }, 'controller');
-          return { accepted: true, workId: id, taskId: accepted.task.id, sourceObservationId: observation.id, finalizationOnly: true };
+          if (!work || task?.workId !== id || operation.workId !== id) throw failure(409, 'Native operation source does not match');
+          const bindingId = 'native:' + operation.operationId;
+          const prior = store.getRecord('native-work-state', bindingId + ':' + id);
+          const signature = JSON.stringify([operation.status, operation.pid, operation.nativeSessionId, operation.pending, operation.error, operation.reconciliation, toOffset]);
+          if (prior?.signature !== signature) store.transaction(() => {
+            const binding = clean({ ...operation, id: bindingId, type: 'native-tool' });
+            const bindings = [...work.bindings.filter(item => item.id !== bindingId), binding];
+            const stop = work.externalStop;
+            const running = bindings.some(item => item.type === 'native-tool' && ['queued', 'starting', 'running', 'awaiting-input', 'stopping'].includes(item.status));
+            const pending = operation.pending?.[0];
+            const progress = events.findLast(event => ['progress', 'result'].includes(event.type))?.text;
+            const waiting = pending && ['active', 'waiting'].includes(work.status)
+              ? { status: 'waiting', waiting: { kind: 'native-input', reason: pending.text, operationId: operation.operationId } }
+              : work.status === 'waiting' && ['native-input', 'native-execution'].includes(work.waiting?.kind) && work.waiting.operationId === operation.operationId && (work.waiting.kind === 'native-input' || ['completed', 'failed', 'stopped', 'unknown', 'superseded'].includes(operation.status))
+                ? { status: 'active', waiting: null } : {};
+            services.works.update(id, { bindings, ...(progress ? { progress } : {}), ...waiting,
+              ...(stop?.status === 'pending' && !running ? { externalStop: { ...stop, status: operation.status === 'unknown' ? 'unknown' : 'local-stopped', observedAt: at() } } : {})
+            }, { control: true });
+            for (const event of events) emit('native.' + event.type, { operationId: operation.operationId, resourceName: operation.resourceName, ...event }, { workId: id, taskId: task.id });
+            const terminal = ['completed', 'failed', 'stopped', 'unknown', 'superseded'].includes(operation.status);
+            if (terminal) {
+              const result = { id: bindingId + ':' + operation.status, workId: id, taskId: task.id, operationId: operation.operationId,
+                executionEventId: services.works.execution(task).executionEventId, content: { type: 'native-execution', ...binding }, observedAt: at() };
+              store.putRecord('work-observations', result);
+              store.putRecord('work-results', { ...result, id: 'native-result:' + result.id, kind: operation.status === 'stopped' ? 'interrupted' :
+                operation.status === 'unknown' ? 'result-unknown' : operation.status, source: 'native-execution' });
+            }
+            store.putRecord('native-work-state', { id: bindingId + ':' + id, signature, offset: toOffset, fromOffset });
+          });
+          const registeredWait = operation.status !== 'unknown' && store.listRecords('work-waits').some(wait => wait.workId === id && wait.status === 'pending' &&
+            (wait.dependencyEventId === operation.operationId || wait.taskId === task.id));
+          if (registeredWait) void wake().catch(() => {});
+          else if (!['paused', 'cancelled', 'completed'].includes(work.status) && ['completed', 'failed', 'stopped', 'unknown', 'superseded'].includes(operation.status)) {
+            await services.works.dispatch(id, { id: bindingId + ':' + operation.status, kind: 'event',
+              content: { type: 'native-execution', operation, instruction: 'Inspect the original receipt and output in catalog_native_status. Use actual results to continue the accepted step. Preserve operation identity and reconcile unknown effects before another write.' },
+              metadata: { actor: 'system', sourceType: 'native-tool', priority: 'background' } }, task);
+          }
+          return { observed: true, status: operation.status };
         }
       }
       if (parts[0] === 'availability' && parts.length === 1 && method === 'PATCH') {
@@ -721,29 +751,22 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
     url = `http://${config.listen.host === '::1' ? '[::1]' : config.listen.host}:${server.address().port}`;
     emit('bot.loading', identity()); await atomicJson(join(config.dataDir, 'run', 'current.json'), identity());
     await engine.initialize(); updates.recover();
-    const restoredExecutionStates = services.executor.restoreExecutionStates();
     state = 'ready'; readyAt = at(); emit('bot.ready', identity()); await atomicJson(join(config.dataDir, 'run', 'current.json'), identity());
-    // External observations only update saved facts and idempotent publications.
-    // Resume the same accepted event if shutdown interrupted that processing.
-    for (const task of store.listTasks({ status: 'interrupted', limit: 10000 })) if (task.metadata?.sourceType === 'external')
-      accept({ id: `recover:external:${task.id}`, to: config.botId, kind: 'event', workId: task.workId, content: task.input,
-        metadata: { ...task.metadata, finalizationOnly: true, observationMessageId: task.metadata.observationMessageId || task.messageId } }, 'controller');
-    // Retry only a real final observation whose supervisor failed. This lane
-    // may reconcile S3/notify; it cannot submit another product execution.
-    for (const work of services.works.list({ status: 'waiting', limit: 500 }).filter(work => work.waiting?.kind === 'review')) {
-      if (restoredExecutionStates.has(work.id)) continue;
-      const failed = store.listRecords('external-reviews').findLast(review => review.workId === work.id && review.status === 'unconfirmed' && !review.resolvedBy);
-      const original = failed && store.getTask(failed.id);
-      if (!original?.input?.final?.confirmed || original.input.status !== 'completed') continue;
-      const binding = work.bindings?.find(item => item.id === original.metadata?.externalBindingId);
-      if (binding?.operationId !== original.input.operationId || binding.turnId !== original.input.turnId || binding.status !== 'completed') continue;
-      accept({ id: `recover:review:${original.id}`, to: config.botId, kind: 'event', workId: work.id, content: original.input,
-        metadata: { ...original.metadata, reviewRecovery: failed.id, finalizationOnly: true,
-          observationMessageId: original.metadata.observationMessageId || original.messageId } }, 'controller');
+    for (const work of services.works.list({ limit: 500 }).filter(item => !['completed', 'paused', 'cancelled'].includes(item.status))) {
+      const migrated = work.bindings?.find(item => item.type === 'native-recovery' && item.status === 'recovery-required');
+      const original = migrated && (store.getTask(migrated.taskId) || store.getTask(work.lastTaskId));
+      if (original && services.works.execution(original).authorization?.source) {
+        await services.works.dispatch(work.id, { id: 'recover-native:' + migrated.id, kind: 'event',
+          metadata: { sourceType: 'native-tool', priority: 'background' },
+          content: { type: 'native-cutover-recovery', binding: migrated,
+            instruction: 'Inspect the actual original tool session and already produced work from this binding. Find the native tool through the catalog and learn its read/resume interface with the assigned maintainer. Use the same session if its identity is confirmed. If unavailable, keep the work and artifacts and reconcile uncertain side effects before choosing any remaining step.' } }, original).catch(error =>
+          emit('work.recovery_pending', { workId: work.id, message: error.message }));
+      }
     }
     for (const work of services.works.list({ status: 'active', limit: 500 })) {
       const last = work.lastTaskId && store.getTask(work.lastTaskId);
-      if (last?.status === 'interrupted' && last.metadata?.sourceType !== 'external') try {
+      const liveNative = work.bindings?.some(item => item.type === 'native-tool' && ['queued', 'starting', 'running', 'awaiting-input', 'stopping'].includes(item.status));
+      if (last?.status === 'interrupted' && last.metadata?.sourceType !== 'external' && !liveNative) try {
         await services.works.dispatch(work.id, { id: `recover:${last.id}`, metadata: { resumeEventId: last.metadata?.resumeEventId || last.metadata?.workEventId }, content: { type: 'execution_interrupted', taskId: last.id, instruction: 'Resume only this accepted step. First inspect durable tool receipts and original external bindings; unknown effects must be queried, never replayed.', unknownTools: store.listTools(last.id).filter(tool => tool.status === 'unknown') } }, last);
       } catch (error) { emit('work.recovery_pending', { workId: work.id, message: error.message }); }
     }

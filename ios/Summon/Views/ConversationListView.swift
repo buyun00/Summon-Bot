@@ -129,6 +129,7 @@ struct ConversationListView: View {
             }
             .onChange(of: store.onboardingRequired, initial: true) { _, required in
                 if required && !onboardingShown { onboardingShown = true; showOnboarding = true }
+                else if !required { onboardingShown = false }
             }
             .onChange(of: store.settings.baseURL) { _, _ in onboardingShown = false }
             .summonSheet(isPresented: $showOnboarding) {
@@ -195,7 +196,7 @@ struct ConversationListView: View {
                     ModelQuotaSignal(item: store.modelSummary["chat"], label: "CHAT") {
                         selectProfileDestination(.quota(store.modelSummary["chat"]))
                     }
-                    let work = store.modelSummary["executors"].array?.first ?? .object(["role": .string("executor"), "kind": .string("codex")])
+                    let work = store.modelSummary["workExecutor"].object.map { SummonJSONValue.object($0) } ?? .object(["role": .string("executor"), "kind": .string("pi")])
                     ModelQuotaSignal(item: work, label: "WORK") { selectProfileDestination(.quota(work)) }
                 }.padding(.vertical, 8)
                 profileMenuButton("Token 统计", symbol: "chart.bar", destination: .usage)

@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { safeId,required,fail,avatarOf,pick,within,now } from '../shared/validation.mjs';
 import { normalizePaperAvatar,defaultPaperAvatar } from '../shared/avatar-style.mjs';
 import { modelText, durationSeconds } from '../../bot/src/context/model-input.mjs';
+import { nativeToolDefinitions } from '../services/native-tool-definitions.mjs';
 import { TEAM_DUTY_TOOLS, dutyOrigin, effectiveBotTools } from './tool-access.mjs';
 
 const core = () => import('@summon/bot');
@@ -13,8 +14,8 @@ const sleep = ms => new Promise(done=>setTimeout(done,ms));
 const startupBudgetMs = 60_000;
 const transientStartupHandshake = error => error.code==='INSTANCE_IDENTITY_UNAVAILABLE' &&
   ['IDENTITY_HANDSHAKE_TIMEOUT','IDENTITY_HANDSHAKE_INCOMPLETE','ECONNRESET','EPIPE'].includes(error.cause?.code);
-export const CATALOG_MAINTAINER_TOOLS = Object.freeze(['catalog_search','catalog_get','catalog_update','catalog_call','catalog_delegate','catalog_skill_write','catalog_skill_propose','catalog_probe','catalog_reconcile','chatroom_read','chatroom_send','chatroom_dm','chatroom_team_read','chatroom_team_raise','bots_list']);
-const catalogPrompt = ({entryId,entryKind,name,description}) => `你是目录条目 ${name} 的专用维护 Bot。唯一维护归属：${entryKind} / ${entryId}。\n职责：维护这个条目的使用说明、适用范围、配置和真实状态，判断同伴针对它的具体委托或纠正；执行范围仍以当前工作授权为准。通过 catalog_get 读取当前条目及必要依赖，凭据只在私有配置中保存，不写进聊天、Markdown 或 Skill。只维护这个条目；相关依赖可按其实际授权使用，不能因维护身份获取其他条目权限。\n共享 Skill 只有一个当前正文；结合可靠来源审阅修订建议，在读取当前 revision 后更新同一条目并保留 proposalId。创建者与维护者是不同身份。不得把收到的维护建议当作新业务授权，不为完成通知创建反馈循环。原始历史、独立 work 和结果返回使用正常 Bot 协议。\n条目说明：${description || '尚未提供；按实际配置与来源补充。'}`;
+export const CATALOG_MAINTAINER_TOOLS = Object.freeze(['catalog_search','catalog_get','catalog_update','catalog_call','catalog_delegate','catalog_skill_write','catalog_skill_propose','catalog_probe','catalog_reconcile','chatroom_read','chatroom_send','chatroom_dm','chatroom_team_read','chatroom_team_raise','bots_list', ...nativeToolDefinitions.map(tool => tool.name), 'web_read', 'web_search']);
+const catalogPrompt = ({entryId,entryKind,name,description}) => `你是目录条目 ${name} 的专用维护 Bot。唯一维护归属：${entryKind} / ${entryId}。\n职责：维护这个条目的使用说明、适用范围、配置和真实状态，判断同伴针对它的具体委托或纠正；执行范围仍以当前工作授权为准。通过 catalog_get 读取当前条目及必要依赖，凭据只在私有配置中保存，不写进聊天、Markdown 或 Skill。只维护这个条目及其方法。CLI 使用 catalog_native_probe 读取实际帮助或版本。把已确认方法和原始观察通过 catalog_native_method_write 登记。相关依赖可按实际授权使用。\n共享 Skill 只有一个当前正文；结合可靠来源审阅修订建议，在读取当前 revision 后更新同一条目并保留 proposalId。创建者与维护者是不同身份。不得把收到的维护建议当作新业务授权，不为完成通知创建反馈循环。原始历史、独立 work 和结果返回使用正常 Bot 协议。\n条目说明：${description || '尚未提供；按实际配置与来源补充。'}`;
 export class BotManager {
   constructor({store,dataRoot,releaseRoot,model={},defaultCwd,emit=()=>{},getTools=()=>[],gatewayUrl=()=>'',botApi=core,cacheReadStores=false}) {
     Object.assign(this,{store,dataRoot:resolve(dataRoot),releaseRoot:resolve(releaseRoot),model,defaultCwd,emit,getTools,gatewayUrl,botApi,cacheReadStores}); this.launching=new Map();this.creating=new Map();this.maintaining=new Map();this.readStores=new Map();
@@ -47,13 +48,18 @@ export class BotManager {
     const {originRoomId:_room,originDutyKey:_duty,...lifecycleInput}=input.lifecycle||{kind:'permanent',state:'active'};
     const lifecycle={...lifecycleInput,...(!_duty&&_room?{originRoomId:_room}:{}),
       ...(teamDuty?{originRoomId:teamDuty.roomId,originDutyKey:teamDuty.dutyKey}:{})};
-    if(teamDuty)input={...input,cwd:undefined,modelConfig:undefined};
+    if(teamDuty)input={...input,cwd:undefined};
+    if(input.workspaceProfileId){
+      const id=safeId(input.workspaceProfileId),connectionStore=join(this.dataRoot,'config','workspaces',id,'model-connections.json');
+      if(!existsSync(connectionStore))fail('Workspace model store is missing',409);
+      input={...input,modelConfig:{connectionStore}};
+    }
     if(!['temporary','permanent'].includes(lifecycle.kind)||!['active','dormant'].includes(lifecycle.state))fail('Invalid Bot lifecycle');
     const dir=this.directory(id), token=randomBytes(32).toString('hex'), capabilityToken=previous?.capabilityToken||randomBytes(32).toString('hex');
     await mkdir(dir,{recursive:true}); await mkdir(join(dir,'workspace'),{recursive:true});
     const skills=maintenanceFor?[]:profile.skills||[], basePrompt=await readFile(join(this.releaseRoot,'roles',roleId,'prompt.md'),'utf8');
     const config={schemaVersion:1,botId:id,dataDir:dir,workspace:input.cwd?resolve(input.cwd):join(dir,'workspace'),model:{...this.model,...input.modelConfig},prompt:[basePrompt,input.prompt?`\n用户设定的身份与职责：\n${input.prompt}`:''].filter(Boolean).join('\n'),skills:skills.map(skill=>join(this.releaseRoot,'skills',skill)),bundleRoot:this.releaseRoot,bundledSkills:skills,token,listen:{host:'127.0.0.1',port:0},concurrency:4,context:{maintenanceConcurrency:1},tools:[],limits:input.limits,...(maintenanceFor?{maintenanceFor}: {})};
-    const bot=this.store.save('bots',{id,name:required(input.name||profile.name,'name',100),role:input.role||profile.role,roleId,lifecycle,creationSource:maintenanceFor?'catalog':'custom',expertise:input.expertise||profile.role,prompt:input.prompt||'',status:input.status==='paused'?'paused':'active',skills,model:config.model.model||'deepseek-flash',executor:'codex',capabilityToken,allowedTools:maintenanceFor?[...CATALOG_MAINTAINER_TOOLS]:teamDuty?[...TEAM_DUTY_TOOLS]:profile.tools,runIntent:'stopped',
+    const bot=this.store.save('bots',{id,name:required(input.name||profile.name,'name',100),role:input.role||profile.role,roleId,lifecycle,creationSource:maintenanceFor?'catalog':'custom',expertise:input.expertise||profile.role,prompt:input.prompt||'',status:input.status==='paused'?'paused':'active',skills,model:config.model.model||'deepseek-flash',executor:'pi',workspaceProfileId:input.workspaceProfileId||null,capabilityToken,allowedTools:maintenanceFor?[...CATALOG_MAINTAINER_TOOLS]:teamDuty?[...TEAM_DUTY_TOOLS]:effectiveBotTools(null,profile.tools),runIntent:'stopped',
       ...(!previous&&!maintenanceFor?{firstRunPending:true}:{}),...(maintenanceFor?{maintenanceFor,createdBy:input.createdBy||'controller'}:{}),...(input.avatar?{avatar:avatarOf(input.avatar)}:{})});
     config.usage={ledgerPath:join(this.dataRoot,'usage.sqlite'),botName:bot.name};
     config.tools=(await this.getTools(bot)).map(tool=>({...tool,headers:{Authorization:`Bearer ${capabilityToken}`}}));
@@ -68,7 +74,7 @@ export class BotManager {
   async ensureCatalogMaintainer(input) {
     this.assertAccepting();
     const entryId=safeId(input.entryId),entryKind=input.entryKind;
-    if(!['mcp','http','skill'].includes(entryKind))fail('Invalid catalog maintenance kind');
+    if(!['mcp','http','cli','skill'].includes(entryKind))fail('Invalid catalog maintenance kind');
     if(this.maintaining.has(entryId))return this.maintaining.get(entryId);
     const pending=(async()=>{
       const matches=this.store.list('bots').filter(bot=>bot.maintenanceFor?.kind==='catalog'&&bot.maintenanceFor.entryId===entryId);
@@ -77,7 +83,7 @@ export class BotManager {
       const maintenanceFor={kind:'catalog',entryId,entryKind};
       const details={entryId,entryKind,name:required(input.name,'name',200),description:input.description};
       const prompt=catalogPrompt(details),expertise=`${entryKind}: ${details.name}`;
-      await this.createNow({id:previous?.id||`bot-catalog-${randomUUID()}`,name:`${details.name} · 维护`.slice(0,100),role:'目录维护',expertise,prompt,status:input.enabled===false?'paused':'active',createdBy:input.createdBy},maintenanceFor);
+      await this.createNow({id:previous?.id||`bot-catalog-${randomUUID()}`,name:`${details.name} · 维护`.slice(0,100),role:'目录维护',expertise,prompt,status:input.enabled===false?'paused':'active',createdBy:input.createdBy,modelConfig:input.modelConfig},maintenanceFor);
       const bot=await this.setCatalogMaintainerState(entryId,{enabled:input.enabled!==false,archived:false});
       if(bot.prompt!==prompt||bot.expertise!==expertise){
         const base=await readFile(join(this.releaseRoot,'roles',bot.roleId||'default','prompt.md'),'utf8'),effective=`${base}\n\n${prompt}`;
@@ -229,7 +235,7 @@ export class BotManager {
     if(present?.state==='ready')return present;
     if(present)return this.waitForReady(id,deadline);
     const dir=this.directory(id), config=await this.config(id), record=this.store.get('bots',id);this.assertAccepting();
-    if(this.model.connectionStore)config.model={connectionStore:this.model.connectionStore};
+    if(this.model.connectionStore&&!config.model?.connectionStore)config.model={connectionStore:this.model.connectionStore};
     const profile=JSON.parse(await readFile(join(this.releaseRoot,'roles',record.roleId||'default','role.json'),'utf8'));
     if(record.presetId==='eggbot'&&record.roleId==='eggbot'){
       const base=await readFile(join(this.releaseRoot,'roles','eggbot','prompt.md'),'utf8');
@@ -367,4 +373,3 @@ export class BotManager {
     return this.store.save('routines',{...previous,...fields,...(input.id?{id:input.id}:{}),botId,name,roomId,instruction:required(input.instruction??previous?.instruction),intervalSeconds,enabled:input.enabled??previous?.enabled??true,nextRunAt,watch});
   }
 }
-

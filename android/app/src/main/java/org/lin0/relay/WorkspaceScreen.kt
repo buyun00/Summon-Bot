@@ -297,6 +297,14 @@ private fun WorkDetail(store: SummonStore, initial: WorkspaceRecord, snapshot: S
         if (value["lastError"].stringValue.isNotEmpty()) Text(value["lastError"]["message"].string ?: value["lastError"].stringValue, color = Color(0xFFFF9F0A))
         if (value["waitingLabel"].stringValue.isNotEmpty()) { Text("等待事项"); Text(value["waitingLabel"].stringValue) }
         else if (value["waiting"]["event"].stringValue.isNotEmpty()) { Text("等待事项"); Text(value["waiting"]["event"].stringValue) }
+        val nativeOperations = value["bindings"].array.orEmpty().filter { it["type"].string in setOf("native-tool", "native-recovery", "native-api") }
+        if (nativeOperations.isNotEmpty()) {
+            Text("工具执行", style = MaterialTheme.typography.titleMedium)
+            nativeOperations.forEach { operation ->
+                NativeWorkOperation(store, initial.id, operation, status !in setOf("paused", "cancelled", "completed")) { load() }
+            }
+        }
+        value["nativeSources"].array.orEmpty().forEach { source -> NativeModelSource(source, store) }
         if (status == "interrupted") Text("上次执行已中断。恢复会继续已有工作对话，已进行的操作仍然保留。", color = Color(0xFF8E8E93))
         if (value["historical"].bool != true && status in setOf("active", "waiting", "blocked")) {
             Text("补充要求")
@@ -322,6 +330,81 @@ private fun WorkDetail(store: SummonStore, initial: WorkspaceRecord, snapshot: S
                 Text(formatSummonDate(event["createdAt"].string ?: event["timestamp"].string), color = Color(0xFF8E8E93))
             }
             Text(eventText(event))
+        }
+    }
+}
+
+@Composable
+private fun NativeWorkOperation(store: SummonStore, workID: String, operation: SummonJson, allowsInput: Boolean, refresh: suspend () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val operationID = operation["operationId"].stringValue
+    val path = "/api/works/${SummonApiClient.component(workID)}/native/${SummonApiClient.component(operationID)}"
+    var busy by remember(operationID) { mutableStateOf(false) }
+    var error by remember(operationID) { mutableStateOf<String?>(null) }
+    var output by remember(operationID) { mutableStateOf("") }
+    var stream by remember(operationID) { mutableStateOf<String?>(null) }
+    var offset by remember(operationID) { mutableStateOf(0) }
+    val request = operation["pending"].array.orEmpty().firstOrNull()
+    var input by remember(operationID, request?.get("id")) { mutableStateOf("") }
+    var attempt by remember(operationID, request?.get("id")) { mutableStateOf("" to "") }
+    fun perform(block: suspend () -> Unit) {
+        if (busy) return
+        scope.launch {
+            busy = true; error = null
+            try { block() } catch (failure: Exception) { if (failure is kotlinx.coroutines.CancellationException) throw failure; error = failure.localizedMessage }
+            finally { busy = false }
+        }
+    }
+    fun read(name: String, reset: Boolean) = perform {
+        val page = store.request("$path?stream=$name&offset=${if (reset) 0 else offset}")["output"]
+        output = ((if (reset) "" else output) + page["text"].stringValue).takeLast(32_768)
+        stream = name
+        offset = page["nextOffset"].int ?: 0
+    }
+    fun respond(text: String) {
+        val nativeRequest = request ?: return
+        if (attempt.first != text) attempt = text to java.util.UUID.randomUUID().toString()
+        perform {
+            val receipt = store.request("$path/answer", "POST", SummonJson.obj(
+                "id" to SummonJson.Str(attempt.second), "requestId" to nativeRequest["id"], "text" to SummonJson.Str(text)))
+            if (receipt["status"].stringValue in setOf("rejected", "unknown")) throw SummonApiException(receipt["error"].string ?: "原生请求结果待确认")
+            refresh()
+        }
+    }
+    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Text(operation["resourceName"].string ?: "原生工具", style = MaterialTheme.typography.titleSmall)
+        val status = operation["status"].stringValue
+        Text(when (status) {
+            "queued" -> "排队"; "starting" -> "启动中"; "running" -> "运行中"; "awaiting-input" -> "等待答复"
+            "stopping" -> "停止中"; "completed" -> "已结束"; "failed" -> "执行失败"; "stopped" -> "已停止"
+            "unknown" -> "结果待确认"; "recovery-required" -> "待核对原会话"; "resumable" -> "已核对，可续接"
+            "unavailable" -> "原会话不可用"; "historical" -> "历史记录"; else -> status
+        }, color = Color.Gray)
+        operation["version"].string?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        operation["nativeSessionId"].string?.let { Text("会话 $it", style = MaterialTheme.typography.bodySmall) }
+        (error ?: operation["error"].string)?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        if (operation["type"].string == "native-tool") {
+            Row {
+                TextButton(enabled = !busy, onClick = { read("stdout", true) }) { Text("标准输出") }
+                TextButton(enabled = !busy, onClick = { read("stderr", true) }) { Text("错误输出") }
+                if (allowsInput && status in setOf("queued", "starting", "running", "awaiting-input")) {
+                    TextButton(enabled = !busy, onClick = { perform { store.request("$path/stop", "POST", SummonJson.obj()); refresh() } }) { Text("停止操作") }
+                }
+            }
+            stream?.let { name ->
+                Text(output.ifEmpty { "当前没有输出" }, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+                TextButton(enabled = !busy, onClick = { read(name, false) }) { Text("读取新输出") }
+            }
+        }
+        if (allowsInput && request != null) {
+            Text(request["text"].stringValue)
+            val choices = request["choices"].array.orEmpty()
+            if (choices.isEmpty()) {
+                OutlinedTextField(input, { input = it }, label = { Text("回复工具请求") }, modifier = Modifier.fillMaxWidth())
+                Button(enabled = !busy && input.isNotBlank(), onClick = { respond(input.trim()) }) { Text("发送回复") }
+            } else {
+                choices.forEach { choice -> TextButton(enabled = !busy, onClick = { respond(choice["id"].stringValue) }) { Text(choice["label"].stringValue) } }
+            }
         }
     }
 }

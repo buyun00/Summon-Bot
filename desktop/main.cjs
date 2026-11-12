@@ -1,9 +1,9 @@
-const { app, BrowserWindow, ipcMain, Menu, shell, dialog, protocol, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, shell, protocol } = require('electron');
 const { join } = require('node:path');
 const { readFile } = require('node:fs/promises');
 const { autoUpdater } = require('electron-updater');
 const release = require('./release.json');
-const { runtime, setupUrl, workspaceCommand, workspaceToken, login, authorizationUrl } = require('./workspace.cjs');
+const { runtime, setupUrl, desktopSettings, localAccess, prepareWorkspace, workspaceProfiles, authorizationUrl } = require('./workspace.cjs');
 // Keep the existing profile directory while changing the product's visible name.
 app.setPath('userData', join(app.getPath('appData'), 'Relay'));
 app.setName('Summon Bot');
@@ -13,7 +13,7 @@ const localUpdateFeed = new URL(release.updatePath, 'http://127.0.0.1:8787').hre
 const [releasePlatform, releaseArch] = release.updatePath.split('/').filter(Boolean).slice(-2);
 const remoteUpdateFeed = `https://github.com/${release.githubRepository}/releases/download/client-${releasePlatform}-${releaseArch}/`;
 let window, timer, checking;
-let workspace = { mode: 'unselected' }, setup = { section: 'workspace', error: '' }, busy = false;
+let workspace = null, candidate = null, setup = { section: 'unpacking', error: '' }, busy = false;
 let update = { status: 'idle', currentVersion: app.getVersion() };
 
 function setUpdate(value) {
@@ -21,42 +21,70 @@ function setUpdate(value) {
   if (window && !window.isDestroyed()) window.webContents.send('summon:update-state', update);
 }
 const webOrigin = url => { try { return new URL(url).origin; } catch { return null; } };
-const isWeb = url => workspace.origin && webOrigin(url) === workspace.origin;
+const isWeb = url => workspace?.origin && webOrigin(url) === workspace.origin;
 function trusted(event, local = false) {
-  if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame
+  if (!window || event.sender !== window.webContents || !event.senderFrame || event.senderFrame !== window.webContents.mainFrame
     || !(local ? event.senderFrame.url === setupUrl : isWeb(event.senderFrame.url))) throw new Error('Untrusted desktop request');
 }
 
-function showSetup(section = 'workspace', error = '') {
+function showSetup(section = 'unpacking', error = '') {
+  if (section === 'unpacking') candidate = null;
   setup = { section, error };
-  if (window?.webContents.getURL() === setupUrl) window.webContents.send('summon:workspace-setup-state', setup);
-  else window?.loadURL(setupUrl).catch(() => {});
+  if (!window || window.isDestroyed()) return;
+  if (window.webContents.getURL() === setupUrl) window.webContents.send('summon:workspace-setup-state');
+  else window.loadURL(setupUrl).catch(() => {});
 }
 
-async function showWorkspace(token, reportError = false) {
-  if (!window || !workspace.origin) return showSetup();
+async function showWorkspace(target, selection) {
+  if (target !== window || target.isDestroyed()) return;
+  const url = new URL('/', selection.origin);
+  if (selection.workspaceId) url.searchParams.set('workspace', selection.workspaceId);
+  const previousSetup = setup;
+  await target.loadURL(url.href).catch(() => {
+    if (target === window && !target.isDestroyed() && setup === previousSetup) {
+      showSetup('instances', '暂时无法打开工作区。请重试或选择其他实例。');
+    }
+  });
+}
+
+async function continueWorkspace(target) {
+  const selection = workspace;
+  if (!selection) return showSetup();
+  const previousSetup = setup;
+  const profiles = await prepareWorkspace(target.webContents.session, selection);
+  if (target !== window || setup !== previousSetup) return;
+  if (selection.workspaceId && !profiles.some(item => item.id === selection.workspaceId)) {
+    candidate = { mode: selection.mode, origin: selection.origin, profiles };
+    return showSetup('workspaces', '上次选择的工作区已不可用，请重新选择。');
+  }
+  await showWorkspace(target, selection);
+}
+
+function connectionError(error, selection) {
+  const section = selection?.mode === 'remote' && error.code === 'WORKSPACE_LOGIN_REQUIRED' ? 'remote' : 'instances';
+  showSetup(section, error.message);
+}
+
+async function restoreWorkspace(target) {
+  const previousSetup = setup;
   try {
-    if (workspace.mode === 'local') token = await workspaceToken(workspace);
-    if (token) await login(window.webContents.session, workspace.origin, token);
-    await window.loadURL(workspace.origin);
-  } catch {
-    const message = workspace.mode === 'local' && workspace.local?.state === 'stopped'
-      ? '本机工作区已停止。可以在这里重新启动。' : '暂时无法打开工作区。请检查地址、令牌和服务状态后重试。';
-    if (reportError) throw new Error(message);
-    showSetup('workspace', message);
+    const { readWorkspaceSelection } = await desktopSettings();
+    const selection = await readWorkspaceSelection(profile);
+    if (target !== window) return;
+    workspace = selection;
+    if (setup === previousSetup) await continueWorkspace(target);
+  } catch (error) {
+    if (target === window && setup === previousSetup) connectionError(error, workspace);
   }
 }
 
-async function restoreWorkspace() {
-  try {
-    workspace = await workspaceCommand(profile, 'status');
-    if (workspace.mode === 'unselected') return showSetup('unpacking');
-    const local = workspace.local;
-    if (workspace.mode === 'local' && local?.owner === 'summon' && local.runIntent !== 'stopped'
-      && (local.state !== 'ready' || workspace.buildId !== workspace.installedBuildId)) return showSetup('unpacking');
-    if (workspace.mode === 'local') workspace = await workspaceCommand(profile, 'resume');
-    await showWorkspace();
-  } catch (error) { showSetup('workspace', error.message); }
+async function rememberWorkspace(target, { mode, origin }, workspaceId) {
+  const selection = { mode, origin, workspaceId };
+  const { saveWorkspaceSelection } = await desktopSettings();
+  await saveWorkspaceSelection(profile, selection);
+  if (target !== window) return;
+  workspace = selection;
+  await showWorkspace(target, selection);
 }
 
 function installSetupProtocol() {
@@ -126,7 +154,7 @@ function requestInstall() {
   if (update.status === 'downloaded') window.webContents.send('summon:request-install');
 }
 function createWindow() {
-  window = new BrowserWindow({
+  const target = window = new BrowserWindow({
     title: 'Summon Bot', width: 1280, height: 900, minWidth: 680, minHeight: 560,
     backgroundColor: '#fdfdfc', show: false, autoHideMenuBar: process.platform !== 'darwin',
     titleBarStyle: 'hidden',
@@ -134,22 +162,27 @@ function createWindow() {
     ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 16, y: 16 } } : {}),
     webPreferences: { preload: join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true },
   });
-  window.once('ready-to-show', () => window.show());
-  window.on('closed', () => { window = null; });
-  window.webContents.setWindowOpenHandler(({ url }) => {
+  target.once('ready-to-show', () => target.show());
+  target.on('closed', () => { if (target === window) window = null; });
+  target.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//.test(url)) shell.openExternal(url).catch(() => {});
     return { action: 'deny' };
   });
-  window.webContents.on('will-frame-navigate', event => {
-    if (event.isMainFrame ? !isWeb(event.url) : webOrigin(event.url) !== workspace.origin) event.preventDefault();
+  target.webContents.on('will-frame-navigate', event => {
+    if (event.isMainFrame ? !isWeb(event.url) : webOrigin(event.url) !== workspace?.origin) event.preventDefault();
   });
-  window.webContents.on('will-redirect', event => { if (!isWeb(event.url)) event.preventDefault(); });
-  window.webContents.session.setPermissionRequestHandler((_contents, permission, callback) => callback(permission === 'clipboard-sanitized-write'));
-  window.webContents.on('did-fail-load', (_event, code, _description, url, isMainFrame) => {
-    if (!isMainFrame || code === -3 || !isWeb(url)) return;
-    showSetup('workspace', '暂时无法连接工作区。可以重试或更改地址。');
+  target.webContents.on('will-redirect', event => { if (!isWeb(event.url)) event.preventDefault(); });
+  target.webContents.session.setPermissionRequestHandler((_contents, permission, callback) => callback(permission === 'clipboard-sanitized-write'));
+  target.webContents.on('did-fail-load', (_event, code, _description, url, isMainFrame) => {
+    if (target !== window || !isMainFrame || code === -3 || !isWeb(url)) return;
+    showSetup('instances', '暂时无法连接工作区。请重试或选择其他实例。');
   });
-  void restoreWorkspace();
+  target.webContents.on('did-navigate', (_event, url, status) => {
+    if (target !== window || !isWeb(url) || new URL(url).pathname !== '/' || status < 400) return;
+    if (status === 401 && workspace.mode === 'remote') showSetup('remote', '工作区登录已失效，请重新连接该实例。');
+    else showSetup('instances', '工作区页面暂不可用。请重试或选择其他实例。');
+  });
+  void restoreWorkspace(target);
 }
 autoUpdater.autoDownload = false;
 autoUpdater.autoInstallOnAppQuit = false;
@@ -162,48 +195,84 @@ autoUpdater.on('update-downloaded', info => setUpdate({ status: 'downloaded', ve
 autoUpdater.on('error', error => {
   if (!checking) setUpdate({ status: 'error', message: error.message });
 });
-ipcMain.handle('summon:desktop-info', event => { trusted(event); return { version: app.getVersion(), platform: process.platform, arch: process.arch, windowControlsOverlay: true, localWorkspace: workspace.mode === 'local', update }; });
+ipcMain.handle('summon:desktop-info', event => { trusted(event); return { version: app.getVersion(), platform: process.platform, arch: process.arch, windowControlsOverlay: true, localWorkspace: workspace?.mode === 'local', update }; });
 ipcMain.handle('summon:open-workspace-setup', (event, section) => {
   trusted(event);
-  showSetup(workspace.mode === 'local' && ['codex', 'cloudflare', 'tailscale'].includes(section) ? section : 'workspace');
+  if (!busy) showSetup(workspace?.mode === 'local' && ['cloudflare', 'tailscale'].includes(section) ? section : 'unpacking');
 });
-ipcMain.handle('summon:workspace-info', event => { trusted(event, true); return { ...setup, workspace }; });
+ipcMain.handle('summon:workspace-info', event => {
+  trusted(event, true);
+  return { ...setup, workspace, candidate, localAvailable: process.platform === 'win32' };
+});
 ipcMain.handle('summon:workspace-action', async (event, command, input = {}) => {
   trusted(event, true);
   if (busy) throw new Error('另一个设置操作正在进行。');
   busy = true;
+  const target = window;
   try {
-    if (command === 'continue') { await showWorkspace(undefined, true); return workspace; }
-    if (command === 'copy-access-token') {
-      clipboard.writeText(await workspaceToken(workspace));
-      return { copied: true };
+    if (command === 'continue') {
+      try { await continueWorkspace(target); }
+      catch (error) { if (target === window) connectionError(error, workspace); }
+      return;
     }
-    if (command === 'authorize') {
-      const url = await authorizationUrl(workspace, input.provider);
+    if (command === 'prepare-local' || command === 'prepare-remote' || command === 'prepare-current') {
+      const { formalOrigin, remoteWorkspaceOrigin } = await desktopSettings();
+      let selection = workspace;
+      if (command === 'prepare-local') {
+        if (process.platform !== 'win32') throw new Error('请通过 HTTPS 连接已有实例。');
+        selection = { mode: 'local', origin: formalOrigin };
+      } else if (command === 'prepare-remote') {
+        selection = { mode: 'remote', origin: remoteWorkspaceOrigin(input.address) };
+      }
+      if (!selection) throw new Error('请先选择一个实例。');
+      const token = command === 'prepare-remote' ? input.token : undefined;
+      let profiles;
+      try { profiles = await prepareWorkspace(target.webContents.session, selection, token); }
+      catch (error) {
+        if (command === 'prepare-remote' && !token && error.code === 'WORKSPACE_LOGIN_REQUIRED') {
+          throw new Error('请输入该实例的访问令牌。');
+        }
+        throw error;
+      }
+      if (target !== window) return;
+      return candidate = { mode: selection.mode, origin: selection.origin, profiles };
+    }
+    if (command === 'open-workspace' || command === 'create-workspace') {
+      const connection = candidate;
+      if (!connection) throw new Error('请先连接实例。');
+      if (command === 'open-workspace') {
+        const workspaceId = input.workspaceId ?? null;
+        if (workspaceId !== null && !connection.profiles.some(item => item.id === workspaceId)) throw new Error('请选择列表中的工作区。');
+        return await rememberWorkspace(target, connection, workspaceId);
+      }
+      const { reserveWorkspaceCreation } = await desktopSettings();
+      const session = target.webContents.session;
+      const id = await reserveWorkspaceCreation(profile, connection);
+      let created;
+      try { created = await workspaceProfiles(session, connection.origin, id); }
+      catch (error) {
+        if (error.code !== 'WORKSPACE_LOGIN_REQUIRED') throw error;
+        if (connection.mode === 'remote') {
+          if (target === window) connectionError(error, connection);
+          return;
+        }
+        await prepareWorkspace(session, connection);
+        created = await workspaceProfiles(session, connection.origin, id);
+      }
+      if (!connection.profiles.some(item => item.id === id)) connection.profiles.unshift(created);
+      if (target === window && target.webContents.getURL() === setupUrl) target.webContents.send('summon:workspace-progress', 'ready');
+      return await rememberWorkspace(target, connection, id);
+    }
+    if (command === 'access' || command === 'authorize') {
+      if (workspace?.mode !== 'local') throw new Error('请在部署机配置本机远程访问。');
+      if (command === 'access') {
+        return await localAccess(profile, { ...input, dataRoot: undefined });
+      }
+      const url = await authorizationUrl(input.provider);
       if (url) await shell.openExternal(url);
       return { opened: Boolean(url) };
     }
-    if (command === 'codex-status') return await workspaceCommand(profile, 'codex', { action: 'status' });
-    if (command === 'codex-consent') return await workspaceCommand(profile, 'codex', { action: input.enabled === true ? 'connect' : 'disconnect' });
-    if (['access', 'codex'].includes(command)) {
-      if (workspace.mode !== 'local') throw new Error('请在部署机配置本机能力。');
-      const { dataRoot, ...options } = input;
-      return await workspaceCommand(profile, command, options);
-    }
-    if (!['local', 'new', 'remote', 'start', 'resume', 'stop'].includes(command)) throw new Error('未知的工作区操作。');
-    try {
-      workspace = await workspaceCommand(profile, command, input, progress => {
-        if (!event.sender.isDestroyed() && event.sender.getURL() === setupUrl) {
-          event.sender.send('summon:workspace-progress', progress);
-        }
-      });
-    } catch (error) {
-      workspace = await workspaceCommand(profile, 'status').catch(() => workspace);
-      throw error;
-    }
-    if (command === 'stop') showSetup('workspace', '本机工作区已停止。');
-    else if (!['local', 'new', 'resume'].includes(command)) void showWorkspace(command === 'remote' ? input.token : undefined);
-    return workspace;
+    throw new Error('未知的工作区操作。');
   } finally { busy = false; }
 });
 ipcMain.handle('summon:check-update', event => { trusted(event); return checkForUpdates(); });
@@ -220,15 +289,7 @@ else {
     installSetupProtocol();
     createWindow();
     const clientMenu = { label: 'Summon Bot', submenu: [
-      { label: '切换工作区…', click: () => showSetup() },
-      { label: '停止本机工作区…', click: async () => {
-        if (!window || workspace.mode !== 'local' || workspace.local?.owner !== 'summon') return;
-        const { response } = await dialog.showMessageBox(window, { type: 'question', message: '停止本机工作区？', buttons: ['停止', '取消'], cancelId: 1 });
-        if (response === 0) {
-          try { workspace = await workspaceCommand(profile, 'stop'); showSetup('workspace', '本机工作区已停止。'); }
-          catch (error) { showSetup('workspace', error.message); }
-        }
-      } },
+      { label: '切换工作区…', click: () => { if (!busy) showSetup(); } },
       { type: 'separator' },
       { label: '检查更新', click: () => window?.webContents.send('summon:open-updates') },
       { label: '重启并更新', click: requestInstall }, { type: 'separator' }, { role: 'quit' },

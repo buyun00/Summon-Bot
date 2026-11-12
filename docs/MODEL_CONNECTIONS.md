@@ -1,10 +1,10 @@
 # 模型与引擎
 
-聊天由 Pi 驱动；执行工作沿用 Codex 桌面连接器。二者分别配置、分别展示账号额度。
+聊天和工作都由 Pi 驱动。聊天模型连接提供 CHAT 的模型与额度。Pi 使用该模型推进 WORK，并按具体工作调用已接入的工具。工具沿用自身的登录方式或正式配置中的凭据引用，展示来源由维护 Bot 登记。[能力目录与共享 Skill](CAPABILITY_CATALOG.md)
 
 网页从头像的设置菜单进入“模型与引擎”。聊天连接支持 Codex 订阅、Grok 订阅及通用 API；API 可使用 OpenAI Chat Completions、Responses 或 Anthropic Messages 协议，填写模型 ID 或读取供应商目录。Codex 可导入正式服务器本机已有的登录，也可使用设备码授权；手机的“导入服务器上的 Codex 登录”指向同一台正式服务器。Grok 使用设备码授权，能使用的模型和权限由账号决定。
 
-模型连接、凭据与额度缓存保存在正式数据根的私有配置中。网页和原生客户端只接收连接资料和脱敏的额度结果，不返回 API Key 或订阅令牌。切换聊天连接影响新发起的 Pi 请求，不改变正在使用的工作执行器。已存在的对话和工作数据继续保留。
+模型连接、凭据与额度缓存保存在正式数据根的私有配置中。网页和原生客户端接收连接资料和脱敏的额度结果。切换聊天连接影响新发起的 Pi 请求，正在执行的原工作沿其已记录的工具与会话继续。
 
 底栏上方为工作和知识，下面为用户、CHAT 和 WORK 三栏。头像打开设置菜单。点击额度打开详情卡片，再从卡片进入管理页。菜单和额度卡片支持点击外部或按 Escape 关闭。
 
@@ -13,6 +13,12 @@
 - 同时有每周与 5 小时窗口时：外圈显示周额度，四点按四档显示 5 小时剩余额度。
 - 未返回的数值显示未知；读取失败时保留并标注上次结果。附加点数按 credits 展示，不转换成货币。
 
-Android Compose 与 iOS SwiftUI 使用同一后端接口，支持连接编辑、授权、目录、切换、移除和额度详情。模型品牌图标从网页的本地图标目录生成，未匹配的使用默认 AI 图标；更新命令为 `node scripts/build/model-icons.mjs`。原生资源内保留图标的 MIT 许可。
+Android Compose 与 iOS SwiftUI 使用同一后端接口，支持连接编辑、授权、目录、切换和移除。模型品牌图标从网页的本地图标目录生成，未匹配的使用默认 AI 图标。更新命令为 `node scripts/build/model-icons.mjs`。原生资源内保留图标的 MIT 许可。
 
-客户端打包发布遵循 [CLIENT_RELEASES.md](CLIENT_RELEASES.md)。Windows 主机发布网页、Windows 和 Android；macOS/iOS 仍需 Mac 与对应签名身份构建。
+Windows 主机更新正式网页和后端，并在本机发布 Windows 安装包。GitHub Actions 构建发布远端 Windows、macOS 和 Android 发行物，并上传 iOS 至 TestFlight。[客户端发行与更新](CLIENT_RELEASES.md)
+
+## 工具状态与额度来源
+
+`GET /api/model-settings/usage` 返回当前聊天连接、Pi 执行器信息与已登记的工具展示来源。`GET /api/works/:id` 按原工作实际绑定的工具返回相关来源。来源保留观测时间、单位、状态及原始观察引用，可提交多个额度窗口或不同类型的指标。失效和读取失败会标记在对应来源上，有上次快照时可继续读取。
+
+`POST /api/model-settings/usage/:resourceId/:sourceId/actions` 接收已登记动作的 `id`。当前的只读方法可直接刷新，需处理登录或解释异常时由负责 Bot 接手。刷新操作跟随来源和其当前版本。

@@ -1,9 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { acceptedWorkTask, taskSource, workExecution } from '../context/sources.mjs';
 import { modelText, boundedNumber, durationSeconds } from '../context/model-input.mjs';
-import { isCliExecutor } from '../capabilities/executor-connections.mjs';
 import { directoryProject } from '../context/project-scope.mjs';
-import { externalExecution } from '../context/execution-evidence.mjs';
+import { externalExecution, unsettledNativeBinding } from '../context/execution-evidence.mjs';
 import { currentProductionStage, productionStage, requireProductionGrant } from '../capabilities/request-routing.mjs';
 import { OWNER_DELIVERY, ROOM_DUTY_PLANS, matchesContributionGrant } from '../context/duty-actions.mjs';
 
@@ -13,7 +12,7 @@ const stopped = new Set(['paused', 'cancelled']);
 const stopOutcomes = new Set(['local-stopped', 'interrupted', 'completed', 'failed', 'cancelled']);
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), { status }); };
 const productionTarget = work => ({ projectId: work.project?.id ?? null, target: JSON.stringify(work.executor?.target || null),
-  bindingId: work.bindings?.findLast(item => item.type === 'codex-desktop')?.id });
+  bindingId: work.bindings?.findLast(item => item.type === 'native-recovery')?.id });
 
 export function workFormReceipt(store, id, request) {
   const submission = store?.getRecord('work-form-submissions', id);
@@ -31,8 +30,8 @@ export function workFormReceipt(store, id, request) {
 
 /** S3 is state and pointers only. Knowledge正文 lives in Markdown, never here. */
 export class WorkService {
-  constructor({ store, botId, accept, schedule, cancel, selectModel, selectExecutor, clean = value => value }) {
-    Object.assign(this, { store, botId, accept, schedule, cancel, selectModel, selectExecutor, clean }); this.dispatches = new Map();
+  constructor({ store, botId, accept, schedule, cancel, selectModel, clean = value => value }) {
+    Object.assign(this, { store, botId, accept, schedule, cancel, selectModel, clean }); this.dispatches = new Map();
   }
   get(id) { return this.store.getRecord('works', id); }
   list({ status, query, limit = 100 } = {}) {
@@ -52,10 +51,8 @@ export class WorkService {
       if (sourceKey) fail('This work ID belongs to a different action', 409);
       return previous;
     }
-    const executor = input.executor || this.selectExecutor?.() || { kind: 'pi' };
-    if (!['pi', 'codex'].includes(executor.kind) && !isCliExecutor(executor.kind)) fail('Unknown work executor');
-    if (executor.kind === 'codex' && !['project', 'projectless', 'directory'].includes(executor.target?.type)) fail('Codex requires an authorized directory or selected project target');
-    if (isCliExecutor(executor.kind) && executor.target) fail('这个工作引擎使用 Bot 的本机工作目录。');
+    const executor = input.executor || { kind: 'pi' };
+    if (executor.kind !== 'pi') fail('Pi owns work execution. Select native tools from the catalog in the work.');
     const project = executor.target?.type === 'directory' ? directoryProject(executor.target.cwd) : input.project || null;
     const eventId = `${id}:${input.operationId || 'initial'}`;
     const grant = input.productionAuthorization;
@@ -110,7 +107,7 @@ export class WorkService {
     return receipt;
   }
   source(task) { const { input, ...source } = taskSource(task, this.store); return source; }
-  executor(work) { return work.bindings?.some(binding => binding.type === 'codex-desktop') ? { ...work.executor, kind: 'codex' } : work.executor || { kind: 'pi' }; }
+  executor(work) { return work.executor || { kind: 'pi' }; }
   execution(task = {}) { return workExecution(task, this.store); }
   authorization(task, actionId, production) {
     if (task.workId) return this.execution(task).authorization;
@@ -128,6 +125,8 @@ export class WorkService {
       const previous = this.get(id); if (!previous) fail('Unknown work', 404);
       if (input.expectedRevision !== undefined && input.expectedRevision !== previous.revision) fail('Work changed; read current state', 409);
       if (input.status !== undefined && !statuses.has(input.status)) fail('Invalid work status');
+      if (input.status === 'completed' && previous.status !== 'completed' && previous.bindings?.some(unsettledNativeBinding))
+        fail('The work has an unsettled native operation. Read its actual result before completing the work.', 409);
       if (!control && stopped.has(previous.status) && input.status !== undefined && input.status !== previous.status)
         fail('工作已停止，只能由用户明确继续。', 409);
       const patch = Object.fromEntries(Object.entries(input).filter(([key]) => ['goal', 'requirements', 'progress', 'checkpoint', 'status', 'waiting', 'bindings', 'notifications', 'sources', 'responsibility', 'lastTaskId', 'lastError', 'owner', 'notificationCursor', 'executionOutcome', 'executor', 'supervisor'].includes(key)));
@@ -174,9 +173,9 @@ export class WorkService {
         fail('原步骤已完成或阶段已变化，未登记职责协作。', 409);
       const authorization = this.authorization(task, key, grant);
       if (resume) this.requireResume(work, authorization?.source?.receivedAt || null);
-      const binding = work.bindings?.findLast(item => item.type === 'codex-desktop');
+      const binding = work.bindings?.findLast(item => ['native-tool', 'native-recovery'].includes(item.type));
       if (this.store.listUnfinishedTasks().some(item => item.workId === id && ['accepted', 'queued', 'running'].includes(item.status)) ||
-          !resume && binding?.operationId && !['completed', 'failed', 'cancelled', 'interrupted'].includes(externalExecution(work, binding.operationId)?.status))
+          !resume && binding?.operationId && !['completed', 'failed', 'cancelled', 'interrupted', 'stopped', 'historical'].includes(externalExecution(work, binding.operationId)?.status))
         fail('原步骤仍在执行或状态未确定，当前没有替换它的等待状态。', 409);
       const previous = work.waiting?.kind === 'room-duty-contribution' && this.store.getRecord('work-events', work.waiting.operationId);
       if (previous?.status === 'pending') {
@@ -229,7 +228,7 @@ export class WorkService {
       if (stopped.has(work.status) && !input.metadata?.resume) fail('工作已停止，未派发此步骤。', 409);
     }
     if (input.metadata?.resume && stopped.has(work.status)) this.requireResume(work, authorization?.source?.receivedAt || null);
-    if (!work.executor) this.update(id, { executor: this.executor(work).kind === 'codex' ? { kind: 'codex' } : { kind: 'pi', ...this.selectModel?.() } });
+    if (!work.executor) this.update(id, { executor: { kind: 'pi', ...this.selectModel?.() } });
     if (task.id && !task.workId && input.kind === 'request') {
       const source = this.source(task);
       if (!work.sources.some(item => item.taskId === source.taskId)) this.update(id, { sources: [...work.sources, source] });
@@ -269,7 +268,9 @@ export class WorkService {
   }
   async wait(id, input = {}, task = {}, verifyFollowUp) {
     const work = this.get(id); if (!work) fail('Unknown work', 404);
-    const bound = work.bindings?.some(binding => binding.type === 'codex-desktop') || work.waiting?.kind === 'external';
+    if (work.waiting?.kind === 'tool-maintenance' && !input.taskId && !input.until && !input.dependencyWorkId)
+      return { accepted: true, workId: id, status: 'waiting', maintenanceId: work.waiting.maintenanceId };
+    const bound = work.bindings?.some(binding => binding.type === 'native-tool') || work.waiting?.kind === 'external';
     const events = this.store.listRecords('work-events').filter(event => event.requestTaskId === task.id && event.receipt?.accepted);
     if (!input.unresolvedTaskId && !input.taskId && !input.until && !input.dependencyWorkId) {
       const dependencies = [...new Set(events.filter(event => event.workId !== id).map(event => event.workId))];
@@ -286,7 +287,7 @@ export class WorkService {
       else if (candidates.length > 1) input = { ...input, unresolvedTaskId: 'multiple-current-executions' };
       else {
         const dependency = this.get(input.dependencyWorkId);
-        const operationId = dependency?.waiting?.operationId || dependency?.bindings?.find(binding => binding.type === 'codex-desktop')?.operationId;
+        const operationId = dependency?.waiting?.operationId || dependency?.bindings?.find(binding => binding.type === 'native-tool')?.operationId;
         const event = operationId && this.store.getRecord('work-events', operationId);
         if (event?.receipt?.taskId) input = { ...input, taskId: event.receipt.taskId };
         else if (operationId) input = { ...input, dependencyEventId: operationId };
@@ -356,11 +357,11 @@ export class WorkService {
       if (holding && (previous.status === status || previous.status === 'cancelled')) return previous;
       if (!holding && receivedAt && previous.externalStop && receivedAt <= previous.externalStop.requestedAt)
         fail('该停止请求早于上一次停止或恢复，请使用新的用户请求。', 409);
-      const binding = previous.bindings?.find(item => item.type === 'codex-desktop');
+      const binding = previous.bindings?.findLast(item => item.type === 'native-tool' && ['queued', 'starting', 'running', 'awaiting-input', 'stopping'].includes(item.status));
       const contribution = previous.waiting?.kind === 'room-duty-contribution' && this.store.getRecord('work-events', previous.waiting.operationId);
       const awaitingContribution = contribution?.status === 'pending';
       const externalStop = holding || { id: randomUUID(), fromRevision: revision, requestedAt: now(),
-        status: !awaitingContribution && (binding || previous.executor?.kind === 'codex' && previous.waiting?.kind !== 'room-duty-contribution') ? 'pending' : 'local-stopped',
+        status: !awaitingContribution && binding ? 'pending' : 'local-stopped',
         bindingId: binding?.id, threadId: binding?.externalThreadId, hostId: binding?.hostId };
       const saved = this.update(id, { status, externalStop, controlRevision: revision + 1 }, { control: true });
       if (status === 'cancelled' && awaitingContribution)
@@ -422,27 +423,10 @@ export class WorkService {
       const queued = tasks.filter(task => task.status === 'accepted' && !task.cancelRequested);
       if (queued.length > 1) fail('有多项待处理步骤。请在来源会话明确要继续哪一步。', 409);
       const last = work.lastTaskId && this.store.getTask(work.lastTaskId);
-      const binding = work.bindings?.findLast(item => item.type === 'codex-desktop');
-      let originalId, expectedTurn;
-      if (binding?.externalThreadId) {
-        const current = binding.operations?.find(item => item.operationId === binding.operationId);
-        const operationId = current?.action === 'interrupt' ? binding.executionOperationId : binding.operationId;
-        const operation = binding.operations?.find(item => item.operationId === operationId);
-        if (!['interrupted', 'cancelled', 'failed'].includes(stop?.status) || stop.bindingId !== binding.id ||
-          stop.threadId !== binding.externalThreadId || !stop.turnId || stop.turnId !== binding.turnId ||
-          !operationId || operation?.status !== 'received' || operation.threadId !== stop.threadId || operation.verificationOnly ||
-          binding.pendingClientThreadId || binding.operations.some(item => !item.appliedAt))
-          fail('无法确认当前绑定的原步骤已中断或失败。请在来源会话查看原回合。', 409);
-        const sent = this.store.getTool(operationId);
-        const owner = sent?.name === 'codex_send' && sent.workId === id && !sent.executionRejected && !sent.executionReused && this.store.getTask(sent.taskId);
-        originalId = owner ? this.execution(owner).executionEventId : operationId;
-        expectedTurn = { stopId: stop.id, bindingId: binding.id, threadId: stop.threadId,
-          hostId: binding.hostId || 'local', turnId: stop.turnId, status: stop.status };
-      } else {
-        if (this.executor(work).kind === 'codex' && (binding?.pendingClientThreadId || stop?.status !== 'local-stopped' && binding?.operationId))
-          fail('原执行操作尚未确认，请先核对它的结果。', 409);
-        if (last?.workId === id && ['cancelled', 'interrupted', 'failed'].includes(last.status)) originalId = this.execution(last).executionEventId;
-      }
+      const binding = work.bindings?.findLast(item => item.type === 'native-tool' || item.type === 'native-recovery');
+      const original = binding?.taskId ? this.store.getTask(binding.taskId) : last;
+      const originalId = original?.workId === id && (binding || ['cancelled', 'interrupted', 'failed'].includes(original.status))
+        ? this.execution(original).executionEventId : null;
       const ready = queued[0];
       const eventId = ready ? ready.metadata?.workEventId : originalId;
       const event = eventId && this.store.getRecord('work-events', eventId);
@@ -450,24 +434,24 @@ export class WorkService {
       const originalTask = acceptedWorkTask(event, this.store);
       const savedSource = source && this.source(source);
       if (event?.workId !== id || event.kind !== 'request' || !originalTask ||
-        event.content === undefined || !savedSource || !auth.source || source.cancelRequested ||
+        event.content === undefined || !savedSource || !auth.source || source.cancelRequested && source.workId !== id ||
         ['taskId', 'messageId', 'actor', 'roomId', 'replyTo'].some(field => auth.source[field] !== savedSource[field]) ||
         ready && (originalTask.id !== ready.id || event.transport) ||
-        !ready && !expectedTurn && originalTask.status === 'completed' && last?.id === originalTask.id)
+        !ready && !binding && originalTask.status === 'completed' && last?.id === originalTask.id)
         fail('没有可继续的原始工作步骤，请在来源会话明确提出继续要求。', 409);
       if (auth.production) {
         if (auth.production.bindingId && auth.production.bindingId !== binding?.id) fail('原步骤的执行绑定已变化。', 409);
         requireProductionGrant(source, this.store, auth.production, { ...productionTarget(work), workId: id,
           bindingId: auth.production.bindingId, actionId: auth.actionId });
       }
-      const cardResume = { originalEventId: event.id, controlRevision: revision, expectedTurn };
+      const cardResume = { originalEventId: event.id, controlRevision: revision, operationId: binding?.operationId, nativeSessionId: binding?.nativeSessionId };
       let task;
       if (ready) {
         this.store.putRecord('work-events', { ...event, cardResume });
         task = ready;
       } else {
         const content = { type: 'work_continuation', acceptedStep: event.content, continuation: {
-          instruction: '继续这个已授权的原步骤。核对原回合和已保留的进展，只完成剩余事项。保留原有要求、范围和绑定。查询未知结果，避免重复已完成的操作。' } };
+          instruction: '继续这个已授权的原步骤。核对原回合和已保留的进展，只完成剩余事项。保留原有要求、范围和绑定。先读 work_get 和 catalog_native_status 查已记录的会话与操作。只有实际原生会话支持时，选当前版本的续接方法；核对未知效果后才继续写入。' } };
         this.store.putRecord('work-events', { id: key, workId: id, kind: 'request', content, authorization: auth,
           requestTaskId: auth.requestTaskId, cardResume, status: 'pending', createdAt: now() });
         const accepted = this.accept({ id: `work:${key}`, to: this.botId, kind: 'request', workId: id, content,

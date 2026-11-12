@@ -1,6 +1,14 @@
 # 能力目录与共享 Skill
 
-正式网页“设置与应用 → 能力目录”管理 MCP、普通 HTTP API 和 Skill。目录使用现有能力网关和注册数据库，执行配置与方法正文分开；不启动第二个平台。每个 MCP、HTTP API 和共享 Skill 在保存时自动创建并绑定一个专属维护 Bot，无需选择已有成员。维护 Bot 只负责这一条能力，可允许其它 Bot 直接使用；创建能力的 Bot 保留使用权。责任关系不代表持续业务授权。
+正式网页“设置与应用 → 能力目录”使用现有能力网关和注册数据库。目录收录本机 CLI、MCP、普通 HTTP API 和共享 Skill。登记工具时创建或复用其专属维护 Bot，维护者处理该工具的版本、方法和故障。其他 Bot 按目录条目的使用范围和当前工作的授权调用。
+
+## 本机 CLI
+
+聊天模型连接后，新手引导让 Pi 在部署主机发起工具发现。`catalog_native_discover` 读取 PATH、安装位置和当前项目入口。Pi 用 `catalog_native_enroll` 登记适用的候选，并复用已有条目和维护 Bot。用户后续介绍工具时也可用这两个入口接入。发现记录保留主机、实际入口和来源，准备状态根据真实观察和已登记的方法更新。
+
+维护 Bot 用 `catalog_native_probe` 读取版本或帮助，用 `catalog_native_method_write` 保存带来源和适用版本的方法。CLI 方法可以保存参数、输入或 Node 脚本。脚本可用 `summon-jsonl` 把会话、进度及输入请求关联到原操作。HTTP API 和 MCP 先按连接方式登记、探测，再将已发现的接口绑定到方法。
+
+Pi 在原 WORK 中使用 `catalog_native_run`，在获准的项目目录运行当前方法并记录稳定的 `operationId`。用 `catalog_native_status` 按游标查询 stdout、stderr 或事件，使用 `catalog_native_input` 和 `catalog_native_stop` 对应原操作。工具提供实际会话标识时，可按已确认的原生会话续接。结果未知时由维护者查询实际效果或原会话，再用 `catalog_native_reconcile` 记录结论。
 
 ## 连接
 
@@ -60,5 +68,11 @@ HTTP API 可包含多个工具，直接使用 GET、POST、PUT、PATCH、DELETE 
 普通 Bot 的角色模板和正式安装配置包含 `catalog_search/get/probe/register/update/call/reconcile/delegate/skill_write/skill_propose`。每个目录项仍单独检查使用范围和负责人。简单工具可直接调用，需业务判断时才委托负责 Bot，结果通过现有工作/会话路由返回。
 
 Web 使用 `/api/catalog` 的增删改查、`/:id/probe`、`/:id/resource` 等接口。Bot 使用已有独立能力令牌调用 `/tools/catalog_*`。HTTP 探测仅检查配置与可加载性，不冒充一次真实业务请求；MCP 探测验证传输握手和工具发现。调用记录保持实际成功、失败或未知状态。
+
+## 展示来源
+
+维护 Bot 用 `catalog_native_source_register` 在实际工具资源上登记展示来源、账号引用与可执行动作，再用 `catalog_native_publish` 发布带原始观察引用、修订和观测时间的结果。指标支持额度、金额、数值、状态、进度、文本、表格和文件引用。额度窗口保留单位、范围、方向与重置时间。旧修订结果留在历史中，当前快照按对应资源和来源的修订更新。
+
+客户端通过 `/api/model-settings/usage` 读取来源，`/api/works/:id` 根据实际工具绑定返回相关来源。已登记的非交互只读方法可直接刷新，其他动作交给维护 Bot。并发刷新复用同一请求，失败时保留对应状态与已有快照。
 
 完整更新继续使用 `docs/OPERATIONS.md` 中唯一正式安装流程；有效聊天、Bot、工作、记忆和用户文件原地保留。

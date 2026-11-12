@@ -53,14 +53,6 @@
     "write_file",
     "edit_file",
     "run_command",
-    "publish_file",
-    "codex_projects",
-    "codex_threads",
-    "codex_create",
-    "codex_attach",
-    "codex_status",
-    "codex_read",
-    "codex_send",
-    "codex_interrupt"
+    "publish_file"
   ]
 }

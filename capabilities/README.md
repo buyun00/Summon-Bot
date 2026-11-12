@@ -1,6 +1,6 @@
 # External capabilities
 
-`startGateway({dataRoot,releaseRoot,defaultCwd,model,token,host,port})` starts an authenticated loopback service. It returns `url`, `token`, `manager`, `chatroom`, `knowledge`, `codex`, `memories`, `state`, `handleApi`, and `close`. It never creates an Agent inside the capability process. Bot processes use the independent `@summon/bot` package.
+`startGateway({dataRoot,releaseRoot,defaultCwd,model,token,host,port})` starts an authenticated loopback service. It returns `url`, `token`, `manager`, `chatroom`, `knowledge`, `memories`, `state`, `handleApi`, and `close`. It never creates an Agent inside the capability process. Bot processes use the independent `@summon/bot` package.
 
 The Web backend forwards approved `/api/*` calls with its controller token. Stateful services each own `dataRoot/capabilities/<name>/state.sqlite`; the shared `RecordStore` supplies storage mechanics only. Public attachment content belongs to chatroom. Private transcripts, memory, tasks and tool artifacts belong to `dataRoot/bots/<botId>`. Capability tokens are not included in public Bot projections.
 

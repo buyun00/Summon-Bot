@@ -190,7 +190,7 @@ export async function loadConfiguredTools(definitions = [], { botId, dataDir, wo
   const lifetime = new AbortController();
   const signals = (...values) => AbortSignal.any([lifetime.signal, signal, ...values].filter(Boolean));
   const closers = [], tools = [], names = new Set();
-  let closing;
+  let closing, serverInfo;
   const close = () => closing ||= (async () => {
     lifetime.abort(new Error('Configured capabilities are closed'));
     await Promise.allSettled(closers.reverse().map(dispose => Promise.resolve().then(dispose)));
@@ -214,6 +214,7 @@ export async function loadConfiguredTools(definitions = [], { botId, dataDir, wo
       } else if (definition.type === 'mcp') {
         loaded = await connectMcpTools(definition, { botId, workspace, signal: signals(), redact, ...resolved });
       } else throw new TypeError('Capability type must be http, module or mcp');
+      if (loaded?.serverInfo) serverInfo = sanitizeValue(loaded.serverInfo, redact);
       if (loaded && typeof loaded.close === 'function') closers.push(() => loaded.close());
       signal?.throwIfAborted();
       if (!Array.isArray(loaded?.tools)) throw new TypeError('Capability factory must return tools');
@@ -247,6 +248,6 @@ export async function loadConfiguredTools(definitions = [], { botId, dataDir, wo
         });
       }
     }
-    return { tools, close };
+    return { tools, close, serverInfo };
   } catch (error) { await close(); throw sanitizedError(error, redact); }
 }

@@ -90,8 +90,8 @@ export class TeamService {
         const sameRoom = work.sources.every(source => source.roomId === room.id);
         const sourceMessageIds = [...new Set(work.sources.filter(roomUserSource).map(source => source.replyTo))].slice(-6);
         const operations = accepted.filter(event => event.workId === work.id).slice(-2);
-        const native = sameRoom && work.bindings?.some(binding => binding.type === 'codex-desktop') &&
-          externalExecution(work, operations.at(-1)?.id);
+        const native = sameRoom && work.bindings?.some(binding => ['native-tool','native-recovery','native-api'].includes(binding.type)) &&
+          externalExecution(work);
         const acceptedScope = operations.map(event => ({
           operationId: event.id, messageId: event.authorization.source.replyTo, stage: event.authorization.production?.stage,
           scope: report(event.authorization.production?.scope, 1000),
@@ -344,29 +344,17 @@ export class TeamService {
     const works = (await this.works(room, botId)).filter(work => (activeWork(work) || operation.stoppingWorkIds?.includes(work.id)) && (!workId || work.id === workId));
     if (operation.status === 'waiting' && works.some(work => operation.stoppingWorkIds?.includes(work.id) && work.status !== 'paused')) fail('Work resumed or changed during handoff; discuss the new state before pausing it again', 409);
     operation.stoppingWorkIds = [...new Set([...(operation.stoppingWorkIds || []), ...works.map(work => work.id)])];
-    operation.stoppingTurns ||= {};
-    this.store.save('team-operations', { id: operation.id, stoppingWorkIds: operation.stoppingWorkIds, stoppingTurns: operation.stoppingTurns });
+    this.store.save('team-operations', { id: operation.id, stoppingWorkIds: operation.stoppingWorkIds });
     const jobs = this.chatroom.jobs(room.id).filter(job => job.botId === botId && !terminal.has(job.status) && (!workId || job.workId === workId));
     const paused = await this.manager.pauseProject(botId, { roomId: room.id, workIds: operation.stoppingWorkIds, taskIds: jobs.map(job => job.taskId).filter(Boolean), messageIds: jobs.map(job => job.id) });
     const results = [...paused.tasks];
     for (const work of works) {
-      const external = [];
-      for (const binding of work.bindings || []) if (binding.type === 'codex-desktop') {
-        try {
-          const observed = await this.invoke('codex', 'read', [binding.id, {}]);
-          const turn = observed.observed?.currentTurn;
-          if (turn?.id && !observed.observed.stale && !terminal.has(turn.status)) {
-            const expected = operation.stoppingTurns[binding.id];
-            if (expected && expected !== turn.id) { external.push({ bindingId: binding.id, status: 'changed_turn', expectedTurnId: expected, currentTurnId: turn.id }); continue; }
-            operation.stoppingTurns[binding.id] = turn.id;
-            this.store.save('team-operations', { id: operation.id, stoppingTurns: operation.stoppingTurns });
-            await this.invoke('codex', 'interrupt', [binding.id, { operationId: `team:${operation.id}:${work.id}`, expectedTurnId: turn.id }]);
-            const after = await this.invoke('codex', 'read', [binding.id, {}]);
-            external.push({ bindingId: binding.id, turnId: turn.id, status: after.observed?.currentTurn?.id === turn.id && terminal.has(after.observed.currentTurn.status) ? after.observed.currentTurn.status : 'interrupt_requested' });
-          } else external.push({ bindingId: binding.id, status: observed.work?.status || 'unknown' });
-        } catch (error) { external.push({ bindingId: binding.id, status: 'unknown', error: error.message }); }
-      }
-      results.push({ workId: work.id, status: 'paused', external });
+      const saved = await this.manager.readState(botId, db => db?.getRecord('works', work.id));
+      const external = (saved?.bindings || []).filter(binding => ['native-tool', 'native-recovery'].includes(binding.type)).map(binding => ({
+        bindingId: binding.id, operationId: binding.operationId, nativeSessionId: binding.nativeSessionId,
+        status: ['stopped', 'superseded', 'historical', 'unavailable', 'resumable'].includes(binding.status) ? 'interrupted' : binding.status,
+      }));
+      results.push({ workId: work.id, status: saved?.status || 'unknown', external });
     }
     for (const job of jobs.filter(job => !job.taskId)) {
       const receipt = await this.manager.readState(botId, db => db?.listMessages().find(message => message.sourceMessageId === job.id));
@@ -477,7 +465,7 @@ export class TeamService {
         if (plannedDuty && !activeDuties(room, botId).some(duty => duty.dutyKey === dutyKey && duty.operationId === operationId))
           room = placeDuty(null, responsibility, 'provisioning');
         const prompt = required(input.prompt, 'prompt', 16000);
-        await this.manager.create({ id: botId, name: required(input.name, 'name', 100), roleId: input.roleId || 'default', prompt,
+        await this.manager.create({ id: botId, workspaceProfileId: room.workspaceProfileId, name: required(input.name, 'name', 100), roleId: input.roleId || 'default', prompt,
           ...(plannedDuty ? { role: row.name, expertise: row.subject + '；' + row.boundary } : { cwd: input.cwd }),
           lifecycle: { kind: 'temporary', state: 'active', originRoomId: room.id, createdBy: actor, reason } },
         plannedDuty ? { roomId: room.id, dutyKey } : undefined);
@@ -534,10 +522,10 @@ export class TeamService {
         if (bot.lifecycle?.kind !== 'temporary' || bot.presetId || bot.maintenanceFor) fail('Retirement applies to temporary project members');
         if (this.store.list('rooms').some(other => other.id !== room.id && other.kind === 'group' && other.members.includes(botId))) fail('Member still belongs to another team', 409);
         if (await this.manager.readState(botId, db => (db?.listRecords('works') || []).some(activeWork))) fail('Member has unfinished work outside this room', 409);
-        for (const work of await this.works(room, botId)) for (const binding of work.bindings || []) if (binding.type === 'codex-desktop') {
-          const observed = await this.invoke('codex', 'read', [binding.id, {}]);
-          if (!terminal.has(observed.work?.status)) fail('External work is still active or unknown; retain this member until reconciled', 409);
-        }
+        for (const work of await this.works(room, botId)) if (work.bindings?.some(binding =>
+          ['native-tool', 'native-recovery'].includes(binding.type) && !terminal.has(binding.status) &&
+          !['stopped', 'superseded', 'historical', 'unavailable', 'resumable'].includes(binding.status)))
+          fail('An original native operation is still active or unknown', 409);
         await this.manager.update(botId, { status: 'paused', lifecycle: { ...bot.lifecycle, state: 'dormant', retiredAt: now(), reason } });
         await this.manager.stop(botId);
       }

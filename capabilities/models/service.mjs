@@ -4,10 +4,6 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { connectionPath, readConnectionCatalog, saveModelJson, modelConnection, connectionModel, connectionRuntime,
   ModelCredentialStore, localCodexAuthPath, localGrokAuthPath, localGrokLogin, grokProxyHeaders, codexCredential, decodeModelToken, modelChoices, modelError } from '../../bot/src/agent/connections.mjs';
-import { DesktopCodex } from '../codex/desktop.mjs';
-import { cliExecutorStates, desktopExecutorState, isCliExecutor } from '../../bot/src/capabilities/executor-connections.mjs';
-import { confirmWorkCli, readCodexCliRateLimits } from '../../bot/src/runtime/cli-work-engine.mjs';
-import { ensureCodexConnector, stopCodexConnector } from '../../scripts/installation/auxiliaries.mjs';
 
 const number = value => value !== '' && value !== null && value !== undefined && Number.isFinite(Number(value)) ? Number(value) : null;
 const clamp = value => Math.min(100, Math.max(0, value));
@@ -17,16 +13,17 @@ const at = (value, path) => String(path || '').split('.').filter(Boolean).reduce
 const windowLabel = minutes => minutes === 10080 ? '每周' : minutes === 300 ? '每 5 小时' : minutes === 1440 ? '每日' : minutes ? `${minutes} 分钟` : '订阅额度';
 const amount = (value, currency) => number(value) === null ? null : { amount: number(value), currency };
 const requireEntry = (catalog, id) => { const entry = catalog.connections.find(item => item.id === id); if (!entry) throw new Error('找不到这个模型连接'); return entry; };
-const quotaExecutors = ['codex-cli', 'codex-desktop'];
 
 /** Model credentials and account usage belong to the existing host, outside Bot conversation history. */
 export class ModelConnections {
-  constructor({ dataRoot, model, emit = () => {} }) {
-    this.dataRoot = dataRoot; this.initialModel = model; this.emit = emit; this.path = connectionPath(dataRoot);
+  constructor({ dataRoot, model, profileId, emit = () => {} }) {
+    this.dataRoot = dataRoot; this.profileId = profileId; this.initialModel = model; this.emit = emit;
+    this.path = profileId ? join(dataRoot, 'config', 'workspaces', profileId, 'model-connections.json') : connectionPath(dataRoot);
     this.credentials = new ModelCredentialStore(this.path); this.logins = new Map(); this.usage = {}; this.pendingUsage = new Map(); this.writeChain = Promise.resolve();
-    this.usagePath = join(dataRoot, 'config', 'model-usage.json');
+    this.usagePath = profileId ? join(dataRoot, 'config', 'workspaces', profileId, 'model-usage.json') : join(dataRoot, 'config', 'model-usage.json');
   }
   async initialize() {
+    if (!existsSync(this.path) && this.profileId) await saveModelJson(this.path, { schemaVersion: 1, activeId: null, connections: [] });
     if (!existsSync(this.path)) {
       const original = this.initialModel || {};
       await saveModelJson(this.path, { schemaVersion: 1, activeId: 'api-deepseek', environmentFile: join(this.dataRoot, 'config', 'runtime.env'),
@@ -36,11 +33,8 @@ export class ModelConnections {
       if (original.apiKey) await this.credentials.modify('api-deepseek', async () => ({ type: 'api_key', key: original.apiKey }));
     }
     try { this.usage = JSON.parse(await readFile(this.usagePath, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    if (!desktopExecutorState({ dataRoot: this.dataRoot }).enabled && this.usage['codex-desktop']) {
-      delete this.usage['codex-desktop']; await saveModelJson(this.usagePath, this.usage);
-    }
     const deploymentPath = join(this.dataRoot, 'config', 'deployment.json');
-    if (existsSync(deploymentPath)) {
+    if (!this.profileId && existsSync(deploymentPath)) {
       const deployment = JSON.parse(await readFile(deploymentPath, 'utf8'));
       if (deployment.model?.connectionStore !== this.path || Object.keys(deployment.model || {}).length !== 1)
         await saveModelJson(deploymentPath, { ...deployment, model: { connectionStore: this.path } });
@@ -74,58 +68,10 @@ export class ModelConnections {
   }
   summary() {
     const catalog = this.catalog(), selected = catalog.activeId ? requireEntry(catalog, catalog.activeId) : null;
-    const executor = desktopExecutorState({ dataRoot: this.dataRoot });
-    const executors = [...cliExecutorStates(catalog), ...(executor.enabled ? [executor] : [])].map(item => ({
-      ...item, usage: !item.enabled ? { status: 'not_connected', note: item.note } : quotaExecutors.includes(item.id) ? this.usageFor(item.id)
-        : { status: 'unsupported', unsupported: true, note: '当前工作引擎没有可用的额度查询接口。' },
-    }));
-    const workExecutor = catalog.workExecutorId === 'pi'
-      ? { id: 'pi', name: '内置 Pi', kind: 'pi', role: 'executor', enabled: true, label: '当前工作引擎', usage: { status: 'shared', note: '内置 Pi 使用聊天引擎的额度。' } }
-      : executors.find(item => item.enabled && item.id === catalog.workExecutorId) || null;
+    const workExecutor = { id: 'pi', name: 'Pi', kind: 'pi', role: 'executor', enabled: true, label: '工作执行',
+      usage: { status: 'shared', note: 'Pi 使用已连接的聊天模型。' } };
     return { activeId: selected?.id || null, chat: selected ? { ...this.publicEntry(selected), role: 'chat' }
-      : { role: 'chat', name: '尚未选择聊天模型', configured: false, usage: { status: 'unconfigured' } },
-      executors, workExecutor };
-  }
-  setExecutor(id, enabled, { select = false, bridgePath, signal } = {}) {
-    if ((id !== 'codex-desktop' && !isCliExecutor(id)) || typeof enabled !== 'boolean') throw new Error('请选择有效的执行引擎接入状态');
-    const change = (this.executorChange || Promise.resolve()).catch(() => {}).then(() => this.changeExecutor(id, enabled, select, bridgePath, signal));
-    this.executorChange = change;
-    return change.finally(() => { if (this.executorChange === change) this.executorChange = null; });
-  }
-  async changeExecutor(id, enabled, select, bridgePath, signal) {
-    signal?.throwIfAborted();
-    const desktop = id === 'codex-desktop';
-    const bridge = bridgePath === undefined ? this.catalog().executors?.[id]?.bridgePath : bridgePath;
-    if (enabled && desktop) {
-      const connection = await ensureCodexConnector(this.dataRoot);
-      try { await new DesktopCodex({ dataRoot: this.dataRoot }).connect(connection); }
-      catch (error) {
-        if (connection.managed && !desktopExecutorState({ dataRoot: this.dataRoot }).enabled) await stopCodexConnector(this.dataRoot);
-        throw error;
-      }
-    }
-    if (enabled && !desktop) await confirmWorkCli(id, { bridgePath: bridge, signal });
-    signal?.throwIfAborted();
-    await this.mutate(catalog => {
-      catalog.executors = { ...catalog.executors, [id]: { enabled, ...(bridge ? { bridgePath: bridge } : {}), ...(enabled ? { connectedAt: new Date().toISOString() } : {}) } };
-      if (enabled && select) catalog.workExecutorId = id;
-      if (!enabled && catalog.workExecutorId === id) catalog.workExecutorId = 'pi';
-      this.clearUsage(id);
-    });
-    if (desktop && !enabled) await stopCodexConnector(this.dataRoot);
-    await saveModelJson(this.usagePath, this.usage);
-    if (enabled && quotaExecutors.includes(id)) {
-      void this.refreshOne(id, true).then(() => saveModelJson(this.usagePath, this.usage)).catch(() => {});
-    }
-    return this.snapshot();
-  }
-  async selectWorkExecutor(id) {
-    await this.mutate(catalog => {
-      const connected = (id === 'codex-desktop' || isCliExecutor(id)) && catalog.executors?.[id]?.enabled === true;
-      if (id !== 'pi' && !connected) throw new Error('请先接入这个工作引擎。');
-      catalog.workExecutorId = id;
-    });
-    return this.snapshot();
+      : { role: 'chat', name: '尚未选择聊天模型', configured: false, usage: { status: 'unconfigured' } }, workExecutor };
   }
   async snapshot() {
     const catalog = this.catalog(), credentials = await this.credentials.list();
@@ -180,7 +126,7 @@ export class ModelConnections {
         }
         if (input.kind === 'api' && !entry.allowNoKey && !await this.credentials.read(id)) throw new Error('请填写 API Key，或选择无需 Key 的本地服务');
       } catch (error) { await saveModelJson(this.path, original); throw error; }
-      delete this.usage[id];
+      this.clearUsage(id);
     });
     return this.snapshot();
   }
@@ -193,7 +139,7 @@ export class ModelConnections {
   async remove(id) {
     if (this.catalog().activeId === id) throw new Error('请先选择其他聊天模型，再移除此连接');
     this.cancelLogin(id);
-    await this.mutate(async catalog => { requireEntry(catalog, id); await this.credentials.delete(id); catalog.connections = catalog.connections.filter(entry => entry.id !== id); delete this.usage[id]; });
+    await this.mutate(async catalog => { requireEntry(catalog, id); await this.credentials.delete(id); catalog.connections = catalog.connections.filter(entry => entry.id !== id); this.clearUsage(id); });
     return this.snapshot();
   }
   async localLogins() {
@@ -224,7 +170,7 @@ export class ModelConnections {
     await this.mutate(catalog => { const entry = requireEntry(catalog, id);
       entry.authMode = authMode; entry.authFile = authFile; entry.identity = identity;
       if (kind === 'grok') { entry.authScope = authScope; entry.baseUrl = 'https://cli-chat-proxy.grok.com/v1'; }
-      delete this.usage[id]; });
+      this.clearUsage(id); });
     return { ...await this.snapshot(), importedId: id };
   }
   loginStatus(id) {
@@ -271,28 +217,6 @@ export class ModelConnections {
     try { return await response.json(); } catch { throw new Error('供应商未返回有效的 JSON'); }
   }
   async accountUsage(id, signal) {
-    if (id === 'codex-cli') {
-      const result = await readCodexCliRateLimits({ bridgePath: this.catalog().executors?.[id]?.bridgePath, signal });
-      const allLimits = Object.entries(result.rateLimitsByLimitId || {});
-      const limits = allLimits.length ? allLimits : [['codex', result.rateLimits]];
-      const windows = limits.flatMap(([limitId, bucket]) => ['primary', 'secondary'].flatMap(field => {
-        const value = bucket?.[field], used = number(value?.usedPercent);
-        if (used === null) return [];
-        const durationMinutes = number(value.windowDurationMins);
-        return [{ name: `${bucket.limitName || (limitId === 'codex' ? 'Codex' : limitId)} · ${windowLabel(durationMinutes)}`,
-          limitId, durationMinutes, remainingPercent: clamp(100 - used), resetsAt: date(value.resetsAt) }];
-      }));
-      const main = result.rateLimitsByLimitId?.codex || result.rateLimits;
-      return { source: 'Codex 订阅', plan: main?.planType || null, windows,
-        credits: number(main?.credits?.balance), unlimited: main?.credits?.unlimited === true };
-    }
-    if (id === 'codex-desktop') {
-      const result = await new DesktopCodex({ dataRoot: this.dataRoot }).request('/v1/account/usage', { signal: AbortSignal.timeout(10000) });
-      const values = result.windows || result.weekly || [];
-      return { source: 'Codex 桌面端', plan: result.planType || null, windows: values.map(value => ({ name: value.label || windowLabel(value.windowDurationMins),
-        limitId: value.limitId, durationMinutes: number(value.windowDurationMins), remainingPercent: number(value.remaining), resetsAt: value.periodEnd || null })),
-        credits: number(result.credits?.balance), unlimited: result.credits?.unlimited === true };
-    }
     const connection = modelConnection({ connectionStore: this.path }, id), runtime = connectionRuntime(connection, this.credentials);
     const resolved = await runtime.models.getAuth(id);
     if (!resolved) throw new Error('尚未配置或授权');
@@ -341,7 +265,6 @@ export class ModelConnections {
     return { source: 'API', windows: [], unsupported: true, note: '此服务未配置余额查询接口，可在设置中补充' };
   }
   refreshOne(id, force = false) {
-    if (quotaExecutors.includes(id) && this.catalog().executors?.[id]?.enabled !== true) return Promise.resolve(null);
     if (this.pendingUsage.has(id)) return this.pendingUsage.get(id).promise;
     const previous = this.usage[id];
     if (!force && Date.now() - Date.parse(previous?.attemptedAt || previous?.checkedAt) < 60000) return Promise.resolve(previous);
@@ -362,7 +285,7 @@ export class ModelConnections {
   }
   async refreshUsage(force = false) {
     const catalog = this.catalog();
-    const ids = [catalog.activeId, ...quotaExecutors.filter(id => catalog.executors?.[id]?.enabled)].filter(Boolean);
+    const ids = [catalog.activeId].filter(Boolean);
     await Promise.all(ids.map(id => this.refreshOne(id, force)));
     await saveModelJson(this.usagePath, this.usage); return this.summary();
   }

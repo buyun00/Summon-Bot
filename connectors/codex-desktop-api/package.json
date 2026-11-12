@@ -1,8 +1,0 @@
-{
-  "name": "summon-codex-desktop-connector",
-  "version": "0.1.0",
-  "private": true,
-  "type": "module",
-  "description": "Summon Bot connector to the existing Codex desktop through local HTTP and SSE",
-  "engines": { "node": ">=24.0.0" }
-}

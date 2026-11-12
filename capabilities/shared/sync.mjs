@@ -127,7 +127,7 @@ export class IncrementalSync {
   }
 
   respond(scope, snapshot, since) {
-    const collectionPaths = scope === 'workspace' ? WORKSPACE_COLLECTIONS
+    const collectionPaths = scope === 'workspace' || scope.startsWith('workspace:') ? WORKSPACE_COLLECTIONS
       : scope.startsWith('room:') ? ROOM_COLLECTIONS : null;
     if (!collectionPaths) throw new TypeError('Unknown incremental sync scope');
     // Normalize once so undefined fields cannot differ from their persisted JSON.

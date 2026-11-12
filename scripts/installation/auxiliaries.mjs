@@ -1,19 +1,14 @@
-import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { existsSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { workspaceOrigin } from '../../web/backend/origins.mjs';
-import { setTimeout as pause } from 'node:timers/promises';
 import { readJson, writeJson } from '../build/files.mjs';
-import { bundledNode, deploymentPath, inspectService, launchService, serviceRoot, stopService } from './system.mjs';
+import { bundledNode, inspectService, launchService, serviceRoot, stopService } from './system.mjs';
 import { readRemoteAccess, registerCustomRemote, removeCustomRemote } from './remote-config.mjs';
-import { desktopExecutorState } from '../../bot/src/capabilities/executor-connections.mjs';
 import { terminateTree } from '../../bot/src/runtime/process-tools.mjs';
 
-export const codexConfigPath = dataRoot => join(serviceRoot(dataRoot, 'codex-connector'), 'config.json');
 export const tunnelTokenPath = dataRoot => join(serviceRoot(dataRoot, 'cloudflared'), 'tunnel-token');
-const connectorEntry = releaseRoot => join(releaseRoot, 'connectors/codex-desktop-api/src/main.js');
 export const cloudflareInstall = 'https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/';
 export const tailscaleInstall = 'https://tailscale.com/download';
 const windows = process.platform === 'win32';
@@ -42,53 +37,7 @@ async function loopbackPort() {
   return port;
 }
 
-export async function inspectCodex(config) {
-  const path = codexConfigPath(config.dataRoot);
-  const saved = existsSync(path) ? await readJson(path) : null;
-  const executor = desktopExecutorState({ dataRoot: config.dataRoot });
-  const status = saved?.managed ? (await inspectService(config, 'codex-connector')).state : saved ? 'external' : 'pending';
-  return { status, enabled: executor.enabled, managed: saved?.managed === true, callerConfigured: Boolean(saved?.callerThreadId),
-    socketsConfigured: windows || Boolean(saved?.toolsPipe && saved?.ipcPipe), platform: process.platform };
-}
-
-export async function prepareCodex(config, input = {}) {
-  const path = codexConfigPath(config.dataRoot);
-  const saved = existsSync(path) ? await readJson(path) : null;
-  if (saved && !saved.managed) return inspectCodex(config);
-  if (saved && (await inspectService(config, 'codex-connector')).state !== 'stopped') throw new Error('请先停用 Codex 执行器，再更改本机端点。');
-  const values = {};
-  if (input.callerThreadId) {
-    if (!/^[a-zA-Z0-9_-]{8,100}$/.test(input.callerThreadId)) throw new Error('请填写 Codex 的本机会话 ID。');
-    values.callerThreadId = input.callerThreadId;
-  }
-  for (const field of ['toolsPipe', 'ipcPipe']) if (input[field]) {
-    if (!(windows ? /^\\\\\.\\pipe\\[\w.-]+$/i.test(input[field]) : isAbsolute(input[field]))) throw new Error('请填写本机 Codex 套接字路径。');
-    values[field] = input[field];
-  }
-  await writeJson(path, { managed: true, host: '127.0.0.1', port: await loopbackPort(),
-    auth: { enabled: true, localhostBypass: false, bearerToken: randomBytes(32).toString('base64url') }, ...saved, ...values });
-  return inspectCodex(config);
-}
-
-export async function ensureCodexConnector(dataRoot) {
-  const config = await readJson(deploymentPath(dataRoot));
-  if (!existsSync(codexConfigPath(dataRoot))) await prepareCodex(config);
-  const saved = await readJson(codexConfigPath(dataRoot));
-  if (!saved.managed) return { managed: false };
-  if (!windows && !(saved.toolsPipe && saved.ipcPipe)) throw Object.assign(
-    new Error('请在部署机填写当前 Codex 的工具端点和会话 IPC 套接字，然后重试。'), { expose: true });
-  if (!saved.callerThreadId) throw Object.assign(
-    new Error('请打开使用默认权限的 Codex 本机会话，并在部署机填写它的会话 ID。'), { expose: true });
-  await launchService(config, 'codex-connector', { timeoutMs: 10000 });
-  return { managed: true };
-}
-
-export async function stopCodexConnector(dataRoot) {
-  if (!existsSync(codexConfigPath(dataRoot)) || !(await readJson(codexConfigPath(dataRoot))).managed) return;
-  await stopService(await readJson(deploymentPath(dataRoot)), 'codex-connector');
-}
-
-async function spawnAuxiliary(file, args, { env, cwd, ipc, url, health, discoverOrigin }, onExit) {
+async function spawnAuxiliary(file, args, { env, cwd, ipc, url, discoverOrigin }, onExit) {
   const child = spawn(file, args, { env, cwd, windowsHide: true, detached: discoverOrigin && !windows, stdio: ipc ? ['ignore', 'ignore', 'ignore', 'ipc'] : 'ignore' });
   let exited;
   const completion = new Promise(ready => {
@@ -113,15 +62,6 @@ async function spawnAuxiliary(file, args, { env, cwd, ipc, url, health, discover
     if (discoverOrigin) url = await originReady;
   } catch (error) { if (discoverOrigin) await terminateTree(child); throw error; }
   finally { clearTimeout(originTimer); }
-  if (health) {
-    for (let attempt = 0; attempt < 40; attempt++) {
-      if (exited) throw new Error('本机连接器启动后退出。请检查端口和配置。');
-      const response = await fetch(new URL(health, url), { signal: AbortSignal.timeout(500), redirect: 'error' }).catch(() => null);
-      if (response?.ok) break;
-      if (attempt === 39) { child.kill(); throw new Error('本机连接器未能就绪。'); }
-      await pause(150);
-    }
-  }
   if (exited) throw new Error('本机连接器启动后退出。');
   void completion.then(onExit);
   return {
@@ -150,15 +90,6 @@ export async function startAuxiliary(config, type, onExit) {
       return service;
     } catch (error) { await service.close(); throw error; }
   }
-  if (type === 'codex-connector') {
-    const file = codexConfigPath(config.dataRoot);
-    const connector = await readJson(file);
-    if (!connector.managed || connector.host !== '127.0.0.1') throw new Error('此 Codex 连接器由外部管理。');
-    return spawnAuxiliary(bundledNode(config.releaseRoot), [connectorEntry(config.releaseRoot)], {
-      env: { ...env, SUMMON_DATA_ROOT: config.dataRoot, CODEX_DESKTOP_API_CONFIG: file },
-      cwd, ipc: true, url: 'http://127.0.0.1:' + connector.port, health: '/healthz',
-    }, onExit);
-  }
   const entry = (await readRemoteAccess(config.dataRoot)).cloudflare;
   if (entry?.owner !== 'summon') throw new Error('此 Cloudflare 隧道由外部管理。');
   const file = installedBinary('cloudflared');
@@ -170,9 +101,6 @@ export async function startAuxiliary(config, type, onExit) {
 
 export async function restoreAuxiliaries(config) {
   const result = {};
-  if (desktopExecutorState({ dataRoot: config.dataRoot }).enabled) {
-    result.codex = await ensureCodexConnector(config.dataRoot).then(() => 'enabled', () => 'unavailable');
-  }
   const entry = (await readRemoteAccess(config.dataRoot)).cloudflare;
   if (entry?.owner === 'summon' && !entry.pending) {
     result.cloudflare = await launchService(config, 'cloudflared', { timeoutMs: 10000 }).then(() => 'running', () => 'unavailable');

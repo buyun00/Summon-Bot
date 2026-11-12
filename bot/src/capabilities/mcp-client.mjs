@@ -106,7 +106,7 @@ export async function connectMcpTools(definition, {
     // The SDK refreshes its output-schema cache for each listTools page. Retain
     // validation for every tool, including those returned before the last page.
     client.cacheToolMetadata(remoteTools);
-    return { tools, close };
+    return { tools, close, serverInfo: client.getServerVersion() };
   } catch (error) {
     await close().catch(() => {});
     // No original cause or server stderr is exposed: either can carry secrets.

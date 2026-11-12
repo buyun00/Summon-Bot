@@ -8,12 +8,12 @@
 
 <sub>[English](README.md) · [简体中文](README.zh-CN.md)</sub>
 
-创建自己的 Bot，在私聊中合作，在群聊中组织项目，连接工具、文件和桌面 Codex。<br/>
+创建自己的 Bot，在私聊中合作，在群聊中组织项目，在工作中使用命令行工具、API 和文件。<br/>
 让工作从一次交流开始，带着目标、进度和积累继续推进。
 
 [![Node.js](https://img.shields.io/badge/Node.js-24%2B-43853d?style=flat-square)](package.json)
 [![Agent](https://img.shields.io/badge/Agent-Pi-64748b?style=flat-square)](bot/)
-[![Capabilities](https://img.shields.io/badge/Tools-MCP%20%2B%20HTTP%20%2B%20Skills-2563eb?style=flat-square)](docs/CAPABILITY_CATALOG.md)
+[![Capabilities](https://img.shields.io/badge/Tools-CLI%20%2B%20MCP%20%2B%20HTTP%20%2B%20Skills-2563eb?style=flat-square)](docs/CAPABILITY_CATALOG.md)
 [![Status](https://img.shields.io/badge/Status-In_development-d97706?style=flat-square)](#多端体验)
 
 [English](README.md) · **简体中文**
@@ -32,7 +32,7 @@ Summon Bot 是一个围绕长期协作构建的 AI 工作空间。每个 Bot 拥
 
 例如，你可以这样开始：
 
-> **开发协作**：「把这个需求交给工程伙伴，在桌面 Codex 里推进，遇到需要我决定的事情回到这里说。」
+> **开发协作**「把这个需求交给工程伙伴，在项目目录用 Codex 推进，遇到需要我决定的事情回到这里说。」
 >
 > **项目组队**：「为这个项目组织合适的成员，明确分工，跟进依赖和交接。」
 >
@@ -60,15 +60,15 @@ Bot 内部区分交流与工作，每项工作单独保存目标、要求、进�
 
 整理、压缩和上下文组装分别按需创建短暂维护对话。真实工具结果与用户纠正可以成为更新 Skill 的依据；Bot 可以维护自己的方法，也可以向共享 Skill 的维护者提出有来源的修订建议。详见 [上下文与持续工作设计](docs/BOT_3_PLUS_3_DESIGN.md)。
 
-### MCP、HTTP API 与 Skill 的统一目录
+### CLI、MCP、HTTP API 与 Skill 的统一目录
 
-在能力目录中管理 MCP 服务、普通 HTTP API 和共享 Skill。MCP 支持 stdio 与 Streamable HTTP，现有 HTTP 接口也可以直接登记为工具；Skill 保存使用条件、操作方法和相关资源。
+在能力目录中查找已登记的命令行工具、MCP 服务、HTTP API 和共享 Skill。连接聊天模型并开始引导后，Pi 在部署主机发现 CLI 入口。MCP 支持 stdio 与 Streamable HTTP，现有 HTTP 接口可以直接登记为工具。Skill 保存可复用的方法和相关资源。
 
-每项登记的能力自动绑定一个专属维护 Bot，负责这一项连接或方法的维护与咨询。其他 Bot 按各自授权直接使用工具，遇到需要业务判断的事情再委托负责者。详见 [能力目录与共享 Skill](docs/CAPABILITY_CATALOG.md)。
+每项登记的能力有一个专属维护 Bot。CLI 的维护者读取本机版本和帮助，登记附有来源和适用版本的方法。其他 Bot 按授权使用已登记的方法，需要新用法或遇到故障时咨询维护者。[能力目录与共享 Skill](docs/CAPABILITY_CATALOG.md)
 
-### 桌面 Codex 与本机工作区
+### 原工作中的本机工具
 
-通过桌面连接器创建、连接、续发、读取和中断 Codex 会话，将桌面任务的进展与结果带回原工作和原对话。外部线程、执行回合和操作标识持久保存，结果未知时查询原操作。
+Pi 推进工作，在授权的项目目录运行已接入的 CLI，例如 Codex。原工作保存操作标识、执行状态、输出引用，以及实际取得的原生会话标识。提供结构化事件的方法可将进度和问题带回原工作与原对话，维护者也可通过统一展示接口发布额度和状态等观察。[展示来源](docs/CAPABILITY_CATALOG.md#展示来源)
 
 文件能力提供读取、写入、编辑文件与执行命令，可用于 Bot 工作区和已配置的项目目录。命令以宿主用户权限运行，部署时应按实际用途配置可用范围。详见 [运行维护](docs/OPERATIONS.md)。
 
@@ -80,7 +80,7 @@ Token 统计可以按 Bot、单聊、群聊和时间查看请求明细、缓存�
 
 ## 从一段对话开始
 
-安装并启动服务后，打开工作空间，主 Bot 会通过对话带你接上聊天模型：导入运行 Summon Bot 的主机上已有的 Codex / Grok 登录、授权订阅，或者在隐藏输入中填写 API Key。接通模型前使用本地引导消息，密钥不会写进聊天和草稿。
+打开网页工作区，或在安装后的桌面应用开箱页选择本机正式实例或远程地址。新建或选择工作区后，在同一窗口继续。主 Bot 会引导你导入部署主机上已有的 Codex 或 Grok 登录、授权订阅，或在隐藏输入中填写 API Key。接通聊天模型前使用脚本引导消息，凭据保存在主机的私有配置中。
 
 点击继续后，真实主 Bot 会围绕你想做的事，一次一个问题地介绍和完成后续配置。网页、Electron、Android 和 iOS 共用模型连接和主 Bot 的对话，也可以随时从“设置 → 新手引导”重新进入。
 
@@ -105,21 +105,21 @@ Summon Bot 以 Node.js 24+ 和 ESM JavaScript 构建后端，使用 Pi Agent 作
 flowchart TB
   Clients["网页 · Electron · iOS · Android"] --> Web["Web 服务<br/>API · 事件流 · 文件与客户端下载"]
   Web --> Gateway["能力网关<br/>鉴权 · 路由 · 当前版本绑定"]
-  Gateway <--> Services["独立能力服务<br/>Bot 管理 · 聊天室 · 知识<br/>文件 · Codex · 记忆管理"]
+  Gateway <--> Services["独立能力服务<br/>Bot 管理 · 聊天室 · 知识<br/>文件 · 记忆管理"]
   Services <--> Bot["独立 Bot<br/>身份 · 收件箱 · 对话 · 工作调度"]
   Bot --> Agent["Pi Agent<br/>每个活动执行拥有独立 Agent 状态"]
   Agent --> Gateway
   Agent <--> Data["Bot 数据<br/>SQLite · Markdown · Skills · Artifacts"]
-  Gateway --> Catalog["能力目录<br/>MCP · HTTP API · 共享 Skill"]
+  Gateway --> Catalog["能力目录<br/>CLI · MCP · HTTP API · 共享 Skill"]
   Catalog -->|MCP / HTTP| External["外部工具与业务系统"]
+  Catalog -->|已登记的 CLI 方法| CLI["部署主机上的命令行工具"]
   Catalog -. 方法按需读取 .-> Agent
-  Services --> Codex["桌面 Codex 连接器"]
 ```
 
 ### 三个清晰的运行边界
 
 - **Bot 内核**：每个 Bot 拥有独立配置、收件箱、SQLite 和工作目录；调度器管理同会话串行与有限并发，每个活动执行持有独立的 Pi Agent 状态。默认 4 个业务执行位置，后台维护独立限流。
-- **能力服务**：聊天室、知识、文件、Codex、Bot 管理和记忆管理分别持有自己的领域数据。网关提供鉴权、路由、能力绑定及聚合接口；独立能力更新在活动执行到达安全边界后切换。
+- **能力服务**各自管理聊天室、知识、文件、Bot 和记忆等领域数据。网关提供鉴权、路由、能力绑定和聚合接口，也管理登记的原生工具执行与展示来源。独立能力更新在活动执行到达安全边界后切换。
 - **用户界面**：Web 提供页面、API 转发、实时事件和下载分发。Electron 加载同一网页，原生手机端通过 API 接入；Bot 与外部工作在后端运行，关闭页面后仍保留责任与状态。
 
 ### 三层持久数据
@@ -132,7 +132,7 @@ flowchart TB
 
 整理把有价值的增量写回对应 Markdown，组装为当前执行选择相关资料，压缩在上下文预算需要时发生。三者各自按需启动、完成后结束；原始记录继续保留，供后续定位来源。
 
-进一步阅读：[架构说明](docs/ARCHITECTURE.md) · [当前实现](docs/BOT_3_PLUS_3_IMPLEMENTATION.md) · [能力服务与更新](docs/CAPABILITY_SERVICES.md)。Pi 的适配与上游说明见 [Pi 组件说明](bot/third_party/pi/README.md)。
+进一步阅读：[架构说明](docs/ARCHITECTURE.md) · [工作与上下文实现记录](docs/BOT_3_PLUS_3_IMPLEMENTATION.md) · [能力服务与更新](docs/CAPABILITY_SERVICES.md)。Pi 的适配与上游说明见 [Pi 组件说明](bot/third_party/pi/README.md)。
 
 ## 多端体验
 
@@ -150,7 +150,6 @@ flowchart TB
 ```text
 bot/                        独立 Bot 内核、调度、上下文与持久化
 capabilities/               领域能力服务、网关、能力目录与版本绑定
-connectors/codex-desktop-api/ 桌面 Codex 连接器
 roles/                      角色配置与提示词
 skills/                     随项目提供的 Skill
 web/                        普通网页、HTTP 入口与发行包分发
@@ -169,6 +168,6 @@ docs/                       架构、设计与操作文档
 | 理解系统组成与数据边界 | [架构说明](docs/ARCHITECTURE.md) |
 | 理解 Bot 的工作、上下文和持久化 | [设计](docs/BOT_3_PLUS_3_DESIGN.md) · [实现](docs/BOT_3_PLUS_3_IMPLEMENTATION.md) |
 | 组织项目团队与成员交接 | [EggBot 与群聊团队](docs/EGGBOT.md) |
-| 接入 MCP、HTTP API 和共享方法 | [能力目录](docs/CAPABILITY_CATALOG.md) · [能力服务](docs/CAPABILITY_SERVICES.md) |
+| 接入 CLI、MCP、HTTP API 和共享方法 | [能力目录](docs/CAPABILITY_CATALOG.md) · [能力服务](docs/CAPABILITY_SERVICES.md) |
 | 参与开发和运行维护 | [开发约定](AGENTS.md) · [开发流程](docs/DEVELOPMENT.md) · [运行维护](docs/OPERATIONS.md) |
 | 构建与发布客户端 | [客户端发行与更新](docs/CLIENT_RELEASES.md) · [iOS](ios/README.md) · [Android](android/README.md) · [桌面端](desktop/README.md) |

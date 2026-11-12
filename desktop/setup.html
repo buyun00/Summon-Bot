@@ -10,17 +10,15 @@
   <header class="titlebar"><img src="icon.png" alt=""><span>Summon Bot</span></header>
   <main id="welcome" hidden>
     <div class="welcome-heading">
-      <span>工作区</span>
-      <h1 id="title">你好，我是主 Bot。</h1>
+      <h1 id="title" tabindex="-1">选择实例</h1>
     </div>
-    <div id="conversation" role="log" aria-label="欢迎对话"></div>
+    <div id="conversation" role="log" aria-label="设置说明"></div>
     <div id="controls"></div>
     <p id="status" role="status"></p>
   </main>
   <main id="unpacking" hidden aria-labelledby="unpacking-title">
     <div class="unpacking-heading">
-      <p>SUMMON BOT <span aria-hidden="true">·</span> 本机工作区</p>
-      <h1 id="unpacking-title">正在准备你的工作区</h1>
+      <h1 id="unpacking-title">拆开你的工作区</h1>
     </div>
     <div class="parcel">
       <div class="parcel-inside" aria-hidden="true"></div>
@@ -37,9 +35,8 @@
       </div>
     </div>
     <div class="unpacking-caption">
-      <p id="unpacking-stage" role="status"></p>
-      <p id="unpacking-detail"></p>
-      <div id="parcel-actions" class="buttons" hidden></div>
+      <p id="unpacking-detail">开箱后选择实例和工作区。</p>
+      <div id="parcel-actions" class="buttons"></div>
     </div>
   </main>
   <main id="startup" hidden aria-labelledby="startup-label">
@@ -67,7 +64,7 @@
     </svg>
     <svg class="startup-corner startup-corner-top" viewBox="0 0 208 158" aria-hidden="true"><use href="#startup-source"/></svg>
     <svg class="startup-corner startup-corner-bottom" viewBox="1280 839 256 185" aria-hidden="true"><use href="#startup-source"/></svg>
-    <div class="startup-band" role="progressbar" aria-label="本机工作区启动进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+    <div class="startup-band" role="progressbar" aria-label="工作区准备进度" aria-valuemin="0" aria-valuemax="100">
       <div class="startup-track"><div class="startup-fill"></div></div>
       <svg class="startup-seal" viewBox="0 0 60 56" aria-hidden="true">
         <path d="M2 39 21 8Q30-5 39 8L58 39Q63 54 48 54H12Q-3 54 2 39Z" fill="#888d50" stroke="#fff8e5" stroke-width="1.2"/>
@@ -75,8 +72,8 @@
       </svg>
     </div>
     <div class="startup-caption">
-      <h1 id="startup-label" role="status">正在启动 Bot…</h1>
-      <p id="startup-percent" aria-hidden="true">0%</p>
+      <h1 id="startup-label" role="status">正在创建工作区…</h1>
+      <p id="startup-detail"></p>
     </div>
   </main>
 </body>

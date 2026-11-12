@@ -148,3 +148,13 @@
 .catalog-choice { display:flex!important; align-items:center; gap:8px; font-size:var(--text-meta); margin:6px 0; }
 .catalog-choice input { width:auto!important; }
 @media(max-width:820px) { .catalog-layout { grid-template-columns:1fr; } .catalog-list { border-right:0; max-height:300px; overflow:auto; } .catalog-detail { padding:18px; } .catalog-search { flex-wrap:wrap; } }
+
+.native-work-operation { border-top: 1px solid var(--line, #3a403a); padding: 12px 0; display: grid; gap: 8px; }
+.native-work-operation > small { overflow-wrap: anywhere; }
+.native-answer-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.native-answer-form input { flex: 1 1 12rem; }
+.models-native-source { display: grid; gap: 8px; padding: 12px 0; border-top: 1px solid var(--line, #3a403a); }
+.models-native-source > header { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.models-native-source progress { margin-inline: 8px; max-width: 45%; }
+.native-metric-table { overflow-x: auto; }
+.native-metric-table th, .native-metric-table td { padding: 6px 10px; text-align: start; }

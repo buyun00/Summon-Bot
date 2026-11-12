@@ -4,7 +4,7 @@ import { mkdir,copyFile,mkdtemp,readdir,rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { copyTree,readJson,writeJson,within,parseArgs } from '../build/files.mjs';
 import { verifyRelease } from '../build/verify.mjs';
-import { initializeDeployment,inspectService,deploymentPath } from './system.mjs';
+import { initializeDeployment,inspectService,deploymentPath,serviceFolders } from './system.mjs';
 import { selectCurrentVersion } from './current-version.mjs';
 import { migratePublicOrigin } from './remote-config.mjs';
 import { removeInside } from '../release/repository.mjs';
@@ -16,7 +16,8 @@ export async function installRelease({releaseRoot,appRoot,dataRoot,sourceRoot,de
   const verified=await verifyRelease(releaseRoot),destination=join(appRoot,'releases',verified.buildId);
   if(!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(verified.buildId)||!within(join(appRoot,'releases'),destination))throw new Error('Invalid release build ID');
   if(existsSync(deploymentPath(dataRoot))){
-    const current=await readJson(deploymentPath(dataRoot));for(const type of ['gateway','web','codex-connector','cloudflared'])if((await inspectService(current,type)).state!=='stopped')throw new Error('Stop managed services before installing a different release');
+    const current=await readJson(deploymentPath(dataRoot));
+    for(const type of Object.keys(serviceFolders))if((await inspectService(current,type)).state!=='stopped')throw new Error(`Stop managed service ${type} before installing a different release`);
     const module=join(releaseRoot,'capabilities/services/supervisor.mjs');
     if(existsSync(module)){
       const {CapabilityServiceSupervisor}=await import(pathToFileURL(module));

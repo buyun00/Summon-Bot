@@ -4,57 +4,54 @@ const transcript = document.querySelector('#conversation');
 const controls = document.querySelector('#controls');
 const status = document.querySelector('#status');
 const welcome = document.querySelector('#welcome');
+const title = document.querySelector('#title');
 const unpacking = document.querySelector('#unpacking');
-const parcel = unpacking.querySelector('.parcel');
-const parcelTitle = document.querySelector('#unpacking-title');
 const parcelActions = document.querySelector('#parcel-actions');
-const stageLabel = document.querySelector('#unpacking-stage');
-const stageDetail = document.querySelector('#unpacking-detail');
 const startup = document.querySelector('#startup');
 const startupBand = startup.querySelector('.startup-band');
-const startupFill = startup.querySelector('.startup-fill');
 const startupLabel = document.querySelector('#startup-label');
-const startupPercent = document.querySelector('#startup-percent');
-const startupStages = new Map([
-  ['prepare', [3, '正在准备本机工作区']],
-  ['runtime', [8, '正在复制运行组件']],
-  ['gateway', [60, '正在启动主 Bot']],
-  ['web', [82, '正在启动工作区页面']],
-  ['verify', [94, '正在确认工作区就绪']],
-  ['ready', [100, '工作区准备好了']],
-]);
-let workspace, busy = false;
+const startupDetail = document.querySelector('#startup-detail');
+let workspace, candidate, localAvailable, busy = false;
 
-function say(text, user = false) {
+function say(text) {
   const row = document.createElement('div');
-  row.className = user ? 'message user' : 'message';
-  if (!user) {
-    const icon = new Image(); icon.src = 'icon.png'; icon.alt = '主 Bot';
-    row.append(icon);
-  }
+  row.className = 'message';
+  const icon = new Image();
+  icon.src = 'icon.png';
+  icon.alt = '';
   const bubble = document.createElement('div');
-  bubble.className = 'bubble'; bubble.textContent = text;
-  row.append(bubble); transcript.append(row);
+  bubble.className = 'bubble';
+  bubble.textContent = text;
+  row.append(icon, bubble);
+  transcript.append(row);
 }
 
 function button(label, action, primary = false) {
   const element = document.createElement('button');
-  element.type = 'button'; element.textContent = label;
+  element.type = 'button';
+  element.textContent = label;
   if (primary) element.className = 'primary';
   element.onclick = () => void perform(action);
   return element;
 }
 
 function buttons(...items) {
-  const row = document.createElement('div'); row.className = 'buttons';
-  row.append(...items); controls.append(row);
+  const row = document.createElement('div');
+  row.className = 'buttons';
+  row.append(...items);
+  controls.append(row);
 }
 
-function field(label, name, { type = 'text', placeholder = '', value = '' } = {}) {
+function field(label, name, { type = 'text', placeholder = '', value = '', required = false } = {}) {
   const element = document.createElement('label');
   const input = document.createElement('input');
-  input.name = name; input.type = type; input.value = value; input.placeholder = placeholder;
-  input.autocomplete = type === 'password' ? 'new-password' : 'off'; input.spellcheck = false;
+  input.name = name;
+  input.type = type;
+  input.value = value;
+  input.placeholder = placeholder;
+  input.required = required;
+  input.autocomplete = type === 'password' ? 'new-password' : 'off';
+  input.spellcheck = false;
   if (type === 'checkbox') { element.className = 'check'; element.append(input, label); }
   else element.append(label, input);
   return element;
@@ -64,8 +61,11 @@ function form(fields, label, submit) {
   controls.replaceChildren();
   const form = document.createElement('form');
   const action = document.createElement('button');
-  action.type = 'submit'; action.className = 'primary'; action.textContent = label;
-  form.append(...fields, action); controls.append(form);
+  action.type = 'submit';
+  action.className = 'primary';
+  action.textContent = label;
+  form.append(...fields, action);
+  controls.append(form);
   form.onsubmit = event => {
     event.preventDefault();
     const values = Object.fromEntries(new FormData(form));
@@ -74,132 +74,111 @@ function form(fields, label, submit) {
   };
 }
 
+function message(error) {
+  return String(error.message).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
+}
+
 async function perform(action) {
   if (busy) return;
-  busy = true; status.textContent = '正在处理…';
-  controls.inert = true;
+  busy = true;
+  status.textContent = '正在处理…';
+  controls.inert = parcelActions.inert = true;
   try {
     await action();
     if (status.textContent === '正在处理…') status.textContent = '';
+  } catch (error) {
+    status.textContent = message(error);
+  } finally {
+    busy = false;
+    controls.inert = parcelActions.inert = false;
   }
-  catch (error) { status.textContent = String(error.message).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, ''); }
-  finally { busy = false; controls.inert = false; }
 }
 
-function updateStartupProgress({ stage, ratio }) {
-  const info = startupStages.get(stage);
-  if (!info) return;
-  const [start, label] = info;
-  const copied = stage === 'runtime' && Number.isFinite(ratio) ? Math.min(1, Math.max(0, ratio)) : 0;
-  const previous = stage === 'prepare' ? 0 : Number(startupBand.getAttribute('aria-valuenow'));
-  const position = Math.max(previous, start + Math.round(46 * copied));
-  startupBand.style.setProperty('--startup-progress', position + '%');
-  startupBand.setAttribute('aria-valuenow', position);
-  startupBand.setAttribute('aria-valuetext', `${label}，${position}%`);
-  startupPercent.textContent = position + '%';
-  const caption = stage === 'ready' ? '工作区准备好了' : '正在启动 Bot…';
-  if (startupLabel.textContent !== caption) startupLabel.textContent = caption;
+function showWelcome(label) {
+  startup.hidden = true;
+  unpacking.hidden = true;
+  welcome.hidden = false;
+  title.textContent = label;
+  transcript.replaceChildren();
+  controls.replaceChildren();
+  status.textContent = '';
+  title.focus({ preventScroll: true });
 }
 
 function showParcel() {
   startup.hidden = true;
   welcome.hidden = true;
   unpacking.hidden = false;
-  parcelActions.hidden = true;
+  parcelActions.replaceChildren(button('拆开箱子', showInstances, true));
+  if (workspace) parcelActions.append(button('回到当前工作区', () => setup.action('continue')));
 }
 
-function chooseParcel(root) {
-  showParcel();
-  parcelTitle.textContent = '打开你的工作区';
-  stageLabel.textContent = '发现一个已有的工作区';
-  stageDetail.textContent = '你想继续用原来的工作区，还是新建一个？';
-  parcelActions.replaceChildren(button('使用已有工作区', () => unpackLocal('local', root, true), true),
-    button('新建工作区', () => unpackLocal('new', undefined, true)));
-  parcelActions.hidden = false;
+async function connect(command, input) {
+  candidate = await setup.action(command, input);
+  showWorkspaces();
 }
 
-async function unpackLocal(command, dataRoot, fromStartup = false) {
-  updateStartupProgress({ stage: 'prepare' });
-  unpacking.hidden = true;
-  welcome.hidden = true;
-  startup.hidden = false;
-  try {
-    await setup.action(command, { dataRoot });
-    updateStartupProgress({ stage: 'ready' });
-    await Promise.all(startupFill.getAnimations().map(animation => animation.finished.catch(() => {})));
-    await setup.action('continue');
-  } catch (error) {
-    startup.hidden = true;
-    if (fromStartup) {
-      showParcel();
-      parcelTitle.textContent = '开箱暂未完成';
-      stageLabel.textContent = '工作区暂时无法打开';
-      stageDetail.textContent = String(error.message).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
-      parcelActions.replaceChildren(button('重试打开工作区', () => open(), true), button('工作区选项', () => {
-        unpacking.hidden = true;
-        welcome.hidden = false;
-        showChoices();
-      }));
-      parcelActions.hidden = false;
-      return;
+function showInstances() {
+  showWelcome('选择实例');
+  if (localAvailable) buttons(button('本机正式实例', () => connect('prepare-local'), true));
+  buttons(button('连接已有实例', showRemote, !localAvailable));
+  if (workspace?.mode === 'remote') {
+    buttons(button('使用上次连接的实例', () => connect('prepare-current')));
+  }
+  if (workspace) buttons(button('回到当前工作区', () => setup.action('continue')));
+  if (workspace?.mode === 'local') {
+    buttons(button('Cloudflare Tunnel', () => showAccess('cloudflare')), button('Tailscale Serve', () => showAccess('tailscale')));
+  }
+}
+
+function showRemote() {
+  showWelcome('连接已有实例');
+  say('访问令牌由实例部署者提供。已登录的实例可沿用当前会话。');
+  const previous = candidate?.mode === 'remote' ? candidate : workspace?.mode === 'remote' ? workspace : null;
+  form([field('实例地址', 'address', { type: 'url', placeholder: 'https://', value: previous?.origin || '', required: true }),
+    field('访问令牌', 'token', { type: 'password' })],
+    '连接实例', values => connect('prepare-remote', { address: values.address.trim(), token: values.token.trim() }));
+  buttons(button('返回实例选择', showInstances));
+}
+
+function showWorkspaces() {
+  showWelcome('选择工作区');
+  say(candidate.mode === 'local' ? '本机正式实例\n' + candidate.origin : candidate.origin);
+  buttons(button('新建工作区', createWorkspace, true));
+  const list = document.createElement('section');
+  list.className = 'workspace-list';
+  list.setAttribute('aria-label', '已有工作区');
+  const current = workspace?.origin === candidate.origin ? workspace : null;
+  for (const { id, name } of [{ id: null, name: '默认工作区' }, ...candidate.profiles]) {
+    const item = button(name, () => setup.action('open-workspace', { workspaceId: id }));
+    if (current && current.workspaceId === id) item.setAttribute('aria-current', 'true');
+    if (id) {
+      const code = document.createElement('small');
+      code.textContent = id.slice(-8);
+      item.append(code);
     }
-    welcome.hidden = false;
+    list.append(item);
+  }
+  controls.append(list);
+  const back = [button('更换实例', showInstances)];
+  if (workspace) back.push(button('回到当前工作区', () => setup.action('continue')));
+  buttons(...back);
+}
+
+async function createWorkspace() {
+  welcome.hidden = true;
+  unpacking.hidden = true;
+  startup.hidden = false;
+  startupBand.removeAttribute('data-ready');
+  startupBand.removeAttribute('aria-valuenow');
+  startupLabel.textContent = '正在创建工作区…';
+  startupDetail.textContent = '';
+  try {
+    await setup.action('create-workspace');
+  } catch (error) {
+    showWorkspaces();
     throw error;
   }
-}
-
-function chooseLocal() {
-  say('在本机创建工作区', true);
-  say('工作区会保存在你选的目录。新建时如果默认端口被占用，我会自动选一个空闲端口。关闭窗口后，服务可以继续运行。');
-  form([field('工作区数据目录', 'dataRoot', { placeholder: workspace.defaultDataRoot || '使用默认目录' })],
-    '创建或打开本机工作区', values => unpackLocal('local', values.dataRoot.trim() || undefined));
-  buttons(button('返回选择', showChoices));
-}
-
-function chooseRemote() {
-  say('连接已有工作区', true);
-  say('请填写工作区的地址和访问令牌。你可以向工作区的部署者索取。');
-  const fields = [field('工作区地址', 'address', { type: 'url', placeholder: 'https://你的工作区地址', value: workspace.mode === 'remote' ? workspace.origin : '' }),
-    field('工作区访问令牌', 'token', { type: 'password' })];
-  if (workspace.mode === 'local' && workspace.local?.owner === 'summon' && workspace.local.state === 'ready') {
-    fields.push(field('切换时停止这个安装管理的本机服务', 'stopLocal', { type: 'checkbox' }));
-  }
-  form(fields, '连接工作区', async values => {
-    await setup.action('remote', { address: values.address.trim(), token: values.token.trim(), stopLocal: values.stopLocal === 'on' });
-  });
-  buttons(button('返回选择', showChoices));
-}
-
-function showChoices() {
-  controls.replaceChildren();
-  buttons(button(workspace.local?.dataRoot ? '打开本机工作区' : '在本机创建工作区', chooseLocal, true),
-    button('连接已有工作区', chooseRemote));
-  if (workspace.mode === 'remote' || workspace.mode === 'local' && workspace.local?.state === 'ready') {
-    buttons(button('回到当前工作区', () => setup.action('continue')));
-  }
-  if (workspace.mode === 'local') buttons(button('Codex 工作执行器', showCodex),
-    button('Cloudflare Tunnel', () => showAccess('cloudflare')), button('Tailscale Serve', () => showAccess('tailscale')));
-  if (workspace.mode === 'local' && workspace.local?.state === 'ready') buttons(button('复制工作区访问令牌', async () => {
-    await setup.action('copy-access-token');
-    status.textContent = '访问令牌已复制，可粘贴到另一台设备的安全输入框。';
-  }));
-}
-
-async function showCodex() {
-  const result = await setup.action('codex-status');
-  const title = 'Codex 工作执行器';
-  say(result.enabled ? 'Codex 已获得工作执行授权。工作会话会自动创建，结果会回到主 Bot 对话。'
-    : '允许我使用这台电脑上已登录的 Codex 订阅执行工作吗？确认后，我会在每次工作时自动创建独立会话，完成后把结果带回这里。');
-  controls.replaceChildren();
-  buttons(button(result.enabled ? '停用 Codex 执行器' : '同意并接入 Codex', () => connectCodex(!result.enabled), true));
-  buttons(button('返回主 Bot 对话', () => setup.action('continue')), button('返回工作区选择', showChoices));
-  document.querySelector('#title').textContent = title;
-}
-
-async function connectCodex(enabled) {
-  await setup.action('codex-consent', { enabled });
-  if (enabled) await setup.action('continue');
-  else await showCodex();
 }
 
 const statusText = {
@@ -220,16 +199,25 @@ function describe(result) {
 
 function accessLinks(provider, result) {
   if (result.docsUrl) {
-    const link = document.createElement('a'); link.className = 'button';
-    link.href = result.docsUrl; link.target = '_blank'; link.rel = 'noopener noreferrer';
-    link.textContent = '官方安装指引'; buttons(link);
+    const link = document.createElement('a');
+    link.className = 'button';
+    link.href = result.docsUrl;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = '官方安装指引';
+    buttons(link);
   }
   if (result.authorizationAvailable) buttons(button('打开官方授权页', () => setup.action('authorize', { provider })));
 }
 
+function accessNavigation() {
+  buttons(button('返回主 Bot 对话', () => setup.action('continue')), button('返回实例选择', showInstances));
+}
+
 async function showAccess(provider) {
+  showWelcome(provider === 'tailscale' ? 'Tailscale Serve' : 'Cloudflare Tunnel');
+  accessNavigation();
   const result = await setup.action('access', { action: 'status', provider });
-  document.querySelector('#title').textContent = provider === 'tailscale' ? 'Tailscale Serve' : 'Cloudflare Tunnel';
   describe(result);
   const fields = provider === 'tailscale' ? [field('Serve HTTPS 端口', 'port', { type: 'number', placeholder: '443' })]
     : [field('已经发布的 HTTPS 主机名', 'origin', { type: 'url', value: result.origin || '' }),
@@ -245,11 +233,11 @@ async function showAccess(provider) {
     say('撤销会移除这条登记，并停止 Summon 自己管理的转发。');
     controls.replaceChildren();
     buttons(button('确认撤销', async () => {
-      describe(await setup.action('access', { action: 'revoke', provider, confirm: true }));
+      await setup.action('access', { action: 'revoke', provider, confirm: true });
       await showAccess(provider);
     }, true), button('取消', () => showAccess(provider)));
   }));
-  buttons(button('返回主 Bot 对话', () => setup.action('continue')), button('返回工作区选择', showChoices));
+  accessNavigation();
 }
 
 function confirmAccess(provider, plan) {
@@ -258,7 +246,8 @@ function confirmAccess(provider, plan) {
     type: 'password', placeholder: plan.needsToken ? '粘贴已建隧道的令牌' : '留空沿用已保存的令牌',
   })] : [], '确认并应用', async values => {
     const result = await setup.action('access', { action: 'apply', provider, confirm: true, planId: plan.planId, token: values.token?.trim() });
-    describe(result); accessLinks(provider, result);
+    describe(result);
+    accessLinks(provider, result);
     if (['registered', 'reachable'].includes(result.state)) {
       controls.replaceChildren();
       buttons(button('回到主 Bot 的引导', () => setup.action('continue'), true), button('查看接入设置', () => showAccess(provider)));
@@ -268,36 +257,29 @@ function confirmAccess(provider, plan) {
 }
 
 async function open() {
-  const info = await setup.info();
-  workspace = info.workspace; transcript.replaceChildren(); controls.replaceChildren();
-  document.querySelector('#title').textContent = '你好，我是主 Bot。';
-  if (info.section === 'unpacking') {
-    const existing = workspace.existingDataRoot || (workspace.buildId !== workspace.installedBuildId && workspace.local?.dataRoot);
-    if (existing) return chooseParcel(existing);
-    if (workspace.mode === 'local') return unpackLocal('resume', undefined, true);
-    showParcel();
-    parcelTitle.textContent = '拆开你的新工作区';
-    stageLabel.textContent = '主 Bot 就在箱子里';
-    stageDetail.textContent = '拆开箱子，开始创建你的工作区。';
-    parcelActions.replaceChildren(button('新建工作区', () => unpackLocal('local', undefined, true), true));
-    parcelActions.hidden = false;
-    return;
+  try {
+    const info = await setup.info();
+    ({ workspace, candidate, localAvailable } = info);
+    if (info.section === 'unpacking') showParcel();
+    else if (info.section === 'workspaces') showWorkspaces();
+    else if (info.section === 'remote') showRemote();
+    else if (['cloudflare', 'tailscale'].includes(info.section)) await perform(() => showAccess(info.section));
+    else showInstances();
+    if (info.error) status.textContent = info.error;
+  } catch (error) {
+    showInstances();
+    status.textContent = message(error);
   }
-  startup.hidden = true;
-  unpacking.hidden = true;
-  welcome.hidden = false;
-  if (info.section === 'codex') await showCodex();
-  else if (['cloudflare', 'tailscale'].includes(info.section)) await showAccess(info.section);
-  else {
-    say('欢迎来到 Summon Bot。你可以在这台电脑上创建自己的工作区，也可以连接一个已经运行的工作区。');
-    if (workspace.origin) say('当前选择了' + (workspace.mode === 'local' ? '本机工作区。' : '远程工作区。') + '\n' + workspace.origin);
-    showChoices();
-  }
-  status.textContent = info.error || '';
 }
 
 const avatars = window.SummonAvatars;
-if (avatars) parcel.querySelector('.parcel-bot').innerHTML = avatars.render(avatars.defaults('bot-entry'), 144, { static: true });
-setup.onProgress(progress => { if (!startup.hidden) updateStartupProgress(progress); });
-setup.onSetup(() => void perform(open));
-void perform(open);
+if (avatars) document.querySelector('.parcel-bot').innerHTML = avatars.render(avatars.defaults('bot-entry'), 144, { static: true });
+setup.onProgress(stage => {
+  if (stage !== 'ready' || startup.hidden) return;
+  startupBand.setAttribute('data-ready', '');
+  startupBand.setAttribute('aria-valuenow', '100');
+  startupLabel.textContent = '工作区已就绪';
+  startupDetail.textContent = '正在打开工作区…';
+});
+setup.onSetup(() => void open());
+void open();

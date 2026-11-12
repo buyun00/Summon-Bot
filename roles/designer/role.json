@@ -4,9 +4,23 @@
   "role": "产品与流程设计、交互和体验判据",
   "skills": ["discussion"],
   "tools": [
-    "chatroom_list", "chatroom_read", "chatroom_send", "chatroom_dm",
-    "chatroom_team_read", "chatroom_team_raise", "bots_list", "knowledge_search",
-    "list_files", "read_file", "publish_file", "codex_projects", "codex_status",
-    "codex_create", "codex_attach", "codex_read", "codex_send", "codex_interrupt"
+    "chatroom_list",
+    "chatroom_read",
+    "chatroom_send",
+    "chatroom_dm",
+    "chatroom_team_read",
+    "chatroom_team_raise",
+    "bots_list",
+    "knowledge_search",
+    "list_files",
+    "read_file",
+    "publish_file",
+    "catalog_search",
+    "catalog_get",
+    "catalog_call",
+    "catalog_delegate",
+    "catalog_register",
+    "write_file",
+    "edit_file"
   ]
 }

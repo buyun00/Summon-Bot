@@ -172,6 +172,7 @@ fun OnboardingStep(store: SummonStore, roomID: String) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)
         .background(Color(0xFF202522), RoundedCornerShape(12.dp)).padding(12.dp)) {
         Text(text, style = MaterialTheme.typography.bodyMedium)
+        guide["setup"]["progress"].string?.takeIf { it.isNotBlank() }?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = Color.Gray) }
         (error ?: guide["error"].string)?.let { Text(it, color = Color(0xFFFF9F0A)) }
         val local = guide["localControl"]
         val address = local["origin"].string?.takeIf { it.startsWith("https://") }
@@ -184,7 +185,7 @@ fun OnboardingStep(store: SummonStore, roomID: String) {
                     scope.launch {
                         try {
                             store.request("/api/model-settings/onboarding/advance", "POST", SummonJson.obj(
-                                "step" to guide["step"], "action" to option["action"]))
+                                "step" to guide["step"], "action" to option["action"], "messageId" to guide["messageId"]))
                             store.refresh()
                         } catch (cancelled: CancellationException) { throw cancelled }
                         catch (failure: Exception) { error = failure.localizedMessage }

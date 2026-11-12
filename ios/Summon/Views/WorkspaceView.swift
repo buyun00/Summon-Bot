@@ -325,6 +325,18 @@ private struct WorkspaceWorkDetail: View {
             } else if !value["waiting"]["event"].stringValue.isEmpty {
                 Section("等待事项") { Text(value["waiting"]["event"].stringValue).textSelection(.enabled) }
             }
+            let nativeOperations = (value["bindings"].array ?? []).filter { ["native-tool", "native-recovery", "native-api"].contains($0["type"].stringValue) }
+            if !nativeOperations.isEmpty {
+                Section("工具执行") {
+                    ForEach(Array(nativeOperations.enumerated()), id: \.offset) { _, operation in
+                        WorkspaceNativeOperation(workID: initial.id, operation: operation,
+                                                 allowsInput: !["paused", "cancelled", "completed"].contains(status), refresh: load)
+                    }
+                }
+            }
+            ForEach(Array((value["nativeSources"].array ?? []).enumerated()), id: \.offset) { _, source in
+                Section(source["label"].stringValue) { SummonNativeSourceView(source: source) }
+            }
             if status == "interrupted" {
                 Section { Text("上次执行已中断。恢复会继续已有工作对话，已进行的操作仍然保留。")
                     .summonFont(.footnote).foregroundStyle(.secondary) }
@@ -409,6 +421,90 @@ private struct WorkspaceWorkDetail: View {
                 work = .object(fields)
             }
             await load()
+        } catch { self.error = error.localizedDescription }
+    }
+}
+
+private struct WorkspaceNativeOperation: View {
+    @Environment(SummonStore.self) private var store
+    let workID: String
+    let operation: SummonJSONValue
+    let allowsInput: Bool
+    let refresh: () async -> Void
+    @State private var input = ""
+    @State private var attempt = UUID().uuidString
+    @State private var pendingAnswer = ""
+    @State private var busy = false
+    @State private var error: String?
+    @State private var stream: String?
+    @State private var output = ""
+    @State private var offset = 0
+    private var path: String { "/api/works/\(workspaceEscaped(workID))/native/\(workspaceEscaped(operation["operationId"].stringValue))" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(operation["resourceName"].string ?? "原生工具").summonFont(.headline)
+            let status = operation["status"].stringValue
+            Text(["queued":"排队", "starting":"启动中", "running":"运行中", "awaiting-input":"等待答复", "stopping":"停止中",
+                  "completed":"已结束", "failed":"执行失败", "stopped":"已停止", "unknown":"结果待确认",
+                  "recovery-required":"待核对原会话", "resumable":"已核对，可续接", "unavailable":"原会话不可用", "historical":"历史记录"][status] ?? status)
+                .summonFont(.caption).foregroundStyle(.secondary)
+            if let version = operation["version"].string { Text(version).summonFont(.caption) }
+            if let session = operation["nativeSessionId"].string { Text("会话 \(session)").summonFont(.caption).textSelection(.enabled) }
+            if let error = error ?? operation["error"].string { Text(error).foregroundStyle(.orange) }
+            if operation["type"].string == "native-tool" {
+                HStack {
+                    Button("标准输出") { Task { await read("stdout", reset: true) } }.buttonStyle(.bordered)
+                    Button("错误输出") { Task { await read("stderr", reset: true) } }.buttonStyle(.bordered)
+                    if allowsInput && ["queued", "starting", "running", "awaiting-input"].contains(status) {
+                        Button("停止操作", role: .destructive) { Task { await post("stop", body: .object([:])) } }.buttonStyle(.bordered)
+                    }
+                }.disabled(busy)
+                if let stream {
+                    Text(output.isEmpty ? "当前没有输出" : output).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                    Button("读取新输出") { Task { await read(stream, reset: false) } }.buttonStyle(.borderless).disabled(busy)
+                }
+            }
+            if allowsInput, let request = operation["pending"].array?.first {
+                Text(request["text"].stringValue)
+                let choices = request["choices"].array ?? []
+                if choices.isEmpty {
+                    TextField("回复工具请求", text: $input)
+                    Button("发送回复") { Task { await respond(request, input) } }.buttonStyle(.bordered).disabled(busy || input.isEmpty)
+                } else {
+                    ForEach(Array(choices.enumerated()), id: \.offset) { _, choice in
+                        Button(choice["label"].stringValue) { Task { await respond(request, choice["id"].stringValue) } }
+                            .buttonStyle(.bordered).disabled(busy)
+                    }
+                }
+            }
+        }
+    }
+
+    private func respond(_ request: SummonJSONValue, _ value: String) async {
+        let signature = request["id"].stringValue + value
+        if signature != pendingAnswer { pendingAnswer = signature; attempt = UUID().uuidString }
+        await post("answer", body: .object(["id": .string(attempt), "requestId": request["id"], "text": .string(value)]))
+    }
+
+    private func post(_ action: String, body: SummonJSONValue) async {
+        busy = true; error = nil; defer { busy = false }
+        do {
+            let receipt = try await store.request(path: path + "/" + action, method: "POST", body: body)
+            if ["rejected", "unknown"].contains(receipt["status"].stringValue) {
+                throw WorkspaceFormError(message: receipt["error"].string ?? "原生请求结果待确认")
+            }
+            await refresh()
+        } catch { self.error = error.localizedDescription }
+    }
+
+    private func read(_ name: String, reset: Bool) async {
+        busy = true; error = nil; defer { busy = false }
+        do {
+            let result = try await store.request(path: path + "?stream=\(name)&offset=\(reset ? 0 : offset)")["output"]
+            output = String(((reset ? "" : output) + result["text"].stringValue).suffix(32_768))
+            stream = name
+            offset = result["nextOffset"].int ?? 0
         } catch { self.error = error.localizedDescription }
     }
 }

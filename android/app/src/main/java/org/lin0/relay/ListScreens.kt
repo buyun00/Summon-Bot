@@ -132,7 +132,7 @@ fun ConversationListScreen(
     val systemBots = store.bots.filter { !it.presetId.isNullOrEmpty() && matches("${it.name} ${it.role}") }
     val peers = store.rooms.filter { it.kind == "dm" && !it.members.contains("user") && matches(it.name) }
     val chat = store.modelSummary["chat"].takeIf { it is SummonJson.Obj } ?: SummonJson.obj("role" to SummonJson.Str("chat"))
-    val work = store.modelSummary["executors"].array.orEmpty().firstOrNull() ?: SummonJson.obj("role" to SummonJson.Str("executor"), "kind" to SummonJson.Str("codex"))
+    val work = store.modelSummary["workExecutor"].takeIf { it is SummonJson.Obj } ?: SummonJson.obj("role" to SummonJson.Str("executor"), "kind" to SummonJson.Str("pi"))
     val menuHeight = (LocalConfiguration.current.screenHeightDp * 100f / LocalSummonDisplay.current.zoom * .7f).dp
 
     Scaffold(
@@ -269,9 +269,8 @@ fun ConversationListScreen(
     quotaItem?.let { item ->
         ModalBottomSheet(onDismissRequest = { quotaItem = null }, containerColor = Color(0xFF1C231E)) {
             Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                val current = if (item["role"].stringValue == "executor") store.modelSummary["executors"].array.orEmpty().firstOrNull() ?: item else item
+                val current = if (item["role"].stringValue == "executor") store.modelSummary["workExecutor"].takeIf { it is SummonJson.Obj } ?: item else item
                 ModelUsageDetails(current)
-                ModelExecutorControl(current, store)
                 TextButton(onClick = { quotaItem = null; onOpenModels() }, modifier = Modifier.fillMaxWidth()) { Text("管理模型与引擎") }
             }
         }

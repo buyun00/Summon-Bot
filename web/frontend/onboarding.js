@@ -91,6 +91,7 @@ globalThis.SummonOnboarding = (() => {
         await bindings.api(endpoint + '/advance', 'POST', { action: element.dataset.value, step: element.dataset.step,
           messageId: element.dataset.messageId, requestId: crypto.randomUUID() });
         await bindings.refresh();
+        if (element.dataset.value === 'change-model') await open(bindings);
       } finally { pendingChoice = null; repaint(); }
       return;
     }
@@ -122,15 +123,15 @@ globalThis.SummonOnboarding = (() => {
   function setupActivity(roomId) {
     const guide = progress?.guide;
     if (!guide || progress.roomId !== roomId) return null;
-    const pending = pendingChoice && pendingChoice.step === guide.step && ['connect-engine', 'check', 'tailscale', 'cloudflare', 'custom'].includes(pendingChoice.action);
+    const pending = pendingChoice && pendingChoice.step === guide.step && ['retry-discovery', 'check', 'tailscale', 'cloudflare', 'custom'].includes(pendingChoice.action);
     if (!guide.setup && !pending) return null;
     const status = pending ? 'queued' : guide.setup.status;
     if (['completed', 'cancelled'].includes(status)) return null;
     const label = status === 'waiting' ? '等待你补充配置所需的信息'
       : ['blocked', 'paused'].includes(status) ? '配置等待继续'
-        : guide.engine ? `正在接入 ${guide.engine.name}` : '正在配置远程访问';
+        : guide.step === 'discover' ? 'Pi 正在初始化本机工具' : '正在配置远程访问';
     return { id: guide.setup?.workId || guide.messageId, workId: guide.setup?.workId, botId: progress.bot.id,
-      engineId: guide.engine?.id, status: status === 'active' ? 'running' : status, label };
+      status: status === 'active' ? 'running' : status, label };
   }
 
   function renderFollowup(message, esc) {
@@ -143,11 +144,10 @@ globalThis.SummonOnboarding = (() => {
       : onHost && setupLabel
         ? `<button type="button" class="secondary-button" data-action="onboarding-local-setup" data-provider="${esc(local.provider)}">${setupLabel}</button>`
         : local ? '<small>主 Bot 会在这里继续处理远程配置，需要你授权时会提示。</small>' : '';
-    const install = { codex: 'https://developers.openai.com/codex/cli', grok: 'https://docs.x.ai/build/overview', 'claude-code': 'https://code.claude.com/docs/en/setup' }[guide.step];
     const working = guide.setup && ['queued', 'active'].includes(guide.setup.status);
-    const options = guide.options.map(choice => `<button type="button" class="secondary-button" data-action="onboarding-choice" data-step="${esc(guide.step)}" data-message-id="${esc(message.id)}" data-value="${esc(choice.action)}" ${pendingChoice || working && ['connect-engine', 'check'].includes(choice.action) ? 'disabled' : ''}>${esc(choice.label)}</button>`).join('');
+    const options = guide.options.map(choice => `<button type="button" class="secondary-button" data-action="onboarding-choice" data-step="${esc(guide.step)}" data-message-id="${esc(message.id)}" data-value="${esc(choice.action)}" ${pendingChoice || working && ['retry-discovery', 'check'].includes(choice.action) ? 'disabled' : ''}>${esc(choice.label)}</button>`).join('');
     return `<div class="onboarding-followup">${guide.error ? `<p class="onboarding-error" role="alert">${esc(guide.error)}</p>` : ''}
-      <div class="onboarding-choices">${setup}${options}${install ? `<a href="${esc(install)}" target="_blank" rel="noopener noreferrer">官方安装指引</a>` : ''}</div></div>`;
+      ${guide.step === 'discover' && guide.setup?.progress ? `<p class="subtle">${esc(guide.setup.progress)}</p>` : ''}<div class="onboarding-choices">${setup}${options}</div></div>`;
   }
 
   function visibleMessages(messages) {

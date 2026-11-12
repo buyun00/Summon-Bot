@@ -50,7 +50,7 @@ try {
   if (type === 'gateway') {
     const { startGateway } = await import(pathToFileURL(join(config.releaseRoot, 'capabilities/gateway/index.mjs')));
     app = await startGateway({ dataRoot: config.dataRoot, releaseRoot: config.releaseRoot, defaultCwd: config.defaultCwd,
-      ...config.gateway, token: config.gatewayToken, model: config.model, codexPath: config.codexPath,
+      ...config.gateway, token: config.gatewayToken, model: config.model,
       onListening: async ({port}) => {
         if (!config.gateway.port) {
           const latest = await readJson(resolve(options.config));

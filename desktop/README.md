@@ -1,19 +1,17 @@
 # Summon Bot 桌面端
 
-Windows x64 和 Apple Silicon macOS 的桌面安装包内置 Electron、Node、Web、服务端和 Codex 桌面连接器。首次打开时可创建本机工作区，或填写已有工作区的地址和访问令牌。Electron 显示所选实例的网页。
+Windows x64 和 Apple Silicon macOS 的桌面安装包内置 Electron、Node、Web 和服务端。Electron 显示所选实例的网页。
 
-桌面创建的本机工作区默认使用 `http://127.0.0.1:8787`。端口已被占用时，系统分配空闲的回环端口并保存供下次使用。登记远程入口后，本机端口作为转发配置的一部分固定下来。数据默认保存在用户应用设置目录下的 `Relay/workspace-data`，初次创建时可指定绝对路径。关闭窗口后服务继续运行，菜单可明确停止。可以选择已运行的外部工作区数据目录，原安装入口负责该实例的启停和升级。
+Windows 安装后从开始菜单打开 Summon Bot。默认安装路径是 `%LOCALAPPDATA%\Programs\summon-desktop\Summon Bot.exe`。开箱页可选择本机正式实例，或填写远程地址并用该实例的访问令牌登录。新建或选择工作区后，在同一窗口的正式页面配置聊天模型和 API Key。
 
-## 安装后的命令
+本机正式实例使用 `D:/Relay-Bot-data`，入口为 `http://127.0.0.1:8787` 和 `https://bot.lin0.org`。该实例中的新工作区使用同一服务和数据根。正式服务由现有安装入口启停和升级，关闭窗口后继续运行。[运行维护](../docs/OPERATIONS.md)
 
-Windows 入口为安装目录的 `summon.cmd`。macOS 入口为 `Summon Bot.app/Contents/Resources/summon`。下例以 `summon` 表示对应命令。
+## 安装后的运维命令
+
+Windows 运维命令为安装目录的 `summon.cmd`。macOS 运维命令为 `Summon Bot.app/Contents/Resources/summon`。应用连接工作区后，可以使用以下命令查询状态或配置远程访问。下例以 `summon` 表示对应命令。
 
 ```text
 summon status
-summon local [--data-root PATH]
-summon start
-summon stop
-summon remote --address HTTPS --token-file PATH [--stop-local]
 summon access status tailscale
 summon access prepare tailscale --port 443
 summon access apply tailscale --plan PLAN_ID --confirm
@@ -22,16 +20,13 @@ summon access prepare cloudflare --origin HTTPS --owner external
 summon access prepare cloudflare --origin HTTPS --owner summon
 summon access apply cloudflare --plan PLAN_ID --confirm --token-file PATH
 summon access revoke cloudflare --confirm
-summon codex status
-summon codex connect
-summon codex disconnect
 ```
 
-`remote --stop-local` 停止本安装管理且当前选择的本机工作区。令牌文件可用 `-` 从标准输入读取。命令输出 JSON。退出码 `0` 表示操作已处理，`1` 表示失败，`2` 表示需要组件、授权或恢复操作。外部 Cloudflare 入口使用已发布的主机名，代理目标填本机 Web 地址并保留请求 Host。Tailscale 使用官方客户端的私网 Serve，遇到现有映射时可选择另一 HTTPS 端口。
+`summon status` 查询内嵌运行时版本与当前连接。命令输出 JSON。退出码 `0` 表示操作已处理，`1` 表示失败，`2` 表示需要组件、授权或恢复操作。Cloudflare 隧道令牌文件可用 `-` 从标准输入读取。外部 Cloudflare 入口使用已发布的主机名，代理目标填本机 Web 地址并保留请求 Host。Tailscale 使用官方客户端的私网 Serve，遇到现有映射时可选择另一 HTTPS 端口。
 
-Codex 在主 Bot 引导或「模型与引擎」中点击「同意并接入 Codex」，也可以运行 `summon codex connect`。程序复用本机 Codex 的订阅登录及配置，执行工作时自动创建和续接会话。CHAT 订阅单独导入。
+连接聊天模型并开始主 Bot 引导后，Pi 在部署主机发现 CLI。Codex 等工具通过能力目录接入，在原工作中使用。CHAT 的订阅导入用于配置聊天模型。[能力目录与共享 Skill](../docs/CAPABILITY_CATALOG.md)
 
-API 使用工作区访问令牌。可从桌面本机设置复制令牌，程序化操作也可从部署配置的私有 `web.accessToken` 字段读取。模型引导依次调用 `/api/model-settings/onboarding/reply`，按返回的 `options` 提交 `action` 与 `value`。等待首条真实回复时查询 `GET /api/model-settings/onboarding`，或提交 `action=progress`。进入真实房间后按 `guide.options` 向 `/api/model-settings/onboarding/advance` 提交 `step` 与 `action`。
+程序化访问使用实例的工作区访问令牌。模型引导调用 `/api/model-settings/onboarding/reply`，按返回的 `options` 提交 `action` 与 `value`。进度由 `GET /api/model-settings/onboarding` 返回。进入引导私聊后，按 `guide.options` 向 `/api/model-settings/onboarding/advance` 提交 `step` 与 `action`。
 
 ## 构建候选
 

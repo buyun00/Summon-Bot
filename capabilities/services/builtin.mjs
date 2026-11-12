@@ -10,7 +10,6 @@ import { ChatroomService } from '../chatroom/service.mjs';
 import { AttachmentStore,MAX_ATTACHMENT_REQUEST_BYTES } from '../chatroom/attachments.mjs';
 import { KnowledgeService } from '../knowledge/service.mjs';
 import { MemoryManagement } from '../memory-management/service.mjs';
-import { DesktopCodex } from '../codex/desktop.mjs';
 import { createFileTools, MAX_FILE_REQUEST_BYTES } from '../filesystem/tools.mjs';
 import { createRedactor } from '../../bot/src/runtime/config.mjs';
 import { acceptedWorkTask, workExecution } from '../../bot/src/context/sources.mjs';
@@ -18,12 +17,11 @@ import { executorManifestOperation, readExecutorManifest } from '../../bot/src/r
 import { toolDefinitions, FILE_TOOLS } from '../gateway/tools.mjs';
 import { fail, pick } from '../shared/validation.mjs';
 
-export const BUILTIN_CAPABILITIES = ['bot-management', 'chatroom', 'knowledge', 'memory-management', 'codex', 'filesystem'];
+export const BUILTIN_CAPABILITIES = ['bot-management', 'chatroom', 'knowledge', 'memory-management', 'filesystem'];
 export function capabilityForTool(name) {
   if (FILE_TOOLS.has(name)) return 'filesystem';
   if (name.startsWith('chatroom_')) return 'chatroom';
   if (name.startsWith('knowledge_')) return 'knowledge';
-  if (name.startsWith('codex_')) return 'codex';
   if (name.startsWith('bots_') || name.startsWith('reminders_') || name === 'routines_create') return 'bot-management';
 }
 const unfinished = item => ['queued','accepted','running','waiting'].includes(item.status);
@@ -52,11 +50,6 @@ export async function createCapability(options) {
   const memories = id === 'memory-management' ? new MemoryManagement({store:store(id),manager,dataRoot,emit}) : null;
   const workspaceLocks = new Map();
   const lockFor = cwd => { const key=resolve(cwd);if(!workspaceLocks.has(key))workspaceLocks.set(key,new WorkspaceExecutionLock(key));return workspaceLocks.get(key); };
-  let codex;
-  if (id === 'codex') {
-    codex = new DesktopCodex({store:store(id),dataRoot,manager,emit,version});
-    if(!options.deferStart)await codex.start();
-  }
   if (chatroom) {
     store(id).transaction(()=>{for(const job of chatroom.jobs())if(!job.serviceVersion)store(id).save('deliveries',{id:job.id,serviceVersion:version});});
     chatroom.staffingMutation=locked;
@@ -74,7 +67,7 @@ export async function createCapability(options) {
     if(FILE_TOOLS.has(name)) {
       if(actor==='controller')fail('Filesystem tools require an explicit Bot identity');
       const config=await manager.config(actor),artifacts=[];
-      const definitions=createFileTools({workspace:config.workspace,projectRoot:config.workspace,protectedRoot:dataRoot,accessPolicy:context.fileAccessPolicy,redact:createRedactor(config),containProcesses:context.workId?.startsWith('onboarding-')===true,tempRoot:join(manager.directory(actor),'tmp','capability-tools'),onArtifacts:items=>artifacts.push(...items),withExecution:(fn,toolSignal)=>lockFor(defaultCwd).withLock(`bot:${actor}`,fn,toolSignal),saveArtifact:async input=>(await manager.botApi()).saveArtifact(join(manager.directory(actor),'artifacts'),input),
+      const definitions=createFileTools({workspace:context.projectRoot||config.workspace,projectRoot:context.projectRoot||config.workspace,protectedRoot:dataRoot,accessPolicy:context.fileAccessPolicy,redact:createRedactor(config),containProcesses:context.workId?.startsWith('onboarding-')===true,tempRoot:join(manager.directory(actor),'tmp','capability-tools'),onArtifacts:items=>artifacts.push(...items),withExecution:(fn,toolSignal)=>lockFor(context.projectRoot||config.workspace).withLock(`bot:${actor}`,fn,toolSignal),saveArtifact:async input=>(await manager.botApi()).saveArtifact(join(manager.directory(actor),'artifacts'),input),
         publishFile:(input,file)=>locked(async ()=>{
           const workId=context.workId||(context.mode==='chat'?args.workId:null);
           if(!workId||!context.taskId)fail('File publication requires an authorized work ID',403);
@@ -119,7 +112,7 @@ export async function createCapability(options) {
           if(publication)return {...(await reconcile(publication)).attachment,publication:'existing-upload'};
           if(frontend&&operation.resultFile){
             const manifest=await readExecutorManifest({workspace:config.workspace,workId:work.id,operation}).catch(error=>{
-              if(error.code!=='ENOENT'||!work.bindings?.some(binding=>binding.type==='codex-desktop'&&
+              if(error.code!=='ENOENT'||!work.bindings?.some(binding=>binding.type==='native-recovery'&&
                 [binding.operationId,binding.executionOperationId].includes(operation.id)))throw error;
               return null;
             });
@@ -187,7 +180,7 @@ export async function createCapability(options) {
       }
       case 'chatroom_dm':return chatroom.dm(actor,args);
       case 'chatroom_conclude':{const room=chatroom.need('rooms',args.roomId);if(actor!=='controller'&&!room.members.includes(actor))fail('Not a room member',403);return chatroom.saveConclusion(args.roomId,args);}
-      case 'knowledge_search':return knowledge.search(args.query);
+      case 'knowledge_search':return knowledge.search(args.query,actor==='controller'?null:manager.get(actor).workspaceProfileId||null);
       case 'knowledge_save_node':return knowledge.saveNode(args);
       case 'knowledge_save_edge':return knowledge.saveEdge(args);
       case 'bots_list':{
@@ -207,28 +200,11 @@ export async function createCapability(options) {
       case 'bots_create':return manager.create(args);
       case 'bots_start':return manager.start(args.botId);
       case 'bots_stop':return manager.stop(args.botId);
-      case 'bots_cleanup':return cleanTemporaryData(manager,args.botId,{externalTasks:()=>store('codex').list('works')});
+      case 'bots_cleanup':return cleanTemporaryData(manager,args.botId,{});
       case 'routines_create':{const previous=args.id&&manager.store.get('routines',args.id);if(previous)assertOwner(actor,previous.botId);const botId=args.botId||previous?.botId||actor;assertOwner(actor,botId);return manager.saveRoutine({...args,botId});}
       case 'reminders_create':return manager.saveReminder(args,actor,context.source);
       case 'reminders_list':return manager.store.list('reminders').filter(item=>item.botId===actor&&item.roomId===context.source?.roomId);
       case 'reminders_cancel':return manager.cancelReminder(args.id,actor,context.source);
-      case 'codex_projects':return codex.projects(signal,context.codexScope,actor);
-      case 'codex_threads':return codex.threads(signal,context.codexScope,actor);
-      case 'codex_create':case 'codex_attach':{
-        codex.assertScope(actor,args.workId||context.workId,context.codexScope);
-        if(name==='codex_attach'&&actor!=='controller'&&!context.codexScope.threadGrants.includes(args.threadId))
-          fail('Attaching an existing chat requires its exact ID in the authenticated user request. Global chat discovery is not authorization.',403);
-        return codex[name==='codex_create'?'create':'attach']({...args,botId:actor},signal);
-      }
-      case 'codex_status':{codex.assertScope(actor,args.workId,context.codexScope);const id=codex.bindingId(actor,args.workId),work=codex.require(id);assertOwner(actor,work.botId);return codex.get(id);}
-      case 'codex_read':case 'codex_send':case 'codex_interrupt':{
-        codex.assertScope(actor,args.workId||context.workId,context.codexScope);
-        if(name==='codex_interrupt'&&context.stopId&&context.workId===args.workId)
-          return codex.stopWork(actor,args.workId,context.stopId);
-        const id=codex.bindingId(actor,args.workId||context.workId),work=codex.require(id);assertOwner(actor,work.botId);
-        return codex[{codex_read:'read',codex_send:'send',codex_interrupt:'interrupt'}[name]](id,
-          {...args,verification:context.codexVerification,cardResume:context.cardResume,signal});
-      }
       default:fail('Unknown capability tool',404);
     }
   }
@@ -244,17 +220,12 @@ export async function createCapability(options) {
   }
   if(knowledge)expose(knowledge,['saveNode','saveEdge']);
   if(memories)expose(memories,['write']);
-  if(codex){
-    expose(codex,['create','attach','send','interrupt','read','stopWork']);
-    operations.pause=async()=>{await codex.stop();return {paused:true};};
-    operations.resumeService=async()=>{await codex.start();return {ready:true};};
-  }
   if(id==='bot-management')operations.resumeService=()=>{manager.quiescing=false;return {ready:true};};
   return {tools,stateVersion:'1',operations,...(chatroom?{maxRequestBytes:MAX_ATTACHMENT_REQUEST_BYTES}:
     id==='filesystem'?{maxRequestBytes:MAX_FILE_REQUEST_BYTES}:{}),
     callTool:(name,args,context,signal)=>id==='filesystem'?invoke(name,args,context,signal):locked(()=>invoke(name,args,context,signal)),
     pendingWork:()=>chatroom?(chatroom.closed?0:Math.max(Number(chatroom.busy),chatroom.teamService.staffing.running.size,
-      chatroom.jobs().filter(job=>job.serviceVersion===version&&unfinished(job)).length)):codex?Number(Boolean(codex.active)):0,
-    close:async()=>{await chatroom?.close();await codex?.stop();for(const db of stores.values())db.close();}
+      chatroom.jobs().filter(job=>job.serviceVersion===version&&unfinished(job)).length)):0,
+    close:async()=>{await chatroom?.close();for(const db of stores.values())db.close();}
   };
 }

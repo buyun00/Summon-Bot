@@ -8,12 +8,12 @@
 
 <sub>[English](README.md) · [简体中文](README.zh-CN.md)</sub>
 
-Create your own Bots, work with them in direct chats, organize projects in group chats, and connect tools, files, and desktop Codex.<br/>
+Create your own Bots, work with them in direct chats, and organize projects in group chats. Bring command-line tools, APIs, and files into the work.<br/>
 Work starts with one conversation and continues with its goal, progress, and accumulated knowledge.
 
 [![Node.js](https://img.shields.io/badge/Node.js-24%2B-43853d?style=flat-square)](package.json)
 [![Agent](https://img.shields.io/badge/Agent-Pi-64748b?style=flat-square)](bot/)
-[![Capabilities](https://img.shields.io/badge/Tools-MCP%20%2B%20HTTP%20%2B%20Skills-2563eb?style=flat-square)](docs/CAPABILITY_CATALOG.md)
+[![Capabilities](https://img.shields.io/badge/Tools-CLI%20%2B%20MCP%20%2B%20HTTP%20%2B%20Skills-2563eb?style=flat-square)](docs/CAPABILITY_CATALOG.md)
 [![Status](https://img.shields.io/badge/Status-In_development-d97706?style=flat-square)](#multi-platform-experience)
 
 [Overview](#what-is-summon-bot) · [Core capabilities](#core-capabilities) · [Design choices](#design-choices) · [Architecture](#architecture) · [Multi-platform experience](#multi-platform-experience) · [Let an AI deploy it](docs/DEPLOYMENT.md)
@@ -30,7 +30,7 @@ A single request becomes work that can keep moving: it records requirements, wai
 
 For example, you can start like this:
 
-> **Development collaboration**: "Give this requirement to the engineering partner, work on it in desktop Codex, and come back here for anything that needs my decision."
+> **Development collaboration** — "Give this requirement to the engineering partner, use Codex in the project directory, and come back here for anything that needs my decision."
 >
 > **Project staffing**: "Organize suitable members for this project, make the responsibilities clear, and follow up on dependencies and handovers."
 >
@@ -58,15 +58,15 @@ Raw conversation and tool results, refined knowledge, and current work state are
 
 Refinement, compaction, and context assembly each create a short-lived maintenance conversation on demand. Real tool results and user corrections can become the basis for updating a Skill; a Bot can maintain its own methods and can also propose sourced revisions to the maintainers of shared Skills. See [Context and persistent work design](docs/BOT_3_PLUS_3_DESIGN.md).
 
-### One catalog for MCP, HTTP APIs, and Skills
+### One catalog for CLI tools, MCP, HTTP APIs, and Skills
 
-Manage MCP services, ordinary HTTP APIs, and shared Skills in the capability catalog. MCP supports stdio and Streamable HTTP, and existing HTTP endpoints can also be registered directly as tools; a Skill stores its usage conditions, procedures, and related resources.
+Find registered command-line tools, MCP services, HTTP APIs, and shared Skills in the capability catalog. After the chat model is connected and the guide starts, Pi discovers CLI entry points on the deployment host. MCP supports stdio and Streamable HTTP, and existing HTTP endpoints can be registered directly as tools. Skills store reusable procedures and their supporting resources.
 
-Each registered capability is automatically bound to a dedicated maintenance Bot that maintains and advises on that connection or method. Other Bots use tools directly within their own authorization and delegate matters that need business judgment to the responsible owner. See [Capability catalog and shared Skills](docs/CAPABILITY_CATALOG.md).
+Each registered capability has a dedicated maintenance Bot. For CLI tools, that Bot reads the installed version and help output and publishes methods with their sources and applicable versions. Other Bots use those methods within their authorization or consult the maintainer about a new use or a failure. [Capability catalog and shared Skills](docs/CAPABILITY_CATALOG.md)
 
-### Desktop Codex and local workspaces
+### Native tools in the original work
 
-Create, connect to, continue, read, and interrupt Codex sessions through the desktop connector, bringing desktop task progress and results back to the original work and conversation. External threads, execution turns, and operation identifiers are stored durably, and unknown results are looked up against the original operation.
+Pi drives the work and can run an enrolled CLI such as Codex in the authorized project directory. The original work keeps the operation ID, execution state, output references, and the native session ID when available. A tool method that provides structured events can send progress and questions back to the work and its conversation. A maintainer can also publish quota or status observations through the shared display interface. [Display sources](docs/CAPABILITY_CATALOG.md#展示来源)
 
 File capabilities provide reading, writing, and editing files plus running commands, usable in Bot workspaces and configured project directories. Commands run with host user privileges, so the available scope should be configured according to actual use. See [Operations](docs/OPERATIONS.md).
 
@@ -78,7 +78,7 @@ Token statistics show request details, cached usage, and reference cost by Bot, 
 
 ## Start with a conversation
 
-After installing and starting the server, open the web workspace. The main Bot walks you through connecting a chat model: import an available Codex or Grok login from the machine running Summon Bot, authorize a subscription, or enter an API key in a hidden input. These first messages run locally until a model is configured; keys stay out of the conversation and its drafts.
+Open the web workspace, or open the installed desktop app and choose the local production instance or a remote address. Create or select a workspace and continue in the same app window. The main Bot guides you through importing an available Codex or Grok login from the deployment host, authorizing a subscription, or entering an API key in a hidden input. The guide uses scripted messages until the chat model is configured, and the credentials stay in the host's private configuration.
 
 Continue to start a real conversation with the main Bot. It introduces the next steps around what you want to do, one question at a time. You can reopen this conversation from **Settings → New user guide (新手引导)**. The web, Electron, Android, and iOS interfaces use the same model connections and main Bot conversation.
 
@@ -103,21 +103,21 @@ Summon Bot builds its backend with Node.js 24+ and ESM JavaScript, uses Pi Agent
 flowchart TB
   Clients["Web · Electron · iOS · Android"] --> Web["Web service<br/>API · event stream · files and client downloads"]
   Web --> Gateway["Capability gateway<br/>auth · routing · current version bindings"]
-  Gateway <--> Services["Independent capability services<br/>Bot management · chatroom · knowledge<br/>files · Codex · memory management"]
+  Gateway <--> Services["Independent capability services<br/>Bot management · chatroom · knowledge<br/>files · memory management"]
   Services <--> Bot["Independent Bot<br/>identity · inbox · conversation · work scheduling"]
   Bot --> Agent["Pi Agent<br/>each active execution has its own Agent state"]
   Agent --> Gateway
   Agent <--> Data["Bot data<br/>SQLite · Markdown · Skills · Artifacts"]
-  Gateway --> Catalog["Capability catalog<br/>MCP · HTTP API · shared Skills"]
+  Gateway --> Catalog["Capability catalog<br/>CLI · MCP · HTTP API · shared Skills"]
   Catalog -->|MCP / HTTP| External["External tools and business systems"]
+  Catalog -->|registered CLI methods| CLI["CLI tools on the deployment host"]
   Catalog -. methods read on demand .-> Agent
-  Services --> Codex["Desktop Codex connector"]
 ```
 
 ### Three clear runtime boundaries
 
 - **Bot kernel**: each Bot has its own configuration, inbox, SQLite, and working directory; the scheduler manages serial execution per conversation and bounded concurrency, with each active execution holding its own Pi Agent state. There are 4 business execution slots by default, with background maintenance limited separately.
-- **Capability services**: chatroom, knowledge, files, Codex, Bot management, and memory management each own their domain data. The gateway provides authentication, routing, capability bindings, and aggregated endpoints; independent capability updates switch over after active executions reach a safe boundary.
+- **Capability services** own domain data for chatrooms, knowledge, files, Bot management, and memory management. The gateway provides authentication, routing, capability bindings, and aggregated endpoints. It also manages registered native tool executions and display sources. Independent capability updates switch over after active executions reach a safe boundary.
 - **User interfaces**: the web provides pages, API forwarding, real-time events, and download distribution. Electron loads the same web pages, and native mobile clients connect through the API; Bots and external work run in the backend, so responsibilities and state persist after the page is closed.
 
 ### Three layers of durable data
@@ -130,7 +130,7 @@ flowchart TB
 
 Refinement writes valuable increments back into the corresponding Markdown, assembly selects relevant material for the current execution, and compaction happens when the context budget requires it. All three start on demand and finish when done; raw records remain for later source lookup.
 
-Further reading: [Architecture](docs/ARCHITECTURE.md) · [Current implementation](docs/BOT_3_PLUS_3_IMPLEMENTATION.md) · [Capability services and updates](docs/CAPABILITY_SERVICES.md). For Pi adaptation and upstream notes, see [Pi component notes](bot/third_party/pi/README.md).
+Further reading: [Architecture](docs/ARCHITECTURE.md) · [Context and work implementation notes](docs/BOT_3_PLUS_3_IMPLEMENTATION.md) · [Capability services and updates](docs/CAPABILITY_SERVICES.md). For Pi adaptation and upstream notes, see [Pi component notes](bot/third_party/pi/README.md).
 
 ## Multi-platform experience
 
@@ -148,7 +148,6 @@ The project is in active development. The table describes the source implementat
 ```text
 bot/                        Independent Bot kernel, scheduling, context, and persistence
 capabilities/               Domain capability services, gateway, capability catalog, and version bindings
-connectors/codex-desktop-api/ Desktop Codex connector
 roles/                      Role configuration and prompts
 skills/                     Skills shipped with the project
 web/                        Web pages, HTTP entry points, and release package distribution
@@ -167,6 +166,6 @@ docs/                       Architecture, design, and operations documentation
 | Understand the system composition and data boundaries | [Architecture](docs/ARCHITECTURE.md) |
 | Understand a Bot's work, context, and persistence | [Design](docs/BOT_3_PLUS_3_DESIGN.md) · [Implementation](docs/BOT_3_PLUS_3_IMPLEMENTATION.md) |
 | Organize project teams and member handovers | [EggBot and group teams](docs/EGGBOT.md) |
-| Connect MCP, HTTP APIs, and shared methods | [Capability catalog](docs/CAPABILITY_CATALOG.md) · [Capability services](docs/CAPABILITY_SERVICES.md) |
+| Connect CLI tools, MCP, HTTP APIs, and shared methods | [Capability catalog](docs/CAPABILITY_CATALOG.md) · [Capability services](docs/CAPABILITY_SERVICES.md) |
 | Contribute to development and operations | [Development conventions](AGENTS.md) · [Development workflow](docs/DEVELOPMENT.md) · [Operations](docs/OPERATIONS.md) |
 | Build and release clients | [Client releases and updates](docs/CLIENT_RELEASES.md) · [iOS](ios/README.md) · [Android](android/README.md) · [Desktop](desktop/README.md) |

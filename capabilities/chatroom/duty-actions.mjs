@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import { EXISTING_PUBLICATION, OWNER_DELIVERY, ROOM_DUTY_PLANS, dependencyDispatches, matchesContributionGrant, publishedReviewTarget, reviewReferenceAttachments, roomDutyPlanId, sourceDispatches } from '../../bot/src/context/duty-actions.mjs';
 import { currentUserRequest, requireProductionGrant } from '../../bot/src/capabilities/request-routing.mjs';
 import { acceptedWorkTask } from '../../bot/src/context/sources.mjs';
-import { externalExecution } from '../../bot/src/context/execution-evidence.mjs';
 import { activeDuties, staffingArtifacts, staffingProject } from './staffing.mjs';
 import { fail, now, pick } from '../shared/validation.mjs';
 
@@ -185,20 +184,18 @@ export class RoomDutyActions {
       if (stopped.has(task.status) || work.status === 'cancelled') return { failure: '先行执行未成功，后续复核没有启动。' };
       if (work.status === 'paused' || work.status === 'blocked') return { wait: 'dependency-paused-or-blocked', selection };
       if (task.status !== 'completed' || task.result?.partial || task.result?.suspended) return { wait: 'successful-execution', selection };
-      const native = work.executor?.kind === 'codex' || work.bindings?.some(item => item.type === 'codex-desktop');
-      if (native) {
-        const execution = externalExecution(work, operation.id);
-        if (stopped.has(execution.status)) return { failure: '先行的外部执行未成功，后续复核没有启动。' };
-        if (execution.status !== 'completed' || !execution.startedConfirmed || !execution.externalReceived ||
-            execution.currentOperationId !== operation.id || work.executionOutcome?.operationId !== operation.id ||
-            work.executionOutcome?.finalConfirmed !== true) return { wait: 'confirmed-external-result', selection };
-      }
+      const native = (work.bindings || []).filter(binding => ['native-tool', 'native-api'].includes(binding.type) &&
+        (binding.executionEventId === operation.id || !binding.executionEventId && binding.taskId === task.id));
+      if (native.some(binding => ['queued', 'starting', 'running', 'awaiting-input', 'stopping', 'unknown'].includes(binding.status)))
+        return { wait: 'confirmed-native-result', selection };
+      const historical = work.bindings?.some(binding => binding.type === 'native-recovery' && binding.operationId === operation.id);
+      if (historical && work.executionOutcome?.operationId === operation.id && work.executionOutcome.finalConfirmed !== true)
+        return { wait: 'confirmed-historical-result', selection };
       const receipts = db.listRecords('work-notifications').filter(notification =>
         notification.workId === work.id && notification.roomId === plan.roomId && notification.replyTo === plan.messageId &&
         notification.status === 'delivered' && !notification.late && notification.resultKind !== 'progress' &&
         notification.executionEventId === operation.id &&
-        (native ? notification.publication === 'external' && notification.resultKind === 'execution-ended' :
-          notification.publication === 'explicit' && notification.taskId === task.id));
+        (notification.publication === 'explicit' || historical && notification.publication === 'external' && notification.resultKind === 'execution-ended'));
       const publications = new Map();
       for (const notification of receipts) for (const saved of [notification.receipt].flat()) {
         const message = saved?.id && this.store.get('messages', saved.id);

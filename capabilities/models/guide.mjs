@@ -9,8 +9,8 @@ export async function guideReply(onboarding, input = {}) {
   const choice = option;
   const reply = (phase, text, options = [], extra = {}) => ({ phase, text, options, draft, input: 'text', ...extra });
   const back = choice('换一种连接方式', 'back');
-  const ready = () => reply('ready', '可以继续设置工作引擎和远程访问。',
-    [choice('继续配置', 'handoff'), choice('换一个聊天模型', 'choose')], { draft: {}, placeholder: '回复“继续”…' });
+  const ready = () => reply('ready', '可以继续初始化本机工具和远程访问。',
+    [choice('开始工具初始化', 'handoff'), choice('换一个聊天模型', 'choose')], { draft: {}, placeholder: '回复“继续”…' });
   const select = async id => {
     await models.select(id);
     try { return handoffReply(await onboarding.handoff()); }

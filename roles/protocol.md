@@ -8,7 +8,7 @@
 - work_update 保存目标、要求、进度、真实状态及通知关系；后续纠正用 work_dispatch 送原 work。结果未知不是失败重试许可，外部绑定不能因压缩或重启换成新任务。
 - work_wait 登记同伴 taskId、外部结果或时间条件，完成本轮其他必要动作后释放执行位置。真实事件到达后沿原 work 续接。暂停/取消工作仍保存迟到结果，不自行恢复。
 - work_notify 把有意义结果或纠正持久投递给授权来源；目标、回复关系和通知 ID 由程序从已保存的请求关系取得。不同私聊来源不自动公开到群。
-- work_create 可选 executor.kind=pi/codex；Codex 目标先用 codex_projects 选择。evidence 使用读取工具返回的 room/session/artifact 引用，instruction 是模型说明；程序另行附上本轮真实用户原话，三者身份分开。多个独立动作分别保存，程序生成操作 ID；同一动作续办沿原记录，不要求模型回显内部 ID。辅助引用逐条读取，缺项只影响依赖它的步骤，原话和可用材料照常交付。
+- work_create 由 Pi 负责。工作目录来自当前工作范围或用户明确选择。evidence 使用读取工具返回的 room/session/artifact 引用，instruction 是模型说明；程序另行附上本轮真实用户原话，三者身份分开。多个独立动作分别保存，程序生成操作 ID；同一动作续办沿原记录，不要求模型回显内部 ID。辅助引用逐条读取，缺项只影响依赖它的步骤，原话和可用材料照常交付。
 - work_wait 可指定 dependencyWorkId 和 targetWorkId，将指定结果直接交给后续工作；也可用普通文字说明后续；程序从本轮已有动作和绑定补齐条件，B 的失败与部分产出也交给 A 判断，保留用户明确的前置条件。完成本轮必要读取与交接后结束，不在首个交接成功时丢弃其余动作。
 - contacts_list 查看直连同伴，messages_send 返回受理回执。tasks_get 读取实际状态；只有短暂必要查询才使用 waitMs，持续等待改用 work_wait。tasks_cancel 后读取实际终态，不把受理写成已停止。
 - 未知投递重试复用原 id。messages_list/tasks_list 是预览，完整结果用 tasks_get，原始历史用 read_session_history。
@@ -39,9 +39,9 @@
 
 ## 外部能力与持续职责
 
-- Codex 新工作只使用当前 codex-desktop-api Skill 和整合后的桌面连接器能力，保留稳定操作键及真实 threadId/turnId。未知写请求先查询原操作；不能切到旧 app-server 或重复创建。
+- 通过 catalog_search 查工具及适用方法，必要时通过 catalog_native_discover 读取实际入口。CLI 使用 catalog_native_run 保留原生会话和操作键，HTTP API 和 MCP 按目录接口调用。未知写请求先查询原操作。
 - bots_list 查询同伴职责、资料入口、生命周期和当前责任。普通任务由 work 承接；群内需要独立成员时交 EggBot 优先复用，再用 chatroom_team_manage 创建临时成员。bots_create 仍用于已授权的普通独立身份，不克隆在途执行。
-- routines_create 延续既有持续职责。复用 id/eventKey，同职责在途项合并；enabled:false 停止后续触发。可以 watch 已知 work/task/room，实际状态不变时只读观察，不唤醒模型。等待外部结果优先 work_wait，不为每个 Codex 任务另建轮询职责。
+- routines_create 延续既有持续职责。复用 id/eventKey，同职责在途项合并；enabled:false 停止后续触发。可以 watch 已知 work/task/room，实际状态不变时只读观察，不唤醒模型。等待外部结果优先 work_wait，执行事件沿原工作唤醒。
 - reminders_create 保存一次性提醒，传 delaySeconds 或带时区的 dueAt 和正文。相对延时以原消息接收时刻为准；原 Bot、房间和回复目标由程序取得。保存回执只是受理，到期直接发布并持久重试，不占模型或工作位置。reminders_cancel 沿原提醒 ID 取消，发送中返回实际已知状态。
 - 文件工具遵循允许路径与真实宿主语法，保留无关改动。源码修改、构建、正式安装、启动和发布是不同事实。
 

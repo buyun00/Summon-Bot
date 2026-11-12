@@ -1,6 +1,13 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
-contextBridge.exposeInMainWorld('SummonDesktop', Object.freeze({
+if (location.protocol === 'summon-setup:' && location.host === 'workspace') {
+  contextBridge.exposeInMainWorld('SummonSetup', Object.freeze({
+    info: () => ipcRenderer.invoke('summon:workspace-info'),
+    action: (command, input) => ipcRenderer.invoke('summon:workspace-action', command, input),
+    onSetup: callback => { ipcRenderer.on('summon:workspace-setup-state', () => callback()); },
+    onProgress: callback => { ipcRenderer.on('summon:workspace-progress', (_event, progress) => callback(progress)); },
+  }));
+} else contextBridge.exposeInMainWorld('SummonDesktop', Object.freeze({
   getInfo: () => ipcRenderer.invoke('summon:desktop-info'),
   checkForUpdates: () => ipcRenderer.invoke('summon:check-update'),
   installUpdate: () => ipcRenderer.invoke('summon:install-update'),
@@ -22,12 +29,3 @@ contextBridge.exposeInMainWorld('SummonDesktop', Object.freeze({
     return () => ipcRenderer.removeListener('summon:update-state', listener);
   },
 }));
-
-if (location.protocol === 'summon-setup:' && location.host === 'workspace') {
-  contextBridge.exposeInMainWorld('SummonSetup', Object.freeze({
-    info: () => ipcRenderer.invoke('summon:workspace-info'),
-    action: (command, input) => ipcRenderer.invoke('summon:workspace-action', command, input),
-    onSetup: callback => { ipcRenderer.on('summon:workspace-setup-state', () => callback()); },
-    onProgress: callback => { ipcRenderer.on('summon:workspace-progress', (_event, progress) => callback(progress)); },
-  }));
-}

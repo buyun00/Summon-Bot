@@ -61,14 +61,6 @@ const definitions=[
  ['write_file','Write an allowed workspace/project file',{path:string,content:string,overwrite:boolean},'write'],
  ['edit_file','Replace exact text in an allowed file',{path:string,oldText:string,newText:string,replaceAll:boolean},'write'],
  ['run_command','Execute a bounded noninteractive shell command; host privileges apply. File refusals and explicit user restrictions also bind shell/.NET reads, writes, copies and renames. Report partial/unknown effects truthfully; an error does not prove no changes.',{command:string,cwd:string,timeoutMs:{type:'integer',...commandTimeout,description:`Timeout in milliseconds (${commandTimeout.minimum}–${commandTimeout.maximum}, default ${commandTimeout.default})`}},'process'],
- ['codex_projects','List only Desktop projects already authorized in this Bot/source. An empty list permits using the authorized Bot directory; never borrow another project.',{},'read'],
- ['codex_threads','List only threads bound to accessible work in this Bot and current room/work. Other Desktop chats are private; an empty list is normal for a new Bot.',{},'read'],
- ['codex_create','Bind an existing local work to a new Desktop thread. Stable operationId is persisted before submission; unknown requests are queried, never replayed. End this turn with work_wait after acceptance.',{workId:string,operationId:string,prompt:string,target:{type:'object'},roomId:string},'external'],
- ['codex_attach','Bind an explicitly identified existing Desktop thread to local work without submitting any prompt',{workId:string,threadId:string,hostId:string},'write'],
- ['codex_status','Read durable external binding, operations and results; old executor history is read-only',{workId:string},'read'],
- ['codex_read','Read the bound Desktop state or recent visible history; summarized output may be incomplete',{workId:string,history:boolean},'read'],
- ['codex_send','Continue the same bound Desktop thread with a new explicit operationId. From a confirmed final review, set verificationOnly=true only for a read-only check of the existing result. Corrective production uses the normal send. A receipt is not completion.',{workId:string,operationId:string,message:string,verificationOnly:boolean},'external'],
- ['codex_interrupt','Request an authorized stop of the observed turn; read state first and supply its expectedTurnId',{workId:string,operationId:string,expectedTurnId:string},'external'],
  ['bots_list','List peer identities and roles',{},'read'],
  ['bots_create','Create an ordinary Bot from a role',{name:string,roleId:string,prompt:string,cwd:string},'external'],
  ['bots_start','Start a configured Bot',{botId:string},'external'],
@@ -80,5 +72,5 @@ const definitions=[
  ['reminders_cancel','Cancel a saved reminder by its returned ID. A sending reminder returns cancellation requested until the actual delivery outcome is known.',{id:string},'write'],
 ];
 export const toolDefinitions=definitions.map(([name,description,properties,effect])=>({name,description,inputSchema:
-  name==='chatroom_read'||name.startsWith('reminders_')||name.startsWith('codex_')?looseSchema({properties}):object(properties),effect}));
+  name==='chatroom_read'||name.startsWith('reminders_')?looseSchema({properties}):object(properties),effect}));
 export const FILE_TOOLS=new Set(['list_files','read_file','search_files','write_file','edit_file','run_command','publish_file','web_search','web_read']);

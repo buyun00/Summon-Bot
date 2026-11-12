@@ -16,8 +16,6 @@ Bot 的角色配置保存可用能力总集，前台 chat 与后台 work 在运�
 
 ## 日常启停
 
-Codex 桌面 API 已整合到 `connectors/codex-desktop-api` 并随正式发行打包。开机助手条目“Summon Bot · Codex 连接器”沿用 `Codex Desktop API` 任务，由本项目 `Run-Hidden.vbs` 无控制台启动，实际运行 current.json 选择的已安装代码。配置、事件与幂等数据库、日志在 `D:/Relay-Bot-data/connectors/codex-desktop-api`。手动启动双击该连接器的 `Start-Hidden.vbs`；停止用其 `Stop.ps1`。连接器更新后需单独重启该任务；不再使用原 `D:/Codex-Desktop-API` 服务入口。
-
 - 双击安装根的 `Start-Hidden.vbs` 无窗口启动；`Run.cmd` 也转交该入口，不保留终端窗口。命令行仍可使用 `Start.ps1 -DataRoot <数据根>`，已就绪实例不重复启动。
 - StartupHub 使用 `wscript.exe //B //NoLogo Start-Hidden.vbs -Foreground -RespectIntent -DataRoot <数据根>`；无窗口宿主等待 PowerShell 和看门狗退出，任务全程保持运行并尊重此前保存的停止意图。
 - 正式 `Start.ps1` 启动后会拉起已有的 `Summon Bot` 任务。前台任务持有独占身份锁，每 5 秒检查 Web/网关，仅在确认进程停止时自动恢复；连续失败按 5/10/20/40/60 秒退避，稳定运行 60 秒后清零。身份不明或暂时无响应时保留原进程，不启动副本。
@@ -87,7 +85,9 @@ Windows 正式发行使用 Node 24.21.0 LTS 构建并随包携带该运行时，
 
 下面的完整安装流程用于替换 Bot 引擎、网关或 Web 基础程序，不能用于冒充能力热更新。网关端口和控制令牌必须稳定；不能在忙碌服务仍运行时随意重生成。
 
-需要更新安装时，构建发行物，正常停止当前系统和连接器后运行 `summon:install -- --release-root <构建目录> --app-root D:/Relay-Bot-app --data-root D:/Relay-Bot-data --source-root D:/Relay-Bot`，再启动。这个流程不前置测试、哈希比对或额外验收。安装结果写入 current.json 和 deployment.json，只保留选中的发行目录。
+需要更新安装时，构建发行物，正常停止当前系统后运行 `npm run summon:install -- --release-root <构建目录> --app-root D:/Relay-Bot-app --data-root D:/Relay-Bot-data --source-root D:/Relay-Bot`，再启动。这个流程不前置测试、哈希比对或额外验收。安装结果写入 current.json 和 deployment.json，只保留选中的发行目录。
+
+首次从桌面中转切换时，先读取现有工作、会话绑定和在途操作状态。分别用现有系统的停止入口和原中转停止脚本关闭两者，再安装新版。完成切换后移除中转的计划任务和 StartupHub 条目。
 
 完整安装会重建当前内置能力配置和 Bot 绑定，更新 Bot 内核、Skill、模块与工具路由引用，删除被替代的能力运行目录、旧配置和构建中间目录。历史请求、对话、记忆、工具事实及用户文件继续保留。
 
@@ -103,7 +103,7 @@ manifest 的 `sourceCommit` 是构建时 Git HEAD，`sourceDirty` 表示是否�
 
 普通任务由 work_create 建立，不再提供克隆、分身交付和记忆合并入口。work_wait 持久记录外部等待并释放执行位；外部事件、同伴终态或到期条件唤醒原工作。暂停/取消后迟到事件只保存，显式恢复才继续。重复相同观察停止该无进展链，保留工作，不对正常任务设置总轮数、时长或工具次数截止。
 
-新 Codex 工作只经已整合桌面连接器的 codex_create/attach/send/read/interrupt；稳定 operationId 在请求前持久化，结果未知查询原操作，不换键重发。SSE 游标和待投递事件持久化，成功、失败、取消、中断与待输入回到原工作。原桌面登录/审批仍按连接器实际能力处理，不引入旧 app-server 后端。
+Pi 在已授权的项目目录调用部署主机上已接入的原生 CLI。原工作保存工具选择、实际会话身份和等待条件，后续据此观察和续作。对于结果未知的操作，先查实际结果再决定后续动作。
 
 既有 routines 调度可绑定工作与 watch 条件；同职责在途合并，前台优先，有明确观察源时无变化不调用模型。无 watch 的显式定时语义职责按约定时间执行。群聊未 @ 不全员唤醒；明确来源/工作直达，必要时由普通成员做一次只读语义路由。
 

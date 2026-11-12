@@ -1,20 +1,22 @@
 (() => {
   'use strict';
 
-  const databaseName = 'summon-workspace-v1';
+  const workspaceId = new URLSearchParams(location.search).get('workspace');
+  const workspaceScope = workspaceId ? 'workspace:' + workspaceId : 'workspace';
+  const databaseName = 'summon-workspace-v1' + (workspaceId ? '-' + workspaceId : '');
   const collectionPaths = {
     workspace: ['bots', 'rooms', 'works', 'agentRuns', 'activity', 'routines', 'knowledge.nodes', 'knowledge.edges', 'runtime.jobs'],
     room: ['messages', 'jobs'],
   };
   const valuePaths = {
-    workspace: ['historyEpoch', 'provider', 'defaultCwd', 'runtime.started', 'runtime.fast', 'runtime.deep'],
+    workspace: ['historyEpoch', 'workspaceProfileId', 'provider', 'defaultCwd', 'onboarding', 'modelSettings', 'runtime.started', 'runtime.fast', 'runtime.deep'],
     room: ['historyEpoch', 'room'],
   };
   const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
   const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
   const copy = value => typeof structuredClone === 'function' ? structuredClone(value) : JSON.parse(JSON.stringify(value));
   const getPath = (value, path) => path.split('.').reduce((parent, key) => object(parent) && own(parent, key) ? parent[key] : undefined, value);
-  const kindOf = scope => scope === 'workspace' ? 'workspace' : typeof scope === 'string' && scope.startsWith('room:') && scope.length > 5 ? 'room' : null;
+  const kindOf = scope => scope === workspaceScope || scope === 'workspace' ? 'workspace' : typeof scope === 'string' && scope.startsWith('room:') && scope.length > 5 ? 'room' : null;
   const validId = id => typeof id === 'string' && id.length > 0;
 
   function collectionValid(items) {
@@ -35,7 +37,7 @@
     return valuePaths[kind].every(path => {
       const value = getPath(snapshot, path);
       if (value === undefined) return true;
-      if (path === 'historyEpoch') return value === null || validId(value);
+      if (path === 'historyEpoch' || path === 'workspaceProfileId') return value === null || validId(value);
       if (path === 'defaultCwd') return typeof value === 'string';
       if (path === 'runtime.started') return typeof value === 'boolean';
       return object(value);

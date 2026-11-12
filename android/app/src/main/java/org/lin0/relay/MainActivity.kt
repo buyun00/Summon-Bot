@@ -100,6 +100,7 @@ private fun SummonApp(model: SummonViewModel = viewModel()) {
                 var onboardingShown by remember(store.settings.baseURL) { mutableStateOf(false) }
                 LaunchedEffect(store.settings.baseURL, store.onboardingRequired) {
                     if (store.onboardingRequired && !onboardingShown) { onboardingShown = true; nav.navigate("onboarding") }
+                    else if (!store.onboardingRequired) onboardingShown = false
                 }
                 NavHost(nav, startDestination = "list",
                     enterTransition = { slideInHorizontally(tween(380)) { it } },

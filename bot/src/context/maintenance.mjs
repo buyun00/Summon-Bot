@@ -777,7 +777,6 @@ export class ContextMaintenance {
     let projectError;
     try {
       project ||= await this.services.sources.contextProject(task);
-      project = await this.services.sources.projectForHandoff(task, project);
     } catch (error) { projectError = error.message; }
     const projectIds = [...new Set([knowledgeProjectId(project), project?.id, this.services.sources.roomProject(source)?.id].filter(Boolean))];
     const projectScopes = projectIds.map(id => this.store.getRecord('knowledge_scope', `project:${id}`)).filter(Boolean);

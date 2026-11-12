@@ -5,7 +5,7 @@ const kind = 'business-decisions';
 export const flowMarker = '[[SUMMON_FLOW ';
 const verdicts = new Set(['confirmed', 'adjusted', 'blocked', 'unconfirmed']);
 const choices = new Set(['answer', 'pass', 'ask', 'retain', 'reuse', 'skip', 'refuse', 'continue', 'handoff', 'verify', 'remember', 'route', 'correct']);
-const businessReads = new Set(['request_actions', 'work_get', 'work_outputs', 'runtime_status', 'codex_read', 'codex_status',
+const businessReads = new Set(['request_actions', 'work_get', 'work_outputs', 'runtime_status', 'catalog_native_status', 'catalog_native_observations', 'catalog_get',
   'chatroom_team_read', 'evidence_read', 'knowledge_read', 'context_assemble']);
 const code = value => typeof value === 'string' && /^[a-z0-9_.:-]{1,100}$/i.test(value) ? value : undefined;
 const id = value => typeof value === 'string' && value.length <= 350 && !/[\s\u0000-\u001f]/.test(value) ? value : undefined;
