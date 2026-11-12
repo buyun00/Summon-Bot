@@ -27,6 +27,11 @@ import { verifiedProductionRecovery } from '../capabilities/production-recovery.
 const at = () => new Date().toISOString();
 const failure = (status, message, code) => Object.assign(new Error(message), { status, code });
 const tokenEquals = (a, b) => typeof a === 'string' && typeof b === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
+const pendingCutoverRecovery = work => work?.status === 'waiting' && work.waiting?.kind === 'native-recovery' ?
+  work.bindings?.find(item => item.type === 'native-recovery' && item.status === 'recovery-required' && item.id === work.waiting.bindingId) : undefined;
+const heldBeforeCutover = (work, createdAt) => Boolean(createdAt &&
+  (['paused', 'cancelled', 'blocked'].includes(work?.status) || work?.status === 'waiting' && ['review', 'user-input'].includes(work.waiting?.kind)) &&
+  work.bindings?.some(item => item.type === 'native-recovery' && item.origin === 'pre-cutover' && createdAt <= item.migratedAt));
 async function atomicJson(path, data) { const temp = `${path}.${randomUUID()}.tmp`; await writeFile(temp, JSON.stringify(data, null, 2), { mode: 0o600 }); await rename(temp, path); }
 async function readBody(request) {
   let size = 0; const chunks = [];
@@ -146,6 +151,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         boundary: 'schedule', decision: 'skip', runtimeCheck: 'blocked', facts: { reason, status: work?.status },
         result: { status: 'not-started' } });
       if (work && ['paused', 'cancelled', 'blocked'].includes(work.status)) { hold('work-stopped', work); return; }
+      if (heldBeforeCutover(work, task.createdAt)) { hold('pre-cutover-wait', work); return; }
       const controller = new AbortController();
       const conversationScheduler = task.workId ? scheduler : frontendScheduler;
       const promise = conversationScheduler.run(task.conversationId || task.sessionId, async () => {
@@ -154,12 +160,17 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         if (task.status !== 'accepted') return;
         const currentWork = task.workId && services.works.get(task.workId);
         if (currentWork && ['paused', 'cancelled', 'blocked'].includes(currentWork.status)) { hold('work-stopped', currentWork); return; }
+        if (heldBeforeCutover(currentWork, task.createdAt)) { hold('pre-cutover-wait', currentWork); return; }
+        const cutoverRecovery = task.metadata?.cutoverRecoveryBindingId;
+        if (cutoverRecovery && pendingCutoverRecovery(currentWork)?.id !== cutoverRecovery) {
+          hold('cutover-recovery-state-changed', currentWork); return;
+        }
         if (currentWork?.status === 'waiting' && currentWork.waiting?.dependencyWorkId &&
           store.getRecord('work-waits', currentWork.waiting.id)?.status === 'pending') { hold('dependency-pending', currentWork); return; }
         // A later request can be accepted while its predecessor is still active.
         // The predecessor may finish after acceptance, so refresh at actual
         // queue start as well; its completed state does not describe this task.
-        if (currentWork && ['waiting', 'completed'].includes(currentWork.status))
+        if (currentWork && !cutoverRecovery && ['waiting', 'completed'].includes(currentWork.status))
           services.works.update(currentWork.id, { status: 'active', waiting: null, lastError: null, executionOutcome: null });
         // Keep each accepted request and its publication route intact in the work queue.
         if (currentWork) services.works.update(currentWork.id, { lastTaskId: task.id });
@@ -186,7 +197,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
           const native = latest?.bindings?.findLast(binding => binding.type === 'native-tool' && ['queued', 'starting', 'running', 'awaiting-input', 'stopping'].includes(binding.status));
           if (latest?.status === 'active' && native) latest = services.works.update(latest.id, { status: 'waiting',
             waiting: { kind: 'native-execution', operationId: native.operationId, reason: '等待 ' + native.resourceName + ' 的原生操作' } });
-          if (latest?.status === 'active' && services.works.executor(latest).kind === 'pi') {
+          if (latest?.status === 'active' && !cutoverRecovery && services.works.executor(latest).kind === 'pi') {
             const execution = services.works.execution(task), continuationId = execution.actionId || execution.executionEventId;
             const prior = store.getRecord('work-continuation', continuationId);
             const observation = JSON.stringify({ progress: latest.progress, content: result.content, bindings: latest.bindings });
@@ -306,7 +317,8 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
             services.works.requireResume(work, event.authorization.source.receivedAt || null);
             services.works.activate(work);
           }
-        } else if (['waiting', 'blocked'].includes(work.status) || work.status === 'completed' && envelope.kind === 'request') {
+        } else if (!envelope.metadata?.cutoverRecoveryBindingId &&
+          (['waiting', 'blocked'].includes(work.status) || work.status === 'completed' && envelope.kind === 'request')) {
           services.works.update(work.id, { status: 'active', waiting: null, lastError: null });
         }
       }
@@ -465,7 +477,8 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         const waits = new Map(store.listRecords('work-waits').filter(item => item.status === 'pending').map(item => [item.id, item]));
         for (const wait of waits.values()) {
           const target = services.works.get(wait.targetWorkId || wait.workId);
-          if (!target || ['paused', 'cancelled'].includes(target.status) || wait.unresolvedTaskId) continue;
+          if (!target || ['paused', 'cancelled'].includes(target.status) || wait.unresolvedTaskId ||
+            wait.mode === 'follow_up' && heldBeforeCutover(target, wait.createdAt)) continue;
           try {
             let observation;
             if (wait.dependencyWorkId) {
@@ -502,6 +515,9 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         }
         for (const task of store.listTasks({ status: 'accepted', limit: 10000 })) schedule(task);
         for (const event of store.listRecords('work-events').filter(event => event.status === 'pending' && !event.receipt)) {
+          const work = services.works.get(event.workId);
+          if (heldBeforeCutover(work, event.createdAt) || event.metadata?.cutoverRecoveryBindingId &&
+            pendingCutoverRecovery(work)?.id !== event.metadata.cutoverRecoveryBindingId) continue;
           const sourceId = event.sourceTaskId || event.requestTaskId;
           const source = sourceId && store.getTask(sourceId);
           try {
@@ -676,7 +692,8 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
           const registeredWait = operation.status !== 'unknown' && store.listRecords('work-waits').some(wait => wait.workId === id && wait.status === 'pending' &&
             (wait.dependencyEventId === operation.operationId || wait.taskId === task.id));
           if (registeredWait) void wake().catch(() => {});
-          else if (!['paused', 'cancelled', 'completed'].includes(work.status) && ['completed', 'failed', 'stopped', 'unknown', 'superseded'].includes(operation.status)) {
+          else if (!task.metadata?.cutoverRecoveryBindingId && !['paused', 'cancelled', 'completed'].includes(work.status) &&
+            ['completed', 'failed', 'stopped', 'unknown', 'superseded'].includes(operation.status)) {
             await services.works.dispatch(id, { id: bindingId + ':' + operation.status, kind: 'event',
               content: { type: 'native-execution', operation, instruction: 'Inspect the original receipt and output in catalog_native_status. Use actual results to continue the accepted step. Preserve operation identity and reconcile unknown effects before another write.' },
               metadata: { actor: 'system', sourceType: 'native-tool', priority: 'background' } }, task);
@@ -752,21 +769,22 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
     emit('bot.loading', identity()); await atomicJson(join(config.dataDir, 'run', 'current.json'), identity());
     await engine.initialize(); updates.recover();
     state = 'ready'; readyAt = at(); emit('bot.ready', identity()); await atomicJson(join(config.dataDir, 'run', 'current.json'), identity());
-    for (const work of services.works.list({ limit: 500 }).filter(item => !['completed', 'paused', 'cancelled'].includes(item.status))) {
-      const migrated = work.bindings?.find(item => item.type === 'native-recovery' && item.status === 'recovery-required');
-      const original = migrated && (store.getTask(migrated.taskId) || store.getTask(work.lastTaskId));
-      if (original && services.works.execution(original).authorization?.source) {
+    for (const work of store.listRecords('works')) {
+      const migrated = pendingCutoverRecovery(work);
+      const original = migrated?.taskId && store.getTask(migrated.taskId);
+      if (original?.workId === work.id && services.works.execution(original).authorization?.source) {
         await services.works.dispatch(work.id, { id: 'recover-native:' + migrated.id, kind: 'event',
-          metadata: { sourceType: 'native-tool', priority: 'background' },
+          metadata: { sourceType: 'native-tool', priority: 'background', cutoverRecoveryBindingId: migrated.id },
           content: { type: 'native-cutover-recovery', binding: migrated,
-            instruction: 'Inspect the actual original tool session and already produced work from this binding. Find the native tool through the catalog and learn its read/resume interface with the assigned maintainer. Use the same session if its identity is confirmed. If unavailable, keep the work and artifacts and reconcile uncertain side effects before choosing any remaining step.' } }, original).catch(error =>
+            instruction: 'Use the catalog and the assigned maintainer to inspect the original tool session, progress and artifacts. Limit this startup step to read-only observations and recording the reconciliation. Preserve uncertain results, and use the normal work flow to continue once the original effects and next authorized step are clear.' } }, original).catch(error =>
           emit('work.recovery_pending', { workId: work.id, message: error.message }));
       }
     }
     for (const work of services.works.list({ status: 'active', limit: 500 })) {
       const last = work.lastTaskId && store.getTask(work.lastTaskId);
       const liveNative = work.bindings?.some(item => item.type === 'native-tool' && ['queued', 'starting', 'running', 'awaiting-input', 'stopping'].includes(item.status));
-      if (last?.status === 'interrupted' && last.metadata?.sourceType !== 'external' && !liveNative) try {
+      const unresolvedOriginal = work.bindings?.some(item => item.type === 'native-recovery' && item.status === 'recovery-required' && last?.createdAt <= item.migratedAt);
+      if (last?.status === 'interrupted' && last.metadata?.sourceType !== 'external' && !last.metadata?.cutoverRecoveryBindingId && !liveNative && !unresolvedOriginal) try {
         await services.works.dispatch(work.id, { id: `recover:${last.id}`, metadata: { resumeEventId: last.metadata?.resumeEventId || last.metadata?.workEventId }, content: { type: 'execution_interrupted', taskId: last.id, instruction: 'Resume only this accepted step. First inspect durable tool receipts and original external bindings; unknown effects must be queried, never replayed.', unknownTools: store.listTools(last.id).filter(tool => tool.status === 'unknown') } }, last);
       } catch (error) { emit('work.recovery_pending', { workId: work.id, message: error.message }); }
     }

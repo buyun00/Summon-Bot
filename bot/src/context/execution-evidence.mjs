@@ -1,5 +1,7 @@
 import { factTime } from './fact-time.mjs';
 
+export const HISTORICAL_WORK_DELIVERIES = 'historical-work-deliveries';
+
 export function unsettledNativeBinding(binding) {
   return ['native-tool', 'native-api'].includes(binding.type) && ['queued', 'starting', 'running', 'awaiting-input', 'stopping', 'unknown'].includes(binding.status);
 }

@@ -8,7 +8,7 @@ import { acceptanceActionScope, acceptanceReply, authorizeProduction, currentPro
 import { EXISTING_PUBLICATION, OWNER_DELIVERY, ROOM_DUTY_PLANS, dependencyDispatches, publishedReviewTarget, roomDutyPlanId, saveRoomDutyPlan, sourceDispatches } from '../context/duty-actions.mjs';
 import { acceptanceBindings, acceptanceLinks, naturalAcceptanceMatch, sameRoomResultAcceptance } from './acceptance-identity.mjs';
 import { localTime } from '../context/fact-time.mjs';
-import { externalExecution } from '../context/execution-evidence.mjs';
+import { externalExecution, HISTORICAL_WORK_DELIVERIES } from '../context/execution-evidence.mjs';
 import { readExecutorManifest } from '../runtime/executor-delivery.mjs';
 import { deliveredLocalFiles, localPathKey } from '../runtime/local-delivery.mjs';
 import { MESSAGE_ATTACHMENTS, WORK_ATTACHMENTS } from '../runtime/notifications.mjs';
@@ -76,7 +76,11 @@ const withPublications = (target, publications) => publications.length ? { ...ta
   publicationMessageIds: [...new Set(publications.map(item => item.messageId))], publications } : null;
 
 function acceptanceTarget(store, work, roomId, notifications = store.listRecords('work-notifications').filter(item => item.workId === work.id)) {
-  if (work.executor?.kind === 'pi' && !work.bindings?.some(item => item.type === 'codex-desktop')) {
+  const history = store.getRecord(HISTORICAL_WORK_DELIVERIES, work.id), execution = history?.final, outcome = work.executionOutcome;
+  const originalDelivery = execution && history.botId === work.botId && work.bindings?.some(item => item.id === history.bindingId && item.type === 'native-recovery') &&
+    outcome?.kind === 'execution-ended' && outcome.finalConfirmed && outcome.operationId === execution.operationId && outcome.turnId === execution.turnId &&
+    (!work.waiting?.operationId || work.waiting.operationId === execution.operationId);
+  if (!originalDelivery) {
     const last = work.lastTaskId && store.getTask(work.lastTaskId);
     if (work.status !== 'completed' || last?.workId !== work.id || last.status !== 'completed' ||
       !last.finishedAt || last.result?.partial || last.result?.suspended || last.metadata?.sourceType === 'external') return null;
@@ -88,16 +92,10 @@ function acceptanceTarget(store, work, roomId, notifications = store.listRecords
       .map(acceptancePublication);
     return withPublications({ operationId: operation.id }, publications);
   }
-  const execution = externalExecution(work), outcome = work.executionOutcome;
   if (!roomId || !['waiting', 'completed'].includes(work.status) ||
-    work.status === 'waiting' && !['review', 'user-input'].includes(work.waiting?.kind) ||
-    !execution.startedConfirmed || !execution.externalReceived || execution.operationId !== execution.currentOperationId ||
-    execution.status !== 'completed' || outcome?.kind !== 'execution-ended' || !outcome.finalConfirmed ||
-    outcome.operationId !== execution.operationId || outcome.turnId !== execution.turnId) return null;
+    work.status === 'waiting' && !['review', 'user-input'].includes(work.waiting?.kind)) return null;
 
-  const binding = work.bindings.find(item => item.id === execution.bindingId);
-  const receipts = new Map(binding.operations?.filter(item => item.status === 'received' &&
-    item.threadId === execution.threadId).map(item => [item.operationId, item]));
+  const receipts = new Map(history.receipts.map(item => [item.operationId, item]));
   let { operationId, turnId } = execution;
   const visited = new Set();
   while (receipts.get(operationId)?.verificationOnly) {
@@ -111,7 +109,7 @@ function acceptanceTarget(store, work, roomId, notifications = store.listRecords
   // A read-only verification can preserve a previously published file, but is never itself the result.
   const throughVerification = operationId !== execution.operationId;
   if (work.status === 'waiting' && work.waiting.kind === 'user-input' &&
-    (!throughVerification || work.waiting.operationId !== execution.operationId || work.waiting.bindingId !== execution.bindingId ||
+    (!throughVerification || work.waiting.operationId !== execution.operationId || work.waiting.bindingId !== history.bindingId ||
       work.waiting.outcome !== 'execution-ended')) return null;
 
   const publications = notifications.flatMap(item => {
@@ -119,12 +117,12 @@ function acceptanceTarget(store, work, roomId, notifications = store.listRecords
       item.publication !== 'external' || item.executionEventId !== operationId || item.resultKind !== 'execution-ended' ||
       item.authorization?.source?.actor !== 'user' || item.authorization.source.roomId !== roomId ||
       item.authorization.source.replyTo !== item.replyTo ||
-      !item.sourceRefs?.some(ref => ref.type === 'codex' && ref.operationId === operationId &&
+      !item.sourceRefs?.some(ref => ref.type === history.source.referenceType && ref.operationId === operationId &&
         ref.threadId === execution.threadId && ref.turnId === turnId)) return [];
     const observation = store.getRecord('work-observations', item.notificationId);
     const observed = observation?.content;
     if (observation?.workId !== work.id || observation.taskId !== item.taskId || observation.late ||
-      observed?.source !== 'codex-desktop-connector' || observed.operationId !== operationId ||
+      observed?.source !== history.source.observationSource || observed.operationId !== operationId ||
       observed.externalThreadId !== execution.threadId || observed.turnId !== turnId || observed.status !== 'completed' ||
       observed.state?.stale || !observed.final?.confirmed || observed.final.threadId !== execution.threadId || observed.final.turnId !== turnId) return [];
     return (Array.isArray(item.receipt) ? item.receipt : [item.receipt]).flatMap(receipt => {
@@ -187,8 +185,8 @@ async function requestAcceptanceBindings(services, task, user, rooms, page, { ex
     const target = !pending.has(workId) && acceptanceTarget(store, work, user.roomId, notifications);
     if (target) target.workRevision = work.revision;
     const current = new Map((target?.publications || []).map(item => [item.messageId, item]));
-    const verifications = new Set(work.bindings?.flatMap(binding => (binding.operations || []).filter(item => item.verificationOnly &&
-      item.status === 'received' && item.threadId === binding.externalThreadId).map(item => item.operationId)));
+    const history = store.getRecord(HISTORICAL_WORK_DELIVERIES, workId);
+    const verifications = new Set(history?.receipts.filter(item => item.verificationOnly).map(item => item.operationId));
     for (const item of delivered) for (const receipt of [item.receipt].flat()) {
       if (!receipt?.id || receipt.roomId !== user.roomId || receipt.workId !== workId || receipt.senderId !== work.botId || receipt.replyTo !== item.replyTo) continue;
       const verified = item.executionEventId === target?.operationId && current.get(receipt.id);

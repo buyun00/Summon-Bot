@@ -6,6 +6,7 @@ import { copyTree,readJson,writeJson,within,parseArgs } from '../build/files.mjs
 import { verifyRelease } from '../build/verify.mjs';
 import { initializeDeployment,inspectService,deploymentPath,serviceFolders } from './system.mjs';
 import { selectCurrentVersion } from './current-version.mjs';
+import { migrateNativeExecution } from './native-cutover.mjs';
 import { migratePublicOrigin } from './remote-config.mjs';
 import { removeInside } from '../release/repository.mjs';
 
@@ -43,6 +44,9 @@ export async function installRelease({releaseRoot,appRoot,dataRoot,sourceRoot,de
     }
     finally {await removeInside(dirname(destination),staging);}
   }
+  const {RecordStore}=await import(pathToFileURL(join(destination,'capabilities/shared/store.mjs')));
+  const {BotStore}=await import(pathToFileURL(join(destination,'bot/src/storage/store.mjs')));
+  const nativeMigration=await migrateNativeExecution(dataRoot,{RecordStore,BotStore});
   const initialized=await initializeDeployment({dataRoot,releaseRoot:destination,defaultCwd,publicOrigin,port});
   sourceRoot=sourceRoot||initialized.config.sourceRoot;
   const {publicOrigin:previousOrigin,...deployment}=initialized.config;
@@ -52,7 +56,7 @@ export async function installRelease({releaseRoot,appRoot,dataRoot,sourceRoot,de
   for(const name of ['Start.ps1','Start-Hidden.vbs','Stop.ps1','Run.cmd'])await copyFile(join(destination,name),join(appRoot,name));
   const selection={schemaVersion:1,releaseRoot:destination,buildId:verified.buildId,dataRoot,selectedAt:new Date().toISOString()};
   await writeJson(join(appRoot,'current.json'),selection);
-  const cleanup=await selectCurrentVersion({appRoot,dataRoot,sourceRoot,releaseRoot:destination,buildId:verified.buildId,deferredCleanupPaths});
+  const cleanup=await selectCurrentVersion({appRoot,dataRoot,sourceRoot,releaseRoot:destination,buildId:verified.buildId,nativeMigration,deferredCleanupPaths});
   return {...selection,cleanup};
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){

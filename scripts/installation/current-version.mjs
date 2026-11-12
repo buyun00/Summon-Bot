@@ -3,7 +3,6 @@ import { existsSync } from 'node:fs';
 import { join, resolve, relative, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { migrateNativeExecution } from './native-cutover.mjs';
 
 const inside = (root, path) => { const part = relative(root, path); return part && !part.startsWith('..') && !isAbsolute(part); };
 const readJson = async path => JSON.parse(await readFile(path, 'utf8'));
@@ -33,7 +32,8 @@ const activeBuild = name => {
 
 /** Full installs stop every writer first, replace operational configuration, and
  * retain only the current release. Business history and user files are retained. */
-export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, releaseRoot, buildId, deferredCleanupPaths = [] }) {
+export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, releaseRoot, buildId, nativeMigration, deferredCleanupPaths = [] }) {
+  if (!nativeMigration) throw new Error('Native execution conversion must finish before release cleanup');
   appRoot = resolve(appRoot); dataRoot = resolve(dataRoot); releaseRoot = resolve(releaseRoot);
   if (!inside(join(appRoot, 'releases'), releaseRoot)) throw new Error('Current release must belong to the installation');
   if (sourceRoot) {
@@ -52,7 +52,6 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
   const { catalogTools } = await import(pathToFileURL(join(releaseRoot, 'capabilities/services/catalog.mjs')));
   const { CATALOG_MAINTAINER_TOOLS } = await import(pathToFileURL(join(releaseRoot, 'capabilities/bot-management/service.mjs')));
   const { dutyOrigin, effectiveBotTools } = await import(pathToFileURL(join(releaseRoot, 'capabilities/bot-management/tool-access.mjs')));
-  const nativeMigration = await migrateNativeExecution(dataRoot, { RecordStore, BotStore });
   const deployment = await readJson(join(dataRoot, 'config/deployment.json'));
   const registryPath = join(dataRoot, 'capabilities/registry/state.sqlite');
   const retained = new Map(BUILTIN_CAPABILITIES.map(id => [id, buildId]));
@@ -139,7 +138,8 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
     try { for (const record of store.list(kind)) if (unfinished(record)) store.save(kind, { ...record, serviceVersion: buildId }); }
     finally { store.close(); }
   }
-  for (const name of ['state.sqlite', 'state.sqlite-wal', 'state.sqlite-shm']) await removeWithin(dataRoot, join(dataRoot, 'capabilities', 'codex', name));
+  for (const name of ['state.sqlite', 'state.sqlite-wal', 'state.sqlite-shm', 'state.sqlite-journal'])
+    await removeWithin(dataRoot, join(dataRoot, 'capabilities', 'codex', name));
   const runtime = join(dataRoot, 'capabilities/service-runtime');
   for (const capability of await entries(runtime)) {
     if (!capability.isDirectory()) continue;

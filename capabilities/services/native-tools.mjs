@@ -463,7 +463,15 @@ export class NativeToolService {
     const binding = context.work.bindings.find(item => item.id === args.bindingId && item.type === 'native-recovery');
     if (!binding) fail('Migrated execution binding not found in this work', 404);
     if (!args.disposition) {
-      const archive = this.readArchive(binding.archiveId), material = JSON.stringify(archive || null);
+      const archive = this.readArchive(binding.archiveId);
+      // Tool results also appear in the run detail. Return recovery metadata only.
+      const material = JSON.stringify(archive && archive.botId === actor && archive.workId === context.work.id ? {
+        priorStatus: archive.priorStatus, priorExecutor: archive.priorExecutor?.kind,
+        priorWait: archive.priorWait?.kind, priorStop: archive.priorStop?.status, priorOutcome: archive.priorOutcome?.kind,
+        remoteId: archive.remoteId, eventIds: archive.eventIds,
+        operations: (archive.operations || []).map(({ id, operationId, action, status, attemptedAt, appliedAt, resultAppliedAt, checkedAt, recordedAt }) =>
+          ({ id, operationId, action, status, attemptedAt, appliedAt, resultAppliedAt, checkedAt, recordedAt })),
+      } : null);
       const offset = args.offset || 0, next = offset + 16_384;
       return { binding, archivedEvidence: material.slice(offset, next), nextOffset: next < material.length ? next : null };
     }
