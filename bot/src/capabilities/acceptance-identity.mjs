@@ -18,6 +18,8 @@ const versionNumber = String.raw`\d+(?:\.\d+)*(?:-(?:alpha|beta|rc|preview|dev)(
 const standaloneVersion = new RegExp(String.raw`(?:(?<![\w.-])v|(?:\bversion|版本)\s*:?\s*)(${versionNumber})(?![\w-]|\.[\w])`, 'gu');
 const publishedVersion = new RegExp(String.raw`(?:(?<![a-z\d])v|(?:\bversion|版本)\s*:?\s*)(${versionNumber})(?!\d|\.\d)`, 'gu');
 const compoundLabel = new RegExp(String.raw`(?<![\w.-])[a-z\d]+(?:[_.-][a-z\d]+)*[_.-]v${versionNumber}(?![\w-]|\.[\w])`, 'gu');
+const attachmentMention = /(?:附件|\battachments?\b)/iu;
+const filenameExtension = /\.\d*[a-z][a-z\d]*$/u;
 const archivePath = /\.(?:zip|7z|tar(?:\.gz)?|tgz)$/iu;
 const evidenceFile = /^(?:[\x60"'「《][^\x60"'「」《》:/\\\r\n]+\.[a-z\d]+[\x60"'」》]|[\p{L}\p{N}_-][\p{L}\p{N}_.-]*\.[a-z\d]+)(?![\w-]|\.[\w])/iu;
 const fileListJoin = /^\s*(?:以及|和|与|及|、)\s*(?:(?:随包|包内|同(?:一)?目录|解包后)的?\s*)?/u;
@@ -152,14 +154,14 @@ function publicationMatchesTime(publication, times) {
 }
 
 function timedAttachmentTitles(text, times) {
-  if (!times.length || !/(?:附件|\battachments?\b)/iu.test(text)) return [];
+  if (!times.length) return [];
   return [...normal(text).matchAll(/《([^《》]+)》/gu)].map(([, title]) => title.trim()).filter(title => /[\p{L}\p{N}]/u.test(title));
 }
 
 function attachmentHasTitle(attachment, title) {
   const name = normal(attachment.name);
   // A trailing numeric segment can belong to the title's version.
-  if (/\.\d*[a-z][a-z\d]*$/u.test(title)) return name === title;
+  if (filenameExtension.test(title)) return name === title;
   const stem = name.replace(/\.[^.]+$/u, '');
   for (let start = stem.indexOf(title); start !== -1; start = stem.indexOf(title, start + 1)) {
     if (!/[\p{L}\p{N}]/u.test(stem[start - 1] || '') && !/^[\p{L}\p{N}]/u.test(stem.slice(start + title.length))) return true;
@@ -198,7 +200,15 @@ export function acceptanceBindings(units, entries, replyTo, {
   const sentenceIndex = new Map(sentences.map((start, index) => [start, index]));
   const excludedUnits = new Set(excluded);
   const sharedUnits = new Set(sharedScopeUnits);
-  const sharedTitles = new Map(sharedScopeUnits.map(unit => [unit, timedAttachmentTitles(units[unit - 1].text, clockOf.get(unit))]));
+  const sharedAttachments = units.filter(item => sharedUnits.has(item.unit)).flatMap(item => {
+    const titles = timedAttachmentTitles(item.text, clockOf.get(item.unit));
+    if (!titles.length) return [];
+    if (attachmentMention.test(item.text)) return [{ item, titles }];
+    const marker = units[item.unit];
+    if (!marker || marker.sentenceStart !== item.sentenceStart || excludedUnits.has(marker.unit) ||
+        !attachmentMention.test(marker.text) || !titles.every(title => filenameExtension.test(title))) return [];
+    return [{ item, titles, marker }];
+  });
   const scope = approval?.scopeUnits && new Set(approval.scopeUnits);
   const identity = approval?.identityUnits && new Set(approval.identityUnits);
   return (approval ? units.slice(approval.unit - 1, approval.unit) : units).map(({ unit, sentenceStart }) => {
@@ -224,12 +234,16 @@ export function acceptanceBindings(units, entries, replyTo, {
     const referenced = nearby.filter(item => hasReferences(referenceOf.get(item.unit)) || pathsOf.get(item.unit).length);
     const fail = (reason, matches = []) => ({ unit, reason, identified: matches.slice(0, 3).map(({ workId, publication }) => ({ workId, ...publication })) });
     if (replyTo && !replied) return fail('未能确认所回复的消息是本群的有效交付。');
-    // The same clause can identify an earlier attachment and supply input to
-    // new production. Only share a timed, named attachment reference, never
-    // the separate action clause or its other scope details.
-    const shared = !replied && !referenced.length ? adjacent.filter(item => item.unit <= unit &&
-      (!scope || scope.has(item.unit)) && sharedTitles.get(item.unit)?.length) : [];
-    const titles = unique(shared.flatMap(item => sharedTitles.get(item.unit)));
+    // A timed attachment reference can also be production input. For a split
+    // reference, both clauses must belong to the same approval sentence and scope.
+    const sharedReferences = !replied && !referenced.length ? sharedAttachments.filter(({ item, marker }) => {
+      if (!adjacent.includes(item) || item.unit > unit || scope && !scope.has(item.unit)) return false;
+      if (!marker) return true;
+      return marker.sentenceStart === sentenceStart && marker.unit <= unit && nearby.includes(marker) &&
+        units.slice(marker.unit, unit - 1).every(clause => !excludedUnits.has(clause.unit) || sharedUnits.has(clause.unit));
+    }) : [];
+    const shared = sharedReferences.map(({ item }) => item);
+    const titles = unique(sharedReferences.flatMap(reference => reference.titles));
     const pool = replied ? publicEntries.filter(entry => entry === replied || replied.verification && entry.workId === replied.workId &&
       entry.target?.verificationOperationIds?.includes(replied.operationId)) : publicEntries;
     // A scope can cite the time of a separate check without changing the
@@ -300,7 +314,7 @@ export function acceptanceBindings(units, entries, replyTo, {
       pathsOf.get(item.unit).length || hasReferences(localReferences.get(item.unit) || referenceOf.get(item.unit))) : referenced;
     const sharedIdentityUnits = [...shared, ...sharedLocal.filter(item => identityReferences.includes(item))].map(item => item.unit);
     const identityUnits = [...nearby, ...shared].filter(item => identityReferences.includes(item) || timed.includes(item) || shared.includes(item) ||
-      target?.roomResultId && labelUnits.includes(item)).map(item => item.unit);
+      sharedReferences.some(({ marker }) => marker === item) || target?.roomResultId && labelUnits.includes(item)).map(item => item.unit);
     identityUnits.sort((left, right) => left - right);
     return target ? { unit, identityUnit: identityUnits[0] ?? unit, identityUnits, sharedIdentityUnits, workId, target, publication } :
       fail(localUnavailable ? '所指本机文件的项目权限或原交付时的文件状态未能核对。' :
