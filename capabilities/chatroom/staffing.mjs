@@ -6,9 +6,14 @@ import { join } from 'node:path';
 import { TEAM_DUTY_TOOLS } from '../bot-management/tool-access.mjs';
 import { fail, now, pick, required, safeId } from '../shared/validation.mjs';
 
-export const staffingPolicyVersion = 3;
+export const staffingPolicyVersion = 4;
 const assessments = 'team-staffing-assessments', sources = 'team-staffing-sources', staffState = 'team-staffing';
+const choices = 'team-staffing-choices';
+const proposalPrefix = 'team-staffing-proposal:';
+const projectIntents = new Set(['project', 'ordinary', 'unclear']);
 const handling = new Set(['member', 'current-work', 'independent-work', 'project-knowledge', 'defer', 'close']);
+const workDecisions = new Set(['retain', 'adjust', 'handoff']);
+const dutyChanges = new Set(['adjust', 'handoff']);
 const terminal = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
 const operationKey = (plan, row) => JSON.stringify([plan.roomId, plan.actor, row.operationId]);
 const roomRef = message => ({ type: 'room-message', roomId: message.roomId, messageId: message.id, actor: message.senderId });
@@ -35,9 +40,10 @@ const formatProfile = row => ({
   aliases: row.aliases,
 });
 
-export const staffingProject = room => room?.kind === 'group' && room.status === 'active' &&
+export const staffingProject = room => room?.kind === 'group' && room.status !== 'concluded' &&
   room.projectMode !== 'chat' && ['idle', 'active'].includes(room.team?.state);
-export const staffingScope = room => [room.goal, room.team.requirements, room.team.state];
+export const staffingScope = room => [room.goal, room.team.requirements, room.projectMode || 'auto'];
+const sameScope = (room, scope) => JSON.stringify(staffingScope(room)) === JSON.stringify(scope);
 export const activeDuties = (room, botId) => (room.team?.duties || []).filter(duty =>
   (!duty.state || duty.state === 'active') && room.members.includes(duty.botId) && (!botId || duty.botId === botId));
 export const staffingArtifacts = message => (message.attachments || []).flatMap(({ id, name, origin }) =>
@@ -62,6 +68,7 @@ export function staffingSnapshot(chatroom, room) {
     if (delivered.size === 5) break;
   }
   for (const { message } of reports.slice(-3)) selected.add(message.id);
+  for (const { message } of messages.filter(({ signal }) => signal.kind === 'work-progress').slice(-3)) selected.add(message.id);
   const parents = messages.filter(({ message }) => selected.has(message.id) && message.replyTo)
     .map(({ message }) => message.replyTo);
   for (const id of parents.slice(-3)) selected.add(id);
@@ -82,41 +89,51 @@ export class Staffing {
     const plan = this.get(this.store.get(staffState, roomId)?.lastAssessmentId);
     return plan?.policyVersion === staffingPolicyVersion ? plan : null;
   }
+  isChoice(messageId) { return Boolean(this.store.get(choices, messageId)); }
+  proposals(room) {
+    return this.chatroom.roomRows.all(assessments, room.id).map(record => JSON.parse(record.data))
+      .filter(plan => plan.choiceMessageId && plan.policyVersion === staffingPolicyVersion && sameScope(room, plan.scope));
+  }
+  proposalHistory(room) {
+    return this.proposals(room).slice(-8).map(plan => ({ messageId: plan.choiceMessageId,
+      duties: plan.candidates.filter(row => row.options?.length).map(row =>
+        pick(row, ['dutyKey', 'dutyChange', 'name', 'subject', 'boundary', 'state', 'choice'])) }));
+  }
 
   upgrade() {
     const version = this.store.get('chatroom-schema', 'staffing');
     if (version?.version === staffingPolicyVersion) return;
     this.store.transaction(() => {
       for (const room of this.store.list('rooms').filter(item => item.team)) {
-        const jobs = this.chatroom.jobs(room.id).filter(job => job.routedDutyKey && job.workId && job.taskId && job.status === 'completed');
-        const duties = (room.team.duties || []).map(({ staffingArea, ...duty }) => {
-          // The old assessment stored every cited work as this duty's own work.
-          // Keep all references, and retain certification only for exact
-          // deliveries that went to this duty's actual owner.
-          const owned = jobs.filter(job => job.routedDutyKey === duty.dutyKey && job.botId === duty.botId &&
-            duty.workIds?.includes(job.workId) && this.store.get('messages', job.messageId)?.senderId === 'user');
-          const artifacts = (duty.artifacts || []).filter(artifact => owned.some(job => {
-            const result = this.store.get('messages', artifact.messageId);
-            return job.workId === artifact.workId && result?.senderId === job.botId && result.replyTo === job.messageId &&
-              staffingArtifacts(result).some(item => item.id === artifact.id && item.operationId === artifact.operationId);
-          }));
-          return { ...duty, dutyKey: duty.dutyKey || 'duty.' + randomUUID(),
-            state: room.team.state === 'completed' || !room.members.includes(duty.botId) ? 'closed' : duty.state || 'active',
-            referenceWorkIds: unique([...(duty.referenceWorkIds || []), ...(duty.workIds || [])]),
-            referenceArtifacts: mergeRefs(duty.referenceArtifacts || [], duty.artifacts || [], 'id'),
-            workIds: unique(owned.map(job => job.workId)), artifacts,
-            workBindings: mergeRefs(duty.workBindings || [], artifacts.map(artifact => ({ workId: artifact.workId, botId: artifact.botId,
-              operationId: artifact.operationId, sourceMessageId: this.store.get('messages', artifact.messageId).replyTo })), 'operationId') };
-        });
-        if (duties.length) this.store.save('rooms', { id: room.id, team: { ...room.team, duties } });
+        if ((version?.version || 0) < 3 && room.team.duties?.length) {
+          const jobs = this.chatroom.jobs(room.id).filter(job => job.routedDutyKey && job.workId && job.taskId && job.status === 'completed');
+          const duties = room.team.duties.map(({ staffingArea, ...duty }) => {
+            // Certify only exact deliveries to this duty's owner.
+            const owned = jobs.filter(job => job.routedDutyKey === duty.dutyKey && job.botId === duty.botId &&
+              duty.workIds?.includes(job.workId) && this.store.get('messages', job.messageId)?.senderId === 'user');
+            const artifacts = (duty.artifacts || []).filter(artifact => owned.some(job => {
+              const result = this.store.get('messages', artifact.messageId);
+              return job.workId === artifact.workId && result?.senderId === job.botId && result.replyTo === job.messageId &&
+                staffingArtifacts(result).some(item => item.id === artifact.id && item.operationId === artifact.operationId);
+            }));
+            return { ...duty, dutyKey: duty.dutyKey || 'duty.' + randomUUID(),
+              state: room.team.state === 'completed' || !room.members.includes(duty.botId) ? 'closed' : duty.state || 'active',
+              referenceWorkIds: unique([...(duty.referenceWorkIds || []), ...(duty.workIds || [])]),
+              referenceArtifacts: mergeRefs(duty.referenceArtifacts || [], duty.artifacts || [], 'id'),
+              workIds: unique(owned.map(job => job.workId)), artifacts,
+              workBindings: mergeRefs(duty.workBindings || [], artifacts.map(artifact => ({ workId: artifact.workId, botId: artifact.botId,
+                operationId: artifact.operationId, sourceMessageId: this.store.get('messages', artifact.messageId).replyTo })), 'operationId') };
+          });
+          this.store.save('rooms', { id: room.id, team: { ...room.team, duties } });
+        }
         const state = this.store.get(staffState, room.id);
         const old = this.get(state?.activeAssessmentId);
         if (old && old.policyVersion !== staffingPolicyVersion) {
           this.store.save(assessments, { id: old.id, status: 'superseded', finishedAt: now() });
           this.store.save(staffState, { id: room.id, activeAssessmentId: null });
         }
-        if (state && JSON.stringify(state.scope) === JSON.stringify(staffingScope(room)) && !old)
-          this.store.save(staffState, { id: room.id, policyVersion: staffingPolicyVersion });
+        if (state && (sameScope(room, state.scope) || JSON.stringify(state.scope) === JSON.stringify([room.goal, room.team.requirements, room.team.state])))
+          this.store.save(staffState, { id: room.id, scope: staffingScope(room), policyVersion: staffingPolicyVersion });
       }
       for (const job of this.store.list('deliveries')) if (job.teamStaffing &&
           job.teamStaffing.policyVersion !== staffingPolicyVersion && !terminal.has(job.status)) {
@@ -134,16 +151,18 @@ export class Staffing {
 
   view(plan) {
     return { assessmentId: plan.id, status: plan.status, assessedRevision: plan.assessedRevision,
-      ...pick(plan, ['domain', 'phase', 'deliveryChain', 'reason', 'sourceMessageId', 'finishedAt', 'analysisAsOf', 'currentPublications']),
-      noChange: plan.status === 'completed' && !plan.candidates.some(row => ['assigned', 'closed'].includes(row.state)),
+      ...pick(plan, ['domain', 'phase', 'deliveryChain', 'reason', 'projectIntent', 'workReviews', 'sourceMessageId', 'finishedAt',
+        'analysisAsOf', 'currentPublications', 'choiceMessageId']),
+      noChange: plan.status === 'completed' && !plan.candidates.some(row => ['awaiting-choice', 'assigned', 'closed'].includes(row.state)),
       candidates: plan.candidates.map(row => pick(row, [...Object.keys(fields), 'handling', 'dutyKey', 'state', 'botId',
-        'operationId', 'sourceRefs', 'referenceWorkIds', 'referenceArtifacts', 'receipt', 'error'])) };
+        'dutyChange', 'operationId', 'sourceRefs', 'referenceWorkIds', 'referenceArtifacts', 'receipt', 'error', 'choice'])) };
   }
 
-  candidate(raw, room, job) {
+  candidate(raw, room, job, offered) {
     if (!raw || !handling.has(raw.handling)) fail('Choose how to handle each proposed responsibility');
     const existing = raw.dutyKey && (room.team.duties || []).find(duty => duty.dutyKey === raw.dutyKey);
-    if (raw.dutyKey && !existing) fail('Use an existing dutyKey exactly as returned by chatroom_team_read');
+    if (raw.dutyKey && !existing && !offered.some(row => row.dutyKey === raw.dutyKey))
+      fail('Use a saved or proposed dutyKey exactly as returned by chatroom_team_read');
     if (raw.handling === 'close' && !existing) fail('Choose an existing duty to close');
     const cited = ids(raw.sourceMessageIds ?? [job.messageId], 'sourceMessageIds');
     const citedMessages = cited.map(id => this.store.get('messages', id));
@@ -154,9 +173,11 @@ export class Staffing {
       name: existing?.dutyProfile?.name || String(raw.name || '未确认职责').slice(0, 100),
       benefit: '没有可用于分工的真实来源；普通回复仅保留为讨论背景。',
       sourceRefs: [], referenceWorkIds: [], referenceArtifacts: [] };
-    const results = messages.filter(message => this.chatroom.staffingEvidence(message)?.kind === 'work-result');
+    const results = messages.filter(message => ['work-result', 'work-progress'].includes(this.chatroom.staffingEvidence(message)?.kind));
     const artifacts = results.flatMap(staffingArtifacts);
-    const workIds = unique([...results.map(message => message.workId), ...signals.map(signal => signal.workId).filter(Boolean)]);
+    const reviewWorks = job.input?.content?.staffing?.reviewWorks || [];
+    const workIds = unique([...results.map(message => message.workId), ...signals.map(signal => signal.workId).filter(Boolean),
+      ...reviewWorks.filter(work => work.sourceMessageIds.some(id => cited.includes(id))).map(work => work.id)]);
     const common = { handling: raw.handling, sourceRefs: messages.map(roomRef), referenceWorkIds: workIds, referenceArtifacts: artifacts,
       sourceAt: messages.map(message => message.createdAt).sort().at(-1) };
     if (raw.handling === 'close') {
@@ -176,7 +197,7 @@ export class Staffing {
         fail('Closing a duty requires current user or work evidence that its phase ended');
       return { ...common, name: existing.dutyProfile?.name || existing.responsibility.slice(0, 100),
         dutyKey: existing.dutyKey, benefit: required(raw.benefit, 'reason for closing', 550),
-        state: 'pending', operationId: 'staffing:' + randomUUID() };
+        state: 'recorded' };
     }
     const details = Object.fromEntries(Object.entries(fields).map(([key, limit]) => [key, required(raw[key], key, limit)]));
     const independentReview = raw.independentReview === undefined ?
@@ -193,9 +214,13 @@ export class Staffing {
     if (candidateBotIds.some(id => !this.manager.store.get('bots', id))) fail('Use actual Bot IDs from the team or Bot list');
     const reviewPublications = signals.filter(signal => signal.kind === 'room-duty-plan').map(signal =>
       this.chatroom.dutyActions.get(signal.planId)?.dependency).filter(dependency => dependency?.condition === EXISTING_PUBLICATION);
+    const dutyChange = raw.dutyChange;
+    if (dutyChange && (!dutyChanges.has(dutyChange) || !existing || existing.state !== 'active' || raw.handling !== 'member'))
+      fail('A scope adjustment or handoff requires an active saved member duty');
     const makerBotIds = unique([...results.map(message => [message.senderId, message.workId]),
       ...reviewPublications.map(({ publication }) => [publication.makerBotId, publication.workId]),
-      ...signals.filter(item => item.kind === 'work-dispatch').map(signal => [signal.ownerBotId, signal.workId])]
+      ...signals.filter(item => item.kind === 'work-dispatch').map(signal => [signal.ownerBotId, signal.workId]),
+      ...reviewWorks.filter(work => workIds.includes(work.id) && work.productionStage).map(work => [work.botId, work.id])]
       .filter(([botId, workId]) => botId && !room.team.duties.some(duty => duty.botId === botId &&
         duty.dutyProfile?.independentReview && duty.workIds?.includes(workId))).map(([botId]) => botId));
     return { ...common, ...details, independentReview, roleId, separateFromDutyKeys,
@@ -203,8 +228,8 @@ export class Staffing {
       candidateBotIds,
       requiredTools: ids(raw.requiredTools ?? [], 'requiredTools', 32),
       makerBotIds,
-      ...(existing ? { dutyKey: existing.dutyKey } : {}),
-      state: raw.handling === 'member' ? 'pending' : 'recorded' };
+      ...(raw.dutyKey ? { dutyKey: raw.dutyKey } : {}), ...(dutyChange ? { dutyChange } : {}),
+      state: 'recorded' };
   }
 
   match(row, existing) {
@@ -220,6 +245,26 @@ export class Staffing {
       row.sourceRefs.some(ref => existing.sourceRefs?.some(prior => prior.messageId === ref.messageId));
   }
 
+  workReviews(input, job) {
+    const work = new Map((job.input?.content?.staffing?.reviewWorks || []).map(item => [item.id, item]));
+    if (!Array.isArray(input.workReviews)) fail('Submit workReviews for the supplied room works');
+    const reviewed = new Set();
+    const reviews = input.workReviews.map(row => {
+      const view = work.get(row?.workId);
+      if (!view || reviewed.has(row.workId) || !workDecisions.has(row.decision))
+        fail('Review each supplied work once, with retain, adjust or handoff');
+      reviewed.add(row.workId);
+      const facts = Object.fromEntries(['requirements', 'scope', 'ownerFit', 'progress', 'reason'].map(key =>
+        [key, required(row[key], key, 900)]));
+      return { workId: view.id, ownerBotId: view.botId, decision: row.decision, ...facts,
+        sourceMessageIds: unique([...view.sourceMessageIds, ...job.teamStaffing.evidence
+          .filter(signal => signal.workId === view.id).map(signal => signal.messageId)]) };
+    });
+    if (input.projectIntent === 'project' && reviewed.size !== work.size)
+      fail('Compare every item in staffing.reviewWorks before deciding');
+    return reviews;
+  }
+
   assess(input, actor, source) {
     const deliveryId = source?.input?.metadata?.deliveryId;
     const job = deliveryId && this.store.get('deliveries', deliveryId);
@@ -233,15 +278,22 @@ export class Staffing {
     if (previous) return this.view(previous);
     if (terminal.has(job.status)) fail('The staffing delivery already ended', 409);
     const state = this.store.get(staffState, room.id);
-    if (JSON.stringify(staffingScope(room)) !== JSON.stringify(job.teamStaffing.scope) ||
+    if (!sameScope(room, job.teamStaffing.scope) ||
         state?.latestUserMessageId && state.latestUserMessageId !== job.teamStaffing.latestUserMessageId)
       return this.view(this.supersede(job, room));
     if (input.expectedRevision !== undefined && input.expectedRevision !== room.team.revision)
       fail('Team changed; read its current revision', 409);
-    if (!Array.isArray(input.candidates)) fail('Submit zero or more concrete candidates');
+    if (!projectIntents.has(input.projectIntent)) fail('Classify the current project intent');
+    const currentEvidence = job.teamStaffing.evidence.filter(signal => job.teamStaffing.changeKeys.includes(signal.key));
+    if (input.projectIntent !== 'project' && currentEvidence.some(signal => signal.kind !== 'user-update'))
+      fail('Current project evidence requires a project assessment');
+    const workReviews = this.workReviews(input, job);
+    if (!Array.isArray(input.candidates) || input.candidates.length > 12) fail('Submit up to twelve concrete candidates');
+    if (input.projectIntent !== 'project' && input.candidates.length) fail('Ordinary or unclear discussion has no staffing candidates');
+    const proposals = this.proposals(room), offered = proposals.flatMap(plan => plan.candidates.filter(row => row.options?.length));
     const candidates = [];
     for (const item of input.candidates) {
-      const row = this.candidate(item, room, job);
+      const row = this.candidate(item, room, job, offered);
       const registered = (room.team.duties || []).filter(duty => this.match(row, duty));
       if (registered.length > 1) fail('Responsibility overlaps multiple saved duties; choose its exact boundary and saved dutyKey');
       if (registered[0]) {
@@ -261,10 +313,13 @@ export class Staffing {
           if (row[key]) duplicate[key] = unique([...(duplicate[key] || []), ...row[key]]);
       } else candidates.push(row);
     }
-    for (const row of candidates.filter(row => row.handling === 'member')) {
-      row.dutyKey ||= 'duty.' + randomUUID();
-      row.operationId = 'staffing:' + randomUUID();
-    }
+    for (const row of candidates) this.prepareChoice(room, row, offered);
+    const asking = candidates.some(row => row.state === 'awaiting-choice');
+    const firstScope = input.projectIntent === 'project' && !offered.length && !activeDuties(room).length && !workReviews.length &&
+      currentEvidence.some(signal => signal.kind === 'user-update');
+    if (firstScope && !candidates.some(row => row.state === 'awaiting-choice' && row.sourceRefs.some(ref =>
+      currentEvidence.some(signal => signal.kind === 'user-update' && signal.messageId === ref.messageId))))
+      fail('Clear first project scope needs a member responsibility citing the current user’s project words');
     const scope = {
       domain: required(input.domain, 'domain', 180), phase: required(input.phase, 'phase', 220),
       deliveryChain: required(input.deliveryChain, 'deliveryChain', 1400), reason: required(input.reason, 'reason', 900),
@@ -278,16 +333,17 @@ export class Staffing {
     const plan = this.store.transaction(() => {
       const replay = this.get(this.store.get(sources, key)?.assessmentId);
       if (replay) return replay;
-      const state = this.store.get(staffState, room.id);
-      if (this.get(state?.activeAssessmentId)?.status === 'applying') fail('The current assessment is still applying', 409);
-      const applying = candidates.some(row => row.state === 'pending');
       const saved = this.store.save(assessments, { id: deliveryId, actor, roomId: room.id, operationId, candidates, ...scope,
-        analysisAsOf, currentPublications,
+        analysisAsOf, currentPublications, projectIntent: input.projectIntent, workReviews,
+        ...(asking ? { choiceMessageId: proposalPrefix + deliveryId } : {}),
         sourceMessageId: job.messageId, policyVersion: staffingPolicyVersion, assessedRevision: room.team.revision,
         scope: job.teamStaffing.scope, latestUserMessageId: job.teamStaffing.latestUserMessageId,
-        status: applying ? 'applying' : 'completed', ...(applying ? {} : { finishedAt: now() }) });
+        status: 'completed', finishedAt: now() });
       this.store.save(sources, { id: key, assessmentId: saved.id });
-      this.store.save(staffState, { id: room.id, lastAssessmentId: saved.id, activeAssessmentId: applying ? saved.id : null });
+      if (input.projectIntent === 'project') this.store.save(staffState, { id: room.id, lastAssessmentId: saved.id });
+      if (input.projectIntent === 'ordinary') for (const signal of currentEvidence)
+        this.team.skipOrdinarySource(room, signal.messageId);
+      if (asking) this.publishChoice(room, saved);
       return saved;
     });
     return this.view(plan);
@@ -305,7 +361,7 @@ export class Staffing {
     });
   }
 
-  async available(botId, row, room, { firstRun = false } = {}) {
+  fits(botId, row, room) {
     const bot = this.manager.store.get('bots', botId);
     if (!bot || botId === room.team.eggBotId || bot.status !== 'active' ||
         bot.archivedAt || bot.maintenanceFor || bot.lifecycle?.state === 'dormant' ||
@@ -315,44 +371,157 @@ export class Staffing {
     if (activeDuties(room, botId).some(duty => duty.dutyKey !== row.dutyKey && duty.dutyProfile &&
         (similar(duty.dutyProfile.subject, row.subject, 4) || row.separateFromDutyKeys.includes(duty.dutyKey)) &&
         Boolean(duty.dutyProfile.independentReview) !== row.independentReview)) return false;
+    return bot.firstRunPending === true || bot.runIntent === 'running';
+  }
+
+  async available(botId, row, room, { firstRun = false } = {}) {
+    if (!this.fits(botId, row, room)) return false;
+    const bot = this.manager.get(botId);
     return firstRun && bot.firstRunPending === true ||
       bot.runIntent === 'running' && (await this.manager.identity(botId))?.state === 'ready';
   }
 
-  async choose(room, row) {
+  prepareChoice(room, row, offered) {
+    if (!['member', 'close'].includes(row.handling)) return;
     const registered = room.team.duties.find(duty => duty.dutyKey === row.dutyKey);
-    if (row.handling === 'close') return registered?.state === 'closed' ?
-      { state: 'covered', botId: registered.botId } : { action: 'close-duty', botId: registered?.botId };
-    const create = (botId) => ({ action: 'create', roleId: row.roleId, name: row.name, ...(botId ? { botId } : {}),
-      prompt: '你在此项目担任「' + row.name + '」，关注' + row.subject + '。请按本群最新登记职责和真实来源参与。任何制作或外部操作仍以当前用户授权为准。' });
-    if (registered) {
-      if (registered.state === 'closed' && registered.closedAt && !(row.sourceAt > registered.closedAt))
-        return { state: 'covered', botId: registered.botId };
-      if (await this.available(registered.botId, row, room, { firstRun: true })) {
-        if (!room.members.includes(registered.botId)) return { action: 'invite', botId: registered.botId };
-        if (registered.state !== 'active' || this.manager.get(registered.botId).firstRunPending)
-          return { action: 'assign', botId: registered.botId };
-        return { state: 'covered', botId: registered.botId, registered };
-      }
-      const bot = this.manager.store.get('bots', registered.botId);
-      if (registered.state === 'provisioning' && row.requiredTools.every(name => TEAM_DUTY_TOOLS.includes(name)) &&
-          (!bot || bot.lifecycle?.originDutyKey === row.dutyKey && bot.status === 'active' &&
-            (bot.runIntent === 'running' || !existsSync(join(this.manager.directory(bot.id), 'config.json')))))
-        return create(registered.botId);
-      return { state: 'blocked', botId: registered.botId, error: 'The saved owner cannot cover this duty now. The responsibility and Bot are retained for explicit follow-up.' };
+    const prior = offered.find(item => (['awaiting-choice', 'pending', 'declined'].includes(item.state) ||
+        registered?.operationId === item.operationId && ['assigned', 'closed'].includes(item.state)) &&
+      item.handling === row.handling && item.dutyChange === row.dutyChange &&
+      (this.match(row, item) || row.aliases && row.independentReview === item.independentReview &&
+        norm(row.subject) === norm(item.subject) && norm(row.name) === norm(item.name)));
+    if (prior) {
+      row.dutyKey = prior.dutyKey;
+      row.state = 'already-offered';
+      return;
     }
-    const ranked = [...row.candidateBotIds.filter(id => room.members.includes(id)), ...row.candidateBotIds.filter(id => !room.members.includes(id))];
-    for (const botId of ranked) if (await this.available(botId, row, room, { firstRun: true }))
-      return { action: room.members.includes(botId) ? 'assign' : 'invite', botId };
-    const missing = row.requiredTools.filter(name => !TEAM_DUTY_TOOLS.includes(name));
-    if (missing.length) return { state: 'blocked', error: 'No proposed owner has the required tools. Staffing cannot grant: ' + missing.join(', ') };
-    return create();
+    const options = [];
+    if (row.handling === 'close') {
+      if (registered.state === 'active') options.push({ command: '结清', action: 'close-duty', botId: registered.botId });
+    } else if (row.dutyChange === 'adjust') {
+      if (room.members.includes(registered.botId) && this.fits(registered.botId, row, room))
+        options.push({ command: '调整', action: 'assign', botId: registered.botId });
+    } else if (row.dutyChange === 'handoff') {
+      const target = row.candidateBotIds.find(id => id !== registered.botId && this.fits(id, row, room));
+      options.push({ command: '交接', action: 'handoff-duty', botId: target, named: true });
+    } else if (registered) {
+      if (registered.state === 'closed' && row.sourceAt > registered.closedAt && this.fits(registered.botId, row, room))
+        options.push({ command: room.members.includes(registered.botId) ? '复用' : '邀请',
+          action: room.members.includes(registered.botId) ? 'assign' : 'invite', botId: registered.botId });
+      else if (registered.state === 'active' && this.fits(registered.botId, row, room)) row.state = 'covered';
+    } else {
+      const suitable = row.candidateBotIds.filter(id => this.fits(id, row, room));
+      const member = suitable.find(id => room.members.includes(id));
+      const invitee = suitable.find(id => !room.members.includes(id));
+      if (row.requiredTools.every(name => TEAM_DUTY_TOOLS.includes(name))) options.push({ command: '创建', action: 'create' });
+      options.push({ command: '邀请', action: 'invite', botId: invitee, named: true });
+      if (member) options.push({ command: '复用', action: 'assign', botId: member, named: true });
+    }
+    if (!options.length) return;
+    row.dutyKey ||= 'duty.' + randomUUID();
+    Object.assign(row, { state: 'awaiting-choice', operationId: 'staffing:' + randomUUID(), options,
+      previousOwnerId: registered?.botId || null, previousAssignmentId: registered?.operationId || null });
+  }
+
+  publishChoice(room, plan) {
+    const proposed = plan.candidates.filter(row => row.options?.length);
+    const sections = proposed.map((row, index) => {
+      const number = index + 1;
+      const options = row.options.map(({ command, botId, named }) => {
+        const name = botId && this.manager.get(botId).name;
+        if (named && !name) return `「${command} ${number} Bot 名称」`;
+        return `「${command} ${number}」${name ? `（${name}）` : ''}`;
+      });
+      return `${number}. ${row.name}。 ${[row.boundary, row.benefit].filter(Boolean).join(' ')}\n${options.join('、')}`;
+    });
+    this.chatroom.append(room.id, { id: plan.choiceMessageId, replyTo: plan.sourceMessageId,
+      eventType: 'team_staffing_proposal', purpose: 'fyi',
+      content: ['我建议按这些职责分工。你希望怎么安排？', ...sections,
+        '请回复这条消息，填写对应的选择。想邀请其他已有 Bot，可以回复「邀请 编号 Bot 名称」。也可以回复「暂不组队」，继续当前讨论。'].join('\n\n'),
+      sourceRefs: mergeRefs([], proposed.flatMap(row => row.sourceRefs), 'messageId') }, plan.actor);
+  }
+
+  recordChoice(room, message) {
+    if (!room.team || message.attachments?.length || message.toBotId && message.toBotId !== room.team.eggBotId ||
+        message.replyTo && (typeof message.replyTo !== 'string' || !message.replyTo.startsWith(proposalPrefix))) return false;
+    const text = message.content.normalize('NFKC').trim().replace(/[。！!]+$/, '');
+    const decline = /^(暂不|暂时不|先不|暂时先不)组队$/.test(text);
+    const requested = decline ? [] : text.split(/[\n;]+/).map(part =>
+      /^(?:请\s*)?(创建|邀请|复用|调整|交接|结清)\s*(\d+)(?:\s+(.+))?$/.exec(part.trim()));
+    if (requested.some(part => !part)) return false;
+    const open = message.replyTo ? [this.get(message.replyTo.slice(proposalPrefix.length))] :
+      this.proposals(room).filter(item => item.candidates.some(row => row.state === 'awaiting-choice'));
+    if (open.length !== 1) return false;
+    const [plan] = open;
+    const proposal = plan?.choiceMessageId && this.store.get('messages', plan.choiceMessageId);
+    if (plan?.roomId !== room.id || proposal?.senderId !== room.team.eggBotId) return false;
+    const proposed = plan.candidates.filter(row => row.options?.length);
+    const answer = (content, selected = []) => {
+      this.store.save(choices, { id: message.id, roomId: room.id, assessmentId: plan.id, selected, declined: decline, answer: content });
+      this.chatroom.append(room.id, { id: 'team-staffing-choice:' + message.id, replyTo: message.id,
+        eventType: 'team_staffing_choice', purpose: 'fyi', content }, plan.actor);
+      return true;
+    };
+    if (plan.policyVersion !== staffingPolicyVersion || !staffingProject(room) || !sameScope(room, plan.scope))
+      return answer('这次分工建议已过期，请按当前项目范围讨论。');
+    const updates = new Map();
+    for (const [, command, index, name] of requested) {
+      const row = proposed[Number(index) - 1];
+      const option = row?.options.find(item => item.command === command);
+      if (!option || updates.has(row.dutyKey) || name && !option.named) return answer('请按这条建议中的编号和选项回复。');
+      const botId = name ? this.choiceBot(room, row, option, name) : option.botId;
+      if (!botId && option.action !== 'create') return answer('请填写唯一可用的 Bot 名称或 ID。');
+      const choice = { action: option.action, command, botId: botId || null, messageId: message.id };
+      const selectable = ['awaiting-choice', 'declined'].includes(row.state);
+      if (!selectable &&
+          (row.choice?.action !== choice.action || row.choice?.botId !== choice.botId))
+        return answer('这一项已有处理结果，请重新讨论要调整的职责。');
+      if (selectable) updates.set(row.dutyKey, { ...row, state: 'pending', choice });
+    }
+    if (decline) for (const row of proposed.filter(row => row.state === 'awaiting-choice'))
+      updates.set(row.dutyKey, { ...row, state: 'declined', choice: { action: 'decline', messageId: message.id } });
+    const changed = [...updates.values()];
+    if (!changed.length) return answer('这次选择已记录。');
+    const candidates = plan.candidates.map(row => updates.get(row.dutyKey) || row);
+    if (decline) {
+      this.store.save(assessments, { id: plan.id, candidates });
+      return answer('好，暂不组队，按现有安排继续讨论。');
+    }
+    this.store.save(assessments, { id: plan.id, status: 'applying', candidates, finishedAt: null });
+    const state = this.store.get(staffState, room.id);
+    this.store.save(staffState, { id: room.id, applyingAssessmentIds: unique([...(state?.applyingAssessmentIds || []), plan.id]) });
+    return answer('已收到你的分工选择。', changed.map(row => ({ dutyKey: row.dutyKey, ...row.choice })));
+  }
+
+  choiceBot(room, row, option, name) {
+    const requested = name.trim().toLowerCase();
+    const available = this.manager.store.list('bots').filter(bot => this.fits(bot.id, row, room) &&
+      (option.action === 'assign' ? room.members.includes(bot.id) : option.action !== 'invite' || !room.members.includes(bot.id)) &&
+      (option.action !== 'handoff-duty' || bot.id !== row.previousOwnerId));
+    const byId = available.find(bot => bot.id === requested);
+    if (byId) return byId.id;
+    const matches = available.filter(bot => bot.name.normalize('NFKC').toLowerCase() === requested);
+    return matches.length === 1 ? matches[0].id : null;
+  }
+
+  async choose(room, row) {
+    const { action, botId } = row.choice;
+    const registered = room.team.duties.find(duty => duty.dutyKey === row.dutyKey);
+    if ((registered?.botId || null) !== row.previousOwnerId || (registered?.operationId || null) !== row.previousAssignmentId)
+      fail('职责已由其他操作变更，原选择未应用。', 409);
+    if (action === 'close-duty') return { action, botId };
+    if (action === 'create') return { action, roleId: row.roleId, name: row.name,
+      prompt: '你在此项目担任「' + row.name + '」，关注' + row.subject + '。请按本群最新登记职责和真实来源参与。制作或外部操作以当前用户授权为准。' };
+    if (!await this.available(botId, row, room, { firstRun: true })) fail('所选成员当前不可用或缺少这项职责需要的工具。', 409);
+    const assigned = room.members.includes(botId);
+    if (action === 'assign' && !assigned) fail('所选成员已不在本群。', 409);
+    return { action: action === 'handoff-duty' ? assigned ? 'assign' : 'invite' : action === 'invite' && assigned ? 'assign' : action, botId };
   }
 
   dutyEvidence(previous, row) {
     const profile = row.aliases ? formatProfile(row) : previous?.dutyProfile;
     const dutyProfile = profile && {
-      ...profile, ...(previous?.dutyProfile ? pick(previous.dutyProfile, ['name', 'subject', 'boundary', 'independentReview']) : {}),
+      ...profile, ...(previous?.dutyProfile && !row.dutyChange ?
+        pick(previous.dutyProfile, ['name', 'subject', 'boundary', 'independentReview']) : {}),
       aliases: unique([...(previous?.dutyProfile?.aliases || []), ...(profile.aliases || [])]),
     };
     return {
@@ -372,14 +541,25 @@ export class Staffing {
       this.store.save(assessments, { id: plan.id, candidates,
         status: pending ? 'applying' : candidates.some(row => row.state === 'blocked') ? 'blocked' : 'completed',
         ...(pending ? {} : { finishedAt: now() }) });
-      if (!pending) this.store.save(staffState, { id: plan.roomId, activeAssessmentId: null });
+      if (!pending) {
+        const state = this.store.get(staffState, plan.roomId);
+        this.store.save(staffState, { id: plan.roomId,
+          applyingAssessmentIds: (state?.applyingAssessmentIds || []).filter(id => id !== plan.id) });
+      }
+      if (['blocked', 'superseded'].includes(update.state)) this.chatroom.append(plan.roomId, {
+        id: 'team-staffing-outcome:' + original.operationId, replyTo: original.choice.messageId,
+        eventType: 'team_staffing_choice', purpose: 'fyi',
+        content: `「${original.name}」的分工选择未落实。 ${update.error}`,
+      }, plan.actor);
     });
   }
 
   schedule(room) {
     if (this.running.has(room.id)) return true;
-    const state = this.store.get(staffState, room.id), plan = this.get(state?.activeAssessmentId);
-    if (plan?.status !== 'applying' || plan.policyVersion !== staffingPolicyVersion) return false;
+    const state = this.store.get(staffState, room.id);
+    const plan = (state?.applyingAssessmentIds || []).map(id => this.get(id))
+      .find(item => item?.status === 'applying' && item.policyVersion === staffingPolicyVersion);
+    if (!plan) return false;
     const coordinator = this.manager.get(plan.actor);
     if (staffingProject(room) && (coordinator.status !== 'active' || coordinator.runIntent === 'stopped')) return true;
     if (!plan.candidates.some(row => row.state === 'pending' && (!row.retryAt || row.retryAt <= Date.now()))) return true;
@@ -398,36 +578,22 @@ export class Staffing {
 
   async advance(room, plan, row) {
     const key = operationKey(plan, row), operation = this.store.get('team-operations', key);
-    if (!operation?.result && this.team.pendingStaffingRoute(room.id)) return;
     let input = row.input;
     try {
-      if (!operation?.result && (!staffingProject(room) || room.team.eggBotId !== plan.actor ||
-          JSON.stringify(staffingScope(room)) !== JSON.stringify(plan.scope) ||
-          (this.store.get(staffState, room.id)?.latestUserMessageId || null) !== (plan.latestUserMessageId || null))) {
+      const choice = this.store.get(choices, row.choice?.messageId);
+      if (!operation?.result && (!staffingProject(room) || room.team.eggBotId !== plan.actor || !sameScope(room, plan.scope) ||
+          choice?.assessmentId !== plan.id || !choice.selected.some(item => item.dutyKey === row.dutyKey &&
+            item.action === row.choice.action && item.botId === row.choice.botId))) {
         this.store.transaction(() => {
-          this.store.save(assessments, { id: plan.id, status: 'superseded', finishedAt: now(), candidates: plan.candidates
-            .map(candidate => candidate.state === 'pending' ? { ...candidate, state: 'superseded' } : candidate) });
-          this.store.save(staffState, { id: room.id, activeAssessmentId: null });
+          this.saveRow(plan, row, { state: 'superseded', error: '项目范围或组队选择已变更。' });
           if (operation?.status === 'pending') this.store.save('team-operations', { id: operation.id, status: 'superseded' });
         });
         return;
       }
       if (!input) {
-        const { registered, ...candidate } = await this.choose(room, row);
-        if (this.team.pendingStaffingRoute(room.id) ||
-            (this.store.get(staffState, room.id)?.latestUserMessageId || null) !== (plan.latestUserMessageId || null)) return;
-        if (candidate.state) {
-          if (registered) {
-            const evidence = this.dutyEvidence(registered, row);
-            if (Object.keys(evidence).some(field => JSON.stringify(registered[field]) !== JSON.stringify(evidence[field])))
-              this.team.change(room, { team: { duties: room.team.duties.map(item =>
-                item.dutyKey === row.dutyKey ? { ...item, ...evidence } : item) } }, room.team.revision);
-          }
-          this.saveRow(plan, row, candidate);
-          return;
-        }
+        const candidate = await this.choose(room, row);
         input = { ...candidate, roomId: room.id, expectedRevision: room.team.revision, dutyKey: row.dutyKey,
-          operationId: row.operationId, sourceMessageId: row.sourceRefs[0].messageId,
+          operationId: row.operationId, sourceMessageId: row.choice.messageId,
           reason: row.benefit, ...(row.handling === 'member' ? { responsibility: row.name + '：' + row.subject + '；' + row.boundary } : {}) };
         this.saveRow(plan, row, { input });
       }
@@ -444,8 +610,8 @@ export class Staffing {
     } catch (error) {
       const saved = this.store.get('team-operations', key);
       const current = this.chatroom.need('rooms', room.id);
-      const changedBeforeWrite = !saved && input && staffingProject(current) &&
-        JSON.stringify(staffingScope(current)) === JSON.stringify(plan.scope) && input.expectedRevision !== current.team.revision;
+      const changedBeforeWrite = !saved && input && staffingProject(current) && sameScope(current, plan.scope) &&
+        input.expectedRevision !== current.team.revision;
       const attempts = (row.attempts || 0) + 1;
       const retry = attempts < 4 && (changedBeforeWrite || !error.status || error.status >= 500 || error.status === 429);
       const message = String(error.message || error).slice(0, 900);

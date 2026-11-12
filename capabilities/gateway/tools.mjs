@@ -17,11 +17,24 @@ const candidates={type:'array',description:'Only concrete candidates discovered 
     ownerFit:{type:'string',description:'Who has matching capacity, evidence and authorization; explain if there is no available owner.'},
     sourceMessageIds:{...array,description:'Exact user messages or authenticated results in this room. Omit only when the current delivery trigger is the actual source.'},
     dutyKey:{type:'string',description:'Reuse the exact saved key for the same object and boundary, even if renamed. Required for close.'},
+    dutyChange:{type:'string',enum:['adjust','handoff'],description:'For a saved member duty, propose a real scope adjustment or transfer. Omit for new or already covered duties.'},
     independentReview:{type:'boolean',description:'True only when a review must be kept separate from the actual makers.'},
     separateFromDutyKeys:{...array,description:'Existing related duties that are genuinely separate; explain the distinct boundary in benefit.'},
     candidateBotIds:{...array,description:'Available existing Bots whose real capability and authority fit, in order of preference.'},
     roleId:{type:'string',description:'Optional installed role template from chatroom_team_read. Omit for a new custom role on the standard base.'},
     requiredTools:{...array,description:'Exact existing tool names only if indispensable to this duty. Staffing cannot grant a tool.'},
+  },
+}};
+const workReviews={type:'array',items:{
+  type:'object',additionalProperties:false,required:['workId','decision','requirements','scope','ownerFit','progress','reason'],
+  properties:{
+    workId:{type:'string',description:'Exact ID from staffing.reviewWorks.'},
+    decision:{type:'string',enum:['retain','adjust','handoff']},
+    requirements:{type:'string',description:'Current user requirements and material changes that bear on this work.'},
+    scope:{type:'string',description:'Actual scope the work has accepted and any remaining gap or overlap.'},
+    ownerFit:{type:'string',description:'Compare this scope with the owner’s actual duty, capabilities, and execution record.'},
+    progress:{type:'string',description:'Observed progress, blocks and actual publications. Distinguish native execution, local work and user acceptance.'},
+    reason:{type:'string',description:'Why keep this owner or what concrete scope, review or responsibility should change while retaining the original work.'},
   },
 }};
 const definitions=[
@@ -30,7 +43,7 @@ const definitions=[
  ['chatroom_create','Create a group, DM or discussion. Group projectMode=project explicitly enables continuing project reviews and requires a goal. Use chat for ordinary chat or auto for evidence-based enrollment.',{name:string,kind:string,members:array,goal:string,leadBotId:string,projectMode:{type:'string',enum:['auto','project','chat']}},'write'],
  ['chatroom_team_read','Read shared project goals, lead/EggBot, member responsibilities, open concerns, real work states and routine costs; private conversations stay private.',{roomId:string},'read'],
  ['chatroom_team_raise','Raise a sourced collaboration, staffing, lifecycle, scope, dependency, timing, handoff or improvement question in this group. Stable operationId deduplicates; the responsible member is notified.',{roomId:string,operationId:string,kind:string,title:string,message:string,sourceMessageId:string,targetBotId:string},'external'],
- ['chatroom_team_manage','In a staffing delivery submit assess with domain, phase, deliveryChain, reason and zero or more candidates. The runtime binds the original source and operation key. Cite current user or real result evidence for each candidate. Other management actions use their original operationId and current revision.',{roomId:string,operationId:string,action:{type:'string',enum:['assess','create','invite','assign','close-duty','promote','resume','leave','retire','handoff','project','resolve']},candidates,domain:string,phase:string,deliveryChain:string,botId:string,name:string,roleId:string,prompt:string,cwd:string,responsibility:string,dutyKey:string,reason:string,sourceMessageId:string,issueId:string,workId:string,stopCurrent:boolean,goal:string,requirements:string,status:{type:'string',enum:['idle','active','paused','completed']},deadlineAt:{type:['string','null']},nextReviewAt:{type:['string','null']},reviewIntervalSeconds:number,auditIntervalSeconds:number,expectedRevision:number},'external'],
+ ['chatroom_team_manage','For a staffing delivery save assess with projectIntent, workReviews for the supplied room works, project context, reason and sourced candidates. A candidate proposes a team choice for the user. Other management actions use their original operationId and current revision.',{roomId:string,operationId:string,action:{type:'string',enum:['assess','create','invite','assign','close-duty','promote','resume','leave','retire','handoff','project','resolve']},candidates,workReviews,projectIntent:{type:'string',enum:['project','ordinary','unclear']},domain:string,phase:string,deliveryChain:string,botId:string,name:string,roleId:string,prompt:string,cwd:string,responsibility:string,dutyKey:string,reason:string,sourceMessageId:string,issueId:string,workId:string,stopCurrent:boolean,goal:string,requirements:string,status:{type:'string',enum:['idle','active','paused','completed']},deadlineAt:{type:['string','null']},nextReviewAt:{type:['string','null']},reviewIntervalSeconds:number,auditIntervalSeconds:number,expectedRevision:number},'external'],
  ['chatroom_send','Post sourced information to a room. Requests and corrections can reach their owner. FYI is published for group observation without directing a task.',{roomId:string,content:string,toBotId:string,replyTo:string,clientId:string,workId:string,purpose:string,sourceRefs:array},'external'],
  ['chatroom_dm','Ask a peer about an explicit work; keep original source references and authorization.',{targetBotId:string,message:string,originRoomId:string,originMessageId:string,clientId:string,workId:string,targetWorkId:string,purpose:string,sourceRefs:array},'external'],
  ['chatroom_conclude','Save an evidence-based discussion conclusion',{roomId:string,summary:string},'write'],

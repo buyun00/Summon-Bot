@@ -332,7 +332,8 @@ export class OnboardingService {
   async postMessage(roomId, input) {
     const current = this.record();
     const content = typeof input.content === 'string' ? input.content.trim() : '';
-    if (current.status !== 'guiding' || current.roomId !== roomId || !content) return this.chatroom.post(roomId, input);
+    if (current.status !== 'guiding' || current.roomId !== roomId || !content)
+      return this.chatroom.post(roomId, input, 'user', { fromUser: true });
     const currentGuide = await this.guide();
     const currentAction = currentGuide && !input.attachments?.length && typedChoice(currentGuide, content);
     if (currentGuide?.options.some(choice => choice.action === currentAction)) this.interruptSetup(currentAction, currentGuide.messageId);
