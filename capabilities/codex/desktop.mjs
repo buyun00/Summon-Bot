@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fail } from '../shared/validation.mjs';
@@ -210,7 +210,7 @@ export class DesktopCodex {
         recordedAt: item.checkedAt || item.resultAppliedAt || item.attemptedAt })),
       ...(work.directoryTarget ? { target: work.directoryTarget } : {}) };
     const synchronized = await this.manager.request(work.botId, `/works/${encodeURIComponent(work.workId)}`, { method: 'PATCH', body: JSON.stringify({ expectedRevision: current.revision,
-      ...(work.directoryTarget ? { project: { ...directoryProject(work.directoryTarget.cwd), nativeProjectId: work.directoryTarget.projectId,
+      ...(work.directoryTarget && current.executor?.target?.type !== 'project' ? { project: { ...directoryProject(work.directoryTarget.cwd), nativeProjectId: work.directoryTarget.projectId,
         nativeRegistration: 'confirmed' } } : {}),
       bindings: [...(current.bindings || []).filter(item => item.id !== work.id), binding] }) });
     this.save({ id: work.id, ownerSyncPending: false, syncError: null });
@@ -559,6 +559,9 @@ export class DesktopCodex {
     // The stream still stores the original event and advances its cursor.
     if (confirmedTerminal(work) && (stale || !relevantTurn || !terminal.has(status))) return;
     const effective = stale ? 'unknown' : relevantTurn ? status : 'watching';
+    const directoryTarget = !stale && relevantTurn && state.threadId === work.externalThreadId && state.hostId === 'local' &&
+      work.directoryTarget && typeof state.cwd === 'string' && isAbsolute(state.cwd) &&
+      !relative(work.directoryTarget.cwd, state.cwd) ? work.directoryTarget : undefined;
     const signature = JSON.stringify([work.operationId, effective, relevantTurn ? turnId : null, state.pendingRequests || []]);
     const changed = signature !== work.observationSignature;
     const shouldNotify = changed && (terminal.has(effective) || effective === 'waiting_for_input' || state.pendingRequests?.length || effective === 'unknown');
@@ -572,7 +575,8 @@ export class DesktopCodex {
         ownerSyncPending: changed || work.ownerSyncPending, status: terminal.has(effective) || effective === 'waiting_for_input' ? effective : work.status === 'interrupt_requested' ? 'interrupt_requested' : effective === 'unknown' ? 'unknown' : 'running', ...(relevantTurn ? { turnId } : {}) });
       if (shouldNotify) {
         event = this.queue(id, `${work.operationKey || 'attach'}:${turnId || 'unknown'}:${effective}`, { type: 'external_status', status: effective, turnId: relevantTurn ? turnId : null, state,
-          final: relevantTurn ? finalReply(state, work.externalThreadId, turnId) : null, history: null });
+          final: relevantTurn ? finalReply(state, work.externalThreadId, turnId) : null, history: null,
+          ...(directoryTarget ? { directoryTarget } : {}) });
         if (!stale && relevantTurn) this.store.save('workEvents', { id: event.id, status: 'preparing' });
       }
     });

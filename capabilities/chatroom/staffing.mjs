@@ -5,6 +5,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { TEAM_DUTY_TOOLS } from '../bot-management/tool-access.mjs';
 import { workflowReviewerId } from '../../bot/src/context/workflow-review.mjs';
+import { workflowComparison } from '../../bot/src/context/workflow-comparison.mjs';
 import { fail, now, pick, required, safeId } from '../shared/validation.mjs';
 
 export const staffingPolicyVersion = 4;
@@ -34,7 +35,12 @@ const ids = (value, name, limit = 16) => {
 };
 const fields = {
   name: 100, subject: 250, boundary: 550, outcome: 420, acceptance: 420,
-  participation: 420, retainedContext: 550, benefit: 550, workAlternativeLoss: 550, ownerFit: 550,
+  participation: 420, retainedContext: 550, ownerFit: 550, benefit: 550, alternative: 420, workAlternativeLoss: 550,
+};
+const requireComparison = value => {
+  const comparison = workflowComparison(value);
+  if (!comparison) fail('Record feasibility, fit, the specific alternative and its tradeoff');
+  return comparison;
 };
 const formatProfile = row => ({
   ...pick(row, ['name', 'subject', 'boundary', 'outcome', 'acceptance', 'participation', 'retainedContext', 'independentReview']),
@@ -153,7 +159,7 @@ export class Staffing {
   view(plan) {
     return { assessmentId: plan.id, status: plan.status, assessedRevision: plan.assessedRevision,
       ...pick(plan, ['domain', 'phase', 'deliveryChain', 'reason', 'projectIntent', 'workReviews', 'sourceMessageId', 'finishedAt',
-        'analysisAsOf', 'currentPublications', 'choiceMessageId']),
+        'analysisAsOf', 'currentPublications', 'choiceMessageId', 'comparison', 'sourceRefs']),
       noChange: plan.status === 'completed' && !plan.candidates.some(row => ['awaiting-choice', 'assigned', 'closed'].includes(row.state)),
       candidates: plan.candidates.map(row => pick(row, [...Object.keys(fields), 'handling', 'dutyKey', 'state', 'botId',
         'dutyChange', 'operationId', 'sourceRefs', 'referenceWorkIds', 'referenceArtifacts', 'receipt', 'error', 'choice'])) };
@@ -167,7 +173,8 @@ export class Staffing {
     if (raw.handling === 'close' && !existing) fail('Choose an existing duty to close');
     const cited = ids(raw.sourceMessageIds ?? [job.messageId], 'sourceMessageIds');
     const citedMessages = cited.map(id => this.store.get('messages', id));
-    if (citedMessages.some(message => message?.roomId !== room.id)) fail('A candidate source is outside this room', 403);
+    if (citedMessages.some(message => message?.roomId !== room.id))
+      fail('A candidate source is outside this room. Copy the full message ID from the same-room snapshot or an authorized room read.', 403);
     const signals = job.teamStaffing.evidence.filter(signal => cited.includes(signal.messageId));
     const messages = citedMessages.filter(message => this.chatroom.staffingEvidence(message) || signals.some(signal => signal.messageId === message.id));
     if (!messages.length) return { handling: 'defer', state: 'recorded',
@@ -198,6 +205,8 @@ export class Staffing {
         fail('Closing a duty requires current user or work evidence that its phase ended');
       return { ...common, name: existing.dutyProfile?.name || existing.responsibility.slice(0, 100),
         dutyKey: existing.dutyKey, benefit: required(raw.benefit, 'reason for closing', 550),
+        ownerFit: required(raw.ownerFit, 'ownerFit', 550), alternative: required(raw.alternative, 'alternative', 420),
+        workAlternativeLoss: required(raw.workAlternativeLoss, 'workAlternativeLoss', 550),
         state: 'recorded' };
     }
     const details = Object.fromEntries(Object.entries(fields).map(([key, limit]) => [key, required(raw[key], key, limit)]));
@@ -255,13 +264,13 @@ export class Staffing {
       if (!view || reviewed.has(row.workId) || !workDecisions.has(row.decision))
         fail('Review each supplied work once, with retain, adjust or handoff');
       reviewed.add(row.workId);
-      const facts = Object.fromEntries(['requirements', 'scope', 'ownerFit', 'progress', 'reason'].map(key =>
+      const facts = Object.fromEntries(['requirements', 'scope', 'progress'].map(key =>
         [key, required(row[key], key, 900)]));
       const citedSourceMessageIds = ids(row.sourceMessageIds ?? [], 'work review sourceMessageIds').filter(id => {
         const message = this.store.get('messages', id);
         return message?.roomId === job.roomId && message.createdAt <= job.input.content.staffing.snapshotAt;
       });
-      return { workId: view.id, ownerBotId: view.botId, decision: row.decision, ...facts,
+      return { workId: view.id, ownerBotId: view.botId, decision: row.decision, ...facts, comparison: requireComparison(row.comparison),
         citedSourceMessageIds,
         sourceMessageIds: unique([...view.sourceMessageIds, ...(view.published || []).map(message => message.messageId),
           ...(view.savedAcceptance ? [view.savedAcceptance.messageId, ...view.savedAcceptance.publicationMessageIds] : []), ...job.teamStaffing.evidence
@@ -294,6 +303,12 @@ export class Staffing {
     const currentEvidence = job.teamStaffing.evidence.filter(signal => job.teamStaffing.changeKeys.includes(signal.key));
     if (input.projectIntent !== 'project' && currentEvidence.some(signal => signal.kind !== 'user-update'))
       fail('Current project evidence requires a project assessment');
+    const comparison = requireComparison(input.comparison);
+    const cited = ids(input.sourceMessageIds ?? [job.messageId], 'assessment sourceMessageIds');
+    if (!cited.length) fail('Cite at least one actual message for the project comparison');
+    const evidence = cited.map(id => this.store.get('messages', id));
+    if (evidence.some(message => message?.roomId !== room.id)) fail('An assessment source is outside this room', 403);
+    const sourceRefs = evidence.map(roomRef);
     const workReviews = this.workReviews(input, job);
     if (!Array.isArray(input.candidates) || input.candidates.length > 12) fail('Submit up to twelve concrete candidates');
     if (input.projectIntent !== 'project' && input.candidates.length) fail('Ordinary or unclear discussion has no staffing candidates');
@@ -322,11 +337,11 @@ export class Staffing {
     }
     for (const row of candidates) this.prepareChoice(room, row, offered);
     const asking = candidates.some(row => row.state === 'awaiting-choice');
-    const firstScope = input.projectIntent === 'project' && !offered.length && !activeDuties(room).length && !workReviews.length &&
-      currentEvidence.some(signal => signal.kind === 'user-update');
-    if (firstScope && !candidates.some(row => row.state === 'awaiting-choice' && row.sourceRefs.some(ref =>
-      currentEvidence.some(signal => signal.kind === 'user-update' && signal.messageId === ref.messageId))))
-      fail('Clear first project scope needs a member responsibility citing the current user’s project words');
+    const firstScope = input.projectIntent === 'project' && !offered.length && !activeDuties(room).length && !workReviews.length;
+    const userSources = new Set(currentEvidence.filter(signal => signal.kind === 'user-update').map(signal => signal.messageId));
+    if (firstScope && userSources.size && candidates.some(row => row.state === 'awaiting-choice' &&
+      !row.sourceRefs.some(ref => userSources.has(ref.messageId))))
+      fail('A first staffing proposal must cite the current user’s project words');
     const scope = {
       domain: required(input.domain, 'domain', 180), phase: required(input.phase, 'phase', 220),
       deliveryChain: required(input.deliveryChain, 'deliveryChain', 1400), reason: required(input.reason, 'reason', 900),
@@ -341,7 +356,7 @@ export class Staffing {
       const replay = this.get(this.store.get(sources, key)?.assessmentId);
       if (replay) return replay;
       const saved = this.store.save(assessments, { id: deliveryId, actor, roomId: room.id, operationId, candidates, ...scope,
-        analysisAsOf, currentPublications, projectIntent: input.projectIntent, workReviews,
+        analysisAsOf, currentPublications, projectIntent: input.projectIntent, comparison, sourceRefs, workReviews,
         ...(asking ? { choiceMessageId: proposalPrefix + deliveryId } : {}),
         sourceMessageId: job.messageId, policyVersion: staffingPolicyVersion, assessedRevision: room.team.revision,
         scope: job.teamStaffing.scope, latestUserMessageId: job.teamStaffing.latestUserMessageId,

@@ -7,7 +7,7 @@ import { FramedPipe } from './framed-pipe.js';
 import { ApiError, modelPreflightUnavailable, permissionPreflightUnavailable, readBefore, unavailable } from './errors.js';
 import { DesktopIpc } from './desktop-ipc.js';
 import { assertExecutorConnected } from './executor-connection.js';
-import { resolveDirectoryTarget, matchesDirectoryTarget } from './directory-target.js';
+import { directoryPath, resolveDirectoryTarget, matchesDirectoryTarget } from './directory-target.js';
 
 export const ALLOWED_TOOLS = new Set(['get_usage_limits', 'list_threads', 'list_archived_threads', 'read_thread', 'wait_threads', 'list_projects', 'create_thread', 'send_message_to_thread', 'set_thread_title', 'set_thread_archived', 'set_thread_read_state']);
 
@@ -156,14 +156,18 @@ export class AppTools {
       phase?.('project-catalog');
       return this.callDesktopTool('list_projects', {}, context.threadId);
     };
-    const directory = args.target?.type === 'directory' ? await readBefore(deadline, () =>
-      resolveDirectoryTarget(args.target.cwd, listProjects, () => phase?.('directory-registration'))) : null;
-    if (directory) args = { ...args, target: { type: 'project', projectId: directory.projectId, environment: { type: 'local' } } };
-    else if (args.target?.type === 'project') {
+    let directory;
+    if (args.target?.type === 'directory') {
+      directory = await readBefore(deadline, () =>
+        resolveDirectoryTarget(args.target.cwd, listProjects, () => phase?.('directory-registration')));
+      args = { ...args, target: { type: 'project', projectId: directory.projectId, environment: { type: 'local' } } };
+    } else if (args.target?.type === 'project') {
       const projects = await readBefore(deadline, listProjects);
       const project = projects.projects?.find(project => project.projectId === args.target.projectId);
       if (!project) throw new ApiError(400, 'unknown_project', 'Use a projectId returned by list_projects. No message was sent.');
       if (project.hostId !== 'local' || project.projectKind !== 'local') throw new ApiError(501, 'unsupported_permission_host', 'Default permission inheritance is verified for local Codex projects only. No message was sent.');
+      const cwd = await readBefore(deadline, () => directoryPath(project.path));
+      directory = { cwd, projectId: project.projectId, hostId: project.hostId };
     }
     // These checks precede the one native creation request. Never send the
     // user's prompt and then try to repair permissions on an active turn.
@@ -191,7 +195,9 @@ export class AppTools {
     if (!matchesPermissionDefault(observed.permissions, expected)) throw new ApiError(502, 'created_permissions_mismatch', 'Desktop did not inherit the verified context permissions. Do not resubmit or assume full access.', { outcome: 'unknown', threadId: result.threadId, firstMessageSubmitted: true });
     if (directory) {
       phase?.('directory-readback', { threadId: result.threadId });
-      if (!await matchesDirectoryTarget(observed.cwd, directory.cwd)) throw new ApiError(502, 'created_directory_mismatch', 'The created chat did not confirm the authorized directory. Inspect this thread; do not resubmit.', { outcome: 'unknown', threadId: result.threadId, firstMessageSubmitted: true });
+      if (observed.threadId !== result.threadId || (result.projectId != null && result.projectId !== directory.projectId) ||
+          !await matchesDirectoryTarget(observed.cwd, directory.cwd))
+        throw new ApiError(502, 'created_directory_mismatch', 'The created chat did not confirm the authorized directory. Inspect this thread; do not resubmit.', { outcome: 'unknown', threadId: result.threadId, firstMessageSubmitted: true });
     }
     return { ...result, ...(directory ? { directoryTarget: directory } : {}), permissionInheritance: { source: 'desktop_default', mode: expected.mode, profileId: expected.profileId, approvalPolicy: expected.approvalPolicy, approvalsReviewer: expected.approvalsReviewer, contextVerifiedBeforeFirstMessage: true, verifiedAfterCreation: true } };
   }

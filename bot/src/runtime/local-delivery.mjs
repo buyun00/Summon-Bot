@@ -46,9 +46,16 @@ export async function deliveredLocalFiles({ store, workspace, task, work, notifi
 
   const operation = store.getRecord('work-events', id), observation = store.getRecord('work-observations', notification.notificationId);
   const source = operation?.authorization?.source, observed = observation?.content, final = observed?.final;
-  const target = operation?.executionReceipt?.directoryTarget;
-  if (!operation?.resultFile || operation.workId !== work.id || target?.hostId !== 'local' || !target.cwd || relative(project.cwd, target.cwd) ||
-    project.nativeProjectId && project.nativeProjectId !== target.projectId || source?.actor !== 'user' ||
+  const execution = operation?.executionReceipt, target = execution?.directoryTarget;
+  const requested = work.executor?.target;
+  const registeredId = requested?.type === 'project' ? project.id : project.nativeProjectId;
+  if (!operation?.resultFile || operation.workId !== work.id || execution?.workId !== work.id ||
+    execution?.operationId !== id || !execution.operationKey || !observed?.operationKey ||
+    (id === notification.executionEventId && execution.operationKey !== observed.operationKey) ||
+    execution.hostId !== 'local' || !execution.externalThreadId || execution.externalThreadId !== observed?.externalThreadId ||
+    !registeredId || target?.projectId !== registeredId || target.hostId !== 'local' ||
+    typeof target.cwd !== 'string' || !isAbsolute(target.cwd) || relative(project.cwd, target.cwd) ||
+    source?.actor !== 'user' ||
     source.roomId !== receipt.roomId || source.replyTo !== receipt.replyTo ||
     observation?.workId !== work.id || observation.taskId !== notification.taskId || observation.late ||
     observed?.source !== 'codex-desktop-connector' || observed.status !== 'completed' || observed.state?.stale ||
@@ -56,6 +63,9 @@ export async function deliveredLocalFiles({ store, workspace, task, work, notifi
     final.threadId !== observed.externalThreadId || final.turnId !== observed.turnId ||
     !notification.sourceRefs?.some(ref => ref.type === 'codex' && ref.operationId === observed.operationId &&
       ref.threadId === final.threadId && ref.turnId === final.turnId)) return [];
+  if (requested?.type === 'project' && (requested.projectId !== registeredId ||
+    observed.directoryTarget?.projectId !== registeredId || observed.directoryTarget.hostId !== 'local' ||
+    !observed.directoryTarget.cwd || relative(target.cwd, observed.directoryTarget.cwd))) return [];
   const origin = acceptedWorkTask(operation, store);
   const start = Date.parse(operation.submittedAt), finish = Date.parse(notification.createdAt);
   if (!origin || !(start < finish)) return [];

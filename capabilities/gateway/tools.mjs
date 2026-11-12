@@ -1,9 +1,10 @@
 import { looseSchema } from '../../bot/src/context/model-input.mjs';
+import { comparisonSchema } from '../../bot/src/context/workflow-comparison.mjs';
 import { commandTimeout } from '../filesystem/tools.mjs';
 const object = properties => ({type:'object',properties,additionalProperties:true});
 const string={type:'string'},number={type:'number'},boolean={type:'boolean'},array={type:'array',items:{type:'string'}};
 const candidates={type:'array',description:'Only concrete candidates discovered in this project; an empty array is valid.',items:{
-  type:'object',required:['handling','benefit'],additionalProperties:false,properties:{
+  type:'object',required:['handling','ownerFit','benefit','alternative','workAlternativeLoss'],additionalProperties:false,properties:{
     handling:{type:'string',enum:['member','current-work','independent-work','project-knowledge','defer','close']},
     name:{type:'string',description:'A project-specific role or duty name. A name change does not create a new duty.'},
     subject:{type:'string',description:'The actual responsibility or maintenance object; use the same project term across assessments.'},
@@ -12,10 +13,11 @@ const candidates={type:'array',description:'Only concrete candidates discovered 
     acceptance:{type:'string',description:'How the project can tell the expected result was achieved.'},
     participation:{type:'string',description:'Which actual handoff, decision, repeat event or phase calls for involvement.'},
     retainedContext:{type:'string',description:'Which exact material, decisions, dependencies and constraints the next work needs to retain.'},
-    benefit:{type:'string',description:'Evidence for the decision, distinct value of independence or continued ownership, or what is missing.'},
-    workAlternativeLoss:{type:'string',description:'What this project would lose if an existing member simply opened a separate work, or why that is enough.'},
-    ownerFit:{type:'string',description:'Who has matching capacity, evidence and authorization; explain if there is no available owner.'},
-    sourceMessageIds:{...array,description:'Exact user messages or authenticated results in this room. Omit only when the current delivery trigger is the actual source.'},
+    ownerFit:{type:'string',description:'Feasibility. Identify actual capabilities, context and authority, including a gap if no owner fits.'},
+    benefit:{type:'string',description:'Fit for the project. State the concrete benefit or gap in the current or suggested responsibility.'},
+    alternative:{type:'string',description:'A specific alternative for this responsibility, or evidence of why none is feasible.'},
+    workAlternativeLoss:{type:'string',description:'Gain, handoff or maintenance cost, and reason for choosing this option.'},
+    sourceMessageIds:{...array,description:'Copy full same-room message IDs from a snapshot or reference.messageId from chatroom_read. Use the actual request, progress or publication, never a work, attachment or operation ID.'},
     dutyKey:{type:'string',description:'Reuse the exact saved key for the same object and boundary, even if renamed. Required for close.'},
     dutyChange:{type:'string',enum:['adjust','handoff'],description:'For a saved member duty, propose a real scope adjustment or transfer. Omit for new or already covered duties.'},
     independentReview:{type:'boolean',description:'True only when a review must be kept separate from the actual makers.'},
@@ -26,16 +28,15 @@ const candidates={type:'array',description:'Only concrete candidates discovered 
   },
 }};
 const workReviews={type:'array',items:{
-  type:'object',additionalProperties:false,required:['workId','decision','requirements','scope','ownerFit','progress','reason'],
+  type:'object',additionalProperties:false,required:['workId','decision','requirements','scope','progress','comparison'],
   properties:{
     workId:{type:'string',description:'Exact ID from staffing.reviewWorks.'},
     decision:{type:'string',enum:['retain','adjust','handoff']},
     sourceMessageIds:{type:'array',maxItems:16,items:{type:'string'},description:'Actual same-room messages used for this work judgment. Separate the original request, publication and user acceptance; cite the actual evidence for each claim.'},
     requirements:{type:'string',description:'Current user requirements and material changes that bear on this work.'},
     scope:{type:'string',description:'Actual scope the work has accepted and any remaining gap or overlap.'},
-    ownerFit:{type:'string',description:'Compare this scope with the owner’s actual duty, capabilities, and execution record.'},
     progress:{type:'string',description:'Observed progress, blocks and actual publications. Distinguish native execution, local work and user acceptance.'},
-    reason:{type:'string',description:'Why keep this owner or what concrete scope, review or responsibility should change while retaining the original work.'},
+    comparison:comparisonSchema,
   },
 }};
 const definitions=[
@@ -44,7 +45,7 @@ const definitions=[
  ['chatroom_create','Create a group, DM or discussion. Group projectMode=project explicitly enables continuing project reviews and requires a goal. Use chat for ordinary chat or auto for evidence-based enrollment.',{name:string,kind:string,members:array,goal:string,leadBotId:string,projectMode:{type:'string',enum:['auto','project','chat']}},'write'],
  ['chatroom_team_read','Read shared project goals, lead/EggBot, member responsibilities, open concerns, real work states and routine costs; private conversations stay private.',{roomId:string},'read'],
  ['chatroom_team_raise','Raise a sourced collaboration, staffing, lifecycle, scope, dependency, timing, handoff or improvement question in this group. Stable operationId deduplicates; the responsible member is notified.',{roomId:string,operationId:string,kind:string,title:string,message:string,sourceMessageId:string,targetBotId:string},'external'],
- ['chatroom_team_manage','For a staffing delivery save assess with projectIntent, workReviews for the supplied room works, project context, reason and sourced candidates. A candidate proposes a team choice for the user. Other management actions use their original operationId and current revision.',{roomId:string,operationId:string,action:{type:'string',enum:['assess','create','invite','assign','close-duty','promote','resume','leave','retire','handoff','project','resolve']},candidates,workReviews,projectIntent:{type:'string',enum:['project','ordinary','unclear']},domain:string,phase:string,deliveryChain:string,botId:string,name:string,roleId:string,prompt:string,cwd:string,responsibility:string,dutyKey:string,reason:string,sourceMessageId:string,issueId:string,workId:string,stopCurrent:boolean,goal:string,requirements:string,status:{type:'string',enum:['idle','active','paused','completed']},deadlineAt:{type:['string','null']},nextReviewAt:{type:['string','null']},reviewIntervalSeconds:number,auditIntervalSeconds:number,expectedRevision:number},'external'],
+ ['chatroom_team_manage','For staffing, save assess with a sourced comparison, projectIntent, project context, reason, workReviews and candidates. A candidate proposes a choice for the user. Other management actions use their original operationId and current revision.',{roomId:string,operationId:string,action:{type:'string',enum:['assess','create','invite','assign','close-duty','promote','resume','leave','retire','handoff','project','resolve']},candidates,workReviews,comparison:comparisonSchema,sourceMessageIds:{...array,description:'Full same-room message IDs supporting the project comparison.'},projectIntent:{type:'string',enum:['project','ordinary','unclear']},domain:string,phase:string,deliveryChain:string,botId:string,name:string,roleId:string,prompt:string,cwd:string,responsibility:string,dutyKey:string,reason:string,sourceMessageId:string,issueId:string,workId:string,stopCurrent:boolean,goal:string,requirements:string,status:{type:'string',enum:['idle','active','paused','completed']},deadlineAt:{type:['string','null']},nextReviewAt:{type:['string','null']},reviewIntervalSeconds:number,auditIntervalSeconds:number,expectedRevision:number},'external'],
  ['chatroom_send','Post sourced information to a room. Requests and corrections can reach their owner. FYI is published for group observation without directing a task.',{roomId:string,content:string,toBotId:string,replyTo:string,clientId:string,workId:string,purpose:string,sourceRefs:array},'external'],
  ['chatroom_dm','Ask a peer about an explicit work; keep original source references and authorization.',{targetBotId:string,message:string,originRoomId:string,originMessageId:string,clientId:string,workId:string,targetWorkId:string,purpose:string,sourceRefs:array},'external'],
  ['chatroom_conclude','Save an evidence-based discussion conclusion',{roomId:string,summary:string},'write'],

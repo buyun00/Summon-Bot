@@ -16,10 +16,10 @@ const dutyActions = new Set(['create', 'invite', 'assign']);
 const staffingActions = new Set([...dutyActions, 'close-duty']);
 const staffingBatchSize = 8;
 const staffingInstruction = [
-  '先读 chatroom_team_read、bots_list 和必要本群原文。用户已经明确要开展什么项目时，范围讨论首轮就从原话提出适合该项目的职责，提交 member 候选供用户选择。空群、尚无目标字段、未授权文稿或制作都可以询问组队。单纯闲聊、随口点子或与项目无关的短问答用 ordinary 或 unclear，候选留空。',
-  '已有工作时为 staffing.reviewWorks 中的每项提交 workReviews。逐项对照当前需求、已实际承接的范围、负责人的职责与能力、工作进度与实际发布。参考同操作的原生执行观察，区分受理、在做、已发布与验收。特别判断需求变化、阶段交付、交接与反复卡点，明确哪些仍由原人负责、哪些责任要缩小、独立维护、独立复核或交接，并说明依据。已有 work 或用户自验本身不足以证明覆盖。',
-  '一次性事情优先现有成员或独立 work。用具体对象、边界、产出、参与时机与续用材料说明每个候选，列出实际合适的成员。相同职责沿用已登记或已询问的 dutyKey。已有负责人需要调整边界用 dutyChange=adjust，需要换负责人用 dutyChange=handoff。另设责任时说明与原工作如何衔接，保留原 work、执行者与授权，不要重复派同一交付。',
-  '用 chatroom_team_manage action=assess 保存 projectIntent、workReviews、候选和依据。每项引用本群真实用户消息、进展或结果。只有实质变化才再次建议组队，先查已询问、已选和暂不组队的职责。服务用 EggBot 的身份发出一次选择，收到用户在本群的选择后才登记、复用、创建或交接。文稿、制作与验收按各自的用户授权办理。',
+  '先读 chatroom_team_read、bots_list 和必要的本群原文。从项目实际行业、规模、目标、阶段产物和已定后续发现职责，包括尚无独立 WORK 的职责。实际有收益时可在范围讨论首轮提议组队。普通闲聊或未选定的点子用 ordinary 或 unclear，候选留空。',
+  '为项目及 staffing.reviewWorks 中的每项按「行不行、好不好、怎么更好」提交 comparison。核实际能力、上下文与授权，再核持续交付、专业判断、记忆维护、独立验证及并行。最后比较具体安排的收益、交接成本和选择。保留现状也写实际比较；无可行替代时给事实和限制。',
+  '候选给出对象、边界、产出、参与时机和续用材料。可沿原人、收窄范围、复用同伴或独立 work。沿用既有 dutyKey，真实范围调整用 dutyChange=adjust，交接用 dutyChange=handoff。保留原 WORK、执行和授权。',
+  '用 chatroom_team_manage action=assess 保存判断。引用快照或本群读取返回的完整消息 ID。服务仅在实际需要时询问一次，收到原群用户选择后才沿权限落实。制作方自测、实际发布和用户验收各按原授权处理。',
 ].join('\n');
 
 export function groupTeam(members, manager, input = {}) {

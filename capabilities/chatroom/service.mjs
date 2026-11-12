@@ -35,7 +35,8 @@ const observationMessage=message=>({ ...pick(message,['id','roomId','senderId','
   sourceRefs:(message.sourceRefs||[]).filter(ref=>!ref?.roomId||ref.roomId===message.roomId) });
 const staffingMessage=message=>{
   const content=String(message.content||'');
-  return {...observationMessage(message),content:content.slice(0,2400),...(content.length>2400?{truncated:true}:{})};
+  return {...observationMessage(message),content:content.slice(0,2400),
+    reference:{type:'room',roomId:message.roomId,messageId:message.id},...(content.length>2400?{truncated:true}:{})};
 };
 const firstPosition={at:'',row:0};
 const comparePosition=(a,b)=>a.at.localeCompare(b.at)||a.row-b.row;

@@ -7,6 +7,13 @@ const decisions = 'business-decisions';
 const terminal = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
 const interval = 90_000;
 const workTopics = /负责|验收|复验|验证|交接|长期|维护|responsib|verif|acceptance|handoff|mainten/i;
+const verification = /自测|回归|解包|复验|验收|验证|\b(?:self[- ]?tests?|regression|unpack(?:ed|ing)?|validation|verification|acceptance)\b/i;
+const observedProgress = /已|正在|完成|通过|失败|\b(?:started|running|completed|passed|failed)\b/i;
+function progressStage(content) {
+  const report = content.split(/\n\s*(?:下一步|next step\b)/i, 1)[0];
+  if (verification.test(report) && observedProgress.test(report)) return 'verification';
+  return workTopics.test(content) ? 'workflow' : null;
+}
 const viewMessage = message => ({ ...pick(message, ['id', 'senderId', 'replyTo', 'workId', 'toBotId', 'createdAt']),
   content: message.content.slice(0, 1600),
   attachments: (message.attachments || []).slice(0, 8).map(item => pick(item, ['id', 'name', 'size'])) });
@@ -54,13 +61,21 @@ export class WorkflowReviews {
     const parent = message.replyTo && this.store.get('messages', message.replyTo);
     const followup = signal.kind === 'user-update' && parent?.roomId === room.id &&
       parent.senderId !== 'user' && parent.senderId !== 'system' && workTopics.test(message.content);
-    const progress = signal.kind === 'work-progress' && workTopics.test(message.content);
+    const stage = signal.kind === 'work-progress' && message.workId && parent?.roomId === room.id ? progressStage(message.content) : null;
+    const progress = Boolean(stage);
     if (!followup && !progress && !['work-result', 'room-result'].includes(signal.kind)) return;
     const targetBotId = followup ? parent.senderId : message.senderId;
     if (targetBotId === workflowReviewerId || !room.members.includes(targetBotId) || !this.available(targetBotId)) return;
     const id = `review:${message.id}`;
     const prior = this.store.get(records, id);
     if (prior) return;
+    // Progress can justify a review at a new phase. A second report from the
+    // same phase and request adds context to the later review of the result.
+    if (progress && this.chatroom.roomRows.all(records, room.id).some(({ data }) => {
+      const saved = JSON.parse(data);
+      return saved.progressStage === stage && saved.workId === message.workId &&
+        saved.requestMessageId === message.replyTo && saved.targetBotId === targetBotId;
+    })) return;
     const recent = this.store.get('workflow-review-cursor', room.id);
     const open = recent && this.store.get(records, recent.reviewId);
     const pending = ['queued', 'asked'].includes(open?.status);
@@ -76,6 +91,7 @@ export class WorkflowReviews {
     const review = this.store.save(records, { id, roomId: room.id, sourceId: message.id, targetBotId,
       decisionMessageId: followup ? parent.id : message.id, workId: (followup ? parent.workId : message.workId) || null,
       operationId: signal.operationId, sourceKind: signal.kind, goal: room.goal, requirements: room.team.requirements, teamRevision: room.team.revision,
+      ...(progress ? { progressStage: stage, requestMessageId: message.replyTo } : {}),
       phase: 'inspect', status: 'queued' });
     this.store.save('workflow-review-cursor', { id: room.id, reviewId: review.id });
     this.chatroom.enqueue(message, workflowReviewerId, { id, workId: null, workflowReview: { id, phase: 'inspect' }, priority: 'background' });
@@ -88,20 +104,29 @@ export class WorkflowReviews {
       message.senderId !== 'system' && message.createdAt <= (review.questionCreatedAt || origin.createdAt));
     const results = recent.filter(message => this.chatroom.staffingEvidence(message)?.kind === 'work-result').slice(-6);
     const textResults = recent.filter(message => this.chatroom.staffingEvidence(message)?.kind === 'room-result').slice(-3);
-    const refs = [...new Map([decision, origin, parent, ...results, ...textResults, ...recent.slice(-5)]
+    const workProgress = recent.filter(message => review.workId && message.workId === review.workId &&
+      this.chatroom.staffingEvidence(message)?.kind === 'work-progress').slice(-3);
+    const refs = [...new Map([decision, origin, parent, ...results, ...textResults, ...workProgress, ...recent.slice(-5)]
       .filter(message => message?.roomId === room.id).map(message => [message.id, message])).values()];
     const work = review.workId && await this.manager.readState(review.targetBotId, db => {
       const work = db?.getRecord('works', review.workId);
       const request = work?.sources?.find(item => item.roomId === room.id && item.replyTo === decision?.replyTo);
       if (!work || work.botId !== review.targetBotId || !request) return null;
-      const bindings = work.bindings?.findLast(item => item.operationId === review.operationId);
+      const binding = work.bindings?.findLast(item => {
+        if (review.operationId) return item.operationId === review.operationId;
+        const source = item.operationId && db.getRecord('work-events', item.operationId)?.authorization?.source;
+        return source?.roomId === room.id && source.replyTo === request.replyTo;
+      });
+      const execution = binding?.observation;
       return { ...pick(work, ['id', 'revision', 'status', 'productionStage']), requestMessageId: request.replyTo,
-        controlRevision: work.controlRevision || 0, externalStatus: bindings?.status,
+        controlRevision: work.controlRevision || 0,
+        ...(execution && !execution.stale ? { execution: pick(execution, ['operationId', 'status', 'observedAt', 'submissionConfirmed']) } : {}),
         acceptanceRecorded: Boolean(work.acceptance), waitingKind: work.waiting?.kind,
         ...(deliveryRoom.id === room.id && review.phase === 'answer' ? { next: work.checkpoint?.next } : {}) };
     });
     return { id: review.id, originRoomId: room.id, targetBotId: review.targetBotId, decisionMessageId: review.decisionMessageId, sourceId: review.sourceId,
       questionId: review.questionId, topic: review.topic, project: pick(room, ['goal', 'projectMode']),
+      ...(review.inspection ? { inspection: pick(review.inspection, ['comparison', 'evidenceIds']) } : {}),
       teamRequirements: room.team.requirements, leadBotId: room.team.leadBotId,
       duties: activeDuties(room).slice(0, 12).map(item => ({ ...pick(item, ['botId', 'responsibility', 'workIds']),
         independentReview: item.dutyProfile?.independentReview === true })),
@@ -145,19 +170,22 @@ export class WorkflowReviews {
       return;
     }
     const answer = task.result.workflowReview;
+    const conclusion = pick(answer, ['kind', 'evidenceIds', 'comparison']);
     if (phase === 'inspect') {
       if (answer.kind !== 'ask') {
         const status = answer.kind === 'pass' ? 'retained' : 'unconfirmed';
-        this.store.save(records, { id: review.id, status, inspectionTaskId: task.id });
-        settled(answer.kind === 'pass' ? 'retain' : 'no-action', { status });
+        this.store.save(records, { id: review.id, status, inspectionTaskId: task.id, inspection: conclusion });
+        settled(answer.kind === 'pass' ? 'retain' : 'no-action', { status },
+          { evidenceIds: answer.evidenceIds, comparison: answer.comparison });
         return;
       }
       const issueId = key(room.id, review.targetBotId, review.workId || review.decisionMessageId, answer.topic);
       const earlier = this.store.get('workflow-issues', issueId);
       if (earlier && earlier.reviewId !== review.id) {
         this.store.save('workflow-issues', { id: issueId, latestReviewId: review.id, latestEvidenceIds: answer.evidenceIds });
-        this.store.save(records, { id: review.id, status: 'same-issue', earlierReviewId: earlier.reviewId });
-        settled('reuse', { status: 'same-issue', earlierReviewId: earlier.reviewId });
+        this.store.save(records, { id: review.id, status: 'same-issue', earlierReviewId: earlier.reviewId, inspection: conclusion });
+        settled('reuse', { status: 'same-issue', earlierReviewId: earlier.reviewId },
+          { evidenceIds: answer.evidenceIds, comparison: answer.comparison });
         return;
       }
       const privateRoom = answer.channel === 'private' && this.privateRoom(room, review.targetBotId);
@@ -169,14 +197,14 @@ export class WorkflowReviews {
         observationReply: true, kind: 'message',
       }, workflowReviewerId, saved => {
         this.store.save(records, { id: review.id, status: 'asked', topic: answer.topic, evidenceIds: answer.evidenceIds,
-          questionId, questionCreatedAt: saved.createdAt, deliveryRoomId, inspectionTaskId: task.id, issueId });
+          questionId, questionCreatedAt: saved.createdAt, deliveryRoomId, inspectionTaskId: task.id, inspection: conclusion, issueId });
         this.store.save('workflow-issues', { id: issueId, reviewId: review.id, questionId });
         this.chatroom.enqueue(saved, review.targetBotId, { id: `workflow-answer:${review.sourceId}`, workId: null,
           workflowReview: { id: review.id, phase: 'answer' }, priority: 'background' });
         return true;
       });
       settled('ask', { status: 'asked', questionId: question.id, channel: privateRoom ? 'private' : 'group' },
-        { evidenceIds: answer.evidenceIds, topic: answer.topic });
+        { evidenceIds: answer.evidenceIds, topic: answer.topic, comparison: answer.comparison });
       return;
     }
     let correction;
@@ -197,11 +225,13 @@ export class WorkflowReviews {
       observationReply: true, ...(item.roomId === room.id ? { sourceRefs: answer.evidenceIds.map(messageId => ({ type: 'room', roomId: room.id, messageId })) } : {}),
     }, item.botId, saved => {
       this.store.save(records, { id: review.id, status: 'answered', outcome, answerMessageId: saved.id,
-        answerTaskId: task.id, correction, answerEvidenceIds: answer.evidenceIds });
+        answerTaskId: task.id, correction, answerEvidenceIds: answer.evidenceIds,
+        ...(item.roomId === room.id ? { answer: conclusion } : {}) });
       this.store.save('workflow-issues', { id: review.issueId, outcome, answerMessageId: saved.id });
       return true;
     });
-    settled('review-original-decision', { status: outcome, messageId: reply.id, ...correction }, { evidenceIds: answer.evidenceIds });
+    settled('review-original-decision', { status: outcome, messageId: reply.id, ...correction },
+      { evidenceIds: answer.evidenceIds, comparison: answer.comparison });
   }
   expire(item, reason) {
     this.store.save(records, { id: item.workflowReview.id, status: 'expired', reason });

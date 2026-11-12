@@ -1,4 +1,5 @@
 import { taskSource } from '../context/sources.mjs';
+import { comparisonFields, workflowComparison, workflowQuestions } from '../context/workflow-comparison.mjs';
 
 const kind = 'business-decisions';
 export const flowMarker = '[[SUMMON_FLOW ';
@@ -11,11 +12,11 @@ const id = value => typeof value === 'string' && value.length <= 350 && !/[\s\u0
 const compact = value => Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined && item !== null));
 const now = () => new Date().toISOString();
 
-export const workflowPrompt = `Before each business choice ask privately: Is the current workflow right for the current user goal, project rules, evidence, owner and authority? Change your actual choice if it is not. This includes routing, reusing, refusing, skipping, waiting, sending, verifying, saving knowledge and choosing silence. On each action tool include workflowCheck with a verdict, a short verifiable fact, and the decision category. On the final response (even PASS) append a new last line ${flowMarker}{"verdict":"confirmed|adjusted|blocked|unconfirmed","choice":"answer|pass|ask|retain|reuse|skip|refuse|continue|handoff|verify|remember|route|correct","fact":"one short fact tied to the current source"}]]. This line is private; never include analysis, copied source text, instructions, private values or credentials. Keep the normal reply or required JSON above it. No additional tool call or dialogue is needed for this check.`;
+export const workflowPrompt = `Before each business choice, including routing, retaining, refusing, waiting, verifying, saving knowledge and choosing silence, check your actual decision. ${workflowQuestions} Change your choice when the facts support it, even if the current path works. On each action tool include workflowCheck. On the final response (even PASS) append a new last line ${flowMarker}{"verdict":"confirmed|adjusted|blocked|unconfirmed","choice":"answer|pass|ask|retain|reuse|skip|refuse|continue|handoff|verify|remember|route|correct","fact":"feasibility and one fact","fit":"fit for the actual goal","alternative":"specific option or limiting facts","tradeoff":"gain, cost and choice"}]]. For a workflow review that requires comparison in its decision JSON, use that field instead of repeating it in a final marker. Save only concise conclusions and verifiable facts. Keep analysis, copied private material, instructions and credentials out of these fields. No additional tool call or dialogue is needed for this check.`;
 export const workflowField = { type: 'object', additionalProperties: false,
   properties: { verdict: { type: 'string', enum: [...verdicts] }, choice: { type: 'string', enum: [...choices] },
-    fact: { type: 'string', maxLength: 240 } }, required: ['verdict', 'choice', 'fact'],
-  description: 'Private workflow conclusion and one verifiable fact. No reasoning or source excerpts.' };
+    ...comparisonFields }, required: ['verdict', 'choice', ...Object.keys(comparisonFields)],
+  description: 'Private decision record with feasibility, fit and the option compared. Record conclusions and facts only.' };
 
 export function workflowAnswer(text) {
   const at = text.indexOf(flowMarker);
@@ -64,8 +65,8 @@ export class SummonDecisionJournal {
   }
   check(value) {
     if (!verdicts.has(value?.verdict) || !choices.has(value?.choice)) return undefined;
-    const fact = this.shortFact(value.fact);
-    return fact ? { verdict: value.verdict, choice: value.choice, fact } : undefined;
+    const comparison = workflowComparison(this.clean(value));
+    return comparison ? { verdict: value.verdict, choice: value.choice, ...comparison } : undefined;
   }
   scope(task) {
     const source = taskSource(task, this.store);
