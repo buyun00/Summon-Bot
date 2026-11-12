@@ -23,14 +23,19 @@ const transientPermissionReads = new Set(['desktop_unavailable', 'desktop_timeou
   'permission_owner_unavailable', 'permissions_unavailable', 'preflight_read_timeout']);
 
 export function readDesktopPermissionDefault(file = path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), '.codex-global-state.json')) {
-  let atoms;
-  try { atoms = JSON.parse(readFileSync(file, 'utf8'))['electron-persisted-atom-state']; }
+  let state;
+  try { state = JSON.parse(readFileSync(file, 'utf8')); }
   catch { throw new ApiError(503, 'desktop_defaults_unavailable', 'Cannot read desktop permission defaults. No chat or message was created.'); }
+  const accountOwner = state?.['electron-renderer-content-owner'];
+  const signedIn = typeof accountOwner === 'string' && accountOwner !== '' &&
+    accountOwner.trim() === accountOwner && accountOwner !== 'signed-out';
+  const atoms = signedIn ? state[`electron-owner-atoms:${accountOwner}`] : null;
   const selection = atoms?.['permission-selection-by-host-id:local'];
-  const mode = selection == null ? atoms?.['agent-mode-by-host-id']?.local : selection.kind === 'agent-mode' ? selection.agentMode : null;
-  const permissions = Object.hasOwn(PERMISSION_MODES, mode ?? '') ? PERMISSION_MODES[mode] : null;
-  if (!permissions) throw new ApiError(501, 'unsupported_permission_default', 'The desktop default permission selection is not supported by this adapter. No chat or message was created.');
-  return { mode, ...structuredClone(permissions) };
+  const mode = selection?.kind === 'agent-mode' ? selection.agentMode : null;
+  if (typeof mode !== 'string' || !Object.hasOwn(PERMISSION_MODES, mode))
+    throw new ApiError(501, 'unsupported_permission_default', 'The desktop default permission selection is not supported by this adapter. No chat or message was created.');
+  // Keep the owner in the preflight comparison even if two accounts use the same mode.
+  return { accountOwner, mode, ...structuredClone(PERMISSION_MODES[mode]) };
 }
 
 export function matchesPermissionDefault(permissions, expected) {
