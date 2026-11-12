@@ -458,12 +458,12 @@ export function coreTools(services, task) {
   const targetIdentity = work => ({ ...work, status: undefined, executionStatus: undefined });
   const sameWork = (expected, current) => Boolean(current && JSON.stringify(targetIdentity(selectedWork(current))) ===
     JSON.stringify(targetIdentity(expected)));
-  const authorize = (decision, ctx, proposed, { workId, actionId, scopeEvidence }) => {
+  const authorize = (decision, ctx, proposed, { workId, actionId, scopeEvidence, correctionToolId }) => {
     const fileScopeSources = proposed.relation === 'new' && !proposed.after ?
       earlierFileSources(task, store, scopeEvidence || []) : [];
     return authorizeProduction({ task, store, decision,
       proposed: { ...proposed, ...(fileScopeSources.length ? { fileScopeSources } : {}) },
-      workId, actionId, verify: (input, signal) => ctx.verifyProduction({ ...input, scopeEvidence }, signal), signal: ctx.signal,
+      workId, actionId, correctionToolId, verify: (input, signal) => ctx.verifyProduction({ ...input, scopeEvidence }, signal), signal: ctx.signal,
       isTargetCurrent: proposed.work ? () => sameWork(proposed.work, services.works.get(workId)) : undefined });
   };
   const roomMaterials = content => {
@@ -1085,7 +1085,7 @@ export function coreTools(services, task) {
           participant, duty, workId: work.id, operationId, projectId: selected.project?.id ?? null, work }) : undefined;
         const grant = await authorize(decision, ctx, { relation: 'continue', work: selected, handoff: content.handoff,
           sourceMaterials: proposalMaterials(content), ...(participant ? { participant: { ...participant, duty } } : {}),
-          ...(after ? { after } : {}) }, { workId: work.id, actionId: operationId, scopeEvidence: content.evidence });
+          ...(after ? { after } : {}) }, { workId: work.id, actionId: operationId, scopeEvidence: content.evidence, correctionToolId: ctx.recordId });
         if (grant) content.stage = productionStage(grant);
         try {
           content.currentKnowledge = await services.memory.forRequest(task, services.sources.project(work));
