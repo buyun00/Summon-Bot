@@ -108,7 +108,7 @@ fun WorkspaceScreen(store: SummonStore, section: WorkspaceSection, onBack: () ->
                 IconButton(onClick = { plus = true }, enabled = snapshot.obj != null) { Icon(Icons.Filled.Add, "新增知识或关联") }
                 DropdownMenu(plus, { plus = false }) {
                     DropdownMenuItem(text = { Text("新增知识") }, onClick = { plus = false; editor = EditorKind.Node(null) })
-                    DropdownMenuItem(text = { Text("建立关联") }, enabled = records(snapshot["knowledge"]["nodes"]).size >= 2, onClick = { plus = false; editor = EditorKind.Edge(null) })
+                    DropdownMenuItem(text = { Text("建立关联") }, enabled = editableKnowledgeNodes(snapshot).size >= 2, onClick = { plus = false; editor = EditorKind.Edge(null) })
                 }
             } else if (section == WorkspaceSection.Works) {
                 IconButton(onClick = { editor = EditorKind.Work }, enabled = snapshot.obj != null) { Icon(Icons.Filled.Add, "委托工作") }
@@ -416,6 +416,7 @@ private fun KnowledgeDetail(store: SummonStore, initial: WorkspaceRecord, snapsh
     var error by remember { mutableStateOf<String?>(null) }
     var editor by remember { mutableStateOf<EditorKind?>(null) }
     val node = records(graph["nodes"]).firstOrNull { it.id == initial.id } ?: initial
+    val editable = node.value["editable"].bool != false
     suspend fun load() {
         try { graph = store.request("/api/knowledge/graph?id=${SummonApiClient.component(initial.id)}&depth=1"); error = null }
         catch (exception: Exception) { error = exception.message }
@@ -425,7 +426,7 @@ private fun KnowledgeDetail(store: SummonStore, initial: WorkspaceRecord, snapsh
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
             Text("知识详情", modifier = Modifier.weight(1f))
-            TextButton(onClick = { editor = EditorKind.Node(node) }) { Text("修订") }
+            if (editable) TextButton(onClick = { editor = EditorKind.Node(node) }) { Text("修订") }
         }
         error?.let { Text(it, color = Color(0xFFFF9F0A)) }
         Text(node.value["title"].stringValue)
@@ -434,6 +435,7 @@ private fun KnowledgeDetail(store: SummonStore, initial: WorkspaceRecord, snapsh
         Text(node.value["content"].stringValue)
         if (node.value["source"].stringValue.isNotEmpty()) Text("来源  ${node.value["source"].stringValue}")
         if (node.value["version"].stringValue.isNotEmpty()) Text("适用版本  ${node.value["version"].stringValue}")
+        if (!editable) node.value["revision"].int?.let { Text("修订 $it") }
         Text("关联知识", modifier = Modifier.padding(top = 8.dp))
         val edges = records(graph["edges"]).filter { it.value["from"].string == node.id || it.value["to"].string == node.id }
         if (edges.isEmpty()) Text("尚未建立关联", color = Color(0xFF8E8E93))
@@ -447,7 +449,7 @@ private fun KnowledgeDetail(store: SummonStore, initial: WorkspaceRecord, snapsh
             }
             if (edge.value["status"].string == "expired") Text("已过期", color = Color(0xFF8E8E93))
         }
-        TextButton(enabled = records(snapshot["knowledge"]["nodes"]).size >= 2, onClick = { editor = EditorKind.Edge(null) }) { Text("建立关联") }
+        if (editable) TextButton(enabled = editableKnowledgeNodes(snapshot).size >= 2, onClick = { editor = EditorKind.Edge(null) }) { Text("建立关联") }
         val history = node.value["history"].array.orEmpty().reversed()
         if (history.isNotEmpty()) {
             Text("修订历史")
@@ -477,15 +479,19 @@ private fun WorkspaceEditor(store: SummonStore, kind: EditorKind, snapshot: Summ
     var content by remember { mutableStateOf(record["content"].string ?: record["instruction"].string.orEmpty()) }
     var botID by remember { mutableStateOf(record["botId"].string ?: records(snapshot["bots"]).firstOrNull()?.id.orEmpty()) }
     var roomID by remember { mutableStateOf(record["roomId"].string ?: records(snapshot["rooms"]).firstOrNull()?.id.orEmpty()) }
-    var cwd by remember { mutableStateOf(snapshot["defaultCwd"].stringValue) }
+    var cwd by remember { mutableStateOf("") }
     var constraints by remember { mutableStateOf("") }
     var inputRefs by remember { mutableStateOf("") }
+    var fileInputs by remember { mutableStateOf("") }
+    var executables by remember { mutableStateOf("") }
+    var outputDirectories by remember { mutableStateOf("") }
+    var outputFiles by remember { mutableStateOf("") }
     var type by remember { mutableStateOf(record["type"].string ?: "unverified") }
     var status by remember { mutableStateOf(record["status"].string ?: "active") }
     var source by remember { mutableStateOf(record["source"].stringValue) }
     var version by remember { mutableStateOf(record["version"].stringValue) }
-    var fromID by remember { mutableStateOf(record["from"].string ?: records(snapshot["knowledge"]["nodes"]).firstOrNull()?.id.orEmpty()) }
-    var toID by remember { mutableStateOf(record["to"].string ?: records(snapshot["knowledge"]["nodes"]).drop(1).firstOrNull()?.id.orEmpty()) }
+    var fromID by remember { mutableStateOf(record["from"].string ?: editableKnowledgeNodes(snapshot).firstOrNull()?.id.orEmpty()) }
+    var toID by remember { mutableStateOf(record["to"].string ?: editableKnowledgeNodes(snapshot).getOrNull(1)?.id.orEmpty()) }
     var interval by remember { mutableStateOf(record["intervalSeconds"].int?.let { (it / 60.0).toString() } ?: "60") }
     var enabled by remember { mutableStateOf(record["enabled"].bool ?: true) }
     var busy by remember { mutableStateOf(false) }
@@ -519,7 +525,12 @@ private fun WorkspaceEditor(store: SummonStore, kind: EditorKind, snapshot: Summ
                 RecipientFields(snapshot, botID, roomID, { botID = it }, { roomID = it })
                 OutlinedTextField(cwd, { cwd = it }, label = { Text("工作目录（选填，服务器上的绝对路径）") }, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(constraints, { constraints = it }, label = { Text("约束与注意事项") }, minLines = 3, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(inputRefs, { inputRefs = it }, label = { Text("每行一项：文件路径、资料说明或链接") }, minLines = 3, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(inputRefs, { inputRefs = it }, label = { Text("每行一项：资料说明或链接") }, minLines = 3, modifier = Modifier.fillMaxWidth())
+                Text("本机文件授权（选填，每行一个路径）")
+                OutlinedTextField(fileInputs, { fileInputs = it }, label = { Text("允许读取的文件或目录") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(executables, { executables = it }, label = { Text("允许执行的程序文件") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(outputDirectories, { outputDirectories = it }, label = { Text("允许创建和写入的结果目录") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(outputFiles, { outputFiles = it }, label = { Text("允许写入的指定结果文件") }, modifier = Modifier.fillMaxWidth())
             }
             is EditorKind.Node -> {
                 OutlinedTextField(title, { title = it }, label = { Text("标题") }, modifier = Modifier.fillMaxWidth())
@@ -570,11 +581,14 @@ private fun WorkspaceEditor(store: SummonStore, kind: EditorKind, snapshot: Summ
                 val payload: Map<String, SummonJson>
                 when (kind) {
                     EditorKind.Work -> {
+                        fun pathLines(value: String) = SummonJson.Arr(value.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.map(SummonJson::Str).toList())
                         path = "/api/works"
                         payload = mapOf(
                             "id" to SummonJson.Str(workRequestID), "goal" to SummonJson.Str(content.trim()), "botId" to SummonJson.Str(botID), "roomId" to SummonJson.Str(roomID),
                             "cwd" to SummonJson.Str(cwd.trim()), "constraints" to SummonJson.Str(constraints),
-                            "inputRefs" to SummonJson.Arr(inputRefs.split('\n').map { it.trim() }.filter { it.isNotEmpty() }.map(SummonJson::Str)),
+                            "inputRefs" to pathLines(inputRefs),
+                            "fileScope" to SummonJson.Obj(mapOf("inputs" to pathLines(fileInputs), "executables" to pathLines(executables),
+                                "outputDirectories" to pathLines(outputDirectories), "outputFiles" to pathLines(outputFiles))),
                         )
                     }
                     is EditorKind.Node -> {
@@ -644,11 +658,14 @@ private fun NodePicker(label: String, snapshot: SummonJson, selected: String, on
     var open by remember { mutableStateOf(false) }
     TextButton(onClick = { open = true }) { Text("$label  ${workspaceName(selected, snapshot["knowledge"]["nodes"], "title")}") }
     DropdownMenu(open, { open = false }) {
-        records(snapshot["knowledge"]["nodes"]).forEach { node ->
+        editableKnowledgeNodes(snapshot).forEach { node ->
             DropdownMenuItem(text = { Text(node.value["title"].string ?: node.id) }, onClick = { onSelect(node.id); open = false })
         }
     }
 }
+
+private fun editableKnowledgeNodes(snapshot: SummonJson): List<WorkspaceRecord> =
+    records(snapshot["knowledge"]["nodes"]).filter { it.value["editable"].bool != false }
 
 private fun records(value: SummonJson): List<WorkspaceRecord> = value.array.orEmpty().mapNotNull { item ->
     val id = item["id"].string?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
@@ -668,10 +685,18 @@ private fun eventLabel(value: String) = mapOf(
     "turn_completed" to "本轮执行结束", "connection_lost" to "执行端连接中断", "result_delivery_error" to "结果回传异常",
     "queued" to "进入队列", "started" to "开始执行", "progress" to "执行进度", "output" to "执行输出", "question" to "等待答复",
     "error" to "执行异常", "reasoning" to "正在思考", "result" to "执行结果", "work.created" to "工作已建立", "work.updated" to "工作状态更新",
+    "work.maintenance_observed" to "工具维护结果",
 )[value] ?: workspaceStatus(value)
 
 private fun eventText(event: SummonJson): String {
     val data = if (event["payload"] == SummonJson.Null) event["data"] else event["payload"]
+    if (event["type"].string == "work.maintenance_observed") {
+        val result = data["content"]
+        val name = result["entryName"].string ?: result["entryId"].stringValue
+        val status = workspaceStatus(result["status"].stringValue)
+        val work = result["ownerWorkId"].string?.let { "维护工作 $it" }.orEmpty()
+        return listOf("$name · $status", result["content"].stringValue, work).filter { it.isNotEmpty() }.joinToString("\n")
+    }
     if (data["work"] != SummonJson.Null) {
         val work = data["work"]
         return listOf(workspaceStatus(work["status"].stringValue), work["progress"].stringValue, work["lastError"]["message"].stringValue).filter { it.isNotEmpty() }.joinToString("\n")

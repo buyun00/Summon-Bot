@@ -5,6 +5,8 @@ import { directoryProject } from '../context/project-scope.mjs';
 import { externalExecution, unsettledNativeBinding } from '../context/execution-evidence.mjs';
 import { currentProductionStage, productionStage, requireProductionGrant } from '../capabilities/request-routing.mjs';
 import { OWNER_DELIVERY, ROOM_DUTY_PLANS, matchesContributionGrant } from '../context/duty-actions.mjs';
+import { fileAccessAnswer, pendingFileScope, WORK_FILE_ACCESS, WORK_FILE_ANSWERS } from '../capabilities/file-access.mjs';
+import { samePath } from '../capabilities/file-policy.mjs';
 
 const now = () => new Date().toISOString();
 const statuses = new Set(['active', 'waiting', 'paused', 'blocked', 'completed', 'cancelled']);
@@ -105,6 +107,62 @@ export class WorkService {
     });
     if (!receipt.dispatch.duplicate) this.schedule(this.store.getTask(receipt.dispatch.taskId));
     return receipt;
+  }
+  requestFileAccess(task, base, path) {
+    const work = this.get(task.workId);
+    const scope = work && pendingFileScope(task, this.store, base, path);
+    if (!scope) fail('Ask about a precise path from the accepted source whose operation actually lacks permission.', 409);
+    return this.store.transaction(() => {
+      const current = this.get(work.id);
+      const prior = this.store.listRecords(WORK_FILE_ACCESS).find(record => record.workId === work.id &&
+        record.actionId === scope.actionId && samePath(record.path, scope.path) &&
+        JSON.stringify(record.operations) === JSON.stringify(scope.operations));
+      if (prior) {
+        if (prior.status !== 'pending' || current.waiting?.fileAccess?.requestId !== prior.id)
+          fail('This exact file request already has a decision or was superseded.', 409);
+        return prior;
+      }
+      if (current.status !== 'active') fail('The original work must be active before requesting this file permission.', 409);
+      const labels = { read: '读取', write: '创建或写入', execute: '执行', publish: '发布' };
+      const question = '继续这一步需要你的本机文件授权。\n' +
+        scope.operations.map(operation => labels[operation]).join('、') + ' ' + (scope.kind === 'directory' ? '目录 ' : '文件 ') + scope.path +
+        '\n请回复「允许」或「拒绝」，也可以在原工作详情中答复。';
+      const request = this.store.putRecord(WORK_FILE_ACCESS, { ...scope, id: randomUUID(), workId: work.id,
+        controlRevision: current.controlRevision || 0, question, status: 'pending', createdAt: now() });
+      this.update(work.id, { status: 'waiting', waiting: { kind: 'user-input', operationId: scope.actionId, question,
+        fileAccess: { requestId: request.id, path: scope.path, kind: scope.kind, operations: scope.operations } } });
+      return request;
+    });
+  }
+  answerFileAccess(workId, input) {
+    const decision = fileAccessAnswer(input.content.trim()), answerKey = workId + ':' + input.id;
+    if (!decision) fail('请对这项文件授权答复「允许」或「拒绝」。');
+    const result = this.store.transaction(() => {
+      const prior = this.store.getRecord(WORK_FILE_ANSWERS, answerKey);
+      if (prior) {
+        if (prior.decision !== decision || input.fileAccessRequestId && prior.requestId !== input.fileAccessRequestId)
+          fail('此答复标识已绑定原授权决定。', 409);
+        return { ...prior, duplicate: true };
+      }
+      const work = this.get(workId), id = work?.waiting?.fileAccess?.requestId;
+      const request = id && this.store.getRecord(WORK_FILE_ACCESS, id);
+      if (!request || request.status !== 'pending' || input.fileAccessRequestId !== request.id ||
+        request.workId !== workId || request.controlRevision !== (work.controlRevision || 0) || stopped.has(work.status) ||
+        input.roomId && input.roomId !== request.roomId)
+        fail('这项文件授权已变更，请查看原工作和当前请求。', 409);
+      const accepted = this.accept({ id: 'work-file-answer:' + id + ':' + input.id, to: this.botId, workId, kind: 'request',
+        content: { type: 'work-file-answer', requestId: id, actionId: request.actionId, decision, path: request.path,
+          operations: request.operations, instruction: 'Continue this same accepted action within the recorded decision. Inspect any unknown native or publication outcome before attempting a write.' },
+        metadata: { actor: 'user', sourceType: 'file-access-answer', executionEventId: request.executionEventId,
+          roomId: request.roomId, originMessageId: input.replyTo, priority: 'foreground' } }, 'controller', { deferSchedule: true });
+      if (accepted.duplicate) fail('原文件授权答复的受理回执当前不可读。', 409);
+      this.store.putRecord(WORK_FILE_ACCESS, { ...request, status: decision, answerMessageId: accepted.message.id,
+        answerTaskId: accepted.task.id, answeredAt: now() });
+      return this.store.putRecord(WORK_FILE_ANSWERS, { id: answerKey, accepted: true, workId, requestId: id,
+        operationId: request.actionId, decision, taskId: accepted.task.id, status: accepted.task.status });
+    });
+    if (!result.duplicate) this.schedule(this.store.getTask(result.taskId));
+    return result;
   }
   source(task) { const { input, ...source } = taskSource(task, this.store); return source; }
   executor(work) { return work.executor || { kind: 'pi' }; }

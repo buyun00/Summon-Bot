@@ -5,6 +5,8 @@ import { validateToolArguments } from '@earendil-works/pi-ai';
 import { loadConfiguredTools } from '../../bot/src/capabilities/remote-tools.mjs';
 import { nativeToolDefinitions } from './native-tool-definitions.mjs';
 import { taskMode } from '../../bot/src/capabilities/task-policy.mjs';
+import { workExecution } from '../../bot/src/context/sources.mjs';
+import { isEnvironmentInitializationSource } from '../../bot/src/context/environment.mjs';
 import { fail, safeId, required, within } from '../shared/validation.mjs';
 
 const K = { entries: 'catalog-entries', requests: 'catalog-requests', proposals: 'catalog-skill-proposals', delegations: 'catalog-delegations' };
@@ -448,7 +450,10 @@ export class CapabilityCatalog {
       let record = this.store.get(K.delegations, key);
       if (record && (record.message !== message || record.sourceWorkId !== (input.workId || null))) fail('Delegation operationId already belongs to another request', 409);
       record ||= this.store.save(K.delegations, { id: key, entryId: id, operationId, actor, sourceWorkId: input.workId || null,
-        ownerBotId: entry.ownerBotId, ownerWorkId: `catalog-${randomUUID()}`, sourceTaskId: input.sourceTaskId || null, systemMaintenance: input.systemMaintenance === true, nativeMaintenanceId: input.systemMaintenance === true ? input.nativeMaintenanceId || null : null, nativeUpdateAuthorized: input.nativeUpdateAuthorized || null, project: sourceWork?.project || null, sourceConversationId: input.conversationId || null, proposalId: correctionOnly ? proposal.id : null, message, status: 'pending' });
+        ownerBotId: entry.ownerBotId, ownerWorkId: `catalog-${randomUUID()}`, sourceTaskId: input.sourceTaskId || null,
+        systemMaintenance: input.systemMaintenance === true, nativeMaintenanceId: input.systemMaintenance === true ? input.nativeMaintenanceId || null : null,
+        nativeUpdateAuthorized: input.nativeUpdateAuthorized || null, project: input.systemMaintenance === true ? null : sourceWork?.project || null,
+        sourceConversationId: input.conversationId || null, proposalId: correctionOnly ? proposal.id : null, message, status: 'pending' });
       record = await this.dispatchDelegation(record);
       return { entryId: id, ownerBotId: record.ownerBotId, ownerWorkId: record.ownerWorkId, taskId: record.taskId, sourceWorkId: record.sourceWorkId, status: record.status, accepted: true };
     });
@@ -468,11 +473,16 @@ export class CapabilityCatalog {
   async tick() {
     if (this.ticking || this.controller.signal.aborted) return; this.ticking = true;
     try {
-      for (const listed of this.store.list(K.delegations).filter(item => !item.returnedAt)) {
+      for (const listed of this.store.list(K.delegations).filter(item => !item.returnedAt ||
+        item.environmentObservation && !item.observationDeliveredAt && (!item.lastAttemptAt || Date.now() - Date.parse(item.lastAttemptAt) >= 30_000))) {
         if (this.controller.signal.aborted) break;
         await this.serial(`delegation:${listed.id}`, async () => {
-          let record = this.store.get(K.delegations, listed.id); if (!record || record.returnedAt) return;
+          let record = this.store.get(K.delegations, listed.id); if (!record) return;
           try {
+            if (record.returnedAt) {
+              await this.projectEnvironmentObservation(record);
+              return;
+            }
             const entry = this.store.get(K.entries, record.entryId);
             if (!entry?.enabled || record.cancelReason) {
               await this.finishDelegation(record, 'cancelled', record.cancelReason || 'Catalog entry is disabled or removed');
@@ -496,6 +506,16 @@ export class CapabilityCatalog {
   }
   async finishDelegation(record, status, content) {
     const source = record.actor !== 'controller' && this.manager.store.get('bots', record.actor);
+    const environment = record.systemMaintenance && record.sourceWorkId?.startsWith('onboarding-') && record.sourceTaskId &&
+      await this.manager.readState(record.actor, db => {
+        const task = db?.getTask(record.sourceTaskId);
+        return task?.workId === record.sourceWorkId && isEnvironmentInitializationSource(workExecution(task, db).authorization?.source);
+      });
+    if (environment) {
+      this.store.save(K.delegations, { id: record.id, status, result: content, returnedAt: stamp(), lastError: null, lastAttemptAt: null,
+        environmentObservation: true });
+      return;
+    }
     const stoppedMaintainer = source?.maintenanceFor?.kind === 'catalog' && source.status !== 'active';
     if (!record.proposalId && source && !source.archivedAt && !stoppedMaintainer && record.sourceWorkId) {
       await this.manager.start(record.actor);
@@ -505,6 +525,19 @@ export class CapabilityCatalog {
     }
     if (record.proposalId) this.store.save(K.proposals, { id: record.proposalId, reviewStatus: status, reviewedAt: stamp(), reviewResult: content });
     this.store.save(K.delegations, { ...record, status, result: content, returnedAt: stamp(), lastError: null, ...(source?.archivedAt || stoppedMaintainer ? { deliverySkipped: 'source-maintainer-inactive' } : {}) });
+  }
+  async projectEnvironmentObservation(record) {
+    const source = this.manager.store.get('bots', record.actor);
+    if (!source || source.archivedAt || source.status !== 'active' || source.runIntent !== 'running') return;
+    const entry = this.store.get(K.entries, record.entryId);
+    const receipt = await this.manager.request(record.actor, `/works/${encodeURIComponent(record.sourceWorkId)}/native-event`, { method: 'POST', body: JSON.stringify({
+      id: `catalog-return:${record.ownerWorkId}`, taskId: record.sourceTaskId,
+      content: { type: 'tool-maintenance-result', entryId: record.entryId, entryName: entry?.name, ownerBotId: record.ownerBotId,
+        ownerWorkId: record.ownerWorkId, status: record.status, content: record.result },
+      metadata: { authority: 'peer-observation', actor: record.ownerBotId, maintenanceId: record.nativeMaintenanceId, observedAt: record.returnedAt },
+    }) });
+    if (!receipt.observed) fail('The environment maintenance source observation was not recorded', 409);
+    this.store.save(K.delegations, { id: record.id, observationDeliveredAt: stamp(), lastError: null });
   }
   async propose(input, actor = 'controller') {
     const entry = this.entry(input.id); this.access(entry, actor); if (entry.kind !== 'skill') fail('Only Skills accept method corrections');

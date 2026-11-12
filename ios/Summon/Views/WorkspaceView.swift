@@ -74,7 +74,7 @@ struct WorkspaceView: View {
                         Menu {
                             Button("新增知识", systemImage: "plus") { editor = .node(nil) }
                             Button("建立关联", systemImage: "link") { editor = .edge(nil) }
-                                .disabled(workspaceRecords(snapshot["knowledge"]["nodes"]).count < 2)
+                                .disabled(editableKnowledgeNodes(snapshot).count < 2)
                         } label: { Image(systemName: "plus") }
                         .accessibilityLabel("新增知识或关联")
                         .disabled(snapshot.object == nil)
@@ -531,6 +531,9 @@ private struct WorkspaceKnowledgeDetail: View {
                 Text(node.value["content"].stringValue).textSelection(.enabled)
                 if !node.value["source"].stringValue.isEmpty { WorkspaceTextFact(title: "来源", value: node.value["source"].stringValue) }
                 if !node.value["version"].stringValue.isEmpty { LabeledContent("适用版本", value: node.value["version"].stringValue) }
+                if node.value["editable"].bool == false, let revision = node.value["revision"].int {
+                    LabeledContent("修订", value: String(revision))
+                }
             }
             Section("关联知识") {
                 let edges = workspaceRecords(graph["edges"]).filter {
@@ -552,8 +555,10 @@ private struct WorkspaceKnowledgeDetail: View {
                         if edge.value["status"].string == "expired" { Text("已过期").summonFont(.caption).foregroundStyle(.secondary) }
                     }.padding(.vertical, 3)
                 }
-                Button("建立关联", systemImage: "link") { editor = .edge(nil) }
-                    .disabled(workspaceRecords(snapshot["knowledge"]["nodes"]).count < 2)
+                if node.value["editable"].bool != false {
+                    Button("建立关联", systemImage: "link") { editor = .edge(nil) }
+                        .disabled(editableKnowledgeNodes(snapshot).count < 2)
+                }
             }
             if let history = node.value["history"].array, !history.isEmpty {
                 Section("修订历史") {
@@ -568,7 +573,11 @@ private struct WorkspaceKnowledgeDetail: View {
         }
         .navigationTitle("知识详情")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar { Button("修订", systemImage: "pencil") { editor = .node(node) } }
+        .toolbar {
+            if node.value["editable"].bool != false {
+                Button("修订", systemImage: "pencil") { editor = .node(node) }
+            }
+        }
         .refreshable { await load() }
         .task { await load() }
         .summonSheet(item: $editor, onDismiss: { Task { await load() } }) { kind in
@@ -634,6 +643,10 @@ private struct WorkspaceEditor: View {
     @State private var cwd = ""
     @State private var constraints = ""
     @State private var inputRefs = ""
+    @State private var fileInputs = ""
+    @State private var executables = ""
+    @State private var outputDirectories = ""
+    @State private var outputFiles = ""
     @State private var type = "unverified"
     @State private var status = "active"
     @State private var source = ""
@@ -674,7 +687,13 @@ private struct WorkspaceEditor: View {
                 recipientFields
                 Section("执行环境") { TextField("工作目录（选填，服务器上的绝对路径）", text: $cwd).textInputAutocapitalization(.never).autocorrectionDisabled() }
                 Section("约束与注意事项") { TextField("操作边界、已有修改和需要保留的行为", text: $constraints, axis: .vertical).lineLimit(3...10) }
-                Section("输入资料") { TextField("每行一项：文件路径、资料说明或链接", text: $inputRefs, axis: .vertical).lineLimit(3...10) }
+                Section("资料说明") { TextField("每行一项：资料说明或链接", text: $inputRefs, axis: .vertical).lineLimit(3...10) }
+                Section("本机文件授权（选填，每行一个路径）") {
+                    TextField("允许读取的文件或目录", text: $fileInputs, axis: .vertical).lineLimit(2...6)
+                    TextField("允许执行的程序文件", text: $executables, axis: .vertical).lineLimit(2...6)
+                    TextField("允许创建和写入的结果目录", text: $outputDirectories, axis: .vertical).lineLimit(2...6)
+                    TextField("允许写入的指定结果文件", text: $outputFiles, axis: .vertical).lineLimit(2...6)
+                }.textInputAutocapitalization(.never).autocorrectionDisabled()
             case .node:
                 Section {
                     TextField("标题", text: $title)
@@ -749,7 +768,7 @@ private struct WorkspaceEditor: View {
     private func nodePicker(_ label: String, selection: Binding<String>) -> some View {
         Picker(label, selection: selection) {
             Text("选择知识").tag("")
-            ForEach(workspaceRecords(snapshot["knowledge"]["nodes"])) { node in
+            ForEach(editableKnowledgeNodes(snapshot)) { node in
                 Text(node.value["title"].string ?? node.id).tag(node.id)
             }
         }
@@ -789,12 +808,11 @@ private struct WorkspaceEditor: View {
         content = record["content"].string ?? record["instruction"].string ?? ""
         botID = record["botId"].string ?? workspaceRecords(snapshot["bots"]).first?.id ?? ""
         roomID = record["roomId"].string ?? workspaceRecords(snapshot["rooms"]).first?.id ?? ""
-        cwd = snapshot["defaultCwd"].stringValue
         type = record["type"].string ?? "unverified"
         status = record["status"].string ?? "active"
         source = record["source"].stringValue
         version = record["version"].stringValue
-        let nodes = workspaceRecords(snapshot["knowledge"]["nodes"])
+        let nodes = editableKnowledgeNodes(snapshot)
         fromID = record["from"].string ?? nodes.first?.id ?? ""
         toID = record["to"].string ?? nodes.dropFirst().first?.id ?? ""
         if let seconds = record["intervalSeconds"].int { intervalMinutes = String(Double(seconds) / 60) }
@@ -814,11 +832,17 @@ private struct WorkspaceEditor: View {
         var payload: [String: SummonJSONValue]
         switch kind {
         case .work:
+            func pathLines(_ value: String) -> SummonJSONValue {
+                .array(value.split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }.map(SummonJSONValue.string))
+            }
             path = "/api/works"
             payload = ["id": .string(workRequestID), "goal": .string(content.trimmingCharacters(in: .whitespacesAndNewlines)), "botId": .string(botID),
                        "roomId": .string(roomID), "cwd": .string(cwd.trimmingCharacters(in: .whitespacesAndNewlines)),
                        "constraints": .string(constraints),
-                       "inputRefs": .array(inputRefs.split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }.map { .string($0) })]
+                       "inputRefs": pathLines(inputRefs),
+                       "fileScope": .object(["inputs": pathLines(fileInputs), "executables": pathLines(executables),
+                                             "outputDirectories": pathLines(outputDirectories), "outputFiles": pathLines(outputFiles)])]
         case .node:
             path = record.map { "/api/knowledge/nodes/\(workspaceEscaped($0.id))" } ?? "/api/knowledge/nodes"
             payload = ["title": .string(title), "content": .string(content), "type": .string(type), "status": .string(status), "source": .string(source), "version": .string(version)]
@@ -877,6 +901,10 @@ private struct WorkspaceFormError: LocalizedError {
     var errorDescription: String? { message }
 }
 
+private func editableKnowledgeNodes(_ snapshot: SummonJSONValue) -> [WorkspaceRecord] {
+    workspaceRecords(snapshot["knowledge"]["nodes"]).filter { $0.value["editable"].bool != false }
+}
+
 private func workspaceRecords(_ value: SummonJSONValue) -> [WorkspaceRecord] {
     (value.array ?? []).compactMap { item in
         guard let id = item["id"].string, !id.isEmpty else { return nil }
@@ -911,11 +939,19 @@ private func workspaceEventLabel(_ value: String) -> String {
      "interrupt_error": "停止请求异常", "resume_queued": "等待恢复", "steered": "补充要求已传递",
      "turn_completed": "本轮执行结束", "connection_lost": "执行端连接中断", "result_delivery_error": "结果回传异常",
      "queued": "进入队列", "started": "开始执行", "progress": "执行进度", "output": "执行输出", "question": "等待答复",
-     "error": "执行异常", "reasoning": "正在思考", "result": "执行结果", "work.created": "工作已建立", "work.updated": "工作状态更新"][value] ?? workspaceStatus(value)
+     "error": "执行异常", "reasoning": "正在思考", "result": "执行结果", "work.created": "工作已建立", "work.updated": "工作状态更新",
+     "work.maintenance_observed": "工具维护结果"][value] ?? workspaceStatus(value)
 }
 
 private func workspaceEventText(_ event: SummonJSONValue) -> String {
     let data = event["payload"] == .null ? event["data"] : event["payload"]
+    if event["type"].string == "work.maintenance_observed" {
+        let result = data["content"]
+        let name = result["entryName"].string ?? result["entryId"].stringValue
+        let status = workspaceStatus(result["status"].stringValue)
+        let work = result["ownerWorkId"].string.map { "维护工作 \($0)" } ?? ""
+        return ["\(name) · \(status)", result["content"].stringValue, work].filter { !$0.isEmpty }.joined(separator: "\n")
+    }
     if data["work"] != .null {
         let work = data["work"]
         return [workspaceStatus(work["status"].stringValue), work["progress"].stringValue, work["lastError"]["message"].stringValue].filter { !$0.isEmpty }.joined(separator: "\n")

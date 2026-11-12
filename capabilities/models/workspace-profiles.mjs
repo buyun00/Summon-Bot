@@ -45,9 +45,9 @@ export class WorkspaceProfiles {
   }
 
   async forWork(workId) {
-    const row = this.store.list('onboarding').find(record => record.setup?.workId === workId);
-    if (!row || row.id === 'main') return null;
-    return this.get(row.id);
+    const active = this.store.list('onboarding').find(record => record.setup?.workId === workId);
+    const id = active?.id || this.store.get('setup-completions', workId)?.workspaceProfileId;
+    return id && id !== 'main' ? this.get(id) : null;
   }
 
   async restore() {

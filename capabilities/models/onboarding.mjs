@@ -6,11 +6,37 @@ import { fail, within } from '../shared/validation.mjs';
 import { probeRemoteOrigin, readRemoteAccess, registerCustomRemote } from '../../scripts/installation/remote-config.mjs';
 import { applyRemote, prepareRemote, remoteStatus } from '../../scripts/installation/remote-access.mjs';
 import { checkRemoteBridge, startRemoteBridge, stopRemoteBridge } from '../../scripts/installation/auxiliaries.mjs';
+import { isEnvironmentInitializationSource } from '../../bot/src/context/environment.mjs';
 
 const remoteProviders = new Map([['tailscale', 'Tailscale Serve'], ['cloudflare', 'Cloudflare Tunnel'], ['custom', '临时访问或其他方案']]);
 const guideSource = 'summon:onboarding';
 const localOnly = option('先只在这台电脑上用', 'local-only');
 const setupConfirmation = () => '远程访问已准备好。';
+
+function discoverySummary({ scans, registered, methodReady, maintenancePending }) {
+  if (!scans.full) return '';
+  return `本机全量扫描发现 ${scans.full.total} 个候选入口。目录已登记 ${registered} 项资源，其中 ${methodReady} 项有当前可复用方法。维护任务未结 ${maintenancePending} 项。`;
+}
+
+function environmentIndex(progress, { workId, questionId, taskId }) {
+  const { host, scans, entries } = progress;
+  const names = entries.map(entry => {
+    const methods = entry.methods.map(method => `${method.id} r${method.revision}`).join('、');
+    return `- ${entry.name} · \`catalog:${entry.id}\`${entry.version ? ` · ${entry.version}` : ''}${methods ? ` · 已登记方法 ${methods}` : ''}`;
+  });
+  return {
+    title: '本机工具环境总览',
+    workId,
+    source: `初始化工作 ${workId} · 引导消息 ${questionId} · 全量扫描 ${scans.full.id} · 发现任务 ${scans.full.taskId || taskId}`,
+    resourceIds: entries.map(entry => entry.id),
+    text: [
+      `${host.name} · ${host.platform}/${host.architecture}`,
+      `首次接入记录 ${new Date().toISOString()}。${discoverySummary(progress)}`,
+      '按工具名称搜索能力目录，或用 catalog_get 读取对应资源。目录提供当前安装入口、版本、负责 Bot、方法修订和实际观察；未结维护的进展也在该资源下查询。',
+      ...names,
+    ].join('\n\n'),
+  };
+}
 
 function question(step) {
   if (step === 'discover') return '聊天模型已保存。Pi 正在读取这台电脑的工具入口和实际帮助，整理可复用的本机工具资料。';
@@ -95,8 +121,7 @@ export class OnboardingService {
       localControl = { provider: step, origin: !entry?.pending && entry?.origin || null };
       options = localControl.origin ? [option('完成引导', 'next')] : [option('继续配置', 'check'), localOnly];
     } else return null;
-    const discovered = step === 'discover' && setup?.discovery ? this.discoveryStatus(setup).discovered : null;
-    const progress = work?.progress || (discovered === null ? '' : '已发现 ' + discovered + ' 个候选入口');
+    const progress = step === 'discover' && setup?.discovery ? discoverySummary(this.discoveryStatus(setup)) : work?.progress;
     return { step, text: questionText || question(step), options, localControl, messageId: questionId, error,
       setup: setup?.questionId === questionId ? { workId: setup.workId, status: error ? 'blocked' : work?.status || 'queued', progress } : null };
   }
@@ -155,7 +180,7 @@ export class OnboardingService {
     const instruction = [
       '这是当前工作区连接模型后的首次本机工具初始化。通过 catalog_native_discover 实际检查当前主机 PATH、安装目录与项目入口，分页读取实际候选。',
       '使用 catalog_search 查已有工具。对实际发现且可用的 CLI 调用 catalog_native_enroll，复用既有专属 Bot。根据工具的实际入口及用途识别命令行工具。由维护者查本机版本和帮助并保存适用的方法。不要生成试聊或演示任务。',
-      '现有工具资料只在适用时复用。未确定用途、登录或版本的工具如实留作环境待办。调用 workspace_setup status 读取真实发现与维护进度，再调用 finish-discovery；平台按记录处理未完成的学习工作。'
+      '现有工具资料只在适用时复用。未确定用途、登录或版本的工具如实留作环境待办。调用 workspace_setup status 读取真实发现与维护进度，再调用 finish-discovery。完成后结束本次任务。已登记的维护任务在各工具自己的工作中继续。'
     ].join('\n');
     this.save({ error: null, setup: { discovery: true, questionId: state.questionId, workId, attempt } });
     try {
@@ -177,34 +202,41 @@ export class OnboardingService {
     const actor = this.state().bot.id;
     const key = JSON.stringify([actor, setup?.workId]);
     const discovery = this.native.store.get('native-discovery-runs', key);
-    const jobs = this.native.store.list('native-maintenance').filter(job => job.actor === actor && job.workId === setup?.workId && job.kind === 'initial-learning');
-    const resourceIds = [...new Set([...(discovery?.resources || []), ...jobs.map(job => job.entryId)])];
-    const entries = resourceIds.map(id => this.native.catalog.entry(id)).map(entry => ({
-      id: entry.id, name: entry.name, status: entry.native?.status, ownerBotId: entry.ownerBotId,
+    const jobs = this.native.store.list('native-maintenance').filter(job => job.actor === actor && job.workId === setup?.workId);
+    const maintenancePending = jobs.filter(job => !job.finishedAt &&
+      !this.native.store.get('catalog-delegations', JSON.stringify([job.actor, job.entryId, job.operationId]))?.returnedAt).length;
+    const resourceIds = new Set(discovery?.resources || []);
+    const entries = this.native.store.list('catalog-entries').filter(entry => resourceIds.has(entry.id)).map(entry => ({
+      id: entry.id, name: entry.name, status: entry.enabled ? entry.native?.status : 'disabled',
+      ownerBotId: entry.ownerBotId, version: entry.native?.version,
+      methods: entry.enabled && entry.native?.status === 'ready' ? (entry.native.methods || []).filter(method => method.resourceRevision === entry.native.resourceRevision)
+        .map(({ id, revision }) => ({ id, revision })) : [],
     }));
-    return { discovered: discovery?.count ?? null, ready: entries.filter(entry => entry.status === 'ready').length,
-      remaining: jobs.filter(job => !job.finishedAt).length, entries, host: this.native.host };
+    return { workId: setup?.workId, scans: discovery?.scans || {}, registered: entries.length,
+      methodReady: entries.filter(entry => entry.methods.length > 0).length, maintenancePending, entries, host: this.native.host };
   }
 
   async finishDiscovery(work, task) {
     const setup = this.record().setup, state = this.state(), progress = this.discoveryStatus(setup);
-    if (progress.discovered === null) fail('请先在当前工作实际发现工具。', 409);
-    if (!progress.ready && progress.remaining) {
+    if (!progress.scans.full) fail('请先在当前工作完成本机全量扫描。', 409);
+    const message = discoverySummary(progress);
+    const knowledge = await this.manager.request(state.bot.id, '/knowledge/environment', { method: 'POST',
+      body: JSON.stringify(environmentIndex(progress, setup)) });
+    const current = await this.manager.readState(state.bot.id, db => db?.getRecord('works', work.id));
+    const completedTaskId = current?.executionOutcome?.onboardingCompletedTaskId || task?.id || setup.taskId;
+    if (current?.status !== 'completed' || !current.executionOutcome?.onboardingCompletedTaskId) {
+      const { scans, registered, methodReady, maintenancePending } = progress;
       await this.manager.request(state.bot.id, '/works/' + encodeURIComponent(work.id), { method: 'PATCH', body: JSON.stringify({
-        status: 'waiting', waiting: { kind: 'tool-environment', reason: '等待工具维护 Bot 读取本机接口并登记方法' },
-        progress: '发现 ' + progress.discovered + ' 个候选入口，' + progress.remaining + ' 个工具待维护者接入。',
+        status: 'completed', progress: message, executionOutcome: { ...current?.executionOutcome,
+          onboardingCompletedTaskId: completedTaskId, onboardingSourceTaskId: setup.taskId,
+          environmentDiscovery: { scans, registered, methodReady, maintenancePending },
+          environmentKnowledge: { scopeId: knowledge.id, revision: knowledge.revision } },
       }) });
-      this.save({ setup: { ...setup, awaitingOwners: true } });
-      return { ...progress, completed: false, waiting: true };
     }
-    const message = '已在本机发现 ' + progress.discovered + ' 个候选入口。' +
-      (progress.ready ? '已有 ' + progress.ready + ' 个工具登记了可复用方法。' : '目前由 Pi 执行工作。') +
-      (progress.remaining ? '另有 ' + progress.remaining + ' 个工具在继续接入。' : '');
-    await this.manager.request(state.bot.id, '/works/' + encodeURIComponent(work.id), { method: 'PATCH', body: JSON.stringify({
-      status: 'completed', progress: message, executionOutcome: { ...work.executionOutcome, onboardingCompletedTaskId: task?.id || setup.taskId },
-    }) });
-    await this.move('remote', { cancelSetup: false, replyTo: state.questionId, confirmation: message });
-    return { ...progress, completed: true };
+    this.store.save('setup-completions', { id: work.id, kind: 'native-environment', workspaceProfileId: this.profileId || null,
+      botId: state.bot.id, taskId: setup.taskId, completedTaskId, nextStep: 'remote', replyTo: state.questionId });
+    await this.move('remote', { cancelSetup: false, replyTo: state.questionId, confirmation: current?.status === 'completed' ? current.progress || message : message });
+    return { ...progress, completed: true, knowledge: { scopeId: knowledge.id, revision: knowledge.revision } };
   }
 
   async tick() {
@@ -215,16 +247,13 @@ export class OnboardingService {
       if (current.setup?.taskId !== setup.taskId || current.step !== 'discover') return;
       const { work, task } = await this.manager.readState(this.bot().id, db => ({ work: db?.getRecord('works', setup.workId), task: db?.getTask(setup.taskId) }));
       if (!work || ['paused', 'cancelled'].includes(work.status)) return;
-      if (setup.awaitingOwners) {
-        const progress = this.discoveryStatus(setup);
-        if (progress.ready || !progress.remaining) await this.finishDiscovery(work, task);
-        return;
-      }
-      if (['failed', 'interrupted', 'cancelled'].includes(task?.status) && !current.error)
+      if (work.status === 'completed' && work.executionOutcome?.onboardingCompletedTaskId && this.discoveryStatus(setup).scans.full)
+        await this.finishDiscovery(work, task);
+      else if (['failed', 'interrupted', 'cancelled'].includes(task?.status) && !current.error)
         this.save({ error: task?.status === 'failed' ? 'Pi 未能完成初始化。请检查聊天模型连接，或继续当前工作。' : '初始化已中断。可以继续原工作。' });
       else if (task?.status === 'completed' && !current.error) {
         const progress = this.discoveryStatus(setup);
-        if (progress.discovered !== null) await this.finishDiscovery(work, task);
+        if (progress.scans.full) await this.finishDiscovery(work, task);
         else this.save({ error: '本机工具扫描尚未完成。请继续初始化。' });
       }
     });
@@ -288,15 +317,20 @@ export class OnboardingService {
   setupAction(input, context) {
     return this.serialize(async () => {
       const state = this.state(), setup = this.record().setup, { actor, task, work, source } = context;
+      const completed = work && this.store.get('setup-completions', work.id);
+      if (completed?.kind === 'native-environment' && completed.botId === actor &&
+        isEnvironmentInitializationSource(source) && completed.taskId === source.taskId && ['status', 'finish-discovery'].includes(input.action)) {
+        return { ...this.discoveryStatus({ workId: work.id }), completed: true, nextStep: completed.nextStep };
+      }
       if (state.step === 'discover') {
-        if (actor !== state.bot.id || work?.id !== setup?.workId || !setup.discovery || source?.metadata?.sourceType !== 'workspace-onboarding')
+        if (state.status !== 'guiding' || actor !== state.bot.id || work?.id !== setup?.workId || !setup?.discovery ||
+          !isEnvironmentInitializationSource(source) || source.replyTo !== state.questionId || source.taskId !== setup.taskId)
           fail('当前工作并非这次工具初始化', 403);
         if (input.action === 'status') return this.discoveryStatus(setup);
         if (input.action === 'finish-discovery') return this.finishDiscovery(work, task);
         fail('请完成当前工具初始化', 409);
       }
-      const completed = work && this.store.get('setup-completions', work.id);
-      if (completed?.botId === actor && completed.sourceIds.includes(source?.replyTo) && source?.actor === 'user') {
+      if (completed?.botId === actor && completed.sourceIds?.includes(source?.replyTo) && source?.actor === 'user') {
         if (state.status === 'guiding' && setup?.workId === work.id) await this.move(completed.nextStep, {
           cancelSetup: false, replyTo: completed.replyTo || source.replyTo, confirmation: setupConfirmation(state.step),
         });

@@ -13,6 +13,8 @@ import { readExecutorManifest } from '../runtime/executor-delivery.mjs';
 import { deliveredLocalFiles, localPathKey } from '../runtime/local-delivery.mjs';
 import { MESSAGE_ATTACHMENTS, WORK_ATTACHMENTS } from '../runtime/notifications.mjs';
 import { verifiedProductionRecovery } from './production-recovery.mjs';
+import { earlierFileSources, sourceFileScopes } from './file-access.mjs';
+import { pathWithin, resolveFilePath, samePath } from './file-policy.mjs';
 
 const string = { type: 'string' };
 const object = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
@@ -456,9 +458,14 @@ export function coreTools(services, task) {
   const targetIdentity = work => ({ ...work, status: undefined, executionStatus: undefined });
   const sameWork = (expected, current) => Boolean(current && JSON.stringify(targetIdentity(selectedWork(current))) ===
     JSON.stringify(targetIdentity(expected)));
-  const authorize = (decision, ctx, proposed, { workId, actionId, scopeEvidence }) => authorizeProduction({ task, store, decision, proposed,
-    workId, actionId, verify: (input, signal) => ctx.verifyProduction({ ...input, scopeEvidence }, signal), signal: ctx.signal,
-    isTargetCurrent: proposed.work ? () => sameWork(proposed.work, services.works.get(workId)) : undefined });
+  const authorize = (decision, ctx, proposed, { workId, actionId, scopeEvidence }) => {
+    const fileScopeSources = proposed.relation === 'new' && !proposed.after ?
+      earlierFileSources(task, store, scopeEvidence || []) : [];
+    return authorizeProduction({ task, store, decision,
+      proposed: { ...proposed, ...(fileScopeSources.length ? { fileScopeSources } : {}) },
+      workId, actionId, verify: (input, signal) => ctx.verifyProduction({ ...input, scopeEvidence }, signal), signal: ctx.signal,
+      isTargetCurrent: proposed.work ? () => sameWork(proposed.work, services.works.get(workId)) : undefined });
+  };
   const roomMaterials = content => {
     const readAttachments = store.listTools(task.id).flatMap(tool => tool.status === 'completed' &&
       ['chatroom_read', 'evidence_read'].includes(tool.name) && tool.output?.details?.reference?.attachmentId ? [tool.output.details] : []);
@@ -840,7 +847,7 @@ export function coreTools(services, task) {
         return { workId: work.id, operationId, status: 'ready-for-current-reply',
           attachments: available.filter(item => !selected || selected.includes(item.id)).map(({ id, messageId }) => ({ id, messageId })) };
       }),
-    tool('work_create', 'Submit one selected source action. An immediate production action schedules actual work; omit executor for the default engine. For new production after an assigned room owner contributes, select the production unit and pass participant with the active dutyKey and exact prerequisite contribution. This can be your own assigned duty; the runtime delivers that portion separately before starting the new work. For a separateOwner review, omit executor and target. For an already published result, include its exact same-room attachment references and original material in evidence. Give separately authorized earlier comparison files in reviewReferenceAttachments. For a review after new production, register the selected after-dependency review unit. A registered wait does not prove execution.',
+    tool('work_create', 'Submit one selected source action. An immediate production action schedules actual work. Omit the executor target unless the user picked a working project or directory. Input materials and output destinations are separate from cwd; an output directory can be absent. When the user directs production following a discussion, include the exact same-room original user message that supplied its inputs or executable. For new production after an assigned room owner contributes, select the production unit and pass participant with the active dutyKey and exact prerequisite contribution. This can be your own assigned duty; the runtime delivers that portion separately before starting the new work. For a separateOwner review, omit executor and target. For an already published result, include its exact same-room attachment references and original material in evidence. Give separately authorized earlier comparison files in reviewReferenceAttachments. For a review after new production, register the selected after-dependency review unit. A registered wait does not prove execution.',
       object({ id: string, operationId: string, goal: string, requirements: string, responsibility: string, ...handoffFields,
         participant: object({ dutyKey: string, contribution: string }),
         reviewPublicationMessageId: string,
@@ -954,7 +961,23 @@ export function coreTools(services, task) {
         }
         const suppliedExecutor = typeof args.executor === 'string' ? { kind: args.executor } : modelArgs(args.executor);
         const selectedTarget = suppliedExecutor.target || args.target || (args.cwd ? { type: 'directory', cwd: args.cwd } : args.projectId ? { type: 'project', projectId: args.projectId } : null);
-        const target = selectedTarget;
+        const namedScopes = sourceFileScopes(task, store);
+        const declaredDirectories = namedScopes.filter(item => item.purpose === 'cwd')
+          .map(item => resolveFilePath(services.sources.workspace, item.path));
+        let target = selectedTarget;
+        if (selectedTarget?.type === 'directory') {
+          const cwd = resolveFilePath(services.sources.workspace, selectedTarget.cwd);
+          if (declaredDirectories.some(path => samePath(cwd, path))) target = { type: 'directory', cwd };
+          else if (declaredDirectories.length) throw new Error('Use the exact working directory selected in the original request.');
+          else {
+            const inputs = earlierFileSources(task, store, content.evidence).flatMap(item => item.scopes);
+            const resourceTarget = [...namedScopes, ...inputs].some(({ path, purpose }) => purpose !== 'cwd' &&
+              pathWithin(resolveFilePath(services.sources.workspace, path), cwd));
+            target = resourceTarget ? null : { type: 'directory', cwd };
+          }
+        } else if (!selectedTarget && declaredDirectories.length === 1) {
+          target = { type: 'directory', cwd: declaredDirectories[0] };
+        }
         const executor = { kind: 'pi', ...(suppliedExecutor.connectionId ? { connectionId: suppliedExecutor.connectionId } : {}), ...(target ? { target } : {}) };
         let project;
         try { project = target ? await services.sources.authorizeProject(target, task) : await services.sources.contextProject(task); }
@@ -1128,6 +1151,15 @@ export function coreTools(services, task) {
         return { ...await services.works.wait(work.id, { ...waiting, unresolvedTaskId, waitId: actionId(args, ctx, 'waitId'), handoff }, task, verifyFollowUp),
           acceptance: modelText(args.acceptance), evidenceWarnings: handoff.evidenceWarnings };
       }),
+    ...(!frontend ? [tool('work_file_access', 'Ask for a genuine unresolved file permission on this accepted work. Give the exact path from its original source after a file or native capability reported a missing grant. The program derives the operation, preserves the same action and sends the exact question to the original conversation.',
+      object({ path: string }, ['path']), 'external', async (args, ctx) => {
+        const work = await services.sources.requireWork(task.workId, task);
+        const request = services.works.requestFileAccess(task, work.project?.cwd || services.sources.workspace, args.path);
+        const result = await services.notify({ id: work.id, notificationId: request.id, publication: 'file-access',
+          resultKind: 'file-access', content: request.question,
+          sourceRefs: [{ type: 'work-file-access', workId: work.id, requestId: request.id, operationId: request.actionId }] }, task, ctx);
+        return { requestId: request.id, operationId: request.actionId, status: request.status, notification: result.status, question: request.question };
+      })] : []),
     tool('work_notify', 'Save and publish this work’s useful result text directly. The program supplies the original recipient, reply association and notification ID; peer FYI does not demand another reply.',
       object({ id: string, content: string, attachments: { type: 'array', maxItems: WORK_ATTACHMENTS, items: object({ id: string }, ['id']) } }), 'external', async (args, ctx) => {
         const work = await services.sources.requireWork(workId(args), task);

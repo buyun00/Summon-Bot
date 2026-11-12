@@ -15,6 +15,7 @@ import { requestBot, sendMessage } from '../messaging/client.mjs';
 import { WorkService } from './works.mjs';
 import { ConversationScheduler } from './scheduler.mjs';
 import { writeKnowledgeDocument } from '../context/knowledge-api.mjs';
+import { isEnvironmentInitializationSource } from '../context/environment.mjs';
 import { RuntimeSources, taskSource } from '../context/sources.mjs';
 import { notificationParts, notificationSupersession, progressNotificationCurrent } from './notifications.mjs';
 import { selectedConnection } from '../agent/model.mjs';
@@ -145,11 +146,20 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
     updates = new CapabilityUpdates({ config, store, engine, emit, clean, persist: persistConfig });
     const schedule = task => {
       if (jobs.has(task.id) || task.status !== 'accepted') return;
-      engine.maintenance.activity(task);
       const work = task.workId && services.works.get(task.workId);
       const hold = (reason, work) => journal.note(task, `hold:${reason}:${work?.revision || 0}`, {
         boundary: 'schedule', decision: 'skip', runtimeCheck: 'blocked', facts: { reason, status: work?.status },
         result: { status: 'not-started' } });
+      const settleObsoleteEnvironmentTask = work => {
+        if (work?.status !== 'completed' || !work.id.startsWith('onboarding-') ||
+          !isEnvironmentInitializationSource(services.works.execution(task).authorization?.source)) return false;
+        journal.note(task, 'task', { boundary: 'task', decision: 'observe-without-action', runtimeCheck: 'confirmed',
+          facts: { reason: 'environment-initialization-completed' } });
+        journal.settled(store.updateTask(task.id, { status: 'completed', result: { content: '', observed: true }, finishedAt: at() }));
+        return true;
+      };
+      if (settleObsoleteEnvironmentTask(work)) return;
+      engine.maintenance.activity(task);
       if (work && ['paused', 'cancelled', 'blocked'].includes(work.status)) { hold('work-stopped', work); return; }
       if (heldBeforeCutover(work, task.createdAt)) { hold('pre-cutover-wait', work); return; }
       const controller = new AbortController();
@@ -159,6 +169,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         task = store.getTask(task.id);
         if (task.status !== 'accepted') return;
         const currentWork = task.workId && services.works.get(task.workId);
+        if (settleObsoleteEnvironmentTask(currentWork)) return;
         if (currentWork && ['paused', 'cancelled', 'blocked'].includes(currentWork.status)) { hold('work-stopped', currentWork); return; }
         if (heldBeforeCutover(currentWork, task.createdAt)) { hold('pre-cutover-wait', currentWork); return; }
         const cutoverRecovery = task.metadata?.cutoverRecoveryBindingId;
@@ -613,6 +624,8 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
           const work = services.works.get(id), body = await readBody(request);
           if (!work) throw failure(404, 'Unknown work');
           if (!/^[\w:.-]{1,256}$/.test(body.id || '') || typeof body.content !== 'string' || !body.content.trim()) throw failure(400, 'Invalid work input');
+          if (body.fileAccessRequestId || work.waiting?.fileAccess)
+            return services.works.answerFileAccess(id, { ...body, fileAccessRequestId: body.fileAccessRequestId || work.waiting.fileAccess.requestId });
           const original = work.sources.find(item => item.roomId);
           const accepted = accept({ id: 'work-input:' + id + ':' + body.id, to: config.botId, workId: id, kind: 'request',
             content: { type: 'user-work-input', instruction: body.content, deliveredToNativeOperation: body.delivered || null },
@@ -636,11 +649,17 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
           return { observed: true };
         }
         if (method === 'POST' && parts[2] === 'native-event') {
-          const work = services.works.get(id), body = await readBody(request);
+          const body = await readBody(request), work = services.works.get(id);
           if (!work) throw failure(404, 'Unknown work');
-          const task = store.getTask(body.taskId);
-          store.putRecord('work-observations', { id: body.id, workId: id, taskId: task?.id, content: clean(body.content), observedAt: at() });
-          if (!task || task.workId !== id || ['paused', 'cancelled', 'completed'].includes(work.status)) return { observed: true, wakeup: false };
+          const task = body.taskId && store.getTask(body.taskId);
+          const environment = task?.workId === id && isEnvironmentInitializationSource(services.works.execution(task).authorization?.source);
+          store.transaction(() => {
+            if (environment && store.getRecord('work-observations', body.id)) return;
+            const observation = store.putRecord('work-observations', { id: body.id, workId: id, taskId: task?.id,
+              content: clean(body.content), metadata: clean(body.metadata), observedAt: at() });
+            if (environment) emit('work.maintenance_observed', observation, { workId: id, taskId: task.id });
+          });
+          if (environment || task?.workId !== id || ['paused', 'cancelled', 'completed'].includes(work.status)) return { observed: true, wakeup: false };
           if (work.waiting?.kind === 'tool-maintenance' && work.waiting.maintenanceId === body.metadata?.maintenanceId)
             services.works.update(id, { status: 'active', waiting: null });
           return services.works.dispatch(id, { id: body.id, kind: 'event', content: body.content,
@@ -751,6 +770,11 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       if (parts[0] === 'knowledge') {
         if (method === 'GET') return parts[1] ? engine.maintenance.read(parts[1]) : engine.maintenance.directory();
         if (method === 'POST' && !parts[1]) return writeKnowledgeDocument(engine.maintenance, store, clean(await readBody(request)));
+        if (method === 'POST' && parts[1] === 'environment') {
+          const body = clean(await readBody(request)), work = services.works.get(body.workId);
+          if (!work?.sources.some(isEnvironmentInitializationSource)) throw failure(409, 'The original environment initialization work is unavailable');
+          return writeKnowledgeDocument(engine.maintenance, store, body, { environment: true });
+        }
       }
       if (method === 'GET' && parts[0] === 'tools') return parts[1] ? store.getTool(parts[1]) : store.listTools(parsed.searchParams.get('taskId') || undefined);
       if (method === 'GET' && parts[0] === 'artifacts') return parts[1] ? store.getArtifact(parts[1]) : store.listArtifacts();

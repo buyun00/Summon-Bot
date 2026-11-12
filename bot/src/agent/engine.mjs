@@ -636,7 +636,8 @@ export class BotEngine {
           reference: { type: 'room', roomId: source.roomId, messageId: source.replyTo }, author: source.actor,
           instruction: hasCurrentRequest ? 'Only this identified accepted source is the current trigger. All earlier published messages are history, including requests without a visible answer yet. Use them to understand references, never to replay their actions or reminders. Read request_actions for saved receipts if needed. Complete independent actions belonging to this current request.' :
             'This event is the current trigger and carries no current user request. Earlier user messages and their saved actions are evidence. Use them to handle this event without replaying those actions.' }) : null;
-        const filePolicy = roomDecision ? { deniedPaths: [] } : taskFileAccessPolicy(originalTask, this.store, this.config.workspace);
+        const cwd = task.workId && currentWork()?.project?.cwd || this.config.workspace;
+        const filePolicy = roomDecision ? { grants: [], deniedPaths: [] } : taskFileAccessPolicy(originalTask, this.store, cwd);
         // Append live facts after the reusable transcript. Persist changed
         // knowledge once; unchanged material remains readable by exact entry.
         let knowledgeMessage;
@@ -655,8 +656,8 @@ export class BotEngine {
         }
         const prompts = [prompt, ...(boundary ? [boundary] : []),
           ...(knowledgeMessage ? [knowledgeMessage] : []),
-          ...(filePolicy.deniedPaths.length ? [userMessage({ type: 'current_file_access_constraints', ...filePolicy,
-            instruction: `${FILE_ACCESS_GUIDANCE} Only a successful canonical recheck releases an alternate-channel guard; another tool cannot lift a refusal.` })] : []),
+          ...(filePolicy.grants.length || filePolicy.deniedPaths.length ? [userMessage({ type: 'current_file_access_constraints', ...filePolicy, cwd,
+            instruction: `${FILE_ACCESS_GUIDANCE} Local inputs, the executable entry and output destinations have different permissions. Omit a native cwd to run in the existing work directory. Use typed native path operands; write_file and native output operands can create their authorized missing parents. Use work_file_access for a genuine missing grant on this work after a refusal for that exact path and operation.` })] : []),
           ...(!routeOnly ? [userMessage({ type: 'fact_reporting', ...factTime({ requestReceivedAt: originalTask.createdAt }) })] : []),
           ...(publicView?.runtimeInstruction && !publicView.runtimeEvent ? [userMessage({ type: 'delivery_context', instruction: publicView.runtimeInstruction, authority: 'runtime-context' })] : []),
           ...(invocation ? [userMessage({ type: 'requested_skill', ...invocation })] : [])];

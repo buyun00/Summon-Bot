@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { finished } from 'node:stream/promises';
 import { MAX_ATTACHMENT_BYTES } from '../chatroom/attachments.mjs';
 import { cleanEnvironment, terminateTree, windowsProcessJob } from '../../bot/src/runtime/process-tools.mjs';
-import { createPathAccess, assertCommandPolicy, fileAccessDenied } from '../../bot/src/capabilities/file-policy.mjs';
+import { assertCommandPolicy, assertScopedShell, createAuthorizedDirectory, createPathAccess, fileAccessDenied } from '../../bot/src/capabilities/file-policy.mjs';
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 export const MAX_FILE_REQUEST_BYTES = 24 * 1024 * 1024;
@@ -157,7 +157,7 @@ if (-not $summonCommandSucceeded) { exit 1 }
 }
 
 /** Filesystem access is constrained here; command cwd is a convenience, not an OS sandbox. */
-export function createFileTools({ workspace, projectRoot, protectedRoot, protectedRoots = [], accessPolicy = {}, signal: defaultSignal, withExecution = async fn => fn(), redact = defaultRedact, saveArtifact, onArtifacts, publishFile, tempRoot, containProcesses = false }) {
+export function createFileTools({ workspace, projectRoot, base, projectOnly, protectedRoot, protectedRoots = [], accessPolicy = {}, signal: defaultSignal, withExecution = async fn => fn(), redact = defaultRedact, saveArtifact, onArtifacts, publishFile, tempRoot, containProcesses = false }) {
   const workspaceRoot = resolve(textValue(workspace, 'workspace'));
   const project = resolve(textValue(projectRoot, 'projectRoot'));
   const protectedDirectories = [...new Set([protectedRoot, ...protectedRoots].filter(value => value != null)
@@ -169,7 +169,7 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
     if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, sanitizeResult(item)]));
     return value;
   };
-  const checkedPath = createPathAccess({ workspace: workspaceRoot, project, protectedDirectories, accessPolicy });
+  const checkedPath = createPathAccess({ workspace: workspaceRoot, project, base, projectOnly, protectedDirectories, accessPolicy });
 
   async function readText(path, signal) {
     cancelled(signal);
@@ -257,7 +257,7 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
     ...createWebTools(),
     tool('publish_file', 'Publish a verified work file as a chat attachment. Supply the returned attachment ID to work_notify. Standalone HTML/text receives an isolated browser preview.', objectSchema({path:stringSchema('Finished file in this authorized workspace/project'),name:stringSchema('Optional download filename'),mimeType:stringSchema('Optional MIME type')},['path']), async (args, signal) => {
       if (!publishFile) throw publicationRejected('File publication requires the installed chat attachment capability', 409);
-      const path = await checkedPath(args.path, { alternative: true });
+      const path = await checkedPath(args.path, { operations: ['read', 'publish'], alternative: true });
       const handle = await open(path, constants.O_RDONLY);
       let bytes, before;
       try {
@@ -328,10 +328,8 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
       const content = textValue(args.content, 'content', true);
       const bytes = Buffer.from(content);
       if (bytes.length > MAX_FILE_BYTES) throw new Error('Content exceeds 8 MiB');
-      let path = await checkedPath(args.path, { operations: ['write'] });
       cancelled(signal);
-      await mkdir(dirname(path), { recursive: true });
-      path = await checkedPath(args.path, { operations: ['write'] });
+      const path = await createAuthorizedDirectory(args.path, checkedPath, { parentOfFile: true });
       return saveVerified(path, bytes, signal, { overwrite: args.overwrite === true });
     }, true),
     tool('edit_file', 'Replace exactly one occurrence of oldText in a UTF-8 file. Fails on missing or ambiguous matches, then re-reads and verifies the saved bytes.', objectSchema({ path: stringSchema('Existing file'), oldText: stringSchema('Exact text that occurs once'), newText: stringSchema('Replacement text; may be empty') }, ['path', 'oldText', 'newText']), async (args, signal) => {
@@ -353,6 +351,7 @@ export function createFileTools({ workspace, projectRoot, protectedRoot, protect
       const command = textValue(args.command, 'command');
       if (command.length > 20000) throw new Error('command is too long');
       const cwd = await checkedPath(args.cwd, { directory: true });
+      assertScopedShell(cwd, accessPolicy);
       await assertCommandPolicy(command, cwd, accessPolicy, (path, operations) => checkedPath(path, { operations, alternative: true }));
       const timeoutMs = boundedInteger(args.timeoutMs, commandTimeout.default, commandTimeout.minimum, commandTimeout.maximum, 'timeoutMs');
       return runCommand(command, cwd, timeoutMs, signal, sanitize, saveArtifact, onArtifacts, tempRoot, containProcesses);

@@ -5,6 +5,10 @@ const object = (properties, required = []) => ({ type: 'object', properties, req
 const definition = (name, description, effect, inputSchema) => ({ name: 'catalog_native_' + name, description, effect, inputSchema });
 const id = { id: string };
 const operation = { workId: string, operationId: string };
+const fileArgs = { type: 'array', items: object({ index: integer,
+  access: { type: 'string', enum: ['read', 'write', 'read-write'] },
+  kind: { type: 'string', enum: ['file', 'directory'] }, prefix: string, suffix: string }, ['index', 'access']),
+  description: 'Use zero-based indexes in the method or direct args array. Declare each file/directory input as read and each output as write. Use prefix/suffix for an option value or format wrapper. The remainder is one exact local path.' };
 
 export const nativeToolDefinitions = [
   definition('discover', 'Find actual CLI entry points in the host PATH, installed package paths and this project. Provide an executable name or an authorized absolute path to look up one entry. Read candidates, then enroll relevant entries so their maintainers learn the real help and methods.', 'read',
@@ -15,14 +19,14 @@ export const nativeToolDefinitions = [
     object({ ...id, args: strings, versionProbe: { type: 'boolean' } }, ['id', 'args'])),
   definition('observations', 'Read an immutable observation for a tool, or list its recent observations and source references.', 'read',
     object({ ...id, observationId: string, offset: integer, limit: integer }, ['id'])),
-  definition('method_write', 'Maintain one searchable invocation method for this resource and its observed version. Supply real observation IDs and describe applicability and limitations. CLI methods use args with {{parameter}} placeholders, optional stdin and optional Node script using the Summon JSON-lines bridge. API and MCP methods bind a tool name and arguments.', 'write',
+  definition('method_write', 'Maintain one searchable invocation method for this resource and its observed version. Supply real observation IDs and describe applicability and limitations. CLI methods use args with {{parameter}} placeholders and fileArgs for each input or output. CLI methods can also use optional stdin and an optional Node script using the Summon JSON-lines bridge. API and MCP methods bind a tool name and arguments.', 'write',
     object({ ...id, expectedRevision: integer, methodId: string, name: string, description: string, sourceIds: strings, args: strings,
       input: string, keepInput: { type: 'boolean' }, protocol: { type: 'string', enum: ['stdin', 'summon-jsonl'] }, script: string,
-      env: { type: 'object' }, tool: string, arguments: { type: 'object' }, effect: { type: 'string', enum: ['read', 'write', 'update'] } },
+      env: { type: 'object' }, tool: string, arguments: { type: 'object' }, fileArgs, effect: { type: 'string', enum: ['read', 'write', 'update'] } },
     ['id', 'expectedRevision', 'methodId', 'name', 'description', 'sourceIds'])),
-  definition('run', 'Run a current method in the original authorized work using a stable operationId. A CLI method stays alive between Pi turns. For an exploratory or update invocation, the tool maintainer can supply explicit args after inspecting the live interface. resumeFromOperationId binds a known native session from this same work.', 'external',
+  definition('run', 'Run a current method in the original authorized work using a stable operationId. Omit cwd to use the work’s existing execution directory. A CLI method uses its published fileArgs. For an exploratory or update invocation, the tool maintainer can supply explicit args and fileArgs after inspecting the live interface. resumeFromOperationId binds a known native session from this same work.', 'external',
     object({ ...id, ...operation, methodId: string, expectedMethodRevision: integer, parameters: { type: 'object' }, args: strings, cwd: string, input: string,
-      keepInput: { type: 'boolean' }, resumeFromOperationId: string, recoveryBindingId: string, effect: { type: 'string', enum: ['read', 'write', 'update'] }, rationale: string },
+      fileArgs, keepInput: { type: 'boolean' }, resumeFromOperationId: string, recoveryBindingId: string, effect: { type: 'string', enum: ['read', 'write', 'update'] }, rationale: string },
     ['id', 'operationId', 'rationale'])),
   definition('status', 'Inspect a durable process or original work bindings. Supply the operationId and optionally a stream and byte cursor for real stdout, stderr or JSON-lines events. This never starts a process.', 'read',
     object({ ...operation, stream: { type: 'string', enum: ['stdout', 'stderr', 'events'] }, offset: integer, limit: integer })),

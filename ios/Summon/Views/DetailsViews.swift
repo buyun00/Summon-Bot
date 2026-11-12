@@ -52,14 +52,22 @@ struct BotDetailsView: View {
             Section {
                 if memories.isEmpty { Text("还没有长期记忆").foregroundStyle(.secondary) }
                 ForEach(Array(memories.enumerated()), id: \.offset) { _, memory in
-                    Button {
-                        editingMemory = memory; showMemoryEditor = true
-                    } label: {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(memory["content"].string ?? memory["text"].string ?? "").foregroundStyle(.primary)
-                            Text(memory["status"].string == "expired" ? "已过期" : "有效").summonFont(.caption).foregroundStyle(.secondary)
-                        }.padding(.vertical, 5)
-                    }.buttonStyle(.plain)
+                    if memory["editable"].bool == false {
+                        DisclosureGroup(memory["title"].stringValue) {
+                            if let revision = memory["revision"].int { Text("修订 \(revision)").foregroundStyle(.secondary) }
+                            Text(memory["content"].stringValue).textSelection(.enabled)
+                            Text(memory["source"].stringValue).summonFont(.caption).foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Button {
+                            editingMemory = memory; showMemoryEditor = true
+                        } label: {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(memory["content"].string ?? memory["text"].string ?? "").foregroundStyle(.primary)
+                                Text(memory["status"].string == "expired" ? "已过期" : "有效").summonFont(.caption).foregroundStyle(.secondary)
+                            }.padding(.vertical, 5)
+                        }.buttonStyle(.plain)
+                    }
                 }
                 Button("添加记忆", systemImage: "plus") { editingMemory = nil; showMemoryEditor = true }
             } header: { Text("长期记忆") }

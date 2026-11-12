@@ -1,7 +1,7 @@
-import { realpath, stat } from 'node:fs/promises';
+import { lstat, mkdir, realpath, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, parse, relative, resolve } from 'node:path';
 
-export const FILE_ACCESS_GUIDANCE = 'A file access refusal is a permission/protection boundary, not a missing tool or an ordinary command error. Do not switch to shell, another API, a copy or a renamed path to perform the refused file operation. Report the exact attempted operation and refusal reason. A refused read does not establish that a write was attempted or refused; distinguish an original user prohibition from an observed tool denial. Preserve the restriction and report the actual result; other authorized paths and operations may continue.';
+export const FILE_ACCESS_GUIDANCE = 'Keep a refused file operation in its original scope. For a missing grant, ask about the exact path and operation in the original conversation or work, then recheck through the same capability. Preserve explicit user restrictions, protected paths and unknown outcomes. Report the operation actually attempted.';
 
 export function fileAccessDenied(path, reason, extra = {}) {
   return Object.assign(new Error(`File access refused (${reason}). ${FILE_ACCESS_GUIDANCE}`), {
@@ -13,6 +13,8 @@ export const pathWithin = (root, path) => {
   const part = relative(root, path);
   return !part || part !== '..' && !part.startsWith('../') && !part.startsWith('..\\') && !isAbsolute(part);
 };
+export const samePath = (left, right) => relative(left, right) === '';
+export const filePathKey = path => process.platform === 'win32' ? path.toLowerCase() : path;
 
 export function assertPathPolicy(path, policy = {}, { operations = ['read', 'write'], alternative = false } = {}) {
   for (const constraint of policy.deniedPaths || []) if ((!constraint.alternativesOnly || alternative) &&
@@ -24,7 +26,7 @@ export function assertPathPolicy(path, policy = {}, { operations = ['read', 'wri
     });
 }
 
-function sensitivePath(path, workspace) {
+export function sensitivePath(path, workspace) {
   const parts = path.slice(parse(path).root.length).split(/[\\/]+/).map(part => part.toLowerCase());
   for (const [index, part] of parts.entries()) {
     if (part === '.git' || part === '.ssh' || part === '.aws' || part === '.azure' || part === 'gcloud') return true;
@@ -38,41 +40,130 @@ function sensitivePath(path, workspace) {
   return false;
 }
 
-// Resolve the closest existing ancestor, including junctions and symlinks.
-async function physicalPath(path) {
+export function resolveFilePath(base, input) {
+  if (typeof input !== 'string' || !input.trim() || input.includes('\0')) throw new Error('path must be a non-empty string without NUL');
+  if (process.platform === 'win32' && (/^(?:[A-Za-z]:(?![\\/])|[\\/](?![\\/])|[\\/]{2}[.?][\\/])/.test(input) ||
+    input.slice(parse(input).root.length).split(/[\\/]/).some(part =>
+      part && part !== '.' && part !== '..' && (/[<>:"|?*\x00-\x1f]|[. ]$/.test(part) || /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(part)))))
+    throw fileAccessDenied(input, 'ambiguous_windows_path');
+  return resolve(base, input);
+}
+
+// An absent destination may have absent parents. A dangling link is an existing
+// object and must not be treated as an uncreated directory.
+async function locatePath(path) {
   const missing = [];
   let current = path;
   while (true) {
-    try { return resolve(await realpath(current), ...missing.reverse()); }
+    let info;
+    try { info = await lstat(current); }
     catch (error) {
       if (error.code !== 'ENOENT') throw error;
       const parent = dirname(current);
       if (parent === current) throw error;
       missing.push(basename(current));
       current = parent;
+      continue;
     }
+    const actual = await realpath(current).catch(error => {
+      if (info.isSymbolicLink() && ['ENOENT', 'ELOOP'].includes(error.code)) throw fileAccessDenied(path, 'unresolved_reparse_point');
+      throw error;
+    });
+    if (info.isSymbolicLink()) info = await stat(actual);
+    if (missing.length && !info.isDirectory()) throw Object.assign(new Error('An existing path component is not a directory'), { code: 'ENOTDIR' });
+    return { path: resolve(actual, ...missing.reverse()), info: missing.length ? null : info };
   }
 }
+const physicalPath = async path => (await locatePath(path)).path;
 
-export function createPathAccess({ workspace, project = workspace, protectedDirectories = [], accessPolicy = {} }) {
-  return async function checkedPath(input = '.', { directory = false, operations = ['read'], alternative = false } = {}) {
-    if (typeof input !== 'string' || !input.trim() || input.includes('\0')) throw new Error('path must be a non-empty string without NUL');
-    const requested = resolve(workspace, input);
+function allowsFile(grant, requested, operation) {
+  return grant.operations.includes(operation) &&
+    (grant.kind === 'file' ? samePath(grant.path, requested) : pathWithin(grant.path, requested));
+}
+
+export function insideProtectedDirectory(path, workspace, roots) {
+  return roots.some(root => pathWithin(root, path) &&
+    !(pathWithin(root, workspace) && !samePath(root, workspace) && pathWithin(workspace, path)));
+}
+
+export function createPathAccess({ workspace, project = workspace, base = workspace, projectOnly = false, protectedDirectories = [], accessPolicy = {} }) {
+  return async function checkedPath(input = '.', { directory = false, file = false, exists = directory || file,
+    operations = ['read'], alternative = false } = {}) {
+    const requested = resolveFilePath(base, input);
     assertPathPolicy(requested, accessPolicy, { operations, alternative });
-    if (![workspace, project].some(root => pathWithin(root, requested))) throw fileAccessDenied(requested, 'outside_allowed_roots', { operations });
-    if (sensitivePath(requested, workspace) || (protectedDirectories.some(root => pathWithin(root, requested)) && !pathWithin(workspace, requested)))
+    if (sensitivePath(requested, workspace) || insideProtectedDirectory(requested, workspace, protectedDirectories))
       throw fileAccessDenied(requested, 'protected_path', { operations });
-    const [actual, actualWorkspace, actualProject, actualProtected] = await Promise.all([
-      physicalPath(requested), realpath(workspace), realpath(project), Promise.all(protectedDirectories.map(physicalPath)),
+    const roots = (projectOnly ? [project] : [workspace, project]).filter(root => pathWithin(root, requested));
+    const grants = (accessPolicy.grants || []).filter(grant => grant.kind === 'file' ?
+      samePath(grant.path, requested) : pathWithin(grant.path, requested));
+    if ((grants.length || !roots.length) && !operations.every(operation => grants.some(grant => allowsFile(grant, requested, operation))))
+      throw fileAccessDenied(requested, grants.length ? 'operation_not_granted' : 'outside_allowed_roots', {
+        operations, ...(directory ? { kind: 'directory' } : file ? { kind: 'file' } : {}),
+      });
+    const [located, actualWorkspace, actualProject, actualProtected] = await Promise.all([
+      locatePath(requested), realpath(workspace), realpath(project), Promise.all(protectedDirectories.map(physicalPath)),
     ]);
+    const actual = located.path;
     const actualDenied = await Promise.all((accessPolicy.deniedPaths || []).map(async item => ({ ...item, path: await physicalPath(item.path) })));
     assertPathPolicy(actual, { deniedPaths: actualDenied }, { operations, alternative });
-    if (![actualWorkspace, actualProject].some(root => pathWithin(root, actual))) throw fileAccessDenied(requested, 'resolved_outside_allowed_roots', { operations });
-    if (sensitivePath(actual, actualWorkspace) || (actualProtected.some(root => pathWithin(root, actual)) && !pathWithin(actualWorkspace, actual)))
+    if (sensitivePath(actual, actualWorkspace) || insideProtectedDirectory(actual,
+      samePath(workspace, actualWorkspace) ? actualWorkspace : workspace, actualProtected))
       throw fileAccessDenied(requested, 'resolved_protected_path', { operations });
-    if (directory && !(await stat(actual)).isDirectory()) throw new Error('Path is not a directory');
+    const inRoot = roots.some(root => samePath(root, workspace) ? pathWithin(actualWorkspace, actual) :
+      samePath(project, actualProject) && pathWithin(actualProject, actual));
+    if (grants.length || !inRoot) {
+      if (!samePath(requested, actual)) throw fileAccessDenied(requested, 'resolved_outside_allowed_roots', { operations });
+      const confirmed = await Promise.all(grants.map(async grant => {
+        const root = await locatePath(grant.path);
+        const ancestorOfProtected = actualProtected.some(path => pathWithin(root.path, path));
+        if (ancestorOfProtected || !samePath(grant.path, root.path) ||
+          grant.kind === 'existing' && !root.info ||
+          root.info && (grant.kind === 'directory' && !root.info.isDirectory() || grant.kind === 'file' && !root.info.isFile() ||
+            !root.info.isDirectory() && !root.info.isFile())) return null;
+        if (grant.kind === 'existing' && root.info.isFile() && !samePath(grant.path, actual)) return null;
+        return grant;
+      }));
+      if (!operations.every(operation => confirmed.some(grant => grant && allowsFile(grant, actual, operation))))
+        throw fileAccessDenied(requested, 'resolved_outside_allowed_roots', { operations });
+    }
+    if (exists && !located.info) throw Object.assign(new Error('The requested path does not exist'), { code: 'ENOENT', path: requested });
+    if (directory && located.info && !located.info.isDirectory()) throw new Error('Path is not a directory');
+    if (file && located.info && !located.info.isFile()) throw new Error('Path is not a regular file');
     return actual;
   };
+}
+
+export function assertScopedShell(cwd, policy = {}) {
+  if (policy.grants?.length || policy.deniedPaths?.some(rule => !rule.alternativesOnly))
+    throw fileAccessDenied(cwd, 'scoped_process_required', {
+      instruction: 'Use the file capabilities or a catalog native method with explicit read and write path operands. A host shell cannot enforce this work’s file scope.',
+    });
+}
+
+export async function createAuthorizedDirectory(input, checkedPath, { parentOfFile = false, alternative = false } = {}) {
+  const options = { operations: ['write'], alternative, directory: !parentOfFile, file: parentOfFile, exists: false };
+  const target = await checkedPath(input, options);
+  const directory = parentOfFile ? dirname(target) : target;
+  const missing = [];
+  let current = directory;
+  while (true) {
+    const existing = await lstat(current).catch(error => { if (error.code !== 'ENOENT') throw error; return null; });
+    if (existing) {
+      if (!existing.isDirectory() || !samePath(current, await realpath(current)))
+        throw fileAccessDenied(target, 'output_parent_changed', { operations: ['write'] });
+      break;
+    }
+    missing.push(current);
+    current = dirname(current);
+  }
+  for (const next of missing.reverse()) {
+    if (!samePath(target, await checkedPath(input, options)) || !samePath(dirname(next), await realpath(dirname(next))))
+      throw fileAccessDenied(target, 'output_parent_changed', { operations: ['write'] });
+    await mkdir(next).catch(error => { if (error.code !== 'EEXIST') throw error; });
+    if (!(await lstat(next)).isDirectory() || !samePath(next, await realpath(next)))
+      throw fileAccessDenied(target, 'output_parent_changed', { operations: ['write'] });
+  }
+  return checkedPath(input, options);
 }
 
 // A bounded lexer keeps quoted document data out of command recognition. This

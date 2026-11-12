@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { randomBytes,timingSafeEqual,randomUUID } from 'node:crypto';
-import { mkdir,writeFile,readFile,realpath } from 'node:fs/promises';
+import { mkdir,writeFile,readFile } from 'node:fs/promises';
 import { isAbsolute,join,resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
@@ -25,12 +25,12 @@ import { BUILTIN_CAPABILITIES } from '../services/builtin.mjs';
 import { deployCapability } from '../services/publish.mjs';
 import { coreTools } from '../../bot/src/capabilities/core-tools.mjs';
 import { assertToolPolicy, permitsTool, permitsMaintenanceTool, taskMode } from '../../bot/src/capabilities/task-policy.mjs';
-import { taskSource,workExecution } from '../../bot/src/context/sources.mjs';
+import { acceptedWorkTask,taskSource,workExecution } from '../../bot/src/context/sources.mjs';
 import { directoryProject } from '../../bot/src/context/project-scope.mjs';
 import { createRedactor } from '../../bot/src/runtime/config.mjs';
 import { workFormReceipt } from '../../bot/src/runtime/works.mjs';
-import { createPathAccess } from '../../bot/src/capabilities/file-policy.mjs';
-import { taskFileAccessPolicy } from '../../bot/src/capabilities/file-access.mjs';
+import { createPathAccess,resolveFilePath } from '../../bot/src/capabilities/file-policy.mjs';
+import { fileAccessAnswer,taskFileAccessPolicy,workFormFileScope,WORK_FILE_ACCESS,WORK_FILE_ANSWERS } from '../../bot/src/capabilities/file-access.mjs';
 import { notificationParts,progressNotificationCurrent } from '../../bot/src/runtime/notifications.mjs';
 import { waitingLabel } from '../../bot/src/context/execution-evidence.mjs';
 import { CapabilityCatalog,catalogTools } from '../services/catalog.mjs';
@@ -39,6 +39,7 @@ import { ModelConnections } from '../models/service.mjs';
 import { NativeToolService } from '../services/native-tools.mjs';
 import { WorkspaceProfiles } from '../models/workspace-profiles.mjs';
 import { OnboardingService } from '../models/onboarding.mjs';
+import { environmentScopeId } from '../../bot/src/context/environment.mjs';
 
 const same=(a,b)=>typeof a==='string'&&typeof b==='string'&&Buffer.byteLength(a)===Buffer.byteLength(b)&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
 const activityText=(value,max=512)=>typeof value==='string'?value.replace(/[\u0000-\u001f\u007f]/g,' ').slice(0,max):null;
@@ -106,6 +107,18 @@ export async function startGateway(options={}) {
     await native.answer(request.actor,request.workId,request.operationId,request.requestId,{id:inputId,text});
     return chatroom.append(request.roomId,{...body,clientId:inputId,content},'user');
   }
+  async function answerFileAccessInRoom(message,body) {
+    const ref=message.sourceRefs?.find(item=>item.type==='work-file-access'&&item.workId===message.workId);
+    const content=required(body.content,'文件授权答复',16000),id=body.clientId||body.id||randomUUID();
+    if(!ref||!fileAccessAnswer(content)||body.attachments?.length)fail('请回复「允许」或「拒绝」来处理这项文件授权。');
+    const request=await manager.readState(message.senderId,db=>db?.getRecord(WORK_FILE_ACCESS,ref.requestId));
+    if(!request||request.workId!==message.workId||request.roomId!==message.roomId||request.actionId!==ref.operationId||
+      message.clientId!==message.workId+':'+request.id)fail('原文件授权请求不可用。',409);
+    await manager.start(message.senderId);
+    await manager.request(message.senderId,'/works/'+encodeURIComponent(message.workId)+'/user-input',{method:'POST',
+      body:JSON.stringify({id,content,fileAccessRequestId:request.id,roomId:message.roomId,replyTo:message.id})});
+    return chatroom.append(message.roomId,{...body,clientId:id,content},'user');
+  }
   const ensureSetupAccess=async bot=>{
       await control.grant(bot.id,[...new Set([...(bot.allowedTools||[]),'workspace_setup'])]);
       for(let attempt=0;attempt<100;attempt++){
@@ -117,6 +130,31 @@ export async function startGateway(options={}) {
   };
   const onboarding=await new OnboardingService({store:store('gateway'),models:modelConnections,manager,chatroom,emit,ensureSetupAccess,native}).initialize();
   const profiles=new WorkspaceProfiles({store:store('gateway'),dataRoot,manager,chatroom,emit,ensureSetupAccess,native});
+  async function environmentKnowledge(profileId, actor='controller') {
+    const botId=profileId?store('gateway').get('workspace-profiles',profileId)?.botId:onboarding.bot()?.id;
+    const environment=botId&&await memories.environment(botId);
+    if (!environment) return null;
+    const {resourceIds,text,...node}=environment;
+    if (actor!=='controller'&&resourceIds.some(id=>{
+      const entry=store('registry').get('catalog-entries',id);
+      return !entry||!catalog.permitted(entry,actor);
+    })) return null;
+    return node;
+  }
+  async function workspaceKnowledgeGraph(profileId,id=null,depth=1) {
+    const environment=(!id||id===environmentScopeId)&&await environmentKnowledge(profileId);
+    if (id===environmentScopeId&&environment) return {nodes:[environment],edges:[]};
+    const result=knowledge.graph(id,depth,profileId);
+    if (environment) result.nodes.push(environment);
+    return result;
+  }
+  async function includeEnvironment(result,query,profileId,actor='controller') {
+    const environment=await environmentKnowledge(profileId,actor);
+    const terms=String(query||'').toLowerCase().split(/[\s，。！？、,;:：!?]+/).filter(Boolean);
+    if (environment&&(!terms.length||terms.some(term=>`${environment.title} ${environment.content}`.toLowerCase().includes(term))))
+      return {...result,nodes:[...(result.nodes||[]),environment]};
+    return result;
+  }
   proxy(knowledge,'knowledge',['saveNode','saveEdge']);
   proxy(memories,'memory-management',['write']);
   proxy(attachments,'chatroom',['upload']);
@@ -201,7 +239,7 @@ export async function startGateway(options={}) {
     const rows=previews?works.map(({id,workId,botId,roomId,goal,status,waitingLabel,createdAt,updatedAt,historical,revision,controlRevision,externalStop})=>
       ({id,workId,botId,roomId,goal,status,waitingLabel,createdAt,updatedAt,historical,revision,controlRevision,
         ...(externalStop?{externalStop:{status:externalStop.status}}:{})})):works;
-    return {historyEpoch,workspaceProfileId:profileId,onboarding:await guideService.publicState(),modelSettings,bots:bots.map(bot=>({...bot,activity:botActivities.get(bot.id)})),rooms,routines:manager.store.list('routines').filter(item=>bots.some(bot=>bot.id===item.botId)),knowledge:knowledge.graph(null,1,profileId),runtime,activity:activity.filter(message=>roomIds.has(message.roomId)),works:rows,agentRuns:agentRuns.slice(-100),provider:{configured,model:selection?.model||null,...latestProvider},defaultCwd};
+    return {historyEpoch,workspaceProfileId:profileId,onboarding:await guideService.publicState(),modelSettings,bots:bots.map(bot=>({...bot,activity:botActivities.get(bot.id)})),rooms,routines:manager.store.list('routines').filter(item=>bots.some(bot=>bot.id===item.botId)),knowledge:await workspaceKnowledgeGraph(profileId),runtime,activity:activity.filter(message=>roomIds.has(message.roomId)),works:rows,agentRuns:agentRuns.slice(-100),provider:{configured,model:selection?.model||null,...latestProvider},defaultCwd};
   }
   function visibleTools(actor) {
     const allowed=actor==='controller'?null:manager.get(actor).allowedTools||[];
@@ -262,23 +300,26 @@ export async function startGateway(options={}) {
     if(task&&['list_files','read_file','search_files','write_file','edit_file','run_command','publish_file'].includes(name)){
       const config=await manager.config(actor);
       const fileScope=await manager.readState(actor,db=>{
+        if(name==='publish_file'&&!task.workId){
+          const route=db.getRecord('request-routing',task.id),event=args.operationId&&db.getRecord('work-events',args.operationId);
+          const origin=event&&acceptedWorkTask(event,db),work=origin&&db.getRecord('works',origin.workId);
+          if(!work||work.id!==args.workId||!source?.roomId||!['deliver','produce','revise'].includes(route?.intent)||
+            route.messageId!==source.replyTo||route.roomId!==source.roomId||event.authorization?.source?.roomId!==source.roomId)
+            fail('Select existing delivery and its exact same-room work and operation from work_outputs',403);
+          const project=work.project?.cwd,base=project||config.workspace;
+          const policy=taskFileAccessPolicy(origin,db,base);
+          policy.deniedPaths.push(...taskFileAccessPolicy(task,db,base).deniedPaths);
+          return {project,policy};
+        }
         const project=db?.getRecord('works',task.workId)?.project?.cwd;
-        const policy=taskFileAccessPolicy(task,db,project||config.workspace);
-        if(project)return {project,policy};
-        const original=JSON.stringify(taskSource(task,db).input||'').replaceAll('\\\\','\\').replaceAll('\\','/').toLowerCase();
-        if(name==='list_files'&&source?.actor==='user'&&typeof args.path==='string'&&isAbsolute(args.path)&&original.includes(args.path.replaceAll('\\','/').toLowerCase()))
-          return {project:args.path,policy};
-        return {policy};
+        return {project,policy:taskFileAccessPolicy(task,db,project||config.workspace)};
       });
-      if(fileScope.project){
-        const root=await realpath(fileScope.project);
-        if(within(dataRoot,root)&&!within(config.workspace,root))fail('The selected directory is inside protected runtime data',403);
-        context.projectRoot=root;
-      }
+      if(fileScope.project)context.projectRoot=fileScope.project;
       context.fileAccessPolicy=fileScope.policy;
     }
-    if(pin)return registry.callVersion(pin.id,pin.version,name,args,{signal,context});
-    return registry.call(actor,name,args,{signal,context});
+    const result=pin?registry.callVersion(pin.id,pin.version,name,args,{signal,context}):registry.call(actor,name,args,{signal,context});
+    if(name==='knowledge_search')return includeEnvironment(await result,args.query,actor==='controller'?null:manager.get(actor).workspaceProfileId||null,actor);
+    return result;
   }
   async function tokenUsage(params, profileId) {
     const range=usageRange(params.get('period')||'today'),botId=params.get('botId')||null;
@@ -374,11 +415,13 @@ export async function startGateway(options={}) {
     if((match=path.match(/^\/api\/rooms\/([^/]+)\/messages$/))){const id=decodeURIComponent(match[1]);if(method==='GET'){const value={historyEpoch,room:chatroom.need('rooms',id),messages:chatroom.messages(id),jobs:chatroom.jobs(id)};return params.get('sync')==='1'?{...sync.respond(`room:${id}`,value,params.get('since')),historyEpoch}:value;}if(method==='POST'){
       const request=body.replyTo&&store('gateway').get('native-room-requests',body.replyTo);
       if(request?.roomId===id)return answerInRoom(request,body);
+      const replied=body.replyTo&&chatroom.store.get('messages',body.replyTo);
+      if(replied?.roomId===id&&replied.eventType==='work_file_access_requested')return answerFileAccessInRoom(replied,body);
       return guide.postMessage(id,body);
     }}
     if((match=path.match(/^\/api\/rooms\/([^/]+)\/conclude$/))&&method==='POST')return chatroom.conclude(decodeURIComponent(match[1]));
-    if(method==='GET'&&path==='/api/knowledge/search'){const result=knowledge.search(params.get('q')||'',profileId);return {...result,memories:params.get('botId')?(await memories.list(params.get('botId'))).map(memory=>({...memory,content:memory.text})):[]};}
-    if(method==='GET'&&path==='/api/knowledge/graph')return knowledge.graph(params.get('id'),params.get('depth'),profileId);
+    if(method==='GET'&&path==='/api/knowledge/search'){const query=params.get('q')||'',result=await includeEnvironment(knowledge.search(query,profileId),query,profileId);return {...result,memories:params.get('botId')?(await memories.list(params.get('botId'))).map(memory=>({...memory,content:memory.text})):[]};}
+    if(method==='GET'&&path==='/api/knowledge/graph')return workspaceKnowledgeGraph(profileId,params.get('id'),params.get('depth'));
     if(method==='POST'&&path==='/api/knowledge/nodes')return knowledge.saveNode({...body,workspaceProfileId:profileId});
     if((match=path.match(/^\/api\/knowledge\/nodes\/([^/]+)$/))&&method==='PATCH')return knowledge.saveNode({...body,id:decodeURIComponent(match[1]),workspaceProfileId:profileId});
     if(method==='POST'&&path==='/api/knowledge/edges')return knowledge.saveEdge({...body,workspaceProfileId:profileId});
@@ -393,8 +436,9 @@ export async function startGateway(options={}) {
         [body.cwd,body.constraints,body.roomId].some(value=>value!=null&&typeof value!=='string')||
         body.inputRefs!=null&&(!Array.isArray(body.inputRefs)||body.inputRefs.some(value=>typeof value!=='string')))
         fail('工作表单的标识、目标或输入资料无效。');
+      const fileScope=workFormFileScope(body.fileScope);
       const request={goal:required(body.goal,'工作目标'),constraints:body.constraints||'',cwd:body.cwd?.trim()||'',
-        roomId:body.roomId||null,inputRefs:body.inputRefs||[]};
+        roomId:body.roomId||null,inputRefs:body.inputRefs||[],...(Object.keys(fileScope).length?{fileScope}:{})};
       if(body.projectId||body.target)fail('请使用登记项目的实际目录指定工作目标。');
       const intake=store('gateway');
       const assertFormOwner=()=>{
@@ -421,8 +465,7 @@ export async function startGateway(options={}) {
       if(request.cwd){
         if(!isAbsolute(request.cwd)||!(/^(?:[A-Za-z]:[\\/]|\/|\\\\)/).test(request.cwd)||request.cwd.includes('\0'))
           fail('请填写服务器上明确的绝对工作目录。');
-        const config=await manager.config(bot.id),cwd=await realpath(request.cwd);
-        if(within(dataRoot,cwd)&&!within(config.workspace,cwd))fail('工作目录不能指向受保护的运行数据。',403);
+        const config=await manager.config(bot.id),cwd=resolveFilePath(config.workspace,request.cwd);
         const checkedPath=createPathAccess({workspace:config.workspace,project:cwd,protectedDirectories:[dataRoot]});
         project=directoryProject(await checkedPath(cwd,{directory:true}));
       }
@@ -447,6 +490,10 @@ export async function startGateway(options={}) {
         const endpoint=`/works/${encodeURIComponent(work.workId)}`;
         if(match[2]==='send'){
           const id=body.id||randomUUID(),text=required(body.message,'补充要求',16000);
+          const prior=fileAccessAnswer(text)&&await manager.readState(work.botId,db=>db?.getRecord(WORK_FILE_ANSWERS,work.workId+':'+id));
+          const fileAccessRequestId=prior?.requestId||work.waiting?.fileAccess?.requestId;
+          if(fileAccessRequestId)return manager.request(work.botId,endpoint+'/user-input',{method:'POST',
+            body:JSON.stringify({id,content:text,fileAccessRequestId})});
           const delivered=await native.steer(work.botId,work.workId,id,text);
           return manager.request(work.botId,endpoint+'/user-input',{method:'POST',body:JSON.stringify({id,content:text,delivered})});
         }

@@ -91,8 +91,8 @@ export class ContextMaintenance {
       scopeRefs, sourcePolicy: CHAT_WORK_POLICY, isolationPolicy: CHAT_WORK_POLICY, sessions: task.sessionId ? [task.sessionId] : [], pending: false, revision: 0, createdAt: now(), updatedAt: now() });
   }
   directory() {
-    return this.store.listRecords('knowledge_scope').map(({ id, title, workId, conversationId, projectId, roomId, authorizations, scopeRefs = [], revision, updatedAt }) =>
-      ({ id, ownerBotId: this.config.botId, scopeLocality: 'bot-local', title, workId, conversationId, projectId, roomId, authorizations, scopeRefs, revision, updatedAt, pendingCount: this.pending(id).length }));
+    return this.store.listRecords('knowledge_scope').map(({ id, title, kind, workId, conversationId, projectId, roomId, authorizations, scopeRefs = [], revision, updatedAt }) =>
+      ({ id, ownerBotId: this.config.botId, scopeLocality: 'bot-local', title, kind, workId, conversationId, projectId, roomId, authorizations, scopeRefs, revision, updatedAt, pendingCount: this.pending(id).length }));
   }
   scopePermitted(current, selected) {
     if (!selected) return false;
@@ -133,6 +133,7 @@ export class ContextMaintenance {
       .sort((a, b) => String(b.origin?.receivedAt || b.createdAt).localeCompare(String(a.origin?.receivedAt || a.createdAt)) || String(b.createdAt).localeCompare(String(a.createdAt)))
       .slice(0, 6).map(item => this.referenceView(item));
     return { scopeId, ownerBotId: this.config.botId, scopeLocality: 'bot-local', revision: scope.revision,
+      ...(scope.source ? { source: scope.source } : {}),
       scope: { projectId: scope.projectId, conversationId: scope.conversationId, workId: scope.workId },
       instruction: 'This is only the named owner Bot\'s local knowledge scope. Revision 0, an empty body or unavailable evidence here does not establish that the project or another Bot has no saved knowledge. No other Bot/private scope is granted by this read. Pending selections are durable and immediately usable. Prefer the newest applicable explicit user rule/correction by original time, including recent processed rules, over older S2 or findings. Preserve original author, time and evidence; findings are not confirmed user rules.',
       recentUserRules, pending, pendingCount: selections.length, nextPendingOffset: pendingOffset + pending.length < selections.length ? pendingOffset + pending.length : null,
@@ -179,7 +180,7 @@ export class ContextMaintenance {
     // If the prepared file disappeared, the atomic rename already succeeded.
     const updated = this.store.transaction(() => {
       const current = this.store.getRecord('knowledge_scope', scope.id);
-      this.store.putRecord('knowledge_scope', { ...current, ...(intent.title ? { title: intent.title } : {}),
+      this.store.putRecord('knowledge_scope', { ...current, ...intent.document, ...(intent.title ? { title: intent.title } : {}),
         ...(intent.scopeRefs ? { scopeRefs: intent.scopeRefs } : {}), isolationPolicy: CHAT_WORK_POLICY, revision: current.revision + 1, updatedAt: now() });
       const updated = this.consume(scope.id, intent.consumeIds, intent.maintenance);
       this.store.deleteRecord('knowledge-write', scope.id);
@@ -188,7 +189,7 @@ export class ContextMaintenance {
     this.emit('knowledge.updated', { scopeId: scope.id, revision: updated.revision });
     return { scopeId: scope.id, revision: updated.revision };
   }
-  async write(scopeId, content, { signal, title, scopeRefs, expectedRevision, consumeIds, maintenance } = {}) {
+  async write(scopeId, content, { signal, title, scopeRefs, expectedRevision, consumeIds, maintenance, document } = {}) {
     return this.serial(scopeId, async () => {
       const prepared = this.store.getRecord('knowledge-write', scopeId);
       if (prepared) await this.finishWrite(prepared);
@@ -200,7 +201,7 @@ export class ContextMaintenance {
       const preparedFile = `${scope.file}.${randomUUID()}.pending`;
       await this.writeFile(join(this.root, preparedFile), text, signal);
       const intent = this.store.putRecord('knowledge-write', { id: scopeId, expectedRevision: scope.revision, preparedFile,
-        title: title ? String(title).slice(0, 160) : undefined, scopeRefs: checkedRefs, consumeIds, maintenance });
+        title: title ? String(title).slice(0, 160) : undefined, scopeRefs: checkedRefs, consumeIds, maintenance, document });
       return this.finishWrite(intent);
     }).finally(() => this.queueScope(scopeId));
   }

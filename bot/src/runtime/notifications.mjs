@@ -64,7 +64,7 @@ export function notificationParts(record) {
   return publicationParts(String(record.content || ''), record.attachments).map((part, index) => ({
     ...part, roomId: record.roomId, replyTo: record.replyTo,
     clientId: index ? `${record.id}:part:${index + 1}` : record.id, workId: record.workId, purpose: 'fyi',
-    eventType: record.resultKind === 'progress' ? 'work_progress' : 'work_result',
+    eventType: record.resultKind === 'progress' ? 'work_progress' : record.resultKind === 'file-access' ? 'work_file_access_requested' : 'work_result',
     sourceRefs: record.sourceRefs || [{ type: 'work', workId: record.workId, taskId: record.taskId }],
   }));
 }

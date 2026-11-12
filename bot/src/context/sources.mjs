@@ -3,6 +3,7 @@ import { modelText, modelArgs, boundedNumber } from './model-input.mjs';
 import { directoryProject, knowledgeProjectId } from './project-scope.mjs';
 import { externalExecution } from './execution-evidence.mjs';
 import { savedWorkEvidence } from './work-context.mjs';
+import { environmentScopeId } from './environment.mjs';
 
 const denied = message => { throw Object.assign(new Error(message), { status: 403, code: 'SOURCE_SCOPE_DENIED' }); };
 export const HANDOFF_REFERENCES = 48;
@@ -180,6 +181,7 @@ export class RuntimeSources {
   async memoryTarget(task, input = {}) {
     const args = modelArgs(input), access = await this.memoryAccess(task);
     const supplied = args.scopeId || (typeof args.scope === 'string' && /^(?:work|conversation|project):/.test(args.scope) ? args.scope : null);
+    if (supplied === environmentScopeId) denied('The environment index is maintained from catalog observations');
     const sameRoomScope = supplied && supplied === access.source.roomId && access.rooms.includes(supplied);
     if (supplied && !sameRoomScope) {
       const scope = this.store.getRecord('knowledge_scope', supplied);
@@ -266,10 +268,14 @@ export class RuntimeSources {
     access ||= await this.memoryAccess(task);
     const permittedSource = source => source?.roomId ? access.rooms.includes(source.roomId) :
       source?.source === access.source.source && source?.conversationId === access.source.conversationId;
-    return directory.filter(item => item.projectId ? access.projects.some(project => project.id === item.projectId ||
-      knowledgeProjectId(project) === item.projectId && item.authorizations?.some(origin => sameKnowledgeSource(origin, access.source))) ||
-      !task.workId && item.authorizations?.some(permittedSource) : item.workId ? access.works.some(work => work.id === item.workId) :
-      item.conversationId === access.source.conversationId || !task.workId && access.rooms.includes(item.roomId || item.conversationId?.replace(/^room:/, '')));
+    return directory.filter(item => {
+      if (item.id === environmentScopeId) return item.kind === 'native-environment' && item.revision > 0;
+      if (item.projectId) return access.projects.some(project => project.id === item.projectId ||
+        knowledgeProjectId(project) === item.projectId && item.authorizations?.some(origin => sameKnowledgeSource(origin, access.source))) ||
+        !task.workId && item.authorizations?.some(permittedSource);
+      if (item.workId) return access.works.some(work => work.id === item.workId);
+      return item.conversationId === access.source.conversationId || !task.workId && access.rooms.includes(item.roomId || item.conversationId?.replace(/^room:/, ''));
+    });
   }
   grant(task, reference) {
     if (!task.workId) return null;

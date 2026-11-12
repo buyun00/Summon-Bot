@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { access, readdir, realpath, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { basename, delimiter, extname, isAbsolute, join, resolve } from 'node:path';
+import { basename, delimiter, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { cleanEnvironment, terminateTree } from '../../bot/src/runtime/process-tools.mjs';
 import { fail, within } from '../shared/validation.mjs';
 
@@ -46,6 +46,10 @@ function packageRoots(workspace) {
     process.env.HOME && join(process.env.HOME, '.cargo', 'bin'),
     process.env.HOME && join(process.env.HOME, '.local', 'bin'),
   ].filter(Boolean);
+}
+
+export function installedExecutablePath(path) {
+  return isAbsolute(path) && [...pathRoots(), ...packageRoots()].some(root => relative(root, dirname(path)) === '');
 }
 
 export async function localExecutable(path) {

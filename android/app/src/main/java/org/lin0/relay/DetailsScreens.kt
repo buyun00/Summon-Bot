@@ -110,9 +110,21 @@ fun BotDetailsScreen(store: SummonStore, botID: String, onBack: () -> Unit) {
         Text("长期记忆", modifier = Modifier.padding(top = 12.dp).align(Alignment.Start))
         if (memories.isEmpty()) Text("还没有长期记忆", color = Color(0xFF8E8E93), modifier = Modifier.align(Alignment.Start))
         memories.forEach { memory ->
-            Column(Modifier.fillMaxWidth().clickable { editing = memory; showEditor = true }.padding(vertical = 8.dp)) {
-                Text(memory["content"].string ?: memory["text"].string.orEmpty())
-                Text(if (memory["status"].string == "expired") "已过期" else "有效", color = Color(0xFF8E8E93))
+            if (memory["editable"].bool == false) {
+                var expanded by remember(memory["id"].string) { mutableStateOf(false) }
+                Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                    TextButton(onClick = { expanded = !expanded }) { Text(memory["title"].stringValue) }
+                    if (expanded) {
+                        memory["revision"].int?.let { Text("修订 $it", color = Color(0xFF8E8E93)) }
+                        Text(memory["content"].stringValue)
+                        Text(memory["source"].stringValue, color = Color(0xFF8E8E93))
+                    }
+                }
+            } else {
+                Column(Modifier.fillMaxWidth().clickable { editing = memory; showEditor = true }.padding(vertical = 8.dp)) {
+                    Text(memory["content"].string ?: memory["text"].string.orEmpty())
+                    Text(if (memory["status"].string == "expired") "已过期" else "有效", color = Color(0xFF8E8E93))
+                }
             }
         }
         TextButton(onClick = { editing = null; showEditor = true }) { Icon(Icons.Filled.Add, null); Text("添加记忆") }

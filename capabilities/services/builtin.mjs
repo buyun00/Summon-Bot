@@ -67,7 +67,8 @@ export async function createCapability(options) {
     if(FILE_TOOLS.has(name)) {
       if(actor==='controller')fail('Filesystem tools require an explicit Bot identity');
       const config=await manager.config(actor),artifacts=[];
-      const definitions=createFileTools({workspace:context.projectRoot||config.workspace,projectRoot:context.projectRoot||config.workspace,protectedRoot:dataRoot,accessPolicy:context.fileAccessPolicy,redact:createRedactor(config),containProcesses:context.workId?.startsWith('onboarding-')===true,tempRoot:join(manager.directory(actor),'tmp','capability-tools'),onArtifacts:items=>artifacts.push(...items),withExecution:(fn,toolSignal)=>lockFor(context.projectRoot||config.workspace).withLock(`bot:${actor}`,fn,toolSignal),saveArtifact:async input=>(await manager.botApi()).saveArtifact(join(manager.directory(actor),'artifacts'),input),
+      const project=context.projectRoot||config.workspace;
+      const definitions=createFileTools({workspace:config.workspace,projectRoot:project,base:project,projectOnly:true,protectedRoot:dataRoot,accessPolicy:context.fileAccessPolicy,redact:createRedactor(config),containProcesses:context.workId?.startsWith('onboarding-')===true,tempRoot:join(manager.directory(actor),'tmp','capability-tools'),onArtifacts:items=>artifacts.push(...items),withExecution:(fn,toolSignal)=>lockFor(project).withLock(`bot:${actor}`,fn,toolSignal),saveArtifact:async input=>(await manager.botApi()).saveArtifact(join(manager.directory(actor),'artifacts'),input),
         publishFile:(input,file)=>locked(async ()=>{
           const workId=context.workId||(context.mode==='chat'?args.workId:null);
           if(!workId||!context.taskId)fail('File publication requires an authorized work ID',403);

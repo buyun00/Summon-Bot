@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { isAbsolute, join, resolve } from 'node:path';
-import { assertCommandPolicy, createPathAccess } from '../../bot/src/capabilities/file-policy.mjs';
+import { extname, isAbsolute, join } from 'node:path';
+import { assertPathPolicy, createPathAccess, fileAccessDenied, insideProtectedDirectory, resolveFilePath, samePath, sensitivePath } from '../../bot/src/capabilities/file-policy.mjs';
 import { taskFileAccessPolicy } from '../../bot/src/capabilities/file-access.mjs';
 import { taskSource, workExecution } from '../../bot/src/context/sources.mjs';
-import { fail, now, required, safeId, within } from '../shared/validation.mjs';
-import { discoverExecutables, executableKey, findExecutable, inspectNative, localExecutable, nativeArgs, nativeCommand, nativeEnvironment } from './native-host.mjs';
+import { fail, now, required, safeId } from '../shared/validation.mjs';
+import { discoverExecutables, executableKey, findExecutable, inspectNative, installedExecutablePath, localExecutable, nativeArgs, nativeCommand, nativeEnvironment } from './native-host.mjs';
+import { checkedNativeArguments, hasExplicitFileScope, inspectOnlyArgs, nativeFileArgs, validInspectionArgs } from './native-file-arguments.mjs';
 import { NativeExecutions, liveNative } from './native-executions.mjs';
 import { NativeSources } from './native-sources.mjs';
 
@@ -19,8 +20,8 @@ const stopped = new Set(['paused', 'cancelled', 'completed']);
 const ambientMaintenance = new Set(['version-change', 'version-check-failed', 'executable-unavailable', 'path-change', 'scheduled-change', 'scheduled-failure']);
 const recurringMaintenance = new Set(['scheduled-change', 'scheduled-failure', 'display-failure', 'connection-failure']);
 const remoteProjection = receipt => JSON.stringify([receipt.status, receipt.reconciledAt || null]);
-const invocationIdentity = ({ id, methodId, parameters, args, cwd, input, keepInput, resumeFromOperationId, recoveryBindingId, effect }) =>
-  ({ id, methodId, parameters, args, cwd, input, keepInput, resumeFromOperationId, recoveryBindingId, effect });
+const invocationIdentity = ({ id, methodId, parameters, args, cwd, input, keepInput, resumeFromOperationId, recoveryBindingId, effect, fileArgs }) =>
+  ({ id, methodId, parameters, args, cwd, input, keepInput, resumeFromOperationId, recoveryBindingId, effect, fileArgs });
 const scopeStatus = status => status === 'completed' || status === 'failed' || status === 'stopped' || status === 'unknown';
 const stamp = file => [executableKey(file.canonicalFile), file.size, file.modifiedAt].join('|');
 const currentMethod = (entry, id) => entry.native?.methods?.find(method => method.id === id && method.resourceRevision === entry.native.resourceRevision);
@@ -82,31 +83,53 @@ export class NativeToolService {
     const saved = task && await this.manager.readState(actor, db => {
       const work = task.workId && db?.getRecord('works', task.workId);
       const execution = work && workExecution(task, db);
-      return { work, execution, policy: db ? taskFileAccessPolicy(task, db, config.workspace) : {} };
+      return { work, execution, policy: db ? taskFileAccessPolicy(task, db, work?.project?.cwd || config.workspace) : {} };
     });
     if (!discovery && (!saved?.work || !saved.execution?.authorization?.source || stopped.has(saved.work.status)))
       fail('An active original work and its accepted authority are required', 409);
     if (args.workId && args.workId !== saved?.work?.id) fail('Use the current original work', 403);
     const project = saved?.work?.project?.cwd || config.workspace;
-    const checkedPath = createPathAccess({ workspace: config.workspace, project, protectedDirectories: [this.dataRoot], accessPolicy: saved?.policy });
-    const cwd = await checkedPath(resolve(project, args.cwd || '.'), { directory: true, operations: ['read'], alternative: true });
+    const checkedPath = createPathAccess({ workspace: config.workspace, project, base: project,
+      protectedDirectories: [this.dataRoot], accessPolicy: saved?.policy });
+    const cwd = await checkedPath(args.cwd || '.', { directory: true, operations: !discovery && args.cwd ? ['read', 'write'] : ['read'], alternative: true });
     return { ...saved, cwd, checkedPath, config, source: saved?.execution?.authorization?.source };
+  }
+
+  protectedExecutable(path, workspace = this.workspace) {
+    return sensitivePath(path, workspace) || insideProtectedDirectory(path, workspace, [this.dataRoot]);
+  }
+
+  async executablePath(file, scope, actor, entry, { canonical = false, catalogMethod = false } = {}) {
+    const requested = resolveFilePath(scope.cwd, file);
+    const operations = ['execute'];
+    if (this.protectedExecutable(requested, scope.config?.workspace)) throw fileAccessDenied(requested, 'protected_path', { operations });
+    assertPathPolicy(requested, scope.policy, { operations, alternative: !canonical });
+    if (actor !== 'controller') {
+      const maintenance = entry?.ownerBotId === actor && this.store.list('catalog-delegations').some(record =>
+        record.entryId === entry.id && record.ownerBotId === actor && record.ownerWorkId === scope.work?.id);
+      const registered = catalogMethod && scope.work && entry?.native?.hostId === this.host.hostId &&
+        entry.native.executableAuthority?.some(record => record.actor === actor &&
+          samePath(record.file, requested) && samePath(record.canonicalFile, entry.config.canonicalFile));
+      try { await scope.checkedPath(requested, { file: true, operations, alternative: !canonical }); }
+      catch (error) {
+        if (error.accessDenial?.reason !== 'outside_allowed_roots' || !maintenance && !registered && !installedExecutablePath(requested)) throw error;
+      }
+    }
+    const actual = await localExecutable(requested);
+    if (this.protectedExecutable(actual.canonicalFile, scope.config?.workspace))
+      throw fileAccessDenied(requested, 'resolved_protected_path', { operations });
+    assertPathPolicy(actual.canonicalFile, scope.policy, { operations, alternative: !canonical });
+    if (entry && !samePath(entry.config.canonicalFile, actual.canonicalFile))
+      throw fileAccessDenied(requested, 'executable_binding_changed', { operations });
+    return actual;
   }
 
   async discover(args, actor, task) {
     const scope = await this.workContext(actor, task, args, { discovery: true });
-    const command = args.command && /^[.]{1,2}[/\\]/.test(args.command) ? resolve(scope.cwd, args.command) : args.command;
-    const direct = command && await findExecutable(command, scope.cwd);
-    if (direct && isAbsolute(command) && actor !== 'controller') {
-      const matches = await discoverExecutables(scope.cwd);
-      const explicitlyProvided = await this.manager.readState(actor, db => {
-        const request = db?.getTask(scope.execution?.requestTaskId || task?.id);
-        const input = JSON.stringify(request?.input || '').replaceAll('\\\\', '\\').replaceAll('\\', '/').toLowerCase();
-        return scope.source?.actor === 'user' && input.includes(command.replaceAll('\\', '/').toLowerCase());
-      });
-      if (!matches.some(item => executableKey(item.canonicalFile) === executableKey(direct.canonicalFile)) && !explicitlyProvided)
-        await scope.checkedPath(direct.file, { alternative: true });
-    }
+    const command = args.command;
+    const direct = command && (isAbsolute(command) || /[/\\]/.test(command) ?
+      await this.executablePath(command, scope, actor, null, { canonical: true }) :
+      await this.executablePath((await findExecutable(command, scope.cwd)).file, scope, actor, null, { canonical: true }));
     let results;
     if (direct) results = [{ ...direct, aliases: [direct.name], source: 'explicit' }];
     else {
@@ -117,6 +140,8 @@ export class NativeToolService {
         results = await this.discovery.promise;
       }
     }
+    results = results.filter(file => !this.protectedExecutable(file.file, scope.config?.workspace) &&
+      !this.protectedExecutable(file.canonicalFile, scope.config?.workspace));
     const terms = String(args.query || '').toLowerCase().split(/\s+/).filter(Boolean);
     const filtered = results.filter(file => terms.every(term => [file.file, ...file.aliases].some(text => text.toLowerCase().includes(term))));
     const offset = Math.min(args.offset || 0, filtered.length), limit = Math.min(args.limit || 24, 100);
@@ -129,16 +154,29 @@ export class NativeToolService {
       const { allowedActors: actors, ...value } = row;
       return { ...value, resourceId: known?.id, ownerBotId: known?.ownerBotId, status: known?.native?.status };
     });
-    if (task?.workId) this.store.save('native-discovery-runs', { id: JSON.stringify([actor, task.workId]), count: results.length, lastDiscoveryAt: now() });
-    this.store.save('native-hosts', { id: 'local', lastDiscovery: { at: now(), total: results.length, cwd: scope.cwd } });
-    return { host: this.host, candidates: rows, total: filtered.length, nextOffset: offset + limit < filtered.length ? offset + limit : null };
+    const nextOffset = offset + limit < filtered.length ? offset + limit : null;
+    const scan = { id: randomUUID(), kind: command ? 'single' : terms.length ? 'filtered' : 'full',
+      total: filtered.length, offset, nextOffset, observedAt: now(), taskId: task?.id };
+    if (task?.workId) this.store.transaction(() => {
+      const id = JSON.stringify([actor, task.workId]);
+      const previous = this.store.get('native-discovery-runs', id);
+      this.store.save('native-discovery-scans', this.catalog.clean({ ...scan, actor, workId: task.workId,
+        cwd: scope.cwd, command: command || null, query: args.query || null }));
+      this.store.save('native-discovery-runs', { id, scans: { ...previous?.scans, [scan.kind]: scan } });
+    });
+    if (scan.kind === 'full') this.store.save('native-hosts', { id: 'local', lastDiscovery: { at: scan.observedAt, total: scan.total, cwd: scope.cwd } });
+    return { host: this.host, candidates: rows, total: scan.total, nextOffset, scan };
   }
 
   async enroll(args, actor, task) {
     const candidate = this.store.get(candidates, safeId(args.candidateId));
     if (!candidate || actor !== 'controller' && !candidate.allowedActors.includes(actor)) fail('Discover this candidate first', 404);
     const context = await this.workContext(actor, task);
-    const file = await localExecutable(candidate.file);
+    const file = await this.executablePath(candidate.file, context, actor);
+    if (!samePath(candidate.canonicalFile, file.canonicalFile)) fail('The observed executable path changed; discover the current entry again', 409);
+    const origin = context.policy?.grants?.find(grant => grant.operations.includes('execute') && samePath(grant.path, file.file));
+    const authority = origin && { actor, file: file.file, canonicalFile: file.canonicalFile,
+      sourceTaskId: origin.sourceTaskId, sourceMessageId: origin.sourceMessageId, sourceRoomId: origin.sourceRoomId };
     return this.catalog.serial('native-enroll', async () => {
       let entry = this.matches(file);
       if (!entry) {
@@ -151,7 +189,8 @@ export class NativeToolService {
         await this.catalog.save({ id, kind: 'cli', name, description: args.description || 'Local command-line tool ' + file.name,
           config: { file: file.file, canonicalFile: file.canonicalFile, executableName: file.name }, allowedBotIds: ['*'],
           source: { type: 'native-discovery', candidateId: candidate.id, at: candidate.observedAt, path: file.file },
-          native: { hostId: this.host.hostId, resourceRevision: 1, status: 'discovered', installations: [file], aliases: candidate.aliases, fingerprint: stamp(file), versionArgs: ['--version'], methods: [] },
+          native: { hostId: this.host.hostId, resourceRevision: 1, status: 'discovered', installations: [file], aliases: candidate.aliases,
+            fingerprint: stamp(file), versionArgs: ['--version'], methods: [], ...(authority ? { executableAuthority: [authority] } : {}) },
         }, actor, { native: true, ownerModel: context.config?.model });
         entry = this.catalog.entry(id);
         this.observation(entry, 'discovery', { file, candidateId: candidate.id, source: candidate.source }, actor);
@@ -165,6 +204,9 @@ export class NativeToolService {
       } else if (candidate.aliases?.some(alias => !entry.native.aliases?.includes(alias))) {
         entry = this.save(entry, { aliases: [...new Set([...(entry.native.aliases || []), ...candidate.aliases])] });
       }
+      if (authority && !entry.native.executableAuthority?.some(item => item.actor === actor && samePath(item.file, file.file) &&
+        samePath(item.canonicalFile, file.canonicalFile)))
+        entry = this.save(entry, { executableAuthority: [...(entry.native.executableAuthority || []), authority] });
       if (!currentMethod(entry, entry.native.methods?.find(method => method.resourceRevision === entry.native.resourceRevision)?.id))
         this.enqueue(entry, 'initial-learning', entry.lastObservationId ? this.store.get(observations, entry.lastObservationId) : null, actor, task);
       if (task?.workId) {
@@ -203,12 +245,13 @@ export class NativeToolService {
     const entry = this.owner(args.id, actor);
     if (entry.kind !== 'cli') fail('Use catalog_probe for a network or MCP connection');
     const context = await this.workContext(actor, task), argv = nativeArgs(args.args);
-    if (!argv.length) fail('Provide explicit version or help arguments');
+    inspectOnlyArgs(argv);
     return this.catalog.serial('native-resource:' + entry.id, async () => {
       let current = this.catalog.entry(entry.id);
       if (this.executions.forResource(entry.id).some(item => item.effect === 'update' && item.status !== 'queued' && liveNative(item.status)))
         fail('The resource is being updated', 409);
-      const result = await inspectNative(current.config.file, argv, context.cwd, { signal });
+      const file = await this.executablePath(current.config.file, context, actor, current);
+      const result = await inspectNative(file.canonicalFile, argv, context.cwd, { signal });
       const version = result.exitCode === 0 && !result.timeout && (result.stdout.trim() || result.stderr.trim()).split('\n')[0].trim().slice(0, 256);
       if (args.versionProbe && version) {
         const changed = current.native.version && current.native.version !== version;
@@ -220,9 +263,12 @@ export class NativeToolService {
     });
   }
 
-  async check(entry, { force = false, actor = 'controller', task, signal } = {}) {
+  async check(entry, { force = false, actor = 'controller', task, signal, workspace } = {}) {
     if (entry.kind !== 'cli') return entry;
-    const file = await localExecutable(entry.config.file).catch(() => null), original = entry.native;
+    const original = entry.native;
+    const observedFile = await localExecutable(entry.config.file).catch(() => null);
+    const file = observedFile && samePath(entry.config.canonicalFile, observedFile.canonicalFile) &&
+      !this.protectedExecutable(observedFile.file, workspace) && !this.protectedExecutable(observedFile.canonicalFile, workspace) ? observedFile : null;
     const pathChanged = !file || original.fingerprint !== stamp(file);
     if (!pathChanged && !force && original.lastCheckedAt && Date.now() - Date.parse(original.lastCheckedAt) < 1500) return entry;
     if (!file) {
@@ -233,7 +279,9 @@ export class NativeToolService {
       return changed;
     }
     if (!original.versionObserved && !pathChanged) return entry;
-    const result = await inspectNative(file.file, original.versionArgs, this.workspace, { signal });
+    const result = validInspectionArgs(original.versionArgs) ?
+      await inspectNative(file.canonicalFile, original.versionArgs, this.workspace, { signal }) :
+      { observedAt: now(), exitCode: null, error: 'The saved version invocation needs a current documented version or help probe.' };
     const text = result.exitCode === 0 && !result.timeout && (result.stdout.trim() || result.stderr.trim()).split('\n')[0].trim().slice(0, 256);
     const changed = pathChanged || Boolean(text && original.version && original.version !== text) || original.status === 'unavailable';
     if (!changed && (text || !original.versionObserved))
@@ -269,6 +317,7 @@ export class NativeToolService {
         effect: args.effect || 'write', observedAt: now() };
       if (entry.kind === 'cli') {
         method.args = nativeArgs(args.args);
+        method.fileArgs = nativeFileArgs(args.fileArgs, method.args.length, method.effect);
         method.input = args.input;
         method.keepInput = args.keepInput === true;
         method.protocol = args.protocol || 'stdin';
@@ -303,11 +352,12 @@ export class NativeToolService {
   invocation(entry, method, args, sessionId) {
     const parameters = { ...(args.parameters || {}) };
     if (sessionId) parameters.sessionId = sessionId;
-    if (!method) return { file: entry.config.file, args: nativeArgs(args.args), input: args.input, keepInput: args.keepInput === true };
+    if (!method) return { file: entry.config.file, args: nativeArgs(args.args), fileArgs: args.fileArgs, input: args.input, keepInput: args.keepInput === true };
+    if (args.fileArgs !== undefined) fail('Use the file argument roles published with the method.');
     const argv = nativeArgs(expand(method.args, parameters));
     const input = args.input ?? expand(method.input, parameters);
     return { file: method.script ? process.execPath : entry.config.file,
-      args: method.script ? [join(this.catalog.skillRoot, entry.id, method.script), ...argv] : argv,
+      args: method.script ? [join(this.catalog.skillRoot, entry.id, method.script), ...argv] : argv, fileArgs: method.fileArgs,
       input, keepInput: method.keepInput, protocol: method.protocol, env: method.env, authorizedEnv: entry.native.credentialRefs || [], sessionId };
   }
 
@@ -322,8 +372,14 @@ export class NativeToolService {
         if (prior.resourceId !== entry.id || JSON.stringify(prior.intent) !== JSON.stringify(this.catalog.clean(invocationIdentity(args)))) fail('Operation identity already belongs to another invocation', 409);
         return this.executions.public(await this.executions.refresh(prior));
       }
+      if (entry.kind === 'cli') {
+        try { await this.executablePath(entry.config.file, context, actor, entry, {
+          catalogMethod: Boolean(args.methodId && entry.native?.methods?.some(method => method.id === args.methodId)),
+        }); }
+        catch (error) { if (error.code !== 'ENOENT') throw error; }
+      }
       const updating = this.executions.forResource(entry.id).some(item => item.effect === 'update' && item.status !== 'queued' && liveNative(item.status));
-      const fresh = updating ? entry : await this.check(entry, { actor, task, signal });
+      const fresh = updating ? entry : await this.check(entry, { actor, task, signal, workspace: context.config?.workspace });
       const method = currentMethod(fresh, args.methodId), unavailable = fresh.native?.status === 'unavailable';
       if (actor !== fresh.ownerBotId && (unavailable || !method && (fresh.kind === 'cli' || args.methodId))) {
         const observed = this.observation(fresh, 'method-needed', { workId: task.workId, methodId: args.methodId, objective: context.work.goal, rationale: args.rationale }, actor);
@@ -363,13 +419,7 @@ export class NativeToolService {
       if (launch.input !== undefined && (typeof launch.input !== 'string' || launch.input.length > 32_768)) fail('Native stdin payload exceeds the inline input limit');
       nativeCommand(launch.file, launch.args);
       nativeEnvironment(launch.env, launch.authorizedEnv);
-      await assertCommandPolicy([launch.file, ...launch.args].map(arg => JSON.stringify(arg)).join(' '), launch.cwd, context.policy,
-        (path, operations) => context.checkedPath(path, { operations, alternative: true }));
-      for (const arg of launch.args.slice(method?.script ? 1 : 0)) {
-        const target = arg.startsWith('-') && arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : arg;
-        if (isAbsolute(target) || /^[.]{1,2}[/\\]/.test(target))
-          await context.checkedPath(resolve(launch.cwd, target), { operations: effect === 'read' ? ['read'] : ['read', 'write'], alternative: true });
-      }
+      await this.scopedLaunch(launch, context, fresh, method, actor, effect);
       const siblings = this.executions.forResource(fresh.id);
       if (effect !== 'read' && siblings.some(item => item.status === 'unknown' && item.effect !== 'read' && (item.workId === task.workId || item.effect === 'update' || effect === 'update')))
         fail('An original mutation has an unknown outcome; read and reconcile it before another write', 409);
@@ -381,6 +431,17 @@ export class NativeToolService {
       await this.project(started).catch(() => {});
       return this.executions.public(started);
     });
+  }
+
+  async scopedLaunch(launch, context, entry, method, actor, effect, createOutputs = false) {
+    const file = await this.executablePath(entry.config.file, context, actor, entry, { catalogMethod: Boolean(method) });
+    if (hasExplicitFileScope(context.policy) && (method?.script || launch.keepInput || launch.input ||
+        ['.cmd', '.bat', '.ps1'].includes(extname(file.file).toLowerCase())))
+      throw fileAccessDenied(file.file, 'scoped_direct_executable_required', { operations: ['execute'] });
+    const offset = method?.script ? 1 : 0;
+    const args = await checkedNativeArguments({ argv: launch.args.slice(offset), fileArgs: launch.fileArgs, cwd: context.cwd,
+      effect, policy: context.policy, checkedPath: context.checkedPath, createOutputs });
+    return { ...launch, file: method?.script ? launch.file : file.canonicalFile, args: [...launch.args.slice(0, offset), ...args] };
   }
 
   async advance(item) {
@@ -397,6 +458,17 @@ export class NativeToolService {
     if (earlierUpdate || item.effect === 'update' && active) return item;
     if (others.some(other => other.workId === item.workId && other.actor === item.actor && other.controlRevision !== item.controlRevision &&
         (liveNative(other.status) || other.status === 'unknown') && other.status !== 'queued')) return item;
+    const task = await this.manager.readState(item.actor, db => db?.getTask(item.taskId));
+    try {
+      const context = await this.workContext(item.actor, task, { workId: item.workId, cwd: item.intent.cwd });
+      if (context.execution.executionEventId !== item.executionEventId || !samePath(context.cwd, item.cwd))
+        fail('The accepted work action or its working directory changed before launch', 409);
+      const launch = await this.scopedLaunch(item.launch, context, entry, currentMethod(entry, item.methodId), item.actor, item.effect, true);
+      item = this.executions.save(item, { launch });
+    } catch (error) {
+      return this.executions.save(item, { status: 'failed', error: this.catalog.clean(error.message),
+        ...(error.accessDenial ? { accessDenial: error.accessDenial } : {}), finishedAt: now(), observedAt: now() });
+    }
     await this.project(item);
     return this.executions.launch(item);
   }
