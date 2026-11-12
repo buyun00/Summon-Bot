@@ -993,7 +993,7 @@ export function coreTools(services, task) {
         const duty = participant && dutyProposal(participant.dutyKey, false, source.input?.room, ownerFirst);
         const after = ownerFirst && await ownerPrerequisite({ decision, action: selected, participant, duty, workId: id,
           operationId: `${id}:${operationId}`, projectId: project?.id ?? null });
-        const grant = await authorize(decision, ctx, { relation: 'new', project, target: executor?.target || target, executor: executorKind,
+        const grant = await authorize(decision, ctx, { relation: 'new', project, target: executor?.target || target, executor: executor.kind,
           goal, requirements, handoff: proposalHandoff(content.handoff), sourceMaterials: proposalMaterials(content),
           ...(participant ? { participant: { ...participant, duty } } : {}), ...(after ? { after } : {}) },
         { workId: id, actionId: `${id}:${operationId}`, scopeEvidence: content.evidence });
