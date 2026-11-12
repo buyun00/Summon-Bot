@@ -65,26 +65,42 @@ export class TeamService {
   }
   async staffingWorks(room, evidence) {
     const relevant = new Set(evidence.map(signal => signal.workId).filter(Boolean));
-    const members = await Promise.all(room.members.filter(id => id !== 'user' && id !== room.team.eggBotId).map(async botId => {
-      const works = (await this.works(room, botId)).filter(work => work.sources.some(source =>
-        source.roomId === room.id && source.actor === 'user' && source.replyTo));
+    const roomUserSource = source => {
+      if (source?.roomId !== room.id || source.actor !== 'user' || !source.replyTo) return false;
+      const message = this.store.get('messages', source.replyTo);
+      return message?.roomId === room.id && message.senderId === 'user';
+    };
+    const report = (text, limit) => typeof text === 'string' ? text.slice(0, limit) : undefined;
+    const memberIds = room.members.filter(id => id !== 'user' && id !== room.team.eggBotId);
+    const members = await Promise.all(memberIds.map(botId => this.manager.readState(botId, db => {
+      if (!db) return [];
+      const works = db.listRecords('works').filter(work => work.sources?.some(roomUserSource));
       const selected = new Set([...works.filter(work => relevant.has(work.id)),
         ...works.filter(activeWork).slice(-6), ...works.slice(-1)]);
+      const selectedIds = new Set([...selected].map(work => work.id));
+      const accepted = db.listRecords('work-events').filter(event => selectedIds.has(event.workId) &&
+        event.kind === 'request' && event.receipt?.accepted && roomUserSource(event.authorization?.source));
       return [...selected].map(work => {
         const sameRoom = work.sources.every(source => source.roomId === room.id);
-        const sourceMessageIds = [...new Set(work.sources.filter(source => source.roomId === room.id && source.actor === 'user')
-          .map(source => source.replyTo).filter(Boolean))].slice(-6);
-        const native = sameRoom && work.bindings?.some(binding => binding.type === 'codex-desktop') && externalExecution(work);
-        const report = (text, limit) => typeof text === 'string' ? text.slice(0, limit) : undefined;
-        return { ...pick(work, ['id', 'productionStage', 'status', 'updatedAt']), botId, sourceMessageIds,
+        const sourceMessageIds = [...new Set(work.sources.filter(roomUserSource).map(source => source.replyTo))].slice(-6);
+        const operations = accepted.filter(event => event.workId === work.id).slice(-2);
+        const native = sameRoom && work.bindings?.some(binding => binding.type === 'codex-desktop') &&
+          externalExecution(work, operations.at(-1)?.id);
+        const acceptedScope = operations.map(event => ({
+          operationId: event.id, messageId: event.authorization.source.replyTo, stage: event.authorization.production?.stage,
+          scope: report(event.authorization.production?.scope, 1000),
+          ...(sameRoom ? { handoff: report(event.content?.handoff?.instruction || event.content?.handoff?.goal, 600) } : {}),
+        }));
+        return { ...pick(work, ['id', 'productionStage', 'status', 'updatedAt']), botId, sourceMessageIds, acceptedScope,
           ...(sameRoom ? { goal: report(work.goal, 600), requirements: report(work.requirements, 1000),
             responsibility: report(work.responsibility, 500), progress: report(work.progress, 1000),
             next: report(work.checkpoint?.next, 400), waiting: pick(work.waiting || {}, ['kind', 'reason', 'operationId']),
             lastError: work.lastError && { kind: work.lastError.kind, message: report(work.lastError.message || work.lastError.error?.message, 400) } } : {}),
-          ...(native ? { execution: { ...pick(native, ['operationId', 'turnId', 'externalReceived', 'startedConfirmed', 'status', 'transportStatus']),
+          ...(native ? { execution: { ...pick(native, ['operationId', 'turnId', 'currentOperation', 'externalReceived',
+            'startedConfirmed', 'status', 'transportStatus']),
             observedAt: native.observation?.observedAt } } : {}) };
       });
-    }));
+    })));
     return members.flat();
   }
   staffingRoom(room) {
