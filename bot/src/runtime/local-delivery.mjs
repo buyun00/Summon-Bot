@@ -10,7 +10,7 @@ const packageSuffix = String.raw`\.(?:zip|7z|tar(?:\.gz)?|tgz|exe|msi|apk|dmg|pk
 const quoted = String.raw`[\x60"'(<](${absolutePrefix}[^<>"'\x60()\[\]\r\n，。；]+?${packageSuffix})[\x60"')>]`;
 const bare = String.raw`(?<![\w.:/\\])(${absolutePrefix}[^\s<>"'\x60()[\]，。；（）【】]+?${packageSuffix})`;
 const packagePath = new RegExp(quoted + '|' + bare, 'giu');
-const byteCount = /^\s*(?:\x60{3,}[ \t]*\r?\n\s*)?[(（,，:]?\s*(?:(?:实测|精确|大小|size)\s*[:：]?\s*)?\*{0,2}(\d{1,3}(?:,\d{3})+|\d+)\s*(?:字节|bytes?\b)/iu;
+const byteCount = /^\s*(?:\x60{3,}[ \t]*\r?\n\s*)?[(（,，:]?\s*(?:(?:实测|精确(?:[ \t]*大小)?|大小|size)\s*[:：]?\s*)?\*{0,2}(\d{1,3}(?:,\d{3})+|\d+)\s*(?:字节|bytes?\b)/iu;
 
 export const localPathKey = path => process.platform === 'win32' ? path.replaceAll('\\', '/').toLowerCase() : path;
 const pathMatches = text => [...String(text || '').matchAll(packagePath)]
