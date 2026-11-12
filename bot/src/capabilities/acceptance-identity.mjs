@@ -135,7 +135,7 @@ function matchLocalPublication(entry, ref) {
   if (!publication.localFiles?.length || (!ref.files.length && !ref.paths.length) || ref.unknownFile) return [];
   const ids = [workId, operationId, publication.messageId, publication.replyTo, publication.manifestOperationId].map(normal);
   if (ref.ids.some(id => !ids.includes(id)) || ref.urls.some(url => !entry.links.includes(url))) return [];
-  return publication.localFiles.filter(file => ref.files.every(name => name === normal(file.name)) &&
+  return publication.localFiles.filter(file => (!file.supplements || ref.paths.length === 1) && ref.files.every(name => name === normal(file.name)) &&
     ref.paths.every(path => path === localPathKey(file.path)) &&
     ref.versions.every(version => versions(file.name, { published: true }).includes(version))).map(file => {
     const available = Number.isFinite(file.mtimeMs);
@@ -183,7 +183,8 @@ function hasContentClue(source, delivered) {
 }
 
 export function acceptanceBindings(units, entries, replyTo, {
-  excluded = [], sharedScopeUnits = [], attachmentPublications = [], roomWorkPublications = [], approval, roomResultsAvailable = true,
+  excluded = [], sharedScopeUnits = [], attachmentPublications = [], roomWorkPublications = [], approval, approvalUnits = [],
+  roomResultsAvailable = true,
 } = {}) {
   const localNames = new Set(entries.flatMap(entry => (entry.publication.localFiles || []).map(file => normal(file.name))));
   const names = unique([...entries.flatMap(entry => entry.publication.attachments.map(item => normal(item.name))), ...localNames].filter(Boolean));
@@ -211,7 +212,8 @@ export function acceptanceBindings(units, entries, replyTo, {
   });
   const scope = approval?.scopeUnits && new Set(approval.scopeUnits);
   const identity = approval?.identityUnits && new Set(approval.identityUnits);
-  return (approval ? units.slice(approval.unit - 1, approval.unit) : units).map(({ unit, sentenceStart }) => {
+  const approvedUnits = new Set(approvalUnits);
+  return (approval ? units.slice(approval.unit - 1, approval.unit) : units).map(({ unit, start, sentenceStart }) => {
     const sentence = sentenceIndex.get(sentenceStart);
     const adjacent = sentences.slice(Math.max(0, sentence - 1), sentence + 2).flatMap(start => bySentence.get(start));
     const namedLocalFiles = referenceOf.get(unit).files.filter(name => localNames.has(name));
@@ -234,10 +236,18 @@ export function acceptanceBindings(units, entries, replyTo, {
     const referenced = nearby.filter(item => hasReferences(referenceOf.get(item.unit)) || pathsOf.get(item.unit).length);
     const fail = (reason, matches = []) => ({ unit, reason, identified: matches.slice(0, 3).map(({ workId, publication }) => ({ workId, ...publication })) });
     if (replyTo && !replied) return fail('未能确认所回复的消息是本群的有效交付。');
-    // A timed attachment reference can also be production input. For a split
-    // reference, both clauses must belong to the same approval sentence and scope.
-    const sharedReferences = !replied && !referenced.length ? sharedAttachments.filter(({ item, marker }) => {
-      if (!adjacent.includes(item) || item.unit > unit || scope && !scope.has(item.unit)) return false;
+    // A shared locator can end immediately before the approval. Require the
+    // whole locator sentence and the approval to be contiguous in the saved scope.
+    const preceding = !replied && sharedAttachments.find(({ item, marker }) => marker && marker.unit === unit - 1 &&
+      marker.sentenceStart !== sentenceStart && bySentence.get(marker.sentenceStart)[0] === item &&
+      item.start + item.text.length === marker.start && marker.start + marker.text.length === start &&
+      !/[\r\n]/u.test(item.text + marker.text) && nearby.includes(marker) && (!scope || scope.has(item.unit)));
+    if (preceding && (approvedUnits.has(preceding.item.unit) || nearby.some(item => item.unit !== unit && approvedUnits.has(item.unit))))
+      return fail('附件定位跨过了同条消息里的另一项确认。');
+    const sharedReferences = !replied ? sharedAttachments.filter(reference => {
+      if (reference === preceding) return true;
+      const { item, marker } = reference;
+      if (preceding || referenced.length || !adjacent.includes(item) || item.unit > unit || scope && !scope.has(item.unit)) return false;
       if (!marker) return true;
       return marker.sentenceStart === sentenceStart && marker.unit <= unit && nearby.includes(marker) &&
         units.slice(marker.unit, unit - 1).every(clause => !excludedUnits.has(clause.unit) || sharedUnits.has(clause.unit));
@@ -263,6 +273,8 @@ export function acceptanceBindings(units, entries, replyTo, {
     const combined = Object.fromEntries(['ids', 'files', 'urls', 'versions'].map(key => [key, unique(refs.flatMap(ref => ref[key]))]));
     combined.unknownFile = refs.some(ref => ref.unknownFile);
     combined.paths = unique(referenced.flatMap(item => pathsOf.get(item.unit).map(localPathKey)));
+    if (preceding && (titles.length !== 1 || combined.paths.length || combined.files.some(name => name !== titles[0])))
+      return fail('本条确认中的附件标识指向多个文件。');
     // Limit this to one explicit local archive path. The original excerpts
     // still supply the scope, and the room and work checks still bind the file.
     const localReferences = combined.paths.length === 1 && archivePath.test(combined.paths[0])
@@ -281,17 +293,24 @@ export function acceptanceBindings(units, entries, replyTo, {
       [namedAttachment] = named;
     }
     const matches = pool.flatMap(entry => {
-      if (!publicationMatchesTime(entry.publication, times)) return [];
+      const atPublication = publicationMatchesTime(entry.publication, times);
       const exactBodyLabel = entry.target?.roomResultId && labels.length;
       if (exactBodyLabel && !matchesContentLabels(entry.identityText, labels)) return [];
       if (!replied && !referenced.length && !titles.length && !exactBodyLabel && !hasContentClue(timedSource, entry.identityText)) return [];
-      const publication = !combined.paths.length && matchPublication(entry, combined, namedAttachment);
+      const publication = atPublication && !combined.paths.length && matchPublication(entry, combined, namedAttachment);
       if (namedAttachment) {
         const attachment = publication?.messageId === namedAttachment.messageId &&
           publication.attachments.find(item => item.id === namedAttachment.id);
-        return attachment ? [{ ...entry, publication: { ...publication, attachments: [attachment] } }] : [];
+        return attachment && (!preceding || publication.attachments.length === 1)
+          ? [{ ...entry, publication: { ...publication, attachments: [attachment] } }] : [];
       }
-      const local = matchLocalPublication(entry, localIdentity);
+      const local = matchLocalPublication(entry, localIdentity).filter(({ publication }) => {
+        const [file] = publication.localFiles;
+        if (!file.supplements) return atPublication;
+        return timed.every(item => clockOf.get(item.unit).every(time => publicationMatchesTime(publication, [time]) ||
+          referenceOf.get(item.unit).files.includes(normal(file.name)) &&
+          file.supplements.some(reply => publicationMatchesTime(reply, [time]))));
+      });
       return publication ? [{ ...entry, publication }, ...local] : local;
     });
     if (!matches.length) return { ...fail(replied ? '所回复的交付不可用，或与本条确认里的标识冲突。' :
@@ -301,10 +320,12 @@ export function acceptanceBindings(units, entries, replyTo, {
     const [{ target, publication, workId, senderId, operationId, localUnavailable }] = matches;
     if (publication.localFiles?.length) {
       const [file] = publication.localFiles;
+      const originalTimes = file.supplements ? times.filter(time => publicationMatchesTime(publication, [time])) : times;
       const roomMatches = roomWorkPublications.filter(item => (!replyTo || item.messageId === replyTo) &&
-        publicationMatchesTime(item, times) && combined.ids.every(id =>
+        publicationMatchesTime(item, originalTimes) && combined.ids.every(id =>
           [item.messageId, item.workId, item.replyTo, ...item.operationIds].map(normal).includes(id)) &&
-        item.paths.some(path => combined.paths.length ? localPathKey(path) === localPathKey(file.path) : normal(basename(path)) === normal(file.name)));
+        (file.supplements && item.messageId === publication.messageId || item.paths.some(path =>
+          combined.paths.length ? localPathKey(path) === localPathKey(file.path) : normal(basename(path)) === normal(file.name))));
       if (roomMatches.length > 1) return fail('本群有多个工作交付符合该本机文件线索，请回复对应的原交付。', matches);
       if (!roomMatches.some(item => item.messageId === publication.messageId && item.workId === workId &&
         item.senderId === senderId && item.replyTo === publication.replyTo && item.operationIds.includes(operationId)))

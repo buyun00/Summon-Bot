@@ -11,7 +11,7 @@ import { acceptanceBindings, acceptanceLinks, naturalAcceptanceMatch, sameRoomRe
 import { localTime } from '../context/fact-time.mjs';
 import { externalExecution, isAcceptedOperation } from '../context/execution-evidence.mjs';
 import { readExecutorManifest } from '../runtime/executor-delivery.mjs';
-import { deliveredLocalFiles } from '../runtime/local-delivery.mjs';
+import { deliveredLocalFiles, localPathKey } from '../runtime/local-delivery.mjs';
 import { MESSAGE_ATTACHMENTS, WORK_ATTACHMENTS } from '../runtime/notifications.mjs';
 
 const string = { type: 'string' };
@@ -178,9 +178,28 @@ const runnableWorkIds = store => new Set(store.listUnfinishedTasks().filter(item
 const acceptanceIdentity = ['operationId', 'threadId', 'turnId', 'throughOperationId', 'verificationOperationIds',
   'roomResultId', 'ownerBotId', 'dutyKey', 'deliveryId', 'taskId', 'sourceMessageId', 'version'];
 
+function packageReplyReads(store, user, replies = []) {
+  return replies.flatMap(reply => {
+    const task = store.getTask(reply.taskId), request = task && currentUserRequest(task, store);
+    const accepted = request && store.getMessage(request.acceptedMessageId);
+    if (task?.status !== 'completed' || task.cancelRequested || task.result?.partial || task.result?.suspended ||
+        request?.actor !== user.actor || request.roomId !== user.roomId || request.messageId !== reply.requestMessageId ||
+        request.roomMessageAt !== reply.requestedAt || accepted?.sourceMessageId !== reply.jobId ||
+        accepted.content?.metadata?.deliveryId !== reply.jobId) return [];
+    const reads = store.listTools(task.id).filter(tool => tool.status === 'completed' && tool.effect === 'read');
+    const outputs = reads.filter(tool => tool.name === 'work_outputs').map(tool => tool.output?.details).filter(Boolean);
+    if (!outputs.length) return [];
+    const files = reads.filter(tool => tool.name === 'list_files').flatMap(tool => tool.output?.details?.entries || []);
+    const packages = reply.packages.filter(file => files.some(item => item.type === 'file' && typeof item.path === 'string' &&
+      localPathKey(item.path) === localPathKey(file.path) && item.size === file.size));
+    return packages.length ? [{ ...reply, packages, outputs, requestReplyTo: request.replyTo }] : [];
+  });
+}
+
 async function requestAcceptanceBindings(services, task, user, rooms, page, { excluded = [], sharedScopeUnits = [] } = {}) {
   if (!user?.roomId || !rooms.includes(user.roomId) || !Number.isFinite(Date.parse(user.roomMessageAt))) return { bindings: [], entries: [] };
   const { store } = services, byWork = new Map();
+  const packageReplies = packageReplyReads(store, user, page.roomPackageReplies);
   for (const item of store.listRecords('work-notifications')) {
     if (!byWork.has(item.workId)) byWork.set(item.workId, []);
     byWork.get(item.workId).push(item);
@@ -210,7 +229,7 @@ async function requestAcceptanceBindings(services, task, user, rooms, page, { ex
       const key = JSON.stringify([workId, item.executionEventId, receipt.id]);
       if (entries.has(key) && !verified) continue;
       if (item.publication === 'external') localReads.push(deliveredLocalFiles({ store, workspace: services.workspace, task, work,
-        notification: item, receipt, requestText: user.text }).then(files => {
+        notification: item, receipt, requestText: user.text, packageReplies }).then(files => {
         if (files.length) publication.localFiles = files;
       }));
       entries.set(key, { workId, senderId: work.botId, operationId: item.executionEventId, publication, links: acceptanceLinks(receipt.content),
@@ -272,12 +291,14 @@ function acceptanceContextView({ bindings, entries, roomResultsComplete }, user)
 
 function selectedAcceptanceBindings(snapshot, approvals, user) {
   const units = sourceUnits(user.text);
+  const approvalUnits = approvals.map(item => item.unit);
   return approvals.map(approval => {
     const { unit, publicationMessageId, naturalIdentity } = approval;
     const initial = snapshot.bindings.find(binding => binding.unit === unit && binding.publication?.messageId === publicationMessageId);
     const [binding] = acceptanceBindings(units, snapshot.entries, user.replyTo, { excluded: snapshot.excluded,
       sharedScopeUnits: snapshot.sharedScopeUnits, attachmentPublications: snapshot.attachmentPublications,
-      roomWorkPublications: snapshot.roomWorkPublications, approval: initial ? { ...approval, identityUnits: initial.identityUnits } : approval,
+      roomWorkPublications: snapshot.roomWorkPublications, approvalUnits,
+      approval: initial ? { ...approval, identityUnits: initial.identityUnits } : approval,
       roomResultsAvailable: snapshot.roomResultsAvailable });
     if (!binding || !publicationMessageId || !naturalIdentity || !binding.allowNatural ||
         !snapshot.roomResultsComplete && !binding.clockTimes?.length) return binding || { unit };

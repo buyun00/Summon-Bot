@@ -10,7 +10,7 @@ const packageSuffix = String.raw`\.(?:zip|7z|tar(?:\.gz)?|tgz|exe|msi|apk|dmg|pk
 const quoted = String.raw`[\x60"'(<](${absolutePrefix}[^<>"'\x60()\[\]\r\n，。；]+?${packageSuffix})[\x60"')>]`;
 const bare = String.raw`(?<![\w.:/\\])(${absolutePrefix}[^\s<>"'\x60()[\]，。；（）【】]+?${packageSuffix})`;
 const packagePath = new RegExp(quoted + '|' + bare, 'giu');
-const byteCount = /^\s*[(（,，:]?\s*(?:(?:实测|大小|size)\s*[:：]?\s*)?\*{0,2}(\d{1,3}(?:,\d{3})+|\d+)\s*(?:字节|bytes?\b)/iu;
+const byteCount = /^\s*(?:\x60{3,}[ \t]*\r?\n\s*)?[(（,，:]?\s*(?:(?:实测|精确|大小|size)\s*[:：]?\s*)?\*{0,2}(\d{1,3}(?:,\d{3})+|\d+)\s*(?:字节|bytes?\b)/iu;
 
 export const localPathKey = path => process.platform === 'win32' ? path.replaceAll('\\', '/').toLowerCase() : path;
 const pathMatches = text => [...String(text || '').matchAll(packagePath)]
@@ -21,15 +21,11 @@ export function namesLocalPackage(text, name) {
   return new RegExp('(?<![\\w.-])' + exact + '(?![\\w-]|\\.[\\w])', 'iu').test(text.normalize('NFKC'));
 }
 
-// The runtime saved this summary after validating the accepted operation's
-// result manifest. The same path must actually have reached the room.
-function declaredPackages(summary, delivered) {
-  const published = new Set(localPackagePaths(delivered).map(localPathKey));
+export function localPackageDeclarations(text) {
   const declarations = new Map();
-  for (const { path, end } of pathMatches(summary)) {
+  for (const { path, end } of pathMatches(text)) {
     const name = basename(path), key = localPathKey(path);
-    if (!published.has(key)) continue;
-    const count = byteCount.exec(summary.slice(end))?.[1];
+    const count = byteCount.exec(text.slice(end))?.[1];
     const size = count && Number(count.replaceAll(',', ''));
     if (!Number.isSafeInteger(size) || size < 1) continue;
     const prior = declarations.get(key);
@@ -38,14 +34,14 @@ function declaredPackages(summary, delivered) {
   return [...declarations.values()].filter(Boolean);
 }
 
-export async function deliveredLocalFiles({ store, workspace, task, work, notification, receipt, requestText }) {
+export async function deliveredLocalFiles({ store, workspace, task, work, notification, receipt, requestText, packageReplies = [] }) {
   const project = work.project;
   if (!workspace || project?.hostId !== 'local' || !project.id || typeof project.cwd !== 'string' || !isAbsolute(project.cwd) ||
     notification.publication !== 'external' || notification.late) return [];
   const id = notification.manifestOperationId || notification.executionEventId;
   const delivery = store.getRecord('executor-deliveries', id);
   if (!delivery?.summary || !['published', 'rejected', 'unconfirmed'].includes(delivery.status)) return [];
-  const files = declaredPackages(delivery.summary, receipt.content);
+  const files = localPackageDeclarations(delivery.summary);
   if (!files.length) return [];
 
   const operation = store.getRecord('work-events', id), observation = store.getRecord('work-observations', notification.notificationId);
@@ -65,16 +61,33 @@ export async function deliveredLocalFiles({ store, workspace, task, work, notifi
   if (!origin || !(start < finish)) return [];
 
   const finalPaths = new Set(localPackagePaths(final.text).map(localPathKey));
+  const published = new Set(localPackagePaths(receipt.content).map(localPathKey));
+  const attachmentIds = new Set((receipt.attachments || []).filter(attachment =>
+    notification.attachments?.some(item => item.id === attachment.id) && delivery.attachments?.some(item => item.id === attachment.id))
+    .map(attachment => attachment.id));
+  const publishedAt = Date.parse(receipt.createdAt);
+  const supplements = operation.receipt?.accepted && attachmentIds.size ? packageReplies.filter(reply =>
+    reply.senderId === receipt.senderId && publishedAt < Date.parse(reply.requestedAt) &&
+    (!reply.requestReplyTo || reply.requestReplyTo === receipt.id) && reply.outputs.some(output =>
+      output.workId === work.id && output.operationId === id && output.delivery?.id === id && !output.unavailable &&
+      output.replyDelivery?.candidates?.some(item => item.messageId === receipt.id && attachmentIds.has(item.id)))) : [];
   const root = resolve(project.cwd);
-  const candidates = files.filter(({ path }) => finalPaths.has(localPathKey(path)) &&
-    pathWithin(root, path) && pathWithin(workspace, path) && !pathWithin(resolve(root, '.summon-handoffs'), path));
+  const candidates = files.flatMap(file => {
+    const { path, size } = file, key = localPathKey(path);
+    if (!pathWithin(root, path) || !pathWithin(workspace, path) || pathWithin(resolve(root, '.summon-handoffs'), path)) return [];
+    if (published.has(key) && finalPaths.has(key)) return [file];
+    // A same-room answer can corroborate disclosure of the manifest's file.
+    // The exact operation, publication and prior scoped file read supply provenance.
+    const confirmed = supplements.filter(reply => reply.packages.some(item => localPathKey(item.path) === key && item.size === size));
+    return confirmed.length ? [{ ...file, supplements: confirmed.map(({ messageId, publishedAt }) => ({ messageId, publishedAt })) }] : [];
+  });
   const requested = new Set(candidates.filter(file => namesLocalPackage(requestText, file.name)));
-  if (!requested.size) return candidates;
+  if (!requested.size) return candidates.filter(file => !file.supplements);
   const checkedPath = createPathAccess({ workspace, accessPolicy: { deniedPaths: [
     ...taskFileAccessPolicy(origin, store, workspace).deniedPaths,
     ...taskFileAccessPolicy(task, store, workspace).deniedPaths,
   ] } });
-  return Promise.all(candidates.map(async file => {
+  const checked = await Promise.all(candidates.map(async file => {
     if (!requested.has(file)) return file;
     try {
       const path = await checkedPath(file.path, { alternative: true });
@@ -89,4 +102,5 @@ export async function deliveredLocalFiles({ store, workspace, task, work, notifi
     } catch { /* A missing or inaccessible file can identify the claim but cannot be accepted. */ }
     return file;
   }));
+  return checked.filter(file => !file.supplements || Number.isFinite(file.mtimeMs));
 }

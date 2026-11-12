@@ -3,7 +3,7 @@ import { currentUserRequest } from '../../bot/src/capabilities/request-routing.m
 import { acceptanceClockTimes, sameRoomResultAcceptance } from '../../bot/src/capabilities/acceptance-identity.mjs';
 import { EXISTING_PUBLICATION, OWNER_DELIVERY, reviewReferenceAttachments } from '../../bot/src/context/duty-actions.mjs';
 import { localTime } from '../../bot/src/context/fact-time.mjs';
-import { localPackagePaths, namesLocalPackage } from '../../bot/src/runtime/local-delivery.mjs';
+import { localPackageDeclarations, localPackagePaths, localPathKey, namesLocalPackage } from '../../bot/src/runtime/local-delivery.mjs';
 import { activeDuties } from './staffing.mjs';
 import { pick } from '../shared/validation.mjs';
 
@@ -168,19 +168,40 @@ export class RoomTextResults {
       item === duty ? { ...item, resultIds: [...(item.resultIds || []), record.id] } : item) } }, room.team.revision);
   }
 
+  packageReply(message, room, trigger, requestedPaths) {
+    if (!requestedPaths.size || !message?.jobId || message.roomId !== room.id || message.kind === 'error' ||
+        message.workId || message.workPublication || message.observationReply || message.attachments?.length ||
+        message.id !== 'reply:' + message.jobId || !(Date.parse(message.createdAt) < Date.parse(trigger.createdAt))) return null;
+    const packages = localPackageDeclarations(message.content).filter(file => requestedPaths.has(localPathKey(file.path)));
+    if (!packages.length) return null;
+    const job = this.store.get('deliveries', message.jobId), request = job && this.store.get('messages', job.messageId);
+    if (job?.roomId !== room.id || job.status !== 'completed' || !job.taskId || job.workId || !userDelivery(job) ||
+        job.botId !== message.senderId || request?.roomId !== room.id || request.senderId !== trigger.senderId ||
+        request.id !== message.replyTo || !(Date.parse(request.createdAt) < Date.parse(message.createdAt))) return null;
+    return { messageId: message.id, publishedAt: message.createdAt, senderId: message.senderId,
+      requestMessageId: request.id, requestedAt: request.createdAt, jobId: job.id, taskId: job.taskId, packages };
+  }
+
   async before(room, trigger) {
-    const messages = trigger.replyTo ? [this.store.get('messages', trigger.replyTo)] : this.chatroom.messages(room.id).reverse();
     const times = acceptanceClockTimes(trigger.content);
-    const candidates = [], attachmentPublications = [], roomWorkPublications = [];
+    const requestedPaths = new Set(localPackagePaths(trigger.content).map(localPathKey));
+    const replied = trigger.replyTo && this.store.get('messages', trigger.replyTo);
+    const messages = !trigger.replyTo || requestedPaths.size && replied?.workPublication
+      ? this.chatroom.messages(room.id).reverse() : [replied];
+    const candidates = [], attachmentPublications = [], roomWorkPublications = [], roomPackageReplies = [];
     let complete = true;
     let unavailable = false;
     for (const message of messages) {
+      const packageReply = this.packageReply(message, room, trigger, requestedPaths);
+      if (packageReply) roomPackageReplies.push(packageReply);
+      if (trigger.replyTo && message?.id !== trigger.replyTo) continue;
       if (message?.workPublication && message.eventType === 'work_result' && message.roomId === room.id && message.workId &&
           Date.parse(message.createdAt) < Date.parse(trigger.createdAt)) {
         const paths = localPackagePaths(message.content).filter(path => namesLocalPackage(trigger.content, basename(path)));
         const operationIds = (message.sourceRefs || []).filter(ref => ref.type === 'codex').map(ref => ref.operationId);
-        if (paths.length && operationIds.length) roomWorkPublications.push({ messageId: message.id, publishedAt: message.createdAt,
-          workId: message.workId, senderId: message.senderId, replyTo: message.replyTo, operationIds, paths });
+        if (operationIds.length && (paths.length || requestedPaths.size && message.attachments?.length))
+          roomWorkPublications.push({ messageId: message.id, publishedAt: message.createdAt,
+            workId: message.workId, senderId: message.senderId, replyTo: message.replyTo, operationIds, paths });
       }
       // Include other senders' attachments in the ambiguity check. Only the
       // owning work's separately verified receipt can authorize a write.
@@ -200,7 +221,8 @@ export class RoomTextResults {
       }
       candidates.push({ ...record, content: message.content.slice(0, 4000), originalRequest: source.content.slice(0, 4000) });
     }
-    return { roomResults: candidates, roomResultsComplete: complete && !unavailable, attachmentPublications, roomWorkPublications, unavailable };
+    return { roomResults: candidates, roomResultsComplete: complete && !unavailable,
+      attachmentPublications, roomWorkPublications, roomPackageReplies, unavailable };
   }
 
   toolDecisions(tools, taskId, roomId, messageId) {
