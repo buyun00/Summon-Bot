@@ -47,8 +47,8 @@ export async function deliveredLocalFiles({ store, workspace, task, work, notifi
   const operation = store.getRecord('work-events', id), observation = store.getRecord('work-observations', notification.notificationId);
   const source = operation?.authorization?.source, observed = observation?.content, final = observed?.final;
   const execution = operation?.executionReceipt, target = execution?.directoryTarget;
-  const requested = work.executor?.target;
-  const registeredId = requested?.type === 'project' ? project.id : project.nativeProjectId;
+  const executorTarget = work.executor?.target;
+  const registeredId = executorTarget?.type === 'project' ? project.id : project.nativeProjectId;
   if (!operation?.resultFile || operation.workId !== work.id || execution?.workId !== work.id ||
     execution?.operationId !== id || !execution.operationKey || !observed?.operationKey ||
     (id === notification.executionEventId && execution.operationKey !== observed.operationKey) ||
@@ -63,7 +63,7 @@ export async function deliveredLocalFiles({ store, workspace, task, work, notifi
     final.threadId !== observed.externalThreadId || final.turnId !== observed.turnId ||
     !notification.sourceRefs?.some(ref => ref.type === 'codex' && ref.operationId === observed.operationId &&
       ref.threadId === final.threadId && ref.turnId === final.turnId)) return [];
-  if (requested?.type === 'project' && (requested.projectId !== registeredId ||
+  if (executorTarget?.type === 'project' && (executorTarget.projectId !== registeredId ||
     observed.directoryTarget?.projectId !== registeredId || observed.directoryTarget.hostId !== 'local' ||
     !observed.directoryTarget.cwd || relative(target.cwd, observed.directoryTarget.cwd))) return [];
   const origin = acceptedWorkTask(operation, store);
