@@ -107,15 +107,26 @@ export class WorkflowReviews {
         independentReview: item.dutyProfile?.independentReview === true })),
       privateAvailable: Boolean(this.privateRoom(room, review.targetBotId)), messages: refs.map(viewMessage), work };
   }
-  async input(item, trigger) {
+  async input(item, trigger, { requireBoundSource = false } = {}) {
     const review = this.store.get(records, item.workflowReview.id), deliveryRoom = this.chatroom.need('rooms', item.roomId);
     const room = this.current(review, deliveryRoom.id);
     if (!room) return null;
+    if (requireBoundSource) {
+      const signal = this.chatroom.staffingEvidence(trigger);
+      const request = trigger.replyTo && this.store.get('messages', trigger.replyTo);
+      if (review.status !== 'queued' || room.status !== 'active' || room.id !== deliveryRoom.id ||
+          item.id !== review.id || trigger.roomId !== room.id || trigger.id !== review.sourceId || trigger.id !== review.decisionMessageId ||
+          trigger.senderId !== review.targetBotId || !review.workId || review.workId !== trigger.workId ||
+          request?.roomId !== room.id || !['work-progress', 'work-result'].includes(review.sourceKind) || signal?.kind !== review.sourceKind)
+        return null;
+    }
     const metadata = { actor: item.workflowReview.phase === 'inspect' ? 'system' : workflowReviewerId,
       roomId: deliveryRoom.id, originMessageId: trigger.id, sourceType: 'workflow-review',
       workflowReview: item.workflowReview, priority: 'background', toolPolicy: { allowedEffects: [] } };
     const snapshot = await this.snapshot({ ...review, phase: item.workflowReview.phase }, room, deliveryRoom);
     if (!snapshot || !this.current(review, deliveryRoom.id)) return null;
+    if (requireBoundSource && (!snapshot.work || ['paused', 'cancelled'].includes(snapshot.work.status))) return null;
+    if (item.input) return item.input;
     return { id: item.id, kind: 'event', sessionId: item.id, conversationId: item.id, replyTo: trigger.id,
       metadata, content: { room: pick(deliveryRoom, ['id', 'kind']), trigger: viewMessage(trigger), workflowReview: snapshot,
         metadata: { roomId: deliveryRoom.id, deliveryId: item.id } } };

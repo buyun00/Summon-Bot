@@ -749,14 +749,14 @@ export class BotEngine {
       const partial = !acknowledgmentOnly && !suspended && (!lastOutcome || ['error', 'aborted', 'length'].includes(lastOutcome.stopReason));
       if (partial && (task.workId || !partialText && !handoffs.length && !receipt)) throw Object.assign(new Error(lastOutcome?.errorMessage || `Agent ended with ${lastOutcome?.stopReason || 'no result'}`), { code: 'MODEL_ERROR' });
       const assessmentAnswer = staffingAssessment && [
-        staffingAssessment.noChange ? 'PASS' : '已保存分工评估，后续状态以团队管理回执为准。',
+        staffingAssessment.noChange || staffingAssessment.status === 'superseded' ? 'PASS' : '已保存分工评估，后续状态以团队管理回执为准。',
         staffingAssessment.reason,
         ...staffingAssessment.candidates.map(row => `${row.name} · ${row.state}：${row.benefit}`),
       ].join('\n');
       const answer = assessmentAnswer || partialText || handoffs.map(item => `工作 ${item.workId}：${item.label}。`).join('\n');
       const content = acknowledgmentOnly ? receipt : [receipt, receipt && /^PASS\s*$/i.test(answer) ? '' : answer].filter(Boolean).join('\n\n');
-      if (!partial && (lastOutcome?.stopReason === 'stop' || staffingAssessment))
-        journal.final(task, finalCheck, staffingAssessment ? 'staffing-assessment' : routeOnly ? 'route' :
+      if (!partial && !staffingAssessment && lastOutcome?.stopReason === 'stop')
+        journal.final(task, finalCheck, routeOnly ? 'route' :
           /^PASS(?:\s|$)/i.test(answer) ? 'pass' : suspended ? 'wait' : handoffs.length ? 'handoff' : 'reply');
       return clean({ content: content +
         (partial ? `\n本轮答复未完整结束：${lastOutcome?.errorMessage || lastOutcome?.stopReason || '未取得完整答复'}。已保存的动作和内容仍然保留。` : ''),

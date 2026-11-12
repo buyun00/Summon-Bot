@@ -45,6 +45,7 @@ function outcome(record) {
     executed: record.executionRejected || record.executionReused ? false : undefined,
     reused: record.executionReused || d.duplicate || undefined, accepted: typeof d.accepted === 'boolean' ? d.accepted : undefined,
     workId: id(d.workId), operationId: id(d.operationId), assessmentId: id(d.assessmentId),
+    assessmentStatus: d.assessmentId ? code(d.status) : undefined,
     sourceIntent: code(d.intent), roomMessageId: id(d.roomMessageId || d.messageId), taskId: id(d.taskId),
     acceptances: Array.isArray(d.acceptances) ? d.acceptances.slice(0, 24).map(a => compact({
       workId: id(a.workId), operationId: id(a.operationId), publicationMessageId: id(a.publicationMessageId), reused: a.alreadyRecorded,
@@ -58,9 +59,12 @@ function outcome(record) {
 /** Private durable index of decisions. This is never an input to dispatch or memory. */
 export class SummonDecisionJournal {
   constructor({ store, botId, clean, onError }) { Object.assign(this, { store, botId, clean, onError }); }
+  shortFact(value) {
+    return typeof value === 'string' ? this.clean(value.slice(0, 240)).replace(/[\r\n\t]+/g, ' ').trim() || undefined : undefined;
+  }
   check(value) {
-    if (!verdicts.has(value?.verdict) || !choices.has(value?.choice) || typeof value.fact !== 'string') return undefined;
-    const fact = this.clean(value.fact.slice(0, 240)).replace(/[\r\n\t]+/g, ' ').trim();
+    if (!verdicts.has(value?.verdict) || !choices.has(value?.choice)) return undefined;
+    const fact = this.shortFact(value.fact);
     return fact ? { verdict: value.verdict, choice: value.choice, fact } : undefined;
   }
   scope(task) {
@@ -108,11 +112,16 @@ export class SummonDecisionJournal {
     const running = record.status === 'running', key = `tool:${record.id}`;
     if (record.effect === 'read' && !businessReads.has(record.name) && (running || record.status === 'completed')) return;
     const prior = this.store.getRecord(kind, `${task.id}:${key}`);
+    const receipt = record.output?.details;
+    const assessmentReason = task.metadata?.teamStaffing && record.name === 'chatroom_team_manage' &&
+      record.status === 'completed' && record.args?.action === 'assess' && receipt?.assessmentId ?
+      this.shortFact(receipt.reason) : undefined;
     this.note(task, key, { boundary: 'tool', decision: record.executionReused ? 'reuse' : record.executionRejected ? 'refuse' : record.name,
       toolRunId: record.id, effect: record.effect, modelCheck: prior?.modelCheck || this.check(record.workflowCheck),
       runtimeCheck: running ? 'checking' : record.status === 'unknown' ? 'unconfirmed' :
-        record.status === 'completed' ? 'confirmed' : prior?.runtimeCheck === 'confirmed' ? 'confirmed' : 'blocked',
-      facts: { tool: record.name, ...(prior?.facts || {}), ...(record.originalToolRunId ? { originalToolRunId: record.originalToolRunId } : {}) },
+        record.status === 'completed' && !record.executionRejected ? 'confirmed' : 'blocked',
+      facts: { tool: record.name, ...(prior?.facts || {}), ...(assessmentReason ? { assessmentReason } : {}),
+        ...(record.originalToolRunId ? { originalToolRunId: record.originalToolRunId } : {}) },
       result: outcome(record) });
   }
   allowed(task, tool, context) {

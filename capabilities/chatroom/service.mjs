@@ -771,11 +771,14 @@ export class ChatroomService {
       }
       if(item.status==='queued'){
         const owner=this.manager.get(item.botId),trigger=this.need('messages',item.messageId);
-        if(owner.status!=='active'||owner.runIntent==='stopped'&&!(item.teamStaffing&&owner.firstRunPending)&&
-          (item.teamStaffing||item.observation||item.roomDutyAction||trigger.senderId!=='user')){
+        const firstInspection=owner.runIntent==='stopped'&&owner.firstRunPending===true&&
+          owner.id===workflowReviewerId&&owner.presetId==='skeptic'&&owner.roleId==='skeptic'&&item.workflowReview?.phase==='inspect';
+        if(owner.status!=='active'||owner.runIntent==='stopped'&&!(owner.firstRunPending&&(item.teamStaffing||firstInspection))&&
+          (item.teamStaffing||item.workflowReview||item.observation||item.roomDutyAction||trigger.senderId!=='user')){
           this.store.save('deliveries',{id:item.id,deferredReason:'recipient-stopped',retryAt:new Date(Date.now()+30000).toISOString()});return;
         }
-        const input=item.teamStaffing&&item.input||await this.inputFor(item);
+        const input=firstInspection?await this.workflowReviews.input(item,trigger,{requireBoundSource:true}):
+          item.teamStaffing&&item.input||await this.inputFor(item);
         if(item.workflowReview&&!input){
           this.workflowReviews.expire(item,'snapshot-unavailable');
           this.emit('job',this.store.save('deliveries',{id:item.id,status:'cancelled',finishedAt:now()}));return;

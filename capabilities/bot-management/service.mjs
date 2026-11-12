@@ -10,6 +10,9 @@ import { TEAM_DUTY_TOOLS, dutyOrigin, effectiveBotTools } from './tool-access.mj
 
 const core = () => import('@summon/bot');
 const sleep = ms => new Promise(done=>setTimeout(done,ms));
+const startupBudgetMs = 60_000;
+const transientStartupHandshake = error => error.code==='INSTANCE_IDENTITY_UNAVAILABLE' &&
+  ['IDENTITY_HANDSHAKE_TIMEOUT','IDENTITY_HANDSHAKE_INCOMPLETE','ECONNRESET','EPIPE'].includes(error.cause?.code);
 export const CATALOG_MAINTAINER_TOOLS = Object.freeze(['catalog_search','catalog_get','catalog_update','catalog_call','catalog_delegate','catalog_skill_write','catalog_skill_propose','catalog_probe','catalog_reconcile','chatroom_read','chatroom_send','chatroom_dm','chatroom_team_read','chatroom_team_raise','bots_list']);
 const catalogPrompt = ({entryId,entryKind,name,description}) => `你是目录条目 ${name} 的专用维护 Bot。唯一维护归属：${entryKind} / ${entryId}。\n职责：维护这个条目的使用说明、适用范围、配置和真实状态，判断同伴针对它的具体委托或纠正；执行范围仍以当前工作授权为准。通过 catalog_get 读取当前条目及必要依赖，凭据只在私有配置中保存，不写进聊天、Markdown 或 Skill。只维护这个条目；相关依赖可按其实际授权使用，不能因维护身份获取其他条目权限。\n共享 Skill 只有一个当前正文；结合可靠来源审阅修订建议，在读取当前 revision 后更新同一条目并保留 proposalId。创建者与维护者是不同身份。不得把收到的维护建议当作新业务授权，不为完成通知创建反馈循环。原始历史、独立 work 和结果返回使用正常 Bot 协议。\n条目说明：${description || '尚未提供；按实际配置与来源补充。'}`;
 export class BotManager {
@@ -181,19 +184,50 @@ export class BotManager {
     const config=await this.config(id), response=await fetch(`${identity.url}${path}`,{...options,headers:{Authorization:`Bearer ${config.token}`,'Content-Type':'application/json',...options.headers},signal:options.signal||AbortSignal.timeout(15000)});
     const result=await response.json();if(!response.ok) fail(result.error?.message||result.error||`Bot HTTP ${response.status}`,response.status);return result;
   }
-  async start(id,options) {
+  assertStartAllowed(id,options) {
     this.assertAccepting();
     if(options?.respectStop){
       const bot=this.get(id);
       if(bot.status!=='active'||bot.runIntent==='stopped'&&!bot.firstRunPending)fail('Bot is paused or explicitly stopped',409);
     }
-    if(this.launching.has(id)) return this.launching.get(id);
-    const pending=this.startNow(id).finally(()=>this.launching.delete(id));this.launching.set(id,pending);return pending;
   }
-  async startNow(id) {
+  async start(id,options) {
+    this.assertStartAllowed(id,options);
+    if(this.launching.has(id)) return this.launching.get(id);
+    const pending=this.startNow(id,options).finally(()=>this.launching.delete(id));this.launching.set(id,pending);return pending;
+  }
+  async waitForReady(id,deadline,{identityError,childFailure}={}) {
+    while(Date.now()<deadline){
+      await sleep(Math.min(100,Math.max(0,deadline-Date.now())));
+      const failure=childFailure?.();
+      if(failure)throw failure;
+      if(Date.now()>=deadline)break;
+      let state;
+      try{state=await this.identity(id);}
+      catch(error){
+        if(!transientStartupHandshake(error))throw error;
+        identityError=error;
+      }
+      const failed=childFailure?.();
+      if(failed)throw failed;
+      if(Date.now()<deadline&&state?.state==='ready')return state;
+    }
+    const failure=childFailure?.()||identityError;
+    if(failure)throw failure;
+    fail('Bot startup timed out; inspect process log before retrying',504);
+  }
+  async startNow(id,options) {
     const saved=this.get(id);if(saved.archivedAt||saved.maintenanceFor&&saved.status!=='active')fail('Catalog maintenance Bot is disabled or archived',409);
-    const present=await this.identity(id);if(present?.state==='ready') return present;
-    if(present) { for(let i=0;i<600;i++){await sleep(100);const state=await this.identity(id);if(state?.state==='ready')return state;}fail('Bot startup timed out',504); }
+    const deadline=Date.now()+startupBudgetMs;
+    let present;
+    try{present=await this.identity(id);}
+    catch(error){
+      if(!transientStartupHandshake(error))throw error;
+      // A failed read is evidence of uncertain ownership. Stay in the same readiness wait.
+      return this.waitForReady(id,deadline,{identityError:error});
+    }
+    if(present?.state==='ready')return present;
+    if(present)return this.waitForReady(id,deadline);
     const dir=this.directory(id), config=await this.config(id), record=this.store.get('bots',id);this.assertAccepting();
     if(this.model.connectionStore)config.model={connectionStore:this.model.connectionStore};
     const profile=JSON.parse(await readFile(join(this.releaseRoot,'roles',record.roleId||'default','role.json'),'utf8'));
@@ -212,7 +246,7 @@ export class BotManager {
     config.bundleRoot=this.releaseRoot;config.bundledSkills=profile.skills||[];config.bundledToolNames=bundledTools.map(tool=>tool.name);
     config.accepting=record.status==='active';
     await writeFile(join(dir,'config.json'),JSON.stringify(config,null,2),{mode:0o600});await mkdir(join(dir,'logs'),{recursive:true});
-    this.assertAccepting();let failure;
+    this.assertStartAllowed(id,options);let failure;
     const child=spawn(process.execPath,[join(this.releaseRoot,'bot','bin','summon-bot.mjs'),'--config',join(dir,'config.json')],{cwd:this.releaseRoot,detached:true,windowsHide:true,stdio:['ignore','ignore','ignore','ipc']});
     child.on('error',error=>{failure=error;this.emit('bot-error',{botId:id,error:error.message});});
     child.once('exit',(code,signal)=>{failure ||= new Error(`Bot exited during startup (${code??signal}); inspect ${join(dir,'logs')}`);});
@@ -220,8 +254,8 @@ export class BotManager {
     child.unref();
     this.store.save('bots',{id,runIntent:'running',...(record.firstRunPending?{firstRunPending:false}:{})});
     try {
-      for(let i=0;i<600;i++){await sleep(100);if(failure)throw failure;const state=await this.identity(id);if(state?.state==='ready'){this.emit('bot-state',state);return state;}}
-      fail('Bot startup timed out; inspect process log before retrying',504);
+      const state=await this.waitForReady(id,deadline,{childFailure:()=>failure});
+      this.emit('bot-state',state);return state;
     } finally {if(child.connected)child.disconnect();}
   }
   async stop(id,{persistIntent=true}={}) {
