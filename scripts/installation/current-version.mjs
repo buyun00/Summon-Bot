@@ -32,8 +32,7 @@ const activeBuild = name => {
 
 /** Full installs stop every writer first, replace operational configuration, and
  * retain only the current release. Business history and user files are retained. */
-export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, releaseRoot, buildId, nativeMigration, deferredCleanupPaths = [] }) {
-  if (!nativeMigration) throw new Error('Native execution conversion must finish before release cleanup');
+export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, releaseRoot, buildId, deferredCleanupPaths = [] }) {
   appRoot = resolve(appRoot); dataRoot = resolve(dataRoot); releaseRoot = resolve(releaseRoot);
   if (!inside(join(appRoot, 'releases'), releaseRoot)) throw new Error('Current release must belong to the installation');
   if (sourceRoot) {
@@ -59,12 +58,12 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
     const registry = new RecordStore(registryPath);
     try {
       for (const service of registry.list('capability-services')) {
-        if (service.id !== 'codex' && !BUILTIN_CAPABILITIES.includes(service.id) && service.status === 'active' && service.activeVersion) retained.set(service.id, service.activeVersion);
+        if (!BUILTIN_CAPABILITIES.includes(service.id) && service.status === 'active' && service.activeVersion) retained.set(service.id, service.activeVersion);
       }
       registry.transaction(() => {
         for (const kind of ['capability-services', 'capability-versions']) for (const record of registry.list(kind)) {
           const id = kind === 'capability-services' ? record.id : record.capabilityId;
-          if (id === 'codex' || BUILTIN_CAPABILITIES.includes(id) || retained.get(id) !== (kind === 'capability-services' ? record.activeVersion : record.version)) registry.remove(kind, record.id);
+          if (BUILTIN_CAPABILITIES.includes(id) || retained.get(id) !== (kind === 'capability-services' ? record.activeVersion : record.version)) registry.remove(kind, record.id);
         }
         for (const kind of ['capability-actors', 'capability-proposals', 'switches', 'capability-retirements', 'service-restarts']) for (const record of registry.list(kind)) registry.remove(kind, record.id);
       });
@@ -106,7 +105,7 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
     for (const name of ['promptFile', 'agentDir']) if (config[name]) config[name] = rebase(config[name]);
     for (const name of ['skills', 'promptPaths']) if (config[name]) config[name] = config[name].map(rebase);
     config.limits = Object.fromEntries(Object.entries(config.limits || {}).filter(([key]) => ['reserveTokens', 'keepRecentTokens'].includes(key)));
-    config.tools = (config.tools || []).filter(tool => !tool.name?.startsWith('codex_') && !String(tool.url || '').includes('/capabilities/codex/')).map(tool => {
+    config.tools = (config.tools || []).map(tool => {
       const current = { ...tool }; if (current.module) current.module = rebase(current.module);
       if (typeof current.url === 'string') current.url = current.url.replace(/\/capabilities\/([^/]+)\/versions\/([^/]+)\/tools\//, (match, id) => retained.has(decodeURIComponent(id)) ? `/capabilities/${id}/versions/${encodeURIComponent(retained.get(decodeURIComponent(id)))}/tools/` : match);
       return current;
@@ -138,8 +137,6 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
     try { for (const record of store.list(kind)) if (unfinished(record)) store.save(kind, { ...record, serviceVersion: buildId }); }
     finally { store.close(); }
   }
-  for (const name of ['state.sqlite', 'state.sqlite-wal', 'state.sqlite-shm', 'state.sqlite-journal'])
-    await removeWithin(dataRoot, join(dataRoot, 'capabilities', 'codex', name));
   const runtime = join(dataRoot, 'capabilities/service-runtime');
   for (const capability of await entries(runtime)) {
     if (!capability.isDirectory()) continue;
@@ -161,5 +158,5 @@ export async function selectCurrentVersion({ appRoot, dataRoot, sourceRoot, rele
     }
     await removeWithin(sourceRoot, join(sourceRoot, 'scripts/migration'));
   }
-  return { currentOnly: !cleanupDeferred.length, bots, releaseRoot, nativeMigration, ...(cleanupDeferred.length ? { cleanupDeferred } : {}) };
+  return { currentOnly: !cleanupDeferred.length, bots, releaseRoot, ...(cleanupDeferred.length ? { cleanupDeferred } : {}) };
 }
