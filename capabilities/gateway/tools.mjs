@@ -30,6 +30,7 @@ const workReviews={type:'array',items:{
   properties:{
     workId:{type:'string',description:'Exact ID from staffing.reviewWorks.'},
     decision:{type:'string',enum:['retain','adjust','handoff']},
+    sourceMessageIds:{type:'array',maxItems:16,items:{type:'string'},description:'Actual same-room messages used for this work judgment. Separate the original request, publication and user acceptance; cite the actual evidence for each claim.'},
     requirements:{type:'string',description:'Current user requirements and material changes that bear on this work.'},
     scope:{type:'string',description:'Actual scope the work has accepted and any remaining gap or overlap.'},
     ownerFit:{type:'string',description:'Compare this scope with the owner’s actual duty, capabilities, and execution record.'},

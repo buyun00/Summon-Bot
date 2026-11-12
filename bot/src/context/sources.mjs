@@ -314,6 +314,9 @@ export class RuntimeSources {
   async publicHistory(task) {
     const source = taskSource(task, this.store);
     if (!source.roomId || !source.replyTo) return null;
+    if (source.metadata?.workflowReview) return { messages: [], roomId: source.roomId,
+      runtimeEvent: { type: 'workflow_review', phase: source.metadata.workflowReview.phase,
+        trigger: source.input.trigger, snapshot: source.input.workflowReview } };
     if (source.metadata?.groupObservation) {
       const page = await this.call('chatroom_read', { roomId: source.roomId, messageId: source.replyTo, length: 1 }, task);
       if (!page.messages?.length) throw new Error('The group observation source is unavailable');

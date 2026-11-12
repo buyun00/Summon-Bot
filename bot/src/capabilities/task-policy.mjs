@@ -2,6 +2,7 @@ import { modelArgs, modelText } from '../context/model-input.mjs';
 import { externalExecution, waitingLabel } from '../context/execution-evidence.mjs';
 import { factTime } from '../context/fact-time.mjs';
 import { OWNER_DELIVERY } from '../context/duty-actions.mjs';
+import { workflowReviewPrompt } from '../context/workflow-review.mjs';
 
 // Conversation authority is derived from durable task ownership, never model arguments.
 export const CHAT_WORK_POLICY = 1;
@@ -19,6 +20,8 @@ export function taskMode(task = {}) {
 }
 export function permitsTool(task, tool) {
   const mode = taskMode(task);
+  if (task.metadata?.workflowReview) return false;
+  if (task.metadata?.productionRecovery && tool.effect !== 'read' && !['request_decide', 'work_create'].includes(tool.name)) return false;
   if (task.metadata?.groupObservation) return tool.name === 'chatroom_read' && tool.effect === 'read';
   if (task.metadata?.teamStaffing) return staffingTools.has(tool.name);
   if (task.metadata?.roomDutyAction) return tool.effect === 'read' && dutyActionTools.has(tool.name);
@@ -152,9 +155,12 @@ export const compactTask = (task, work, operationId) => task && ({ id: task.id, 
   createdAt: task.createdAt, startedAt: task.startedAt, finishedAt: task.finishedAt, handoff: task.result?.handoff,
   summary: String(task.result?.content || task.error?.message || '').slice(0, 1200) });
 export function conversationPrompt(task, hasCurrentRequest) {
+  if (task.metadata?.workflowReview) return workflowReviewPrompt(task.metadata.workflowReview.phase);
+  if (task.metadata?.productionRecovery) return `This is the original authenticated user request recovered once after a later same-room instruction. Only its saved original implementation unit ${task.metadata.productionRecovery.sourceUnit} is eligible. Use request_decide for produce/implementation/new and the exact original unit. If it is still unsubmitted, use work_create for that one original deliverable, preserving all original materials, project, executor and limits. The earlier acceptance was already handled. Never repeat it, change the scope, submit a second action or claim native execution from local acceptance. No other action is authorized by this delivery.`;
   if (task.metadata?.teamStaffing) return [
     'You are EggBot assessing responsibilities in this room. A clear project intent in the first scope conversation is enough to propose specific duties and ask the user to choose a team, including in an idle group with no saved goal. Classify ordinary chat and unchosen ideas separately. The team question is independent of permission to draft, make or verify anything.',
     'Read the project, duties, peers and original evidence. Submit chatroom_team_manage action=assess with projectIntent, project context, a reason and sourced candidates. Compare every supplied staffing.reviewWorks item in workReviews: the current requirements, actual accepted scope, the owner’s duties and capabilities, verified progress and publications, and the concrete reason to retain, adjust or hand off. Use actual changes, deliveries, handoffs and repeated blocks. A local waiting work may have a confirmed native turn in progress. A delivery, a proposal and user acceptance are separate facts.',
+    'For every work review, cite the actual publication or user message used in sourceMessageIds. A document approval that precedes implementation cannot establish package acceptance. Use savedAcceptance for the verified work write, published for original reports, and read exact same-room user messages when a verbal approval is not recorded on the card. A waiting status is not evidence of no saved acceptance. If you cannot confirm a claim, preserve that uncertainty.',
     'For member candidates identify an object, a boundary and a concrete benefit. Reuse saved and already proposed duty keys. Prefer a suitable current owner for work that remains in scope, and explain any genuinely separate review or maintenance responsibility. The service asks once and applies only the user’s group choice. Retain the original work, execution and authority. Cite the exact request and publication for a waiting independent review. A one-time text handoff can end while its continuing duty remains active.',
   ].join('\n');
   if (task.metadata?.roomDutyAction) return [

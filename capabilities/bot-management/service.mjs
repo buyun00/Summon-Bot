@@ -103,7 +103,7 @@ export class BotManager {
     this.emit('bot',this.public(updated));return this.public(updated);
   }
   async seed() {
-    for(const roleId of ['entry','eggbot']) {
+    for(const roleId of ['entry','eggbot','skeptic']) {
       const id=`bot-${roleId}`,previous=this.store.get('bots',id);
       await this.create({id,roleId});
       // Existing installations predate explicit provenance. Only this exact
@@ -269,7 +269,7 @@ export class BotManager {
       try{await this.start(bot.id);this.store.save('bots',{id:bot.id,restartFailures:0});}catch(error){this.store.save('bots',{id:bot.id,restartFailures:(bot.restartFailures||0)+1,lastRestartError:error.message});throw error;}
     }));
   }
-  async send(id,message) { this.assertAccepting();if(this.get(id).status!=='active')fail('Bot is paused',409);await this.start(id,message.metadata?.teamStaffing||message.metadata?.roomDutyAction?{respectStop:true}:undefined);this.assertAccepting();return this.request(id,'/messages',{method:'POST',body:JSON.stringify({...message,to:id})}); }
+  async send(id,message) { this.assertAccepting();if(this.get(id).status!=='active')fail('Bot is paused',409);await this.start(id,message.metadata?.teamStaffing||message.metadata?.roomDutyAction||message.metadata?.workflowReview||message.metadata?.productionRecovery?{respectStop:true}:undefined);this.assertAccepting();return this.request(id,'/messages',{method:'POST',body:JSON.stringify({...message,to:id})}); }
   async tasks(id) { try { const result=await this.request(id,'/tasks');return Array.isArray(result)?result:result.tasks||[]; }catch(error){if(error.status!==503)throw error; const api=await this.botApi(); if(!existsSync(join(this.directory(id),'state.sqlite')))return [];const db=new api.BotStore(join(this.directory(id),'state.sqlite'),{readOnly:true});try{return db.listTasks?.()||[];}finally{db.close();}} }
   async readState(id,fn) {
     const api=await this.botApi(),path=join(this.directory(id),'state.sqlite');if(!existsSync(path))return fn(null);

@@ -12,6 +12,9 @@ import { RoomTextResults } from './room-results.mjs';
 import { productionRefusal } from '../../bot/src/capabilities/request-routing.mjs';
 import { EXISTING_PUBLICATION, OWNER_DELIVERY, publishedReviewTarget, reviewReferenceAttachments } from '../../bot/src/context/duty-actions.mjs';
 import { dutyOrigin } from '../bot-management/tool-access.mjs';
+import { WorkflowReviews } from './workflow-reviews.mjs';
+import { workflowReviewerId } from '../../bot/src/context/workflow-review.mjs';
+import { verifiedProductionRecovery } from '../../bot/src/capabilities/production-recovery.mjs';
 const TERMINAL=new Set(['completed','failed','cancelled','interrupted']);
 const foreground=item=>item.priority!=='background';
 const normalized=text=>String(text||'').trim().replace(/\s+/g,' ');
@@ -27,7 +30,7 @@ const observable=message=>!message.observationReply&&!message.routineId&&message
   !['team_issue','team_result','team_staffing_proposal','team_staffing_choice'].includes(message.eventType)&&
   !(message.senderId==='system'&&message.toBotId)&&
   (message.attachments?.length||normalized(message.content)&&!isAcknowledgement(message.content));
-const observationMessage=message=>({ ...pick(message,['id','roomId','senderId','content','kind','workId','createdAt','rootId','replyTo']),
+const observationMessage=message=>({ ...pick(message,['id','roomId','senderId','content','kind','workId','createdAt','rootId','replyTo','toBotId']),
   attachments:(message.attachments||[]).filter(item=>!item.origin?.roomId||item.origin.roomId===message.roomId).map(item=>pick(item,['id','name','size','mimeType'])),
   sourceRefs:(message.sourceRefs||[]).filter(ref=>!ref?.roomId||ref.roomId===message.roomId) });
 const staffingMessage=message=>{
@@ -54,6 +57,7 @@ export class ChatroomService {
     Object.assign(this,{store,manager,attachments,emit,version});this.teamService=new TeamService(this,{invoke});this.busy=false;this.closed=false;
     this.dutyActions=new RoomDutyActions(this);
     this.roomTextResults=new RoomTextResults(this);
+    this.workflowReviews=new WorkflowReviews(this);
     this.staffingMutation=async operation=>operation();
     store.db.exec("CREATE INDEX IF NOT EXISTS records_room ON records(kind,json_extract(data,'$.roomId'),created_at)");
     store.db.exec(`CREATE INDEX IF NOT EXISTS records_message_reply ON records(json_extract(data,'$.roomId'),
@@ -78,7 +82,10 @@ export class ChatroomService {
     this.rootReplies=store.db.prepare(`SELECT data FROM records WHERE kind='messages' AND json_extract(data,'$.roomId')=?
       AND json_extract(data,'$.rootId')=? AND json_extract(data,'$.senderId')=?`);
   }
-  seed() { if(!this.store.get('rooms','room-lobby'))this.createRoom({id:'room-lobby',name:'项目大群',kind:'group',members:['user','bot-entry','bot-eggbot']}); }
+  seed() {
+    if(!this.store.get('rooms','room-lobby'))this.createRoom({id:'room-lobby',name:'项目大群',kind:'group',members:['user','bot-entry','bot-eggbot']});
+    this.workflowReviews.seed();
+  }
   need(kind,id) { const value=this.store.get(kind,id);if(!value)fail(`${kind} not found`,404);return value; }
   rooms() { return this.store.list('rooms').map(room=>({...room,lastMessage:JSON.parse(this.latestRoomMessage.get(room.id)?.data||'null')})); }
   messages(id) { return this.roomRows.all('messages',id).map(row=>JSON.parse(row.data)); }
@@ -274,7 +281,8 @@ export class ChatroomService {
     if(kind==='deep'&&this.manager.store.get('bots','bot-chatroom')?.status==='active'&&!members.includes('bot-chatroom'))members.push('bot-chatroom');
     for(const id of members)if(id!=='user'&&!id.startsWith('executor:'))this.manager.get(id);
     if(kind==='dm'){if(members.length!==2)fail('DM requires two participants');const existing=this.store.list('rooms').find(room=>room.kind==='dm'&&room.members.length===2&&members.every(id=>room.members.includes(id)));if(existing)return existing;}
-    const room=this.store.save('rooms',{...pick(input,['id','originRoomId','originMessageId']),name:input.name||members.join(' ↔ '),kind,members,status:'active',goal:input.goal||'',summary:'',...(team?{team,projectMode:mode}:{})});this.emit('room',room);
+    const draft={...pick(input,['id','originRoomId','originMessageId']),name:input.name||members.join(' ↔ '),kind,members,status:'active',goal:input.goal||'',summary:'',...(team?{team,projectMode:mode}:{})};
+    const room=this.store.save('rooms',{...draft,members:this.workflowReviews.members(draft)});this.emit('room',room);
     if(kind==='deep'&&room.goal)void this.post(room.id,{content:room.goal,toBotId:members.includes('bot-chatroom')?'bot-chatroom':members.find(id=>id!=='user'),kind:'event'},'system').catch(error=>this.emit('chatroom-error',{roomId:room.id,error:error.message}));return room;
   }
   updateRoom(id,input) {
@@ -370,8 +378,10 @@ export class ChatroomService {
         this.teamService.noteStaffing(room,[route?.dutyRoute?{...evidence,provisional:true}:evidence]);
       }
       if(evidence?.kind==='work-result')this.teamService.linkResult(this.need('rooms',roomId),saved);
+      if(evidence&&!repeated)this.workflowReviews.consider(this.need('rooms',roomId),saved,evidence);
       const specialists=this.specialists(room);
       if(room.kind==='group'&&observable(saved)&&!repeated)for(const botId of room.members){
+        if(botId===workflowReviewerId)continue;
         const bot=this.manager.store.get('bots',botId);
         if(this.teamService.staffingRoom(room)&&botId===room.team.eggBotId)continue;
         if(this.inactiveDutyMember(room,bot))continue;
@@ -424,7 +434,8 @@ export class ChatroomService {
     if(input.toBotId&&!room.members.includes(input.toBotId))fail('Target is not a member');
     const targets=input.toBotId?[input.toBotId]:room.kind==='dm'?room.members.filter(id=>id!==senderId&&id!=='user'):[];
     for(const id of targets){const bot=this.manager.store.get('bots',id);if(bot&&bot.status!=='active')fail(`成员「${bot.name||id}」已暂停或不可用；消息未投递，请恢复成员后重试`,409);}
-    const activeMembers=current=>current.members.filter(id=>id!==senderId&&this.manager.store.get('bots',id)?.status==='active');
+    const activeMembers=current=>current.members.filter(id=>id!==senderId&&(id!==workflowReviewerId||input.toBotId===id||current.kind==='dm')&&
+      this.manager.store.get('bots',id)?.status==='active');
     const passive=peer&&(input.purpose==='fyi'||isAcknowledgement(input.content));
     const owner=passive?null:await this.knownOwner(room,input,activeMembers(room));
     if(this.need('rooms',roomId).status==='concluded')fail('Discussion has concluded',409);
@@ -459,6 +470,11 @@ export class ChatroomService {
     if(previous&&(!previous.observation||extra.observation||previous.status!=='queued'||previous.input))return previous;
     const item=this.store.save('deliveries',{id,botId,roomId:message.roomId,messageId:message.id,status:'queued',rootId:message.rootId,hop:message.hop,routineId:message.routineId,workId:message.targetWorkId||message.workId,priority:message.priority||(message.routineId?'background':'foreground'),discussionBatch:message.discussionBatch,observation:false,...extra,serviceVersion:this.version});this.emit('job',item);return item;
   }
+  noteDeliveryDecision(item, decision, reason, status, facts={}) {
+    this.store.save('business-decisions',{id:`delivery:${item.id}`,roomId:item.roomId,botId:item.botId,messageId:item.messageId,
+      taskId:item.taskId,workId:item.workId,decision,runtimeCheck:status==='cancelled'?'blocked':'confirmed',
+      facts:{reason,...facts},result:{status}});
+  }
   async tick() {
     if(this.busy||this.closed)return;this.busy=true;
     try{
@@ -481,7 +497,10 @@ export class ChatroomService {
     if(direct.some(item=>!item.routeOnly&&!TERMINAL.has(this.store.get('deliveries',item.id)?.status)))return;
     const {botId,roomId}=observations[0],room=this.need('rooms',roomId);
     if(!room.members.includes(botId)||this.inactiveDutyMember(room,this.manager.store.get('bots',botId))){
-      for(const item of observations)this.store.save('deliveries',{id:item.id,status:'cancelled',finishedAt:now()});
+      for(const item of observations){
+        this.noteDeliveryDecision(item,'skip','recipient-no-longer-eligible','cancelled');
+        this.store.save('deliveries',{id:item.id,status:'cancelled',finishedAt:now()});
+      }
       return;
     }
     const cursor=this.store.get('delivery-cursors',`${botId}:${roomId}:chat`);
@@ -494,12 +513,14 @@ export class ChatroomService {
       if(route&&!TERMINAL.has(route.status))continue;
       const owner=ownerDeliveries?.find(job=>job.messageId===item.messageId);
       if(owner){
+        this.noteDeliveryDecision(item,'retain','owner-covered','no-action',{ownerDeliveryId:owner.id});
         this.emit('job',this.store.save('deliveries',{id:item.id,status:'completed',ownerCovered:owner.id,finishedAt:now()}));
         continue;
       }
       const position=this.position(roomId,item.messageId);
       if(!position)continue;
       if(cursor&&comparePosition(position,through)<=0){
+        this.noteDeliveryDecision(item,'reuse','observation-cursor-covered','no-action',{coveredThroughMessageId:cursor.messageId});
         this.emit('job',this.store.save('deliveries',{id:item.id,status:'completed',coalesced:true,coveredThroughMessageId:cursor.messageId,finishedAt:now()}));
       }else{
         if(comparePosition(position,latestPosition)>0){latest=item;latestPosition=position;}
@@ -511,7 +532,7 @@ export class ChatroomService {
   }
   async directory(room,{workId,dutyRoute=false}={}) {
     const candidates=dutyRoute?[room.team?.leadBotId,...this.specialists(room)]:room.members;
-    return Promise.all(candidates.filter(id=>room.members.includes(id)&&this.manager.store.get('bots',id)?.status==='active').map(async id=>{
+    return Promise.all(candidates.filter(id=>id!==workflowReviewerId&&room.members.includes(id)&&this.manager.store.get('bots',id)?.status==='active').map(async id=>{
       const bot=this.manager.get(id),works=new Map();
       for(const job of this.jobs(room.id))if(job.botId===id&&job.workId&&!job.routeOnly)works.set(job.workId,{workId:job.workId,status:job.status,messageId:job.messageId});
       // Read only public purpose and source pointers, never the other Bot's private requirements/history.
@@ -526,6 +547,7 @@ export class ChatroomService {
   async inputFor(item) {
     if(item.input)return item.input;
     const room=this.need('rooms',item.roomId),trigger=this.need('messages',item.messageId);
+    if(item.workflowReview)return this.workflowReviews.input(item,trigger);
     if(item.roomDutyAction){
       const plan=this.dutyActions.current(item,room);
       if(!plan)fail('The authorized duty action no longer matches this project and owner',409);
@@ -601,6 +623,7 @@ export class ChatroomService {
     const input={id:item.id,kind:!staffing&&!item.peerAnswer&&!item.observation&&!item.teamIntroduction&&trigger.senderId==='user'?'request':'event',
       sessionId,conversationId:!item.routeOnly&&item.workId?`work:${item.workId}`:sessionId,workId:item.routeOnly?undefined:item.workId,correlationId:trigger.rootId,replyTo:trigger.id,
       metadata:{kind:item.workId?'work':'chat',routeOnly:!!item.routeOnly,priority:item.priority,actor,accessActor:staffing?'system':trigger.senderId,
+        ...(item.productionRecovery?{productionRecovery:item.productionRecovery}:{}),
         ...(staffing?{teamStaffing:true,roomId:room.id,sourceType:'team-staffing'}:{}),
         ...(item.observation?{groupObservation:true,authority:'published-observation'}:{referencedWorkId:item.referencedWorkId||this.store.get('messages',trigger.replyTo)?.workId}),
         historyThroughMessageId:item.peerAnswer?latest:trigger.id,...(item.peerAnswer?{authority:'peer-observation',sourceType:'peer-result'}:{}),
@@ -650,9 +673,71 @@ export class ChatroomService {
     if(!evidence||!read)return null;
     return [result,support].map(message=>({type:'room',roomId:item.roomId,messageId:message.id}));
   }
+  recoveryCurrent(room, plan) {
+    if(room?.kind!=='group'||room.status!=='active'||!room.members.includes('user')||room.projectMode==='chat'||room.team?.state==='paused')return false;
+    const at=this.position(room.id,plan.requestMessageId);
+    return Boolean(at)&&!this.messages(room.id).some(message=>message.senderId==='user'&&
+      comparePosition(this.position(room.id,message.id),at)>0);
+  }
+  async applyProductionRecovery(item, task) {
+    const plan=task.result.productionRecovery,request=this.need('messages',item.messageId),room=this.need('rooms',item.roomId);
+    const original=this.store.get('messages',plan.sourceMessageId);
+    const prior=this.jobs(room.id).find(job=>job.taskId===plan.sourceTaskId&&job.messageId===original?.id&&
+      job.botId===item.botId&&!job.observation&&!job.routeOnly&&!job.productionRecovery);
+    if(request.senderId!=='user'||plan.requestMessageId!==request.id||plan.requestTaskId!==task.id||plan.roomId!==room.id||
+       original?.senderId!=='user'||original.roomId!==room.id||!prior||!room.members.includes(item.botId))return false;
+    const verification=await this.manager.readState(item.botId,db=>{
+      const saved=db?.getRecord('production-recovery-requests',task.id);
+      if(!saved||JSON.stringify(saved)!==JSON.stringify(plan))return null;
+      return plan.outcome==='unsubmitted'?verifiedProductionRecovery(db,plan):saved;
+    });
+    const current=this.need('rooms',room.id);
+    let decision='unconfirmed',text='未能确认原制作从未被受理；本次没有再次提交。';
+    const id=`production-recovery:${item.botId}:${plan.sourceMessageId}:${plan.sourceUnit}`;
+    this.store.transaction(()=>{
+      const retry=this.store.get('deliveries',id);
+      if(verification?.outcome==='already-accepted'){
+        decision='retain';
+        text=`原授权的制作已受理，沿用原工作 ${verification.workId}。本次未重复提交。`;
+      }else if(retry){
+        decision='reuse';
+        text=TERMINAL.has(retry.status)?
+          `原授权的一次续办已有记录（${retry.status}）。请以对应受理或错误回执为准；本次未重复提交。`:
+          '原授权的一次续办已经排入原消息的处理流程；本次未重复安排。';
+      }else if(verification?.outcome==='unsubmitted'&&this.recoveryCurrent(current,plan)&&
+        current.members.includes(item.botId)&&this.workflowReviews.available(item.botId)&&
+        !this.jobs(room.id).some(job=>job.messageId===original.id&&job.botId===item.botId&&!TERMINAL.has(job.status))){
+        this.enqueue(original,item.botId,{id,workId:null,retryOf:prior.id,productionRecovery:plan,
+          instruction:'仅继续已核实未受理的原制作。保留原范围、目标和限制；原验收已处理，不重复写入。按实际受理回执报告状态。'});
+        decision='recover-once';
+        text='已安排沿原授权消息处理一次尚未受理的制作。制作是否入队，以原消息后续的实际受理回执为准。';
+      }
+      const reply=this.append(room.id,{id:`reply:${item.id}`,replyTo:request.id,jobId:item.id,content:text,
+        sourceRefs:[{type:'room',roomId:room.id,messageId:original.id}],observationReply:true},item.botId,()=>true);
+      this.store.save('business-decisions',{id:`delivery:${item.id}`,roomId:room.id,botId:item.botId,taskId:task.id,
+        messageId:request.id,decision,runtimeCheck:decision==='unconfirmed'?'unconfirmed':'confirmed',
+        facts:{sourceMessageId:original.id,sourceUnit:plan.sourceUnit,sourceTaskId:prior.taskId},
+        result:{status:decision,replyIds:[reply.id],...(decision==='recover-once'||decision==='reuse'?{deliveryId:id}:{}),
+          workId:verification?.workId,operationId:verification?.operationId}});
+      this.store.save('deliveries',{id:item.id,status:'completed',finishedAt:now(),agentRunId:task.runId||task.id});
+    });
+    this.emit('job',this.store.get('deliveries',item.id));
+    return true;
+  }
   async deliver(item) {
     if(this.version&&item.serviceVersion!==this.version)fail('This capability version does not own the delivery',409);
     try {
+      if(item.productionRecovery&&item.status==='queued'&&(!this.recoveryCurrent(this.need('rooms',item.roomId),item.productionRecovery)||
+        !this.need('rooms',item.roomId).members.includes(item.botId)||!this.workflowReviews.available(item.botId))){
+        this.store.save('business-decisions',{id:`delivery:${item.id}`,roomId:item.roomId,botId:item.botId,messageId:item.messageId,
+          decision:'skip',runtimeCheck:'blocked',facts:{reason:'original-source-no-longer-current'},result:{status:'cancelled'}});
+        this.emit('job',this.store.save('deliveries',{id:item.id,status:'cancelled',finishedAt:now()}));return;
+      }
+      if(item.workflowReview&&item.status==='queued'&&!this.workflowReviews.current(
+        this.store.get('workflow-reviews',item.workflowReview.id),item.roomId)){
+        this.workflowReviews.expire(item,'room-or-membership-changed');
+        this.emit('job',this.store.save('deliveries',{id:item.id,status:'cancelled',finishedAt:now()}));return;
+      }
       const contribution=item.roomDutyAction&&this.dutyActions.get(item.roomDutyAction);
       const coordination=contribution?.gatesProduction&&(item.status==='queued'||!item.taskId)?
         await this.dutyActions.coordinatorState(contribution):null;
@@ -668,17 +753,20 @@ export class ChatroomService {
         const room=this.need('rooms',item.roomId);
         if(!this.teamService.staffingRoom(room)||room.team.eggBotId!==item.botId||
           item.teamStaffing.policyVersion!==staffingPolicyVersion){
+          this.noteDeliveryDecision(item,'skip','staffing-scope-no-longer-current','cancelled');
           this.emit('job',this.store.save('deliveries',{id:item.id,status:'cancelled',finishedAt:now()}));return;
         }
         const state=this.store.get('team-staffing',room.id);
         if(JSON.stringify(item.teamStaffing.scope)!==JSON.stringify(staffingScope(room))||
             state?.latestUserMessageId&&state.latestUserMessageId!==item.teamStaffing.latestUserMessageId){
           const assessment=this.teamService.staffing.supersede(item,room);
+          this.noteDeliveryDecision(item,'skip','newer-staffing-source','superseded',{assessmentId:assessment.id});
           this.emit('job',this.store.save('deliveries',{id:item.id,status:'completed',staffingAssessmentId:assessment.id,
             staffingOutcome:'superseded',finishedAt:now()}));return;
         }
       }
       if(item.observation&&!this.need('rooms',item.roomId).members.includes(item.botId)){
+        this.noteDeliveryDecision(item,'skip','recipient-no-longer-member','cancelled');
         this.emit('job',this.store.save('deliveries',{id:item.id,status:'cancelled',finishedAt:now()}));return;
       }
       if(item.status==='queued'){
@@ -688,12 +776,16 @@ export class ChatroomService {
           this.store.save('deliveries',{id:item.id,deferredReason:'recipient-stopped',retryAt:new Date(Date.now()+30000).toISOString()});return;
         }
         const input=item.teamStaffing&&item.input||await this.inputFor(item);
-        if(item.teamStaffing&&!item.input)item=this.store.save('deliveries',{id:item.id,input});
+        if(item.workflowReview&&!input){
+          this.workflowReviews.expire(item,'snapshot-unavailable');
+          this.emit('job',this.store.save('deliveries',{id:item.id,status:'cancelled',finishedAt:now()}));return;
+        }
+        if((item.teamStaffing||item.workflowReview)&&!item.input)item=this.store.save('deliveries',{id:item.id,input});
         const receipt=await this.manager.send(item.botId,input);
         item=this.store.transaction(()=>{
           const accepted=this.store.save('deliveries',{...item,input,status:'accepted',taskId:receipt.taskId,startedAt:now(),attempts:0,error:null});
           // Unknown sends retain the exact input and leave the cursor in place.
-          if(!item.routeOnly){
+          if(!item.routeOnly&&!item.workflowReview){
             const key=cursorKey(item),previous=this.store.get('delivery-cursors',key);
             const position=this.position(item.roomId,item.messageId),through=this.position(item.roomId,previous?.messageId)||firstPosition;
             if(position&&comparePosition(position,through)>0)this.store.save('delivery-cursors',{id:key,messageId:item.messageId});
@@ -707,6 +799,11 @@ export class ChatroomService {
       });if(!task)throw error;}
       const status=task.status;
       if(!TERMINAL.has(status)){if(item.status!==status){item=this.store.save('deliveries',{...item,status});this.emit('job',item);}return;}
+      if(item.workflowReview){
+        await this.workflowReviews.finish(item,task);
+        this.emit('job',this.store.save('deliveries',{id:item.id,status,finishedAt:now(),error:task.error||null}));return;
+      }
+      if(status==='completed'&&task.result?.productionRecovery&&await this.applyProductionRecovery(item,task))return;
       item=this.store.save('deliveries',{...item,workId:task.workId||task.result?.workId||item.workId});
       const roomForPlan=this.need('rooms',item.roomId),triggerForPlan=this.need('messages',item.messageId);
       const imported=await this.dutyActions.import(item,roomForPlan,triggerForPlan,task);
@@ -722,13 +819,13 @@ export class ChatroomService {
       if(roomResultAction?.kind==='room-handoff'&&roomResultAction.dutyKey!==item.routedDutyKey)
         item=this.store.save('deliveries',{...item,routedDutyKey:roomResultAction.dutyKey,requestScope:'single-duty'});
       const isUserDelivery=triggerForPlan.senderId==='user'&&!item.observation&&!item.routeOnly&&!item.teamStaffing&&!item.teamIntroduction&&!item.roomDutyAction;
-      const roomAcceptances=isUserDelivery?await this.roomTextResults.record(roomForPlan,triggerForPlan,item,task):[];
+      const roomAcceptances=isUserDelivery&&!item.productionRecovery?await this.roomTextResults.record(roomForPlan,triggerForPlan,item,task):[];
       const peerRequest=isUserDelivery&&(task.tools||[]).some(tool=>tool.name==='chatroom_send'&&tool.status==='completed'&&
         tool.args?.roomId===item.roomId&&tool.args.toBotId&&tool.args.purpose==='request'&&(tool.args.replyTo||item.messageId)===item.messageId);
       const savedRefusals=isUserDelivery&&(status!=='completed'||task.result?.partial||peerRequest)?refusalNotes(task.tools):'';
       const registeredOwnerDelivery=imported.some(plan=>plan.dependency?.condition===OWNER_DELIVERY);
       const registeredReview=imported.some(plan=>plan.kind==='independent-review');
-      let dutyResultMessageId,routeScope;
+      let dutyResultMessageId,routeScope,actualReplyIds=[],observationOutcome,routedTo;
       if(status==='completed') {
         let text=String(task.result?.content||''),passed=/^PASS(?:\s*$|\s*\n)/i.test(text);
         if(item.routeOnly){
@@ -752,6 +849,7 @@ export class ChatroomService {
           routeScope=requestScope;
           this.enqueue(this.need('messages',item.messageId),recipient.id,{workId:null,referencedWorkId:workId,
             ...(duty?{routedDutyKey:duty.dutyKey}:{}),requestScope,routedBy:item.botId,routeReason:String(parsed.reason||text).slice(0,1000)});
+          routedTo={botId:recipient.id,workId,dutyKey:duty?.dutyKey,scope:requestScope};
         }else if(!item.teamStaffing&&!task.workId&&(!item.observation||this.need('rooms',item.roomId).members.includes(item.botId))){
           let response;try{response=ownerReply||JSON.parse(text);if(typeof response?.reply==='string'){text=response.reply;passed=response.pass||!text;}}catch{}
           if((registeredOwnerDelivery||registeredReview)&&(passed||!text.trim())){
@@ -762,6 +860,9 @@ export class ChatroomService {
           const correction=item.observationCoverage&&this.coveredCorrection(item,task,response);
           if(item.observationCoverage&&!correction)passed=true;
           if(item.observation&&isAcknowledgement(text))passed=true;
+          const delegated=item.observation&&triggerForPlan.senderId==='user'&&triggerForPlan.toBotId&&triggerForPlan.toBotId!==item.botId;
+          if(delegated)passed=true;
+          if(item.observation)observationOutcome=delegated?'targeted-owner':passed?'pass':correction?'correction':'reply';
           const alreadyReplied=!item.roomDutyAction&&this.sourceReplies.all(item.roomId,item.messageId,item.botId).some(row=>{
             const message=JSON.parse(row.data);
             return !message.jobId&&!(peerRequest&&message.toBotId&&message.purpose==='request');
@@ -801,6 +902,7 @@ export class ChatroomService {
                 ...(sourceRefs.length?{sourceRefs}:{}),usage:index?undefined:task.result?.usage,model:task.result?.model},item.botId,
                 index===0&&roomResultAction?message=>this.roomTextResults.publish(item,task,message,roomResultAction):undefined,{observationCoverage});
             });
+            actualReplyIds=replies.map(message=>message.id);
             if(item.roomDutyAction&&this.store.get('room-text-results',replies[0]?.id))dutyResultMessageId=replies[0].id;
             if(replies.length&&!item.observation&&!task.result?.handoff)this.returnReply(replies[0]);
           }
@@ -850,6 +952,12 @@ export class ChatroomService {
             room.team&&JSON.stringify(staffingScope(room))!==JSON.stringify(item.teamStaffing.scope)))
           assessment=this.teamService.staffing.supersede(item,room);
         const missing=status==='completed'&&item.teamStaffing?.policyVersion===staffingPolicyVersion&&!assessment;
+        this.store.save('business-decisions',{id:`delivery:${item.id}`,roomId:item.roomId,messageId:item.messageId,botId:item.botId,
+          taskId:task.id,workId:item.workId,decision:item.routeOnly?'route':item.observation?observationOutcome||'no-judgment':
+            item.teamStaffing?assessment?.status||'no-assessment':actualReplyIds.length?'publish-reply':'no-reply',
+          runtimeCheck:missing||status!=='completed'?'unconfirmed':observationOutcome==='targeted-owner'?'adjusted':'confirmed',
+          facts:{routedTo,assessmentId:assessment?.id,coveredBy:item.observationCoverage?.ownerBotId},
+          result:{status:missing?'failed':task.result?.partial?'partial':status,replyIds:actualReplyIds,code:task.error?.code}});
         return this.store.save('deliveries',{...item,status:missing?'failed':status,finishedAt:now(),agentRunId:task.runId||item.taskId,
           ...(assessment?{staffingAssessmentId:assessment.id,staffingOutcome:assessment.status}:{}),
           error:missing?{code:'STAFFING_ASSESSMENT_REQUIRED',message:'The staffing decision ended without a saved assessment'}:task.error||null});
@@ -858,12 +966,14 @@ export class ChatroomService {
       const room=this.need('rooms',item.roomId);if(room.kind==='deep'&&room.status!=='concluded'&&room.members.includes('bot-chatroom'))this.settleDiscussion(room);
     }catch(error){
       const current=this.store.get('deliveries',item.id)||item,attempts=(current.attempts||0)+1;
-      const terminalFailure=error.routing?'interrupted':error.status>=400&&error.status<500&&error.status!==429?'failed':null;
+      const terminalFailure=error.routing?'interrupted':(item.workflowReview||item.productionRecovery)&&attempts>=3||
+        error.status>=400&&error.status<500&&error.status!==429?'failed':null;
       const result=this.store.save('deliveries',{...current,attempts,error:error.message,retryAt:new Date(Date.now()+Math.min(60000,1000*2**Math.min(attempts,6))).toISOString(),...(terminalFailure?{status:terminalFailure,finishedAt:now()}:{} )});this.emit('job',result);
       if(terminalFailure&&(item.dutyRoute||item.requestScope==='ordinary'))
         this.teamService.confirmStaffingSource(this.need('rooms',item.roomId),item.messageId);
       if(terminalFailure&&item.roomDutyAction)this.dutyActions.finish(item,terminalFailure);
-      if(terminalFailure&&!item.observation&&!item.teamStaffing){
+      if(terminalFailure&&item.workflowReview)this.workflowReviews.expire(item,'delivery-refused');
+      if(terminalFailure&&!item.observation&&!item.teamStaffing&&!item.workflowReview){
         const reply=this.append(item.roomId,{id:`error:${item.id}`,content:`${error.routing?'消息路由未完成':'消息未被受理'}：${error.message}`,kind:'error',jobId:item.id,replyTo:item.messageId},'system');
         this.returnReply(reply,{responderId:item.botId,status:terminalFailure});
         if(item.routineId)await this.manager.saveRoutine({id:item.routineId,lastStatus:terminalFailure,error:error.message});
@@ -900,7 +1010,7 @@ export class ChatroomService {
     const original=this.need('deliveries',id),room=this.need('rooms',original.roomId),family=[original],seen=new Set([original.id]),jobs=this.jobs(original.roomId).filter(job=>job.botId===original.botId&&job.messageId===original.messageId);
     for(let index=0;index<family.length;index++)for(const job of jobs)if(job.retryOf===family[index].id&&!seen.has(job.id)){family.push(job);seen.add(job.id);}
     const completed=family.find(job=>job.status==='completed');if(completed)return completed;const active=family.find(job=>!TERMINAL.has(job.status));if(active)return active;
-    if(original.roomDutyAction)fail('This exact duty action already ended; inspect its saved result or register a newly authorized request.',409);
+    if(original.roomDutyAction||original.workflowReview||original.productionRecovery)fail('This exact bounded action already ended; inspect its saved result.',409);
     if(room.status==='concluded')fail('Discussion has concluded',409);
     if(this.messages(room.id).some(message=>seen.has(message.jobId)&&message.replyTo===original.messageId&&message.senderId===original.botId&&message.kind!=='error'))fail('This task already has a recorded reply; inspect its history instead of retrying',409);
     const item=family.at(-1);let retry;

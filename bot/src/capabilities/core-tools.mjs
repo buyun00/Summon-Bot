@@ -13,6 +13,7 @@ import { externalExecution, isAcceptedOperation } from '../context/execution-evi
 import { readExecutorManifest } from '../runtime/executor-delivery.mjs';
 import { deliveredLocalFiles, localPathKey } from '../runtime/local-delivery.mjs';
 import { MESSAGE_ATTACHMENTS, WORK_ATTACHMENTS } from '../runtime/notifications.mjs';
+import { verifiedProductionRecovery } from './production-recovery.mjs';
 
 const string = { type: 'string' };
 const object = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
@@ -633,6 +634,12 @@ export function coreTools(services, task) {
         reason: string }, ['intent', 'reason']), 'write', async (args, ctx) => {
         const user = currentUserRequest(task, store);
         if (taskMode(task) !== 'chat' || !userRequest || !user) throw new Error('Request decisions belong to the current authenticated frontend user request.');
+        const recovery = task.metadata?.productionRecovery;
+        if (recovery) {
+          const current = verifiedProductionRecovery(store, recovery);
+          if (current?.outcome !== 'unsubmitted') throw new Error('The original implementation is no longer proven unsubmitted.');
+          args = { ...args, intent: 'produce', productionStage: recovery.stage, workRelation: 'new', sourceUnit: recovery.sourceUnit };
+        }
         if (!requestIntents.includes(args.intent)) throw new Error('Choose a supported request intent.');
         if (['produce', 'revise'].includes(args.intent) && !productionStages.includes(args.productionStage)) throw new Error('Production requires its actual stage.');
         let intent = args.intent, production = ['produce', 'revise'].includes(intent);
@@ -664,7 +671,7 @@ export function coreTools(services, task) {
         };
         const checkProduction = production && !confirmedFeedback;
         const checkRoomDelivery = intent === 'room-deliver';
-        const processAcceptance = checkProduction || intent === 'accept' || checkRoomDelivery;
+        const processAcceptance = !recovery && (checkProduction || intent === 'accept' || checkRoomDelivery);
         if (checkProduction || checkRoomDelivery || intent === 'accept' && !acceptance) {
           const selected = work && selectedWork(work);
           const room = source.input?.room;
@@ -685,7 +692,7 @@ export function coreTools(services, task) {
             } : {}) }, proposed: { work: selected || undefined },
             verify: ctx.verifyProduction, signal: ctx.signal, isTargetCurrent: selected ? () => sameWork(selected, services.works.get(work.id)) : undefined,
             sourceOnly: true, savedDecision: previous ?? null, acceptanceContext: loadAcceptanceContext, roomDuties,
-            acceptanceMode: acceptance ? undefined : intent === 'accept' ? 'required' : 'candidate' });
+            acceptanceMode: recovery || acceptance ? undefined : intent === 'accept' ? 'required' : 'candidate' });
         }
         // Freeze positive, negative and unresolved decisions for the original message before refreshing permissions.
         const approval = classification?.approval;
@@ -757,7 +764,7 @@ export function coreTools(services, task) {
             reason: directReview ? 'The authenticated source requests a separate independent review of an existing publication.' :
               intent !== args.intent ? 'The authenticated source contains no independent production action.' : modelText(args.reason), authority: 'model-routing-decision' });
         });
-        const reply = acceptanceReply(decision, user?.text);
+        const reply = recovery ? '' : acceptanceReply(decision, user?.text);
         const result = reply ? { ...decision, acceptanceReply: reply } : decision;
         if (!production && (intent !== args.intent || intent === 'room-deliver')) return { ...result, instruction: 'Follow the saved intent and respond to the original message. Do not call an executor or dispatch independent work for this source classification.' };
         return sourceActions?.length ? { ...result, sourceActions,
@@ -892,6 +899,16 @@ export function coreTools(services, task) {
         if (decision?.workRelation === 'continue') throw new Error(`Continue the existing deliverable with work_dispatch workId=${decision.workId}; this request does not authorize another work.`);
         const selected = selectedSourceAction(decision);
         if (!selected) throw new Error('Choose the matching original action from request_decide.sourceActions before submitting a proposal.');
+        const recovery = task.metadata?.productionRecovery;
+        const checkRecovery = () => {
+          if (!recovery) return;
+          const current = verifiedProductionRecovery(store, recovery);
+          if (current?.outcome !== 'unsubmitted' || source.replyTo !== recovery.sourceMessageId || selected.unit !== recovery.sourceUnit ||
+              selected.stage !== recovery.stage || selected.kind !== 'start' || selected.when !== 'now' ||
+              args.participant || args.afterDependency || args.reviewPublicationMessageId)
+            throw Object.assign(new Error('The original one-time implementation is no longer eligible for this submission.'), { code: 'PRODUCTION_RECOVERY_NOT_CURRENT' });
+        };
+        checkRecovery();
         const reviewReferences = args.reviewReferenceAttachments ?? [];
         if (!Array.isArray(reviewReferences) || reviewReferences.length > MESSAGE_ATTACHMENTS || reviewReferences.some(ref =>
           typeof ref?.messageId !== 'string' || !ref.messageId.trim() || typeof ref.attachmentId !== 'string' || !ref.attachmentId.trim() ||
@@ -1019,6 +1036,7 @@ export function coreTools(services, task) {
         if (concurrent.length > 1) throw new Error('More than one previously submitted work has this source action. No additional work was submitted.');
         let participantPlan;
         const work = store.transaction(() => {
+          checkRecovery();
           if (participant) participantPlan = saveContribution(participant, participantRefs, grant, id, `${id}:${operationId}`);
           return services.works.create({ id, operationId, goal, requirements, responsibility: modelText(args.responsibility), executor, project,
             productionStage: grant?.stage, productionAuthorization: grant, initialHandoff: content,

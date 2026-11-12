@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { validateToolArguments } from '@earendil-works/pi-ai';
+import { workflowField } from '../agent/workflow-decision.mjs';
 
 const effects = new Set(['read', 'write', 'process', 'external']);
 const timestamp = () => new Date().toISOString();
@@ -34,6 +35,8 @@ export class ToolRegistry {
   async invoke(name, input, suppliedContext = {}) {
     const definition = this.definitions.get(name);
     if (!definition) throw new Error(`Tool "${name}" not found`);
+    const { workflowCheck, ...originalInput } = input || {};
+    input = originalInput;
     const context = { ...this.context(suppliedContext), ...suppliedContext };
     context.toolCallId ||= randomUUID();
     context.emitProgress ||= async () => {};
@@ -45,7 +48,7 @@ export class ToolRegistry {
     const id = context.recordId || context.toolCallId;
     const record = { id, toolCallId: context.toolCallId, instanceId: context.instanceId, requestId: context.requestId,
       sessionId: context.sessionId, runId: context.runId, name, toolName: name, implementation: definition.implementation,
-      effect: definition.effect, cwd: context.cwd, args: input, status: 'running', startedAt: timestamp() };
+      effect: definition.effect, cwd: context.cwd, args: input, workflowCheck, status: 'running', startedAt: timestamp() };
     await this.record(record);
     let executing = false, recordingOutcome = false;
     try {
@@ -72,10 +75,11 @@ export class ToolRegistry {
     }
   }
 
-  toSdkTools() {
+  toSdkTools({ workflow = false } = {}) {
     return this.list().map(definition => ({
       ...(definition.sdk || {}),
-      name: definition.name, description: definition.description, parameters: definition.inputSchema,
+      name: definition.name, description: definition.description, parameters: workflow && definition.effect !== 'read' ?
+        { ...definition.inputSchema, properties: { ...definition.inputSchema.properties, workflowCheck: workflowField } } : definition.inputSchema,
       label: definition.sdk?.label || definition.name,
       execute: (toolCallId, input, signal, onUpdate) => this.invoke(definition.name, input, {
         toolCallId, signal, emitProgress: value => onUpdate?.(value),

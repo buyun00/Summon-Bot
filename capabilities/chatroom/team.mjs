@@ -5,6 +5,7 @@ import { fail, required, pick, now } from '../shared/validation.mjs';
 import { activeDuties, Staffing, staffingArtifacts, staffingPolicyVersion, staffingProject, staffingScope, staffingSnapshot } from './staffing.mjs';
 import { externalExecution } from '../../bot/src/context/execution-evidence.mjs';
 import { ROOM_DUTY_PLANS } from '../../bot/src/context/duty-actions.mjs';
+import { workflowReviewerId } from '../../bot/src/context/workflow-review.mjs';
 
 const terminal = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
 const activeWork = work => ['active', 'waiting', 'blocked'].includes(work.status);
@@ -24,8 +25,8 @@ const staffingInstruction = [
 export function groupTeam(members, manager, input = {}) {
   const eggBotId = 'bot-eggbot';
   manager.get(eggBotId);
-  const leadBotId = input.leadBotId || members.find(id => id !== 'user' && id !== eggBotId && manager.get(id).status === 'active') || 'bot-entry';
-  if (leadBotId === eggBotId || manager.get(leadBotId).status !== 'active') fail('Choose an available project lead');
+  const leadBotId = input.leadBotId || members.find(id => !['user', eggBotId, workflowReviewerId].includes(id) && manager.get(id).status === 'active') || 'bot-entry';
+  if ([eggBotId, workflowReviewerId].includes(leadBotId) || manager.get(leadBotId).status !== 'active') fail('Choose an available project lead');
   for (const id of [leadBotId, eggBotId]) if (!members.includes(id)) members.push(id);
   return { leadBotId, eggBotId, state: input.projectMode === 'project' ? 'active' : 'idle', requirements: '', deadlineAt: null,
     reviewIntervalSeconds: 900, auditIntervalSeconds: 604800, nextReviewAt: null, lastReviewAt: null,
@@ -71,7 +72,12 @@ export class TeamService {
       return message?.roomId === room.id && message.senderId === 'user';
     };
     const report = (text, limit) => typeof text === 'string' ? text.slice(0, limit) : undefined;
-    const memberIds = room.members.filter(id => id !== 'user' && id !== room.team.eggBotId);
+    const memberIds = room.members.filter(id => !['user', room.team.eggBotId, workflowReviewerId].includes(id));
+    const publications = new Map();
+    for (const message of this.chatroom.messages(room.id)) if (this.chatroom.staffingEvidence(message)?.kind === 'work-result') {
+      const list = publications.get(message.workId) || [];
+      publications.set(message.workId, [...list.slice(-1), message]);
+    }
     const members = await Promise.all(memberIds.map(botId => this.manager.readState(botId, db => {
       if (!db) return [];
       const works = db.listRecords('works').filter(work => work.sources?.some(roomUserSource));
@@ -91,7 +97,17 @@ export class TeamService {
           scope: report(event.authorization.production?.scope, 1000),
           ...(sameRoom ? { handoff: report(event.content?.handoff?.instruction || event.content?.handoff?.goal, 600) } : {}),
         }));
+        const published = (publications.get(work.id) || []).filter(message => message.senderId === botId)
+          .map(message => ({ messageId: message.id, replyTo: message.replyTo, at: message.createdAt,
+            attachments: staffingArtifacts(message).slice(0, 8).map(file => file.name) }));
+        const acceptance = work.acceptance;
+        const acceptanceMessageId = roomUserSource({ ...acceptance?.source, actor: acceptance?.source?.userId,
+          replyTo: acceptance?.source?.messageId }) && acceptance.source.messageId;
+        const savedAcceptance = acceptanceMessageId ? { messageId: acceptanceMessageId, fullScope: acceptance.fullScope === true,
+          publicationMessageIds: (acceptance.publicationMessageIds || []).filter(id => this.store.get('messages', id)?.roomId === room.id),
+          recordedAt: acceptance.recordedAt } : null;
         return { ...pick(work, ['id', 'productionStage', 'status', 'updatedAt']), botId, sourceMessageIds, acceptedScope,
+          published, savedAcceptance,
           ...(sameRoom ? { goal: report(work.goal, 600), requirements: report(work.requirements, 1000),
             responsibility: report(work.responsibility, 500), progress: report(work.progress, 1000),
             next: report(work.checkpoint?.next, 400), waiting: pick(work.waiting || {}, ['kind', 'reason', 'operationId']),
@@ -415,7 +431,7 @@ export class TeamService {
       if (staffing && ['invite', 'assign'].includes(action)) {
         const bot = this.manager.get(required(input.botId, 'botId', 128));
         if (action === 'invite' && room.members.includes(bot.id)) fail('Member already belongs to this room; use assign for a real duty change', 409);
-        if (action === 'assign' && (!room.members.includes(bot.id) || bot.status !== 'active')) fail('Choose a current available member', 409);
+        if (bot.id === workflowReviewerId || action === 'assign' && (!room.members.includes(bot.id) || bot.status !== 'active')) fail('Choose a current available member', 409);
       }
       if (dutyActions.has(action) && dutyKey && (!transferring && room.team.duties.some(duty => duty.dutyKey === dutyKey && duty.botId !== input.botId) ||
           this.store.list('team-operations').some(item => item.roomId === room.id && item.dutyKey === dutyKey &&
@@ -529,7 +545,7 @@ export class TeamService {
         duty.botId !== botId || duty.state === 'closed' ? duty : { ...duty, state: 'closed', closedAt: now(), closeSource: operation.source }) } });
       result = { room, bot: this.manager.get(botId), paused, historyRetained: true };
     } else if (action === 'handoff') {
-      if (!room.members.includes(botId) || [room.team.eggBotId, 'user'].includes(botId) || this.manager.get(botId).status !== 'active') fail('Choose an available current member as lead');
+      if (!room.members.includes(botId) || [room.team.eggBotId, 'user', workflowReviewerId].includes(botId) || this.manager.get(botId).status !== 'active') fail('Choose an available current member as lead');
       const previousBotId = operation.fromBotId;
       if (botId === previousBotId) fail('Choose a different lead');
       if (![previousBotId, botId].includes(room.team.leadBotId)) fail('Another handoff changed the lead; inspect current project state', 409);

@@ -4,6 +4,7 @@ import { EXISTING_PUBLICATION } from '../../bot/src/context/duty-actions.mjs';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { TEAM_DUTY_TOOLS } from '../bot-management/tool-access.mjs';
+import { workflowReviewerId } from '../../bot/src/context/workflow-review.mjs';
 import { fail, now, pick, required, safeId } from '../shared/validation.mjs';
 
 export const staffingPolicyVersion = 4;
@@ -256,8 +257,14 @@ export class Staffing {
       reviewed.add(row.workId);
       const facts = Object.fromEntries(['requirements', 'scope', 'ownerFit', 'progress', 'reason'].map(key =>
         [key, required(row[key], key, 900)]));
+      const citedSourceMessageIds = ids(row.sourceMessageIds ?? [], 'work review sourceMessageIds').filter(id => {
+        const message = this.store.get('messages', id);
+        return message?.roomId === job.roomId && message.createdAt <= job.input.content.staffing.snapshotAt;
+      });
       return { workId: view.id, ownerBotId: view.botId, decision: row.decision, ...facts,
-        sourceMessageIds: unique([...view.sourceMessageIds, ...job.teamStaffing.evidence
+        citedSourceMessageIds,
+        sourceMessageIds: unique([...view.sourceMessageIds, ...(view.published || []).map(message => message.messageId),
+          ...(view.savedAcceptance ? [view.savedAcceptance.messageId, ...view.savedAcceptance.publicationMessageIds] : []), ...job.teamStaffing.evidence
           .filter(signal => signal.workId === view.id).map(signal => signal.messageId)]) };
     });
     if (input.projectIntent === 'project' && reviewed.size !== work.size)
@@ -363,7 +370,7 @@ export class Staffing {
 
   fits(botId, row, room) {
     const bot = this.manager.store.get('bots', botId);
-    if (!bot || botId === room.team.eggBotId || bot.status !== 'active' ||
+    if (!bot || [room.team.eggBotId, workflowReviewerId].includes(botId) || bot.status !== 'active' ||
         bot.archivedAt || bot.maintenanceFor || bot.lifecycle?.state === 'dormant' ||
         bot.lifecycle?.kind === 'temporary' && bot.lifecycle.originRoomId && bot.lifecycle.originRoomId !== room.id ||
         !['chatroom_read', 'chatroom_team_read', ...row.requiredTools].every(name => bot.allowedTools?.includes(name))) return false;

@@ -1,0 +1,7 @@
+{
+  "id": "skeptic",
+  "name": "流程复核 Bot",
+  "role": "用同群证据复核工作流程、分工与验收边界",
+  "skills": [],
+  "tools": ["chatroom_read"]
+}

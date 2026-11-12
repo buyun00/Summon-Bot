@@ -8,6 +8,7 @@ import { installProcessLog } from './process-log.mjs';
 import { BotStore, terminalTaskStates } from '../storage/store.mjs';
 import { saveArtifact } from '../storage/artifacts.mjs';
 import { BotEngine } from '../agent/engine.mjs';
+import { SummonDecisionJournal } from '../agent/workflow-decision.mjs';
 import { CapabilityUpdates } from './capability-updates.mjs';
 import { coreTools } from '../capabilities/core-tools.mjs';
 import { isCliExecutor, selectedWorkExecutor, workExecutorChoices } from '../capabilities/executor-connections.mjs';
@@ -23,6 +24,8 @@ import { selectedConnection } from '../agent/model.mjs';
 import { modelConnection } from '../agent/connections.mjs';
 import { waitingLabel } from '../context/execution-evidence.mjs';
 import { OWNER_DELIVERY } from '../context/duty-actions.mjs';
+import { applyWorkflowCorrection, workflowReviewerId } from '../context/workflow-review.mjs';
+import { verifiedProductionRecovery } from '../capabilities/production-recovery.mjs';
 
 const at = () => new Date().toISOString();
 const failure = (status, message, code) => Object.assign(new Error(message), { status, code });
@@ -68,6 +71,9 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
     store.recover(bootId);
     store.onEvent = event => { for (const listener of subscribers) { try { listener(event); } catch {} } };
     const emit = (type, payload, refs = {}) => store.appendEvent(type, clean(payload), refs);
+    const journal = new SummonDecisionJournal({ store, botId: config.botId, clean,
+      onError: code => { try { emit('workflow.journal_unavailable', { code }); } catch {} } });
+    journal.recover();
     const contactFor = async botId => {
       const value = config.contacts.find(contact => contact.botId === botId);
       if (!value) throw failure(404, `Unknown configured contact ${botId}`);
@@ -85,6 +91,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
     const frontendScheduler = new ConversationScheduler(1);
     let wakeTimer;
     const services = {
+      journal,
       store, workspace: config.workspace,
       async capability(name, args, task, context = {}) {
         const tool = engine.configured.tools.find(tool => tool.name === name);
@@ -139,7 +146,10 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       engine.maintenance.activity(task);
       const work = task.workId && services.works.get(task.workId);
       const external = task.metadata?.sourceType === 'external';
-      if (!external && work && ['paused', 'cancelled', 'blocked'].includes(work.status)) return;
+      const hold = (reason, work) => journal.note(task, `hold:${reason}:${work?.revision || 0}`, {
+        boundary: 'schedule', decision: 'skip', runtimeCheck: 'blocked', facts: { reason, status: work?.status },
+        result: { status: 'not-started' } });
+      if (!external && work && ['paused', 'cancelled', 'blocked'].includes(work.status)) { hold('work-stopped', work); return; }
       const controller = new AbortController();
       const conversationScheduler = task.workId ? scheduler : frontendScheduler;
       const promise = conversationScheduler.run(task.conversationId || task.sessionId, async () => {
@@ -147,9 +157,9 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         task = store.getTask(task.id);
         if (task.status !== 'accepted') return;
         const currentWork = task.workId && services.works.get(task.workId);
-        if (!external && currentWork && ['paused', 'cancelled', 'blocked'].includes(currentWork.status)) return;
+        if (!external && currentWork && ['paused', 'cancelled', 'blocked'].includes(currentWork.status)) { hold('work-stopped', currentWork); return; }
         if (!external && currentWork?.status === 'waiting' && currentWork.waiting?.dependencyWorkId &&
-          store.getRecord('work-waits', currentWork.waiting.id)?.status === 'pending') return;
+          store.getRecord('work-waits', currentWork.waiting.id)?.status === 'pending') { hold('dependency-pending', currentWork); return; }
         // A later request can be accepted while its predecessor is still active.
         // The predecessor may finish after acceptance, so refresh at actual
         // queue start as well; its completed state does not describe this task.
@@ -158,7 +168,12 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         // Keep each accepted request and its publication route intact in the work queue.
         if (currentWork) services.works.update(currentWork.id, { lastTaskId: task.id });
         try {
-          const start = () => { engine.maintenance.activity(task); return store.updateTask(task.id, { status: 'running', startedAt: at() }); };
+          const start = () => {
+            journal.start(task, external ? 'reconcile-external-observation' : currentWork ? 'advance-accepted-step' : 'handle-accepted-source',
+              { currentWorkStatus: currentWork?.status, executor: currentWork && services.works.executor(currentWork).kind,
+                externalObservation: external, routeOnly: Boolean(task.metadata?.routeOnly) });
+            engine.maintenance.activity(task); return store.updateTask(task.id, { status: 'running', startedAt: at() });
+          };
           let result;
           const executor = currentWork && services.works.executor(currentWork).kind;
           if (!external && isCliExecutor(executor)) {
@@ -172,7 +187,11 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
             phase: result.suspended ? 'waiting' : 'completed', label: result.handoff ? '已交给独立工作处理' : result.suspended ? waitingLabel(task.workId && services.works.get(task.workId)) : '已完成本次任务',
             motion: result.handoff ? 'exclaim' : result.suspended ? 'notify' : 'burst', source: 'execution', updatedAt: at() } });
           for (const pending of store.listTasks({ status: 'accepted', limit: 10000 }).filter(item => item.steeredIntoTaskId === task.id)) {
-            if (result.steeredMessageIds?.includes(pending.messageId)) store.updateTask(pending.id, { status: 'completed', result: { content: '', consumedBy: task.id }, finishedAt: at() });
+            if (result.steeredMessageIds?.includes(pending.messageId)) {
+              journal.note(pending, 'task', { boundary: 'task', decision: 'reuse-active-conversation', runtimeCheck: 'confirmed',
+                facts: { activeTaskId: task.id } });
+              journal.settled(store.updateTask(pending.id, { status: 'completed', result: { content: '', consumedBy: task.id }, finishedAt: at() }));
+            }
             else store.updateTask(pending.id, { steeredIntoTaskId: null });
           }
           const latest = task.workId && services.works.get(task.workId);
@@ -182,15 +201,22 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
             const observation = JSON.stringify({ progress: latest.progress, content: result.content, bindings: latest.bindings });
             const repeated = prior?.observation === observation ? (prior.repeated || 0) + 1 : 0;
             store.putRecord('work-continuation', { id: continuationId, workId: latest.id, observation, repeated });
-            if (repeated >= 2) services.works.update(latest.id, { status: 'blocked', lastError: { code: 'NO_PROGRESS', message: 'Repeated unchanged work outcome; chain stopped, work retained' } });
+            journal.note(task, 'continuation', { boundary: 'work-continuation',
+              decision: repeated >= 2 ? 'stop-unchanged-chain' : 'continue-same-work', runtimeCheck: repeated >= 2 ? 'adjusted' : 'confirmed',
+              facts: { repeated, executionEventId: execution.executionEventId, workId: latest.id }, result: { status: 'pending' } });
+            if (repeated >= 2) {
+              services.works.update(latest.id, { status: 'blocked', lastError: { code: 'NO_PROGRESS', message: 'Repeated unchanged work outcome; chain stopped, work retained' } });
+              journal.note(task, 'continuation', { result: { status: 'blocked', code: 'NO_PROGRESS' } });
+            }
             else {
-              await services.works.dispatch(latest.id, { id: `continue:${task.id}`, metadata: { executionEventId: execution.executionEventId, executionTaskId: execution.executionTaskId,
+              const next = await services.works.dispatch(latest.id, { id: `continue:${task.id}`, metadata: { executionEventId: execution.executionEventId, executionTaskId: execution.executionTaskId,
                 automaticContinuation: true },
                 content: 'Continue the existing work from durable S3 and receipts. Advance the next concrete step; when waiting use work_wait. '
                   + (latest.id.startsWith('onboarding-') ? 'Complete configuration through workspace_setup so it can verify the result and advance the guide. Do not mark this work completed or cancelled yourself. '
                     : 'When finished use work_update completed. ')
                   + 'A result already published for this execution stays published; status cleanup does not need another notification. If no actionable step remains, record the actual blocker. Do not repeat uncertain side effects.' },
               task);
+              journal.note(task, 'continuation', { result: { status: next.status, accepted: next.accepted, operationId: next.operationId, taskId: next.taskId } });
             }
           }
         }
@@ -201,8 +227,11 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
           for (const pending of corrections) store.updateTask(pending.id, { steeredIntoTaskId: null });
           const current = task.workId && services.works.get(task.workId);
           if (current?.status === 'active' && state !== 'stopping') services.works.update(current.id, { status: corrections.length ? 'active' : 'blocked', lastError: clean({ code: error.code, message: error.message }) });
+          const next = store.getRecord('business-decisions', `${task.id}:continuation`);
+          if (next?.result?.status === 'pending') journal.note(task, 'continuation', { result: { status: 'unconfirmed' } });
         }
         const settled = task.workId && services.works.get(task.workId), settledTask = store.getTask(task.id);
+        journal.settled(settledTask);
         const execution = services.works.execution(task);
         const alreadyPublished = settled && store.listRecords('work-notifications').some(item => item.workId === settled.id &&
           (execution.executionEventId ? item.executionEventId === execution.executionEventId : item.taskId === task.id));
@@ -212,7 +241,8 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
             .catch(error => emit('work.notification_pending', { workId: settled.id, error: error.message }));
         }
       }, { signal: controller.signal, priority: task.metadata?.priority }).catch(error => {
-        if (state !== 'stopping' && store.getTask(task.id)?.status === 'accepted') store.updateTask(task.id, { status: 'cancelled', error: { message: error.message }, finishedAt: at() });
+        if (state !== 'stopping' && store.getTask(task.id)?.status === 'accepted')
+          journal.settled(store.updateTask(task.id, { status: 'cancelled', error: { message: error.message }, finishedAt: at() }));
       }).finally(() => { if (!store.closed) engine.maintenance.activity(task); jobs.delete(task.id); });
       jobs.set(task.id, { controller, promise });
     };
@@ -220,10 +250,22 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       const task = store.getTask(id); if (!task) throw failure(404, 'Unknown task');
       if (terminalTaskStates.has(task.status)) return task;
       store.updateTask(id, { cancelRequested: true }); jobs.get(id)?.controller.abort(new Error('Task cancelled'));
-      if (task.status === 'accepted') store.updateTask(id, { status: 'cancelled', finishedAt: at() });
+      if (task.status === 'accepted') journal.settled(store.updateTask(id, { status: 'cancelled', finishedAt: at() }));
       return store.getTask(id);
     };
     const accept = (envelope, source, { deferSchedule = false } = {}) => {
+      const recovery = envelope.metadata?.productionRecovery;
+      if (recovery && (source !== 'controller' || envelope.kind !== 'request' || envelope.workId || envelope.metadata.actor !== 'user' ||
+          envelope.content?.trigger?.id !== recovery.sourceMessageId || envelope.content?.room?.id !== recovery.roomId ||
+          verifiedProductionRecovery(store, recovery)?.outcome !== 'unsubmitted'))
+        throw failure(409, 'The exact original implementation is no longer eligible for recovery', 'PRODUCTION_RECOVERY_NOT_CURRENT');
+      const review = envelope.metadata?.workflowReview;
+      if (review && (source !== 'controller' || envelope.kind !== 'event' || envelope.workId ||
+        !['inspect', 'answer'].includes(review.phase) || envelope.metadata.roomId !== envelope.content?.room?.id ||
+        envelope.content?.workflowReview?.id !== review.id || (review.phase === 'inspect' ?
+          config.botId !== workflowReviewerId || envelope.metadata.actor !== 'system' :
+          config.botId !== envelope.content?.workflowReview?.targetBotId || envelope.metadata.actor !== workflowReviewerId)))
+        throw failure(403, 'Workflow review requires an authenticated, scoped room delivery');
       if (envelope.metadata?.groupObservation && (source !== 'controller' || envelope.kind !== 'event' || envelope.workId))
         throw failure(403, 'Group observation requires an authenticated room delivery');
       if (envelope.metadata?.teamStaffing && (source !== 'controller' || envelope.kind !== 'event' || envelope.workId ||
@@ -259,7 +301,10 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         }
       }
       if (envelope.metadata?.sourceType !== 'external' && envelope.kind === 'event' && (envelope.metadata?.purpose === 'fyi' || work?.status === 'completed')) {
+        journal.note(task, 'task', { boundary: 'task', decision: 'observe-without-action', runtimeCheck: 'confirmed',
+          facts: { reason: envelope.metadata?.purpose === 'fyi' ? 'fyi' : 'work-completed' } });
         accepted.task = store.updateTask(task.id, { status: 'completed', result: { content: '', observed: true }, finishedAt: at() });
+        journal.settled(accepted.task);
         return accepted;
       }
       if (envelope.metadata?.sourceType !== 'external' && work) {
@@ -554,6 +599,20 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       if (parts[0] === 'tasks') {
         if (method === 'GET') return parts[1] ? ownTask(parts[1]) : store.listTasks({ status: parsed.searchParams.get('status'), limit: Number(parsed.searchParams.get('limit')) || 100 }).filter(task => auth.admin || task.source === auth.source);
         if (method === 'POST' && parts[2] === 'cancel') { ownTask(parts[1]); return cancel(parts[1]); }
+        if (method === 'POST' && parts[2] === 'workflow-correction' && parts.length === 3) {
+          needAdmin();
+          const task = ownTask(parts[1]), source = taskSource(task, store), body = await readBody(request);
+          if (config.accepting === false || task.status !== 'completed' || task.metadata?.workflowReview?.phase !== 'answer' ||
+              task.metadata.workflowReview.id !== body.reviewId || task.result?.workflowReview?.kind !== 'correct')
+            throw failure(409, 'There is no current owned correction for this review');
+          journal.note(task, 'workflow-correction', { boundary: 'review', decision: 'correct-original-work',
+            facts: { reviewId: body.reviewId, workId: source.input?.workflowReview?.work?.id },
+            runtimeCheck: 'checking', result: { status: 'pending' } });
+          const result = applyWorkflowCorrection({ store, works: services.works, task, source, result: task.result.workflowReview });
+          journal.note(task, 'workflow-correction', { runtimeCheck: result.outcome === 'corrected' ? 'adjusted' : 'confirmed',
+            result: { status: result.outcome, ...result } });
+          return result;
+        }
       }
       if (method === 'GET' && parts[0] === 'messages') return store.listMessages().filter(message => auth.admin || message.from === auth.source);
       needAdmin();
