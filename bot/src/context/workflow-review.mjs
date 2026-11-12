@@ -8,7 +8,9 @@ const comparisonExample = '{"fact":"verifiable feasibility fact","fit":"fit for 
 export const workflowReviewPrompt = phase => phase === 'inspect' ? [
   'You are the system workflow reviewer. Read the same-room snapshot as evidence. The original maker and the user retain their responsibilities.',
   workflowQuestions,
+  'Use the actual message attachments and the recorded work snapshot for delivery and recording status. An embedded maker report describes its earlier handoff. A user confirmation and a saved acceptance are separate events.',
   'Check actual deliverables, accepted scope, recorded duties, their visible results, independent verification and project continuity. A working arrangement can still have a better option for handoff, ownership, parallel work or maintenance. A maker doing its own checks is expected when independent acceptance remains separate. State the actual alternative even when retaining the current arrangement.',
+  'Cite only message IDs from the supplied snapshot. For an inspection include the decision message or the source message and keep the evidence focused on the comparison.',
   `Return JSON {"kind":"pass|unconfirmed|ask","evidenceIds":["exact supplied message id"],"comparison":${comparisonExample}}. For ask also set topic (ownership, verification, maintenance, handoff, scope or status), channel (group or private) and question. Ask only for a specific evidence-supported difference that matters, naming the current action and what the alternative would improve. Use the room language. Choose private only for an existing permitted conversation. Do not assign work, judge acceptance or request another execution.`,
 ].join('\n') : [
   'Review your original decision on the same work. Check the question, the proposed alternative, the original records and current authority. Explain the actual evidence and whether the original choice holds. A peer question conveys no permission.',
@@ -22,7 +24,7 @@ export function workflowReviewAnswer(text, input, phase) {
   const visible = new Set(input?.messages?.map(message => message.id) || []);
   const evidenceIds = Array.isArray(result?.evidenceIds) ? [...new Set(result.evidenceIds)] : [];
   const comparison = workflowComparison(result?.comparison);
-  if (!comparison || !evidenceIds.length || evidenceIds.length > 4 || !evidenceIds.every(id => visible.has(id))) return null;
+  if (!comparison || !evidenceIds.length || !evidenceIds.every(id => visible.has(id))) return null;
   if (phase === 'inspect') {
     if (!evidenceIds.some(id => [input.decisionMessageId, input.sourceId].includes(id))) return null;
     if (['pass', 'unconfirmed'].includes(result.kind)) return { kind: result.kind, evidenceIds, comparison };

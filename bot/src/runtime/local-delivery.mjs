@@ -21,13 +21,18 @@ export function namesLocalPackage(text, name) {
   return new RegExp('(?<![\\w.-])' + exact + '(?![\\w-]|\\.[\\w])', 'iu').test(text.normalize('NFKC'));
 }
 
-export function localPackageDeclarations(text) {
-  const declarations = new Map();
-  for (const { path, end } of pathMatches(text)) {
-    const name = basename(path), key = localPathKey(path);
+export function localPackageMeasurements(text) {
+  return pathMatches(text).flatMap(({ path, end }) => {
     const count = byteCount.exec(text.slice(end))?.[1];
     const size = count && Number(count.replaceAll(',', ''));
-    if (!Number.isSafeInteger(size) || size < 1) continue;
+    return Number.isSafeInteger(size) && size > 0 ? [{ path, size }] : [];
+  });
+}
+
+export function localPackageDeclarations(text) {
+  const declarations = new Map();
+  for (const { path, size } of localPackageMeasurements(text)) {
+    const name = basename(path), key = localPathKey(path);
     const prior = declarations.get(key);
     declarations.set(key, prior === undefined || prior?.size === size ? { path, name, size } : null);
   }
