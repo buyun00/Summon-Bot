@@ -7,8 +7,6 @@ import { fail } from '../shared/validation.mjs';
 
 export const nativeReferencePrefix = 'reference:';
 export const nativeReferenceRoot = fileURLToPath(new URL('../references', import.meta.url));
-export const containsNativeReference = value => value.includes(nativeReferencePrefix);
-
 const srgbId = `${nativeReferencePrefix}srgb-icc`;
 export const nativeReferences = [{
   id: srgbId, kind: 'reference', name: 'Standard sRGB ICC profile',
@@ -20,6 +18,38 @@ export const nativeReferences = [{
   nativeArgument: { value: srgbId, access: 'read', kind: 'file' },
   usage: 'Pass nativeArgument.value as the parameter for the target profile in a registered CLI method with a read-only fileArgs operand. For example, set srgbProfile to this value when the method declares srgbProfile as a read file.',
 }];
+
+export const isNativeReference = value => nativeReferences.some(reference => reference.id === value);
+
+function referenceForParameter(name) {
+  const words = name.replace(/([A-Z])([A-Z][a-z])/g, '$1 $2').replace(/([a-z\d])([A-Z])/g, '$1 $2')
+    .toLowerCase().replace(/\bs rgb\b/g, 'srgb').split(/[ _]+/);
+  if (words.includes('srgb') && (words.includes('profile') || words.includes('icc')) &&
+      !words.some(word => ['input', 'source', 'src', 'from'].includes(word))) return srgbId;
+}
+
+export async function attachNativeMethodReferences(methods) {
+  const matches = [];
+  for (const method of methods) {
+    if (!method.current || method.script || method.input || method.keepInput) continue;
+    for (const { index, access, kind, prefix = '', suffix = '' } of method.fileArgs || []) {
+      if (access !== 'read' || kind !== 'file') continue;
+      const template = method.args?.[index];
+      if (typeof template !== 'string' || !template.startsWith(prefix) || !template.endsWith(suffix)) continue;
+      const operand = template.slice(prefix.length, suffix.length ? -suffix.length : undefined);
+      const parameter = /^\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}$/.exec(operand)?.[1];
+      const id = parameter && referenceForParameter(parameter);
+      if (id) matches.push({ method, id, parameter });
+    }
+  }
+  const available = new Set(await Promise.all([...new Set(matches.map(item => item.id))].map(async id =>
+    checkedNativeReference(id).then(() => id, () => null))));
+  for (const { method, id, parameter } of matches) {
+    if (!available.has(id)) continue;
+    (method.bundledReferences ||= []).push({ id, available: true, parameters: { [parameter]: id },
+      instruction: 'Use these values in catalog_native_run.parameters when the bundled reference suits the task. Supply other arguments within the original work’s file scope.' });
+  }
+}
 
 export async function checkedNativeReference(id, { policy, protectedDirectories = [] } = {}) {
   const reference = nativeReferences.find(item => item.id === id);

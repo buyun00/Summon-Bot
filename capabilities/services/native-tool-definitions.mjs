@@ -8,7 +8,7 @@ const operation = { workId: string, operationId: string };
 const fileArgs = { type: 'array', items: object({ index: integer,
   access: { type: 'string', enum: ['read', 'write', 'read-write'] },
   kind: { type: 'string', enum: ['file', 'directory'] }, prefix: string, suffix: string }, ['index', 'access']),
-  description: 'Use zero-based indexes in the method or direct args array. Declare each file/directory input as read and each output as write. Use prefix/suffix for an option value or format wrapper. The remainder is one exact local path.' };
+  description: 'Use zero-based indexes in the method or direct args array. Declare each file/directory input as read and each output as write. Use prefix/suffix for an option value or format wrapper. The remainder is one exact local path or a bundled reference ID for a registered read-only file operand.' };
 
 export const nativeToolDefinitions = [
   definition('discover', 'Find actual CLI entry points in the host PATH, installed package paths and this project. Provide an executable name or an authorized absolute path to look up one entry. Read candidates, then enroll relevant entries so their maintainers learn the real help and methods.', 'read',
@@ -25,7 +25,8 @@ export const nativeToolDefinitions = [
       env: { type: 'object' }, tool: string, arguments: { type: 'object' }, fileArgs, effect: { type: 'string', enum: ['read', 'write', 'update'] } },
     ['id', 'expectedRevision', 'methodId', 'name', 'description', 'sourceIds'])),
   definition('run', 'Run a current method in the original authorized work using a stable operationId. Omit cwd to use the work’s existing execution directory. A CLI method uses its published fileArgs. For an exploratory or update invocation, the tool maintainer can supply explicit args and fileArgs after inspecting the live interface. resumeFromOperationId binds a known native session from this same work.', 'external',
-    object({ ...id, ...operation, methodId: string, expectedMethodRevision: integer, parameters: { type: 'object' }, args: strings, cwd: string, input: string,
+    object({ ...id, ...operation, methodId: string, expectedMethodRevision: integer, parameters: { type: 'object',
+      description: 'Use the current method’s bundledReferences.parameters values from catalog_get for applicable read-only file inputs. Supply the remaining method parameters separately.' }, args: strings, cwd: string, input: string,
       fileArgs, keepInput: { type: 'boolean' }, resumeFromOperationId: string, recoveryBindingId: string, effect: { type: 'string', enum: ['read', 'write', 'update'] }, rationale: string },
     ['id', 'operationId', 'rationale'])),
   definition('status', 'Inspect a durable process or original work bindings. Supply the operationId and optionally a stream and byte cursor for real stdout, stderr or JSON-lines events. This never starts a process.', 'read',

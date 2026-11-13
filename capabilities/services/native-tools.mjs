@@ -8,8 +8,8 @@ import { currentUserRequest } from '../../bot/src/capabilities/request-routing.m
 import { acceptedWorkTask, taskSource, workExecution } from '../../bot/src/context/sources.mjs';
 import { fail, now, required, safeId } from '../shared/validation.mjs';
 import { discoverExecutables, executableKey, findExecutable, inspectNative, installedExecutablePath, localExecutable, nativeArgs, nativeCommand, nativeEnvironment } from './native-host.mjs';
-import { checkedNativeArguments, hasExplicitFileScope, inspectOnlyArgs, nativeFileArgs, validInspectionArgs } from './native-file-arguments.mjs';
-import { checkedNativeReference, containsNativeReference, nativeReferenceRoot } from './native-references.mjs';
+import { checkedNativeArguments, hasExplicitFileScope, inspectOnlyArgs, nativeFileArgs, usesNativeReference, validInspectionArgs } from './native-file-arguments.mjs';
+import { checkedNativeReference, nativeReferenceRoot } from './native-references.mjs';
 import { NativeExecutions, liveNative } from './native-executions.mjs';
 import { NativeSources } from './native-sources.mjs';
 
@@ -365,7 +365,7 @@ export class NativeToolService {
     if (!method) return { file: entry.config.file, args: nativeArgs(args.args), fileArgs: args.fileArgs, input: args.input, keepInput: args.keepInput === true };
     if (args.fileArgs !== undefined) fail('Use the file argument roles published with the method.');
     const argv = nativeArgs(expand(method.args, parameters));
-    if (!work && argv.some(containsNativeReference)) fail('Use bundled reference files through catalog_native_run in an accepted work', 403);
+    if (!work && usesNativeReference(argv, method.fileArgs)) fail('Use bundled reference files through catalog_native_run in an accepted work', 403);
     const input = args.input ?? expand(method.input, parameters);
     return { file: method.script ? process.execPath : entry.config.file,
       args: method.script ? [join(this.catalog.skillRoot, entry.id, method.script), ...argv] : argv, fileArgs: method.fileArgs,
@@ -503,12 +503,13 @@ export class NativeToolService {
 
   async scopedLaunch(launch, context, entry, method, actor, effect, createOutputs = false) {
     const file = await this.executablePath(entry.config.file, context, actor, entry, { catalogMethod: Boolean(method) });
-    const usesReference = launch.args.some(containsNativeReference);
-    const indirect = method?.script || launch.keepInput || launch.input || ['.cmd', '.bat', '.ps1'].includes(extname(file.file).toLowerCase());
-    if ((hasExplicitFileScope(context.policy) || usesReference) && indirect)
-      throw fileAccessDenied(file.file, 'scoped_direct_executable_required', { operations: ['execute'] });
     const offset = method?.script ? 1 : 0;
-    const args = await checkedNativeArguments({ argv: launch.args.slice(offset), templateArgs: method?.args, fileArgs: launch.fileArgs,
+    const argv = launch.args.slice(offset);
+    const fileArgs = launch.fileArgs;
+    const indirect = method?.script || launch.keepInput || launch.input || ['.cmd', '.bat', '.ps1'].includes(extname(file.file).toLowerCase());
+    if (indirect && (hasExplicitFileScope(context.policy) || usesNativeReference(argv, fileArgs)))
+      throw fileAccessDenied(file.file, 'scoped_direct_executable_required', { operations: ['execute'] });
+    const args = await checkedNativeArguments({ argv, templateArgs: method?.args, fileArgs,
       cwd: context.cwd, effect, policy: context.policy, checkedPath: context.checkedPath, createOutputs,
       resolveReference: method ? id => checkedNativeReference(id, { policy: context.policy, protectedDirectories: [this.dataRoot] }) : undefined });
     return { ...launch, file: method?.script ? launch.file : file.canonicalFile, args: [...launch.args.slice(0, offset), ...args] };

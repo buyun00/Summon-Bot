@@ -4,7 +4,7 @@ import { join, resolve, dirname } from 'node:path';
 import { validateToolArguments } from '@earendil-works/pi-ai';
 import { loadConfiguredTools } from '../../bot/src/capabilities/remote-tools.mjs';
 import { nativeToolDefinitions } from './native-tool-definitions.mjs';
-import { nativeReferencePrefix, nativeReferences, publicNativeReference } from './native-references.mjs';
+import { attachNativeMethodReferences, nativeReferencePrefix, nativeReferences, publicNativeReference } from './native-references.mjs';
 import { taskMode } from '../../bot/src/capabilities/task-policy.mjs';
 import { workExecution } from '../../bot/src/context/sources.mjs';
 import { isEnvironmentInitializationSource } from '../../bot/src/context/environment.mjs';
@@ -17,7 +17,7 @@ const refFields = { workId: string, conversationId: string, originRoomId: string
 const entryFields = { id: string, kind: { type: 'string', enum: ['mcp', 'http'] }, name: string, description: string, config: { type: 'object' }, allowedBotIds: strings, scopeRefs: strings, dependencies: strings, enabled: { type: 'boolean' }, coordination: { type: 'object' }, source: {}, expectedRevision: integer };
 export const catalogTools = [...[
   ['catalog_search', 'Find permitted CLI, MCP, API, shared methods and bundled read-only reference files by purpose or scope. Use a reference entry’s nativeArgument.value for a registered CLI method’s read-file parameter. Availability is not business authorization.', 'read', object({ query: string, kind: string, scopeRefs: strings, offset: integer, limit: { type: 'integer', minimum: 1, maximum: 80 } })],
-  ['catalog_get', 'Read a catalog entry, its current methods, tool schemas, owner and dependencies, a bundled reference, or a Skill resource. In the original work, a CLI entry can include evidence of a prior read refused before launch. Supply operationId to inspect your persisted call receipt without contacting the remote service. resource is SKILL.md or a relative scripts/references/assets path.', 'read', object({ id: string, resource: string, operationId: string }, ['id'])],
+  ['catalog_get', 'Read a catalog entry, its current methods, tool schemas, owner and dependencies, a bundled reference, or a Skill resource. Check a CLI method’s bundledReferences for values that can satisfy its read-only file parameters. In the original work, a CLI entry can include evidence of a prior read refused before launch. Supply operationId to inspect your persisted call receipt without contacting the remote service. resource is SKILL.md or a relative scripts/references/assets path.', 'read', object({ id: string, resource: string, operationId: string }, ['id'])],
   ['catalog_probe', 'Discover an MCP connection’s current tool schemas or load an HTTP configuration. Does not call a business tool. HTTP configuration readiness alone is not a successful API request.', 'read', object({ id: string }, ['id'])],
   ['catalog_register', 'Record an explicitly introduced MCP or HTTP entry once, with credential environment references only. The platform creates its own dedicated maintenance Bot and retains your access. Registration does not authorize continuing business.', 'write', object(entryFields, ['id', 'kind', 'name', 'description', 'config', 'source'])],
   ['catalog_update', 'Update a connection you maintain after an observed change or user correction. Read its revision first. Never put secret values in config; use environment references.', 'write', object(entryFields, ['id', 'expectedRevision'])],
@@ -158,9 +158,12 @@ export class CapabilityCatalog {
       return { ...this.public(entry), path: `catalog:${entry.id}/${resourceName(resource)}`, baseDir: `catalog:${entry.id}/`, content: await this.readResource(entry, resource) };
     }
     const result = this.public(entry, true);
-    if (entry.kind === 'cli' && result.available && task?.workId) {
-      const recheck = await this.native?.priorReadRefusal(entry, actor, task);
-      if (recheck) result.priorReadRefusal = this.clean(recheck);
+    if (entry.kind === 'cli' && result.available) {
+      await attachNativeMethodReferences(result.native.methods);
+      if (task?.workId) {
+        const recheck = await this.native?.priorReadRefusal(entry, actor, task);
+        if (recheck) result.priorReadRefusal = this.clean(recheck);
+      }
     }
     if (entry.kind === 'skill' && actor === 'controller') {
       const markdown = await this.readResource(entry, 'SKILL.md');
