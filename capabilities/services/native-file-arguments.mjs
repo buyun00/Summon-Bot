@@ -5,6 +5,20 @@ const operations = { read: ['read'], write: ['write'], 'read-write': ['read', 'w
 const explicitPath = /(?:[A-Za-z]:[\\/]|(^|[=: "'\x60])(?:[/\\]{2}|\.{1,2}[\\/]|\/(?![a-z?]+$))|[A-Za-z0-9_.-][\\/][^/\\])|(?:^|[=: "'\x60])[^/\\=:]+\.[a-z][a-z0-9]{0,15}$/i;
 const opaqueArgument = /^(?:@|https?:|file:|ftp:)|^(?:--eval|-command|-encodedcommand|--script)(?:=|$)/i;
 const helpOrVersion = /^(?:--(?:help|version)|-(?:help|version|h|v|\?)|\/(?:help|version|h|v|\?)|help|version)$/i;
+const formatField = /^[A-Za-z][\w-]*=%(?:[A-Za-z]|\[[A-Za-z][\w-]*\])(?:\\[nrt])*$/;
+
+function isFixedFormatArgument(argv, templateArgs, byIndex, index) {
+  const optionIndex = index - 1;
+  const option = templateArgs?.[optionIndex];
+  const value = argv[index];
+  if ((option !== '-format' && option !== '--format') ||
+      argv[optionIndex] !== option || value !== templateArgs[index] ||
+      byIndex.has(optionIndex) || argv.slice(0, optionIndex).includes('--')) return false;
+  // A backslash escape is also a possible path separator. Require labeled
+  // format fields after a fixed format option in the registered template.
+  const fields = value.split(/ +/);
+  return fields.length > 1 && fields.every(field => formatField.test(field));
+}
 
 export function nativeFileArgs(input = [], length, effect) {
   if (!Array.isArray(input) || input.length > 128) fail('File arguments must name distinct argument indexes');
@@ -34,7 +48,7 @@ export function hasExplicitFileScope(policy) {
   return Boolean(policy?.grants?.length || policy?.deniedPaths?.some(item => !item.alternativesOnly));
 }
 
-export async function checkedNativeArguments({ argv, fileArgs, effect, cwd, policy, checkedPath, createOutputs = false }) {
+export async function checkedNativeArguments({ argv, templateArgs, fileArgs, effect, cwd, policy, checkedPath, createOutputs = false }) {
   const scoped = hasExplicitFileScope(policy);
   const byIndex = new Map(nativeFileArgs(fileArgs, argv.length, effect).map(item => [item.index, item]));
   const planned = [];
@@ -43,7 +57,8 @@ export async function checkedNativeArguments({ argv, fileArgs, effect, cwd, poli
     if (scoped && opaqueArgument.test(value))
       throw fileAccessDenied(cwd, 'opaque_native_argument', { argumentIndex: index });
     if (!definition) {
-      if (!explicitPath.test(value) || helpOrVersion.test(value)) continue;
+      if (!explicitPath.test(value) || helpOrVersion.test(value) ||
+          isFixedFormatArgument(argv, templateArgs, byIndex, index)) continue;
       if (scoped) throw fileAccessDenied(cwd, 'undeclared_native_path_operand', {
         argumentIndex: index, instruction: 'Use fileArgs to declare the exact read or write operand and its argument index.',
       });

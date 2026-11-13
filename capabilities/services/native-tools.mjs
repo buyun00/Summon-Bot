@@ -447,8 +447,8 @@ export class NativeToolService {
         ['.cmd', '.bat', '.ps1'].includes(extname(file.file).toLowerCase())))
       throw fileAccessDenied(file.file, 'scoped_direct_executable_required', { operations: ['execute'] });
     const offset = method?.script ? 1 : 0;
-    const args = await checkedNativeArguments({ argv: launch.args.slice(offset), fileArgs: launch.fileArgs, cwd: context.cwd,
-      effect, policy: context.policy, checkedPath: context.checkedPath, createOutputs });
+    const args = await checkedNativeArguments({ argv: launch.args.slice(offset), templateArgs: method?.args, fileArgs: launch.fileArgs,
+      cwd: context.cwd, effect, policy: context.policy, checkedPath: context.checkedPath, createOutputs });
     return { ...launch, file: method?.script ? launch.file : file.canonicalFile, args: [...launch.args.slice(0, offset), ...args] };
   }
 

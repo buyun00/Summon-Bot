@@ -1,6 +1,6 @@
 {
   "name": "summon-bot",
-  "version": "0.3.94",
+  "version": "0.3.95",
   "private": true,
   "description": "Independent Pi Bots, external capabilities and a separate Web interface",
   "type": "module",
