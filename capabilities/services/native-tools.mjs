@@ -4,7 +4,8 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { extname, isAbsolute, join } from 'node:path';
 import { assertPathPolicy, createPathAccess, fileAccessDenied, insideProtectedDirectory, resolveFilePath, samePath, sensitivePath } from '../../bot/src/capabilities/file-policy.mjs';
 import { taskFileAccessPolicy } from '../../bot/src/capabilities/file-access.mjs';
-import { taskSource, workExecution } from '../../bot/src/context/sources.mjs';
+import { currentUserRequest } from '../../bot/src/capabilities/request-routing.mjs';
+import { acceptedWorkTask, taskSource, workExecution } from '../../bot/src/context/sources.mjs';
 import { fail, now, required, safeId } from '../shared/validation.mjs';
 import { discoverExecutables, executableKey, findExecutable, inspectNative, installedExecutablePath, localExecutable, nativeArgs, nativeCommand, nativeEnvironment } from './native-host.mjs';
 import { checkedNativeArguments, hasExplicitFileScope, inspectOnlyArgs, nativeFileArgs, validInspectionArgs } from './native-file-arguments.mjs';
@@ -367,6 +368,63 @@ export class NativeToolService {
     return { file: method.script ? process.execPath : entry.config.file,
       args: method.script ? [join(this.catalog.skillRoot, entry.id, method.script), ...argv] : argv, fileArgs: method.fileArgs,
       input, keepInput: method.keepInput, protocol: method.protocol, env: method.env, authorizedEnv: entry.native.credentialRefs || [], sessionId };
+  }
+
+  async priorReadRefusal(entry, actor, task) {
+    if (actor === 'controller' || task.status !== 'running' || task.cancelRequested) return;
+    return this.manager.readState(actor, db => {
+      if (db?.getRecord('works', task.workId)?.status !== 'active' || db.getTask(task.id)?.cancelRequested) return;
+      const execution = workExecution(task, db);
+      const events = db.listRecords('work-events').filter(event => event.workId === task.workId);
+      const index = events.findIndex(event => event.id === execution.executionEventId);
+      const current = events[index];
+      if (index < 1 || current.kind !== 'request' || current.receipt?.accepted !== true ||
+          acceptedWorkTask(current, db)?.id !== task.id || current.cardResume ||
+          current.authorization?.production?.relation !== 'continue') return;
+      const sourceFor = event => {
+        const grant = event.authorization?.production;
+        if (grant?.basis !== 'direct' || grant.when !== 'now' || grant.workId !== task.workId || grant.actionId !== event.id) return;
+        const origin = db.getTask(event.authorization.requestTaskId);
+        const user = origin && currentUserRequest(origin, db);
+        if (user && grant.acceptedMessageId === user.acceptedMessageId && grant.messageId === user.messageId && grant.roomId === user.roomId)
+          return { ...user, conversationId: origin.conversationId };
+      };
+      const source = sourceFor(current);
+      if (!source) return;
+      const isInvocation = record => record.name === 'catalog_native_run' && record.args?.id === entry.id && record.args.methodId;
+      const attempted = new Set(db.listTools(task.id).filter(isInvocation).map(record => record.args.methodId));
+      const earlierEvents = events.slice(0, index);
+      const earlierActions = new Map(earlierEvents.filter(event => event.kind === 'request').map(event => [event.id, event]));
+      for (const event of earlierEvents.reverse()) {
+        if (event.receipt?.accepted !== true) continue;
+        const prior = db.getTask(event.receipt.taskId);
+        if (prior?.workId !== task.workId || prior.sessionId !== task.sessionId) continue;
+        const original = workExecution(prior, db);
+        const root = earlierActions.get(original.executionEventId);
+        if (!root?.receipt?.accepted || root.authorization?.actionId !== original.actionId || !acceptedWorkTask(root, db)) continue;
+        const earlier = sourceFor(root);
+        if (!earlier || earlier.messageId === source.messageId || earlier.roomId !== source.roomId || earlier.conversationId !== source.conversationId) continue;
+        for (const record of db.listTools(prior.id).reverse()) {
+          if (!isInvocation(record)) continue;
+          const { methodId, expectedMethodRevision, operationId, resumeFromOperationId, recoveryBindingId } = record.args;
+          if (attempted.has(methodId)) continue;
+          attempted.add(methodId);
+          const { code, accessDenial, outcomeUnknown } = record.error || {};
+          // This validator refuses argument shape before run registers the business operation.
+          if (record.status !== 'failed' || record.executionRejected || outcomeUnknown || code !== 'FILE_ACCESS_DENIED' ||
+              accessDenial?.reason !== 'undeclared_native_path_operand' || !Number.isSafeInteger(accessDenial.argumentIndex) ||
+              resumeFromOperationId || recoveryBindingId || typeof operationId !== 'string' || !/^[\w.:-]{1,256}$/.test(operationId)) continue;
+          const method = currentMethod(entry, methodId);
+          if (method?.effect !== 'read' || method.revision !== expectedMethodRevision || this.executions.get(actor, task.workId, operationId)) continue;
+          return { workId: task.workId, operationId, methodId, methodRevision: method.revision, resourceRevision: method.resourceRevision,
+            failedToolRunId: record.id, reason: accessDenial.reason, argumentIndex: accessDenial.argumentIndex,
+            nativeOperationRecorded: false, ...(record.assistantMessageId ? {
+              invocationReference: { type: 'session', sessionId: prior.sessionId, entryId: record.assistantMessageId },
+            } : {}),
+            instruction: 'The earlier invocation was refused by the argument validator before its business operation was registered or launched. That receipt applies to the earlier attempt even when the method revision is unchanged. If the current accepted user request requires this exact read and permits it within the original restrictions, check it once through catalog_native_run with the current published method, its expected revision, the same authorized operands and this stable operationId. Apply the current receipt. Preserve hard permission refusals, any user instruction to stop or forbid this read, and unknown write outcomes.' };
+        }
+      }
+    });
   }
 
   async run(args, actor, task, signal) {
