@@ -1,5 +1,5 @@
 import { jsonToolResult } from './registry.mjs';
-import { taskMode, compactWork, compactTask } from './task-policy.mjs';
+import { assertToolPolicy, taskMode, compactWork, compactTask, nativeReviewStatuses, nativeReviewWaits } from './task-policy.mjs';
 import { randomUUID } from 'node:crypto';
 import { factTime } from '../context/fact-time.mjs';
 import { HANDOFF_REFERENCES, taskSource, workExecution } from '../context/sources.mjs';
@@ -460,6 +460,8 @@ function page(items, args, project) {
 export function coreTools(services, task) {
   const store = services.store;
   const frontend = taskMode(task) !== 'work';
+  const nativeReview = Boolean(task.metadata?.nativeEngineReview);
+  const reviewUpdates = { progress: string, checkpoint: {}, next: string, evidence: {} };
   const workView = (work, observedAt) => frontend ? compactWork(work, observedAt) : work;
   const taskView = value => compactTask(value, value?.workId && services.works.get(value.workId),
     value && services.works.execution(value).executionEventId);
@@ -1063,9 +1065,13 @@ export function coreTools(services, task) {
         return { ...compactWork(work), ...receipt, handedOff: receipt.accepted === true, acceptance: modelText(args.acceptance),
           ...(participantPlan ? { participantPlan: planReceipt(participantPlan) } : {}), evidenceWarnings: content.evidenceWarnings };
       }),
-    tool('work_update', frontend ? 'Pause or cancel existing work. Send requirements with work_dispatch; only the worker records progress and completion.' : 'Record actual progress and status of the current work. Its identity and revision are supplied by the program.',
-      object({ id: string, ...(!frontend ? { goal: string, requirements: string, progress: string, checkpoint: {}, next: string, constraints: string, evidence: {},
-        waiting: waitingFields } : {}), status: { type: 'string', enum: frontend ? ['paused', 'cancelled'] : ['active', 'waiting', 'paused', 'blocked', 'completed', 'cancelled'] } }), 'write', async args => {
+    tool('work_update', nativeReview ? 'Record the review findings and outcome on the original work.' :
+      frontend ? 'Pause or cancel existing work. Send requirements with work_dispatch; only the worker records progress and completion.' : 'Record actual progress and status of the current work. Its identity and revision are supplied by the program.',
+      object({ id: string, ...(nativeReview ? { workId: string, ...reviewUpdates, waiting: object({ ...waitingFields.properties,
+        kind: { type: 'string', enum: nativeReviewWaits } }, ['kind']) } :
+        !frontend ? { goal: string, requirements: string, constraints: string, ...reviewUpdates, waiting: waitingFields } : {}),
+        status: { type: 'string', enum: nativeReview ? nativeReviewStatuses : frontend ? ['paused', 'cancelled'] : ['active', 'waiting', 'paused', 'blocked', 'completed', 'cancelled'] } }), 'write', async args => {
+        if (nativeReview) assertToolPolicy(task, { name: 'work_update', effect: 'write' }, args);
         const work = await services.sources.requireWork(workId(args), task);
         const question = modelText(args.waiting?.question).trim(), blockingRequirement = modelText(args.waiting?.blockingRequirement).trim();
         if (args.waiting?.kind === 'user-input' && !question) throw new Error('Waiting for user input requires the actual unanswered question.');
@@ -1075,7 +1081,8 @@ export function coreTools(services, task) {
             throw new Error('请在这项工作的来源会话停止，或使用它的工作卡。');
           return compactWork(await services.stopWork(work, args.status, task));
         }
-        const patch = Object.fromEntries((frontend ? ['status'] : ['goal', 'requirements', 'progress', 'status']).filter(key => args[key] !== undefined).map(key => [key, modelText(args[key])]));
+        const patch = Object.fromEntries((frontend ? ['status'] : nativeReview ? ['progress', 'status'] : ['goal', 'requirements', 'progress', 'status'])
+          .filter(key => args[key] !== undefined).map(key => [key, modelText(args[key])]));
         if (!frontend && args.waiting && (args.status || work.status) === 'waiting') patch.waiting = { kind: args.waiting.kind,
           question, reason: modelText(args.waiting.reason), since: new Date().toISOString(),
           ...(args.waiting.kind === 'user-input' && blockingRequirement ? { blockingRequirement } : {}) };

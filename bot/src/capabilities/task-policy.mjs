@@ -14,6 +14,9 @@ const workHidden = new Set(['work_create', 'work_dispatch', 'work_deliver', 'mes
 const maintenanceTools = new Set(['catalog_search', 'catalog_get', 'catalog_probe', 'catalog_skill_write', 'catalog_skill_propose', 'catalog_native_observations']);
 const staffingTools = new Set(['chatroom_read', 'chatroom_team_read', 'bots_list', 'chatroom_team_manage']);
 const dutyActionTools = new Set(['chatroom_read', 'chatroom_team_read', 'evidence_read', 'knowledge_list', 'knowledge_read']);
+const nativeReviewFields = ['id', 'workId', 'progress', 'checkpoint', 'next', 'evidence', 'waiting', 'status'];
+export const nativeReviewStatuses = ['waiting', 'blocked', 'completed'];
+export const nativeReviewWaits = ['review', 'user-input'];
 
 export function taskMode(task = {}) {
   return task.metadata?.routeOnly ? 'routing' : task.workId ? 'work' : 'chat';
@@ -37,6 +40,20 @@ export function permitsTool(task, tool) {
 export function assertToolPolicy(task, tool, args = {}) {
   const deny = message => { throw Object.assign(new Error(message), { status: 403, code: 'TOOL_POLICY_DENIED' }); };
   if (!permitsTool(task, tool)) deny(`${taskMode(task)} conversation cannot use ${tool.name}`);
+  if (task.metadata?.nativeEngineReview && tool.name === 'work_update') {
+    const input = modelArgs(args);
+    if (!task.workId || [input.id, input.workId].some(id => id !== undefined && id !== task.workId) ||
+        Object.keys(input).some(key => !nativeReviewFields.includes(key)))
+      deny('Native result review can record findings and status only on its original work');
+    if (input.status !== undefined && !nativeReviewStatuses.includes(input.status))
+      deny('Native result review can record only a completed, blocked or waiting outcome');
+    if (input.waiting !== undefined && (!nativeReviewWaits.includes(input.waiting?.kind) ||
+        input.status !== undefined && input.status !== 'waiting' ||
+        input.waiting.kind === 'user-input' && (!modelText(input.waiting.question).trim() ||
+          !modelText(input.waiting.blockingRequirement).trim()) ||
+        Object.keys(input.waiting).some(key => !['kind', 'question', 'reason', 'blockingRequirement'].includes(key))))
+      deny('Native result review can wait for acceptance or the answer to a specific remaining question');
+  }
   if (task.metadata?.teamStaffing && args.roomId && args.roomId !== task.metadata.roomId) deny('Staffing can only use the current room');
   if (task.metadata?.roomDutyAction && args.roomId && args.roomId !== task.metadata.roomId) deny('A duty action can only use its own project group');
   if (task.metadata?.teamStaffing && tool.name === 'chatroom_team_manage' && args.action !== 'assess')
@@ -139,7 +156,7 @@ export const compactTask = (task, work, operationId) => task && ({ id: task.id, 
   createdAt: task.createdAt, startedAt: task.startedAt, finishedAt: task.finishedAt, handoff: task.result?.handoff,
   summary: String(task.result?.content || task.error?.message || '').slice(0, 1200) });
 export function conversationPrompt(task, hasCurrentRequest) {
-  if (task.metadata?.nativeEngineReview) return 'Review the completed native result in this original work. Compare the current result and actual event evidence to the accepted step. Record the verified status with work_update. The runtime delivers the executor text and actual attachment receipts separately. Use only review tools.';
+  if (task.metadata?.nativeEngineReview) return 'Review the completed native result in this original work. Compare the actual result and event evidence to the accepted step. Use work_update for progress, checkpoint, next step, evidence and a completed, blocked or waiting outcome. A wait can be for review or a specific unanswered question. The runtime delivers the executor text and actual attachment receipts.';
   if (task.metadata?.workflowReview) return workflowReviewPrompt(task.metadata.workflowReview.phase);
   if (task.metadata?.productionRecovery) return `This is the original authenticated user request recovered once after a later same-room instruction. Only its saved original implementation unit ${task.metadata.productionRecovery.sourceUnit} is eligible. Use request_decide for produce/implementation/new and the exact original unit. If it is still unsubmitted, use work_create for that one original deliverable, preserving all original materials, project, executor and limits. The earlier acceptance was already handled. Never repeat it, change the scope, submit a second action or claim native execution from local acceptance. No other action is authorized by this delivery.`;
   if (task.metadata?.teamStaffing) return [

@@ -1,4 +1,4 @@
-import { resolve, basename, extname, parse } from 'node:path';
+import { resolve, basename, extname, isAbsolute, parse } from 'node:path';
 import { taskSource, workExecution } from '../context/sources.mjs';
 import { assertPathPolicy, assertCommandPolicy, filePathKey, resolveFilePath, samePath } from './file-policy.mjs';
 
@@ -11,7 +11,7 @@ function pathMentions(text) {
     const quoted = match[1] ?? match[2] ?? match[3] ?? match[4] ?? match[5];
     const path = (quoted ?? match[6]?.replace(/[)\]}>]+$/, ''))?.trim();
     if (!path || /^(?:https?|file):/i.test(path) || !localStart.test(path) && !(quoted && localRelative.test(path))) return [];
-    return [{ path, start: match.index, end: match.index + match[0].length }];
+    return [{ path, start: match.index, end: match.index + match[0].length, quoted: quoted !== undefined }];
   });
 }
 
@@ -50,14 +50,45 @@ const inputLabel = /(?:素材|输入(?:资料|目录|文件)?|原件|原图|补�
 const executableLabel = /(?:执行|调用|运行|使用)\s*(?:工具|程序|可执行文件|入口)?\s*|(?:便携版入口|程序入口|工具入口|可执行(?:文件|入口)|入口)\s*(?:在|是|为|用|[:：=])|\b(?:execute|run|invoke|executable\s*(?:is|at|:|=)|entry\s+point\s*(?:is|at|:|=))\s*/i;
 const outputLabel = /(?:保存|放|写入|写|输出|生成|交付|导出|打包|存)(?:到|进|在|至|入)?\s*(?:这个|目录|文件)?|(?:结果|输出|交付)(?:目录|文件|路径|位置)\s*(?:是|为|[:：=])|(?:创建|新建|建立)\s*(?:一个|这个)?\s*(?:目录|文件夹)|\b(?:save|write|put|export|deliver|output)\s*(?:to|in|under|at|:|=)|\b(?:output|destination)\s+(?:directory|file|path)\s*(?:is|:|=)?/i;
 const conditionalMention = /(?:例如|举例|假如|如果|要是|假设|引用|转述|报错|未经|等.+(?:确认|批准|授权)|以后再|稍后再|(?:他|她|有人|对方|日志|工具|助手).{0,12}(?:说|写道|声称|提到)|\b(?:example|e\.g\.|if|suppose|quoted|hypothetical|once approved|(?:he|she|they|the log) said)\b)/i;
+const clauseBoundary = /[，,。；;！？!?\r\n]+/;
+const projectLocation = /^(?:(?:这个|当前|该|本次(?:的)?|本)\s*)?(?:项目|工程)\s*(?:就在|在|位于)\s*(?:[:：=]\s*)?$|^(?:the\s+)?(?:project|repository)\s+is\s+(?:located\s+)?(?:in|at)\s*$/i;
+const exclusiveLocation = /^(?:(?:这项|本次)(?:工作|任务)\s*)?(?:(?:仍|也)\s*)?(?:只|仅)(?:能|可|限)?在\s*$/;
+const workInside = /(?:^|\s+)(?:之?内|之?中|里面?)\s*(?:(?:用|使用)\s*(?:(?:现有|已有)\s*的?\s*)?(?:本地|本机)\s*(?:环境|工具)\s*(?:来)?\s*)?(?:完成(?:(?:这项|本次)\s*)?(?:工作|任务)?|开展(?:这项|本次)?(?:工作|任务)|工作|开发|实施)\s*\.?$/;
+const continuedLocation = /(?:\s+(?:and|or)\s+|\s*[及和或]\s*)(?:[A-Za-z]:[\\/]|[/\\]{2}|\/)/i;
+
+function projectDirectoryMention(text, clause, mention) {
+  const declaration = projectLocation.test(clause);
+  if (!declaration && !exclusiveLocation.test(clause)) return null;
+  const { path, start, end, quoted } = mention;
+  if (!isAbsolute(path)) return null;
+  const prefix = text.slice(0, start);
+  const sentence = prefix.split(/[。；;！？!?\r\n]+/).at(-1);
+  const after = text.slice(end).split(clauseBoundary, 1)[0];
+  if (negative.test(sentence) || conditionalMention.test(sentence + ' ' + after) ||
+      /^\s*>/.test(prefix.split(/\r?\n/).at(-1)) ||
+      prefix.split(/^[ \t]*(?:\x60{3,}|~{3,}).*$/m).length % 2 === 0) return null;
+  let directory = path;
+  if (declaration) {
+    if (after.trim() && after.trim() !== '.') return null;
+  } else {
+    // An unquoted path can contain spaces. Strip only an explicit work-location suffix.
+    const ending = workInside.exec(quoted ? after.trim() : path);
+    if (!ending || (quoted ? ending.index !== 0 : ending.index === 0)) return null;
+    if (!quoted) directory = path.slice(0, ending.index).trimEnd();
+  }
+  return !quoted && continuedLocation.test(directory) ? null : directory;
+}
 
 function namedFileScopes(text) {
   let previous = 0;
-  return pathMentions(text).flatMap(({ path, start, end }) => {
+  return pathMentions(text).flatMap(mention => {
+    const { path, start, end } = mention;
     const leading = text.slice(previous, start);
     previous = end;
-    const clause = leading.split(/[，,。；;！？!?\r\n]+/).at(-1).trimEnd();
+    const clause = leading.split(clauseBoundary).at(-1).trim();
     if (negative.test(clause) || conditionalMention.test(clause)) return [];
+    const cwd = projectDirectoryMention(text, clause, mention);
+    if (cwd) return [{ path: cwd, purpose: 'cwd', exact: true }];
     const role = [[scopeLabel, 'cwd'], [inputLabel, 'input'], [executableLabel, 'executable'], [outputLabel, 'output']]
       .find(([pattern]) => new RegExp('(?:' + pattern.source + ')\\s*(?:[:：=]\\s*)?$', 'i').test(clause))?.[1];
     if (!role) return [];
@@ -267,16 +298,17 @@ export function taskFileAccessPolicy(task, store, base) {
     }
     const scoped = [...namedFileScopes(source.fileScopeText ?? source.text), ...(source.scopes || [])].filter(({ purpose }) =>
       purpose === 'input' || purpose === 'executable' || !source.inputsOnly && Boolean(task.workId) === (purpose !== 'cwd'));
+    // Cwd grants only locate the directory before dispatch. Execution uses the saved project.
     if (scoped.some(({ purpose }) => purpose.startsWith('output-'))) {
       for (const [key, grant] of grants) if (grant.operations.includes('write'))
         grants.set(key, { ...grant, operations: grant.operations.filter(operation => operation !== 'write') });
     }
-    for (const { path, purpose } of scoped) {
+    for (const { path, purpose, exact } of scoped) {
       let resolved;
       try { resolved = resolveFilePath(base, path); } catch { continue; }
       if (resolved === parse(resolved).root) continue;
       const grant = { path: resolved, kind: purposeKinds[purpose], operations: purposeOperations[purpose],
-        sourceMessageId, sourceRoomId: source.roomId, sourceTaskId: source.taskId };
+        sourceMessageId, sourceRoomId: source.roomId, sourceTaskId: source.taskId, ...(exact ? { exact: true } : {}) };
       grants.set(JSON.stringify([filePathKey(resolved), purpose]), grant);
     }
   }

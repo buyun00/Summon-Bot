@@ -76,10 +76,9 @@ async function locatePath(path) {
 }
 const physicalPath = async path => (await locatePath(path)).path;
 
-function allowsFile(grant, requested, operation) {
-  return grant.operations.includes(operation) &&
-    (grant.kind === 'file' ? samePath(grant.path, requested) : pathWithin(grant.path, requested));
-}
+const matchesFileGrant = (grant, requested) => grant.exact || grant.kind === 'file' ?
+  samePath(grant.path, requested) : pathWithin(grant.path, requested);
+const allowsFile = (grant, requested, operation) => grant.operations.includes(operation) && matchesFileGrant(grant, requested);
 
 export function insideProtectedDirectory(path, workspace, roots) {
   return roots.some(root => pathWithin(root, path) &&
@@ -94,8 +93,7 @@ export function createPathAccess({ workspace, project = workspace, base = worksp
     if (sensitivePath(requested, workspace) || insideProtectedDirectory(requested, workspace, protectedDirectories))
       throw fileAccessDenied(requested, 'protected_path', { operations });
     const roots = (projectOnly ? [project] : [workspace, project]).filter(root => pathWithin(root, requested));
-    const grants = (accessPolicy.grants || []).filter(grant => grant.kind === 'file' ?
-      samePath(grant.path, requested) : pathWithin(grant.path, requested));
+    const grants = (accessPolicy.grants || []).filter(grant => matchesFileGrant(grant, requested));
     if ((grants.length || !roots.length) && !operations.every(operation => grants.some(grant => allowsFile(grant, requested, operation))))
       throw fileAccessDenied(requested, grants.length ? 'operation_not_granted' : 'outside_allowed_roots', {
         operations, ...(directory ? { kind: 'directory' } : file ? { kind: 'file' } : {}),
