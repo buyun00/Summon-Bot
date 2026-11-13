@@ -74,14 +74,14 @@ export class NativeExecutions {
     });
   }
 
-  async launch(item) {
+  async launch(item, launch) {
     if (item.status !== 'queued') return item;
     const directory = this.directory(item);
     await mkdir(join(directory, 'inputs'), { recursive: true, mode: 0o700 });
-    await atomic(join(directory, 'launch.json'), { ...item.launch, nonce: item.nonce });
+    await atomic(join(directory, 'launch.json'), { ...launch, nonce: item.nonce });
     // Persist intent before creating the OS process. Once starting, recovery
     // inspects the original receipt and heartbeat. It never repeats a launch.
-    const starting = this.save(item, { status: 'starting', launchedAt: now() });
+    const starting = this.save(item, { launch, status: 'starting', launchedAt: now() });
     try {
       const child = spawn(process.execPath, [worker, directory], {
         detached: true, windowsHide: true, stdio: 'ignore', env: process.env,

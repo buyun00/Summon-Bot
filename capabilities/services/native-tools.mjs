@@ -9,6 +9,7 @@ import { acceptedWorkTask, taskSource, workExecution } from '../../bot/src/conte
 import { fail, now, required, safeId } from '../shared/validation.mjs';
 import { discoverExecutables, executableKey, findExecutable, inspectNative, installedExecutablePath, localExecutable, nativeArgs, nativeCommand, nativeEnvironment } from './native-host.mjs';
 import { checkedNativeArguments, hasExplicitFileScope, inspectOnlyArgs, nativeFileArgs, validInspectionArgs } from './native-file-arguments.mjs';
+import { checkedNativeReference, containsNativeReference, nativeReferenceRoot } from './native-references.mjs';
 import { NativeExecutions, liveNative } from './native-executions.mjs';
 import { NativeSources } from './native-sources.mjs';
 
@@ -99,13 +100,13 @@ export class NativeToolService {
     // policy still uses its recorded project to resolve relative restrictions.
     const project = this.ownsDelegation(inspectionEntry, actor, saved?.work?.id) ? config.workspace : workProject;
     const checkedPath = createPathAccess({ workspace: config.workspace, project, base: project,
-      protectedDirectories: [this.dataRoot], accessPolicy: saved?.policy });
+      protectedDirectories: [this.dataRoot, nativeReferenceRoot], accessPolicy: saved?.policy });
     const cwd = await checkedPath(args.cwd || '.', { directory: true, operations: !discovery && args.cwd ? ['read', 'write'] : ['read'], alternative: true });
     return { ...saved, cwd, checkedPath, config, source: saved?.execution?.authorization?.source };
   }
 
   protectedExecutable(path, workspace = this.workspace) {
-    return sensitivePath(path, workspace) || insideProtectedDirectory(path, workspace, [this.dataRoot]);
+    return sensitivePath(path, workspace) || insideProtectedDirectory(path, workspace, [this.dataRoot, nativeReferenceRoot]);
   }
 
   async executablePath(file, scope, actor, entry, { canonical = false, catalogMethod = false } = {}) {
@@ -358,12 +359,13 @@ export class NativeToolService {
 
   expand(value, parameters) { return expand(value, parameters, true); }
 
-  invocation(entry, method, args, sessionId) {
+  invocation(entry, method, args, sessionId, { work = false } = {}) {
     const parameters = { ...(args.parameters || {}) };
     if (sessionId) parameters.sessionId = sessionId;
     if (!method) return { file: entry.config.file, args: nativeArgs(args.args), fileArgs: args.fileArgs, input: args.input, keepInput: args.keepInput === true };
     if (args.fileArgs !== undefined) fail('Use the file argument roles published with the method.');
     const argv = nativeArgs(expand(method.args, parameters));
+    if (!work && argv.some(containsNativeReference)) fail('Use bundled reference files through catalog_native_run in an accepted work', 403);
     const input = args.input ?? expand(method.input, parameters);
     return { file: method.script ? process.execPath : entry.config.file,
       args: method.script ? [join(this.catalog.skillRoot, entry.id, method.script), ...argv] : argv, fileArgs: method.fileArgs,
@@ -480,7 +482,7 @@ export class NativeToolService {
       const previous = args.resumeFromOperationId && await this.executions.refresh(this.resolveOperation({ operationId: args.resumeFromOperationId }, actor, task));
       if (args.resumeFromOperationId && (!previous?.nativeSessionId || previous.resourceId !== fresh.id || liveNative(previous.status) || previous.status === 'unknown'))
         fail('Resume requires an observed native session on a settled operation in this work', 409);
-      const launch = this.invocation(fresh, method, args, previous?.nativeSessionId || recovery?.nativeSessionId);
+      const launch = this.invocation(fresh, method, args, previous?.nativeSessionId || recovery?.nativeSessionId, { work: true });
       launch.cwd = context.cwd;
       if (launch.input !== undefined && (typeof launch.input !== 'string' || launch.input.length > 32_768)) fail('Native stdin payload exceeds the inline input limit');
       nativeCommand(launch.file, launch.args);
@@ -501,12 +503,14 @@ export class NativeToolService {
 
   async scopedLaunch(launch, context, entry, method, actor, effect, createOutputs = false) {
     const file = await this.executablePath(entry.config.file, context, actor, entry, { catalogMethod: Boolean(method) });
-    if (hasExplicitFileScope(context.policy) && (method?.script || launch.keepInput || launch.input ||
-        ['.cmd', '.bat', '.ps1'].includes(extname(file.file).toLowerCase())))
+    const usesReference = launch.args.some(containsNativeReference);
+    const indirect = method?.script || launch.keepInput || launch.input || ['.cmd', '.bat', '.ps1'].includes(extname(file.file).toLowerCase());
+    if ((hasExplicitFileScope(context.policy) || usesReference) && indirect)
       throw fileAccessDenied(file.file, 'scoped_direct_executable_required', { operations: ['execute'] });
     const offset = method?.script ? 1 : 0;
     const args = await checkedNativeArguments({ argv: launch.args.slice(offset), templateArgs: method?.args, fileArgs: launch.fileArgs,
-      cwd: context.cwd, effect, policy: context.policy, checkedPath: context.checkedPath, createOutputs });
+      cwd: context.cwd, effect, policy: context.policy, checkedPath: context.checkedPath, createOutputs,
+      resolveReference: method ? id => checkedNativeReference(id, { policy: context.policy, protectedDirectories: [this.dataRoot] }) : undefined });
     return { ...launch, file: method?.script ? launch.file : file.canonicalFile, args: [...launch.args.slice(0, offset), ...args] };
   }
 
@@ -525,18 +529,18 @@ export class NativeToolService {
     if (others.some(other => other.workId === item.workId && other.actor === item.actor && other.controlRevision !== item.controlRevision &&
         (liveNative(other.status) || other.status === 'unknown') && other.status !== 'queued')) return item;
     const task = await this.manager.readState(item.actor, db => db?.getTask(item.taskId));
+    let launch;
     try {
       const context = await this.workContext(item.actor, task, { workId: item.workId, cwd: item.intent.cwd });
       if (context.execution.executionEventId !== item.executionEventId || !samePath(context.cwd, item.cwd))
         fail('The accepted work action or its working directory changed before launch', 409);
-      const launch = await this.scopedLaunch(item.launch, context, entry, currentMethod(entry, item.methodId), item.actor, item.effect, true);
-      item = this.executions.save(item, { launch });
+      launch = await this.scopedLaunch(item.launch, context, entry, currentMethod(entry, item.methodId), item.actor, item.effect, true);
     } catch (error) {
       return this.executions.save(item, { status: 'failed', error: this.catalog.clean(error.message),
         ...(error.accessDenial ? { accessDenial: error.accessDenial } : {}), finishedAt: now(), observedAt: now() });
     }
     await this.project(item);
-    return this.executions.launch(item);
+    return this.executions.launch(item, launch);
   }
 
   resolveOperation(args, actor, task) {

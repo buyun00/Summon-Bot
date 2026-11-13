@@ -1,5 +1,6 @@
 import { assertCommandPolicy, createAuthorizedDirectory, fileAccessDenied, resolveFilePath } from '../../bot/src/capabilities/file-policy.mjs';
 import { fail } from '../shared/validation.mjs';
+import { containsNativeReference, nativeReferencePrefix } from './native-references.mjs';
 
 const operations = { read: ['read'], write: ['write'], 'read-write': ['read', 'write'] };
 const explicitPath = /(?:[A-Za-z]:[\\/]|(^|[=: "'\x60])(?:[/\\]{2}|\.{1,2}[\\/]|\/(?![a-z?]+$))|[A-Za-z0-9_.-][\\/][^/\\])|(?:^|[=: "'\x60])[^/\\=:]+\.[a-z][a-z0-9]{0,15}$/i;
@@ -48,14 +49,16 @@ export function hasExplicitFileScope(policy) {
   return Boolean(policy?.grants?.length || policy?.deniedPaths?.some(item => !item.alternativesOnly));
 }
 
-export async function checkedNativeArguments({ argv, templateArgs, fileArgs, effect, cwd, policy, checkedPath, createOutputs = false }) {
-  const scoped = hasExplicitFileScope(policy);
+export async function checkedNativeArguments({ argv, templateArgs, fileArgs, effect, cwd, policy, checkedPath, resolveReference, createOutputs = false }) {
+  const scoped = hasExplicitFileScope(policy) || argv.some(containsNativeReference);
   const byIndex = new Map(nativeFileArgs(fileArgs, argv.length, effect).map(item => [item.index, item]));
   const planned = [];
   for (const [index, value] of argv.entries()) {
     const definition = byIndex.get(index);
     if (scoped && opaqueArgument.test(value))
       throw fileAccessDenied(cwd, 'opaque_native_argument', { argumentIndex: index });
+    if (!definition && containsNativeReference(value))
+      throw fileAccessDenied(cwd, 'invalid_native_reference_operand', { argumentIndex: index });
     if (!definition) {
       if (!explicitPath.test(value) || helpOrVersion.test(value) ||
           isFixedFormatArgument(argv, templateArgs, byIndex, index)) continue;
@@ -71,6 +74,14 @@ export async function checkedNativeArguments({ argv, templateArgs, fileArgs, eff
     if (!value.startsWith(prefix) || !value.endsWith(suffix) || value.length <= prefix.length + suffix.length)
       fail('A native path operand did not match its registered argument shape');
     const operand = value.slice(prefix.length, suffix.length ? -suffix.length : undefined);
+    if (containsNativeReference(value)) {
+      if (!resolveReference || kind !== 'file' || access !== 'read' || !operand.startsWith(nativeReferencePrefix) ||
+          containsNativeReference(prefix) || containsNativeReference(suffix))
+        throw fileAccessDenied(cwd, 'invalid_native_reference_operand', { argumentIndex: index });
+      await resolveReference(operand);
+      planned.push({ index, prefix, suffix, reference: operand });
+      continue;
+    }
     if (/[@*?\r\n]/.test(operand) || /^(?:file|https?|ftp):/i.test(operand))
       throw fileAccessDenied(cwd, 'unresolved_native_path_operand', { argumentIndex: index });
     const path = resolveFilePath(cwd, operand);
@@ -83,6 +94,10 @@ export async function checkedNativeArguments({ argv, templateArgs, fileArgs, eff
     (path, allowed) => checkedPath(path, { operations: allowed, alternative: true }));
   const result = [...argv];
   for (const item of planned) {
+    if (item.reference) {
+      result[item.index] = item.prefix + await resolveReference(item.reference) + item.suffix;
+      continue;
+    }
     if (createOutputs && item.write) await createAuthorizedDirectory(item.path, checkedPath, {
       parentOfFile: item.kind === 'file', alternative: true,
     });

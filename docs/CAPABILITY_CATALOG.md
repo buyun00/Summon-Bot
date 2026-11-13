@@ -10,6 +10,8 @@
 
 Pi 在原 WORK 中使用 `catalog_native_run`，在获准的项目目录运行当前方法并记录稳定的 `operationId`。用 `catalog_native_status` 按游标查询 stdout、stderr 或事件，使用 `catalog_native_input` 和 `catalog_native_stop` 对应原操作。工具提供实际会话标识时，可按已确认的原生会话续接。结果未知时由维护者查询实际效果或原会话，再用 `catalog_native_reconcile` 记录结论。
 
+`catalog_search` 可查随正式版本发布的只读参考文件。搜索 `sRGB ICC profile` 可找到 `reference:srgb-icc`。将目录返回的 `nativeArgument.value` 填入已登记 CLI 方法的只读文件参数。启动时网关解析当前安装中的实际文件。工作中的素材和输出继续按各自的文件授权处理。该 ICC 配置采用 CC0 1.0，原许可随文件发布。 [Compact ICC Profiles](https://github.com/saucecontrol/Compact-ICC-Profiles/blob/abb1b6f48570b4eb0fabd8566e517dca07e617d4/profiles/sRGB-v2-magic.icc)
+
 ## 连接
 
 添加连接时填写名称、用途、使用范围、依赖和实际资源引用。专属维护 Bot 的绑定由系统管理，修改条目不会另建负责人；停用条目会停止维护 Bot，移除条目会将它归档并保留有效聊天、工作和知识。维护 Bot 收到咨询或维护提案时按需启动，保存本身不会自动调用业务接口。引用可表示某个连接、账号或对象，不要求预置项目分类。凭据仅引用正式 `config/runtime.env` 的环境变量；不要在配置 JSON、聊天或 Skill 正文填写密钥。

@@ -16,6 +16,7 @@ import { acceptedWorkTask, workExecution } from '../../bot/src/context/sources.m
 import { executorManifestOperation, readExecutorManifest } from '../../bot/src/runtime/executor-delivery.mjs';
 import { toolDefinitions, FILE_TOOLS } from '../gateway/tools.mjs';
 import { fail, pick } from '../shared/validation.mjs';
+import { nativeReferenceRoot } from './native-references.mjs';
 
 export const BUILTIN_CAPABILITIES = ['bot-management', 'chatroom', 'knowledge', 'memory-management', 'filesystem'];
 export function capabilityForTool(name) {
@@ -69,7 +70,7 @@ export async function createCapability(options) {
       if(name==='copy_file'&&(context.mode!=='work'||!context.workId||!context.taskId))fail('File copying requires an active work task',403);
       const config=await manager.config(actor),artifacts=[];
       const project=context.projectRoot||config.workspace;
-      const definitions=createFileTools({workspace:config.workspace,projectRoot:project,base:project,projectOnly:true,protectedRoot:dataRoot,accessPolicy:context.fileAccessPolicy,redact:createRedactor(config),containProcesses:context.workId?.startsWith('onboarding-')===true,tempRoot:join(manager.directory(actor),'tmp','capability-tools'),onArtifacts:items=>artifacts.push(...items),withExecution:(fn,toolSignal)=>lockFor(project).withLock(`bot:${actor}`,fn,toolSignal),saveArtifact:async input=>(await manager.botApi()).saveArtifact(join(manager.directory(actor),'artifacts'),input),
+      const definitions=createFileTools({workspace:config.workspace,projectRoot:project,base:project,projectOnly:true,protectedRoot:dataRoot,protectedRoots:[nativeReferenceRoot],accessPolicy:context.fileAccessPolicy,redact:createRedactor(config),containProcesses:context.workId?.startsWith('onboarding-')===true,tempRoot:join(manager.directory(actor),'tmp','capability-tools'),onArtifacts:items=>artifacts.push(...items),withExecution:(fn,toolSignal)=>lockFor(project).withLock(`bot:${actor}`,fn,toolSignal),saveArtifact:async input=>(await manager.botApi()).saveArtifact(join(manager.directory(actor),'artifacts'),input),
         publishFile:(input,file)=>locked(async ()=>{
           const workId=context.workId||(context.mode==='chat'?args.workId:null);
           if(!workId||!context.taskId)fail('File publication requires an authorized work ID',403);

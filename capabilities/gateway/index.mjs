@@ -382,7 +382,7 @@ export async function startGateway(options={}) {
       }
     }
     if(path==='/api/catalog'){
-      if(method==='GET')return catalog.search({query:params.get('query')||'',kind:params.get('kind')||undefined,scopeRefs:params.getAll('scopeRef'),offset:Number(params.get('offset')||0),limit:Number(params.get('limit')||40)},params.get('botId')||'controller');
+      if(method==='GET')return catalog.search({query:params.get('query')||'',kind:params.get('kind')||undefined,scopeRefs:params.getAll('scopeRef'),offset:Number(params.get('offset')||0),limit:Number(params.get('limit')||40)},params.get('botId')||'controller',{includeReferences:false});
       if(method==='POST')return ['mcp','http'].includes(body.kind)?native.registerNetwork(body,'controller'):catalog.save(body);
     }
     if((match=path.match(/^\/api\/catalog\/([^/]+)(?:\/(probe|call|delegate|proposals|resource|requests))?$/))){

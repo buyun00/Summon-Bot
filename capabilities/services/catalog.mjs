@@ -4,6 +4,7 @@ import { join, resolve, dirname } from 'node:path';
 import { validateToolArguments } from '@earendil-works/pi-ai';
 import { loadConfiguredTools } from '../../bot/src/capabilities/remote-tools.mjs';
 import { nativeToolDefinitions } from './native-tool-definitions.mjs';
+import { nativeReferencePrefix, nativeReferences, publicNativeReference } from './native-references.mjs';
 import { taskMode } from '../../bot/src/capabilities/task-policy.mjs';
 import { workExecution } from '../../bot/src/context/sources.mjs';
 import { isEnvironmentInitializationSource } from '../../bot/src/context/environment.mjs';
@@ -15,8 +16,8 @@ const object = (properties, required = []) => ({ type: 'object', properties, req
 const refFields = { workId: string, conversationId: string, originRoomId: string, originMessageId: string, sourceRefs: strings };
 const entryFields = { id: string, kind: { type: 'string', enum: ['mcp', 'http'] }, name: string, description: string, config: { type: 'object' }, allowedBotIds: strings, scopeRefs: strings, dependencies: strings, enabled: { type: 'boolean' }, coordination: { type: 'object' }, source: {}, expectedRevision: integer };
 export const catalogTools = [...[
-  ['catalog_search', 'Find permitted CLI, MCP, API and shared methods by purpose or actual scope references. Read only relevant entries; availability is not business authorization.', 'read', object({ query: string, kind: string, scopeRefs: strings, offset: integer, limit: { type: 'integer', minimum: 1, maximum: 80 } })],
-  ['catalog_get', 'Read a catalog entry, its current methods, tool schemas, owner and dependencies, or a Skill resource. In the original work, a CLI entry can include evidence of a prior read refused before launch. Supply operationId to inspect your persisted call receipt without contacting the remote service. resource is SKILL.md or a relative scripts/references/assets path.', 'read', object({ id: string, resource: string, operationId: string }, ['id'])],
+  ['catalog_search', 'Find permitted CLI, MCP, API, shared methods and bundled read-only reference files by purpose or scope. Use a reference entry’s nativeArgument.value for a registered CLI method’s read-file parameter. Availability is not business authorization.', 'read', object({ query: string, kind: string, scopeRefs: strings, offset: integer, limit: { type: 'integer', minimum: 1, maximum: 80 } })],
+  ['catalog_get', 'Read a catalog entry, its current methods, tool schemas, owner and dependencies, a bundled reference, or a Skill resource. In the original work, a CLI entry can include evidence of a prior read refused before launch. Supply operationId to inspect your persisted call receipt without contacting the remote service. resource is SKILL.md or a relative scripts/references/assets path.', 'read', object({ id: string, resource: string, operationId: string }, ['id'])],
   ['catalog_probe', 'Discover an MCP connection’s current tool schemas or load an HTTP configuration. Does not call a business tool. HTTP configuration readiness alone is not a successful API request.', 'read', object({ id: string }, ['id'])],
   ['catalog_register', 'Record an explicitly introduced MCP or HTTP entry once, with credential environment references only. The platform creates its own dedicated maintenance Bot and retains your access. Registration does not authorize continuing business.', 'write', object(entryFields, ['id', 'kind', 'name', 'description', 'config', 'source'])],
   ['catalog_update', 'Update a connection you maintain after an observed change or user correction. Read its revision first. Never put secret values in config; use environment references.', 'write', object(entryFields, ['id', 'expectedRevision'])],
@@ -132,17 +133,24 @@ export class CapabilityCatalog {
         observationSchedule: this.store.get('native-observation-schedules', entry.id) }
       : { resources: undefined, tools: (entry.tools || []).map(({ name, description, effect }) => ({ name, description, effect })) }) });
   }
-  search(input = {}, actor = 'controller') {
+  async search(input = {}, actor = 'controller', { includeReferences = true } = {}) {
     const { query = '', kind, scopeRefs = [], offset = 0, limit = 40 } = input;
     if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 80) fail('Invalid catalog pagination');
     const terms = String(query).toLowerCase().split(/\s+/).filter(Boolean);
     let entries = this.store.list(K.entries).filter(entry => this.permitted(entry, actor)).map(entry => this.public(entry));
     if (!kind || kind === 'service') entries.push(...this.registry.inventory().services.map(service => ({ id: `service:${service.id}`, kind: 'service', name: service.id, description: `Installed capability service ${service.id}`, readOnly: true, enabled: service.status === 'active', status: service.status, available: service.status === 'active', ownerBotId: null, scopeRefs: [], dependencies: [] })));
+    if (includeReferences && (!kind || kind === 'reference')) entries.push(...nativeReferences);
     entries = entries.filter(entry => (!kind || entry.kind === kind) && (!scopeRefs.length || scopeRefs.some(ref => entry.scopeRefs.includes(ref) || ref === `catalog:${entry.id}` || entry.dependencies.some(id => ref === `catalog:${id}`))) && terms.every(term => JSON.stringify(entry).toLowerCase().includes(term)));
-    return { entries: entries.slice(offset, offset + limit), total: entries.length, nextOffset: offset + limit < entries.length ? offset + limit : null };
+    const page = await Promise.all(entries.slice(offset, offset + limit).map(entry => entry.kind === 'reference' ? publicNativeReference(entry) : entry));
+    return { entries: page, total: entries.length, nextOffset: offset + limit < entries.length ? offset + limit : null };
   }
   async get(id, actor = 'controller', resource, task) {
-    if (String(id).startsWith('service:')) { const entry = this.search({ kind: 'service', limit: 80 }, actor).entries.find(item => item.id === id); if (!entry) fail('Service not found', 404); return entry; }
+    if (String(id).startsWith(nativeReferencePrefix)) {
+      const reference = nativeReferences.find(item => item.id === id);
+      if (!reference || resource) fail('Bundled reference not found', 404);
+      return publicNativeReference(reference);
+    }
+    if (String(id).startsWith('service:')) { const entry = (await this.search({ kind: 'service', limit: 80 }, actor)).entries.find(item => item.id === id); if (!entry) fail('Service not found', 404); return entry; }
     const entry = this.entry(id); this.access(entry, actor);
     if (resource) {
       if (entry.kind !== 'skill') fail('Only Skills have resources');
