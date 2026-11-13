@@ -12,6 +12,7 @@ import { checkedNativeArguments, hasExplicitFileScope, inspectOnlyArgs, nativeFi
 import { checkedNativeReference, nativeReferenceRoot } from './native-references.mjs';
 import { NativeExecutions, liveNative } from './native-executions.mjs';
 import { NativeSources } from './native-sources.mjs';
+import { nativeWorkScope, workAdapter, workAdapters, workEngineChoices, workEngineConfig, workEngineMethod } from './native-work-engines.mjs';
 
 const entries = 'catalog-entries';
 const observations = 'native-observations';
@@ -216,7 +217,11 @@ export class NativeToolService {
       if (authority && !entry.native.executableAuthority?.some(item => item.actor === actor && samePath(item.file, file.file) &&
         samePath(item.canonicalFile, file.canonicalFile)))
         entry = this.save(entry, { executableAuthority: [...(entry.native.executableAuthority || []), authority] });
-      if (!currentMethod(entry, entry.native.methods?.find(method => method.resourceRevision === entry.native.resourceRevision)?.id))
+      if (workAdapter(entry) && !workEngineMethod(entry)) {
+        await this.catalog.serial('native-resource:' + entry.id, () => this.engineMethod(this.catalog.entry(entry.id), actor, task));
+        entry = this.catalog.entry(entry.id);
+      }
+      if (!currentMethod(entry, entry.native.methods?.find(method => method.resourceRevision === entry.native.resourceRevision && !method.adapter)?.id))
         this.enqueue(entry, 'initial-learning', entry.lastObservationId ? this.store.get(observations, entry.lastObservationId) : null, actor, task);
       if (task?.workId) {
         const key = JSON.stringify([actor, task.workId]), prior = this.store.get('native-discovery-runs', key);
@@ -325,6 +330,12 @@ export class NativeToolService {
       const method = { id, name: required(args.name, 'method name', 128), description: required(args.description, 'method description', 8000),
         resourceRevision: revision, revision: (previous?.revision || 0) + 1, version: entry.native?.version || null, sourceIds: args.sourceIds,
         effect: args.effect || 'write', observedAt: now() };
+      if (args.role !== undefined || previous?.role === 'work-engine') {
+        if ((args.role || previous.role) !== 'work-engine' || entry.kind !== 'cli' || method.effect !== 'write' ||
+          args.protocol !== 'summon-jsonl' || args.keepInput !== true || !args.script)
+          fail('A work engine method needs a CLI bridge with an open Summon JSON-lines session');
+        method.role = 'work-engine';
+      }
       if (entry.kind === 'cli') {
         method.args = nativeArgs(args.args);
         method.fileArgs = nativeFileArgs(args.fileArgs, method.args.length, method.effect);
@@ -358,6 +369,172 @@ export class NativeToolService {
   }
 
   expand(value, parameters) { return expand(value, parameters, true); }
+
+  choices(actor, model, configuredId = workEngineConfig(model)) {
+    return workEngineChoices(this.forHost().filter(entry => this.catalog.permitted(entry, actor)), configuredId,
+      entry => this.catalog.state(entry), this.sources.list());
+  }
+
+  recoveryChoice(actor, work, binding) {
+    if (!binding?.nativeSessionId || !binding.archiveId) return null;
+    const archive = this.readArchive(binding.archiveId);
+    if (archive?.botId !== actor || archive.workId !== work.id) return null;
+    const prior = archive.priorExecutor?.kind || binding.resourceName;
+    const matches = this.choices(actor).executors.filter(engine => engine.kind === 'native' &&
+      (engine.id === binding.resourceId || [prior, binding.resourceName].some(value =>
+        engine.aliases.some(name => name.toLowerCase() === String(value).toLowerCase()))));
+    return matches.length === 1 ? matches[0] : null;
+  }
+
+  async prepareWorkEngine(entry, actor = 'controller', task, signal) {
+    const adapter = workAdapter(entry);
+    if (!adapter || !entry.enabled || entry.native.status === 'unavailable') return entry;
+    const file = entry.config.canonicalFile, cwd = this.workspace;
+    const inspected = await inspectNative(file, entry.native.versionArgs, cwd, { signal });
+    const version = inspected.exitCode === 0 && (inspected.stdout.trim() || inspected.stderr.trim()).split('\n')[0].trim();
+    if (!adapter.matches(version)) return entry;
+    entry = this.save(entry, { version, versionObserved: true, lastCheckedAt: inspected.observedAt });
+    const help = await inspectNative(file, adapter.helpArgs, cwd, { signal });
+    if (help.exitCode !== 0 || !help.stdout.includes('--stdio')) return entry;
+    const versionSource = this.observation(entry, 'version-probe', inspected, actor);
+    const interfaceSource = this.observation(entry, 'interface-probe', help, actor);
+    const account = await this.readEngineAccount(entry, adapter, actor, signal);
+    const { resourceRevision, methods } = entry.native, old = methods.find(method => method.id === adapter.methodId);
+    const method = { id: adapter.methodId, name: '交互式工作会话', description: '使用本机 CLI 的当前会话协议执行原 WORK，支持原生会话续接、追加、停止、进度和用户输入。',
+      role: 'work-engine', adapter: adapter.id, args: adapter.args, protocol: 'summon-jsonl', keepInput: true, effect: 'write',
+      resourceRevision, revision: (old?.revision || 0) + 1, version, observedAt: now(), sourceIds: [versionSource.id, interfaceSource.id] };
+    const fresh = this.save(entry, { methods: [...methods.filter(method => method.id !== adapter.methodId), method], status: 'ready',
+      workEngineAccount: account }, { revision: entry.revision + 1 });
+    this.emit('catalog.updated', { id: entry.id, ownerBotId: entry.ownerBotId });
+    return fresh;
+  }
+
+  async readEngineAccount(entry, adapter, actor, signal) {
+    const check = await adapter.account(entry.config.canonicalFile, this.workspace, signal);
+    let observed;
+    try { if (check.exitCode === 0) observed = JSON.parse(check.stdout); } catch {}
+    const account = this.observation(entry, 'work-engine-account', { status: observed?.ready ? 'connected' : observed ? 'login-required' : 'unknown',
+      authType: observed?.authType || null, observedAt: check.observedAt, ...(check.exitCode !== 0 ? { error: check.stderr.trim().slice(0, 1000) } : {}) }, actor);
+    return { status: account.status, resourceRevision: entry.native.resourceRevision, observationId: account.id, observedAt: account.observedAt };
+  }
+
+  async engineMethod(entry, actor, task, signal) {
+    const current = await this.check(entry, { actor, task, signal });
+    const method = workEngineMethod(current), adapter = workAdapter(current);
+    if (method) {
+      const account = current.native.workEngineAccount;
+      if (!method.adapter || !adapter || Date.now() - Date.parse(account?.observedAt) < 5 * 60_000) return current;
+      return this.save(current, { workEngineAccount: await this.readEngineAccount(current, adapter, actor, signal) });
+    }
+    if (current.native.workEnginePreparedRevision === current.native.resourceRevision) return current;
+    const prepared = await this.prepareWorkEngine(current, actor, task, signal);
+    return this.save(prepared, { workEnginePreparedRevision: prepared.native.resourceRevision, lastCheckedAt: now() });
+  }
+
+  async discoverWorkEngines() {
+    for (const adapter of workAdapters) {
+      if (this.forHost().some(entry => workAdapter(entry)?.id === adapter.id)) continue;
+      try {
+        const { candidates } = await this.discover({ command: adapter.executable }, 'controller');
+        if (candidates[0]) await this.enroll({ candidateId: candidates[0].id, name: adapter.name }, 'controller');
+      } catch (error) { if (error.status !== 404) throw error; }
+    }
+  }
+
+  async engineExecute(args, actor, task, operation, signal) {
+    const context = await this.workContext(actor, task, args), { work } = context;
+    const resourceId = work.executor?.resourceId;
+    if (work.executor?.kind !== 'native' || !resourceId || operation.workId !== work.id ||
+        (work.controlRevision || 0) !== operation.engine?.controlRevision)
+      fail('The original work engine selection or control revision changed', 409);
+    const requestId = args.operationId;
+    return this.catalog.serial('native-resource:' + resourceId, async () => {
+      const existing = this.executions.get(actor, work.id, requestId);
+      if (existing) return this.executions.public(await this.executions.refresh(existing));
+      const entry = this.entry(resourceId, actor);
+      if (!entry.enabled) fail('The selected work engine is disabled', 409);
+      const { blockedInput, recoverySource } = await this.manager.readState(actor, db => ({
+        blockedInput: db.listRecords('work-events').some(event => event.workId === work.id && event.status === 'engine-input-unknown'),
+        recoverySource: operation.engine.recoveryBindingId && db.getRecord('works', work.id)?.bindings.find(item => item.id === operation.engine.recoveryBindingId),
+      }));
+      if (blockedInput && !recoverySource) fail('An earlier native input has an unknown outcome; inspect that receipt before continuing', 409);
+      const siblings = this.executions.forWork(actor, work.id).filter(item => item.engine && !item.engine.recovery);
+      const previous = siblings.at(-1);
+      const recovery = recoverySource;
+      if (!recovery && siblings.some(item => item.resourceId !== resourceId)) fail('The work has a different native engine binding', 409);
+      const active = previous && await this.executions.refresh(previous);
+      if (active && !liveNative(active.status) && active.projectedStatus !== active.status) {
+        await this.project(active);
+        if (!recovery && active.status !== 'unknown') return { status: 'queue-behind-turn', operationId: active.operationId, resourceId };
+      }
+      if (recovery && active && liveNative(active.status)) return { status: 'queue-behind-turn', operationId: active.operationId, resourceId };
+      if (active && liveNative(active.status)) {
+        const currentStage = context.execution.authorization?.production?.stage;
+        const openingStage = active.engine.stage;
+        if (openingStage && currentStage && openingStage !== currentStage)
+          return { status: 'queue-behind-turn', operationId: active.operationId, resourceId };
+        if (active.status === 'queued') return { status: 'queue-behind-turn', operationId: active.operationId, resourceId };
+        if (active.controlRevision !== operation.engine.controlRevision || active.status === 'stopping')
+          return { status: 'queue-behind-turn', operationId: active.operationId, resourceId };
+        const launchScope = active.launch.engineScope;
+        const scope = await nativeWorkScope(context, operation, this.dataRoot);
+        if (JSON.stringify([scope.filesystem, scope.workspaceMode]) !== JSON.stringify([launchScope.filesystem, launchScope.workspaceMode]))
+          return { status: 'queue-behind-turn', operationId: active.operationId, resourceId };
+        const receipt = await this.catalog.serial('native-operation:' + active.id, () => this.executions.command(active,
+          { id: requestId, type: 'input', text: operation.engine.steer, source: 'work:' + task.id }));
+        return { status: 'steered', operationId: active.operationId, resourceId, receipt };
+      }
+      if (!recovery && active?.status === 'unknown') fail('The original engine turn has an unknown outcome. Inspect its actual effects before continuing.', 409);
+      if (!recovery && active) {
+        const prior = (await this.executions.inputReceipts(active)).find(input => input.id === requestId);
+        if (prior && prior.status !== 'rejected') return { status: 'steered', operationId: active.operationId, resourceId, receipt: prior };
+      }
+      if (active?.status === 'completed' && !recovery && operation.engine.controlRevision === active.controlRevision &&
+          !await this.manager.readState(actor, db => db.getRecord('native-engine-reviews', active.operationId)))
+        return { status: 'queue-behind-turn', operationId: active.operationId, resourceId };
+      if (!recovery) this.requireReconciled(work);
+      if (operation.engine.recoveryBindingId && !recovery) fail('The original recovery binding no longer exists', 409);
+      if (recovery && (!recovery.nativeSessionId || !['resumable', 'recovery-required'].includes(recovery.status) || recovery.resourceId && recovery.resourceId !== resourceId))
+        fail('The original recovery binding cannot be read through this engine', 409);
+      const earlier = siblings.filter(item => item.nativeSessionId && item.resourceId === resourceId).at(-1);
+      const sessionId = recovery?.nativeSessionId || active?.nativeSessionId || work.bindings.findLast(binding =>
+        binding.type === 'native-recovery' && binding.status === 'resumable' &&
+        (binding.resourceId === resourceId || this.recoveryChoice(actor, work, binding)?.id === resourceId))?.nativeSessionId || earlier?.nativeSessionId || null;
+      if (!recovery && siblings.some(item => item.turnStartedAt) && !sessionId) fail('The original engine session is unavailable. Recover the binding before resuming.', 409);
+      const fresh = await this.engineMethod(entry, actor, task, signal), method = workEngineMethod(fresh);
+      if (!method) {
+        const observed = this.observation(fresh, 'method-needed', { workId: work.id, methodRole: 'work-engine', objective: work.goal }, actor);
+        const queued = this.enqueue(fresh, 'method-needed', observed, actor, task);
+        if (queued?.finishedAt || !queued) fail('The selected work engine still has no current executable session method', 409);
+        await this.manager.request(actor, '/works/' + encodeURIComponent(work.id) + '/native-wait', { method: 'POST',
+          body: JSON.stringify({ taskId: task.id, maintenanceId: queued.id, resourceId, resourceName: fresh.name }) });
+        return { status: 'maintenance', maintenanceId: queued.id, resourceId };
+      }
+      const adapter = method.adapter && workAdapter(fresh);
+      const file = await this.executablePath(fresh.config.file, context, actor, fresh, { catalogMethod: true });
+      const scope = recovery ? null : await nativeWorkScope(context, operation, this.dataRoot);
+      const details = { prompt: operation.engine.prompt, sessionId, scope, operationId: requestId, observeOnly: Boolean(recovery) };
+      const launch = adapter ? adapter.launch(file.canonicalFile, details) :
+        this.invocation(fresh, method, { parameters: { sessionId: sessionId || '', cwd: context.cwd }, input: JSON.stringify({ summonStart: details }) + '\n' }, sessionId, { work: true });
+      if (method.adapter && adapter?.id !== method.adapter) fail('The work engine protocol adapter is unavailable', 409);
+      if (!adapter && recovery) fail('The selected native method has no read-only session lookup', 409);
+      if (!adapter) await this.scopedLaunch(launch, context, fresh, method, actor, 'write');
+      nativeCommand(launch.file, launch.args);
+      if (launch.input.length > 192_000) fail('The saved work handoff exceeds the native engine transport limit', 409);
+      Object.assign(launch, { cwd: context.cwd, engine: true, engineScope: scope, sessionId });
+      const item = this.executions.create({ actor, workId: work.id, taskId: task.id, operationId: requestId,
+        executionEventId: context.execution.executionEventId, hostId: this.host.hostId, resourceId, resourceName: fresh.name,
+        catalogRevision: fresh.revision, resourceRevision: fresh.native.resourceRevision, version: fresh.native.version || null,
+        methodId: method.id, methodRevision: method.revision, cwd: context.cwd, command: fresh.config.file,
+        effect: recovery ? 'read' : 'write', engine: { operationId: operation.id, recovery: Boolean(recovery),
+          stage: context.execution.authorization?.production?.stage || work.productionStage || null },
+        controlRevision: work.controlRevision || 0, intent: { id: resourceId, methodId: method.id }, source: context.source,
+        resumeFromOperationId: active?.nativeSessionId ? active.operationId : earlier?.operationId || null }, launch, 'queued');
+      const started = await this.advance(item);
+      await this.project(started).catch(() => {});
+      return this.executions.public(started);
+    });
+  }
 
   invocation(entry, method, args, sessionId, { work = false } = {}) {
     const parameters = { ...(args.parameters || {}) };
@@ -535,7 +712,17 @@ export class NativeToolService {
       const context = await this.workContext(item.actor, task, { workId: item.workId, cwd: item.intent.cwd });
       if (context.execution.executionEventId !== item.executionEventId || !samePath(context.cwd, item.cwd))
         fail('The accepted work action or its working directory changed before launch', 409);
-      launch = await this.scopedLaunch(item.launch, context, entry, currentMethod(entry, item.methodId), item.actor, item.effect, true);
+      const method = currentMethod(entry, item.methodId);
+      if (item.engine && method?.adapter) {
+        const file = await this.executablePath(entry.config.file, context, item.actor, entry, { catalogMethod: true });
+        if (!samePath(file.canonicalFile, item.launch.args[1])) fail('The accepted engine executable changed before launch', 409);
+        if (!item.engine.recovery) {
+          const operation = await this.manager.readState(item.actor, db => db?.getRecord('work-events', item.engine.operationId));
+          const scope = await nativeWorkScope(context, operation, this.dataRoot);
+          if (JSON.stringify(scope) !== JSON.stringify(item.launch.engineScope)) fail('The authorized engine scope changed before launch', 409);
+        }
+        launch = item.launch;
+      } else launch = await this.scopedLaunch(item.launch, context, entry, method, item.actor, item.effect, true);
     } catch (error) {
       return this.executions.save(item, { status: 'failed', error: this.catalog.clean(error.message),
         ...(error.accessDenial ? { accessDenial: error.accessDenial } : {}), finishedAt: now(), observedAt: now() });
@@ -689,7 +876,8 @@ export class NativeToolService {
   async maintain(job) {
     const entry = this.catalog.entry(job.entryId);
     const kinds = job.kinds || [job.kind];
-    if (!entry.enabled || kinds.every(kind => kind === 'initial-learning') && entry.native?.methods?.some(method => currentMethod(entry, method.id))) {
+    if (!entry.enabled || kinds.every(kind => kind === 'initial-learning') &&
+        entry.native?.methods?.some(method => !method.adapter && currentMethod(entry, method.id))) {
       this.store.save(tasks, { id: job.id, finishedAt: now() });
       return;
     }
@@ -699,6 +887,7 @@ export class NativeToolService {
         '处理工具维护事件 ' + kinds.join(', ') + '。用 catalog_get 读取当前资源，随后用 catalog_native_observations 或 catalog_get operationId 读取实际来源。',
         '资源 ' + entry.id + '，观察 ' + job.observationIds.join(', ') + '。原工作 ' + (job.workId || '无') + '，' + (userGoal || '') + '。',
         'CLI 优先在当前安装用真实版本/帮助探查，API/MCP 读当前接口。形成可直接执行的方法时用 catalog_native_method_write 登记准确适用条件、版本和来源；修改版本前评估现有方法，保留有效范围。',
+        ...(kinds.includes('method-needed') && workAdapter(entry) ? ['若原工作需要执行引擎，请维护可启动和续接真实回合的 work-engine 方法；普通探测方法不能完成这个委托。'] : []),
         '有具体业务问题时给原工作返回可使用的方法或处理结果，并说明选择理由。检查原生会话和实际效果再处理未知写入。仅观察到变更时保留用户权限边界。',
         '维护工作完成后更新当前工作状态和实际结果。',
         protocolGuide,
@@ -738,18 +927,19 @@ export class NativeToolService {
 
   async project(item) {
     if (!item?.workId) return item;
-    const { events, offset } = await this.executions.events(item);
-    const signature = JSON.stringify([item.status, item.pid, item.nativeSessionId, item.pending, item.error, item.reconciliation, offset]);
-    const projection = { eventOffset: offset, projected: signature, projectedStatus: item.status, projectedReconciledAt: item.reconciledAt || null };
+    const { events, offset, more } = await this.executions.events(item);
+    const signature = JSON.stringify([item.status, item.pid, item.nativeSessionId, item.nativeTurnId, item.pending, item.error, item.reconciliation, offset]);
+    const projection = { eventOffset: offset, projected: signature, projectedStatus: item.status, moreEvents: more, projectedReconciledAt: item.reconciledAt || null };
     if (item.projected === signature) return item.projectedStatus === item.status ? item : this.executions.save(item, projection);
     const work = await this.manager.readState(item.actor, db => db?.getRecord('works', item.workId));
     if (!work) return item;
     const projectState = () => this.manager.request(item.actor, '/works/' + encodeURIComponent(item.workId) + '/native-state', {
-      method: 'POST', body: JSON.stringify({ operation: this.executions.public(item), events, fromOffset: item.eventOffset || 0, toOffset: offset }),
+      method: 'POST', body: JSON.stringify({ operation: this.executions.public(item), events, fromOffset: item.eventOffset || 0, toOffset: offset, more }),
     });
     if (!['cancelled', 'paused'].includes(work.status)) {
       for (const [index, event] of events.entries()) {
-        if (event.type === 'request' && item.pending?.some(request => request.id === event.request.id) || ['progress', 'result'].includes(event.type))
+        if (event.type === 'request' && item.pending?.some(request => request.id === event.request.id) ||
+            event.type === 'progress' || event.type === 'result' && !item.engine)
           await this.notifyUser(item, event, (item.eventOffset || 0) + ':' + index);
       }
     }
@@ -759,7 +949,7 @@ export class NativeToolService {
       const observed = this.observation(entry, 'execution-' + item.status, { workId: item.workId, operationId: item.operationId,
         revision: item.catalogRevision, resourceRevision: item.resourceRevision, toolVersion: item.version, command: item.command, arguments: item.launch.args, cwd: item.cwd, exitCode: item.exitCode, pid: item.pid,
         nativeSessionId: item.nativeSessionId, error: item.error, stderr: stderr.text, outputRef: this.executions.public(item).outputRef }, item.actor);
-      if (item.status === 'failed' || item.status === 'unknown' || item.effect === 'update')
+      if ((item.status === 'failed' || item.status === 'unknown') && !item.engine?.recovery || item.effect === 'update')
         this.enqueue(entry, item.effect === 'update' ? 'update-' + item.status : 'execution-' + item.status, observed, item.actor, { workId: item.workId, id: item.taskId });
       if (item.effect === 'update' && item.status !== 'unknown') await this.check(entry, { force: true, actor: item.actor, task: { workId: item.workId, id: item.taskId } });
       item = this.executions.save(item, { terminalObserved: observed.id });
@@ -883,7 +1073,7 @@ export class NativeToolService {
 
   async tick() {
     this.sources.tick();
-    for (const item of this.executions.list().filter(item => liveNative(item.status) || item.projectedStatus !== item.status ||
+    for (const item of this.executions.list().filter(item => liveNative(item.status) || item.projectedStatus !== item.status || item.moreEvents ||
         item.status === 'unknown' && !item.reconciledAt && Date.now() - Date.parse(item.lastUnknownPoll || item.updatedAt) >= 30_000 ||
         item.reconciledAt && item.projectedReconciledAt !== item.reconciledAt)) {
       this.background('process:' + item.nonce, () => this.catalog.serial('native-resource:' + item.resourceId, async () => {
@@ -931,10 +1121,12 @@ export class NativeToolService {
         catch (error) { this.store.save(tasks, { id: job.id, lastError: this.catalog.clean(error.message), nextAt: Date.now() + 30_000 }); }
       });
     }
-    for (const entry of this.forHost().filter(item => item.enabled && item.native.versionObserved && (!item.native.lastCheckedAt || Date.now() - Date.parse(item.native.lastCheckedAt) >= 5 * 60_000)).slice(0, 2)) {
+    for (const entry of this.forHost().filter(item => item.enabled && (item.native.versionObserved || workAdapter(item)) &&
+        (!item.native.lastCheckedAt || Date.now() - Date.parse(item.native.lastCheckedAt) >= 5 * 60_000)).slice(0, 2)) {
       this.background('check:' + entry.id, () => this.catalog.serial('native-resource:' + entry.id, async () => {
         if (this.executions.forResource(entry.id).some(item => item.effect === 'update' && item.status !== 'queued' && liveNative(item.status))) return;
-        await this.check(this.catalog.entry(entry.id), { force: true });
+        const current = await this.check(this.catalog.entry(entry.id), { force: true });
+        if (workAdapter(current)) await this.engineMethod(current, 'controller');
       }));
     }
     for (const receipt of this.store.list('catalog-requests').filter(record => record.actor !== 'controller' && record.workId && record.taskId && record.nativeReceiptProjected !== remoteProjection(record)).slice(0, 4))
@@ -951,7 +1143,7 @@ export class NativeToolService {
 
   async close() { await Promise.allSettled([...this.working.values(), this.sources.close()]); }
 
-  async call(name, args, { actor, task, signal }) {
+  async call(name, args, { actor, task, signal, runtimeOperation }) {
     switch (name) {
       case 'discover': return this.discover(args, actor, task);
       case 'enroll': return this.enroll(args, actor, task);
@@ -960,6 +1152,21 @@ export class NativeToolService {
       case 'method_write': return this.methodWrite(args, actor);
       case 'run': return this.run(args, actor, task, signal);
       case 'status': return this.status(args, actor, task);
+      case 'engine_choices': {
+        const model = actor !== 'controller' ? (await this.manager.config(actor)).model : null;
+        const result = this.choices(actor, model);
+        if (actor !== 'controller' && args.workId) result.recovery = await this.manager.readState(actor, db => {
+          const work = db?.getRecord('works', args.workId);
+          const binding = work?.bindings?.findLast(item => item.type === 'native-recovery' && ['resumable', 'recovery-required'].includes(item.status));
+          return binding && this.recoveryChoice(actor, work, binding);
+        });
+        return result;
+      }
+      case 'engine_execute': {
+        if (!runtimeOperation?.engine || !task?.workId || task.workId !== args.workId)
+          fail('Work engines execute only a saved, authorized work action', 403);
+        return this.engineExecute(args, actor, task, runtimeOperation, signal);
+      }
       case 'input': case 'stop': return this.command(args, actor, task, name);
       case 'reconcile': return this.reconcile(args, actor, task);
       case 'recover': return this.recover(args, actor, task);

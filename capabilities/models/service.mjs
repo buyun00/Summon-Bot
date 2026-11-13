@@ -16,8 +16,8 @@ const requireEntry = (catalog, id) => { const entry = catalog.connections.find(i
 
 /** Model credentials and account usage belong to the existing host, outside Bot conversation history. */
 export class ModelConnections {
-  constructor({ dataRoot, model, profileId, emit = () => {} }) {
-    this.dataRoot = dataRoot; this.profileId = profileId; this.initialModel = model; this.emit = emit;
+  constructor({ dataRoot, model, profileId, native, emit = () => {} }) {
+    this.dataRoot = dataRoot; this.profileId = profileId; this.initialModel = model; this.emit = emit; this.native = native;
     this.path = profileId ? join(dataRoot, 'config', 'workspaces', profileId, 'model-connections.json') : connectionPath(dataRoot);
     this.credentials = new ModelCredentialStore(this.path); this.logins = new Map(); this.usage = {}; this.pendingUsage = new Map(); this.writeChain = Promise.resolve();
     this.usagePath = profileId ? join(dataRoot, 'config', 'workspaces', profileId, 'model-usage.json') : join(dataRoot, 'config', 'model-usage.json');
@@ -68,10 +68,19 @@ export class ModelConnections {
   }
   summary() {
     const catalog = this.catalog(), selected = catalog.activeId ? requireEntry(catalog, catalog.activeId) : null;
-    const workExecutor = { id: 'pi', name: 'Pi', kind: 'pi', role: 'executor', enabled: true, label: '工作执行',
-      usage: { status: 'shared', note: 'Pi 使用已连接的聊天模型。' } };
+    const { executors = [], defaultId = null } = this.native?.choices('controller', null, catalog.workExecutorId) || {};
+    const workExecutor = executors.find(item => item.id === defaultId) || null;
     return { activeId: selected?.id || null, chat: selected ? { ...this.publicEntry(selected), role: 'chat' }
-      : { role: 'chat', name: '尚未选择聊天模型', configured: false, usage: { status: 'unconfigured' } }, workExecutor };
+      : { role: 'chat', name: '尚未选择聊天模型', configured: false, usage: { status: 'unconfigured' } }, executors, workExecutor };
+  }
+  async selectWorkExecutor(id) {
+    await this.mutate(catalog => {
+      if (id === null) { delete catalog.workExecutorId; return; }
+      const choice = this.native?.choices('controller', null, id).executors.find(item => item.id === id);
+      if (!choice || choice.status === 'unavailable') throw new Error('请选择目录中可用的工作引擎。');
+      catalog.workExecutorId = id;
+    });
+    return this.snapshot();
   }
   async snapshot() {
     const catalog = this.catalog(), credentials = await this.credentials.list();

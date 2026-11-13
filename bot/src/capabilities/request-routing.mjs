@@ -28,7 +28,7 @@ export function productionRefusal(record) {
 }
 
 export function currentProductionStage(work, store) {
-  const binding = work.bindings?.findLast(item => item.type === 'codex-desktop');
+  const binding = work.bindings?.findLast(item => item.type === 'codex-desktop' || item.type === 'native-tool' && item.engine && !item.engine.recovery);
   for (const id of [binding?.operationId, binding?.executionOperationId]) {
     if (!id) continue;
     const event = store.getRecord('work-events', id), tool = store.getTool(id);
@@ -547,6 +547,7 @@ export async function authorizeProduction({ task, store, decision, proposed, act
     sourceKey, kind: action.kind,
     taskId: user.taskId, acceptedMessageId: user.acceptedMessageId, messageId: user.messageId, roomId: user.roomId,
     relation: proposed.relation, workId, actionId, projectId: (proposed.work?.project || proposed.project)?.id ?? null,
+    ...(proposed.executor?.id ? { executorResourceId: proposed.executor.id } : {}),
     target: JSON.stringify(proposed.work?.target || proposed.target || null), bindingId: proposed.work?.bindingId,
     controlRevision: proposed.work?.controlRevision, checkedAt: new Date().toISOString() };
 }

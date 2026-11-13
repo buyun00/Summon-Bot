@@ -104,10 +104,14 @@ export async function publishExecutorResult({ store, services, task, operation, 
       const path = await artifactPath(artifact.path);
       if (!within(root, path) || within(resolve(root, '.summon-handoffs'), path)) throw new Error('Deliverable is outside the product output scope');
       if (!isCurrent()) return store.putRecord('executor-deliveries', { ...delivery, status: 'superseded' });
+      const args = { path, ...(artifact.name ? { name: artifact.name } : {}) };
+      const operationId = `${key}:publish:${index}`;
+      store.putRecord('work-events', { id: operationId, workId: task.workId, sourceTaskId: task.id,
+        kind: 'executor-publication', status: 'submitting', transport: { name: 'publish_file', args } });
       attempted = true;
-      const published = await services.capability('publish_file', { path, ...(artifact.name ? { name: artifact.name } : {}) }, task,
-        { operationId: `${key}:publish:${index}` });
+      const published = await services.capability('publish_file', args, task, { operationId });
       if (!published?.id) throw new Error('Attachment publication did not return an attachment ID');
+      store.putRecord('work-events', { ...store.getRecord('work-events', operationId), status: 'submitted', executionReceipt: { id: published.id } });
       delivery = store.putRecord('executor-deliveries', { ...delivery, attachments: [...delivery.attachments, { id: published.id }] });
     }
     return store.putRecord('executor-deliveries', { ...delivery, status: 'published' });

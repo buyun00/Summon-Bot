@@ -19,7 +19,8 @@ const append = (name, text) => appendFileSync(join(directory, name), text, { mod
 writeFileSync(own, String(process.pid), { flag: 'wx', mode: 0o600 });
 
 let child, timer, stopTimer, stopping = false, finished = false, secrets = [];
-const state = { nonce: manifest.nonce, runnerPid: process.pid, status: 'starting', pending: [], nativeSessionId: manifest.sessionId || null };
+let nativeInputs = new Map();
+const state = { nonce: manifest.nonce, runnerPid: process.pid, status: 'starting', pending: [], nativeSessionId: manifest.engine ? null : manifest.sessionId || null };
 const clean = value => redactNative(value, secrets);
 const record = patch => {
   Object.assign(state, patch, { observedAt: now() });
@@ -35,12 +36,44 @@ function protocolLine(line) {
   if (!message || typeof message !== 'object') return;
   if (message.type === 'session' && field(message.sessionId, 512)) {
     const nativeSessionId = field(message.sessionId, 512);
+    if (manifest.engine && (manifest.sessionId && manifest.sessionId !== nativeSessionId || state.nativeSessionId && state.nativeSessionId !== nativeSessionId)) return;
     record({ nativeSessionId });
     event('session', { nativeSessionId, ref: field(message.ref, 1024) });
   }
+  if (manifest.engine && message.type === 'turn' && message.sessionId === state.nativeSessionId && field(message.turnId, 512)) {
+    const nativeTurnId = field(message.turnId, 512), turnStartedAt = field(message.startedAt, 64) || now();
+    record({ nativeTurnId, turnStartedAt });
+    event('turn', { nativeSessionId: state.nativeSessionId, nativeTurnId, turnStartedAt });
+  }
+  if (manifest.engine && message.type === 'turn-submitting' && message.sessionId === state.nativeSessionId)
+    record({ turnSubmitted: true });
   if (message.type === 'progress' || message.type === 'result') {
-    const text = field(message.text, 4000);
-    if (text) event(message.type, { text });
+    const text = field(message.text, message.type === 'result' ? 16000 : 4000);
+    if (text) {
+      const evidence = { text, itemId: field(message.itemId, 512), turnId: field(message.turnId, 512),
+        phase: field(message.phase, 64), confirmed: message.confirmed === true };
+      if (manifest.engine && message.type === 'result' && evidence.turnId === state.nativeTurnId) record({ final: evidence });
+      event(message.type, evidence);
+    }
+  }
+  if (manifest.engine && message.type === 'item' && message.turnId === state.nativeTurnId) {
+    const { exitCode } = message;
+    event('item', { turnId: state.nativeTurnId, itemId: field(message.itemId, 512), itemType: field(message.itemType, 80),
+      status: field(message.status, 80), phase: field(message.phase, 80), command: field(message.command, 2000),
+      files: Array.isArray(message.files) ? message.files.slice(0, 20).map(file => field(file, 512)) : undefined,
+      output: field(message.output, 4000), exitCode: Number.isInteger(exitCode) ? exitCode : null });
+  }
+  if (manifest.engine && message.type === 'outcome' && ['completed', 'failed', 'stopped', 'unknown'].includes(message.status)) {
+    record({ nativeOutcome: message.status, error: field(message.error, 4000) });
+    event('outcome', { status: message.status, nativeTurnId: state.nativeTurnId, error: state.error });
+  }
+  if (manifest.engine && message.type === 'input-result' && field(message.inputId, 256) &&
+    ['accepted', 'rejected', 'unknown'].includes(message.status)) {
+    const result = { inputId: field(message.inputId, 256), status: message.status,
+      turnId: field(message.turnId, 512), error: field(message.error, 4000) };
+    const filename = nativeInputs.get(result.inputId);
+    if (filename) { json(filename, { ...result, at: now() }); nativeInputs.delete(result.inputId); }
+    event('input-result', result);
   }
   if (message.type === 'request' && !stopping) {
     const id = field(message.id, 256), text = field(message.text, 4000);
@@ -121,6 +154,7 @@ async function applyCommand(command, path) {
     ? JSON.stringify({ summonInput: { type: request ? 'answer' : 'message', id: command.id, requestId: command.requestId || null, text: command.text } }) + '\n'
     : command.text;
   receipt({ status: 'submitting', requestId: command.requestId || null });
+  if (manifest.engine) nativeInputs.set(command.id, path + '.native');
   try {
     await writeInput(input);
     receipt({ status: 'delivered', requestId: command.requestId || null });
@@ -160,5 +194,8 @@ try {
     timer = setInterval(() => { void poll().catch(error => event('supervisor-error', { error: clean(error.message) })); }, 750);
   });
   child.once('error', error => finish({ status: 'failed', error: clean(error.message) }));
-  child.once('close', (exitCode, exitSignal) => finish({ status: stopping ? 'stopped' : exitCode === 0 ? 'completed' : 'failed', exitCode, exitSignal }));
+  child.once('close', (exitCode, exitSignal) => finish({
+    status: manifest.engine ? state.nativeOutcome || (state.nativeTurnId || state.turnSubmitted ? 'unknown' : stopping ? 'stopped' : 'failed') :
+      stopping ? 'stopped' : exitCode === 0 ? 'completed' : 'failed', exitCode, exitSignal,
+  }));
 } catch (error) { finish({ status: 'failed', error: clean(error.message) }); }

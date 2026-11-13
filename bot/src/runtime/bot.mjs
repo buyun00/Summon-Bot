@@ -24,6 +24,7 @@ import { waitingLabel } from '../context/execution-evidence.mjs';
 import { OWNER_DELIVERY } from '../context/duty-actions.mjs';
 import { applyWorkflowCorrection, workflowReviewerId } from '../context/workflow-review.mjs';
 import { verifiedProductionRecovery } from '../capabilities/production-recovery.mjs';
+import { nativeWorkExecutor } from './native-work-executor.mjs';
 
 const at = () => new Date().toISOString();
 const failure = (status, message, code) => Object.assign(new Error(message), { status, code });
@@ -105,7 +106,9 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         if (output.isError) throw new Error(output.content?.map(item => item.text || '').join('\n') || `${name} failed`);
         return output.details ?? output.structuredContent ?? output;
       },
-      executors: () => ({ defaultId: 'pi', executors: [{ id: 'pi', kind: 'pi', name: 'Pi' }] }),
+      executors: workId => engine.configured.tools.some(tool => tool.name === 'catalog_native_engine_choices')
+        ? services.capability('catalog_native_engine_choices', workId ? { workId } : {}, {})
+        : { defaultId: 'pi', executors: [{ id: 'pi', kind: 'pi', name: 'Pi' }] },
       contacts: () => config.contacts.map(({botId,name,dataDir}) => ({botId,name,transport:dataDir?'local-direct':'http-direct'})),
       async send(to, envelope, { signal, taskId } = {}) {
         const id = envelope.id || randomUUID(), key = `${to}:${id}`;
@@ -160,7 +163,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       };
       if (settleObsoleteEnvironmentTask(work)) return;
       engine.maintenance.activity(task);
-      if (work && ['paused', 'cancelled', 'blocked'].includes(work.status)) { hold('work-stopped', work); return; }
+      if (work && (['paused', 'cancelled'].includes(work.status) || work.status === 'blocked' && !task.metadata?.nativeEngineReview)) { hold('work-stopped', work); return; }
       if (heldBeforeCutover(work, task.createdAt)) { hold('pre-cutover-wait', work); return; }
       const controller = new AbortController();
       const conversationScheduler = task.workId ? scheduler : frontendScheduler;
@@ -170,7 +173,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         if (task.status !== 'accepted') return;
         const currentWork = task.workId && services.works.get(task.workId);
         if (settleObsoleteEnvironmentTask(currentWork)) return;
-        if (currentWork && ['paused', 'cancelled', 'blocked'].includes(currentWork.status)) { hold('work-stopped', currentWork); return; }
+        if (currentWork && (['paused', 'cancelled'].includes(currentWork.status) || currentWork.status === 'blocked' && !task.metadata?.nativeEngineReview)) { hold('work-stopped', currentWork); return; }
         if (heldBeforeCutover(currentWork, task.createdAt)) { hold('pre-cutover-wait', currentWork); return; }
         const cutoverRecovery = task.metadata?.cutoverRecoveryBindingId;
         if (cutoverRecovery && pendingCutoverRecovery(currentWork)?.id !== cutoverRecovery) {
@@ -178,10 +181,14 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         }
         if (currentWork?.status === 'waiting' && currentWork.waiting?.dependencyWorkId &&
           store.getRecord('work-waits', currentWork.waiting.id)?.status === 'pending') { hold('dependency-pending', currentWork); return; }
+        if (currentWork?.status === 'waiting' && currentWork.waiting?.kind === 'tool-maintenance' &&
+            currentWork.executor?.kind === 'native' && !task.metadata?.nativeEngineReview) { hold('engine-maintenance-pending', currentWork); return; }
         // A later request can be accepted while its predecessor is still active.
         // The predecessor may finish after acceptance, so refresh at actual
         // queue start as well; its completed state does not describe this task.
-        if (currentWork && !cutoverRecovery && ['waiting', 'completed'].includes(currentWork.status))
+        const native = currentWork && services.works.executor(currentWork).kind === 'native';
+        if (currentWork && !cutoverRecovery && ['waiting', 'completed'].includes(currentWork.status) &&
+            !(native && (task.metadata?.nativeEngineReview || ['native-input', 'tool-maintenance', 'native-recovery'].includes(currentWork.waiting?.kind))))
           services.works.update(currentWork.id, { status: 'active', waiting: null, lastError: null, executionOutcome: null });
         // Keep each accepted request and its publication route intact in the work queue.
         if (currentWork) services.works.update(currentWork.id, { lastTaskId: task.id });
@@ -192,7 +199,8 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
                 routeOnly: Boolean(task.metadata?.routeOnly) });
             engine.maintenance.activity(task); return store.updateTask(task.id, { status: 'running', startedAt: at() });
           };
-          const result = await engine.run(task, { signal: controller.signal, onStart: start });
+          const result = native ? await services.nativeEngine.execute(start(), { signal: controller.signal }) :
+            await engine.run(task, { signal: controller.signal, onStart: start });
           store.updateTask(task.id, { status: 'completed', result, finishedAt: at(), activity: {
             phase: result.suspended ? 'waiting' : 'completed', label: result.handoff ? '已交给独立工作处理' : result.suspended ? waitingLabel(task.workId && services.works.get(task.workId)) : '已完成本次任务',
             motion: result.handoff ? 'exclaim' : result.suspended ? 'notify' : 'burst', source: 'execution', updatedAt: at() } });
@@ -205,9 +213,9 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
             else store.updateTask(pending.id, { steeredIntoTaskId: null });
           }
           let latest = task.workId && services.works.get(task.workId);
-          const native = latest?.bindings?.findLast(binding => binding.type === 'native-tool' && ['queued', 'starting', 'running', 'awaiting-input', 'stopping'].includes(binding.status));
-          if (latest?.status === 'active' && native) latest = services.works.update(latest.id, { status: 'waiting',
-            waiting: { kind: 'native-execution', operationId: native.operationId, reason: '等待 ' + native.resourceName + ' 的原生操作' } });
+          const liveOperation = latest?.bindings?.findLast(binding => binding.type === 'native-tool' && ['queued', 'starting', 'running', 'awaiting-input', 'stopping'].includes(binding.status));
+          if (latest?.status === 'active' && liveOperation) latest = services.works.update(latest.id, { status: 'waiting',
+            waiting: { kind: 'native-execution', operationId: liveOperation.operationId, reason: '等待 ' + liveOperation.resourceName + ' 的原生操作' } });
           if (latest?.status === 'active' && !cutoverRecovery && services.works.executor(latest).kind === 'pi') {
             const execution = services.works.execution(task), continuationId = execution.actionId || execution.executionEventId;
             const prior = store.getRecord('work-continuation', continuationId);
@@ -239,7 +247,14 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
           const corrections = store.listTasks({ status: 'accepted', limit: 10000 }).filter(item => item.steeredIntoTaskId === task.id);
           for (const pending of corrections) store.updateTask(pending.id, { steeredIntoTaskId: null });
           const current = task.workId && services.works.get(task.workId);
-          if (current?.status === 'active' && state !== 'stopping') services.works.update(current.id, { status: corrections.length ? 'active' : 'blocked', lastError: clean({ code: error.code, message: error.message }) });
+          if (current && ['active', 'waiting'].includes(current.status) && state !== 'stopping') {
+            const unknown = native && error.outcomeUnknown;
+            if (current.status === 'active' || native && !['native-input', 'tool-maintenance'].includes(current.waiting?.kind))
+              services.works.update(current.id, { status: corrections.length ? 'active' : unknown ? 'waiting' : 'blocked',
+                ...(unknown ? { waiting: { kind: 'native-execution', operationId: task.metadata?.workEventId,
+                  reason: '原生提交结果待确认' }, executionOutcome: { kind: 'result-unknown', operationId: task.metadata?.workEventId } } : {}),
+                lastError: clean({ code: error.code, message: error.message }) });
+          }
           const next = store.getRecord('business-decisions', `${task.id}:continuation`);
           if (next?.result?.status === 'pending') journal.note(task, 'continuation', { result: { status: 'unconfirmed' } });
         }
@@ -313,7 +328,7 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
             { sources: [...work.sources, execution.authorization.source] });
         }
       }
-      if (envelope.metadata?.sourceType !== 'external' && envelope.kind === 'event' && (envelope.metadata?.purpose === 'fyi' || work?.status === 'completed')) {
+      if (envelope.metadata?.sourceType !== 'external' && !envelope.metadata?.nativeEngineReview && envelope.kind === 'event' && (envelope.metadata?.purpose === 'fyi' || work?.status === 'completed')) {
         journal.note(task, 'task', { boundary: 'task', decision: 'observe-without-action', runtimeCheck: 'confirmed',
           facts: { reason: envelope.metadata?.purpose === 'fyi' ? 'fyi' : 'work-completed' } });
         accepted.task = store.updateTask(task.id, { status: 'completed', result: { content: '', observed: true }, finishedAt: at() });
@@ -328,7 +343,8 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
             services.works.requireResume(work, event.authorization.source.receivedAt || null);
             services.works.activate(work);
           }
-        } else if (!envelope.metadata?.cutoverRecoveryBindingId &&
+        } else if (!envelope.metadata?.cutoverRecoveryBindingId && !envelope.metadata?.nativeEngineReview &&
+          !(work.executor?.kind === 'native' && ['native-input', 'tool-maintenance', 'native-recovery'].includes(work.waiting?.kind)) &&
           (['waiting', 'blocked'].includes(work.status) || work.status === 'completed' && envelope.kind === 'request')) {
           services.works.update(work.id, { status: 'active', waiting: null, lastError: null });
         }
@@ -341,6 +357,18 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       const selected = id ? modelConnection(config.model, id) : selectedConnection(config);
       return { connectionId: selected.id, modelId: selected.model, thinkingLevel: selected.thinkingLevel };
     } });
+    services.nativeEngine = nativeWorkExecutor({ store, services, emit, clean });
+    services.reviewNative = (task, options) => engine.run(task, options);
+    services.bindRecoveredEngine = async (work, inspect = false) => {
+      if (work.executor?.kind !== 'pi' || !work.bindings?.some(binding => binding.type === 'native-recovery' &&
+          (binding.status === 'resumable' || inspect && binding.status === 'recovery-required'))) return work;
+      const { recovery } = await services.executors(work.id);
+      if (!recovery) return work;
+      const current = services.works.get(work.id);
+      if (current.revision !== work.revision) throw failure(409, '原工作已变化，请从当前记录继续。');
+      return services.works.update(work.id, { expectedRevision: work.revision,
+        executor: { kind: 'native', resourceId: recovery.id, name: recovery.name, ...(work.executor.target ? { target: work.executor.target } : {}) } });
+    };
     services.stopWork = async (target, status, task) => services.works.stop(target.id, status, target.controlRevision || 0, taskSource(task, store).receivedAt);
     services.resultSource = (work, task) => {
       return task.workId === work.id ? services.works.execution(task).authorization?.source : undefined;
@@ -614,6 +642,10 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
         if (method === 'POST' && !id) return services.works.create(await readBody(request));
         if (method === 'PATCH' && id) {
           const body = await readBody(request);
+          if (body.status === 'active' && body.controlRevision !== undefined) {
+            const work = services.works.get(id);
+            if (work && (work.controlRevision || 0) === body.controlRevision) await services.bindRecoveredEngine(work);
+          }
           const work = ['paused', 'cancelled'].includes(body.status) ? services.works.stop(id, body.status, body.controlRevision) :
             body.status === 'active' && body.controlRevision !== undefined ? await services.works.resume(id, body.controlRevision) : services.works.update(id, body);
           if (body.status === 'active') void wake().catch(() => {});
@@ -660,8 +692,12 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
             if (environment) emit('work.maintenance_observed', observation, { workId: id, taskId: task.id });
           });
           if (environment || task?.workId !== id || ['paused', 'cancelled', 'completed'].includes(work.status)) return { observed: true, wakeup: false };
+          const resumesEngine = work.executor?.kind === 'native' && work.waiting?.kind === 'tool-maintenance' &&
+            work.waiting.maintenanceId === body.metadata?.maintenanceId;
           if (work.waiting?.kind === 'tool-maintenance' && work.waiting.maintenanceId === body.metadata?.maintenanceId)
             services.works.update(id, { status: 'active', waiting: null });
+          if (resumesEngine) return services.works.dispatch(id, { id: body.id, kind: 'request',
+            content: task.input, metadata: { ...body.metadata, nativeEngineResume: true, priority: 'background' } }, task);
           return services.works.dispatch(id, { id: body.id, kind: 'event', content: body.content,
             metadata: { ...body.metadata, sourceType: 'native-tool', priority: 'background' } }, task);
         }
@@ -676,26 +712,33 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
           return settled;
         }
         if (method === 'POST' && parts[2] === 'native-state') {
-          const { operation, events = [], fromOffset, toOffset } = await readBody(request);
+          const { operation, events = [], fromOffset, toOffset, more } = await readBody(request);
           const task = operation?.taskId && store.getTask(operation.taskId);
           const work = services.works.get(id);
           if (!work || task?.workId !== id || operation.workId !== id) throw failure(409, 'Native operation source does not match');
           const bindingId = 'native:' + operation.operationId;
           const prior = store.getRecord('native-work-state', bindingId + ':' + id);
-          const signature = JSON.stringify([operation.status, operation.pid, operation.nativeSessionId, operation.pending, operation.error, operation.reconciliation, toOffset]);
+          const signature = JSON.stringify([operation.status, operation.pid, operation.nativeSessionId, operation.nativeTurnId,
+            operation.pending, operation.error, operation.reconciliation, toOffset]);
           if (prior?.signature !== signature) store.transaction(() => {
             const binding = clean({ ...operation, id: bindingId, type: 'native-tool' });
             const bindings = [...work.bindings.filter(item => item.id !== bindingId), binding];
             const stop = work.externalStop;
             const running = bindings.some(item => item.type === 'native-tool' && ['queued', 'starting', 'running', 'awaiting-input', 'stopping'].includes(item.status));
             const pending = operation.pending?.[0];
-            const progress = events.findLast(event => ['progress', 'result'].includes(event.type))?.text;
+            const progressEvent = events.findLast(event => ['progress', 'result'].includes(event.type));
+            const progress = progressEvent && !['paused', 'cancelled', 'completed'].includes(work.status) ? progressEvent.text : null;
             const waiting = pending && ['active', 'waiting'].includes(work.status)
               ? { status: 'waiting', waiting: { kind: 'native-input', reason: pending.text, operationId: operation.operationId } }
               : work.status === 'waiting' && ['native-input', 'native-execution'].includes(work.waiting?.kind) && work.waiting.operationId === operation.operationId && (work.waiting.kind === 'native-input' || ['completed', 'failed', 'stopped', 'unknown', 'superseded'].includes(operation.status))
                 ? { status: 'active', waiting: null } : {};
-            services.works.update(id, { bindings, ...(progress ? { progress } : {}), ...waiting,
-              ...(stop?.status === 'pending' && !running ? { externalStop: { ...stop, status: operation.status === 'unknown' ? 'unknown' : 'local-stopped', observedAt: at() } } : {})
+            services.works.update(id, { bindings, ...(progress ? { progress, ...(operation.engine ? { checkpoint: { ...work.checkpoint,
+              evidence: { kind: 'executor-commentary', operationId: operation.operationId, threadId: operation.nativeSessionId,
+                turnId: progressEvent.turnId, itemId: progressEvent.itemId, observedAt: progressEvent.at } } } : {}) } : {}), ...waiting,
+              ...(stop?.status === 'pending' && !running && stop.bindingId === bindingId ? { externalStop: { ...stop,
+                status: operation.status === 'unknown' ? 'unknown' : operation.status === 'completed' ? 'completed' :
+                  operation.status === 'stopped' && operation.nativeTurnId ? 'interrupted' : operation.status === 'failed' ? 'failed' : 'local-stopped',
+                threadId: operation.nativeSessionId, turnId: operation.nativeTurnId, observedAt: at() } } : {})
             }, { control: true });
             for (const event of events) emit('native.' + event.type, { operationId: operation.operationId, resourceName: operation.resourceName, ...event }, { workId: id, taskId: task.id });
             const terminal = ['completed', 'failed', 'stopped', 'unknown', 'superseded'].includes(operation.status);
@@ -711,7 +754,12 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
           const registeredWait = operation.status !== 'unknown' && store.listRecords('work-waits').some(wait => wait.workId === id && wait.status === 'pending' &&
             (wait.dependencyEventId === operation.operationId || wait.taskId === task.id));
           if (registeredWait) void wake().catch(() => {});
-          else if (!task.metadata?.cutoverRecoveryBindingId && !['paused', 'cancelled', 'completed'].includes(work.status) &&
+          if (operation.engine && !more && !['paused', 'cancelled', 'completed'].includes(work.status) &&
+              ['completed', 'failed', 'stopped', 'unknown', 'superseded'].includes(operation.status)) {
+            await services.works.dispatch(id, { id: bindingId + ':engine-review:' + operation.status, kind: 'event',
+              content: { type: 'native-engine-result', operationId: operation.operationId },
+              metadata: { actor: 'system', sourceType: 'native-tool', nativeEngineReview: operation.operationId, priority: 'foreground' } }, task);
+          } else if (!operation.engine && !registeredWait && !task.metadata?.cutoverRecoveryBindingId && !['paused', 'cancelled', 'completed'].includes(work.status) &&
             ['completed', 'failed', 'stopped', 'unknown', 'superseded'].includes(operation.status)) {
             await services.works.dispatch(id, { id: bindingId + ':' + operation.status, kind: 'event',
               content: { type: 'native-execution', operation, instruction: 'Inspect the original receipt and output in catalog_native_status. Use actual results to continue the accepted step. Preserve operation identity and reconcile unknown effects before another write.' },
@@ -797,18 +845,32 @@ export async function startBot(input, { captureProcessOutput = false } = {}) {
       const migrated = pendingCutoverRecovery(work);
       const original = migrated?.taskId && store.getTask(migrated.taskId);
       if (original?.workId === work.id && services.works.execution(original).authorization?.source) {
+        const bound = await services.bindRecoveredEngine(work, true).catch(error => {
+          emit('work.recovery_pending', { workId: work.id, message: error.message }); return work;
+        });
         await services.works.dispatch(work.id, { id: 'recover-native:' + migrated.id, kind: 'event',
           metadata: { sourceType: 'native-tool', priority: 'background', cutoverRecoveryBindingId: migrated.id },
-          content: { type: 'native-cutover-recovery', binding: migrated,
+          content: { type: 'native-cutover-recovery', binding: migrated, engine: bound.executor?.kind === 'native' ? bound.executor.name : undefined,
             instruction: 'Use the catalog and the assigned maintainer to inspect the original tool session, progress and artifacts. Limit this startup step to read-only observations and recording the reconciliation. Preserve uncertain results, and use the normal work flow to continue once the original effects and next authorized step are clear.' } }, original).catch(error =>
           emit('work.recovery_pending', { workId: work.id, message: error.message }));
       }
     }
-    for (const work of services.works.list({ status: 'active', limit: 500 })) {
+    for (const work of services.works.list({ limit: 500 }).filter(work => work.status === 'active' ||
+        work.executor?.kind === 'native' && work.status === 'waiting' && !['user-input', 'native-input', 'tool-maintenance'].includes(work.waiting?.kind))) {
       const last = work.lastTaskId && store.getTask(work.lastTaskId);
       const liveNative = work.bindings?.some(item => item.type === 'native-tool' && ['queued', 'starting', 'running', 'awaiting-input', 'stopping'].includes(item.status));
       const unresolvedOriginal = work.bindings?.some(item => item.type === 'native-recovery' && item.status === 'recovery-required' && last?.createdAt <= item.migratedAt);
       if (last?.status === 'interrupted' && last.metadata?.sourceType !== 'external' && !last.metadata?.cutoverRecoveryBindingId && !liveNative && !unresolvedOriginal) try {
+        if (last.metadata?.nativeEngineReview) {
+          await services.works.dispatch(work.id, { id: 'recover-native-review:' + last.id, kind: 'event',
+            metadata: { nativeEngineReview: last.metadata.nativeEngineReview, priority: 'foreground' }, content: last.input }, last);
+          continue;
+        }
+        if (work.executor?.kind === 'native' && last.metadata?.workEventId) {
+          await services.works.dispatch(work.id, { id: 'recover-native-action:' + last.id, kind: 'request',
+            metadata: { nativeEngineRetryId: last.metadata.nativeEngineRetryId || last.metadata.workEventId, priority: 'foreground' }, content: last.input }, last);
+          continue;
+        }
         await services.works.dispatch(work.id, { id: `recover:${last.id}`, metadata: { resumeEventId: last.metadata?.resumeEventId || last.metadata?.workEventId }, content: { type: 'execution_interrupted', taskId: last.id, instruction: 'Resume only this accepted step. First inspect durable tool receipts and original external bindings; unknown effects must be queried, never replayed.', unknownTools: store.listTools(last.id).filter(tool => tool.status === 'unknown') } }, last);
       } catch (error) { emit('work.recovery_pending', { workId: work.id, message: error.message }); }
     }

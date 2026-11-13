@@ -225,6 +225,7 @@ export async function loadConfiguredTools(definitions = [], { botId, dataDir, wo
         if (names.has(tool.name)) throw new Error(`Configured tool name collision: ${tool.name}`);
         names.add(tool.name);
         tools.push({ name: tool.name, description: redact(tool.description), inputSchema: sanitizeValue(tool.inputSchema, redact), effect,
+          ...(definition.runtimeOnly ? { runtimeOnly: true } : {}),
           classify: typeof tool.classify === 'function' ? (result, context) => tool.classify(result, context) : result => result?.isError ? 'failed' : 'completed',
           async execute(args, context = {}) {
             const executionSignal = signals(context.signal, AbortSignal.timeout(timeout));

@@ -58,7 +58,7 @@ export class NativeExecutions {
     return this.store.save(collection, { ...base, ...patch });
   }
   public(item) {
-    const { id, nonce, sequence, launch, intent, source, eventOffset, projected, stopRequestedAt, ...result } = item;
+    const { id, nonce, sequence, launch, intent, source, eventOffset, projected, stopRequestedAt, moreEvents, ...result } = item;
     return this.clean({ ...result, outputRef: { type: 'native-execution', operationId: item.operationId, workId: item.workId, botId: item.actor } });
   }
 
@@ -109,7 +109,8 @@ export class NativeExecutions {
       return this.save(item, { status: stale ? 'unknown' : state.status, runnerPid: state.runnerPid, pid: state.pid,
         observedAt: state.observedAt, startedAt: state.startedAt, finishedAt: state.finishedAt,
         error: stale ? 'Execution heartbeat unavailable; the original outcome is unknown' : state.error,
-        pending: stale ? [] : state.pending, nativeSessionId: state.nativeSessionId, exitCode: state.exitCode, exitSignal: state.exitSignal });
+        pending: stale ? [] : state.pending, nativeSessionId: state.nativeSessionId, nativeTurnId: state.nativeTurnId,
+        turnStartedAt: state.turnStartedAt, final: state.final, exitCode: state.exitCode, exitSignal: state.exitSignal });
     }
     return Date.now() - Date.parse(item.launchedAt) > 15_000
       ? this.save(item, { status: 'unknown', error: 'Execution launch receipt unavailable; inspect the original effect before another write' })
@@ -125,7 +126,7 @@ export class NativeExecutions {
   async events(item) {
     const read = await this.output(item, { stream: 'events', offset: item.eventOffset || 0, limit: 65_536 });
     const events = read.text.split('\n').filter(Boolean).map(line => JSON.parse(line));
-    return { events, offset: read.nextOffset };
+    return { events, offset: read.nextOffset, more: read.more };
   }
 
   async command(item, { id, type, text, requestId, source }) {
@@ -156,6 +157,10 @@ export class NativeExecutions {
       record = this.store.save(inputs, { id: record.id, status: 'queued' });
     }
     const receipt = await optional(path + '.receipt');
+    const native = item.engine && await optional(path + '.receipt.native');
+    if (native) return { ...native, id: record.inputId, requestId: record.requestId, receiptLayer: 'native-turn' };
+    if (item.engine && record.type === 'input' && receipt?.status === 'delivered')
+      return { ...receipt, status: liveNative(item.status) ? 'sent-to-bridge' : 'unknown', receiptLayer: 'process-stdin' };
     if (!receipt && !liveNative(item.status)) return { id: record.inputId, requestId: record.requestId, status: 'unknown', observedAt: item.observedAt };
     return receipt || { id: record.inputId, requestId: record.requestId, status: record.status };
   }

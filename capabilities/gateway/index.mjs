@@ -98,6 +98,7 @@ export async function startGateway(options={}) {
       if(request)store('gateway').save('native-room-requests',{id:message.id,actor:item.actor,workId:item.workId,operationId:item.operationId,requestId:request.id,roomId});
     }});
   catalog.native=native;
+  modelConnections.native=native;
   async function answerInRoom(request,body) {
     const operation=await native.status({workId:request.workId,operationId:request.operationId},request.actor);
     const question=operation.pending?.find(item=>item.id===request.requestId);
@@ -280,14 +281,14 @@ export async function startGateway(options={}) {
         if(runtimeOperation&&['chatroom_read','chatroom_list'].includes(name)&&!source)fail('Original evidence authorization is unavailable',403);
         if(!task||(task.status!=='running'&&!publishing&&!runtimeOperation))fail('An active task or saved delivery owned by this Bot is required',403);
         if(!publishing&&!runtimeOperation)assertToolPolicy(task,definition,args);
-      }else if(!permitsMaintenanceTool(name))fail('A runtime task context is required',403);
+      }else if(name!=='catalog_native_engine_choices'&&!permitsMaintenanceTool(name))fail('A runtime task context is required',403);
     }
     if(catalogTools.some(tool=>tool.name===name)){
       const current=task?.input?.current||task?.input,work=task?.workId&&await manager.readState(actor,db=>db?.getRecord('works',task.workId));
       const source=work?await manager.readState(actor,db=>workExecution(task,db).authorization?.source||{}):{};
       const provenance=task?{workId:task.workId,conversationId:task.conversationId,originRoomId:current?.room?.id||source.roomId,
         originMessageId:current?.trigger?.id||source.replyTo,sourceRefs:[`task:${task.id}`]}:undefined;
-      return catalog.call(name,{...args,...(provenance?{_context:provenance}:{})},{actor,signal,task});
+      return catalog.call(name,{...args,...(provenance?{_context:provenance}:{})},{actor,signal,task,runtimeOperation});
     }
     if(name==='workspace_setup'){
       const context=task?.workId&&await manager.readState(actor,db=>({work:db?.getRecord('works',task.workId),source:workExecution(task,db).authorization?.source}));
@@ -356,6 +357,7 @@ export async function startGateway(options={}) {
     const models=selectedWorkspace?.models||modelConnections,guide=selectedWorkspace?.onboarding||onboarding;
     if(method==='GET'&&path==='/api/usage')return tokenUsage(params,profileId);
     if(path==='/api/model-settings'&&method==='GET')return {...await models.snapshot(),sources:native.sources.list()};
+    if(path==='/api/model-settings/executors/active'&&method==='POST')return {...await models.selectWorkExecutor(body.id),sources:native.sources.list()};
     if(path==='/api/model-settings/local'&&method==='GET')return models.localLogins();
     if(path==='/api/model-settings/local/import'&&method==='POST')return models.importLocal(body.kind);
     if(path==='/api/model-settings/onboarding'&&method==='GET')return guide.snapshot();
@@ -434,12 +436,12 @@ export async function startGateway(options={}) {
     if(method==='POST'&&path==='/api/works'){
       const bot=manager.get(body.botId),id=body.id??randomUUID();
       if(typeof id!=='string'||!(/^[\w.-]{1,160}$/).test(id)||['.','..'].includes(id)||typeof body.goal!=='string'||
-        [body.cwd,body.constraints,body.roomId].some(value=>value!=null&&typeof value!=='string')||
+        [body.cwd,body.constraints,body.roomId,body.executorId].some(value=>value!=null&&typeof value!=='string')||
         body.inputRefs!=null&&(!Array.isArray(body.inputRefs)||body.inputRefs.some(value=>typeof value!=='string')))
         fail('工作表单的标识、目标或输入资料无效。');
       const fileScope=workFormFileScope(body.fileScope);
       const request={goal:required(body.goal,'工作目标'),constraints:body.constraints||'',cwd:body.cwd?.trim()||'',
-        roomId:body.roomId||null,inputRefs:body.inputRefs||[],...(Object.keys(fileScope).length?{fileScope}:{})};
+        roomId:body.roomId||null,inputRefs:body.inputRefs||[],...(body.executorId?{executorId:body.executorId}:{}),...(Object.keys(fileScope).length?{fileScope}:{})};
       if(body.projectId||body.target)fail('请使用登记项目的实际目录指定工作目标。');
       const intake=store('gateway');
       const assertFormOwner=()=>{
@@ -461,14 +463,18 @@ export async function startGateway(options={}) {
           fail('请选择用户和委托成员均可进入的有效会话。',403);
       }
       await manager.start(bot.id);
-      const executor={kind:'pi'};
+      const config=await manager.config(bot.id), choices=native.choices(bot.id,config.model);
+      const engineId=body.executorId||choices.defaultId||'pi', engine=choices.executors.find(item=>item.id===engineId);
+      if(!engine)fail('请选择当前成员可以使用的工作引擎。',409);
+      const executor=engine.kind==='native'?{kind:'native',resourceId:engine.id,name:engine.name}:{kind:'pi'};
       let project;
       if(request.cwd){
         if(!isAbsolute(request.cwd)||!(/^(?:[A-Za-z]:[\\/]|\/|\\\\)/).test(request.cwd)||request.cwd.includes('\0'))
           fail('请填写服务器上明确的绝对工作目录。');
-        const config=await manager.config(bot.id),cwd=resolveFilePath(config.workspace,request.cwd);
+        const cwd=resolveFilePath(config.workspace,request.cwd);
         const checkedPath=createPathAccess({workspace:config.workspace,project:cwd,protectedDirectories:[dataRoot]});
         project=directoryProject(await checkedPath(cwd,{directory:true}));
+        executor.target={type:'directory',cwd:project.cwd};
       }
       intake.transaction(()=>{if(!assertFormOwner())intake.save('work-form-owners',{id,botId:bot.id});});
       const {work,dispatch}=await manager.request(bot.id,'/works/form',{method:'POST',body:JSON.stringify({id,request,executor,project})});
@@ -495,7 +501,7 @@ export async function startGateway(options={}) {
           const fileAccessRequestId=prior?.requestId||work.waiting?.fileAccess?.requestId;
           if(fileAccessRequestId)return manager.request(work.botId,endpoint+'/user-input',{method:'POST',
             body:JSON.stringify({id,content:text,fileAccessRequestId})});
-          const delivered=await native.steer(work.botId,work.workId,id,text);
+          const delivered=work.executor?.kind==='native'?null:await native.steer(work.botId,work.workId,id,text);
           return manager.request(work.botId,endpoint+'/user-input',{method:'POST',body:JSON.stringify({id,content:text,delivered})});
         }
         if(!Number.isSafeInteger(body.controlRevision)||body.controlRevision<0)fail('请刷新工作详情后重新操作。',409);
@@ -628,6 +634,7 @@ export async function startGateway(options={}) {
     if(options.seed!==false){await manager.seed();await chatroom.seed();}
     control.pinExisting();await control.tick();
     if(options.restore!==false){await manager.restore();await profiles.restore();}
+    if(modelConnections.runtimeModel()) native.background('work-engine-discovery',()=>native.discoverWorkEngines());
   } catch(error) {
     closing=true;await push.close();await profiles.close();await native.close();await control.close();await catalog.close();await stopIdleWorkers().catch(()=>{});for(const client of clients)client.end();server.closeAllConnections();if(server.listening)await new Promise(done=>server.close(done));await Promise.allSettled([...pending]);manager.closeReadStores();for(const value of stores.values())value.close();usageLedger.close();throw error;
   }

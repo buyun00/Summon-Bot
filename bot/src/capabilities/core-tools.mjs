@@ -17,6 +17,15 @@ import { earlierFileSources, sourceFileScopes } from './file-access.mjs';
 import { pathWithin, resolveFilePath, samePath } from './file-policy.mjs';
 
 const string = { type: 'string' };
+const requestedEngine = (text, choices) => {
+  const aliases = choices.flatMap(item => [...new Set([item.id, item.name, ...(item.aliases || [])])].map(name => ({ name, item })))
+    .sort((left, right) => right.name.length - left.name.length);
+  const marker = '(?:^|[\\s，。！？、；,:])(?:请(?:明确)?\\s*)?(?:使用|指定|选择|换成|交给|派给|让|用|use\\s+|select\\s+|delegate\\s+to\\s+|run\\s+with\\s+)';
+  for (const { name, item } of aliases) {
+    const escaped = name.replace(/[.*+?^$\{\}()|[\]\\]/g, '\\$&');
+    if (new RegExp(marker + '\\s*[\x60"“「]?' + escaped + '(?![A-Za-z0-9_.-])', 'i').test(text)) return item.id;
+  }
+};
 const object = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const flexible = name => name.startsWith('work') || ['evidence_read', 'tasks_get', 'tasks_list', 'messages_send'].includes(name);
 const tool = (name, description, inputSchema, effect, execute) => ({ name, description, inputSchema: flexible(name) ? looseSchema(inputSchema) : inputSchema, effect,
@@ -79,6 +88,27 @@ const withPublications = (target, publications) => publications.length ? { ...ta
 
 function acceptanceTarget(store, work, roomId, notifications = store.listRecords('work-notifications').filter(item => item.workId === work.id)) {
   const history = store.getRecord(HISTORICAL_WORK_DELIVERIES, work.id), execution = history?.final, outcome = work.executionOutcome;
+  if (work.executor?.kind === 'native' && outcome?.kind === 'execution-ended' && outcome.finalConfirmed &&
+      (work.status === 'completed' || work.status === 'waiting' && work.waiting?.kind === 'review')) {
+    const native = externalExecution(work, outcome.operationId);
+    const operation = store.getRecord('work-events', outcome.operationId);
+    if (!roomId || operation?.authorization?.source?.roomId !== roomId || operation.authorization.source.actor !== 'user' ||
+        native?.status !== 'completed' || !native.startedConfirmed || native.threadId !== outcome.threadId || native.turnId !== outcome.turnId)
+      return null;
+    const publications = notifications.flatMap(item => {
+      if (item.roomId !== roomId || item.status !== 'delivered' || item.late || item.resultKind !== 'execution-ended' ||
+          item.manifestOperationId !== operation.id || !item.sourceRefs?.some(ref => ref.type === 'native-tool' && ref.operationId === operation.id &&
+          ref.threadId === native.threadId && ref.turnId === native.turnId)) return [];
+      return [item.receipt].flat().flatMap(receipt => {
+        if (receipt?.roomId !== roomId || receipt.workId !== work.id || receipt.senderId !== work.botId ||
+            receipt.replyTo !== operation.authorization.source.replyTo || !receipt.id) return [];
+        const attachments = (receipt.attachments || []).filter(attachment => item.attachments?.some(published => published.id === attachment.id));
+        return [acceptancePublication({ messageId: receipt.id, replyTo: receipt.replyTo, publishedAt: receipt.createdAt, attachments,
+          observationId: 'native:' + operation.id + ':completed', manifestOperationId: operation.id })];
+      });
+    });
+    return withPublications({ operationId: operation.id, threadId: native.threadId, turnId: native.turnId }, publications);
+  }
   const originalDelivery = execution && history.botId === work.botId && work.bindings?.some(item => item.id === history.bindingId && item.type === 'native-recovery') &&
     outcome?.kind === 'execution-ended' && outcome.finalConfirmed && outcome.operationId === execution.operationId && outcome.turnId === execution.turnId &&
     (!work.waiting?.operationId || work.waiting.operationId === execution.operationId);
@@ -415,7 +445,7 @@ function saveRequestAcceptances(services, user, items, before, current) {
 
 function outputOperationId(store, work, roomId, requestedId) {
   const id = requestedId || acceptanceTarget(store, work, roomId)?.operationId || work.waiting?.operationId ||
-    work.bindings?.findLast(item => item.type === 'codex-desktop')?.operationId ||
+    work.bindings?.findLast(item => item.type === 'codex-desktop' || item.type === 'native-tool' && item.engine && !item.engine.recovery)?.operationId ||
     (work.executor?.kind === 'pi' && work.lastTaskId && workExecution(store.getTask(work.lastTaskId), store).executionEventId);
   if (!id || store.getRecord('work-events', id)) return id;
   return roomPublications(store, work.id, roomId).find(item => item.executionEventId === id &&
@@ -594,7 +624,7 @@ export function coreTools(services, task) {
   };
   const documentBoundary = (work, grant) => {
     if (grant?.stage !== 'document-review') return;
-    if ((['active', 'paused', 'cancelled'].includes(work.status) || work.status === 'waiting' && work.waiting?.kind === 'external') &&
+    if ((['active', 'paused', 'cancelled'].includes(work.status) || work.status === 'waiting' && ['external', 'native-input', 'native-execution'].includes(work.waiting?.kind)) &&
       currentProductionStage(work, store) !== 'document-review')
       throw new Error('仅文稿授权不会追加到正在实施的回合或恢复已停止的实施工作。请使用对应的文档工作，或登记独立新文档工作。');
   };
@@ -745,7 +775,7 @@ export function coreTools(services, task) {
       }),
     tool('evidence_read', 'Read a bounded original fragment by exact reference. Workers may follow only handed-off references, never browse another room/session feed. Current source access is rechecked.',
       object({ reference }, ['reference']), 'read', args => services.sources.resolve(services.sources.reference(args.reference ?? args, task), task)),
-    tool('executors_status', 'Read the work owner. Pi runs independent work; discover tools and applicable methods with catalog_search.', object({}), 'read', () => services.executors()),
+    tool('executors_status', 'Read the workspace default and the actual registered native work engines, including their catalog IDs, method and account readiness. An installed command alone does not confirm availability.', object({}), 'read', () => services.executors()),
     tool('runtime_status', 'Read current source room/work state with local tasks, native operation bindings and S3 waits.', object({}), 'read', async () => {
       const rooms = await services.sources.rooms(task), works = [];
       for (const work of services.works.list({ limit: 500 })) if (await services.sources.canReadWork(work, task, rooms)) works.push(work);
@@ -847,15 +877,16 @@ export function coreTools(services, task) {
         return { workId: work.id, operationId, status: 'ready-for-current-reply',
           attachments: available.filter(item => !selected || selected.includes(item.id)).map(({ id, messageId }) => ({ id, messageId })) };
       }),
-    tool('work_create', 'Submit one selected source action. An immediate production action schedules actual work. Omit the executor target unless the user picked a working project or directory. Input materials and output destinations are separate from cwd; an output directory can be absent. When the user directs production following a discussion, include the exact same-room original user message that supplied its inputs or executable. For new production after an assigned room owner contributes, select the production unit and pass participant with the active dutyKey and exact prerequisite contribution. This can be your own assigned duty; the runtime delivers that portion separately before starting the new work. For a separateOwner review, omit executor and target. For an already published result, include its exact same-room attachment references and original material in evidence. Give separately authorized earlier comparison files in reviewReferenceAttachments. For a review after new production, register the selected after-dependency review unit. A registered wait does not prove execution.',
+    tool('work_create', 'Submit one selected source action. An immediate production action schedules actual work. For implementation or document production omit executor to use the workspace default. For a complex other deliverable set execution=work-engine. For a bounded operation set execution=pi. Honor a user-selected engine using its exact executors_status id. Omit the executor target unless the user picked a working project or directory. Input materials and output destinations are separate from cwd; an output directory can be absent. When the user directs production following a discussion, include the exact same-room original user message that supplied its inputs or executable. For new production after an assigned room owner contributes, select the production unit and pass participant with the active dutyKey and exact prerequisite contribution. This can be your own assigned duty; the runtime delivers that portion separately before starting the new work. For a separateOwner review, omit executor and target. For an already published result, include its exact same-room attachment references and original material in evidence. Give separately authorized earlier comparison files in reviewReferenceAttachments. For a review after new production, register the selected after-dependency review unit. A registered wait does not prove execution.',
       object({ id: string, operationId: string, goal: string, requirements: string, responsibility: string, ...handoffFields,
         participant: object({ dutyKey: string, contribution: string }),
         reviewPublicationMessageId: string,
         reviewReferenceAttachments: { type: 'array', maxItems: MESSAGE_ATTACHMENTS, items: object({ messageId: string, attachmentId: string }, ['messageId', 'attachmentId']),
           description: 'Exact same-room pairs for earlier files the current user authorizes comparing with the primary publication. Keep these pairs out of evidence. Use the primary publication and its attachments for reviewPublicationMessageId and evidence.' },
         afterDependency: object({ workId: string, minimumAttachments: { type: 'integer', minimum: 1, maximum: WORK_ATTACHMENTS } }),
-        executor: object({ kind: { type: 'string', enum: ['pi'] }, connectionId: string,
-          target: { type: 'object', description: 'Use {type:"directory",cwd:"absolute authorized path"} for the explicitly selected directory or choose an already authorized project.' } }, ['kind']) }), 'write', async (args, ctx) => {
+        execution: { type: 'string', enum: ['pi', 'work-engine'] },
+        executor: object({ kind: string, resourceId: string, connectionId: string,
+          target: { type: 'object', description: 'Use {type:"directory",cwd:"absolute authorized path"} for the explicitly selected directory or choose an already authorized project.' } }) }), 'write', async (args, ctx) => {
         const decision = productionDecision(task, store);
         if (decision?.workRelation === 'continue') throw new Error(`Continue the existing deliverable with work_dispatch workId=${decision.workId}; this request does not authorize another work.`);
         const selected = selectedSourceAction(decision);
@@ -978,7 +1009,20 @@ export function coreTools(services, task) {
         } else if (!selectedTarget && declaredDirectories.length === 1) {
           target = { type: 'directory', cwd: declaredDirectories[0] };
         }
-        const executor = { kind: 'pi', ...(suppliedExecutor.connectionId ? { connectionId: suppliedExecutor.connectionId } : {}), ...(target ? { target } : {}) };
+        const routeNative = args.execution !== 'pi' && (args.execution === 'work-engine' || ['implementation', 'document-review'].includes(selected.stage));
+        const proposedEngine = modelText(suppliedExecutor.resourceId || suppliedExecutor.kind).trim();
+        const choices = await services.executors();
+        const user = currentUserRequest(task, store), units = sourceUnits(user?.text || '');
+        const explicit = requestedEngine(units[selected.unit - 1]?.text || '', choices.executors) ||
+          (nowActions.length === 1 ? requestedEngine(user?.text || '', choices.executors) : undefined) || proposedEngine;
+        const desired = explicit || (routeNative ? choices?.defaultId : 'pi');
+        const candidate = desired && choices?.executors.find(item => item.id === desired ||
+          item.aliases?.some(name => name.toLowerCase() === desired.toLowerCase()));
+        if (desired !== 'pi' && !candidate) throw new Error(desired ? '当前工作区找不到指定的工作引擎 ' + desired + '。' : '当前工作区还没有选定可接入的工作引擎。');
+        const executor = desired === 'pi'
+          ? { kind: 'pi', ...(suppliedExecutor.connectionId ? { connectionId: suppliedExecutor.connectionId } : {}) }
+          : { kind: 'native', resourceId: candidate.resourceId, name: candidate.name };
+        if (target) executor.target = target;
         let project;
         try { project = target ? await services.sources.authorizeProject(target, task) : await services.sources.contextProject(task); }
         catch (error) { if (target) throw error; content.evidenceWarnings.push({ message: `Project scope is unavailable: ${error.message}` }); }
@@ -993,7 +1037,7 @@ export function coreTools(services, task) {
         const duty = participant && dutyProposal(participant.dutyKey, false, source.input?.room, ownerFirst);
         const after = ownerFirst && await ownerPrerequisite({ decision, action: selected, participant, duty, workId: id,
           operationId: `${id}:${operationId}`, projectId: project?.id ?? null });
-        const grant = await authorize(decision, ctx, { relation: 'new', project, target: executor?.target || target, executor: executor.kind,
+        const grant = await authorize(decision, ctx, { relation: 'new', project, target: executor?.target || target, executor: executor.kind === 'native' ? { id: executor.resourceId, name: executor.name } : executor.kind,
           goal, requirements, handoff: proposalHandoff(content.handoff), sourceMaterials: proposalMaterials(content),
           ...(participant ? { participant: { ...participant, duty } } : {}), ...(after ? { after } : {}) },
         { workId: id, actionId: `${id}:${operationId}`, scopeEvidence: content.evidence });
@@ -1083,6 +1127,14 @@ export function coreTools(services, task) {
         }
         const after = sourceAction?.when === 'after-dependency' ? await ownerPrerequisite({ decision, action: sourceAction,
           participant, duty, workId: work.id, operationId, projectId: selected.project?.id ?? null, work }) : undefined;
+        if (sourceAction) {
+          const choices = await services.executors(work.id);
+          const user = currentUserRequest(task, store), units = sourceUnits(user?.text || '');
+          const desired = requestedEngine(units[sourceAction.unit - 1]?.text || '', choices.executors) ||
+            (nowSteps.length === 1 ? requestedEngine(user?.text || '', choices.executors) : undefined);
+          if (desired && desired !== (work.executor?.resourceId || choices.recovery?.id || work.executor?.kind || 'pi'))
+            throw new Error('这个工作已经绑定其他执行会话。请沿原会话继续，或明确授权独立工作使用另一引擎。');
+        }
         const grant = await authorize(decision, ctx, { relation: 'continue', work: selected, handoff: content.handoff,
           sourceMaterials: proposalMaterials(content), ...(participant ? { participant: { ...participant, duty } } : {}),
           ...(after ? { after } : {}) }, { workId: work.id, actionId: operationId, scopeEvidence: content.evidence, correctionToolId: ctx.recordId });
@@ -1098,6 +1150,7 @@ export function coreTools(services, task) {
         const current = services.works.get(work.id);
         if (!sameWork(selected, current)) throw new Error('工作目标或控制状态已变化；请重新读取并依据新的用户要求处理。');
         documentBoundary(current, grant);
+        if (grant) await services.bindRecoveredEngine(current);
         const input = { id: eventId, kind: frontend ? 'request' : 'event', content, productionAuthorization: grant,
           metadata: { correction: args.correction === true, resume: Boolean(grant), priority: 'foreground' } };
         let participantPlan;

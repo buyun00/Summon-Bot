@@ -179,7 +179,26 @@ struct ModelQuotaDetailsView: View {
             Form {
                 if let error { Section { Text(error).foregroundStyle(.orange) } }
                 Section("当前额度") { ModelUsageDetails(item: store.modelSummary["chat"]) }
-                if store.modelSummary["workExecutor"].object != nil { Section("工作执行") { ModelUsageDetails(item: store.modelSummary["workExecutor"]) } }
+                Section("工作引擎") {
+                    ForEach(Array((store.modelSummary["executors"].array ?? []).enumerated()), id: \.offset) { _, engine in
+                        let current = engine["id"] == store.modelSummary["workExecutor"]["id"]
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(engine["name"].stringValue)
+                                Text(engine["label"].stringValue).summonFont(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if current { Text("当前默认").foregroundStyle(modelTint) }
+                            else {
+                                Button("设为默认") { run {
+                                    data = try await store.request(path: "/api/model-settings/executors/active", method: "POST", body: .object(["id": engine["id"]]))
+                                    try await store.refreshModelUsage()
+                                } }.disabled(busy || engine["status"].stringValue == "unavailable")
+                            }
+                        }
+                    }
+                    if store.modelSummary["workExecutor"].object != nil { ModelUsageDetails(item: store.modelSummary["workExecutor"]) }
+                }
                 ForEach(Array((store.modelSummary["sources"].array ?? []).enumerated()), id: \.offset) { _, source in
                     Section(source["label"].stringValue) { SummonNativeSourceView(source: source) }
                 }

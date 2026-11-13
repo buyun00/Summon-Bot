@@ -54,7 +54,8 @@ export class WorkService {
       return previous;
     }
     const executor = input.executor || { kind: 'pi' };
-    if (executor.kind !== 'pi') fail('Pi owns work execution. Select native tools from the catalog in the work.');
+    if (executor.kind !== 'pi' && (executor.kind !== 'native' || !/^[\w.-]{1,160}$/.test(executor.resourceId || '')))
+      fail('Select Pi or a registered native work engine.');
     const project = executor.target?.type === 'directory' ? directoryProject(executor.target.cwd) : input.project || null;
     const eventId = `${id}:${input.operationId || 'initial'}`;
     const grant = input.productionAuthorization;
@@ -66,6 +67,7 @@ export class WorkService {
     if (sourceKey) requireProductionGrant(task, this.store, input.productionAuthorization, {
       workId: id, actionId: eventId, relation: 'new', stage: input.productionStage,
       when: ownerDelivery ? 'after-dependency' : 'now', ...productionTarget({ project, executor }),
+      ...(executor.kind === 'native' ? { executorResourceId: executor.resourceId } : {}),
     });
     const supervisor = this.selectModel?.(executor.kind === 'pi' ? executor.connectionId : undefined);
     const binding = executor.kind === 'pi' ? { kind: 'pi', ...(executor.target ? { target: executor.target } : {}) } : executor;
@@ -420,7 +422,7 @@ export class WorkService {
       const awaitingContribution = contribution?.status === 'pending';
       const externalStop = holding || { id: randomUUID(), fromRevision: revision, requestedAt: now(),
         status: !awaitingContribution && binding ? 'pending' : 'local-stopped',
-        bindingId: binding?.id, threadId: binding?.externalThreadId, hostId: binding?.hostId };
+        bindingId: binding?.id, threadId: binding?.nativeSessionId, turnId: binding?.nativeTurnId, hostId: binding?.hostId };
       const saved = this.update(id, { status, externalStop, controlRevision: revision + 1 }, { control: true });
       if (status === 'cancelled' && awaitingContribution)
         this.store.putRecord('work-events', { ...contribution, status: 'cancelled', stoppedAt: externalStop.requestedAt });

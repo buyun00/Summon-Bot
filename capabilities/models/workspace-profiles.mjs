@@ -35,7 +35,7 @@ export class WorkspaceProfiles {
 
   async open(profile) {
     const { id, botId } = profile;
-    const models = await new ModelConnections({ dataRoot: this.dataRoot, profileId: id, emit: this.emit }).initialize();
+    const models = await new ModelConnections({ dataRoot: this.dataRoot, profileId: id, native: this.native, emit: this.emit }).initialize();
     try {
       await this.manager.create({ id: botId, roleId: 'entry', workspaceProfileId: id, modelConfig: { connectionStore: models.path } });
       const onboarding = await new OnboardingService({ store: this.store, models, manager: this.manager, chatroom: this.chatroom,

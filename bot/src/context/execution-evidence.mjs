@@ -39,9 +39,10 @@ export function externalExecution(work, operationId) {
   if (!work) return null;
   const native = work.bindings?.findLast(item => ['native-tool', 'native-api', 'native-recovery'].includes(item.type) && (!operationId || item.operationId === operationId));
   if (native) return { workId: work.id, operationId: native.operationId || null, bindingId: native.id, resourceId: native.resourceId,
-    threadId: native.nativeSessionId || null, turnId: null, status: native.status, transportStatus: native.status, currentOperation: true,
-    currentOperationId: native.operationId, externalReceived: Boolean(native.pid || native.receivedAt), startedConfirmed: Boolean(native.startedAt || native.receivedAt),
-    receiptLayer: native.type, observation: native, facts: factTime({ receiptAt: native.startedAt, turnObservedAt: native.observedAt }) };
+    threadId: native.nativeSessionId || null, turnId: native.nativeTurnId || null, status: native.status, transportStatus: native.status, currentOperation: true,
+    currentOperationId: native.operationId, externalReceived: Boolean(native.pid || native.receivedAt),
+    startedConfirmed: native.engine ? Boolean(native.nativeSessionId && native.nativeTurnId && native.turnStartedAt) : Boolean(native.startedAt || native.receivedAt),
+    receiptLayer: native.type, observation: native, facts: factTime({ receiptAt: native.startedAt, turnObservedAt: native.turnStartedAt || native.observedAt }) };
   const operation = operationId || work.waiting?.operationId || work.bindings?.findLast(item => item.type === 'codex-desktop')?.operationId || null;
   const owning = work.bindings?.findLast(item => item.type === 'codex-desktop');
   const binding = work.bindings?.findLast(item => item.type === 'codex-desktop' &&

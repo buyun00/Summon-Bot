@@ -19,7 +19,7 @@ export function effectiveBotTools(bot, allowed = bot?.allowedTools) {
     // Copying composes the existing file read and write capabilities.
     if (!bot?.maintenanceFor && values.includes('read_file') && values.includes('write_file')) values.push('copy_file');
     if (values.includes('catalog_search')) values.push(...nativeToolDefinitions.filter(tool => tool.effect === 'read').map(tool => tool.name));
-    if (values.includes('catalog_call')) values.push(...nativeToolDefinitions.filter(tool => /_(run|input|stop|recover)$/.test(tool.name)).map(tool => tool.name));
+    if (values.includes('catalog_call')) values.push(...nativeToolDefinitions.filter(tool => /_(run|input|stop|recover|engine_execute)$/.test(tool.name)).map(tool => tool.name));
     if (values.includes('catalog_register')) values.push('catalog_native_enroll');
     return [...new Set(values)];
   }

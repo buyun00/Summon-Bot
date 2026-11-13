@@ -1,5 +1,5 @@
 import { mkdir, realpath, writeFile } from 'node:fs/promises';
-import { join, relative, isAbsolute } from 'node:path';
+import { join, relative } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { WORK_ATTACHMENTS } from '../runtime/notifications.mjs';
 
@@ -22,22 +22,26 @@ export async function executorHandoff({ workspace, work, task, event, execution,
   const root = await realpath(workspace), directory = join(root, '.summon-handoffs');
   await mkdir(directory, { recursive: true });
   const part = relative(root, await realpath(directory));
-  if (isAbsolute(part) || part === '..' || part.startsWith('..\\') || part.startsWith('../'))
+  if (part !== '.summon-handoffs')
     throw new Error('Executor handoff directory is outside the authorized workspace');
   const handoffId = randomUUID();
-  const path = join(directory, `${handoffId}.json`), resultFile = join(directory, `${handoffId}.result.json`);
-  const outputDirectory = join(root, `deliverables-${handoffId}`);
+  const staging = join(root, '.summon-deliverables');
+  await mkdir(staging, { recursive: true });
+  const stagingPart = relative(root, await realpath(staging));
+  if (stagingPart !== '.summon-deliverables') throw new Error('Executor delivery directory changed outside its saved location');
+  const path = join(directory, `${handoffId}.json`), resultFile = join(staging, `${handoffId}.result.json`);
+  const outputDirectory = join(staging, handoffId);
   const projectCwd = work.project?.cwd || work.executor?.target?.cwd;
   const executionPolicy = {
     ...(projectCwd ? { projectCwd } : {}),
     scope: 'Work only in the authorized project and supplied sources. Do not search/read Summon source, installation, production data/configuration, other projects, credentials, tokens or private API routes. A missing publication tool does not grant access to infrastructure. Do not enumerate processes, application data or authentication routes to compensate.',
-    delivery: 'Use the bound Codex project cwd for the work itself. The output directory is only for staging authorized finished files for this step, and does not change the project cwd. Summon/Pi owns authenticated publication and chat delivery. You do not call publish_file, gateway/internal APIs or send chat messages. End with a concise factual result about production and the checks you actually observed. Summon reports attachment status from actual receipts. If a file cannot be produced, report the actual error and stop that action.',
+    delivery: 'Use the bound project cwd for the work itself. The output directory is for staging authorized finished files for this step. Summon handles authenticated publication and chat delivery. End with a concise factual result about production and the checks you actually observed. Summon reports attachment status from actual receipts. If a file cannot be produced, report the actual error and stop that action.',
     verification: 'Do not calculate or compare file/directory/artifact hashes, add integrity scans, extra evidence reports or repeat acceptance. Do not add/run tests unless the authenticated user explicitly requested them for this step. Perform only necessary build/configuration/start operations and handle their actual failures. Preserve applicable user constraints from all complete sources.',
-    enforcement: 'Summon capability calls enforce project/source access. Native Codex tools inherit the actual desktop permission profile; this scope instruction and cwd are not an OS read sandbox. Do not claim otherwise.',
+    enforcement: 'Honor the file and operation scope of the accepted request and the permissions supplied by the local CLI. Route questions and authorization through this same session.',
   };
   const delivery = { outputDirectory, resultFile, schema: { workId: work.id, operationId: event.id, status: 'ready',
     summary: 'Actual result and remaining limitations; no secrets.', artifacts: [{ path: 'absolute finished file path in outputDirectory', name: 'download filename (optional)' }] },
-    instruction: `If this step has authorized file deliverables, create outputDirectory and stage only the files to be attached. Keep the project originals. Use the staged absolute paths in artifacts. For a finished package also delivered by local path, give its absolute project path and exact size in bytes together in summary, and give the same path in your final reply. Put only the JSON manifest at resultFile in .summon-handoffs, never the files themselves. Write it after the files are finished, with up to ${WORK_ATTACHMENTS} attachments and no digest fields. If there are no file deliverables, leave both paths unused. Summon reads this exact per-operation manifest, checks identity and scope, and publishes attachments to the original room in parts. Never claim published until Summon returns the real attachment receipt.` };
+    instruction: `If this step has authorized file deliverables, create outputDirectory and stage only the files to be attached. Keep the project originals. Use the staged absolute paths in artifacts. For a finished package also delivered by local path, give its absolute project path and exact size in bytes together in summary, and give the same path in your final reply. Put only the JSON manifest at resultFile, outside outputDirectory. Write it after the files are finished, with up to ${WORK_ATTACHMENTS} attachments and no digest fields. If there are no file deliverables, leave both paths unused. Summon reads this exact per-operation manifest, checks identity and scope, and publishes attachments to the original room in parts. Claim attachment publication only from Summon's actual receipt.` };
   const bundle = { type: 'executor_handoff', workId: work.id, operationId: event.id,
     originalRequest: materials.originalRequest || { content: materials.trigger?.content || input },
     handoff: materials.handoff || {}, stage: materials.stage, evidence: materials.evidence || [], evidenceWarnings: materials.evidenceWarnings || [],
@@ -66,5 +70,7 @@ export async function executorHandoff({ workspace, work, task, event, execution,
     prompt = JSON.stringify({ ...header, index: ['originalRequest', 'handoff', 'additionalRequests', 'work', 'currentKnowledge', 'evidence'],
       originalRequest: excerpt(bundle.originalRequest, 16000, `${path}#originalRequest`), evidenceCount: bundle.evidence.length });
   }
-  return { prompt, path, resultFile, characters: prompt.length };
+  const steer = JSON.stringify({ type: 'accepted_work_update', sourceFile: path, originalRequest: excerpt(bundle.originalRequest, 8000, `${path}#originalRequest`),
+    instruction: 'Read this accepted update now. Continue the current turn, respecting its newer instructions within the same authorization. Use the current turn’s existing result manifest and staging directory.' });
+  return { prompt, steer, path, resultFile, outputDirectory, characters: prompt.length };
 }

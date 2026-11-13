@@ -190,6 +190,22 @@ private fun modelGauge(item: SummonJson): ModelGaugeData {
             listOf(store.modelSummary["chat"], store.modelSummary["workExecutor"]).filter { it is SummonJson.Obj }.forEach { item ->
                 Surface(shape = RoundedCornerShape(18.dp), color = Color(0xFF1C231E)) { Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { ModelUsageDetails(item) } }
             }
+            Text("工作引擎", style = MaterialTheme.typography.titleMedium)
+            store.modelSummary["executors"].array.orEmpty().forEach { engine ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(engine["name"].stringValue)
+                        Text(engine["label"].stringValue, color = Color.Gray, fontSize = 12.sp)
+                    }
+                    if (engine["id"] == store.modelSummary["workExecutor"]["id"]) Text("当前默认", color = modelGreen)
+                    else TextButton(enabled = !busy && engine["status"].stringValue != "unavailable", onClick = {
+                        perform {
+                            data = store.request("/api/model-settings/executors/active", "POST", SummonJson.obj("id" to engine["id"]))
+                            store.refreshModelUsage()
+                        }
+                    }) { Text("设为默认") }
+                }
+            }
             store.modelSummary["sources"].array.orEmpty().forEach { source ->
                 Surface(shape = RoundedCornerShape(18.dp), color = Color(0xFF1C231E)) {
                     Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { NativeModelSource(source, store) }

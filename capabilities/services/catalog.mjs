@@ -126,7 +126,7 @@ export class CapabilityCatalog {
     const { config, resources, ...metadata } = entry;
     const native = entry.native && { ...entry.native,
       methods: (entry.native.methods || []).filter(method => detail || method.resourceRevision === entry.native.resourceRevision).map(method => detail ? { ...method, current: method.resourceRevision === entry.native.resourceRevision } : {
-        id: method.id, name: method.name, description: method.description, version: method.version, revision: method.revision, effect: method.effect,
+        id: method.id, name: method.name, description: method.description, version: method.version, revision: method.revision, effect: method.effect, role: method.role,
       }) };
     return this.clean({ ...metadata, ...this.state(entry), native, ...(detail
       ? { config, resources: resources || [], displaySources: this.native?.sources.list().filter(source => source.resourceId === entry.id),
@@ -569,10 +569,10 @@ export class CapabilityCatalog {
     try { const delivery = await this.handoff(entry.id, { ...input, proposalId: proposal.id, message, operationId: `proposal:${proposal.id}` }, actor); return this.store.save(K.proposals, { ...proposal, delivery, deliveredAt: stamp(), deliveryError: null }); }
     catch (error) { this.store.save(K.proposals, { ...proposal, deliveryError: this.clean(error.message) }); throw error; }
   }
-  async call(name, args, { actor = 'controller', signal, task } = {}) {
+  async call(name, args, { actor = 'controller', signal, task, runtimeOperation } = {}) {
     const { _context, ...supplied } = args;
     args = { ...supplied, ...(plain(_context) ? Object.fromEntries(['workId','conversationId','originRoomId','originMessageId','sourceRefs'].filter(key => _context[key] !== undefined).map(key => [key, _context[key]])) : {}) };
-    if (name.startsWith('catalog_native_')) return this.native.call(name.slice('catalog_native_'.length), args, { actor, signal, task });
+    if (name.startsWith('catalog_native_')) return this.native.call(name.slice('catalog_native_'.length), args, { actor, signal, task, runtimeOperation });
     switch (name) {
       case 'catalog_search': return this.search(args, actor);
       case 'catalog_get': return args.operationId ? this.receipt(args.id, args.operationId, actor) : this.get(args.id, actor, args.resource, task);
