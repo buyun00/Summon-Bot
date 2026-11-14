@@ -588,6 +588,25 @@ export class BotRuntime {
     return item ? this.inspectLocal(item.inbox, item.conversation, options) : { status: 'unknown', input_targets: [] };
   }
 
+  conversationSummary(id) {
+    const item = this.locate(id);
+    return item ? this.runSummary(id, this.latestRun(item.inbox.runs(id), id)) : null;
+  }
+
+  latestRun(runs, id) {
+    const active = this.active.get(id);
+    if (active) return runs.find(run => run.id === active.runId);
+    return runs.reduce((latest, run) => !latest || (run.updated_at ?? '') >= (latest.updated_at ?? '') ? run : latest, null);
+  }
+
+  runSummary(id, run) {
+    const active = this.active.get(id);
+    const ended = !run || ['completed', 'cancelled', 'stopped', 'archived', 'access_revoked'].includes(run.state);
+    const status = active ? 'running' : ended ? 'idle' : run.state;
+    const error = !active && run?.error;
+    return { status, ...(error?.message ? { last_error: { code: error.code || 'runtime_error', message: error.message } } : {}) };
+  }
+
   async inspectPi(session, options) {
     const id = session.conversation_id || session.id;
     const inbox = await this.inbox(session.execution_actor.id, { create: false });
@@ -599,10 +618,10 @@ export class BotRuntime {
     const runs = inbox.runs(conversation.id);
     const current = inbox.conversation(conversation.id);
     const active = this.active.get(conversation.id);
-    const last = runs.at(-1);
-    const finished = !last || ['completed', 'cancelled', 'stopped', 'suspended', 'archived', 'access_revoked'].includes(last.state);
-    const status = active ? 'running' : finished ? 'idle' : last.state;
-    const target = active?.accepting ? [targetOption('steer', { kind: 'pi_run', run_id: active.runId })] : status === 'idle' ?
+    const last = this.latestRun(runs, conversation.id);
+    const summary = this.runSummary(conversation.id, last);
+    const canAdvance = summary.status === 'idle' || summary.status === 'suspended';
+    const target = active?.accepting ? [targetOption('steer', { kind: 'pi_run', run_id: active.runId })] : canAdvance ?
       [targetOption('next', { kind: 'idle_input', input_revision: current.input_revision })] : [];
     const output = runs.flatMap(run => {
       const record = inbox.store.getRecord(R.transcript, run.id);
@@ -616,7 +635,7 @@ export class BotRuntime {
     const slice = output.slice(after, after + limit);
     const rawOutput = last?.result?.text;
     const text = cursor || typeof rawOutput !== 'string' ? undefined : rawOutput.slice(0, 16000);
-    return { status, input_targets: target, input_revision: current.input_revision, messages: slice, output: text,
+    return { ...summary, input_targets: target, input_revision: current.input_revision, messages: slice, output: text,
       next_cursor: after + slice.length < output.length ? slice.at(-1)?.id : null };
   }
 

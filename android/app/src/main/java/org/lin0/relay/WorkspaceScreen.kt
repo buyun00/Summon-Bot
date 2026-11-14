@@ -396,6 +396,10 @@ private fun ExecutionDetail(store: SummonStore, ref: SummonReference, close: () 
         if (busy) CircularProgressIndicator()
         error?.let { SummonError(it) }
         detail["status"].string?.let { Text("连接状态 · " + summonStatus(it)) }
+        val lastError = detail["last_error"]
+        val errorText = listOfNotNull(lastError["code"].string, lastError["message"].string)
+            .filter { it.isNotEmpty() }.joinToString(" · ")
+        if (errorText.isNotEmpty()) SummonError("最近错误 · " + errorText)
         detail["control"]["state"].string?.let { Text("控制 · " + summonStatus(it)) }
         detail["control"]["stop_status"].string?.let { Text("停止结果 · " + summonStatus(it)) }
         (detail["execution_actor"]["id"].string ?: detail["bot_id"].string)?.let { Text("执行身份 · " + store.name(it)) }

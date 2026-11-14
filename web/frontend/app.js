@@ -1818,11 +1818,16 @@ const inputLabels = { codex_turn:'Codex 轮次', pi_run:'Pi 运行', cli_process
 const stopLabels = { pending:'停止待确认', unknown:'停止结果未知', stopped:'已确认停止', unsupported:'连接不支持停止' };
 const executionLabel = item => item.kind === 'conversation' ? '内部对话' : item.engine === 'pi' ? 'Pi 会话' : (item.engine || '执行会话');
 const executionTitle = item => [executionLabel(item), item.space?.kind === 'room' ? roomById(item.space.id)?.name : null].filter(Boolean).join(' · ');
+const executionError = item => [item.last_error?.message, item.last_error?.code].filter(Boolean).join(' · ');
 
 function renderExecutionRow(item) {
   const ref = item.execution_ref;
+  const status = item.status || 'unknown';
+  const error = executionError(item);
   return `<button class="profile-record record-button execution-row" data-action="open-execution" data-kind="${esc(ref.kind)}" data-id="${esc(ref.id)}">
-    <strong>${esc(executionTitle(item))}</strong><small>${esc([item.bot_id && nameOf(item.bot_id), item.status && (labels[item.status] || item.status), item.control?.state === 'paused' && '已暂停'].filter(Boolean).join(' · '))}</small></button>`;
+    <strong>${esc(executionTitle(item))}</strong>
+    <small>${esc([item.bot_id && nameOf(item.bot_id), labels[status] || status, item.control?.state === 'paused' && '控制已暂停'].filter(Boolean).join(' · '))}</small>
+    ${error ? `<small class="execution-error">${esc(error)}</small>` : ''}</button>`;
 }
 
 async function loadExecution(ref) {
@@ -1874,6 +1879,7 @@ function renderInputOption(option, index) {
 
 function renderExecutionDetail(detail) {
   if (!detail) return '<p class="panel-empty">选择会话查看输入、输出和控制</p>';
+  const error = executionError(detail);
   const paused = detail.control?.state === 'paused';
   const canResume = paused && detail.resume_ref && detail.control.stop_status === 'stopped';
   const stop = !paused && detail.can_stop;
@@ -1890,7 +1896,8 @@ function renderExecutionDetail(detail) {
     `<pre class="execution-output">${esc(page.text ?? '')}</pre>`).join('');
   const native = detail.native ? `<details><summary>连接返回的标识</summary><pre class="execution-output">${esc(JSON.stringify(detail.native,null,2))}</pre></details>` : '';
   return `<div class="execution-facts"><h2>${esc(executionTitle(detail))}</h2><dl>
-    <dt>连接状态</dt><dd>${statusPill(detail.status)}</dd>
+    <dt>执行状态</dt><dd>${statusPill(detail.status || 'unknown')}</dd>
+    ${error ? `<dt>最近运行错误</dt><dd class="execution-error">${esc(error)}</dd>` : ''}
     <dt>控制</dt><dd>${statusPill(detail.control?.state)} ${esc(stopLabels[detail.control?.stop_status] || '')}</dd>
     ${detail.execution_actor || detail.bot_id ? `<dt>执行身份</dt><dd>${esc(nameOf(detail.execution_actor?.id || detail.bot_id))}</dd>` : ''}
     ${detail.submitted_by ? `<dt>提交者</dt><dd>${esc(nameOf(detail.submitted_by.id))}</dd>` : ''}

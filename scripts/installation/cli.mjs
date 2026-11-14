@@ -21,7 +21,7 @@ export async function main(args = process.argv.slice(2)) {
     if (installation && !['runtime_ready', 'done'].includes(installation.phase)) {
       result = { state: 'updating', phase: installation.phase, buildId: installation.target_build, drain: installation.drain?.active };
     } else {
-      if (config.dataFormat !== dataFormat) throw new Error('Query status with the selected legacy release launcher during the transition');
+      if (config.dataFormat !== dataFormat) throw new Error('The selected deployment uses another data format');
       result = { web: await inspectService(config, 'web'), gateway: await inspectService(config, 'gateway') };
     }
   }

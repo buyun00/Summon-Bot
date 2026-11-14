@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { stat } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { readJson } from '../build/files.mjs';
 import { validateRelease } from './repository.mjs';
@@ -9,9 +9,6 @@ import { githubBase, releaseTargets } from './targets.mjs';
 const run = promisify(execFile);
 const matches = (current, expected) => current.sourceCommit === expected.sourceCommit &&
   current.version === expected.version && current.buildNumber === expected.buildNumber;
-
-export const sameAvailability = (availability, dataRoot, expected) => Boolean(availability &&
-  typeof availability.dataRoot === 'string' && !relative(dataRoot, availability.dataRoot) && matches(availability, expected));
 
 export async function localWindowsRelease(root, expected) {
   const folder = join(root, 'windows', 'x64');
@@ -82,5 +79,4 @@ export async function assertClientAvailability({ dataRoot, release, expected }) 
   ]);
   const failures = outcomes.filter(result => result.status === 'rejected');
   if (failures.length) throw Object.assign(new Error(failures.map(result => result.reason.message).join('\n')), { code: 'CLIENT_RELEASES_PENDING' });
-  return { dataRoot, sourceCommit: expected.sourceCommit, version: expected.version, buildNumber: expected.buildNumber };
 }

@@ -10,8 +10,7 @@ import { nativeFileOperands } from './native-references.mjs';
 import { assertServiceConfig, credentialNames, mcpTasksUnsupported, ServiceConnections } from './service-connection.mjs';
 import { inputRecords, makeProcessGuard, operationRecords, SessionProcesses, settled } from './session-processes.mjs';
 
-export { connectionRecords, convertConnectionEntry, importNativeInput, importNativeOperation, importNetworkOperation,
-  readLegacyInputFacts, readLegacyOperationFacts } from './connection-records.mjs';
+export { connectionRecords } from './connection-records.mjs';
 
 const codexStatus = { completed: 'completed', interrupted: 'stopped', failed: 'failed' };
 const nativeKind = kind => kind === 'cli' || kind === 'codex';

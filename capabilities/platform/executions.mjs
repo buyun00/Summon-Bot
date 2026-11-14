@@ -86,13 +86,18 @@ export class Executions {
         this.permission({ kind, id: record.id }, record, context)).map(record => this.baseView({ kind, id: record.id }, record, context)));
   }
 
-  baseView(target, record, context) {
+  baseView(target, record, context, observation) {
     const controlled = this.permission(target, record, context, 'control');
     const { control } = record;
+    const conversation = target.kind === 'conversation';
+    const facts = conversation ? observation ?? this.platform.runtime.conversationSummary(record.id) : observation;
+    const status = facts?.status || (conversation ? 'unknown' : record.status ?? 'idle');
+    const error = conversation && facts?.last_error;
     return { kind: target.kind, id: record.id, execution_ref: target, bot_id: record.bot_id, space: record.space, engine: record.engine,
       source_space: record.source_space && this.platform.canReadSpace(context.actor, record.source_space, context) ? record.source_space : undefined,
       model: record.model, execution_actor: record.execution_actor, submitted_by: record.submitted_by, latest_call_id: record.latest_call_id,
-      status: record.status ?? 'idle', control, control_version: control.control_version, input_revision: record.input_revision,
+      status, ...(error ? { last_error: { code: error.code, message: error.message } } : {}),
+      control, control_version: control.control_version, input_revision: record.input_revision,
       can_stop: controlled, can_submit: this.permission(target, record, context, 'input') && !record.authority_revoked,
       resume_ref: controlled && canResume(context.actor, control, record.owner) ? resumeReference(target, control) : null };
   }
@@ -114,7 +119,7 @@ export class Executions {
         settledStop(observation.session_status || observation.status, current.engine === 'pi' || safe === true)) {
       current.control = this.saveControl(target, { ...current.control, stop_status: 'stopped' }).control;
     }
-    const base = this.baseView(target, current, context);
+    const base = this.baseView(target, current, context, observation);
     if (target.kind === 'session' && base.can_submit) {
       try { this.platform.assertSessionAuthority(current); }
       catch (error) {
@@ -125,7 +130,7 @@ export class Executions {
     const inputTargets = observation.input_targets || current.input_targets || [];
     const questions = observation.pending_input || [];
     const output = observation.output ?? (observation.output_page?.text ? observation.output_page.text : undefined);
-    return { ...observation, ...base, output, input_revision: observation.input_revision ?? base.input_revision, status: observation.status || base.status || 'idle',
+    return { ...observation, ...base, output, input_revision: observation.input_revision ?? base.input_revision,
       input_targets: base.can_submit && current.control.state === 'active' ? inputTargets.map(option => {
         const question = option.input_target?.request_id && questions.find(item => item.id === option.input_target.request_id);
         return question ? { ...option, question: question.question ?? question.text, choices: question.choices } : option;

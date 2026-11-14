@@ -420,6 +420,10 @@ struct SummonExecutionView: View {
             if let status = detail["status"].string {
                 Section("执行事实") {
                     LabeledContent("状态", value: SummonFormat.status(status))
+                    let lastError = detail["last_error"]
+                    let errorText = [lastError["code"].string, lastError["message"].string]
+                        .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+                    if !errorText.isEmpty { InlineError(message: "最近错误 · " + errorText) }
                     LabeledContent("控制", value: SummonFormat.status(detail["control"]["state"].stringValue))
                     if let stop = detail["control"]["stop_status"].string { LabeledContent("停止结果", value: SummonFormat.status(stop)) }
                     if let actor = detail["execution_actor"]["id"].string ?? detail["bot_id"].string {

@@ -26,7 +26,6 @@ export async function enterDrain({ dataRoot, state, previous, owner }) {
   if (!previous) return advanceInstallation(dataRoot, state, 'draining', { cutoff: new Date().toISOString(), drain: { started_calls: [], active: [], ready: true } });
   const gateway = await owner.gateway();
   if (gateway.state === 'stopped') {
-    if (owner.legacy) throw failure('The previous protocol stopped without leaving a drain boundary for this installation');
     await owner.assertStopped();
   } else {
     const support = await installationRequest(previous, gateway);
@@ -41,9 +40,6 @@ export async function finishDrain({ dataRoot, state, previous, owner, onProgress
   for (;;) {
     const gateway = await owner.gateway();
     if (gateway.state === 'stopped') {
-      if (owner.legacy && !(state.intake_closed && state.drain?.ready && state.drain?.intake_closed)) {
-        throw failure('The old gateway stopped before confirming that calls and receipt writers reached the cutover boundary');
-      }
       if (state.intake_closed && state.drain?.ready) await owner.stop();
       await owner.assertStopped({ drained: state.drain?.intake_closed === true && state.drain.ready === true });
       return state;
@@ -88,7 +84,7 @@ function assertNoUneventfulShutdown(dataRoot) {
     const inputs = records.all(inputRecords).map(row => JSON.parse(row.data));
     const uncertain = operations.find(item => item.submitted_at && !(item.runtime_ended && item.finished_at &&
       (item.protocol !== 'codex' || item.status !== 'unknown' || !item.thread_active && !item.turn_attempted)));
-    const pending = inputs.find(item => !item.migrated && !item.receipt && ['writing', 'submitted'].includes(item.status));
+    const pending = inputs.find(item => !item.receipt && ['writing', 'submitted'].includes(item.status));
     if (uncertain || pending) {
       throw failure(`The stopped gateway left execution ${(uncertain || pending).id} without a final boundary. Resume the selected runtime to finish draining.`,
         'INSTALLATION_ACTIVE_WRITER');
@@ -99,7 +95,6 @@ function assertNoUneventfulShutdown(dataRoot) {
 export function currentWriters(config) {
   const types = ['web', 'gateway', 'cloudflared', 'remote-bridge'];
   return {
-    legacy: false,
     gateway: () => inspectService(config, 'gateway'),
     async stop() {
       for (const type of types) await stopService(config, type, { waitForExit: true });
@@ -119,7 +114,6 @@ export function currentWriters(config) {
   };
 }
 
-// Shared by the managed control listener and the same-protocol upgrade support.
 export async function installationStatus(app, state, record, method) {
   const support = typeof app?.installationDrain === 'function';
   const identity = { pid: record.pid, bootId: record.bootId, supportsDrain: support };

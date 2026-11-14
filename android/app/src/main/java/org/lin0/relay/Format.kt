@@ -51,6 +51,6 @@ fun summonStatus(value: String): String = mapOf(
     "queued" to "等待投递", "pending" to "等待确认", "submitted" to "已提交", "accepted" to "已受理",
     "received" to "Bot 已接收", "processed" to "本轮已处理", "access_revoked" to "访问已撤销", "rejected" to "未受理",
     "running" to "运行中", "waiting" to "等待结果", "needs_input" to "待输入", "completed" to "执行已结束",
-    "failed" to "失败", "cancelled" to "已取消", "active" to "启用", "paused" to "已暂停",
+    "failed" to "失败", "cancelled" to "已取消", "active" to "启用", "paused" to "已暂停", "suspended" to "运行已挂起",
     "stopping" to "停止中", "stopped" to "已停止", "idle" to "空闲", "unknown" to "状态未知", "unsupported" to "连接不支持",
 )[value] ?: value

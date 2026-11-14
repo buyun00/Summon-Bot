@@ -5,12 +5,11 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { copyTree, parseArgs, readJson, within, writeJson } from '../build/files.mjs';
-import { assertClientAvailability, sameAvailability } from '../release/availability.mjs';
+import { assertClientAvailability } from '../release/availability.mjs';
 import { removeInside } from '../release/repository.mjs';
 import { currentWriters, enterDrain, finishDrain, installationRequest } from './drain.mjs';
 import { advanceInstallation, dataFormat, readInstallationState, writeInstallationState } from './installation-state.mjs';
-import { firstCutoverPath, legacyWriters, readLegacyHandoff } from './legacy-writers.mjs';
-import { migrateInstallation } from './migration.mjs';
+import { stageConfiguration } from './configuration.mjs';
 import { acquireServiceLock } from './service-lock.mjs';
 import { createDeployment, deploymentPath, startSystem } from './system.mjs';
 
@@ -46,8 +45,7 @@ async function stageRelease(releaseRoot, destination, manifest, onCopyProgress) 
   await mkdir(dirname(destination), { recursive: true });
   const staging = await mkdtemp(join(dirname(destination), '.installing-'));
   try {
-    const included = name => name !== 'scripts/installation/first-cutover' && name !== 'scripts/installation/r2-conversion.mjs';
-    await copyTree(releaseRoot, staging, included, onCopyProgress);
+    await copyTree(releaseRoot, staging, undefined, onCopyProgress);
     await rename(staging, destination);
   } finally { await removeInside(dirname(destination), staging); }
 }
@@ -60,13 +58,10 @@ async function installLauncher(source, target) {
   } finally { await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
 }
 
-async function cleanReleases({ appRoot, sourceRoot, dataRoot, destination, legacy }) {
+async function cleanReleases({ appRoot, sourceRoot, destination }) {
   for (const entry of await entries(join(appRoot, 'releases'))) {
     const file = join(appRoot, 'releases', entry.name);
     if (resolve(file) !== destination) await removeInside(appRoot, file);
-  }
-  if (legacy) {
-    for (const name of ['service-runtime', 'packages']) await removeInside(dataRoot, join(dataRoot, 'capabilities', name));
   }
   if (!sourceRoot) return;
   for (const entry of await entries(join(sourceRoot, 'dist', 'releases'))) {
@@ -91,7 +86,7 @@ async function startSelected(config, appRoot, previousIntent) {
 }
 
 export async function installRelease({ releaseRoot, appRoot, dataRoot, sourceRoot, defaultCwd, publicOrigin = '', port = 8787,
-  clientAvailability, onCopyProgress, onProgress } = {}) {
+  onCopyProgress, onProgress } = {}) {
   releaseRoot = resolve(releaseRoot);
   appRoot = resolve(appRoot);
   dataRoot = resolve(dataRoot);
@@ -117,55 +112,38 @@ export async function installRelease({ releaseRoot, appRoot, dataRoot, sourceRoo
   try {
     let state = await readInstallationState(dataRoot);
     const selected = await readOptional(join(appRoot, 'current.json'));
-    let deployment = await readOptional(deploymentPath(dataRoot));
+    const deployment = await readOptional(deploymentPath(dataRoot));
     if (state?.phase === 'done' && state.target_build === manifest.buildId) {
       return { ...selected, sourceCommit: manifest.sourceCommit, runtimeState: deployment.runIntent };
     }
     if (!state || state.phase === 'done') {
-      const previousManifest = deployment ? await readJson(join(deployment.releaseRoot, 'release-manifest.json')) : null;
-      const legacy = Boolean(deployment && !previousManifest.dataFormat);
-      const owner = deployment && (legacy ? legacyWriters(deployment, appRoot) : currentWriters(deployment));
-      const handoff = legacy ? await readLegacyHandoff(deployment) : null;
-      if (handoff && handoff.target_build !== manifest.buildId) {
-        throw new Error(`Continue first cutover with its staged release ${handoff.target_build}`);
-      }
-      if (owner) {
+      let previousManifest;
+      if (deployment) {
         if (!selected || resolve(selected.releaseRoot) !== resolve(deployment.releaseRoot)) throw new Error('The running deployment and installation pointer disagree');
+        previousManifest = await candidate(deployment.releaseRoot);
+        const owner = currentWriters(deployment);
         const gateway = await owner.gateway();
         if (gateway.state === 'stopped') {
-          if (legacy) throw new Error('The previous runtime has no recorded protocol drain boundary. Install its same-protocol handoff support first.');
           await owner.assertStopped();
         } else {
-          try {
-            const result = await installationRequest(deployment, gateway);
-            if (result.supportsDrain !== true) throw new Error('The current gateway lacks a protocol drain handler');
-          } catch (error) {
-            throw new Error(legacy ? `The running legacy release needs same-protocol drain support before cutover (${error.message})` : error.message, { cause: error });
-          }
+          const result = await installationRequest(deployment, gateway);
+          if (result.supportsDrain !== true) throw new Error('The current gateway lacks a protocol drain handler');
         }
       }
-      if (previousManifest && previousManifest.protocolVersion !== manifest.protocolVersion && !sameAvailability(clientAvailability, dataRoot, manifest)) {
+      if (previousManifest && previousManifest.protocolVersion !== manifest.protocolVersion) {
         await assertClientAvailability({ dataRoot, release: await readJson(join(releaseRoot, 'release.json')), expected: manifest });
       }
       await stageRelease(releaseRoot, destination, manifest, onCopyProgress);
-      const previousIntent = handoff?.previousIntent ?? deployment?.runIntent ?? 'running';
-      state = await writeInstallationState(dataRoot, { schemaVersion: 1, phase: 'prepared', migration_id: handoff?.id || randomUUID(),
+      state = await writeInstallationState(dataRoot, { schemaVersion: 1, phase: 'prepared', migration_id: randomUUID(),
         target_build: manifest.buildId, target_format: manifest.dataFormat, release_root: destination, previous_release: deployment?.releaseRoot ?? null,
-        previous_format: deployment ? previousManifest.dataFormat ?? 1 : null, previousIntent, source_root: sourceRoot ?? deployment?.sourceRoot ?? null,
-        ...(handoff ? { cutoff: handoff.cutoff, drain: { started_calls: handoff.started_calls } } : {}) });
+        previousIntent: deployment?.runIntent ?? 'running', source_root: sourceRoot ?? deployment?.sourceRoot ?? null });
       onProgress?.({ phase: state.phase, buildId: manifest.buildId });
     } else if (state.target_build !== manifest.buildId || resolve(state.release_root) !== destination) {
       throw new Error(`Continue installation ${state.target_build} with its staged release`);
     }
 
     const previous = state.previous_release ? { ...deployment, dataRoot, releaseRoot: state.previous_release } : null;
-    const legacy = state.previous_format === 1;
-    const owner = previous && (legacy ? legacyWriters(previous, appRoot) : currentWriters(previous));
-    if (legacy && !state.intake_closed && ['prepared', 'draining'].includes(state.phase) &&
-        (await owner.gateway()).state === 'stopped') {
-      const { resume104 } = await import('./first-cutover/switch-104.mjs');
-      await resume104({ appRoot, dataRoot, state });
-    }
+    const owner = previous && currentWriters(previous);
     if (state.phase === 'prepared') state = await enterDrain({ dataRoot, state, previous, owner });
     if (state.phase === 'draining') {
       state = await finishDrain({ dataRoot, state, previous, owner, onProgress });
@@ -175,11 +153,9 @@ export async function installRelease({ releaseRoot, appRoot, dataRoot, sourceRoo
     if (state.phase === 'converting') {
       await owner?.assertStopped({ drained: state.drain?.intake_closed === true && state.drain.ready === true });
       const { defaultLimits } = await import(new URL('../../capabilities/platform/resources.mjs', import.meta.url));
-      deployment ||= createDeployment({ dataRoot, releaseRoot: destination, defaultCwd, port });
-      const { publicOrigin: oldOrigin, ...current } = deployment;
+      const current = deployment || createDeployment({ dataRoot, releaseRoot: destination, defaultCwd, port });
       await mkdir(current.defaultCwd, { recursive: true });
-      state = await migrateInstallation({ dataRoot, appRoot, state, deployment: current, defaultLimits,
-        publicOrigin: oldOrigin || publicOrigin });
+      await stageConfiguration({ dataRoot, state, deployment: current, defaultLimits, publicOrigin });
       state = await advanceInstallation(dataRoot, state, 'data_ready');
     }
     const selection = { schemaVersion: 1, releaseRoot: destination, buildId: manifest.buildId, dataRoot,
@@ -194,8 +170,7 @@ export async function installRelease({ releaseRoot, appRoot, dataRoot, sourceRoo
     }
     const activeConfig = await readJson(deploymentPath(dataRoot));
     const runtimeState = await startSelected(activeConfig, appRoot, state.previousIntent);
-    await cleanReleases({ appRoot, dataRoot, sourceRoot: state.source_root, destination, legacy });
-    if (legacy) await unlink(firstCutoverPath(dataRoot)).catch(error => { if (error.code !== 'ENOENT') throw error; });
+    await cleanReleases({ appRoot, sourceRoot: state.source_root, destination });
     await unlink(join(dataRoot, 'config', `deployment.${state.migration_id}.json`)).catch(error => { if (error.code !== 'ENOENT') throw error; });
     await writeInstallationState(dataRoot, { schemaVersion: 1, phase: 'done', target_build: manifest.buildId,
       target_format: manifest.dataFormat, release_root: destination });

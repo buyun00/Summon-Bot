@@ -5,7 +5,6 @@ import { runtimeRecords as R } from './runtime-records.mjs';
 
 const decode = row => row ? JSON.parse(row.data) : null;
 const historyRecordKinds = [R.event, R.delivery, R.route, R.conversation, R.run, R.wait, R.call, R.transcript, R.checkpoint, R.batch, R.input, R.materialView];
-const legacyTables = new Set(['messages', 'tasks', 'sessions', 'tools', 'events', 'outbox', 'memories', 'artifacts', 'state']);
 
 /** SQLite stores original transcript entries and their independent processing positions. */
 export class BotStore {
@@ -54,19 +53,6 @@ export class BotStore {
   deleteRecord(kind, id) { return this.db.prepare('DELETE FROM records WHERE kind=? AND id=?').run(kind, id).changes > 0; }
   listRecords(kind) { return this.db.prepare('SELECT data FROM records WHERE kind=? ORDER BY rowid').all(kind).map(decode); }
 
-  tableExists(table) {
-    return Boolean(this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table));
-  }
-
-  // Entry points used by the one-time installer to read the original data before conversion.
-  list(table) {
-    if (!legacyTables.has(table)) throw new Error('Unknown installation source table');
-    return this.tableExists(table) ? this.db.prepare(`SELECT data FROM ${table} ORDER BY rowid`).all().map(decode) : [];
-  }
-  listMessages() { return this.list('messages'); }
-  listSessions() { return this.list('sessions'); }
-  listTools() { return this.list('tools'); }
-
   clearHistory() {
     return this.transaction(() => {
       const tables = {}, records = {};
@@ -74,9 +60,6 @@ export class BotStore {
       for (const kind of historyRecordKinds) {
         const count = Number(remove.run(kind).changes);
         if (count) records[kind] = count;
-      }
-      for (const table of ['messages', 'tasks', 'sessions', 'tools', 'events', 'outbox']) {
-        if (this.tableExists(table)) tables[table] = Number(this.db.prepare(`DELETE FROM ${table}`).run().changes);
       }
       return { tables, records };
     });

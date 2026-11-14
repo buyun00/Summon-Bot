@@ -99,7 +99,7 @@ enum SummonFormat {
         ["queued": "等待投递", "pending": "等待确认", "submitted": "已提交", "accepted": "已受理",
          "received": "Bot 已接收", "processed": "本轮已处理", "access_revoked": "访问已撤销",
          "rejected": "未受理", "running": "运行中", "waiting": "等待结果", "needs_input": "待输入",
-         "completed": "执行已结束", "failed": "失败", "cancelled": "已取消", "active": "启用",
+         "completed": "执行已结束", "failed": "失败", "cancelled": "已取消", "active": "启用", "suspended": "运行已挂起",
          "paused": "已暂停", "stopping": "停止中", "stopped": "已停止", "idle": "空闲",
          "unknown": "状态未知", "unsupported": "连接不支持"][value] ?? value
     }
