@@ -95,7 +95,7 @@ export class BotRuntime {
     if (this.closed) return { accepted: false, retryable: true, code: 'runtime_closed' };
     this.platform.getBot(delivery.bot_id);
     const receipt = (await this.inbox(delivery.bot_id)).receive(delivery);
-    if (receipt.processed) setImmediate(() => {
+    if (receipt.processed || receipt.waits.length) setImmediate(() => {
       if (!this.closed) this.consumeDeliveries(this.inboxes.get(delivery.bot_id), [receipt.event_id]);
     });
     this.wake();
@@ -191,31 +191,44 @@ export class BotRuntime {
       }
     }
 
+    const foreground = [];
+    const maintenance = [];
     for (const conversation of inbox.store.listRecords(R.conversation)) {
       if (!this.registered(conversation)) this.register(inbox, conversation);
-      if (this.active.has(conversation.id) || this.starting.has(conversation.id)) continue;
+      if (this.active.has(conversation.id) || this.starting.has(conversation.id)) {
+        if (conversation.kind !== 'material') foreground.push(conversation);
+        continue;
+      }
       if (!this.conversationActive(conversation)) continue;
       let runs = inbox.runs(conversation.id).filter(run => activeRunStates.has(run.state));
       runs = runs.filter(run => !run.retry_at || Date.parse(run.retry_at) <= Date.now());
       const eligible = runs.find(run => run.state === 'waiting' && this.waitReady(inbox, run));
       const run = eligible || runs.find(run => run.state !== 'waiting');
       if (!run) continue;
+      if (conversation.kind === 'material') {
+        maintenance.push({ conversation, run });
+        continue;
+      }
       if (eligible && conversation.kind === 'room') {
         const fresh = inbox.pending().filter(route => !route.run_id && sameRef(route.event.space, conversation.space) &&
           (route.event.ref?.kind !== 'conversation' || route.event.ref.id === conversation.id) &&
           (route.event.type !== 'call.receipt' || !inbox.list(R.route, 'event_id', route.event_id).some(item => item.wait_id)));
         inbox.associate(run.id, fresh.slice(0, 32));
       }
+      foreground.push(conversation);
       this.launch(inbox, conversation, inbox.run(run.id), bot);
     }
-    await this.materials.consider(inbox, bot);
+    // Start foreground runs before starting a prepared maintenance batch.
+    if (!foreground.length) {
+      for (const { conversation, run } of maintenance) this.launch(inbox, conversation, run, bot);
+    }
+    await this.materials.consider(inbox, bot, foreground);
   }
 
   waitReady(inbox, run) {
     const pending = run.route_ids.map(id => inbox.store.getRecord(R.route, id)).filter(route => route?.state === 'pending');
     if (pending.some(route => route.wait_id && this.routeReady(inbox, route))) return true;
-    const openWait = inbox.waits(run.id).some(wait => !terminalCallStates.has(wait.status) && wait.status !== 'inline');
-    return !openWait && pending.some(route => !route.wait_id);
+    return !inbox.hasOpenWaits(run.id) && pending.some(route => !route.wait_id);
   }
 
   routePaused(inbox, route) {
@@ -256,17 +269,6 @@ export class BotRuntime {
     return control.state === 'active' && !this.targetPaused(conversation.session_id && sessionRef(conversation.session_id));
   }
 
-  foregroundPending(inbox) {
-    return inbox.pending().some(route => {
-      if (route.run_id) return this.routeReady(inbox, route);
-      const { event } = route;
-      if (event.type === 'call.receipt' &&
-          (this.targetPaused(event.target) || inbox.list(R.route, 'event_id', event.id).some(item => item.wait_id))) return false;
-      const conversation = event.ref?.kind === 'conversation' && inbox.conversation(event.ref.id);
-      return !conversation || this.conversationActive(conversation);
-    });
-  }
-
   targetPaused(target) { return Boolean(target && this.platform.executions.record(target)?.control?.state === 'paused'); }
   localCallTarget(inbox, callId) {
     const result = callId && inbox.store.getRecord(R.call, callId)?.result;
@@ -285,17 +287,22 @@ export class BotRuntime {
   }
 
   consumeDeliveries(inbox, eventIds) {
-    for (const eventId of eventIds) {
-      if (inbox.list(R.route, 'event_id', eventId).some(route => route.state === 'pending')) continue;
-      for (const delivery of inbox.list(R.delivery, 'event_id', eventId)) this.platform.deliveries?.consume(inbox.botId, delivery.id);
+    for (const eventId of new Set(eventIds)) {
+      for (const delivery of inbox.list(R.delivery, 'event_id', eventId)) this.syncDelivery(inbox, inbox.receipt(delivery.id));
     }
   }
 
   reconcileDeliveries(inbox, received) {
     for (const delivery of received.filter(item => item.bot_id === inbox.botId)) {
       const receipt = inbox.receipt(delivery.id);
-      if (receipt?.processed && receipt.revision === delivery.revision) this.platform.consumeDelivery(inbox.botId, delivery.id);
+      if (receipt?.revision === (delivery.revision ?? 1)) this.syncDelivery(inbox, receipt);
     }
+  }
+
+  syncDelivery(inbox, receipt) {
+    if (!receipt?.accepted || (!receipt.processed && !receipt.waits.length)) return;
+    const { delivery_id, revision, processed, waits, result_access } = receipt;
+    this.platform.consumeDelivery(inbox.botId, delivery_id, { revision, processed, waits, result_access });
   }
 
   binding(bot, conversation) {
@@ -331,10 +338,12 @@ export class BotRuntime {
         const result = this.materials.recovered(job) || restored || await this.engine.execute(job);
         job.check();
         await this.materials.finish(job, result);
+        const view = job.view();
         const cancelledProgress = [];
         const state = inbox.store.transaction(() => {
-          inbox.complete(run.id, 'running', result.eventIds, { result: { text: result.text, model: result.model, response_id: result.response_id } }, canProcess);
-          const outstanding = inbox.waits(run.id).some(wait => !terminalCallStates.has(wait.status) && wait.status !== 'inline');
+          inbox.complete(run.id, 'running', result.eventIds, { result: { text: result.text, model: result.model, response_id: result.response_id } },
+            canProcess, view.canReadEvent);
+          const outstanding = inbox.hasOpenWaits(run.id);
           const settledProgress = pendingForRun().filter(route => this.settledProgress(inbox, route));
           for (const { event, ...route } of settledProgress) {
             inbox.store.putRecord(R.route, { ...route, state: 'cancelled' });
@@ -422,7 +431,11 @@ export class BotRuntime {
       this.platform.assertRunAllowed?.(context());
     };
     const job = { inbox, conversation, runId: run.id, binding, controller, signal: controller.signal, context, check, accepting: true,
-      view: () => this.authorizationView(context(), conversation),
+      view: () => {
+        const view = this.authorizationView(context(), conversation);
+        inbox.attachReturnWaits(conversation.id, run.id, view.pending_return_waits);
+        return view;
+      },
       refresh: () => this.contextBoundary(job),
       materials: () => this.materials.boundary(job),
       checkInstallation: () => this.checkInstallation(),
@@ -438,7 +451,9 @@ export class BotRuntime {
     const profile = this.platform.principalContext(context.actor);
     const rooms = view.session ? [view.session.space].filter(space => space.kind === 'room') :
       this.platform.room.rooms(context.actor.id, profile).map(room => room.ref).sort((left, right) => left.id.localeCompare(right.id));
-    return { ...view, view_revision: recordKey(conversation.space, profile.workspaceProfileId ?? null, rooms, view.resources ?? [], access) };
+    const scope = [conversation.space, profile.workspaceProfileId ?? null, rooms, view.resources ?? [], access];
+    if (view.revoked_return_waits?.length) scope.push(view.revoked_return_waits);
+    return { ...view, view_revision: recordKey(...scope) };
   }
 
   async contextBoundary(job) {
@@ -456,7 +471,7 @@ export class BotRuntime {
       const authorized = event.type === 'pi.input' || view.canReadEvent(event);
       if (authorized) current.push(event);
       else if (routes.some(route => route.wait_id)) current.push({ id: event.id, type: event.type, call_id: event.call_id, status: event.status,
-        time: event.time, result_access: 'revoked', author: event.author });
+        result_position: event.result_position, time: event.time, result_access: 'revoked', author: event.author });
       else this.discard(inbox, routes, 'access_revoked');
     }
     let history = [];
@@ -557,7 +572,7 @@ export class BotRuntime {
     if (details.inbox.store.getRecord(R.input, call.id)) return status();
     signal?.throwIfAborted();
     await beforeSubmit();
-    const run = this.acceptInput(details, call, input, 'next', null);
+    const { run } = this.acceptInput(details, call, input, 'next', null);
     this.wake();
     return { status: 'submitted', input_revision: run.input_revision, native: { conversation_id: details.conversation.id, run_id: run.id }, input_targets: [] };
   }
@@ -571,7 +586,7 @@ export class BotRuntime {
     if (!details) throw runtimeFailure('execution_not_found', 'Pi conversation is unavailable', 404);
     const { inbox, conversation } = details;
     const prior = inbox.store.getRecord(R.input, call.id);
-    if (prior) return this.inspectLocal(inbox, conversation);
+    if (prior) return { ...this.inspectLocal(inbox, conversation), confirmed_input: prior.confirmed_input };
     const verify = () => {
       const progress = this.inspectLocal(inbox, conversation);
       const expected = progress.input_targets.find(option => option.kinds.includes(kind));
@@ -585,12 +600,14 @@ export class BotRuntime {
     signal?.throwIfAborted();
     await beforeSubmit();
     const active = verify();
-    const run = this.acceptInput(details, call, input, kind, active?.runId);
+    const steerTarget = forSession && kind === 'steer' ? input_target : null;
+    const { run, confirmed_input } = this.acceptInput(details, call, input, kind, active?.runId, steerTarget);
     this.wake();
-    return { status: 'submitted', input_revision: run.input_revision, native: { conversation_id: conversation.id, run_id: run.id }, input_targets: [] };
+    return { status: 'submitted', input_revision: run.input_revision, native: { conversation_id: conversation.id, run_id: run.id },
+      input_targets: [], ...(confirmed_input && { confirmed_input }) };
   }
 
-  acceptInput({ inbox, conversation }, call, input, kind, runId) {
+  acceptInput({ inbox, conversation }, call, input, kind, runId, steerTarget) {
     return inbox.store.transaction(() => {
       const current = inbox.conversation(conversation.id);
       const id = recordKey('pi.input', call.id);
@@ -600,14 +617,29 @@ export class BotRuntime {
       inbox.store.putRecord(R.event, { id, event, received_at: event.time });
       const route = inbox.route(id, { conversation_id: current.id });
       const run = runId ? inbox.associate(runId, [route]) : inbox.createRun(next, [route], { submitted_by: actorFor(call) });
+      const start = steerTarget?.kind === 'pi_run' && steerTarget.run_id === run.id && call.origin?.run_id !== run.id &&
+        inbox.list(R.input, 'run_id', run.id).find(item => item.kind === 'next' && item.conversation_id === current.id);
+      const confirmed_input = start ? { operation_call_id: start.id, input_target: steerTarget } : undefined;
       inbox.store.putRecord(R.input, { id: call.id, run_id: run.id, event_id: id, conversation_id: current.id,
-        kind, status: 'submitted', input_revision: next.input_revision, submitted_by: actorFor(call) });
-      return inbox.putRun({ id: run.id, input_revision: next.input_revision });
+        kind, status: 'submitted', input_revision: next.input_revision, submitted_by: actorFor(call), confirmed_input });
+      return { run: inbox.putRun({ id: run.id, input_revision: next.input_revision }), confirmed_input };
     });
   }
 
   stageInputs(inbox, conversation, runId, status, result) {
-    for (const input of inbox.list(R.input, 'run_id', runId).filter(item => !terminalCallStates.has(item.status) && item.status !== status)) {
+    const run = inbox.run(runId);
+    const controls = [conversationRef(conversation.id), ...(conversation.session_id ? [sessionRef(conversation.session_id)] : [])];
+    const resumed = status === 'completed' && run.state === 'completed' && controls.some(target => {
+      const control = this.platform.executions.record(target)?.control;
+      return control?.state === 'active' && control.stop_id && control.stop_status === 'stopped';
+    });
+    for (const input of inbox.list(R.input, 'run_id', runId)) {
+      if (input.status === status) continue;
+      if (terminalCallStates.has(input.status)) {
+        if (!resumed || input.status !== 'stopped' || !run.injected_event_ids.includes(input.event_id)) continue;
+        const route = inbox.store.getRecord(R.route, recordKey(input.event_id, 'observation'));
+        if (route?.run_id !== run.id || route.state !== 'processed') continue;
+      }
       this.stageInput(inbox, conversation, input, status, result);
     }
   }
@@ -615,18 +647,28 @@ export class BotRuntime {
   stageInput(inbox, conversation, input, status, result) {
     const revision = inbox.conversation(conversation.id).input_revision;
     const facts = { status, position: recordKey(input.run_id, status), native: { run_id: input.run_id }, output: result?.text,
-      input_targets: status === 'completed' ? [targetOption('next', { kind: 'idle_input', input_revision: revision })] : [], input_revision: revision };
+      input_targets: status === 'completed' ? [targetOption('next', { kind: 'idle_input', input_revision: revision })] : [], input_revision: revision,
+      confirmed_input: input.confirmed_input };
+    if (input.receipt_pending === 'pending') {
+      inbox.store.putRecord(R.input, { ...input, status, queued_receipts: [...(input.queued_receipts || []), facts] });
+      return;
+    }
     inbox.store.putRecord(R.input, { ...input, status, receipt: facts, receipt_pending: 'pending' });
   }
 
   flushInputs(inbox) {
-    for (const input of inbox.list(R.input, 'receipt_pending', 'pending')) {
+    for (let input of inbox.list(R.input, 'receipt_pending', 'pending')) {
       const conversation = inbox.conversation(input.conversation_id);
-      try {
-        this.platform.recordReceipt(input.id, input.receipt, conversation.session_id);
-        inbox.store.putRecord(R.input, { ...input, receipt_pending: 'saved' });
-      } catch (error) {
-        this.emit('engine.receipt_pending', { run_id: input.run_id, call_id: input.id, ...this.clean(cleanError(error)) });
+      while (input.receipt_pending === 'pending') {
+        try {
+          this.platform.recordReceipt(input.id, input.receipt, conversation.session_id);
+          const [next, ...queued] = input.queued_receipts || [];
+          input = inbox.store.putRecord(R.input, { ...input, receipt: next || input.receipt, receipt_pending: next ? 'pending' : 'saved',
+            queued_receipts: queued.length ? queued : undefined });
+        } catch (error) {
+          this.emit('engine.receipt_pending', { run_id: input.run_id, call_id: input.id, ...this.clean(cleanError(error)) });
+          break;
+        }
       }
     }
   }

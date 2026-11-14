@@ -102,7 +102,7 @@ export class ServiceConnections {
       ...(tool.requiresTasks ? { status: 'unsupported', code: mcpTasksUnsupported, task_support: 'required' } : {}) }));
   }
 
-  async invoke(entry, actor, workspace, input, callId, beforeSubmit, signal, onProgress) {
+  async invoke(entry, actor, workspace, input, callId, beforeSubmit, signal, context = {}) {
     if (!plain(input) || typeof input.method !== 'string' || input.arguments !== undefined && !plain(input.arguments) ||
         Object.keys(input).some(key => !['method', 'arguments'].includes(key)))
       reject('invalid_service_input', 'Service input requires a method and optional arguments object');
@@ -116,7 +116,7 @@ export class ServiceConnections {
     await beforeSubmit();
     signal?.throwIfAborted();
     try {
-      return await tool.execute(args, { signal, onProgress });
+      return await tool.execute(args, { ...context, signal });
     } catch (error) {
       if (entry.kind === 'mcp' && ['CAPABILITY_UNAVAILABLE', 'REMOTE_OUTCOME_UNKNOWN'].includes(error.code)) {
         void this.disconnect(entry.id);
@@ -143,7 +143,7 @@ export class ServiceConnections {
       ...(status === 'needs_input' ? { request_id: nativeId(at(payload, config.request_id_path)) } : { request_id: null }) };
   }
 
-  async step(entry, session, operation, method, input, callId, beforeSubmit, signal) {
+  async step(entry, session, operation, method, input, callId, beforeSubmit, signal, kind) {
     if (!method) reject('operation_unsupported', 'The external protocol does not provide this operation', 409);
     const lifecycle = entry.config.lifecycle;
     const fields = lifecycle.method_arguments?.[method];
@@ -152,8 +152,22 @@ export class ServiceConnections {
       ...(operation.request_id ? { request_id: operation.request_id } : {}) };
     const parameters = fields ? Object.fromEntries(Object.entries(fields).flatMap(([name, field]) =>
       Object.hasOwn(values, field) && values[field] !== undefined && values[field] !== null ? [[name, values[field]]] : [])) : args;
-    const result = await this.invoke(entry, session.execution_actor, operation.cwd, { method, arguments: parameters }, callId, beforeSubmit, signal);
-    return this.facts(entry, result, operation);
+    let carriedTarget = false;
+    const context = {};
+    if (kind === 'steer' || kind === 'reply') {
+      const required = kind === 'reply' ? ['operation_id', 'input', 'request_id'] : ['operation_id', 'input'];
+      const bindings = Object.entries(fields || { input: 'input', operation_id: 'operation_id', request_id: 'request_id' });
+      context.onRequestFields = (sent, sentArgs) => {
+        carriedTarget = required.every(value => bindings.some(([name, field]) => field === value &&
+          (value === 'input' ? sent.has(name) || [...sent].some(path => path.startsWith(name + '.')) :
+            sent.has(name) && nativeId(sentArgs[name]) === nativeId(values[value]))));
+      };
+    }
+    const result = await this.invoke(entry, session.execution_actor, operation.cwd, { method, arguments: parameters }, callId, beforeSubmit, signal, context);
+    const facts = this.facts(entry, result, operation);
+    const echoedId = carriedTarget && nativeId(at(result?.details ?? result?.structuredContent ?? result, lifecycle.operation_id_path));
+    return echoedId && echoedId === String(operation.operation_id) && !facts.rejected && facts.status !== 'unknown'
+      ? { ...facts, confirmed_operation_id: echoedId } : facts;
   }
 
   async refresh(operation, entry, session) {

@@ -84,9 +84,9 @@ function fieldMap(value, label) {
   }
   return value;
 }
-function mappedInput(args, mapping) {
+function mappedInput(read, mapping) {
   return Object.fromEntries(Object.entries(mapping).flatMap(([name, path]) => {
-    const value = inputField(args, path); return value === undefined ? [] : [[name, value]];
+    const value = read(path); return value === undefined ? [] : [[name, value]];
   }));
 }
 function unknownOutcome(error) {
@@ -115,25 +115,40 @@ function httpTool(definition, headers) {
   return { ...definition, effect,
     async execute(args, context) {
       const url = new URL(baseUrl), requestHeaders = new Headers(headers);
+      const sentFields = context.onRequestFields && new Set();
+      const read = path => inputField(args, path);
+      const readBody = path => {
+        const value = read(path);
+        if (value !== undefined && value !== null) sentFields?.add(path);
+        return value;
+      };
       url.pathname = baseUrl.pathname.replace(/(?:\{|%7B)([a-zA-Z0-9_-]+)(?:\}|%7D)/gi, (_match, name) => {
-        const value = inputField(args, pathMapping[name] || name);
+        const path = pathMapping[name] || name;
+        const value = read(path);
         if (!['string', 'number', 'boolean'].includes(typeof value) || value === '' || value === '.' || value === '..') throw new TypeError(`Missing or invalid HTTP path parameter: ${name}`);
+        sentFields?.add(path);
         return encodeURIComponent(String(value));
       });
-      const query = queryMapping ? mappedInput(args, queryMapping) : noBody ? Object.fromEntries(Object.entries(args).filter(([key]) => !pathFields.has(key))) : {};
+      const query = queryMapping ? mappedInput(read, queryMapping) : noBody ? Object.fromEntries(Object.entries(args).filter(([key]) => !pathFields.has(key))) : {};
       for (const [name, value] of Object.entries(query)) {
         if (value === undefined || value === null) continue;
         const values = Array.isArray(value) ? value : [value];
         if (values.some(item => !['string', 'number', 'boolean'].includes(typeof item))) throw new TypeError(`HTTP query parameter ${name} must be a scalar or scalar array`);
         url.searchParams.delete(name);
         for (const item of values) url.searchParams.append(name, String(item));
+        if (values.length) sentFields?.add(queryMapping?.[name] ?? name);
       }
       let body;
       if (!noBody && definition.bodyMode !== 'none') {
-        const value = typeof request.body === 'string' ? inputField(args, request.body) : request.body ? mappedInput(args, request.body) : definition.bodyMode === 'raw' ? args : { arguments: args };
+        const value = typeof request.body === 'string' ? readBody(request.body) : request.body ? mappedInput(readBody, request.body) :
+          definition.bodyMode === 'raw' ? args : { arguments: args };
         if (value !== undefined) { body = JSON.stringify(value); if (!requestHeaders.has('Content-Type')) requestHeaders.set('Content-Type', 'application/json'); }
+        if (sentFields && !request.body) {
+          for (const [name, value] of Object.entries(args)) if (value !== undefined && value !== null) sentFields.add(name);
+        }
       }
       context.signal?.throwIfAborted();
+      context.onRequestFields?.(sentFields, args);
       let response, text;
       try {
         response = await fetch(url, { method, headers: requestHeaders, redirect: 'error', signal: context.signal, ...(body === undefined ? {} : { body }) });

@@ -168,9 +168,9 @@ export class MaterialRuntime {
       ({ key, material_revision, selection_revision, skill_revision, issue, previous_material_revision })), removed, index_ref };
   }
 
-  async consider(inbox, bot) {
+  async consider(inbox, bot, foreground) {
     if (this.runtime.draining || this.runtime.closed || !bot.material_index_ref || this.nextScan.get(bot.id) > Date.now() ||
-        this.runtime.foregroundPending(inbox) || [...this.runtime.active.values()].some(job => job.inbox === inbox)) return;
+        [...this.runtime.active.values()].some(job => job.inbox === inbox && job.conversation.kind === 'material')) return;
     this.nextScan.set(bot.id, Date.now() + 15000);
     const current = inbox.store.listRecords(R.batch).some(batch => ['prepared', 'result_saved'].includes(batch.state) &&
       ['pending', 'running', 'waiting', 'interrupted', 'retry'].includes(inbox.run(batch.run_id)?.state));
@@ -181,10 +181,9 @@ export class MaterialRuntime {
     const selected = entries.filter(item => item.selected && item.key && !item.material_truncated && typeof item.content === 'string' &&
       !item.issue && !inbox.store.getRecord(R.consumption, item.key));
     for (const seed of selected) {
-      const activeInScope = inbox.store.listRecords(R.conversation).some(conversation => conversation.kind !== 'material' && this.runtime.conversationActive(conversation) &&
-        seed.applies_to.some(scope => sameRef(scope, conversation.space) || scope.kind === 'conversation' && scope.id === conversation.id ||
-          scope.kind === 'session' && scope.id === conversation.session_id) &&
-        inbox.runs(conversation.id).some(run => ['running', 'pending', 'waiting', 'retry', 'interrupted'].includes(run.state)));
+      const activeInScope = foreground.some(conversation => seed.applies_to.some(scope =>
+        sameRef(scope, actor) || sameRef(scope, conversation.space) ||
+        scope.kind === 'conversation' && scope.id === conversation.id || scope.kind === 'session' && scope.id === conversation.session_id));
       if (activeInScope) continue;
       const target = this.read(seed.target_ref, context);
       if (!positiveRevision(target?.revision)) continue;

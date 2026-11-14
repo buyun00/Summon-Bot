@@ -114,7 +114,7 @@ function protocolLine(line) {
     const pending = nativeInputs.get(result.inputId);
     if (pending) {
       if (['rejected', 'not_submitted'].includes(result.status) && pending.requestId) answers.delete(pending.requestId);
-      json(pending.path, { ...result, at: now() });
+      json(pending.path, { ...result, at: now(), ...(!codex && result.status === 'accepted' ? { explicitAck: true } : {}) });
       nativeInputs.delete(result.inputId);
     }
     event('input-result', result);
@@ -134,9 +134,9 @@ function protocolLine(line) {
   }
   if ((message.type === 'resolved' || message.type === 'withdrawn') && state.pending.some(item => item.id === message.id)) {
     if (!codex && message.type === 'resolved') {
-      for (const [inputId, item] of nativeInputs) if (item.requestId === message.id) {
-        json(item.path, { inputId, status: 'accepted', at: now() });
-        nativeInputs.delete(inputId);
+      for (const [inputId, item] of nativeInputs) if (item.requestId === message.id && !item.resolved) {
+        json(item.path + '.resolved', { inputId, status: 'accepted', at: now() });
+        item.resolved = true;
       }
     }
     const pending = state.pending.filter(item => item.id !== message.id);
@@ -218,7 +218,7 @@ async function applyCommand(command, path) {
       expectedTurnId: command.expectedTurnId, guard: codex ? command.guard : undefined, text: command.text } }) + '\n'
     : command.text;
   receipt({ status: 'submitting', requestId: command.requestId || null });
-  if (codex || request) nativeInputs.set(command.id, { path: path + '.native', requestId: command.requestId });
+  if (eventProtocol) nativeInputs.set(command.id, { path: path + '.native', requestId: command.requestId });
   try {
     await writeInput(input);
     receipt({ status: 'delivered', requestId: command.requestId || null });

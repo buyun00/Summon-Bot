@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { conversationControl, eventOrder, matchSources, now, recordKey, runtimeFailure, runtimeRecords as R } from './runtime-records.mjs';
+import { conversationControl, eventOrder, matchSources, now, recordKey, runtimeFailure, runtimeRecords as R, terminalCallStates } from './runtime-records.mjs';
+
+const settledRouteStates = new Set(['processed', 'cancelled', 'access_revoked']);
 
 /** Per-Bot inbox. The event is stored once; observation and each wait have independent processing positions. */
 export class Inbox {
@@ -20,7 +22,7 @@ export class Inbox {
         if (original && (original.run_id !== wait.run_id || original.call_id !== wait.call_id || original.conversation_id !== wait.conversation_id))
           throw runtimeFailure('wait_conflict', 'Wait identity belongs to another call or run');
         waitIds.push(wait.id);
-        this.store.putRecord(R.wait, { ...original, ...wait, ...original?.status && { status: original.status },
+        this.store.putRecord(R.wait, { ...original, ...wait, ...original && { status: original.status, result_position: original.result_position },
           event_ids: [...new Set([...(original?.event_ids || []), event.id])] });
         const route = this.route(event.id, { wait_id: wait.id, conversation_id: wait.conversation_id, run_id: wait.run_id });
         if (route.state === 'pending' && this.run(wait.run_id)) {
@@ -31,7 +33,12 @@ export class Inbox {
       if (match_sources.length || wait_refs.length === 0) this.route(event.id, { match_sources });
       const saved = this.store.getRecord(R.event, event.id);
       const savedAt = prior?.received_at || now();
-      this.store.putRecord(R.event, { id: event.id, event: saved?.event || event, received_at: saved?.received_at || savedAt });
+      const previous = saved?.event;
+      const canExpand = prior && revision > (prior.revision ?? 1) && previous?.result_access === 'revoked' && event.result_access !== 'revoked' &&
+        event.type === 'call.receipt' && previous.type === event.type && previous.call_id === event.call_id &&
+        previous.result_position === event.result_position && previous.author?.kind === event.author?.kind && previous.author?.id === event.author?.id;
+      const projection = canExpand ? event : previous || event;
+      this.store.putRecord(R.event, { id: event.id, event: projection, received_at: saved?.received_at || savedAt });
       this.store.putRecord(R.delivery, { id, event_id: event.id, bot_id, state: 'received', received_at: savedAt, revision: Math.max(prior?.revision || 0, revision),
         match_sources: matchSources(prior?.match_sources || [], match_sources), wait_refs: [...new Set([...(prior?.wait_refs || []), ...waitIds])] });
       for (const runId of affected) if (this.run(runId).state === 'completed') this.putRun({ id: runId, state: 'waiting' });
@@ -49,9 +56,15 @@ export class Inbox {
   event(eventId) { return this.store.getRecord(R.event, eventId)?.event; }
   receipt(deliveryId) {
     const record = this.store.getRecord(R.delivery, deliveryId);
-    return record && { accepted: record.state === 'received', state: record.state, delivery_id: record.id,
-      event_id: record.event_id, received_at: record.received_at, revision: record.revision,
-      processed: this.list(R.route, 'event_id', record.event_id).every(route => route.state !== 'pending') };
+    if (!record) return null;
+    const routes = this.list(R.route, 'event_id', record.event_id);
+    const waitRefs = new Set(record.wait_refs);
+    const waits = routes.filter(route => waitRefs.has(route.wait_id) && settledRouteStates.has(route.state))
+      .map(route => ({ id: route.wait_id, state: route.state }));
+    return { accepted: record.state === 'received', state: record.state, delivery_id: record.id,
+      event_id: record.event_id, received_at: record.received_at, revision: record.revision ?? 1,
+      result_access: this.event(record.event_id)?.result_access,
+      processed: routes.length > 0 && waits.length === waitRefs.size && routes.every(route => settledRouteStates.has(route.state)), waits };
   }
   conversation(id) { return this.store.getRecord(R.conversation, id); }
   run(id) { return this.store.getRecord(R.run, id); }
@@ -59,6 +72,21 @@ export class Inbox {
   calls(runId) { return this.list(R.call, 'run_id', runId); }
   waits(runId) { return this.list(R.wait, 'run_id', runId); }
   runs(conversationId) { return this.list(R.run, 'conversation_id', conversationId); }
+
+  hasOpenWaits(runId) {
+    return this.waits(runId).some(wait => wait.status !== 'inline' && !terminalCallStates.has(wait.status) &&
+      this.store.getRecord(R.input, wait.call_id)?.run_id !== runId);
+  }
+
+  attachReturnWaits(conversationId, runId, waits) {
+    const incoming = waits?.filter(wait => wait.id && wait.call_id && wait.bot_id === this.botId &&
+      wait.conversation_id === conversationId && wait.run_id === runId && !this.wait(wait.id) &&
+      this.store.getRecord(R.input, wait.call_id)?.run_id !== runId);
+    if (!incoming?.length) return;
+    this.store.transaction(() => {
+      for (const wait of incoming) this.store.putRecord(R.wait, { ...wait, status: 'waiting' });
+    });
+  }
 
   list(kind, field, value) {
     return this.store.db.prepare('SELECT data FROM records WHERE kind=? AND json_extract(data,?)=? ORDER BY rowid')
@@ -109,17 +137,17 @@ export class Inbox {
     });
   }
 
-  complete(runId, state, eventIds, boundaries = {}, canProcess = () => true) {
+  complete(runId, state, eventIds, boundaries = {}, canProcess = () => true, canReadEvent = () => true) {
     return this.store.transaction(() => {
       const run = this.run(runId), injected = new Set(run.injected_event_ids), processed = new Set(run.processed_event_ids);
       for (const id of eventIds) if (injected.has(id)) processed.add(id);
       for (const id of run.route_ids) {
         const route = this.store.getRecord(R.route, id);
         if (!route || !processed.has(route.event_id) || route.state !== 'pending' || !canProcess(route)) continue;
-        this.store.putRecord(R.route, { ...route, state: 'processed', processed_at: now() });
+        const event = route.wait_id && this.event(route.event_id);
+        this.store.putRecord(R.route, { ...route, state: event && !canReadEvent(event) ? 'access_revoked' : 'processed', processed_at: now() });
         if (route.wait_id) {
           const wait = this.wait(route.wait_id);
-          const event = this.event(route.event_id);
           if (wait) this.store.putRecord(R.wait, { ...wait, status: event?.status || 'processed',
             result_position: event?.result_position ?? event?.id, processed_event_ids: [...new Set([...(wait.processed_event_ids || []), route.event_id])] });
         }

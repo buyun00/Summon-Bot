@@ -1,6 +1,6 @@
 import { activeControl, assertResume, canResume, resumeReference } from '../bot-management/service.mjs';
 import { assertRevision, identity, keyOf, reject, sameIdentity, sameRef } from './contract.mjs';
-import { errorResult } from './calls.mjs';
+import { callRecords, errorResult, mayAdvanceReceipt } from './calls.mjs';
 
 export const sessionRecords = 'platform-sessions';
 export const conversationRecords = 'platform-conversations';
@@ -17,6 +17,18 @@ function sameInput(a, b) {
   return a?.kind === b?.kind && Boolean(inputFields[a?.kind]?.every(field => a[field] === b[field]));
 }
 
+function matchesOperation(call, inputTarget) {
+  const native = call.result?.native;
+  switch (inputTarget.kind) {
+    case 'codex_turn': return native?.turn_id == null || native.turn_id === inputTarget.turn_id;
+    case 'pi_run': return native?.run_id == null || native.run_id === inputTarget.run_id;
+    case 'cli_process': return call.id === inputTarget.launch_call_id && (native?.instance_id == null || native.instance_id === inputTarget.instance_id);
+    case 'service_call': return call.id === inputTarget.call_id &&
+      (native?.operation_id == null || String(native.operation_id) === inputTarget.operation_id);
+    default: return false;
+  }
+}
+
 const roomMember = (members, actor) => members.includes(actor.id);
 const granted = (values, actor, members, roomId) => values?.some(principal => principal.kind === 'room_members'
   ? principal.id === roomId && roomMember(members, actor) : sameIdentity(principal, actor));
@@ -26,6 +38,14 @@ export class Executions {
 
   record(target) {
     return this.store.get(target.kind === 'session' ? sessionRecords : conversationRecords, target.id);
+  }
+
+  sameOperationTarget(left, right, pi) {
+    if (sameRef(left, right)) return true;
+    if (!pi || !left || !right || left.kind === right.kind) return false;
+    const [session, conversation] = left.kind === 'session' ? [left, right] : [right, left];
+    return session.kind === 'session' && conversation.kind === 'conversation' &&
+      this.record(session)?.engine === 'pi' && this.record(conversation)?.session_id === session.id;
   }
 
   registerConversation(record) {
@@ -172,8 +192,8 @@ export class Executions {
         started = true;
       };
       const options = { session, call: this.calls.get(call.id), input: args.input, beforeSubmit, signal: context.signal };
-      facts = session.engine === 'pi' ? await this.platform.runtime.pi.start(options) : await this.platform.connections.open(options);
-      this.applyResponse(session, call.id, facts);
+      const result = session.engine === 'pi' ? await this.platform.runtime.pi.start(options) : await this.platform.connections.open(options);
+      facts = this.applyResponse(session, call.id, result);
     } catch (error) {
       this.failedSubmission(session, call.id, error);
       throw error;
@@ -242,9 +262,9 @@ export class Executions {
     try {
       const options = { session: current, conversation: current, call: this.calls.get(call.id), kind: args.kind,
         input_target: args.input_target, input: args.input, beforeSubmit, signal: context.signal };
-      const facts = target.kind === 'conversation' ? await this.platform.runtime.submitConversation(options)
+      const result = target.kind === 'conversation' ? await this.platform.runtime.submitConversation(options)
         : current.engine === 'pi' ? await this.platform.runtime.pi.submit(options) : await this.platform.connections.input(options);
-      this.applyResponse(target.kind === 'session' ? current : null, call.id, facts);
+      const facts = this.applyResponse(target.kind === 'session' ? current : null, call.id, result);
       this.settleInput(inputKey, call.id, resultStatus(facts.status));
       return { ...facts, call_id: call.id, target, execution_ref: target };
     } catch (error) {
@@ -349,10 +369,40 @@ export class Executions {
     return this.calls.finish(call.id, 'completed', { status, targets });
   }
 
-  applyResponse(session, callId, facts) {
-    if (typeof facts?.status !== 'string') throw new Error('Execution adapter did not return its actual status');
+  confirmInput(call, confirmed) {
+    if (typeof confirmed?.operation_call_id !== 'string' || !confirmed.operation_call_id || !call.input_id ||
+        call.tool !== 'send_input' || call.submitted_by?.kind !== 'bot') return;
+    const input = this.store.get(inputRecords, call.input_id);
+    const origin = call.origin;
+    if (!input || input.call_id !== call.id || !sameIdentity(input.submitted_by, call.submitted_by) || !sameRef(input.target, call.target) ||
+        !['steer', 'reply'].includes(input.kind) || ['prepared', 'cancelled', 'not_submitted'].includes(input.status) ||
+        !sameInput(input.input_target, confirmed.input_target) || !origin?.run_id || !origin.conversation_id || origin.bot_id !== call.submitted_by.id ||
+        origin.conversation_id !== input.origin?.conversation_id || origin.run_id !== input.origin.run_id ||
+        origin.control_version !== input.origin.control_version || input.confirmed_operation_call_id) return;
+    if (input.input_target.kind === 'pi_run' && input.input_target.run_id === origin.run_id) return;
+
+    const operation = this.store.get(callRecords, confirmed.operation_call_id);
+    if (!operation || operation.id === call.id || operation.status === 'prepared' ||
+        (operation.workspaceProfileId ?? null) !== (call.workspaceProfileId ?? null) ||
+        !this.sameOperationTarget(operation.target, call.target, input.input_target.kind === 'pi_run') ||
+        !matchesOperation(operation, input.input_target)) return;
+    if (operation.tool !== 'open_session') {
+      const start = operation.input_id && this.store.get(inputRecords, operation.input_id);
+      if (operation.tool !== 'send_input' || start?.kind !== 'next' || start.call_id !== operation.id ||
+          !sameRef(start.target, operation.target)) return;
+    }
+    if (operation.origin?.run_id === origin.run_id && operation.origin.conversation_id === origin.conversation_id) return;
+
+    this.calls.addWait(operation.id, { ...origin, input_call_id: call.id, initiating_principal: call.initiating_principal });
+    this.store.save(inputRecords, { id: input.id, confirmed_operation_call_id: operation.id });
+  }
+
+  applyResponse(session, callId, result) {
+    if (typeof result?.status !== 'string') throw new Error('Execution adapter did not return its actual status');
+    const { confirmed_input, ...facts } = result;
     this.store.transaction(() => {
       const call = this.calls.get(callId);
+      this.confirmInput(call, confirmed_input);
       if (call.result_ref?.kind === 'event') return;
       if (session) this.saveFacts(session.id, callId, facts);
       if (facts.status === 'unknown' && call.status === 'submitted') {
@@ -369,6 +419,7 @@ export class Executions {
         this.calls.bind(callId, { result: facts, result_ref: { kind: 'call', id: callId } });
       }
     });
+    return facts;
   }
 
   failedSubmission(session, callId, error, inputId) {
@@ -406,14 +457,22 @@ export class Executions {
     return updated;
   }
 
-  receipt(sessionId, callId, facts) {
+  receipt(sessionId, callId, { confirmed_input, ...facts }) {
     return this.store.transaction(() => {
       const call = this.calls.get(callId);
-      const target = sessionId ? { kind: 'session', id: sessionId } : call.target;
-      if (!sameRef(target, call.target)) reject('call_target_conflict', 'Execution result belongs to another call target', 409);
+      const target = call.target;
+      const source = sessionId ? { kind: 'session', id: sessionId } : target;
+      if (!this.sameOperationTarget(source, target, Boolean(facts.native?.run_id))) {
+        reject('call_target_conflict', 'Execution result belongs to another call target', 409);
+      }
+      this.confirmInput(call, confirmed_input);
       const eventId = keyOf('call', callId, facts.position ?? facts.id);
-      if (!this.store.get('platform-events', eventId) && target?.kind === 'session') this.saveFacts(target.id, callId, facts);
+      const existing = this.store.get('platform-events', eventId);
+      if (existing) return existing;
+      const advances = mayAdvanceReceipt(call, facts.status);
+      if (advances && target?.kind === 'session') this.saveFacts(target.id, callId, facts);
       const event = this.calls.recordReceipt(callId, facts, target);
+      if (!advances) return event;
       if (call.input_id) this.settleInput(call.input_id, callId, resultStatus(facts.status));
       if (call.lease_id && (terminal.has(facts.status) && (facts.status !== 'unknown' || facts.safe_to_disconnect === true) ||
           ['needs_input', 'awaiting_input'].includes(facts.status))) {
@@ -426,7 +485,9 @@ export class Executions {
   settleInput(id, callId, status) {
     const existing = this.store.get(inputRecords, id);
     if (existing?.call_id === callId && !['cancelled', 'not_submitted'].includes(existing.status) &&
-        !(terminal.has(existing.status) && existing.status !== 'unknown' && !terminal.has(status))) this.store.save(inputRecords, { id, status });
+        !(terminal.has(existing.status) && existing.status !== 'unknown' && (!terminal.has(status) || status === 'unknown'))) {
+      this.store.save(inputRecords, { id, status });
+    }
   }
 }
 

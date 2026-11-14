@@ -3,6 +3,16 @@ import { keyOf, reject, sameIdentity, sameRef } from './contract.mjs';
 
 export const callRecords = 'platform-calls';
 export const waitRecords = 'platform-waits';
+const settledOutcomes = new Set(['completed', 'failed', 'stopped', 'unsupported', 'cancelled', 'not_submitted']);
+const receiptOutcomes = new Set([...settledOutcomes, 'unknown']);
+
+export function mayAdvanceReceipt(call, status) {
+  return !settledOutcomes.has(call.status) || settledOutcomes.has(status);
+}
+
+export function isWaitOrigin(wait, origin) {
+  return Boolean(wait && origin && wait.conversation_id === origin.conversation_id && wait.run_id === origin.run_id);
+}
 
 export function errorResult(error) {
   if (error.status && error.code) return { code: error.code, error: error.message, status: error.status, details: error.details };
@@ -13,6 +23,8 @@ export function errorResult(error) {
 export class Calls {
   constructor({ store, deliver, canReadTarget, spaceFor }) {
     Object.assign(this, { store, deliver, canReadTarget, spaceFor });
+    this.linkedWaits = store.db.prepare(`SELECT data FROM records WHERE kind='platform-waits'
+      AND json_extract(data,'$.run_id')=? AND json_extract(data,'$.input_call_id') IS NOT NULL`);
   }
 
   clientCall(actor, clientId, profile) {
@@ -59,17 +71,21 @@ export class Calls {
       const wait = this.store.save(waitRecords, { id: waitId, call_id: id, bot_id: origin.bot_id,
         conversation_id: origin.conversation_id, run_id: origin.run_id, control_version: origin.control_version,
         session_id: origin.session_id || null, workspaceProfileId: call.workspaceProfileId,
+        ...(origin.input_call_id ? { input_call_id: origin.input_call_id, initiating_principal: origin.initiating_principal } : {}),
         target: call.target, status: 'waiting', result_position: null });
       this.store.save(callRecords, { id, return_refs: [...call.return_refs, wait.id] });
-      if (call.result_ref?.kind === 'event') {
-        const event = this.store.get('platform-events', call.result_ref.id);
-        if (event) {
-          const pending = this.store.save(waitRecords, { id: wait.id, status: 'pending_delivery', latest_event_id: event.id });
-          this.deliver(event, [pending]);
-        }
+      if (origin.input_call_id && receiptOutcomes.has(call.status)) {
+        const event = call.result_ref?.kind === 'event' ? this.store.get('platform-events', call.result_ref.id)
+          : call.result_ref?.kind === 'call' ? this.inlineEvent(call) : null;
+        if (event?.call_id === id && receiptOutcomes.has(event.status)) this.deliverWaits(event, [wait], false);
       }
       return this.store.get(waitRecords, wait.id);
     });
+  }
+
+  returnWaits(origin, actor) {
+    return this.linkedWaits.all(origin.run_id).map(row => JSON.parse(row.data))
+      .filter(wait => wait.bot_id === actor.id && isWaitOrigin(wait, origin));
   }
 
   reserveExternal(id, limits) {
@@ -87,13 +103,37 @@ export class Calls {
 
   finish(id, status, result) {
     return this.store.transaction(() => {
-      const call = this.get(id);
-      this.store.save(callRecords, { id, status, result, result_ref: { kind: 'call', id } });
-      for (const waitId of call.return_refs) {
-        this.store.save(waitRecords, { id: waitId, status: 'inline', target: call.target, result_position: 'inline' });
+      const call = this.store.save(callRecords, { id, status, result, result_ref: { kind: 'call', id } });
+      const linked = [];
+      for (const id of call.return_refs) {
+        const wait = this.store.get(waitRecords, id);
+        if (wait?.input_call_id) linked.push(wait);
+        else this.store.save(waitRecords, { id, status: 'inline', target: call.target, result_position: 'inline' });
       }
+      if (linked.length) this.deliverWaits(this.inlineEvent(call), linked, false);
       return result;
     });
+  }
+
+  inlineEvent(call) {
+    const position = 'inline';
+    return this.store.get('platform-events', keyOf('call', call.id, position)) ??
+      this.saveReceiptEvent(call, { ...call.result, status: call.status }, call.target, position);
+  }
+
+  saveReceiptEvent(call, receipt, target, position) {
+    const result = { kind: 'call', id: call.id, status: receipt.status, target, output: receipt.output,
+      input_targets: receipt.input_targets, native: receipt.native, safe_to_disconnect: receipt.safe_to_disconnect,
+      ...(receipt.error ? { error: receipt.error } : {}) };
+    return this.store.save('platform-events', { id: keyOf('call', call.id, position), kind: 'event', type: 'call.receipt',
+      author: { kind: 'platform', id: 'platform' }, call_id: call.id, target, space: this.spaceFor(target),
+      result_position: position, status: receipt.status, result, time: new Date().toISOString() });
+  }
+
+  deliverWaits(event, waits, matchWakeups = true) {
+    const pending = waits.map(wait => this.store.save(waitRecords, { id: wait.id, status: 'pending_delivery',
+      availability: null, latest_event_id: event.id }));
+    this.deliver(event, pending, matchWakeups);
   }
 
   fail(id, error) {
@@ -110,7 +150,7 @@ export class Calls {
       const { code, error, status, details } = call.result;
       reject(code, error, status, details);
     }
-    if (call.target && !this.canReadTarget(context.actor, call.target, context)) {
+    if (call.target && !this.canReadTarget(context.actor, call.target, context, call)) {
       return { status: call.status, result_access: 'revoked', ref: { kind: 'call', id: call.id } };
     }
     return call.result ?? { status: call.status, ref: { kind: 'call', id: call.id } };
@@ -124,40 +164,32 @@ export class Calls {
       const eventId = keyOf('call', call.id, position);
       const existing = this.store.get('platform-events', eventId);
       if (existing) return existing;
-      const result = { kind: 'call', id, status: receipt.status, target: target || call.target,
-        output: receipt.output, input_targets: receipt.input_targets, native: receipt.native,
-        safe_to_disconnect: receipt.safe_to_disconnect,
-        ...(receipt.error ? { error: receipt.error } : {}) };
-      const event = this.store.save('platform-events', { id: eventId, kind: 'event', type: 'call.receipt',
-        author: { kind: 'platform', id: 'platform' }, call_id: id, target: result.target,
-        space: this.spaceFor(result.target),
-        result_position: position, status: receipt.status, result, time: new Date().toISOString() });
-      const terminal = ['completed', 'failed', 'stopped', 'unknown', 'unsupported', 'cancelled', 'not_submitted'].includes(receipt.status);
-      const canAdvance = !['completed', 'stopped', 'failed', 'cancelled', 'not_submitted', 'unsupported'].includes(call.status) || terminal;
+      const event = this.saveReceiptEvent(call, receipt, target || call.target, position);
+      const terminal = receiptOutcomes.has(receipt.status);
+      const canAdvance = mayAdvanceReceipt(call, receipt.status);
       if (canAdvance) this.store.save(callRecords, { id, status: terminal ? receipt.status : 'submitted', safe_to_disconnect: receipt.safe_to_disconnect,
-        result: { ...result, event: { kind: 'event', id: event.id } }, result_ref: { kind: 'event', id: event.id } });
-      const waits = call.return_refs.map(waitId => this.store.get(waitRecords, waitId)).filter(wait => wait &&
-        !(wait.status === 'inline' && call.status !== 'unknown'));
-      for (const wait of waits) {
-        this.store.save(waitRecords, { id: wait.id, status: 'pending_delivery', availability: null, latest_event_id: event.id });
-      }
-      this.deliver(event, waits);
+        result: { ...event.result, event: { kind: 'event', id: event.id } }, result_ref: { kind: 'event', id: event.id } });
+      const waits = canAdvance ? call.return_refs.map(waitId => this.store.get(waitRecords, waitId)).filter(wait => wait &&
+        !(wait.status === 'inline' && call.status !== 'unknown')) : [];
+      this.deliverWaits(event, waits);
       return event;
     });
   }
 
   canRead(actor, call, context) {
-    const hasOrigin = actor.kind === 'user' || sameIdentity(actor, call.submitted_by) || call.return_refs.some(id =>
-      this.store.get(waitRecords, id)?.bot_id === actor.id);
+    const waits = call.return_refs.map(id => this.store.get(waitRecords, id)).filter(wait =>
+      wait?.bot_id === actor.id && (!wait.input_call_id || isWaitOrigin(wait, context.origin)));
+    const hasOrigin = actor.kind === 'user' || sameIdentity(actor, call.submitted_by) || waits.length > 0;
     const profile = call.workspaceProfileId ?? (call.origin_bot ? this.store.get('platform-bots', call.origin_bot)?.workspaceProfileId : null) ?? null;
     return profile === (context.workspaceProfileId ?? null) && hasOrigin &&
-      (!context.session || sameRef(context.session, call.target) || call.origin?.session_id === context.session.id);
+      (!context.session || sameRef(context.session, call.target) || call.origin?.session_id === context.session.id ||
+        waits.some(wait => wait.input_call_id && wait.session_id === context.session.id));
   }
 
   view(call, context) {
     if (!this.canRead(context.actor, call, context)) reject('call_not_found', 'Call not found', 404);
     const { id, tool, submitted_by, initiating_principal, execution_actor, origin, source_event_ids, status, controls, target, result_ref, client_id } = call;
-    const targetReadable = !target || this.canReadTarget(context.actor, target, context);
+    const targetReadable = !target || this.canReadTarget(context.actor, target, context, call);
     const own = context.actor.kind === 'user' || sameIdentity(context.actor, submitted_by);
     const wait_refs = call.return_refs.map(key => this.store.get(waitRecords, key)).filter(wait => wait &&
       (context.actor.kind === 'user' || wait.bot_id === context.actor.id) && (!context.session || wait.session_id === context.session.id));

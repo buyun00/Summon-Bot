@@ -1,13 +1,15 @@
 import { assertRevision, idOf, identity, keyOf, reject, sameIdentity, sameRef } from './contract.mjs';
+import { waitRecords } from './calls.mjs';
 
 export const wakeupRecords = 'platform-wakeups';
 export const deliveryRecords = 'platform-deliveries';
 const roomBaseId = (botId, roomId) => keyOf('room_base', botId, roomId);
 const unique = (values, key) => [...new Map(values.map(value => [key(value), value])).values()];
+const handledWaitStates = new Set(['processed', 'cancelled', 'access_revoked']);
 
 export class Deliveries {
-  constructor({ store, resources, emit, canReadEvent, canReadReference, manager }) {
-    Object.assign(this, { store, resources, emit, canReadEvent, canReadReference, manager });
+  constructor({ store, resources, emit, canReadEvent, canReadWait, canReadReference, manager }) {
+    Object.assign(this, { store, resources, emit, canReadEvent, canReadWait, canReadReference, manager });
     store.db.exec(`CREATE INDEX IF NOT EXISTS platform_delivery_status ON records (json_extract(data,'$.status')) WHERE kind='platform-deliveries';
       CREATE INDEX IF NOT EXISTS platform_delivery_event ON records (json_extract(data,'$.event.id')) WHERE kind='platform-deliveries'`);
     this.queueUsage = store.db.prepare(`SELECT count(*) AS used FROM records WHERE kind='platform-deliveries' AND
@@ -119,14 +121,14 @@ export class Deliveries {
     this.queueEvent(event);
   }
 
-  queueEvent(event, waits = []) {
+  queueEvent(event, waits = [], matchWakeups = true) {
     const byBot = new Map();
     const entry = id => {
       if (!byBot.has(id)) byBot.set(id, { matches: [], waits: [] });
       return byBot.get(id);
     };
     for (const wait of waits) entry(wait.bot_id).waits.push(wait);
-    for (const wakeup of this.store.list(wakeupRecords)) {
+    for (const wakeup of matchWakeups ? this.store.list(wakeupRecords) : []) {
       if (this.matches(wakeup, event) && this.canReadEvent(wakeup.bot_id, event)) {
         entry(wakeup.bot_id).matches.push({ id: wakeup.id, revision: wakeup.revision, kind: wakeup.rule.kind });
       }
@@ -157,7 +159,8 @@ export class Deliveries {
     const wait_refs = unique([...(previous?.wait_refs || []), ...waits], item => item.id);
     if (previous && match_sources.length === (previous.match_sources?.length || 0) && wait_refs.length === (previous.wait_refs?.length || 0)) return previous;
     return this.store.save(deliveryRecords, { id: previous?.id ?? keyOf('delivery', botId, event.id), bot_id: botId, event, match_sources, wait_refs,
-      revision: (previous?.revision ?? 0) + 1, status: 'pending', retry_at: null });
+      revision: (previous ? previous.revision ?? 1 : 0) + 1, status: 'pending', received_at: null, processed_at: null,
+      sent_wait_access: null, retry_at: null });
   }
 
   tickTime() {
@@ -185,20 +188,36 @@ export class Deliveries {
       ({ id, bot_id, status, match_sources, received_at }));
   }
 
-  consume(botId, id) {
+  consume(botId, id, receipt) {
     this.store.transaction(() => {
       const item = this.store.get(deliveryRecords, id);
-      if (item?.bot_id !== botId || item.status !== 'received') return;
+      if (!item || item.bot_id !== botId || item.status !== 'received' || !receipt || receipt.accepted === false ||
+          (receipt.revision ?? 1) !== (item.revision ?? 1)) return;
       const processed_at = new Date().toISOString();
-      this.store.save(deliveryRecords, { id, status: 'processed', processed_at });
-      for (const wait of item.wait_refs || []) {
-        const live = this.store.get('platform-waits', wait.id);
-        if (live?.latest_event_id === item.event.id) {
-          this.store.save('platform-waits', { id: wait.id, status: 'processed',
-            result_position: item.event.result_position ?? item.event.id, processed_at });
+      const included = new Map((item.wait_refs || []).map(wait => [wait.id, wait]));
+      const outcomes = new Map(Object.entries(item.wait_receipts ?? {}));
+      let changed = false;
+      for (const wait of receipt.waits || []) {
+        const link = included.get(wait.id);
+        const prior = outcomes.get(wait.id);
+        if (!link || !handledWaitStates.has(wait.state) || handledWaitStates.has(prior?.state)) continue;
+        const live = this.store.get(waitRecords, wait.id);
+        const latest = live?.latest_event_id === item.event.id;
+        const accessRevoked = wait.state === 'access_revoked' || wait.result_access === 'revoked' ||
+          (link.input_call_id && !this.canReadWait(link, item.event));
+        const availability = accessRevoked ? 'revoked' : prior?.availability ?? (latest ? live.availability : undefined);
+        outcomes.set(wait.id, { state: wait.state, availability, processed_at });
+        changed = true;
+        if (latest) {
+          this.store.save(waitRecords, { id: wait.id, status: wait.state, availability, processed_at,
+            ...(wait.state === 'processed' ? { result_position: item.event.result_position ?? item.event.id } : {}) });
         }
       }
-      this.emit('delivery');
+      if (changed || receipt.processed === true) {
+        this.store.save(deliveryRecords, { id, wait_receipts: Object.fromEntries(outcomes),
+          ...(receipt.processed === true ? { status: 'processed', processed_at } : {}) });
+        this.emit('delivery');
+      }
     });
   }
 
@@ -209,16 +228,21 @@ export class Deliveries {
       for (const row of this.pendingRecords.all()) {
         const delivery = JSON.parse(row.data);
         if (!['pending', 'unknown'].includes(delivery.status) || delivery.retry_at && delivery.retry_at > Date.now()) continue;
-        const { id, bot_id, event, wait_refs, revision, match_sources } = delivery;
-        const read = this.canReadEvent(bot_id, event);
+        const { id, bot_id, event, wait_refs = [], revision = 1, match_sources = [] } = delivery;
+        const readable = this.canReadEvent(bot_id, event);
+        const waitAccess = new Map(wait_refs.map(wait => [wait.id, readable &&
+          (!wait.input_call_id || this.canReadWait(wait, event))]));
+        const read = readable && (!wait_refs.length || match_sources.length > 0 || [...waitAccess.values()].some(Boolean));
         let prior;
         try { prior = delivery.status === 'unknown' ? await runtime.inboxReceipt(bot_id, id) : null; }
         catch {
           this.updateDelivery(id, revision, { retry_at: Date.now() + 1000 });
           continue;
         }
-        if (prior && prior.revision >= revision && prior.accepted) {
-          this.markReceived(delivery, read);
+        if (prior?.accepted && (prior.revision ?? 1) >= revision) {
+          const acceptedAccess = new Map([...waitAccess].map(([waitId, allowed]) =>
+            [waitId, allowed && delivery.sent_wait_access?.[waitId] !== false]));
+          this.markReceived(delivery, acceptedAccess, prior);
           continue;
         }
         if (!read && !wait_refs.length) {
@@ -227,7 +251,7 @@ export class Deliveries {
         }
         const body = read ? event : { id: event.id, kind: 'event', type: event.type, call_id: event.call_id, status: event.status,
           result_position: event.result_position, result_access: 'revoked', time: event.time, author: event.author };
-        this.updateDelivery(id, revision, { status: 'unknown' });
+        this.updateDelivery(id, revision, { status: 'unknown', sent_wait_access: Object.fromEntries(waitAccess) });
         let result;
         try { result = await runtime.receive({ id, bot_id, event: body, match_sources, wait_refs, revision }); }
         catch (error) {
@@ -236,7 +260,7 @@ export class Deliveries {
           } else this.updateDelivery(id, revision, { retry_at: Date.now() + 1000 });
           continue;
         }
-        if (result?.accepted) this.markReceived(delivery, read);
+        if (result?.accepted) this.markReceived(delivery, waitAccess, result);
         else if (result?.retryable !== false) this.updateDelivery(id, revision, { status: 'pending', retry_at: Date.now() + 1000 });
         else this.updateDelivery(id, revision, { status: 'rejected', code: result.code || 'delivery_rejected' });
       }
@@ -245,18 +269,27 @@ export class Deliveries {
 
   updateDelivery(id, revision, value) {
     const current = this.store.get(deliveryRecords, id);
-    if (current?.revision === revision) return this.store.save(deliveryRecords, { id, ...value });
+    if (current && (current.revision ?? 1) === revision) return this.store.save(deliveryRecords, { id, ...value });
   }
 
-  markReceived(delivery, readable) {
+  markReceived(delivery, waitAccess, receipt) {
     this.store.transaction(() => {
-      const record = this.updateDelivery(delivery.id, delivery.revision, { status: 'received', received_at: new Date().toISOString(), retry_at: null });
+      const record = this.updateDelivery(delivery.id, delivery.revision ?? 1, { status: 'received', received_at: new Date().toISOString(),
+        sent_wait_access: null, retry_at: null });
       if (!record) return;
-      for (const wait of record.wait_refs) {
-        const current = this.store.get('platform-waits', wait.id);
-        if (current?.latest_event_id === record.event.id) this.store.save('platform-waits', { id: wait.id, status: 'received', availability: readable ? 'available' : 'revoked' });
+      const outcomes = new Map(Object.entries(record.wait_receipts ?? {}));
+      for (const wait of record.wait_refs || []) {
+        const current = this.store.get(waitRecords, wait.id);
+        if (handledWaitStates.has(outcomes.get(wait.id)?.state)) continue;
+        const availability = waitAccess.get(wait.id) && receipt?.result_access !== 'revoked' ? 'available' : 'revoked';
+        outcomes.set(wait.id, { state: 'received', availability });
+        if (current?.latest_event_id === record.event.id && ['pending_delivery', 'received'].includes(current.status)) {
+          this.store.save(waitRecords, { id: wait.id, status: 'received', availability });
+        }
       }
+      if (outcomes.size) this.store.save(deliveryRecords, { id: record.id, wait_receipts: Object.fromEntries(outcomes) });
       this.emit('delivery', { id: record.id, event_id: record.event.id, bot_id: record.bot_id, status: record.status });
+      this.consume(record.bot_id, record.id, receipt);
     });
   }
 }

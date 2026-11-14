@@ -222,7 +222,7 @@ export class SummonConnections {
         await beforeSubmit();
         this.saveOperation(operation, { cwd, method: input.method, status: 'submitted', submitted_at: new Date().toISOString() });
         started = true;
-      }, signal, progress => {
+      }, signal, { onProgress: progress => {
         const current = this.store.get(operationRecords, operation.id);
         const position = (current?.progress_position || 0) + 1;
         const id = keyOf(operation.id, position);
@@ -232,7 +232,7 @@ export class SummonConnections {
             this.saveOperation(operation, { progress_position: position });
           });
         } catch (error) { console.error('Could not persist MCP progress', this.clean(error.message)); }
-      });
+      } });
       const saved = this.saveOperation(operation, this.services.facts(entry, result));
       return this.operationFacts(saved, session);
     } catch (error) {
@@ -421,9 +421,9 @@ export class SummonConnections {
     if (target?.request_id && this.store.list(inputRecords).some(row => row.operation_id === operation.id && row.target?.request_id === target.request_id &&
         !['rejected', 'not_submitted'].includes(row.receipt?.status))) reject('request_already_answered', 'The service request already has an answer', 409);
     this.store.save(inputRecords, { id: call.id, operation_id: operation.id, kind, target, status: 'prepared' });
-    let submitted = false;
+    let submitted = false, response;
     try {
-      const result = await this.services.step(entry, session, operation, method, input, call.id, async () => {
+      response = await this.services.step(entry, session, operation, method, input, call.id, async () => {
         const current = this.get(entry.id);
         if (!current || (current.binding_version ?? 1) !== (entry.binding_version ?? 1) || current.revision !== entry.revision)
           reject('connection_binding_changed', 'The service connection changed before input submission', 409);
@@ -431,15 +431,17 @@ export class SummonConnections {
         signal?.throwIfAborted();
         this.store.save(inputRecords, { id: call.id, status: 'submitted' });
         submitted = true;
-      }, signal);
-      const actual = result.rejected ? operation : this.saveOperation(operation, result);
-      const receipt = { status: result.status === 'unknown' ? 'unknown' :
-        result.rejected ? 'rejected' : result.service_accepted ? 'acknowledged' : 'accepted', result: result.result };
-      return this.commandFacts(this.store.save(inputRecords, { id: call.id, receipt }), actual, session);
+      }, signal, kind);
     } catch (error) {
       const receipt = { status: !submitted ? 'not_submitted' : error.outcomeUnknown || signal?.aborted ? 'unknown' : 'rejected', error: this.clean(error.message) };
       return this.commandFacts(this.store.save(inputRecords, { id: call.id, receipt }), operation, session);
     }
+    const { confirmed_operation_id, ...result } = response;
+    const receipt = { status: result.status === 'unknown' ? 'unknown' :
+      result.rejected ? 'rejected' : result.service_accepted ? 'acknowledged' : 'accepted', result: result.result };
+    const [actual, saved] = this.store.transaction(() => [result.rejected ? operation : this.saveOperation(operation, result),
+      this.store.save(inputRecords, { id: call.id, receipt, confirmed_operation_id })]);
+    return this.commandFacts(saved, actual, session);
   }
 
   commandFacts(record, operation, session) {
@@ -447,7 +449,24 @@ export class SummonConnections {
     const status = ['accepted', 'acknowledged', 'delivered'].includes(receipt?.status) ? 'completed' :
       receipt?.status === 'rejected' ? 'failed' : ['not_submitted', 'unknown', 'completed'].includes(receipt?.status) ? receipt.status : 'submitted';
     const facts = this.operationFacts(operation, session);
-    return { ...facts, status, session_status: facts.status, output: this.clean(receipt), input_status: receipt?.status || record.status };
+    const confirmed = operation.session_id === session.id && this.confirmedInput(record, operation);
+    return { ...facts, status, session_status: facts.status, output: this.clean(receipt), input_status: receipt?.status || record.status,
+      ...(confirmed ? { confirmed_input: confirmed } : {}) };
+  }
+
+  confirmedInput(record, operation) {
+    const { kind, receipt, target } = record;
+    if (record.migrated || record.suppressed || record.operation_id !== operation.id || !receipt || !target ||
+        !['submitted', 'writing'].includes(record.status) || !['steer', 'reply'].includes(kind)) return;
+    const accepted = receipt.status === 'accepted' && receipt.inputId === record.id && receipt.layer === operation.protocol;
+    const codex = operation.protocol === 'codex' && kind === 'steer' && target.kind === 'codex_turn' &&
+      accepted && operation.turn_id && receipt.turnId === operation.turn_id && target.turn_id === operation.turn_id;
+    const cli = operation.protocol === 'summon-jsonl' && target.kind === 'cli_process' && accepted && record.native_acknowledged === true &&
+      target.instance_id === operation.instance_id && target.launch_call_id === operation.launch_call_id;
+    const service = operation.protocol === 'service' && target.kind === 'service_call' && ['accepted', 'acknowledged'].includes(receipt.status) &&
+      record.confirmed_operation_id && target.call_id === operation.id && target.operation_id === record.confirmed_operation_id &&
+      target.operation_id === String(operation.operation_id);
+    if (codex || cli || service) return { operation_call_id: operation.id, input_target: target };
   }
 
   async stop({ session, call }) {
@@ -499,11 +518,13 @@ export class SummonConnections {
       else if (!record.receipt && !this.locks.has(session.id))
         next = this.store.save(inputRecords, { id: record.id, receipt: { status: record.status === 'submitted' ? 'unknown' : 'not_submitted' } });
       if (next.kind === 'stop' || next.suppressed || !this.onEvent || !next.receipt) continue;
-      const signature = keyOf(next.receipt.status, next.receipt.execution_status);
+      const signature = next.native_acknowledged ? keyOf(next.receipt.status, next.receipt.execution_status, 'native_acknowledged') :
+        keyOf(next.receipt.status, next.receipt.execution_status);
       if (signature === next.signature) continue;
       const facts = this.commandFacts(next, operation, session);
       const call = this.store.get('platform-calls', next.id);
-      if (call?.status === facts.status && call.result_ref?.kind === 'call' && call.result) {
+      if (call?.status === facts.status && call.result_ref?.kind === 'call' && call.result &&
+          (!facts.confirmed_input || call.result.input_status === facts.input_status && isDeepStrictEqual(call.result.output, facts.output))) {
         this.store.save(inputRecords, { id: next.id, signature });
         continue;
       }

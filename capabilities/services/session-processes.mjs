@@ -240,10 +240,16 @@ export class SessionProcesses {
     if (record.migrated || record.receipt?.status === 'not_submitted') return record;
     const path = join(this.directory(operation), 'inputs', record.file + '.receipt');
     const receipt = await optionalJson(path);
-    const native = (operation.protocol === 'codex' || operation.protocol === 'summon-jsonl') && await optionalJson(path + '.native');
+    const nativeFile = (operation.protocol === 'codex' || operation.protocol === 'summon-jsonl') && (await optionalJson(path + '.native') ??
+      (operation.protocol === 'summon-jsonl' && record.kind === 'reply' ? await optionalJson(path + '.native.resolved') : null));
+    const native = nativeFile?.inputId === record.id ? nativeFile : null;
     let next = native || receipt || record.receipt;
-    if (native) next = { ...native, layer: operation.protocol };
-    else if (receipt?.status === 'delivered' && (operation.protocol === 'codex' || operation.protocol === 'summon-jsonl' && record.kind === 'reply')) {
+    let native_acknowledged = record.native_acknowledged === true;
+    if (native) {
+      const { explicitAck, ...result } = native;
+      native_acknowledged = operation.protocol === 'summon-jsonl' && native.status === 'accepted' && explicitAck === true;
+      next = { ...result, layer: operation.protocol };
+    } else if (receipt?.status === 'delivered' && (operation.protocol === 'codex' || operation.protocol === 'summon-jsonl' && record.kind === 'reply')) {
       next = { ...receipt, status: settled(operation.status) ? 'unknown' : 'sent-to-bridge', layer: 'stdin' };
     } else if (receipt?.status === 'submitting' && settled(operation.status)) {
       next = { ...receipt, status: 'unknown', layer: 'stdin' };
@@ -259,8 +265,8 @@ export class SessionProcesses {
       if (operation.runtime_ended && operation.status !== 'unknown') next = { status: 'completed', execution_status: operation.status };
       else if (operation.status === 'unknown' && next?.status !== 'not_submitted') next = { status: 'unknown' };
     }
-    if (JSON.stringify(next) === JSON.stringify(record.receipt)) return record;
-    return this.store.save(inputRecords, { id: record.id, receipt: next });
+    if (JSON.stringify(next) === JSON.stringify(record.receipt) && native_acknowledged === (record.native_acknowledged === true)) return record;
+    return this.store.save(inputRecords, { id: record.id, receipt: next, native_acknowledged });
   }
 }
 

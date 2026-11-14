@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { bindModel } from '../../bot/src/agent/model.mjs';
 import { BotManager, activeControl, botRecords } from '../bot-management/service.mjs';
 import { Files } from '../filesystem/files.mjs';
-import { Calls, waitRecords } from './calls.mjs';
+import { Calls, isWaitOrigin, waitRecords } from './calls.mjs';
 import { assertRevision, idOf, identity, keyOf, page, readTools, reject, sameIdentity, sameRef, user, validateTool } from './contract.mjs';
 import { Deliveries } from './delivery.mjs';
 import { Executions, conversationRecords, sessionRecords } from './executions.mjs';
@@ -25,9 +25,10 @@ export class SummonPlatform {
     this.manager = new BotManager({ store, dataRoot, resources: this.resources, models, canUseModel: (actor, id, context) => this.canUseModel(actor, id, context) });
     this.deliveries = new Deliveries({ store, resources: this.resources, manager: this.manager, emit,
       canReadEvent: (botId, event) => this.canReadEvent(event, this.principalContext({ kind: 'bot', id: botId })),
+      canReadWait: (wait, event) => this.canReadReturnWait(wait, event.target),
       canReadReference: (ref, context) => this.canReadReference(ref, context) });
-    this.calls = new Calls({ store, deliver: (event, waits) => this.deliveries.queueEvent(event, waits),
-      canReadTarget: (actor, ref, context) => this.canReadReference(ref, { ...context, actor }),
+    this.calls = new Calls({ store, deliver: (event, waits, matchWakeups) => this.deliveries.queueEvent(event, waits, matchWakeups),
+      canReadTarget: (actor, ref, context, call) => this.canReadCallResult(call, ref, { ...context, actor }),
       spaceFor: ref => ['session', 'conversation'].includes(ref?.kind) ? this.executions.record(ref)?.space : ref });
     this.executions = new Executions({ store, platform: this, calls: this.calls, resources: this.resources });
     this.workspaces = workspaces;
@@ -48,6 +49,7 @@ export class SummonPlatform {
   removeRoomBase(botId, roomId) { return this.deliveries.removeBase(botId, roomId); }
   queueMessage(event) { return this.deliveries.queueMessage(event); }
   messageDeliveries(eventId) { return this.deliveries.messageDeliveries(eventId); }
+  consumeDelivery(botId, id, receipt) { return this.deliveries.consume(botId, id, receipt); }
   recordReceipt(callId, facts, sessionId) { return this.executions.receipt(sessionId, callId, facts); }
   roomMembers(id) { return this.deliveries.roomMembers(id); }
 
@@ -109,15 +111,40 @@ export class SummonPlatform {
     return this.canReadSpace(actor, space, context);
   }
 
+  canReadReturnWait(wait, target) {
+    const actor = { kind: 'bot', id: wait.bot_id };
+    const context = this.principalContext(actor);
+    const source = { kind: 'conversation', id: wait.conversation_id };
+    const conversation = this.executions.record(source);
+    const session = wait.session_id && this.executions.record({ kind: 'session', id: wait.session_id });
+    if (!conversation || !profileMatches(wait, context) || (conversation.session_id ?? null) !== (wait.session_id ?? null) ||
+        wait.session_id && !session || !this.executions.permission(source, conversation, context)) return false;
+    const principal = wait.initiating_principal;
+    return this.canReadReference(target, { ...context, session, resource_refs: session?.resource_refs ?? [] }) &&
+      (!principal || sameIdentity(principal, actor) || this.canReadReference(target, this.principalContext(principal, context.workspaceProfileId)));
+  }
+
+  canReadCallResult(call, target, context) {
+    if (!this.canReadReference(target, context)) return false;
+    if (!context.origin) return true;
+    const wait = call?.return_refs.map(id => this.store.get(waitRecords, id)).find(item => item?.input_call_id && item.bot_id === context.actor.id &&
+      isWaitOrigin(item, context.origin));
+    return !wait || this.canReadReturnWait(wait, target);
+  }
+
   canReadEvent(event, context) {
     if (event.result_access === 'revoked') return false;
     if (event.call_id && event.target) {
       const call = this.store.get('platform-calls', event.call_id);
       const waits = call?.return_refs || [];
       const watching = context.actor.kind === 'user' || sameIdentity(context.actor, call?.submitted_by) || call?.origin_bot === context.actor.id ||
-        waits.some(id => this.store.get(waitRecords, id)?.bot_id === context.actor.id) ||
+        waits.some(id => {
+          const wait = this.store.get(waitRecords, id);
+          return wait?.bot_id === context.actor.id && (!wait.input_call_id || (context.origin ? isWaitOrigin(wait, context.origin)
+            : this.canReadReturnWait(wait, event.target)));
+        }) ||
         this.store.list('platform-wakeups').some(rule => rule.bot_id === context.actor.id && this.deliveries.matches(rule, event));
-      return watching && this.canReadReference(event.target, context);
+      return watching && this.canReadCallResult(call, event.target, context);
     }
     if (event.bot_id && event.bot_id !== context.actor.id && context.actor.kind !== 'user') return false;
     const resource = context.resource_refs?.some(ref => sameRef(ref, { kind: 'event', id: event.id }));
@@ -420,9 +447,13 @@ export class SummonPlatform {
     const sharedConnections = this.store.list('platform-connections').filter(item => this.canUseConnection(context.actor, item.id, context))
       .map(({ id, revision }) => [id, revision]);
     const permitted = context.session?.resource_refs?.map(ref => [ref.kind, ref.id, this.canReadReference(ref, context)]) ?? [];
+    const waits = this.calls.returnWaits(context.origin, context.actor);
+    const revoked_return_waits = waits.filter(wait => !this.canReadReturnWait(wait, wait.target)).map(wait => wait.id).sort();
     return { actor: context.actor, resources: context.resource_refs, session: context.session, conversation: context.conversation,
       view_revision: keyOf(rooms, context.session?.id, context.session?.control.control_version, access?.revision, sharedConnections, permitted),
       unfinished_calls: this.calls.unfinishedFor(context.conversation.id, context.actor),
+      pending_return_waits: waits.filter(wait => ['waiting', 'pending_delivery', 'received'].includes(wait.status)),
+      revoked_return_waits,
       canReadEvent: event => this.canReadEvent(event, context) };
   }
 
@@ -451,15 +482,6 @@ export class SummonPlatform {
   acquireModel(input, options = {}) {
     const context = this.assertRunAllowed(input);
     return this.resources.acquire('models', this.resourceSource(context, context.session), options);
-  }
-
-  addWait(callId, input) {
-    const context = this.assertRunAllowed(input);
-    const call = this.calls.get(callId);
-    if (!this.calls.canRead(context.actor, call, context) || call.target && !this.canReadReference(call.target, context)) {
-      reject('call_not_found', 'Call not found', 404);
-    }
-    return this.calls.addWait(callId, { ...context.origin, bot_id: context.actor.id });
   }
 
   async invoke(name, args, input) {
