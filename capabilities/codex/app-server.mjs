@@ -6,9 +6,11 @@ import { nativeCommand } from '../services/native-host.mjs';
 import { guardStillMatches } from '../services/session-processes.mjs';
 
 const [executable, mode, originalThread, originalTurn, originalCall] = process.argv.slice(2);
+const windows = process.platform === 'win32';
+const mxcUnavailable = 'codex_mxc_unavailable';
 // Legacy Windows sandboxing rejects a root-deny profile. Select MXC for this
 // adapter process so it can keep the same restricted-read policy.
-const sandboxArgs = process.platform === 'win32' && !mode ? ['-c', 'windows.sandbox=mxc'] : [];
+const sandboxArgs = windows && !mode ? ['-c', 'windows.sandbox=mxc'] : [];
 const command = nativeCommand(executable, ['app-server', '--stdio', ...sandboxArgs]);
 const server = spawn(command.file, command.args, { ...command.options, cwd: process.cwd(),
   windowsHide: true, stdio: ['pipe', 'pipe', 'inherit'] });
@@ -44,7 +46,7 @@ function rpc(method, params, timeoutMs = 20_000) {
   });
 }
 
-function finish(status, error) {
+function finish(status, error, code) {
   if (ending) return;
   ending = true;
   for (const prompt of prompts.values()) {
@@ -53,7 +55,7 @@ function finish(status, error) {
   }
   prompts.clear();
   guardDb?.close();
-  if (!mode) emit('outcome', { status, error });
+  if (!mode) emit('outcome', { status, error, code });
   process.exitCode = status === 'completed' || status === 'stopped' ? 0 : 1;
   input.close();
   process.stdin.pause();
@@ -274,13 +276,14 @@ async function start({ text, sessionId, scope, callId, model, effort, guard, sto
   const { account, requiresOpenaiAuth } = await initialize();
   if (!account && requiresOpenaiAuth)
     return finish('failed', 'Codex CLI 需要登录。请先在部署机运行 codex login。');
-  if (process.platform === 'win32') {
+  if (windows) {
+    // Readiness describes setup. The thread request must still prepare the scoped sandbox.
     const [readiness, effective] = await Promise.all([
       rpc('windowsSandbox/readiness', {}),
       rpc('config/read', { includeLayers: false, cwd: process.cwd() }),
     ]);
     if (readiness.status !== 'ready' || effective.config?.windows?.sandbox !== 'mxc')
-      return finish('not_submitted', 'Codex MXC sandbox is unavailable for the restricted Windows workspace');
+      return finish('not_submitted', 'Codex requires Windows MXC for this restricted workspace', mxcUnavailable);
   }
   await checkModel(model, effort);
   if (stopping) return finish('stopped');
@@ -299,8 +302,16 @@ async function start({ text, sessionId, scope, callId, model, effort, guard, sto
     threadSubmitted = true;
     emit('thread-submitting');
   }
-  const response = await rpc(sessionId ? 'thread/resume' : 'thread/start', { ...policy, config, ...(model ? { model } : {}),
-    ...(sessionId ? { threadId: sessionId, excludeTurns: true } : { ephemeral: false, threadSource: 'automation', allowProviderModelFallback: false }) });
+  let response;
+  try {
+    response = await rpc(sessionId ? 'thread/resume' : 'thread/start', { ...policy, config, ...(model ? { model } : {}),
+      ...(sessionId ? { threadId: sessionId, excludeTurns: true } : { ephemeral: false, threadSource: 'automation', allowProviderModelFallback: false }) });
+  } catch (error) {
+    if (windows && !error.unconfirmed && (error.message.includes('native MXC is unavailable on this executor') ||
+        error.message.includes('this Windows build cannot enforce native MXC deny paths')))
+      return finish('failed', error.message, mxcUnavailable);
+    throw error;
+  }
   if (!response.thread?.id || sessionId && response.thread.id !== sessionId)
     throw new Error('Codex did not confirm the intended thread');
   threadId = response.thread.id;

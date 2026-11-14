@@ -6,6 +6,7 @@ import { reportedUsage, referenceCost } from './usage.mjs';
 
 const connectionWaitMs = 180000;
 const wireReasoningEfforts = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+const codexTerminalEvents = new Set(['response.done', 'response.completed', 'response.incomplete', 'response.failed']);
 const timeoutError = phase => Object.assign(new Error(`Model request timed out during ${phase}`), { code: 'MODEL_DEADLINE' });
 
 function serializedReasoning(payload, model, deepseek) {
@@ -63,6 +64,40 @@ function providerUsage(usage, api) {
     completion_tokens_details: usage.completion_tokens_details ?? usage.output_tokens_details };
 }
 
+function codexFinalUsage(message) {
+  const usage = message?.usage;
+  if (typeof message?.responseId !== 'string' || !message.responseId || !usage ||
+      !Number.isSafeInteger(usage.totalTokens) || usage.totalTokens <= 0) return null;
+  const inputs = [usage.input, usage.cacheRead, usage.cacheWrite];
+  if (![...inputs, usage.output].every(value => Number.isSafeInteger(value) && value >= 0)) return null;
+  const input = inputs.reduce((total, value) => total + value, 0);
+  if (input + usage.output !== usage.totalTokens) return null;
+  return {
+    input_tokens: input, output_tokens: usage.output, total_tokens: usage.totalTokens,
+    ...(usage.cacheRead > 0 ? { input_tokens_details: { cached_tokens: usage.cacheRead } } : {}),
+    ...(Number.isSafeInteger(usage.reasoning) && usage.reasoning > 0 && usage.reasoning <= usage.output
+      ? { output_tokens_details: { reasoning_tokens: usage.reasoning } } : {}),
+  };
+}
+
+function mergeCodexFinalUsage(wireUsage, finalUsage) {
+  if (!finalUsage) return null;
+  const wire = providerUsage(wireUsage, 'openai-codex-responses');
+  const sdk = providerUsage(finalUsage, 'openai-codex-responses');
+  const existing = reportedUsage(wire);
+  const fallback = reportedUsage(sdk);
+  // A partial raw receipt can identify the same result. A conflicting count cannot.
+  if (['inputTokens', 'outputTokens', 'totalTokens'].some(key => existing[key] !== null && existing[key] !== fallback[key])) return null;
+  return {
+    ...sdk, ...wire,
+    prompt_tokens: wire?.prompt_tokens ?? sdk.prompt_tokens,
+    completion_tokens: wire?.completion_tokens ?? sdk.completion_tokens,
+    total_tokens: wire?.total_tokens ?? sdk.total_tokens,
+    prompt_tokens_details: { ...sdk.prompt_tokens_details, ...wire?.prompt_tokens_details },
+    completion_tokens_details: { ...sdk.completion_tokens_details, ...wire?.completion_tokens_details },
+  };
+}
+
 /** Pi owns serialization, streaming and the tool loop for every configured source. */
 export class ModelProvider {
   constructor(config) {
@@ -73,10 +108,10 @@ export class ModelProvider {
     const output = new AssistantMessageEventStream(), controller = new AbortController();
     const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
     const deadline = new AbortController(), requestSignal = AbortSignal.any([signal, deadline.signal]);
-    const { timeoutMs: totalWaitMs, onPayload, roomCache, requireEffort, usageContext, beforeFetch, ...streamOptions } = options;
+    const { timeoutMs: totalWaitMs, onPayload, onProviderStreamEvent, roomCache, requireEffort, usageContext, beforeFetch, ...streamOptions } = options;
     this.controllers.add(controller);
     const started = Date.now(), secrets = new Set();
-    let record, received, ended = false, wireUsage, stageTimer, totalTimer;
+    let record, received, ended = false, wireUsage, usageSource, stageTimer, totalTimer;
     const waitFor = (phase, ms) => {
       clearTimeout(stageTimer);
       stageTimer = setTimeout(() => {
@@ -94,7 +129,8 @@ export class ModelProvider {
         const connection = modelConnection(this.config, this.config.connectionStore ? model.provider : undefined);
         const deepseek = officialDeepSeekCompletions({ ...connection, model: model.id }, model.api, model.baseUrl);
         const responses = model.api === 'openai-responses';
-        const responsesProtocol = responses || model.api === 'openai-codex-responses';
+        const codex = model.api === 'openai-codex-responses';
+        const responsesProtocol = responses || codex;
         // A fixed effort belongs in the request-level Responses field for every turn of this binding.
         const wireModel = requireEffort && responses && model.compat?.supportsMidConvoEffort
           ? { ...model, compat: { ...model.compat, supportsMidConvoEffort: false } } : model;
@@ -112,6 +148,18 @@ export class ModelProvider {
           if (expectedEffort !== null && result.effort !== expectedEffort)
             throw new Error(`Model ${model.id} did not serialize the configured reasoning effort ${requireEffort}`);
           return result;
+        };
+        const observeUsage = (event, source) => {
+          const usage = codex ? (codexTerminalEvents.has(event.type) ? event.response?.usage : null) :
+            event?.usage || event?.response?.usage || event?.message?.usage;
+          if (usage && typeof usage === 'object' && !Array.isArray(usage)) {
+            wireUsage = { ...wireUsage, ...usage };
+            usageSource = source;
+          }
+          const responseModel = responsesProtocol ? event?.response?.model : event?.model;
+          if (typeof responseModel === 'string' && responseModel !== record.responseModel && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(responseModel) &&
+              !model.baseUrl?.includes(responseModel) && ![...secrets].some(secret => secret && responseModel.includes(secret)) &&
+              modelError(responseModel) === responseModel && this.config.redact(responseModel) === responseModel) record.responseModel = responseModel;
         };
         const maxTokens = Math.min(options.maxTokens ?? model.maxTokens, model.outputTokenLimit ?? model.maxTokens);
         record = { id: randomUUID(), botId: this.config.botId, ...usageContext,
@@ -132,6 +180,12 @@ export class ModelProvider {
           timeoutMs: connectionWaitMs + 1000,
           sessionId: usageContext?.sessionId || options.sessionId, maxRetries: 0,
           ...(connection.kind === 'codex' ? { transport: 'sse' } : {}),
+          onProviderStreamEvent: async (event, model) => {
+            if (codex && event?.response && (event.type === 'response.created' || codexTerminalEvents.has(event.type))) {
+              try { observeUsage(event, 'sdk_provider_event'); } catch {}
+            }
+            await onProviderStreamEvent?.(event, model);
+          },
           onPayload: async (payload, model) => {
             const replacement = await onPayload?.(payload, model);
             const original = replacement ?? payload;
@@ -166,7 +220,7 @@ export class ModelProvider {
             const response = await fetch(input, { ...init, redirect: 'error' });
             record.httpStatus = response.status;
             waitFor('first-progress', idleWaitMs);
-            if (!response.body || !response.headers.get('content-type')?.includes('text/event-stream')) return response;
+            if (codex || !response.body || !response.headers.get('content-type')?.includes('text/event-stream')) return response;
             let tail = ''; const decoder = new TextDecoder();
             // Observe billing fields while forwarding bytes; missing usage stays unknown.
             const body = response.body.pipeThrough(new TransformStream({ transform(chunk, destination) {
@@ -175,13 +229,7 @@ export class ModelProvider {
               while ((split = tail.indexOf('\n')) >= 0) {
                 const line = tail.slice(0, split).trim(); tail = tail.slice(split + 1);
                 if (!line.startsWith('data:')) continue;
-                try { const event = JSON.parse(line.slice(5)); const usage = event.usage || event.response?.usage || event.message?.usage;
-                  if (usage) wireUsage = { ...wireUsage, ...usage };
-                  const responseModel = responsesProtocol ? event.response?.model : event.model;
-                  if (typeof responseModel === 'string' && responseModel !== record.responseModel && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(responseModel) &&
-                    !model.baseUrl?.includes(responseModel) && ![...secrets].some(secret => secret && responseModel.includes(secret)) &&
-                    modelError(responseModel) === responseModel && this.config.redact(responseModel) === responseModel) record.responseModel = responseModel;
-                } catch {}
+                try { observeUsage(JSON.parse(line.slice(5)), 'sse'); } catch {}
               }
               if (tail.length > 2 * 1024 * 1024) tail = '';
             } }));
@@ -198,8 +246,16 @@ export class ModelProvider {
           if (event.type === 'done' || event.type === 'error') {
             received = event.type === 'done' ? event.message : event.error;
             if (event.type === 'done' && roomCacheThroughMessageId) received.roomCacheThroughMessageId = roomCacheThroughMessageId;
-            if (wireUsage) {
-              Object.assign(record, reportedUsage(providerUsage(wireUsage, model.api)));
+            let usage = providerUsage(wireUsage, model.api);
+            if (codex && !reportedUsage(usage).usageReported) {
+              const fallback = mergeCodexFinalUsage(wireUsage, codexFinalUsage(received));
+              if (fallback) {
+                usage = fallback;
+                usageSource = wireUsage ? 'sdk_provider_event_and_final_usage' : 'sdk_final_usage';
+              }
+            }
+            if (usage) {
+              Object.assign(record, reportedUsage(usage), { usageSource });
               record.cost = connection.kind === 'api' ? referenceCost(record, model.id,
                 connection.provider === 'deepseek' && new URL(model.baseUrl).hostname === 'api.deepseek.com') : null;
               if (!record.cost && connection.kind === 'api' && received.usage.cost?.total > 0) record.cost = {
@@ -222,7 +278,7 @@ export class ModelProvider {
         if (!ended) {
           const message = cleanError(error), cancelled = signal.aborted;
           if (record) {
-            if (wireUsage) Object.assign(record, reportedUsage(providerUsage(wireUsage, model.api)));
+            if (wireUsage) Object.assign(record, reportedUsage(providerUsage(wireUsage, model.api)), { usageSource });
             Object.assign(record, { status: cancelled ? 'cancelled' : 'failed', finishReason: cancelled ? 'aborted' : 'error',
               error: message, finishedAt: new Date().toISOString(), latencyMs: Date.now() - started });
             try { this.config.recordUsage?.(record); } catch {}

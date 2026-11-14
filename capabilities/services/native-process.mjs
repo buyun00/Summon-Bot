@@ -10,6 +10,7 @@ const directory = process.argv[2];
 const manifest = JSON.parse(readFileSync(join(directory, 'launch.json'), 'utf8'));
 const now = () => new Date().toISOString();
 const heartbeatPath = join(directory, 'state.json');
+const finishedPath = join(directory, 'finished.json');
 const own = join(directory, 'started');
 const json = (path, value) => {
   const temporary = path + '.' + process.pid + '.tmp';
@@ -20,7 +21,7 @@ const append = (name, text) => appendFileSync(join(directory, name), text, { mod
 // If the launching service lost its receipt it must never start this action a second time.
 writeFileSync(own, String(process.pid), { flag: 'wx', mode: 0o600 });
 
-let child, timer, stopTimer, pollTask, stopping = false, finished = false, secrets = [];
+let child, timer, stopTimer, pollTask, stopping = false, finished = false, heartbeatBlocked = false, secrets = [];
 const nativeInputs = new Map(), answers = new Set();
 const state = { nonce: manifest.nonce, runnerPid: process.pid, status: 'starting', pending: [],
   stdinOpen: false, nativeSessionId: manifest.sessionId || null };
@@ -37,7 +38,17 @@ function allowed(guard) {
 const clean = value => redactNative(value, secrets);
 const record = patch => {
   Object.assign(state, patch, { observedAt: now() });
-  json(heartbeatPath, state);
+  try {
+    json(heartbeatPath, state);
+    heartbeatBlocked = false;
+  } catch (error) {
+    if (process.platform !== 'win32' || error.syscall !== 'rename' || !['EACCES', 'EPERM', 'EBUSY'].includes(error.code)) throw error;
+    // A reader can delay replacing the heartbeat on Windows. Keep supervising
+    // the child and publish its final snapshot separately if replacement is blocked.
+    if (state.finishedAt) renameSync(heartbeatPath + '.' + process.pid + '.tmp', finishedPath);
+    if (!heartbeatBlocked) event('state-write-delayed', { error: clean(error.code) });
+    heartbeatBlocked = true;
+  }
 };
 const event = (type, value) => append('events.jsonl', JSON.stringify({ type, at: now(), ...value }) + '\n');
 const field = (value, size) => typeof value === 'string' ? clean(value).slice(0, size) : null;
@@ -88,8 +99,8 @@ function protocolLine(line) {
       output: field(message.output, 4000), exitCode: Number.isInteger(exitCode) ? exitCode : null });
   }
   if (codex && message.type === 'outcome' && ['completed', 'failed', 'stopped', 'unknown', 'not_submitted'].includes(message.status)) {
-    record({ nativeOutcome: message.status, error: field(message.error, 4000) });
-    event('outcome', { status: message.status, nativeTurnId: state.nativeTurnId, error: state.error });
+    record({ nativeOutcome: message.status, error: field(message.error, 4000), code: field(message.code, 128) });
+    event('outcome', { status: message.status, nativeTurnId: state.nativeTurnId, error: state.error, code: state.code ?? undefined });
   }
   if (codex && message.type === 'model-rerouted' && message.turnId === state.nativeTurnId) {
     const reroute = { from: field(message.from, 128), to: field(message.to, 128), reason: field(message.reason, 256) };

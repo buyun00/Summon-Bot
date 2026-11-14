@@ -327,14 +327,16 @@ export class SummonConnections {
         operation_id: operation.original_native_id };
     return this.clean({ status, session_status: status, native, input_revision: operation.input_revision, safe_to_disconnect: this.safeToDisconnect(operation),
       input_targets: this.targets(operation, this.current(session)), pending_input: operation.pending?.length ? operation.pending : undefined,
-      ...(operation.result ? { output: operation.result } : operation.error ? { output: { error: operation.error } } :
+      ...(operation.result ? { output: operation.result } : operation.error ?
+        { output: { error: operation.error, ...(operation.code ? { code: operation.code } : {}) } } :
         operation.pending?.length ? { output: { requests: operation.pending } } : {}),
       ...(operation.error ? { error: operation.error } : {}), ...(operation.code ? { code: operation.code } : {}) });
   }
 
   observationKey(operation, status) {
-    return keyOf(status, operation.thread_id, operation.turn_id, operation.operation_id, operation.request_id,
+    const position = keyOf(status, operation.thread_id, operation.turn_id, operation.operation_id, operation.request_id,
       ...(operation.pending || []).map(item => item.id));
+    return status === 'unknown' && this.safeToDisconnect(operation) ? keyOf(position, 'runtime_ended') : position;
   }
 
   async inspect(session, { cursor, limit, stream = 'stdout' } = {}) {
@@ -481,6 +483,7 @@ export class SummonConnections {
         operation.migrated && !operation.signature && settled(operation.status) && operation.status !== 'unknown' && !operation.recovered_at) return;
     const call = this.store.get('platform-calls', operation.id);
     if (call?.result_ref?.kind === 'call' && call.result?.status === facts.status &&
+        (facts.status !== 'unknown' || call.result.safe_to_disconnect === facts.safe_to_disconnect) &&
         keyOf(call.result.native, call.result.input_targets) === keyOf(facts.native, facts.input_targets)) {
       this.saveOperation(operation, { signature });
       return;

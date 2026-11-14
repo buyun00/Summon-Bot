@@ -151,7 +151,7 @@ export async function installRelease({ releaseRoot, appRoot, dataRoot, sourceRoo
       onProgress?.({ phase: state.phase, buildId: manifest.buildId });
     }
     if (state.phase === 'converting') {
-      await owner?.assertStopped({ drained: state.drain?.intake_closed === true && state.drain.ready === true });
+      await owner?.assertStopped({ drain: state.drain });
       const { defaultLimits } = await import(new URL('../../capabilities/platform/resources.mjs', import.meta.url));
       const current = deployment || createDeployment({ dataRoot, releaseRoot: destination, defaultCwd, port });
       await mkdir(current.defaultCwd, { recursive: true });
@@ -161,6 +161,7 @@ export async function installRelease({ releaseRoot, appRoot, dataRoot, sourceRoo
     const selection = { schemaVersion: 1, releaseRoot: destination, buildId: manifest.buildId, dataRoot,
       selectedAt: state.selected_at || new Date().toISOString() };
     if (state.phase === 'data_ready') {
+      await owner?.assertStopped({ drain: state.drain });
       const next = await readJson(join(dataRoot, 'config', `deployment.${state.migration_id}.json`));
       await writeJson(deploymentPath(dataRoot), next);
       for (const name of launchers) await installLauncher(join(destination, name), join(appRoot, name));
