@@ -48,7 +48,10 @@ const definitions = [
     'If the index reference is empty, use save_file in private_space (for example memory/index.json) to save ordinary JSON such as ' +
     '{"items":[{"id":"stable-note-id","revision":1,"note":"The user’s actual instruction","applies_to":[{"kind":"room","id":"actual-room-id"}],"source_refs":[{"kind":"event","id":"actual-source-event-id"}]}]}. ' +
     'Use the real applicable scope and source references. Register the returned File reference as material_index_ref using the current Bot revision. ' +
-    'For an existing index, read it before editing and save with the current File revision. Increment the revision of a changed item.',
+    'For an existing index, read it before editing and save with the current File revision. Increment the revision of a changed item. ' +
+    'To request a separate background consolidation, set "selected":true on the specific item in the registered index and set its ' +
+    '"target_ref" to the actual reference of an existing, accessible knowledge File. The runtime processes selected items when their ' +
+    'scope is idle. Use find with kind "material_consumption" to check the recorded outcome.',
     object({ bot: refOrId, revision: integer, name: text, instructions: text, model, enabled: flag, resume_ref: resumeRef,
       material_index_ref: { anyOf: [ref, { type: 'null' }] } }, ['bot', 'revision'])],
   ['create_room', 'Create a Room with the specified members, including you as creator.',
