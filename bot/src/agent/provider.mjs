@@ -1,5 +1,6 @@
 import { AssistantMessageEventStream, clampThinkingLevel, getCurrentTools, normalizeContext } from '@earendil-works/pi-ai';
 import { randomUUID } from 'node:crypto';
+import { zstdDecompressSync } from 'node:zlib';
 import { modelConnection, connectionRuntime, modelError, officialDeepSeekCompletions, supportsOpenAIRoomCache } from './connections.mjs';
 import { reportedUsage, referenceCost } from './usage.mjs';
 
@@ -18,6 +19,18 @@ function serializedReasoning(payload, model, deepseek) {
   if (update) return { effort: update.reasoning.effort, topLevel, source: 'configuration_update' };
   if (deepseek && payload?.thinking?.type === 'disabled') return { effort: 'disabled', topLevel, source: 'thinking.type' };
   return { effort: topLevel, topLevel, source: responses ? 'reasoning.effort' : 'reasoning_effort' };
+}
+
+function readWirePayload(body, headers) {
+  const compressed = headers.get('content-encoding')?.trim().toLowerCase() === 'zstd';
+  if (compressed && !(body instanceof Uint8Array)) throw new Error('Expected bytes for the zstd model request');
+  if (!compressed && typeof body !== 'string') return undefined;
+  try {
+    return JSON.parse(compressed ? zstdDecompressSync(body).toString('utf8') : body);
+  } catch {
+    if (compressed) throw new Error('Could not decode the zstd model request as JSON');
+    return undefined;
+  }
 }
 
 function roomCacheRequest(payload, roomCache) {
@@ -136,8 +149,7 @@ export class ModelProvider {
             const headers = new Headers(init?.headers);
             const bearer = headers.get('authorization'); if (bearer) secrets.add(bearer.replace(/^Bearer\s+/i, ''));
             if (headers.get('x-api-key')) secrets.add(headers.get('x-api-key'));
-            let wire;
-            if (typeof init?.body === 'string') try { wire = JSON.parse(init.body); } catch {}
+            const wire = readWirePayload(init?.body, headers);
             if (typeof wire?.model === 'string' && wire.model !== model.id)
               throw new Error(`The provider serialized a different model for ${model.id}`);
             const efforts = validateReasoning(wire);
