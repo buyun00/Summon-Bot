@@ -33,10 +33,8 @@ export class BotEngine {
     const inject = () => {
       inbox.store.transaction(() => {
         // Revalidate access after fitting the request and before saving its delivery position.
-        if (materialAtFetch && job.materials()?.fact.content[0].text !== materialAtFetch.fact.content[0].text) {
-          failure = runtimeFailure('access_changed', 'Material context changed before model transport', 409);
-          throw failure;
-        }
+        if (materialAtFetch && job.materials()?.fact.content[0].text !== materialAtFetch.fact.content[0].text)
+          throw runtimeFailure('access_changed', 'Material context changed before model transport', 409);
         for (const message of appendAtFetch) inbox.append(runId, message);
         inbox.recordInjection(runId, modelEventIds);
         if (materialAtFetch?.record) inbox.store.putRecord(R.materialView, materialAtFetch.record);
@@ -45,9 +43,17 @@ export class BotEngine {
       materialAtFetch = undefined;
     };
     const requestPurpose = inbox.run(runId).material_batch_id ? 'material_consolidation' : conversation.session_id ? 'pi_session' : 'conversation';
+    const onBeforeFetchError = error => { failure = error; };
     const streamFn = (selected, context, options) => this.stream(job, selected, context,
-      { ...options, roomCache, inject, neededView: authorizedView }, outputTokens, requestPurpose)
+      { ...options, roomCache, inject, neededView: authorizedView, onBeforeFetchError }, outputTokens, requestPurpose)
       .catch(error => { failure = error; throw error; });
+    const compress = async messages => {
+      const response = await this.stream(job, model, { messages }, { neededView: authorizedView, onBeforeFetchError },
+        Math.min(model.maxTokens, 8192), 'compression');
+      const answer = await response.result();
+      if (failure) throw failure;
+      return answer;
+    };
     const agent = new Agent({ initialState: { messages: [system], model, tools, thinkingLevel: binding.model.thinking_level },
       streamFn, sessionId: conversation.id, toolExecution: 'sequential' });
     const unsub = agent.subscribe(event => {
@@ -94,7 +100,7 @@ export class BotEngine {
         const material = boundary.material && { ...boundary.material.fact, view_revision: authorizedView, runtime_fact: true };
         const tail = [...fresh, ...(material ? [material] : []), ...newFacts];
         const optionalMaterial = requestPurpose === 'material_consolidation' ? null : material;
-        const prompt = await this.fit(job, model, system, history, sameRun, tail, inputBudget, boundary, optionalMaterial);
+        const prompt = await this.fit(job, compress, system, history, sameRun, tail, inputBudget, boundary, optionalMaterial);
         check();
         const sharedPrefix = conversation.kind === 'room' ? prompt.filter(message => message.public_event_id) : [];
         const cachePoint = sharedPrefix.at(-1);
@@ -143,7 +149,7 @@ export class BotEngine {
     } finally { signal.removeEventListener('abort', abort); unsub(); }
   }
 
-  async stream(job, model, context, { inject, neededView, ...options }, maxTokens, purpose) {
+  async stream(job, model, context, { inject, neededView, onBeforeFetchError, ...options }, maxTokens, purpose) {
     await job.checkInstallation();
     job.check();
     const origin = job.context().origin;
@@ -159,12 +165,18 @@ export class BotEngine {
           sessionId: origin.session_id || origin.conversation_id, runId: origin.run_id, parentCallId: job.conversation.open_call_id,
           chargeAccount: 'host', hostUsageId: lease.id, submittedBy: job.context().submitted_by },
         beforeFetch: async () => {
-          await job.checkInstallation();
-          job.check();
-          if ((await job.view()).view_revision !== view.view_revision)
-            throw runtimeFailure('access_changed', 'Execution authorization changed before model transport', 409);
-          job.check();
-          inject?.();
+          try {
+            await job.checkInstallation();
+            job.check();
+            if ((await job.view()).view_revision !== view.view_revision)
+              throw runtimeFailure('access_changed', 'Execution authorization changed before model transport', 409);
+            job.check();
+            inject?.();
+          } catch (error) {
+            // The provider stream can reduce this exception to a formatted error message.
+            onBeforeFetchError?.(error);
+            throw error;
+          }
         },
       });
       void result.result().then(message => lease.finish({ tokens: message.generationBudget?.input == null || message.generationBudget?.output == null ? undefined :
@@ -208,7 +220,7 @@ export class BotEngine {
     }
   }
 
-  async fit(job, model, system, history, transcript, tail, budget, boundary, optionalMaterial) {
+  async fit(job, compress, system, history, transcript, tail, budget, boundary, optionalMaterial) {
     const currentTime = Date.now();
     let current = [...transcript, ...tail];
     const key = recordKey(job.conversation.id, boundary.view_revision);
@@ -258,10 +270,9 @@ export class BotEngine {
         }
         if (chunk.length) {
           const checkpointPrompt = textMessage({ previous: summary?.summary, history: chunk.map(message => JSON.parse(message.content[0].text)) });
-          const response = await this.stream(job, model, { messages: [
+          const answer = await compress([
             { role: 'system', content: 'Summarize these authorized historical records for a later model request. Preserve names, corrections, source references and actual call status.', timestamp: currentTime }, checkpointPrompt,
-          ] }, { neededView: boundary.view_revision }, Math.min(model.maxTokens, 8192), 'compression');
-          const answer = await response.result();
+          ]);
           job.check();
           const text = answer.stopReason === 'stop' && answer.content.filter(part => part.type === 'text').map(part => part.text).join('\n');
           if (text) {
