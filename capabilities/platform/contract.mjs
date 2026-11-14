@@ -43,7 +43,12 @@ const definitions = [
       revision: integer, sources: array(ref) }, ['space', 'path', 'content_or_source'])],
   ['create_bot', 'Create a Bot with instructions and an optional configured default model connection.',
     object({ name: text, instructions: text, model }, ['name', 'instructions'])],
-  ['configure_bot', 'Change a Bot configuration at its current revision. An explicit resume reference is required to re-enable a paused Bot.',
+  ['configure_bot', 'Change a Bot configuration at its current revision. An explicit resume reference is required to re-enable a paused Bot. ' +
+    'When asked to remember or correct something for future work, read your Bot for its revision, private_space and material_index_ref. ' +
+    'If the index reference is empty, use save_file in private_space (for example memory/index.json) to save ordinary JSON such as ' +
+    '{"items":[{"id":"stable-note-id","revision":1,"note":"The user’s actual instruction","applies_to":[{"kind":"room","id":"actual-room-id"}],"source_refs":[{"kind":"event","id":"actual-source-event-id"}]}]}. ' +
+    'Use the real applicable scope and source references. Register the returned File reference as material_index_ref using the current Bot revision. ' +
+    'For an existing index, read it before editing and save with the current File revision. Increment the revision of a changed item.',
     object({ bot: refOrId, revision: integer, name: text, instructions: text, model, enabled: flag, resume_ref: resumeRef,
       material_index_ref: { anyOf: [ref, { type: 'null' }] } }, ['bot', 'revision'])],
   ['create_room', 'Create a Room with the specified members, including you as creator.',

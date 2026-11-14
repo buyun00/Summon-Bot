@@ -23,6 +23,8 @@ const permissionCodes = new Set(['access_revoked', 'execution_not_found', 'conne
 const cleanError = error => ({ status: error.status, code: error.code, message: error.message, details: error.details });
 const actorFor = call => call.submitted_by || { kind: 'user', id: 'user' };
 const targetOption = (kind, value) => ({ kinds: [kind], input_target: value });
+const isTerminalReceipt = (event, wait) => event?.type === 'call.receipt' && event.call_id === wait.call_id && terminalCallStates.has(event.status);
+const callSettled = status => status !== 'unknown' && terminalCallStates.has(status);
 const roomEvent = message => ({ id: message.id, kind: 'event', type: 'message', space: { kind: 'room', id: message.roomId },
   sequence: message.sequence, time: message.createdAt, author: message.author || (message.senderId === 'user' ? { kind: 'user', id: 'user' } :
     message.senderId === 'system' ? { kind: 'platform', id: 'platform' } : botRef(message.senderId)),
@@ -141,17 +143,21 @@ export class BotRuntime {
   }
 
   async dispatch(inbox, bot) {
-    const pending = inbox.pending();
+    const snapshot = inbox.pending();
+    const settled = new Set(snapshot.filter(route => this.settledProgress(inbox, route)));
+    if (settled.size) this.discard(inbox, [...settled], 'cancelled');
+    const pending = snapshot.filter(route => !settled.has(route));
     const unassigned = new Map();
     for (const route of pending) {
       if (route.run_id) continue;
       if (route.event.type === 'call.receipt') {
         const returns = inbox.list(R.route, 'event_id', route.event_id).filter(item => item.wait_id);
-        if (returns.some(item => item.state === 'pending') || this.targetPaused(route.event.target)) continue;
+        if (returns.some(item => item.state === 'pending')) continue;
         if (returns.length) {
           this.discard(inbox, [route], returns.some(item => item.state === 'processed') ? 'processed' : 'access_revoked');
           continue;
         }
+        if (this.targetPaused(route.event.target)) continue;
       }
       const space = route.event.space || botRef(bot.id);
       const related = route.event.ref?.kind === 'conversation' ? route.event.ref : null;
@@ -166,7 +172,7 @@ export class BotRuntime {
       }
       const retained = related?.kind === 'conversation' ? inbox.conversation(related.id) : null;
       const conversations = inbox.list(R.conversation, 'space.id', space.id).filter(item => item.kind === 'room' && sameRef(item.space, space));
-      const available = conversation => (this.registered(conversation)?.control || conversation.control).state === 'active';
+      const available = conversation => this.conversationActive(conversation);
       let conversation = retained ? (available(retained) ? retained : null) : conversations.reverse().find(available);
       if (retained && !conversation) continue;
       if (!conversation) conversation = this.register(inbox, inbox.putConversation({ id: randomUUID(), kind: 'room', space, owner: botRef(bot.id) }));
@@ -188,8 +194,7 @@ export class BotRuntime {
     for (const conversation of inbox.store.listRecords(R.conversation)) {
       if (!this.registered(conversation)) this.register(inbox, conversation);
       if (this.active.has(conversation.id) || this.starting.has(conversation.id)) continue;
-      const control = this.registered(conversation)?.control || conversation.control;
-      if (control.state !== 'active' || conversation.session_id && this.targetPaused(sessionRef(conversation.session_id))) continue;
+      if (!this.conversationActive(conversation)) continue;
       let runs = inbox.runs(conversation.id).filter(run => activeRunStates.has(run.state));
       runs = runs.filter(run => !run.retry_at || Date.parse(run.retry_at) <= Date.now());
       const eligible = runs.find(run => run.state === 'waiting' && this.waitReady(inbox, run));
@@ -197,7 +202,8 @@ export class BotRuntime {
       if (!run) continue;
       if (eligible && conversation.kind === 'room') {
         const fresh = inbox.pending().filter(route => !route.run_id && sameRef(route.event.space, conversation.space) &&
-          (route.event.ref?.kind !== 'conversation' || route.event.ref.id === conversation.id));
+          (route.event.ref?.kind !== 'conversation' || route.event.ref.id === conversation.id) &&
+          (route.event.type !== 'call.receipt' || !inbox.list(R.route, 'event_id', route.event_id).some(item => item.wait_id)));
         inbox.associate(run.id, fresh.slice(0, 32));
       }
       this.launch(inbox, conversation, inbox.run(run.id), bot);
@@ -207,14 +213,58 @@ export class BotRuntime {
 
   waitReady(inbox, run) {
     const pending = run.route_ids.map(id => inbox.store.getRecord(R.route, id)).filter(route => route?.state === 'pending');
-    if (pending.some(route => route.wait_id && !this.routePaused(inbox, route))) return true;
+    if (pending.some(route => route.wait_id && this.routeReady(inbox, route))) return true;
     const openWait = inbox.waits(run.id).some(wait => !terminalCallStates.has(wait.status) && wait.status !== 'inline');
     return !openWait && pending.some(route => !route.wait_id);
   }
 
   routePaused(inbox, route) {
+    const conversation = route.conversation_id && inbox.conversation(route.conversation_id);
+    if (conversation && !this.conversationActive(conversation)) return true;
     const wait = route.wait_id && inbox.wait(route.wait_id);
-    return Boolean(wait && this.targetPaused(wait.target || this.localCallTarget(inbox, wait.call_id)));
+    if (!wait) return false;
+    const target = wait.target || this.localCallTarget(inbox, wait.call_id);
+    if (!this.targetPaused(target)) return false;
+    const event = inbox.event(route.event_id);
+    return !conversation || !isTerminalReceipt(event, wait) || Boolean(event.target && !sameRef(target, event.target));
+  }
+
+  routeReady(inbox, route) { return !this.routePaused(inbox, route) && !this.supersededProgress(inbox, route); }
+
+  supersededProgress(inbox, route) {
+    const wait = route.wait_id && inbox.wait(route.wait_id);
+    if (!wait) return false;
+    const event = inbox.event(route.event_id);
+    if (event?.type !== 'call.receipt' || event.call_id !== wait.call_id || isTerminalReceipt(event, wait)) return false;
+    return callSettled(wait.status) || (wait.event_ids || []).some(id => {
+      const receipt = inbox.event(id);
+      if (!isTerminalReceipt(receipt, wait) || !callSettled(receipt.status)) return false;
+      const sibling = inbox.store.getRecord(R.route, recordKey(id, wait.id));
+      return sibling?.state === 'processed' || sibling?.state === 'pending' && !this.routePaused(inbox, sibling);
+    });
+  }
+
+  settledProgress(inbox, route) {
+    const wait = route.wait_id && inbox.wait(route.wait_id);
+    if (!callSettled(wait?.status)) return false;
+    const conversation = inbox.conversation(wait.conversation_id);
+    return conversation && this.conversationActive(conversation) && this.supersededProgress(inbox, route);
+  }
+
+  conversationActive(conversation) {
+    const control = this.registered(conversation)?.control || conversation.control;
+    return control.state === 'active' && !this.targetPaused(conversation.session_id && sessionRef(conversation.session_id));
+  }
+
+  foregroundPending(inbox) {
+    return inbox.pending().some(route => {
+      if (route.run_id) return this.routeReady(inbox, route);
+      const { event } = route;
+      if (event.type === 'call.receipt' &&
+          (this.targetPaused(event.target) || inbox.list(R.route, 'event_id', event.id).some(item => item.wait_id))) return false;
+      const conversation = event.ref?.kind === 'conversation' && inbox.conversation(event.ref.id);
+      return !conversation || this.conversationActive(conversation);
+    });
   }
 
   targetPaused(target) { return Boolean(target && this.platform.executions.record(target)?.control?.state === 'paused'); }
@@ -273,24 +323,31 @@ export class BotRuntime {
         this.emit('engine.started', refs);
         await this.recoverCalls(job);
         const storedOutcome = inbox.run(run.id).model_outcome;
-        const pendingNow = inbox.pending().filter(route => route.run_id === run.id && !this.routePaused(inbox, route));
+        const pendingForRun = () => inbox.pending().filter(route => route.run_id === run.id);
+        const canProcess = route => this.routeReady(inbox, route);
+        const pendingNow = pendingForRun().filter(canProcess);
         const restored = storedOutcome && pendingNow.every(route => storedOutcome.eventIds.includes(route.event_id)) &&
           (await job.view()).view_revision === inbox.run(run.id).model_outcome_uses_view ? storedOutcome : null;
         const result = this.materials.recovered(job) || restored || await this.engine.execute(job);
         job.check();
         await this.materials.finish(job, result);
-        const canProcess = route => !this.routePaused(inbox, route);
+        const cancelledProgress = [];
         const state = inbox.store.transaction(() => {
           inbox.complete(run.id, 'running', result.eventIds, { result: { text: result.text, model: result.model, response_id: result.response_id } }, canProcess);
           const outstanding = inbox.waits(run.id).some(wait => !terminalCallStates.has(wait.status) && wait.status !== 'inline');
-          const pending = inbox.pending().filter(route => route.run_id === run.id);
+          const settledProgress = pendingForRun().filter(route => this.settledProgress(inbox, route));
+          for (const { event, ...route } of settledProgress) {
+            inbox.store.putRecord(R.route, { ...route, state: 'cancelled' });
+            cancelledProgress.push(route.event_id);
+          }
+          const pending = pendingForRun();
           const next = pending.some(canProcess) ? 'pending' : outstanding || pending.length ? 'waiting' : 'completed';
           inbox.putRun({ id: run.id, state: next, model_outcome: null, model_outcome_uses_view: null });
           if (next === 'completed' || next === 'waiting') this.stageInputs(inbox, conversation, run.id, next, result);
           return next;
         });
         this.flushInputs(inbox);
-        this.consumeDeliveries(inbox, result.eventIds);
+        this.consumeDeliveries(inbox, [...result.eventIds, ...cancelledProgress]);
         this.emit('engine.finished', { ...refs, state, model: result.model });
       } catch (error) {
         const code = error.code || 'runtime_error';
@@ -367,8 +424,9 @@ export class BotRuntime {
     const job = { inbox, conversation, runId: run.id, binding, controller, signal: controller.signal, context, check, accepting: true,
       view: () => this.authorizationView(context(), conversation),
       refresh: () => this.contextBoundary(job),
+      materials: () => this.materials.boundary(job),
       checkInstallation: () => this.checkInstallation(),
-      hasNewInput: ids => inbox.pending().some(route => route.run_id === run.id && !ids.includes(route.event_id) && !this.routePaused(inbox, route)),
+      hasNewInput: ids => inbox.pending().some(route => route.run_id === run.id && !ids.includes(route.event_id) && this.routeReady(inbox, route)),
       finishInput() { job.accepting = false; },
     };
     return job;
@@ -393,9 +451,8 @@ export class BotRuntime {
     for (const event of ordered) {
       const { id } = event;
       if (run.processed_event_ids.includes(id) && !inbox.list(R.route, 'event_id', id).some(route => route.run_id === runId && route.state === 'pending')) continue;
-      const routes = inbox.list(R.route, 'event_id', id).filter(route => route.run_id === runId);
-      if (routes.length && routes.every(route => ['cancelled', 'access_revoked'].includes(route.state))) continue;
-      if (routes.length && routes.every(route => this.routePaused(inbox, route))) continue;
+      const routes = inbox.list(R.route, 'event_id', id).filter(route => route.run_id === runId && route.state === 'pending');
+      if (!routes.some(route => this.routeReady(inbox, route))) continue;
       const authorized = event.type === 'pi.input' || view.canReadEvent(event);
       if (authorized) current.push(event);
       else if (routes.some(route => route.wait_id)) current.push({ id: event.id, type: event.type, call_id: event.call_id, status: event.status,
@@ -437,8 +494,7 @@ export class BotRuntime {
         }));
       }
     }
-    facts.push(...await this.materials.boundary(job));
-    return { ...view, current, history, facts };
+    return { ...view, current, history, facts, material: job.materials() };
   }
 
   sessionHistory(inbox, conversation, runId, view) {

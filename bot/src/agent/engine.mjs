@@ -3,6 +3,7 @@ import { toToolDeclaration } from '@earendil-works/pi-ai';
 import { randomUUID } from 'node:crypto';
 import { boundModel } from './model.mjs';
 import { ModelProvider } from './provider.mjs';
+import { isMaterialFact } from '../context/materials.mjs';
 import { contextTokens, eventInput, repairRun, textMessage, toolObservation } from '../context/projection.mjs';
 import { now, recordKey, runtimeFailure, runtimeRecords as R } from '../storage/runtime-records.mjs';
 
@@ -27,14 +28,21 @@ export class BotEngine {
     const inputReserve = Math.min(model.maxTokens, Math.floor(model.contextWindow / 4));
     const outputTokens = Math.max(128, Math.min(model.maxTokens, inputReserve));
     const inputBudget = model.contextWindow - outputTokens - 512;
-    let last, boundary, failure, modelEventIds = [], authorizedView, roomCache, appendAtFetch = [];
+    let last, boundary, failure, modelEventIds = [], authorizedView, roomCache, appendAtFetch = [], materialAtFetch;
     const completedEvents = new Set();
     const inject = () => {
       inbox.store.transaction(() => {
+        // Revalidate access after fitting the request and before saving its delivery position.
+        if (materialAtFetch && job.materials()?.fact.content[0].text !== materialAtFetch.fact.content[0].text) {
+          failure = runtimeFailure('access_changed', 'Material context changed before model transport', 409);
+          throw failure;
+        }
         for (const message of appendAtFetch) inbox.append(runId, message);
         inbox.recordInjection(runId, modelEventIds);
+        if (materialAtFetch?.record) inbox.store.putRecord(R.materialView, materialAtFetch.record);
       });
       appendAtFetch = [];
+      materialAtFetch = undefined;
     };
     const requestPurpose = inbox.run(runId).material_batch_id ? 'material_consolidation' : conversation.session_id ? 'pi_session' : 'conversation';
     const streamFn = (selected, context, options) => this.stream(job, selected, context,
@@ -71,7 +79,8 @@ export class BotEngine {
         const history = asHistory.map(event => ({ ...textMessage(eventInput(event, false), Date.parse(event.time || event.createdAt) || 0),
           public_event_id: event.id }));
         const alreadyProcessed = new Set(inbox.run(runId).processed_event_ids);
-        const sameRun = repairRun(original, inbox.calls(runId)).map(message => {
+        // Project materials from current authorization, including after an index is detached.
+        const sameRun = repairRun(original.filter(message => !isMaterialFact(message)), inbox.calls(runId)).map(message => {
           if (!message.origin_event_ids?.length || message.origin_event_ids.some(id => !alreadyProcessed.has(id) || currentIds.has(id))) return message;
           const event = inbox.event(message.origin_event_ids[0]);
           return event ? textMessage({ type: 'previously_processed_event', event }, message.timestamp) : message;
@@ -82,8 +91,10 @@ export class BotEngine {
         const facts = boundary.facts.map(message => ({ ...message, view_revision: authorizedView }));
         const previousFacts = new Set(sameRun.filter(message => message.runtime_fact).map(message => message.content[0]?.text));
         const newFacts = facts.filter(message => !previousFacts.has(message.content[0]?.text)).map(message => ({ ...message, runtime_fact: true }));
-        const tail = [...fresh, ...newFacts];
-        const prompt = await this.fit(job, model, system, history, sameRun, tail, inputBudget, boundary);
+        const material = boundary.material && { ...boundary.material.fact, view_revision: authorizedView, runtime_fact: true };
+        const tail = [...fresh, ...(material ? [material] : []), ...newFacts];
+        const optionalMaterial = requestPurpose === 'material_consolidation' ? null : material;
+        const prompt = await this.fit(job, model, system, history, sameRun, tail, inputBudget, boundary, optionalMaterial);
         check();
         const sharedPrefix = conversation.kind === 'room' ? prompt.filter(message => message.public_event_id) : [];
         const cachePoint = sharedPrefix.at(-1);
@@ -93,6 +104,9 @@ export class BotEngine {
         modelEventIds = prompt.flatMap(message => message.origin_event_ids || []).filter(id => currentIds.has(id));
         // An over-limit or cancelled request can stop between assembly and transport.
         appendAtFetch = tail.filter(message => prompt.includes(message));
+        materialAtFetch = material && prompt.includes(material) ? boundary.material : undefined;
+        if (materialAtFetch && original.findLast(isMaterialFact)?.content[0].text === material.content[0].text)
+          appendAtFetch = appendAtFetch.filter(message => message !== material);
         this.emit('engine.request', { bot_id: conversation.bot_id, conversation_id: conversation.id, run_id: runId, model: model.id,
           thinking_level: binding.model.thinking_level, tool_count: tools.length, event_ids: modelEventIds });
         return { context: { ...request.context, messages: prompt, tools } };
@@ -194,9 +208,9 @@ export class BotEngine {
     }
   }
 
-  async fit(job, model, system, history, transcript, tail, budget, boundary) {
+  async fit(job, model, system, history, transcript, tail, budget, boundary, optionalMaterial) {
     const currentTime = Date.now();
-    const current = [...transcript, ...tail];
+    let current = [...transcript, ...tail];
     const key = recordKey(job.conversation.id, boundary.view_revision);
     const stored = job.inbox.store.getRecord(R.checkpoint, key);
     const prefix = value => value ? [textMessage({ type: 'derived_history', covered_through: value.through, text: value.summary }, value.time)] : [];
@@ -206,7 +220,12 @@ export class BotEngine {
     let prior = history.slice(covered);
     let messages = [system, ...prefix(summary), ...prior, ...current];
     if (contextTokens(messages) <= budget) return messages;
-    const currentInputs = current.filter(message => message.origin_event_ids?.length || message.runtime_fact || message.role === 'user' && !transcript.includes(message));
+    let currentInputs = current.filter(message => message.origin_event_ids?.length || message.runtime_fact || message.role === 'user' && !transcript.includes(message));
+    if (optionalMaterial && contextTokens([system, ...currentInputs]) > budget) {
+      tail = tail.filter(message => message !== optionalMaterial);
+      current = current.filter(message => message !== optionalMaterial);
+      currentInputs = currentInputs.filter(message => message !== optionalMaterial);
+    }
     if (contextTokens([system, ...currentInputs]) > budget) {
       const accepted = [];
       for (const message of tail) {
@@ -262,6 +281,7 @@ export class BotEngine {
     const calls = job.inbox.calls(job.runId).map(call => ({ ref: { kind: 'call', id: call.id }, state: call.state, tool: call.tool }));
     const recovery = textMessage({ type: 'accessible_prior_calls', calls });
     messages = [system, ...currentInputs, recovery];
+    if (optionalMaterial && contextTokens(messages) > budget) messages = messages.filter(message => message !== optionalMaterial);
     if (contextTokens(messages) > budget) throw runtimeFailure('context_limit', 'The active turn exceeds the model context window', 413);
     return messages;
   }

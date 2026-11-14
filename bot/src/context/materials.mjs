@@ -28,6 +28,12 @@ const itemIdentity = (file, item) => recordKey(file.id, item.id, item.revision);
 const itemScope = (item, botId) => [{ kind: 'bot', id: botId }, ...item.applies_to];
 const contentOf = message => message?.content?.filter(part => part.type === 'text').map(part => part.text).join('\n');
 
+export function isMaterialFact(message) {
+  if (!message.runtime_fact) return false;
+  const text = message.content[0]?.text;
+  return ['selected_material_revisions', 'material_index', 'selected_materials'].some(type => text?.startsWith(`{"type":"${type}",`));
+}
+
 export class MaterialRuntime {
   constructor(runtime) { this.runtime = runtime; this.nextScan = new Map(); }
 
@@ -42,11 +48,12 @@ export class MaterialRuntime {
     if (!head) return { entries: [], issue: 'index_unavailable' };
     const rootIndex = parseIndex(head);
     if (!rootIndex) return { entries: [], issue: 'index_unreadable', revision: head.revision };
-    const indexes = [[head, rootIndex]];
+    const indexes = [[head, rootIndex]], unavailable = new Set();
     for (const ref of refs(rootIndex.shared_indexes, value => isRef(value, 'file'))) {
       if (ref.id === head.id) continue;
       const file = this.read(ref, context), index = parseIndex(file);
-      if (index && !indexes.some(([entry]) => entry.id === file.id)) indexes.push([file, index]);
+      if (!index) unavailable.add(ref.id);
+      else if (!indexes.some(([entry]) => entry.id === file.id)) indexes.push([file, index]);
     }
     const entries = [];
     for (const [file, index] of indexes) {
@@ -81,63 +88,89 @@ export class MaterialRuntime {
           material_revision: materialRevision, material_author: material?.author, content, material_truncated: Boolean(material?.next_cursor), skill, key });
       }
     }
-    return { entries, revision: head.revision };
+    return { entries, revision: head.revision, unavailable };
   }
 
-  async boundary(job) {
+  boundary(job) {
     const { inbox, conversation, runId } = job;
     const run = inbox.run(runId);
+    const context = this.runtime.platform.context(job.context());
+    const bot = this.runtime.platform.getBot(inbox.botId);
     if (run.material_batch_id) {
       const batch = inbox.store.getRecord(R.batch, run.material_batch_id);
-      const context = this.runtime.platform.context(job.context());
-      const bot = this.runtime.platform.getBot(inbox.botId);
       const snapshot = sameRef(bot.material_index_ref, batch.root) ? this.snapshot(inbox, batch.root, context).entries : [];
-      const items = batch.items.filter(item => snapshot.some(latest => latest.key === item.key));
-      return [textMessage({ type: 'selected_materials', batch_id: batch.id, target: batch.target,
+      const latest = new Map(snapshot.map(item => [item.key, item]));
+      const items = batch.items.map(item => latest.get(item.key)).filter(Boolean);
+      return { fact: textMessage({ type: 'selected_materials', batch_id: batch.id, target: batch.target,
         items: items.map(({ item_id, index_ref, material_ref, material_revision, note, content, source_refs }) =>
           ({ item_id, index_ref, material_ref, material_revision, note, content, source_refs })),
         instructions: 'Read the target and consolidate the selected material if useful. Return a JSON object. For items that needed no change, include {"no_change":{"item_ids":["actual IDs"],"observed_target_revision":1}}. For items incorporated by saving the target, include {"processed_item_ids":["actual IDs"],"call_id":"the save_file call ID","target_revision":2}. Both sets can be present. Include only the supplied items you actually handled. Tool calls use their ordinary parameters.',
-      }, Date.parse(batch.created_at))];
+      }, Date.parse(batch.created_at)) };
     }
-    const context = this.runtime.platform.context(job.context());
-    const bot = this.runtime.platform.getBot(inbox.botId);
     const root = conversation.session_id ? conversation.binding.material_index_ref : bot.material_index_ref;
-    if (!root) return [];
     const scope = [context.actor, conversation.space, { kind: 'conversation', id: conversation.id }];
     if (context.session) scope.push({ kind: 'session', id: context.session.id });
-    const snapshot = this.snapshot(inbox, root, context, scope);
-    if (snapshot.issue) return [textMessage({ type: 'material_index', ref: root, status: snapshot.issue })];
-    const id = recordKey(conversation.id, root.id);
-    const old = inbox.store.getRecord(R.materialView, id);
-    const current = snapshot.entries.map(item => ({ key: item.id, material_revision: item.material_revision,
-      selection_revision: item.selection_revision, skill_revision: item.skill?.revision, issue: item.issue || (item.material_revision === null ? 'material_unavailable' : null) }));
+    const snapshot = root ? this.snapshot(inbox, root, context, scope) : { entries: [], revision: null };
+    if (snapshot.issue) return { fact: textMessage({ type: 'material_index', ref: root, status: snapshot.issue }) };
+
+    const id = conversation.id;
+    // Earlier snapshots could advance during assembly. Only trust revisions found in the sent transcript.
+    const old = inbox.store.getRecord(R.materialView, id) || this.sentPosition(inbox, runId);
+    if (!root && !old) return null;
     const previous = new Map((old?.entries || []).map(item => [item.key, item]));
-    const entries = snapshot.entries.map((item, index) => {
-      const state = current[index], before = previous.get(state.key);
-      return { ...state, ref: item.material_ref || item.index_ref, item_id: item.item_id, source_refs: item.source_refs,
-        owner: item.material_author || item.author, skill: item.skill, note: item.material_ref ? undefined : item.note,
-        ...(before && JSON.stringify(state) !== JSON.stringify(before) ? { previous_material_revision: before.material_revision } : {}) };
-    });
-    const removed = (old?.entries || []).filter(item => !current.some(entry => entry.key === item.key)).map(item => item.key);
-    if (JSON.stringify(current) !== JSON.stringify(old?.entries)) {
-      inbox.store.putRecord(R.materialView, { id, entries: current, revision: snapshot.revision, recorded_at: now() });
+    const currentKeys = new Set(snapshot.entries.map(item => item.id));
+    const isRemoved = key => !currentKeys.has(key) && !snapshot.unavailable?.has(JSON.parse(key)[0]);
+    const newlyRemoved = [...previous.keys()].filter(isRemoved);
+    const priorRemovals = old?.run_id === runId ? old.removed : [];
+    const removed = [...new Set([...newlyRemoved, ...(priorRemovals || []).filter(isRemoved)])].slice(0, 64);
+    if (!root && !removed.length && !old?.index_ref) return null;
+
+    const pending = [], unchanged = [];
+    for (const item of snapshot.entries) {
+      const state = { key: item.id, material_revision: item.material_revision, selection_revision: item.selection_revision,
+        skill_revision: item.skill?.revision, issue: item.issue || (item.material_revision === null ? 'material_unavailable' : null) };
+      const before = previous.get(state.key);
+      const revised = !before || before.material_revision !== state.material_revision || before.skill_revision !== state.skill_revision || before.issue !== state.issue;
+      let priorRevision;
+      if (before && before.material_revision !== state.material_revision) priorRevision = before.material_revision;
+      else if (old?.run_id === runId) priorRevision = before?.previous_material_revision;
+      if (priorRevision !== undefined) state.previous_material_revision = priorRevision;
+      const note = item.material_ref ? undefined : item.note?.slice(0, 6500);
+      const projection = { ...state, ref: item.material_ref || item.index_ref, item_id: item.item_id, source_refs: item.source_refs,
+        applies_to: item.applies_to, owner: item.material_author || item.author, skill: item.skill, note,
+        ...(note && note.length < item.note.length ? { note_truncated: true } : {}) };
+      (revised ? pending : unchanged).push({ state, projection });
     }
+
     const visible = [];
     let budget = 48000;
-    for (const entry of entries) {
-      const projected = { ...entry, note: entry.note?.slice(0, 6500), ...(entry.note?.length > 6500 ? { note_truncated: true } : {}) };
-      const cost = JSON.stringify(projected).length;
+    for (const { state, projection } of [...pending, ...unchanged]) {
+      const cost = JSON.stringify(projection).length;
       if (visible.length >= 64 || cost > budget) break;
       budget -= cost;
-      visible.push(projected);
+      visible.push(projection);
+      previous.set(state.key, state);
     }
-    return [textMessage({ type: 'selected_material_revisions', scope, index_ref: root, index_revision: snapshot.revision,
-      entries: visible, removed, additional_entries: Math.max(0, entries.length - visible.length) }, Date.parse(old?.recorded_at) || Date.now())];
+    for (const key of removed) previous.delete(key);
+    const record = { id, run_id: runId, index_ref: root ?? null, revision: snapshot.revision, entries: [...previous.values()], removed };
+    const fact = textMessage({ type: 'selected_material_revisions', scope, index_ref: record.index_ref, index_revision: snapshot.revision,
+      entries: visible, removed, additional_entries: snapshot.entries.length - visible.length,
+      ...(snapshot.unavailable?.size ? { unavailable_indexes: [...snapshot.unavailable].map(id => ({ kind: 'file', id })) } : {}) });
+    return { fact, record: JSON.stringify(old) === JSON.stringify(record) ? undefined : record };
+  }
+
+  sentPosition(inbox, runId) {
+    const text = inbox.transcript(runId).findLast(message => isMaterialFact(message) &&
+      message.content[0].text.startsWith('{"type":"selected_material_revisions",'))?.content[0].text;
+    if (!text) return null;
+    const { entries, removed, index_ref } = JSON.parse(text);
+    return { run_id: runId, entries: entries.map(({ key, material_revision, selection_revision, skill_revision, issue, previous_material_revision }) =>
+      ({ key, material_revision, selection_revision, skill_revision, issue, previous_material_revision })), removed, index_ref };
   }
 
   async consider(inbox, bot) {
-    if (this.runtime.draining || this.runtime.closed || !bot.material_index_ref || this.nextScan.get(bot.id) > Date.now() || inbox.pending().length ||
-        [...this.runtime.active.values()].some(job => job.inbox === inbox)) return;
+    if (this.runtime.draining || this.runtime.closed || !bot.material_index_ref || this.nextScan.get(bot.id) > Date.now() ||
+        this.runtime.foregroundPending(inbox) || [...this.runtime.active.values()].some(job => job.inbox === inbox)) return;
     this.nextScan.set(bot.id, Date.now() + 15000);
     const current = inbox.store.listRecords(R.batch).some(batch => ['prepared', 'result_saved'].includes(batch.state) &&
       ['pending', 'running', 'waiting', 'interrupted', 'retry'].includes(inbox.run(batch.run_id)?.state));
@@ -148,7 +181,7 @@ export class MaterialRuntime {
     const selected = entries.filter(item => item.selected && item.key && !item.material_truncated && typeof item.content === 'string' &&
       !item.issue && !inbox.store.getRecord(R.consumption, item.key));
     for (const seed of selected) {
-      const activeInScope = inbox.store.listRecords(R.conversation).some(conversation => conversation.kind !== 'material' &&
+      const activeInScope = inbox.store.listRecords(R.conversation).some(conversation => conversation.kind !== 'material' && this.runtime.conversationActive(conversation) &&
         seed.applies_to.some(scope => sameRef(scope, conversation.space) || scope.kind === 'conversation' && scope.id === conversation.id ||
           scope.kind === 'session' && scope.id === conversation.session_id) &&
         inbox.runs(conversation.id).some(run => ['running', 'pending', 'waiting', 'retry', 'interrupted'].includes(run.state)));
