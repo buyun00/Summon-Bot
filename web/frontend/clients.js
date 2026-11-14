@@ -67,12 +67,15 @@
         files: item.files.map(file => ({ ...file, url: new URL(file.url, response.url).href })) }));
     } catch { return []; }
   }
+  let releaseEndpoint = '/api/releases';
   async function load() {
     const id = ++requestId;
     failure = ''; render();
     const local = await localReleases();
     try {
-      const response = await fetch('/api/releases', { cache: 'no-store' });
+      const endpoint = new URL(releaseEndpoint, location.origin);
+      if (endpoint.origin !== location.origin || endpoint.pathname !== '/api/releases') throw new Error('发行目录地址无效');
+      const response = await fetch(endpoint, { cache: 'no-store' });
       if (!response.ok) throw new Error('下载信息暂时不可用，请稍后重试。');
       const value = await response.json();
       if (id !== requestId) return;
@@ -89,11 +92,12 @@
     render();
   }
   async function install() {
-    if (!preserveUpdateDrafts(true)) return;
+    await persistClientSession();
     try { if (!await window.SummonDesktop.installUpdate()) toast('请先完成更新包下载。'); }
     catch { toast('更新未能启动，请稍后重试。', true); }
   }
-  async function open() {
+  async function open(releasesUrl = '/api/releases') {
+    releaseEndpoint = releasesUrl;
     ui.menu = null; renderTopbar();
     const modal = document.querySelector('#modal');
     modal.classList.remove('create-bot-modal');

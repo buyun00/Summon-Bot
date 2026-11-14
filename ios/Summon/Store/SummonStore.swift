@@ -5,67 +5,50 @@ import UniformTypeIdentifiers
 @MainActor
 @Observable
 final class SummonStore {
-    private(set) var onboarding: SummonJSONValue = .null
-    var onboardingRequired: Bool { onboarding["required"].bool == true || onboarding["status"].string == "guiding" }
     private(set) var settings = SummonConnectionSettings()
     private(set) var bots: [SummonBot] = []
     private(set) var rooms: [SummonRoom] = []
-    private(set) var messages: [SummonMessage] = []
-    private(set) var jobs: [SummonJob] = []
-    private(set) var agentRuns: [SummonAgentRun] = []
-    private(set) var agentRunDetails: [String: SummonAgentRun] = [:]
-    private(set) var messageHistory: [String: [SummonMessage]] = [:]
     private(set) var pendingMessages: [SummonPendingMessage] = []
     private(set) var drafts: [String: String] = [:]
     private(set) var draftAttachments: [String: [SummonAttachment]] = [:]
-    private(set) var draftTargets: [String: String] = [:]
+    private(set) var draftMentions: [String: [String]] = [:]
     private(set) var draftReplies: [String: String] = [:]
+    private(set) var draftReferences: [String: [SummonReference]] = [:]
     private(set) var selectedRoomID: String?
     private(set) var isLoading = false
     private(set) var isRefreshing = false
     private(set) var isConnected = false
+    private(set) var profiles: [SummonWorkspaceProfile] = []
+    private(set) var protocolReady = false
+    private(set) var protocolNotice: String?
+    private(set) var needsClientUpdate = false
     private(set) var sendingRoomIDs: Set<String> = []
     private(set) var lastSyncAt: Date?
+    private(set) var modelSummary: SummonJSONValue = .null
     var errorMessage: String?
+
+    private var messageHistory: [String: [SummonMessage]] = [:]
+    private var deliveries: [String: [SummonDelivery]] = [:]
+    private var cursors: [String: String] = [:]
 
     @ObservationIgnored private var client: SummonAPIClient?
     @ObservationIgnored private var streamTask: Task<Void, Never>?
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
-    @ObservationIgnored private var roomRefreshTask: Task<Void, Never>?
-    @ObservationIgnored private var roomRecoveryTask: Task<Void, Never>?
-    @ObservationIgnored private var workspaceRequest: Task<SummonWorkspace, Error>?
-    @ObservationIgnored private var roomRequests: [String: Task<SummonRoomSnapshot, Error>] = [:]
-    @ObservationIgnored private var runDetailRequests: [String: Task<Void, Never>] = [:]
-    @ObservationIgnored private var runDetailTokens: [String: UUID] = [:]
-    @ObservationIgnored private var runDetailLastRequested: [String: ContinuousClock.Instant] = [:]
-    @ObservationIgnored private var runDetailGeneration = 0
+    @ObservationIgnored private var recoveryTask: Task<Void, Never>?
     @ObservationIgnored private var persistenceTask: Task<Void, Never>?
+    @ObservationIgnored private var roomReads: Set<String> = []
     @ObservationIgnored private var connectionGeneration = 0
-    @ObservationIgnored private var historyGeneration = 0
-    @ObservationIgnored private var roomReadGeneration: [String: Int] = [:]
-    @ObservationIgnored private var roomLoadsInFlight: Set<String> = []
-    @ObservationIgnored private var roomsNeedingReload: Set<String> = []
-    @ObservationIgnored private var roomLastRead: [String: ContinuousClock.Instant] = [:]
-    @ObservationIgnored private var workspaceLastRequested: ContinuousClock.Instant?
-    @ObservationIgnored private var activeRoomID: String?
-    @ObservationIgnored private var isForeground = false
+    @ObservationIgnored private var pushGeneration: Int?
     @ObservationIgnored private var historyEpoch: String?
-    @ObservationIgnored private var hasSnapshot = false
+    @ObservationIgnored private var activeRoomID: String?
     @ObservationIgnored private var refreshAgain = false
-    @ObservationIgnored private var roomRefreshAgain = false
-    @ObservationIgnored private var roomRefreshGeneration = 0
-    @ObservationIgnored private var startingConnection: Int?
+    @ObservationIgnored private var foreground = false
     @ObservationIgnored private let defaults = UserDefaults.standard
     @ObservationIgnored private let settingsKey = "SummonNative.connection.v1"
-    @ObservationIgnored private var cacheURL: URL?
+    @ObservationIgnored private var storageDirectory: URL?
 
     var isConfigured: Bool { client != nil }
     var savedToken: String { SummonKeychain.token(for: settings.baseURL) }
-    var selectedRoom: SummonRoom? { rooms.first { $0.id == selectedRoomID } }
-    var currentDraft: String {
-        get { selectedRoomID.map { drafts[$0] ?? "" } ?? "" }
-        set { if let id = selectedRoomID { setDraft(newValue, for: id) } }
-    }
 
     init() {
         do { try SummonBrandingMigration.run() }
@@ -73,72 +56,49 @@ final class SummonStore {
         if let data = defaults.data(forKey: settingsKey),
            let saved = try? JSONDecoder().decode(SummonConnectionSettings.self, from: data) { settings = saved }
         if let url = try? SummonAPIClient.normalizedURL(settings.baseURL) {
-            client = SummonAPIClient(baseURL: url, token: SummonKeychain.token(for: settings.baseURL))
+            client = SummonAPIClient(baseURL: url, token: savedToken, workspaceID: settings.workspaceID)
         }
         if let root = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                                    appropriateFor: nil, create: true) {
-            let directory = root.appending(path: "SummonNative", directoryHint: .isDirectory)
+            var directory = root.appending(path: "SummonNative", directoryHint: .isDirectory)
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            var excluded = directory
             var values = URLResourceValues()
             values.isExcludedFromBackup = true
-            try? excluded.setResourceValues(values)
-            cacheURL = directory.appending(path: "workspace.json")
+            try? directory.setResourceValues(values)
+            storageDirectory = directory
         }
         restoreSnapshot()
     }
 
     func start() async {
-        guard client != nil, startingConnection != connectionGeneration else { return }
-        isForeground = true
+        guard client != nil, !foreground else { return }
+        foreground = true
         let connection = connectionGeneration
-        startingConnection = connection
-        defer { if startingConnection == connection { startingConnection = nil } }
-        startStream()
-        startRoomRecovery()
         await refresh()
-        if connection == connectionGeneration, errorMessage == nil, let client { await SummonPush.shared.connect(client) }
+        guard foreground, connection == connectionGeneration else { return }
+        startStream()
+        startRecovery()
     }
 
-    func reconnect() async {
-        guard startingConnection != connectionGeneration else { return }
-        disconnect()
-        if let url = try? SummonAPIClient.normalizedURL(settings.baseURL) {
-            client = SummonAPIClient(baseURL: url, token: savedToken)
-        }
-        await start()
-    }
+    func reconnect() async { await start() }
 
     func disconnect() {
         connectionGeneration += 1
-        isForeground = false
-        startingConnection = nil
-        streamTask?.cancel()
-        streamTask = nil
-        refreshTask?.cancel()
-        refreshTask = nil
-        roomRefreshTask?.cancel()
-        roomRefreshTask = nil
-        roomRefreshGeneration += 1
-        roomRecoveryTask?.cancel()
-        roomRecoveryTask = nil
-        workspaceRequest?.cancel()
-        workspaceRequest = nil
-        for task in roomRequests.values { task.cancel() }
-        roomRequests = [:]
-        cancelRunDetailRefreshes()
-        roomLoadsInFlight = []
-        roomsNeedingReload = []
+        foreground = false
+        streamTask?.cancel(); streamTask = nil
+        refreshTask?.cancel(); refreshTask = nil
+        recoveryTask?.cancel(); recoveryTask = nil
+        roomReads.removeAll()
         isConnected = false
-        isRefreshing = false
+        protocolReady = false
         isLoading = false
+        isRefreshing = false
         refreshAgain = false
-        roomRefreshAgain = false
         for index in pendingMessages.indices where pendingMessages[index].status == "sending" {
             pendingMessages[index].status = "failed"
-            pendingMessages[index].error = "连接已暂停，送达状态待确认。请刷新后手动重试。"
+            pendingMessages[index].error = "保存状态待确认。"
         }
-        sendingRoomIDs = []
+        sendingRoomIDs.removeAll()
         persistNow()
     }
 
@@ -146,22 +106,62 @@ final class SummonStore {
         let url = try SummonAPIClient.normalizedURL(baseURL)
         let endpoint = url.absoluteString
         let newToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        let newClient = SummonAPIClient(baseURL: url, token: newToken)
-        try await newClient.verifyWorkspace()
+        let changed = endpoint != settings.baseURL
+        let newClient = SummonAPIClient(baseURL: url, token: newToken, workspaceID: changed ? nil : settings.workspaceID)
+        let startup: SummonBootstrap
+        do { startup = try await newClient.bootstrap(probe: true) }
+        catch { throw startupError(error) }
         let previousToken = savedToken
         try SummonKeychain.save(token: newToken, for: endpoint)
-        let changedEndpoint = endpoint != settings.baseURL
-        if changedEndpoint || newToken != previousToken { SummonPush.shared.changeServer() }
+        if changed || newToken != previousToken { SummonPush.shared.changeServer() }
         disconnect()
+        if changed { clearWorkspace() }
         settings = SummonConnectionSettings(baseURL: endpoint,
-                                           userName: userName?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? settings.userName)
-        if changedEndpoint { clearWorkspace() }
-        client = newClient
+            userName: userName?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? settings.userName, workspaceID: newClient.workspaceID)
         if let data = try? JSONEncoder().encode(settings) { defaults.set(data, forKey: settingsKey) }
+        client = newClient
+        if changed { restoreSnapshot() }
+        acceptStartup(startup)
         errorMessage = nil
         persistNow()
         await start()
-        if let errorMessage { throw SummonAPIError.http(0, errorMessage) }
+    }
+
+    func selectWorkspace(_ id: String?) async throws {
+        guard id != settings.workspaceID, let url = try? SummonAPIClient.normalizedURL(settings.baseURL) else { return }
+        let next = SummonAPIClient(baseURL: url, token: savedToken, workspaceID: id)
+        let startup = try await next.bootstrap(probe: true)
+        guard startup.ready else { throw SummonAPIError.protocolUnavailable(startup.notice ?? "暂时无法切换工作区。") }
+        disconnect()
+        clearWorkspace()
+        settings.workspaceID = id
+        if let data = try? JSONEncoder().encode(settings) { defaults.set(data, forKey: settingsKey) }
+        client = next
+        restoreSnapshot()
+        acceptStartup(startup)
+        errorMessage = nil
+        persistNow()
+        await start()
+    }
+
+    func openPushRoom(_ id: String) async throws {
+        if room(id: id) != nil { return }
+        guard protocolReady, let url = try? SummonAPIClient.normalizedURL(settings.baseURL) else {
+            throw SummonAPIError.protocolUnavailable(protocolNotice ?? "正在连接工作区。")
+        }
+        let connection = connectionGeneration
+        let candidates: [String?] = [nil] + profiles.map { Optional($0.id) }
+        for profile in candidates where profile != settings.workspaceID {
+            let probe = SummonAPIClient(baseURL: url, token: savedToken, workspaceID: profile)
+            do {
+                _ = try await probe.request(SummonRoomSnapshot.self, path: Self.roomPath(id) + "?limit=1")
+                guard connection == connectionGeneration else { throw CancellationError() }
+                try await selectWorkspace(profile)
+                return
+            } catch SummonAPIError.http(404, _) { continue }
+            catch SummonAPIError.http(403, _) { continue }
+        }
+        throw SummonAPIError.http(404, "推送中的会话已不可用。")
     }
 
     func setUserName(_ name: String) {
@@ -170,581 +170,496 @@ final class SummonStore {
     }
 
     func refresh() async {
-        guard let client else { return }
-        // The visible conversation must not wait for the gateway to inspect every
-        // Bot's tasks and health while building the much larger /api/state response.
-        scheduleRoomRefresh()
+        guard let client, foreground else { return }
         if isRefreshing { refreshAgain = true; return }
         let connection = connectionGeneration
-        workspaceLastRequested = ContinuousClock.now
         isRefreshing = true
-        isLoading = !hasSnapshot
+        isLoading = rooms.isEmpty && bots.isEmpty
         defer {
             if connection == connectionGeneration {
-                workspaceRequest = nil
-                isRefreshing = false
                 isLoading = false
+                isRefreshing = false
                 if refreshAgain { refreshAgain = false; scheduleRefresh() }
             }
         }
         do {
-            let request = Task { try await client.request(SummonWorkspace.self, path: "/api/state") }
-            workspaceRequest = request
-            let snapshot = try await withTaskCancellationHandler {
-                try await request.value
-            } onCancel: { request.cancel() }
+            if !protocolReady {
+                let startup = try await client.bootstrap(probe: true)
+                guard connection == connectionGeneration, !Task.isCancelled else { return }
+                acceptStartup(startup)
+                guard startup.ready else { return }
+            }
+            let state = try await client.request(SummonWorkspace.self, path: "/api/state")
             guard connection == connectionGeneration, !Task.isCancelled else { return }
-            acceptEpoch(snapshot.historyEpoch)
-            bots = snapshot.bots
-            onboarding = snapshot.onboarding ?? .null
-            if let modelSettings = snapshot.modelSettings { modelSummary = modelSettings }
-            rooms = snapshot.rooms.map { room in
-                var updated = room
-                if let latest = messageHistory[room.id]?.last,
-                   (latest.createdAt ?? "") > (room.lastMessage?.createdAt ?? "") { updated.lastMessage = latest }
-                return updated
+            if historyEpoch != state.historyEpoch {
+                messageHistory = [:]
+                deliveries = [:]
+                cursors = [:]
             }
-            agentRuns = snapshot.agentRuns ?? []
-            hasSnapshot = true
-            lastSyncAt = Date()
+            historyEpoch = state.historyEpoch
+            bots = state.bots
+            rooms = state.rooms
+            if let model = state.modelSettings { modelSummary = model }
             errorMessage = nil
-            if let selected = selectedRoomID, !rooms.contains(where: { $0.id == selected }) {
-                selectedRoomID = nil
-                messages = []
-                jobs = []
-                if activeRoomID == selected { deactivateRoom(selected) }
-            }
-            scheduleRoomRefresh()
+            lastSyncAt = Date()
+            if let id = activeRoomID, room(id: id) != nil { await loadRoom(id) }
+            guard connection == connectionGeneration else { return }
             schedulePersistence()
+            if protocolReady && pushGeneration != connection {
+                pushGeneration = connection
+                await SummonPush.shared.connect(client)
+            }
         } catch {
-            if connection == connectionGeneration, !Task.isCancelled { errorMessage = error.localizedDescription }
+            guard connection == connectionGeneration, !Task.isCancelled else { return }
+            if !protocolReady { protocolNotice = startupError(error).localizedDescription }
+            else { handle(error) }
         }
+    }
+
+    private func acceptStartup(_ startup: SummonBootstrap) {
+        if let profiles = startup.workspaceProfiles, !startup.updating { self.profiles = profiles }
+        protocolReady = startup.ready
+        protocolNotice = startup.notice
+        needsClientUpdate = startup.protocolVersion > SummonAPIClient.protocolVersion
+    }
+
+    private func startupError(_ error: Error) -> Error {
+        if case SummonAPIError.http(404, _) = error {
+            return SummonAPIError.protocolUnavailable("正在等待服务支持当前协议。草稿和待确认的发送已保留。")
+        }
+        if case SummonAPIError.http(503, _) = error {
+            return SummonAPIError.protocolUnavailable("服务正在更新。草稿和待确认的发送已保留。")
+        }
+        return error
+    }
+
+    private func handle(_ error: Error) {
+        if case SummonAPIError.http(let status, _) = error, [426, 503].contains(status) {
+            protocolReady = false
+            isConnected = false
+            protocolNotice = status == 503 ? "服务正在更新。草稿和待确认的发送已保留。" : "正在重新检查服务协议。"
+            scheduleRefresh()
+        } else { errorMessage = error.localizedDescription }
     }
 
     func selectRoom(_ id: String) async {
-        if activeRoomID != id { cancelRunDetailRefreshes() }
+        ensureRoomActive(id)
+        await loadRoom(id)
+    }
+
+    func ensureRoomActive(_ id: String) {
         selectedRoomID = id
         activeRoomID = id
-        roomRefreshTask?.cancel()
-        roomRefreshTask = nil
-        roomRefreshAgain = false
-        roomRefreshGeneration += 1
-        messages = messagesForRoom(id)
-        jobs = []
         schedulePersistence()
-        startRoomRecovery()
-        guard let client else { return }
-        await loadRoom(id, client: client, connection: connectionGeneration)
     }
 
-    /// Restore page activity on appearance, including returning from a sheet.
-    /// Unlike a new selection this keeps the current job snapshot while scheduling a fresh read.
-    func ensureRoomActive(_ id: String) {
-        guard activeRoomID != id else { return }
-        cancelRunDetailRefreshes()
-        roomRefreshTask?.cancel()
-        roomRefreshTask = nil
-        roomRefreshAgain = false
-        roomRefreshGeneration += 1
-        activeRoomID = id
-        if selectedRoomID != id {
-            selectedRoomID = id
-            messages = messagesForRoom(id)
-            jobs = []
-            schedulePersistence()
-        }
-        startRoomRecovery()
-        scheduleRoomRefresh(id)
-    }
-
-    /// Called when the conversation page closes. Keep its selected/cache state,
-    /// while stopping foreground reads for a page that is no longer visible.
     func deactivateRoom(_ id: String) {
-        guard activeRoomID == id else { return }
-        activeRoomID = nil
-        roomRefreshTask?.cancel()
-        roomRefreshTask = nil
-        roomRefreshAgain = false
-        roomRefreshGeneration += 1
-        roomRecoveryTask?.cancel()
-        roomRecoveryTask = nil
-        roomRequests[id]?.cancel()
-        roomsNeedingReload.remove(id)
-        cancelRunDetailRefreshes()
+        if activeRoomID == id { activeRoomID = nil }
     }
 
     func messagesForRoom(_ id: String) -> [SummonMessage] {
         let remote = messageHistory[id] ?? []
-        let confirmed = Set(remote.filter { $0.senderId == "user" }.compactMap(\.clientId))
+        let confirmed = Set(remote.filter(\.isOwn).compactMap(\.clientId))
         return remote + pendingMessages.filter { $0.roomID == id && !confirmed.contains($0.clientID) }.map(\.message)
     }
 
     func bot(id: String) -> SummonBot? { bots.first { $0.id == id } }
     func room(id: String) -> SummonRoom? { rooms.first { $0.id == id } }
-    func name(for id: String) -> String { id == "user" ? settings.userName : bot(id: id)?.name ?? (id == "system" ? "Summon Bot" : id) }
+    func name(for id: String) -> String {
+        switch id {
+        case "user": settings.userName
+        case "system", "platform": "Summon 平台"
+        default: bot(id: id)?.name ?? id
+        }
+    }
+
+    func label(_ ref: SummonReference) -> String {
+        switch ref.kind {
+        case "bot", "user": name(for: ref.id)
+        case "room": room(id: ref.id)?.name ?? ref.id
+        case "event": "消息 · \(ref.id)"
+        case "file": "资料 · \(ref.id)"
+        case "session": "执行会话 · \(ref.id)"
+        case "conversation": "内部对话 · \(ref.id)"
+        default: ref.id
+        }
+    }
+
+    func deliveryFacts(_ id: String) -> [SummonDelivery] { deliveries[id] ?? [] }
     func pendingMessage(for message: SummonMessage) -> SummonPendingMessage? {
         pendingMessages.first { $0.clientID == message.clientId && $0.roomID == message.roomId }
     }
 
+    func canLoadOlder(_ id: String) -> Bool { cursors[id] != nil }
+
+    func loadRoom(_ id: String, older: Bool = false) async {
+        guard protocolReady, let client, roomReads.insert(id).inserted else { return }
+        let connection = connectionGeneration
+        defer { if connection == connectionGeneration { roomReads.remove(id) } }
+        let cursor = older ? cursors[id] : nil
+        if older && cursor == nil { return }
+        let suffix = cursor.map { "?cursor=\(SummonAPIClient.component($0))" } ?? ""
+        do {
+            let snapshot = try await client.request(SummonRoomSnapshot.self, path: Self.roomPath(id) + "/messages" + suffix)
+            guard connection == connectionGeneration, !Task.isCancelled else { return }
+            guard snapshot.historyEpoch == historyEpoch else { scheduleRefresh(); return }
+            upsertRoom(snapshot.room)
+            let cached = messageHistory[id] ?? []
+            let pageIDs = Set(snapshot.messages.map(\.id))
+            let retainCache = older || cached.contains { pageIDs.contains($0.id) }
+            var byID: [String: SummonMessage] = [:]
+            if retainCache { for message in cached { byID[message.id] = message } }
+            for message in snapshot.messages { byID[message.id] = message }
+            messageHistory[id] = byID.values.sorted(by: Self.messageOrder)
+            let oldest = messageHistory[id]?.first?.id
+            if older || oldest == snapshot.messages.first?.id { cursors[id] = snapshot.cursor }
+            else if cursors[id] == nil { cursors[id] = oldest }
+            deliveries.merge(snapshot.deliveries ?? [:]) { _, new in new }
+            let confirmed = Set(snapshot.messages.filter(\.isOwn).compactMap(\.clientId))
+            let staged = pendingMessages.filter { $0.roomID == id && confirmed.contains($0.clientID) }.flatMap(\.attachments)
+            pendingMessages.removeAll { $0.roomID == id && confirmed.contains($0.clientID) }
+            if !staged.isEmpty, persistNow() { staged.forEach(discardStagedAttachment) }
+            schedulePersistence()
+            lastSyncAt = Date()
+        } catch {
+            if connection == connectionGeneration, id == activeRoomID, !Task.isCancelled { handle(error) }
+        }
+    }
+
+    nonisolated private static func messageOrder(_ a: SummonMessage, _ b: SummonMessage) -> Bool {
+        if a.createdAt == b.createdAt, let first = a.sequence, let second = b.sequence, first != second { return first < second }
+        return (a.createdAt ?? "", a.id) < (b.createdAt ?? "", b.id)
+    }
+
     func openDirectMessage(bot: SummonBot) async throws -> SummonRoom {
-        // ChatView loads messages after navigation; resolving a room must not wait for history.
-        if let room = rooms.first(where: { $0.kind == "dm" && $0.members.contains("user") && $0.members.contains(bot.id) && $0.members.count == 2 }) {
-            return room
-        }
-        return try await createGroup(name: "与 \(bot.name) 的私聊", members: ["user", bot.id], kind: "dm")
+        if let room = rooms.first(where: { !$0.isGroup && $0.members.contains(bot.id) }) { return room }
+        return try await createGroup(name: bot.name, members: [bot.id])
     }
 
-    func createBot(name: String, avatar: SummonAvatar, role: String = "项目协作",
-                   expertise: String = "", prompt: String = "") async throws -> SummonBot {
-        let connection = connectionGeneration
-        let value = try Self.json(avatar)
-        let result: SummonBot = try await apiClient().request(SummonBot.self, path: "/api/bots", method: "POST", body: .object([
-            "id": .string("bot-\(UUID().uuidString.lowercased())"), "name": .string(name), "role": .string(role),
-            "expertise": .string(expertise), "prompt": .string(prompt), "avatar": value
-        ]))
-        if connection == connectionGeneration { upsertBot(result); schedulePersistence() }
+    func fetchBot(_ id: String) async throws -> SummonBot {
+        try await business(SummonBot.self, "/api/bots/\(SummonAPIClient.component(id))", "GET", nil)
+    }
+
+    func createBot(name: String, avatar: SummonAvatar, instructions: String) async throws -> SummonBot {
+        let result = try await business(SummonBot.self, "/api/bots", "POST", .object([
+            "name": .string(name), "instructions": .string(instructions), "avatar": try Self.json(avatar)
+        ]), clientID: Self.newID())
+        upsertBot(result)
         return result
     }
 
-    func updateBot(_ bot: SummonBot) async throws -> SummonBot {
-        try await updateBot(id: bot.id, name: bot.name, role: bot.role, expertise: bot.expertise,
-                            prompt: bot.prompt, status: bot.status, avatar: bot.avatar)
-    }
-
-    func updateBot(id: String, name: String? = nil, role: String? = nil, expertise: String? = nil,
-                   prompt: String? = nil, status: String? = nil, avatar: SummonAvatar? = nil) async throws -> SummonBot {
-        let connection = connectionGeneration
-        var body: [String: SummonJSONValue] = [:]
-        for (key, value) in [("name", name), ("role", role), ("expertise", expertise), ("prompt", prompt), ("status", status)] {
-            if let value { body[key] = .string(value) }
-        }
-        if let avatar { body["avatar"] = try Self.json(avatar) }
-        let result = try await apiClient().request(SummonBot.self, path: "/api/bots/\(SummonAPIClient.component(id))",
-                                                   method: "PATCH", body: .object(body))
-        if connection == connectionGeneration { upsertBot(result); schedulePersistence() }
+    func updateBot(_ bot: SummonBot, changes: [String: SummonJSONValue]) async throws -> SummonBot {
+        guard let revision = bot.revision else { throw SummonAPIError.invalidResponse }
+        var body = changes
+        body["revision"] = .number(Double(revision))
+        let result = try await business(SummonBot.self, "/api/bots/\(SummonAPIClient.component(bot.id))", "PATCH",
+                                        .object(body), clientID: Self.newID())
+        upsertBot(result)
         return result
     }
 
-    func createGroup(name: String, members: [String], goal: String = "", kind: String = "group", projectMode: String? = nil) async throws -> SummonRoom {
-        let connection = connectionGeneration
-        var body: [String: SummonJSONValue] = [
-            "name": .string(name), "kind": .string(kind), "goal": .string(goal), "members": .array(members.map(SummonJSONValue.string))
-        ]
-        if let projectMode { body["projectMode"] = .string(projectMode) }
-        let result = try await apiClient().request(SummonRoom.self, path: "/api/rooms", method: "POST", body: .object(body))
-        if connection == connectionGeneration { upsertRoom(result); schedulePersistence() }
+    func setAvatar(_ avatar: SummonAvatar, bot: SummonBot) async throws -> SummonBot {
+        try await updateBot(bot, changes: ["avatar": try Self.json(avatar)])
+    }
+
+    func createGroup(name: String, members: [String]) async throws -> SummonRoom {
+        var body: [String: SummonJSONValue] = ["members": .array(members.map(SummonJSONValue.string))]
+        if !name.isEmpty { body["title"] = .string(name) }
+        let result = try await business(SummonRoom.self, "/api/rooms", "POST", .object(body), clientID: Self.newID())
+        upsertRoom(result)
         return result
     }
 
-    func updateRoom(id: String, name: String, members: [String], goal: String = "", projectMode: String? = nil) async throws -> SummonRoom {
-        let connection = connectionGeneration
-        var body: [String: SummonJSONValue] = [
-            "name": .string(name), "members": .array(members.map(SummonJSONValue.string)), "goal": .string(goal)
-        ]
-        if let projectMode { body["projectMode"] = .string(projectMode) }
-        let result = try await apiClient().request(SummonRoom.self, path: "/api/rooms/\(SummonAPIClient.component(id))", method: "PATCH", body: .object(body))
-        if connection == connectionGeneration { upsertRoom(result); schedulePersistence() }
-        return result
+    func updateRoom(_ room: SummonRoom, name: String, members: [String]) async throws {
+        try await changeRoom(room, [
+            "title": .string(name),
+            "add_members": .array(members.filter { !room.members.contains($0) }.map(SummonJSONValue.string)),
+            "remove_members": .array(room.members.filter { $0 != "user" && !members.contains($0) }.map(SummonJSONValue.string))
+        ])
+    }
+
+    func setPin(_ ref: SummonReference, in room: SummonRoom, remove: Bool) async throws {
+        try await changeRoom(room, [remove ? "pin_remove" : "pin_add": .array([ref.json])])
+    }
+
+    private func changeRoom(_ room: SummonRoom, _ changes: [String: SummonJSONValue]) async throws {
+        guard let revision = room.revision else { throw SummonAPIError.invalidResponse }
+        var body = changes
+        body["revision"] = .number(Double(revision))
+        upsertRoom(try await business(SummonRoom.self, Self.roomPath(room.id), "PATCH", .object(body), clientID: Self.newID()))
     }
 
     func draft(for id: String) -> String { drafts[id] ?? "" }
     func setDraft(_ value: String, for id: String) { drafts[id] = value; schedulePersistence() }
-    func updateDraft(_ value: String) { currentDraft = value }
-    func setDraftAttachments(_ value: [SummonAttachment], for id: String) {
-        draftAttachments[id] = Array(value.prefix(8)); schedulePersistence()
-    }
-    func setDraftTarget(_ value: String?, for id: String) { draftTargets[id] = value; schedulePersistence() }
+    func setDraftAttachments(_ value: [SummonAttachment], for id: String) { draftAttachments[id] = value; persistNow() }
+    func setDraftMentions(_ value: [String], for id: String) { draftMentions[id] = value; schedulePersistence() }
     func setDraftReply(_ value: String?, for id: String) { draftReplies[id] = value; schedulePersistence() }
+    func setDraftReferences(_ value: [SummonReference], for id: String) { draftReferences[id] = value; schedulePersistence() }
 
-    /// Sends once. An uncertain receipt remains visible for an explicit retry with the same clientId.
-    func sendMessage(roomID: String, content: String, attachments: [SummonAttachment] = [],
-                     toBotID: String? = nil, replyTo: String? = nil) async {
-        guard !sendingRoomIDs.contains(roomID) else { return }
-        let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty || !attachments.isEmpty else { errorMessage = SummonAPIError.emptyMessage.localizedDescription; return }
+    func sendMessage(roomID: String) async {
+        guard protocolReady, !sendingRoomIDs.contains(roomID) else { return }
+        let text = draft(for: roomID)
+        let attachments = draftAttachments[roomID] ?? []
+        let refs = draftReferences[roomID] ?? []
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty || !refs.isEmpty else { return }
         guard attachments.count <= 8 else { errorMessage = SummonAPIError.tooManyAttachments.localizedDescription; return }
-        guard client != nil else { errorMessage = SummonAPIError.noConnection.localizedDescription; return }
-        let id = UUID().uuidString.lowercased()
+        let id = Self.newID()
         let message = SummonMessage(id: "local-\(id)", roomId: roomID, senderId: "user", content: text,
-                                   attachments: attachments, replyTo: replyTo, toBotId: toBotID,
-                                   clientId: id, createdAt: ISO8601DateFormatter().string(from: Date()))
-        pendingMessages.append(SummonPendingMessage(clientID: id, message: message, status: "sending"))
-        drafts[roomID] = ""
-        draftAttachments[roomID] = []
-        draftTargets[roomID] = nil
+            attachments: attachments, references: refs, mentions: draftMentions[roomID] ?? [],
+            replyTo: draftReplies[roomID], clientId: id, createdAt: ISO8601DateFormatter().string(from: Date()))
+        pendingMessages.append(SummonPendingMessage(clientID: id, message: message, status: "queued"))
+        drafts[roomID] = nil
+        draftAttachments[roomID] = nil
+        draftMentions[roomID] = nil
         draftReplies[roomID] = nil
-        updateVisibleMessages(roomID)
-        persistNow()
-        await deliver(clientID: id)
+        draftReferences[roomID] = nil
+        await deliver(id, queryFirst: false)
     }
 
     func retryMessage(clientID: String) async {
-        guard let pending = pendingMessages.first(where: { $0.clientID == clientID }), pending.status == "failed" else { return }
-        await deliver(clientID: clientID)
+        await deliver(clientID, queryFirst: true)
     }
 
-    func cancelRun(id: String) async throws {
-        _ = try await request(path: "/api/agent-runs/\(SummonAPIClient.component(id))/cancel", method: "POST", body: .object([:]))
-        await refresh()
-    }
-
-    func fetchAgentRun(id: String) async throws -> SummonAgentRun {
+    private func deliver(_ id: String, queryFirst: Bool) async {
+        guard protocolReady, let client, let item = pendingMessages.first(where: { $0.id == id }),
+              item.status != "sent", sendingRoomIDs.insert(item.roomID).inserted else { return }
         let connection = connectionGeneration
-        let result = try await apiClient().request(SummonAgentRun.self, path: "/api/agent-runs/\(SummonAPIClient.component(id))")
-        if connection == connectionGeneration { agentRunDetails[id] = result }
-        return result
+        defer {
+            if connection == connectionGeneration {
+                sendingRoomIDs.remove(item.roomID)
+                if pendingMessages.first(where: { $0.id == id })?.status == "sending" {
+                    updatePending(id) { $0.status = "failed"; $0.error = protocolNotice ?? "保存状态待确认。" }
+                    persistNow()
+                }
+            }
+        }
+        updatePending(id) { $0.status = "sending"; $0.error = nil }
+        guard persistNow() else {
+            updatePending(id) { $0.status = "failed"; $0.error = "本机发送记录无法保存。" }
+            return
+        }
+        do {
+            let path = Self.roomPath(item.roomID) + "/messages"
+            var receipt: SummonReceipt?
+            if queryFirst {
+                do { receipt = try await client.request(SummonReceipt.self, path: path + "/receipt?clientId=\(SummonAPIClient.component(id))") }
+                catch SummonAPIError.http(404, _) { }
+            }
+            if receipt == nil {
+                let message = item.message
+                var attachments: [SummonJSONValue] = []
+                for attachment in item.attachments {
+                    guard connection == connectionGeneration, protocolReady else { return }
+                    let file = try await preparedAttachment(attachment, client: client)
+                    attachments.append(SummonReference(kind: "file", id: file.id).json)
+                }
+                guard connection == connectionGeneration, protocolReady else { return }
+                var body: [String: SummonJSONValue] = ["text": .string(message.content), "clientId": .string(id),
+                    "attachments": .array(attachments), "references": .array(message.references.map(\.json)),
+                    "mentions": .array(message.mentions.map(SummonJSONValue.string))]
+                if let reply = message.replyTo { body["reply_to"] = SummonReference(kind: "event", id: reply).json }
+                receipt = try await client.request(SummonReceipt.self, path: path, method: "POST", body: .object(body), clientID: id)
+            }
+            guard connection == connectionGeneration else { return }
+            guard let receipt, receipt.message.clientId == id, receipt.message.roomId == item.roomID,
+                  receipt.message.isOwn, !receipt.message.id.isEmpty else { throw SummonAPIError.invalidReceipt }
+            deliveries[receipt.message.id] = receipt.deliveries
+            updatePending(id) { $0.message = receipt.message; $0.status = "sent"; $0.error = nil }
+            if let index = rooms.firstIndex(where: { $0.id == item.roomID }) { rooms[index].lastMessage = receipt.message }
+            if persistNow() { item.attachments.forEach(discardStagedAttachment) }
+            scheduleRefresh()
+        } catch {
+            guard connection == connectionGeneration else { return }
+            updatePending(id) { $0.status = "failed"; $0.error = error.localizedDescription }
+            persistNow()
+            if case SummonAPIError.http(let status, _) = error, [426, 503].contains(status) { handle(error) }
+        }
     }
 
-    func uploadAttachment(fileURL: URL) async throws -> SummonAttachment {
-        let client = try apiClient()
+    func stageAttachment(fileURL: URL) async throws -> SummonAttachment {
         let accessing = fileURL.startAccessingSecurityScopedResource()
         defer { if accessing { fileURL.stopAccessingSecurityScopedResource() } }
-        let data = try await Task.detached(priority: .userInitiated) {
+        let result = try await Task.detached(priority: .userInitiated) {
             let attributes = try fileURL.resourceValues(forKeys: [.fileSizeKey, .contentTypeKey])
             guard (attributes.fileSize ?? 0) <= 20 * 1024 * 1024 else { throw SummonAPIError.attachmentTooLarge }
-            let bytes = try Data(contentsOf: fileURL)
-            guard bytes.count <= 20 * 1024 * 1024 else { throw SummonAPIError.attachmentTooLarge }
-            return (bytes, attributes.contentType?.preferredMIMEType ?? "application/octet-stream")
+            return (try Data(contentsOf: fileURL), attributes.contentType?.preferredMIMEType ?? "application/octet-stream")
         }.value
-        return try await client.upload(data: data.0, name: fileURL.lastPathComponent, mimeType: data.1)
+        return try stageAttachment(data: result.0, name: fileURL.lastPathComponent, mimeType: result.1)
     }
 
-    func uploadAttachment(data: Data, name: String, mimeType: String) async throws -> SummonAttachment {
-        try await apiClient().upload(data: data, name: name, mimeType: mimeType)
+    func stageAttachment(data: Data, name: String, mimeType: String) throws -> SummonAttachment {
+        guard data.count <= 20 * 1024 * 1024 else { throw SummonAPIError.attachmentTooLarge }
+        let id = Self.newID()
+        guard let url = stagingURL(id) else { throw SummonAPIError.missingAttachment }
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        return SummonAttachment(id: id, name: name, mimeType: mimeType, size: data.count, staged: true)
+    }
+
+    func discardStagedAttachment(_ attachment: SummonAttachment) {
+        if attachment.staged == true, let url = stagingURL(attachment.id) { try? FileManager.default.removeItem(at: url) }
+    }
+
+    private func stagingURL(_ id: String) -> URL? {
+        guard UUID(uuidString: id) != nil else { return nil }
+        return storageDirectory?.appending(path: "attachments").appending(path: id)
+    }
+
+    private func preparedAttachment(_ attachment: SummonAttachment, client: SummonAPIClient) async throws -> SummonAttachment {
+        guard attachment.staged == true else { return attachment }
+        guard let url = stagingURL(attachment.id), FileManager.default.fileExists(atPath: url.path) else { throw SummonAPIError.missingAttachment }
+        let data = try await Task.detached { try Data(contentsOf: url) }.value
+        return try await client.upload(data: data, name: attachment.name,
+            mimeType: attachment.mimeType ?? "application/octet-stream", clientID: attachment.id)
     }
 
     func attachmentFileURL(_ attachment: SummonAttachment) async throws -> URL {
-        try await apiClient().download(path: "/api/attachments/\(SummonAPIClient.component(attachment.id))", name: attachment.name)
+        guard attachment.unavailable != true else { throw SummonAPIError.http(404, "附件不可用。") }
+        return try await apiClient().download(path: attachment.downloadPath, name: attachment.name)
     }
 
     func attachmentPreviewData(_ attachment: SummonAttachment) async throws -> Data {
         try await apiClient().attachmentData(attachment)
     }
 
-    func artifactFileURL(_ artifact: SummonArtifact, runID: String, toolID: String) async throws -> URL {
-        let component = SummonAPIClient.component
-        return try await apiClient().download(path: "/api/agent-runs/\(component(runID))/tools/\(component(toolID))/artifacts/\(component(artifact.id))",
-                                               name: artifact.name ?? "产物")
+    func downloadFile(id: String, name: String) async throws -> URL {
+        try await apiClient().download(path: "/api/files/\(SummonAPIClient.component(id))/download", name: name)
     }
-
-    private(set) var modelSummary: SummonJSONValue = .null
 
     @discardableResult
     func refreshModelUsage(force: Bool = false) async throws -> SummonJSONValue {
-        let connection = connectionGeneration
         let result = try await request(path: "/api/model-settings/usage", method: "POST", body: .object(["force": .bool(force)]))
-        if connection == connectionGeneration { modelSummary = result }
+        modelSummary = result
         return result
     }
 
-    func request(path: String, method: String = "GET", body: SummonJSONValue? = nil) async throws -> SummonJSONValue {
-        try await apiClient().request(SummonJSONValue.self, path: path, method: method, body: body)
+    func request(path: String, method: String = "GET", body: SummonJSONValue? = nil, clientID: String? = nil) async throws -> SummonJSONValue {
+        try await business(SummonJSONValue.self, path, method, body, clientID: clientID)
+    }
+
+    func read(_ ref: SummonReference, cursor: String? = nil) async throws -> SummonJSONValue {
+        if let path = ref.path {
+            return try await request(path: path + (cursor.map { "?cursor=\(SummonAPIClient.component($0))" } ?? ""))
+        }
+        return try await request(path: "/api/platform/read", method: "POST", body: .object(["arguments": .object(["ref": ref.json])]))["result"]
+    }
+
+    func list(_ path: String) async throws -> [SummonJSONValue] {
+        var cursor: String?
+        var items: [SummonJSONValue] = []
+        repeat {
+            let endpoint = path + (cursor.map { (path.contains("?") ? "&" : "?") + "cursor=" + SummonAPIClient.component($0) } ?? "")
+            let page = try await request(path: endpoint)
+            items += page["items"].array ?? []
+            cursor = page["next_cursor"].string
+        } while cursor != nil
+        return items
     }
 
     private func apiClient() throws -> SummonAPIClient {
         guard let client else { throw SummonAPIError.noConnection }
+        guard protocolReady else { throw SummonAPIError.protocolUnavailable(protocolNotice ?? "正在连接工作区。") }
         return client
     }
 
-    private func deliver(clientID: String) async {
-        guard let client, let item = pendingMessages.first(where: { $0.clientID == clientID }),
-              !sendingRoomIDs.contains(item.roomID) else { return }
-        let connection = connectionGeneration, history = historyGeneration
-        sendingRoomIDs.insert(item.roomID)
-        updatePending(clientID) { $0.status = "sending"; $0.error = nil }
-        persistNow()
-        defer {
-            if connection == connectionGeneration, history == historyGeneration {
-                sendingRoomIDs.remove(item.roomID)
-                updateVisibleMessages(item.roomID)
-                schedulePersistence()
-                scheduleRoomRefresh(item.roomID)
-                scheduleRefresh()
-            }
-        }
+    private func business<T: Decodable & Sendable>(_ type: T.Type, _ path: String, _ method: String,
+        _ body: SummonJSONValue?, clientID: String? = nil) async throws -> T {
+        let connection = connectionGeneration
         do {
-            let message = item.message
-            var body: [String: SummonJSONValue] = [
-                "content": .string(message.content), "clientId": .string(clientID),
-                "attachments": .array(message.attachments.map { .object(["id": .string($0.id)]) })
-            ]
-            if let id = message.toBotId { body["toBotId"] = .string(id) }
-            if let id = message.replyTo { body["replyTo"] = .string(id) }
-            let sent = try await client.request(SummonMessage.self, path: "/api/rooms/\(SummonAPIClient.component(item.roomID))/messages",
-                                               method: "POST", body: .object(body))
-            guard connection == connectionGeneration, history == historyGeneration else { return }
-            guard sent.clientId == clientID, sent.roomId == item.roomID, !sent.id.isEmpty else { throw SummonAPIError.invalidReceipt }
-            updatePending(clientID) { $0.message = sent; $0.status = "sent"; $0.error = nil }
-            if let index = rooms.firstIndex(where: { $0.id == item.roomID }) { rooms[index].lastMessage = sent }
+            let result = try await apiClient().request(type, path: path, method: method, body: body, clientID: clientID)
+            guard connection == connectionGeneration else { throw CancellationError() }
+            return result
         } catch {
-            guard connection == connectionGeneration, history == historyGeneration else { return }
-            // An SSE read can confirm this message while the POST is still returning.
-            if messageHistory[item.roomID]?.contains(where: { $0.clientId == clientID && $0.senderId == "user" }) == true { return }
-            updatePending(clientID) { $0.status = "failed"; $0.error = error.localizedDescription }
-            errorMessage = "消息尚未确认送达，可在消息旁手动重试。"
-        }
-    }
-
-    private func loadRoom(_ id: String, client: SummonAPIClient, connection: Int) async {
-        guard isForeground, connection == connectionGeneration else { return }
-        if roomLoadsInFlight.contains(id) { roomsNeedingReload.insert(id); return }
-        roomLoadsInFlight.insert(id)
-        let read = (roomReadGeneration[id] ?? 0) + 1
-        roomReadGeneration[id] = read
-        let history = historyGeneration
-        defer {
-            if connection == connectionGeneration {
-                roomRequests[id] = nil
-                roomLoadsInFlight.remove(id)
-                if roomsNeedingReload.remove(id) != nil {
-                    if roomRefreshTask != nil { roomRefreshAgain = true }
-                    else { scheduleRoomRefresh(id) }
-                }
+            if connection == connectionGeneration, case SummonAPIError.http(let status, _) = error, [426, 503].contains(status) {
+                handle(error)
             }
-        }
-        do {
-            let request = Task { try await client.request(SummonRoomSnapshot.self, path: "/api/rooms/\(SummonAPIClient.component(id))/messages") }
-            roomRequests[id] = request
-            let snapshot = try await withTaskCancellationHandler {
-                try await request.value
-            } onCancel: { request.cancel() }
-            guard connection == connectionGeneration, history == historyGeneration,
-                  roomReadGeneration[id] == read, !Task.isCancelled else { return }
-            if hasSnapshot && snapshot.historyEpoch != historyEpoch {
-                // A maintenance boundary was crossed; get the workspace before accepting room data.
-                scheduleRefresh()
-                return
-            }
-            var updatedRoom = snapshot.room
-            updatedRoom.lastMessage = snapshot.messages.last
-            upsertRoom(updatedRoom)
-            messageHistory[id] = snapshot.messages
-            let confirmed = Set(snapshot.messages.filter { $0.senderId == "user" }.compactMap(\.clientId))
-            pendingMessages.removeAll { $0.roomID == id && confirmed.contains($0.clientID) }
-            let replied = Set(snapshot.messages.compactMap(\.jobId))
-            if selectedRoomID == id {
-                messages = messagesForRoom(id)
-                // Preserve the job/run relationship even during the brief reply-before-terminal window.
-                // The UI can suppress a stale active job using the recorded message.jobId.
-                jobs = snapshot.jobs
-            }
-            scheduleActiveRunDetails(roomID: id, roomJobs: snapshot.jobs, repliedJobIDs: replied)
-            lastSyncAt = Date()
-            roomLastRead[id] = ContinuousClock.now
-            schedulePersistence()
-        } catch {
-            if connection == connectionGeneration, activeRoomID == id, !Task.isCancelled,
-               (error as? URLError)?.code != .cancelled { errorMessage = error.localizedDescription }
+            throw error
         }
     }
 
     private func startStream() {
-        guard isForeground, streamTask == nil, let client else { return }
+        guard streamTask == nil, let client else { return }
         let connection = connectionGeneration
         streamTask = Task { [weak self] in
             var delay: UInt64 = 1
-            while !Task.isCancelled {
-                let attemptStarted = ContinuousClock.now
-                do {
-                    try await SummonEventStream(client: client).consume { [weak self] event in
-                        await self?.receiveStream(event, connection: connection)
+            while !Task.isCancelled, let self, self.foreground, connection == self.connectionGeneration {
+                if !self.protocolReady { await self.refresh() }
+                if self.protocolReady {
+                    let started = ContinuousClock.now
+                    do {
+                        try await SummonEventStream(client: client).consume { [weak self] event in
+                            await self?.receiveStream(event, connection: connection)
+                        }
+                    } catch {
+                        guard !Task.isCancelled, connection == self.connectionGeneration else { return }
+                        self.isConnected = false
+                        if case SummonAPIError.http(let status, _) = error, [426, 503].contains(status) { self.handle(error) }
+                        if started.duration(to: ContinuousClock.now) >= .seconds(30) { delay = 1 }
                     }
-                    delay = 1
-                } catch {
-                    guard !Task.isCancelled, let self, connection == self.connectionGeneration else { return }
-                    self.isConnected = false
-                    if attemptStarted.duration(to: ContinuousClock.now) >= .seconds(30) { delay = 1 }
-                    self.scheduleRoomRefresh()
-                    do { try await Task.sleep(for: .seconds(delay)) } catch { return }
-                    delay = min(delay * 2, 30)
                 }
+                do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+                delay = min(delay * 2, 30)
             }
         }
     }
 
     private func receiveStream(_ event: SummonStreamEvent, connection: Int) {
-        guard isForeground, connection == connectionGeneration else { return }
-        // A complete SSE frame or comment proves bytes are arriving, unlike HTTP headers alone.
+        guard foreground, connection == connectionGeneration else { return }
         isConnected = true
         switch event {
-        case .connected:
-            scheduleRoomRefresh()
-            scheduleRefresh()
-        case .keepAlive:
-            break
-        case .change(let type, let roomID, let botID):
-            let active = activeRoomID.flatMap { id in rooms.first { $0.id == id } }
-            let concernsActiveRoom: Bool
-            if let roomID { concernsActiveRoom = roomID == activeRoomID }
-            else if let botID { concernsActiveRoom = active?.members.contains(botID) == true }
-            else { concernsActiveRoom = type == nil || type == "change" || type == "state" }
-            if concernsActiveRoom { scheduleRoomRefresh() }
-            // Changes are coalesced and rate limited; no state request is made for heartbeats.
-            // Agent records and off-page conversation previews still refresh after real events.
-            if type != "connected" { scheduleRefresh() }
+        case .connected, .change: scheduleRefresh()
+        case .keepAlive: break
+        }
+    }
+
+    private func startRecovery() {
+        guard recoveryTask == nil else { return }
+        let connection = connectionGeneration
+        recoveryTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(15)) } catch { return }
+                guard let self, self.foreground, connection == self.connectionGeneration else { return }
+                if let id = self.activeRoomID, self.protocolReady { await self.loadRoom(id) }
+            }
         }
     }
 
     private func scheduleRefresh() {
-        guard isForeground, client != nil, refreshTask == nil else { return }
+        guard foreground, refreshTask == nil else { return }
         let connection = connectionGeneration
-        let now = ContinuousClock.now
-        let minimumDelay = workspaceLastRequested.map { now.duration(to: $0.advanced(by: .seconds(5))) } ?? .zero
-        let delay = max(.milliseconds(300), minimumDelay)
         refreshTask = Task { [weak self] in
-            do { try await Task.sleep(for: delay) } catch { return }
-            guard let self, !Task.isCancelled, connection == self.connectionGeneration else { return }
+            do { try await Task.sleep(for: .milliseconds(850)) } catch { return }
+            guard let self, connection == self.connectionGeneration else { return }
             self.refreshTask = nil
             await self.refresh()
         }
     }
 
-    private func scheduleRoomRefresh(_ id: String? = nil) {
-        guard isForeground, let active = activeRoomID, id == nil || id == active,
-              let client else { return }
-        if roomRefreshTask != nil {
-            if roomLoadsInFlight.contains(active) { roomRefreshAgain = true }
-            return
-        }
-        let connection = connectionGeneration
-        roomRefreshGeneration += 1
-        let refreshGeneration = roomRefreshGeneration
-        roomRefreshTask = Task { [weak self] in
-            do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
-            guard let self else { return }
-            defer {
-                if connection == self.connectionGeneration, refreshGeneration == self.roomRefreshGeneration {
-                    self.roomRefreshTask = nil
-                    if self.roomRefreshAgain { self.roomRefreshAgain = false; self.scheduleRoomRefresh() }
-                }
-            }
-            guard !Task.isCancelled, self.isForeground,
-                  connection == self.connectionGeneration, refreshGeneration == self.roomRefreshGeneration,
-                  active == self.activeRoomID else { return }
-            await self.loadRoom(active, client: client, connection: connection)
-        }
-    }
-
-    private func startRoomRecovery() {
-        guard isForeground, activeRoomID != nil, roomRecoveryTask == nil else { return }
-        let connection = connectionGeneration
-        roomRecoveryTask = Task { [weak self] in
-            while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(5)) } catch { return }
-                guard let self, self.isForeground, connection == self.connectionGeneration,
-                      let id = self.activeRoomID, let client = self.client else { return }
-                // Real SSE traffic usually satisfies this age check, so recovery adds no request.
-                // A stalled stream or active multi-Bot reply gets a room-only read every 5 seconds;
-                // an otherwise quiet open conversation gets one after 15 seconds without a read.
-                let interval: Duration = !self.isConnected || self.jobs.contains(where: \.isActive) ? .seconds(5) : .seconds(15)
-                if let last = self.roomLastRead[id], last.duration(to: ContinuousClock.now) < interval { continue }
-                await self.loadRoom(id, client: client, connection: connection)
-            }
-        }
-    }
-
-    private func scheduleActiveRunDetails(roomID: String, roomJobs: [SummonJob], repliedJobIDs: Set<String>) {
-        guard isForeground, activeRoomID == roomID, let client else { return }
-        let settled = roomJobs.filter { !$0.isActive || repliedJobIDs.contains($0.id) }
-        let settledIDs = Set(settled.flatMap { [$0.taskId, $0.agentRunId].compactMap { $0 } })
-        var wanted = Set(roomJobs.filter { $0.isActive && !repliedJobIDs.contains($0.id) }
-            .compactMap { $0.agentRunId ?? $0.taskId })
-        // Some running records precede their delivery's accepted/taskId update.
-        for run in agentRuns where run.roomId == roomID && run.isActive && !settledIDs.contains(run.id) { wanted.insert(run.id) }
-        for id in Array(runDetailRequests.keys) where !wanted.contains(id) {
-            runDetailRequests[id]?.cancel()
-            runDetailRequests[id] = nil
-            runDetailTokens[id] = nil
-        }
-        let connection = connectionGeneration, generation = runDetailGeneration
-        for id in wanted {
-            guard runDetailRequests[id] == nil else { continue }
-            let now = ContinuousClock.now
-            if let previous = runDetailLastRequested[id], previous.duration(to: now) < .seconds(5) { continue }
-            runDetailLastRequested[id] = now
-            let token = UUID()
-            runDetailTokens[id] = token
-            runDetailRequests[id] = Task { [weak self] in
-                defer {
-                    if let self, connection == self.connectionGeneration, generation == self.runDetailGeneration,
-                       self.runDetailTokens[id] == token {
-                        self.runDetailRequests[id] = nil
-                        self.runDetailTokens[id] = nil
-                    }
-                }
-                do {
-                    let detail = try await client.request(SummonAgentRun.self, path: "/api/agent-runs/\(SummonAPIClient.component(id))")
-                    guard let self, !Task.isCancelled, self.isForeground, self.activeRoomID == roomID,
-                          connection == self.connectionGeneration, generation == self.runDetailGeneration,
-                          self.runDetailTokens[id] == token else { return }
-                    self.agentRunDetails[id] = detail
-                } catch {
-                    // Waiting copy is optional; a detail read must never hide a message or its error.
-                }
-            }
-        }
-    }
-
-    private func cancelRunDetailRefreshes() {
-        runDetailGeneration += 1
-        for task in runDetailRequests.values { task.cancel() }
-        runDetailRequests = [:]
-        runDetailTokens = [:]
-    }
-
-    private func acceptEpoch(_ epoch: String?) {
-        if hasSnapshot && historyEpoch != epoch {
-            historyGeneration += 1
-            messageHistory = [:]
-            messages = []
-            jobs = []
-            pendingMessages = []
-            drafts = [:]
-            draftAttachments = [:]
-            draftTargets = [:]
-            draftReplies = [:]
-            sendingRoomIDs = []
-            agentRunDetails = [:]
-            cancelRunDetailRefreshes()
-            runDetailLastRequested = [:]
-        }
-        historyEpoch = epoch
-    }
-
     private func clearWorkspace() {
-        onboarding = .null
-        historyGeneration += 1
-        hasSnapshot = false
-        historyEpoch = nil
-        bots = []; rooms = []; messages = []; jobs = []; agentRuns = []; agentRunDetails = [:]
-        messageHistory = [:]; pendingMessages = []; drafts = [:]; draftAttachments = [:]
-        draftTargets = [:]; draftReplies = [:]; selectedRoomID = nil; sendingRoomIDs = []; lastSyncAt = nil
-        activeRoomID = nil
-        roomLastRead = [:]
-        runDetailLastRequested = [:]
+        bots = []; rooms = []; messageHistory = [:]; deliveries = [:]; cursors = [:]
+        pendingMessages = []; drafts = [:]; draftAttachments = [:]; draftMentions = [:]; draftReplies = [:]; draftReferences = [:]
+        selectedRoomID = nil; activeRoomID = nil; historyEpoch = nil; lastSyncAt = nil; modelSummary = .null
     }
 
     private func upsertBot(_ bot: SummonBot) {
         if let index = bots.firstIndex(where: { $0.id == bot.id }) { bots[index] = bot }
         else { bots.append(bot) }
+        schedulePersistence()
     }
 
     private func upsertRoom(_ room: SummonRoom) {
         if let index = rooms.firstIndex(where: { $0.id == room.id }) {
-            var updated = room
-            updated.lastMessage = room.lastMessage ?? rooms[index].lastMessage
-            rooms[index] = updated
+            if (room.revision ?? 0) >= (rooms[index].revision ?? 0) { rooms[index] = room }
         } else { rooms.append(room) }
+        schedulePersistence()
     }
 
     private func updatePending(_ id: String, _ mutate: (inout SummonPendingMessage) -> Void) {
-        guard let index = pendingMessages.firstIndex(where: { $0.clientID == id }) else { return }
-        mutate(&pendingMessages[index])
+        if let index = pendingMessages.firstIndex(where: { $0.id == id }) { mutate(&pendingMessages[index]) }
     }
 
-    private func updateVisibleMessages(_ roomID: String) {
-        if selectedRoomID == roomID { messages = messagesForRoom(roomID) }
-    }
+    nonisolated static func newID() -> String { UUID().uuidString.lowercased() }
+    private static func roomPath(_ id: String) -> String { "/api/rooms/\(SummonAPIClient.component(id))" }
 
     private static func json<T: Encodable>(_ value: T) throws -> SummonJSONValue {
         try JSONDecoder().decode(SummonJSONValue.self, from: JSONEncoder().encode(value))
@@ -752,61 +667,84 @@ final class SummonStore {
 
     private struct LocalSnapshot: Codable {
         var endpoint: String
+        var workspaceID: String?
         var historyEpoch: String?
         var bots: [SummonBot]
         var rooms: [SummonRoom]
-        var agentRuns: [SummonAgentRun]
         var messageHistory: [String: [SummonMessage]]
         var pendingMessages: [SummonPendingMessage]
         var drafts: [String: String]
         var draftAttachments: [String: [SummonAttachment]]
-        var draftTargets: [String: String]
+        var draftMentions: [String: [String]]?
         var draftReplies: [String: String]
-        var selectedRoomID: String?
+        var draftReferences: [String: [SummonReference]]?
+        var draftTargets: [String: String]?
         var savedAt: Date
     }
 
-    private func restoreSnapshot() {
-        guard let url = cacheURL, let data = try? Data(contentsOf: url),
-              let snapshot = try? JSONDecoder().decode(LocalSnapshot.self, from: data),
-              snapshot.endpoint == settings.baseURL else { return }
-        historyEpoch = snapshot.historyEpoch
-        bots = snapshot.bots; rooms = snapshot.rooms; agentRuns = snapshot.agentRuns
-        messageHistory = snapshot.messageHistory
-        pendingMessages = snapshot.pendingMessages.map { entry in
-            var restored = entry
-            if restored.status == "sending" { restored.status = "failed"; restored.error = "上次发送尚未确认，请手动重试。" }
-            return restored
+    private var snapshotURL: URL? {
+        guard let directory = storageDirectory, !settings.baseURL.isEmpty else { return nil }
+        let key = settings.workspaceID.map { settings.baseURL + "|" + $0 } ?? settings.baseURL
+        let encoded = Data(key.utf8).base64EncodedString()
+            .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "+", with: "-")
+        let pieces = stride(from: 0, to: encoded.count, by: 120).map { offset in
+            let start = encoded.index(encoded.startIndex, offsetBy: offset)
+            return String(encoded[start..<encoded.index(start, offsetBy: min(120, encoded.count - offset))])
         }
-        drafts = snapshot.drafts; draftAttachments = snapshot.draftAttachments
-        draftTargets = snapshot.draftTargets; draftReplies = snapshot.draftReplies
-        selectedRoomID = snapshot.selectedRoomID
-        if let id = selectedRoomID { messages = messagesForRoom(id) }
-        lastSyncAt = snapshot.savedAt
-        hasSnapshot = true
+        let target = pieces.reduce(directory.appending(path: "workspaces")) { $0.appending(path: $1) }
+        return target.appending(path: "snapshot.json")
+    }
+
+    private func restoreSnapshot() {
+        let legacyURL = storageDirectory?.appending(path: "workspace.json")
+        let decoder = JSONDecoder()
+        var convertedURL: URL?
+        var saved: LocalSnapshot?
+        if let url = snapshotURL, let data = try? Data(contentsOf: url) {
+            saved = try? decoder.decode(LocalSnapshot.self, from: data)
+        } else if settings.workspaceID == nil, let url = legacyURL, let data = try? Data(contentsOf: url) {
+            saved = try? decoder.decode(LocalSnapshot.self, from: data)
+            convertedURL = url
+        }
+        guard let saved, saved.endpoint == settings.baseURL, saved.workspaceID == settings.workspaceID else { return }
+        historyEpoch = saved.historyEpoch
+        bots = saved.bots; rooms = saved.rooms; messageHistory = saved.messageHistory
+        pendingMessages = saved.pendingMessages.map { entry in
+            guard entry.status == "sending" || entry.status == "queued" else { return entry }
+            var value = entry; value.status = "failed"; value.error = "上次发送的保存状态待确认。"; return value
+        }
+        drafts = saved.drafts; draftAttachments = saved.draftAttachments
+        draftMentions = saved.draftMentions ?? saved.draftTargets?.mapValues { [$0] } ?? [:]
+        draftReplies = saved.draftReplies
+        draftReferences = saved.draftReferences ?? [:]
+        lastSyncAt = saved.savedAt
+        if let convertedURL, persistNow() { try? FileManager.default.removeItem(at: convertedURL) }
     }
 
     private func schedulePersistence() {
         persistenceTask?.cancel()
         persistenceTask = Task { [weak self] in
-            do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+            do { try await Task.sleep(for: .milliseconds(220)) } catch { return }
             self?.persistNow()
         }
     }
 
-    private func persistNow() {
+    @discardableResult
+    private func persistNow() -> Bool {
         persistenceTask?.cancel()
         persistenceTask = nil
-        guard let url = cacheURL else { return }
-        let snapshot = LocalSnapshot(endpoint: settings.baseURL, historyEpoch: historyEpoch, bots: bots,
-            rooms: rooms, agentRuns: agentRuns, messageHistory: messageHistory, pendingMessages: pendingMessages,
-            drafts: drafts, draftAttachments: draftAttachments, draftTargets: draftTargets,
-            draftReplies: draftReplies, selectedRoomID: selectedRoomID, savedAt: lastSyncAt ?? Date())
+        guard let url = snapshotURL else { return false }
+        let saved = LocalSnapshot(endpoint: settings.baseURL, workspaceID: settings.workspaceID, historyEpoch: historyEpoch, bots: bots, rooms: rooms,
+            messageHistory: messageHistory.mapValues { Array($0.suffix(100)) }, pendingMessages: pendingMessages, drafts: drafts,
+            draftAttachments: draftAttachments, draftMentions: draftMentions, draftReplies: draftReplies,
+            draftReferences: draftReferences, draftTargets: nil, savedAt: lastSyncAt ?? Date())
         do {
-            let data = try JSONEncoder().encode(snapshot)
-            try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONEncoder().encode(saved).write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            return true
         } catch {
-            errorMessage = "本机草稿暂时无法保存：\(error.localizedDescription)"
+            errorMessage = "无法保存本机草稿：\(error.localizedDescription)"
+            return false
         }
     }
 }

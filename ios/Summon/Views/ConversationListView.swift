@@ -10,25 +10,22 @@ struct ConversationListView: View {
     @State private var profileDestination: ProfileDestination?
     @State private var quotaItem: SummonJSONValue?
     @State private var showCreateBot = false
-    @State private var newRoomKind: String?
-    @State private var showSystemBots = false
-    @State private var showPeerRooms = false
+    @State private var showCreateRoom = false
+    @State private var showModels = false
     @State private var workspaceSection: WorkspaceSection?
     @State private var openingBot = false
-    @State private var showOnboarding = false
-    @State private var onboardingShown = false
+    @State private var openingPush = false
 
     private var groups: [SummonRoom] {
-        store.rooms.filter { $0.kind != "dm" && matches("\($0.name) \($0.goal)") }
+        store.rooms.filter { room in
+            guard matches(room.name) else { return false }
+            return room.isGroup || !store.bots.contains { room.members.contains($0.id) } ||
+                store.rooms.first(where: { !$0.isGroup && $0.members == room.members })?.id != room.id
+        }
     }
 
     private var contacts: [SummonBot] {
-        store.bots.filter { ($0.presetId ?? "").isEmpty && matches("\($0.name) \($0.role)") }
-            .sorted { activityDate($0) > activityDate($1) }
-    }
-
-    private var systemBots: [SummonBot] {
-        store.bots.filter { !($0.presetId ?? "").isEmpty && matches("\($0.name) \($0.role)") }
+        store.bots.filter { matches($0.name) }.sorted { activityDate($0) > activityDate($1) }
     }
 
     var body: some View {
@@ -38,31 +35,7 @@ struct ConversationListView: View {
                     connectionStatus
                     if !groups.isEmpty { groupGrid }
                     ForEach(contacts) { bot in contact(bot) }
-                    if !systemBots.isEmpty {
-                        DisclosureGroup(isExpanded: $showSystemBots) {
-                            ForEach(systemBots) { bot in contact(bot) }
-                        } label: {
-                            Label("系统 Bot · \(systemBots.count)", systemImage: "slider.horizontal.3")
-                                .foregroundStyle(.secondary)
-                                .padding(.vertical, 16)
-                        }
-                        .padding(.horizontal, 22)
-                    }
-                    let peers = store.rooms.filter { $0.kind == "dm" && !$0.members.contains("user") && matches($0.name) }
-                    if !peers.isEmpty {
-                        DisclosureGroup("Bot 之间的对话", isExpanded: $showPeerRooms) {
-                            ForEach(peers) { room in
-                                Button { openRoom(room.id) } label: {
-                                    HStack(spacing: 14) {
-                                        RoomAvatar(room: room, size: 44)
-                                        Text(room.name).foregroundStyle(.primary)
-                                        Spacer()
-                                    }.padding(.vertical, 12)
-                                }.buttonStyle(SummonPressStyle())
-                            }
-                        }.foregroundStyle(.secondary).padding(22)
-                    }
-                    if store.bots.isEmpty && store.rooms.isEmpty && !store.isLoading {
+                    if store.bots.isEmpty && store.rooms.isEmpty && !store.isLoading && store.protocolReady {
                         ContentUnavailableView {
                             Label("你的工作空间", systemImage: "bubble.left.and.bubble.right")
                         } description: {
@@ -71,7 +44,7 @@ struct ConversationListView: View {
                             Button("创建 Bot") { showCreateBot = true }.buttonStyle(.glass)
                             Button("连接设置") { showSettings = true }
                         }.padding(.top, 80)
-                    } else if contacts.isEmpty && groups.isEmpty && systemBots.isEmpty && !query.isEmpty {
+                    } else if contacts.isEmpty && groups.isEmpty && !query.isEmpty {
                         ContentUnavailableView.search(text: query).padding(.top, 60)
                     }
                 }
@@ -109,31 +82,18 @@ struct ConversationListView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("创建新 Bot", systemImage: "person.badge.plus") { showCreateBot = true }
-                        Button("创建群聊", systemImage: "person.2.badge.plus") { newRoomKind = "group" }
-                        Button("发起深聊", systemImage: "square.stack.3d.up") { newRoomKind = "deep" }
+                        Button("创建群聊", systemImage: "person.2.badge.plus") { showCreateRoom = true }
                     } label: {
                         Image(systemName: "plus").summonFont(.title2)
-                    }.accessibilityLabel("新建")
+                    }.accessibilityLabel("新建").disabled(!store.protocolReady)
                 }
             }
             .searchable(text: $query, prompt: "搜索")
-            .task(id: store.settings.baseURL) {
-                while !Task.isCancelled { try? await store.refreshModelUsage(); try? await Task.sleep(for: .seconds(60)) }
-            }
             .navigationDestination(for: String.self) { id in ChatView(roomID: id) }
-            .onChange(of: SummonPush.shared.destinationRoomID, initial: true) { _, roomID in
-                guard let roomID else { return }
-                showSettings = false; showOnboarding = false
-                path = [roomID]
-                SummonPush.shared.destinationRoomID = nil
-            }
-            .onChange(of: store.onboardingRequired, initial: true) { _, required in
-                if required && !onboardingShown { onboardingShown = true; showOnboarding = true }
-                else if !required { onboardingShown = false }
-            }
-            .onChange(of: store.settings.baseURL) { _, _ in onboardingShown = false }
-            .summonSheet(isPresented: $showOnboarding) {
-                OnboardingView { id in showOnboarding = false; openRoom(id) }
+            .onChange(of: SummonPush.shared.destinationRoomID, initial: true) { _, _ in openNotification() }
+            .onChange(of: store.protocolReady) { _, _ in openNotification() }
+            .onChange(of: store.settings) { old, new in
+                if old.baseURL != new.baseURL || old.workspaceID != new.workspaceID { path = [] }
             }
             .summonSheet(isPresented: $showSettings) { ConnectionSettingsView() }
             .summonSheet(isPresented: $showUsage) { TokenUsageView() }
@@ -143,9 +103,8 @@ struct ConversationListView: View {
                     .presentationDragIndicator(.visible)
                     .presentationCornerRadius(28)
             }
-            .summonSheet(isPresented: Binding(get: { newRoomKind != nil }, set: { if !$0 { newRoomKind = nil } })) {
-                CreateRoomView(initialKind: newRoomKind ?? "group") { room in openRoom(room.id) }
-            }
+            .summonSheet(isPresented: $showCreateRoom) { CreateRoomView { room in openRoom(room.id) } }
+            .summonSheet(isPresented: $showModels) { ModelSettingsView() }
             .summonSheet(item: $workspaceSection) { section in WorkspaceView(section: section) }
         }
     }
@@ -155,10 +114,13 @@ struct ConversationListView: View {
             if store.isLoading && store.bots.isEmpty {
                 ProgressView("正在打开工作空间…").padding(.top, 24)
             }
+            if let notice = store.protocolNotice {
+                SummonProtocolNotice(notice: notice, needsUpdate: store.needsClientUpdate)
+            }
             if let error = store.errorMessage {
                 HStack(alignment: .top) {
                     InlineError(message: error)
-                    Button("重连") { Task { await store.reconnect() } }.buttonStyle(.glass)
+                    Button("重连") { Task { await store.refresh() } }.buttonStyle(.glass)
                 }.padding(.horizontal, 20)
             } else if !store.isConnected && !store.bots.isEmpty {
                 Label("已显示本机记录，正在连接…", systemImage: "wifi.slash")
@@ -174,9 +136,6 @@ struct ConversationListView: View {
                     VStack(spacing: 12) {
                         RoomAvatar(room: room, size: 96)
                         Text(room.name).summonFont(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                        if room.kind == "deep" {
-                            Text(room.status == "concluded" ? "已结束" : "深聊").summonFont(.caption2).foregroundStyle(.tertiary)
-                        }
                     }.frame(maxWidth: .infinity).padding(.vertical, 16)
                 }.buttonStyle(SummonPressStyle())
             }
@@ -184,7 +143,7 @@ struct ConversationListView: View {
     }
 
     private enum ProfileDestination {
-        case usage, settings, onboarding
+        case usage, settings, models
         case quota(SummonJSONValue)
         case workspace(WorkspaceSection)
     }
@@ -193,21 +152,17 @@ struct ConversationListView: View {
         ScrollView {
             VStack(spacing: 2) {
                 HStack(spacing: 12) {
-                    ModelQuotaSignal(item: store.modelSummary["chat"], label: "CHAT") {
+                    ModelQuotaSignal(item: store.modelSummary["chat"], label: "默认模型") {
                         selectProfileDestination(.quota(store.modelSummary["chat"]))
                     }
-                    let work = store.modelSummary["workExecutor"].object.map { SummonJSONValue.object($0) } ?? .object(["role": .string("executor"), "kind": .string("pi")])
-                    ModelQuotaSignal(item: work, label: "WORK") { selectProfileDestination(.quota(work)) }
                 }.padding(.vertical, 8)
                 profileMenuButton("Token 统计", symbol: "chart.bar", destination: .usage)
                 profileMenuButton("设置", symbol: "gearshape", destination: .settings)
-                profileMenuButton("新手引导", symbol: "sparkles", destination: .onboarding)
+                profileMenuButton("模型与用量", symbol: "cpu", destination: .models)
                 Divider().padding(.vertical, 6)
-                profileMenuButton("事件", symbol: "bolt", destination: .workspace(.event))
-                profileMenuButton("定时", symbol: "clock", destination: .workspace(.routines))
-                profileMenuButton("知识", symbol: "book", destination: .workspace(.knowledge))
-                profileMenuButton("工作", symbol: "briefcase", destination: .workspace(.works))
-                profileMenuButton("管理 Bot", symbol: "person.2", destination: .workspace(.bots))
+                ForEach(WorkspaceSection.allCases) { section in
+                    profileMenuButton(section.title, symbol: section.symbol, destination: .workspace(section))
+                }
             }.padding(12)
         }
         .scrollBounceBehavior(.basedOnSize)
@@ -234,7 +189,7 @@ struct ConversationListView: View {
         switch destination {
         case .usage: showUsage = true
         case .settings: showSettings = true
-        case .onboarding: showOnboarding = true
+        case .models: showModels = true
         case .quota(let item): quotaItem = item
         case .workspace(let section): workspaceSection = section
         }
@@ -259,7 +214,7 @@ struct ConversationListView: View {
                         Spacer(minLength: 12)
                         Text(SummonFormat.time(room?.lastMessage?.createdAt)).summonFont(.caption).foregroundStyle(.tertiary)
                     }
-                    Text(bot.status == "paused" ? "已暂停" : preview(room, bot: bot))
+                    Text(bot.isPaused ? "已暂停" : preview(room, bot: bot))
                         .summonFont(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
@@ -270,14 +225,37 @@ struct ConversationListView: View {
 
     private func matches(_ text: String) -> Bool { query.isEmpty || text.localizedCaseInsensitiveContains(query) }
     private func directRoom(_ bot: SummonBot) -> SummonRoom? {
-        store.rooms.first { $0.kind == "dm" && $0.members.contains("user") && $0.members.contains(bot.id) }
+        store.rooms.first { !$0.isGroup && $0.members.contains(bot.id) }
     }
     private func activityDate(_ bot: SummonBot) -> String { directRoom(bot)?.lastMessage?.createdAt ?? "" }
     private func preview(_ room: SummonRoom?, bot: SummonBot) -> String {
         if let last = room?.lastMessage {
-            return last.content.isEmpty ? last.attachments.map { "[附件] \($0.name)" }.joined(separator: "、") : last.content
+            if !last.content.isEmpty { return last.content }
+            if !last.attachments.isEmpty { return last.attachments.map(\.name).joined(separator: "、") }
+            return "共享了引用"
         }
-        return bot.role.isEmpty ? "开始聊天" : bot.role
+        return "开始聊天"
     }
+    private func openNotification() {
+        guard let id = SummonPush.shared.destinationRoomID, store.protocolReady, !openingPush else { return }
+        openingPush = true
+        Task {
+            defer {
+                openingPush = false
+                if SummonPush.shared.destinationRoomID != id { openNotification() }
+            }
+            do {
+                try await store.openPushRoom(id)
+                guard SummonPush.shared.destinationRoomID == id else { return }
+                showSettings = false
+                path = [id]
+                SummonPush.shared.destinationRoomID = nil
+            } catch {
+                if SummonPush.shared.destinationRoomID == id { SummonPush.shared.destinationRoomID = nil }
+                store.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
     private func openRoom(_ id: String) { path.append(id) }
 }

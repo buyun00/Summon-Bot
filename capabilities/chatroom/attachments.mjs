@@ -1,14 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
-import { mkdir, readFile, writeFile, rm, realpath, lstat, rename } from 'node:fs/promises';
-import { join, resolve, relative, isAbsolute, extname } from 'node:path';
-import { MESSAGE_ATTACHMENTS } from '../../bot/src/runtime/notifications.mjs';
+import { mkdir, readFile, writeFile, rm, rmdir, rename } from 'node:fs/promises';
+import { join, resolve, extname } from 'node:path';
+import { documentText } from './document-text.mjs';
 
 export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 export const MAX_ATTACHMENT_REQUEST_BYTES = Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4 + 4096;
 const validId = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), { status }); };
-const within = (root, path) => { const part = relative(root, path); return !isAbsolute(part) && part !== '..' && !part.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`); };
+const MESSAGE_ATTACHMENTS = 8;
+const openable = name => ['.html', '.htm', '.txt', '.md', '.csv', '.json'].includes(extname(name).toLowerCase());
 
 function rasterType(bytes) {
   if (bytes.length >= 24 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) && bytes.toString('ascii', 12, 16) === 'IHDR') return 'image/png';
@@ -27,7 +28,7 @@ export class AttachmentStore {
     return join(this.root, id);
   }
 
-  async upload(input, origin) {
+  async upload(input, { ownerId, workspaceProfileId = null, id = randomUUID() }) {
     if (typeof input.name !== 'string' || !input.name.trim() || input.name.length > 240 || /[\\/\x00-\x1f\x7f]/.test(input.name)) fail('附件文件名无效');
     if (typeof input.data !== 'string' || input.data.length > Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4) fail('附件不能超过 20 MB', 413);
     if (input.data.length % 4 !== 0 || /[^A-Za-z0-9+/=]/.test(input.data) || input.data.slice(0, -2).includes('=')) fail('附件数据必须为有效的 Base64');
@@ -36,30 +37,33 @@ export class AttachmentStore {
     if (bytes.length > MAX_ATTACHMENT_BYTES) fail('附件不能超过 20 MB', 413);
     const detected = rasterType(bytes);
     const declared = typeof input.mimeType === 'string' && /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i.test(input.mimeType) ? input.mimeType.toLowerCase() : 'application/octet-stream';
-    const id = origin?.publicationId || randomUUID();
     this.directory(id);
-    if (origin?.publicationId) {
-      const previous = this.publication(id);
-      if (previous.status === 'published') {
-        const saved = previous.attachment.origin;
-        if (saved?.botId !== origin.botId || saved?.workId !== origin.workId || saved?.roomId !== origin.roomId)
-          fail('Publication identity belongs to another source', 409);
-        return previous.attachment;
-      }
-    }
-    const extension = extname(input.name).toLowerCase();
-    const openable = origin?.type === 'work-output' && ['.html','.htm','.txt','.md','.csv','.json'].includes(extension);
-    const record = { id, name: input.name.trim(), mimeType: detected || declared, size: bytes.length,
+    const record = { id, name: input.name.trim(), mimeType: detected || declared, size: bytes.length, ownerId, workspaceProfileId,
+      ref: { kind: 'file', id }, revision: 1,
       url: `/api/attachments/${id}`, ...(detected ? { previewUrl: `/api/attachments/${id}/preview` } : {}),
-      ...(openable ? { openUrl: `/api/attachments/${id}/view` } : {}), ...(origin ? { origin } : {}), createdAt: new Date().toISOString() };
+      ...(openable(input.name.trim()) ? { openUrl: `/api/attachments/${id}/view` } : {}), createdAt: new Date().toISOString() };
     const directory = this.directory(id);
     await mkdir(this.root, { recursive: true });
-    await mkdir(directory);
+    const staging = join(this.root, '.' + randomUUID() + '.upload');
+    await mkdir(staging);
     try {
-      await writeFile(join(directory, 'data'), bytes, { flag: 'wx' });
-      await writeFile(join(directory, 'metadata.json'), JSON.stringify(record), { flag: 'wx' });
-    } catch (error) { await rm(directory, { recursive: true, force: true }); throw error; }
-    return record;
+      await writeFile(join(staging, 'data'), bytes, { flag: 'wx' });
+      await writeFile(join(staging, 'metadata.json'), JSON.stringify(record), { flag: 'wx' });
+      await rename(staging, directory);
+    } catch (error) {
+      const previous = this.find(id);
+      if (!previous || previous.ownerId !== ownerId || (previous.workspaceProfileId ?? null) !== workspaceProfileId) throw error;
+      return this.project(previous);
+    } finally {
+      await Promise.all([rm(join(staging, 'data'), { force: true }), rm(join(staging, 'metadata.json'), { force: true })]);
+      await rmdir(staging).catch(error => { if (error.code !== 'ENOENT') throw error; });
+    }
+    return this.project(record);
+  }
+
+  project(record) {
+    const { id, name, mimeType, size, url, previewUrl, openUrl, createdAt, revision } = record;
+    return { id, ref: { kind: 'file', id }, name, mimeType, size, revision, url, previewUrl, openUrl, createdAt };
   }
 
   get(id) {
@@ -71,28 +75,32 @@ export class AttachmentStore {
     } catch (error) { if (error.status) throw error; fail('附件不存在，请重新选择文件', 404); }
   }
 
-  publication(id) {
-    try { return { status: 'published', attachment: this.get(id) }; }
-    catch (error) { if (error.status !== 404) throw error; return { status: 'unconfirmed', publicationId: id }; }
+  find(id) {
+    try { return this.get(id); }
+    catch (error) { if (error.status !== 404) throw error; return null; }
   }
 
-  resolve(input) {
+  resolve(input, resolveFile) {
     if (input === undefined) return [];
     if (!Array.isArray(input) || input.length > MESSAGE_ATTACHMENTS) fail(`每条消息最多附加 ${MESSAGE_ATTACHMENTS} 个文件`);
     const ids = new Set();
     return input.map(item => {
       if (!item || typeof item !== 'object' || Array.isArray(item)) fail('附件格式无效');
-      const record = this.get(item.id);
-      if (ids.has(record.id)) fail('同一条消息不能重复附加同一个文件');
-      ids.add(record.id);
-      return record;
+      if (ids.has(item.id)) fail('同一条消息不能重复附加同一个文件');
+      ids.add(item.id);
+      return resolveFile(item, this.find(item.id));
     });
+  }
+
+  async text(id) {
+    const record = this.get(id);
+    return documentText(record.name, await readFile(join(this.directory(id), 'data')));
   }
 
   async read(id, preview = false) {
     const record = this.get(id);
     if (preview === 'view') {
-      if (!record.openUrl || record.origin?.type !== 'work-output') fail('此附件没有独立预览入口',404);
+      if (!openable(record.name)) fail('此附件没有独立预览入口', 404);
       const source = await readFile(join(this.directory(id),'data'));
       const html = /\.html?$/i.test(record.name);
       const escaped = html ? source : Buffer.from(`<!doctype html><meta charset="utf-8"><title>文件预览</title><style>body{margin:24px;font:16px system-ui}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style><pre>${source.toString('utf8').replace(/[&<>]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[char]))}</pre>`);
@@ -116,41 +124,4 @@ export class AttachmentStore {
     } };
   }
 
-  async stageContext(context, workspace) {
-    const references = [...(context.messages || []), context.trigger].filter(Boolean);
-    const ids = [...new Set(references.flatMap(message => (message.attachments || []).map(item => item.id)))];
-    if (!ids.length) return context;
-    const directory = join(workspace, 'attachments');
-    let directoryError;
-    try {
-      await mkdir(directory, { recursive: true });
-      if (!within(await realpath(workspace), await realpath(directory))) fail('附件目录不在 Bot 工作区内');
-    } catch (error) { directoryError = error; }
-    const staged = new Map();
-    for (const id of ids) {
-      try {
-      if (directoryError) throw directoryError;
-      const record = this.get(id);
-      const extension = extname(record.name).match(/^\.[a-z0-9]{1,12}$/i)?.[0] || '.bin';
-      const path = join(directory, `${id}${extension}`);
-      // A fresh temporary file and rename replace the directory entry, never a symlink target.
-      const temp = join(directory, `${id}.${randomUUID()}.tmp`);
-      try {
-        const previous = await lstat(path).catch(error => { if (error.code !== 'ENOENT') throw error; });
-        if (previous?.isDirectory()) fail('附件暂存路径被目录占用');
-        await writeFile(temp, await readFile(join(this.directory(id), 'data')), { flag: 'wx' });
-        await rename(temp, path);
-      } finally { await rm(temp, { force: true }); }
-      staged.set(id, { ...record, path, ...(record.mimeType.startsWith('image/') ? {
-        modelNote: '当前模型仅接收文本，此图片只提供文件路径，尚未读取或理解图像内容；不能根据文件名猜测画面。',
-      } : { modelNote: '附件已暂存到工作区；请用文件工具读取实际内容，不要仅凭文件名猜测。' }) });
-      } catch (error) {
-        const original = references.flatMap(message => message.attachments || []).find(item => item.id === id);
-        staged.set(id, { ...original, path: undefined, unavailable: true,
-          modelNote: `该附件暂时无法读取：${error.message}。保留原始引用，继续使用其他资料；明确依赖它的步骤须说明缺口。` });
-      }
-    }
-    const decorate = message => message?.attachments?.length ? { ...message, attachments: message.attachments.map(item => staged.get(item.id)) } : message;
-    return { ...context, messages: (context.messages || []).map(decorate), trigger: decorate(context.trigger) };
-  }
 }

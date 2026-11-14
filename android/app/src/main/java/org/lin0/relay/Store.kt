@@ -2,7 +2,7 @@ package org.lin0.relay
 
 import android.content.Context
 import android.net.Uri
-import android.os.SystemClock
+import android.util.AtomicFile
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -11,46 +11,31 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.time.Instant
-import java.time.format.DateTimeFormatter
 import java.util.UUID
 
 class SummonStore(private val app: Context) {
-    var onboarding by mutableStateOf<SummonJson>(SummonJson.Null)
-        private set
-    val onboardingRequired: Boolean get() = onboarding["required"].bool == true || onboarding["status"].string == "guiding"
     var settings by mutableStateOf(SummonConnectionSettings(baseURL = ""))
         private set
     var bots by mutableStateOf<List<SummonBot>>(emptyList())
         private set
     var rooms by mutableStateOf<List<SummonRoom>>(emptyList())
         private set
-    var messages by mutableStateOf<List<SummonMessage>>(emptyList())
-        private set
-    var jobs by mutableStateOf<List<SummonJob>>(emptyList())
-        private set
-    var agentRuns by mutableStateOf<List<SummonAgentRun>>(emptyList())
-        private set
-    var agentRunDetails by mutableStateOf<Map<String, SummonAgentRun>>(emptyMap())
-        private set
     var pendingMessages by mutableStateOf<List<SummonPendingMessage>>(emptyList())
-        private set
-    var drafts by mutableStateOf<Map<String, String>>(emptyMap())
         private set
     var draftAttachments by mutableStateOf<Map<String, List<SummonAttachment>>>(emptyMap())
         private set
-    var draftTargets by mutableStateOf<Map<String, String>>(emptyMap())
+    var draftMentions by mutableStateOf<Map<String, List<String>>>(emptyMap())
         private set
     var draftReplies by mutableStateOf<Map<String, String>>(emptyMap())
         private set
-    var selectedRoomID by mutableStateOf<String?>(null)
+    var draftReferences by mutableStateOf<Map<String, List<SummonReference>>>(emptyMap())
         private set
     var isLoading by mutableStateOf(false)
         private set
@@ -58,108 +43,77 @@ class SummonStore(private val app: Context) {
         private set
     var isConnected by mutableStateOf(false)
         private set
+    var profiles by mutableStateOf<List<SummonWorkspaceProfile>>(emptyList())
+        private set
+    var protocolReady by mutableStateOf(false)
+        private set
+    var protocolNotice by mutableStateOf<String?>(null)
+        private set
+    var needsClientUpdate by mutableStateOf(false)
+        private set
     var sendingRoomIDs by mutableStateOf<Set<String>>(emptySet())
         private set
     var lastSyncAt by mutableStateOf<Long?>(null)
         private set
+    var modelSummary by mutableStateOf<SummonJson>(SummonJson.Null)
+        private set
     var errorMessage by mutableStateOf<String?>(null)
 
+    private var drafts by mutableStateOf<Map<String, String>>(emptyMap())
     private var messageHistory by mutableStateOf<Map<String, List<SummonMessage>>>(emptyMap())
+    private var deliveries by mutableStateOf<Map<String, List<SummonDelivery>>>(emptyMap())
+    private var cursors by mutableStateOf<Map<String, String>>(emptyMap())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var client: SummonApiClient? = null
     private var streamJob: Job? = null
     private var refreshJob: Job? = null
-    private var roomRefreshJob: Job? = null
-    private var roomRecoveryJob: Job? = null
+    private var recoveryJob: Job? = null
     private var persistenceJob: Job? = null
-    private val roomJobs = mutableMapOf<String, Job>()
-    private val runDetailJobs = mutableMapOf<String, Job>()
-    private val runDetailTokens = mutableMapOf<String, String>()
-    private val runDetailLastRequested = mutableMapOf<String, Long>()
-    private var runDetailGeneration = 0
+    private val roomReads = mutableSetOf<String>()
     private var connectionGeneration = 0
-    private var historyGeneration = 0
-    private val roomReadGeneration = mutableMapOf<String, Int>()
-    private val roomLoadsInFlight = mutableSetOf<String>()
-    private val roomsNeedingReload = mutableSetOf<String>()
-    private val roomLastRead = mutableMapOf<String, Long>()
-    private var workspaceLastRequested = 0L
-    private var activeRoomID: String? = null
-    private var isForeground = false
     private var historyEpoch: String? = null
-    private var hasSnapshot = false
+    private var activeRoomID: String? = null
     private var refreshAgain = false
-    private var roomRefreshAgain = false
-    private var roomRefreshGeneration = 0
-    private var startingConnection: Int? = null
+    private var foreground = false
     private val prefs = app.getSharedPreferences(SETTINGS_KEY, Context.MODE_PRIVATE)
-    private val cacheFile = File(File(app.filesDir, "RelayNative").apply { mkdirs() }, "workspace.json")
-    private val ioMutex = Mutex()
+    private val storageDirectory = File(app.filesDir, "RelayNative")
 
     val isConfigured: Boolean get() = client != null
     val savedToken: String get() = SummonKeystore.token(app, settings.baseURL)
-    val selectedRoom: SummonRoom? get() = rooms.firstOrNull { it.id == selectedRoomID }
 
     init {
-        prefs.getString(SETTINGS_KEY, null)?.let { raw ->
-            runCatching { settings = SummonConnectionSettings.parse(SummonJson.parse(raw)) }
-        }
-        runCatching { SummonApiClient.normalized(settings.baseURL) }.getOrNull()?.let { url ->
-            client = SummonApiClient(url, SummonKeystore.token(app, settings.baseURL))
-        }
+        val saved = prefs.getString(SETTINGS_KEY, null)
+        if (saved != null) settings = runCatching { SummonConnectionSettings.parse(SummonJson.parse(saved)) }.getOrDefault(settings)
+        client = runCatching { SummonApiClient(SummonApiClient.normalized(settings.baseURL), savedToken, settings.workspaceID) }.getOrNull()
         restoreSnapshot()
     }
 
     fun dispose() {
         disconnect()
-        scope.coroutineContext[Job]?.cancel()
+        scope.cancel()
     }
 
     suspend fun start() {
-        if (client == null || startingConnection == connectionGeneration) return
-        isForeground = true
+        if (client == null || foreground) return
+        foreground = true
         val connection = connectionGeneration
-        startingConnection = connection
-        try {
-            startStream()
-            startRoomRecovery()
-            refresh()
-        } finally {
-            if (startingConnection == connection) startingConnection = null
-        }
+        refresh()
+        if (!foreground || connection != connectionGeneration) return
+        startStream()
+        startRecovery()
     }
 
-    suspend fun reconnect() {
-        if (startingConnection == connectionGeneration) return
-        disconnect()
-        runCatching { SummonApiClient.normalized(settings.baseURL) }.getOrNull()?.let { url ->
-            client = SummonApiClient(url, savedToken)
-        }
-        start()
-    }
+    suspend fun reconnect() = start()
 
     fun disconnect() {
-        connectionGeneration += 1
-        isForeground = false
-        startingConnection = null
+        connectionGeneration++
+        foreground = false
         streamJob?.cancel(); streamJob = null
         refreshJob?.cancel(); refreshJob = null
-        roomRefreshJob?.cancel(); roomRefreshJob = null
-        roomRefreshGeneration += 1
-        roomRecoveryJob?.cancel(); roomRecoveryJob = null
-        roomJobs.values.forEach { it.cancel() }
-        roomJobs.clear()
-        cancelRunDetailRefreshes()
-        roomLoadsInFlight.clear()
-        roomsNeedingReload.clear()
-        isConnected = false
-        isRefreshing = false
-        isLoading = false
-        refreshAgain = false
-        roomRefreshAgain = false
-        pendingMessages = pendingMessages.map { item ->
-            if (item.status == "sending") item.copy(status = "failed", error = "连接已暂停，送达状态待确认。请刷新后手动重试。") else item
-        }
+        recoveryJob?.cancel(); recoveryJob = null
+        roomReads.clear()
+        isConnected = false; protocolReady = false; isLoading = false; isRefreshing = false; refreshAgain = false
+        pendingMessages = pendingMessages.map { if (it.status == "sending") it.copy(status = "failed", error = "保存状态待确认。") else it }
         sendingRoomIDs = emptySet()
         persistNow()
     }
@@ -167,658 +121,557 @@ class SummonStore(private val app: Context) {
     suspend fun saveConnection(baseURL: String, token: String, userName: String? = null) {
         val url = SummonApiClient.normalized(baseURL)
         val endpoint = url.toString()
-        val newClient = SummonApiClient(url, token.trim())
-        withContext(Dispatchers.IO) { newClient.verifyWorkspace() }
-        SummonKeystore.save(app, token.trim(), endpoint)
         val changed = endpoint != settings.baseURL
+        val newClient = SummonApiClient(url, token.trim(), if (changed) null else settings.workspaceID)
+        val startup = try { withContext(Dispatchers.IO) { newClient.bootstrap() } }
+        catch (error: SummonApiException) { throw SummonApiException(startupError(error)) }
+        SummonKeystore.save(app, token.trim(), endpoint)
         disconnect()
-        val name = userName?.trim()?.ifBlank { null } ?: settings.userName
-        settings = SummonConnectionSettings(endpoint, name.ifBlank { "你" })
         if (changed) clearWorkspace()
-        client = newClient
+        settings = SummonConnectionSettings(endpoint, userName?.trim()?.takeIf { it.isNotEmpty() } ?: settings.userName, newClient.workspaceID)
         prefs.edit().putString(SETTINGS_KEY, settings.toJson().encode().toString()).apply()
+        client = newClient
+        if (changed) restoreSnapshot()
+        acceptStartup(startup)
         errorMessage = null
         persistNow()
         start()
-        errorMessage?.let { throw SummonApiException.http(0, it) }
+    }
+
+    suspend fun selectWorkspace(id: String?) {
+        if (settings.workspaceID == id) return
+        val api = SummonApiClient(SummonApiClient.normalized(settings.baseURL), savedToken, id)
+        val startup = withContext(Dispatchers.IO) { api.bootstrap() }
+        if (!startup.ready) throw SummonApiException(startup.notice ?: "暂时无法切换工作区。")
+        disconnect()
+        clearWorkspace()
+        settings = settings.copy(workspaceID = id)
+        prefs.edit().putString(SETTINGS_KEY, settings.toJson().encode().toString()).apply()
+        client = api
+        restoreSnapshot()
+        acceptStartup(startup)
+        errorMessage = null
+        persistNow()
+        start()
     }
 
     fun setUserName(name: String) {
-        settings = settings.copy(userName = name.trim().ifBlank { "Lin" })
+        settings = settings.copy(userName = name.trim().ifEmpty { "Lin" })
         prefs.edit().putString(SETTINGS_KEY, settings.toJson().encode().toString()).apply()
     }
 
     suspend fun refresh() {
         val api = client ?: return
-        scheduleRoomRefresh()
-        if (isRefreshing) {
-            refreshAgain = true
-            return
-        }
+        if (!foreground) return
+        if (isRefreshing) { refreshAgain = true; return }
         val connection = connectionGeneration
-        workspaceLastRequested = SystemClock.elapsedRealtime()
         isRefreshing = true
-        isLoading = !hasSnapshot
+        isLoading = bots.isEmpty() && rooms.isEmpty()
         try {
-            val snapshot = withContext(Dispatchers.IO) { SummonWorkspace.parse(api.requestJson("/api/state")) }
+            if (!protocolReady) {
+                val startup = withContext(Dispatchers.IO) { api.bootstrap() }
+                if (connection != connectionGeneration) return
+                acceptStartup(startup)
+                if (!startup.ready) return
+            }
+            val state = withContext(Dispatchers.IO) { api.requestJson("/api/state") }
             if (connection != connectionGeneration) return
-            acceptEpoch(snapshot.historyEpoch)
-            bots = snapshot.bots
-            onboarding = snapshot.onboarding
-            if (snapshot.modelSettings is SummonJson.Obj) modelSummary = snapshot.modelSettings
-            rooms = snapshot.rooms.map { room ->
-                val latest = messageHistory[room.id]?.lastOrNull()
-                if (latest != null && (latest.createdAt ?: "") > (room.lastMessage?.createdAt ?: "")) room.copy(lastMessage = latest) else room
-            }
-            agentRuns = snapshot.agentRuns
-            hasSnapshot = true
-            lastSyncAt = System.currentTimeMillis()
+            val epoch = state["historyEpoch"].string
+            if (historyEpoch != epoch) { messageHistory = emptyMap(); deliveries = emptyMap(); cursors = emptyMap() }
+            historyEpoch = epoch
+            bots = (state["bots"].array ?: throw SummonApiException.invalidResponse).map(SummonBot::parse)
+            rooms = (state["rooms"].array ?: throw SummonApiException.invalidResponse).map { SummonRoom.parse(it) }
+            if (state["modelSettings"].obj != null) modelSummary = state["modelSettings"]
             errorMessage = null
-            val selected = selectedRoomID
-            if (selected != null && rooms.none { it.id == selected }) {
-                selectedRoomID = null
-                messages = emptyList()
-                jobs = emptyList()
-                if (activeRoomID == selected) deactivateRoom(selected)
-            }
-            scheduleRoomRefresh()
-            schedulePersistence()
-        } catch (error: CancellationException) {
-            throw error
-        } catch (error: Exception) {
-            if (connection == connectionGeneration) errorMessage = error.message
+            lastSyncAt = System.currentTimeMillis()
+            activeRoomID?.takeIf { room(it) != null }?.let { loadRoom(it) }
+            if (connection == connectionGeneration) schedulePersistence()
+        } catch (error: CancellationException) { throw error }
+        catch (error: Exception) {
+            if (connection != connectionGeneration) return
+            if (!protocolReady) protocolNotice = startupError(error) else handle(error)
         } finally {
             if (connection == connectionGeneration) {
-                isRefreshing = false
-                isLoading = false
-                if (refreshAgain) {
-                    refreshAgain = false
-                    scheduleRefresh()
-                }
+                isRefreshing = false; isLoading = false
+                if (refreshAgain) { refreshAgain = false; scheduleRefresh() }
             }
+        }
+    }
+
+    private fun acceptStartup(startup: SummonBootstrap) {
+        if (!startup.updating) startup.workspaceProfiles?.let { profiles = it }
+        protocolReady = startup.ready
+        protocolNotice = startup.notice
+        needsClientUpdate = startup.protocolVersion > SummonApiClient.PROTOCOL_VERSION
+    }
+
+    private fun startupError(error: Exception): String = when ((error as? SummonApiException)?.status) {
+        404 -> "正在等待服务支持当前协议。草稿和待确认的发送已保留。"
+        503 -> "服务正在更新。草稿和待确认的发送已保留。"
+        else -> error.localizedMessage ?: "暂时无法连接服务。"
+    }
+
+    private fun handle(error: Exception) {
+        when (val status = (error as? SummonApiException)?.status) {
+            426, 503 -> {
+                protocolReady = false; isConnected = false
+                protocolNotice = if (status == 503) "服务正在更新。草稿和待确认的发送已保留。" else "正在重新检查服务协议。"
+                scheduleRefresh()
+            }
+            else -> errorMessage = error.localizedMessage
         }
     }
 
     suspend fun selectRoom(id: String) {
-        if (activeRoomID != id) cancelRunDetailRefreshes()
-        selectedRoomID = id
-        activeRoomID = id
-        roomRefreshJob?.cancel(); roomRefreshJob = null
-        roomRefreshAgain = false
-        roomRefreshGeneration += 1
-        messages = messagesForRoom(id)
-        jobs = emptyList()
-        schedulePersistence()
-        startRoomRecovery()
-        val api = client ?: return
-        loadRoom(id, api, connectionGeneration)
+        ensureRoomActive(id)
+        loadRoom(id)
     }
 
-    fun ensureRoomActive(id: String) {
-        if (activeRoomID == id) return
-        cancelRunDetailRefreshes()
-        roomRefreshJob?.cancel(); roomRefreshJob = null
-        roomRefreshAgain = false
-        roomRefreshGeneration += 1
-        activeRoomID = id
-        if (selectedRoomID != id) {
-            selectedRoomID = id
-            messages = messagesForRoom(id)
-            jobs = emptyList()
-            schedulePersistence()
-        }
-        startRoomRecovery()
-        scheduleRoomRefresh(id)
-    }
-
-    fun deactivateRoom(id: String) {
-        if (activeRoomID != id) return
-        activeRoomID = null
-        roomRefreshJob?.cancel(); roomRefreshJob = null
-        roomRefreshAgain = false
-        roomRefreshGeneration += 1
-        roomRecoveryJob?.cancel(); roomRecoveryJob = null
-        roomJobs[id]?.cancel()
-        roomsNeedingReload.remove(id)
-        cancelRunDetailRefreshes()
-    }
+    fun ensureRoomActive(id: String) { activeRoomID = id }
+    fun deactivateRoom(id: String) { if (activeRoomID == id) activeRoomID = null }
 
     fun messagesForRoom(id: String): List<SummonMessage> {
         val remote = messageHistory[id].orEmpty()
-        val confirmed = remote.filter { it.senderId == "user" }.mapNotNull { it.clientId }.toSet()
-        return remote + pendingMessages.filter { it.roomID == id && it.clientID !in confirmed }.map { it.message }
+        val confirmed = remote.filter(SummonMessage::isOwn).mapNotNull(SummonMessage::clientId).toSet()
+        return remote + pendingMessages.filter { it.roomID == id && it.clientID !in confirmed }.map(SummonPendingMessage::message)
     }
 
-    fun bot(id: String): SummonBot? = bots.firstOrNull { it.id == id }
     fun room(id: String): SummonRoom? = rooms.firstOrNull { it.id == id }
+    fun bot(id: String): SummonBot? = bots.firstOrNull { it.id == id }
     fun name(id: String): String = when (id) {
         "user" -> settings.userName
-        "system" -> bot(id)?.name ?: "Summon Bot"
+        "system", "platform" -> "Summon 平台"
         else -> bot(id)?.name ?: id
     }
 
-    suspend fun openDirectMessage(bot: SummonBot): SummonRoom {
-        rooms.firstOrNull { it.kind == "dm" && it.members.contains("user") && it.members.contains(bot.id) && it.members.size == 2 }?.let { room ->
-            selectRoom(room.id)
-            return room
-        }
-        val room = createGroup("与 ${bot.name} 的私聊", listOf("user", bot.id), kind = "dm")
-        selectRoom(room.id)
-        return room
+    fun label(ref: SummonReference): String = when (ref.kind) {
+        "bot", "user" -> name(ref.id)
+        "room" -> room(ref.id)?.name ?: ref.id
+        "event" -> "消息 · " + ref.id
+        "file" -> "资料 · " + ref.id
+        "session" -> "执行会话 · " + ref.id
+        "conversation" -> "内部对话 · " + ref.id
+        else -> ref.id
     }
 
-    suspend fun createBot(name: String, avatar: SummonAvatar, role: String = "项目协作", expertise: String = "", prompt: String = ""): SummonBot {
-        val connection = connectionGeneration
-        val result = withContext(Dispatchers.IO) {
-            SummonBot.parse(apiClient().requestJson("/api/bots", "POST", SummonJson.obj(
-                "id" to SummonJson.Str("bot-${UUID.randomUUID().toString().lowercase()}"),
-                "name" to SummonJson.Str(name),
-                "role" to SummonJson.Str(role),
-                "expertise" to SummonJson.Str(expertise),
-                "prompt" to SummonJson.Str(prompt),
-                "avatar" to avatar.toJson(),
-            )))
-        }
-        if (connection == connectionGeneration) {
-            upsertBot(result)
-            schedulePersistence()
-        }
-        return result
-    }
+    fun deliveryFacts(id: String): List<SummonDelivery> = deliveries[id].orEmpty()
+    fun pendingMessage(message: SummonMessage): SummonPendingMessage? =
+        pendingMessages.firstOrNull { it.clientID == message.clientId && it.roomID == message.roomId }
 
-    suspend fun updateBot(id: String, name: String? = null, role: String? = null, expertise: String? = null, prompt: String? = null, status: String? = null, avatar: SummonAvatar? = null): SummonBot {
+    fun canLoadOlder(id: String): Boolean = id in cursors
+
+    suspend fun loadRoom(id: String, older: Boolean = false) {
+        val api = client ?: return
+        if (!protocolReady || !roomReads.add(id)) return
         val connection = connectionGeneration
-        val body = buildMap<String, SummonJson> {
-            listOf("name" to name, "role" to role, "expertise" to expertise, "prompt" to prompt, "status" to status).forEach { (key, value) ->
-                if (value != null) put(key, SummonJson.Str(value))
+        try {
+            val cursor = if (older) cursors[id] ?: return else null
+            val suffix = cursor?.let { "?cursor=" + SummonApiClient.component(it) }.orEmpty()
+            val snapshot = withContext(Dispatchers.IO) { api.requestJson(roomPath(id) + "/messages" + suffix) }
+            if (connection != connectionGeneration) return
+            if (snapshot["historyEpoch"].string != historyEpoch) { scheduleRefresh(); return }
+            upsertRoom(SummonRoom.parse(snapshot["room"]))
+            val page = snapshot["messages"].array.orEmpty().map { SummonMessage.parse(it) }
+            val cached = messageHistory[id].orEmpty()
+            val pageIDs = page.map(SummonMessage::id).toSet()
+            val retainCache = older || cached.any { it.id in pageIDs }
+            val all = ((if (retainCache) cached else emptyList()) + page).associateBy(SummonMessage::id).values
+                .sortedWith(compareBy({ it.createdAt.orEmpty() }, { it.sequence ?: 0 }, { it.id }))
+            messageHistory = messageHistory + (id to all)
+            if (older || all.firstOrNull()?.id == page.firstOrNull()?.id) {
+                val next = snapshot["cursor"].string
+                cursors = if (next != null) cursors + (id to next) else cursors - id
+            } else if (id !in cursors) {
+                all.firstOrNull()?.id?.let { cursors = cursors + (id to it) }
             }
-            if (avatar != null) put("avatar", avatar.toJson())
-        }
-        val result = withContext(Dispatchers.IO) {
-            SummonBot.parse(apiClient().requestJson("/api/bots/${SummonApiClient.component(id)}", "PATCH", SummonJson.Obj(body)))
-        }
-        if (connection == connectionGeneration) {
-            upsertBot(result)
+            deliveries = deliveries + snapshot["deliveries"].obj.orEmpty().mapValues { SummonDelivery.list(it.value) }
+            val confirmed = page.filter(SummonMessage::isOwn).mapNotNull(SummonMessage::clientId).toSet()
+            val staged = pendingMessages.filter { it.roomID == id && it.clientID in confirmed }.flatMap { it.message.attachments }
+            pendingMessages = pendingMessages.filterNot { it.roomID == id && it.clientID in confirmed }
+            if (staged.isNotEmpty() && persistNow()) staged.forEach(::discardStagedAttachment)
             schedulePersistence()
-        }
-        return result
+            lastSyncAt = System.currentTimeMillis()
+        } catch (error: CancellationException) { throw error }
+        catch (error: Exception) { if (connection == connectionGeneration && id == activeRoomID) handle(error) }
+        finally { if (connection == connectionGeneration) roomReads.remove(id) }
     }
 
-    suspend fun createGroup(name: String, members: List<String>, goal: String = "", kind: String = "group", projectMode: String = "auto"): SummonRoom {
-        val connection = connectionGeneration
-        val result = withContext(Dispatchers.IO) {
-            SummonRoom.parse(apiClient().requestJson("/api/rooms", "POST", SummonJson.obj(
-                "name" to SummonJson.Str(name),
-                "kind" to SummonJson.Str(kind),
-                "goal" to SummonJson.Str(goal),
-                "projectMode" to SummonJson.Str(projectMode),
-                "members" to SummonJson.Arr(members.map(SummonJson::Str)),
-            )))
-        }
-        if (connection == connectionGeneration) {
-            upsertRoom(result)
-            schedulePersistence()
-        }
-        return result
+    suspend fun openDirectMessage(bot: SummonBot): SummonRoom =
+        rooms.firstOrNull { !it.isGroup && bot.id in it.members } ?: createGroup(bot.name, listOf(bot.id))
+
+    suspend fun createBot(name: String, avatar: SummonAvatar, instructions: String): SummonBot {
+        val body = SummonJson.obj("name" to SummonJson.Str(name), "instructions" to SummonJson.Str(instructions), "avatar" to avatar.toJson())
+        return SummonBot.parse(request("/api/bots", "POST", body, newID())).also(::upsertBot)
     }
 
-    suspend fun updateRoom(id: String, name: String, members: List<String>, goal: String = "", projectMode: String? = null): SummonRoom {
-        val connection = connectionGeneration
-        val body = mutableMapOf<String, SummonJson>(
-            "name" to SummonJson.Str(name),
-            "members" to SummonJson.Arr(members.map(SummonJson::Str)),
-            "goal" to SummonJson.Str(goal),
-        )
-        if (projectMode != null) body["projectMode"] = SummonJson.Str(projectMode)
-        val result = withContext(Dispatchers.IO) {
-            SummonRoom.parse(apiClient().requestJson("/api/rooms/${SummonApiClient.component(id)}", "PATCH", SummonJson.Obj(body)))
-        }
-        if (connection == connectionGeneration) {
-            upsertRoom(result)
-            schedulePersistence()
-        }
-        return result
+    suspend fun updateBot(bot: SummonBot, vararg changes: Pair<String, SummonJson>): SummonBot {
+        val revision = bot.revision ?: throw SummonApiException.invalidResponse
+        val body = SummonJson.Obj(mapOf(*changes) + ("revision" to revision.numOrNull()))
+        val result = request("/api/bots/" + SummonApiClient.component(bot.id), "PATCH", body, newID())
+        return SummonBot.parse(result).also(::upsertBot)
+    }
+
+    suspend fun createGroup(name: String, members: List<String>): SummonRoom {
+        val body = SummonJson.Obj(buildMap {
+            put("members", members.toJsonStrings())
+            if (name.isNotEmpty()) put("title", SummonJson.Str(name))
+        })
+        return SummonRoom.parse(request("/api/rooms", "POST", body, newID())).also(::upsertRoom)
+    }
+
+    suspend fun updateRoom(room: SummonRoom, name: String, members: List<String>) {
+        changeRoom(room, mapOf("title" to SummonJson.Str(name),
+            "add_members" to members.filterNot { it in room.members }.toJsonStrings(),
+            "remove_members" to room.members.filter { it != "user" && it !in members }.toJsonStrings()))
+    }
+
+    suspend fun setPin(ref: SummonReference, room: SummonRoom, remove: Boolean) {
+        val field = if (remove) "pin_remove" else "pin_add"
+        changeRoom(room, mapOf(field to SummonJson.Arr(listOf(ref.toJson()))))
+    }
+
+    private suspend fun changeRoom(room: SummonRoom, changes: Map<String, SummonJson>) {
+        val revision = room.revision ?: throw SummonApiException.invalidResponse
+        val body = SummonJson.Obj(changes + ("revision" to revision.numOrNull()))
+        upsertRoom(SummonRoom.parse(request(roomPath(room.id), "PATCH", body, newID())))
     }
 
     fun draft(id: String): String = drafts[id].orEmpty()
     fun setDraft(value: String, id: String) { drafts = drafts + (id to value); schedulePersistence() }
-    fun setDraftAttachments(value: List<SummonAttachment>, id: String) { draftAttachments = draftAttachments + (id to value.take(8)); schedulePersistence() }
-    fun setDraftTarget(value: String?, id: String) {
-        draftTargets = if (value == null) draftTargets - id else draftTargets + (id to value)
-        schedulePersistence()
+    fun setDraftAttachments(value: List<SummonAttachment>, id: String) {
+        draftAttachments = draftAttachments + (id to value)
+        persistNow()
     }
+    fun setDraftMentions(value: List<String>, id: String) { draftMentions = draftMentions + (id to value); schedulePersistence() }
     fun setDraftReply(value: String?, id: String) {
         draftReplies = if (value == null) draftReplies - id else draftReplies + (id to value)
         schedulePersistence()
     }
+    fun setDraftReferences(value: List<SummonReference>, id: String) { draftReferences = draftReferences + (id to value); schedulePersistence() }
 
-    suspend fun sendMessage(roomID: String, content: String, attachments: List<SummonAttachment> = emptyList(), toBotID: String? = null, replyTo: String? = null) {
-        if (roomID in sendingRoomIDs) return
-        val text = content.trim()
-        if (text.isEmpty() && attachments.isEmpty()) { errorMessage = SummonApiException.emptyMessage.message; return }
-        if (attachments.size > 8) { errorMessage = SummonApiException.tooManyAttachments.message; return }
-        if (client == null) { errorMessage = SummonApiException.noConnection.message; return }
-        val id = UUID.randomUUID().toString().lowercase()
-        val message = SummonMessage(
-            id = "local-$id", roomId = roomID, senderId = "user", content = text, attachments = attachments,
-            replyTo = replyTo, toBotId = toBotID, clientId = id,
-            createdAt = DateTimeFormatter.ISO_INSTANT.format(Instant.now()),
-        )
-        pendingMessages = pendingMessages + SummonPendingMessage(id, message, "sending")
-        drafts = drafts + (roomID to "")
-        draftAttachments = draftAttachments + (roomID to emptyList())
-        draftTargets = draftTargets - roomID
-        draftReplies = draftReplies - roomID
-        updateVisibleMessages(roomID)
-        persistNow()
-        deliver(id)
+    suspend fun sendMessage(roomID: String) {
+        if (!protocolReady || roomID in sendingRoomIDs) return
+        val text = draft(roomID)
+        val files = draftAttachments[roomID].orEmpty()
+        val refs = draftReferences[roomID].orEmpty()
+        if (text.isBlank() && files.isEmpty() && refs.isEmpty()) return
+        if (files.size > 8) { errorMessage = SummonApiException.tooManyAttachments.message; return }
+        val id = newID()
+        val message = SummonMessage("local-$id", roomID, "user", text, files, refs, draftMentions[roomID].orEmpty(),
+            draftReplies[roomID], id, Instant.now().toString())
+        pendingMessages = pendingMessages + SummonPendingMessage(id, message, "queued", null)
+        drafts = drafts - roomID; draftAttachments = draftAttachments - roomID; draftMentions = draftMentions - roomID
+        draftReplies = draftReplies - roomID; draftReferences = draftReferences - roomID
+        deliver(id, queryFirst = false)
     }
 
-    suspend fun retryMessage(clientID: String) {
-        val pending = pendingMessages.firstOrNull { it.clientID == clientID } ?: return
-        if (pending.status != "failed") return
-        deliver(clientID)
-    }
+    suspend fun retryMessage(clientID: String) = deliver(clientID, queryFirst = true)
 
-    suspend fun cancelRun(id: String) {
-        withContext(Dispatchers.IO) { apiClient().requestJson("/api/agent-runs/${SummonApiClient.component(id)}/cancel", "POST", SummonJson.Obj(emptyMap())) }
-        refresh()
-    }
-
-    suspend fun uploadAttachment(uri: Uri): SummonAttachment = withContext(Dispatchers.IO) {
-        val resolver = app.contentResolver
-        val length = resolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1
-        if (length > 20L * 1024 * 1024) throw SummonApiException.attachmentTooLarge
-        val bytes = resolver.openInputStream(uri)?.use { it.readBytes() } ?: throw SummonApiException.invalidResponse
-        if (bytes.size > 20 * 1024 * 1024) throw SummonApiException.attachmentTooLarge
-        apiClient().upload(bytes, displayName(app, uri), mimeFor(app, uri))
-    }
-
-    suspend fun uploadAttachment(data: ByteArray, name: String, mimeType: String): SummonAttachment =
-        withContext(Dispatchers.IO) { apiClient().upload(data, name, mimeType) }
-
-    suspend fun attachmentFile(attachment: SummonAttachment): File = withContext(Dispatchers.IO) {
-        apiClient().download(app, "/api/attachments/${SummonApiClient.component(attachment.id)}", attachment.name)
-    }
-
-    suspend fun attachmentPreview(attachment: SummonAttachment): ByteArray = withContext(Dispatchers.IO) {
-        apiClient().bytes("/api/attachments/${SummonApiClient.component(attachment.id)}/preview")
-    }
-
-    suspend fun artifactFile(artifact: SummonArtifact, runID: String, toolID: String): File = withContext(Dispatchers.IO) {
-        val component = SummonApiClient::component
-        apiClient().download(app, "/api/agent-runs/${component(runID)}/tools/${component(toolID)}/artifacts/${component(artifact.id)}", artifact.name ?: "产物")
-    }
-
-    var modelSummary by mutableStateOf<SummonJson>(SummonJson.Null)
-        private set
-
-    suspend fun refreshModelUsage(force: Boolean = false): SummonJson {
-        val endpoint = settings.baseURL
-        val result = request("/api/model-settings/usage", "POST", SummonJson.obj("force" to SummonJson.Bool(force)))
-        if (endpoint == settings.baseURL) modelSummary = result
-        return result
-    }
-
-    suspend fun request(path: String, method: String = "GET", body: SummonJson? = null): SummonJson =
-        withContext(Dispatchers.IO) { apiClient().requestJson(path, method, body) }
-
-    private fun apiClient(): SummonApiClient = client ?: throw SummonApiException.noConnection
-
-    private suspend fun deliver(clientID: String) {
+    private suspend fun deliver(id: String, queryFirst: Boolean) {
         val api = client ?: return
-        val item = pendingMessages.firstOrNull { it.clientID == clientID } ?: return
-        if (item.roomID in sendingRoomIDs) return
+        val item = pendingMessages.firstOrNull { it.clientID == id } ?: return
+        if (!protocolReady || item.status == "sent" || item.roomID in sendingRoomIDs) return
         val connection = connectionGeneration
-        val history = historyGeneration
         sendingRoomIDs = sendingRoomIDs + item.roomID
-        updatePending(clientID) { it.copy(status = "sending", error = null) }
-        persistNow()
+        updatePending(id) { it.copy(status = "sending", error = null) }
         try {
-            val message = item.message
-            val body = buildMap {
-                put("content", SummonJson.Str(message.content))
-                put("clientId", SummonJson.Str(clientID))
-                put("attachments", SummonJson.Arr(message.attachments.map { SummonJson.obj("id" to SummonJson.Str(it.id)) }))
-                message.toBotId?.let { put("toBotId", SummonJson.Str(it)) }
-                message.replyTo?.let { put("replyTo", SummonJson.Str(it)) }
+            if (!persistNow()) throw SummonApiException("本机发送记录无法保存。")
+            val path = roomPath(item.roomID) + "/messages"
+            var receipt: SummonReceipt? = null
+            if (queryFirst) {
+                try {
+                    val result = withContext(Dispatchers.IO) { api.requestJson(path + "/receipt?clientId=" + SummonApiClient.component(id)) }
+                    receipt = SummonReceipt.parse(result)
+                } catch (error: SummonApiException) { if (error.status != 404) throw error }
             }
-            val sent = withContext(Dispatchers.IO) {
-                SummonMessage.parse(api.requestJson("/api/rooms/${SummonApiClient.component(item.roomID)}/messages", "POST", SummonJson.Obj(body)))
+            if (receipt == null) {
+                val message = item.message
+                val uploaded = mutableListOf<SummonJson>()
+                for (file in message.attachments) {
+                    if (connection != connectionGeneration || !protocolReady) return
+                    val prepared = withContext(Dispatchers.IO) { preparedAttachment(file, api) }
+                    uploaded += SummonReference("file", prepared.id).toJson()
+                }
+                if (connection != connectionGeneration || !protocolReady) return
+                val body = SummonJson.Obj(buildMap {
+                    put("text", SummonJson.Str(message.content)); put("clientId", SummonJson.Str(id))
+                    put("attachments", SummonJson.Arr(uploaded)); put("references", SummonJson.Arr(message.references.map(SummonReference::toJson)))
+                    put("mentions", message.mentions.toJsonStrings())
+                    message.replyTo?.let { put("reply_to", SummonReference("event", it).toJson()) }
+                })
+                receipt = SummonReceipt.parse(withContext(Dispatchers.IO) { api.requestJson(path, "POST", body, id) })
             }
-            if (connection != connectionGeneration || history != historyGeneration) return
-            if (sent.clientId != clientID || sent.roomId != item.roomID || sent.id.isEmpty()) throw SummonApiException.invalidReceipt
-            updatePending(clientID) { it.copy(message = sent, status = "sent", error = null) }
-            rooms = rooms.map { room -> if (room.id == item.roomID) room.copy(lastMessage = sent) else room }
-        } catch (error: CancellationException) {
-            throw error
-        } catch (error: Exception) {
-            if (connection != connectionGeneration || history != historyGeneration) return
-            if (messageHistory[item.roomID].orEmpty().any { it.clientId == clientID && it.senderId == "user" }) return
-            updatePending(clientID) { it.copy(status = "failed", error = error.message) }
-            errorMessage = "消息尚未确认送达，可在消息旁手动重试。"
-        } finally {
-            if (connection == connectionGeneration && history == historyGeneration) {
-                sendingRoomIDs = sendingRoomIDs - item.roomID
-                updateVisibleMessages(item.roomID)
-                schedulePersistence()
-                scheduleRoomRefresh(item.roomID)
-                scheduleRefresh()
+            if (connection != connectionGeneration) return
+            val confirmed = receipt ?: throw SummonApiException.invalidReceipt
+            val message = confirmed.message
+            if (message.clientId != id || message.roomId != item.roomID || !message.isOwn || message.id.isEmpty()) throw SummonApiException.invalidReceipt
+            deliveries = deliveries + (message.id to confirmed.deliveries)
+            updatePending(id) { it.copy(message = message, status = "sent", error = null) }
+            rooms = rooms.map { if (it.id == item.roomID) it.copy(lastMessage = message) else it }
+            if (persistNow()) item.message.attachments.forEach(::discardStagedAttachment)
+            scheduleRefresh()
+        } catch (error: CancellationException) { throw error }
+        catch (error: Exception) {
+            if (connection == connectionGeneration) {
+                updatePending(id) { it.copy(status = "failed", error = error.localizedMessage) }
+                persistNow()
+                if ((error as? SummonApiException)?.status in listOf(426, 503)) handle(error)
             }
-        }
-    }
-
-    private suspend fun loadRoom(id: String, api: SummonApiClient, connection: Int) {
-        if (!isForeground || connection != connectionGeneration) return
-        if (id in roomLoadsInFlight) {
-            roomsNeedingReload.add(id)
-            return
-        }
-        roomLoadsInFlight.add(id)
-        val read = (roomReadGeneration[id] ?: 0) + 1
-        roomReadGeneration[id] = read
-        val history = historyGeneration
-        val job = scope.launch { }
-        roomJobs[id] = job
-        try {
-            val snapshot = withContext(Dispatchers.IO) {
-                SummonRoomSnapshot.parse(api.requestJson("/api/rooms/${SummonApiClient.component(id)}/messages"))
-            }
-            if (connection != connectionGeneration || history != historyGeneration || roomReadGeneration[id] != read) return
-            if (hasSnapshot && snapshot.historyEpoch != historyEpoch) {
-                scheduleRefresh()
-                return
-            }
-            upsertRoom(snapshot.room.copy(lastMessage = snapshot.messages.lastOrNull()))
-            messageHistory = messageHistory + (id to snapshot.messages)
-            val confirmed = snapshot.messages.filter { it.senderId == "user" }.mapNotNull { it.clientId }.toSet()
-            pendingMessages = pendingMessages.filterNot { it.roomID == id && it.clientID in confirmed }
-            val replied = snapshot.messages.mapNotNull { it.jobId }.toSet()
-            if (selectedRoomID == id) {
-                messages = messagesForRoom(id)
-                jobs = snapshot.jobs
-            }
-            scheduleActiveRunDetails(id, snapshot.jobs, replied)
-            lastSyncAt = System.currentTimeMillis()
-            roomLastRead[id] = SystemClock.elapsedRealtime()
-            schedulePersistence()
-        } catch (error: CancellationException) {
-            throw error
-        } catch (error: Exception) {
-            if (connection == connectionGeneration && activeRoomID == id) errorMessage = error.message
         } finally {
             if (connection == connectionGeneration) {
-                roomJobs.remove(id)
-                roomLoadsInFlight.remove(id)
-                if (roomsNeedingReload.remove(id)) {
-                    if (roomRefreshJob != null) roomRefreshAgain = true else scheduleRoomRefresh(id)
+                sendingRoomIDs = sendingRoomIDs - item.roomID
+                if (pendingMessages.any { it.clientID == id && it.status == "sending" }) {
+                    updatePending(id) { it.copy(status = "failed", error = protocolNotice ?: "保存状态待确认。") }
+                    persistNow()
                 }
             }
         }
+    }
+
+    suspend fun stageAttachment(uri: Uri): SummonAttachment = withContext(Dispatchers.IO) {
+        val max = 20 * 1024 * 1024
+        val data = app.contentResolver.openInputStream(uri)?.use { stream ->
+            val buffer = ByteArray(8192)
+            val output = java.io.ByteArrayOutputStream()
+            while (true) {
+                val count = stream.read(buffer)
+                if (count < 0) break
+                if (output.size() + count > max) throw SummonApiException.attachmentTooLarge
+                output.write(buffer, 0, count)
+            }
+            output.toByteArray()
+        } ?: throw SummonApiException.missingAttachment
+        val id = newID()
+        val file = stagingFile(id) ?: throw SummonApiException.missingAttachment
+        file.parentFile?.mkdirs()
+        file.writeBytes(data)
+        SummonAttachment(id, displayName(app, uri), mimeFor(app, uri), data.size, staged = true)
+    }
+
+    fun discardStagedAttachment(attachment: SummonAttachment) {
+        if (attachment.staged) stagingFile(attachment.id)?.delete()
+    }
+
+    private fun stagingFile(id: String): File? =
+        if (runCatching { UUID.fromString(id).toString() == id }.getOrDefault(false)) File(storageDirectory, "attachments/$id") else null
+
+    private fun preparedAttachment(attachment: SummonAttachment, api: SummonApiClient): SummonAttachment {
+        if (!attachment.staged) return attachment
+        val file = stagingFile(attachment.id)?.takeIf(File::isFile) ?: throw SummonApiException.missingAttachment
+        return api.upload(file.readBytes(), attachment.name, attachment.mimeType, attachment.id)
+    }
+
+    suspend fun attachmentFile(attachment: SummonAttachment): File {
+        if (attachment.unavailable) throw SummonApiException.http(404, "附件不可用。")
+        val api = apiClient()
+        return withContext(Dispatchers.IO) { api.download(app, attachment.downloadPath, attachment.name) }
+    }
+
+    suspend fun attachmentPreview(attachment: SummonAttachment): ByteArray {
+        val api = apiClient()
+        return withContext(Dispatchers.IO) { api.bytes("/api/attachments/" + SummonApiClient.component(attachment.id) + "/preview") }
+    }
+
+    suspend fun downloadFile(id: String, name: String): File {
+        val api = apiClient()
+        return withContext(Dispatchers.IO) { api.download(app, "/api/files/" + SummonApiClient.component(id) + "/download", name) }
+    }
+
+    suspend fun refreshModelUsage(force: Boolean = false): SummonJson =
+        request("/api/model-settings/usage", "POST", SummonJson.obj("force" to SummonJson.Bool(force))).also { modelSummary = it }
+
+    suspend fun request(path: String, method: String = "GET", body: SummonJson? = null, clientID: String? = null): SummonJson {
+        val connection = connectionGeneration
+        val api = apiClient()
+        try {
+            val result = withContext(Dispatchers.IO) { api.requestJson(path, method, body, clientID) }
+            if (connection != connectionGeneration) throw CancellationException()
+            return result
+        } catch (error: SummonApiException) {
+            if (connection == connectionGeneration && error.status in listOf(426, 503)) handle(error)
+            throw error
+        }
+    }
+
+    suspend fun read(ref: SummonReference, cursor: String? = null): SummonJson {
+        val path = ref.path
+        if (path != null) return request(path + (cursor?.let { "?cursor=" + SummonApiClient.component(it) }).orEmpty())
+        return request("/api/platform/read", "POST", SummonJson.obj("arguments" to SummonJson.obj("ref" to ref.toJson())))["result"]
+    }
+
+    suspend fun list(path: String): List<SummonJson> {
+        val items = mutableListOf<SummonJson>()
+        var cursor: String? = null
+        do {
+            val endpoint = path + (cursor?.let { (if ("?" in path) "&" else "?") + "cursor=" + SummonApiClient.component(it) }).orEmpty()
+            val page = request(endpoint)
+            items += page["items"].array.orEmpty()
+            cursor = page["next_cursor"].string
+        } while (cursor != null)
+        return items
+    }
+
+    private fun apiClient(): SummonApiClient {
+        val api = client ?: throw SummonApiException.noConnection
+        if (!protocolReady) throw SummonApiException(protocolNotice ?: "正在连接工作区。")
+        return api
     }
 
     private fun startStream() {
-        if (!isForeground || streamJob != null || client == null) return
         val api = client ?: return
+        if (streamJob != null) return
         val connection = connectionGeneration
         streamJob = scope.launch {
-            var delaySec = 1L
-            while (isActive) {
-                val started = SystemClock.elapsedRealtime()
-                try {
-                    SummonEventStream(api).consume { event ->
-                        withContext(Dispatchers.Main.immediate) { receiveStream(event, connection) }
+            var seconds = 1L
+            while (isActive && foreground && connection == connectionGeneration) {
+                if (!protocolReady) refresh()
+                if (protocolReady) {
+                    val started = android.os.SystemClock.elapsedRealtime()
+                    try {
+                        val current = SummonEventStream(api)
+                        withContext(Dispatchers.IO) {
+                            current.consume { event ->
+                                withContext(Dispatchers.Main.immediate) {
+                                    if (connection == connectionGeneration && foreground) {
+                                        isConnected = true
+                                        if (event !is SummonStreamEvent.KeepAlive) scheduleRefresh()
+                                    }
+                                }
+                            }
+                        }
+                    } catch (error: CancellationException) { throw error }
+                    catch (error: Exception) {
+                        if (connection != connectionGeneration) return@launch
+                        isConnected = false
+                        if ((error as? SummonApiException)?.status in listOf(426, 503)) handle(error)
+                        if (android.os.SystemClock.elapsedRealtime() - started >= 30_000) seconds = 1
                     }
-                    delaySec = 1
-                } catch (error: CancellationException) {
-                    return@launch
-                } catch (_: Exception) {
-                    if (connection != connectionGeneration) return@launch
-                    isConnected = false
-                    if (SystemClock.elapsedRealtime() - started >= 30_000) delaySec = 1
-                    scheduleRoomRefresh()
-                    delay(delaySec * 1000)
-                    delaySec = minOf(delaySec * 2, 30)
                 }
+                delay(seconds * 1000)
+                seconds = (seconds * 2).coerceAtMost(30)
             }
         }
     }
 
-    private fun receiveStream(event: SummonStreamEvent, connection: Int) {
-        if (!isForeground || connection != connectionGeneration) return
-        isConnected = true
-        when (event) {
-            SummonStreamEvent.Connected -> {
-                scheduleRoomRefresh()
-                scheduleRefresh()
-            }
-            SummonStreamEvent.KeepAlive -> Unit
-            is SummonStreamEvent.Change -> {
-                val active = activeRoomID?.let { id -> rooms.firstOrNull { it.id == id } }
-                val concerns = when {
-                    event.roomID != null -> event.roomID == activeRoomID
-                    event.botID != null -> active?.members?.contains(event.botID) == true
-                    else -> event.type == null || event.type == "change" || event.type == "state"
-                }
-                if (concerns) scheduleRoomRefresh()
-                if (event.type != "connected") scheduleRefresh()
+    private fun startRecovery() {
+        if (recoveryJob != null) return
+        recoveryJob = scope.launch {
+            while (isActive && foreground) {
+                delay(15_000)
+                if (protocolReady) activeRoomID?.let { loadRoom(it) }
             }
         }
     }
 
     private fun scheduleRefresh() {
-        if (!isForeground || client == null || refreshJob != null) return
-        val connection = connectionGeneration
-        val elapsed = SystemClock.elapsedRealtime() - workspaceLastRequested
-        val delayMs = maxOf(300L, 5_000L - elapsed)
+        if (!foreground || refreshJob != null) return
         refreshJob = scope.launch {
-            delay(delayMs)
-            if (connection != connectionGeneration) return@launch
+            delay(850)
             refreshJob = null
             refresh()
         }
     }
 
-    private fun scheduleRoomRefresh(id: String? = null) {
-        val active = activeRoomID ?: return
-        val api = client ?: return
-        if (!isForeground || (id != null && id != active)) return
-        if (roomRefreshJob != null) {
-            if (active in roomLoadsInFlight) roomRefreshAgain = true
-            return
-        }
-        val connection = connectionGeneration
-        roomRefreshGeneration += 1
-        val generation = roomRefreshGeneration
-        roomRefreshJob = scope.launch {
-            delay(180)
-            try {
-                if (!isForeground || connection != connectionGeneration || generation != roomRefreshGeneration || active != activeRoomID) return@launch
-                loadRoom(active, api, connection)
-            } finally {
-                if (connection == connectionGeneration && generation == roomRefreshGeneration) {
-                    roomRefreshJob = null
-                    if (roomRefreshAgain) {
-                        roomRefreshAgain = false
-                        scheduleRoomRefresh()
-                    }
-                }
-            }
-        }
-    }
-
-    private fun startRoomRecovery() {
-        if (!isForeground || activeRoomID == null || roomRecoveryJob != null) return
-        val connection = connectionGeneration
-        roomRecoveryJob = scope.launch {
-            while (isActive) {
-                delay(5_000)
-                if (!isForeground || connection != connectionGeneration) return@launch
-                val id = activeRoomID ?: return@launch
-                val api = client ?: return@launch
-                val interval = if (!isConnected || jobs.any { it.isActive }) 5_000L else 15_000L
-                val last = roomLastRead[id]
-                if (last != null && SystemClock.elapsedRealtime() - last < interval) continue
-                loadRoom(id, api, connection)
-            }
-        }
-    }
-
-    private fun scheduleActiveRunDetails(roomID: String, roomJobs: List<SummonJob>, repliedJobIDs: Set<String>) {
-        if (!isForeground || activeRoomID != roomID || client == null) return
-        val api = client ?: return
-        val settled = roomJobs.filter { !it.isActive || it.id in repliedJobIDs }
-        val settledIDs = settled.flatMap { listOfNotNull(it.taskId, it.agentRunId) }.toSet()
-        val wanted = roomJobs.filter { it.isActive && it.id !in repliedJobIDs }.mapNotNull { it.agentRunId ?: it.taskId }.toMutableSet()
-        agentRuns.filter { it.roomId == roomID && it.isActive && it.id !in settledIDs }.forEach { wanted += it.id }
-        runDetailJobs.keys.filter { it !in wanted }.forEach { id ->
-            runDetailJobs.remove(id)?.cancel()
-            runDetailTokens.remove(id)
-        }
-        val connection = connectionGeneration
-        val generation = runDetailGeneration
-        val now = SystemClock.elapsedRealtime()
-        for (id in wanted) {
-            if (runDetailJobs[id] != null) continue
-            val previous = runDetailLastRequested[id]
-            if (previous != null && now - previous < 5_000) continue
-            runDetailLastRequested[id] = now
-            val token = UUID.randomUUID().toString()
-            runDetailTokens[id] = token
-            runDetailJobs[id] = scope.launch {
-                try {
-                    val detail = withContext(Dispatchers.IO) {
-                        SummonAgentRun.parse(api.requestJson("/api/agent-runs/${SummonApiClient.component(id)}"))
-                    }
-                    if (!isForeground || activeRoomID != roomID || connection != connectionGeneration || generation != runDetailGeneration || runDetailTokens[id] != token) return@launch
-                    agentRunDetails = agentRunDetails + (id to detail)
-                } catch (_: CancellationException) {
-                    throw CancellationException()
-                } catch (_: Exception) {
-                } finally {
-                    if (connection == connectionGeneration && generation == runDetailGeneration && runDetailTokens[id] == token) {
-                        runDetailJobs.remove(id)
-                        runDetailTokens.remove(id)
-                    }
-                }
-            }
-        }
-    }
-
-    private fun cancelRunDetailRefreshes() {
-        runDetailGeneration += 1
-        runDetailJobs.values.forEach { it.cancel() }
-        runDetailJobs.clear()
-        runDetailTokens.clear()
-    }
-
-    private fun acceptEpoch(epoch: String?) {
-        if (hasSnapshot && historyEpoch != epoch) {
-            historyGeneration += 1
-            messageHistory = emptyMap()
-            messages = emptyList()
-            jobs = emptyList()
-            pendingMessages = emptyList()
-            drafts = emptyMap()
-            draftAttachments = emptyMap()
-            draftTargets = emptyMap()
-            draftReplies = emptyMap()
-            sendingRoomIDs = emptySet()
-            agentRunDetails = emptyMap()
-            cancelRunDetailRefreshes()
-            runDetailLastRequested.clear()
-        }
-        historyEpoch = epoch
-    }
-
-    private fun clearWorkspace() {
-        onboarding = SummonJson.Null
-        historyGeneration += 1
-        hasSnapshot = false
-        historyEpoch = null
-        bots = emptyList(); rooms = emptyList(); messages = emptyList(); jobs = emptyList()
-        agentRuns = emptyList(); agentRunDetails = emptyMap(); messageHistory = emptyMap()
-        pendingMessages = emptyList(); drafts = emptyMap(); draftAttachments = emptyMap()
-        draftTargets = emptyMap(); draftReplies = emptyMap(); selectedRoomID = null
-        sendingRoomIDs = emptySet(); lastSyncAt = null; activeRoomID = null
-        roomLastRead.clear(); runDetailLastRequested.clear()
+    private fun upsertRoom(room: SummonRoom) {
+        val before = room(room.id)
+        if (before == null) rooms = rooms + room
+        else if ((room.revision ?: 0) >= (before.revision ?: 0)) rooms = rooms.map { if (it.id == room.id) room else it }
+        schedulePersistence()
     }
 
     private fun upsertBot(bot: SummonBot) {
-        bots = if (bots.any { it.id == bot.id }) bots.map { if (it.id == bot.id) bot else it } else bots + bot
+        if (this.bot(bot.id) == null) bots = bots + bot else bots = bots.map { if (it.id == bot.id) bot else it }
+        schedulePersistence()
     }
 
-    private fun upsertRoom(room: SummonRoom) {
-        rooms = if (rooms.any { it.id == room.id }) {
-            rooms.map { current ->
-                if (current.id != room.id) current
-                else room.copy(lastMessage = room.lastMessage ?: current.lastMessage)
-            }
-        } else rooms + room
+    private fun updatePending(id: String, change: (SummonPendingMessage) -> SummonPendingMessage) {
+        pendingMessages = pendingMessages.map { if (it.clientID == id) change(it) else it }
     }
 
-    private fun updatePending(id: String, mutate: (SummonPendingMessage) -> SummonPendingMessage) {
-        pendingMessages = pendingMessages.map { if (it.clientID == id) mutate(it) else it }
+    private fun clearWorkspace() {
+        bots = emptyList(); rooms = emptyList(); messageHistory = emptyMap(); deliveries = emptyMap(); cursors = emptyMap()
+        pendingMessages = emptyList(); drafts = emptyMap(); draftAttachments = emptyMap(); draftMentions = emptyMap()
+        draftReplies = emptyMap(); draftReferences = emptyMap(); activeRoomID = null; historyEpoch = null; lastSyncAt = null
+        modelSummary = SummonJson.Null
     }
 
-    private fun updateVisibleMessages(roomID: String) {
-        if (selectedRoomID == roomID) messages = messagesForRoom(roomID)
+    private fun snapshotFile(): File? {
+        if (settings.baseURL.isEmpty()) return null
+        val keyText = settings.workspaceID?.let { settings.baseURL + "|" + it } ?: settings.baseURL
+        val key = android.util.Base64.encodeToString(keyText.toByteArray(), android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE)
+        val directory = key.chunked(120).fold(File(storageDirectory, "workspaces")) { root, part -> File(root, part) }
+        return File(directory, "snapshot.json")
     }
 
     private fun restoreSnapshot() {
-        val raw = runCatching { cacheFile.readText() }.getOrNull() ?: return
-        val json = runCatching { SummonJson.parse(raw) }.getOrNull() ?: return
-        if (json["endpoint"].string != settings.baseURL) return
-        historyEpoch = json["historyEpoch"].string
-        bots = json["bots"].array.orEmpty().map(SummonBot::parse)
-        rooms = json["rooms"].array.orEmpty().map(SummonRoom::parse)
-        agentRuns = json["agentRuns"].array.orEmpty().map(SummonAgentRun::parse)
-        messageHistory = json["messageHistory"].obj.orEmpty().mapValues { (_, value) -> value.array.orEmpty().map(SummonMessage::parse) }
-        pendingMessages = json["pendingMessages"].array.orEmpty().map(SummonPendingMessage::parse).map { entry ->
-            if (entry.status == "sending") entry.copy(status = "failed", error = "上次发送尚未确认，请手动重试。") else entry
-        }
-        drafts = json["drafts"].obj.orEmpty().mapValues { it.value.stringValue }
-        draftAttachments = json["draftAttachments"].obj.orEmpty().mapValues { it.value.array.orEmpty().map(SummonAttachment::parse) }
-        draftTargets = json["draftTargets"].obj.orEmpty().mapValues { it.value.stringValue }
-        draftReplies = json["draftReplies"].obj.orEmpty().mapValues { it.value.stringValue }
-        selectedRoomID = json["selectedRoomID"].string
-        selectedRoomID?.let { messages = messagesForRoom(it) }
-        lastSyncAt = json["savedAt"].string?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() }
-        hasSnapshot = true
+        val current = snapshotFile() ?: return
+        val old = File(storageDirectory, "workspace.json")
+        val useLegacy = settings.workspaceID == null && !current.exists() && old.exists()
+        val source = if (useLegacy) old else current
+        val saved = runCatching { SummonJson.parse(AtomicFile(source).readFully().toString(Charsets.UTF_8)) }.getOrNull() ?: return
+        if (saved["endpoint"].string != settings.baseURL || saved["workspaceID"].string != settings.workspaceID) return
+        runCatching {
+            historyEpoch = saved["historyEpoch"].string
+            bots = saved["bots"].array.orEmpty().map(SummonBot::parse)
+            rooms = saved["rooms"].array.orEmpty().map { SummonRoom.parse(it, stored = true) }
+            messageHistory = saved["messageHistory"].obj.orEmpty().mapValues { (_, list) ->
+                list.array.orEmpty().map { SummonMessage.parse(it, stored = true) }
+            }
+            pendingMessages = saved["pendingMessages"].array.orEmpty().map(SummonPendingMessage::parse).map {
+                if (it.status in listOf("sending", "queued")) it.copy(status = "failed", error = "上次发送的保存状态待确认。") else it
+            }
+            drafts = saved["drafts"].obj.orEmpty().mapValues { it.value.stringValue }
+            draftAttachments = saved["draftAttachments"].obj.orEmpty().mapValues { it.value.array.orEmpty().map(SummonAttachment::parse) }
+            draftMentions = saved["draftMentions"].obj?.mapValues { it.value.array.orEmpty().mapNotNull { entry -> entry.string } }
+                ?: saved["draftTargets"].obj.orEmpty().mapValues { listOfNotNull(it.value.string) }
+            draftReferences = saved["draftReferences"].obj.orEmpty().mapValues { it.value.array.orEmpty().mapNotNull(SummonReference::parse) }
+            draftReplies = saved["draftReplies"].obj.orEmpty().mapValues { it.value.stringValue }
+            lastSyncAt = (saved["savedAt"] as? SummonJson.Num)?.value?.toLong()
+                ?: parseSummonDate(saved["savedAt"].string)?.toEpochMilli()
+        }.onSuccess { if (useLegacy && persistNow()) old.delete() }
     }
 
     private fun schedulePersistence() {
         persistenceJob?.cancel()
         persistenceJob = scope.launch {
-            delay(250)
+            delay(220)
+            persistenceJob = null
             persistNow()
         }
     }
 
-    private fun persistNow() {
-        persistenceJob?.cancel()
-        persistenceJob = null
+    private fun persistNow(): Boolean {
+        persistenceJob?.cancel(); persistenceJob = null
+        val target = snapshotFile() ?: return false
+        val cachedMessages = messageHistory.mapValues { SummonJson.Arr(it.value.takeLast(100).map(SummonMessage::toJson)) }
         val snapshot = SummonJson.obj(
-            "endpoint" to SummonJson.Str(settings.baseURL),
-            "historyEpoch" to (historyEpoch?.let(SummonJson::Str) ?: SummonJson.Null),
-            "bots" to SummonJson.Arr(bots.map { it.toJson() }),
-            "rooms" to SummonJson.Arr(rooms.map { it.toJson() }),
-            "agentRuns" to SummonJson.Arr(agentRuns.map { it.toJson() }),
-            "messageHistory" to SummonJson.Obj(messageHistory.mapValues { SummonJson.Arr(it.value.map { message -> message.toJson() }) }),
-            "pendingMessages" to SummonJson.Arr(pendingMessages.map { it.toJson() }),
+            "endpoint" to SummonJson.Str(settings.baseURL), "workspaceID" to settings.workspaceID.strOrNull(), "historyEpoch" to historyEpoch.strOrNull(),
+            "bots" to SummonJson.Arr(bots.map(SummonBot::toJson)), "rooms" to SummonJson.Arr(rooms.map(SummonRoom::toJson)),
+            "messageHistory" to SummonJson.Obj(cachedMessages),
+            "pendingMessages" to SummonJson.Arr(pendingMessages.map(SummonPendingMessage::toJson)),
             "drafts" to SummonJson.Obj(drafts.mapValues { SummonJson.Str(it.value) }),
-            "draftAttachments" to SummonJson.Obj(draftAttachments.mapValues { SummonJson.Arr(it.value.map { item -> item.toJson() }) }),
-            "draftTargets" to SummonJson.Obj(draftTargets.mapValues { SummonJson.Str(it.value) }),
+            "draftAttachments" to SummonJson.Obj(draftAttachments.mapValues { SummonJson.Arr(it.value.map(SummonAttachment::toJson)) }),
+            "draftMentions" to SummonJson.Obj(draftMentions.mapValues { it.value.toJsonStrings() }),
             "draftReplies" to SummonJson.Obj(draftReplies.mapValues { SummonJson.Str(it.value) }),
-            "selectedRoomID" to (selectedRoomID?.let(SummonJson::Str) ?: SummonJson.Null),
-            "savedAt" to SummonJson.Str(Instant.ofEpochMilli(lastSyncAt ?: System.currentTimeMillis()).toString()),
+            "draftReferences" to SummonJson.Obj(draftReferences.mapValues { SummonJson.Arr(it.value.map(SummonReference::toJson)) }),
+            "savedAt" to SummonJson.Num((lastSyncAt ?: System.currentTimeMillis()).toDouble()),
         )
-        runCatching { cacheFile.writeText(snapshot.encode().toString()) }.onFailure { error ->
-            errorMessage = "本机草稿暂时无法保存：${error.message}"
+        val file = AtomicFile(target)
+        return try {
+            target.parentFile?.mkdirs()
+            val stream = file.startWrite()
+            try { stream.write(snapshot.bytes()); file.finishWrite(stream) }
+            catch (error: Exception) { file.failWrite(stream); throw error }
+            true
+        } catch (error: Exception) {
+            errorMessage = "无法保存本机草稿：" + error.localizedMessage
+            false
         }
     }
 
     companion object {
         private const val SETTINGS_KEY = "SummonNative.connection.v1"
+        fun newID(): String = UUID.randomUUID().toString()
+        private fun roomPath(id: String): String = "/api/rooms/" + SummonApiClient.component(id)
     }
 }

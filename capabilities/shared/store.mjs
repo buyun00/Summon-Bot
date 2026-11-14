@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-/** A capability owns its database; collections are local implementation details. */
+/** Durable records with synchronous transactions for changes in one SQLite store. */
 export class RecordStore {
   constructor(path) {
     this.path = path;

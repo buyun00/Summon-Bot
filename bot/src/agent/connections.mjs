@@ -53,7 +53,7 @@ export function modelConnection(config, id) {
   const catalog = readConnectionCatalog(config.connectionStore);
   const selected = catalog.connections.find(item => item.id === (id || catalog.activeId));
   if (!selected) throw new Error('请先在模型与引擎设置中选择聊天模型');
-  return { ...selected, connectionStore: config.connectionStore, environmentFile: catalog.environmentFile };
+  return { ...selected, connectionStore: config.connectionStore, environmentFile: selected.environmentFile ?? catalog.environmentFile };
 }
 export function officialDeepSeekCompletions(connection, api, baseUrl) {
   return connection.kind === 'api' && connection.provider === 'deepseek' && api === 'openai-completions' &&

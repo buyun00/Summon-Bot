@@ -11,7 +11,7 @@ struct SummonEventStream: Sendable {
     let client: SummonAPIClient
 
     func consume(_ receive: @escaping @Sendable (SummonStreamEvent) async -> Void) async throws {
-        var request = try client.makeRequest(path: "/api/stream")
+        var request = try client.makeRequest(path: "/api/stream?protocol=(SummonAPIClient.protocolVersion)")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -21,7 +21,7 @@ struct SummonEventStream: Sendable {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 60
         configuration.timeoutIntervalForResource = 86_400
-        let session = URLSession(configuration: configuration)
+        let session = URLSession(configuration: configuration, delegate: SummonConnectionProbe(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         let (bytes, response) = try await session.bytes(for: request)
         guard let http = response as? HTTPURLResponse,

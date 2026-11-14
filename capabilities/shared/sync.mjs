@@ -1,8 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
-const WORKSPACE_COLLECTIONS = ['bots', 'rooms', 'works', 'agentRuns', 'activity', 'routines',
-  'knowledge.nodes', 'knowledge.edges', 'runtime.jobs'];
-const ROOM_COLLECTIONS = ['messages', 'jobs'];
+const WORKSPACE_COLLECTIONS = ['bots', 'rooms', 'executions', 'files', 'wakeups', 'connections'];
+const ROOM_COLLECTIONS = ['messages'];
 const emptyPatch = () => ({ values: {}, collections: {} });
 const equal = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 const atPath = (value, path) => path.split('.').reduce((parent, key) => parent?.[key], value);
@@ -23,7 +22,7 @@ export function* syncPages(value) {
   }
   yield line({ header, field });
   for (const [key, data] of Object.entries(snapshot || patch)) {
-    const depth = field === 'patch' && key === 'collections' ? 2 : field === 'snapshot' && ['knowledge', 'runtime'].includes(key) ? 1 : 0;
+    const depth = field === 'patch' && key === 'collections' ? 2 : 0;
     yield* branch([key], data, depth);
   }
   yield line({ end: value.sync.cursor });

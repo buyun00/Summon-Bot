@@ -1,989 +1,917 @@
 import SwiftUI
+import QuickLook
 
 enum WorkspaceSection: String, CaseIterable, Identifiable {
-    case bots, works, knowledge, routines, event
-
+    case bots, executions, files, wakeups, connections
     var id: String { rawValue }
-
     var title: String {
         switch self {
-        case .bots: "管理 Bot"
-        case .works: "工作"
-        case .knowledge: "知识"
-        case .routines: "定时职责"
-        case .event: "投递事件"
+        case .bots: "成员"
+        case .executions: "执行会话"
+        case .files: "资料"
+        case .wakeups: "订阅与提醒"
+        case .connections: "执行连接与额度"
         }
     }
-
     var symbol: String {
         switch self {
         case .bots: "person.2"
-        case .works: "briefcase"
-        case .knowledge: "books.vertical"
-        case .routines: "clock"
-        case .event: "bolt"
+        case .executions: "terminal"
+        case .files: "folder"
+        case .wakeups: "clock"
+        case .connections: "link"
         }
+    }
+    var endpoint: String { "/api/\(rawValue)" }
+}
+
+struct SummonProtocolNotice: View {
+    @Environment(SummonStore.self) private var store
+    let notice: String
+    let needsUpdate: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            InlineError(message: notice)
+            HStack {
+                Button("重新连接") { Task { await store.refresh() } }
+                if needsUpdate, let url = URL(string: "https://testflight.apple.com/") {
+                    Link("打开 TestFlight", destination: url)
+                }
+            }.summonFont(.caption)
+        }.padding(.horizontal, 18).padding(.vertical, 5)
     }
 }
 
 struct WorkspaceView: View {
-    @Environment(SummonStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     let section: WorkspaceSection
 
-    @State private var snapshot: SummonJSONValue = .null
-    @State private var loading = false
-    @State private var error: String?
-    @State private var editor: WorkspaceEditKind?
-    @State private var workFilter = "all"
-    @State private var query = ""
-    @State private var results: SummonJSONValue?
-    @State private var routineOverrides: [String: Bool] = [:]
-    @State private var mutatingIDs: Set<String> = []
-
     var body: some View {
         NavigationStack {
-            Group {
-                if section == .event {
-                    if snapshot.object != nil {
-                        WorkspaceEditor(kind: .event, snapshot: snapshot, embedded: true)
-                    } else {
-                        List { statusRows }
-                    }
-                } else {
-                    List {
-                        statusRows
-                        switch section {
-                        case .bots: botRows
-                        case .works: workRows
-                        case .knowledge: knowledgeRows
-                        case .routines: routineRows
-                        case .event: EmptyView()
+            SummonObjectList(section: section)
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } } }
+        }
+    }
+}
+
+struct SummonObjectList: View {
+    @Environment(SummonStore.self) private var store
+    let section: WorkspaceSection
+    var space: SummonReference? = nil
+    @State private var items: [SummonJSONValue] = []
+    @State private var hosts = SummonJSONValue.null
+    @State private var directories: [SummonJSONValue] = []
+    @State private var loading = false
+    @State private var error: String?
+    @State private var editor: SummonEditorRoute?
+
+    private var path: String {
+        guard let space else { return section.endpoint }
+        return section.endpoint + "?\(space.kind)=" + SummonAPIClient.component(space.id)
+    }
+
+    var body: some View {
+        List {
+            if let error { InlineError(message: error) }
+            if loading && items.isEmpty { ProgressView() }
+            switch section {
+            case .bots:
+                ForEach(store.bots) { bot in
+                    NavigationLink {
+                        BotDetailsView(botID: bot.id)
+                    } label: {
+                        HStack {
+                            MemberAvatar(bot: bot, size: 35)
+                            Text(bot.name)
+                            Spacer()
+                            Text(bot.isPaused ? "已暂停" : "启用").foregroundStyle(.secondary)
                         }
                     }
-                    .refreshable { await reload() }
                 }
-            }
-            .navigationTitle(section.title)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("完成") { dismiss() }
-                }
-                ToolbarItemGroup(placement: .primaryAction) {
-                    if section == .knowledge {
-                        Menu {
-                            Button("新增知识", systemImage: "plus") { editor = .node(nil) }
-                            Button("建立关联", systemImage: "link") { editor = .edge(nil) }
-                                .disabled(editableKnowledgeNodes(snapshot).count < 2)
-                        } label: { Image(systemName: "plus") }
-                        .accessibilityLabel("新增知识或关联")
-                        .disabled(snapshot.object == nil)
-                    } else if section == .works {
-                        Button("委托工作", systemImage: "plus") { editor = .work }
-                            .labelStyle(.iconOnly)
-                            .disabled(snapshot.object == nil)
-                    } else if section == .routines {
-                        Button("新增职责", systemImage: "plus") { editor = .routine(nil) }
-                            .labelStyle(.iconOnly)
-                            .disabled(snapshot.object == nil)
+            case .executions:
+                ForEach(items, id: \.prettyPrinted) { item in
+                    if let ref = SummonReference(item["execution_ref"]) {
+                        NavigationLink {
+                            SummonExecutionView(ref: ref)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(executionTitle(item, store: store))
+                                Text("\(SummonFormat.status(item["status"].stringValue)) · \(SummonFormat.status(item["control"]["state"].stringValue))")
+                                    .summonFont(.caption).foregroundStyle(.secondary)
+                            }
+                        }
                     }
-                    Button("刷新", systemImage: "arrow.clockwise") { Task { await reload() } }
-                        .labelStyle(.iconOnly)
-                        .disabled(loading)
                 }
+            case .files:
+                ForEach(items, id: \.prettyPrinted) { item in
+                    if let ref = SummonReference(item["ref"]) {
+                        NavigationLink(item["path"].string ?? store.label(ref)) { SummonFileView(ref: ref, room: space?.kind == "room" ? space : nil) }
+                    }
+                }
+            case .wakeups:
+                wakeupSection("基础关注", items: items.filter { $0["rule"]["kind"].string == "room_base" })
+                wakeupSection("自定义订阅与提醒", items: items.filter { $0["rule"]["kind"].string != "room_base" })
+            case .connections:
+                connectionSections
             }
-            .summonSheet(item: $editor, onDismiss: { Task { await reload() } }) { kind in
-                WorkspaceEditor(kind: kind, snapshot: snapshot)
+            if items.isEmpty && !loading && section != .bots && section != .connections && section != .wakeups {
+                Text("暂无记录").foregroundStyle(.secondary)
             }
-            .task { await reload() }
+        }
+        .navigationTitle(section.title)
+        .refreshable { await reload() }
+        .task(id: store.protocolReady) { if store.protocolReady { await reload() } }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    switch section {
+                    case .bots: Button("创建 Bot") { editor = .bot }
+                    case .executions:
+                        if space == nil { Button("打开执行会话") { editor = .execution } }
+                    case .files: Button("新增资料") { editor = .file }
+                    case .wakeups: Button("新增订阅或提醒") { editor = .wakeup(.null) }
+                    case .connections:
+                        Button("新增连接") { editor = .connection(.null) }
+                        Button("登记执行目录") { editor = .directory(.null) }
+                    }
+                    Button("刷新") { Task { await reload() } }
+                } label: { Image(systemName: "ellipsis.circle").accessibilityLabel("操作") }
+                    .disabled(!store.protocolReady)
+            }
+        }
+        .summonSheet(item: $editor, onDismiss: { Task { await reload() } }) { route in
+            switch route {
+            case .bot: CreateBotView { _ in editor = nil }
+            case .execution: SummonExecutionEditor()
+            case .file: SummonFileEditor(space: space)
+            case .wakeup(let item): SummonWakeupEditor(item: item, space: space)
+            case .connection(let item): SummonConnectionEditor(item: item)
+            case .directory(let item): SummonDirectoryEditor(item: item)
+            case .limits: SummonLimitsEditor()
+            }
         }
     }
 
-    @ViewBuilder private var statusRows: some View {
-        if loading && snapshot.object == nil { ProgressView("正在载入…") }
-        if let error { WorkspaceErrorRow(message: error) }
-    }
-
-    @ViewBuilder private var botRows: some View {
-        let bots = workspaceRecords(snapshot["bots"])
-        if bots.isEmpty && !loading {
-            ContentUnavailableView("还没有 Bot", systemImage: "person.2")
-        }
-        ForEach(bots) { bot in
-            NavigationLink { BotDetailsView(botID: bot.id) } label: {
-                HStack(spacing: 12) {
-                    BotAvatar(shape: bot.value["avatar"]["shape"].string ?? "dev",
-                              color: bot.value["avatar"]["color"].string ?? "#FFC18E",
-                              image: bot.value["avatar"]["image"].string, size: 42, secondary: bot.value["avatar"]["secondary"].string, ink: bot.value["avatar"]["ink"].string, paper: bot.value["avatar"]["paper"].string)
+    private func wakeupSection(_ title: String, items: [SummonJSONValue]) -> some View {
+        Section(title) {
+            if items.isEmpty { Text("暂无规则").foregroundStyle(.secondary) }
+            ForEach(items, id: \.prettyPrinted) { item in
+                Button { editor = .wakeup(item) } label: {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(bot.value["name"].string ?? bot.id).summonFont(.headline)
-                        Text(bot.value["role"].stringValue).summonFont(.subheadline).foregroundStyle(.secondary)
+                        Text(store.name(for: item["bot_id"].stringValue) + " · " + wakeupTitle(item["rule"]))
+                        Text(item["enabled"].bool == true ? "启用" : "已停用").summonFont(.caption).foregroundStyle(.secondary)
                     }
-                    Spacer()
-                    if bot.value["status"].string == "paused" {
-                        Text("已暂停").summonFont(.caption).foregroundStyle(.secondary)
-                    }
-                }.padding(.vertical, 4)
+                }.disabled(!store.protocolReady)
             }
         }
     }
 
-    @ViewBuilder private var workRows: some View {
-        Section {
-            Picker("筛选", selection: $workFilter) {
-                Text("全部").tag("all")
-                Text("进行中").tag("active")
-                Text("等待中").tag("waiting")
-                Text("已完成").tag("completed")
-                Text("待处理").tag("attention")
-            }
-        }
-        let works = workspaceRecords(snapshot["works"]).filter { record in
-            let status = record.value["status"].stringValue
-            switch workFilter {
-            case "active": return ["active", "queued", "running"].contains(status)
-            case "attention": return ["paused", "blocked", "failed", "interrupted", "cancelled"].contains(status)
-            case "all": return true
-            default: return status == workFilter
-            }
-        }
-        if works.isEmpty && !loading {
-            ContentUnavailableView("这里暂时没有工作", systemImage: "briefcase",
-                                   description: Text("通过右上角加号明确目标并委托给成员。"))
-        }
-        ForEach(works) { record in
-            NavigationLink {
-                WorkspaceWorkDetail(initial: record, snapshot: snapshot)
-            } label: {
-                VStack(alignment: .leading, spacing: 7) {
-                    Text(record.value["goal"].stringValue).summonFont(.headline).lineLimit(3)
-                    HStack {
-                        Text(record.value["status"].stringValue == "active" ? "进行中" : workspaceStatus(record.value["status"].stringValue))
-                        Text("·")
-                        Text(workspaceName(record.value["botId"].stringValue, in: snapshot["bots"]))
-                        Spacer()
-                        Text(workspaceDate(record.value["createdAt"].string))
-                    }.summonFont(.caption).foregroundStyle(.secondary)
-                }.padding(.vertical, 4)
-            }
-        }
-    }
-
-    @ViewBuilder private var knowledgeRows: some View {
-        Section {
-            HStack {
-                TextField("搜索标题和知识内容", text: $query)
-                    .submitLabel(.search)
-                    .onSubmit { Task { await searchKnowledge() } }
-                if !query.isEmpty {
-                    Button("清除", systemImage: "xmark.circle.fill") { query = ""; results = nil }
-                        .labelStyle(.iconOnly)
-                        .foregroundStyle(.secondary)
-                }
-                Button("搜索") { Task { await searchKnowledge() } }
-                    .disabled(loading)
-            }
-        }
-        let nodes = workspaceRecords(results?["nodes"] ?? snapshot["knowledge"]["nodes"])
-        if nodes.isEmpty && !loading {
-            ContentUnavailableView(query.isEmpty ? "还没有知识记录" : "没有匹配的知识", systemImage: "books.vertical")
-        }
-        ForEach(nodes) { node in
-            NavigationLink {
-                WorkspaceKnowledgeDetail(initial: node, snapshot: snapshot)
-            } label: {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text(workspaceStatus(node.value["type"].stringValue))
-                        Text("·")
-                        Text(workspaceStatus(node.value["status"].stringValue))
-                    }.summonFont(.caption).foregroundStyle(.secondary)
-                    Text(node.value["title"].stringValue).summonFont(.headline)
-                    Text(node.value["content"].stringValue).summonFont(.subheadline).foregroundStyle(.secondary).lineLimit(3)
-                }.padding(.vertical, 4)
-            }
-        }
-        if let memories = results?["memories"].array, !memories.isEmpty {
-            Section("相关成员记忆") {
-                ForEach(Array(memories.enumerated()), id: \.offset) { _, memory in
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(workspaceName(memory["botId"].stringValue, in: snapshot["bots"]))
-                            .summonFont(.caption).foregroundStyle(.secondary)
-                        Text(memory["content"].stringValue).textSelection(.enabled)
+    private var connectionSections: some View {
+        Group {
+            Section("执行连接") {
+                ForEach(items, id: \.prettyPrinted) { item in
+                    if let id = item["id"].string {
+                        NavigationLink(item["name"].string ?? id) {
+                            SummonReferenceView(ref: SummonReference(kind: "connection", id: id))
+                        }
+                        .swipeActions {
+                            if item["revision"].int != nil, id != "pi" {
+                                Button("设置") { editor = .connection(item) }.disabled(!store.protocolReady)
+                            }
+                        }
                     }
                 }
             }
-        }
-    }
-
-    @ViewBuilder private var routineRows: some View {
-        let routines = workspaceRecords(snapshot["routines"])
-        if routines.isEmpty && !loading {
-            ContentUnavailableView("还没有定时职责", systemImage: "clock",
-                                   description: Text("创建职责后，服务会按设定周期投递给成员。"))
-        }
-        ForEach(routines) { record in
-            Section {
-                Button { editor = .routine(record) } label: {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(record.value["name"].stringValue).summonFont(.headline).foregroundStyle(.primary)
-                        Text(record.value["instruction"].stringValue)
-                            .summonFont(.subheadline).foregroundStyle(.secondary).lineLimit(4)
-                        Text(workspaceName(record.value["botId"].stringValue, in: snapshot["bots"]))
-                            .summonFont(.caption).foregroundStyle(.secondary)
-                    }.frame(maxWidth: .infinity, alignment: .leading)
+            Section("宿主额度") {
+                ForEach((hosts["limits"].object ?? [:]).keys.sorted(), id: \.self) { key in
+                    let used = hosts["usage"][key].int.map { "\($0) / " } ?? ""
+                    LabeledContent(resourceName(key), value: used + (hosts["limits"][key].int.map { String($0) } ?? ""))
                 }
-                Toggle("启用", isOn: Binding(
-                    get: { routineOverrides[record.id] ?? record.value["enabled"].bool ?? false },
-                    set: { enabled in Task { await setRoutine(record, enabled: enabled) } }
-                )).disabled(mutatingIDs.contains(record.id))
-                LabeledContent("间隔", value: "\(record.value["intervalSeconds"].int.map { $0 / 60 } ?? 60) 分钟")
-                if record.value["enabled"].bool == true {
-                    LabeledContent("下一次", value: workspaceDate(record.value["nextRunAt"].string, full: true))
+                if let at = SummonDate.parse(hosts["usage"]["resets_at"].string) {
+                    LabeledContent("本周期截止", value: at.formatted(date: .abbreviated, time: .shortened))
                 }
-                if let lastStatus = record.value["lastStatus"].string, !lastStatus.isEmpty {
-                    LabeledContent("最近状态", value: workspaceStatus(lastStatus))
-                }
-                if let failure = record.value["error"].string, !failure.isEmpty {
-                    WorkspaceErrorRow(message: failure)
+                Button("编辑额度") { editor = .limits }.disabled(!store.protocolReady || hosts["limits_revision"].int == nil)
+            }
+            Section("执行目录") {
+                ForEach(directories, id: \.prettyPrinted) { directory in
+                    Button { editor = .directory(directory) } label: {
+                        VStack(alignment: .leading) {
+                            Text(directory["name"].stringValue)
+                            Text(directory["path"].stringValue).summonFont(.caption).foregroundStyle(.secondary)
+                        }
+                    }.disabled(!store.protocolReady || directory["revision"].int == nil)
                 }
             }
         }
     }
 
     private func reload() async {
-        loading = true
+        guard store.protocolReady, !loading else { return }
+        loading = true; error = nil
         defer { loading = false }
         do {
-            snapshot = try await store.request(path: "/api/state")
-            error = nil
-            if results != nil { await searchKnowledge() }
-        } catch { self.error = error.localizedDescription }
-    }
-
-    private func searchKnowledge() async {
-        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { results = nil; return }
-        do {
-            results = try await store.request(path: "/api/knowledge/search?q=\(workspaceEscaped(text))")
-            error = nil
-        } catch { self.error = error.localizedDescription }
-    }
-
-    private func setRoutine(_ record: WorkspaceRecord, enabled: Bool) async {
-        guard !mutatingIDs.contains(record.id) else { return }
-        mutatingIDs.insert(record.id)
-        routineOverrides[record.id] = enabled
-        defer { mutatingIDs.remove(record.id); routineOverrides.removeValue(forKey: record.id) }
-        do {
-            _ = try await store.request(path: "/api/routines/\(workspaceEscaped(record.id))", method: "PATCH",
-                                        body: .object(["enabled": .bool(enabled)]))
-            await reload()
-        } catch { self.error = error.localizedDescription }
+            if section == .bots { await store.refresh(); return }
+            items = try await store.list(path)
+            if section == .connections {
+                async let usage = store.request(path: "/api/connections")
+                async let workspaces = store.list("/api/workspaces")
+                (hosts, directories) = try await (usage, workspaces)
+            }
+        } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
     }
 }
 
-private struct WorkspaceWorkDetail: View {
-    @Environment(SummonStore.self) private var store
-    let initial: WorkspaceRecord
-    let snapshot: SummonJSONValue
-    @State private var work: SummonJSONValue = .null
-    @State private var error: String?
-    @State private var busy = false
-    @State private var answer = ""
-    @State private var answerRequestID = UUID().uuidString
-
-    private var value: SummonJSONValue { work.object == nil ? initial.value : work }
-    private var status: String { value["status"].stringValue }
-
-    var body: some View {
-        List {
-            if let error { WorkspaceErrorRow(message: error) }
-            Section {
-                Text(value["goal"].stringValue).summonFont(.title3, weight: .bold).textSelection(.enabled)
-                LabeledContent("状态", value: status == "active" ? "进行中" : workspaceStatus(status))
-                LabeledContent("委托成员", value: workspaceName(value["botId"].stringValue, in: snapshot["bots"]))
-                LabeledContent("来源会话", value: workspaceName(value["roomId"].stringValue, in: snapshot["rooms"]))
-                WorkspaceTextFact(title: "工作目录", value: value["cwd"].stringValue)
-                if let model = value["model"].string { LabeledContent("执行模型", value: model) }
-                LabeledContent("创建时间", value: workspaceDate(value["createdAt"].string, full: true))
-            }
-            if !value["requirements"].stringValue.isEmpty {
-                Section("工作要求") { Text(value["requirements"].stringValue).textSelection(.enabled) }
-            } else if !value["constraints"].stringValue.isEmpty {
-                Section("约束与注意事项") { Text(value["constraints"].stringValue).textSelection(.enabled) }
-            }
-            if !(value["inputRefs"].array ?? []).isEmpty {
-                Section("输入资料") { Text(value["inputRefs"].stringValue).textSelection(.enabled) }
-            }
-            if !value["error"].stringValue.isEmpty { Section { WorkspaceErrorRow(message: value["error"].stringValue) } }
-            if !value["lastError"].stringValue.isEmpty {
-                Section { WorkspaceErrorRow(message: value["lastError"]["message"].string ?? value["lastError"].stringValue) }
-            }
-            if !value["waitingLabel"].stringValue.isEmpty {
-                Section("等待事项") { Text(value["waitingLabel"].stringValue).textSelection(.enabled) }
-            } else if !value["waiting"]["event"].stringValue.isEmpty {
-                Section("等待事项") { Text(value["waiting"]["event"].stringValue).textSelection(.enabled) }
-            }
-            let nativeOperations = (value["bindings"].array ?? []).filter { ["native-tool", "native-recovery", "native-api"].contains($0["type"].stringValue) }
-            if !nativeOperations.isEmpty {
-                Section("工具执行") {
-                    ForEach(Array(nativeOperations.enumerated()), id: \.offset) { _, operation in
-                        WorkspaceNativeOperation(workID: initial.id, operation: operation,
-                                                 allowsInput: !["paused", "cancelled", "completed"].contains(status), refresh: load)
-                    }
-                }
-            }
-            ForEach(Array((value["nativeSources"].array ?? []).enumerated()), id: \.offset) { _, source in
-                Section(source["label"].stringValue) { SummonNativeSourceView(source: source) }
-            }
-            if status == "interrupted" {
-                Section { Text("上次执行已中断。恢复会继续已有工作对话，已进行的操作仍然保留。")
-                    .summonFont(.footnote).foregroundStyle(.secondary) }
-            }
-            if value["historical"].bool != true && ["active", "waiting", "blocked"].contains(status) {
-                Section("补充要求") {
-                    TextField("补充信息或纠正当前要求", text: $answer, axis: .vertical).lineLimit(3...12)
-                    Button("发送给负责成员") {
-                        Task {
-                            await perform("send", body: .object(["id": .string(answerRequestID), "message": .string(answer.trimmingCharacters(in: .whitespacesAndNewlines))]))
-                        }
-                    }.disabled(busy || answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }
-            if !value["summary"].stringValue.isEmpty {
-                Section("当前进度与结果") { Text(value["summary"].stringValue).textSelection(.enabled) }
-            }
-            if status == "blocked", let detail = value["lastError"]["message"].string, !detail.isEmpty {
-                Section { Text(detail).foregroundStyle(.red) }
-            }
-            if value["historical"].bool != true && value["controlRevision"].int != nil && ["active", "waiting"].contains(status) {
-                Section { Button("暂停工作", systemImage: "pause") { Task { await perform("pause") } }.disabled(busy) }
-                Section { Button("取消工作", role: .destructive) { Task { await perform("cancel") } }.disabled(busy) }
-            } else if value["historical"].bool != true && value["controlRevision"].int != nil && ["paused", "cancelled"].contains(status) && value["externalStop"]["status"].string == "pending" {
-                Section { Button("重新确认执行端停止", systemImage: "arrow.clockwise") { Task { await perform(status == "paused" ? "pause" : "cancel") } }.disabled(busy) }
-            } else if value["historical"].bool != true && value["controlRevision"].int != nil && value["externalStop"]["status"].string != "completed" && ["paused", "blocked", "cancelled"].contains(status) {
-                Section { Button("恢复工作", systemImage: "play") { Task { await perform("resume") } }.disabled(busy) }
-            }
-            Section("进度记录") {
-                let events = workspaceWorkEvents(value["events"].array ?? [])
-                if events.isEmpty { Text("暂无详细进度").foregroundStyle(.secondary) }
-                ForEach(Array(events.enumerated()), id: \.offset) { _, event in
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(alignment: .firstTextBaseline) {
-                            Text(workspaceEventLabel(event["type"].stringValue)).summonFont(.subheadline, weight: .bold)
-                            Spacer()
-                            Text(workspaceDate(event["createdAt"].string ?? event["timestamp"].string))
-                                .summonFont(.caption).foregroundStyle(.secondary)
-                        }
-                        Text(workspaceEventText(event)).summonFont(.subheadline).textSelection(.enabled)
-                    }.padding(.vertical, 4)
-                }
-            }
-        }
-        .navigationTitle("工作详情")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            Button("刷新", systemImage: "arrow.clockwise") { Task { await load() } }.disabled(busy)
-        }
-        .refreshable { await load() }
-        .task { await load() }
-        .onChange(of: answer) { _, _ in answerRequestID = UUID().uuidString }
-    }
-
-    private func load() async {
-        do {
-            let response = try await store.request(path: "/api/works/\(workspaceEscaped(initial.id))")
-            if var object = response["work"].object {
-                object["events"] = response["events"]
-                work = .object(object)
-            } else if response.object != nil { work = response }
-            else { throw WorkspaceFormError(message: "Work not found") }
-            error = nil
-        } catch { self.error = error.localizedDescription }
-    }
-
-    private func perform(_ action: String, body: SummonJSONValue = .object([:])) async {
-        guard !busy else { return }
-        busy = true
-        defer { busy = false }
-        do {
-            let requestBody: SummonJSONValue
-            if action == "send" { requestBody = body }
-            else {
-                guard let revision = value["controlRevision"].int else { throw WorkspaceFormError(message: "请刷新工作详情后重新操作。") }
-                requestBody = .object(["controlRevision": .number(Double(revision))])
-            }
-            let response = try await store.request(path: "/api/works/\(workspaceEscaped(initial.id))/\(action)", method: "POST", body: requestBody)
-            if action == "send" { answer = "" }
-            else if var fields = response.object, response["id"].string == initial.id {
-                fields["events"] = value["events"]
-                work = .object(fields)
-            }
-            await load()
-        } catch { self.error = error.localizedDescription }
-    }
-}
-
-private struct WorkspaceNativeOperation: View {
-    @Environment(SummonStore.self) private var store
-    let workID: String
-    let operation: SummonJSONValue
-    let allowsInput: Bool
-    let refresh: () async -> Void
-    @State private var input = ""
-    @State private var attempt = UUID().uuidString
-    @State private var pendingAnswer = ""
-    @State private var busy = false
-    @State private var error: String?
-    @State private var stream: String?
-    @State private var output = ""
-    @State private var offset = 0
-    private var path: String { "/api/works/\(workspaceEscaped(workID))/native/\(workspaceEscaped(operation["operationId"].stringValue))" }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(operation["resourceName"].string ?? "原生工具").summonFont(.headline)
-            let status = operation["status"].stringValue
-            Text(["queued":"排队", "starting":"启动中", "running":"运行中", "awaiting-input":"等待答复", "stopping":"停止中",
-                  "completed":"已结束", "failed":"执行失败", "stopped":"已停止", "unknown":"结果待确认",
-                  "recovery-required":"待核对原会话", "resumable":"已核对，可续接", "unavailable":"原会话不可用", "historical":"历史记录"][status] ?? status)
-                .summonFont(.caption).foregroundStyle(.secondary)
-            if let version = operation["version"].string { Text(version).summonFont(.caption) }
-            if let session = operation["nativeSessionId"].string { Text("会话 \(session)").summonFont(.caption).textSelection(.enabled) }
-            if let error = error ?? operation["error"].string { Text(error).foregroundStyle(.orange) }
-            if operation["type"].string == "native-tool" {
-                HStack {
-                    Button("标准输出") { Task { await read("stdout", reset: true) } }.buttonStyle(.bordered)
-                    Button("错误输出") { Task { await read("stderr", reset: true) } }.buttonStyle(.bordered)
-                    if allowsInput && ["queued", "starting", "running", "awaiting-input"].contains(status) {
-                        Button("停止操作", role: .destructive) { Task { await post("stop", body: .object([:])) } }.buttonStyle(.bordered)
-                    }
-                }.disabled(busy)
-                if let stream {
-                    Text(output.isEmpty ? "当前没有输出" : output).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                    Button("读取新输出") { Task { await read(stream, reset: false) } }.buttonStyle(.borderless).disabled(busy)
-                }
-            }
-            if allowsInput, let request = operation["pending"].array?.first {
-                Text(request["text"].stringValue)
-                let choices = request["choices"].array ?? []
-                if choices.isEmpty {
-                    TextField("回复工具请求", text: $input)
-                    Button("发送回复") { Task { await respond(request, input) } }.buttonStyle(.bordered).disabled(busy || input.isEmpty)
-                } else {
-                    ForEach(Array(choices.enumerated()), id: \.offset) { _, choice in
-                        Button(choice["label"].stringValue) { Task { await respond(request, choice["id"].stringValue) } }
-                            .buttonStyle(.bordered).disabled(busy)
-                    }
-                }
-            }
-        }
-    }
-
-    private func respond(_ request: SummonJSONValue, _ value: String) async {
-        let signature = request["id"].stringValue + value
-        if signature != pendingAnswer { pendingAnswer = signature; attempt = UUID().uuidString }
-        await post("answer", body: .object(["id": .string(attempt), "requestId": request["id"], "text": .string(value)]))
-    }
-
-    private func post(_ action: String, body: SummonJSONValue) async {
-        busy = true; error = nil; defer { busy = false }
-        do {
-            let receipt = try await store.request(path: path + "/" + action, method: "POST", body: body)
-            if ["rejected", "unknown"].contains(receipt["status"].stringValue) {
-                throw WorkspaceFormError(message: receipt["error"].string ?? "原生请求结果待确认")
-            }
-            await refresh()
-        } catch { self.error = error.localizedDescription }
-    }
-
-    private func read(_ name: String, reset: Bool) async {
-        busy = true; error = nil; defer { busy = false }
-        do {
-            let result = try await store.request(path: path + "?stream=\(name)&offset=\(reset ? 0 : offset)")["output"]
-            output = String(((reset ? "" : output) + result["text"].stringValue).suffix(32_768))
-            stream = name
-            offset = result["nextOffset"].int ?? 0
-        } catch { self.error = error.localizedDescription }
-    }
-}
-
-private struct WorkspaceKnowledgeDetail: View {
-    @Environment(SummonStore.self) private var store
-    let initial: WorkspaceRecord
-    let snapshot: SummonJSONValue
-    @State private var graph: SummonJSONValue = .null
-    @State private var error: String?
-    @State private var editor: WorkspaceEditKind?
-
-    private var node: WorkspaceRecord {
-        workspaceRecords(graph["nodes"]).first { $0.id == initial.id } ?? initial
-    }
-
-    var body: some View {
-        List {
-            if let error { WorkspaceErrorRow(message: error) }
-            Section {
-                Text(node.value["title"].stringValue).summonFont(.title3, weight: .bold).textSelection(.enabled)
-                LabeledContent("性质", value: workspaceStatus(node.value["type"].stringValue))
-                LabeledContent("状态", value: workspaceStatus(node.value["status"].stringValue))
-                Text(node.value["content"].stringValue).textSelection(.enabled)
-                if !node.value["source"].stringValue.isEmpty { WorkspaceTextFact(title: "来源", value: node.value["source"].stringValue) }
-                if !node.value["version"].stringValue.isEmpty { LabeledContent("适用版本", value: node.value["version"].stringValue) }
-                if node.value["editable"].bool == false, let revision = node.value["revision"].int {
-                    LabeledContent("修订", value: String(revision))
-                }
-            }
-            Section("关联知识") {
-                let edges = workspaceRecords(graph["edges"]).filter {
-                    $0.value["from"].string == node.id || $0.value["to"].string == node.id
-                }
-                if edges.isEmpty { Text("尚未建立关联").foregroundStyle(.secondary) }
-                ForEach(edges) { edge in
-                    VStack(alignment: .leading, spacing: 8) {
-                        let otherID = edge.value["from"].string == node.id ? edge.value["to"].stringValue : edge.value["from"].stringValue
-                        if let other = workspaceRecords(graph["nodes"]).first(where: { $0.id == otherID }) {
-                            NavigationLink {
-                                WorkspaceKnowledgeDetail(initial: other, snapshot: snapshot)
-                            } label: { Text(other.value["title"].stringValue) }
-                        }
-                        Button { editor = .edge(edge) } label: {
-                            Label("\(workspaceName(edge.value["from"].stringValue, in: graph["nodes"], field: "title")) → \(edge.value["relation"].stringValue) → \(workspaceName(edge.value["to"].stringValue, in: graph["nodes"], field: "title"))", systemImage: "pencil")
-                                .summonFont(.caption).multilineTextAlignment(.leading)
-                        }
-                        if edge.value["status"].string == "expired" { Text("已过期").summonFont(.caption).foregroundStyle(.secondary) }
-                    }.padding(.vertical, 3)
-                }
-                if node.value["editable"].bool != false {
-                    Button("建立关联", systemImage: "link") { editor = .edge(nil) }
-                        .disabled(editableKnowledgeNodes(snapshot).count < 2)
-                }
-            }
-            if let history = node.value["history"].array, !history.isEmpty {
-                Section("修订历史") {
-                    ForEach(Array(history.reversed().enumerated()), id: \.offset) { _, entry in
-                        DisclosureGroup(workspaceDate(entry["updatedAt"].string ?? entry["createdAt"].string ?? entry["at"].string, full: true)) {
-                            Text(entry["content"].string ?? entry["snapshot"]["content"].string ?? entry.stringValue)
-                                .textSelection(.enabled)
-                        }
-                    }
-                }
-            }
-        }
-        .navigationTitle("知识详情")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            if node.value["editable"].bool != false {
-                Button("修订", systemImage: "pencil") { editor = .node(node) }
-            }
-        }
-        .refreshable { await load() }
-        .task { await load() }
-        .summonSheet(item: $editor, onDismiss: { Task { await load() } }) { kind in
-            WorkspaceEditor(kind: kind, snapshot: snapshot)
-        }
-    }
-
-    private func load() async {
-        do {
-            graph = try await store.request(path: "/api/knowledge/graph?id=\(workspaceEscaped(initial.id))&depth=1")
-            error = nil
-        } catch { self.error = error.localizedDescription }
-    }
-}
-
-private struct WorkspaceRecord: Identifiable {
-    let id: String
-    let value: SummonJSONValue
-}
-
-private enum WorkspaceEditKind: Identifiable {
-    case work, node(WorkspaceRecord?), edge(WorkspaceRecord?), routine(WorkspaceRecord?), event
-
+private enum SummonEditorRoute: Identifiable {
+    case bot, execution, file, wakeup(SummonJSONValue), connection(SummonJSONValue), directory(SummonJSONValue), limits
     var id: String {
         switch self {
-        case .work: "work"
-        case .node(let record): "node-\(record?.id ?? "new")"
-        case .edge(let record): "edge-\(record?.id ?? "new")"
-        case .routine(let record): "routine-\(record?.id ?? "new")"
-        case .event: "event"
-        }
-    }
-
-    var title: String {
-        switch self {
-        case .work: "委托工作"
-        case .node(let record): record == nil ? "新增知识" : "修订知识"
-        case .edge(let record): record == nil ? "建立关联" : "修订关系"
-        case .routine(let record): record == nil ? "新增定时职责" : "修改定时职责"
-        case .event: "投递事件"
-        }
-    }
-
-    var record: WorkspaceRecord? {
-        switch self {
-        case .node(let record), .edge(let record), .routine(let record): record
-        default: nil
+        case .bot: "bot"
+        case .execution: "execution"
+        case .file: "file"
+        case .wakeup(let item): "wakeup" + item["id"].stringValue
+        case .connection(let item): "connection" + item["id"].stringValue
+        case .directory(let item): "directory" + item["id"].stringValue
+        case .limits: "limits"
         }
     }
 }
 
-private struct WorkspaceEditor: View {
+private func wakeupTitle(_ rule: SummonJSONValue) -> String {
+    switch rule["kind"].string {
+    case "room_base": return rule["mode"].string == "all" ? "全部消息" : "仅 @ 或回复"
+    case "time":
+        let time = SummonDate.parse(rule["at"].string)?.formatted(date: .abbreviated, time: .shortened) ?? rule["at"].stringValue
+        if let interval = rule["interval_ms"].int { return time + " · 每 \(Double(interval) / 60000) 分钟" }
+        return time
+    default:
+        return [rule["type"].string, rule["author"]["id"].string, rule["room"].string].compactMap { $0 }.joined(separator: " · ")
+    }
+}
+
+private func resourceName(_ key: String) -> String {
+    ["bots": "Bot 数量", "sessions": "活动会话", "models": "并发模型请求", "external": "并发外部执行",
+     "queue": "待处理事件", "reserved_calls": "回执容量", "period_ms": "周期（毫秒）", "calls": "调用次数",
+     "tokens": "Token", "active_ms": "活跃时间（毫秒）"][key] ?? key
+}
+
+struct SummonReferencePicker: View {
     @Environment(SummonStore.self) private var store
     @Environment(\.dismiss) private var dismiss
-    let kind: WorkspaceEditKind
-    let snapshot: SummonJSONValue
-    var embedded = false
-
-    @State private var title = ""
-    @State private var content = ""
-    @State private var botID = ""
-    @State private var roomID = ""
-    @State private var cwd = ""
-    @State private var constraints = ""
-    @State private var inputRefs = ""
-    @State private var fileInputs = ""
-    @State private var executables = ""
-    @State private var outputDirectories = ""
-    @State private var outputFiles = ""
-    @State private var type = "unverified"
-    @State private var status = "active"
-    @State private var source = ""
-    @State private var version = ""
-    @State private var fromID = ""
-    @State private var toID = ""
-    @State private var intervalMinutes = "60"
-    @State private var enabled = true
-    @State private var busy = false
-    @State private var initialized = false
+    let roomID: String
+    let onSelect: (SummonReference) -> Void
+    @State private var files: [SummonJSONValue] = []
     @State private var error: String?
-    @State private var receipt: String?
-    @State private var workRequestID = UUID().uuidString
 
     var body: some View {
-        Group {
-            if embedded { form }
-            else {
-                NavigationStack {
-                    form
-                        .navigationTitle(kind.title)
-                        .navigationBarTitleDisplayMode(.inline)
-                        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() }.disabled(busy) } }
-                }
-            }
-        }
-        .onAppear { initialize() }
-        .interactiveDismissDisabled(busy)
-    }
-
-    private var form: some View {
-        Form {
-            if let error { WorkspaceErrorRow(message: error) }
-            if let receipt { Label(receipt, systemImage: "checkmark.circle").foregroundStyle(.green).textSelection(.enabled) }
-            switch kind {
-            case .work:
-                Section("工作目标") { TextField("希望完成什么", text: $content, axis: .vertical).lineLimit(4...12) }
-                recipientFields
-                Section("执行环境") { TextField("工作目录（选填，服务器上的绝对路径）", text: $cwd).textInputAutocapitalization(.never).autocorrectionDisabled() }
-                Section("约束与注意事项") { TextField("操作边界、已有修改和需要保留的行为", text: $constraints, axis: .vertical).lineLimit(3...10) }
-                Section("资料说明") { TextField("每行一项：资料说明或链接", text: $inputRefs, axis: .vertical).lineLimit(3...10) }
-                Section("本机文件授权（选填，每行一个路径）") {
-                    TextField("允许读取的文件或目录", text: $fileInputs, axis: .vertical).lineLimit(2...6)
-                    TextField("允许执行的程序文件", text: $executables, axis: .vertical).lineLimit(2...6)
-                    TextField("允许创建和写入的结果目录", text: $outputDirectories, axis: .vertical).lineLimit(2...6)
-                    TextField("允许写入的指定结果文件", text: $outputFiles, axis: .vertical).lineLimit(2...6)
-                }.textInputAutocapitalization(.never).autocorrectionDisabled()
-            case .node:
-                Section {
-                    TextField("标题", text: $title)
-                    TextField("知识内容", text: $content, axis: .vertical).lineLimit(5...16)
-                    Picker("性质", selection: $type) {
-                        Text("事实").tag("fact"); Text("假设").tag("hypothesis")
-                        Text("观点").tag("opinion"); Text("待核查").tag("unverified")
+        NavigationStack {
+            List {
+                if let error { InlineError(message: error) }
+                if files.isEmpty && error == nil { Text("暂无可引用的群资料").foregroundStyle(.secondary) }
+                ForEach(files, id: \.prettyPrinted) { file in
+                    if let ref = SummonReference(file["ref"]) {
+                        Button(file["path"].string ?? store.label(ref)) { onSelect(ref); dismiss() }
                     }
-                    Picker("状态", selection: $status) {
-                        Text("有效").tag("active"); Text("有争议").tag("disputed"); Text("已过期").tag("expired")
+                }
+            }
+            .navigationTitle("引用资料")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } } }
+            .task {
+                do { files = try await store.list("/api/files?room=" + SummonAPIClient.component(roomID)) }
+                catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+            }
+        }
+    }
+}
+
+struct SummonReferenceView: View {
+    @Environment(SummonStore.self) private var store
+    let ref: SummonReference
+    @State private var value = SummonJSONValue.null
+    @State private var error: String?
+
+    var body: some View {
+        switch ref.kind {
+        case "session", "conversation": SummonExecutionView(ref: ref)
+        case "file": SummonFileView(ref: ref)
+        case "bot": BotDetailsView(botID: ref.id)
+        case "room": RoomDetailsView(roomID: ref.id)
+        default:
+            List {
+                if let error { InlineError(message: error) }
+                else if value == .null { ProgressView() }
+                else if ref.kind == "event" {
+                    Text(store.name(for: value["senderId"].string ?? "platform"))
+                    Text(value["content"].stringValue).textSelection(.enabled)
+                    ForEach(value["mentions"].array ?? [], id: \.prettyPrinted) { id in
+                        Text("@" + store.name(for: id.stringValue)).summonFont(.caption)
                     }
-                    TextField("来源", text: $source, axis: .vertical)
-                    TextField("适用版本（选填）", text: $version)
+                } else { Text(value.prettyPrinted).font(.system(.footnote, design: .monospaced)).textSelection(.enabled) }
+            }
+            .navigationTitle(store.label(ref))
+            .task(id: store.protocolReady) {
+                guard store.protocolReady else { return }
+                do { value = try await store.read(ref); error = nil }
+                catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+            }
+        }
+    }
+}
+
+struct SummonFileView: View {
+    @Environment(SummonStore.self) private var store
+    let ref: SummonReference
+    var room: SummonReference? = nil
+    @State private var value = SummonJSONValue.null
+    @State private var text = ""
+    @State private var cursor: String?
+    @State private var preview: URL?
+    @State private var editor = false
+    @State private var busy = false
+    @State private var error: String?
+
+    var body: some View {
+        List {
+            if let error { InlineError(message: error) }
+            if let path = value["path"].string { LabeledContent("文件", value: path) }
+            if let revision = value["revision"].int { LabeledContent("修订", value: "\(revision)") }
+            let sources = (value["sources"].array ?? []).compactMap(SummonReference.init)
+            if !sources.isEmpty {
+                Section("来源") {
+                    ForEach(sources, id: \.self) { ref in NavigationLink(store.label(ref)) { SummonReferenceView(ref: ref) } }
                 }
-            case .edge(let record):
-                Section("关系有方向") {
-                    if record == nil {
-                        nodePicker("起点", selection: $fromID)
-                        nodePicker("终点", selection: $toID)
-                    } else {
-                        LabeledContent("起点", value: workspaceName(fromID, in: snapshot["knowledge"]["nodes"], field: "title"))
-                        LabeledContent("终点", value: workspaceName(toID, in: snapshot["knowledge"]["nodes"], field: "title"))
+            }
+            if !text.isEmpty { Text(text).textSelection(.enabled) }
+            if value["content_status"].string == "unavailable" { Text("正文不可用").foregroundStyle(.secondary) }
+            if cursor != nil { Button("读取后续正文") { Task { await load(append: true) } }.disabled(busy) }
+            if value["url"].string != nil {
+                Button("下载文件", systemImage: "arrow.down.circle") {
+                    Task {
+                        busy = true; defer { busy = false }
+                        do {
+                            if value["url"].string?.hasPrefix("/api/attachments/") == true {
+                                let attachment = SummonAttachment(id: ref.id, name: value["name"].string ?? "附件",
+                                                                  mimeType: value["mimeType"].string)
+                                preview = try await store.attachmentFileURL(attachment)
+                            } else { preview = try await store.downloadFile(id: ref.id, name: value["name"].string ?? "资料") }
+                        } catch { self.error = error.localizedDescription }
                     }
-                    TextField("关系，例如：依赖、支持、来自、修订", text: $title)
-                    TextField("来源（选填）", text: $source, axis: .vertical)
-                    Picker("状态", selection: $status) { Text("有效").tag("active"); Text("已过期").tag("expired") }
-                }
-            case .routine:
-                Section {
-                    TextField("职责名称", text: $title)
-                    TextField("到期时需要关注或完成什么", text: $content, axis: .vertical).lineLimit(4...12)
-                }
-                recipientFields
-                Section {
-                    TextField("间隔（分钟，最短 1 分钟）", text: $intervalMinutes).keyboardType(.decimalPad)
-                    Toggle("立即启用", isOn: $enabled)
-                } footer: { Text("到期后投递给指定成员。服务重启后只补一次到期职责。") }
-            case .event:
-                Section {
-                    TextField("事件类型", text: $title)
-                    TextField("事件内容", text: $content, axis: .vertical).lineLimit(4...14)
-                }
-                recipientFields
+                }.disabled(busy || !store.protocolReady)
             }
-            Section {
-                Button { Task { await save() } } label: {
-                    HStack {
-                        Spacer()
-                        if busy { ProgressView() }
-                        Text(submitTitle)
-                        Spacer()
+            if cursor == nil && value["path"].string != nil && value["content"].string != nil {
+                Button("编辑资料", systemImage: "pencil") { editor = true }.disabled(busy || !store.protocolReady)
+            }
+            if let room, let record = store.room(id: room.id) {
+                let pinned = record.pins?.contains(ref) == true
+                Button(pinned ? "取消置顶" : "在群里置顶", systemImage: "pin") {
+                    Task {
+                        do { try await store.setPin(ref, in: record, remove: pinned) }
+                        catch { self.error = error.localizedDescription }
                     }
-                }.disabled(busy || !canSave)
+                }.disabled(busy || !store.protocolReady)
             }
         }
-        .disabled(busy)
-    }
-
-    @ViewBuilder private var recipientFields: some View {
-        Section {
-            Picker("负责成员", selection: $botID) {
-                Text("选择成员").tag("")
-                ForEach(workspaceRecords(snapshot["bots"])) { bot in Text(bot.value["name"].string ?? bot.id).tag(bot.id) }
-            }
-            Picker("投递到会话", selection: $roomID) {
-                Text("选择会话").tag("")
-                ForEach(workspaceRecords(snapshot["rooms"])) { room in Text(room.value["name"].string ?? room.id).tag(room.id) }
-            }
+        .navigationTitle(value["name"].string ?? "资料")
+        .quickLookPreview($preview)
+        .task(id: store.protocolReady) { if store.protocolReady { await load() } }
+        .refreshable { await load() }
+        .summonSheet(isPresented: $editor, onDismiss: { Task { await load() } }) {
+            SummonFileEditor(before: value, original: text)
         }
     }
 
-    private func nodePicker(_ label: String, selection: Binding<String>) -> some View {
-        Picker(label, selection: selection) {
-            Text("选择知识").tag("")
-            ForEach(editableKnowledgeNodes(snapshot)) { node in
-                Text(node.value["title"].string ?? node.id).tag(node.id)
-            }
-        }
-    }
-
-    private var submitTitle: String {
-        switch kind {
-        case .work: "开始工作"
-        case .event: "投递事件"
-        default: "保存"
-        }
-    }
-
-    private var canSave: Bool {
-        let hasTitle = !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let hasContent = !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        switch kind {
-        case .work: return hasContent && !botID.isEmpty && !roomID.isEmpty
-        case .node: return hasTitle && hasContent
-        case .edge: return hasTitle && !fromID.isEmpty && !toID.isEmpty && fromID != toID
-        case .routine: return hasTitle && hasContent && !botID.isEmpty && !roomID.isEmpty && routineIntervalSeconds != nil
-        case .event: return hasTitle && hasContent && !botID.isEmpty && !roomID.isEmpty
-        }
-    }
-
-    private var routineIntervalSeconds: Double? {
-        guard let minutes = Double(intervalMinutes), minutes.isFinite, minutes >= 1 else { return nil }
-        let seconds = minutes * 60
-        return seconds.isFinite ? seconds : nil
-    }
-
-    private func initialize() {
-        guard !initialized else { return }
-        initialized = true
-        let record = kind.record?.value ?? .null
-        title = record["title"].string ?? record["name"].string ?? record["relation"].string ?? ""
-        content = record["content"].string ?? record["instruction"].string ?? ""
-        botID = record["botId"].string ?? workspaceRecords(snapshot["bots"]).first?.id ?? ""
-        roomID = record["roomId"].string ?? workspaceRecords(snapshot["rooms"]).first?.id ?? ""
-        type = record["type"].string ?? "unverified"
-        status = record["status"].string ?? "active"
-        source = record["source"].stringValue
-        version = record["version"].stringValue
-        let nodes = editableKnowledgeNodes(snapshot)
-        fromID = record["from"].string ?? nodes.first?.id ?? ""
-        toID = record["to"].string ?? nodes.dropFirst().first?.id ?? ""
-        if let seconds = record["intervalSeconds"].int { intervalMinutes = String(Double(seconds) / 60) }
-        enabled = record["enabled"].bool ?? true
-        if case .event = kind { title = "人工提醒" }
-    }
-
-    private func save() async {
-        guard canSave && !busy else { return }
-        busy = true
-        error = nil
-        receipt = nil
+    private func load(append: Bool = false) async {
+        guard !busy else { return }
+        busy = true; error = nil
         defer { busy = false }
-        let record = kind.record
-        var path: String
-        var method = record == nil ? "POST" : "PATCH"
-        var payload: [String: SummonJSONValue]
-        switch kind {
-        case .work:
-            func pathLines(_ value: String) -> SummonJSONValue {
-                .array(value.split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }.map(SummonJSONValue.string))
-            }
-            path = "/api/works"
-            payload = ["id": .string(workRequestID), "goal": .string(content.trimmingCharacters(in: .whitespacesAndNewlines)), "botId": .string(botID),
-                       "roomId": .string(roomID), "cwd": .string(cwd.trimmingCharacters(in: .whitespacesAndNewlines)),
-                       "constraints": .string(constraints),
-                       "inputRefs": pathLines(inputRefs),
-                       "fileScope": .object(["inputs": pathLines(fileInputs), "executables": pathLines(executables),
-                                             "outputDirectories": pathLines(outputDirectories), "outputFiles": pathLines(outputFiles)])]
-        case .node:
-            path = record.map { "/api/knowledge/nodes/\(workspaceEscaped($0.id))" } ?? "/api/knowledge/nodes"
-            payload = ["title": .string(title), "content": .string(content), "type": .string(type), "status": .string(status), "source": .string(source), "version": .string(version)]
-            if let revision = record?.value["revision"].int { payload["expectedRevision"] = .number(Double(revision)) }
-        case .edge:
-            // The gateway exposes saveEdge through POST, including edits with an existing id.
-            path = "/api/knowledge/edges"
-            method = "POST"
-            payload = ["from": .string(fromID), "to": .string(toID), "relation": .string(title), "source": .string(source), "status": .string(status)]
-            if let record { payload["id"] = .string(record.id) }
-        case .routine:
-            path = record.map { "/api/routines/\(workspaceEscaped($0.id))" } ?? "/api/routines"
-            payload = ["name": .string(title), "instruction": .string(content), "botId": .string(botID), "roomId": .string(roomID),
-                       "intervalSeconds": .number(routineIntervalSeconds ?? 3600), "enabled": .bool(enabled)]
-        case .event:
-            path = "/api/events"
-            payload = ["type": .string(title), "content": .string(content), "botId": .string(botID), "roomId": .string(roomID)]
-        }
         do {
-            let response = try await store.request(path: path, method: method, body: .object(payload))
-            if case .work = kind, response["dispatch"]["accepted"].bool != true {
-                error = "工作尚无受理回执，请保留本次表单并重试。"
-                return
+            let previousRevision = value["revision"].int
+            let page = try await store.read(ref, cursor: append ? cursor : nil)
+            if append && page["revision"].int != previousRevision {
+                throw SummonAPIError.http(409, "资料已修订，请刷新后读取。")
             }
-            if embedded {
-                content = ""
-                let eventID = response["event"]["id"].string ?? response["id"].string
-                receipt = eventID.map { "事件已投递 · \($0)" } ?? "事件已投递"
-            } else { dismiss() }
-        } catch { self.error = error.localizedDescription }
+            value = page; cursor = page["next_cursor"].string
+            text = (append ? text : "") + (page["content"].string ?? "")
+        } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
     }
 }
 
-private struct WorkspaceErrorRow: View {
-    let message: String
+@MainActor private func executionTitle(_ value: SummonJSONValue, store: SummonStore) -> String {
+    let role = value["bot_id"].string.map { store.name(for: $0) }
+    let title = value["kind"].string == "conversation" ? "内部对话" : value["engine"].string ?? "执行会话"
+    return role.map { title + " · " + $0 } ?? title
+}
+
+struct SummonExecutionView: View {
+    @Environment(SummonStore.self) private var store
+    let ref: SummonReference
+    @State private var detail = SummonJSONValue.null
+    @State private var logPages: [SummonJSONValue] = []
+    @State private var pendingCommand: SummonExecutionRequest?
+    @State private var stopResults: [SummonJSONValue] = []
+    @State private var showStop = false
+    @State private var busy = false
+    @State private var error: String?
+
     var body: some View {
-        Label(message, systemImage: "exclamationmark.circle")
-            .summonFont(.footnote).foregroundStyle(.orange).textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        List {
+            if let error { InlineError(message: error) }
+            if detail == .null && busy { ProgressView() }
+            if let status = detail["status"].string {
+                Section("执行事实") {
+                    LabeledContent("状态", value: SummonFormat.status(status))
+                    LabeledContent("控制", value: SummonFormat.status(detail["control"]["state"].stringValue))
+                    if let stop = detail["control"]["stop_status"].string { LabeledContent("停止结果", value: SummonFormat.status(stop)) }
+                    if let actor = detail["execution_actor"]["id"].string ?? detail["bot_id"].string {
+                        LabeledContent("执行身份", value: store.name(for: actor))
+                    }
+                    if let submitter = detail["submitted_by"]["id"].string { LabeledContent("提交者", value: store.name(for: submitter)) }
+                    if let call = detail["latest_call_id"].string {
+                        NavigationLink("调用 \(call)") { SummonReferenceView(ref: SummonReference(kind: "call", id: call)) }
+                    }
+                    if detail["native"].object != nil {
+                        DisclosureGroup("原生标识") { Text(detail["native"].prettyPrinted).textSelection(.enabled) }
+                    }
+                }
+                Section("控制") {
+                    if detail["can_stop"].bool == true && detail["control"]["state"].string != "paused" {
+                        Button("暂停并请求停止", role: .destructive) { showStop = true }.disabled(busy || !store.protocolReady)
+                    }
+                    if detail["resume_ref"].object != nil && detail["control"]["stop_status"].string == "stopped" {
+                        Button("恢复控制") { Task { await command(kind: "resume") } }.disabled(busy || !store.protocolReady)
+                    }
+                    ForEach(stopResults, id: \.prettyPrinted) { result in
+                        if let target = SummonReference(result["target"]) {
+                            Text(store.label(target) + " · " + SummonFormat.status(result["control"]["stop_status"].stringValue))
+                        }
+                    }
+                }
+                ForEach(SummonInputOption.options(detail)) { option in
+                    SummonNativeInput(option: option, disabled: busy || !store.protocolReady) { input in
+                        await command(kind: option.kind, input: input, target: option.target)
+                    }
+                    .id(detail["control_version"].stringValue + option.id)
+                }
+                Section("输入与输出") {
+                    ForEach(Array(logPages.enumerated()), id: \.offset) { _, page in logRows(page) }
+                    if logPages.last?["next_cursor"].string != nil {
+                        Button("读取后续日志") { Task { await load(append: true) } }.disabled(busy || !store.protocolReady)
+                    }
+                }
+            }
+        }
+        .navigationTitle(detail == .null ? store.label(ref) : executionTitle(detail, store: store))
+        .refreshable { await load() }
+        .task(id: store.protocolReady) { if store.protocolReady { await load() } }
+        .toolbar { ToolbarItem(placement: .primaryAction) {
+            Button("刷新", systemImage: "arrow.clockwise") { Task { await load() } }.disabled(busy || !store.protocolReady)
+        } }
+        .confirmationDialog("选择停止范围", isPresented: $showStop) {
+            Button("当前目标", role: .destructive) { Task { await command(kind: "stop", scope: "target") } }
+            Button("当前目标及其独占调用", role: .destructive) { Task { await command(kind: "stop", scope: "target_and_owned_calls") } }
+        }
+    }
+
+    private func logRows(_ page: SummonJSONValue) -> some View {
+        let outputs = page["output_pages"].array ?? (page["output_page"] == .null ? [] : [page["output_page"]])
+        return Group {
+            if outputs.isEmpty && page["output"] != .null {
+                Text(page["output"].string ?? page["output"].prettyPrinted).textSelection(.enabled)
+            }
+            ForEach(Array(outputs.enumerated()), id: \.offset) { _, output in Text(output["text"].stringValue).textSelection(.enabled) }
+            ForEach(Array(((page["messages"].array ?? []) + (page["output_events"].array ?? [])).enumerated()), id: \.offset) { _, entry in
+                let message = entry["message"] == .null ? entry : entry["message"]
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(message["role"].string ?? entry["type"].string ?? "输出").summonFont(.caption).foregroundStyle(.secondary)
+                    Text(message["content"].array?.map { $0["text"].string ?? $0.prettyPrinted }.joined(separator: "\n")
+                         ?? message["content"].string ?? message["text"].string ?? message.prettyPrinted).textSelection(.enabled)
+                }
+            }
+        }.font(.system(.footnote, design: .monospaced))
+    }
+
+    private func load(append: Bool = false) async {
+        guard !busy else { return }
+        busy = true; error = nil
+        defer { busy = false }
+        do {
+            let page = try await store.read(ref, cursor: append ? logPages.last?["next_cursor"].string : nil)
+            detail = page
+            if !append { logPages = [page] }
+            else if page["next_cursor"] != logPages.last?["next_cursor"] || !page["output_page"]["text"].stringValue.isEmpty ||
+                page["messages"].array?.isEmpty == false || page["output_events"].array?.isEmpty == false { logPages.append(page) }
+        } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+    }
+
+    private func command(kind: String, input: SummonJSONValue? = nil, target: SummonJSONValue? = nil, scope: String? = nil) async {
+        guard !busy, let execution = SummonReference(detail["execution_ref"]), execution == ref,
+              let version = detail["control_version"].int else { return }
+        busy = true; error = nil
+        var body: [String: SummonJSONValue] = ["target": execution.json, "control_version": .number(Double(version))]
+        if kind == "stop", let scope { body["scope"] = .string(scope) }
+        else {
+            body["kind"] = .string(kind)
+            if kind == "resume" { body["resume_ref"] = detail["resume_ref"] }
+            else { body["input"] = input; body["input_target"] = target }
+        }
+        let payload = SummonJSONValue.object(body)
+        let request = pendingCommand.flatMap { $0.kind == kind && $0.body == payload ? $0 : nil }
+            ?? SummonExecutionRequest(kind: kind, body: payload, id: SummonStore.newID())
+        pendingCommand = request
+        do {
+            let result = try await store.request(path: "/api/executions/" + (kind == "stop" ? "stop" : "input"),
+                                                 method: "POST", body: request.body, clientID: request.id)
+            if let status = result["status"].string, ["unknown", "prepared", "not_submitted", "failed", "unsupported"].contains(status) {
+                error = SummonFormat.status(status) + (result["call_id"].string.map { " · " + $0 } ?? "")
+            } else { pendingCommand = nil }
+            if kind == "stop" { stopResults = result["targets"].array ?? result["results"].array ?? [] }
+            let next = try await store.read(ref)
+            detail = next; logPages = [next]
+        } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+        busy = false
     }
 }
 
-private struct WorkspaceTextFact: View {
+private struct SummonExecutionRequest {
+    let kind: String
+    let body: SummonJSONValue
+    let id: String
+}
+
+private struct SummonNativeInput: View {
+    let option: SummonInputOption
+    let disabled: Bool
+    let submit: (SummonJSONValue) async -> Void
+    @State private var text = ""
+    @State private var asJSON = false
+    @State private var error: String?
+
+    var body: some View {
+        Section(option.label) {
+            LabeledContent("实际目标", value: targetLabel)
+            if let question = option.question { Text(question) }
+            if option.choices.isEmpty {
+                TextField("输入", text: $text, axis: .vertical).lineLimit(2...8)
+                Toggle("JSON 输入", isOn: $asJSON)
+            } else {
+                Picker("回答", selection: $text) {
+                    Text("选择回答").tag("")
+                    ForEach(option.choices, id: \.prettyPrinted) { choice in
+                        if let id = choice["id"].string { Text(choice["label"].string ?? id).tag(id) }
+                    }
+                }
+            }
+            Button(option.label) {
+                Task {
+                    do {
+                        let input: SummonJSONValue = asJSON
+                            ? try JSONDecoder().decode(SummonJSONValue.self, from: Data(text.utf8)) : .string(text)
+                        error = nil
+                        await submit(input)
+                    } catch { self.error = "JSON 输入格式无效。" }
+                }
+            }.disabled(disabled || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            if let error { InlineError(message: error) }
+        }
+    }
+
+    private var targetLabel: String {
+        let keys = ["kind", "turn_id", "run_id", "instance_id", "launch_call_id", "call_id", "operation_id", "request_id", "input_revision"]
+        return keys.compactMap { option.target[$0] == .null ? nil : option.target[$0].stringValue }.joined(separator: " · ")
+    }
+}
+
+
+private struct SummonEditorForm<Fields: View>: View {
+    @Environment(SummonStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
     let title: String
-    let value: String
+    var canSave = true
+    var load: (() async throws -> Void)? = nil
+    let save: () async throws -> Void
+    @ViewBuilder let fields: () -> Fields
+    @State private var busy = false
+    @State private var error: String?
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(title).summonFont(.caption).foregroundStyle(.secondary)
-            Text(value).textSelection(.enabled)
+        NavigationStack {
+            Form {
+                fields()
+                if let error { InlineError(message: error) }
+            }
+            .navigationTitle(title)
+            .task {
+                guard let load else { return }
+                busy = true; defer { busy = false }
+                do { try await load() }
+                catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+            }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        busy = true; error = nil
+                        Task {
+                            defer { busy = false }
+                            do { try await save(); dismiss() }
+                            catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+                        }
+                    }.disabled(busy || !canSave || !store.protocolReady)
+                }
+            }
         }
     }
 }
 
-private struct WorkspaceFormError: LocalizedError {
-    let message: String
-    var errorDescription: String? { message }
-}
+private struct SummonExecutionEditor: View {
+    @Environment(SummonStore.self) private var store
+    @State private var connections: [SummonJSONValue] = []
+    @State private var directories: [SummonJSONValue] = []
+    @State private var engine = ""
+    @State private var directory = ""
+    @State private var input = ""
+    @State private var json = false
+    @State private var clientID = SummonStore.newID()
 
-private func editableKnowledgeNodes(_ snapshot: SummonJSONValue) -> [WorkspaceRecord] {
-    workspaceRecords(snapshot["knowledge"]["nodes"]).filter { $0.value["editable"].bool != false }
-}
-
-private func workspaceRecords(_ value: SummonJSONValue) -> [WorkspaceRecord] {
-    (value.array ?? []).compactMap { item in
-        guard let id = item["id"].string, !id.isEmpty else { return nil }
-        return WorkspaceRecord(id: id, value: item)
+    var body: some View {
+        SummonEditorForm(title: "打开执行会话", canSave: !engine.isEmpty && !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, load: {
+            async let engines = store.list("/api/connections")
+            async let workspaces = store.list("/api/workspaces")
+            connections = try await engines.filter { $0["id"].string != "pi" && $0["available"].bool != false }
+            directories = try await workspaces
+            engine = connections.first?["id"].string ?? ""
+        }, save: {
+            let value: SummonJSONValue = json
+                ? try JSONDecoder().decode(SummonJSONValue.self, from: Data(input.utf8)) : .string(input)
+            var body: [String: SummonJSONValue] = ["engine": .string(engine), "input": value]
+            if !directory.isEmpty { body["workspace"] = SummonReference(kind: "workspace", id: directory).json }
+            _ = try await store.request(path: "/api/executions", method: "POST", body: .object(body), clientID: clientID)
+        }) {
+            Picker("连接", selection: $engine) {
+                Text("选择连接").tag("")
+                ForEach(connections, id: \.prettyPrinted) { item in Text(item["name"].string ?? item["id"].stringValue).tag(item["id"].stringValue) }
+            }
+            Picker("执行目录", selection: $directory) {
+                Text("选择目录").tag("")
+                ForEach(directories, id: \.prettyPrinted) { item in Text(item["name"].stringValue).tag(item["id"].stringValue) }
+            }
+            Toggle("JSON 输入", isOn: $json)
+            TextField("输入", text: $input, axis: .vertical).lineLimit(5...12)
+        }
+        .onChange(of: engine) { _, _ in clientID = SummonStore.newID() }
+        .onChange(of: directory) { _, _ in clientID = SummonStore.newID() }
+        .onChange(of: input) { _, _ in clientID = SummonStore.newID() }
+        .onChange(of: json) { _, _ in clientID = SummonStore.newID() }
     }
 }
 
-private func workspaceEscaped(_ value: String) -> String {
-    value.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-._~"))) ?? value
-}
+private struct SummonFileEditor: View {
+    @Environment(SummonStore.self) private var store
+    var space: SummonReference? = nil
+    var before = SummonJSONValue.null
+    var original = ""
+    @State private var selection: SummonReference?
+    @State private var path = ""
+    @State private var text = ""
 
-private func workspaceName(_ id: String, in values: SummonJSONValue, field: String = "name") -> String {
-    guard !id.isEmpty else { return "未指定" }
-    return workspaceRecords(values).first { $0.id == id }?.value[field].string ?? id
-}
-
-private func workspaceDate(_ value: String?, full: Bool = false) -> String {
-    guard let date = SummonDate.parse(value) else { return value ?? "—" }
-    return full ? date.formatted(date: .abbreviated, time: .shortened) : date.formatted(date: .omitted, time: .shortened)
-}
-
-private func workspaceStatus(_ value: String) -> String {
-    ["queued": "等待执行", "running": "进行中", "waiting": "等待中", "paused": "已暂停", "blocked": "需处理", "completed": "已完成", "failed": "失败",
-     "cancelled": "已取消", "interrupted": "已中断", "active": "有效", "expired": "已过期", "disputed": "有争议",
-     "fact": "事实", "hypothesis": "假设", "opinion": "观点", "unverified": "待核查", "accepted": "已接收"][value] ?? value
-}
-
-private func workspaceEventLabel(_ value: String) -> String {
-    ["thread_started": "工作会话已建立", "thread_resumed": "工作会话已恢复", "message_delta": "执行端消息",
-     "command_output": "命令输出", "item_started": "开始处理", "item_completed": "处理完成", "consult_requested": "中途咨询",
-     "consult_answer": "咨询答复", "consult_failed": "咨询未完成", "interrupt_acknowledged": "执行端已停止",
-     "interrupt_error": "停止请求异常", "resume_queued": "等待恢复", "steered": "补充要求已传递",
-     "turn_completed": "本轮执行结束", "connection_lost": "执行端连接中断", "result_delivery_error": "结果回传异常",
-     "queued": "进入队列", "started": "开始执行", "progress": "执行进度", "output": "执行输出", "question": "等待答复",
-     "error": "执行异常", "reasoning": "正在思考", "result": "执行结果", "work.created": "工作已建立", "work.updated": "工作状态更新",
-     "work.maintenance_observed": "工具维护结果"][value] ?? workspaceStatus(value)
-}
-
-private func workspaceEventText(_ event: SummonJSONValue) -> String {
-    let data = event["payload"] == .null ? event["data"] : event["payload"]
-    if event["type"].string == "work.maintenance_observed" {
-        let result = data["content"]
-        let name = result["entryName"].string ?? result["entryId"].stringValue
-        let status = workspaceStatus(result["status"].stringValue)
-        let work = result["ownerWorkId"].string.map { "维护工作 \($0)" } ?? ""
-        return ["\(name) · \(status)", result["content"].stringValue, work].filter { !$0.isEmpty }.joined(separator: "\n")
+    var body: some View {
+        SummonEditorForm(title: before == .null ? "新增资料" : "编辑资料",
+                          canSave: selection != nil && !path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, save: save) {
+            if before == .null && space == nil {
+                Picker("资料空间", selection: $selection) {
+                    Text("选择空间").tag(nil as SummonReference?)
+                    ForEach(store.rooms) { room in Text(room.name).tag(Optional(SummonReference(kind: "room", id: room.id))) }
+                    ForEach(store.bots) { bot in Text(bot.name + " 的私有资料").tag(Optional(SummonReference(kind: "bot", id: bot.id))) }
+                }
+            }
+            TextField("文件路径", text: $path).autocorrectionDisabled().disabled(before != .null)
+            TextField("正文", text: $text, axis: .vertical).lineLimit(8...24)
+        }
+        .onAppear {
+            selection = space ?? SummonReference(before["space"])
+            path = before["path"].string ?? ""
+            text = original
+        }
     }
-    if data["work"] != .null {
-        let work = data["work"]
-        return [workspaceStatus(work["status"].stringValue), work["progress"].stringValue, work["lastError"]["message"].stringValue].filter { !$0.isEmpty }.joined(separator: "\n")
+
+    private func save() async throws {
+        guard let selection else { return }
+        var body: [String: SummonJSONValue] = [
+            "space": selection.json, "path": .string(path.trimmingCharacters(in: .whitespacesAndNewlines)), "content_or_source": .string(text)
+        ]
+        if let revision = before["revision"].int {
+            body["revision"] = .number(Double(revision))
+            body["sources"] = before["sources"].array.map(SummonJSONValue.array)
+        }
+        _ = try await store.request(path: "/api/files", method: "POST", body: .object(body), clientID: SummonStore.newID())
     }
-    if let text = data.string { return text }
-    if data == .null { return event["content"].string ?? event["message"].stringValue }
-    if data["item"].object != nil {
-        let item = data["item"]
-        var parts = ["text", "command", "aggregatedOutput"].compactMap { item[$0].string }.filter { !$0.isEmpty }
-        if let code = item["exitCode"].int { parts.append("退出码：\(code)") }
-        if !parts.isEmpty { return parts.joined(separator: "\n") }
-        return ["reasoning": "执行端正在分析目标与上下文。", "fileChange": "工作目录文件发生变更。",
-                "dynamicToolCall": "执行端正在调用协作工具。"][item["type"].stringValue] ?? item["type"].stringValue
-    }
-    for key in ["text", "delta", "message", "content", "summary", "question", "answer", "error"] {
-        if let text = data[key].string { return text }
-    }
-    if event["type"].string == "queued" { return data["goal"].string ?? "等待执行端接手。" }
-    return data.stringValue
 }
 
-private func workspaceWorkEvents(_ events: [SummonJSONValue]) -> [SummonJSONValue] {
-    var result: [SummonJSONValue] = []
-    for event in events {
-        if let last = result.last,
-           ["message_delta", "command_output"].contains(event["type"].stringValue),
-           last["type"] == event["type"], last["data"]["itemId"] == event["data"]["itemId"],
-           var object = last.object, var data = last["data"].object {
-            data["text"] = .string(last["data"]["text"].stringValue + event["data"]["text"].stringValue)
-            object["data"] = .object(data)
-            result[result.count - 1] = .object(object)
-        } else { result.append(event) }
+private struct SummonWakeupEditor: View {
+    @Environment(SummonStore.self) private var store
+    let item: SummonJSONValue
+    let space: SummonReference?
+    @State private var botID = ""
+    @State private var kind = "event"
+    @State private var roomID = ""
+    @State private var mode = "all"
+    @State private var eventType = "message"
+    @State private var authorID = ""
+    @State private var at = Date()
+    @State private var interval = ""
+    @State private var enabled = true
+
+    private var rule: SummonJSONValue { item["rule"] }
+    private var bots: [SummonBot] {
+        if let space, space.kind == "room", let room = store.room(id: space.id) {
+            return store.bots.filter { room.members.contains($0.id) }
+        }
+        return store.bots
     }
-    return result
+
+    var body: some View {
+        SummonEditorForm(title: item == .null ? "新增订阅或提醒" : "编辑订阅", canSave: !botID.isEmpty, save: save) {
+            if item == .null {
+                Picker("接收 Bot", selection: $botID) {
+                    Text("选择 Bot").tag("")
+                    ForEach(bots) { bot in Text(bot.name).tag(bot.id) }
+                }
+                Picker("类型", selection: $kind) {
+                    Text("事件订阅").tag("event")
+                    Text("定时提醒").tag("time")
+                }
+            }
+            if kind == "room_base" {
+                Picker("关注范围", selection: $mode) {
+                    Text("所有消息").tag("all")
+                    Text("仅 @ 或回复").tag("mentions")
+                }
+            } else {
+                if space?.kind != "room" {
+                    Picker("会话范围", selection: $roomID) {
+                        Text("全部可访问空间").tag("")
+                        ForEach(store.rooms) { room in Text(room.name).tag(room.id) }
+                    }
+                }
+                if kind == "time" {
+                    DatePicker("提醒时间", selection: $at)
+                    TextField("重复间隔（分钟，可选）", text: $interval).keyboardType(.decimalPad)
+                } else {
+                    TextField("事件类型", text: $eventType).autocorrectionDisabled()
+                    Picker("作者", selection: $authorID) {
+                        Text("任意").tag("")
+                        Text(store.settings.userName).tag("user")
+                        ForEach(bots) { bot in Text(bot.name).tag(bot.id) }
+                    }
+                }
+            }
+            Toggle("启用", isOn: $enabled)
+        }.onAppear {
+            botID = item["bot_id"].string ?? (space?.kind == "bot" ? space?.id : nil) ?? bots.first?.id ?? ""
+            kind = rule["kind"].string ?? "event"
+            roomID = rule["room"].string ?? rule["room"]["id"].string ?? rule["scope"]["id"].string ?? (space?.kind == "room" ? space?.id : nil) ?? ""
+            mode = rule["mode"].string ?? "all"
+            eventType = rule["type"].string ?? "message"
+            authorID = rule["author"]["id"].string ?? ""
+            at = SummonDate.parse(rule["at"].string) ?? Date()
+            interval = rule["interval_ms"].int.map { String(Double($0) / 60_000) } ?? ""
+            enabled = item["enabled"].bool ?? true
+        }
+    }
+
+    private func save() async throws {
+        var settings: [String: SummonJSONValue] = ["kind": .string(kind)]
+        switch kind {
+        case "room_base":
+            settings["room"] = .string(roomID)
+            settings["mode"] = .string(mode)
+        case "time":
+            settings["at"] = .string(ISO8601DateFormatter().string(from: at))
+            if !interval.isEmpty {
+                guard let minutes = Double(interval), minutes.isFinite, minutes >= 1, minutes < Double(Int.max) / 60_000 else {
+                    throw SummonAPIError.http(0, "请输入有效的重复间隔。")
+                }
+                settings["interval_ms"] = .number((minutes * 60_000).rounded())
+            }
+            if !roomID.isEmpty { settings["scope"] = SummonReference(kind: "room", id: roomID).json }
+            else if rule["scope"]["kind"].string != "room", rule["scope"].object != nil { settings["scope"] = rule["scope"] }
+        default:
+            settings["type"] = .string(eventType.trimmingCharacters(in: .whitespacesAndNewlines))
+            if !roomID.isEmpty { settings["room"] = .string(roomID) }
+            if !authorID.isEmpty { settings["author"] = SummonReference(kind: authorID == "user" ? "user" : "bot", id: authorID).json }
+            if rule["ref"].object != nil { settings["ref"] = rule["ref"] }
+        }
+        var body: [String: SummonJSONValue] = ["bot": .string(botID), "event_or_time": .object(settings), "enabled": .bool(enabled)]
+        if let id = item["id"].string, let revision = item["revision"].int {
+            body["id"] = .string(id); body["revision"] = .number(Double(revision))
+        }
+        _ = try await store.request(path: "/api/wakeups", method: "POST", body: .object(body), clientID: SummonStore.newID())
+    }
+}
+
+private struct SummonConnectionEditor: View {
+    @Environment(SummonStore.self) private var store
+    let item: SummonJSONValue
+    @State private var name = ""
+    @State private var kind = "codex"
+    @State private var description = ""
+    @State private var config = "{}"
+    @State private var enabled = true
+    @State private var allowed: Set<String> = []
+
+    var body: some View {
+        SummonEditorForm(title: item == .null ? "新增连接" : "执行连接设置",
+                          canSave: !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, save: save) {
+            TextField("名称", text: $name)
+            TextField("说明", text: $description, axis: .vertical)
+            if item == .null {
+                Picker("协议", selection: $kind) {
+                    ForEach(["codex", "cli", "mcp", "http"], id: \.self) { Text($0).tag($0) }
+                }
+                TextField("连接配置 JSON", text: $config, axis: .vertical)
+                    .lineLimit(4...12).autocorrectionDisabled().textInputAutocapitalization(.never)
+            }
+            Toggle("启用", isOn: $enabled)
+            Section("允许使用的 Bot") {
+                ForEach(store.bots) { bot in
+                    Toggle(bot.name, isOn: Binding(get: { allowed.contains(bot.id) }, set: {
+                        if $0 { allowed.insert(bot.id) } else { allowed.remove(bot.id) }
+                    }))
+                }
+            }
+        }.onAppear {
+            name = item["name"].string ?? ""; description = item["description"].string ?? ""
+            enabled = item["enabled"].bool ?? true
+            allowed = Set((item["allowed_bot_ids"].array ?? []).compactMap(\.string))
+        }
+    }
+
+    private func save() async throws {
+        var body: [String: SummonJSONValue] = ["name": .string(name.trimmingCharacters(in: .whitespacesAndNewlines)),
+            "description": .string(description), "enabled": .bool(enabled), "allowed_bot_ids": .array(allowed.sorted().map(SummonJSONValue.string))]
+        if let id = item["id"].string, let revision = item["revision"].int {
+            body["revision"] = .number(Double(revision))
+            _ = try await store.request(path: "/api/connections/" + SummonAPIClient.component(id), method: "PATCH", body: .object(body))
+        } else {
+            let value = try JSONDecoder().decode(SummonJSONValue.self, from: Data(config.utf8))
+            guard value.object != nil else { throw SummonAPIError.http(0, "连接配置需要一个 JSON 对象。") }
+            body["kind"] = .string(kind); body["config"] = value
+            _ = try await store.request(path: "/api/connections", method: "POST", body: .object(body))
+        }
+    }
+}
+
+private struct SummonDirectoryEditor: View {
+    @Environment(SummonStore.self) private var store
+    let item: SummonJSONValue
+    @State private var name = ""
+    @State private var path = ""
+    @State private var writable = false
+
+    var body: some View {
+        SummonEditorForm(title: item == .null ? "登记执行目录" : "编辑执行目录", canSave: !name.isEmpty && !path.isEmpty, save: {
+            var body: [String: SummonJSONValue] = ["name": .string(name.trimmingCharacters(in: .whitespacesAndNewlines)),
+                "path": .string(path.trimmingCharacters(in: .whitespacesAndNewlines)), "write": .bool(writable)]
+            if let id = item["id"].string, let revision = item["revision"].int {
+                body["revision"] = .number(Double(revision))
+                _ = try await store.request(path: "/api/workspaces/" + SummonAPIClient.component(id), method: "PATCH", body: .object(body))
+            } else { _ = try await store.request(path: "/api/workspaces", method: "POST", body: .object(body)) }
+        }) {
+            TextField("目录名称", text: $name)
+            TextField("绝对路径", text: $path).autocorrectionDisabled().textInputAutocapitalization(.never)
+            Toggle("允许写入", isOn: $writable)
+        }.onAppear {
+            name = item["name"].string ?? ""; path = item["path"].string ?? ""; writable = item["write"].bool ?? false
+        }
+    }
+}
+
+private struct SummonLimitsEditor: View {
+    @Environment(SummonStore.self) private var store
+    @State private var revision: Int?
+    @State private var values: [String: String] = [:]
+
+    var body: some View {
+        SummonEditorForm(title: "宿主额度", canSave: revision != nil, load: {
+            let response = try await store.request(path: "/api/connections/limits")
+            values = response["limits"].object?.mapValues(\.stringValue) ?? [:]
+            revision = response["revision"].int
+        }, save: {
+            guard let revision else { return }
+            var limits: [String: SummonJSONValue] = [:]
+            for (key, value) in values {
+                guard let count = Int(value.trimmingCharacters(in: .whitespacesAndNewlines)), count >= (key == "period_ms" ? 1000 : 0),
+                      count <= 9_007_199_254_740_991 else { throw SummonAPIError.http(0, "请输入有效的 \(resourceName(key))。") }
+                limits[key] = .number(Double(count))
+            }
+            _ = try await store.request(path: "/api/connections/limits", method: "PATCH", body: .object([
+                "revision": .number(Double(revision)), "limits": .object(limits)
+            ]))
+        }) {
+            ForEach(values.keys.sorted(), id: \.self) { key in
+                TextField(resourceName(key), text: Binding(get: { values[key] ?? "" }, set: { values[key] = $0 }))
+                    .keyboardType(.numberPad).accessibilityLabel(resourceName(key))
+            }
+        }
+    }
 }

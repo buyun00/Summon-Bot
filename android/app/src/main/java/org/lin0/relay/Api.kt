@@ -13,7 +13,7 @@ import java.net.URI
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
-class SummonApiException(message: String) : Exception(message) {
+class SummonApiException(message: String, val status: Int? = null) : Exception(message) {
     companion object {
         val invalidURL = SummonApiException("请输入完整的 Summon Bot 服务地址，例如 https://summon.example.com。")
         val noConnection = SummonApiException("请先在设置中连接 Summon Bot 服务。")
@@ -21,32 +21,35 @@ class SummonApiException(message: String) : Exception(message) {
         val invalidReceipt = SummonApiException("消息尚未确认送达，请手动重试确认。")
         val attachmentTooLarge = SummonApiException("附件不能超过 20 MB。")
         val tooManyAttachments = SummonApiException("每条消息最多附加 8 个文件。")
-        val emptyMessage = SummonApiException("请输入消息或添加附件。")
+        val missingAttachment = SummonApiException("本机暂存的附件已不可用。")
 
         fun http(status: Int, message: String): SummonApiException =
-            SummonApiException(if (message.isEmpty()) "请求失败（$status）" else message)
+            SummonApiException(if (message.isEmpty()) "请求失败（$status）" else message, status)
     }
 }
 
-class SummonApiClient(val baseURL: URI, private val token: String) {
+class SummonApiClient(val baseURL: URI, private val token: String, val workspaceID: String? = null) {
     private val http = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
         .callTimeout(180, TimeUnit.SECONDS)
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .retryOnConnectionFailure(false)
         .build()
 
-    fun verifyWorkspace() {
-        val probe = http.newBuilder().callTimeout(12, TimeUnit.SECONDS).followRedirects(false).followSslRedirects(false).build()
-        val request = build("/api/health", "GET", null, "application/json")
+    fun bootstrap(): SummonBootstrap {
+        val probe = http.newBuilder().callTimeout(12, TimeUnit.SECONDS).build()
+        val request = build("/api/bootstrap", "GET", null, "application/json")
         probe.newCall(request).execute().use { response ->
             val payload = runCatching { SummonJson.parse(response.body?.string().orEmpty()) }.getOrNull()
             if (!response.isSuccessful) throw SummonApiException.http(response.code, payload?.get("error")?.stringValue.orEmpty())
-            if (payload?.get("service")?.string != "summon-capabilities") throw SummonApiException.invalidResponse
+            return SummonBootstrap.parse(payload ?: throw SummonApiException.invalidResponse)
         }
     }
 
-    fun requestJson(path: String, method: String = "GET", body: SummonJson? = null): SummonJson {
-        val (responseBody, code) = execute(path, method, body, "application/json")
+    fun requestJson(path: String, method: String = "GET", body: SummonJson? = null, clientID: String? = null): SummonJson {
+        val (responseBody, code) = execute(path, method, body, "application/json", clientID)
         if (code !in 200..299) {
             val error = runCatching { SummonJson.parse(responseBody) }.getOrNull()
             throw SummonApiException.http(code, error?.get("error")?.stringValue.orEmpty())
@@ -58,14 +61,14 @@ class SummonApiClient(val baseURL: URI, private val token: String) {
         }
     }
 
-    fun upload(data: ByteArray, name: String, mimeType: String): SummonAttachment {
+    fun upload(data: ByteArray, name: String, mimeType: String, clientID: String): SummonAttachment {
         if (data.size > 20 * 1024 * 1024) throw SummonApiException.attachmentTooLarge
         val body = SummonJson.obj(
             "name" to SummonJson.Str(name),
             "mimeType" to SummonJson.Str(mimeType),
             "data" to SummonJson.Str(android.util.Base64.encodeToString(data, android.util.Base64.NO_WRAP)),
         )
-        return SummonAttachment.parse(requestJson("/api/attachments", "POST", body))
+        return SummonAttachment.parse(requestJson("/api/attachments", "POST", body, clientID))
     }
 
     fun bytes(path: String): ByteArray {
@@ -99,7 +102,7 @@ class SummonApiClient(val baseURL: URI, private val token: String) {
     }
 
     fun streamCall(): okhttp3.Call {
-        val request = build("/api/stream", "GET", null, "text/event-stream").newBuilder()
+        val request = build("/api/stream?protocol=$PROTOCOL_VERSION", "GET", null, "text/event-stream").newBuilder()
             .header("Cache-Control", "no-cache")
             .build()
         val client = http.newBuilder()
@@ -109,24 +112,31 @@ class SummonApiClient(val baseURL: URI, private val token: String) {
         return client.newCall(request)
     }
 
-    private fun execute(path: String, method: String, body: SummonJson?, accept: String): Pair<String, Int> {
-        val request = build(path, method, body, accept)
+    private fun execute(path: String, method: String, body: SummonJson?, accept: String, clientID: String?): Pair<String, Int> {
+        val request = build(path, method, body, accept, clientID)
         http.newCall(request).execute().use { response ->
             return (response.body?.string().orEmpty()) to response.code
         }
     }
 
-    private fun build(path: String, method: String, body: SummonJson?, accept: String): Request {
+    private fun build(path: String, method: String, body: SummonJson?, accept: String, clientID: String? = null): Request {
         if (!path.startsWith("/api/") || path.contains("\\")) throw SummonApiException.invalidURL
-        val url = baseURL.toString().trimEnd('/') + path
+        val base = baseURL.toString().trimEnd('/') + path
+        val suffix = workspaceID?.takeUnless { path == "/api/workspace-profiles" || path.startsWith("/api/push/") }
+            ?.let { (if ("?" in path) "&" else "?") + "workspace=" + component(it) }.orEmpty()
+        val url = base + suffix
         val builder = Request.Builder().url(url).header("Accept", accept)
+        if (path != "/api/bootstrap") builder.header("X-Summon-Protocol", PROTOCOL_VERSION.toString())
+        if (clientID != null) builder.header("X-Summon-Client-Id", clientID)
         if (token.isNotEmpty()) builder.header("Authorization", "Bearer $token")
         val payload = body?.encode()?.toString()?.toRequestBody("application/json; charset=utf-8".toMediaType())
-        builder.method(method, if (method == "GET" || method == "HEAD") null else payload ?: ByteArray(0).toRequestBody(null))
+        builder.method(method, if (method == "GET" || method == "HEAD") null else payload ?: "{}".toRequestBody("application/json".toMediaType()))
         return builder.build()
     }
 
     companion object {
+        const val PROTOCOL_VERSION = 2
+
         fun normalized(value: String): URI {
             val cleaned = value.trim()
             val uri = try {

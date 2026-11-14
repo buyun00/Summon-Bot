@@ -2,6 +2,8 @@ import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { clampThinkingLevel } from '@earendil-works/pi-ai';
+import { idOf, reject } from '../platform/contract.mjs';
 import { connectionPath, readConnectionCatalog, saveModelJson, modelConnection, connectionModel, connectionRuntime,
   ModelCredentialStore, localCodexAuthPath, localGrokAuthPath, localGrokLogin, grokProxyHeaders, codexCredential, decodeModelToken, modelChoices, modelError } from '../../bot/src/agent/connections.mjs';
 
@@ -13,17 +15,17 @@ const at = (value, path) => String(path || '').split('.').filter(Boolean).reduce
 const windowLabel = minutes => minutes === 10080 ? '每周' : minutes === 300 ? '每 5 小时' : minutes === 1440 ? '每日' : minutes ? `${minutes} 分钟` : '订阅额度';
 const amount = (value, currency) => number(value) === null ? null : { amount: number(value), currency };
 const requireEntry = (catalog, id) => { const entry = catalog.connections.find(item => item.id === id); if (!entry) throw new Error('找不到这个模型连接'); return entry; };
+const sameProfile = (entry, id) => (entry.workspaceProfileId ?? null) === (id ?? null);
 
 /** Model credentials and account usage belong to the existing host, outside Bot conversation history. */
 export class ModelConnections {
-  constructor({ dataRoot, model, profileId, native, emit = () => {} }) {
-    this.dataRoot = dataRoot; this.profileId = profileId; this.initialModel = model; this.emit = emit; this.native = native;
-    this.path = profileId ? join(dataRoot, 'config', 'workspaces', profileId, 'model-connections.json') : connectionPath(dataRoot);
+  constructor({ dataRoot, model, emit = () => {} }) {
+    this.dataRoot = dataRoot; this.initialModel = model; this.emit = emit;
+    this.path = connectionPath(dataRoot);
     this.credentials = new ModelCredentialStore(this.path); this.logins = new Map(); this.usage = {}; this.pendingUsage = new Map(); this.writeChain = Promise.resolve();
-    this.usagePath = profileId ? join(dataRoot, 'config', 'workspaces', profileId, 'model-usage.json') : join(dataRoot, 'config', 'model-usage.json');
+    this.usagePath = join(dataRoot, 'config', 'model-usage.json');
   }
   async initialize() {
-    if (!existsSync(this.path) && this.profileId) await saveModelJson(this.path, { schemaVersion: 1, activeId: null, connections: [] });
     if (!existsSync(this.path)) {
       const original = this.initialModel || {};
       await saveModelJson(this.path, { schemaVersion: 1, activeId: 'api-deepseek', environmentFile: join(this.dataRoot, 'config', 'runtime.env'),
@@ -33,17 +35,54 @@ export class ModelConnections {
       if (original.apiKey) await this.credentials.modify('api-deepseek', async () => ({ type: 'api_key', key: original.apiKey }));
     }
     try { this.usage = JSON.parse(await readFile(this.usagePath, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    const deploymentPath = join(this.dataRoot, 'config', 'deployment.json');
-    if (!this.profileId && existsSync(deploymentPath)) {
-      const deployment = JSON.parse(await readFile(deploymentPath, 'utf8'));
-      if (deployment.model?.connectionStore !== this.path || Object.keys(deployment.model || {}).length !== 1)
-        await saveModelJson(deploymentPath, { ...deployment, model: { connectionStore: this.path } });
-    }
-    this.timer = setInterval(() => { void this.refreshUsage().catch(() => {}); }, 60000); this.timer.unref();
+    this.startUsage();
     return this;
   }
+
+  startUsage() {
+    this.timer ??= setInterval(() => {
+      if (this.backgroundRefresh) return;
+      this.backgroundRefresh = this.refreshUsage().catch(() => {}).finally(() => { this.backgroundRefresh = null; });
+    }, 60000);
+    this.timer.unref();
+  }
+
+  async pauseUsage() {
+    clearInterval(this.timer);
+    this.timer = null;
+    await this.backgroundRefresh;
+    await Promise.allSettled([...this.pendingUsage.values()].map(item => item.promise));
+    await this.usageWrite?.catch(() => {});
+  }
   catalog() { return readConnectionCatalog(this.path); }
-  runtimeModel() { return this.catalog().activeId ? modelConnection({ connectionStore: this.path }) : null; }
+  activeId(catalog, profileId) { return profileId ? catalog.activeByProfile?.[profileId] ?? null : catalog.activeId; }
+  scopedEntry(catalog, id, profileId) {
+    const entry = catalog.connections.find(item => item.id === id && sameProfile(item, profileId));
+    if (!entry) reject('connection_not_found', 'Model connection is unavailable in this workspace', 404);
+    return entry;
+  }
+  selectBinding(selection, profileId = null) {
+    if (selection === null) return null;
+    const requested = typeof selection === 'object' && Object.hasOwn(selection, 'connection_id') ? selection : null;
+    const catalog = this.catalog();
+    const connectionId = requested?.connection_id || (selection == null ? this.activeId(catalog, profileId) : idOf(selection, 'connection'));
+    if (!connectionId) return null;
+    const entry = this.scopedEntry(catalog, connectionId, profileId);
+    const id = requested?.id || entry.model;
+    const choices = modelChoices(entry.kind, entry.provider);
+    if (id !== entry.model && !choices.some(choice => choice.id === id && choice.api === entry.api)) {
+      reject('model_unsupported', 'This model is not configured or supported by the selected connection', 409);
+    }
+    const thinking_level = requested?.thinking_level || (entry.reasoning === false ? 'off' : entry.thinkingLevel || 'high');
+    const optional = { ...entry, model: id, thinkingLevel: thinking_level };
+    const model = connectionModel(optional);
+    if (!['off', 'low', 'medium', 'high', 'xhigh', 'max'].includes(thinking_level) ||
+        thinking_level !== 'off' && (!model.reasoning || model.thinkingLevelMap?.[thinking_level] === null ||
+          clampThinkingLevel(model, thinking_level) !== thinking_level)) {
+      reject('thinking_unsupported', 'This model does not support the selected reasoning level', 409);
+    }
+    return { connection_id: connectionId, id, thinking_level };
+  }
   async mutate(fn) {
     const result = this.writeChain.catch(() => {}).then(async () => {
       const catalog = this.catalog(), value = await fn(catalog); await saveModelJson(this.path, catalog);
@@ -52,10 +91,13 @@ export class ModelConnections {
     this.writeChain = result; return result;
   }
   publicEntry(entry) {
-    const { authFile, authScope, apiKey, apiKeyEnv, environmentFile, ...value } = entry;
-    const { contextWindow, maxTokens, outputTokenLimit } = connectionModel(entry);
-    return { ...value, effectiveBudget: { contextWindow, maxTokens, outputTokenLimit },
-      active: entry.id === this.catalog().activeId, usage: this.usageFor(entry.id) };
+    const { id, kind, name, model, provider, baseUrl, api, thinkingLevel, allowNoKey, balancePath, balanceField, balanceCurrency,
+      contextWindow, maxTokens, authMode, identity } = entry;
+    const effective = connectionModel(entry);
+    return { id, kind, name, model, provider, baseUrl, api, thinkingLevel, allowNoKey, balancePath, balanceField, balanceCurrency,
+      contextWindow, maxTokens, authMode, identity,
+      effectiveBudget: { contextWindow: effective.contextWindow, maxTokens: effective.maxTokens, outputTokenLimit: effective.outputTokenLimit },
+      active: entry.id === this.activeId(this.catalog(), entry.workspaceProfileId), usage: this.usageFor(entry.id) };
   }
   usageFor(id) {
     const usage = this.usage[id];
@@ -66,27 +108,18 @@ export class ModelConnections {
     this.pendingUsage.delete(id);
     delete this.usage[id];
   }
-  summary() {
-    const catalog = this.catalog(), selected = catalog.activeId ? requireEntry(catalog, catalog.activeId) : null;
-    const { executors = [], defaultId = null } = this.native?.choices('controller', null, catalog.workExecutorId) || {};
-    const workExecutor = executors.find(item => item.id === defaultId) || null;
-    return { activeId: selected?.id || null, chat: selected ? { ...this.publicEntry(selected), role: 'chat' }
-      : { role: 'chat', name: '尚未选择聊天模型', configured: false, usage: { status: 'unconfigured' } }, executors, workExecutor };
+  summary(profileId) {
+    const catalog = this.catalog(), active = this.activeId(catalog, profileId);
+    const selected = active ? this.scopedEntry(catalog, active, profileId) : null;
+    return { activeId: selected?.id || null, chat: selected ? this.publicEntry(selected)
+      : { name: '尚未选择模型', configured: false, usage: { status: 'unconfigured' } } };
   }
-  async selectWorkExecutor(id) {
-    await this.mutate(catalog => {
-      if (id === null) { delete catalog.workExecutorId; return; }
-      const choice = this.native?.choices('controller', null, id).executors.find(item => item.id === id);
-      if (!choice || choice.status === 'unavailable') throw new Error('请选择目录中可用的工作引擎。');
-      catalog.workExecutorId = id;
-    });
-    return this.snapshot();
-  }
-  async snapshot() {
+  async snapshot(profileId) {
     const catalog = this.catalog(), credentials = await this.credentials.list();
     const configured = new Set(credentials.map(item => item.providerId));
-    const connections = catalog.connections.map(entry => ({ ...this.publicEntry(entry), configured: configured.has(entry.id) || entry.allowNoKey === true }));
-    const summary = this.summary();
+    const connections = catalog.connections.filter(entry => sameProfile(entry, profileId))
+      .map(entry => ({ ...this.publicEntry(entry), configured: configured.has(entry.id) || entry.allowNoKey === true }));
+    const summary = this.summary(profileId);
     return { ...summary, chat: { ...summary.chat, configured: connections.some(entry => entry.active && entry.configured) }, connections,
       presets: [{ id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', api: 'openai-completions' },
         { id: 'openai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', api: 'openai-responses' },
@@ -96,16 +129,17 @@ export class ModelConnections {
         { id: 'openai-compatible', name: '其他 / 自定义地址', baseUrl: '', api: 'openai-completions' }].map(preset => ({ ...preset,
           models: modelChoices('api', preset.id).map(model => ({ id: model.id, name: model.name, contextWindow: model.contextWindow, maxTokens: model.maxTokens })) })) };
   }
-  async save(input) {
+  async save(input, profileId = null) {
     if (!['api', 'codex', 'grok'].includes(input.kind)) throw new Error('请选择 Codex 订阅、Grok 订阅或通用 API');
     const id = input.id || `${input.kind}-${randomUUID()}`;
-    if (!/^[A-Za-z0-9_-]{1,80}$/.test(id)) throw new Error('无效的连接编号');
+    if (!/^[A-Za-z0-9_:-]{1,200}$/.test(id)) throw new Error('无效的连接编号');
     await this.mutate(async catalog => {
       const original = structuredClone(catalog);
       const previous = catalog.connections.find(item => item.id === id);
+      if (previous && !sameProfile(previous, profileId)) reject('connection_not_found', 'Model connection is unavailable in this workspace', 404);
       if (previous && previous.kind !== input.kind) throw new Error('请为不同类型建立新的连接');
       const name = String(input.name || previous?.name || (input.kind === 'api' ? 'API' : input.kind === 'codex' ? 'Codex 订阅' : 'Grok 订阅')).trim().slice(0, 80);
-      const entry = { ...previous, id, kind: input.kind, name, model: String(input.model || previous?.model || (input.kind === 'codex' ? 'gpt-6-luna' : input.kind === 'grok' ? 'grok-4.7' : '')).trim(),
+      const entry = { ...previous, id, workspaceProfileId: profileId, kind: input.kind, name, model: String(input.model || previous?.model || (input.kind === 'codex' ? 'gpt-6-luna' : input.kind === 'grok' ? 'grok-4.7' : '')).trim(),
         provider: input.kind === 'codex' ? 'openai-codex' : input.kind === 'grok' ? 'xai' : String(input.provider || previous?.provider || 'openai-compatible'),
         baseUrl: input.kind === 'codex' ? 'https://chatgpt.com/backend-api' : input.kind === 'grok' ? 'https://cli-chat-proxy.grok.com/v1' : String(input.baseUrl || previous?.baseUrl || '').trim().replace(/\/+$/, ''),
         api: input.kind === 'codex' ? 'openai-codex-responses' : input.kind === 'grok' ? 'openai-responses' : input.api || previous?.api || 'openai-completions',
@@ -137,19 +171,25 @@ export class ModelConnections {
       } catch (error) { await saveModelJson(this.path, original); throw error; }
       this.clearUsage(id);
     });
-    return this.snapshot();
+    return this.snapshot(profileId);
   }
-  async select(id) {
-    const connection = requireEntry(this.catalog(), id);
+  async select(id, profileId = null) {
+    const connection = this.scopedEntry(this.catalog(), id, profileId);
     if (!connection.allowNoKey && !await this.credentials.read(id)) throw new Error('请先完成这个连接的授权');
-    await this.mutate(catalog => { requireEntry(catalog, id); catalog.activeId = id; });
-    void this.refreshUsage(true).catch(() => {}); return this.snapshot();
+    await this.mutate(catalog => {
+      this.scopedEntry(catalog, id, profileId);
+      if (profileId) (catalog.activeByProfile ??= {})[profileId] = id;
+      else catalog.activeId = id;
+    });
+    void this.refreshUsage(true, profileId).catch(() => {}); return this.snapshot(profileId);
   }
-  async remove(id) {
-    if (this.catalog().activeId === id) throw new Error('请先选择其他聊天模型，再移除此连接');
+  async remove(id, profileId) {
+    const catalog = this.catalog();
+    this.scopedEntry(catalog, id, profileId);
+    if (this.activeId(catalog, profileId) === id) throw new Error('请先选择其他模型，再移除此连接');
     this.cancelLogin(id);
     await this.mutate(async catalog => { requireEntry(catalog, id); await this.credentials.delete(id); catalog.connections = catalog.connections.filter(entry => entry.id !== id); this.clearUsage(id); });
-    return this.snapshot();
+    return this.snapshot(profileId);
   }
   async localLogins() {
     const sources = await Promise.all(['codex', 'grok'].map(async kind => {
@@ -166,7 +206,7 @@ export class ModelConnections {
     }));
     return { scope: 'host', sources };
   }
-  async importLocal(kind) {
+  async importLocal(kind, profileId) {
     if (!['codex', 'grok'].includes(kind)) throw new Error('请选择 Codex 或 Grok');
     const name = kind === 'codex' ? 'Codex' : 'Grok', authMode = `${kind}-local`;
     const authFile = kind === 'codex' ? localCodexAuthPath() : localGrokAuthPath();
@@ -174,13 +214,14 @@ export class ModelConnections {
     let identity, authScope;
     if (kind === 'codex') { const credential = codexCredential(value); identity = decodeModelToken(value.tokens.id_token || credential.access).email || '本机 Codex 账号'; }
     else { const login = localGrokLogin(value); identity = login.identity; authScope = login.authScope; }
-    const existing = this.catalog().connections.find(entry => entry.authMode === authMode), id = existing?.id || authMode;
-    if (!existing) await this.save({ kind, id, name: `本机 ${name} 订阅` });
+    const existing = this.catalog().connections.find(entry => entry.authMode === authMode && sameProfile(entry, profileId));
+    const id = existing?.id || (profileId ? `${profileId}:${authMode}` : authMode);
+    if (!existing) await this.save({ kind, id, name: `本机 ${name} 订阅` }, profileId);
     await this.mutate(catalog => { const entry = requireEntry(catalog, id);
       entry.authMode = authMode; entry.authFile = authFile; entry.identity = identity;
       if (kind === 'grok') { entry.authScope = authScope; entry.baseUrl = 'https://cli-chat-proxy.grok.com/v1'; }
       this.clearUsage(id); });
-    return { ...await this.snapshot(), importedId: id };
+    return { ...await this.snapshot(profileId), importedId: id };
   }
   loginStatus(id) {
     const login = this.logins.get(id);
@@ -292,11 +333,20 @@ export class ModelConnections {
     if (!previous?.checkedAt) this.emit('models.usage', {});
     return pending.promise;
   }
-  async refreshUsage(force = false) {
+  async refreshUsage(force = false, profileId) {
     const catalog = this.catalog();
-    const ids = [catalog.activeId].filter(Boolean);
+    const ids = profileId === undefined ? [...new Set([catalog.activeId, ...Object.values(catalog.activeByProfile || {})])].filter(Boolean)
+      : [this.activeId(catalog, profileId)].filter(Boolean);
     await Promise.all(ids.map(id => this.refreshOne(id, force)));
-    await saveModelJson(this.usagePath, this.usage); return this.summary();
+    const commit = (this.usageWrite || Promise.resolve()).catch(() => {}).then(() => saveModelJson(this.usagePath, this.usage));
+    this.usageWrite = commit;
+    await commit;
+    return this.summary(profileId);
   }
-  async close() { clearInterval(this.timer); for (const id of this.logins.keys()) this.cancelLogin(id); await Promise.allSettled([...this.logins.values()].map(login => login.promise)); await Promise.allSettled([...this.pendingUsage.values()].map(item => item.promise)); await this.writeChain.catch(() => {}); }
+  async close() {
+    for (const id of this.logins.keys()) this.cancelLogin(id);
+    await Promise.allSettled([...this.logins.values()].map(login => login.promise));
+    await this.pauseUsage();
+    await this.writeChain.catch(() => {});
+  }
 }

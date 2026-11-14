@@ -3,6 +3,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 if (location.protocol === 'summon-setup:' && location.host === 'workspace') {
   contextBridge.exposeInMainWorld('SummonSetup', Object.freeze({
     info: () => ipcRenderer.invoke('summon:workspace-info'),
+    checkForUpdates: () => ipcRenderer.invoke('summon:check-update'),
+    installUpdate: () => ipcRenderer.invoke('summon:install-update'),
+    onUpdate: callback => { ipcRenderer.on('summon:update-state', (_event, state) => callback(state)); },
     action: (command, input) => ipcRenderer.invoke('summon:workspace-action', command, input),
     onSetup: callback => { ipcRenderer.on('summon:workspace-setup-state', () => callback()); },
     onProgress: callback => { ipcRenderer.on('summon:workspace-progress', (_event, progress) => callback(progress)); },

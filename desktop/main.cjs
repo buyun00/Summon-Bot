@@ -151,7 +151,9 @@ async function checkForUpdates() {
   return update;
 }
 function requestInstall() {
-  if (update.status === 'downloaded') window.webContents.send('summon:request-install');
+  if (!window || update.status !== 'downloaded') return;
+  if (window.webContents.getURL() === setupUrl) autoUpdater.quitAndInstall(false, true);
+  else window.webContents.send('summon:request-install');
 }
 function createWindow() {
   const target = window = new BrowserWindow({
@@ -202,7 +204,7 @@ ipcMain.handle('summon:open-workspace-setup', (event, section) => {
 });
 ipcMain.handle('summon:workspace-info', event => {
   trusted(event, true);
-  return { ...setup, workspace, candidate, localAvailable: process.platform === 'win32' };
+  return { ...setup, workspace, candidate, update, localAvailable: process.platform === 'win32' };
 });
 ipcMain.handle('summon:workspace-action', async (event, command, input = {}) => {
   trusted(event, true);
@@ -275,9 +277,9 @@ ipcMain.handle('summon:workspace-action', async (event, command, input = {}) => 
     throw new Error('未知的工作区操作。');
   } finally { busy = false; }
 });
-ipcMain.handle('summon:check-update', event => { trusted(event); return checkForUpdates(); });
+ipcMain.handle('summon:check-update', event => { trusted(event, event.senderFrame?.url === setupUrl); return checkForUpdates(); });
 ipcMain.handle('summon:install-update', event => {
-  trusted(event);
+  trusted(event, event.senderFrame?.url === setupUrl);
   if (update.status === 'manual' && [localUpdateFeed, remoteUpdateFeed].some(feed => update.downloadUrl?.startsWith(feed))) { shell.openExternal(update.downloadUrl); return true; }
   if (update.status !== 'downloaded') return false;
   setImmediate(() => autoUpdater.quitAndInstall(true, true)); return true;
@@ -291,7 +293,10 @@ else {
     const clientMenu = { label: 'Summon Bot', submenu: [
       { label: '切换工作区…', click: () => { if (!busy) showSetup(); } },
       { type: 'separator' },
-      { label: '检查更新', click: () => window?.webContents.send('summon:open-updates') },
+      { label: '检查更新', click: () => {
+        if (window?.webContents.getURL() === setupUrl) void checkForUpdates();
+        else window?.webContents.send('summon:open-updates');
+      } },
       { label: '重启并更新', click: requestInstall }, { type: 'separator' }, { role: 'quit' },
     ] };
     Menu.setApplicationMenu(Menu.buildFromTemplate([clientMenu, { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' }]));

@@ -15,7 +15,6 @@ export async function buildDesktop({ platform, arch, output }) {
     if (missing.length) throw new Error(`macOS Developer ID signing and notarization require: ${missing.join(', ')}`);
   }
   const release = JSON.parse(await readFile(join(root, 'release.json'), 'utf8'));
-  const electronChecksums = JSON.parse(await readFile(join(root, 'desktop/node_modules/electron/checksums.json'), 'utf8'));
   const updatePath = `/api/releases/${platform}/${arch}/`;
   const updateMode = platform === 'macos' ? 'manual' : 'automatic';
   await writeFile(join(root, 'desktop/release.json'), JSON.stringify({
@@ -32,7 +31,6 @@ export async function buildDesktop({ platform, arch, output }) {
     config: {
       appId: 'org.lin0.relay.desktop', productName: 'Summon Bot', electronVersion: '45.2.1',
       ...(platform === 'macos' ? { forceCodeSigning: true } : {}),
-      electronDownload: { checksums: electronChecksums },
       ...(process.env.SUMMON_ELECTRON_DIST ? { electronDist: resolve(process.env.SUMMON_ELECTRON_DIST) } : {}),
       directories: { app: join(root, 'desktop'), output },
       files: ['main.cjs', 'preload.cjs', 'workspace.cjs', 'setup.html', 'setup.css', 'setup.js', 'startup-art.png', 'release.json', 'package.json'],

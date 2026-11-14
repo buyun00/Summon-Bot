@@ -1,25 +1,21 @@
 import { DatabaseSync } from 'node:sqlite';
-import { randomUUID, createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { lstat, realpath, readdir, writeFile, rename, unlink } from 'node:fs/promises';
 import { join, resolve, relative, isAbsolute, sep, dirname, parse } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BotStore } from '../../bot/src/storage/store.mjs';
 import { acquireIdentityLock, inspectInstanceIdentity } from '../../bot/src/runtime/identity-lock.mjs';
 import { acquireServiceLock, inspectServiceLock } from '../installation/service-lock.mjs';
+import { assertInstallationWritable } from '../installation/installation-state.mjs';
+import { runtimeRecords as runtime } from '../../bot/src/storage/runtime-records.mjs';
 import { parseArgs } from '../build/files.mjs';
 
 const fail = (message, code = 'HISTORY_CLEANUP_REFUSED') => Object.assign(new Error(message), { code });
 const terminal = new Set(['completed', 'failed', 'cancelled', 'interrupted', 'rejected']);
-const botHistoryKinds = new Set(['messages', 'tasks', 'sessions', 'tools', 'events', 'outbox', 'receipts', 'requests',
-  'agentSessions', 'agentRuns', 'toolRuns', 'jobs', 'imported-events', 'imported-requests', 'imported-sessions', 'imported-tool_runs', 'imported-kv_state']);
 const domains = Object.freeze({
-  'bot-management': ['derivations', 'deliveries', 'event-cursors'],
-  chatroom: ['messages', 'deliveries'],
-  codex: ['works', 'workEvents', 'agentRuns', 'toolRuns', 'jobs', 'requests', 'sessions', 'events'],
-  'memory-management': ['proposals', 'deliveries', 'merges', 'mergeEvents'],
-  gateway: ['event-cursors', 'work-form-owners', 'imported-events', 'imported-kv_state', 'imported-requests', 'imported-sessions'],
-  registry: ['capability-requests', 'capability-reconciliations'],
+  chatroom: ['messages', 'platform-events', 'platform-deliveries', 'platform-calls', 'platform-waits',
+    'platform-client-calls', 'platform-sessions', 'platform-conversations', 'platform-inputs', 'session-operations', 'session-inputs', 'session-service-events'],
+  gateway: [],
 });
 const normalize = value => process.platform === 'win32' ? value.toLowerCase() : value;
 const inside = (root, value) => { const part = relative(root, value); return !part || !isAbsolute(part) && part !== '..' && !part.startsWith(`..${sep}`); };
@@ -82,16 +78,8 @@ async function inventory(root) {
     const folder = join(root, 'capabilities', domain);
     if (await safePath(root, folder, { directory: true })) capabilities[domain] = await database(root, folder);
   }
-  const services = [];
-  for (const capability of await childDirectories(root, join(root, 'capabilities', 'service-runtime'))) {
-    for (const version of await childDirectories(root, capability)) {
-      const launch = await safePath(root, join(version, 'launch'), { directory: true });
-      const run = await safePath(root, join(version, 'run'), { directory: true });
-      if (launch || run) services.push({ root: version, launch, run });
-    }
-  }
   await safePath(root, join(root, 'history.json'));
-  return { bots, botDatabases, capabilities, services };
+  return { bots, botDatabases, capabilities };
 }
 function withReadOnly(path, operation) {
   const db = new DatabaseSync(path, { readOnly: true });
@@ -106,86 +94,29 @@ function refusePending(rows, allowed = terminal) {
 }
 function preflightData(snapshot) {
   for (const path of snapshot.botDatabases) withReadOnly(path, db => {
-    if (db.prepare('PRAGMA user_version').get().user_version !== 1 || ['messages', 'tasks', 'sessions', 'tools', 'events', 'outbox', 'memories', 'artifacts', 'state', 'records'].some(table => !hasTable(db, table))) throw fail('Bot database has an unsupported schema', 'HISTORY_INVALID_SCHEMA');
-    for (const table of ['tasks', 'tools']) if (hasTable(db, table)) refusePending(db.prepare(`SELECT data FROM ${table}`).all().map(row => JSON.parse(row.data)));
-    if (hasTable(db, 'outbox')) refusePending(db.prepare('SELECT data FROM outbox').all().map(row => JSON.parse(row.data)), new Set(['accepted', 'failed', 'cancelled', 'rejected']));
-    for (const update of records(db, 'capability-updates')) if (!['committed', 'aborted', 'failed'].includes(update.status)) throw fail('A Bot capability switch is unresolved', 'HISTORY_PENDING_WORK');
+    if (db.prepare('PRAGMA user_version').get().user_version !== 1 || !hasTable(db, 'records')) throw fail('Bot database has an unsupported schema', 'HISTORY_INVALID_SCHEMA');
+    if (records(db, runtime.run).some(item => ['running', 'waiting'].includes(item.state))) throw fail('A Bot run is still active or waiting', 'HISTORY_PENDING_WORK');
+    if (records(db, runtime.call).some(item => ['submitted', 'unknown'].includes(item.state))) throw fail('A Bot call still has no final result', 'HISTORY_PENDING_WORK');
   });
   for (const [domain, path] of Object.entries(snapshot.capabilities)) {
     if (!path) continue;
     withReadOnly(path, db => {
       if (!hasTable(db, 'records')) throw fail('Capability database has an unsupported schema', 'HISTORY_INVALID_SCHEMA');
-      if (domain === 'chatroom') refusePending(records(db, 'deliveries'));
-      if (domain === 'codex') refusePending(records(db, 'works'));
-      if (domain === 'registry') {
-        refusePending(records(db, 'capability-requests'), new Set(['completed', 'failed']));
-        if (records(db, 'switches').some(item => item.phase !== 'complete') || records(db, 'capability-proposals').some(item => item.status === 'pending')) throw fail('A capability route switch is unresolved', 'HISTORY_PENDING_WORK');
+      if (domain === 'chatroom') {
+        refusePending(records(db, 'platform-calls'), new Set([...terminal, 'stopped', 'unsupported', 'not_submitted']));
+        if (records(db, 'session-operations').some(item => !item.runtime_ended && item.submitted_at &&
+            !['completed', 'failed', 'stopped', 'unsupported', 'not_submitted'].includes(item.status))) {
+          throw fail('An execution has not reached its final runtime boundary', 'HISTORY_PENDING_WORK');
+        }
       }
-      if (domain === 'bot-management' && records(db, 'derivations').some(item => ['initializing', 'unknown'].includes(item.status))) throw fail('A Bot derivation is unresolved', 'HISTORY_PENDING_WORK');
     });
   }
 }
 async function verifyStopped(root, snapshot) {
   for (const type of ['gateway', 'web']) if (await inspectServiceLock(root, type)) throw fail('A system service is still active', 'HISTORY_ACTIVE_OWNER');
   for (const directory of snapshot.bots) if (await inspectInstanceIdentity(directory)) throw fail('A Bot or maintenance owner is still active', 'HISTORY_ACTIVE_OWNER');
-  for (const service of snapshot.services) for (const directory of [service.launch, service.run].filter(Boolean)) {
-    if (await inspectInstanceIdentity(directory)) throw fail('A capability service or launcher is still active', 'HISTORY_ACTIVE_OWNER');
-  }
 }
 const compact = db => { db.exec('PRAGMA wal_checkpoint(TRUNCATE); VACUUM; PRAGMA wal_checkpoint(TRUNCATE);'); };
-function rewrite(db, kind, transform) {
-  let count = 0;
-  for (const item of records(db, kind)) {
-    const next = transform({ ...item });
-    if (JSON.stringify(next) === JSON.stringify(item)) continue;
-    db.prepare('UPDATE records SET data=? WHERE kind=? AND id=?').run(JSON.stringify(next), kind, item.id); count++;
-  }
-  return count;
-}
-const without = (item, keys) => { for (const key of keys) delete item[key]; return item; };
-function retainedRecord(domain, kind, record) {
-  if (domain === 'chatroom' && kind === 'rooms') return { ...without(record, ['concludedAt', 'originMessageId']), summary: '', completedRounds: 0, ...(record.status === 'concluded' ? { status: 'active' } : {}) };
-  if (domain === 'bot-management' && kind === 'routines') return without(record, ['lastRunAt', 'lastStatus', 'lastJobId', 'lastMessageId', 'lastResult', 'lastFinishedAt', 'error']);
-  if (domain === 'bot-management' && kind === 'bots') return without(record, ['lastRestartAttempt', 'lastRestartError', 'restartFailures']);
-  return record;
-}
-function canonical(value) {
-  if (Array.isArray(value)) return value.map(canonical);
-  if (!value || typeof value !== 'object') return value;
-  return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])]));
-}
-function durableFingerprint(root, snapshot) {
-  const hash = createHash('sha256'); let rows = 0;
-  const add = (path, table, key, data) => { hash.update(JSON.stringify([relative(root, path), table, key, canonical(data)]) + '\n'); rows++; };
-  for (const path of snapshot.botDatabases) withReadOnly(path, db => {
-    for (const table of ['memories', 'artifacts', 'state']) for (const row of db.prepare(`SELECT data FROM ${table} ORDER BY ${table === 'state' ? 'scope,key' : 'id'}`).all()) add(path, table, '', JSON.parse(row.data));
-    for (const row of db.prepare('SELECT kind,id,data FROM records ORDER BY kind,id').all()) if (!botHistoryKinds.has(row.kind)) add(path, 'records', [row.kind, row.id], JSON.parse(row.data));
-  });
-  for (const [domain, path] of Object.entries(snapshot.capabilities)) if (path) withReadOnly(path, db => {
-    for (const row of db.prepare('SELECT kind,id,data FROM records ORDER BY kind,id').all()) if (!domains[domain].includes(row.kind)) add(path, 'records', [row.kind, row.id], retainedRecord(domain, row.kind, JSON.parse(row.data)));
-  });
-  return { rows, hash: hash.digest('hex') };
-}
-async function fileFingerprint(root, snapshot) {
-  const excluded = new Set([join(root, 'history.json')]);
-  for (const path of [...snapshot.botDatabases, ...Object.values(snapshot.capabilities).filter(Boolean)]) for (const suffix of ['', '-wal', '-shm', '-journal']) excluded.add(`${path}${suffix}`);
-  const hash = createHash('sha256'); let files = 0, bytes = 0;
-  async function visit(folder) {
-    for (const entry of (await readdir(folder, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
-      const path = join(folder, entry.name);
-      if (excluded.has(path)) continue;
-      if (entry.isSymbolicLink()) throw fail('Preserved data must not escape through filesystem links', 'HISTORY_UNSAFE_PATH');
-      if (entry.isDirectory()) { await safePath(root, path, { directory: true, required: true }); await visit(path); }
-      else if (entry.isFile()) {
-        await safePath(root, path, { required: true });
-        const content = createHash('sha256'); let size = 0;
-        for await (const chunk of createReadStream(path)) { content.update(chunk); size += chunk.length; }
-        hash.update(JSON.stringify([relative(root, path), size, content.digest('hex')]) + '\n'); files++; bytes += size;
-      } else throw fail('Unsupported preserved data file type', 'HISTORY_UNSAFE_PATH');
-    }
-  }
-  await visit(root); return { files, bytes, hash: hash.digest('hex') };
-}
 function clearDomain(path, domain) {
   const db = new DatabaseSync(path);
   try {
@@ -193,10 +124,11 @@ function clearDomain(path, domain) {
     const result = { records: {}, updated: {}, tables: {} };
     try {
       for (const kind of domains[domain]) result.records[kind] = Number(db.prepare('DELETE FROM records WHERE kind=?').run(kind).changes);
-      if (domain === 'chatroom') result.updated.rooms = rewrite(db, 'rooms', room => retainedRecord(domain, 'rooms', room));
-      if (domain === 'bot-management') {
-        result.updated.routines = rewrite(db, 'routines', routine => retainedRecord(domain, 'routines', routine));
-        result.updated.bots = rewrite(db, 'bots', bot => retainedRecord(domain, 'bots', bot));
+      if (domain === 'chatroom') {
+        result.updated.rooms = Number(db.prepare(`UPDATE records SET data=json_set(data,'$.pins',
+          json(COALESCE((SELECT json_group_array(json(pin.value)) FROM json_each(data,'$.pins') AS pin
+          WHERE json_extract(pin.value,'$.kind')<>'event'),'[]')))
+          WHERE kind='rooms' AND EXISTS (SELECT 1 FROM json_each(data,'$.pins') WHERE json_extract(value,'$.kind')='event')`).run().changes);
       }
       if (domain === 'gateway') for (const table of ['sync_journal_v1', 'sync_scopes_v1']) if (hasTable(db, table)) result.tables[table] = Number(db.prepare(`DELETE FROM ${table}`).run().changes);
       db.exec('COMMIT');
@@ -212,23 +144,21 @@ async function marker(root, value) {
 }
 
 /** Explicit offline maintenance. Never backs up, exports, or removes artifact files. */
-export async function clearHistory({ dataRoot, integrity = false } = {}) {
+export async function clearHistory({ dataRoot } = {}) {
   const root = await safeRoot(dataRoot), locks = [], bootId = randomUUID();
   const identity = () => ({ pid: process.pid, bootId, state: 'maintenance', purpose: 'clear-history' });
   let historyEpoch, startedAt;
   try {
-    locks.push(await acquireServiceLock(root, 'history-maintenance', identity));
+    locks.push(await acquireServiceLock(root, 'installation', identity));
+    const installation = await assertInstallationWritable(root);
+    if (!installation) throw fail('Use the history command for the selected deployment format', 'HISTORY_INVALID_SCHEMA');
     const snapshot = await inventory(root);
     await verifyStopped(root, snapshot);
     for (const type of ['gateway', 'web']) locks.push(await acquireServiceLock(root, type, identity));
-    // Launch locks close the supervisor's configuration/start window before run ownership is acquired.
-    for (const service of snapshot.services) if (service.launch) locks.push(await acquireIdentityLock(service.launch, identity));
     for (const directory of snapshot.bots) locks.push(await acquireIdentityLock(directory, identity));
-    for (const service of snapshot.services) if (service.run) locks.push(await acquireIdentityLock(service.run, identity));
     if (JSON.stringify(await inventory(root)) !== JSON.stringify(snapshot)) throw fail('Managed data layout changed during maintenance acquisition', 'HISTORY_LAYOUT_CHANGED');
     if (typeof BotStore.prototype.clearHistory !== 'function') throw fail('Bot package does not support history cleanup', 'HISTORY_INVALID_SCHEMA');
     preflightData(snapshot);
-    const before = integrity ? { durable: durableFingerprint(root, snapshot), files: await fileFingerprint(root, snapshot) } : null;
     historyEpoch = randomUUID(); startedAt = new Date().toISOString();
     // Publish an epoch before deletion as well: a partial failure must not leave browser caches valid.
     await marker(root, { historyEpoch, startedAt, status: 'clearing' });
@@ -238,17 +168,13 @@ export async function clearHistory({ dataRoot, integrity = false } = {}) {
       const store = new BotStore(path);
       try {
         store.db.exec('PRAGMA secure_delete=ON'); const counts = store.clearHistory();
+        counts.records['migration-conversation-history'] = Number(store.db.prepare("DELETE FROM records WHERE kind='migration-conversation-history'").run().changes);
         for (const group of ['tables', 'records']) for (const [name, count] of Object.entries(counts[group])) result.bots[group][name] = (result.bots[group][name] || 0) + count;
         compact(store.db);
       } finally { store.close(); }
     }
     for (const [domain, path] of Object.entries(snapshot.capabilities)) if (path) {
       await database(root, dirname(path)); result.capabilities[domain] = clearDomain(path, domain);
-    }
-    if (integrity) {
-      const after = { durable: durableFingerprint(root, snapshot), files: await fileFingerprint(root, snapshot) };
-      result.preserved = Object.fromEntries(Object.keys(before).map(key => [key, { ...after[key], before: before[key].hash, after: after[key].hash, verified: JSON.stringify(before[key]) === JSON.stringify(after[key]) }]));
-      if (Object.values(result.preserved).some(item => !item.verified)) throw fail('Preserved data changed during history cleanup', 'HISTORY_PRESERVATION_MISMATCH');
     }
     result.clearedAt = new Date().toISOString();
     await marker(root, { historyEpoch, clearedAt: result.clearedAt, status: 'complete' });
@@ -262,6 +188,6 @@ export async function clearHistory({ dataRoot, integrity = false } = {}) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const { options } = parseArgs(process.argv.slice(2));
-  clearHistory({ dataRoot: options['data-root'], integrity: options['with-integrity'] === true || options['with-integrity'] === 'true' }).then(result => console.log(JSON.stringify({ ok: true, ...result }, null, 2)))
+  clearHistory({ dataRoot: options['data-root'] }).then(result => console.log(JSON.stringify({ ok: true, ...result }, null, 2)))
     .catch(error => { console.error(JSON.stringify({ ok: false, code: error.code, error: error.message })); process.exitCode = 1; });
 }

@@ -1,21 +1,18 @@
 import net from 'node:net';
-import { createHash } from 'node:crypto';
-import { realpathSync } from 'node:fs';
+import { statSync } from 'node:fs';
 
 const handshakeError = (message, code) => Object.assign(new Error(message), { code });
 const retryableHandshake = new Set(['IDENTITY_HANDSHAKE_INCOMPLETE', 'ECONNRESET', 'EPIPE']);
 
 function addressFor(instanceDir) {
-  let identity = realpathSync.native(instanceDir);
-  if (process.platform === 'win32') identity = identity.toLowerCase();
-  const hash = createHash('sha256').update(identity).digest('hex');
+  const { dev, ino } = statSync(instanceDir, { bigint: true });
+  if (ino === 0n) throw new Error('Instance directory has no stable filesystem identity');
+  const key = `${dev.toString(16)}-${ino.toString(16)}`;
   // Named pipes are held by the kernel and disappear even on a hard process crash.
-  if (process.platform === 'win32') return `\\\\.\\pipe\\summon-bot-instance-${hash.slice(0, 40)}`;
+  if (process.platform === 'win32') return `\\\\.\\pipe\\summon-bot-instance-${key}`;
   // The Linux abstract socket namespace also has no stale filesystem entry.
-  if (process.platform === 'linux') return `\0summon-bot-instance-${hash.slice(0, 40)}`;
-  // Other platforms use an exclusive loopback listener. A hash collision fails
-  // closed; it can never allow two owners for the same instance.
-  return { host: '127.0.0.1', port: 30000 + (parseInt(hash.slice(0, 8), 16) % 25000) };
+  if (process.platform === 'linux') return `\0summon-bot-instance-${key}`;
+  return { host: '127.0.0.1', port: 30000 + Number((dev + ino) % 25000n) };
 }
 
 function queryIdentity(address, timeoutMs = 1200, strict = false) {

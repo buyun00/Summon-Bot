@@ -41,9 +41,7 @@ docs/OPERATIONS.md 和 docs/CLIENT_RELEASES.md，再检查当前代码与已有�
 
 模型连接由数据根的 config/model-connections.json 管理，API Key 和独立订阅授权保存到 config/model-credentials.json，已有 config/runtime.env 凭据仍按明确引用使用。本机 Codex / Grok 导入引用各自的登录文件，不将令牌写入聊天。客户端签名和发布凭据保存在既有私有配置中，保留当前应用 ID 与签名身份。
 
-首次安装并启动后，打开网页会先进入与主 Bot 的入门对话。模型尚未配置时，介绍和选项由本地消息呈现：先查运行 Summon Bot 的主机上是否存在可导入的 Codex / Grok 登录，用户选择后才导入；没有可用登录时引导填写 API Key，也支持订阅设备码授权。检测不扫描远程网页访问者或手机上的文件，不读取浏览器 Cookie。API Key 使用隐藏输入，不进入消息、草稿或本地对话缓存。保存在系统凭据存储而非登录文件中的账号，可选择订阅授权。
-
-模型配置保存后，用户点击继续才发起第一条真实模型对话，由主 Bot 结合用户目标逐步介绍伙伴、工作、记忆和需要的后续配置。已有模型配置的安装不会被强制重新引导；“设置 → 新手引导”可以随时重新进入。网页与 Electron 直接显示同一网页；Android 和 iOS 使用原生对话界面，通过同一组模型接口接入主 Bot。脚本化入门回复不调用模型，不保存为真实聊天记录。
+首次启动后可在网页设置中配置模型与执行连接，并创建 Bot 和聊天室。网页与 Electron 共用正式页面。Android 和 iOS 使用原生界面，并使用相同协议。
 
 ## 按任务选择入口
 
@@ -71,7 +69,7 @@ docs/OPERATIONS.md 和 docs/CLIENT_RELEASES.md，再检查当前代码与已有�
 npm run release:web
 ```
 
-此入口构建当前工作区，正常停止现有系统，安装后恢复运行。制作阶段的修改会出现在唯一正式网页，Electron 刷新时也会显示。本命令只更新网页和后端。执行前确认工作区内容属于当前获授权的交付范围。
+此入口安装与现行协议相容的工作区构建，由安装器完成收尾和启动。制作阶段的修改在唯一正式网页生效，Electron 刷新后也会显示。
 
 ### 定稿后的完整发布
 
@@ -87,14 +85,13 @@ npm ci --prefix desktop --no-audit --no-fund
 npm run release:all
 ```
 
-Windows 上的完整发布从 Git 当前提交构建并安装网页与后端，再构建 Windows x64 安装包并发布到本机发行目录。GitHub Actions 构建并发布 GitHub 上的 Windows、macOS 和 Android 安装包。macOS 使用 Developer ID Application 签名和 Apple 公证。iOS 使用 GitHub Actions 签名上传并通过 TestFlight 内部测试分发，操作见 docs/IOS_TESTFLIGHT.md。具体操作见 [客户端发行与更新](CLIENT_RELEASES.md)。
+Windows 上的完整发布从 Git 当前提交构建本机包、网页和后端。需要切换协议时，同提交的 GitHub 安装包和 iOS TestFlight 内部版本须先可取得，随后进入正式切换窗口。具体操作见 [客户端发行与更新](CLIENT_RELEASES.md)。
 
 客户端下载先查设备本机，再直接从 GitHub 获取，远程安装包不再通过正式主机转发。发布流程先就位新产物，再切换最新版元数据，清理被替代的版本与中间目录，保留有效业务资料。
 
 ## 需要进一步处理时
 
 - 完整安装、启停、模型配置与故障定位：[运行维护](OPERATIONS.md)。首次安装须使用其中的构建与安装入口，先生成安装目录再启动。
-- 单独更新某项领域能力：[能力服务与热更新](CAPABILITY_SERVICES.md)。
 - 分别构建、上传或发布各端：[客户端发行与更新](CLIENT_RELEASES.md)。
 
 只修改文档时直接交付文档，无需运行部署或客户端打包命令。

@@ -1,10 +1,8 @@
 import { lstat, mkdir, realpath, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, parse, relative, resolve } from 'node:path';
 
-export const FILE_ACCESS_GUIDANCE = 'Keep a refused file operation in its original scope. For a missing grant, ask about the exact path and operation in the original conversation or work, then recheck through the same capability. Preserve explicit user restrictions, protected paths and unknown outcomes. Report the operation actually attempted.';
-
 export function fileAccessDenied(path, reason, extra = {}) {
-  return Object.assign(new Error(`File access refused (${reason}). ${FILE_ACCESS_GUIDANCE}`), {
+  return Object.assign(new Error(`File access refused (${reason})`), {
     status: 403, code: 'FILE_ACCESS_DENIED', accessDenial: { path, reason, ...extra },
   });
 }

@@ -34,6 +34,7 @@ label { display: grid; gap: 4px; color: #365344; }
 input:not([type=checkbox]), select { width: 100%; padding: 10px; border: 1px solid #c6d5c9; border-radius: 8px; background: white; }
 .check { display: flex; gap: 7px; align-items: center; }
 form { display: grid; gap: 12px; }
+#release-controls { display: flex; align-items: center; gap: 12px; margin-inline-start: 44px; }
 #status { color: #8a4732; margin-inline-start: 44px; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 #unpacking {

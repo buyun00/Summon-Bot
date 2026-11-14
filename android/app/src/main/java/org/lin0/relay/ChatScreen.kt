@@ -82,54 +82,59 @@ import java.time.Instant
 @Composable
 fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
-    val context = LocalContext.current
-    val room = store.rooms.firstOrNull { it.id == roomID }
-    val directBot = room?.takeIf { it.kind == "dm" && it.members.contains("user") }?.let { current ->
-        store.bots.firstOrNull { current.members.contains(it.id) }
-    }
-    val title = directBot?.name ?: room?.name ?: "聊天"
+    val room = store.room(roomID)
+    val directBot = room?.takeIf { !it.isGroup }?.members?.firstNotNullOfOrNull { store.bot(it) }
+    val title = room?.name ?: "聊天"
     val messages = store.messagesForRoom(roomID)
-    var text by remember(roomID) { mutableStateOf(store.draft(roomID)) }
-    var attachments by remember(roomID) { mutableStateOf(store.draftAttachments[roomID].orEmpty()) }
-    var reply by remember(roomID) { mutableStateOf<SummonMessage?>(null) }
-    var target by remember(roomID) { mutableStateOf(store.draftTargets[roomID].orEmpty()) }
-    var uploading by remember { mutableStateOf(false) }
-    var localError by remember { mutableStateOf<String?>(null) }
-    var showDetails by remember { mutableStateOf(false) }
+    val text = store.draft(roomID)
+    val attachments = store.draftAttachments[roomID].orEmpty()
+    val mentions = store.draftMentions[roomID].orEmpty()
+    val references = store.draftReferences[roomID].orEmpty()
+    val replyID = store.draftReplies[roomID]
+    var staging by remember(roomID) { mutableStateOf(false) }
+    var localError by remember(roomID) { mutableStateOf<String?>(null) }
+    var showDetails by remember(roomID) { mutableStateOf(false) }
+    var showReferences by remember(roomID) { mutableStateOf(false) }
     var attachMenu by remember { mutableStateOf(false) }
     var targetMenu by remember { mutableStateOf(false) }
     var nearBottom by remember { mutableStateOf(true) }
     val listState = rememberLazyListState()
     val dragging by listState.interactionSource.collectIsDraggedAsState()
     var sentRevision by remember(roomID) { mutableStateOf(0) }
-    val photos = rememberPhotoPicker { uri ->
-        scope.launch { uploadUris(store, listOf(uri), attachments, { attachments = it }, { localError = it }, { uploading = it }) }
-    }
-    val files = androidx.activity.compose.rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        scope.launch { uploadUris(store, uris, attachments, { attachments = it }, { localError = it }, { uploading = it }) }
-    }
-    val working = workingBots(store, roomID, room, messages)
-    val now by rememberNow()
 
-    LaunchedEffect(roomID) {
-        store.selectRoom(roomID)
-        val replyID = store.draftReplies[roomID]
-        reply = store.messagesForRoom(roomID).firstOrNull { it.id == replyID }
+    fun stage(uris: List<Uri>) {
+        if (staging || uris.isEmpty()) return
+        staging = true
+        localError = null
+        val settings = store.settings
+        scope.launch {
+            try {
+                for (uri in uris) {
+                    val current = store.draftAttachments[roomID].orEmpty()
+                    if (current.size >= 8) { localError = "每条消息最多添加 8 个附件。"; break }
+                    val file = store.stageAttachment(uri)
+                    if (settings.baseURL != store.settings.baseURL || settings.workspaceID != store.settings.workspaceID) {
+                        store.discardStagedAttachment(file)
+                        break
+                    }
+                    store.setDraftAttachments(store.draftAttachments[roomID].orEmpty() + file, roomID)
+                }
+            } catch (error: kotlinx.coroutines.CancellationException) { throw error }
+            catch (error: Exception) { localError = error.localizedMessage }
+            finally { staging = false }
+        }
     }
-    LaunchedEffect(roomID) {
-        store.ensureRoomActive(roomID)
-    }
+
+    val photos = rememberPhotoPicker { uri -> stage(listOf(uri)) }
+    val files = androidx.activity.compose.rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments(), ::stage)
+
+    LaunchedEffect(roomID) { store.selectRoom(roomID) }
     androidx.compose.runtime.DisposableEffect(roomID) {
         onDispose { store.deactivateRoom(roomID) }
     }
-    LaunchedEffect(text) { store.setDraft(text, roomID) }
-    LaunchedEffect(attachments) { store.setDraftAttachments(attachments, roomID) }
-    LaunchedEffect(target) { store.setDraftTarget(target.ifEmpty { null }, roomID) }
-    LaunchedEffect(reply?.id) { store.setDraftReply(reply?.id, roomID) }
-    LaunchedEffect(messages.lastOrNull()?.id, working.map { it.id }, sentRevision) {
-        if (nearBottom && (messages.isNotEmpty() || working.isNotEmpty())) {
-            listState.animateScrollToItem((messages.size + working.size).coerceAtLeast(0))
-        }
+    LaunchedEffect(messages.lastOrNull()?.id, sentRevision) {
+        val last = listState.layoutInfo.totalItemsCount - 1
+        if (nearBottom && last >= 0) listState.animateScrollToItem(last)
     }
     LaunchedEffect(dragging, listState.canScrollForward) {
         if (dragging || !listState.canScrollForward) nearBottom = !listState.canScrollForward
@@ -156,86 +161,90 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
                 if (messages.isEmpty() && !store.isLoading) {
                     item { Text("开始聊天\n发一条消息给 $title。", color = Color(0xFF8E8E93), modifier = Modifier.padding(top = 70.dp)) }
                 }
-                items(messages, key = { it.id }) { message ->
-                    MessageRow(store, roomID, message) { reply = message }
-                    Spacer(Modifier.height(20.dp))
+                if (store.canLoadOlder(roomID)) {
+                    item { TextButton(onClick = { scope.launch { store.loadRoom(roomID, older = true) } }, enabled = store.protocolReady) { Text("加载更早消息") } }
                 }
-                items(working, key = { "work-${it.id}" }) { bot ->
-                    BotWorkingIndicator(bot, if (room?.kind == "dm") "" else bot.name, workingStatus(store, roomID, bot, now),
-                        store.agentRuns.lastOrNull { it.roomId == roomID && it.botId == bot.id && it.isActive }?.activity?.get("motion")?.string)
-                    Spacer(Modifier.height(12.dp))
+                items(messages, key = { it.id }) { message ->
+                    MessageRow(store, roomID, message) { store.setDraftReply(message.id, roomID) }
+                    Spacer(Modifier.height(20.dp))
                 }
             }
             if (!nearBottom && messages.isNotEmpty()) {
                 Surface(shape = CircleShape, color = Color(0xFF2C2C2E), modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp).clickable {
                     nearBottom = true
-                    scope.launch { listState.animateScrollToItem((messages.size + working.size).coerceAtLeast(0)) }
+                    scope.launch { listState.animateScrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)) }
                 }) { Icon(Icons.Filled.ArrowDownward, "回到最新消息", modifier = Modifier.padding(10.dp)) }
             }
         }
-        OnboardingStep(store, roomID)
         Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
             localError?.let { Text(it, color = Color(0xFFFF9F0A), modifier = Modifier.padding(horizontal = 20.dp)) }
-            reply?.let { quoted ->
+            store.protocolNotice?.let { notice ->
+                Text(notice, color = Color(0xFFFF9F0A), modifier = Modifier.padding(horizontal = 20.dp))
+            }
+            replyID?.let { id ->
+                val quoted = messages.firstOrNull { it.id == id }
                 Row(Modifier.padding(horizontal = 22.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.AutoMirrored.Filled.Reply, null, tint = Color(0xFF8E8E93))
-                    Text(quoted.content.take(90), color = Color(0xFF8E8E93), modifier = Modifier.weight(1f).padding(horizontal = 8.dp), maxLines = 2)
-                    IconButton(onClick = { reply = null }) { Icon(Icons.Filled.Close, "取消回复") }
+                    Text(quoted?.content?.take(90) ?: "回复消息", color = Color(0xFF8E8E93), modifier = Modifier.weight(1f).padding(horizontal = 8.dp), maxLines = 2)
+                    IconButton(onClick = { store.setDraftReply(null, roomID) }) { Icon(Icons.Filled.Close, "取消回复") }
                 }
             }
-            if (attachments.isNotEmpty()) {
+            if (attachments.isNotEmpty() || references.isNotEmpty() || mentions.isNotEmpty()) {
                 Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 18.dp)) {
                     attachments.forEach { item ->
-                        Surface(shape = RoundedCornerShape(20.dp), color = Color(0xFF1C1C1E), modifier = Modifier.padding(end = 8.dp)) {
-                            Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Filled.Description, null)
-                                Text(item.name, maxLines = 1, modifier = Modifier.padding(horizontal = 6.dp).width(120.dp))
-                                IconButton(onClick = { attachments = attachments.filterNot { it.id == item.id } }) { Icon(Icons.Filled.Close, "移除 ${item.name}") }
-                            }
+                        DraftToken(item.name) {
+                            store.setDraftAttachments(attachments.filterNot { it.id == item.id }, roomID)
+                            store.discardStagedAttachment(item)
                         }
+                    }
+                    references.forEach { ref ->
+                        DraftToken(store.label(ref)) { store.setDraftReferences(references.filterNot { it == ref }, roomID) }
+                    }
+                    mentions.forEach { id ->
+                        DraftToken("@" + store.name(id)) { store.setDraftMentions(mentions.filterNot { it == id }, roomID) }
                     }
                 }
             }
             when {
-                room?.isConcluded == true -> Text("深聊已结束，结论已保留", color = Color(0xFF8E8E93), modifier = Modifier.padding(16.dp))
                 room != null && !room.members.contains("user") -> Row(Modifier.padding(16.dp)) { Icon(Icons.Filled.Visibility, null, tint = Color(0xFF8E8E93)); Spacer(Modifier.width(8.dp)); Text("正在查看 Bot 之间的对话", color = Color(0xFF8E8E93)) }
                 else -> Row(Modifier.padding(horizontal = 10.dp), verticalAlignment = Alignment.Bottom) {
                     Box {
-                        Surface(shape = CircleShape, color = Color(0xFF2C2C2E), modifier = Modifier.size(44.dp).clickable(enabled = !uploading && attachments.size < 8) { attachMenu = true }) {
+                        Surface(shape = CircleShape, color = Color(0xFF2C2C2E), modifier = Modifier.size(44.dp).clickable(enabled = !staging) { attachMenu = true }) {
                             Box(contentAlignment = Alignment.Center) {
-                                if (uploading) CircularProgressIndicator(Modifier.size(18.dp)) else Icon(Icons.Filled.Add, "添加附件")
+                                if (staging) CircularProgressIndicator(Modifier.size(18.dp)) else Icon(Icons.Filled.Add, "添加附件")
                             }
                         }
                         DropdownMenu(attachMenu, { attachMenu = false }) {
-                            DropdownMenuItem(text = { Text("选择文件") }, leadingIcon = { Icon(Icons.Filled.Folder, null) }, onClick = { attachMenu = false; files.launch(arrayOf("*/*")) })
-                            DropdownMenuItem(text = { Text("照片图库") }, leadingIcon = { Icon(Icons.Filled.Image, null) }, onClick = { attachMenu = false; photos.launch(photoRequest()) })
+                            DropdownMenuItem(text = { Text("选择文件") }, enabled = attachments.size < 8, leadingIcon = { Icon(Icons.Filled.Folder, null) }, onClick = { attachMenu = false; files.launch(arrayOf("*/*")) })
+                            DropdownMenuItem(text = { Text("照片图库") }, enabled = attachments.size < 8, leadingIcon = { Icon(Icons.Filled.Image, null) }, onClick = { attachMenu = false; photos.launch(photoRequest()) })
+                            DropdownMenuItem(text = { Text("引用资料") }, enabled = store.protocolReady, onClick = { attachMenu = false; showReferences = true })
                         }
                     }
                     Surface(shape = RoundedCornerShape(25.dp), color = Color(0xFF2C2C2E), modifier = Modifier.weight(1f).padding(horizontal = 8.dp)) {
                         Row(verticalAlignment = Alignment.Bottom) {
-                            TextField(text, { text = it }, modifier = Modifier.weight(1f), placeholder = { Text("给 $title 发消息") }, maxLines = 6)
-                            if (room?.kind != "dm") {
+                            TextField(text, { store.setDraft(it, roomID) }, modifier = Modifier.weight(1f), placeholder = { Text("发消息") }, maxLines = 6)
+                            if (room != null) {
                                 Box {
-                                    IconButton(onClick = { targetMenu = true }) { Icon(Icons.Filled.AlternateEmail, "选择消息对象", tint = if (target.isEmpty()) Color(0xFF8E8E93) else Color.White) }
+                                    IconButton(onClick = { targetMenu = true }) {
+                                        Icon(Icons.Filled.AlternateEmail, "@ 成员", tint = if (mentions.isEmpty()) Color(0xFF8E8E93) else Color.White)
+                                    }
                                     DropdownMenu(targetMenu, { targetMenu = false }) {
-                                        DropdownMenuItem(text = { Text("所有成员") }, onClick = { target = ""; targetMenu = false })
-                                        store.bots.filter { room?.members?.contains(it.id) == true }.forEach { bot ->
-                                            DropdownMenuItem(text = { Text(bot.name) }, onClick = { target = bot.id; targetMenu = false })
+                                        room.members.mapNotNull(store::bot).forEach { bot ->
+                                            DropdownMenuItem(text = { Text(if (bot.id in mentions) "✓  " + bot.name else bot.name) }, onClick = {
+                                                val next = if (bot.id in mentions) mentions.filterNot { it == bot.id } else mentions + bot.id
+                                                store.setDraftMentions(next, roomID)
+                                            })
                                         }
                                     }
                                 }
                             }
                         }
                     }
-                    val canSend = store.isConfigured && roomID !in store.sendingRoomIDs && !uploading && (text.isNotBlank() || attachments.isNotEmpty())
+                    val canSend = store.protocolReady && room?.members?.contains("user") == true && roomID !in store.sendingRoomIDs &&
+                        !staging && (text.isNotBlank() || attachments.isNotEmpty() || references.isNotEmpty())
                     Surface(shape = CircleShape, color = if (canSend) Color.White else Color(0xFF3A3A3C), modifier = Modifier.size(44.dp).clickable(enabled = canSend) {
-                        val content = text.trim()
-                        val filesNow = attachments
-                        val replyID = reply?.id
-                        val targetID = target.ifEmpty { null }
-                        nearBottom = true; sentRevision += 1
-                        text = ""; attachments = emptyList(); reply = null; localError = null
-                        scope.launch { store.sendMessage(roomID, content, filesNow, targetID, replyID) }
+                        nearBottom = true; sentRevision += 1; localError = null
+                        scope.launch { store.sendMessage(roomID) }
                     }) {
                         Box(contentAlignment = Alignment.Center) { Icon(Icons.AutoMirrored.Filled.Send, "发送消息", tint = Color.Black) }
                     }
@@ -246,119 +255,108 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
     if (showDetails) {
         BackHandler { showDetails = false }
         Surface(Modifier.fillMaxSize(), color = Color.Black) {
-            if (directBot != null) BotDetailsScreen(store, directBot.id) { showDetails = false }
-            else RoomDetailsScreen(store, roomID) { showDetails = false }
+            RoomDetailsScreen(store, roomID) { showDetails = false }
         }
     }
-}
-
-private fun workingBots(store: SummonStore, roomID: String, room: SummonRoom?, messages: List<SummonMessage>): List<SummonBot> {
-    val jobs = if (store.selectedRoomID == roomID) store.jobs else emptyList()
-    val replied = messages.filter { !it.isOwn && it.kind != "error" }.mapNotNull { it.jobId }.toSet()
-    val ids = jobs.filter { it.isActive && it.id !in replied }.map { it.botId }.toMutableSet()
-    for (run in store.agentRuns) {
-        if (run.roomId != roomID || !run.isActive) continue
-        val botID = run.botId ?: continue
-        val detail = store.agentRunDetails[run.id]
-        if (detail != null && !detail.isActive) continue
-        val job = jobs.firstOrNull { it.taskId == run.id || it.agentRunId == run.id }
-        if (job != null) {
-            if (job.isActive && job.id !in replied) ids += botID
-        } else ids += botID
-    }
-    for (pending in store.pendingMessages) {
-        if (pending.roomID != roomID || pending.status !in setOf("sending", "sent")) continue
-        val chosen = pending.message.toBotId
-        if (chosen != null) ids += chosen else ids += room?.members.orEmpty()
-    }
-    for (bot in store.bots) {
-        if (bot.activity?.get("phase")?.string == "waiting" && bot.activity?.get("roomId")?.string == roomID) ids += bot.id
-    }
-    return store.bots.filter { it.id in ids && !it.isPaused }
-}
-
-private fun workingStatus(store: SummonStore, roomID: String, bot: SummonBot, now: Instant): String {
-    val job = if (store.selectedRoomID == roomID) store.jobs.lastOrNull { it.botId == bot.id && it.isActive } else null
-    val run = store.agentRuns.lastOrNull {
-        it.roomId == roomID && it.botId == bot.id && it.isActive && (job?.taskId == null || job.taskId == it.id || job.agentRunId == it.id)
-    }
-    val runID = job?.taskId ?: job?.agentRunId ?: run?.id
-    val detail = runID?.let { store.agentRunDetails[it] }
-    val status = detail?.status ?: run?.status ?: job?.status
-    (run?.activity ?: detail?.activity)?.get("label")?.string?.let { return it }
-    if (job == null && bot.activity?.get("phase")?.string == "waiting" && bot.activity?.get("roomId")?.string == roomID) {
-        bot.activity?.get("label")?.string?.let { return it }
-    }
-    if (status == "queued") return "等待执行"
-    if (status == "accepted") return "已接收，准备处理"
-    if (status == "waiting") return "正在等待已登记的工作条件"
-    return "正在分析任务并准备下一步"
+    if (showReferences) SummonReferencePicker(store, roomID, onSelect = { ref ->
+        if (ref !in references) store.setDraftReferences(references + ref, roomID)
+        showReferences = false
+    }, onDismiss = { showReferences = false })
 }
 
 @Composable
-private fun rememberNow(): androidx.compose.runtime.State<Instant> {
-    val state = remember { mutableStateOf(Instant.now()) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(6_000)
-            state.value = Instant.now()
+private fun DraftToken(title: String, remove: () -> Unit) {
+    Surface(shape = RoundedCornerShape(20.dp), color = Color(0xFF1C1C1E), modifier = Modifier.padding(end = 8.dp)) {
+        Row(Modifier.padding(start = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(title, maxLines = 1, modifier = Modifier.width(120.dp))
+            IconButton(onClick = remove) { Icon(Icons.Filled.Close, "移除 $title") }
         }
     }
-    return state
 }
 
 @Composable
 private fun MessageRow(store: SummonStore, roomID: String, message: SummonMessage, onReply: () -> Unit) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
-    val bot = store.bots.firstOrNull { it.id == message.senderId }
-    val pending = store.pendingMessages.firstOrNull { it.clientID == message.clientId }
+    val bot = store.bot(message.senderId)
+    val pending = store.pendingMessage(message)
+    val room = store.room(roomID)
+    val ref = SummonReference("event", message.id)
+    val saved = pending == null || pending.status == "sent"
+    var reference by remember { mutableStateOf<SummonReference?>(null) }
     var menu by remember { mutableStateOf(false) }
+    var showDelivery by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (message.isOwn) Alignment.End else Alignment.Start) {
         Row(verticalAlignment = Alignment.Top) {
             if (!message.isOwn) {
-                if (bot != null) MemberAvatar(bot, 28.dp) else Box(Modifier.size(28.dp))
+                if (bot != null) MemberAvatar(bot, 28.dp) else Icon(Icons.Filled.Info, null, Modifier.size(28.dp))
                 Spacer(Modifier.width(10.dp))
             }
             Column(horizontalAlignment = if (message.isOwn) Alignment.End else Alignment.Start, modifier = Modifier.weight(1f, fill = false)) {
-                Row {
-                    Text(if (message.isOwn) store.settings.userName else bot?.name ?: "系统", style = MaterialTheme.typography.labelMedium, color = Color(0xFF8E8E93))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(store.name(message.senderId), style = MaterialTheme.typography.labelMedium, color = Color(0xFF8E8E93))
                     Spacer(Modifier.width(8.dp))
                     Text(formatSummonTime(message.createdAt), style = MaterialTheme.typography.labelSmall, color = Color(0xFF636366))
-                }
-                message.replyTo?.let { replyID ->
-                    val quoted = store.messagesForRoom(roomID).firstOrNull { it.id == replyID }
-                    if (quoted != null && quoted.senderId != message.senderId && store.bot(quoted.senderId) != null) {
-                        Text("${store.name(quoted.senderId)}：${quoted.content}", color = Color(0xFF8E8E93), maxLines = 3, modifier = Modifier.padding(vertical = 4.dp).background(Color(0xFF1C1C1E), RoundedCornerShape(12.dp)).padding(10.dp))
+                    if (saved) {
+                        TextButton(onClick = { menu = true }) { Text("操作", style = MaterialTheme.typography.labelSmall) }
+                        DropdownMenu(menu, { menu = false }) {
+                            DropdownMenuItem(text = { Text("回复") }, onClick = { menu = false; onReply() })
+                            if (room != null && store.protocolReady) {
+                                val pinned = ref in room.pins
+                                DropdownMenuItem(text = { Text(if (pinned) "取消置顶" else "置顶") }, onClick = {
+                                    menu = false
+                                    scope.launch {
+                                        try { store.setPin(ref, room, pinned); error = null }
+                                        catch (failure: Exception) { error = failure.localizedMessage }
+                                    }
+                                })
+                            }
+                            if (message.content.isNotEmpty()) {
+                                DropdownMenuItem(text = { Text("复制") }, onClick = { menu = false; clipboard.setText(AnnotatedString(message.content)) })
+                                DropdownMenuItem(text = { Text("分享") }, onClick = { menu = false; shareText(context, message.content) })
+                            }
+                        }
                     }
+                }
+                message.replyTo?.let { id ->
+                    val quoted = store.messagesForRoom(roomID).firstOrNull { it.id == id }
+                    if (quoted != null) Text(store.name(quoted.senderId) + " · " + quoted.content, color = Color(0xFF8E8E93),
+                        maxLines = 3, modifier = Modifier.padding(vertical = 4.dp).background(Color(0xFF1C1C1E), RoundedCornerShape(12.dp)).padding(10.dp))
+                    else TextButton(onClick = { reference = SummonReference("event", id) }) { Text("查看引用的消息") }
+                }
+                if (message.mentions.isNotEmpty()) {
+                    Text(message.mentions.joinToString(" ") { "@" + store.name(it) }, style = MaterialTheme.typography.labelSmall)
                 }
                 if (message.content.isNotEmpty()) {
                     SelectionContainer {
-                        Text(
-                            message.content,
-                            modifier = Modifier
-                                .clickable { menu = true }
-                                .background(Color(0xFF1C1C1E), RoundedCornerShape(21.dp))
-                                .padding(horizontal = if (message.isOwn) 14.dp else 10.dp, vertical = if (message.isOwn) 14.dp else 12.dp),
-                        )
-                    }
-                    DropdownMenu(menu, { menu = false }) {
-                        DropdownMenuItem(text = { Text("回复") }, leadingIcon = { Icon(Icons.AutoMirrored.Filled.Reply, null) }, onClick = { menu = false; onReply() })
-                        DropdownMenuItem(text = { Text("复制") }, leadingIcon = { Icon(Icons.Filled.ContentCopy, null) }, onClick = { menu = false; clipboard.setText(AnnotatedString(message.content)) })
-                        DropdownMenuItem(text = { Text("分享") }, leadingIcon = { Icon(Icons.Filled.Share, null) }, onClick = { menu = false; shareText(context, message.content) })
+                        Text(message.content, Modifier.background(Color(0xFF1C1C1E), RoundedCornerShape(21.dp)).padding(14.dp))
                     }
                 }
                 message.attachments.forEach { AttachmentRow(store, it) }
+                message.references.forEach { item -> TextButton(onClick = { reference = item }) { Text(store.label(item)) } }
                 if (pending != null && pending.status != "sent") {
-                    if (pending.status == "sending") Text("正在发送…", color = Color(0xFF8E8E93), style = MaterialTheme.typography.labelSmall)
+                    if (pending.status == "sending") Text("正在发送…", style = MaterialTheme.typography.labelSmall)
                     else {
-                        Text(pending.error ?: "尚未确认送达", color = Color(0xFFFF9F0A), style = MaterialTheme.typography.labelSmall)
-                        TextButton(onClick = { kotlinx.coroutines.MainScope().launch { store.retryMessage(pending.clientID) } }) { Text("重试发送") }
+                        Text(pending.error ?: "保存状态待确认", color = Color(0xFFFF9F0A), style = MaterialTheme.typography.labelSmall)
+                        TextButton(enabled = store.protocolReady && roomID !in store.sendingRoomIDs,
+                            onClick = { scope.launch { store.retryMessage(pending.clientID) } }) { Text("查询并重试") }
+                    }
+                } else if (message.isOwn) {
+                    val deliveries = store.deliveryFacts(message.id)
+                    if (deliveries.isEmpty()) Text("消息已保存", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                    else TextButton(onClick = { showDelivery = !showDelivery }) { Text("消息已保存", style = MaterialTheme.typography.labelSmall) }
+                    if (showDelivery) deliveries.forEach { fact ->
+                        Text(store.name(fact.botId) + " · " + summonStatus(fact.status), style = MaterialTheme.typography.labelSmall)
                     }
                 }
+                error?.let { Text(it, color = Color(0xFFFF9F0A)) }
             }
         }
     }
+    reference?.let { SummonReferenceDialog(store, it) { reference = null } }
 }
 
 @Composable
@@ -369,8 +367,8 @@ private fun AttachmentRow(store: SummonStore, attachment: SummonAttachment) {
     var downloading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var file by remember { mutableStateOf<java.io.File?>(null) }
-    LaunchedEffect(attachment.id) {
-        if (attachment.previewUrl == null) return@LaunchedEffect
+    LaunchedEffect(attachment.id, store.protocolReady) {
+        if (attachment.previewUrl == null || !store.protocolReady) return@LaunchedEffect
         runCatching {
             val bytes = store.attachmentPreview(attachment)
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
@@ -380,7 +378,7 @@ private fun AttachmentRow(store: SummonStore, attachment: SummonAttachment) {
         preview?.let {
             Image(it.asImageBitmap(), null, Modifier.fillMaxWidth().heightIn(max = 260.dp).clip(RoundedCornerShape(14.dp)))
         }
-        Row(Modifier.fillMaxWidth().clickable(enabled = !downloading) {
+        Row(Modifier.fillMaxWidth().clickable(enabled = !downloading && !attachment.staged && !attachment.unavailable && store.protocolReady) {
             scope.launch {
                 downloading = true
                 try {
@@ -394,7 +392,7 @@ private fun AttachmentRow(store: SummonStore, attachment: SummonAttachment) {
             if (downloading) CircularProgressIndicator(Modifier.size(18.dp)) else Icon(if (attachment.mimeType.startsWith("image/")) Icons.Filled.Image else Icons.Filled.Description, null)
             Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
                 Text(attachment.name, maxLines = 2)
-                Text(formatBytes(attachment.size), color = Color(0xFF8E8E93), style = MaterialTheme.typography.labelSmall)
+                Text(if (attachment.unavailable) "附件不可用" else formatBytes(attachment.size), color = Color(0xFF8E8E93), style = MaterialTheme.typography.labelSmall)
             }
             Icon(Icons.Filled.Download, null, tint = Color(0xFF8E8E93))
         }
@@ -402,27 +400,3 @@ private fun AttachmentRow(store: SummonStore, attachment: SummonAttachment) {
         error?.let { Text(it, color = Color(0xFFFF9F0A)) }
     }
 }
-
-private suspend fun uploadUris(
-    store: SummonStore,
-    uris: List<Uri>,
-    current: List<SummonAttachment>,
-    update: (List<SummonAttachment>) -> Unit,
-    error: (String) -> Unit,
-    busy: (Boolean) -> Unit,
-) {
-    if (uris.isEmpty()) return
-    busy(true)
-    var next = current
-    try {
-        for (uri in uris) {
-            if (next.size >= 8) { error("每条消息最多添加 8 个附件。"); break }
-            next = next + store.uploadAttachment(uri)
-            update(next)
-        }
-    } catch (exception: Exception) {
-        error(exception.message ?: "附件上传失败")
-    } finally { busy(false) }
-}
-
-private val androidx.compose.runtime.State<Instant>.valueEpoch get() = value

@@ -12,8 +12,8 @@ import { createTest21Game } from './test21-game.mjs';
 const defaultFrontend = fileURLToPath(new URL('../frontend/', import.meta.url));
 const assets = new Map([
   ['/', ['index.html', 'text/html']],
-  ...['app', 'cache', 'avatars', 'motion', 'clients', 'usage', 'models', 'model-icons', 'onboarding', 'summon-brand', 'branding-migration'].map(name => [`/${name}.js`, [`${name}.js`, 'text/javascript']]),
-  ...['style', 'mobile', 'group-chat', 'typography', 'summon-brand', 'motion', 'clients', 'usage', 'models', 'onboarding'].map(name => [`/${name}.css`, [`${name}.css`, 'text/css']]),
+  ...['app', 'cache', 'avatars', 'motion', 'clients', 'usage', 'models', 'model-icons', 'summon-brand', 'branding-migration'].map(name => [`/${name}.js`, [`${name}.js`, 'text/javascript']]),
+  ...['style', 'mobile', 'group-chat', 'typography', 'summon-brand', 'motion', 'clients', 'usage', 'models'].map(name => [`/${name}.css`, [`${name}.css`, 'text/css']]),
   ['/icons/user-avatar.jpg', ['icons/user-avatar.jpg', 'image/jpeg']],
   ['/icons/owner-paper-frame.png', ['icons/owner-paper-frame.png', 'image/png']],
   ['/icons/ai-brands.svg', ['icons/ai-brands.svg', 'image/svg+xml']],
@@ -21,7 +21,7 @@ const assets = new Map([
   ...['icon-192', 'icon-512', 'icon-maskable-192', 'icon-maskable-512', 'apple-touch-icon']
     .map(name => [`/icons/${name}.png`, [`icons/${name}.png`, 'image/png']]),
 ]);
-const api = /^\/api\/(?:health|state|stream|push|usage|model-settings|workspace-profiles|bots|rooms|messages|memories|knowledge|nodes|edges|routines|works|agent-runs|attachments|events|jobs|catalog|capabilities)(?:\/|$)/;
+const api = /^\/api\/(?:bootstrap|health|state|stream|push|usage|model-settings|workspace-profiles|bots|rooms|wakeups|executions|files|attachments|connections|workspaces|calls|platform)(?:\/|$)/;
 const hopHeaders = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade']);
 const json = (res, status, value) => {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'private, no-store, no-transform', 'X-Content-Type-Options': 'nosniff' });
@@ -51,7 +51,7 @@ export async function startWeb({ host = '127.0.0.1', port = 8787, getRemoteOrigi
   let closing = false;
   const server = createServer(async (req, res) => {
     try {
-      if (closing) return json(res, 503, { error: 'Web service is stopping' });
+      if (closing) return json(res, 503, { error: '工作区正在更新', code: 'updating' });
       const localOrigins = [host, ...(host === '127.0.0.1' ? ['localhost'] : [])].map(name => `http://${name}:${server.address().port}`);
       const remote = await getRemoteOrigins();
       const requestOrigin = originForHost(req.headers.host, [...remote, ...localOrigins]);
@@ -123,6 +123,9 @@ export async function startWeb({ host = '127.0.0.1', port = 8787, getRemoteOrigi
         }
         const target = new URL(`${url.pathname}${url.search}`, upstream);
         const headers = { Authorization: `Bearer ${gatewayToken}`, Accept: req.headers.accept || '*/*' };
+        if (typeof req.headers['x-summon-protocol'] === 'string') headers['X-Summon-Protocol'] = req.headers['x-summon-protocol'];
+        if (typeof req.headers['x-summon-client-id'] === 'string') headers['X-Summon-Client-Id'] = req.headers['x-summon-client-id'];
+        if (typeof req.headers['last-event-id'] === 'string') headers['Last-Event-ID'] = req.headers['last-event-id'];
         if (body) { headers['Content-Type'] = 'application/json'; headers['Content-Length'] = body.length; }
         const outgoing = (target.protocol === 'https:' ? httpsRequest : httpRequest)(target, { method: req.method, headers }, incoming => {
           const responseHeaders = Object.fromEntries(Object.entries(incoming.headers).filter(([key]) => !hopHeaders.has(key.toLowerCase()) && key.toLowerCase() !== 'set-cookie'));
@@ -136,7 +139,7 @@ export async function startWeb({ host = '127.0.0.1', port = 8787, getRemoteOrigi
         });
         active.add(outgoing);
         outgoing.once('close', () => active.delete(outgoing));
-        outgoing.once('error', () => { if (!res.headersSent) json(res, 502, { error: '能力服务暂不可达' }); else res.destroy(); });
+        outgoing.once('error', () => { if (!res.headersSent) json(res, 502, { error: '工作区暂不可达' }); else res.destroy(); });
         if (url.pathname !== '/api/stream') outgoing.setTimeout(requestTimeoutMs, () => outgoing.destroy(new Error('Gateway request timed out')));
         res.once('close', () => outgoing.destroy());
         outgoing.end(body);

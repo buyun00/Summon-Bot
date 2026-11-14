@@ -1,8 +1,8 @@
 {
   "name": "summon-bot",
-  "version": "0.3.100",
+  "version": "0.3.101",
   "private": true,
-  "description": "Independent Pi Bots, external capabilities and a separate Web interface",
+  "description": "Pi Bots, rooms, files and connected execution sessions",
   "type": "module",
   "workspaces": [
     "bot",
@@ -17,11 +17,9 @@
     "summon:build": "node scripts/build/build.mjs",
     "summon:pack": "node scripts/build/build.mjs --bundle-node",
     "summon:start": "node scripts/installation/cli.mjs start",
-    "summon:init": "node scripts/installation/cli.mjs init",
     "summon:install": "node scripts/installation/install.mjs",
     "summon:status": "node scripts/installation/cli.mjs status",
     "summon:stop": "node scripts/installation/cli.mjs stop",
-    "summon:capabilities": "node scripts/installation/capabilities.mjs",
     "summon:history": "node scripts/maintenance/history.mjs",
     "release:version": "node scripts/release/cli.mjs version",
     "release:web": "node scripts/release/cli.mjs web",

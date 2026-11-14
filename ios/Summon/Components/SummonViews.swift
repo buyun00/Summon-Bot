@@ -14,7 +14,7 @@ struct MemberAvatar: View {
     var body: some View {
         let avatar = bot?.resolvedAvatar ?? SummonAvatar()
         BotAvatar(shape: avatar.shape, color: avatar.color,
-                  image: avatar.image, size: size, secondary: avatar.secondary, ink: avatar.ink, paper: avatar.paper, motion: motion ?? bot?.activity?.motion ?? "idle", groupOutline: groupOutline)
+                  image: avatar.image, size: size, secondary: avatar.secondary, ink: avatar.ink, paper: avatar.paper, motion: motion ?? "idle", groupOutline: groupOutline)
     }
 }
 
@@ -96,9 +96,11 @@ enum SummonFormat {
     }
 
     static func status(_ value: String) -> String {
-        ["queued": "等待执行", "running": "进行中", "waiting": "等待答复",
-         "completed": "已完成", "failed": "失败", "cancelled": "已取消",
-         "interrupted": "已中断", "active": "活跃", "paused": "已暂停",
-         "concluded": "已结束"][value] ?? value
+        ["queued": "等待投递", "pending": "等待确认", "submitted": "已提交", "accepted": "已受理",
+         "received": "Bot 已接收", "processed": "本轮已处理", "access_revoked": "访问已撤销",
+         "rejected": "未受理", "running": "运行中", "waiting": "等待结果", "needs_input": "待输入",
+         "completed": "执行已结束", "failed": "失败", "cancelled": "已取消", "active": "启用",
+         "paused": "已暂停", "stopping": "停止中", "stopped": "已停止", "idle": "空闲",
+         "unknown": "状态未知", "unsupported": "连接不支持"][value] ?? value
     }
 }

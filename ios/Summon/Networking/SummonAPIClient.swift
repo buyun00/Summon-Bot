@@ -4,29 +4,33 @@ enum SummonAPIError: LocalizedError, Sendable {
     case invalidURL
     case noConnection
     case http(Int, String)
+    case protocolUnavailable(String)
     case invalidResponse
     case invalidReceipt
     case attachmentTooLarge
     case tooManyAttachments
     case emptyMessage
+    case missingAttachment
 
     var errorDescription: String? {
         switch self {
         case .invalidURL: return "请输入完整的 Summon Bot 服务地址，例如 https://summon.example.com。"
         case .noConnection: return "请先在设置中连接 Summon Bot 服务。"
         case .http(let status, let message): return message.isEmpty ? "请求失败（\(status)）" : message
+        case .protocolUnavailable(let message): return message
         case .invalidResponse: return "服务返回了无法读取的内容，请确认地址指向 Summon Bot 服务。"
         case .invalidReceipt: return "消息尚未确认送达，请手动重试确认。"
         case .attachmentTooLarge: return "附件不能超过 20 MB。"
         case .tooManyAttachments: return "每条消息最多附加 8 个文件。"
-        case .emptyMessage: return "请输入消息或添加附件。"
+        case .emptyMessage: return "请输入消息或添加附件或引用。"
+        case .missingAttachment: return "本机暂存的附件已不可用。"
         }
     }
 }
 
 /// Native API calls use the same JSON routes as the existing web client.
 /// A Web URL uses its existing gateway proxy; a direct gateway URL requires its controller token.
-private final class SummonConnectionProbe: NSObject, URLSessionTaskDelegate {
+final class SummonConnectionProbe: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
         completionHandler(nil)
@@ -34,18 +38,21 @@ private final class SummonConnectionProbe: NSObject, URLSessionTaskDelegate {
 }
 
 struct SummonAPIClient: Sendable {
+    static let protocolVersion = 2
     let baseURL: URL
+    let workspaceID: String?
     private let token: String
     private let session: URLSession
 
-    init(baseURL: URL, token: String) {
+    init(baseURL: URL, token: String, workspaceID: String? = nil) {
         self.baseURL = baseURL
         self.token = token
+        self.workspaceID = workspaceID
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 120
         configuration.timeoutIntervalForResource = 180
         configuration.waitsForConnectivity = true
-        self.session = URLSession(configuration: configuration)
+        self.session = URLSession(configuration: configuration, delegate: SummonConnectionProbe(), delegateQueue: nil)
     }
 
     static func normalizedURL(_ value: String) throws -> URL {
@@ -65,24 +72,36 @@ struct SummonAPIClient: Sendable {
         return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
     }
 
-    func verifyWorkspace() async throws {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 10
-        configuration.timeoutIntervalForResource = 12
-        let probe = URLSession(configuration: configuration, delegate: SummonConnectionProbe(), delegateQueue: nil)
-        defer { probe.finishTasksAndInvalidate() }
-        let (data, response) = try await probe.data(for: makeRequest(path: "/api/health"))
+    func bootstrap(probe: Bool = false) async throws -> SummonBootstrap {
+        let request = try makeRequest(path: "/api/bootstrap")
+        let requester: URLSession
+        if probe {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.timeoutIntervalForRequest = 10
+            configuration.timeoutIntervalForResource = 12
+            requester = URLSession(configuration: configuration, delegate: SummonConnectionProbe(), delegateQueue: nil)
+        } else {
+            requester = session
+        }
+        defer { if probe { requester.finishTasksAndInvalidate() } }
+        let (data, response) = try await requester.data(for: request)
         try validate(response: response, data: data)
-        guard (try? JSONDecoder().decode(SummonJSONValue.self, from: data))?["service"].string == "summon-capabilities"
-        else { throw SummonAPIError.invalidResponse }
+        guard let result = try? JSONDecoder().decode(SummonBootstrap.self, from: data) else { throw SummonAPIError.invalidResponse }
+        return result
     }
 
-    func makeRequest(path: String, method: String = "GET", body: SummonJSONValue? = nil) throws -> URLRequest {
+    func makeRequest(path: String, method: String = "GET", body: SummonJSONValue? = nil, clientID: String? = nil) throws -> URLRequest {
         guard path.hasPrefix("/api/"), !path.contains("\\"),
-              let url = URL(string: baseURL.absoluteString + path) else { throw SummonAPIError.invalidURL }
+              var components = URLComponents(string: baseURL.absoluteString + path) else { throw SummonAPIError.invalidURL }
+        if let workspaceID, path != "/api/workspace-profiles", !path.hasPrefix("/api/push/") {
+            components.queryItems = (components.queryItems ?? []) + [URLQueryItem(name: "workspace", value: workspaceID)]
+        }
+        guard let url = components.url else { throw SummonAPIError.invalidURL }
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if path != "/api/bootstrap" { request.setValue(String(Self.protocolVersion), forHTTPHeaderField: "X-Summon-Protocol") }
+        if let clientID { request.setValue(clientID, forHTTPHeaderField: "X-Summon-Client-Id") }
         if !token.isEmpty { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         if let body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -92,19 +111,19 @@ struct SummonAPIClient: Sendable {
     }
 
     func request<T: Decodable & Sendable>(_ type: T.Type, path: String,
-                                         method: String = "GET", body: SummonJSONValue? = nil) async throws -> T {
-        let request = try makeRequest(path: path, method: method, body: body)
+                                         method: String = "GET", body: SummonJSONValue? = nil, clientID: String? = nil) async throws -> T {
+        let request = try makeRequest(path: path, method: method, body: body ?? (["GET", "HEAD"].contains(method) ? nil : .object([:])), clientID: clientID)
         let (data, response) = try await session.data(for: request)
         try validate(response: response, data: data)
         do { return try JSONDecoder().decode(type, from: data) }
         catch { throw SummonAPIError.invalidResponse }
     }
 
-    func upload(data: Data, name: String, mimeType: String) async throws -> SummonAttachment {
+    func upload(data: Data, name: String, mimeType: String, clientID: String) async throws -> SummonAttachment {
         guard data.count <= 20 * 1024 * 1024 else { throw SummonAPIError.attachmentTooLarge }
         return try await request(SummonAttachment.self, path: "/api/attachments", method: "POST", body: .object([
             "name": .string(name), "mimeType": .string(mimeType), "data": .string(data.base64EncodedString())
-        ]))
+        ]), clientID: clientID)
     }
 
     func attachmentRequest(_ attachment: SummonAttachment, preview: Bool = false) throws -> URLRequest {

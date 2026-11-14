@@ -1,0 +1,590 @@
+import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { isAbsolute, resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
+import { idOf, keyOf, reject, sameRef, user } from '../platform/contract.mjs';
+import { canSupplyProcessArguments, codexBridge, codexInput, connectionExecutable, executionWorkspace, prepareProcess } from './connection-launch.mjs';
+import { connectionAllowed, connectionRecords, executionRecords, plain, validateConnection } from './connection-records.mjs';
+import { inspectNative, redactNative } from './native-host.mjs';
+import { nativeFileOperands } from './native-references.mjs';
+import { assertServiceConfig, credentialNames, mcpTasksUnsupported, ServiceConnections } from './service-connection.mjs';
+import { inputRecords, makeProcessGuard, operationRecords, SessionProcesses, settled } from './session-processes.mjs';
+
+export { connectionRecords, convertConnectionEntry, importNativeInput, importNativeOperation, importNetworkOperation,
+  readLegacyInputFacts, readLegacyOperationFacts } from './connection-records.mjs';
+
+const codexStatus = { completed: 'completed', interrupted: 'stopped', failed: 'failed' };
+const nativeKind = kind => kind === 'cli' || kind === 'codex';
+const actorOf = context => context?.actor || context;
+const callSession = (session, call) => ({ id: call.id, session_id: session.id, submitted_by: call.submitted_by });
+const text = value => typeof value === 'string' && value.length > 0 && value.length <= 32_768 && !value.includes('\0');
+function bindingConfig(entry) {
+  const { model, effort, credential_refs, headersEnv, env, tools, ...binding } = entry.config;
+  return { ...binding, ...(!nativeKind(entry.kind) && tools ? { tools: tools.map(({ headersEnv, env, ...tool }) => tool) } : {}) };
+}
+
+export class SummonConnections {
+  constructor({ store, dataRoot, workspace, onEvent }) {
+    if (!store || !dataRoot) throw new Error('Connection storage and data root are required');
+    Object.assign(this, { store, dataRoot, workspace: resolve(workspace || dataRoot, workspace ? '.' : 'workspace'), onEvent });
+    this.processes = new SessionProcesses({ store, dataRoot, clean: value => this.clean(value) });
+    this.services = new ServiceConnections(this);
+    this.active = new Map();
+    this.locks = new Map();
+  }
+
+  clean(value) {
+    const secrets = [...new Set(this.store.list(connectionRecords).flatMap(credentialNames).map(name => process.env[name]).filter(Boolean))]
+      .flatMap(value => {
+        const authorization = value.match(/^(?:Bearer|Basic)\s+(.+)$/i);
+        return authorization ? [value, authorization[1]] : [value];
+      }).sort((a, b) => b.length - a.length);
+    const visit = value => typeof value === 'string' ? redactNative(value, secrets)
+      : Array.isArray(value) ? value.map(visit) : plain(value)
+        ? Object.fromEntries(Object.entries(value).map(([name, entry]) => [redactNative(name, secrets),
+          name === 'data' && ['image', 'audio'].includes(value.type) ? entry : visit(entry)]))
+        : value;
+    return visit(value);
+  }
+
+  get(id) { return this.store.get(connectionRecords, id); }
+  current(session) { return this.store.get(executionRecords, session.id) || session; }
+
+  serial(id, run) {
+    if (this.locks.has(id)) reject('execution_busy', 'This Session is already accepting an input', 409);
+    const task = Promise.resolve().then(run);
+    this.locks.set(id, task);
+    return task.finally(() => { if (this.locks.get(id) === task) this.locks.delete(id); });
+  }
+
+  available(entry, seen = new Set()) {
+    if (!entry?.enabled || seen.has(entry.id) || credentialNames(entry).some(ref => !process.env[ref])) return false;
+    if (nativeKind(entry.kind) && (!existsSync(entry.config.file) || !existsSync(entry.config.canonical_file))) return false;
+    const visited = new Set([...seen, entry.id]);
+    return (entry.dependencies || []).every(id => {
+      const dependency = this.get(id);
+      return (dependency?.workspaceProfileId ?? null) === (entry.workspaceProfileId ?? null) && this.available(dependency, visited);
+    });
+  }
+
+  requireUsable(entry, actor) {
+    if (!connectionAllowed(entry, actor)) reject('connection_forbidden', 'The connection is unavailable for this actor', 403);
+    if (!this.available(entry)) reject('connection_unavailable', 'The connection or a required credential is unavailable', 409);
+    if (!(entry.dependencies || []).every(id => connectionAllowed(this.get(id), actor)))
+      reject('connection_forbidden', 'A required connection is outside the caller’s grants', 403);
+    return entry;
+  }
+
+  requireAccess(entry, context) {
+    const actor = actorOf(context);
+    if (context?.session?.resource_refs && context.session.engine !== entry?.id &&
+        !context.session.resource_refs.some(ref => sameRef(ref, { kind: 'connection', id: entry?.id })))
+      reject('connection_forbidden', 'The connection is outside the Session’s resource grants', 403);
+    if (!connectionAllowed(entry, actor)) reject('connection_not_found', 'Connection is unavailable', 404);
+    if (context?.allow && !context.allow(entry.id)) reject('connection_forbidden', 'Connection is unavailable in this execution context', 403);
+    return actor;
+  }
+
+  summary(entry) {
+    return this.clean({ kind: 'connection', protocol: entry.kind, id: entry.id, name: entry.name, description: entry.description,
+      revision: entry.revision, enabled: entry.enabled, available: this.available(entry), version: entry.version });
+  }
+
+  find(context, query = '') {
+    const term = String(query || '').trim().toLowerCase();
+    const actor = actorOf(context);
+    return this.store.list(connectionRecords).filter(entry => connectionAllowed(entry, actor) && (!context?.allow || context.allow(entry.id)) &&
+      (!context?.session?.resource_refs || context.session.engine === entry.id ||
+        context.session.resource_refs.some(ref => ref.kind === 'connection' && ref.id === entry.id)))
+      .map(entry => this.summary(entry)).filter(entry => [entry.id, entry.protocol, entry.name, entry.description]
+        .some(value => String(value || '').toLowerCase().includes(term)));
+  }
+
+  async read(id, context) {
+    const entry = this.get(idOf(id, 'connection'));
+    const actor = this.requireAccess(entry, context);
+    const summary = this.summary(entry);
+    if (!summary.available) return summary;
+    if (entry.kind === 'codex') return { ...summary, input: { text: 'string', model: 'optional exact model id', effort: 'optional reasoning effort' },
+      operations: ['reply', 'steer', 'next', 'stop'], ...(entry.config.model ? { model: entry.config.model, effort: entry.config.effort } : {}) };
+    if (entry.kind === 'cli') {
+      const methods = (entry.config.methods || []).map(({ id, name, description, args, file_args, keep_input }) =>
+        ({ id, name, description, args, file_args, keep_input }));
+      return this.clean({ ...summary, input: { method: 'optional configured method', parameters: 'optional method parameters',
+        args: 'argument strings', stdin: 'optional text', keep_input: 'optional boolean', file_args: 'optional file argument roles' },
+      direct_arguments: canSupplyProcessArguments(entry, actor), file_operands: await nativeFileOperands(), methods });
+    }
+    return { ...summary, methods: await this.services.methods(entry, actor, context?.signal) };
+  }
+
+  settings(context) {
+    if (actorOf(context)?.kind !== 'user') reject('connection_forbidden', 'Connection settings require the host user', 403);
+    return this.store.list(connectionRecords).filter(entry => (entry.workspaceProfileId ?? null) === (context.workspaceProfileId ?? null))
+      .map(entry => ({ ...this.summary(entry), allowed_bot_ids: entry.allowed_bot_ids, dependencies: entry.dependencies }));
+  }
+
+  async configure(input, context) {
+    if (actorOf(context)?.kind !== 'user') reject('connection_forbidden', 'Connection settings require the host user', 403);
+    if (!plain(input) || Object.keys(input).some(key => !['id', 'name', 'description', 'kind', 'config', 'revision',
+      'enabled', 'allowed_bot_ids', 'dependencies', 'workspaceProfileId'].includes(key))) reject('invalid_connection', 'Invalid connection settings');
+    const id = idOf(input.id, 'connection');
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(id) || id === 'pi') reject('invalid_connection', 'Invalid managed connection identity');
+    const previous = this.get(id);
+    if (previous && input.revision !== previous.revision) reject('revision_conflict', 'Connection settings changed', 409, { revision: previous.revision });
+    const { revision, workspaceProfileId = null, ...submitted } = input;
+    const profile = context?.workspaceProfileId ?? null;
+    if (workspaceProfileId !== profile || previous && (previous.workspaceProfileId ?? null) !== profile)
+      reject('connection_forbidden', 'Connection settings belong to another workspace profile', 403);
+    const entry = { ...previous, ...submitted, id, enabled: submitted.enabled ?? previous?.enabled ?? true,
+      allowed_bot_ids: submitted.allowed_bot_ids ?? previous?.allowed_bot_ids ?? [], workspaceProfileId: profile };
+    validateConnection(entry);
+    if (typeof entry.name !== 'string' || !entry.name.trim()) reject('invalid_connection', 'Connection name is required');
+    if (previous && previous.kind !== entry.kind) reject('connection_binding_conflict', 'Use a new id for another connection protocol', 409);
+    if (nativeKind(entry.kind)) {
+      await connectionExecutable(entry, this.workspace, this.dataRoot);
+      if (entry.config.workspace_root && !isAbsolute(entry.config.workspace_root))
+        reject('invalid_connection', 'Workspace root must be an absolute host path');
+    } else assertServiceConfig(entry);
+    const changed = previous && !isDeepStrictEqual(bindingConfig(previous), bindingConfig(entry));
+    const record = this.store.transaction(() => {
+      if (this.get(id)?.revision !== previous?.revision) reject('revision_conflict', 'Connection settings changed', 409);
+      return this.store.save(connectionRecords, { ...entry, revision: (previous?.revision || 0) + 1,
+        binding_version: (previous?.binding_version ?? 1) + Number(Boolean(changed)) });
+    });
+    if (!nativeKind(record.kind)) void this.services.disconnect(id);
+    return this.summary(record);
+  }
+
+  entryFor(session, call) {
+    const id = typeof session.engine === 'string' ? session.engine : session.engine?.id;
+    const entry = this.requireUsable(this.get(session.connection_id || id), session.execution_actor);
+    if ((entry.workspaceProfileId ?? null) !== (session.workspaceProfileId ?? null))
+      reject('connection_forbidden', 'The connection does not belong to this Session’s workspace profile', 403);
+    if (call) this.requireUsable(entry, call.submitted_by);
+    if (session.connection_binding_version !== undefined && session.connection_binding_version !== (entry.binding_version ?? 1))
+      reject('connection_binding_changed', 'The original Session’s connection settings changed', 409);
+    return entry;
+  }
+
+  operations(session) {
+    return this.store.list(operationRecords).filter(operation => operation.session_id === session.id)
+      .sort((left, right) => (left.input_revision ?? 0) - (right.input_revision ?? 0));
+  }
+
+  saveOperation(operation, facts) { return this.store.save(operationRecords, { id: operation.id, ...facts }); }
+
+  async startProcess(entry, session, call, input, beforeSubmit, signal, prior = null) {
+    const guard = makeProcessGuard(session, entry, call);
+    const launch = await prepareProcess({ host: this, entry, session, call, input, prior, guard });
+    if (prior && (launch.cwd !== prior.cwd || prior.workspace_scope && !isDeepStrictEqual(prior.workspace_scope, launch.scope)))
+      reject('workspace_binding_changed', 'The Codex thread’s original workspace scope changed', 409);
+    const operation = this.store.save(operationRecords, { ...callSession(session, call), protocol: launch.protocol,
+      instance_id: randomUUID(), launch_call_id: call.id, cwd: launch.cwd, connection_id: entry.id,
+      connection_binding_version: entry.binding_version ?? 1, execution_actor: session.execution_actor,
+      thread_id: prior?.thread_id, binding: prior?.binding, workspace_scope: launch.scope, status: 'prepared',
+      input_revision: (prior?.input_revision ?? session.input_revision ?? 0) + 1 });
+    const started = await this.processes.launch(operation, launch, () => {
+      this.assertRunning(signal);
+      this.entryFor(this.current(session), call);
+      return beforeSubmit();
+    });
+    return this.operationFacts(started, session);
+  }
+
+  assertRunning(signal) {
+    signal?.throwIfAborted();
+    if (this.closing) reject('connection_closing', 'The gateway has stopped accepting external calls', 503);
+  }
+
+  open({ session, call, input, beforeSubmit, signal }) {
+    return this.serial(session.id, async () => {
+      this.assertRunning(signal);
+      const original = this.store.get(operationRecords, call.id);
+      if (original) return this.operationFacts(await this.refresh(original, session), session);
+      const entry = this.entryFor(session, call);
+      if (nativeKind(entry.kind)) return this.startProcess(entry, session, call, input, beforeSubmit, signal);
+      return this.startService(entry, session, call, input, beforeSubmit, signal);
+    });
+  }
+
+  async startService(entry, session, call, input, beforeSubmit, signal) {
+    const operation = this.store.save(operationRecords, { ...callSession(session, call), protocol: 'service',
+      launch_call_id: call.id, connection_id: entry.id, execution_actor: session.execution_actor,
+      connection_binding_version: entry.binding_version ?? 1, status: 'prepared', input_revision: (session.input_revision || 0) + 1 });
+    let started = false;
+    try {
+      const local = entry.kind === 'mcp' && entry.config.transport === 'stdio';
+      const cwd = local || session.workspace ? (await executionWorkspace(session, entry, this)).cwd : this.workspace;
+      this.active.set(operation.id, true);
+      const result = await this.services.invoke(entry, session.execution_actor, cwd, input, call.id, async () => {
+        this.assertRunning(signal);
+        const current = this.entryFor(this.current(session), call);
+        if (current.revision !== entry.revision) reject('connection_binding_changed', 'The service connection changed before execution', 409);
+        await beforeSubmit();
+        this.saveOperation(operation, { cwd, method: input.method, status: 'submitted', submitted_at: new Date().toISOString() });
+        started = true;
+      }, signal, progress => {
+        const current = this.store.get(operationRecords, operation.id);
+        const position = (current?.progress_position || 0) + 1;
+        const id = keyOf(operation.id, position);
+        try {
+          this.store.transaction(() => {
+            this.store.save('session-service-events', { id, operation_id: operation.id, position, progress });
+            this.saveOperation(operation, { progress_position: position });
+          });
+        } catch (error) { console.error('Could not persist MCP progress', this.clean(error.message)); }
+      });
+      const saved = this.saveOperation(operation, this.services.facts(entry, result));
+      return this.operationFacts(saved, session);
+    } catch (error) {
+      const unsupported = !started && error.code === mcpTasksUnsupported;
+      const unknown = started && (error.outcomeUnknown || signal?.aborted || error.name === 'AbortError');
+      const saved = this.saveOperation(operation, { status: unsupported ? 'unsupported' : unknown ? 'unknown' : started ? 'failed' : 'not_submitted',
+        runtime_ended: !unknown, error: this.clean(error.message), ...(unsupported ? { code: mcpTasksUnsupported } : {}) });
+      return this.operationFacts(saved, session);
+    } finally { this.active.delete(operation.id); }
+  }
+
+  async refresh(operation, session, { reconcile = false } = {}) {
+    if (operation.status === 'prepared' && !this.locks.has(operation.session_id)) {
+      return this.saveOperation(operation, { status: 'not_submitted', runtime_ended: true, error: 'The original call ended before submission' });
+    }
+    if (operation.protocol === 'service') {
+      if (operation.status === 'submitted' && !operation.service_accepted && !this.active.has(operation.id))
+        return this.saveOperation(operation, { status: 'unknown', error: 'The original service receipt was not saved before the gateway stopped' });
+      const entry = this.get(operation.connection_id);
+      return entry && this.available(entry) && (!settled(operation.status) || operation.status === 'unknown')
+        ? this.services.refresh(operation, entry, session) : operation;
+    }
+    const current = await this.processes.refresh(operation);
+    if (reconcile && current.protocol === 'codex' && current.status === 'unknown' && current.thread_id) {
+      return this.reconcileCodex(current, session);
+    }
+    return current;
+  }
+
+  async reconcileCodex(operation, session) {
+    if (Date.now() - (operation.last_lookup_at ? Date.parse(operation.last_lookup_at) : 0) < 15_000) return operation;
+    const entry = this.get(operation.connection_id);
+    if (!connectionAllowed(entry, session.execution_actor) || !this.available(entry)) return operation;
+    const attempt = this.saveOperation(operation, { last_lookup_at: new Date().toISOString() });
+    try {
+      const file = await connectionExecutable(entry, operation.cwd, this.dataRoot, session.path_policy);
+      const outcome = await inspectNative(process.execPath, [codexBridge, file, 'history', operation.thread_id,
+        operation.turn_id || '', operation.original_operation_id || operation.id], operation.cwd, { timeoutMs: 15_000 });
+      if (outcome.exitCode !== 0) return attempt;
+      const history = JSON.parse(outcome.stdout);
+      if (history.threadId !== operation.thread_id || (operation.turn_id && operation.turn_id !== history.turnId)) return attempt;
+      const status = codexStatus[history.turnStatus];
+      const binding = operation.binding ?? (history.model ? { model: history.model, effort: history.effort } : undefined);
+      if (!status) return this.saveOperation(operation, { binding });
+      return this.saveOperation(operation, { status, binding, turn_id: history.turnId, recovered_at: new Date().toISOString(), runtime_ended: true,
+        result: history.text ? { text: history.text, confirmed: status === 'completed' } : operation.result, error: history.error });
+    } catch { return attempt; }
+  }
+
+  targets(operation, session, ignoreCallId) {
+    const entry = this.get(operation.connection_id);
+    if (session.control.state !== 'active' || session.authority_revoked || !this.available(entry) || operation.revoked_at ||
+        operation.connection_binding_version !== undefined && operation.connection_binding_version !== (entry.binding_version ?? 1)) return [];
+    if (settled(operation.status)) {
+      if (operation.protocol === 'codex' && operation.status !== 'unknown' && operation.runtime_ended && operation.thread_id &&
+          !operation.binding_rejected && operation.binding?.model && operation.binding?.effort &&
+          session.workspace?.path && session.workspace_ref)
+        return [{ input_target: { kind: 'idle_input', input_revision: operation.input_revision }, kinds: ['next'] }];
+      return [];
+    }
+    const entries = [];
+    const add = (input_target, ...kinds) => entries.push({ input_target, kinds });
+    const answered = requestId => this.store.list(inputRecords).some(item => item.id !== ignoreCallId && item.status !== 'prepared' &&
+      item.operation_id === operation.id &&
+      (item.target?.request_id ?? item.original_request_id) === requestId &&
+      !['not_submitted', 'rejected'].includes(item.receipt?.status));
+    if (!['running', 'awaiting-input', 'needs_input'].includes(operation.status)) return entries;
+    if (operation.protocol === 'service') {
+      const config = entry.config.lifecycle;
+      if (!config || !operation.operation_id) return entries;
+      const target = { kind: 'service_call', call_id: operation.id, operation_id: String(operation.operation_id) };
+      if (operation.request_id && config.reply_method && !answered(operation.request_id)) add({ ...target, request_id: operation.request_id }, 'reply');
+      if (config.steer_method) add(target, 'steer');
+      return entries;
+    }
+    const target = operation.protocol === 'codex' && operation.turn_id
+      ? { kind: 'codex_turn', turn_id: operation.turn_id }
+      : operation.protocol !== 'codex' ? { kind: 'cli_process', instance_id: operation.instance_id, launch_call_id: operation.launch_call_id } : null;
+    if (target && operation.stdin_open) {
+      add(target, 'steer');
+      for (const request of operation.pending || []) if (!answered(request.id)) add({ ...target, request_id: request.id }, 'reply');
+    }
+    return entries;
+  }
+
+  operationFacts(operation, session) {
+    const status = operation.status === 'awaiting-input' ? 'needs_input' : operation.status === 'starting' ? 'submitted' : operation.status;
+    const native = operation.protocol === 'codex' ? { protocol: 'codex', thread_id: operation.thread_id, turn_id: operation.turn_id,
+      model: operation.binding?.model, effort: operation.binding?.effort, reroute: operation.reroute } : operation.protocol === 'service' ?
+      { protocol: 'service', call_id: operation.id, ...(operation.operation_id ? { operation_id: String(operation.operation_id) } : {}) } :
+      { protocol: 'cli', instance_id: operation.instance_id, launch_call_id: operation.launch_call_id, pid: operation.child_pid,
+        operation_id: operation.original_native_id };
+    return this.clean({ status, session_status: status, native, input_revision: operation.input_revision, safe_to_disconnect: this.safeToDisconnect(operation),
+      input_targets: this.targets(operation, this.current(session)), pending_input: operation.pending?.length ? operation.pending : undefined,
+      ...(operation.result ? { output: operation.result } : operation.error ? { output: { error: operation.error } } :
+        operation.pending?.length ? { output: { requests: operation.pending } } : {}),
+      ...(operation.error ? { error: operation.error } : {}), ...(operation.code ? { code: operation.code } : {}) });
+  }
+
+  observationKey(operation, status) {
+    return keyOf(status, operation.thread_id, operation.turn_id, operation.operation_id, operation.request_id,
+      ...(operation.pending || []).map(item => item.id));
+  }
+
+  async inspect(session, { cursor, limit, stream = 'stdout' } = {}) {
+    const operations = this.operations(session);
+    const operation = operations.findLast(item => item.status !== 'prepared') || operations.at(-1);
+    if (!operation) return {};
+    const latest = await this.refresh(operation, session, { reconcile: !this.locks.has(session.id) });
+    const facts = this.operationFacts(latest, session);
+    const members = operations.map(item => ({ call_id: item.id, status: item.status, instance_id: item.instance_id, turn_id: item.turn_id,
+      ...(item.instance_id ? { cursors: Object.fromEntries(['stdout', 'stderr', 'events'].map(stream => [stream, keyOf(item.id, 0, stream)])) } : {}) }));
+    const inputPositions = this.store.list(inputRecords).filter(item => operations.some(operation => operation.id === item.operation_id))
+      .map(item => ({ call_id: item.id, operation_call_id: item.operation_id, kind: item.kind,
+        target: item.target, status: item.receipt?.status || item.status, receipt: item.receipt }));
+    if (!latest.instance_id) {
+      const events = this.store.list('session-service-events').filter(item => item.operation_id === latest.id);
+      const from = cursor ? events.findIndex(item => item.id === cursor) + 1 : 0;
+      if (cursor && !from) reject('invalid_cursor', 'Output cursor is unavailable', 409);
+      const output_events = events.slice(from, from + (limit || 30));
+      return { ...facts, operations: members, input_receipts: this.clean(inputPositions), output_events,
+        next_cursor: output_events.at(-1)?.id || cursor || null };
+    }
+    let offset = 0, selected = latest;
+    if (cursor) {
+      let parsed;
+      try { parsed = JSON.parse(cursor); } catch { reject('invalid_cursor', 'Invalid output cursor'); }
+      selected = operations.find(item => item.id === parsed?.[0]);
+      if (!selected?.instance_id || !Number.isSafeInteger(parsed[1]) || parsed[1] < 0) reject('invalid_cursor', 'Output cursor is unavailable', 409);
+      offset = parsed[1];
+      stream = parsed[2] || stream;
+    }
+    const out = await this.processes.output(selected, { offset, stream, limit: limit === undefined ? 16_384 : Math.max(1024, Math.min(limit * 1024, 65_536)) });
+    return { ...facts, operations: members, input_receipts: this.clean(inputPositions), output_page: this.clean(out), output_call_id: selected.id,
+      next_cursor: keyOf(selected.id, out.next_offset, stream) };
+  }
+
+  input({ session, call, kind, input_target, input, beforeSubmit, signal }) {
+    return this.serial(session.id, async () => {
+      this.assertRunning(signal);
+      const entry = this.entryFor(this.current(session), call);
+      const previousLaunch = this.store.get(operationRecords, call.id);
+      if (previousLaunch) return this.operationFacts(await this.refresh(previousLaunch, session), session);
+      const prior = this.store.get(inputRecords, call.id);
+      if (prior) return this.commandFacts(prior, this.store.get(operationRecords, prior.operation_id), session);
+      let operation = this.operations(session).at(-1);
+      if (!operation) reject('input_target_expired', 'There is no original execution', 409);
+      operation = await this.refresh(operation, session, { reconcile: false });
+      this.assertTarget(operation, session, kind, input_target);
+      const check = async () => {
+        this.assertRunning(signal);
+        const current = this.current(session);
+        const connection = this.entryFor(current, call);
+        if ((connection.binding_version ?? 1) !== (entry.binding_version ?? 1))
+          reject('connection_binding_changed', 'The original connection changed before input submission', 409);
+        const fresh = await this.refresh(operation, current);
+        this.assertTarget(fresh, current, kind, input_target, call.id);
+        await beforeSubmit();
+      };
+      if (kind === 'next') return this.startProcess(entry, session, call, input, check, signal, operation);
+      if (operation.protocol === 'service') return this.stepService(entry, session, operation, call, kind, input_target, input, check, signal);
+      const value = operation.protocol === 'codex' && kind === 'steer' ? codexInput(input, {}, operation.binding).text : input;
+      if (!text(value) || this.clean(value) !== value) reject('invalid_input', 'Input must be valid text without inline credentials');
+      const pending = (operation.pending || []).find(request => request.id === input_target.request_id);
+      if (pending?.choices?.length && !pending.choices.some(choice => choice.id === value))
+        reject('invalid_choice', 'Select an actual value from the native request', 409);
+      if (pending?.kind === 'approval' && pending.choices?.some(choice => choice.id === value && !['decline', 'cancel'].includes(value)) &&
+          call.submitted_by.kind !== 'user') reject('approval_requires_user', 'The native protocol requires the user’s response for this approval', 403);
+      const receipt = await this.processes.command(operation, call, kind, input_target, value, check, makeProcessGuard(session, entry, call));
+      return this.commandFacts(receipt, operation, session);
+    });
+  }
+
+  assertTarget(operation, session, kind, target, ignoreCallId) {
+    if (!this.targets(operation, session, ignoreCallId).some(item => item.kinds.includes(kind) && isDeepStrictEqual(item.input_target, target)))
+      reject('input_target_expired', 'The original native input is closed, busy, or no longer current', 409);
+  }
+
+  async stepService(entry, session, operation, call, kind, target, input, beforeSubmit, signal) {
+    const method = entry.config.lifecycle?.[`${kind}_method`];
+    if (!method) return { status: 'unsupported', session_status: operation.status };
+    const prior = this.store.get(inputRecords, call.id);
+    if (prior) return this.commandFacts(prior, operation, session);
+    if (target?.request_id && this.store.list(inputRecords).some(row => row.operation_id === operation.id && row.target?.request_id === target.request_id &&
+        !['rejected', 'not_submitted'].includes(row.receipt?.status))) reject('request_already_answered', 'The service request already has an answer', 409);
+    this.store.save(inputRecords, { id: call.id, operation_id: operation.id, kind, target, status: 'prepared' });
+    let submitted = false;
+    try {
+      const result = await this.services.step(entry, session, operation, method, input, call.id, async () => {
+        const current = this.get(entry.id);
+        if (!current || (current.binding_version ?? 1) !== (entry.binding_version ?? 1) || current.revision !== entry.revision)
+          reject('connection_binding_changed', 'The service connection changed before input submission', 409);
+        await beforeSubmit();
+        signal?.throwIfAborted();
+        this.store.save(inputRecords, { id: call.id, status: 'submitted' });
+        submitted = true;
+      }, signal);
+      const actual = result.rejected ? operation : this.saveOperation(operation, result);
+      const receipt = { status: result.status === 'unknown' ? 'unknown' :
+        result.rejected ? 'rejected' : result.service_accepted ? 'acknowledged' : 'accepted', result: result.result };
+      return this.commandFacts(this.store.save(inputRecords, { id: call.id, receipt }), actual, session);
+    } catch (error) {
+      const receipt = { status: !submitted ? 'not_submitted' : error.outcomeUnknown || signal?.aborted ? 'unknown' : 'rejected', error: this.clean(error.message) };
+      return this.commandFacts(this.store.save(inputRecords, { id: call.id, receipt }), operation, session);
+    }
+  }
+
+  commandFacts(record, operation, session) {
+    const receipt = record.receipt;
+    const status = ['accepted', 'acknowledged', 'delivered'].includes(receipt?.status) ? 'completed' :
+      receipt?.status === 'rejected' ? 'failed' : ['not_submitted', 'unknown', 'completed'].includes(receipt?.status) ? receipt.status : 'submitted';
+    const facts = this.operationFacts(operation, session);
+    return { ...facts, status, session_status: facts.status, output: this.clean(receipt), input_status: receipt?.status || record.status };
+  }
+
+  async stop({ session, call }) {
+    const operation = this.operations(session).at(-1);
+    if (!operation) return { status: 'stopped' };
+    return this.stopOperation(await this.refresh(operation, session), session, call);
+  }
+
+  async stopOperation(operation, session, call) {
+    if (operation.runtime_ended && operation.status !== 'unknown') return { status: 'stopped' };
+    if (operation.status === 'prepared') return { status: 'pending' };
+    if (operation.status === 'not_submitted') return { status: 'stopped' };
+    if (operation.protocol === 'service') {
+      const entry = this.get(operation.connection_id);
+      if (!entry?.config.lifecycle?.stop_method || !operation.operation_id) return { status: 'unsupported' };
+      if (operation.connection_binding_version !== (entry.binding_version ?? 1) || credentialNames(entry).some(ref => !process.env[ref]))
+        return { status: 'unknown', error: 'The original service operation cannot be reached with its connection binding' };
+      const stopCall = { ...call, id: keyOf('stop', session.id, call.id, operation.id) };
+      const result = await this.stepService(entry, session, operation, stopCall, 'stop', undefined, undefined, () => {});
+      return { status: ['stopped', 'completed', 'failed'].includes(result.session_status) ? 'stopped' :
+        result.status === 'completed' ? 'pending' : result.status };
+    }
+    if (operation.status === 'unknown') return { status: 'unknown' };
+    const key = keyOf('stop', session.id, call.id, operation.id);
+    await this.processes.command(operation, { ...call, id: key }, 'stop', null, undefined, () => {});
+    return { status: 'pending' };
+  }
+
+  async publish(operation, session) {
+    const facts = this.operationFacts(operation, session);
+    const signature = this.observationKey(operation, facts.status);
+    if (!this.onEvent || facts.status === 'prepared' || operation.signature === signature ||
+        operation.migrated && !operation.signature && settled(operation.status) && operation.status !== 'unknown' && !operation.recovered_at) return;
+    const call = this.store.get('platform-calls', operation.id);
+    if (call?.result_ref?.kind === 'call' && call.result?.status === facts.status &&
+        keyOf(call.result.native, call.result.input_targets) === keyOf(facts.native, facts.input_targets)) {
+      this.saveOperation(operation, { signature });
+      return;
+    }
+    await this.onEvent(session.id, operation.id, { ...facts, position: keyOf('execution', operation.id, signature) });
+    this.saveOperation(operation, { signature });
+  }
+
+  async publishInputs(operation, session, inputs = []) {
+    for (const record of inputs) {
+      let next = record;
+      if (operation.instance_id) next = await this.processes.inputReceipt(operation, record);
+      else if (!record.receipt && !this.locks.has(session.id))
+        next = this.store.save(inputRecords, { id: record.id, receipt: { status: record.status === 'submitted' ? 'unknown' : 'not_submitted' } });
+      if (next.kind === 'stop' || next.suppressed || !this.onEvent || !next.receipt) continue;
+      const signature = keyOf(next.receipt.status, next.receipt.execution_status);
+      if (signature === next.signature) continue;
+      const facts = this.commandFacts(next, operation, session);
+      const call = this.store.get('platform-calls', next.id);
+      if (call?.status === facts.status && call.result_ref?.kind === 'call' && call.result) {
+        this.store.save(inputRecords, { id: next.id, signature });
+        continue;
+      }
+      const latest = this.operations(session).at(-1);
+      const current = this.operationFacts(latest || operation, session);
+      await this.onEvent(session.id, next.id, { ...facts, input_revision: current.input_revision, input_targets: current.input_targets,
+        native: current.native, session_status: current.status, position: keyOf('input', next.id, signature) });
+      this.store.save(inputRecords, { id: next.id, signature });
+    }
+  }
+
+  locallyAuthorized(session, operation, entry) {
+    if (!connectionAllowed(entry, session.execution_actor) || !entry.enabled || session.authority_revoked ||
+        (entry.workspaceProfileId ?? null) !== (session.workspaceProfileId ?? null) ||
+        operation.connection_binding_version !== undefined && operation.connection_binding_version !== (entry.binding_version ?? 1)) return false;
+    if (session.sharing && !this.store.get('rooms', session.space.id)?.members?.includes(session.owner.id)) return false;
+    return session.execution_actor.kind === 'user' || !session.workspace_ref ||
+      this.store.get('platform-access', session.execution_actor.id)?.workspace_ids?.includes(session.workspace_ref.id);
+  }
+
+  tick() {
+    if (this.closed) return;
+    return this.ticking ||= this.observe().finally(() => { this.ticking = null; });
+  }
+
+  async observe() {
+    const groups = Map.groupBy(this.store.list(operationRecords), item => item.session_id);
+    const inputs = Map.groupBy(this.store.list(inputRecords), item => item.operation_id);
+    const checks = [...groups].map(async ([sessionId, operations]) => {
+      const session = this.store.get(executionRecords, sessionId);
+      if (!session || this.locks.has(sessionId)) return;
+      const latest = operations.sort((left, right) => (left.input_revision ?? 0) - (right.input_revision ?? 0)).at(-1);
+      let current = await this.refresh(latest, session, { reconcile: true });
+      if (this.locks.has(sessionId) || this.operations(session).at(-1)?.id !== current.id) return;
+      const entry = this.get(current.connection_id);
+      if (!current.revoked_at && !this.locallyAuthorized(session, current, entry)) {
+        current = this.saveOperation(current, { revoked_at: new Date().toISOString() });
+        this.store.save(executionRecords, { id: session.id, authority_revoked: true });
+      }
+      if (current.revoked_at && !settled(current.status)) {
+        const stopId = keyOf('revoked', current.id);
+        try { await this.stopOperation(current, session, { id: stopId, submitted_by: user }); }
+        catch { /* The original outcome remains pending or unknown. */ }
+      }
+      for (const operation of operations) {
+        if (operation.id === current.id) continue;
+        await this.publish(operation, session);
+        await this.publishInputs(operation, session, inputs.get(operation.id));
+      }
+      await this.publish(current, session);
+      await this.publishInputs(current, session, inputs.get(current.id));
+    });
+    const results = await Promise.allSettled(checks);
+    const failure = results.find(result => result.status === 'rejected');
+    if (failure) throw failure.reason;
+  }
+
+  safeToDisconnect(operation) {
+    if (!settled(operation.status)) return false;
+    if (operation.status !== 'unknown') return true;
+    return Boolean(operation.runtime_ended && (operation.protocol !== 'codex' ||
+      !operation.thread_active && !operation.turn_attempted));
+  }
+
+  async drainStatus() {
+    await this.tick();
+    const operations = this.store.list(operationRecords);
+    const active = operations.filter(item => !this.safeToDisconnect(item))
+      .map(item => ({ kind: item.protocol === 'service' ? 'service_call' : item.protocol === 'codex' ? 'codex_turn' : 'cli_process',
+        id: item.id, session_id: item.session_id, call_id: item.id, protocol: item.protocol, status: item.status,
+        native: { instance_id: item.instance_id, thread_id: item.thread_id, turn_id: item.turn_id, operation_id: item.operation_id },
+        safe_to_disconnect: false }));
+    const outstanding = this.store.list(inputRecords).filter(item => !item.migrated && !item.receipt && ['writing', 'submitted'].includes(item.status));
+    for (const input of outstanding) {
+      if (!active.some(item => item.call_id === input.operation_id))
+        active.push({ kind: 'execution_input', id: input.id, call_id: input.id, status: input.status, safe_to_disconnect: false });
+    }
+    return { active, ready: active.length === 0 };
+  }
+
+  async close() {
+    this.closing = true;
+    await Promise.allSettled([...this.locks.values(), this.ticking, this.services.close()]);
+    this.closed = true;
+  }
+}

@@ -5,6 +5,7 @@ import { readJson, writeJson } from '../build/files.mjs';
 import { workspaceOrigin } from '../../web/backend/origins.mjs';
 import { workspaceProof } from '../../web/backend/workspace-probe.mjs';
 import { acquireServiceLock } from './service-lock.mjs';
+import { assertInstallationWritable } from './installation-state.mjs';
 
 const configPath = dataRoot => join(dataRoot, 'config', 'remote-access.json');
 
@@ -15,15 +16,6 @@ export async function readRemoteAccess(dataRoot) {
 
 export function writeRemoteAccess(dataRoot, value) {
   return writeJson(configPath(dataRoot), value);
-}
-
-export async function migratePublicOrigin(dataRoot, publicOrigin) {
-  if (!publicOrigin) return;
-  const access = await readRemoteAccess(dataRoot);
-  if (!access.cloudflare) {
-    access.cloudflare = { origin: workspaceOrigin(publicOrigin, { httpsOnly: true }), owner: 'external' };
-    await writeRemoteAccess(dataRoot, access);
-  }
 }
 
 export async function remoteOrigins(dataRoot) {
@@ -51,13 +43,15 @@ export async function probeRemoteOrigin(config, origin) {
 }
 
 export async function registerCustomRemote(config, input, { signal } = {}) {
+  await assertInstallationWritable(config.dataRoot, config.releaseRoot);
   signal?.throwIfAborted();
   const origin = workspaceOrigin(input.origin, { httpsOnly: true });
   const lock = await acquireServiceLock(config.dataRoot, 'remote-access-operation', () => ({ pid: process.pid, bootId: 'custom-remote', state: 'working' }));
   try {
+    await assertInstallationWritable(config.dataRoot, config.releaseRoot);
     const entries = await readRemoteAccess(config.dataRoot), previous = entries.custom;
     entries.custom = { origin, owner: input.bridgePath ? 'summon' : 'external', label: String(input.label || '自定义远程入口').slice(0, 80),
-      temporary: input.temporary === true, ...(input.bridgePath ? { bridgePath: input.bridgePath } : {}), ...(input.workId ? { workId: input.workId } : {}) };
+      temporary: input.temporary === true, ...(input.bridgePath ? { bridgePath: input.bridgePath } : {}) };
     await writeRemoteAccess(config.dataRoot, entries);
     let registered = false;
     try {
@@ -82,17 +76,6 @@ export async function registerCustomRemote(config, input, { signal } = {}) {
         else delete entries.custom;
         await writeRemoteAccess(config.dataRoot, entries);
       }
-    }
-  } finally { await lock.close(); }
-}
-
-export async function removeCustomRemote(config, workId) {
-  const lock = await acquireServiceLock(config.dataRoot, 'remote-access-operation', () => ({ pid: process.pid, bootId: 'custom-remote', state: 'working' }));
-  try {
-    const entries = await readRemoteAccess(config.dataRoot);
-    if (entries.custom?.workId === workId) {
-      delete entries.custom;
-      await writeRemoteAccess(config.dataRoot, entries);
     }
   } finally { await lock.close(); }
 }

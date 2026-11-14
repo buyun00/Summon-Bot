@@ -1,12 +1,15 @@
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rename, writeFile, mkdtemp } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { parseArgs, readJson, writeJson } from '../build/files.mjs';
+import { copyTree, parseArgs, readJson, writeJson } from '../build/files.mjs';
 import { describeArtifacts, inside, publishRelease, removeInside, validateRelease } from './repository.mjs';
 import { publishGithub } from './github.mjs';
+import { assertClientAvailability, localWindowsRelease } from './availability.mjs';
+import { installationStatePath, readInstallationState } from '../installation/installation-state.mjs';
+import { firstCutoverPath } from '../installation/legacy-writers.mjs';
 
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const buildRoot = join(sourceRoot, '.relay/client-builds');
@@ -15,6 +18,10 @@ const command = positional[0] || 'help';
 const dataRoot = resolve(options['data-root'] || process.env.SUMMON_DATA_ROOT || (process.platform === 'win32' ? 'D:/Relay-Bot-data' : join(sourceRoot, '../Relay-Bot-data')));
 const appRoot = resolve(options['app-root'] || (process.platform === 'win32' ? 'D:/Relay-Bot-app' : join(sourceRoot, '../Relay-Bot-app')));
 const repositoryRoot = join(dataRoot, 'client-releases');
+const readOptional = async path => {
+  try { return await readJson(path); }
+  catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+};
 
 async function run(executable, args, { cwd = sourceRoot, env = process.env } = {}) {
   await new Promise((done, fail) => {
@@ -29,6 +36,14 @@ const sourceCommit = () => {
 };
 // Other chats may commit in this shared checkout while a package is building.
 const buildSourceCommit = sourceCommit();
+function assertReleaseCheckout() {
+  const result = spawnSync('git', ['-C', sourceRoot, 'status', '--porcelain', '--untracked-files=normal',
+    '--', 'desktop', 'android', 'ios', 'web/frontend/icons', 'release.json', 'scripts/release', 'scripts/build', 'package.json', 'package-lock.json'],
+    { encoding: 'utf8', windowsHide: true });
+  if (!buildSourceCommit || sourceCommit() !== buildSourceCommit || result.status !== 0 || result.stdout.trim()) {
+    throw new Error('The client build inputs must still match the selected release commit');
+  }
+}
 async function outputDirectory(name) {
   const path = join(buildRoot, name);
   await mkdir(buildRoot, { recursive: true });
@@ -64,9 +79,15 @@ async function buildDesktop() {
   const arch = options.arch || (platform === 'macos' ? 'arm64' : process.arch);
   if (arch !== (platform === 'macos' ? 'arm64' : 'x64')) throw new Error('Unsupported desktop architecture');
   if (options.candidate && (options.github || options.publish || command === 'all')) throw new Error('Candidate builds cannot publish');
+  if (!options.candidate) assertReleaseCheckout();
+  if (command === 'all' && platform === 'windows') {
+    const release = await readJson(join(sourceRoot, 'release.json'));
+    if (await localWindowsRelease(repositoryRoot, { ...release, sourceCommit: buildSourceCommit })) return;
+  }
   const output = await outputDirectory(`${platform}-${arch}`);
   const { buildDesktop } = await import(pathToFileURL(join(sourceRoot, 'desktop/build.mjs')));
   await buildDesktop({ platform, arch, output });
+  if (!options.candidate) assertReleaseCheckout();
   await describeBuild(output, platform, arch);
   if (!options.candidate && (platform === 'windows' || options.publish || options.github || command === 'all')) await publish(output);
   else console.log(JSON.stringify({ built: true, platform, arch, output }));
@@ -129,16 +150,56 @@ async function buildIos() {
     '-exportPath', join(output, 'export'), '-exportOptionsPlist', resolve(options['export-options']), '-allowProvisioningUpdates']);
   console.log(JSON.stringify({ built: true, platform: 'ios', version: release.version, output, sourceCommit: buildSourceCommit }));
 }
-async function deployWeb() {
+async function prepareFirstCutover(previousRoot, candidateRoot) {
+  const expected = await readJson(join(candidateRoot, 'release-manifest.json'));
+  const release = await readJson(join(candidateRoot, 'release.json'));
+  const availability = await assertClientAvailability({ dataRoot, release, expected });
+  const handoff = await readOptional(firstCutoverPath(dataRoot));
+  const container = join(sourceRoot, 'dist', 'releases', 'first-cutover-104');
+  if (!await readOptional(join(container, 'release-manifest.json'))) {
+    const original = handoff?.previous_release || previousRoot;
+    if (!inside(join(appRoot, 'releases'), original)) throw new Error('The build 104 source is outside the application release directory');
+    const staging = await mkdtemp(join(dirname(container), '.handoff-'));
+    try {
+      const { prepare104 } = await import('../installation/first-cutover/prepare-104.mjs');
+      await copyTree(original, staging);
+      await prepare104(staging);
+      await rename(staging, container);
+    } finally { await removeInside(dirname(container), staging); }
+  }
+  const { switch104 } = await import('../installation/first-cutover/switch-104.mjs');
+  console.log(JSON.stringify(await switch104({ appRoot, dataRoot, container, releaseRoot: candidateRoot, clientAvailability: availability })));
+  return availability;
+}
+
+async function deployWeb({ committedOnly = false } = {}) {
   if (process.platform !== 'win32') throw new Error('The existing production installation runs on Windows');
   const { buildRelease } = await import('../build/build.mjs');
-  const built = await buildRelease({ sourceRoot, bundleNode: true, committedOnly: Boolean(options['committed-only'] || command === 'all') });
-  await run('pwsh.exe', ['-NoProfile', '-File', join(appRoot, 'Stop.ps1'), '-DataRoot', dataRoot]);
+  const state = await readInstallationState(dataRoot);
+  const pending = state && state.phase !== 'done';
+  let releaseRoot = pending ? state.release_root : null, availability;
+  if (!pending) {
+    const selection = await readOptional(join(appRoot, 'current.json'));
+    const previousManifest = selection && await readJson(join(selection.releaseRoot, 'release-manifest.json'));
+    const firstCutover = previousManifest && !previousManifest.dataFormat;
+    if (firstCutover) {
+      if (!committedOnly || !buildSourceCommit) throw new Error('The first protocol cutover needs the committed release and its client packages');
+      releaseRoot = join(sourceRoot, 'dist', 'releases', `cutover-${buildSourceCommit}`);
+      const cached = await readOptional(join(releaseRoot, 'release-manifest.json'));
+      if (!cached) {
+        await buildRelease({ sourceRoot, releaseRoot, bundleNode: true, committedOnly, commit: buildSourceCommit });
+      } else if (cached.sourceMode !== 'git-archive' || cached.sourceCommit !== buildSourceCommit) {
+        throw new Error('The staged cutover belongs to another release commit');
+      }
+      availability = await prepareFirstCutover(selection.releaseRoot, releaseRoot);
+    } else {
+      ({ releaseRoot } = await buildRelease({ sourceRoot, bundleNode: true, committedOnly, commit: committedOnly ? buildSourceCommit : undefined }));
+    }
+  }
   const { installRelease } = await import('../installation/install.mjs');
-  const deferredCleanupPaths = options['defer-build-cleanup-path'] === undefined ? [] : [options['defer-build-cleanup-path']];
-  const installed = await installRelease({ releaseRoot: built.releaseRoot, appRoot, dataRoot, sourceRoot, deferredCleanupPaths });
-  await run('pwsh.exe', ['-NoProfile', '-File', join(appRoot, 'Start.ps1'), '-DataRoot', dataRoot]);
-  console.log(JSON.stringify({ deployed: true, buildId: built.buildId, sourceCommit: built.sourceCommit, ...(installed.cleanup?.cleanupDeferred ? { cleanupDeferred: installed.cleanup.cleanupDeferred } : {}) }));
+  const installed = await installRelease({ releaseRoot, appRoot, dataRoot, sourceRoot, clientAvailability: availability,
+    onProgress: result => console.log(JSON.stringify(result)) });
+  console.log(JSON.stringify({ deployed: true, buildId: installed.buildId, sourceCommit: installed.sourceCommit, state: installed.runtimeState }));
 }
 async function setVersion() {
   const current = await readJson(join(sourceRoot, 'release.json'));
@@ -166,13 +227,17 @@ async function main() {
   if (command === 'help') { console.log('Summon Bot release: version | web | desktop | android | ios | publish --input DIR | all; Windows desktop builds publish locally; --publish (Windows local only) | --github (GitHub Actions only)'); return; }
   if (options.github && process.env.GITHUB_ACTIONS !== 'true') throw new Error('GitHub packages must build and publish in GitHub Actions; local Windows builds stay in the local release directory');
   if (command === 'version') return setVersion();
-  if (command === 'web') return deployWeb();
+  if (command === 'web') return deployWeb({ committedOnly: Boolean(options['committed-only']) });
   if (command === 'desktop') return buildDesktop();
   if (command === 'android') return buildAndroid();
   if (command === 'ios') return buildIos();
   if (command === 'publish') { if (!options.input) throw new Error('Provide --input with the completed build directory'); return publish(resolve(options.input)); }
   if (command === 'all') {
-    if (process.platform === 'win32') { await deployWeb(); await buildDesktop(); }
+    if (process.platform === 'win32') {
+      const pending = await readInstallationState(dataRoot);
+      if (!pending || pending.phase === 'done') await buildDesktop();
+      await deployWeb({ committedOnly: true });
+    }
     else if (process.platform === 'darwin') await buildDesktop();
     else throw new Error('Run platform builds on Windows or Mac');
     return;
@@ -184,12 +249,19 @@ async function main() {
 // release's node.exe open, so execute on a temporary copy of the current runtime.
 if (process.platform === 'win32' && ['24.15.0', '25.8.0'].includes(process.versions.node) && !process.env.SUMMON_RELEASE_RUNNER) {
   try {
-    const current = await readJson(join(appRoot, 'current.json'));
-    const runnerRoot = join(sourceRoot, `.relay/release-runner-${process.pid}`);
-    await mkdir(runnerRoot, { recursive: true });
+    const relayRoot = join(sourceRoot, '.relay');
+    await mkdir(relayRoot, { recursive: true });
+    const runnerRoot = await mkdtemp(join(relayRoot, 'release-runner-'));
     const runner = join(runnerRoot, 'node.exe');
-    await copyFile(join(current.releaseRoot, 'runtime/node.exe'), runner);
-    try { await run(runner, [fileURLToPath(import.meta.url), ...process.argv.slice(2)], { env: { ...process.env, SUMMON_RELEASE_RUNNER: '1' } }); }
-    finally { await removeInside(join(sourceRoot, '.relay'), runnerRoot); }
+    try {
+      const installation = existsSync(installationStatePath(dataRoot)) ? await readInstallationState(dataRoot) : null;
+      let runtime = process.env.SUMMON_RELEASE_NODE;
+      if (!runtime) {
+        const selected = installation?.release_root || (await readJson(join(appRoot, 'current.json'))).releaseRoot;
+        runtime = join(selected, 'runtime/node.exe');
+      }
+      await copyFile(runtime, runner);
+      await run(runner, [fileURLToPath(import.meta.url), ...process.argv.slice(2)], { env: { ...process.env, SUMMON_RELEASE_RUNNER: '1' } });
+    } finally { await removeInside(relayRoot, runnerRoot); }
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 } else main().catch(error => { console.error(error.message); process.exit(1); });

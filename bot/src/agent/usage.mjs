@@ -70,18 +70,6 @@ export class UsageLedger {
   close() { if (!this.closed) { this.db.close(); this.closed = true; } }
 }
 
-export function usageRoomId(task, store) {
-  const input = task?.input?.current || task?.input;
-  const direct = task?.metadata?.roomId || input?.metadata?.roomId || input?.room?.id;
-  if (direct) return direct;
-  const conversation = task?.conversationId || task?.sessionId;
-  if (conversation?.startsWith('room:')) return conversation.slice(5);
-  const work = task?.workId && store?.getRecord('works', task.workId);
-  const rooms = [...new Set((work?.sources || []).map(source => source.roomId).filter(Boolean))];
-  // A work spanning several rooms has no single owner unless the trigger says so.
-  return rooms.length === 1 ? rooms[0] : null;
-}
-
 export function usageRange(period = 'today', at = Date.now()) {
   if (!['today', 'yesterday', '7d', 'all'].includes(period)) throw Object.assign(new Error('无效的用量时间范围'), { status: 400 });
   const day = 86400000, midnight = Math.floor((at + 8 * 3600000) / day) * day - 8 * 3600000;

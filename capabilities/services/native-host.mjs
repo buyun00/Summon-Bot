@@ -1,14 +1,13 @@
 import { spawn } from 'node:child_process';
-import { access, readdir, realpath, stat } from 'node:fs/promises';
+import { access, realpath, stat } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { basename, delimiter, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, extname, isAbsolute, join } from 'node:path';
 import { cleanEnvironment, terminateTree } from '../../bot/src/runtime/process-tools.mjs';
-import { fail, within } from '../shared/validation.mjs';
+import { fail } from '../shared/validation.mjs';
 
 const windows = process.platform === 'win32';
 const windowsExtensions = ['.exe', '.com', '.cmd', '.bat', '.ps1'];
 const executableName = path => windows ? basename(path, extname(path)).toLowerCase() : basename(path);
-export const executableKey = path => windows ? path.toLowerCase() : path;
 const validArg = value => typeof value === 'string' && value.length <= 32_768 && !value.includes('\0');
 export function nativeArgs(value = []) {
   if (!Array.isArray(value) || value.length > 128 || value.some(arg => !validArg(arg))) fail('Expected an array of up to 128 process arguments');
@@ -22,34 +21,10 @@ export function nativeCommand(file, args) {
     args: ['-NoProfile', '-NonInteractive', '-File', file, ...args], options: {} };
   // cmd scripts have no argv API. Prevent a second evaluation of substitutions
   // or quote boundaries. Pass protocol payloads and multiline text over stdin.
-  if ([file, ...args].some(arg => /["%!\r\n]/.test(arg))) fail('This Windows batch launcher needs quoted, expanded or multiline values passed over stdin, or a direct executable');
+  if ([file, ...args].some(arg => /["%!\r\n]/.test(arg))) fail('Use a direct executable or pass complex values over stdin');
   const line = '"' + [file, ...args].map(arg => '"' + arg + '"').join(' ') + '"';
   return { file: join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe'),
     args: ['/d', '/s', '/v:off', '/c', line], options: { windowsVerbatimArguments: true } };
-}
-
-function pathRoots() {
-  return String(process.env.PATH || '').split(delimiter).map(path => path.trim().replace(/^"|"$/g, '')).filter(isAbsolute);
-}
-
-function packageRoots(workspace) {
-  return [
-    workspace && join(workspace, 'node_modules', '.bin'),
-    workspace && join(workspace, '.venv', windows ? 'Scripts' : 'bin'),
-    workspace && join(workspace, 'bin'),
-    process.env.USERPROFILE && join(process.env.USERPROFILE, '.dotnet', 'tools'),
-    process.env.APPDATA && join(process.env.APPDATA, 'npm'),
-    process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'Microsoft', 'WinGet', 'Links'),
-    process.env.USERPROFILE && join(process.env.USERPROFILE, 'scoop', 'shims'),
-    process.env.ProgramData && join(process.env.ProgramData, 'chocolatey', 'bin'),
-    process.env.CARGO_HOME && join(process.env.CARGO_HOME, 'bin'),
-    process.env.HOME && join(process.env.HOME, '.cargo', 'bin'),
-    process.env.HOME && join(process.env.HOME, '.local', 'bin'),
-  ].filter(Boolean);
-}
-
-export function installedExecutablePath(path) {
-  return isAbsolute(path) && [...pathRoots(), ...packageRoots()].some(root => relative(root, dirname(path)) === '');
 }
 
 export async function localExecutable(path) {
@@ -59,48 +34,6 @@ export async function localExecutable(path) {
   if (!info.isFile() || windows && !windowsExtensions.includes(extname(path).toLowerCase())) fail('The selected path is not an executable file');
   if (!windows) await access(file, constants.X_OK);
   return { file: path, canonicalFile: file, name: executableName(path), size: info.size, modifiedAt: info.mtimeMs };
-}
-
-export async function findExecutable(name, cwd) {
-  if (isAbsolute(name)) return localExecutable(name);
-  if (basename(name) !== name || !name || /[<>|:*?]/.test(name)) fail('Use an executable name or absolute path');
-  const names = windows && !windowsExtensions.includes(extname(name).toLowerCase()) ? windowsExtensions.map(ext => name + ext) : [name];
-  for (const root of [...pathRoots(), ...packageRoots(cwd)]) {
-    for (const candidate of names) {
-      const info = await localExecutable(join(root, candidate)).catch(() => null);
-      if (info) return info;
-    }
-  }
-  fail('Executable was not found in the current PATH or package locations', 404);
-}
-
-export async function discoverExecutables(workspace, extraRoots = []) {
-  const system = windows && process.env.SystemRoot;
-  const roots = [...new Set([...extraRoots, ...pathRoots(), ...packageRoots(workspace)].map(path => resolve(path)))];
-  const entries = new Map();
-  for (const root of roots) {
-    // The Windows system directory and app execution aliases are not an
-    // installed CLI package inventory. An explicit command can still find them.
-    if (system && within(system, root) || windows && basename(root).toLowerCase() === 'windowsapps') continue;
-    const files = await readdir(root, { withFileTypes: true }).catch(() => []);
-    const groups = new Map();
-    for (const file of files) {
-      if (file.name.startsWith('.') || !file.isFile() && !file.isSymbolicLink()) continue;
-      const ext = extname(file.name).toLowerCase();
-      if (windows && !windowsExtensions.includes(ext)) continue;
-      const path = join(root, file.name), name = executableName(path);
-      const prior = groups.get(name);
-      if (!prior || windows && windowsExtensions.indexOf(ext) < windowsExtensions.indexOf(extname(prior).toLowerCase())) groups.set(name, path);
-    }
-    const discovered = await Promise.all([...groups.values()].map(path => localExecutable(path).catch(() => null)));
-    for (const item of discovered.filter(Boolean)) {
-      const key = executableKey(item.canonicalFile), existing = entries.get(key);
-      if (existing) {
-        if (!existing.aliases.includes(item.name)) existing.aliases.push(item.name);
-      } else entries.set(key, { ...item, aliases: [item.name], source: root });
-    }
-  }
-  return [...entries.values()];
 }
 
 export function nativeEnvironment(references = {}, authorized = []) {

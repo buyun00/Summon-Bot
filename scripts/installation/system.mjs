@@ -3,10 +3,9 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
 import { readJson, writeJson, within } from '../build/files.mjs';
 import { inspectServiceLock } from './service-lock.mjs';
-import { migratePublicOrigin } from './remote-config.mjs';
+import { assertInstallationWritable, dataFormat } from './installation-state.mjs';
 import { terminateTree } from '../../bot/src/runtime/process-tools.mjs';
 
 const pause = milliseconds => new Promise(resolvePause => setTimeout(resolvePause, milliseconds));
@@ -19,20 +18,14 @@ const token = () => randomBytes(32).toString('base64url');
 const transientStartupHandshake = error => error.code === 'SERVICE_IDENTITY_UNAVAILABLE'
   && ['SERVICE_HANDSHAKE_TIMEOUT', 'SERVICE_HANDSHAKE_INCOMPLETE', 'ECONNRESET', 'EPIPE'].includes(error.cause?.code);
 
-export async function initializeDeployment({ dataRoot, releaseRoot, defaultCwd, publicOrigin = '', port = 8787 } = {}) {
+export function createDeployment({ dataRoot, releaseRoot, defaultCwd, port = 8787 } = {}) {
   dataRoot = resolve(dataRoot); releaseRoot = resolve(releaseRoot);
   if (within(releaseRoot, dataRoot) || within(dataRoot, releaseRoot)) throw new Error('Deployment code and data roots must be disjoint');
-  const path = deploymentPath(dataRoot);
-  if (existsSync(path)) return { created: false, configPath: path, config: await readJson(path) };
-  const config = { schemaVersion: 3, dataRoot, releaseRoot, defaultCwd: resolve(defaultCwd || join(dataRoot, 'workspace')),
+  return { schemaVersion: 4, dataFormat, dataRoot, releaseRoot, defaultCwd: resolve(defaultCwd || join(dataRoot, 'workspace')),
     runIntent: 'running', gatewayToken: token(), controlToken: token(),
     environmentFile: join(dataRoot, 'config', 'runtime.env'), web: { host: '127.0.0.1', port: Number(port), accessToken: token() },
     gateway: { host: '127.0.0.1', port: 0 },
     model: { provider: 'deepseek', model: 'deepseek-flash', baseUrl: 'https://api.deepseek.com/v1', apiKeyEnv: 'DEEPSEEK_API_KEY', contextWindow: 1048576, maxTokens: 393216, thinkingLevel: 'high' } };
-  await mkdir(config.defaultCwd, { recursive: true });
-  await migratePublicOrigin(dataRoot, publicOrigin);
-  await writeJson(path, config);
-  return { created: true, configPath: path, config };
 }
 
 export async function deploymentEnvironment(config) {
@@ -67,6 +60,8 @@ export async function inspectService(config, type) {
 
 export async function launchService(config, type, { foreground = false, timeoutMs = 180000, onExit, signal } = {}) {
   signal?.throwIfAborted();
+  if (config.dataFormat !== dataFormat) throw new Error('Use the selected release launcher for the existing deployment');
+  await assertInstallationWritable(config.dataRoot, config.releaseRoot);
   const current = await inspectService(config, type);
   signal?.throwIfAborted();
   if (current.state === 'ready') {
@@ -79,9 +74,11 @@ export async function launchService(config, type, { foreground = false, timeoutM
   const logRoot = join(serviceRoot(config.dataRoot, type), 'logs');
   await mkdir(logRoot, { recursive: true });
   const bundled = bundledNode(config.releaseRoot);
+  const env = await deploymentEnvironment(config);
+  await assertInstallationWritable(config.dataRoot, config.releaseRoot);
   const child = spawn(existsSync(bundled) ? bundled : process.execPath,
     [entry, '--type', type, '--config', deploymentPath(config.dataRoot)],
-    { cwd: config.defaultCwd, env: await deploymentEnvironment(config), detached: !foreground, windowsHide: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    { cwd: config.defaultCwd, env, detached: !foreground, windowsHide: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
   let failure, stopping;
   const abort = () => { stopping ||= terminateTree(child); };
   signal?.addEventListener('abort', abort, { once: true });
@@ -126,6 +123,8 @@ export async function launchService(config, type, { foreground = false, timeoutM
 
 export async function startSystem(config, { foreground = false, respectIntent = false, onProgress } = {}) {
   config = await readJson(deploymentPath(config.dataRoot));
+  await assertInstallationWritable(config.dataRoot, config.releaseRoot);
+  if (config.dataFormat !== dataFormat) throw new Error('Use the selected release launcher for the existing deployment');
   if (respectIntent && config.runIntent === 'stopped') return { state: 'stopped', reason: 'saved-stop-intent' };
   if (config.runIntent === 'stopped') { config = { ...config, runIntent: 'running' }; await writeJson(deploymentPath(config.dataRoot), config); }
   onProgress?.({ stage: 'gateway' });
@@ -137,13 +136,17 @@ export async function startSystem(config, { foreground = false, respectIntent = 
   return { state: 'ready', gateway, web, auxiliaries };
 }
 
-export async function stopService(config, type) {
+export async function stopService(config, type, { waitForExit = false } = {}) {
   const run = await inspectService(config, type);
   if (run.state === 'stopped') return run;
-  if (run.state !== 'ready') throw new Error(`${type} cannot be safely stopped while ${run.state}`);
-  const response = await fetch(new URL('/shutdown', run.controlUrl), { method: 'POST', headers: { Authorization: `Bearer ${config.controlToken}` }, signal: AbortSignal.timeout(5000) });
-  if (!response.ok) throw new Error(`${type} rejected shutdown (${response.status})`);
-  const deadline = Date.now() + 60000;
+  if (run.state === 'ready') {
+    const response = await fetch(new URL('/shutdown', run.controlUrl), { method: 'POST',
+      headers: { Authorization: `Bearer ${config.controlToken}` }, signal: AbortSignal.timeout(5000) });
+    if (!response.ok) throw new Error(`${type} rejected shutdown (${response.status})`);
+  } else if (run.state !== 'stopping') {
+    throw new Error(`${type} cannot be safely stopped while ${run.state}`);
+  }
+  const deadline = waitForExit ? Infinity : Date.now() + 60000;
   while (Date.now() < deadline) {
     const next = await inspectService(config, type);
     if (next.state === 'stopped') return next;
@@ -155,44 +158,12 @@ export async function stopService(config, type) {
 
 export async function stopSystem(config) {
   config = await readJson(deploymentPath(config.dataRoot));
+  await assertInstallationWritable(config.dataRoot, config.releaseRoot);
+  if (config.dataFormat !== dataFormat) throw new Error('Use the selected release launcher for the existing deployment');
   await writeJson(deploymentPath(config.dataRoot), { ...config, runIntent: 'stopped' });
-  const gateway = await inspectService(config, 'gateway');
-  if (gateway.state === 'ready') {
-    const response = await fetch(new URL('/internal/bots/stop-all', gateway.url), { method: 'POST', headers: { Authorization: `Bearer ${config.gatewayToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ persistIntent: false }), signal: AbortSignal.timeout(120000) });
-    if (!response.ok) throw new Error(`Bot shutdown failed (${response.status}); services remain available for inspection`);
-  } else if (gateway.state !== 'stopped') throw new Error('Gateway unreachable; inspect active Bots before stopping the system');
-  else {
-    // A crashed gateway must not strand independently running Bots.
-    // Stop producers before stopping their consumers. These private service
-    // endpoints remain usable without the gateway; no stale PID is killed.
-    const supervisor = await capabilitySupervisor(config);
-    if (supervisor) {
-      const services = await supervisor.list();
-      for (const id of ['chatroom', 'bot-management']) for (const service of services.filter(item => item.id === id && item.state !== 'stopped')) {
-        await supervisor.request(service.id, service.version, `/rpc/${id === 'bot-management' ? 'quiesce' : 'pause'}`, { body: { arguments: [] }, timeoutMs: 180000 });
-      }
-    }
-    const { RecordStore } = await import(pathToFileURL(join(config.releaseRoot, 'capabilities/shared/store.mjs')));
-    const { BotManager } = await import(pathToFileURL(join(config.releaseRoot, 'capabilities/bot-management/service.mjs')));
-    const path = join(config.dataRoot, 'capabilities/bot-management/state.sqlite');
-    if (existsSync(path)) {
-      const store = new RecordStore(path);
-      try { await new BotManager({ store, dataRoot: config.dataRoot, releaseRoot: config.releaseRoot }).shutdownAll({ persistIntent: false }); }
-      finally { store.close(); }
-    }
-  }
   const web = await stopService(config, 'web');
-  const stoppedGateway = await stopService(config, 'gateway');
-  const supervisor = await capabilitySupervisor(config), capabilities = [];
-  if (supervisor) for (const service of await supervisor.list()) capabilities.push(await supervisor.stop(service.id, service.version, { drain: true, timeoutMs: 60000 }));
+  const gateway = await stopService(config, 'gateway');
   const auxiliaries = [];
   for (const type of ['cloudflared', 'remote-bridge']) auxiliaries.push(await stopService(config, type));
-  return { state: 'stopped', web, gateway: stoppedGateway, capabilities, auxiliaries };
-}
-
-async function capabilitySupervisor(config) {
-  const modulePath = join(config.releaseRoot, 'capabilities/services/supervisor.mjs');
-  if (!existsSync(modulePath)) return null; // Initial upgrade from the old layout.
-  const { CapabilityServiceSupervisor } = await import(pathToFileURL(modulePath));
-  return new CapabilityServiceSupervisor({dataRoot:config.dataRoot,releaseRoot:config.releaseRoot});
+  return { state: 'stopped', web, gateway, auxiliaries };
 }

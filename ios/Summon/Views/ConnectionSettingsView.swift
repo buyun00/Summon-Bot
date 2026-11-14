@@ -39,12 +39,29 @@ struct ConnectionSettingsView: View {
                 } header: { Text("服务连接") } footer: {
                     Text("使用部署机提供的 HTTPS 地址和访问令牌。令牌保存在 iOS 钥匙串中。")
                 }
+                if !store.profiles.isEmpty {
+                    Section("工作区") {
+                        Button {
+                            changeWorkspace(nil)
+                        } label: {
+                            Label("默认工作区", systemImage: store.settings.workspaceID == nil ? "checkmark.circle.fill" : "circle")
+                        }.disabled(saving || !store.protocolReady)
+                        ForEach(store.profiles) { profile in
+                            Button {
+                                changeWorkspace(profile.id)
+                            } label: {
+                                Label(profile.name, systemImage: store.settings.workspaceID == profile.id ? "checkmark.circle.fill" : "circle")
+                            }.disabled(saving || !store.protocolReady)
+                        }
+                    }
+                }
                 Section("消息通知") {
                     Text(SummonPush.shared.status).foregroundStyle(.secondary)
                     Button("启用消息通知") { Task { await SummonPush.shared.enable() } }
                     Link("打开系统通知设置", destination: URL(string: UIApplication.openNotificationSettingsURLString)!)
                 }
                 Section("连接状态") {
+                    if let notice = store.protocolNotice { InlineError(message: notice) }
                     LabeledContent("实时消息", value: store.isConnected ? "已连接" : "未连接")
                     LabeledContent("Bot", value: "\(store.bots.count)")
                     LabeledContent("会话", value: "\(store.rooms.count)")
@@ -60,7 +77,7 @@ struct ConnectionSettingsView: View {
                     }.disabled(saving || baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
                 Section {
-                    Text("已读取的会话和草稿保存在这台设备，失败消息需要手动重试。切换服务时会清除这台设备上的会话缓存。")
+                    Text("草稿和待确认的发送保存在这台设备。重新连接后，可按原发送记录查询保存状态。")
                         .summonFont(.footnote).foregroundStyle(.secondary)
                 }
             }
@@ -77,6 +94,15 @@ struct ConnectionSettingsView: View {
     }
 
     private var appVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "" }
+
+    private func changeWorkspace(_ id: String?) {
+        saving = true; errorMessage = nil
+        Task {
+            defer { saving = false }
+            do { try await store.selectWorkspace(id); dismiss() }
+            catch { errorMessage = error.localizedDescription }
+        }
+    }
 
     private func save() async {
         saving = true; errorMessage = nil
@@ -100,8 +126,8 @@ struct SummonConnectionGuideView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 Image("SummonIcon").resizable().frame(width: 52, height: 52).clipShape(RoundedRectangle(cornerRadius: 14))
-                Text("你好，我是主 Bot。").font(.largeTitle.bold())
-                Text("欢迎来到 Summon Bot。告诉我你的工作区地址，我们就可以接着聊。")
+                Text("连接 Summon Bot").font(.largeTitle.bold())
+                Text("输入部署者提供的工作区地址和访问令牌。")
                     .padding(14).background(SummonTheme.surface, in: RoundedRectangle(cornerRadius: 16))
                 if awaitingToken {
                     Text(address).foregroundStyle(.secondary)

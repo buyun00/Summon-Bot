@@ -1,14 +1,19 @@
 import net from 'node:net';
-import { createHash } from 'node:crypto';
-import { realpath } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 const handshakeError = (message, code) => Object.assign(new Error(message), { code });
 const retryableHandshake = new Set(['SERVICE_HANDSHAKE_INCOMPLETE', 'ECONNRESET', 'EPIPE']);
 
 async function address(dataRoot,type) {
-  const root=await realpath(resolve(dataRoot)),key=createHash('sha256').update(`${process.platform==='win32'?root.toLowerCase():root}:${type}`).digest('hex').slice(0,40);
-  return process.platform==='win32'?`\\\\.\\pipe\\summon-service-${key}`:process.platform==='linux'?`\0summon-service-${key}`:{host:'127.0.0.1',port:30000+parseInt(key.slice(0,8),16)%25000};
+  const root = await stat(resolve(dataRoot), { bigint: true });
+  if (!root.isDirectory() || root.ino === 0n) throw new Error('The data root has no stable filesystem identity');
+  const key = `${root.dev.toString(16)}-${root.ino.toString(16)}-${type}`;
+  if (process.platform === 'win32') return `\\\\.\\pipe\\summon-service-${key}`;
+  if (process.platform === 'linux') return `\0summon-service-${key}`;
+  const kind = ['installation', 'watchdog', 'gateway', 'web', 'cloudflared', 'remote-bridge', 'remote-access-operation', 'history-maintenance'].indexOf(type);
+  if (kind === -1) throw new Error(`Unknown managed service type: ${type}`);
+  return { host: '127.0.0.1', port: 30000 + Number((root.ino + root.dev) % 3000n) * 8 + kind };
 }
 function queryIdentity(endpoint,type,timeoutMs) {
   return new Promise((accept,reject)=>{

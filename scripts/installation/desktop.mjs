@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { workspaceOrigin } from '../../web/backend/origins.mjs';
 import { workspaceProof } from '../../web/backend/workspace-probe.mjs';
 import { parseArgs, readJson, writeJson } from '../build/files.mjs';
+import { protocolVersion } from '../../capabilities/platform/contract.mjs';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const profilePath = root => join(root, 'desktop-workspace.json');
@@ -15,7 +16,7 @@ const formalDataRoot = 'D:/Relay-Bot-data';
 export const formalOrigin = 'http://127.0.0.1:8787';
 const defaultProfile = () => join(process.platform === 'win32' ? process.env.APPDATA || join(homedir(), 'AppData', 'Roaming')
   : join(homedir(), 'Library', 'Application Support'), 'Relay');
-const workspaceIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const workspaceIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isWorkspaceId = id => typeof id === 'string' && workspaceIdPattern.test(id);
 
 export function remoteWorkspaceOrigin(address) {
@@ -133,8 +134,23 @@ function workspaceSummary(item) {
   return { id: item.id, name: typeof item.name === 'string' && item.name.trim() ? item.name.trim().slice(0, 80) : '工作区' };
 }
 
+export async function workspaceBootstrap(origin, headers) {
+  const response = await workspaceRequest(origin, '/api/bootstrap', { headers });
+  if (response.status === 401) throw loginRequired();
+  if (response.status === 404 || response.status === 426) throw new Error('等待正式实例升级到兼容版本。');
+  if (response.status === 503) throw new Error('正式实例正在更新，请稍后重试。');
+  if (!response.ok) throw new Error(`无法读取正式实例状态（HTTP ${response.status}）。`);
+  const status = await response.json().catch(() => null);
+  if (status?.protocolVersion !== protocolVersion) throw new Error('等待正式实例升级到兼容版本。');
+  if (status.updating) throw new Error('正式实例正在更新，请稍后重试。');
+  return status;
+}
+
 export async function requestWorkspaceProfiles(origin, headers, createId) {
   const creating = Boolean(createId);
+  const bootstrap = await workspaceBootstrap(origin, headers);
+  if (!creating && Array.isArray(bootstrap.workspaceProfiles)) return bootstrap.workspaceProfiles.map(workspaceSummary);
+  headers = { ...headers, 'X-Summon-Protocol': String(protocolVersion) };
   const response = await workspaceRequest(origin, '/api/workspace-profiles', creating
     ? { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ id: createId }) }
     : { headers }, creating ? 60000 : 10000);
@@ -167,12 +183,16 @@ export async function desktopCommand(command, input = {}, { profileRoot = defaul
     if (!['local', 'remote'].includes(command)) throw new Error('未知的桌面命令。');
     const local = command === 'local';
     const origin = local ? formalOrigin : remoteWorkspaceOrigin(input.address);
-    try { await requestWorkspaceProfiles(origin, bearerHeader(local ? await formalWorkspaceToken(input.dataRoot) : input.token)); }
+    let profiles;
+    try { profiles = await requestWorkspaceProfiles(origin, bearerHeader(local ? await formalWorkspaceToken(input.dataRoot) : input.token)); }
     catch (error) {
       if (error.code === 'WORKSPACE_LOGIN_REQUIRED') throw new Error('工作区访问令牌无效。');
       throw error;
     }
-    await saveWorkspaceSelection(root, { mode: command, origin, workspaceId: null });
+    const previous = await readWorkspaceSelection(root);
+    const workspaceId = previous?.origin === origin ? previous.workspaceId : null;
+    if (workspaceId && !profiles.some(item => item.id === workspaceId)) throw new Error('先前选择的工作区暂不可用，已保留此选择。');
+    await saveWorkspaceSelection(root, { mode: command, origin, workspaceId });
   }
   const selection = await readWorkspaceSelection(root);
   const manifest = await readJson(join(releaseRoot, 'release-manifest.json'));

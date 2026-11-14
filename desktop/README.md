@@ -24,9 +24,7 @@ summon access revoke cloudflare --confirm
 
 `summon status` 查询内嵌运行时版本与当前连接。命令输出 JSON。退出码 `0` 表示操作已处理，`1` 表示失败，`2` 表示需要组件、授权或恢复操作。Cloudflare 隧道令牌文件可用 `-` 从标准输入读取。外部 Cloudflare 入口使用已发布的主机名，代理目标填本机 Web 地址并保留请求 Host。Tailscale 使用官方客户端的私网 Serve，遇到现有映射时可选择另一 HTTPS 端口。
 
-连接聊天模型并开始主 Bot 引导后，Pi 在部署主机发现 CLI。Codex 等工具通过能力目录接入，在原工作中使用。CHAT 的订阅导入用于配置聊天模型。[能力目录与共享 Skill](../docs/CAPABILITY_CATALOG.md)
-
-程序化访问使用实例的工作区访问令牌。模型引导调用 `/api/model-settings/onboarding/reply`，按返回的 `options` 提交 `action` 与 `value`。进度由 `GET /api/model-settings/onboarding` 返回。进入引导私聊后，按 `guide.options` 向 `/api/model-settings/onboarding/advance` 提交 `step` 与 `action`。
+Electron 通过已验证的部署机登录会话读取启动信息与工作区列表，然后加载该实例的正式网页。桌面设置页和网页都提供客户端更新入口。
 
 ## 构建候选
 

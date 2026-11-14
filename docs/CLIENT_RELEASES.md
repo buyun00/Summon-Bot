@@ -29,16 +29,16 @@ npm run release:version
 npm run release:all
 ```
 
-该命令从 Git 当前提交构建正式 Web 和后端，正常停止现有系统，安装后恢复运行，再构建 Windows 桌面端并发布到本机发行目录。首次需要桌面依赖时执行 `npm ci --prefix desktop --no-audit --no-fund`。
+该命令先从当前提交准备 Windows 本机包，再构建和安装同一提交的 Web 与后端。涉及协议切换时，安装器核对各 GitHub 下载地址已经提供同一提交的发行物，并核对 iOS 工作流已完成对应 TestFlight 内部分发。首次需要桌面依赖时执行 `npm ci --prefix desktop --no-audit --no-fund`。
 
 也可分别执行：
 
 ```powershell
-npm run release:web -- --committed-only
 npm run release:desktop
+npm run release:web -- --committed-only
 ```
 
-制作阶段 `npm run release:web` 仍可安装工作区网页效果，不会发布客户端。Windows 的 `release:desktop` 默认发布到本机发行目录，`--publish` 同样只发布本机。`--github` 仅允许在 GitHub Actions 中使用；本机调用会直接提示改用 Actions。发布完成清理对应中间目录，不通过本机重试 GitHub 上传。
+制作阶段 `npm run release:web` 可安装与现行协议相容的工作区构建。Windows 的 `release:desktop` 默认发布到本机发行目录，`--publish` 同样只发布本机。`--github` 由 GitHub Actions 使用。已就位的同提交 Windows 包会在重试 `release:all` 时复用。
 
 若运行时下载受网络影响，可将同版本 Electron ZIP 的绝对路径放入 `SUMMON_ELECTRON_DIST`。
 

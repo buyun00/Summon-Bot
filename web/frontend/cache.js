@@ -3,20 +3,23 @@
 
   const workspaceId = new URLSearchParams(location.search).get('workspace');
   const workspaceScope = workspaceId ? 'workspace:' + workspaceId : 'workspace';
+  const roomScope = id => 'room:' + (workspaceId ? workspaceId + ':' : '') + id;
+  const roomPrefix = roomScope('');
   const databaseName = 'summon-workspace-v1' + (workspaceId ? '-' + workspaceId : '');
   const collectionPaths = {
-    workspace: ['bots', 'rooms', 'works', 'agentRuns', 'activity', 'routines', 'knowledge.nodes', 'knowledge.edges', 'runtime.jobs'],
-    room: ['messages', 'jobs'],
+    workspace: ['bots', 'rooms', 'executions', 'files', 'wakeups', 'connections'],
+    room: ['messages'],
   };
   const valuePaths = {
-    workspace: ['historyEpoch', 'workspaceProfileId', 'provider', 'defaultCwd', 'onboarding', 'modelSettings', 'runtime.started', 'runtime.fast', 'runtime.deep'],
-    room: ['historyEpoch', 'room'],
+    workspace: ['historyEpoch', 'workspaceProfileId', 'modelSettings', 'limits', 'protocolVersion'],
+    room: ['historyEpoch', 'room', 'cursor', 'deliveries'],
   };
   const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
   const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
   const copy = value => typeof structuredClone === 'function' ? structuredClone(value) : JSON.parse(JSON.stringify(value));
   const getPath = (value, path) => path.split('.').reduce((parent, key) => object(parent) && own(parent, key) ? parent[key] : undefined, value);
-  const kindOf = scope => scope === workspaceScope || scope === 'workspace' ? 'workspace' : typeof scope === 'string' && scope.startsWith('room:') && scope.length > 5 ? 'room' : null;
+  const kindOf = scope => scope === workspaceScope ? 'workspace'
+    : typeof scope === 'string' && scope.startsWith(roomPrefix) && scope.length > roomPrefix.length ? 'room' : null;
   const validId = id => typeof id === 'string' && id.length > 0;
 
   function collectionValid(items) {
@@ -31,15 +34,15 @@
   function snapshotValid(snapshot, scope) {
     const kind = kindOf(scope);
     if (!kind || !object(snapshot)) return false;
-    if (kind === 'workspace' && (!Array.isArray(snapshot.bots) || !Array.isArray(snapshot.rooms))) return false;
-    if (kind === 'workspace' && ['knowledge', 'runtime'].some(key => own(snapshot, key) && !object(snapshot[key]))) return false;
-    if (kind === 'room' && (!object(snapshot.room) || snapshot.room.id !== scope.slice(5) || !Array.isArray(snapshot.messages) || !Array.isArray(snapshot.jobs))) return false;
+    if (kind === 'workspace' && (snapshot.protocolVersion !== 2 || (snapshot.workspaceProfileId ?? null) !== (workspaceId ?? null)
+      || !Array.isArray(snapshot.bots) || !Array.isArray(snapshot.rooms))) return false;
+    if (kind === 'room' && (!object(snapshot.room) || snapshot.room.id !== scope.slice(roomPrefix.length) || !Number.isSafeInteger(snapshot.room.revision)
+      || !Array.isArray(snapshot.room.pins) || !Array.isArray(snapshot.messages) || !object(snapshot.deliveries))) return false;
     return valuePaths[kind].every(path => {
       const value = getPath(snapshot, path);
       if (value === undefined) return true;
-      if (path === 'historyEpoch' || path === 'workspaceProfileId') return value === null || validId(value);
-      if (path === 'defaultCwd') return typeof value === 'string';
-      if (path === 'runtime.started') return typeof value === 'boolean';
+      if (path === 'historyEpoch' || path === 'cursor' || path === 'workspaceProfileId') return value === null || validId(value);
+      if (path === 'protocolVersion') return value === 2;
       return object(value);
     }) && collectionPaths[kind].every(path => {
       const value = getPath(snapshot, path);
@@ -187,7 +190,8 @@
       }, 2500);
       try {
         tx = database.transaction(store, writing ? 'readwrite' : 'readonly');
-        const request = writing ? tx.objectStore(store).put(value, key) : tx.objectStore(store).get(key);
+        const records = tx.objectStore(store);
+        const request = !writing ? records.get(key) : value === undefined ? records.delete(key) : records.put(value, key);
         request.onsuccess = () => { result = request.result; };
         request.onerror = () => finish(request.error || new Error('本地存储读写失败'));
         tx.oncomplete = () => finish();
@@ -229,6 +233,17 @@
     });
   }
 
+  function removeRoom(key) {
+    const capturedGeneration = generation, barrier = resetBarrier;
+    return serialize('rooms', key, async () => {
+      await barrier;
+      if (capturedGeneration !== generation) return;
+      memory.delete('rooms:' + key);
+      if (!database) return;
+      try { await transact('rooms', key, undefined, true); } catch (error) { unavailable(error); }
+    });
+  }
+
   function write(store, key, record, validate) {
     const capturedGeneration = generation, barrier = resetBarrier;
     let captured;
@@ -255,12 +270,12 @@
   const snapshotRecord = value => ({ schema: 1, savedAt: Date.now(), snapshot: value?.snapshot, cursor: value?.cursor ?? null });
   const sessionValid = record => object(record) && record.schema === 1 && Number.isFinite(record.savedAt) && object(record.value);
   window.SummonCache = Object.freeze({
-    ready, applySync, resetHistory,
+    ready, applySync, resetHistory, removeRoom,
     get status() { return { ...storageStatus }; },
-    readWorkspace: () => read('workspace', 'current', record => recordValid(record, 'workspace')),
-    writeWorkspace: value => write('workspace', 'current', snapshotRecord(value), record => recordValid(record, 'workspace')),
-    readRoom: roomId => validId(roomId) ? read('rooms', roomId, record => recordValid(record, `room:${roomId}`)) : Promise.resolve(null),
-    writeRoom: (roomId, value) => validId(roomId) ? write('rooms', roomId, snapshotRecord(value), record => recordValid(record, `room:${roomId}`)) : Promise.resolve(false),
+    readWorkspace: () => read('workspace', 'current', record => recordValid(record, workspaceScope)),
+    writeWorkspace: value => write('workspace', 'current', snapshotRecord(value), record => recordValid(record, workspaceScope)),
+    readRoom: roomId => validId(roomId) ? read('rooms', roomId, record => recordValid(record, roomScope(roomId))) : Promise.resolve(null),
+    writeRoom: (roomId, value) => validId(roomId) ? write('rooms', roomId, snapshotRecord(value), record => recordValid(record, roomScope(roomId))) : Promise.resolve(false),
     readSession: async () => (await read('session', 'current', sessionValid))?.value || null,
     writeSession: value => write('session', 'current', { schema: 1, savedAt: Date.now(), value }, sessionValid),
   });

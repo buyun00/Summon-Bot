@@ -7,6 +7,8 @@ import { acquireServiceLock } from './service-lock.mjs';
 import { installProcessLog } from '@summon/bot/process-log';
 import { readRemoteAccess, remoteOrigins } from './remote-config.mjs';
 import { serviceFolders, serviceRoot as rootForService, serviceRunPath } from './system.mjs';
+import { assertInstallationWritable, dataFormat, readInstallationState } from './installation-state.mjs';
+import { installationStatus } from './drain.mjs';
 
 const bootId = randomUUID();
 const notify = value => { if (process.connected) process.send(value, () => {}); };
@@ -23,11 +25,14 @@ async function shutdown() {
 try {
   const { options } = parseArgs(process.argv.slice(2));
   const config = await readJson(resolve(options.config));
+  await assertInstallationWritable(config.dataRoot, config.releaseRoot);
+  if (config.dataFormat !== dataFormat) throw new Error('The selected deployment uses another data format');
   const type = options.type;
   if (!Object.hasOwn(serviceFolders, type)) throw new Error('Unknown managed service type');
   const serviceRoot = rootForService(config.dataRoot, type);
   runPath = serviceRunPath(config.dataRoot, type);
   ownership = await acquireServiceLock(config.dataRoot, type, () => record || { pid: process.pid, bootId, state: 'starting', releaseRoot: config.releaseRoot });
+  await assertInstallationWritable(config.dataRoot, config.releaseRoot);
   processLog = installProcessLog(join(serviceRoot, 'logs'), { ...config.logs, ...config[type]?.logs });
   // Node's fatal stderr path can bypass the redirected stream on Windows.
   // Observe without swallowing the exception or leaving a broken service alive.
@@ -38,6 +43,10 @@ try {
   control = createServer(async (req, res) => {
     if (!authorized(req.headers.authorization)) return json(res, 401, { error: 'Unauthorized' });
     if (req.method === 'GET' && req.url === '/health') return json(res, 200, { ...record, state: closing ? 'stopping' : 'ready' });
+    if (type === 'gateway' && req.url === '/installation' && ['GET', 'POST'].includes(req.method)) {
+      try { return json(res, 200, await installationStatus(app, await readInstallationState(config.dataRoot), record, req.method)); }
+      catch (error) { return json(res, 409, { code: error.code || 'installation_drain_error', error: error.message }); }
+    }
     if (req.method === 'POST' && req.url === '/shutdown') {
       json(res, 202, { accepted: true, bootId });
       setImmediate(() => shutdown().catch(error => { console.error(error.message); process.exitCode = 1; }));
@@ -50,7 +59,7 @@ try {
   if (type === 'gateway') {
     const { startGateway } = await import(pathToFileURL(join(config.releaseRoot, 'capabilities/gateway/index.mjs')));
     app = await startGateway({ dataRoot: config.dataRoot, releaseRoot: config.releaseRoot, defaultCwd: config.defaultCwd,
-      ...config.gateway, token: config.gatewayToken, model: config.model,
+      ...config.gateway, token: config.gatewayToken, model: config.model, limits: config.limits,
       onListening: async ({port}) => {
         if (!config.gateway.port) {
           const latest = await readJson(resolve(options.config));
@@ -65,7 +74,7 @@ try {
   } else if (type === 'web') {
     const { startWeb } = await import(pathToFileURL(join(config.releaseRoot, 'web/backend/server.mjs')));
     const gateway = await readJson(join(config.dataRoot, 'capabilities/gateway/run/current.json'));
-    const webOptions = { ...config.web, getRemoteOrigins: () => remoteOrigins(config.dataRoot),
+    const webOptions = { ...config.web, dataRoot: config.dataRoot, getRemoteOrigins: () => remoteOrigins(config.dataRoot),
       clientReleaseRoot: join(config.dataRoot, 'client-releases'),
       webRelease: await readJson(join(config.releaseRoot, 'release.json')),
       frontendRoot: join(config.releaseRoot, 'web/frontend'), gatewayUrl: gateway.url, gatewayToken: config.gatewayToken };

@@ -1,15 +1,17 @@
 import { mkdir, readFile, copyFile, writeFile, rename, unlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { resolve, join, dirname, relative, isAbsolute } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { copyTree, walk, readJson, writeJson, digest, within, parseArgs } from './files.mjs';
+import { copyTree, readJson, writeJson, within, parseArgs } from './files.mjs';
+import { removeInside } from '../release/repository.mjs';
+import { dataFormat } from '../installation/installation-state.mjs';
 
 export const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const directories = ['bot', 'web', 'capabilities', 'roles', 'skills', 'scripts/build', 'scripts/installation', 'scripts/maintenance', 'scripts/release'];
-const rootFiles = ['package.json', 'package-lock.json', 'release.json', 'README.md', 'AGENTS.md', 'Start.ps1', 'Start-Hidden.vbs', 'Stop.ps1', 'Run.cmd'];
-const docsFiles = ['REFACTOR_PLAN.md', 'ARCHITECTURE.md', 'CHAT_WORK_ISOLATION.md', 'DEPLOYMENT.md', 'OPERATIONS.md', 'VERIFICATION.md', 'CAPABILITY_SERVICES.md', 'CAPABILITY_CATALOG.md', 'DEVELOPMENT.md', 'CLIENT_RELEASES.md', 'BOT_3_PLUS_3_DESIGN.md', 'BOT_3_PLUS_3_IMPLEMENTATION.md', 'BOT_3_PLUS_3_ACCEPTANCE.md', 'EGGBOT.md', 'DESKTOP_INSTALL_ONBOARDING_SPEC.md'];
+const rootFiles = ['package.json', 'package-lock.json', 'release.json', 'README.md', 'README.zh-CN.md', 'AGENTS.md', 'Start.ps1', 'Start-Hidden.vbs', 'Stop.ps1', 'Run.cmd'];
+const docsFiles = ['ARCHITECTURE.md', 'DEPLOYMENT.md', 'OPERATIONS.md', 'DEVELOPMENT.md', 'CLIENT_RELEASES.md', 'MODEL_CONNECTIONS.md', 'IOS_TESTFLIGHT.md', 'MACOS_SIGNING.md'];
 const include = name => !name.split('/').some(part => ['node_modules', '.git', '.relay', 'test', 'tests', 'coverage', 'dist'].includes(part)
   || /^\.env(?:\.|$)/.test(part) || /(?:\.sqlite(?:-\w+)?|\.log|\.tmp)$/.test(part));
 
@@ -34,76 +36,79 @@ async function materializeWorkspace(root, folder) {
   return { name: pkg.name, version: pkg.version, source: folder, entries: Object.keys(exports) };
 }
 
-export async function buildRelease({ sourceRoot = projectRoot, releaseRoot, bundleNode = true, integrity = false, committedOnly = false } = {}) {
+export async function buildRelease({ sourceRoot = projectRoot, releaseRoot, bundleNode = true, committedOnly = false, commit } = {}) {
   // These Windows builds contain libuv's uninitialized OSVERSIONINFOW stack
   // overwrite in TCP keepalive (nodejs/node#62561). Never ship them again.
   if (process.platform === 'win32' && ['24.15.0','25.8.0'].includes(process.versions.node)) throw new Error('This Node build has a Windows TCP keepalive native crash. Build with the fixed Node 24.21.0 LTS runtime.');
   sourceRoot = resolve(sourceRoot);
-  const git = spawnSync('git', ['-C', sourceRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8', windowsHide: true });
+  const git = spawnSync('git', ['-C', sourceRoot, 'rev-parse', commit || 'HEAD'], { encoding: 'utf8', windowsHide: true });
+  const sourceCommit = git.status === 0 ? git.stdout.trim() : null;
+  if (committedOnly && !sourceCommit) throw new Error('Cannot determine release commit');
   const buildId = `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`;
   releaseRoot = resolve(releaseRoot || join(sourceRoot, 'dist', 'releases', buildId));
   if (releaseRoot === sourceRoot || within(releaseRoot, sourceRoot)) throw new Error('Release must not contain or replace sourceRoot');
   if (existsSync(releaseRoot)) throw new Error('Release directory already exists; builds never overwrite another release');
   const stage = `${releaseRoot}.building-${process.pid}`;
   await mkdir(dirname(stage), { recursive: true }); await mkdir(stage);
-  await writeJson(join(stage, 'build-owner.json'), { sourceRoot, releaseRoot, buildId, pid: process.pid });
+  try {
+    await exportSource({ sourceRoot, stage, committedOnly, sourceCommit });
+    const pkg = await readJson(join(stage, 'package.json')), lock = await readJson(join(stage, 'package-lock.json'));
+    const release = await readJson(join(stage, 'release.json'));
+    const { protocolVersion } = await import(pathToFileURL(join(stage, 'capabilities/platform/contract.mjs')));
+    const dependencies = [];
+    for (const [path, info] of Object.entries(lock.packages)) {
+      if (!path.includes('node_modules/') || info.dev || info.link) continue;
+      const installed = join(sourceRoot, path);
+      if (!existsSync(installed)) { if (info.optional) continue; throw new Error(`Production dependency missing: ${path}`); }
+      const actual = await readJson(join(installed, 'package.json'));
+      if (info.version && actual.version !== info.version) throw new Error(`Lockfile version mismatch: ${path}`);
+      await copyTree(installed, join(stage, path), name => !name.split('/').includes('node_modules'));
+      dependencies.push({ path, version: actual.version });
+    }
+    const workspaces = [];
+    for (const folder of pkg.workspaces) {
+      if (folder.includes('*')) throw new Error('Release builder requires explicit workspace directories');
+      workspaces.push(await materializeWorkspace(stage, folder));
+    }
+    if (bundleNode) {
+      await mkdir(join(stage, 'runtime'), { recursive: true });
+      await copyFile(process.execPath, join(stage, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node'));
+    }
+    const gitStatus = spawnSync('git', ['-C', sourceRoot, 'status', '--porcelain'], { encoding: 'utf8', windowsHide: true });
+    const manifest = { format: 3, dataFormat, protocolVersion, application: pkg.name, version: release.version, buildNumber: release.buildNumber,
+      buildId, builtAt: new Date().toISOString(), sourceCommit, sourceMode: committedOnly ? 'git-archive' : 'workspace',
+      sourceDirty: committedOnly ? false : gitStatus.status === 0 ? Boolean(gitStatus.stdout.trim()) : null,
+      runtime: { node: process.version, platform: process.platform, arch: process.arch, bundled: bundleNode },
+      workspaces, dependencies };
+    await writeJson(join(stage, 'release-manifest.json'), manifest);
+    await rename(stage, releaseRoot);
+    return { releaseRoot, buildId, buildNumber: manifest.buildNumber, sourceCommit };
+  } finally { await removeInside(dirname(stage), stage); }
+}
+
+async function exportSource({ sourceRoot, stage, committedOnly, sourceCommit }) {
   if (committedOnly) {
     const archive = join(stage, 'source.tar');
-    if (git.status !== 0) throw new Error('Cannot determine release commit');
-    const docListing = spawnSync('git', ['-C', sourceRoot, 'ls-tree', '--name-only', `${git.stdout.trim()}:docs`], { encoding: 'utf8', windowsHide: true });
-    if (docListing.status !== 0) throw new Error('Cannot list committed release documents');
-    const committedDocs = new Set(docListing.stdout.trim().split(/\r?\n/));
-    const exported = spawnSync('git', ['-C', sourceRoot, 'archive', '--format=tar', `--output=${archive}`, git.stdout.trim(), ...directories, ...rootFiles, ...docsFiles.filter(name => committedDocs.has(name)).map(name => `docs/${name}`)], { encoding: 'utf8', windowsHide: true });
+    const paths = [...directories, ...rootFiles, ...docsFiles.map(name => `docs/${name}`)];
+    const listing = spawnSync('git', ['-C', sourceRoot, 'ls-tree', '--name-only', sourceCommit, '--', ...paths], { encoding: 'utf8', windowsHide: true });
+    if (listing.status !== 0) throw new Error('Cannot list committed release files');
+    const selected = listing.stdout.trim().split(/\r?\n/).filter(Boolean);
+    const exported = spawnSync('git', ['-C', sourceRoot, 'archive', '--format=tar', `--output=${archive}`, sourceCommit, ...selected], { encoding: 'utf8', windowsHide: true });
     if (exported.status !== 0) throw new Error(`Cannot export committed release source: ${exported.stderr}`);
     const extracted = spawnSync('tar', ['-xf', archive, '-C', stage,
       ...['*/test', '*/tests', '*/node_modules', '*/coverage', '*/dist', '*/.relay', '*/.env*', '*.sqlite*', '*.log', '*.tmp'].map(pattern => `--exclude=${pattern}`)], { encoding: 'utf8', windowsHide: true });
     if (extracted.status !== 0) throw new Error(`Cannot extract release source: ${extracted.stderr}`);
     await unlink(archive);
   } else {
-    for (const folder of directories) await copyTree(join(sourceRoot, folder), join(stage, folder), include);
+    for (const folder of directories) if (existsSync(join(sourceRoot, folder))) await copyTree(join(sourceRoot, folder), join(stage, folder), include);
     for (const name of rootFiles) await copyFile(join(sourceRoot, name), join(stage, name));
     await mkdir(join(stage, 'docs'), { recursive: true });
     for (const name of docsFiles) if (existsSync(join(sourceRoot, 'docs', name))) await copyFile(join(sourceRoot, 'docs', name), join(stage, 'docs', name));
   }
-  const pkg = await readJson(join(stage, 'package.json')), lock = await readJson(join(stage, 'package-lock.json'));
-  const dependencies = [];
-  for (const [path, info] of Object.entries(lock.packages)) {
-    if (!path.includes('node_modules/') || info.dev || info.link) continue;
-    const installed = join(sourceRoot, path);
-    if (!existsSync(installed)) { if (info.optional) continue; throw new Error(`Production dependency missing: ${path}`); }
-    const actual = await readJson(join(installed, 'package.json'));
-    if (info.version && actual.version !== info.version) throw new Error(`Lockfile version mismatch: ${path}`);
-    await copyTree(installed, join(stage, path), name => !name.split('/').includes('node_modules'));
-    dependencies.push({ path, version: actual.version });
-  }
-  const workspaces = [];
-  for (const folder of pkg.workspaces) {
-    if (folder.includes('*')) throw new Error('Release builder requires explicit workspace directories');
-    workspaces.push(await materializeWorkspace(stage, folder));
-  }
-  if (bundleNode) { await mkdir(join(stage, 'runtime'), { recursive: true }); await copyFile(process.execPath, join(stage, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node')); }
-  await unlink(join(stage, 'build-owner.json'));
-  const files = {};
-  const releaseFiles = await walk(stage);
-  for (let index = 0; index < releaseFiles.length; index += 64) {
-    const records = await Promise.all(releaseFiles.slice(index, index + 64).map(async file => [file.name, integrity ? { size: file.size, sha256: digest(await readFile(file.path)) } : { size: file.size }]));
-    for (const [name, record] of records) files[name] = record;
-  }
-  const gitStatus = spawnSync('git', ['-C', sourceRoot, 'status', '--porcelain'], { encoding: 'utf8', windowsHide: true });
-  const manifest = { format: 2, profile: integrity ? 'release' : 'development', application: pkg.name, version: pkg.version, buildId, builtAt: new Date().toISOString(),
-    sourceCommit: git.status === 0 ? git.stdout.trim() : null, sourceMode: committedOnly ? 'git-archive' : 'workspace',
-    sourceDirty: committedOnly ? false : gitStatus.status === 0 ? Boolean(gitStatus.stdout.trim()) : null,
-    workspaceDirty: gitStatus.status === 0 ? Boolean(gitStatus.stdout.trim()) : null,
-    contentHash: integrity ? digest(JSON.stringify(files)) : null,
-    runtime: { node: process.version, platform: process.platform, arch: process.arch, bundled: bundleNode },
-    schemas: { layout: 2, bot: 1, capabilities: 1 }, workspaces, dependencies, files };
-  await writeJson(join(stage, 'release-manifest.json'), manifest);
-  await rename(stage, releaseRoot);
-  return { releaseRoot, buildId, sourceCommit: manifest.sourceCommit, profile: manifest.profile, files: Object.keys(files).length, contentHash: manifest.contentHash };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const { options } = parseArgs(process.argv.slice(2));
-  buildRelease({ sourceRoot: options['source-root'], releaseRoot: options['release-root'], bundleNode: !options['no-node'], integrity: options['with-integrity'] === true || options['with-integrity'] === 'true' })
+  buildRelease({ sourceRoot: options['source-root'], releaseRoot: options['release-root'], bundleNode: !options['no-node'], committedOnly: Boolean(options['committed-only']) })
     .then(result => console.log(JSON.stringify(result, null, 2))).catch(error => { console.error(error.message); process.exitCode = 1; });
 }

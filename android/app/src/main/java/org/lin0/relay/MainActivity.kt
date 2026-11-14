@@ -97,11 +97,6 @@ private fun SummonApp(model: SummonViewModel = viewModel()) {
                     return@Surface
                 }
                 val nav = rememberNavController()
-                var onboardingShown by remember(store.settings.baseURL) { mutableStateOf(false) }
-                LaunchedEffect(store.settings.baseURL, store.onboardingRequired) {
-                    if (store.onboardingRequired && !onboardingShown) { onboardingShown = true; nav.navigate("onboarding") }
-                    else if (!store.onboardingRequired) onboardingShown = false
-                }
                 NavHost(nav, startDestination = "list",
                     enterTransition = { slideInHorizontally(tween(380)) { it } },
                     exitTransition = { slideOutHorizontally(tween(380)) { -it / 4 } },
@@ -113,7 +108,6 @@ private fun SummonApp(model: SummonViewModel = viewModel()) {
                             updater = model.updater,
                             onOpenUsage = { nav.navigate("usage") },
                             onOpenModels = { nav.navigate("models") },
-                            onOpenOnboarding = { nav.navigate("onboarding") },
                             onOpenRoom = { id -> nav.navigate("chat/${URLEncoder.encode(id, "UTF-8")}") },
                             onOpenWorkspace = { section -> nav.navigate("workspace/${section.name}") },
                         )
@@ -124,14 +118,9 @@ private fun SummonApp(model: SummonViewModel = viewModel()) {
                     }
                     composable("usage") { TokenUsageScreen(store) { nav.popBackStack() } }
                     composable("models") { ModelSettingsScreen(store) { nav.popBackStack() } }
-                    composable("onboarding") {
-                        OnboardingScreen(store, onBack = { nav.popBackStack() }, onRoom = { id ->
-                            nav.navigate("chat/${URLEncoder.encode(id, "UTF-8")}") { popUpTo("list") }
-                        })
-                    }
                     composable("workspace/{section}") { entry ->
                         val section = runCatching { WorkspaceSection.valueOf(entry.arguments?.getString("section").orEmpty()) }.getOrDefault(WorkspaceSection.Bots)
-                        WorkspaceScreen(store, section) { nav.popBackStack() }
+                        WorkspaceScreen(store, section, onBack = { nav.popBackStack() })
                     }
                 }
             }

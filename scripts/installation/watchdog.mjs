@@ -4,6 +4,7 @@ import { installProcessLog } from '@summon/bot/process-log';
 import { readJson, writeJson } from '../build/files.mjs';
 import { acquireServiceLock } from './service-lock.mjs';
 import { deploymentPath, inspectService, launchService, stopSystem } from './system.mjs';
+import { assertInstallationWritable, dataFormat } from './installation-state.mjs';
 
 const message = error => String(error.message || error).slice(0, 1000)
   .replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [redacted]')
@@ -11,6 +12,8 @@ const message = error => String(error.message || error).slice(0, 1000)
 
 // OS ownership prevents concurrent manual/StartupHub supervisors.
 export async function watchSystem(config, { respectIntent = false } = {}) {
+  await assertInstallationWritable(config.dataRoot, config.releaseRoot);
+  if (config.dataFormat !== dataFormat) throw new Error('Use the selected release launcher for the existing deployment');
   const bootId = randomUUID();
   const ownership = await acquireServiceLock(config.dataRoot, 'watchdog', () => ({
     pid: process.pid, bootId, state: 'ready', releaseRoot: config.releaseRoot,
@@ -26,6 +29,7 @@ export async function watchSystem(config, { respectIntent = false } = {}) {
     if (stopping) done();
   });
   try {
+    await assertInstallationWritable(config.dataRoot, config.releaseRoot);
     log = installProcessLog(join(config.dataRoot, 'web', 'watchdog'), config.logs, { tee: false });
     process.on('SIGINT', signal); process.on('SIGTERM', signal);
     config = await readJson(deploymentPath(config.dataRoot));
@@ -38,6 +42,7 @@ export async function watchSystem(config, { respectIntent = false } = {}) {
     while (!stopping) {
       try {
         config = await readJson(deploymentPath(config.dataRoot));
+        await assertInstallationWritable(config.dataRoot, releaseRoot);
         if (config.runIntent === 'stopped') {
           // Let Stop.ps1 finish shutting down its children before the task host exits.
           const states = await Promise.all(['gateway', 'web'].map(type => inspectService(config, type)));
@@ -78,16 +83,22 @@ export async function watchSystem(config, { respectIntent = false } = {}) {
               report('watchdog.recovered', { service: type, pid: started.pid });
               // Stop may have been requested while this child was becoming ready.
               const after = await readJson(deploymentPath(config.dataRoot));
+              await assertInstallationWritable(config.dataRoot, releaseRoot);
               if (after.runIntent === 'stopped') { await stopSystem(after); return; }
             } finally { retry.next = Date.now() + delayMs; }
           } catch (error) {
+            if (error.code === 'updating') return;
             report('watchdog.error', { service: type, code: error.code || error.name, causeCode: error.cause?.code, message: message(error) });
           }
         }
-      } catch (error) { report('watchdog.error', { code: error.code || error.name, message: message(error) }); }
+      } catch (error) {
+        if (error.code === 'updating') return;
+        report('watchdog.error', { code: error.code || error.name, message: message(error) });
+      }
       await pause();
     }
-    await stopSystem(config);
+    try { await stopSystem(config); }
+    catch (error) { if (error.code !== 'updating') throw error; }
     report('watchdog.stopped', { reason: 'signal' });
   } finally {
     process.removeListener('SIGINT', signal); process.removeListener('SIGTERM', signal);

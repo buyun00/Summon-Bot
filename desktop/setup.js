@@ -12,6 +12,10 @@ const startupBand = startup.querySelector('.startup-band');
 const startupLabel = document.querySelector('#startup-label');
 const startupDetail = document.querySelector('#startup-detail');
 let workspace, candidate, localAvailable, busy = false;
+const releaseControls = document.createElement('section');
+releaseControls.id = 'release-controls';
+releaseControls.setAttribute('aria-label', '客户端更新');
+status.after(releaseControls);
 
 function say(text) {
   const row = document.createElement('div');
@@ -40,6 +44,24 @@ function buttons(...items) {
   row.className = 'buttons';
   row.append(...items);
   controls.append(row);
+}
+
+function renderUpdates(value) {
+  const installable = ['downloaded', 'manual'].includes(value?.status);
+  const updateButton = button(value?.status === 'downloaded' ? '重启并更新' : installable ? '下载更新' : '检查更新', async () => {
+    if (installable) await setup.installUpdate();
+    else renderUpdates(await setup.checkForUpdates());
+  });
+  updateButton.disabled = ['checking', 'downloading'].includes(value?.status);
+  const detail = document.createElement('small');
+  detail.setAttribute('role', 'status');
+  const labels = {
+    checking: '正在检查更新…', downloading: '正在下载更新 ' + (value?.percent || 0) + '%',
+    downloaded: '更新已下载', manual: '发现新版本', current: '当前已是最新版本',
+    unpublished: '暂未发布新版', error: '暂时无法检查更新',
+  };
+  detail.textContent = labels[value?.status] || '';
+  releaseControls.replaceChildren(updateButton, detail);
 }
 
 function field(label, name, { type = 'text', placeholder = '', value = '', required = false } = {}) {
@@ -211,7 +233,7 @@ function accessLinks(provider, result) {
 }
 
 function accessNavigation() {
-  buttons(button('返回主 Bot 对话', () => setup.action('continue')), button('返回实例选择', showInstances));
+  buttons(button('返回工作区', () => setup.action('continue')), button('返回实例选择', showInstances));
 }
 
 async function showAccess(provider) {
@@ -250,7 +272,7 @@ function confirmAccess(provider, plan) {
     accessLinks(provider, result);
     if (['registered', 'reachable'].includes(result.state)) {
       controls.replaceChildren();
-      buttons(button('回到主 Bot 的引导', () => setup.action('continue'), true), button('查看接入设置', () => showAccess(provider)));
+      buttons(button('回到工作区', () => setup.action('continue'), true), button('查看接入设置', () => showAccess(provider)));
     }
   });
   buttons(button('返回', () => showAccess(provider)));
@@ -265,6 +287,7 @@ async function open() {
     else if (info.section === 'remote') showRemote();
     else if (['cloudflare', 'tailscale'].includes(info.section)) await perform(() => showAccess(info.section));
     else showInstances();
+    renderUpdates(info.update);
     if (info.error) status.textContent = info.error;
   } catch (error) {
     showInstances();
@@ -281,5 +304,6 @@ setup.onProgress(stage => {
   startupLabel.textContent = '工作区已就绪';
   startupDetail.textContent = '正在打开工作区…';
 });
+setup.onUpdate(renderUpdates);
 setup.onSetup(() => void open());
 void open();

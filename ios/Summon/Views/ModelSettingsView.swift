@@ -37,10 +37,8 @@ private struct ModelGaugeData {
     var loading = false
     var showsBrand = true
     init(_ item: SummonJSONValue) {
-        let executor = item["role"].stringValue == "executor"
         let usage = item["usage"]
-        if executor && item["enabled"].bool != true { value = item["label"].string ?? "待接入"; showsBrand = false; return }
-        if !executor && (item["configured"].bool == false || item["id"].string == nil || usage["status"].string == "unconfigured") { value = "待配置"; showsBrand = false; return }
+        if item["configured"].bool == false || item["id"].string == nil || usage["status"].string == "unconfigured" { value = "待配置"; showsBrand = false; return }
         if usage.object == nil || usage["status"].string == "loading" { value = "读取中"; loading = true; return }
         let windows = (usage["windows"].array ?? []).filter { $0["remainingPercent"].modelNumber != nil }
         let primary = windows
@@ -51,7 +49,6 @@ private struct ModelGaugeData {
         if let main, let remaining = main["remainingPercent"].modelNumber { ring = min(100, max(0, remaining)) }
         if let short, let remaining = short["remainingPercent"].modelNumber { dots = Int(ceil(min(100, max(0, remaining)) / 25)); value = "" }
         else if let ring { value = "\(Int(ring.rounded()))%" }
-        else if executor { value = "已接入" }
     }
 }
 struct ModelQuotaSignal: View {
@@ -95,7 +92,7 @@ private struct ModelUsageDetails: View {
             if usage["credits"].modelNumber != nil { Text("附加点数 \(usage["credits"].stringValue) credits").summonFont(.caption).foregroundStyle(.secondary) }
             if usage["unlimited"].bool == true { Text("额外额度不设限").foregroundStyle(modelTint) }
             if usage["status"].stringValue == "not_connected" { Text(usage["note"].stringValue).summonFont(.caption).foregroundStyle(.secondary) }
-            else if usage["status"].stringValue == "unconfigured" { Text("选择聊天模型后读取额度").summonFont(.caption).foregroundStyle(.secondary) }
+            else if usage["status"].stringValue == "unconfigured" { Text("选择默认模型后读取额度").summonFont(.caption).foregroundStyle(.secondary) }
             else if usage["status"].stringValue == "loading" { Text("正在读取额度…").summonFont(.caption).foregroundStyle(.secondary) }
             else if ["shared", "unsupported"].contains(usage["status"].stringValue) { Text(usage["note"].stringValue).summonFont(.caption).foregroundStyle(.secondary) }
             else if usage["status"].stringValue == "error" { Text(usage["stale"].bool == true ? "上次读取 · 当前暂未更新" : usage["error"].stringValue).summonFont(.caption).foregroundStyle(.orange) }
@@ -104,60 +101,13 @@ private struct ModelUsageDetails: View {
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }
-struct SummonNativeSourceView: View {
-    @Environment(SummonStore.self) private var store
-    let source: SummonJSONValue
-    @State private var busy = false
-    @State private var error: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let account = source["accountRef"].string { Text(account).summonFont(.caption).foregroundStyle(.secondary) }
-            if source["status"].string == "login-required" { Text("等待登录").foregroundStyle(.orange) }
-            ModelUsageDetails(item: source)
-            ForEach(Array((source["metrics"].array ?? []).enumerated()), id: \.offset) { _, metric in
-                if metric["kind"].string == "progress", metric["unit"].string == "%", let amount = metric["value"].modelNumber {
-                    ProgressView(value: min(100, max(0, amount)), total: 100) { Text(metric["label"].stringValue) }
-                } else if metric["kind"].string == "table" {
-                    VStack(alignment: .leading) {
-                        Text(metric["label"].stringValue).summonFont(.headline)
-                        Text((metric["columns"].array ?? []).map { $0.stringValue }.joined(separator: " · ")).summonFont(.caption, weight: .bold)
-                        ForEach(Array((metric["rows"].array ?? []).enumerated()), id: \.offset) { _, row in
-                            Text((row.array ?? []).map { $0.stringValue }.joined(separator: " · ")).textSelection(.enabled)
-                        }
-                    }
-                } else if let text = metric["text"].string {
-                    LabeledContent(metric["label"].stringValue, value: text)
-                } else if metric["kind"].string == "number" && metric["unit"].string != "credits" {
-                    let value = metric["value"].modelNumber.map { $0.formatted() + " " + metric["unit"].stringValue } ?? "未知"
-                    LabeledContent(metric["label"].stringValue, value: value)
-                }
-            }
-            if let error { Text(error).foregroundStyle(.orange) }
-            ForEach(Array((source["actions"].array ?? []).enumerated()), id: \.offset) { _, action in
-                Button(action["label"].stringValue) { Task { await perform(action) } }.buttonStyle(.bordered).disabled(busy)
-            }
-        }
-    }
-
-    private func perform(_ action: SummonJSONValue) async {
-        busy = true; error = nil; defer { busy = false }
-        let resource = SummonAPIClient.component(source["resourceId"].stringValue)
-        let id = SummonAPIClient.component(source["sourceId"].stringValue)
-        do {
-            _ = try await store.request(path: "/api/model-settings/usage/\(resource)/\(id)/actions", method: "POST", body: .object(["id": action["id"]]))
-            try await store.refreshModelUsage()
-        } catch { self.error = error.localizedDescription }
-    }
-}
 struct ModelQuotaDetailsView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(SummonStore.self) private var store
     let item: SummonJSONValue
     var body: some View {
         NavigationStack {
-            let current = item["role"].stringValue == "executor" ? store.modelSummary["workExecutor"] : item
-            VStack(alignment: .leading, spacing: 22) { ModelUsageDetails(item: current); Divider(); NavigationLink("管理模型与引擎") { ModelSettingsView() }; Spacer(minLength: 0) }.padding(24)
+            VStack(alignment: .leading, spacing: 22) { ModelUsageDetails(item: item); Divider(); NavigationLink("管理模型与用量") { ModelSettingsView() }; Spacer(minLength: 0) }.padding(24)
                 .background(SummonTheme.background).navigationTitle("额度").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
         }.presentationDetents([.medium, .large]).presentationDragIndicator(.visible).presentationCornerRadius(28)
@@ -179,30 +129,7 @@ struct ModelQuotaDetailsView: View {
             Form {
                 if let error { Section { Text(error).foregroundStyle(.orange) } }
                 Section("当前额度") { ModelUsageDetails(item: store.modelSummary["chat"]) }
-                Section("工作引擎") {
-                    ForEach(Array((store.modelSummary["executors"].array ?? []).enumerated()), id: \.offset) { _, engine in
-                        let current = engine["id"] == store.modelSummary["workExecutor"]["id"]
-                        HStack {
-                            VStack(alignment: .leading) {
-                                Text(engine["name"].stringValue)
-                                Text(engine["label"].stringValue).summonFont(.caption).foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            if current { Text("当前默认").foregroundStyle(modelTint) }
-                            else {
-                                Button("设为默认") { run {
-                                    data = try await store.request(path: "/api/model-settings/executors/active", method: "POST", body: .object(["id": engine["id"]]))
-                                    try await store.refreshModelUsage()
-                                } }.disabled(busy || engine["status"].stringValue == "unavailable")
-                            }
-                        }
-                    }
-                    if store.modelSummary["workExecutor"].object != nil { ModelUsageDetails(item: store.modelSummary["workExecutor"]) }
-                }
-                ForEach(Array((store.modelSummary["sources"].array ?? []).enumerated()), id: \.offset) { _, source in
-                    Section(source["label"].stringValue) { SummonNativeSourceView(source: source) }
-                }
-                Section("聊天模型连接") {
+                Section("默认模型连接") {
                     ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in Button { draft = entry; login = .null } label: { HStack(spacing: 12) { ModelBrandImage(item: entry); VStack(alignment: .leading) { Text(entry["name"].stringValue); Text(entry["model"].stringValue).summonFont(.caption).foregroundStyle(.secondary) }; Spacer(); if entry["active"].bool == true { Text("当前").foregroundStyle(modelTint) } } } }
                     Menu("添加连接") { ForEach(["codex", "grok", "api"], id: \.self) { kind in Button(kind == "codex" ? "Codex 订阅" : kind == "grok" ? "Grok 订阅" : "通用 API") { draft = .object(["kind": .string(kind), "name": .string(kind == "codex" ? "Codex 订阅" : kind == "grok" ? "Grok 订阅" : "通用 API"), "model": .string(kind == "codex" ? "gpt-6-luna" : kind == "grok" ? "grok-4.7" : "")]); login = .null } } }
                 }
@@ -218,10 +145,10 @@ struct ModelQuotaDetailsView: View {
                 }
                 if ["starting", "waiting"].contains(login["status"].stringValue) { Section("订阅授权") { Text(login["userCode"].stringValue).summonFont(.title2).textSelection(.enabled); if let url = URL(string: login["verificationUri"].stringValue), ["https", "http"].contains(url.scheme ?? "") { Link("打开授权页面", destination: url) }; Button("取消授权") { run { login = try await store.request(path: "/api/model-settings/connections/\(component(login["id"]))/login", method: "DELETE") } } } }
                 if !login["error"].stringValue.isEmpty { Text(login["error"].stringValue).foregroundStyle(.orange) }
-                Section { Text("当前工作区的 Pi 使用这里选择的聊天模型。").summonFont(.caption).foregroundStyle(.secondary) }
-            }.navigationTitle("模型与引擎").navigationBarTitleDisplayMode(.inline)
+                Section { Text("当前工作区的 Pi 使用这里选择的默认模型。").summonFont(.caption).foregroundStyle(.secondary) }
+            }.navigationTitle("模型与用量").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } }; ToolbarItem(placement: .topBarTrailing) { Button("刷新") { run { try await store.refreshModelUsage(force: true); try await reload() } }.disabled(busy) } }
-                .task { do { try await reload() } catch { if !Task.isCancelled { self.error = error.localizedDescription } } }
+                .task(id: store.protocolReady) { guard store.protocolReady else { return }; do { try await reload() } catch { if !Task.isCancelled { self.error = error.localizedDescription } } }
                 .task(id: login["id"].stringValue + login["status"].stringValue) { await pollLogin() }
         }
     }
@@ -273,7 +200,7 @@ struct ModelQuotaDetailsView: View {
                 if selected.object == nil { Button("导入服务器上的 \(kind == "codex" ? "Codex" : "Grok") 登录", action: importCodex) }
                 if selected.object != nil && !["codex-local", "grok-local"].contains(selected["authMode"].stringValue) { Button("授权订阅", action: authorize) }
             }
-            TextField("聊天模型 ID", text: binding("model")).textInputAutocapitalization(.never).autocorrectionDisabled()
+            TextField("默认模型 ID", text: binding("model")).textInputAutocapitalization(.never).autocorrectionDisabled()
             if selected.object != nil { Button("获取模型目录") { Task { do { choices = try await discover() } catch { self.error = error.localizedDescription } } } }
             if !choices.isEmpty { Menu("选择模型") { ForEach(Array(choices.enumerated()), id: \.offset) { _, choice in Button(choice["name"].string ?? choice["id"].stringValue) { fields["model"] = choice["id"] } } } }
             Picker("思考强度", selection: binding("thinkingLevel")) { Text("关闭思考").tag("off"); Text("低").tag("low"); Text("中").tag("medium"); Text("高").tag("high"); Text("很高").tag("xhigh"); Text("最高").tag("max") }

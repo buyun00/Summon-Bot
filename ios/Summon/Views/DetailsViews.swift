@@ -3,185 +3,201 @@ import PhotosUI
 
 struct BotDetailsView: View {
     @Environment(SummonStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
     let botID: String
+    @State private var current: SummonBot?
     @State private var name = ""
-    @State private var role = ""
-    @State private var expertise = ""
-    @State private var prompt = ""
+    @State private var instructions = ""
+    @State private var modelConnection = ""
+    @State private var modelName = ""
+    @State private var thinking = ""
     @State private var avatar = SummonAvatar()
     @State private var photo: PhotosPickerItem?
+    @State private var access = SummonJSONValue.null
+    @State private var workspaces: [SummonJSONValue] = []
+    @State private var models: [SummonJSONValue] = []
+    @State private var files: [SummonJSONValue] = []
+    @State private var selectedModels: Set<String> = []
+    @State private var selectedWorkspaces: Set<String> = []
+    @State private var materialIndex = ""
     @State private var busy = false
-    @State private var saved = false
-    @State private var errorMessage: String?
-    @State private var memories: [SummonJSONValue] = []
-    @State private var editingMemory: SummonJSONValue?
-    @State private var showMemoryEditor = false
+    @State private var error: String?
 
-    private var bot: SummonBot? { store.bots.first { $0.id == botID } }
+    private var bot: SummonBot? { current ?? store.bot(id: botID) }
+    private var canEdit: Bool { store.protocolReady && current?.revision != nil && !busy }
+    private var accessPath: String { "/api/bots/\(SummonAPIClient.component(botID))/access" }
 
     var body: some View {
         Form {
-            Section {
-                HStack {
-                    Spacer()
-                    BotAvatar(shape: avatar.shape, color: avatar.color, image: avatar.image, size: 112, secondary: avatar.secondary, ink: avatar.ink, paper: avatar.paper)
-                    Spacer()
-                }
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
-                .padding(.vertical, 14)
+            HStack {
+                Spacer()
+                BotAvatar(shape: avatar.shape, color: avatar.color, image: avatar.image, size: 100,
+                          secondary: avatar.secondary, ink: avatar.ink, paper: avatar.paper)
+                Spacer()
+            }.listRowBackground(Color.clear)
+            Section("头像") {
+                DisclosureGroup("选择头像") { AvatarPicker(avatar: $avatar).padding(.vertical, 12) }
+                PhotosPicker(selection: $photo, matching: .images) { Label("使用自己的图片", systemImage: "photo") }
+                Button("保存头像") { run { if let current { self.current = try await store.setAvatar(avatar, bot: current) } } }
+                    .disabled(!canEdit)
             }
-            Section {
-                DisclosureGroup("编辑头像") {
-                    AvatarPicker(avatar: $avatar).padding(.vertical, 18)
-                    PhotosPicker(selection: $photo, matching: .images) { Label("使用自己的图片", systemImage: "photo") }
-                }
-            }
-            Section("Bot 资料") {
-                TextField("名字", text: $name)
-                TextField("主要职责", text: $role)
-                TextField("专业领域", text: $expertise)
-                TextField("身份与工作方式", text: $prompt, axis: .vertical).lineLimit(4...12)
-                Button(saved ? "已保存" : "保存资料") { Task { await save() } }
-                    .disabled(busy || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                if let bot {
-                    Button(bot.isPaused ? "恢复 Bot" : "暂停 Bot") { Task { await toggleStatus() } }.disabled(busy)
-                }
-            }
-            Section {
-                if memories.isEmpty { Text("还没有长期记忆").foregroundStyle(.secondary) }
-                ForEach(Array(memories.enumerated()), id: \.offset) { _, memory in
-                    if memory["editable"].bool == false {
-                        DisclosureGroup(memory["title"].stringValue) {
-                            if let revision = memory["revision"].int { Text("修订 \(revision)").foregroundStyle(.secondary) }
-                            Text(memory["content"].stringValue).textSelection(.enabled)
-                            Text(memory["source"].stringValue).summonFont(.caption).foregroundStyle(.secondary)
-                        }
-                    } else {
-                        Button {
-                            editingMemory = memory; showMemoryEditor = true
-                        } label: {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(memory["content"].string ?? memory["text"].string ?? "").foregroundStyle(.primary)
-                                Text(memory["status"].string == "expired" ? "已过期" : "有效").summonFont(.caption).foregroundStyle(.secondary)
-                            }.padding(.vertical, 5)
-                        }.buttonStyle(.plain)
+            Section("Bot 设置") {
+                TextField("名称", text: $name)
+                TextField("行为指令", text: $instructions, axis: .vertical).lineLimit(4...12)
+                Picker("模型连接", selection: $modelConnection) {
+                    Text("未绑定模型").tag("")
+                    ForEach(models.filter { item in
+                        let id = item["id"].stringValue
+                        return access["model_ids"].array?.contains(.string(id)) == true || id == current?.model?["connection_id"].string
+                    }, id: \.prettyPrinted) { item in
+                        Text(item["name"].string ?? item["id"].stringValue).tag(item["id"].stringValue)
                     }
                 }
-                Button("添加记忆", systemImage: "plus") { editingMemory = nil; showMemoryEditor = true }
-            } header: { Text("长期记忆") }
-            if let errorMessage { Section { InlineError(message: errorMessage) } }
-        }
-        .navigationTitle(bot?.name ?? "Bot 资料")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
-        .task {
-            if let bot {
-                name = bot.name; role = bot.role; expertise = bot.expertise; prompt = bot.prompt
-                avatar = bot.avatar ?? SummonAvatar.defaultAvatar(for: bot.id)
-            }
-            await loadMemories()
-        }
-        .onChange(of: photo) { _, item in
-            guard let item else { return }
-            Task { await loadAvatar(item) }
-        }
-        .onChange(of: avatar) { _, _ in saved = false }
-        .onChange(of: name) { _, _ in saved = false }
-        .onChange(of: role) { _, _ in saved = false }
-        .onChange(of: expertise) { _, _ in saved = false }
-        .onChange(of: prompt) { _, _ in saved = false }
-        .summonSheet(isPresented: $showMemoryEditor, onDismiss: { Task { await loadMemories() } }) {
-            MemoryEditor(botID: botID, memory: editingMemory)
-        }
-    }
-
-    private func save() async {
-        busy = true; errorMessage = nil
-        defer { busy = false }
-        do {
-            _ = try await store.updateBot(id: botID, name: name, role: role, expertise: expertise, prompt: prompt, avatar: avatar)
-            saved = true
-        } catch { errorMessage = error.localizedDescription }
-    }
-
-    private func toggleStatus() async {
-        guard let bot else { return }
-        busy = true; errorMessage = nil
-        defer { busy = false }
-        do { _ = try await store.updateBot(id: botID, status: bot.isPaused ? "active" : "paused") }
-        catch { errorMessage = error.localizedDescription }
-    }
-
-    private func loadMemories() async {
-        do { memories = try await store.request(path: "/api/bots/\(SummonAPIClient.component(botID))/memories")["memories"].array ?? [] }
-        catch { errorMessage = error.localizedDescription }
-    }
-
-    private func loadAvatar(_ item: PhotosPickerItem) async {
-        do {
-            guard let data = try await item.loadTransferable(type: Data.self), let image = UIImage(data: data) else {
-                throw CocoaError(.fileReadCorruptFile)
-            }
-            let ratio = min(1, 256 / max(image.size.width, image.size.height))
-            let size = CGSize(width: max(1, image.size.width * ratio), height: max(1, image.size.height * ratio))
-            let format = UIGraphicsImageRendererFormat(); format.scale = 1
-            let small = UIGraphicsImageRenderer(size: size, format: format).image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
-            guard let png = small.pngData(), png.base64EncodedString().count <= 390_000 else {
-                errorMessage = "图片缩放后仍然过大，请选择较小的图片。"; return
-            }
-            avatar.image = "data:image/png;base64," + png.base64EncodedString()
-            photo = nil
-        } catch { errorMessage = error.localizedDescription }
-    }
-}
-
-private struct MemoryEditor: View {
-    @Environment(SummonStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
-    let botID: String
-    let memory: SummonJSONValue?
-    @State private var content = ""
-    @State private var status = "active"
-    @State private var category = "professional"
-    @State private var errorMessage: String?
-    @State private var busy = false
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                TextField("记忆内容", text: $content, axis: .vertical).lineLimit(6...16)
-                Picker("分类", selection: $category) {
-                    Text("专业记忆").tag("professional")
-                    Text("私人记忆").tag("private")
+                if !modelConnection.isEmpty {
+                    TextField("模型名称", text: $modelName).autocorrectionDisabled()
+                    Picker("推理强度", selection: $thinking) {
+                        Text("连接默认值").tag("")
+                        ForEach(["off", "low", "medium", "high", "xhigh", "max"], id: \.self) { Text($0).tag($0) }
+                    }
                 }
-                Picker("状态", selection: $status) { Text("有效").tag("active"); Text("已过期").tag("expired") }
-                if let errorMessage { InlineError(message: errorMessage) }
+                Picker("选材索引", selection: $materialIndex) {
+                    Text("未选择").tag("")
+                    ForEach(files.filter { $0["id"].string != nil }, id: \.prettyPrinted) { file in
+                        Text(file["path"].stringValue).tag(file["id"].stringValue)
+                    }
+                    if let current = current?.material_index_ref,
+                       !files.contains(where: { $0["id"].string == current.id }) {
+                        Text(store.label(current)).tag(current.id)
+                    }
+                }
+                Button("保存 Bot 设置") { run { try await saveBot() } }.disabled(!canEdit || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-            .navigationTitle(memory == nil ? "添加记忆" : "修订记忆")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") { Task { await save() } }.disabled(busy || content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            if let current {
+                Section("控制") {
+                    LabeledContent("运行控制", value: current.isPaused ? "已暂停" : "启用")
+                    if current.isPaused, let stop = current.control?["stop_status"].string { LabeledContent("停止结果", value: SummonFormat.status(stop)) }
+                    if !current.isPaused || (current.resume_ref?.object != nil && current.control?["stop_status"].string == "stopped") {
+                        Button(current.isPaused ? "恢复 Bot" : "暂停 Bot") {
+                            run {
+                                var changes: [String: SummonJSONValue] = ["enabled": .bool(current.isPaused)]
+                                if current.isPaused, let resume = current.resume_ref { changes["resume_ref"] = resume }
+                                self.current = try await store.updateBot(current, changes: changes)
+                            }
+                        }.disabled(!canEdit)
+                    }
                 }
             }
-            .onAppear {
-                content = memory?["content"].string ?? memory?["text"].string ?? ""
-                status = memory?["status"].string ?? "active"
-                category = memory?["category"].string ?? "professional"
+            if access["revision"].int != nil {
+                Section("资源权限") {
+                    DisclosureGroup("模型连接") {
+                        ForEach(models, id: \.prettyPrinted) { model in
+                            Toggle(model["name"].string ?? model["id"].stringValue,
+                                   isOn: selection(model["id"].stringValue, in: $selectedModels))
+                        }
+                    }
+                    DisclosureGroup("执行目录") {
+                        ForEach(workspaces, id: \.prettyPrinted) { item in
+                            Toggle(item["name"].string ?? item["id"].stringValue,
+                                   isOn: selection(item["id"].stringValue, in: $selectedWorkspaces))
+                        }
+                    }
+                    Button("保存资源权限") { run { try await saveAccess() } }.disabled(!canEdit)
+                }
+            }
+            Section("资料与会话") {
+                NavigationLink("私有资料") { SummonObjectList(section: .files, space: SummonReference(kind: "bot", id: botID)) }
+                NavigationLink("内部对话和执行会话") { SummonObjectList(section: .executions, space: SummonReference(kind: "bot", id: botID)) }
+                NavigationLink("订阅与提醒") { SummonObjectList(section: .wakeups, space: SummonReference(kind: "bot", id: botID)) }
+            }
+            if let error { InlineError(message: error) }
+        }
+        .navigationTitle(bot?.name ?? "Bot")
+        .task(id: store.protocolReady) {
+            if let bot, current == nil { populate(bot) }
+            if store.protocolReady {
+                do { try await reload() } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
             }
         }
+        .onChange(of: photo) { _, item in if let item { run { try await loadAvatar(item) } } }
     }
 
-    private func save() async {
-        busy = true; defer { busy = false }
-        var body: [String: SummonJSONValue] = ["content": .string(content), "status": .string(status), "category": .string(category)]
-        let id = memory?["id"].string
-        if let revision = memory?["revision"].int { body["expectedRevision"] = .number(Double(revision)) }
-        let path = id.map { "/api/memories/\(SummonAPIClient.component($0))" } ?? "/api/bots/\(SummonAPIClient.component(botID))/memories"
-        do { _ = try await store.request(path: path, method: id == nil ? "POST" : "PATCH", body: .object(body)); dismiss() }
-        catch { errorMessage = error.localizedDescription }
+    private func selection(_ id: String, in values: Binding<Set<String>>) -> Binding<Bool> {
+        Binding(get: { values.wrappedValue.contains(id) }, set: {
+            if $0 { values.wrappedValue.insert(id) } else { values.wrappedValue.remove(id) }
+        })
+    }
+
+    private func populate(_ value: SummonBot) {
+        name = value.name; instructions = value.instructions ?? ""; avatar = value.resolvedAvatar
+        modelConnection = value.model?["connection_id"].stringValue ?? ""
+        modelName = value.model?["id"].stringValue ?? ""
+        thinking = value.model?["thinking_level"].stringValue ?? ""
+        materialIndex = value.material_index_ref?.id ?? ""
+    }
+
+    private func reload() async throws {
+        let value = try await store.fetchBot(botID)
+        if current == nil { populate(value) }
+        current = value
+        async let policy = store.request(path: accessPath)
+        async let catalog = store.request(path: "/api/model-settings")
+        async let locations = store.list("/api/workspaces")
+        async let privateFiles = store.list("/api/files?bot=" + SummonAPIClient.component(botID))
+        (access, workspaces, files) = try await (policy, locations, privateFiles)
+        let configured = try await catalog
+        models = configured["connections"].array ?? []
+        selectedModels = Set((access["model_ids"].array ?? []).compactMap(\.string))
+        selectedWorkspaces = Set((access["workspace_ids"].array ?? []).compactMap(\.string))
+    }
+
+    private func saveBot() async throws {
+        guard let current else { return }
+        var changes: [String: SummonJSONValue] = ["name": .string(name.trimmingCharacters(in: .whitespacesAndNewlines)),
+                                                 "instructions": .string(instructions)]
+        let previous = current.model ?? .null
+        if modelConnection != (previous["connection_id"].string ?? "") || modelName != (previous["id"].string ?? "") ||
+            thinking != (previous["thinking_level"].string ?? "") {
+            var binding: [String: SummonJSONValue] = ["connection_id": .string(modelConnection)]
+            if !modelName.isEmpty { binding["id"] = .string(modelName) }
+            if !thinking.isEmpty { binding["thinking_level"] = .string(thinking) }
+            changes["model"] = modelConnection.isEmpty ? .null : .object(binding)
+        }
+        if materialIndex != (current.material_index_ref?.id ?? "") {
+            changes["material_index_ref"] = materialIndex.isEmpty ? .null : SummonReference(kind: "file", id: materialIndex).json
+        }
+        self.current = try await store.updateBot(current, changes: changes)
+    }
+
+    private func saveAccess() async throws {
+        guard let revision = access["revision"].int else { return }
+        access = try await store.request(path: accessPath, method: "PATCH", body: .object([
+            "revision": .number(Double(revision)), "model_ids": .array(selectedModels.sorted().map(SummonJSONValue.string)),
+            "workspace_ids": .array(selectedWorkspaces.sorted().map(SummonJSONValue.string))
+        ]))
+    }
+
+    private func loadAvatar(_ item: PhotosPickerItem) async throws {
+        defer { photo = nil }
+        guard let data = try await item.loadTransferable(type: Data.self), let image = UIImage(data: data) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        let ratio = min(1, 256 / max(image.size.width, image.size.height))
+        let size = CGSize(width: max(1, image.size.width * ratio), height: max(1, image.size.height * ratio))
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1
+        let small = UIGraphicsImageRenderer(size: size, format: format).image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
+        guard let png = small.pngData(), png.base64EncodedString().count <= 390_000 else {
+            throw SummonAPIError.http(0, "请使用较小的头像图片。")
+        }
+        avatar.image = "data:image/png;base64," + png.base64EncodedString()
+    }
+
+    private func run(_ operation: @escaping @MainActor () async throws -> Void) {
+        guard !busy else { return }
+        busy = true; error = nil
+        Task {
+            defer { busy = false }
+            do { try await operation() }
+            catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+        }
     }
 }
 
@@ -189,88 +205,94 @@ struct RoomDetailsView: View {
     @Environment(SummonStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     let roomID: String
-    @State private var name = ""
-    @State private var goal = ""
-    @State private var projectMode = "auto"
-    @State private var initialProjectMode = "auto"
-    @State private var members: Set<String> = []
-    @State private var busy = false
-    @State private var errorMessage: String?
-    @State private var confirmConclude = false
+    @State private var editing = false
+    @State private var error: String?
 
-    private var room: SummonRoom? { store.rooms.first { $0.id == roomID } }
+    private var room: SummonRoom? { store.room(id: roomID) }
 
     var body: some View {
         Form {
             if let room {
                 Section {
-                    HStack { Spacer(); RoomAvatar(room: room, size: 100, background: Color(uiColor: .secondarySystemGroupedBackground)); Spacer() }.padding(.vertical, 16)
-                    if room.kind == "dm" {
-                        LabeledContent("名称", value: room.name)
-                    } else {
-                        TextField("会话名称", text: $name)
-                        TextField("会话说明或目标", text: $goal, axis: .vertical).lineLimit(3...7)
-                        if room.kind == "group" { RoomProjectModePicker(selection: $projectMode) }
-                    }
+                    HStack { Spacer(); RoomAvatar(room: room); Spacer() }.listRowBackground(Color.clear)
+                    LabeledContent("名称", value: room.name)
+                    Button("编辑名称和成员") { editing = true }.disabled(!store.protocolReady || room.revision == nil)
                 }
                 Section("成员") {
-                    ForEach(store.bots.filter { room.kind != "dm" || room.members.contains($0.id) }) { bot in
-                        Button {
-                            if !members.insert(bot.id).inserted { members.remove(bot.id) }
-                        } label: {
-                            HStack {
-                                MemberAvatar(bot: bot, size: 32)
-                                Text(bot.name).foregroundStyle(.primary)
-                                Spacer()
-                                if members.contains(bot.id) { Image(systemName: "checkmark") }
+                    ForEach(room.members, id: \.self) { id in
+                        if store.bot(id: id) != nil {
+                            NavigationLink { BotDetailsView(botID: id) } label: {
+                                Label { Text(store.name(for: id)) } icon: { MemberAvatar(bot: store.bot(id: id), size: 30) }
                             }
-                        }.buttonStyle(.plain).disabled(room.kind == "dm")
+                        } else { Text(store.name(for: id)) }
+                    }
+                }
+                Section("置顶") {
+                    if room.pins?.isEmpty != false { Text("暂无置顶").foregroundStyle(.secondary) }
+                    ForEach(room.pins ?? [], id: \.self) { ref in
+                        NavigationLink(store.label(ref)) { SummonReferenceView(ref: ref) }
+                            .swipeActions {
+                                Button("移除", role: .destructive) {
+                                    Task {
+                                        do { try await store.setPin(ref, in: room, remove: true) }
+                                        catch { self.error = error.localizedDescription }
+                                    }
+                                }.disabled(!store.protocolReady)
+                            }
                     }
                 }
                 Section {
-                    if room.kind != "dm" {
-                        Button("保存会话") { Task { await save() } }.disabled(busy || members.isEmpty || name.isEmpty)
-                    }
-                    ShareLink(item: store.messagesForRoom(roomID).map { "\(store.name(for: $0.senderId))：\($0.content)" }.joined(separator: "\n\n")) {
-                        Label("分享会话文字", systemImage: "square.and.arrow.up")
-                    }
-                    if room.kind == "deep", !room.isConcluded {
-                        Button("结束深聊并保留结论", role: .destructive) { confirmConclude = true }.disabled(busy)
-                    }
-                    if !room.summary.isEmpty { Text(room.summary).textSelection(.enabled) }
+                    let ref = SummonReference(kind: "room", id: roomID)
+                    NavigationLink("群资料") { SummonObjectList(section: .files, space: ref) }
+                    NavigationLink("订阅与提醒") { SummonObjectList(section: .wakeups, space: ref) }
+                    NavigationLink("执行会话和内部对话") { SummonObjectList(section: .executions, space: ref) }
                 }
             }
-            if let errorMessage { Section { InlineError(message: errorMessage) } }
+            if let error { InlineError(message: error) }
         }
-        .navigationTitle("会话详情").navigationBarTitleDisplayMode(.inline)
-        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } } }
-        .onAppear {
-            if let room {
-                name = room.name; goal = room.goal; members = Set(room.members.filter { $0 != "user" })
-                initialProjectMode = room.projectMode ?? "auto"
-                projectMode = initialProjectMode
+        .navigationTitle("会话详情")
+        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
+        .summonSheet(isPresented: $editing) { if let room { RoomEditView(room: room) } }
+    }
+}
+
+private struct RoomEditView: View {
+    @Environment(SummonStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    let room: SummonRoom
+    @State private var name = ""
+    @State private var members: Set<String> = []
+    @State private var busy = false
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                TextField("名称", text: $name)
+                Section("成员") {
+                    ForEach(store.bots) { bot in
+                        Toggle(bot.name, isOn: Binding(get: { members.contains(bot.id) }, set: {
+                            if $0 { members.insert(bot.id) } else { members.remove(bot.id) }
+                        }))
+                    }
+                }
+                if let error { InlineError(message: error) }
             }
+            .navigationTitle("编辑会话")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        busy = true
+                        Task {
+                            defer { busy = false }
+                            do { try await store.updateRoom(room, name: name, members: members.sorted()); dismiss() }
+                            catch { self.error = error.localizedDescription }
+                        }
+                    }.disabled(busy || !store.protocolReady)
+                }
+            }
+            .onAppear { name = room.name; members = Set(room.members) }
         }
-        .confirmationDialog("结束这段深聊？", isPresented: $confirmConclude, titleVisibility: .visible) {
-            Button("结束并保留结论", role: .destructive) { Task { await conclude() } }
-        }
-    }
-
-    private func save() async {
-        busy = true; defer { busy = false }
-        do {
-            let ids = (room?.members.contains("user") == true ? ["user"] : []) + members.sorted()
-            _ = try await store.updateRoom(id: roomID, name: name, members: ids, goal: goal,
-                                           projectMode: room?.kind == "group" && projectMode != initialProjectMode ? projectMode : nil)
-            dismiss()
-        } catch { errorMessage = error.localizedDescription }
-    }
-
-    private func conclude() async {
-        busy = true; defer { busy = false }
-        do {
-            _ = try await store.request(path: "/api/rooms/\(SummonAPIClient.component(roomID))/conclude", method: "POST", body: .object([:]))
-            await store.refresh(); dismiss()
-        } catch { errorMessage = error.localizedDescription }
     }
 }

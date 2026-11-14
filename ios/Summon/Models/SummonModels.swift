@@ -13,58 +13,67 @@ struct SummonAvatar: Codable, Equatable, Sendable {
     }
 }
 
-struct SummonActivity: Codable, Equatable, Sendable {
-    var label: String
-    var motion: String
-    var phase: String
-    var roomId: String? = nil
+struct SummonReference: Codable, Hashable, Identifiable, Sendable {
+    let kind: String
+    let id: String
+
+    var path: String? {
+        let part = SummonAPIClient.component(id)
+        switch kind {
+        case "session", "conversation": return "/api/executions/\(kind)/\(part)"
+        case "file": return "/api/files/\(part)"
+        case "room": return "/api/rooms/\(part)"
+        case "bot": return "/api/bots/\(part)"
+        case "connection": return "/api/connections/\(part)"
+        case "call": return "/api/calls/\(part)"
+        case "workspace": return "/api/workspaces/\(part)"
+        default: return nil
+        }
+    }
+
+    var json: SummonJSONValue { .object(["kind": .string(kind), "id": .string(id)]) }
+
+    init(kind: String, id: String) { self.kind = kind; self.id = id }
+
+    init?(_ json: SummonJSONValue) {
+        guard let kind = json["kind"].string, let id = json["id"].string, !id.isEmpty else { return nil }
+        self.init(kind: kind, id: id)
+    }
 }
 
 struct SummonBot: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var name: String
-    var role: String
-    var expertise: String
-    var prompt: String
-    var status: String
-    var presetId: String?
-    var roleId: String?
+    var instructions: String?
+    var model: SummonJSONValue?
+    var revision: Int?
+    var enabled: Bool?
+    var control: SummonJSONValue?
+    var resume_ref: SummonJSONValue?
+    var material_index_ref: SummonReference?
     var avatar: SummonAvatar?
-    var activity: SummonActivity?
-    var createdAt: String?
 
-    var isSystem: Bool { presetId != nil }
-    var isPaused: Bool { status == "paused" }
+    var isPaused: Bool { enabled == false || control?["state"].string == "paused" }
     var resolvedAvatar: SummonAvatar { avatar ?? SummonAvatar.defaultAvatar(for: id) }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decode(String.self, forKey: .id)
-        name = try c.decodeIfPresent(String.self, forKey: .name) ?? id
-        role = try c.decodeIfPresent(String.self, forKey: .role) ?? ""
-        let value = try c.decodeIfPresent(SummonJSONValue.self, forKey: .expertise)
-        expertise = value?.stringValue ?? ""
-        prompt = try c.decodeIfPresent(String.self, forKey: .prompt) ?? ""
-        status = try c.decodeIfPresent(String.self, forKey: .status) ?? "active"
-        presetId = try c.decodeIfPresent(String.self, forKey: .presetId)
-        roleId = try c.decodeIfPresent(String.self, forKey: .roleId)
-        avatar = try c.decodeIfPresent(SummonAvatar.self, forKey: .avatar)
-        activity = try c.decodeIfPresent(SummonActivity.self, forKey: .activity)
-        createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt)
-    }
 }
 
 struct SummonAttachment: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var name: String
-    var mimeType: String
-    var size: Int
+    var mimeType: String?
+    var size: Int?
     var url: String?
     var previewUrl: String?
-    var createdAt: String?
+    var unavailable: Bool?
+    var staged: Bool?
 
     var isImage: Bool { previewUrl != nil }
-    var formattedSize: String { ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file) }
+    var formattedSize: String { size.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) } ?? "" }
+    var downloadPath: String {
+        url?.hasPrefix("/api/files/") == true
+            ? "/api/files/\(SummonAPIClient.component(id))/download"
+            : "/api/attachments/\(SummonAPIClient.component(id))"
+    }
 }
 
 struct SummonMessage: Codable, Identifiable, Equatable, Sendable {
@@ -73,152 +82,142 @@ struct SummonMessage: Codable, Identifiable, Equatable, Sendable {
     var senderId: String
     var content: String
     var attachments: [SummonAttachment]
-    var kind: String
+    var references: [SummonReference]
+    var mentions: [String]
     var replyTo: String?
-    var toBotId: String?
     var clientId: String?
-    var jobId: String?
     var createdAt: String?
+    var sequence: Int?
 
     var isOwn: Bool { senderId == "user" }
 
-    init(id: String, roomId: String, senderId: String, content: String,
-         attachments: [SummonAttachment] = [], kind: String = "message", replyTo: String? = nil,
-         toBotId: String? = nil, clientId: String? = nil, jobId: String? = nil, createdAt: String? = nil) {
+    init(id: String, roomId: String, senderId: String, content: String, attachments: [SummonAttachment] = [],
+         references: [SummonReference] = [], mentions: [String] = [], replyTo: String? = nil,
+         clientId: String? = nil, createdAt: String? = nil) {
         self.id = id
         self.roomId = roomId
         self.senderId = senderId
         self.content = content
         self.attachments = attachments
-        self.kind = kind
+        self.references = references
+        self.mentions = mentions
         self.replyTo = replyTo
-        self.toBotId = toBotId
         self.clientId = clientId
-        self.jobId = jobId
         self.createdAt = createdAt
     }
+
+    // The previous on-device snapshot stored a single target. Import it as a mention.
+    private enum StoredFields: String, CodingKey { case toBotId }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
         roomId = try c.decode(String.self, forKey: .roomId)
-        senderId = try c.decodeIfPresent(String.self, forKey: .senderId) ?? "system"
+        senderId = try c.decodeIfPresent(String.self, forKey: .senderId) ?? "platform"
         content = try c.decodeIfPresent(String.self, forKey: .content) ?? ""
         attachments = try c.decodeIfPresent([SummonAttachment].self, forKey: .attachments) ?? []
-        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? "message"
+        references = try c.decodeIfPresent([SummonReference].self, forKey: .references) ?? []
+        if let values = try c.decodeIfPresent([String].self, forKey: .mentions) { mentions = values }
+        else {
+            let stored = try decoder.container(keyedBy: StoredFields.self)
+            mentions = try stored.decodeIfPresent(String.self, forKey: .toBotId).map { [$0] } ?? []
+        }
         replyTo = try c.decodeIfPresent(String.self, forKey: .replyTo)
-        toBotId = try c.decodeIfPresent(String.self, forKey: .toBotId)
         clientId = try c.decodeIfPresent(String.self, forKey: .clientId)
-        jobId = try c.decodeIfPresent(String.self, forKey: .jobId)
         createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt)
+        sequence = try c.decodeIfPresent(Int.self, forKey: .sequence)
     }
 }
 
 struct SummonRoom: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var name: String
-    var kind: String
     var members: [String]
-    var status: String
-    var goal: String
-    var projectMode: String?
-    var summary: String
+    var pins: [SummonReference]?
+    var revision: Int?
     var lastMessage: SummonMessage?
     var createdAt: String?
+    var updatedAt: String?
 
-    var isGroup: Bool { kind != "dm" }
-    var isConcluded: Bool { status == "concluded" }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decode(String.self, forKey: .id)
-        name = try c.decodeIfPresent(String.self, forKey: .name) ?? "会话"
-        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? "group"
-        members = try c.decodeIfPresent([String].self, forKey: .members) ?? []
-        status = try c.decodeIfPresent(String.self, forKey: .status) ?? "active"
-        goal = try c.decodeIfPresent(String.self, forKey: .goal) ?? ""
-        projectMode = try c.decodeIfPresent(String.self, forKey: .projectMode)
-        summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
-        lastMessage = try c.decodeIfPresent(SummonMessage.self, forKey: .lastMessage)
-        createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt)
-    }
+    var isGroup: Bool { members.count != 2 || !members.contains("user") }
 }
 
-struct SummonJob: Codable, Identifiable, Equatable, Sendable {
-    var id: String
-    var botId: String
-    var roomId: String
-    var messageId: String?
+struct SummonDelivery: Codable, Sendable {
+    var bot_id: String
     var status: String
-    var taskId: String?
-    var agentRunId: String?
-    var error: SummonJSONValue?
-    var createdAt: String?
-
-    var isActive: Bool { ["queued", "accepted", "running", "waiting"].contains(status) }
-    var errorText: String? { error?.stringValue }
 }
 
-struct SummonAgentRun: Codable, Identifiable, Equatable, Sendable {
-    var id: String
-    var botId: String?
-    var roomId: String?
-    var status: String?
-    var summary: String?
-    var activity: SummonActivity?
-    var content: SummonJSONValue?
-    var result: SummonJSONValue?
-    var error: SummonJSONValue?
-    var toolCount: Int?
-    var tools: [SummonToolRun]?
-    var createdAt: String?
-    var startedAt: String?
-    var finishedAt: String?
-
-    var isActive: Bool { ["queued", "accepted", "running", "waiting"].contains(status ?? "") }
-    var outputText: String { summary?.isEmpty == false ? summary! : result?.stringValue ?? content?.stringValue ?? "" }
+struct SummonReceipt: Decodable, Sendable {
+    var message: SummonMessage
+    var deliveries: [SummonDelivery]
 }
 
-struct SummonToolRun: Codable, Identifiable, Equatable, Sendable {
-    var id: String
-    var name: String?
-    var toolName: String?
-    var status: String?
-    var arguments: SummonJSONValue?
-    var input: SummonJSONValue?
-    var output: SummonJSONValue?
-    var result: SummonJSONValue?
-    var error: SummonJSONValue?
-    var artifacts: [SummonArtifact]?
-    var createdAt: String?
-
-    var displayName: String { name ?? toolName ?? "工具调用" }
-    var outputText: String { output?.stringValue ?? result?.stringValue ?? error?.stringValue ?? "" }
-}
-
-struct SummonArtifact: Codable, Identifiable, Equatable, Sendable {
-    var id: String
-    var name: String?
-    var mimeType: String?
-    var size: Int?
-    var path: String?
-}
-
-struct SummonWorkspace: Codable, Sendable {
+struct SummonWorkspace: Decodable, Sendable {
     var historyEpoch: String?
     var bots: [SummonBot]
     var rooms: [SummonRoom]
-    var agentRuns: [SummonAgentRun]?
-    var defaultCwd: String?
-    var onboarding: SummonJSONValue?
     var modelSettings: SummonJSONValue?
 }
 
-struct SummonRoomSnapshot: Codable, Sendable {
+struct SummonRoomSnapshot: Decodable, Sendable {
     var historyEpoch: String?
     var room: SummonRoom
     var messages: [SummonMessage]
-    var jobs: [SummonJob]
+    var deliveries: [String: [SummonDelivery]]?
+    var cursor: String?
+}
+
+struct SummonWorkspaceProfile: Decodable, Identifiable, Equatable, Sendable {
+    let id: String
+    let name: String
+}
+
+struct SummonBootstrap: Decodable, Equatable, Sendable {
+    let protocolVersion: Int
+    let updating: Bool
+    let version: String?
+    let releasesUrl: String?
+    let workspaceProfiles: [SummonWorkspaceProfile]?
+
+    var ready: Bool { protocolVersion == SummonAPIClient.protocolVersion && !updating }
+
+    var notice: String? {
+        if updating { return "服务正在更新。草稿和待确认的发送已保留。" }
+        if protocolVersion > SummonAPIClient.protocolVersion { return "请在 TestFlight 更新 Summon Bot。" }
+        if protocolVersion < SummonAPIClient.protocolVersion { return "正在等待服务更新。草稿和待确认的发送已保留。" }
+        return nil
+    }
+}
+
+struct SummonInputOption: Identifiable {
+    let kind: String
+    let target: SummonJSONValue
+    let question: String?
+    let choices: [SummonJSONValue]
+
+    var id: String { kind + target.prettyPrinted }
+    var label: String {
+        switch kind {
+        case "reply": return "回答"
+        case "steer": return "运行中补充"
+        default: return "发送下一轮输入"
+        }
+    }
+
+    static func options(_ detail: SummonJSONValue) -> [Self] {
+        (detail["input_targets"].array ?? []).flatMap { option -> [Self] in
+            let target = option["input_target"]
+            guard target.object != nil else { return [] }
+            let request = target["request_id"].string.flatMap { id in
+                detail["pending_input"].array?.first { $0["id"].string == id }
+            }
+            return (option["kinds"].array ?? []).compactMap { value in
+                guard let kind = value.string, ["reply", "steer", "next"].contains(kind) else { return nil }
+                return Self(kind: kind, target: target, question: option["question"].string ?? request?["question"].string ?? request?["prompt"].string,
+                    choices: option["choices"].array ?? request?["choices"].array ?? [])
+            }
+        }
+    }
 }
 
 struct SummonPendingMessage: Codable, Identifiable, Equatable, Sendable {
@@ -236,6 +235,7 @@ struct SummonPendingMessage: Codable, Identifiable, Equatable, Sendable {
 struct SummonConnectionSettings: Codable, Equatable, Sendable {
     var baseURL: String = ""
     var userName: String = "Lin"
+    var workspaceID: String?
 }
 
 enum SummonJSONValue: Codable, Equatable, Sendable {

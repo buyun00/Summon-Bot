@@ -35,6 +35,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material3.Checkbox
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.BarChart
@@ -92,12 +97,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
-enum class WorkspaceSection(val title: String, val icon: ImageVector) {
-    Bots("管理 Bot", Icons.Filled.Groups),
-    Works("工作", Icons.Filled.Work),
-    Knowledge("知识", Icons.Filled.MenuBook),
-    Routines("定时职责", Icons.Filled.Schedule),
-    Event("投递事件", Icons.Filled.Bolt),
+enum class WorkspaceSection(val title: String, val icon: ImageVector, val path: String) {
+    Bots("成员", Icons.Filled.Groups, "/api/bots"),
+    Executions("执行会话", Icons.Filled.Terminal, "/api/executions"),
+    Files("资料", Icons.Filled.Folder, "/api/files"),
+    Wakeups("订阅与提醒", Icons.Filled.Schedule, "/api/wakeups"),
+    Connections("执行连接与额度", Icons.Filled.Link, "/api/connections"),
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -107,7 +112,6 @@ fun ConversationListScreen(
     updater: SummonAppUpdater,
     onOpenUsage: () -> Unit,
     onOpenModels: () -> Unit,
-    onOpenOnboarding: () -> Unit,
     onOpenRoom: (String) -> Unit,
     onOpenWorkspace: (WorkspaceSection) -> Unit,
 ) {
@@ -115,24 +119,19 @@ fun ConversationListScreen(
     var query by remember { mutableStateOf("") }
     var showSettings by remember { mutableStateOf(false) }
     var showCreateBot by remember { mutableStateOf(false) }
-    var roomKind by remember { mutableStateOf<String?>(null) }
-    var showSystem by remember { mutableStateOf(false) }
-    var showPeers by remember { mutableStateOf(false) }
+    var showCreateRoom by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
     var plus by remember { mutableStateOf(false) }
     var opening by remember { mutableStateOf(false) }
     var quotaItem by remember { mutableStateOf<SummonJson?>(null) }
-    LaunchedEffect(store.settings.baseURL) {
-        while (isActive) { runCatching { store.refreshModelUsage() }; delay(60000) }
-    }
     fun matches(text: String) = query.isBlank() || text.contains(query, ignoreCase = true)
-    val groups = store.rooms.filter { it.kind != "dm" && matches("${it.name} ${it.goal}") }
-    val contacts = store.bots.filter { it.presetId.isNullOrEmpty() && matches("${it.name} ${it.role}") }
+    val groups = store.rooms.filter { room ->
+        matches(room.name) && (room.isGroup || store.bots.none { it.id in room.members } ||
+            store.rooms.firstOrNull { !it.isGroup && it.members == room.members }?.id != room.id)
+    }
+    val contacts = store.bots.filter { matches(it.name) }
         .sortedByDescending { directRoom(store, it)?.lastMessage?.createdAt.orEmpty() }
-    val systemBots = store.bots.filter { !it.presetId.isNullOrEmpty() && matches("${it.name} ${it.role}") }
-    val peers = store.rooms.filter { it.kind == "dm" && !it.members.contains("user") && matches(it.name) }
-    val chat = store.modelSummary["chat"].takeIf { it is SummonJson.Obj } ?: SummonJson.obj("role" to SummonJson.Str("chat"))
-    val work = store.modelSummary["workExecutor"].takeIf { it is SummonJson.Obj } ?: SummonJson.obj("role" to SummonJson.Str("executor"), "kind" to SummonJson.Str("pi"))
+    val model = store.modelSummary["chat"]
     val menuHeight = (LocalConfiguration.current.screenHeightDp * 100f / LocalSummonDisplay.current.zoom * .7f).dp
 
     Scaffold(
@@ -151,31 +150,24 @@ fun ConversationListScreen(
                     }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, modifier = Modifier.width(264.dp).heightIn(max = menuHeight)) {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            ModelQuotaSignal(chat, "CHAT", Modifier.weight(1f)) { menu = false; quotaItem = chat }
-                            ModelQuotaSignal(work, "WORK", Modifier.weight(1f)) { menu = false; quotaItem = work }
+                            ModelQuotaSignal(model, "默认模型", Modifier.weight(1f)) { menu = false; quotaItem = model }
                         }
                         DropdownMenuItem(text = { Text("Token 统计") }, leadingIcon = { Icon(Icons.Filled.BarChart, null) }, onClick = { menu = false; onOpenUsage() })
                         DropdownMenuItem(text = { Text("设置") }, leadingIcon = { Icon(Icons.Filled.Settings, null) }, onClick = { menu = false; showSettings = true })
-                        DropdownMenuItem(text = { Text("新手引导") }, leadingIcon = { Icon(Icons.Filled.Bolt, null) }, onClick = { menu = false; onOpenOnboarding() })
+                        DropdownMenuItem(text = { Text("模型与用量") }, leadingIcon = { Icon(Icons.Filled.Memory, null) }, onClick = { menu = false; onOpenModels() })
                         HorizontalDivider(Modifier.padding(vertical = 6.dp))
-                        listOf(WorkspaceSection.Event, WorkspaceSection.Routines, WorkspaceSection.Knowledge, WorkspaceSection.Works, WorkspaceSection.Bots).forEach { section ->
-                            val title = when (section) {
-                                WorkspaceSection.Event -> "事件"
-                                WorkspaceSection.Routines -> "定时"
-                                else -> section.title
-                            }
-                            DropdownMenuItem(text = { Text(title) }, leadingIcon = { Icon(section.icon, null) }, onClick = { menu = false; onOpenWorkspace(section) })
+                        WorkspaceSection.entries.forEach { section ->
+                            DropdownMenuItem(text = { Text(section.title) }, leadingIcon = { Icon(section.icon, null) }, onClick = { menu = false; onOpenWorkspace(section) })
                         }
                     }
                 }
                 OutlinedTextField(value = query, onValueChange = { query = it }, placeholder = { Text("搜索") }, singleLine = true,
                     leadingIcon = { Icon(Icons.Filled.Search, null) }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(24.dp))
                 Box {
-                    IconButton(onClick = { plus = true }) { Icon(Icons.Filled.Add, "新建", tint = Color.White) }
+                    IconButton(onClick = { plus = true }, enabled = store.protocolReady) { Icon(Icons.Filled.Add, "新建", tint = Color.White) }
                     DropdownMenu(expanded = plus, onDismissRequest = { plus = false }, modifier = Modifier.heightIn(max = menuHeight)) {
                         DropdownMenuItem(text = { Text("创建新 Bot") }, onClick = { plus = false; showCreateBot = true })
-                        DropdownMenuItem(text = { Text("创建群聊") }, onClick = { plus = false; roomKind = "group" })
-                        DropdownMenuItem(text = { Text("发起深聊") }, onClick = { plus = false; roomKind = "deep" })
+                        DropdownMenuItem(text = { Text("创建群聊") }, onClick = { plus = false; showCreateRoom = true })
                     }
                 }
             }
@@ -189,10 +181,19 @@ fun ConversationListScreen(
                             CircularProgressIndicator(); Spacer(Modifier.width(8.dp)); Text("正在打开工作空间…")
                         }
                     }
+                    store.protocolNotice?.let { notice ->
+                        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+                            Text(notice, color = Color(0xFFFF9F0A))
+                            Row {
+                                TextButton(onClick = { scope.launch { store.refresh() } }) { Text("重新连接") }
+                                if (store.needsClientUpdate) TextButton(onClick = { showSettings = true }) { Text("客户端更新") }
+                            }
+                        }
+                    }
                     store.errorMessage?.let { error ->
                         Row(Modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text(error, color = Color(0xFFFF9F0A), modifier = Modifier.weight(1f))
-                            TextButton(onClick = { scope.launch { store.reconnect() } }) { Text("重连") }
+                            TextButton(onClick = { scope.launch { store.refresh() } }) { Text("重连") }
                         }
                     } ?: run {
                         if (!store.isConnected && store.bots.isNotEmpty()) {
@@ -223,35 +224,7 @@ fun ConversationListScreen(
                         }
                     }
                 }
-                if (systemBots.isNotEmpty()) {
-                    item {
-                        TextButton(onClick = { showSystem = !showSystem }, modifier = Modifier.padding(horizontal = 14.dp)) {
-                            Text("系统 Bot · ${systemBots.size}", color = Color(0xFF8E8E93))
-                        }
-                    }
-                    if (showSystem) items(systemBots, key = { "sys-${it.id}" }) { bot ->
-                        ContactRow(store, bot) {
-                            scope.launch {
-                                try { onOpenRoom(store.openDirectMessage(bot).id) } catch (error: Exception) { store.errorMessage = error.message }
-                            }
-                        }
-                    }
-                }
-                if (peers.isNotEmpty()) {
-                    item {
-                        TextButton(onClick = { showPeers = !showPeers }, modifier = Modifier.padding(horizontal = 14.dp)) {
-                            Text("Bot 之间的对话", color = Color(0xFF8E8E93))
-                        }
-                    }
-                    if (showPeers) items(peers, key = { "peer-${it.id}" }) { room ->
-                        Row(Modifier.fillMaxWidth().clickable { onOpenRoom(room.id) }.padding(22.dp, 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            RoomAvatar(room, store.bots, 44.dp)
-                            Spacer(Modifier.width(14.dp))
-                            Text(room.name)
-                        }
-                    }
-                }
-                if (store.bots.isEmpty() && store.rooms.isEmpty() && !store.isLoading) {
+                if (store.bots.isEmpty() && store.rooms.isEmpty() && !store.isLoading && store.protocolReady) {
                     item {
                         Column(Modifier.fillMaxWidth().padding(top = 80.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                             Text("你的工作空间", style = MaterialTheme.typography.titleLarge)
@@ -260,7 +233,7 @@ fun ConversationListScreen(
                             TextButton(onClick = { showSettings = true }) { Text("连接设置") }
                         }
                     }
-                } else if (contacts.isEmpty() && groups.isEmpty() && systemBots.isEmpty() && query.isNotEmpty()) {
+                } else if (contacts.isEmpty() && groups.isEmpty() && query.isNotEmpty()) {
                     item { Text("没有与“$query”匹配的结果", modifier = Modifier.padding(24.dp), color = Color(0xFF8E8E93)) }
                 }
             }
@@ -269,15 +242,14 @@ fun ConversationListScreen(
     quotaItem?.let { item ->
         ModalBottomSheet(onDismissRequest = { quotaItem = null }, containerColor = Color(0xFF1C231E)) {
             Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                val current = if (item["role"].stringValue == "executor") store.modelSummary["workExecutor"].takeIf { it is SummonJson.Obj } ?: item else item
-                ModelUsageDetails(current)
-                TextButton(onClick = { quotaItem = null; onOpenModels() }, modifier = Modifier.fillMaxWidth()) { Text("管理模型与引擎") }
+                ModelUsageDetails(item)
+                TextButton(onClick = { quotaItem = null; onOpenModels() }, modifier = Modifier.fillMaxWidth()) { Text("管理模型") }
             }
         }
     }
     if (showSettings) SettingsSheet(store, updater) { showSettings = false }
     if (showCreateBot) CreateBotSheet(store, onOpenRoom) { showCreateBot = false }
-    roomKind?.let { kind -> CreateRoomSheet(store, kind, onOpenRoom) { roomKind = null } }
+    if (showCreateRoom) CreateRoomSheet(store, onOpenRoom) { showCreateRoom = false }
 }
 
 @Composable
@@ -289,7 +261,6 @@ private fun GroupGrid(groups: List<SummonRoom>, bots: List<SummonBot>, onOpen: (
                     Column(Modifier.weight(1f).clickable { onOpen(room.id) }.padding(vertical = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                         RoomAvatar(room, bots, 96.dp)
                         Text(room.name, color = Color(0xFF8E8E93), maxLines = 1)
-                        if (room.kind == "deep") Text(if (room.status == "concluded") "已结束" else "深聊", color = Color(0xFF636366), style = MaterialTheme.typography.labelSmall)
                     }
                 }
                 if (row.size == 1) Spacer(Modifier.weight(1f))
@@ -309,19 +280,19 @@ private fun ContactRow(store: SummonStore, bot: SummonBot, onClick: () -> Unit) 
                 Text(bot.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f), maxLines = 1)
                 Text(formatSummonTime(room?.lastMessage?.createdAt), color = Color(0xFF636366), style = MaterialTheme.typography.labelSmall)
             }
-            val preview = if (bot.status == "paused") "已暂停" else preview(room, bot)
+            val preview = if (bot.isPaused) "已暂停" else preview(room, bot)
             Text(preview, color = Color(0xFF8E8E93), maxLines = 1)
         }
     }
 }
 
 private fun directRoom(store: SummonStore, bot: SummonBot) =
-    store.rooms.firstOrNull { it.kind == "dm" && it.members.contains("user") && it.members.contains(bot.id) }
+    store.rooms.firstOrNull { !it.isGroup && bot.id in it.members }
 
 private fun preview(room: SummonRoom?, bot: SummonBot): String {
     val last = room?.lastMessage
     if (last != null) return last.content.ifEmpty { last.attachments.joinToString("、") { "[附件] ${it.name}" } }
-    return bot.role.ifEmpty { "开始聊天" }
+    return "开始聊天"
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -352,6 +323,21 @@ private fun SettingsSheet(store: SummonStore, updater: SummonAppUpdater, onDismi
             OutlinedTextField(baseURL, { baseURL = it }, label = { Text("https://你的工作区地址") }, modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), singleLine = true)
             OutlinedTextField(token, { token = it }, label = { Text("工作区访问令牌") }, modifier = Modifier.fillMaxWidth(), visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), singleLine = true)
             Text("使用部署机提供的 HTTPS 地址和访问令牌。令牌保存在系统加密存储中。", color = Color(0xFF8E8E93), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 8.dp))
+            if (store.profiles.isNotEmpty()) {
+                Text("工作区", style = MaterialTheme.typography.titleMedium)
+                val choices = listOf(SummonWorkspaceProfile("", "默认工作区")) + store.profiles
+                choices.forEach { profile ->
+                    val id = profile.id.ifEmpty { null }
+                    TextButton(enabled = !saving && store.protocolReady, onClick = {
+                        saving = true; error = null
+                        scope.launch {
+                            try { store.selectWorkspace(id); onDismiss() }
+                            catch (failure: Exception) { error = failure.localizedMessage }
+                            finally { saving = false }
+                        }
+                    }) { Text((if (id == store.settings.workspaceID) "✓  " else "") + profile.name) }
+                }
+            }
             Text("实时消息  ${if (store.isConnected) "已连接" else "未连接"}")
             Text("Bot  ${store.bots.size}")
             Text("会话  ${store.rooms.size}")
@@ -366,7 +352,7 @@ private fun SettingsSheet(store: SummonStore, updater: SummonAppUpdater, onDismi
             }, enabled = !saving && baseURL.isNotBlank(), modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
                 if (saving) CircularProgressIndicator(Modifier.size(18.dp)) else Text("保存并连接")
             }
-            Text("已读取的会话和草稿保存在这台设备，失败消息需要手动重试。切换服务时会清除这台设备上的会话缓存。", color = Color(0xFF8E8E93), style = MaterialTheme.typography.bodySmall)
+            Text("草稿和待确认的发送保存在这台设备。重新连接后，可按原发送记录查询保存状态。", color = Color(0xFF8E8E93), style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(20.dp))
             Text("显示设置", style = MaterialTheme.typography.titleMedium)
             DisplaySettingsControls()
@@ -399,13 +385,13 @@ fun CreateBotSheet(store: SummonStore, onOpenRoom: (String) -> Unit, onDismiss: 
                 scope.launch {
                     busy = true; error = null
                     try {
-                        val bot = created ?: store.createBot(name.trim(), avatar).also { created = it }
+                        val bot = created ?: store.createBot(name.trim(), avatar, "").also { created = it }
                         val room = store.openDirectMessage(bot)
                         onDismiss(); onOpenRoom(room.id)
                     } catch (exception: Exception) { error = exception.message }
                     finally { busy = false }
                 }
-            }, enabled = !busy && name.isNotBlank(), modifier = Modifier.fillMaxWidth().padding(top = 18.dp)) {
+            }, enabled = !busy && store.protocolReady && name.isNotBlank(), modifier = Modifier.fillMaxWidth().padding(top = 18.dp)) {
                 Text(if (created == null) "创建" else "打开聊天")
             }
             Spacer(Modifier.height(24.dp))
@@ -466,67 +452,39 @@ private fun CrewColorField(label:String,value:String,onChange:(String)->Unit) {
     }
 }
 
-@Composable
-fun RoomProjectModePicker(value: String, onChange: (String) -> Unit) {
-    var expanded by remember { mutableStateOf(false) }
-    val modes = mapOf("auto" to "自动识别持续项目", "project" to "持续项目 · 定期协作复核", "chat" to "日常交流")
-    Box {
-        TextButton(onClick = { expanded = true }) { Text("群聊用途 · ${modes[value] ?: modes.getValue("auto")}") }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            modes.forEach { (mode, label) ->
-                DropdownMenuItem(text = { Text(label) }, onClick = { expanded = false; onChange(mode) })
-            }
-        }
-    }
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CreateRoomSheet(store: SummonStore, initialKind: String, onOpenRoom: (String) -> Unit, onDismiss: () -> Unit) {
+fun CreateRoomSheet(store: SummonStore, onOpenRoom: (String) -> Unit, onDismiss: () -> Unit) {
     val scope = rememberCoroutineScope()
-    var name by remember { mutableStateOf("") }
-    var goal by remember { mutableStateOf("") }
-    var projectMode by remember { mutableStateOf("auto") }
-    var kind by remember { mutableStateOf(initialKind) }
-    var members by remember { mutableStateOf(setOf<String>()) }
+    var title by remember { mutableStateOf("") }
+    var members by remember { mutableStateOf<Set<String>>(emptySet()) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    val canCreate = name.isNotBlank() && members.isNotEmpty() && (kind != "deep" && projectMode != "project" || goal.isNotBlank())
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Color(0xFF1C1C1E)) {
-        Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp)) {
-            Text(if (kind == "deep") "发起深聊" else "创建群聊", style = MaterialTheme.typography.titleMedium)
-            OutlinedTextField(name, { name = it }, label = { Text("会话名称") }, modifier = Modifier.fillMaxWidth())
-            Row {
-                TextButton(onClick = { kind = "group" }) { Text(if (kind == "group") "群聊 ✓" else "群聊") }
-                TextButton(onClick = { kind = "deep" }) { Text(if (kind == "deep") "深聊 ✓" else "深聊") }
-            }
-            OutlinedTextField(goal, { goal = it }, label = { Text("会话说明或目标") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
-            if (kind == "group") RoomProjectModePicker(projectMode) { projectMode = it }
-            Text("选择成员", modifier = Modifier.padding(vertical = 8.dp))
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("创建群聊", style = MaterialTheme.typography.titleLarge)
+            OutlinedTextField(title, { title = it }, label = { Text("群名称（可选）") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            Text("成员", style = MaterialTheme.typography.titleMedium)
             store.bots.forEach { bot ->
-                Row(Modifier.fillMaxWidth().clickable {
-                    members = if (bot.id in members) members - bot.id else members + bot.id
-                }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    MemberAvatar(bot, 32.dp)
-                    Spacer(Modifier.width(12.dp))
-                    Text(bot.name, modifier = Modifier.weight(1f))
-                    if (bot.id in members) Icon(Icons.Filled.Check, null)
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    MemberAvatar(bot, 30.dp)
+                    Text(bot.name, Modifier.padding(horizontal = 12.dp).weight(1f))
+                    Checkbox(checked = bot.id in members, onCheckedChange = { included ->
+                        members = if (included) members + bot.id else members - bot.id
+                    })
                 }
             }
             error?.let { Text(it, color = Color(0xFFFF9F0A)) }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = onDismiss) { Text("取消") }
-                TextButton(enabled = !busy && canCreate, onClick = {
-                    scope.launch {
-                        busy = true; error = null
-                        try {
-                            val room = store.createGroup(name, listOf("user") + members.sorted(), goal, kind, projectMode)
-                            onDismiss(); onOpenRoom(room.id)
-                        } catch (exception: Exception) { error = exception.message }
-                        finally { busy = false }
-                    }
-                }) { Text("创建") }
-            }
+            Button(enabled = !busy && store.protocolReady, onClick = {
+                busy = true; error = null
+                scope.launch {
+                    try {
+                        val record = store.createGroup(title.trim(), store.bots.map { it.id }.filter { it in members })
+                        onDismiss(); onOpenRoom(record.id)
+                    } catch (failure: Exception) { error = failure.localizedMessage }
+                    finally { busy = false }
+                }
+            }) { Text("创建") }
             Spacer(Modifier.height(20.dp))
         }
     }

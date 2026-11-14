@@ -10,6 +10,7 @@ import { cloudflareInstall, installedBinary, safeEnvironment, tailscaleInstall, 
 import { acquireServiceLock } from './service-lock.mjs';
 import { inspectService, launchService, stopService } from './system.mjs';
 import { readRemoteAccess, writeRemoteAccess } from './remote-config.mjs';
+import { assertInstallationWritable, dataFormat } from './installation-state.mjs';
 
 const providers = new Set(['cloudflare', 'tailscale']);
 const targetUrl = config => 'http://127.0.0.1:' + config.web.port;
@@ -103,9 +104,11 @@ export async function remoteStatus(config, provider) {
 }
 
 async function serialized(config, operation) {
+  if (config.dataFormat !== dataFormat) throw new Error('正式实例需先完成版本更新。');
+  await assertInstallationWritable(config.dataRoot, config.releaseRoot);
   const lock = await acquireServiceLock(config.dataRoot, 'remote-access-operation',
     () => ({ pid: process.pid, bootId: 'remote-access', state: 'working' }));
-  try { return await operation(); }
+  try { await assertInstallationWritable(config.dataRoot, config.releaseRoot); return await operation(); }
   finally { await lock.close(); }
 }
 

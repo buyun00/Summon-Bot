@@ -1,14 +1,6 @@
 ---
 name: bot-management
-description: 普通独立 Bot 的职责、运行与持续安排
+description: 查找、创建和配置普通 Bot
 ---
 
-先用 bots_list 查询现有同伴的职责、资料入口、生命周期和责任关系。普通临时任务通过 work_create 承接，不克隆 Bot。群聊项目需要独立成员时，通过 chatroom_team_raise 联系本群 EggBot，先复用已有同伴，再由 chatroom_team_manage 创建临时成员。形成持续维护责任后判断是否升级常驻。已授权的普通独立身份仍可通过 bots_create 创建。
-
-主控接住目标，EggBot 管成员，专业成员独立判断。每个工作 Bot 都从自己的职责关注协作是否失效；有依据的范围、依赖、时间或能力缺口在原群讨论，不等用户纠正。具体工具和交接方式参见 eggbot Skill 或当前 chatroom_team_* 声明。
-
-交接保留目标、来源、已有授权、实际进度、等待与外部绑定。新 Bot 不是原 Bot 的副本，不复制凭据、完整私聊或结果未知的操作。bots_start/bots_stop 管理运行，停止受理不等于外部任务已终止。
-
-持续职责用 routines_create，已有职责复用 id/eventKey。watch 支持已知 work、task 或 room，状态不变时不唤醒模型；同职责在途项会合并。临时外部等待用 work_wait，不为每个任务创建轮询职责。enabled:false 停止后续触发，当前外部工作需按实际能力单独取消。
-
-一次性提醒使用 reminders_create：正文 content，加相对 delaySeconds 或带明确时区的 dueAt。延时以本轮消息接收时刻计算，原房间与回复目标由程序取回；返回提醒 ID 后才表示保存受理。到点直接发送保存的正文，重启后继续同一记录的投递，不启动模型任务。reminders_list 查询当前房间的记录；reminders_cancel 使用原 ID，发送中取消是否成功以实际回执为准。
+用 find 查看可访问成员和已配置的模型连接。需要一个持续协作的成员时，用 create_bot 写明它的名称和行为指令。用 read 取得当前配置及修订，再用 configure_bot 修改。停止和恢复使用相应目标的当前控制引用。现有执行会话的模型和指令来自创建时的绑定。

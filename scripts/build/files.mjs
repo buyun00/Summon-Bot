@@ -1,15 +1,16 @@
-import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile, readdir, lstat, copyFile, rename } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, writeFile, readdir, copyFile, rename, unlink } from 'node:fs/promises';
 import { dirname, resolve, relative, isAbsolute, sep, join } from 'node:path';
 
-export const digest = value => createHash('sha256').update(value).digest('hex');
 export const within = (root, target) => { const part = relative(resolve(root), resolve(target)); return !part || (!isAbsolute(part) && part !== '..' && !part.startsWith(`..${sep}`)); };
 export const readJson = async path => JSON.parse(await readFile(path, 'utf8'));
 export async function writeJson(path, value) {
   await mkdir(dirname(path), { recursive: true });
-  const temporary = `${path}.${process.pid}.tmp`;
-  await writeFile(temporary, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
-  await rename(temporary, path);
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, JSON.stringify(value, null, 2) + '\n', { mode: 0o600, flag: 'wx', flush: true });
+    await rename(temporary, path);
+  } finally { await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
 }
 export function parseArgs(args) {
   const options = {}, positional = [];
@@ -28,7 +29,7 @@ export async function walk(root, filter = () => true) {
       if (!filter(name, entry)) continue;
       if (entry.isSymbolicLink()) throw new Error(`Unpackaged symbolic link: ${path}`);
       if (entry.isDirectory()) await visit(path);
-      else if (entry.isFile()) entries.push({ name, path, size: (await lstat(path)).size });
+      else if (entry.isFile()) entries.push({ name, path });
     }
   }
   await visit(root); return entries.sort((a, b) => a.name.localeCompare(b.name));

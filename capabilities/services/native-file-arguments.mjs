@@ -35,16 +35,6 @@ export function nativeFileArgs(input = [], length, effect) {
   });
 }
 
-export function validInspectionArgs(args) {
-  return Array.isArray(args) && args.some(arg => helpOrVersion.test(arg)) &&
-    args.every(arg => helpOrVersion.test(arg) || /^(?:--?)?[a-z0-9_-]+$/i.test(arg) && !opaqueArgument.test(arg));
-}
-
-export function inspectOnlyArgs(args) {
-  if (!validInspectionArgs(args))
-    fail('Use the documented version or help invocation for a probe. Use a work method for operations with paths or other arguments.');
-}
-
 export function hasExplicitFileScope(policy) {
   return Boolean(policy?.grants?.length || policy?.deniedPaths?.some(item => !item.alternativesOnly));
 }
@@ -75,7 +65,7 @@ export async function checkedNativeArguments({ argv, templateArgs, fileArgs, eff
       if (!explicitPath.test(value) || helpOrVersion.test(value) ||
           isFixedFormatArgument(argv, templateArgs, byIndex, index)) continue;
       if (scoped) throw fileAccessDenied(cwd, 'undeclared_native_path_operand', {
-        argumentIndex: index, instruction: 'Use fileArgs to declare the exact read or write operand and its argument index.',
+        argumentIndex: index, instruction: 'Use file_args to declare the exact read or write operand and its argument index.',
       });
       const operand = value.startsWith('-') && value.includes('=') ? value.slice(value.indexOf('=') + 1) : value;
       if (/^(?:[A-Za-z]:[\\/]|\/|\.{1,2}[\\/])/.test(operand))

@@ -12,7 +12,7 @@ struct CreateBotView: View {
     @State private var errorMessage: String?
 
     private var canSubmit: Bool {
-        !busy && (createdBot != nil || !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        !busy && store.protocolReady && (createdBot != nil || !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
     private var buttonColor: Color {
@@ -79,7 +79,7 @@ struct CreateBotView: View {
             let bot: SummonBot
             if let createdBot { bot = createdBot }
             else {
-                bot = try await store.createBot(name: name.trimmingCharacters(in: .whitespacesAndNewlines), avatar: avatar)
+                bot = try await store.createBot(name: name.trimmingCharacters(in: .whitespacesAndNewlines), avatar: avatar, instructions: "")
                 createdBot = bot
             }
             let room = try await store.openDirectMessage(bot: bot)
@@ -152,27 +152,11 @@ struct AvatarPicker: View {
     }
 }
 
-struct RoomProjectModePicker: View {
-    @Binding var selection: String
-
-    var body: some View {
-        Picker("群聊用途", selection: $selection) {
-            Text("自动识别持续项目").tag("auto")
-            Text("持续项目 · 定期协作复核").tag("project")
-            Text("日常交流").tag("chat")
-        }
-    }
-}
-
 struct CreateRoomView: View {
     @Environment(SummonStore.self) private var store
     @Environment(\.dismiss) private var dismiss
-    let initialKind: String
     let onCreated: (SummonRoom) -> Void
     @State private var name = ""
-    @State private var goal = ""
-    @State private var projectMode = "auto"
-    @State private var kind = "group"
     @State private var members: Set<String> = []
     @State private var busy = false
     @State private var errorMessage: String?
@@ -180,52 +164,37 @@ struct CreateRoomView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("会话") {
-                    TextField("会话名称", text: $name)
-                    Picker("交流方式", selection: $kind) {
-                        Text("群聊").tag("group")
-                        Text("深聊").tag("deep")
-                    }
-                    TextField("会话说明或目标", text: $goal, axis: .vertical).lineLimit(3...6)
-                    if kind == "group" { RoomProjectModePicker(selection: $projectMode) }
-                }
-                Section("选择成员") {
+                TextField("群名称（可选）", text: $name)
+                Section("成员") {
                     ForEach(store.bots) { bot in
-                        Button {
-                            if !members.insert(bot.id).inserted { members.remove(bot.id) }
-                        } label: {
-                            HStack(spacing: 12) {
-                                MemberAvatar(bot: bot, size: 32)
-                                Text(bot.name).foregroundStyle(.primary)
-                                Spacer()
-                                if members.contains(bot.id) { Image(systemName: "checkmark").foregroundStyle(.tint) }
-                            }.contentShape(Rectangle())
-                        }.buttonStyle(.plain)
+                        Toggle(isOn: Binding(get: { members.contains(bot.id) }, set: { included in
+                            if included { members.insert(bot.id) } else { members.remove(bot.id) }
+                        })) {
+                            Label { Text(bot.name) } icon: { MemberAvatar(bot: bot, size: 32) }
+                        }
                     }
                 }
-                if let errorMessage { Section { InlineError(message: errorMessage) } }
+                if let errorMessage { InlineError(message: errorMessage) }
             }
-            .navigationTitle(kind == "deep" ? "发起深聊" : "创建群聊")
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("创建群聊")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("创建") { Task { await create() } }
-                        .disabled(busy || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || members.isEmpty || ((kind == "deep" || projectMode == "project") && goal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+                    Button("创建") { Task { await create() } }.disabled(busy || !store.protocolReady)
                 }
             }
-            .overlay { if busy { ProgressView() } }
-            .onAppear { kind = initialKind }
         }
     }
 
     private func create() async {
-        busy = true; errorMessage = nil
+        guard !busy else { return }
+        busy = true
         defer { busy = false }
         do {
-            let room = try await store.createGroup(name: name, members: ["user"] + members.sorted(), goal: goal, kind: kind,
-                                                   projectMode: kind == "group" ? projectMode : nil)
-            dismiss(); onCreated(room)
+            let room = try await store.createGroup(name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                                                   members: store.bots.map(\.id).filter(members.contains))
+            dismiss()
+            onCreated(room)
         } catch { errorMessage = error.localizedDescription }
     }
 }
