@@ -2,10 +2,15 @@ param([string]$DataRoot = '', [string]$ReleaseRoot = '', [switch]$Foreground, [s
 $ErrorActionPreference = 'Stop'
 if (!$DataRoot) { $DataRoot = if ($env:SUMMON_DATA_ROOT) { $env:SUMMON_DATA_ROOT } else { Join-Path (Split-Path $PSScriptRoot -Parent) 'Relay-Bot-data' } }
 $DataRoot = [IO.Path]::GetFullPath($DataRoot)
+$deploymentPath = Join-Path $DataRoot 'config\deployment.json'
+function Read-SummonJson([string]$Path) {
+    try { Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw "Could not read UTF-8 JSON from $Path." }
+}
 function Read-SummonInstallation {
     $statePath = Join-Path $DataRoot 'config\installation_state.json'
     if (Test-Path -LiteralPath $statePath) {
-        $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+        $state = Read-SummonJson $statePath
         if ($state.schemaVersion -ne 1 -or $state.phase -notin @('runtime_ready', 'done') -or !$state.release_root -or !$state.target_build) {
             return @{ Blocked = $true; Phase = $state.phase }
         }
@@ -16,7 +21,7 @@ function Read-SummonInstallation {
 function Invoke-SummonStart($installation) {
     $requestedRelease = if ($ReleaseRoot) { $ReleaseRoot } elseif ($env:SUMMON_RELEASE_ROOT) { $env:SUMMON_RELEASE_ROOT }
     $selectedRelease = if ($installation.Release) { $installation.Release } else {
-        (Get-Content -LiteralPath (Join-Path $DataRoot 'config\deployment.json') -Raw | ConvertFrom-Json).releaseRoot
+        (Read-SummonJson $deploymentPath).releaseRoot
     }
     if (!$selectedRelease) { throw 'Install a release before starting Summon Bot.' }
     if ($requestedRelease -and [IO.Path]::GetFullPath($requestedRelease) -ne [IO.Path]::GetFullPath($selectedRelease)) {
@@ -39,11 +44,8 @@ if ($installation.Blocked) {
 Invoke-SummonStart $installation
 if ($LASTEXITCODE -ne 0) { throw "Summon Bot failed to start ($LASTEXITCODE). Check managed service logs." }
 if (!$Foreground) {
-    if ($RespectIntent) {
-        $summonIntent = Get-Content -LiteralPath (Join-Path $DataRoot 'config\deployment.json') -Raw | ConvertFrom-Json
-        if ($summonIntent.runIntent -eq 'stopped') { return }
-    }
     try {
+        if ($RespectIntent -and (Read-SummonJson $deploymentPath).runIntent -eq 'stopped') { return }
         $summonTask = Get-ScheduledTask -TaskName 'Summon Bot' -TaskPath '\' -ErrorAction SilentlyContinue
         if ($summonTask -and $summonTask.State -ne 'Running') { Start-ScheduledTask -InputObject $summonTask }
     } catch {

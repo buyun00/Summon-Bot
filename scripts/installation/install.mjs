@@ -73,9 +73,9 @@ async function cleanReleases({ appRoot, sourceRoot, destination }) {
   }
 }
 
-async function startSelected(config, appRoot, previousIntent) {
+async function startSelected(config, appRoot, previousIntent, resumeRuntime) {
   if (previousIntent === 'stopped' || config.runIntent === 'stopped') return 'stopped';
-  if (process.platform === 'win32') {
+  if (process.platform === 'win32' && !resumeRuntime) {
     const args = ['-NoProfile', '-NonInteractive', '-File', join(appRoot, 'Start.ps1'), '-DataRoot', config.dataRoot, '-RespectIntent'];
     await new Promise((accept, reject) => {
       const launcher = spawn('powershell.exe', args, { windowsHide: true, stdio: ['ignore', 'inherit', 'inherit'] });
@@ -96,7 +96,8 @@ async function startSelected(config, appRoot, previousIntent) {
       });
     });
   } else {
-    await startSystem(config, { respectIntent: true });
+    const services = await startSystem(config, { respectIntent: true });
+    if (services.state === 'stopped') return 'stopped';
   }
   return 'running';
 }
@@ -144,6 +145,7 @@ export async function installRelease({ releaseRoot, appRoot, dataRoot, sourceRoo
     let state = await readInstallationState(dataRoot);
     const selected = await readOptional(join(appRoot, 'current.json'));
     const deployment = await readOptional(deploymentPath(dataRoot));
+    const resumeRuntime = state?.phase === 'runtime_ready' && state.target_build === manifest.buildId;
     if (state?.phase === 'done' && state.target_build === manifest.buildId) {
       return { ...selected, sourceCommit: manifest.sourceCommit, runtimeState: deployment.runIntent };
     }
@@ -213,7 +215,7 @@ export async function installRelease({ releaseRoot, appRoot, dataRoot, sourceRoo
     }
     signal?.throwIfAborted();
     const activeConfig = await readJson(deploymentPath(dataRoot));
-    const runtimeState = await startSelected(activeConfig, appRoot, state.previousIntent);
+    const runtimeState = await startSelected(activeConfig, appRoot, state.previousIntent, resumeRuntime);
     try {
       await cleanReleases({ appRoot, sourceRoot: state.source_root, destination });
       await unlink(join(dataRoot, 'config', `deployment.${state.migration_id}.json`)).catch(error => { if (error.code !== 'ENOENT') throw error; });
