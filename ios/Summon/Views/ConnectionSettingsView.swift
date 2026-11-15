@@ -26,6 +26,8 @@ struct ConnectionSettingsView: View {
                 }
                 Section("个人信息") {
                     TextField("显示名称", text: $userName)
+                    Button("保存显示名称") { store.setUserName(userName); userName = store.settings.userName }
+                        .disabled(userName == store.settings.userName)
                 }
                 Section {
                     Button("显示设置", systemImage: "textformat.size") { showDisplay = true }
@@ -39,19 +41,19 @@ struct ConnectionSettingsView: View {
                 } header: { Text("服务连接") } footer: {
                     Text("使用部署机提供的 HTTPS 地址和访问令牌。令牌保存在 iOS 钥匙串中。")
                 }
-                if !store.profiles.isEmpty {
+                if !store.profiles.isEmpty || store.settings.workspaceID != nil {
                     Section("工作区") {
                         Button {
                             changeWorkspace(nil)
                         } label: {
                             Label("默认工作区", systemImage: store.settings.workspaceID == nil ? "checkmark.circle.fill" : "circle")
-                        }.disabled(saving || !store.protocolReady)
+                        }.disabled(saving || store.settings.workspaceID == nil)
                         ForEach(store.profiles) { profile in
                             Button {
                                 changeWorkspace(profile.id)
                             } label: {
                                 Label(profile.name, systemImage: store.settings.workspaceID == profile.id ? "checkmark.circle.fill" : "circle")
-                            }.disabled(saving || !store.protocolReady)
+                            }.disabled(saving || store.settings.workspaceID == profile.id)
                         }
                     }
                 }
@@ -108,7 +110,7 @@ struct ConnectionSettingsView: View {
         saving = true; errorMessage = nil
         defer { saving = false }
         do {
-            try await store.saveConnection(baseURL: baseURL, token: token, userName: userName)
+            try await store.saveConnection(baseURL: baseURL, token: token)
             dismiss()
         } catch { errorMessage = error.localizedDescription }
     }
@@ -135,13 +137,13 @@ struct SummonConnectionGuideView: View {
                     SecureField("访问令牌", text: $token).textFieldStyle(.roundedBorder)
                     Button("连接工作区") {
                         let credential = token.trimmingCharacters(in: .whitespacesAndNewlines)
-                        token = ""; saving = true; failure = nil
+                        saving = true; failure = nil
                         Task {
                             defer { saving = false }
                             do { try await store.saveConnection(baseURL: address, token: credential) }
                             catch { failure = error.localizedDescription }
                         }
-                    }.buttonStyle(.borderedProminent).disabled(saving || token.isEmpty)
+                    }.buttonStyle(.borderedProminent).disabled(saving || token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Button("更改地址") { awaitingToken = false; token = ""; failure = nil }.disabled(saving)
                 } else {
                     TextField("https://你的工作区地址", text: $address)
@@ -154,6 +156,7 @@ struct SummonConnectionGuideView: View {
                 }
                 if saving { ProgressView("正在连接…") }
                 if let failure { InlineError(message: failure) }
+                else if let migrationError = store.errorMessage { InlineError(message: migrationError) }
             }.padding(24)
         }.background(SummonTheme.background)
     }

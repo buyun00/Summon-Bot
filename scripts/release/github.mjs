@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { readFile, writeFile } from 'node:fs/promises';
 import { githubBase, releaseTag } from './targets.mjs';
-import { validateRelease } from './repository.mjs';
+import { assertNewerRelease, sameRelease, validateRelease } from './repository.mjs';
 
 async function gh(args, input) {
   return new Promise((resolve, reject) => {
@@ -28,8 +28,20 @@ async function find(path) {
 
 async function releaseMetadata(release, endpoint) {
   const asset = release.assets.find(item => item.name === 'latest.json');
-  if (!asset) throw new Error(`Missing latest.json for ${release.tag_name}`);
-  return validateRelease(JSON.parse(await gh(['api', `${endpoint}/releases/assets/${asset.id}`, '-H', 'Accept: application/octet-stream'])));
+  if (!asset) return null;
+  const body = await gh(['api', `${endpoint}/releases/assets/${asset.id}`, '-H', 'Accept: application/octet-stream'])
+    .catch(error => { if (/\b404\b/.test(error.message)) return null; throw error; });
+  try { return body ? validateRelease(JSON.parse(body)) : null; }
+  catch { return null; }
+}
+
+async function recordedRelease(ref, endpoint) {
+  if (!ref?.object?.sha) return null;
+  const sha = ref.object.sha;
+  const file = await find(`${endpoint}/contents/release.json?ref=${encodeURIComponent(sha)}`);
+  try {
+    return { ...JSON.parse(Buffer.from(file?.content || '', 'base64').toString('utf8')), sourceCommit: sha };
+  } catch { return null; }
 }
 
 export function releaseDescription(metadata, repository) {
@@ -58,6 +70,7 @@ export async function refreshGithubDescriptions(repository) {
   const releases = await api('GET', `${endpoint}/releases?per_page=100`);
   for (const release of releases.filter(item => !item.draft && item.tag_name.startsWith('client-'))) {
     const metadata = await releaseMetadata(release, endpoint);
+    if (!metadata) continue;
     await api('PATCH', `${endpoint}/releases/${release.id}`, { body: releaseDescription(metadata, repository) });
     console.log(`Updated ${release.html_url}`);
   }
@@ -69,31 +82,42 @@ export async function publishGithub(input, repository) {
   const tag = releaseTag(metadata.platform, metadata.arch);
   const endpoint = `repos/${repository}`;
   let release = await find(`${endpoint}/releases/tags/${tag}`);
-  if (release && !release.draft) {
-    const previous = await releaseMetadata(release, endpoint);
-    if (metadata.buildNumber <= previous.buildNumber) throw new Error(`Increase release.json buildNumber before publishing ${tag} again`);
-  }
+  const publicCatalog = release && !release.draft ? await releaseMetadata(release, endpoint) : null;
   const ref = await find(`${endpoint}/git/ref/tags/${tag}`);
+  const previous = release && !release.draft ? publicCatalog || await recordedRelease(ref, endpoint) : null;
+  if (!previous || !sameRelease(metadata, previous)) assertNewerRelease(metadata, previous);
   if (!ref) await api('POST', `${endpoint}/git/refs`, { ref: `refs/tags/${tag}`, sha: metadata.sourceCommit });
   if (!release) release = await api('POST', `${endpoint}/releases`, { tag_name: tag, name: tag, draft: true, make_latest: 'false' });
 
-  const value = { ...metadata, source: 'github', publishedAt: new Date().toISOString(),
+  const committed = publicCatalog && publicCatalog.platform === metadata.platform && publicCatalog.arch === metadata.arch
+    && sameRelease(metadata, publicCatalog) && ref?.object.sha === metadata.sourceCommit
+    && publicCatalog.files.every(file => release.assets.some(asset => asset.name === file.name && asset.state === 'uploaded'));
+  const value = committed ? publicCatalog : { ...metadata, source: 'github', publishedAt: new Date().toISOString(),
     downloadUrl: `${base}${encodeURIComponent(metadata.mainFile)}`,
     files: metadata.files.map(file => ({ ...file, url: `${base}${encodeURIComponent(file.name)}` })) };
-  await writeFile(join(input, 'latest.json'), JSON.stringify(value, null, 2) + '\n');
-  // Packages arrive first; only then switch the updater channel and public catalog.
-  for (const files of [metadata.files.filter(file => !file.name.endsWith('.yml')).map(file => file.name),
-    metadata.files.filter(file => file.name.endsWith('.yml')).map(file => file.name), ['latest.json']]) {
-    if (files.length) await gh(['release', 'upload', tag, ...files.map(name => join(input, name)), '--repo', repository, '--clobber']);
+  if (!committed) {
+    await writeFile(join(input, 'latest.json'), JSON.stringify(value, null, 2) + '\n');
+    const upload = async files => {
+      if (files.length) await gh(['release', 'upload', tag, ...files.map(name => join(input, name)), '--repo', repository, '--clobber']);
+    };
+    const files = metadata.files.map(file => file.name);
+    await upload(files.filter(name => !name.endsWith('.yml')));
+    await upload(files.filter(name => name.endsWith('.yml')));
+    if (release.draft) await upload(['latest.json']);
+    await api('PATCH', `${endpoint}/git/refs/tags/${tag}`, { sha: metadata.sourceCommit, force: true });
+    await api('PATCH', `${endpoint}/releases/${release.id}`, {
+      name: `Summon Bot ${metadata.version} · ${metadata.platform} ${metadata.arch}`,
+      body: releaseDescription(value, repository), draft: false, make_latest: 'false',
+    });
+    if (!release.draft) await upload(['latest.json']);
   }
-  await api('PATCH', `${endpoint}/git/refs/tags/${tag}`, { sha: metadata.sourceCommit, force: true });
-  await api('PATCH', `${endpoint}/releases/${release.id}`, {
-    name: `Summon Bot ${metadata.version} · ${metadata.platform} ${metadata.arch}`,
-    body: releaseDescription(value, repository), draft: false, make_latest: 'false',
-  });
-  const current = await api('GET', `${endpoint}/releases/${release.id}`);
-  const retained = new Set([...metadata.files.map(file => file.name), 'latest.json']);
-  for (const asset of current.assets) if (!retained.has(asset.name)) await api('DELETE', `${endpoint}/releases/assets/${asset.id}`);
-  console.log(JSON.stringify({ published: true, source: 'github', platform: metadata.platform, arch: metadata.arch, version: metadata.version, url: current.html_url }));
+  let cleanupPending;
+  try {
+    const current = await api('GET', `${endpoint}/releases/${release.id}`);
+    const retained = new Set([...value.files.map(file => file.name), 'latest.json']);
+    for (const asset of current.assets) if (!retained.has(asset.name)) await api('DELETE', `${endpoint}/releases/assets/${asset.id}`);
+  } catch (error) { cleanupPending = error.message; }
+  console.log(JSON.stringify({ published: true, source: 'github', platform: metadata.platform, arch: metadata.arch,
+    version: metadata.version, url: release.html_url, ...(cleanupPending ? { cleanupPending } : {}) }));
   return metadata;
 }

@@ -76,7 +76,7 @@ npm run release:web
 先按 [开发流程](DEVELOPMENT.md) 同步原生端与必要的桌面代码，按 [版本说明](CLIENT_RELEASES.md#版本和-windows-发布) 更新发行版本和递增构建号，提交并推送本次负责的文件。需要准备桌面依赖时运行：
 
 ```powershell
-npm ci --prefix desktop --no-audit --no-fund
+npm ci --prefix desktop --ignore-scripts --no-audit --no-fund
 ```
 
 再执行：
@@ -85,7 +85,7 @@ npm ci --prefix desktop --no-audit --no-fund
 npm run release:all
 ```
 
-Windows 上的完整发布从 Git 当前提交构建本机包、网页和后端。需要切换协议时，同提交的 GitHub 安装包和 iOS TestFlight 内部版本须先可取得，随后进入正式切换窗口。具体操作见 [客户端发行与更新](CLIENT_RELEASES.md)。
+Windows 上的完整发布从 Git 当前提交构建本机包、网页和后端。同协议部署可先更新 Web。需要切换协议时，同提交的 Windows 本机包、GitHub 安装包和 iOS TestFlight 内部版本须先可取得。具体操作见 [客户端发行与更新](CLIENT_RELEASES.md)。
 
 客户端下载先查设备本机，再直接从 GitHub 获取，远程安装包不再通过正式主机转发。发布流程先就位新产物，再切换最新版元数据，清理被替代的版本与中间目录，保留有效业务资料。
 

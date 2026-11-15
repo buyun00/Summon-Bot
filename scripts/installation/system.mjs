@@ -1,14 +1,14 @@
 import { randomBytes } from 'node:crypto';
-import { mkdir, readFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
+import { setTimeout as pause } from 'node:timers/promises';
 import { readJson, writeJson, within } from '../build/files.mjs';
 import { inspectServiceLock } from './service-lock.mjs';
 import { assertInstallationWritable, dataFormat } from './installation-state.mjs';
 import { terminateTree } from '../../bot/src/runtime/process-tools.mjs';
 
-const pause = milliseconds => new Promise(resolvePause => setTimeout(resolvePause, milliseconds));
 export const deploymentPath = dataRoot => join(resolve(dataRoot), 'config', 'deployment.json');
 export const serviceFolders = { web: 'web', gateway: 'capabilities/gateway', cloudflared: 'connectors/cloudflared', 'remote-bridge': 'connectors/remote-bridge' };
 export const serviceRoot = (dataRoot, type) => join(dataRoot, serviceFolders[type]);
@@ -45,11 +45,10 @@ export async function inspectService(config, type) {
   const locked = await inspectServiceLock(config.dataRoot, type);
   if (!locked) return { type, state: 'stopped' };
   if (locked.state === 'starting') return locked;
-  let run;
-  run = locked;
+  const run = locked;
   if (!run.controlUrl || !['127.0.0.1', '[::1]'].includes(new URL(run.controlUrl).hostname)) throw new Error(`Invalid ${type} control address`);
   try {
-    const response = await fetch(new URL('/health', run.controlUrl), { headers: { Authorization: `Bearer ${config.controlToken}` }, signal: AbortSignal.timeout(2000) });
+    const response = await fetch(new URL('/health', run.controlUrl), { redirect: 'error', headers: { Authorization: `Bearer ${config.controlToken}` }, signal: AbortSignal.timeout(2000) });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const actual = await response.json();
     if (actual.bootId !== run.bootId || actual.pid !== run.pid || actual.type !== type) throw Object.assign(new Error('Service identity mismatch'), { code: 'SERVICE_IDENTITY_MISMATCH' });
@@ -71,7 +70,6 @@ export async function launchService(config, type, { foreground = false, timeoutM
   const entry = join(config.releaseRoot, 'scripts/installation/service.mjs');
   if (!existsSync(entry)) throw new Error(`Missing service entry: ${entry}`);
   const logRoot = join(serviceRoot(config.dataRoot, type), 'logs');
-  await mkdir(logRoot, { recursive: true });
   const bundled = bundledNode(config.releaseRoot);
   const env = await deploymentEnvironment(config);
   await assertInstallationWritable(config.dataRoot, config.releaseRoot);
@@ -130,29 +128,38 @@ export async function startSystem(config, { foreground = false, respectIntent = 
   const gateway = await launchService(config, 'gateway', { foreground });
   onProgress?.({ stage: 'web' });
   const web = await launchService(config, 'web', { foreground });
-  const { restoreAuxiliaries } = await import('./auxiliaries.mjs');
-  const auxiliaries = await restoreAuxiliaries(config);
-  return { state: 'ready', gateway, web, auxiliaries };
+  return { state: 'ready', gateway, web };
 }
 
-export async function stopService(config, type, { waitForExit = false } = {}) {
-  const run = await inspectService(config, type);
-  if (run.state === 'stopped') return run;
-  if (run.state === 'ready') {
-    const response = await fetch(new URL('/shutdown', run.controlUrl), { method: 'POST',
-      headers: { Authorization: `Bearer ${config.controlToken}` }, signal: AbortSignal.timeout(5000) });
-    if (!response.ok) throw new Error(`${type} rejected shutdown (${response.status})`);
-  } else if (run.state !== 'stopping') {
-    throw new Error(`${type} cannot be safely stopped while ${run.state}`);
-  }
-  const deadline = waitForExit ? Infinity : Date.now() + 60000;
+export async function stopService(config, type, { timeoutMs = 60000, signal } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let owner, last, requested = false, shutdownError;
   while (Date.now() < deadline) {
-    const next = await inspectService(config, type);
-    if (next.state === 'stopped') return next;
-    if (next.bootId !== run.bootId) throw new Error(`${type} was replaced by another process during shutdown`);
-    await pause(100);
+    signal?.throwIfAborted();
+    last = await inspectService(config, type);
+    if (last.state === 'stopped') return last;
+    if (!last.releaseRoot || resolve(last.releaseRoot) !== resolve(config.releaseRoot)) {
+      throw new Error(`${type} owner PID ${last.pid} belongs to another release (${last.releaseRoot || 'unknown'})`);
+    }
+    if (owner && (last.pid !== owner.pid || last.bootId !== owner.bootId)) {
+      throw new Error(`${type} owner changed from PID ${owner.pid} to PID ${last.pid} during shutdown`);
+    }
+    owner ||= last;
+    signal?.throwIfAborted();
+    if (last.state === 'ready' && !requested) {
+      const timeout = AbortSignal.timeout(Math.max(1, Math.min(5000, deadline - Date.now())));
+      const response = await fetch(new URL('/shutdown', last.controlUrl), { method: 'POST', redirect: 'error',
+        headers: { Authorization: `Bearer ${config.controlToken}` }, signal: signal ? AbortSignal.any([signal, timeout]) : timeout })
+        .catch(error => { signal?.throwIfAborted(); shutdownError = error; return null; });
+      if (response) {
+        if (!response.ok || (await response.json()).bootId !== owner.bootId) throw new Error(`${type} PID ${owner.pid} did not accept shutdown (HTTP ${response.status})`);
+        requested = true;
+      }
+    }
+    await pause(Math.max(0, Math.min(250, deadline - Date.now())), undefined, { signal });
   }
-  throw new Error(`${type} acknowledged shutdown but has not stopped`);
+  throw Object.assign(new Error(`${type} PID ${last?.pid ?? 'unknown'} still owns the service (${last?.state ?? 'unknown'}); resume after this owner exits or its control endpoint responds`,
+    { cause: shutdownError }), { code: 'SERVICE_SHUTDOWN_TIMEOUT' });
 }
 
 export async function stopSystem(config) {

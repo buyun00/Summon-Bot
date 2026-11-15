@@ -167,7 +167,7 @@ struct SummonRoomSnapshot: Decodable, Sendable {
     var cursor: String?
 }
 
-struct SummonWorkspaceProfile: Decodable, Identifiable, Equatable, Sendable {
+struct SummonWorkspaceProfile: Codable, Identifiable, Equatable, Sendable {
     let id: String
     let name: String
 }
@@ -179,7 +179,7 @@ struct SummonBootstrap: Decodable, Equatable, Sendable {
     let releasesUrl: String?
     let workspaceProfiles: [SummonWorkspaceProfile]?
 
-    var ready: Bool { protocolVersion == SummonAPIClient.protocolVersion && !updating }
+    var ready: Bool { protocolVersion == SummonAPIClient.protocolVersion }
 
     var notice: String? {
         if updating { return "服务正在更新。草稿和待确认的发送已保留。" }

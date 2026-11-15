@@ -6,7 +6,7 @@ import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { BotRuntime } from '../../bot/src/runtime/bot.mjs';
 import { createRedactor } from '../../bot/src/runtime/config.mjs';
-import { UsageLedger, readUsage, usageRange, finishUsageTotals, emptyUsageTotals, USAGE_PRICING } from '../../bot/src/agent/usage.mjs';
+import { readUsage, usageRange, finishUsageTotals, emptyUsageTotals, USAGE_PRICING } from '../../bot/src/agent/usage.mjs';
 import { assertInstallationWritable, readInstallationState } from '../../scripts/installation/installation-state.mjs';
 import { AttachmentStore, MAX_ATTACHMENT_REQUEST_BYTES } from '../chatroom/attachments.mjs';
 import { ChatroomService } from '../chatroom/service.mjs';
@@ -103,7 +103,7 @@ export async function startGateway(options = {}) {
   if (history?.status && history.status !== 'complete') throw new Error('Offline history maintenance is incomplete');
   const historyEpoch = history?.historyEpoch ?? null;
   const clients = new Set(), requests = new Set(), stores = [];
-  let platform, runtime, models, connections, push, usage, server, url, timer, activeTick, activeConnectionTick, closeTask, installation;
+  let platform, runtime, models, connections, push, server, url, timer, activeTick, activeConnectionTick, closeTask, installation;
   let closing = false;
   let drainSnapshot;
   function store(name) {
@@ -165,7 +165,6 @@ export async function startGateway(options = {}) {
       await Promise.allSettled([runtime?.close(), connections?.close(), models?.close(), push?.close()]);
       await Promise.allSettled([...(platform?.botStops || [])]);
       await closed;
-      usage?.close();
       for (const value of stores) value.close();
     })();
   }
@@ -182,18 +181,28 @@ export async function startGateway(options = {}) {
       limits: options.limits, workspaces: options.workspaces });
     const room = new ChatroomService({ store: records, manager: platform.manager, attachments, platform, emit });
     connections = new SummonConnections({ store: records, dataRoot, workspace: options.defaultCwd || releaseRoot,
+      assertSessionAuthority: (session, options) => platform.assertSessionAuthority(session, options),
       onEvent: (sessionId, callId, facts) => { const event = platform.recordReceipt(callId, facts, sessionId); emit('execution'); return event; } });
     runtime = new BotRuntime({ dataRoot, releaseRoot, model, platform, emit });
     platform.attach({ room, runtime, connections });
     platform.resources.recoverModels();
     platform.recoverCalls();
     await runtime.initialize();
-    push = await new PushService({ store: store('push'), messages: records, dataRoot, historyEpoch }).initialize();
-    usage = new UsageLedger(join(dataRoot, 'usage.sqlite'));
+    push = await new PushService({ openStore: () => store('push'), messages: records, dataRoot, historyEpoch }).initialize();
     const api = createApi({ platform, room, attachments, models, profiles, connections, push, sync, historyEpoch, emit,
       getUsage: (params, context) => {
+        if (!runtime.usage || runtime.usageRecoveryFailed) reject('usage_unavailable', 'The local usage report is unavailable', 503);
         const all = platform.listBots(), bots = all.filter(bot => platform.visibleBot(bot, context));
-        return usageSnapshot(usage, params, bots, room.rooms(user.id, context), all, context.workspaceProfileId);
+        const rooms = room.rooms(user.id, context);
+        try {
+          const report = usageSnapshot(runtime.usage, params, bots, rooms, all, context.workspaceProfileId);
+          if (runtime.usageIncomplete) report.coverage.writeFailures = true;
+          return report;
+        }
+        catch (error) {
+          if (error.status) throw error;
+          reject('usage_unavailable', 'The local usage report is unavailable', 503);
+        }
       } });
 
     server = createServer((req, res) => {
@@ -256,10 +265,12 @@ export async function startGateway(options = {}) {
         } catch (error) {
           if (res.headersSent) { res.end(); return; }
           const status = error.status || 500;
-          const details = error.details ?? (error.revision === undefined ? undefined : { revision: error.revision });
-          if (status >= 500 && !error.status) console.error(`Summon platform request failed (${error.code || error.name})`, clean(error.message));
-          json(res, status, { error: status < 500 || error.status && error.code ? clean(error.message) : 'The Summon host could not complete this request',
-            code: error.code || 'request_failed', details, ...(error.code === 'protocol_mismatch' ? details : {}), call_id: error.call_id });
+          const diagnostic = clean.error({ message: error.message, status: error.status, code: error.code,
+            details: error.details ?? (error.revision === undefined ? undefined : { revision: error.revision }) });
+          const details = diagnostic.details ?? (error.code === 'protocol_mismatch' ? { protocolVersion, releasesUrl: '/api/releases' } : undefined);
+          if (status >= 500 && !error.status) console.error('Summon platform request failed', diagnostic.message);
+          json(res, status, { error: status < 500 || error.status && error.code ? diagnostic.message : 'The Summon host could not complete this request',
+            code: diagnostic.code || 'request_failed', details, ...(error.code === 'protocol_mismatch' ? details : {}), call_id: error.call_id });
         }
       })();
       requests.add(task);

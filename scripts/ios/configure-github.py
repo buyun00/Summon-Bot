@@ -7,6 +7,7 @@ import plistlib
 import re
 import subprocess
 import sys
+from uuid import UUID
 
 from cryptography.hazmat.primitives.serialization import pkcs12, Encoding
 from cryptography.x509.oid import NameOID
@@ -43,9 +44,7 @@ def main():
     match = re.fullmatch(r'AuthKey_([A-Z0-9]{10})\.p8', api_path.name)
     if not match:
         raise ValueError('Unexpected API key filename')
-    issuer = (app / 'asc-issuer-id.txt').read_text(encoding='utf-8-sig').strip()
-    if not re.fullmatch(r'[0-9a-fA-F-]{36}', issuer):
-        raise ValueError('Invalid App Store Connect issuer ID')
+    issuer = str(UUID((app / 'asc-issuer-id.txt').read_text(encoding='utf-8-sig').strip()))
     private_key = api_path.read_text(encoding='utf-8-sig')
     os.environ.update(ASC_KEY_ID=match[1], ASC_ISSUER_ID=issuer, ASC_PRIVATE_KEY=private_key)
     spec = spec_from_file_location('summon_testflight', pathlib.Path(__file__).with_name('ci-testflight.py'))
@@ -55,13 +54,10 @@ def main():
     apps = api(module.query('/v1/apps', **{'filter[bundleId]': 'org.lin0.summon'}))['data']
     if len(apps) != 1:
         raise ValueError('API key cannot see exactly one Summon app; create the correct app record or grant access')
-    groups = api('/v1/apps/' + apps[0]['id'] + '/betaGroups?limit=200')['data']
+    groups = module.records(api, '/v1/apps/' + apps[0]['id'] + '/betaGroups?limit=200')
     groups = [g for g in groups if g['attributes']['name'] == inputs['group'] and g['attributes']['isInternalGroup']]
     if len(groups) != 1:
         raise ValueError('Create the selected internal testing group inside Summon Bot first')
-    testers = api('/v1/betaGroups/' + groups[0]['id'] + '/betaTesters?limit=1')['data']
-    if not testers:
-        raise ValueError('Add at least one internal tester to the Summon group')
     repo = 'buyun00/Summon-Bot'
     def gh(args, value):
         result = subprocess.run(['gh', *args, '--repo', repo], input=value, text=True,

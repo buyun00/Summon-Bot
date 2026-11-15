@@ -5,17 +5,12 @@ const controls = document.querySelector('#controls');
 const status = document.querySelector('#status');
 const welcome = document.querySelector('#welcome');
 const title = document.querySelector('#title');
-const unpacking = document.querySelector('#unpacking');
-const parcelActions = document.querySelector('#parcel-actions');
 const startup = document.querySelector('#startup');
 const startupBand = startup.querySelector('.startup-band');
 const startupLabel = document.querySelector('#startup-label');
 const startupDetail = document.querySelector('#startup-detail');
 let workspace, candidate, localAvailable, busy = false;
-const releaseControls = document.createElement('section');
-releaseControls.id = 'release-controls';
-releaseControls.setAttribute('aria-label', '客户端更新');
-status.after(releaseControls);
+const releaseControls = document.querySelector('#release-controls');
 
 function say(text) {
   const row = document.createElement('div');
@@ -30,12 +25,12 @@ function say(text) {
   transcript.append(row);
 }
 
-function button(label, action, primary = false) {
+function button(label, action, primary = false, independent = false) {
   const element = document.createElement('button');
   element.type = 'button';
   element.textContent = label;
   if (primary) element.className = 'primary';
-  element.onclick = () => void perform(action);
+  element.onclick = independent ? () => void action().catch(() => renderUpdates({ status: 'error' })) : () => void perform(action);
   return element;
 }
 
@@ -48,10 +43,11 @@ function buttons(...items) {
 
 function renderUpdates(value) {
   const installable = ['downloaded', 'manual'].includes(value?.status);
+  const check = async () => renderUpdates(await setup.checkForUpdates());
   const updateButton = button(value?.status === 'downloaded' ? '重启并更新' : installable ? '下载更新' : '检查更新', async () => {
     if (installable) await setup.installUpdate();
-    else renderUpdates(await setup.checkForUpdates());
-  });
+    else await check();
+  }, false, true);
   updateButton.disabled = ['checking', 'downloading'].includes(value?.status);
   const detail = document.createElement('small');
   detail.setAttribute('role', 'status');
@@ -61,7 +57,7 @@ function renderUpdates(value) {
     unpublished: '暂未发布新版', error: '暂时无法检查更新',
   };
   detail.textContent = labels[value?.status] || '';
-  releaseControls.replaceChildren(updateButton, detail);
+  releaseControls.replaceChildren(updateButton, ...(installable ? [button('重新检查', check, false, true)] : []), detail);
 }
 
 function field(label, name, { type = 'text', placeholder = '', value = '', required = false } = {}) {
@@ -104,7 +100,7 @@ async function perform(action) {
   if (busy) return;
   busy = true;
   status.textContent = '正在处理…';
-  controls.inert = parcelActions.inert = true;
+  controls.inert = true;
   try {
     await action();
     if (status.textContent === '正在处理…') status.textContent = '';
@@ -112,13 +108,12 @@ async function perform(action) {
     status.textContent = message(error);
   } finally {
     busy = false;
-    controls.inert = parcelActions.inert = false;
+    controls.inert = false;
   }
 }
 
 function showWelcome(label) {
   startup.hidden = true;
-  unpacking.hidden = true;
   welcome.hidden = false;
   title.textContent = label;
   transcript.replaceChildren();
@@ -127,12 +122,11 @@ function showWelcome(label) {
   title.focus({ preventScroll: true });
 }
 
-function showParcel() {
-  startup.hidden = true;
-  welcome.hidden = true;
-  unpacking.hidden = false;
-  parcelActions.replaceChildren(button('拆开箱子', showInstances, true));
-  if (workspace) parcelActions.append(button('回到当前工作区', () => setup.action('continue')));
+function showRetry() {
+  showWelcome('连接工作区');
+  if (workspace) say(workspace.origin);
+  buttons(button('重试当前工作区', () => setup.action('continue'), true),
+    button('选择其他实例', () => setup.action('choose-instance')));
 }
 
 async function connect(command, input) {
@@ -189,7 +183,6 @@ function showWorkspaces() {
 
 async function createWorkspace() {
   welcome.hidden = true;
-  unpacking.hidden = true;
   startup.hidden = false;
   startupBand.removeAttribute('data-ready');
   startupBand.removeAttribute('aria-valuenow');
@@ -282,21 +275,19 @@ async function open() {
   try {
     const info = await setup.info();
     ({ workspace, candidate, localAvailable } = info);
-    if (info.section === 'unpacking') showParcel();
+    if (info.section === 'retry') showRetry();
     else if (info.section === 'workspaces') showWorkspaces();
     else if (info.section === 'remote') showRemote();
     else if (['cloudflare', 'tailscale'].includes(info.section)) await perform(() => showAccess(info.section));
     else showInstances();
     renderUpdates(info.update);
-    if (info.error) status.textContent = info.error;
+    if (info.error || info.selectionWarning) status.textContent = info.error || info.selectionWarning;
   } catch (error) {
     showInstances();
     status.textContent = message(error);
   }
 }
 
-const avatars = window.SummonAvatars;
-if (avatars) document.querySelector('.parcel-bot').innerHTML = avatars.render(avatars.defaults('bot-entry'), 144, { static: true });
 setup.onProgress(stage => {
   if (stage !== 'ready' || startup.hidden) return;
   startupBand.setAttribute('data-ready', '');

@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { createModels, createProvider } from '@earendil-works/pi-ai';
+import { createModels, createProvider, getSupportedThinkingLevels } from '@earendil-works/pi-ai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import { xaiProvider } from '@earendil-works/pi-ai/providers/xai';
 import { deepseekProvider } from '@earendil-works/pi-ai/providers/deepseek';
@@ -41,7 +41,11 @@ const openAIExplicitCacheModels = new Set([
 const openAILongContextModels = new Set(['gpt-5.4', 'gpt-5.5', ...openAIExplicitCacheModels]);
 const openAILongContextBudget = { contextWindow: 1050000, maxTokens: 128000 };
 const terraModel = { id: 'gpt-6.1-terra', name: 'GPT-6.1 Terra', api: 'openai-responses', type: 'chat', input: ['text', 'image'] };
-export const readConnectionCatalog = path => JSON.parse(readFileSync(path, 'utf8'));
+export function readConnectionCatalog(path) {
+  const catalog = JSON.parse(readFileSync(path, 'utf8'));
+  if (!Array.isArray(catalog?.connections)) throw new Error('The model connections catalog is unavailable');
+  return catalog;
+}
 export async function saveModelJson(path, value) {
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.${randomUUID()}.tmp`;
@@ -84,17 +88,20 @@ export function connectionModel(connection) {
   const nativeOutput = deepseek ? 393216 : directOpenAI ? openAILongContextBudget.maxTokens : known?.maxTokens;
   const context = Number(connection.contextWindow ?? (nativeWindow || 128000));
   const customOutput = connection.maxTokens == null ? null : Number(connection.maxTokens);
-  const contextWindow = Math.min(context, nativeWindow || Infinity);
+  const contextWindow = context;
   if (!Number.isSafeInteger(context) || context < 4096 || customOutput !== null &&
     (!Number.isSafeInteger(customOutput) || customOutput < 128 || customOutput >= context)) throw new Error('模型上下文与输出上限设置不正确');
-  const thinking = connection.reasoning === false ? 'off' : connection.thinkingLevel || 'high';
+  const thinking = connection.thinkingLevel ?? null;
   const nativeDefault = deepseek ? (thinking === 'off' ? 8192 : thinking === 'max' ? 131072 : 65536) : nativeOutput || 8192;
-  const outputTokenLimit = Math.min(customOutput ?? nativeOutput ?? nativeDefault, nativeOutput || Infinity, contextWindow - 1);
+  const outputTokenLimit = Math.min(customOutput ?? nativeOutput ?? nativeDefault, contextWindow - 1);
   const maxTokens = Math.min(customOutput ?? nativeDefault, outputTokenLimit);
+  const budgetSource = { contextWindow: connection.contextWindow != null ? 'configured' : nativeWindow ? 'catalog' : 'default',
+    maxTokens: customOutput != null ? 'configured' : nativeOutput ? 'catalog' : 'default' };
   return { ...known, id: connection.model, name: known?.name || connection.model, type: 'chat', api,
     provider: connection.id || connection.provider, baseUrl,
     ...(connection.kind === 'grok' ? { headers: { ...known?.headers, ...grokProxyHeaders(connection) } } : {}),
-    reasoning: connection.reasoning !== false, input: known?.input || ['text'], contextWindow, maxTokens, outputTokenLimit,
+    reasoning: connection.reasoning !== false, input: known?.input || ['text'], contextWindow, maxTokens, outputTokenLimit, budgetSource,
+    thinkingLevels: known?.reasoning !== undefined ? getSupportedThinkingLevels(known) : undefined,
     // Keep the four supported levels distinct. Pi rounds medium up to high and xhigh up to max.
     ...(terraResponses(connection, api) ? { thinkingLevelMap: { off: 'none', minimal: null, low: 'low', medium: null, high: 'high', max: 'max' } } : {}),
     cost: connection.kind === 'api' ? known?.cost || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -106,7 +113,8 @@ export function modelChoices(kind, provider) {
     [...models, terraModel] : models;
   return catalog.map(model => {
     const budget = connectionModel({ kind, provider, model: model.id, api: model.api });
-    return { id: model.id, name: model.name, contextWindow: budget.contextWindow, maxTokens: budget.outputTokenLimit, api: model.api };
+    return { id: model.id, name: model.name, contextWindow: budget.contextWindow, maxTokens: budget.outputTokenLimit,
+      api: model.api, thinkingLevels: budget.thinkingLevels };
   });
 }
 export function decodeModelToken(token) {
@@ -162,27 +170,46 @@ function envValue(name, file) {
 async function fileLock(path, action, signal) {
   const lock = `${path}.lock`;
   await mkdir(dirname(lock), { recursive: true });
+  const ownerPath = join(lock, 'owner');
+  const waitUntil = Date.now() + 15000;
   while (true) {
     signal?.throwIfAborted();
-    try { await mkdir(lock); await writeFile(join(lock, 'owner'), String(process.pid)); break; }
+    if (Date.now() >= waitUntil) throw Object.assign(new Error('The model credential store is busy'), { code: 'credential_store_busy', status: 503 });
+    try { await mkdir(lock); }
     catch (error) {
       if (error.code !== 'EEXIST') throw error;
-      const owner = Number(await readFile(join(lock, 'owner'), 'utf8').catch(() => '0'));
-      if (owner) {
+      const owner = Number(await readFile(ownerPath, 'utf8').catch(() => '0'));
+      if (Number.isSafeInteger(owner) && owner > 0 && owner <= 0x7fffffff) {
         try { process.kill(owner, 0); }
-        catch (failure) { if (failure.code === 'ESRCH') { await unlink(join(lock, 'owner')).catch(() => {}); await rmdir(lock).catch(() => {}); continue; } }
+        catch (failure) {
+          if (failure.code === 'ESRCH' && Number(await readFile(ownerPath, 'utf8').catch(() => '0')) === owner) {
+            const removed = await unlink(ownerPath).then(() => true, () => false);
+            if (removed) await rmdir(lock).catch(() => {});
+          }
+        }
       }
       await delay(60, undefined, { signal });
+      continue;
     }
+    try { await writeFile(ownerPath, String(process.pid)); }
+    catch (error) { await rmdir(lock).catch(() => {}); throw error; }
+    break;
   }
   try { return await action(); }
-  finally { await unlink(join(lock, 'owner')); await rmdir(lock); }
+  finally { await unlink(ownerPath); await rmdir(lock); }
 }
 /** Credentials stay on the host. Local logins are referenced; removing a Summon connection does not log out the CLI. */
 export class ModelCredentialStore {
   constructor(path, fallback) { this.catalogPath = path; this.path = path ? join(dirname(path), 'model-credentials.json') : null; this.fallback = fallback; this.memory = new Map(); }
   connection(id) { return this.catalogPath ? modelConnection({ connectionStore: this.catalogPath }, id) : this.fallback; }
-  async saved() { if (!this.path) return Object.fromEntries(this.memory); try { return JSON.parse(await readFile(this.path, 'utf8')); } catch (error) { if (error.code === 'ENOENT') return {}; throw error; } }
+  async saved() {
+    if (!this.path) return Object.fromEntries(this.memory);
+    try {
+      const credentials = JSON.parse(await readFile(this.path, 'utf8'));
+      if (!credentials || typeof credentials !== 'object' || Array.isArray(credentials)) throw new Error('Model credentials are unavailable');
+      return credentials;
+    } catch (error) { if (error.code === 'ENOENT') return {}; throw error; }
+  }
   async read(id) {
     const connection = this.connection(id);
     if (connection.authMode === 'codex-local') return codexCredential(await readLocalModelAuth(connection.authFile));

@@ -12,6 +12,7 @@ Windows 运维命令为安装目录的 `summon.cmd`。macOS 运维命令为 `Sum
 
 ```text
 summon status
+summon local --workspace default
 summon access status tailscale
 summon access prepare tailscale --port 443
 summon access apply tailscale --plan PLAN_ID --confirm
@@ -28,6 +29,6 @@ Electron 通过已验证的部署机登录会话读取启动信息与工作区�
 
 ## 构建候选
 
-在目标系统以本机架构的 Node 24 安装根生产依赖与桌面依赖，然后运行 `npm run release:desktop -- --candidate`。从当前提交构建的候选位于 `.relay/client-builds`。Actions 的 `Client releases` 可通过 `candidate=true` 构建候选。
+在目标系统以本机架构的 Node 24 安装根生产依赖与桌面依赖，然后运行 `npm run release:desktop -- --candidate`。本机候选的桌面外壳和内嵌运行时都取自当前工作区，产物位于命令返回的 `.relay/client-builds` 子目录。Actions 的 `Client releases` 可通过 `candidate=true` 从该次检出的代码构建候选。
 
 下载和更新先查设备本机发行物，再查 GitHub Releases。正式发布见 [客户端发行与更新](../docs/CLIENT_RELEASES.md)。

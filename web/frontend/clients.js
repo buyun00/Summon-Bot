@@ -15,6 +15,9 @@
     root.style.setProperty('--window-controls-right', `${overlay && !overlay.visible ? 0 : right}px`);
   }
   function setDesktopInfo(value) {
+    if (value.selectionWarning && value.selectionWarning !== desktop?.selectionWarning) {
+      document.dispatchEvent(new CustomEvent('summon-selection-warning', { detail:value.selectionWarning }));
+    }
     desktop = value; desktopUpdate = value.update; syncWindowChrome();
     document.documentElement.dataset.localWorkspace = String(value.localWorkspace === true);
   }
@@ -37,7 +40,7 @@
     if (!content) return;
     const releases = catalog?.releases || [];
     const installable = ['downloaded', 'manual'].includes(desktopUpdate?.status);
-    content.innerHTML = `${desktop ? `<section class="client-update-card"><div><strong>当前桌面客户端 ${escape(desktop.version)}</strong><p role="status">${escape(statusText())}</p></div><button type="button" class="primary-button" data-client-action="${installable ? 'install' : 'check'}" ${['checking', 'downloading'].includes(desktopUpdate?.status) ? 'disabled' : ''}>${desktopUpdate?.status === 'manual' ? '下载更新' : desktopUpdate?.status === 'downloaded' ? '重启并更新' : '检查更新'}</button></section>` : ''}
+    content.innerHTML = `${desktop ? `<section class="client-update-card"><div><strong>当前桌面客户端 ${escape(desktop.version)}</strong><p role="status">${escape(statusText())}</p></div><button type="button" class="primary-button" data-client-action="${installable ? 'install' : 'check'}" ${['checking', 'downloading'].includes(desktopUpdate?.status) ? 'disabled' : ''}>${desktopUpdate?.status === 'manual' ? '下载更新' : desktopUpdate?.status === 'downloaded' ? '重启并更新' : '检查更新'}</button>${installable ? '<button type="button" class="secondary-button" data-client-action="check">重新检查</button>' : ''}</section>` : ''}
       <p class="client-web-version">网页${catalog?.web?.version ? ` ${escape(catalog.web.version)}` : ''} · 部署后刷新即可更新</p>
       ${failure ? `<p class="form-error" role="alert">${escape(failure)}</p><button class="secondary-button" data-client-action="reload">重新获取</button>` : ''}
       ${!catalog && !failure ? '<p role="status">正在获取客户端版本…</p>' : ''}
@@ -80,7 +83,7 @@
       const value = await response.json();
       if (id !== requestId) return;
       catalog = { ...value, releases: [...local, ...value.releases.filter(item => !local.some(record => record.platform === item.platform && record.arch === item.arch))] };
-      failure = value.githubError || '';
+      failure = [value.localError, value.githubError].filter(Boolean).join(' · ');
     } catch (error) {
       if (id === requestId) { catalog = { releases: local }; failure = error.message; }
     }

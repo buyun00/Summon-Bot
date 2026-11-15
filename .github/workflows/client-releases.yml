@@ -21,7 +21,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: client-releases
+  group: ${{ inputs.candidate && format('client-candidate-{0}', github.run_id) || 'client-releases' }}
   cancel-in-progress: false
 
 jobs:
@@ -34,19 +34,23 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: npm ci --prefix desktop --no-audit --no-fund
-      - run: npm ci --omit=dev --no-audit --no-fund
       - uses: actions/cache@v4
+        continue-on-error: true
         with:
           path: |
             ~/Library/Caches/electron
             ~/Library/Caches/electron-builder
           key: summon-client-deps-v1-macos-arm64-electron-45.2.1-builder-26.18.1
+      - run: npm ci --prefix desktop --ignore-scripts --no-audit --no-fund
+      - run: npm ci --omit=dev --no-audit --no-fund
       - name: Prepare official desktop dependencies through GitHub asset API
+        continue-on-error: true
+        timeout-minutes: 5
         run: node scripts/release/prepare-ci-dependencies.mjs desktop
         env:
           GH_TOKEN: ${{ github.token }}
       - name: Prepare Developer ID and notarization credentials
+        if: ${{ !inputs.candidate }}
         env:
           SUMMON_MACOS_P12_BASE64: ${{ secrets.SUMMON_MACOS_P12_BASE64 }}
           SUMMON_MACOS_P12_PASSWORD: ${{ secrets.SUMMON_MACOS_P12_PASSWORD }}
@@ -66,7 +70,8 @@ jobs:
           root.joinpath('distribution.p12').write_bytes(base64.b64decode(os.environ['SUMMON_MACOS_P12_BASE64'], validate=True))
           root.joinpath('AuthKey.p8').write_text(os.environ['SUMMON_ASC_PRIVATE_KEY'])
           PY
-      - name: Build, sign, and notarize Apple Silicon DMG and ZIP
+      - name: Build Apple Silicon DMG
+        id: package
         run: |
           if [[ "$CANDIDATE" == true ]]; then
             npm run release:desktop -- --candidate --arch arm64
@@ -86,14 +91,15 @@ jobs:
         with:
           name: summon-candidate-macos-arm64
           path: |
-            .relay/client-builds/macos-arm64/*.dmg
-            .relay/client-builds/macos-arm64/artifact.json
+            ${{ steps.package.outputs.output }}/*.dmg
+            ${{ steps.package.outputs.output }}/artifact.json
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
       - name: Remove macOS signing material
         if: always()
+        continue-on-error: true
         run: rm -rf "$RUNNER_TEMP/summon-macos-signing"
 
   android:
@@ -109,10 +115,13 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: actions/cache@v4
+        continue-on-error: true
         with:
           path: ${{ runner.tool_cache }}/summon-ci-dependencies
           key: summon-client-deps-v1-gradle-8.11.1
       - name: Prepare official Gradle distribution through GitHub asset API
+        continue-on-error: true
+        timeout-minutes: 8
         run: node scripts/release/prepare-ci-dependencies.mjs android
         env:
           GH_TOKEN: ${{ github.token }}
@@ -127,9 +136,10 @@ jobs:
           fi
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/summon-android.p12"
       - name: Build signed APK
+        id: package
         run: |
           if [[ "$CANDIDATE" == true ]]; then
-            npm run release:android
+            npm run release:android -- --candidate
           else
             npm run release:android -- --github
           fi
@@ -145,8 +155,8 @@ jobs:
         with:
           name: summon-candidate-android
           path: |
-            .relay/client-builds/android-universal/*.apk
-            .relay/client-builds/android-universal/artifact.json
+            ${{ steps.package.outputs.output }}/*.apk
+            ${{ steps.package.outputs.output }}/artifact.json
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
@@ -160,19 +170,23 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: npm ci --prefix desktop --no-audit --no-fund
-      - run: npm ci --omit=dev --no-audit --no-fund
       - uses: actions/cache@v4
+        continue-on-error: true
         with:
           path: |
             ~/AppData/Local/electron/Cache
             ~/AppData/Local/electron-builder/Cache
           key: summon-client-deps-v1-windows-x64-electron-45.2.1-builder-26.18.1
+      - run: npm ci --prefix desktop --ignore-scripts --no-audit --no-fund
+      - run: npm ci --omit=dev --no-audit --no-fund
       - name: Prepare official desktop dependencies through GitHub asset API
+        continue-on-error: true
+        timeout-minutes: 5
         run: node scripts/release/prepare-ci-dependencies.mjs desktop
         env:
           GH_TOKEN: ${{ github.token }}
       - name: Build Windows x64
+        id: package
         run: |
           if ($env:CANDIDATE -eq 'true') {
             npm run release:desktop -- --arch x64 --candidate
@@ -187,8 +201,8 @@ jobs:
         with:
           name: summon-candidate-windows-x64
           path: |
-            .relay/client-builds/windows-x64/*.exe
-            .relay/client-builds/windows-x64/artifact.json
+            ${{ steps.package.outputs.output }}/*.exe
+            ${{ steps.package.outputs.output }}/artifact.json
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
@@ -196,9 +210,11 @@ jobs:
 
   ios-simulator:
     if: inputs.candidate && inputs.platform == 'cloud'
-    runs-on: macos-latest
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
+      - name: Select Xcode with the required Simulator SDK
+        run: bash scripts/ios/select-xcode.sh iphonesimulator
       - name: Build simulator app
         run: |
           xcodebuild -project ios/Summon.xcodeproj -scheme SummonBot -configuration Release \

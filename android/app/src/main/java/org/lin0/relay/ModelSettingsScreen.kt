@@ -153,7 +153,17 @@ private fun modelGauge(item: SummonJson): ModelGaugeData {
             }
             data["connections"].array.orEmpty().forEach { item ->
                 Surface(shape = RoundedCornerShape(12.dp), color = if (draft["id"].stringValue == item["id"].stringValue) Color(0xFF24362A) else Color(0xFF1C1C1E), modifier = Modifier.fillMaxWidth().clickable { draft = item; login = SummonJson.Null }) {
-                    Row(Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) { ModelBrand(item); Column(Modifier.weight(1f)) { Text(item["name"].stringValue); Text(item["model"].stringValue, color = Color.Gray, fontSize = 12.sp) }; if (item["active"].bool == true) Text("当前", color = modelGreen) }
+                    Row(Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        ModelBrand(item)
+                        Column(Modifier.weight(1f)) {
+                            Text(item["name"].stringValue)
+                            Text(item["model"].stringValue, color = Color.Gray, fontSize = 12.sp)
+                        }
+                        Column(horizontalAlignment = Alignment.End) {
+                            if (item["active"].bool == true) Text("默认", color = modelGreen, fontSize = 12.sp)
+                            if (item["configured"].bool == false) Text("待连接", color = Color.Gray, fontSize = 12.sp)
+                        }
+                    }
                 }
             }
             if (draft is SummonJson.Obj) {
@@ -166,13 +176,17 @@ private fun modelGauge(item: SummonJson): ModelGaugeData {
                             val entry = data["connections"].array.orEmpty().first { if (payload["id"].stringValue.isNotEmpty()) it["id"].stringValue == payload["id"].stringValue else it["id"].stringValue !in oldIds }
                             draft = entry
                             val id = entry["id"].stringValue
-                            if (entry["kind"].stringValue == "api") data = store.request("/api/model-settings/active", "POST", SummonJson.obj("id" to SummonJson.Str(id)))
-                            else if (entry["configured"].bool != true) login = store.request("/api/model-settings/connections/${SummonApiClient.component(id)}/login", "POST", SummonJson.obj())
+                            if (entry["kind"].stringValue != "api" && entry["configured"].bool != true) {
+                                login = store.request("/api/model-settings/connections/${SummonApiClient.component(id)}/login", "POST", SummonJson.obj())
+                            }
                             store.refreshModelUsage(true)
                         } },
                         onImport = { perform { data = store.request("/api/model-settings/local/import", "POST", SummonJson.obj("kind" to draft["kind"])); draft = data["connections"].array.orEmpty().first { it["id"].stringValue == data["importedId"].stringValue }; store.refreshModelUsage(true) } },
                         onAuthorize = { perform { login = store.request("/api/model-settings/connections/${SummonApiClient.component(selected["id"].stringValue)}/login", "POST", SummonJson.obj()) } },
-                        onActivate = { perform { data = store.request("/api/model-settings/active", "POST", SummonJson.obj("id" to selected["id"])); store.refreshModelUsage(true) } },
+                        onSetDefault = { id -> perform {
+                            data = store.request("/api/model-settings/active", "POST", SummonJson.obj("id" to id))
+                            store.refreshModelUsage(true)
+                        } },
                         onRemove = { perform { data = store.request("/api/model-settings/connections/${SummonApiClient.component(selected["id"].stringValue)}", "DELETE"); draft = data["connections"].array.orEmpty().firstOrNull { it["active"].bool == true } ?: SummonJson.Null; store.refreshModelUsage(true) } },
                         onDiscover = { store.request("/api/model-settings/connections/${SummonApiClient.component(selected["id"].stringValue)}/models?discover=1")["models"].array.orEmpty() })
                 }
@@ -189,13 +203,29 @@ private fun modelGauge(item: SummonJson): ModelGaugeData {
     }
 }
 
-@Composable private fun ModelConnectionForm(entry: SummonJson, selected: SummonJson, presets: List<SummonJson>, busy: Boolean, onSave: (SummonJson) -> Unit, onImport: () -> Unit, onAuthorize: () -> Unit, onActivate: () -> Unit, onRemove: () -> Unit, onDiscover: suspend () -> List<SummonJson>) {
+@Composable
+internal fun ModelThinkingField(
+    label: String,
+    defaultLabel: String,
+    value: String,
+    suggestions: List<SummonJson>?,
+    enabled: Boolean = true,
+    onChange: (String) -> Unit,
+) {
+    val levels = suggestions?.mapNotNull { it.string } ?: listOf("minimal", "low", "medium", "high", "xhigh", "max")
+    val choices = listOf("" to defaultLabel) + (listOf("off") + levels).filter { it.isNotEmpty() }.distinct()
+        .map { it to if (it == "off") "关闭思考" else it }
+    OutlinedTextField(value = value, onValueChange = onChange, label = { Text(label) }, placeholder = { Text(defaultLabel) },
+        singleLine = true, enabled = enabled, modifier = Modifier.fillMaxWidth())
+    ModelChoice("选择档位", value, choices, enabled = enabled, onSelect = onChange)
+}
+
+@Composable private fun ModelConnectionForm(entry: SummonJson, selected: SummonJson, presets: List<SummonJson>, busy: Boolean, onSave: (SummonJson) -> Unit, onImport: () -> Unit, onAuthorize: () -> Unit, onSetDefault: (SummonJson) -> Unit, onRemove: () -> Unit, onDiscover: suspend () -> List<SummonJson>) {
     val scope = rememberCoroutineScope()
     val kind = entry["kind"].stringValue
     var fields by remember { mutableStateOf(entry.obj.orEmpty().toMutableMap().apply {
         putIfAbsent("provider", SummonJson.Str("openai-compatible"))
         putIfAbsent("api", SummonJson.Str("openai-completions"))
-        putIfAbsent("thinkingLevel", SummonJson.Str("high"))
         put("apiKey", SummonJson.Str(""))
     }.toMap()) }
     var choices by remember { mutableStateOf<List<SummonJson>>(emptyList()) }
@@ -206,7 +236,12 @@ private fun modelGauge(item: SummonJson): ModelGaugeData {
     }
     field("连接名称", "name")
     if (kind == "api") {
-        ModelChoice("服务商", fields["provider"]?.stringValue.orEmpty(), presets.map { it["id"].stringValue to it["name"].stringValue }) { id -> val preset = presets.first { it["id"].stringValue == id }; fields = fields + mapOf("provider" to preset["id"], "api" to preset["api"], "baseUrl" to preset["baseUrl"]) }
+        field("服务商 ID", "provider")
+        ModelChoice("应用服务商预设", fields["provider"]?.stringValue.orEmpty(), presets.map { it["id"].stringValue to it["name"].stringValue }, enabled = !busy) { id ->
+            val preset = presets.first { it["id"].stringValue == id }
+            fields = fields + mapOf("provider" to preset["id"], "api" to preset["api"], "baseUrl" to preset["baseUrl"])
+            choices = emptyList()
+        }
         ModelChoice("接口协议", fields["api"]?.stringValue.orEmpty(), listOf("openai-completions" to "OpenAI Chat Completions", "openai-responses" to "OpenAI Responses", "anthropic-messages" to "Anthropic Messages")) { set("api", SummonJson.Str(it)) }
         field("API 地址", "baseUrl"); field(if (selected["configured"].bool == true) "API Key（留空保留）" else "API Key", "apiKey", true)
         Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(checked = fields["allowNoKey"]?.bool == true, onCheckedChange = { set("allowNoKey", SummonJson.Bool(it)) }); Text("这个服务无需 API Key") }
@@ -217,21 +252,38 @@ private fun modelGauge(item: SummonJson): ModelGaugeData {
     }
     field("默认模型 ID", "model")
     if (selected is SummonJson.Obj) TextButton(enabled = !busy, onClick = { scope.launch { try { choices = onDiscover() } catch (e: Exception) { localError = e.localizedMessage } } }) { Text("获取模型目录") }
-    if (choices.isNotEmpty()) ModelChoice("选择模型", fields["model"]?.stringValue.orEmpty(), choices.map { it["id"].stringValue to it["name"].stringValue.ifBlank { it["id"].stringValue } }) { set("model", SummonJson.Str(it)) }
-    ModelChoice("思考强度", fields["thinkingLevel"]?.stringValue.orEmpty(), listOf("off" to "关闭思考", "low" to "低", "medium" to "中", "high" to "高", "xhigh" to "很高", "max" to "最高")) { set("thinkingLevel", SummonJson.Str(it)) }
+    val preset = presets.firstOrNull { it["id"].string == fields["provider"]?.string }
+    val modelChoices = (choices + preset?.get("models")?.array.orEmpty()).distinctBy { it["id"].stringValue }
+    val model = fields["model"]?.stringValue.orEmpty()
+    if (modelChoices.isNotEmpty()) ModelChoice("选择模型", model, modelChoices.map {
+        it["id"].stringValue to it["name"].stringValue.ifBlank { it["id"].stringValue }
+    }, enabled = !busy) { set("model", SummonJson.Str(it)) }
+    val levels = modelChoices.firstOrNull { it["id"].stringValue == model }?.get("thinkingLevels")?.array
+        ?: selected["thinkingLevels"].array.takeIf { selected["model"].stringValue == model }
+    ModelThinkingField("思考强度", "供应商默认", fields["thinkingLevel"]?.stringValue.orEmpty(), levels, !busy) {
+        set("thinkingLevel", SummonJson.Str(it))
+    }
     field("上下文上限（留空使用模型默认）", "contextWindow")
     field("输出上限（留空使用模型默认）", "maxTokens")
     if (kind == "api") { field("余额查询路径（可选）", "balancePath"); field("余额 JSON 字段（可选）", "balanceField"); field("余额币种（默认 USD）", "balanceCurrency") }
     localError?.let { Text(it, color = Color(0xFFD3A074)) }
     Button(enabled = !busy, modifier = Modifier.fillMaxWidth(), onClick = {
-        val payload = (fields - listOf("usage", "identity", "configured", "active", "effectiveBudget")).toMutableMap()
+        val payload = (fields - listOf("usage", "identity", "configured", "active", "effectiveBudget", "thinkingLevels")).toMutableMap()
         for (key in listOf("contextWindow", "maxTokens")) payload[key] = fields[key] ?: SummonJson.Null
+        payload["thinkingLevel"] = fields["thinkingLevel"]?.stringValue?.trim()?.takeIf { it.isNotEmpty() }
+            ?.let { SummonJson.Str(it) } ?: SummonJson.Null
         onSave(SummonJson.Obj(payload))
-    }) { Text(if (busy) "正在保存…" else "保存配置") }
-    if (selected["configured"].bool == true && selected["active"].bool != true) Button(enabled = !busy, onClick = onActivate) { Text("用于 Pi 聊天") }
-    if (selected is SummonJson.Obj && selected["active"].bool != true) TextButton(enabled = !busy, onClick = onRemove) { Text("移除此连接") }
+    }) { Text(if (busy) "正在保存…" else if (kind == "api" || selected["configured"].bool == true) "保存配置" else "保存并授权") }
+    val id = selected["id"].string
+    if (id != null) {
+        val isDefault = selected["active"].bool == true
+        Button(enabled = !busy, onClick = { onSetDefault(if (isDefault) SummonJson.Null else SummonJson.Str(id)) }) {
+            Text(if (isDefault) "取消默认" else "设为默认")
+        }
+        if (!isDefault) TextButton(enabled = !busy, onClick = onRemove) { Text("移除此连接") }
+    }
 }
-@Composable private fun ModelChoice(title: String, current: String, choices: List<Pair<String, String>>, onSelect: (String) -> Unit) {
+@Composable private fun ModelChoice(title: String, current: String, choices: List<Pair<String, String>>, enabled: Boolean = true, onSelect: (String) -> Unit) {
     var open by remember { mutableStateOf(false) }
-    Box { OutlinedButton(onClick = { open = true }, modifier = Modifier.fillMaxWidth()) { Text("$title：${choices.firstOrNull { it.first == current }?.second ?: current}") }; DropdownMenu(expanded = open, onDismissRequest = { open = false }, modifier = Modifier.heightIn(max = 300.dp)) { choices.forEach { (id, name) -> DropdownMenuItem(text = { Text(name) }, onClick = { open = false; onSelect(id) }) } } }
+    Box { OutlinedButton(onClick = { open = true }, enabled = enabled, modifier = Modifier.fillMaxWidth()) { Text("$title：${choices.firstOrNull { it.first == current }?.second ?: current}") }; DropdownMenu(expanded = open, onDismissRequest = { open = false }, modifier = Modifier.heightIn(max = 300.dp)) { choices.forEach { (id, name) -> DropdownMenuItem(text = { Text(name) }, onClick = { open = false; onSelect(id) }) } } }
 }

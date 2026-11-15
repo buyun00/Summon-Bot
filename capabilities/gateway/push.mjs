@@ -3,6 +3,7 @@ import { createPrivateKey, sign, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fail } from '../shared/validation.mjs';
+import { reject } from '../platform/contract.mjs';
 
 const uuid = /^[a-f0-9-]{36}$/i;
 const topic = 'org.lin0.summon';
@@ -13,11 +14,12 @@ const ttl = 24 * 60 * 60 * 1000;
  * Persisted queue + message cursor survives gateway and capability restarts.
  */
 export class PushService {
-  constructor({ store, messages, dataRoot, historyEpoch }) {
-    Object.assign(this, { store, messages, dataRoot, historyEpoch });
+  constructor({ openStore, messages, dataRoot, historyEpoch }) {
+    Object.assign(this, { openStore, messages, dataRoot, historyEpoch });
     this.closed = false;
     this.inflight = null;
     this.config = null;
+    this.configurationStatus = 'unconfigured';
     this.connections = new Set();
   }
   async initialize() {
@@ -31,23 +33,38 @@ export class PushService {
         throw new Error('APNs requires a P-256 private key');
       }
       this.config = { ...config, key };
+      this.configurationStatus = 'ready';
     } catch (error) {
-      if (error.code !== 'ENOENT') throw new Error('Invalid APNs configuration; check private config files');
+      if (error.code !== 'ENOENT') {
+        this.configurationStatus = 'invalid_config';
+        console.error('APNs is disabled because its private configuration could not be loaded');
+      }
     }
-    const cursor = this.store.get('push-state', 'cursor');
-    if (!cursor || cursor.historyEpoch !== this.historyEpoch) {
-      for (const job of this.store.list('push-queue')) this.store.remove('push-queue', job.id);
-      const row = this.messages.db.prepare("SELECT COALESCE(MAX(rowid),0) AS seq FROM records WHERE kind='messages'").get();
-      this.store.save('push-state', { id: 'cursor', seq: row.seq, historyEpoch: this.historyEpoch });
+    try {
+      const store = this.openStore();
+      store.transaction(() => {
+        const cursor = store.get('push-state', 'cursor');
+        if (!cursor || cursor.historyEpoch !== this.historyEpoch) {
+          for (const job of store.list('push-queue')) store.remove('push-queue', job.id);
+          const row = this.messages.db.prepare("SELECT COALESCE(MAX(rowid),0) AS seq FROM records WHERE kind='messages'").get();
+          store.save('push-state', { id: 'cursor', seq: row.seq, historyEpoch: this.historyEpoch });
+        }
+      });
+      this.store = store;
+    } catch {
+      this.configurationStatus = 'storage_unavailable';
+      console.error('APNs is disabled because its local queue could not be opened');
+      return this;
     }
     this.timer = setInterval(() => { void this.tick(); }, 5000);
     this.timer.unref();
     return this;
   }
-  status() { return { configured: Boolean(this.config) }; }
+  status() { return { configured: this.configurationStatus === 'ready', status: this.configurationStatus }; }
   register(input) {
     if (!uuid.test(input.deviceId || '') || !/^[a-f0-9]{64,200}$/i.test(input.token || '')) fail('Invalid push registration');
     if (input.bundleId !== topic || input.environment !== 'production') fail('Unsupported push app or environment');
+    if (!this.store) reject('push_unavailable', 'Push registration storage is unavailable', 503);
     // A rotated installation identifier must not leave two registrations for the same token.
     for (const device of this.store.list('push-devices')) {
       if (device.token === input.token && device.id !== input.deviceId) this.remove({ deviceId: device.id });
@@ -57,6 +74,7 @@ export class PushService {
   }
   remove(input) {
     if (!uuid.test(input.deviceId || '')) fail('Invalid device identifier');
+    if (!this.store) reject('push_unavailable', 'Push registration storage is unavailable', 503);
     this.store.remove('push-devices', input.deviceId);
     for (const job of this.store.list('push-queue')) if (job.deviceId === input.deviceId) this.store.remove('push-queue', job.id);
     return { removed: true };

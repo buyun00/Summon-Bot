@@ -1,5 +1,5 @@
-import { For, Show, createEffect, createSignal, onCleanup } from 'solid-js'
-import type { Cycle } from '@/bot/cycles'
+import { For, Show, createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
+import { MAX_CYCLES, type Cycle } from '@/bot/cycles'
 import { nomDeCycle, t } from '@/i18n'
 
 export default function CycleMenu(props: {
@@ -12,22 +12,42 @@ export default function CycleMenu(props: {
   onRename: (id: string) => void
 }) {
   const [open, setOpen] = createSignal(false)
+  const [page, setPage] = createSignal(0)
+  const first = () => Math.min(page(), Math.max(0, Math.ceil(props.cycles.length / MAX_CYCLES) - 1)) * MAX_CYCLES
+  const last = () => Math.min(first() + MAX_CYCLES, props.cycles.length)
+  const visible = createMemo(() => props.cycles.slice(first(), last()))
+  const canCreate = () => props.cycles.length < MAX_CYCLES
   let root!: HTMLDivElement
+  let list!: HTMLDivElement
   const outside = (event: PointerEvent) => {
     if (!root.contains(event.target as Node)) setOpen(false)
   }
   createEffect(open, (opened) => opened ? window.addEventListener('pointerdown', outside) : window.removeEventListener('pointerdown', outside))
   onCleanup(() => window.removeEventListener('pointerdown', outside))
 
+  function toggle() {
+    if (!open()) {
+      const index = props.cycles.findIndex((cycle) => cycle.id === props.activeId)
+      setPage(Math.floor(Math.max(0, index) / MAX_CYCLES))
+    }
+    setOpen(!open())
+  }
+
+  function turnPage(direction: number) {
+    setPage(first() / MAX_CYCLES + direction)
+    list.scrollTop = 0
+  }
+
   return (
-    <div ref={root} class="relative" onKeyDown={(event) => event.key === 'Escape' && setOpen(false)}>
-      <button type="button" class="flex max-w-56 cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1 text-left text-sm font-medium transition hover:bg-black/5" aria-haspopup="true" aria-expanded={open() ? 'true' : 'false'} title={nomDeCycle(props.current)} onClick={() => setOpen(!open())}>
+    <div ref={root} class="relative min-w-0" onKeyDown={(event) => event.key === 'Escape' && setOpen(false)}>
+      <button type="button" class="flex min-w-0 max-w-56 cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1 text-left text-sm font-medium transition hover:bg-black/5" aria-haspopup="true" aria-expanded={open() ? 'true' : 'false'} title={nomDeCycle(props.current)} onClick={toggle}>
         <span class="tronque">{nomDeCycle(props.current)}</span>
         <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true" class="shrink-0 text-[var(--muted)]"><path d="M2 3.5 5 6.5l3-3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" /></svg>
       </button>
       <Show when={open()}>
         <div class="absolute bottom-full left-0 z-10 mb-2 w-56 rounded-xl bg-white p-1 shadow-lg ring-1 ring-black/5">
-          <For each={props.cycles}>
+          <div ref={list} class="max-h-[min(45dvh,22rem)] overflow-y-auto">
+          <For each={visible()}>
             {(cycle) => (
               <div class="group/row flex items-center gap-1">
                 <button type="button" class="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition hover:bg-black/5" title={nomDeCycle(cycle)} onClick={() => { props.onActiveIdChange(cycle.id); setOpen(false) }}>
@@ -44,8 +64,17 @@ export default function CycleMenu(props: {
               </div>
             )}
           </For>
+          </div>
+          <Show when={props.cycles.length > MAX_CYCLES}>
+            <div class="flex items-center justify-between gap-2 px-2 text-xs tabular-nums text-[var(--muted)]">
+              <button type="button" class="h-7 w-7 rounded-lg hover:bg-black/5 disabled:opacity-40" disabled={first() === 0} aria-label={t('pages.previous')} onClick={() => turnPage(-1)}>‹</button>
+              <span>{t('pages.range', { first: first() + 1, last: last(), total: props.cycles.length })}</span>
+              <button type="button" class="h-7 w-7 rounded-lg hover:bg-black/5 disabled:opacity-40" disabled={last() === props.cycles.length} aria-label={t('pages.next')} onClick={() => turnPage(1)}>›</button>
+            </div>
+          </Show>
           <div class="my-1 h-px bg-[var(--line)]" />
-          <button type="button" class="flex w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition hover:bg-black/5" onClick={() => { setOpen(false); props.onCreate() }}><span class="w-3 shrink-0 text-[var(--muted)]">+</span>{t('cycles.menuNew')}</button>
+          <button type="button" class="flex w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs transition hover:bg-black/5 disabled:cursor-default disabled:opacity-40" disabled={!canCreate()} onClick={() => { setOpen(false); props.onCreate() }}><span class="w-3 shrink-0 text-[var(--muted)]">+</span>{t('cycles.menuNew')}</button>
+          <Show when={!canCreate()}><p class="px-2.5 py-1 text-xs text-[var(--muted)]" role="status">{t('cycles.limit', { limit: MAX_CYCLES })}</p></Show>
         </div>
       </Show>
     </div>

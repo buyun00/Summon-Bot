@@ -226,38 +226,32 @@ export function sansCommentaires(markup: string) {
   return markup.replace(/<!--[\s\S]*?-->/g, '')
 }
 
-/**
- * `bloub-goutte-neutre-encre.png`.
- *
- * Construit sur les **ids** et non sur les libelles traduits : le nom du fichier
- * ne doit pas changer avec la langue de l'interface.
- *
- * Les ids sont filtres alors qu'ils viennent d'unions litterales, parce que
- * `App.vue` les relit du `localStorage` sans les valider : une valeur trafiquee
- * n'a pas a pouvoir composer le nom du fichier telecharge.
- */
+/** Conserve le nom Unicode du montage dans un seul nom de fichier. */
 export function nomFichier(
   forme: string,
   expression: string,
   couleur: string,
-  extension: string,
-  suffixe = ''
+  extension: ActionExport['extension'] | FormatCycle,
+  suffixe = '',
+  secours = ''
 ) {
-  const propre = (v: string) =>
-    v
-      .toLowerCase()
-      // Les accents passent en lettre nue plutot que d'etre effaces : un nom de
-      // montage comme « Cycle par défaut » doit rester lisible dans le dossier de
-      // telechargement, pas devenir « cyclepardfaut ».
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 40)
-  const morceaux = [propre(forme), propre(expression), propre(couleur), propre(suffixe)].filter(
-    Boolean
-  )
-  return `bloub${morceaux.map((m) => `-${m}`).join('')}.${extension}`
+  const propre = (v: string) => v.normalize('NFC')
+    .replace(/[\p{Cc}\p{Cs}\u202A-\u202E\u2066-\u2069<>:"/\\|?*]+/gu, '-')
+    .replace(/^[.\s-]+|[.\s-]+$/gu, '')
+  const morceaux = [forme, expression, couleur, suffixe].map(propre).filter(Boolean)
+  const detail = morceaux.join('-') || propre(secours)
+  const base = detail ? `bloub-${detail}` : 'bloub'
+  const encoder = new TextEncoder()
+  const budget = 255 - extension.length - 1
+  let nom = ''
+  let octets = 0
+  for (const caractere of base) {
+    const taille = encoder.encode(caractere).length
+    if (octets + taille > budget) break
+    nom += caractere
+    octets += taille
+  }
+  return `${nom.replace(/[.\s-]+$/gu, '')}.${extension}`
 }
 
 /**

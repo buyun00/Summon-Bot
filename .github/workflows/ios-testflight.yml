@@ -9,10 +9,16 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: 'release uploads to TestFlight; compile builds the iPhone app without signing'
+        description: Upload, resume an existing TestFlight build, or compile without signing
         type: choice
         default: release
-        options: [release, compile]
+        options: [release, resume, compile]
+      version:
+        description: Marketing version for a resumed build
+        type: string
+      build_number:
+        description: Full Apple build number for a resumed build
+        type: string
 
 permissions:
   contents: read
@@ -27,59 +33,64 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 90
     env:
-      RELEASE: ${{ github.event_name != 'workflow_dispatch' || inputs.action != 'compile' }}
-      SUMMON_APPLE_TEAM_ID: ${{ vars.SUMMON_APPLE_TEAM_ID }}
-      SUMMON_IOS_DISTRIBUTION_P12_BASE64: ${{ secrets.SUMMON_IOS_DISTRIBUTION_P12_BASE64 }}
-      SUMMON_IOS_DISTRIBUTION_P12_PASSWORD: ${{ secrets.SUMMON_IOS_DISTRIBUTION_P12_PASSWORD }}
-      SUMMON_IOS_APP_PROFILE_BASE64: ${{ secrets.SUMMON_IOS_APP_PROFILE_BASE64 }}
-      ASC_KEY_ID: ${{ secrets.SUMMON_ASC_KEY_ID }}
-      ASC_ISSUER_ID: ${{ secrets.SUMMON_ASC_ISSUER_ID }}
-      ASC_PRIVATE_KEY: ${{ secrets.SUMMON_ASC_PRIVATE_KEY }}
-      TESTFLIGHT_GROUP: ${{ vars.SUMMON_TESTFLIGHT_GROUP }}
+      ACTION: ${{ github.event_name == 'workflow_dispatch' && inputs.action || 'release' }}
       PYTHONUNBUFFERED: '1'
     steps:
       - uses: actions/checkout@v4
-      - name: Select stable Xcode 26 and check configuration
+      - name: Select Xcode with the required iOS SDK
+        if: env.ACTION != 'resume'
+        run: bash scripts/ios/select-xcode.sh iphoneos
+      - name: Install Apple signing and TestFlight dependencies
+        if: env.ACTION != 'compile'
         run: |
-          set -euo pipefail
-          XCODE_PATH=$(python3 - <<'PY'
-          import glob, os, re
-          names = ['SUMMON_APPLE_TEAM_ID', 'SUMMON_IOS_DISTRIBUTION_P12_BASE64',
-                   'SUMMON_IOS_DISTRIBUTION_P12_PASSWORD', 'SUMMON_IOS_APP_PROFILE_BASE64',
-                   'ASC_KEY_ID', 'ASC_ISSUER_ID', 'ASC_PRIVATE_KEY', 'TESTFLIGHT_GROUP']
-          missing = [name for name in names if not os.environ.get(name)] if os.environ['RELEASE'] == 'true' else []
-          if missing: raise SystemExit('Missing configuration: ' + ', '.join(missing))
-          versions = []
-          for path in glob.glob('/Applications/Xcode_26*.app'):
-              match = re.fullmatch(r'/Applications/Xcode_(26(?:\.\d+)+)\.app', path)
-              if match: versions.append((tuple(map(int, match[1].split('.'))), path))
-          if not versions: raise SystemExit('No stable Xcode 26 available')
-          print(max(versions)[1])
-          PY
-          )
-          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
-          xcodebuild -version
           python3 -m venv "$RUNNER_TEMP/asc-python"
           "$RUNNER_TEMP/asc-python/bin/pip" install 'PyJWT==2.10.1' 'cryptography==46.0.3'
       - name: Sign, archive, and upload
-        if: env.RELEASE == 'true'
+        if: env.ACTION == 'release'
         run: bash scripts/ios/ci-release.sh
-      - name: Compile iPhone app while Apple materials are being prepared
-        if: env.RELEASE != 'true'
+        env:
+          SUMMON_APPLE_TEAM_ID: ${{ vars.SUMMON_APPLE_TEAM_ID }}
+          SUMMON_IOS_DISTRIBUTION_P12_BASE64: ${{ secrets.SUMMON_IOS_DISTRIBUTION_P12_BASE64 }}
+          SUMMON_IOS_DISTRIBUTION_P12_PASSWORD: ${{ secrets.SUMMON_IOS_DISTRIBUTION_P12_PASSWORD }}
+          SUMMON_IOS_APP_PROFILE_BASE64: ${{ secrets.SUMMON_IOS_APP_PROFILE_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.SUMMON_ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.SUMMON_ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.SUMMON_ASC_PRIVATE_KEY }}
+      - name: Compile iPhone app
+        if: env.ACTION == 'compile'
         run: |
           xcodebuild -project ios/Summon.xcodeproj -scheme SummonBot -configuration Release \
             -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/summon-derived" \
             CODE_SIGNING_ALLOWED=NO build > "$RUNNER_TEMP/summon-build.log" 2>&1 || { tail -n 150 "$RUNNER_TEMP/summon-build.log"; exit 1; }
           echo 'iPhone compilation completed. No signed archive was uploaded.' >> "$GITHUB_STEP_SUMMARY"
-      - name: Wait for exact build and internal TestFlight distribution
-        if: env.RELEASE == 'true'
+      - name: Process internal TestFlight distribution
+        if: env.ACTION != 'compile'
         timeout-minutes: 35
-        run: '"$RUNNER_TEMP/asc-python/bin/python" scripts/ios/ci-testflight.py'
+        env:
+          ASC_KEY_ID: ${{ secrets.SUMMON_ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.SUMMON_ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.SUMMON_ASC_PRIVATE_KEY }}
+          TESTFLIGHT_GROUP: ${{ vars.SUMMON_TESTFLIGHT_GROUP }}
+          BUILD_VERSION: ${{ inputs.version }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
+        run: |
+          if [[ "$ACTION" == resume ]]; then
+            if [[ -z "$BUILD_VERSION" || -z "$BUILD_NUMBER" ]]; then
+              echo 'Supply the version and full Apple build number to resume.' >&2
+              exit 1
+            fi
+            "$RUNNER_TEMP/asc-python/bin/python" scripts/ios/ci-testflight.py --version "$BUILD_VERSION" --build-number "$BUILD_NUMBER"
+          else
+            "$RUNNER_TEMP/asc-python/bin/python" scripts/ios/ci-testflight.py
+          fi
       - name: Remove signing materials and build intermediates
         if: always()
+        continue-on-error: true
         run: |
+          status=0
           if [ -f "$RUNNER_TEMP/summon-signing.keychain-db" ]; then
-            security delete-keychain "$RUNNER_TEMP/summon-signing.keychain-db"
+            security delete-keychain "$RUNNER_TEMP/summon-signing.keychain-db" || status=1
           fi
-          rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/summon-ci.mobileprovision"
-          rm -rf "$RUNNER_TEMP/summon-signing" "$RUNNER_TEMP/summon-derived"
+          rm -f "$HOME/Library/MobileDevice/Provisioning Profiles/summon-ci.mobileprovision" || status=1
+          rm -rf "$RUNNER_TEMP/summon-signing" "$RUNNER_TEMP/summon-derived" "$RUNNER_TEMP/asc-python" || status=1
+          exit "$status"

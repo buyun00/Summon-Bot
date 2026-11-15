@@ -16,7 +16,7 @@ import { ACTION_BY_ID, ANIM_IMAGES, ANIM_PAS, CYCLE_TAILLE, FOND_GIF_DEFAUT, FOR
 import { HUMEURS } from '@/ui/gaze'
 import { INTRO, INTRO_GAZE, POSE_AT, introDue } from '@/ui/intro'
 import { ecris, lis, type NomStocke } from '@/ui/stockage'
-import { blockAt, blocksWith, defaultCycle, makeBlock, parseCycles, totalDuration, type Cycle } from '@/bot/cycles'
+import { blockAt, blocksWith, defaultCycle, makeBlock, MAX_BLOCS, parseCycles, totalDuration, type Cycle } from '@/bot/cycles'
 import { DEFAULT_EXPRESSION, EXPRESSION_BY_ID } from '@/bot/expressions'
 import { COLOR_BY_ID, DEFAULT_COLOR, DEFAULT_SHAPE, SHAPE_BY_ID } from '@/bot/skins'
 import { POSES, SEQUENCE, STATES, type StateId } from '@/bot/states'
@@ -167,6 +167,7 @@ export default function App() {
   })
 
   function addBlock(id: StateId) {
+    if (cycle().blocks.length >= MAX_BLOCS) return
     setCycles((items) => items.map((item) => item.id === cycle().id ? { ...item, blocks: blocksWith(item.blocks, id) } : item))
   }
 
@@ -197,8 +198,10 @@ export default function App() {
     setCycleError(false)
     const controller = new AbortController()
     cycleAbort = controller
-    const blocks = cycle().blocks
+    const selectedCycle = cycle()
+    const blocks = selectedCycle.blocks
     const format = cycleFormat()
+    const filename = nomFichier(nomDeCycle(selectedCycle), '', '', format, '', `cycle-${cycles().indexOf(selectedCycle) + 1}`)
     const images = cycleImages(totalDuration(blocks), format)
     const step = cyclePas(format)
     const size = CYCLE_TAILLE[format]
@@ -209,7 +212,7 @@ export default function App() {
       const file = mp4
         ? await cycleVersMp4(settings, blocks, size, images, step, BLANC, (done, total) => setCycleProgress(done / total), controller.signal)
         : await cycleVersGif(settings, blocks, size, images, step, couleurDeFond(cycleBackground()), (done, total) => setCycleProgress(done / total), controller.signal)
-      telecharge(file, nomFichier(nomDeCycle(cycle()), '', '', mp4 ? 'mp4' : 'gif'))
+      telecharge(file, filename)
       setCycleDialog(false)
     } catch (error) {
       if (!(error instanceof Abandon)) setCycleError(true)
@@ -338,7 +341,7 @@ export default function App() {
         <Show when={!preview()}>
           <aside class={`panneau scene__droite w-full lg:w-80 lg:shrink-0 ${rightOpen() ? 'panneau--ouvert max-lg:order-2' : 'max-lg:hidden'}`}>
             <Switch>
-              <Match when={view() === 'animations'}><h2 class="text-sm font-semibold">{t('panel.animations')}</h2><div class="mt-2 grid grid-cols-4 gap-1.5"><For each={order()}>{(item) => <BotTile label={t(`states.${item.id}`)} selected={item.id === state()} state={item.id} shape={shape()} color={color()} expression={expression()} frozenAt={POSES[item.id]} onClick={() => addBlock(item.id)} />}</For></div></Match>
+              <Match when={view() === 'animations'}><h2 class="text-sm font-semibold">{t('panel.animations')}</h2><fieldset class="mt-2 grid min-w-0 grid-cols-4 gap-1.5 disabled:opacity-50" disabled={cycle().blocks.length >= MAX_BLOCS} aria-describedby={cycle().blocks.length >= MAX_BLOCS ? 'timeline-block-limit' : undefined}><For each={order()}>{(item) => <BotTile label={t(`states.${item.id}`)} selected={item.id === state()} state={item.id} shape={shape()} color={color()} expression={expression()} frozenAt={POSES[item.id]} onClick={() => addBlock(item.id)} />}</For></fieldset></Match>
               <Match when={true}><Customizer shape={shape()} color={color()} expression={expression()} onShapeChange={setShape} onColorChange={setColor} onExpressionChange={setExpression} /></Match>
             </Switch>
           </aside>

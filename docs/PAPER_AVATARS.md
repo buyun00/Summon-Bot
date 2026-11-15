@@ -20,7 +20,6 @@ node scripts/build/export-paper.mjs
 ```
 
 生成的 `web/frontend/avatars.js` 和两端 `paper-avatars.json` 随源码交付。
-原来的 `export-crew.mjs` 入口转交新导出器，避免再次生成职业符号头像。
 网页运行原引擎；移动端读取同引擎导出的矢量几何和眼睛矩阵并插值，不使用逐帧图片或 WebView。
 可见网页头像限制为 30 FPS，屏幕外与后台暂停。原生端响应应用生命周期与减少动态效果设置。
 

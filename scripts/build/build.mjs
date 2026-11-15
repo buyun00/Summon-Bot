@@ -6,7 +6,6 @@ import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { copyTree, readJson, writeJson, within, parseArgs } from './files.mjs';
 import { removeInside } from '../release/repository.mjs';
-import { dataFormat } from '../installation/installation-state.mjs';
 
 export const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const directories = ['bot', 'web', 'capabilities', 'roles', 'skills', 'scripts/build', 'scripts/installation', 'scripts/maintenance', 'scripts/release'];
@@ -14,6 +13,24 @@ const rootFiles = ['package.json', 'package-lock.json', 'release.json', 'README.
 const docsFiles = ['ARCHITECTURE.md', 'DEPLOYMENT.md', 'OPERATIONS.md', 'DEVELOPMENT.md', 'CLIENT_RELEASES.md', 'MODEL_CONNECTIONS.md', 'IOS_TESTFLIGHT.md', 'MACOS_SIGNING.md'];
 const include = name => !name.split('/').some(part => ['node_modules', '.git', '.relay', 'test', 'tests', 'coverage', 'dist'].includes(part)
   || /^\.env(?:\.|$)/.test(part) || /(?:\.sqlite(?:-\w+)?|\.log|\.tmp)$/.test(part));
+
+export async function copyProductionDependencies(sourceRoot, stage) {
+  const lock = await readJson(join(stage, 'package-lock.json'));
+  const dependencies = [];
+  for (const [path, info] of Object.entries(lock.packages)) {
+    if (!path.includes('node_modules/') || info.dev || info.link) continue;
+    const installed = join(sourceRoot, path);
+    if (!existsSync(installed)) {
+      if (info.optional) continue;
+      throw new Error(`Production dependency missing: ${path}`);
+    }
+    const actual = await readJson(join(installed, 'package.json'));
+    if (info.version && actual.version !== info.version) throw new Error(`Lockfile version mismatch: ${path}`);
+    await copyTree(installed, join(stage, path), name => !name.split('/').includes('node_modules'));
+    dependencies.push({ path, version: actual.version });
+  }
+  return dependencies;
+}
 
 /** Emit portable public entry modules instead of filesystem workspace links. */
 async function materializeWorkspace(root, folder) {
@@ -52,19 +69,11 @@ export async function buildRelease({ sourceRoot = projectRoot, releaseRoot, bund
   await mkdir(dirname(stage), { recursive: true }); await mkdir(stage);
   try {
     await exportSource({ sourceRoot, stage, committedOnly, sourceCommit });
-    const pkg = await readJson(join(stage, 'package.json')), lock = await readJson(join(stage, 'package-lock.json'));
+    const pkg = await readJson(join(stage, 'package.json'));
     const release = await readJson(join(stage, 'release.json'));
     const { protocolVersion } = await import(pathToFileURL(join(stage, 'capabilities/platform/contract.mjs')));
-    const dependencies = [];
-    for (const [path, info] of Object.entries(lock.packages)) {
-      if (!path.includes('node_modules/') || info.dev || info.link) continue;
-      const installed = join(sourceRoot, path);
-      if (!existsSync(installed)) { if (info.optional) continue; throw new Error(`Production dependency missing: ${path}`); }
-      const actual = await readJson(join(installed, 'package.json'));
-      if (info.version && actual.version !== info.version) throw new Error(`Lockfile version mismatch: ${path}`);
-      await copyTree(installed, join(stage, path), name => !name.split('/').includes('node_modules'));
-      dependencies.push({ path, version: actual.version });
-    }
+    const { dataFormat } = await import(pathToFileURL(join(stage, 'scripts/installation/installation-state.mjs')));
+    const dependencies = await copyProductionDependencies(sourceRoot, stage);
     const workspaces = [];
     for (const folder of pkg.workspaces) {
       if (folder.includes('*')) throw new Error('Release builder requires explicit workspace directories');
@@ -74,7 +83,7 @@ export async function buildRelease({ sourceRoot = projectRoot, releaseRoot, bund
       await mkdir(join(stage, 'runtime'), { recursive: true });
       await copyFile(process.execPath, join(stage, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node'));
     }
-    const gitStatus = spawnSync('git', ['-C', sourceRoot, 'status', '--porcelain'], { encoding: 'utf8', windowsHide: true });
+    const gitStatus = committedOnly ? null : spawnSync('git', ['-C', sourceRoot, 'status', '--porcelain'], { encoding: 'utf8', windowsHide: true });
     const manifest = { format: 3, dataFormat, protocolVersion, application: pkg.name, version: release.version, buildNumber: release.buildNumber,
       buildId, builtAt: new Date().toISOString(), sourceCommit, sourceMode: committedOnly ? 'git-archive' : 'workspace',
       sourceDirty: committedOnly ? false : gitStatus.status === 0 ? Boolean(gitStatus.stdout.trim()) : null,
@@ -86,19 +95,24 @@ export async function buildRelease({ sourceRoot = projectRoot, releaseRoot, bund
   } finally { await removeInside(dirname(stage), stage); }
 }
 
+export async function exportCommittedPaths(sourceRoot, stage, sourceCommit, paths, excludes = []) {
+  const archive = join(stage, 'source.tar');
+  const listing = spawnSync('git', ['-C', sourceRoot, 'ls-tree', '--name-only', sourceCommit, '--', ...paths], { encoding: 'utf8', windowsHide: true });
+  if (listing.status !== 0) throw new Error('Cannot list committed release files');
+  const selected = listing.stdout.trim().split(/\r?\n/).filter(Boolean);
+  if (!selected.length) throw new Error('No release files found in the selected commit');
+  const exported = spawnSync('git', ['-C', sourceRoot, 'archive', '--format=tar', `--output=${archive}`, sourceCommit, ...selected], { encoding: 'utf8', windowsHide: true });
+  if (exported.status !== 0) throw new Error(`Cannot export committed release source: ${exported.stderr || exported.error?.message || 'git failed'}`);
+  try {
+    const extracted = spawnSync('tar', [...excludes.map(pattern => `--exclude=${pattern}`), '-xf', archive, '-C', stage], { encoding: 'utf8', windowsHide: true });
+    if (extracted.status !== 0) throw new Error(`Cannot extract release source: ${extracted.stderr || extracted.error?.message || 'tar failed'}`);
+  } finally { await unlink(archive); }
+}
+
 async function exportSource({ sourceRoot, stage, committedOnly, sourceCommit }) {
   if (committedOnly) {
-    const archive = join(stage, 'source.tar');
-    const paths = [...directories, ...rootFiles, ...docsFiles.map(name => `docs/${name}`)];
-    const listing = spawnSync('git', ['-C', sourceRoot, 'ls-tree', '--name-only', sourceCommit, '--', ...paths], { encoding: 'utf8', windowsHide: true });
-    if (listing.status !== 0) throw new Error('Cannot list committed release files');
-    const selected = listing.stdout.trim().split(/\r?\n/).filter(Boolean);
-    const exported = spawnSync('git', ['-C', sourceRoot, 'archive', '--format=tar', `--output=${archive}`, sourceCommit, ...selected], { encoding: 'utf8', windowsHide: true });
-    if (exported.status !== 0) throw new Error(`Cannot export committed release source: ${exported.stderr}`);
-    const extracted = spawnSync('tar', ['-xf', archive, '-C', stage,
-      ...['*/test', '*/tests', '*/node_modules', '*/coverage', '*/dist', '*/.relay', '*/.env*', '*.sqlite*', '*.log', '*.tmp'].map(pattern => `--exclude=${pattern}`)], { encoding: 'utf8', windowsHide: true });
-    if (extracted.status !== 0) throw new Error(`Cannot extract release source: ${extracted.stderr}`);
-    await unlink(archive);
+    const excludes = ['*/test', '*/tests', '*/node_modules', '*/coverage', '*/dist', '*/.relay', '*/.env*', '*.sqlite*', '*.log', '*.tmp'];
+    await exportCommittedPaths(sourceRoot, stage, sourceCommit, [...directories, ...rootFiles, ...docsFiles.map(name => `docs/${name}`)], excludes);
   } else {
     for (const folder of directories) if (existsSync(join(sourceRoot, folder))) await copyTree(join(sourceRoot, folder), join(stage, folder), include);
     for (const name of rootFiles) await copyFile(join(sourceRoot, name), join(stage, name));

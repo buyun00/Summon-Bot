@@ -203,6 +203,7 @@ button:focus-visible, a:focus-visible, select:focus-visible { outline-color: #65
 .execution-input-form { display: grid; gap: 8px; margin: 12px 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
 .execution-input-form label { font-weight: 600; }
 .execution-input-form small { color: var(--muted); overflow-wrap: anywhere; }
+.execution-input-question { white-space: pre-wrap; overflow-wrap: anywhere; }
 .execution-input-form textarea, .execution-input-form select { width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--line); border-radius: 6px; font: inherit; }
 .execution-input-form .primary-button { justify-self: start; }
 .execution-output, .execution-log pre { margin: 8px 0; padding: 10px; border: 1px solid var(--line); border-radius: 7px; white-space: pre-wrap; overflow-wrap: anywhere; }

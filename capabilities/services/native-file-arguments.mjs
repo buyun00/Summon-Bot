@@ -1,25 +1,9 @@
-import { assertCommandPolicy, createAuthorizedDirectory, fileAccessDenied, resolveFilePath } from '../../bot/src/capabilities/file-policy.mjs';
+import { isAbsolute, parse } from 'node:path';
+import { fileAccessDenied, resolveFilePath } from '../../bot/src/capabilities/file-policy.mjs';
 import { fail } from '../shared/validation.mjs';
 import { isNativeReference, nativeReferencePrefix } from './native-references.mjs';
 
 const operations = { read: ['read'], write: ['write'], 'read-write': ['read', 'write'] };
-const explicitPath = /(?:[A-Za-z]:[\\/]|(^|[=: "'\x60])(?:[/\\]{2}|\.{1,2}[\\/]|\/(?![a-z?]+$))|[A-Za-z0-9_.-][\\/][^/\\])|(?:^|[=: "'\x60])[^/\\=:]+\.[a-z][a-z0-9]{0,15}$/i;
-const opaqueArgument = /^(?:@|https?:|file:|ftp:)|^(?:--eval|-command|-encodedcommand|--script)(?:=|$)/i;
-const helpOrVersion = /^(?:--(?:help|version)|-(?:help|version|h|v|\?)|\/(?:help|version|h|v|\?)|help|version)$/i;
-const formatField = /^[A-Za-z][\w-]*=%(?:[A-Za-z]|\[[A-Za-z][\w-]*\])(?:\\[nrt])*$/;
-
-function isFixedFormatArgument(argv, templateArgs, byIndex, index) {
-  const optionIndex = index - 1;
-  const option = templateArgs?.[optionIndex];
-  const value = argv[index];
-  if ((option !== '-format' && option !== '--format') ||
-      argv[optionIndex] !== option || value !== templateArgs[index] ||
-      byIndex.has(optionIndex) || argv.slice(0, optionIndex).includes('--')) return false;
-  // A backslash escape is also a possible path separator. Require labeled
-  // format fields after a fixed format option in the registered template.
-  const fields = value.split(/ +/);
-  return fields.length > 1 && fields.every(field => formatField.test(field));
-}
 
 export function nativeFileArgs(input = [], length, effect) {
   if (!Array.isArray(input) || input.length > 128) fail('File arguments must name distinct argument indexes');
@@ -44,64 +28,39 @@ function fileOperand(value, { prefix = '', suffix = '' }) {
     return value.slice(prefix.length, suffix.length ? -suffix.length : undefined);
 }
 
-export function usesNativeReference(argv, fileArgs = []) {
-  return argv.some(isNativeReference) || Array.isArray(fileArgs) && fileArgs.some(definition => {
-    const value = argv[definition?.index];
-    return typeof value === 'string' && isNativeReference(fileOperand(value, definition));
-  });
-}
-
-export async function checkedNativeArguments({ argv, templateArgs, fileArgs, effect, cwd, policy, checkedPath, resolveReference, createOutputs = false }) {
+export async function checkedNativeArguments({ argv, fileArgs, effect, cwd, hasFileScope, checkedPath, resolveReference }) {
   const roles = nativeFileArgs(fileArgs, argv.length, effect);
-  const scoped = hasExplicitFileScope(policy) || usesNativeReference(argv, roles);
   const byIndex = new Map(roles.map(item => [item.index, item]));
-  const planned = [];
+  const result = [...argv];
   for (const [index, value] of argv.entries()) {
     const definition = byIndex.get(index);
-    if (scoped && opaqueArgument.test(value))
-      throw fileAccessDenied(cwd, 'opaque_native_argument', { argumentIndex: index });
     if (!definition) {
       if (isNativeReference(value)) throw fileAccessDenied(cwd, 'invalid_native_reference_operand', { argumentIndex: index });
-      if (!explicitPath.test(value) || helpOrVersion.test(value) ||
-          isFixedFormatArgument(argv, templateArgs, byIndex, index)) continue;
-      if (scoped) throw fileAccessDenied(cwd, 'undeclared_native_path_operand', {
-        argumentIndex: index, instruction: 'Use file_args to declare the exact read or write operand and its argument index.',
-      });
-      const operand = value.startsWith('-') && value.includes('=') ? value.slice(value.indexOf('=') + 1) : value;
-      if (/^(?:[A-Za-z]:[\\/]|\/|\.{1,2}[\\/])/.test(operand))
-        await checkedPath(resolveFilePath(cwd, operand), { operations: effect === 'read' ? ['read'] : ['read', 'write'], alternative: true });
+      if (hasFileScope) {
+        const operand = /^--?[a-z0-9_-]+=([^\n]+)$/i.exec(value)?.[1] ?? value;
+        const absolute = isAbsolute(operand) && (process.platform !== 'win32' || parse(operand).root.length > 1);
+        if (absolute || /^\.{1,2}[\\/]/.test(operand)) {
+          throw fileAccessDenied(cwd, 'undeclared_native_path_operand', {
+            argumentIndex: index, instruction: 'Declare the exact file argument index and access using file_args.',
+          });
+        }
+      }
       continue;
     }
     const { kind, access, prefix, suffix } = definition;
     const operand = fileOperand(value, definition);
     if (!operand) fail('A native path operand did not match its registered argument shape');
-    if (isNativeReference(value) || operand.startsWith(nativeReferencePrefix)) {
+    if (operand.startsWith(nativeReferencePrefix)) {
       if (!resolveReference || kind !== 'file' || access !== 'read')
         throw fileAccessDenied(cwd, 'invalid_native_reference_operand', { argumentIndex: index });
-      await resolveReference(operand);
-      planned.push({ index, prefix, suffix, reference: operand });
+      result[index] = prefix + await resolveReference(operand) + suffix;
       continue;
     }
-    if (/[@*?\r\n]/.test(operand) || /^(?:file|https?|ftp):/i.test(operand))
+    if (/[*?\r\n]/.test(operand) || /^(?:file|https?|ftp):/i.test(operand))
       throw fileAccessDenied(cwd, 'unresolved_native_path_operand', { argumentIndex: index });
     const path = resolveFilePath(cwd, operand);
-    const write = operations[access].includes('write');
     const options = { operations: operations[access], alternative: true, exists: operations[access].includes('read'), [kind]: true };
-    await checkedPath(path, options);
-    planned.push({ index, prefix, suffix, path, kind, write, options });
-  }
-  await assertCommandPolicy(argv.map(value => JSON.stringify(value)).join(' '), cwd, policy,
-    (path, allowed) => checkedPath(path, { operations: allowed, alternative: true }));
-  const result = [...argv];
-  for (const item of planned) {
-    if (item.reference) {
-      result[item.index] = item.prefix + await resolveReference(item.reference) + item.suffix;
-      continue;
-    }
-    if (createOutputs && item.write) await createAuthorizedDirectory(item.path, checkedPath, {
-      parentOfFile: item.kind === 'file', alternative: true,
-    });
-    result[item.index] = item.prefix + await checkedPath(item.path, item.options) + item.suffix;
+    result[index] = prefix + await checkedPath(path, options) + suffix;
   }
   return result;
 }

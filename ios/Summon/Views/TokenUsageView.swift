@@ -37,11 +37,10 @@ struct TokenUsageView: View {
     @State private var errorMessage: String?
     private let purposes = ["chat": "聊天", "activity": "快速任务说明", "work": "工作执行", "routing": "群聊路由", "compress": "上下文压缩", "compact": "上下文压缩", "organize": "记忆整理", "assemble": "上下文组装", "other": "其他调用"]
     private let statuses = ["succeeded": "完成", "failed": "失败", "cancelled": "取消", "pending": "调用中", "unknown": "结果未知"]
-    private var requestKey: String { "\(period):\(selectedKind ?? "all"):\(selectedID):\(offset):\(revision)" }
+    private var workspaceKey: String { store.settings.baseURL + "|" + (store.settings.workspaceID ?? "") }
+    private var requestKey: String { "\(workspaceKey):\(period):\(selectedKind ?? "all"):\(selectedID):\(offset):\(revision)" }
     private var ranking: [SummonJSONValue] {
-        let rows = dimension == "bots" ? overview["bots"].array ?? [] : (overview["rooms"].array ?? []).filter { row in
-            dimension == "dm" ? row["kind"].stringValue == "dm" : !["dm", "unassigned"].contains(row["kind"].stringValue)
-        }
+        let rows = overview[dimension == "bots" ? "bots" : "rooms"].array ?? []
         return rows.sorted { ($0[sort].usageNumberValue ?? 0) > ($1[sort].usageNumberValue ?? 0) }
     }
 
@@ -76,6 +75,7 @@ struct TokenUsageView: View {
             }
             .task(id: requestKey) { await load() }
             .refreshable { await load() }
+            .onChange(of: workspaceKey) { _, _ in selectedKind = nil; selectedID = ""; selectedName = ""; offset = 0; overview = .null; detail = .null }
             .onChange(of: period) { _, _ in selectedKind = nil; selectedID = ""; offset = 0; overview = .null; detail = .null }
             .onChange(of: dimension) { _, _ in selectedKind = nil; selectedID = ""; offset = 0 }
         }
@@ -115,7 +115,7 @@ struct TokenUsageView: View {
 
     private var rankingSection: some View {
         Section {
-            Picker("统计维度", selection: $dimension) { Text("Bot").tag("bots"); Text("单聊").tag("dm"); Text("群聊").tag("group") }.pickerStyle(.segmented)
+            Picker("统计维度", selection: $dimension) { Text("Bot").tag("bots"); Text("会话").tag("rooms") }.pickerStyle(.segmented)
             Picker("排序依据", selection: $sort) {
                 Text("Token").tag("totalTokens"); Text("参考费用").tag("costMax"); Text("缓存未命中").tag("cacheMissTokens"); Text("调用次数").tag("calls")
             }
@@ -191,15 +191,14 @@ struct TokenUsageView: View {
         loading = true; errorMessage = nil; detail = .null
         defer { if requestKey == key { loading = false } }
         do {
-            let client = SummonAPIClient(baseURL: try SummonAPIClient.normalizedURL(store.settings.baseURL), token: store.savedToken)
             var components = URLComponents(); components.path = "/api/usage"
             components.queryItems = [URLQueryItem(name: "period", value: currentPeriod), URLQueryItem(name: "limit", value: "25")]
-            let all = try await client.request(SummonJSONValue.self, path: components.string!)
+            let all = try await store.request(path: components.string!)
             var current = all
             if scopeKind != nil || currentOffset > 0 {
                 components.queryItems?.append(URLQueryItem(name: "offset", value: String(currentOffset)))
                 if let scopeKind { components.queryItems?.append(URLQueryItem(name: scopeKind == "bot" ? "botId" : "roomId", value: scopeID)) }
-                current = try await client.request(SummonJSONValue.self, path: components.string!)
+                current = try await store.request(path: components.string!)
             }
             guard !Task.isCancelled, requestKey == key else { return }
             overview = all; detail = current

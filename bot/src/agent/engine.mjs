@@ -13,9 +13,10 @@ const waiting = new Set(['accepted', 'prepared', 'submitted', 'pending', 'runnin
 const asError = error => ({ code: error.code || 'operation_failed', message: error.message, status: error.status, details: error.details });
 
 export class BotEngine {
-  constructor({ model, platform, usage, toolSpecs, emit, clean }) {
+  constructor({ model, platform, usage, toolSpecs, emit, clean, reportUsageError }) {
     Object.assign(this, { model, platform, toolSpecs, emit, clean });
-    this.provider = new ModelProvider({ ...model, redact: clean, recordUsage: record => usage.save(record) });
+    this.provider = new ModelProvider({ ...model, redact: clean, recordUsage: record => usage?.save(record),
+      reportUsageError });
   }
 
   async execute(job) {
@@ -54,7 +55,7 @@ export class BotEngine {
       if (failure) throw failure;
       return answer;
     };
-    const agent = new Agent({ initialState: { messages: [system], model, tools, thinkingLevel: binding.model.thinking_level },
+    const agent = new Agent({ initialState: { messages: [system], model, tools, thinkingLevel: binding.model.thinking_level ?? 'off' },
       streamFn, sessionId: conversation.id, toolExecution: 'sequential' });
     const unsub = agent.subscribe(event => {
       if (event.type === 'message_end' && event.message.role !== 'system' && event.message.role !== 'user') {
@@ -77,7 +78,8 @@ export class BotEngine {
         check();
         authorizedView = boundary.view_revision;
         if (inbox.run(runId).view_revision !== authorizedView) inbox.putRun({ id: runId, view_revision: authorizedView });
-        const original = inbox.transcript(runId).filter(message => message.view_revision == null || message.view_revision === authorizedView);
+        const original = inbox.transcript(runId).filter(message => message.view_revision == null ||
+          job.sameAuthorizationView(message.view_revision, authorizedView));
         const currentIds = new Set(boundary.current.map(event => event.id));
         const priorInputs = original.filter(message => message.origin_event_ids?.length).flatMap(message => message.origin_event_ids);
         const originalIds = new Set([...currentIds, ...priorInputs]);
@@ -160,7 +162,7 @@ export class BotEngine {
     const lease = this.platform.acquireModel(job.context(), { reserve_tokens: estimate + maxTokens });
     try {
       const result = this.provider.stream(model, context, { ...options, signal: job.signal, maxTokens,
-        reasoning: job.binding.model.thinking_level, requireEffort: job.binding.model.require_effort ? job.binding.model.thinking_level : undefined,
+        reasoning: job.binding.model.thinking_level,
         usageContext: { purpose, botId: origin.bot_id, roomId: job.conversation.space?.kind === 'room' ? job.conversation.space.id : null,
           sessionId: origin.session_id || origin.conversation_id, runId: origin.run_id, parentCallId: job.conversation.open_call_id,
           chargeAccount: 'host', hostUsageId: lease.id, submittedBy: job.context().submitted_by },
@@ -171,6 +173,7 @@ export class BotEngine {
             if ((await job.view()).view_revision !== view.view_revision)
               throw runtimeFailure('access_changed', 'Execution authorization changed before model transport', 409);
             job.check();
+            boundModel(this.model, job.binding.model);
             inject?.();
           } catch (error) {
             // The provider stream can reduce this exception to a formatted error message.
@@ -181,7 +184,7 @@ export class BotEngine {
       });
       void result.result().then(message => lease.finish({ tokens: message.generationBudget?.input == null || message.generationBudget?.output == null ? undefined :
         message.generationBudget.input + message.generationBudget.output, outcome: message.stopReason }),
-      () => lease.finish({ outcome: 'unknown' })).catch(error => this.emit('engine.storage_error', asError(error)));
+      () => lease.finish({ outcome: 'unknown' })).catch(error => this.emit('engine.storage_error', this.clean.error(asError(error))));
       return result;
     } catch (error) { lease.finish({ outcome: 'failed' }); throw error; }
   }
@@ -214,7 +217,7 @@ export class BotEngine {
       return toolObservation(readTools.has(name) ? null : id, result);
     } catch (error) {
       const code = error.status && error.status < 500 ? 'failed' : 'unknown';
-      const result = this.clean({ ...asError(error), state: code, result_ref: { kind: 'call', id } });
+      const result = { ...this.clean.error(asError(error)), state: code, result_ref: { kind: 'call', id } };
       inbox.store.putRecord(R.call, { ...original, state: code, result, finished_at: now() });
       return toolObservation(readTools.has(name) ? null : id, result, true);
     }
@@ -270,11 +273,16 @@ export class BotEngine {
         }
         if (chunk.length) {
           const checkpointPrompt = textMessage({ previous: summary?.summary, history: chunk.map(message => JSON.parse(message.content[0].text)) });
-          const answer = await compress([
-            { role: 'system', content: 'Summarize these authorized historical records for a later model request. Preserve names, corrections, source references and actual call status.', timestamp: currentTime }, checkpointPrompt,
-          ]);
+          let answer;
+          try {
+            answer = await compress([
+              { role: 'system', content: 'Summarize these authorized historical records for a later model request. Preserve names, corrections, source references and actual call status.', timestamp: currentTime }, checkpointPrompt,
+            ]);
+          } catch (error) {
+            if (error.code !== 'resource_limit') throw error;
+          }
           job.check();
-          const text = answer.stopReason === 'stop' && answer.content.filter(part => part.type === 'text').map(part => part.text).join('\n');
+          const text = answer?.stopReason === 'stop' && answer.content.filter(part => part.type === 'text').map(part => part.text).join('\n');
           if (text) {
             summary = { id: key, through: historyIds[covered + chunk.length - 1], summary: text, time: currentTime };
             job.inbox.store.putRecord(R.checkpoint, summary);

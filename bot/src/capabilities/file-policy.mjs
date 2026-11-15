@@ -83,12 +83,13 @@ export function insideProtectedDirectory(path, workspace, roots) {
     !(pathWithin(root, workspace) && !samePath(root, workspace) && pathWithin(workspace, path)));
 }
 
-export function createPathAccess({ workspace, project = workspace, base = workspace, projectOnly = false, protectedDirectories = [], accessPolicy = {} }) {
+export function createPathAccess({ workspace, project = workspace, base = workspace, projectOnly = false,
+  protectedDirectories = [], accessPolicy = {}, protectedPath = sensitivePath }) {
   return async function checkedPath(input = '.', { directory = false, file = false, exists = directory || file,
     operations = ['read'], alternative = false } = {}) {
     const requested = resolveFilePath(base, input);
     assertPathPolicy(requested, accessPolicy, { operations, alternative });
-    if (sensitivePath(requested, workspace) || insideProtectedDirectory(requested, workspace, protectedDirectories))
+    if (protectedPath(requested, workspace) || insideProtectedDirectory(requested, workspace, protectedDirectories))
       throw fileAccessDenied(requested, 'protected_path', { operations });
     const roots = (projectOnly ? [project] : [workspace, project]).filter(root => pathWithin(root, requested));
     const grants = (accessPolicy.grants || []).filter(grant => matchesFileGrant(grant, requested));
@@ -102,7 +103,7 @@ export function createPathAccess({ workspace, project = workspace, base = worksp
     const actual = located.path;
     const actualDenied = await Promise.all((accessPolicy.deniedPaths || []).map(async item => ({ ...item, path: await physicalPath(item.path) })));
     assertPathPolicy(actual, { deniedPaths: actualDenied }, { operations, alternative });
-    if (sensitivePath(actual, actualWorkspace) || insideProtectedDirectory(actual,
+    if (protectedPath(actual, actualWorkspace) || insideProtectedDirectory(actual,
       samePath(workspace, actualWorkspace) ? actualWorkspace : workspace, actualProtected))
       throw fileAccessDenied(requested, 'resolved_protected_path', { operations });
     const inRoot = roots.some(root => samePath(root, workspace) ? pathWithin(actualWorkspace, actual) :

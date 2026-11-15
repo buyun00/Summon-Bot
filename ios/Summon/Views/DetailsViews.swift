@@ -37,8 +37,8 @@ struct BotDetailsView: View {
             Section("头像") {
                 DisclosureGroup("选择头像") { AvatarPicker(avatar: $avatar).padding(.vertical, 12) }
                 PhotosPicker(selection: $photo, matching: .images) { Label("使用自己的图片", systemImage: "photo") }
-                Button("保存头像") { run { if let current { self.current = try await store.setAvatar(avatar, bot: current) } } }
-                    .disabled(!canEdit)
+                Button("保存头像") { run { if let bot { current = try await store.setAvatar(avatar, bot: bot) } } }
+                    .disabled(!store.protocolReady || busy || bot == nil)
             }
             Section("Bot 设置") {
                 TextField("名称", text: $name)
@@ -51,13 +51,14 @@ struct BotDetailsView: View {
                     }, id: \.prettyPrinted) { item in
                         Text(item["name"].string ?? item["id"].stringValue).tag(item["id"].stringValue)
                     }
+                    if let id = current?.model?["connection_id"].string,
+                       !models.contains(where: { $0["id"].string == id }) { Text(id + " · 当前绑定").tag(id) }
                 }
                 if !modelConnection.isEmpty {
-                    TextField("模型名称", text: $modelName).autocorrectionDisabled()
-                    Picker("推理强度", selection: $thinking) {
-                        Text("连接默认值").tag("")
-                        ForEach(["off", "low", "medium", "high", "xhigh", "max"], id: \.self) { Text($0).tag($0) }
-                    }
+                    let entry = models.first { $0["id"].string == modelConnection }
+                    let known = modelName.isEmpty || modelName == entry?["model"].string
+                    TextField("模型名称", text: $modelName, prompt: Text("留空使用连接配置")).autocorrectionDisabled()
+                    ModelThinkingField(label: "推理强度", defaultLabel: "继承连接", suggestions: known ? entry?["thinkingLevels"].array : nil, value: $thinking)
                 }
                 Picker("选材索引", selection: $materialIndex) {
                     Text("未选择").tag("")
@@ -93,14 +94,20 @@ struct BotDetailsView: View {
                             Toggle(model["name"].string ?? model["id"].stringValue,
                                    isOn: selection(model["id"].stringValue, in: $selectedModels))
                         }
+                        ForEach(hiddenGrants("model_ids", in: models), id: \.self) { id in
+                            Toggle(id + " · 现有授权", isOn: selection(id, in: $selectedModels))
+                        }
                     }
                     DisclosureGroup("执行目录") {
                         ForEach(workspaces, id: \.prettyPrinted) { item in
                             Toggle(item["name"].string ?? item["id"].stringValue,
                                    isOn: selection(item["id"].stringValue, in: $selectedWorkspaces))
                         }
+                        ForEach(hiddenGrants("workspace_ids", in: workspaces), id: \.self) { id in
+                            Toggle(id + " · 现有授权", isOn: selection(id, in: $selectedWorkspaces))
+                        }
                     }
-                    Button("保存资源权限") { run { try await saveAccess() } }.disabled(!canEdit)
+                    Button("保存资源权限") { run { try await saveAccess() } }.disabled(!store.protocolReady || busy)
                 }
             }
             Section("资料与会话") {
@@ -126,6 +133,11 @@ struct BotDetailsView: View {
         })
     }
 
+    private func hiddenGrants(_ key: String, in records: [SummonJSONValue]) -> [String] {
+        let visible = Set(records.compactMap { $0["id"].string })
+        return (access[key].array ?? []).compactMap(\.string).filter { !visible.contains($0) }.sorted()
+    }
+
     private func populate(_ value: SummonBot) {
         name = value.name; instructions = value.instructions ?? ""; avatar = value.resolvedAvatar
         modelConnection = value.model?["connection_id"].stringValue ?? ""
@@ -135,18 +147,22 @@ struct BotDetailsView: View {
     }
 
     private func reload() async throws {
-        let value = try await store.fetchBot(botID)
-        if current == nil { populate(value) }
-        current = value
+        async let latest = store.fetchBot(botID)
         async let policy = store.request(path: accessPath)
         async let catalog = store.request(path: "/api/model-settings")
         async let locations = store.list("/api/workspaces")
         async let privateFiles = store.list("/api/files?bot=" + SummonAPIClient.component(botID))
-        (access, workspaces, files) = try await (policy, locations, privateFiles)
-        let configured = try await catalog
-        models = configured["connections"].array ?? []
-        selectedModels = Set((access["model_ids"].array ?? []).compactMap(\.string))
-        selectedWorkspaces = Set((access["workspace_ids"].array ?? []).compactMap(\.string))
+        if let latestPolicy = try? await policy {
+            access = latestPolicy
+            selectedModels = Set((access["model_ids"].array ?? []).compactMap(\.string))
+            selectedWorkspaces = Set((access["workspace_ids"].array ?? []).compactMap(\.string))
+        }
+        if let configured = try? await catalog { models = configured["connections"].array ?? [] }
+        if let directories = try? await locations { workspaces = directories }
+        if let documents = try? await privateFiles { files = documents }
+        let value = try await latest
+        if current == nil { populate(value) }
+        current = value
     }
 
     private func saveBot() async throws {
@@ -154,11 +170,13 @@ struct BotDetailsView: View {
         var changes: [String: SummonJSONValue] = ["name": .string(name.trimmingCharacters(in: .whitespacesAndNewlines)),
                                                  "instructions": .string(instructions)]
         let previous = current.model ?? .null
-        if modelConnection != (previous["connection_id"].string ?? "") || modelName != (previous["id"].string ?? "") ||
-            thinking != (previous["thinking_level"].string ?? "") {
+        let thinkingLevel = thinking.trimmingCharacters(in: .whitespacesAndNewlines)
+        let modelID = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if modelConnection != (previous["connection_id"].string ?? "") || modelID != (previous["id"].string ?? "") ||
+            thinkingLevel != (previous["thinking_level"].string ?? "") {
             var binding: [String: SummonJSONValue] = ["connection_id": .string(modelConnection)]
-            if !modelName.isEmpty { binding["id"] = .string(modelName) }
-            if !thinking.isEmpty { binding["thinking_level"] = .string(thinking) }
+            if !modelID.isEmpty { binding["id"] = .string(modelID) }
+            if !thinkingLevel.isEmpty { binding["thinking_level"] = .string(thinkingLevel) }
             changes["model"] = modelConnection.isEmpty ? .null : .object(binding)
         }
         if materialIndex != (current.material_index_ref?.id ?? "") {
@@ -206,6 +224,8 @@ struct RoomDetailsView: View {
     @Environment(\.dismiss) private var dismiss
     let roomID: String
     @State private var editing = false
+    @State private var confirmsLeave = false
+    @State private var leaving = false
     @State private var error: String?
 
     private var room: SummonRoom? { store.room(id: roomID) }
@@ -247,12 +267,29 @@ struct RoomDetailsView: View {
                     NavigationLink("订阅与提醒") { SummonObjectList(section: .wakeups, space: ref) }
                     NavigationLink("执行会话和内部对话") { SummonObjectList(section: .executions, space: ref) }
                 }
+                if room.isGroup && room.members.contains("user") {
+                    Section {
+                        Button("退出群聊", role: .destructive) { confirmsLeave = true }
+                            .disabled(!store.protocolReady || room.revision == nil || leaving)
+                    }
+                }
             }
             if let error { InlineError(message: error) }
         }
         .navigationTitle("会话详情")
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
         .summonSheet(isPresented: $editing) { if let room { RoomEditView(room: room) } }
+        .confirmationDialog("退出群聊？", isPresented: $confirmsLeave, titleVisibility: .visible) {
+            Button("退出群聊", role: .destructive) {
+                guard let room, !leaving else { return }
+                leaving = true
+                Task {
+                    defer { leaving = false }
+                    do { try await store.leaveRoom(room); dismiss() }
+                    catch { self.error = error.localizedDescription }
+                }
+            }
+        }
     }
 }
 

@@ -2,13 +2,13 @@ import { execFile } from 'node:child_process';
 import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { setTimeout as pause } from 'node:timers/promises';
 import { readJson } from '../build/files.mjs';
-import { validateRelease } from './repository.mjs';
+import { sameRelease, validateRelease } from './repository.mjs';
 import { githubBase, releaseTargets } from './targets.mjs';
+import { findTestFlightBuild, testFlightCredentials } from './testflight.mjs';
 
 const run = promisify(execFile);
-const matches = (current, expected) => current.sourceCommit === expected.sourceCommit &&
-  current.version === expected.version && current.buildNumber === expected.buildNumber;
 
 export async function localWindowsRelease(root, expected) {
   const folder = join(root, 'windows', 'x64');
@@ -16,7 +16,7 @@ export async function localWindowsRelease(root, expected) {
     if (error.code === 'ENOENT') return null;
     throw error;
   });
-  if (!current || !matches(current, expected)) return null;
+  if (!current || !sameRelease(current, expected)) return null;
   const release = validateRelease(current);
   if (release.platform !== 'windows' || release.arch !== 'x64' || !/^release-[A-Za-z0-9._-]+$/.test(current.directory)) {
     throw new Error('Invalid local Windows release pointer');
@@ -33,15 +33,29 @@ export async function localWindowsRelease(root, expected) {
 
 async function githubPackage(repository, platform, arch, expected) {
   const base = githubBase(repository, platform, arch);
-  const options = { signal: AbortSignal.timeout(15000), cache: 'no-store' };
-  const response = await fetch(base + 'latest.json', options);
+  const request = async (file, options) => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const response = await fetch(base + file, { ...options, signal: AbortSignal.timeout(20000), cache: 'no-store' });
+        if (attempt || response.status !== 429 && response.status < 500) return response;
+        await response.body?.cancel();
+      } catch (error) {
+        if (attempt) throw new Error(`Cannot currently reach GitHub ${platform}/${arch}`, { cause: error });
+      }
+      await pause(1000);
+    }
+  };
+  const response = await request('latest.json');
   if (!response.ok) throw new Error(`GitHub ${platform}/${arch} release metadata returned HTTP ${response.status}`);
   const release = validateRelease(await response.json());
-  if (release.platform !== platform || release.arch !== arch || !matches(release, expected)) {
+  if (release.platform !== platform || release.arch !== arch || !sameRelease(release, expected)) {
     throw new Error(`GitHub ${platform}/${arch} is serving build ${release.buildNumber}; expected ${expected.buildNumber} from the selected commit`);
   }
-  const download = await fetch(base + encodeURIComponent(release.mainFile), { ...options, method: 'HEAD', signal: AbortSignal.timeout(15000) });
-  if (!download.ok) throw new Error(`GitHub ${platform}/${arch} download returned HTTP ${download.status}`);
+  const file = encodeURIComponent(release.mainFile);
+  let download = await request(file, { method: 'HEAD' });
+  if (!download.ok) download = await request(file, { headers: { Range: 'bytes=0-0' } });
+  await download.body?.cancel().catch(() => {});
+  if (!download.ok) throw new Error(`GitHub ${platform}/${arch} package download returned HTTP ${download.status}`);
 }
 
 async function githubMetadata(endpoint) {
@@ -50,17 +64,40 @@ async function githubMetadata(endpoint) {
 }
 
 async function testFlightBuild(repository, expected) {
-  const endpoint = `repos/${repository}/actions`;
-  const query = new URLSearchParams({ head_sha: expected.sourceCommit, status: 'success', per_page: '10' });
-  const { workflow_runs } = await githubMetadata(`${endpoint}/workflows/ios-testflight.yml/runs?${query}`);
-  for (const run of workflow_runs) {
-    if (run.head_sha !== expected.sourceCommit || run.conclusion !== 'success') continue;
-    const { jobs } = await githubMetadata(`${endpoint}/runs/${run.id}/attempts/${run.run_attempt}/jobs`);
-    const distributed = jobs.some(job => job.conclusion === 'success' && job.steps?.some(step =>
-      step.name === 'Wait for exact build and internal TestFlight distribution' && step.conclusion === 'success'));
-    if (distributed) return;
+  const endpoint = `repos/${repository}/actions/workflows/ios-testflight.yml/runs`;
+  const builds = new Set(), attempts = [];
+  for (let page = 1; ; page++) {
+    const query = new URLSearchParams({ head_sha: expected.sourceCommit, per_page: '50', page: String(page) });
+    const { workflow_runs } = await githubMetadata(`${endpoint}?${query}`);
+    for (const run of workflow_runs) {
+      if (run.head_sha !== expected.sourceCommit) continue;
+      for (let attempt = run.run_attempt; attempt >= 1; attempt--) {
+        builds.add(`${expected.buildNumber}.${run.run_number}.${attempt}`);
+        attempts.push({ id: run.id, attempt });
+      }
+    }
+    if (workflow_runs.length < 50) break;
   }
-  throw new Error(`Internal TestFlight distribution has not completed for build ${expected.buildNumber} from the selected commit`);
+  const group = process.env.TESTFLIGHT_GROUP;
+  const auth = testFlightCredentials();
+  if (builds.size && auth && await findTestFlightBuild(expected.version, builds, group || 'Personal', auth)) return;
+  if (!auth) {
+    const marker = 'TestFlight availability ';
+    for (const { id, attempt } of attempts) {
+      const logs = await run('gh', ['run', 'view', String(id), '--repo', repository, '--attempt', String(attempt), '--log'],
+        { windowsHide: true, timeout: 30000, maxBuffer: 8 * 1024 * 1024 }).then(result => result.stdout, () => '');
+      for (const line of logs.split(/\r?\n/)) {
+        const index = line.indexOf(marker);
+        if (index < 0) continue;
+        try {
+          const state = JSON.parse(line.slice(index + marker.length));
+          if (state.available === true && state.version === expected.version && builds.has(state.build)
+            && (!group || state.group === group)) return;
+        } catch { /* Other log lines do not describe a distributed build. */ }
+      }
+    }
+  }
+  throw new Error(`TestFlight availability could not be confirmed for ${expected.version} from the selected commit`);
 }
 
 /** A protocol cutover waits for downloads from the existing release channels. */

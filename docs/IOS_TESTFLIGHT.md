@@ -133,7 +133,7 @@ pwsh -NoProfile -File scripts/ios/configure-github.ps1
 gh workflow run ios-testflight.yml --repo buyun00/Summon-Bot --ref main -f action=release
 ```
 
-需要本机已有 `gh` 登录、Python 及 `cryptography`、`PyJWT`；这台机器已发现这些 Python 依赖。脚本通过标准输入写 GitHub Secrets，不把私钥或密码放进命令行、输出或源码。
+配置脚本使用本机已有的 `gh` 登录、Python、`cryptography` 和 `PyJWT`。若私有目录中有多个 API Key，可用 `-ApiKeyFile` 指定现有私钥。脚本通过标准输入写 GitHub Secrets。
 
 | GitHub 配置 | 用途 |
 | --- | --- |
@@ -145,13 +145,19 @@ gh workflow run ios-testflight.yml --repo buyun00/Summon-Bot --ref main -f actio
 | Variable `SUMMON_TESTFLIGHT_GROUP` | `Personal` |
 | Variable `SUMMON_IOS_RELEASE_ENABLED` | 材料确认后设为 `true` |
 
-发布开关打开后，main 上的 `release.json` 变更触发自动发布，也可手动运行发布。iOS 源码候选使用 `Client releases` 的候选构建。需要单独编译 iPhone SDK 时，手动选择 `action=compile` 进行无签名编译。
+发布开关打开后，main 上的 `release.json` 变更触发自动发布，也可手动运行发布。iOS 模拟器候选使用 `Client releases` 的候选构建。选择 `action=compile` 可单独编译无签名的 iPhone 应用，该分支仅需可用的 iOS SDK。
 
 版本名称来自 `release.json`；CI 构建号为 `buildNumber.GITHUB_RUN_NUMBER.GITHUB_RUN_ATTEMPT`。例如源码 buildNumber 为 21、工作流第 1 次运行第 1 次尝试，对应构建 `21.1.1`。以实际 Actions 汇总为准，不把源码的单独数字 21 当作 TestFlight 完整构建号。
 
 工作流步骤依次为：配置校验 → Xcode iPhone 归档 → 签名导出 → API 上传 → Apple 处理 → 核对准确版本/构建号 → 加入或等待内部组 → 回读 `IN_BETA_TESTING` 和组关联。
 
-上传成功只代表 Apple 接收；最后分发步骤成功才表示该准确构建已在内部组可用。等待 30 分钟仍未完成时会明确失败，不能自动声称发布成功，也不应立即重复上传；先在后台查看原构建。工作流不公开 IPA、archive 或签名材料。
+上传后，汇总会记录 Apple 受理的版本和完整构建号。若 30 分钟后 Apple 仍在处理，汇总会标记待分发。用该版本与构建号续接已有上传。
+
+```powershell
+gh workflow run ios-testflight.yml --repo buyun00/Summon-Bot --ref main -f action=resume -f version=VERSION -f build_number=APPLE_BUILD
+```
+
+版本和构建号以实际上传汇总为准。内部组的可用状态以 App Store Connect 上的构建和组关联为准。
 
 ## 10. 在 iPhone 安装并检查消息推送
 

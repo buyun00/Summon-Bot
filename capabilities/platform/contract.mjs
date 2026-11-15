@@ -27,7 +27,7 @@ const wakeupRule = { anyOf: [
   object({ kind: oneOf('time'), at: text, interval_ms: { type: 'integer', minimum: 1000 }, scope: ref }, ['kind', 'at']),
 ] };
 const model = { anyOf: [refOrId, object({ connection_id: text, id: text,
-  thinking_level: oneOf('off', 'low', 'medium', 'high', 'xhigh', 'max') }, ['connection_id']), { type: 'null' }] };
+  thinking_level: { anyOf: [text, { type: 'null' }] } }, ['connection_id']), { type: 'null' }] };
 
 const definitions = [
   ['find', 'Find accessible objects, execution connections, and internal run and call references.',
@@ -39,8 +39,9 @@ const definitions = [
   ['save_file', 'Save text, a permitted File source, or a relative file from an authorized project directory. Supply the current revision to replace an existing File.',
     object({ space: ref, path: text, content_or_source: { anyOf: [text, object({ text }, ['text']),
       object({ source: object({ kind: oneOf('file'), id: text }, ['kind', 'id']) }, ['source']),
-      object({ source: object({ kind: oneOf('workspace'), id: text }, ['kind', 'id']), path: text }, ['source', 'path'])] },
-      revision: integer, sources: array(ref) }, ['space', 'path', 'content_or_source'])],
+      object({ source: object({ kind: oneOf('workspace'), id: text }, ['kind', 'id']), path: text }, ['source', 'path']),
+      object({ no_change: oneOf(true) }, ['no_change'])] },
+      revision: integer, sources: array(ref), material_items: array(text) }, ['space', 'path', 'content_or_source'])],
   ['create_bot', 'Create a Bot with instructions and an optional configured default model connection.',
     object({ name: text, instructions: text, model }, ['name', 'instructions'])],
   ['configure_bot', 'Change a Bot configuration at its current revision. An explicit resume reference is required to re-enable a paused Bot. ' +

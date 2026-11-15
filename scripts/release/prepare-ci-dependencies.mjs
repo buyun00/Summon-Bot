@@ -1,5 +1,5 @@
 import { createWriteStream, existsSync } from 'node:fs';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, rename, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
 import { Readable } from 'node:stream';
@@ -100,7 +100,9 @@ async function desktop() {
   const electronUrl = `https://github.com/electron/electron/releases/download/v${version}/${electronFile}`;
   // getCachePath keys the URL only. The ordinary builder download still performs
   // its existing Electron validation; preparation adds no file hashing.
-  await download('electron/electron', `v${version}`, electronFile, cache.getCachePath(electronUrl, electronFile));
+  const warm = (repository, tag, file, path) => download(repository, tag, file, path)
+    .catch(error => console.warn(`Dependency cache unavailable for ${file}: ${error.message}`));
+  await warm('electron/electron', `v${version}`, electronFile, cache.getCachePath(electronUrl, electronFile));
 
   // Toolset versions used by the pinned electron-builder 26.18.1.
   const tools = [
@@ -115,19 +117,18 @@ async function desktop() {
     ]),
   ];
   const builderCache = getCacheDirectory({ allowEnvVarOverride: true });
-  for (const [tag, file] of tools) await download('electron-userland/electron-builder-binaries', tag, file, join(builderCache, tag, file));
+  await Promise.all(tools.map(([tag, file]) => warm('electron-userland/electron-builder-binaries', tag, file, join(builderCache, tag, file))));
 }
 
 async function android() {
   const propertiesPath = join(root, 'android/gradle/wrapper/gradle-wrapper.properties');
   const properties = await readFile(propertiesPath, 'utf8');
-  const name = properties.match(/^distributionUrl=.*\/(gradle-(\d+(?:\.\d+)+)-bin\.zip)\s*$/m);
-  if (!name) throw new Error('Expected a versioned Gradle binary distribution in wrapper properties');
+  const name = properties.match(/^distributionUrl=.*\/(gradle-(\d+(?:\.\d+)+)-(?:bin|all)\.zip)\s*$/m);
+  if (!name) return;
   const destination = join(process.env.RUNNER_TOOL_CACHE, 'summon-ci-dependencies', name[1]);
   await download('gradle/gradle-distributions', `v${name[2]}`, name[1], destination);
-  // Change only the ephemeral runner's download location. The pinned Gradle
-  // version and all other wrapper/build/signing settings remain in force.
-  await writeFile(propertiesPath, properties.replace(/^distributionUrl=.*$/m, `distributionUrl=${pathToFileURL(destination).href}`));
+  // The release command applies this cache path only to its isolated build.
+  await appendFile(process.env.GITHUB_ENV, `SUMMON_GRADLE_DISTRIBUTION=${destination}\n`);
 }
 
 try {

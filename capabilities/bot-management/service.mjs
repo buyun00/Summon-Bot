@@ -76,8 +76,12 @@ export class BotManager {
   async create(id, args, context, beforeSave) {
     const { actor, workspaceProfileId } = context;
     const name = cleanName(args.name), instructions = instructionsOf(args.instructions);
-    const model = this.models.selectBinding(args.model ?? undefined, workspaceProfileId);
-    if (model && !this.canUseModel(actor, model.connection_id, context)) reject('connection_forbidden', 'Model connection is not available to this caller', 403);
+    const implicitModel = args.model === undefined;
+    let model = this.models.selectBinding(args.model, workspaceProfileId);
+    if (model && !this.canUseModel(actor, model.connection_id, context)) {
+      if (!implicitModel) reject('connection_forbidden', 'Model connection is not available to this caller', 403);
+      model = null;
+    }
     await mkdir(this.directory(id), { recursive: true });
     return this.store.transaction(() => {
       beforeSave();

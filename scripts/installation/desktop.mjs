@@ -34,8 +34,8 @@ async function readProfile(root) {
   let previous;
   try { previous = await readJson(profilePath(root)); }
   catch (error) {
-    if (error.code === 'ENOENT' || error instanceof SyntaxError) return { schemaVersion, selection: null, pendingCreate: null };
-    throw new Error('无法读取本机工作区选择。');
+    if (error.code === 'ENOENT') return { schemaVersion, selection: null, pendingCreate: null };
+    throw new Error('无法读取本机工作区选择。', { cause: error });
   }
   if (previous?.schemaVersion === schemaVersion) {
     const { selection, pendingCreate } = previous;
@@ -49,11 +49,15 @@ async function readProfile(root) {
         ? { mode: pendingCreate.mode, origin: pendingOrigin, id: pendingCreate.id } : null,
     };
   }
-  // A previously connected HTTPS instance can keep using its browser session.
-  const origin = savedOrigin(previous?.mode === 'remote' ? 'remote' : null, previous?.origin);
-  const migrated = { schemaVersion, selection: origin ? { mode: 'remote', origin, workspaceId: null } : null, pendingCreate: null };
-  await writeProfile(root, migrated);
-  return migrated;
+  if (previous && !Object.hasOwn(previous, 'schemaVersion')) {
+    const origin = savedOrigin(previous.mode, previous.origin);
+    if (origin) {
+      const migrated = { schemaVersion, selection: { mode: previous.mode, origin, workspaceId: null }, pendingCreate: null };
+      await writeProfile(root, migrated);
+      return migrated;
+    }
+  }
+  throw new Error('本机工作区设置格式无法识别，已保留原文件。');
 }
 
 async function writeProfile(root, value) {
@@ -118,10 +122,11 @@ export async function workspaceRequest(origin, path, options = {}, timeout = 100
     return await fetch(new URL(path, origin), {
       ...options, redirect: 'error', cache: 'no-store', signal: AbortSignal.timeout(timeout),
     });
-  } catch {
-    throw new Error(origin === formalOrigin
-      ? '无法连接本机正式实例。请确认正式服务已启动后重试。'
-      : '无法连接该实例。请检查 HTTPS 地址和网络后重试。');
+  } catch (error) {
+    const message = error.name === 'TimeoutError' ? '工作区请求超时。'
+      : origin === formalOrigin ? '无法连接本机正式实例。请确认正式服务已启动后重试。'
+      : '无法连接该实例。请检查 HTTPS 地址和网络后重试。';
+    throw new Error(message, { cause: error });
   }
 }
 
@@ -132,6 +137,10 @@ export function loginRequired() {
 function workspaceSummary(item) {
   if (!isWorkspaceId(item?.id)) throw new Error('实例返回的工作区标识无效。');
   return { id: item.id, name: typeof item.name === 'string' && item.name.trim() ? item.name.trim().slice(0, 80) : '工作区' };
+}
+
+function workspaceList(items) {
+  return items.filter(item => isWorkspaceId(item?.id)).map(workspaceSummary);
 }
 
 export async function workspaceBootstrap(origin, headers) {
@@ -149,7 +158,7 @@ export async function workspaceBootstrap(origin, headers) {
 export async function requestWorkspaceProfiles(origin, headers, createId) {
   const creating = Boolean(createId);
   const bootstrap = await workspaceBootstrap(origin, headers);
-  if (!creating && Array.isArray(bootstrap.workspaceProfiles)) return bootstrap.workspaceProfiles.map(workspaceSummary);
+  if (!creating && Array.isArray(bootstrap.workspaceProfiles)) return workspaceList(bootstrap.workspaceProfiles);
   headers = { ...headers, 'X-Summon-Protocol': String(protocolVersion) };
   const response = await workspaceRequest(origin, '/api/workspace-profiles', creating
     ? { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ id: createId }) }
@@ -165,7 +174,7 @@ export async function requestWorkspaceProfiles(origin, headers, createId) {
     return workspaceSummary(result);
   }
   if (!Array.isArray(result?.workspaces)) throw new Error('实例返回的工作区列表无法读取。');
-  return result.workspaces.map(workspaceSummary);
+  return workspaceList(result.workspaces);
 }
 
 export async function desktopCommand(command, input = {}, { profileRoot = defaultProfile(), releaseRoot = packageRoot } = {}) {
@@ -179,6 +188,7 @@ export async function desktopCommand(command, input = {}, { profileRoot = defaul
     if (input.action === 'revoke') return revokeRemote(config, input.provider, input);
     throw new Error('未知的本机设置操作。');
   }
+  let selection;
   if (command !== 'status') {
     if (!['local', 'remote'].includes(command)) throw new Error('未知的桌面命令。');
     const local = command === 'local';
@@ -190,14 +200,21 @@ export async function desktopCommand(command, input = {}, { profileRoot = defaul
       throw error;
     }
     const previous = await readWorkspaceSelection(root);
-    const workspaceId = previous?.origin === origin ? previous.workspaceId : null;
-    if (workspaceId && !profiles.some(item => item.id === workspaceId)) throw new Error('先前选择的工作区暂不可用，已保留此选择。');
-    await saveWorkspaceSelection(root, { mode: command, origin, workspaceId });
+    const workspaceId = input.workspace === 'default' ? null : input.workspace ?? (previous?.origin === origin ? previous.workspaceId : null);
+    if (workspaceId !== null && !profiles.some(item => item.id === workspaceId)) {
+      throw new Error('所选工作区不可用。可用 --workspace default 进入默认工作台，或指定已授权的工作区 ID。');
+    }
+    selection = { mode: command, origin, workspaceId };
+    await saveWorkspaceSelection(root, selection);
+  } else {
+    selection = await readWorkspaceSelection(root);
   }
-  const selection = await readWorkspaceSelection(root);
-  const manifest = await readJson(join(releaseRoot, 'release-manifest.json'));
-  return { ...(selection || { mode: 'unselected', origin: null, workspaceId: null }),
-    version: manifest.version, buildId: manifest.buildId, sourceCommit: manifest.sourceCommit, runtime: manifest.runtime };
+  const manifest = await readJson(join(releaseRoot, 'release-manifest.json')).catch(() => null);
+  return {
+    ...(selection || { mode: 'unselected', origin: null, workspaceId: null }),
+    ...(manifest ? { version: manifest.version, buildId: manifest.buildId, sourceCommit: manifest.sourceCommit, runtime: manifest.runtime }
+      : { manifestWarning: '无法读取桌面内嵌运行时版本。' }),
+  };
 }
 
 async function readStdin() {
@@ -215,7 +232,7 @@ async function cli() {
   const { options, positional } = parseArgs(process.argv.slice(2));
   const [command = 'status', action, provider] = positional;
   if (command === 'help' || options.help) {
-    console.log('summon status | local [--data-root PATH] | remote --address HTTPS --token-file PATH|-\n'
+    console.log('summon status | local [--data-root PATH] [--workspace ID|default] | remote --address HTTPS --token-file PATH|- [--workspace ID|default]\n'
       + 'summon access status|prepare|apply|revoke cloudflare|tailscale [--origin HTTPS] [--owner external|summon] [--port PORT] [--plan ID --confirm] [--token-file PATH|-]');
     return;
   }
@@ -226,12 +243,12 @@ async function cli() {
     catch { throw new Error('无法读取访问令牌输入。'); }
   }
   const input = options.stdin ? JSON.parse(await readStdin()) : {
-    action, provider, dataRoot: options['data-root'], address: options.address,
+    action, provider, dataRoot: options['data-root'], address: options.address, workspace: options.workspace,
     origin: options.origin, owner: options.owner, port: options.port, planId: options.plan, confirm: options.confirm === true, token,
   };
   const result = await desktopCommand(command, input, { profileRoot: options['profile-root'] });
   console.log(JSON.stringify(result));
-  if (['missing', 'needs-login', 'needs-https', 'needs-authorization', 'unavailable', 'conflict', 'mapping-unconfirmed',
+  if (['missing', 'needs-login', 'needs-https', 'needs-authorization', 'unavailable', 'unreachable', 'conflict', 'mapping-unconfirmed',
     'connector-unavailable', 'waiting-connector'].includes(result.state)) process.exitCode = 2;
 }
 

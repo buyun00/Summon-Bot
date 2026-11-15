@@ -1,10 +1,10 @@
-import { createMemo, createSignal } from 'solid-js'
+import { Show, createMemo, createSignal } from 'solid-js'
 import ConfirmDialog from './ConfirmDialog'
 import CycleMenu from './CycleMenu'
 import NameDialog from './NameDialog'
 import TimelineTrack from './TimelineTrack'
 import ZoomSlider from './ZoomSlider'
-import { blocksWith, makeBlock, nextCycleId, offsetOf, totalDuration, uniqueName, type Block, type Cycle } from '@/bot/cycles'
+import { blocksWith, makeBlock, MAX_BLOCS, MAX_CYCLES, nextCycleId, offsetOf, totalDuration, uniqueName, type Block, type Cycle } from '@/bot/cycles'
 import type { StateId } from '@/bot/states'
 import { MAX_ZOOM, MIN_ZOOM, mmss } from '@/ui/timeline'
 import { nomDeCycle, pluriel, t } from '@/i18n'
@@ -29,8 +29,11 @@ export default function Timeline(props: {
   const [zoom, setZoom] = createSignal(1)
   const cycle = createMemo(() => props.cycles.find((item) => item.id === props.activeId) ?? props.cycles[0]!)
   const blocks = () => cycle().blocks
+  const pageStart = createMemo(() => Math.floor(Math.min(props.block, blocks().length - 1) / MAX_BLOCS) * MAX_BLOCS)
+  const pageEnd = () => Math.min(pageStart() + MAX_BLOCS, blocks().length)
   const total = createMemo(() => totalDuration(blocks()))
-  const at = createMemo(() => offsetOf(blocks(), props.block) + props.elapsed)
+  const selectedOffset = createMemo(() => offsetOf(blocks(), props.block))
+  const at = () => selectedOffset() + props.elapsed
   const [naming, setNaming] = createSignal<{ mode: 'create' | 'rename'; id?: string } | null>(null)
   const [nameDraft, setNameDraft] = createSignal('')
   const [nameOpen, setNameOpen] = createSignal(false)
@@ -45,6 +48,7 @@ export default function Timeline(props: {
     props.onBlockChange(0)
   }
   function askCreate() {
+    if (props.cycles.length >= MAX_CYCLES) return
     setNaming({ mode: 'create' })
     setNameDraft(uniqueName(t('cycles.newName'), props.cycles))
     setNameOpen(true)
@@ -60,6 +64,7 @@ export default function Timeline(props: {
     setNaming(null)
     if (!request) return
     if (request.mode === 'create') {
+      if (props.cycles.length >= MAX_CYCLES) return
       const next: Cycle = { id: nextCycleId(props.cycles), name: uniqueName(name, props.cycles), blocks: [makeBlock('idle')] }
       props.onCyclesChange([...props.cycles, next])
       select(next.id)
@@ -93,11 +98,25 @@ export default function Timeline(props: {
       </div>
       <div class="flex h-full flex-col gap-2 select-none">
         <div class="flex items-center justify-between gap-1">
-          <CycleMenu cycles={props.cycles} current={cycle()} activeId={props.activeId} onActiveIdChange={select} onCreate={askCreate} onRename={askRename} onRemove={askRemove} />
+          <div class="flex min-w-0 items-center gap-2">
+            <CycleMenu cycles={props.cycles} current={cycle()} activeId={props.activeId} onActiveIdChange={select} onCreate={askCreate} onRename={askRename} onRemove={askRemove} />
+            <Show when={blocks().length >= MAX_BLOCS}><p id="timeline-block-limit" class="text-xs text-[var(--muted)]" role="status">{t('timeline.blockLimit', { limit: MAX_BLOCS })}</p></Show>
+          </div>
           <button type="button" class="flex h-8 shrink-0 cursor-pointer items-center gap-2 rounded-xl bg-[var(--ink)] pr-3.5 pl-3 text-sm font-medium text-[var(--paper)] shadow-sm transition hover:opacity-90 active:scale-95 max-sm:w-8 max-sm:justify-center max-sm:px-0" onClick={props.onExport}><svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"><path d="M3 15C3 17.8284 3 19.2426 3.87868 20.1213C4.75736 21 6.17157 21 9 21H15C17.8284 21 19.2426 21 20.1213 20.1213C21 19.2426 21 17.8284 21 15" /><path d="M12 3V16M8 11.625L12 16L16 11.625" /></g></svg><span class="max-sm:sr-only">{t('timeline.export')}</span></button>
         </div>
-        <TimelineTrack blocks={blocks()} elapsed={props.elapsed} shape={props.shape} color={props.color} expression={props.expression} block={props.block} zoom={zoom()} onBlocksChange={(next: Block[]) => edit({ blocks: next })} onBlockChange={props.onBlockChange} onZoomChange={setZoom} onAdd={(state: StateId) => edit({ blocks: blocksWith(blocks(), state) })} onSeek={props.onSeek} />
+        <TimelineTrack blocks={blocks()} pageStart={pageStart()} elapsed={props.elapsed} shape={props.shape} color={props.color} expression={props.expression} block={props.block} zoom={zoom()} onBlocksChange={(next: Block[]) => edit({ blocks: next })} onBlockChange={props.onBlockChange} onZoomChange={setZoom} onAdd={(state: StateId) => {
+          const current = blocks()
+          const next = blocksWith(current, state)
+          if (next !== current) edit({ blocks: next })
+        }} onSeek={props.onSeek} />
         <div class="flex shrink-0 items-center justify-end gap-4 max-sm:gap-2">
+          <Show when={blocks().length > MAX_BLOCS}>
+            <div class="mr-auto flex items-center gap-1 text-xs tabular-nums text-[var(--muted)]">
+              <button type="button" class="h-7 w-7 rounded-lg hover:bg-black/5 disabled:opacity-40" disabled={pageStart() === 0} aria-label={t('pages.previous')} onClick={() => props.onBlockChange(pageStart() - MAX_BLOCS)}>‹</button>
+              <span>{t('pages.range', { first: pageStart() + 1, last: pageEnd(), total: blocks().length })}</span>
+              <button type="button" class="h-7 w-7 rounded-lg hover:bg-black/5 disabled:opacity-40" disabled={pageEnd() === blocks().length} aria-label={t('pages.next')} onClick={() => props.onBlockChange(pageEnd())}>›</button>
+            </div>
+          </Show>
           <ZoomSlider zoom={zoom()} min={MIN_ZOOM} max={MAX_ZOOM} onZoomChange={setZoom} />
           <p class="text-xs tabular-nums text-[var(--muted)]"><span class="text-[var(--ink)]">{mmss(at())}</span> / {mmss(total())}</p>
           <span class="group relative flex"><button type="button" class="flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg text-[var(--muted)] transition hover:bg-black/5 hover:text-[var(--ink)]" aria-label={t('timeline.preview')} onClick={props.onPreview}><svg width="17" height="17" viewBox="0 0 24 24" aria-hidden="true"><g fill="currentColor"><path d="M9.75 12A2.25 2.25 0 1 0 14.25 12A2.25 2.25 0 1 0 9.75 12" /><path fill-rule="evenodd" d="M2 12c0 1.64.425 2.192 1.275 3.296C4.972 17.5 7.818 20 12 20s7.028-2.5 8.725-4.704C21.575 14.192 22 13.64 22 12s-.425-2.192-1.275-3.296C19.028 6.5 16.182 4 12 4S4.972 6.5 3.275 8.704C2.425 9.808 2 10.36 2 12m10-3.75a3.75 3.75 0 1 0 0 7.5a3.75 3.75 0 0 0 0-7.5" /></g></svg></button><span class="pointer-events-none absolute bottom-full left-1/2 mb-2 -translate-x-1/2 translate-y-1 rounded-lg bg-[var(--ink)] px-2.5 py-1.5 text-xs whitespace-nowrap text-[var(--paper)] opacity-0 transition group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:translate-y-0 group-focus-within:opacity-100" role="tooltip">{t('timeline.preview')}</span></span>

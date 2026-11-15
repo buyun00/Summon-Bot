@@ -106,8 +106,25 @@
 
   const memory = new Map();
   const queues = new Map();
+  const removedRooms = new Set();
   const storageStatus = { persistent: false, error: null };
-  let database = null, opening = null, generation = 0, resetBarrier = Promise.resolve();
+  let database = null, opening = null, retryAt = 0, generation = 0, resetBarrier = Promise.resolve(), pendingReset = null;
+  let sessionObserved = false;
+
+  function clearPersistedHistory(db, record) {
+    return new Promise((resolve, reject) => {
+      let tx;
+      const finish = error => { clearTimeout(timer); error ? reject(error) : resolve(); };
+      const timer = setTimeout(() => { try { tx?.abort(); } catch {} finish(new Error('清除历史缓存超时')); }, 2500);
+      try {
+        tx = db.transaction(['workspace', 'rooms', 'session'], 'readwrite');
+        for (const name of ['workspace', 'rooms', 'session']) tx.objectStore(name).clear();
+        tx.objectStore('session').put(record, 'current');
+        tx.oncomplete = () => finish();
+        tx.onerror = tx.onabort = () => finish(tx.error || new Error('无法清除历史缓存'));
+      } catch (error) { finish(error); }
+    });
+  }
 
   // Drain writes captured before the reset, then erase all conversation stores
   // in one transaction. New reads/writes wait behind this barrier.
@@ -116,21 +133,15 @@
     generation++; memory.clear();
     const record = { schema: 1, savedAt: Date.now(), value: { ...copy(session), historyEpoch } };
     const reset = previousBarrier.then(async () => {
-      await Promise.allSettled(pending); await ready(); memory.clear();
+      await Promise.allSettled(pending);
+      memory.clear(); removedRooms.clear();
       memory.set('session:current', record);
+      pendingReset = record;
       if (database) {
         try {
-          await new Promise((resolve, reject) => {
-            let tx, settled = false;
-            const finish = error => { if (settled) return; settled = true; clearTimeout(timer); error ? reject(error) : resolve(); };
-            const timer = setTimeout(() => { try { tx?.abort(); } catch {} finish(new Error('清除历史缓存超时')); }, 2500);
-            try {
-              tx = database.transaction(['workspace', 'rooms', 'session'], 'readwrite');
-              for (const name of ['workspace', 'rooms', 'session']) tx.objectStore(name).clear();
-              tx.objectStore('session').put(record, 'current');
-              tx.oncomplete = () => finish(); tx.onerror = tx.onabort = () => finish(tx.error || new Error('无法清除历史缓存'));
-            } catch (error) { finish(error); }
-          });
+          await clearPersistedHistory(database, record);
+          pendingReset = null;
+          sessionObserved = true;
         } catch (error) { unavailable(error); }
       }
       return true;
@@ -139,40 +150,59 @@
     return reset;
   }
 
-  function unavailable(error) {
-    storageStatus.persistent = false;
+  function recordError(error) {
     storageStatus.error = String(error?.message || error || '浏览器本地存储不可用');
+  }
+  function unavailable(error) {
+    recordError(error);
+    storageStatus.persistent = false;
+    retryAt = Date.now() + 2500;
     try { database?.close(); } catch { /* Already closed. */ }
     database = null;
   }
 
   function ready() {
     if (opening) return opening;
-    opening = Promise.resolve(window.SummonStorageMigration).then(() => new Promise(resolve => {
+    if (database || Date.now() < retryAt) return Promise.resolve({ ...storageStatus });
+    opening = new Promise(resolve => {
       let request, settled = false;
-      const finish = (db, error) => {
+      const finish = async (db, error) => {
         if (settled) { try { db?.close(); } catch { /* Late open. */ } return; }
         settled = true; clearTimeout(timer);
         if (db) {
+          if (pendingReset) {
+            try {
+              const record = memory.get('session:current') || pendingReset;
+              await clearPersistedHistory(db, record);
+              pendingReset = null;
+              sessionObserved = true;
+            } catch (error) {
+              db.close();
+              unavailable(error);
+              resolve({ ...storageStatus });
+              return;
+            }
+          }
           database = db; storageStatus.persistent = true; storageStatus.error = null;
-          db.onversionchange = () => unavailable('本地存储版本已更新，请重新打开页面');
+          db.onversionchange = () => unavailable('本地存储版本已更新');
           db.onclose = () => { if (database === db) unavailable('本地存储连接已关闭'); };
         } else unavailable(error);
         resolve({ ...storageStatus });
       };
       const timer = setTimeout(() => finish(null, '打开本地存储超时'), 1500);
-      try {
-        if (!window.indexedDB) { finish(null, '浏览器未提供本地数据库'); return; }
+      Promise.resolve(window.SummonStorageMigration).then(() => {
+        if (settled) return;
+        if (!window.indexedDB) { void finish(null, '浏览器未提供本地数据库'); return; }
         request = window.indexedDB.open(databaseName, 1);
         request.onupgradeneeded = () => {
           const db = request.result;
           for (const store of ['workspace', 'rooms', 'session']) if (!db.objectStoreNames.contains(store)) db.createObjectStore(store);
         };
-        request.onsuccess = () => finish(request.result);
-        request.onerror = () => finish(null, request.error || '无法打开本地存储');
-        request.onblocked = () => finish(null, '本地存储正在被其他页面更新');
-      } catch (error) { finish(null, error); }
-    }));
+        request.onsuccess = () => void finish(request.result);
+        request.onerror = () => void finish(null, request.error || '无法打开本地存储');
+        request.onblocked = () => void finish(null, '本地存储正在被其他页面更新');
+      }).catch(error => void finish(null, error));
+    }).finally(() => { opening = null; });
     return opening;
   }
 
@@ -218,15 +248,19 @@
     return serialize(store, key, async () => {
       try {
         await barrier;
-        if (capturedGeneration !== generation) return null;
+        if (capturedGeneration !== generation || store === 'rooms' && removedRooms.has(key)) return null;
         await ready();
         const memoryKey = `${store}:${key}`;
         let record = memory.get(memoryKey);
         if (database) {
           try {
-            record = await transact(store, key, undefined, false);
-            if (validate(record)) memory.set(memoryKey, record);
-          } catch (error) { unavailable(error); }
+            const saved = await transact(store, key, undefined, false);
+            if (store === 'session') sessionObserved = true;
+            if (validate(saved) && (!record || saved.savedAt >= record.savedAt)) {
+              record = saved;
+              memory.set(memoryKey, record);
+            }
+          } catch (error) { recordError(error); }
         }
         return capturedGeneration === generation && validate(record) ? copy(record) : null;
       } catch { return null; }
@@ -238,9 +272,10 @@
     return serialize('rooms', key, async () => {
       await barrier;
       if (capturedGeneration !== generation) return;
+      removedRooms.add(key);
       memory.delete('rooms:' + key);
       if (!database) return;
-      try { await transact('rooms', key, undefined, true); } catch (error) { unavailable(error); }
+      try { await transact('rooms', key, undefined, true); } catch (error) { recordError(error); }
     });
   }
 
@@ -257,10 +292,16 @@
         await barrier;
         if (capturedGeneration !== generation) return false;
         await ready();
+        if (store === 'rooms') removedRooms.delete(key);
         memory.set(`${store}:${key}`, captured);
         if (database) {
-          try { await transact(store, key, captured, true); }
-          catch (error) { unavailable(error); }
+          try {
+            // A delayed database open may contain drafts this page has never loaded.
+            if (store === 'session' && !sessionObserved && sessionValid(await transact(store,key,undefined,false))) return false;
+            await transact(store, key, captured, true);
+            if (store === 'session') sessionObserved = true;
+          }
+          catch (error) { recordError(error); return false; }
         }
         return true;
       } catch { return false; }

@@ -1,21 +1,27 @@
 param(
     [string]$SharedDirectory = "$env:USERPROFILE/.codex/private/opengym-ios-signing",
     [string]$AppDirectory = "$env:USERPROFILE/.codex/private/summon-ios-signing",
-    [string]$Group = 'Personal'
+    [string]$Group = 'Personal',
+    [string]$ApiKeyFile
 )
 $ErrorActionPreference = 'Stop'
 # Private input is sent over stdin, never through arguments or console output.
 $required = @("$SharedDirectory/Lin-Gym-Distribution.p12", "$SharedDirectory/p12-password.dpapi",
     "$AppDirectory/app.mobileprovision", "$AppDirectory/asc-issuer-id.txt")
 foreach ($file in $required) { if (!(Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing private material: $file" } }
-$keys = @(Get-ChildItem -LiteralPath $SharedDirectory -Filter 'AuthKey_*.p8')
-if ($keys.Count -ne 1) { throw 'Expected exactly one existing App Store Connect API key in the shared directory' }
+if ($ApiKeyFile) {
+    $selectedKey = (Resolve-Path -LiteralPath $ApiKeyFile).Path
+} else {
+    $keys = @(Get-ChildItem -LiteralPath $SharedDirectory -File -Filter 'AuthKey_*.p8')
+    if ($keys.Count -ne 1) { throw 'Select the existing App Store Connect API key with -ApiKeyFile' }
+    $selectedKey = $keys[0].FullName
+}
 $secure = Get-Content -LiteralPath "$SharedDirectory/p12-password.dpapi" -Raw | ConvertTo-SecureString
 $password = [System.Net.NetworkCredential]::new('', $secure).Password
 $payload = @{
     shared = (Resolve-Path -LiteralPath $SharedDirectory).Path
     app = (Resolve-Path -LiteralPath $AppDirectory).Path
-    keyPath = $keys[0].FullName
+    keyPath = $selectedKey
     password = $password
     group = $Group
 } | ConvertTo-Json -Compress

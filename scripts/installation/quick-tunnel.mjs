@@ -13,15 +13,15 @@ if (!file) {
 } else {
   const config = join(process.cwd(), 'quick-tunnel.yml');
   await writeFile(config, '', { mode: 0o600 });
-  const child = spawn(file, ['tunnel', '--config', config, '--no-autoupdate', '--protocol', 'http2', '--url', target.href], {
+  const protocol = process.env.SUMMON_CLOUDFLARE_PROTOCOL;
+  const child = spawn(file, ['tunnel', '--config', config, '--no-autoupdate', ...(protocol ? ['--protocol', protocol] : []), '--url', target.href], {
     env: safeEnvironment(), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
   });
-  let reported = false, registered = false, origin, text = '';
+  let reported = false, origin, text = '';
   const read = chunk => {
     text = (text + chunk.toString()).slice(-16384);
     origin ||= text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com\b/i)?.[0];
-    registered ||= /Registered tunnel connection/i.test(text);
-    if (origin && registered && !reported) { reported = true; process.send?.({ type: 'remote-ready', origin }); }
+    if (origin && !reported) { reported = true; process.send?.({ type: 'remote-ready', origin }); }
   };
   child.stdout.on('data', read); child.stderr.on('data', read);
   child.once('error', error => { process.send?.({ type: 'remote-error', message: error.message }); process.exitCode = 1; });

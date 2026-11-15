@@ -94,6 +94,7 @@ export default {
     play: 'Lancer la lecture',
     pause: 'Arrêter la lecture',
     addAnimation: 'Ajouter une animation',
+    blockLimit: 'Jusqu’à {limit} animations par cycle',
     preview: 'Aperçu',
     export: 'Exporter le montage',
     zoom: 'Zoom de la piste',
@@ -119,8 +120,15 @@ export default {
     defaultName: 'Cycle par défaut',
     newName: 'Mon cycle',
     menuNew: 'Nouveau cycle',
+    limit: 'Limite de création de {limit} cycles atteinte',
     menuRenameAria: 'Renommer {name}',
     menuRemoveAria: 'Supprimer {name}'
+  },
+
+  pages: {
+    previous: 'Page précédente',
+    next: 'Page suivante',
+    range: '{first}–{last} / {total}'
   },
 
   units: {

@@ -1,12 +1,12 @@
 # macOS Developer ID 签名与公证
 
-2026-11-05 起，GitHub 的 macOS Apple Silicon（arm64） DMG/ZIP 发布流程要求 Developer ID Application 签名、Hardened Runtime、Apple 公证并将公证票据附加到 App。缺少材料或公证失败时停止发布，不再回退到 ad-hoc 包。Windows、Android、iOS 的签名方式不变。
+GitHub 发布的 macOS Apple Silicon（arm64）DMG 使用 Developer ID Application 签名及 Hardened Runtime，并将 Apple 公证票据附加到 App。缺少材料或公证失败时停止正式发布。
 
 macOS 继续通过 GitHub Releases 分发，应用 ID 沿用 `org.lin0.relay.desktop`，展示名为 Summon Bot；不需要创建 Mac App Store 应用记录。安装更新仍下载 DMG 手动覆盖。
 
 ## 只需补一张证书
 
-现有 iOS Apple Distribution 证书不能用于站外 macOS 分发。需要 **Developer ID Application**；本项目分发 DMG/ZIP，不需要 Developer ID Installer（用于 PKG），也不需要 Mac App Distribution。
+本项目通过 DMG 分发，使用 **Developer ID Application** 证书。
 
 证书请求及对应私钥已在本机私有目录准备。只上传下面的 CSR，私钥留在本机：
 
@@ -38,7 +38,7 @@ Apple 说明：[Developer ID 证书](https://developer.apple.com/help/account/ce
 gh workflow run client-releases.yml --repo buyun00/Summon-Bot --ref main -f platform=macos
 ```
 
-GitHub Mac runner 自动导入签名证书，生成 仅支持 Apple Silicon 的应用（不支持 Intel），签名并提交 Apple 公证，成功后附加票据，再生成并发布 DMG/ZIP。公证未成功不会替换现有公开发行包。首次公证可能需要 Apple 较长时间处理，以实际运行结果为准。
+GitHub Mac runner 导入签名证书，为 Apple Silicon 构建应用并提交 Apple 公证。公证完成后附加票据，再生成和发布 DMG。
 
 签名后正常从 GitHub 下载的新版应不再因“无法验证开发者”要求到设置里手动放行；macOS 仍可能显示正常的“从互联网下载，是否打开”提示。此前已经下载的旧包不会自动获得签名，需要下载新发布的包。
 

@@ -109,8 +109,11 @@ export function createApi({ platform, room, attachments, models, profiles, conne
         return { id, revision: current.revision ?? 0, model_ids: current.model_ids || [], workspace_ids: current.workspace_ids || [] };
       }
       if (method === 'PATCH') {
+        const prior = platform.accessFor({ kind: 'bot', id });
         const access = platform.configureAccess(id, args, userContext);
-        await platform.revokeSessions();
+        const model_ids = (prior.model_ids || []).filter(model => !access.model_ids?.includes(model));
+        const workspace_ids = (prior.workspace_ids || []).filter(workspace => !access.workspace_ids?.includes(workspace));
+        if (model_ids.length || workspace_ids.length) await platform.revokeSessions({ kind: 'bot', id, model_ids, workspace_ids });
         emit('bot');
         return access;
       }
@@ -199,8 +202,9 @@ export function createApi({ platform, room, attachments, models, profiles, conne
       const ref = routeRef('workspace', match[1]);
       if (method === 'GET') return read(ref, params);
       if (method === 'PATCH') {
+        const prior = platform.workspaceRecords().find(workspace => workspace.id === ref.id);
         const result = platform.configureWorkspace({ ...args, id: ref.id }, userContext);
-        await platform.revokeSessions();
+        if (prior && (prior.path !== result.path || prior.write !== false && !result.write)) await platform.revokeSessions(ref);
         return result;
       }
     }
@@ -217,7 +221,7 @@ export function createApi({ platform, room, attachments, models, profiles, conne
       models.scopedEntry(models.catalog(), id, selectedProfile);
       if (method === 'DELETE' && !action) {
         const result = await models.remove(id, selectedProfile);
-        await platform.revokeSessions();
+        await platform.revokeSessions({ kind: 'model', id });
         return result;
       }
       if (action === 'models' && method === 'GET') return models.choices(id, params.get('discover') === '1');
@@ -230,15 +234,21 @@ export function createApi({ platform, room, attachments, models, profiles, conne
 
     async function settingsConnection(value) {
       if (value.workspaceProfileId !== undefined) reject('invalid_connection', 'Connection workspace is assigned by the host');
-      if (value.id && connections.get(value.id) && !platform.canUseConnection(user, value.id, userContext)) {
+      const current = value.id && connections.get(value.id);
+      if (current && !platform.canUseConnection(user, value.id, userContext)) {
         reject('connection_not_found', 'Connection is unavailable', 404);
       }
-      if (Array.isArray(value.allowed_bot_ids) && value.allowed_bot_ids.some(id => id !== '*' &&
+      if (Array.isArray(value.allowed_bot_ids) && value.allowed_bot_ids.some(id => id !== '*' && !current?.allowed_bot_ids?.includes(id) &&
           !platform.listBots().some(bot => bot.id === id && platform.visibleBot(bot, userContext)))) {
         reject('invalid_connection', 'Connection grant includes a Bot outside this workspace');
       }
       const result = await connections.configure({ ...value, id: value.id ?? randomUUID(), workspaceProfileId: selectedProfile }, userContext);
-      await platform.revokeSessions();
+      if (current) {
+        const updated = connections.get(result.id);
+        const removedGrant = current.allowed_bot_ids?.some(id => !updated?.allowed_bot_ids?.includes(id));
+        if (!updated || current.enabled && !updated.enabled || removedGrant || (current.binding_version ?? 1) !== (updated.binding_version ?? 1))
+          await platform.revokeSessions({ kind: 'connection', id: result.id });
+      }
       emit('connection');
       return result;
     }

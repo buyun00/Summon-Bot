@@ -10,7 +10,7 @@ if (location.protocol === 'summon-setup:' && location.host === 'workspace') {
     onSetup: callback => { ipcRenderer.on('summon:workspace-setup-state', () => callback()); },
     onProgress: callback => { ipcRenderer.on('summon:workspace-progress', (_event, progress) => callback(progress)); },
   }));
-} else contextBridge.exposeInMainWorld('SummonDesktop', Object.freeze({
+} else if (location.pathname === '/') contextBridge.exposeInMainWorld('SummonDesktop', Object.freeze({
   getInfo: () => ipcRenderer.invoke('summon:desktop-info'),
   checkForUpdates: () => ipcRenderer.invoke('summon:check-update'),
   installUpdate: () => ipcRenderer.invoke('summon:install-update'),

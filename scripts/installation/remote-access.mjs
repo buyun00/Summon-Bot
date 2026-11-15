@@ -1,21 +1,24 @@
 import { execFile } from 'node:child_process';
-import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
 import { readJson, writeJson } from '../build/files.mjs';
 import { workspaceOrigin } from '../../web/backend/origins.mjs';
-import { workspaceProof } from '../../web/backend/workspace-probe.mjs';
 import { cloudflareInstall, installedBinary, safeEnvironment, tailscaleInstall, tunnelTokenPath } from './auxiliaries.mjs';
 import { acquireServiceLock } from './service-lock.mjs';
 import { inspectService, launchService, stopService } from './system.mjs';
-import { readRemoteAccess, writeRemoteAccess } from './remote-config.mjs';
+import { inspectRemoteOrigin, readRemoteAccess, usableRemoteAccess, verifyRemoteCandidate, writeRemoteAccess } from './remote-config.mjs';
 import { assertInstallationWritable, dataFormat } from './installation-state.mjs';
 
 const providers = new Set(['cloudflare', 'tailscale']);
 const targetUrl = config => 'http://127.0.0.1:' + config.web.port;
 const planPath = (config, provider) => join(config.dataRoot, 'config', 'remote-' + provider + '-plan.json');
 const docs = { cloudflare: cloudflareInstall, tailscale: tailscaleInstall };
+const budget = (config, provider, name, fallback) => {
+  const value = config.remoteAccess?.[provider]?.[name];
+  return Number.isSafeInteger(value) && value > 0 && value <= 300000 ? value : fallback;
+};
 
 const view = (provider, state, extra) => ({ provider, state, docsUrl: docs[provider], ...extra });
 function providerName(provider) {
@@ -43,13 +46,14 @@ function officialAuthorization(text) {
 async function tailscaleMapping(config, port) {
   const file = installedBinary('tailscale');
   if (!file) return { state: 'missing' };
-  const response = await command(file, ['status', '--json', '--peers=false']);
+  const timeout = budget(config, 'tailscale', 'commandTimeoutMs', 10000);
+  const response = await command(file, ['status', '--json', '--peers=false'], timeout);
   let status;
   try { status = JSON.parse(response.stdout); } catch { return { state: 'unavailable' }; }
   if (status.BackendState !== 'Running') return { state: 'needs-login', authorization: officialAuthorization(status.AuthURL) };
   const dns = String(status.Self?.DNSName || '').replace(/\.$/, '').toLowerCase();
   if (!dns.endsWith('.ts.net') || !status.Self?.ID) return { state: 'needs-https' };
-  const served = await command(file, ['serve', 'status', '--json']);
+  const served = await command(file, ['serve', 'status', '--json'], timeout);
   if (!served.ok) return { state: 'unavailable' };
   let configJSON;
   try { configJSON = JSON.parse(served.stdout) || {}; } catch { return { state: 'unavailable' }; }
@@ -66,15 +70,9 @@ async function tailscaleMapping(config, port) {
     nodeId: status.Self.ID, file, background: Boolean(configJSON.Web?.[hostPort]?.Handlers?.['/']) };
 }
 
-async function probeRoute(config, origin) {
-  const challenge = randomBytes(32).toString('base64url');
-  const url = new URL('/auth/instance', origin);
-  url.searchParams.set('challenge', challenge);
-  try {
-    const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(4500) });
-    return response.ok && (await response.json()).proof === workspaceProof(config.web.accessToken, challenge);
-  } catch { return false; }
-}
+const probeRoute = (config, provider, origin) => inspectRemoteOrigin(config, origin, {
+  timeoutMs: budget(config, provider, 'probeTimeoutMs', 4500),
+});
 
 async function cloudflareConnection(config) {
   const run = await inspectService(config, 'cloudflared');
@@ -85,7 +83,7 @@ async function cloudflareConnection(config) {
 
 export async function remoteStatus(config, provider) {
   providerName(provider);
-  const entry = (await readRemoteAccess(config.dataRoot))[provider];
+  const entry = (await usableRemoteAccess(config.dataRoot))[provider];
   if (provider === 'tailscale') {
     const mapping = await tailscaleMapping(config, entry?.port || 443);
     const registered = mapping.state === 'configured' && mapping.origin === entry?.origin;
@@ -96,7 +94,7 @@ export async function remoteStatus(config, provider) {
     });
   }
   if (!entry) return view(provider, installedBinary('cloudflared') ? 'available' : 'missing');
-  const reachable = !entry.pending && await probeRoute(config, entry.origin);
+  const reachable = !entry.pending && (await probeRoute(config, provider, entry.origin)).reachable;
   const connector = entry.owner === 'summon' ? await cloudflareConnection(config) : 'external';
   return view(provider, reachable ? 'reachable' : entry.pending ? connector : 'registered', {
     origin: entry.origin, owner: entry.owner, registered: !entry.pending, connector, reachable,
@@ -131,65 +129,131 @@ export function prepareRemote(config, provider, input = {}) {
         if (mapping.authorization) await savePlan(config, provider, { authorization: mapping.authorization });
         return view(provider, mapping.state, { authorizationAvailable: Boolean(mapping.authorization) });
       }
-      if (existing && existing.origin !== mapping.origin) throw new Error('请先在原入口撤销登记，再选择另一个 Serve 端口。');
       const plan = await savePlan(config, provider, { port, origin: mapping.origin, nodeId: mapping.nodeId, target,
         reuse: mapping.state === 'configured' });
-      return view(provider, 'prepared', { planId: plan.id, origin: plan.origin, target, reuse: plan.reuse, owner: existing?.owner || (plan.reuse ? 'external' : 'summon') });
+      return view(provider, 'prepared', { planId: plan.id, origin: plan.origin, target, reuse: plan.reuse,
+        owner: (existing?.origin === plan.origin && existing?.owner) || (plan.reuse ? 'external' : 'summon') });
     }
     const origin = workspaceOrigin(input.origin || existing?.origin, { httpsOnly: true });
     const owner = input.owner || existing?.owner || 'external';
     if (!['external', 'summon'].includes(owner)) throw new Error('请选择由外部或 Summon 管理。');
-    if (existing && (existing.owner !== owner || existing.origin !== origin)) throw new Error('请先撤销原登记。外部隧道可继续通过其原有入口管理。');
     if (owner === 'summon' && !installedBinary('cloudflared')) return view(provider, 'missing');
     const plan = await savePlan(config, provider, { origin, owner, target });
     return view(provider, 'prepared', { planId: plan.id, origin, owner, target,
-      needsToken: owner === 'summon' && !existing });
+      needsToken: owner === 'summon' && existing?.owner !== 'summon' });
   });
+}
+
+async function removeTailscaleMapping(config, entry) {
+  const mapping = await tailscaleMapping(config, entry.port);
+  if (mapping.nodeId !== entry.nodeId || mapping.origin !== entry.origin || mapping.target !== entry.target
+    || !['available', 'configured'].includes(mapping.state)) throw new Error('原 Serve 映射的归属无法确认。请检查部署机上的配置。');
+  if (mapping.state === 'configured' && mapping.background) {
+    const result = await command(mapping.file, ['serve', '--bg', '--yes', '--https=' + entry.port, '--set-path=/', 'off'],
+      budget(config, 'tailscale', 'serveTimeoutMs', 15000));
+    if (!result.ok) throw new Error('Tailscale 没有撤销这条 Serve 映射。');
+  }
 }
 
 async function applyTailscale(config, plan, entries) {
   const mapping = await tailscaleMapping(config, plan.port);
   if (mapping.nodeId !== plan.nodeId || mapping.origin !== plan.origin) throw new Error('Tailscale 登录或地址已变化，请重新准备。');
   if (!['available', 'configured'].includes(mapping.state)) return view('tailscale', mapping.state);
-  let owner = entries.tailscale?.owner || 'external';
-  if (mapping.state === 'available') {
-    const response = await command(mapping.file, ['serve', '--bg', '--yes', '--https=' + plan.port, '--set-path=/', plan.target], 15000);
-    if (!response.ok) {
-      const authorization = officialAuthorization(response.stdout + '\n' + response.stderr);
-      if (authorization) await writeJson(planPath(config, 'tailscale'), { ...plan, authorization });
-      return view('tailscale', authorization ? 'needs-authorization' : 'unavailable', { authorizationAvailable: Boolean(authorization) });
+  const previous = entries.tailscale;
+  const sameMapping = previous?.origin === plan.origin && previous.nodeId === plan.nodeId;
+  const result = await verifyRemoteCandidate(config.dataRoot, entries, plan, async () => {
+    let owner = (sameMapping && previous.owner) || 'external', created = false;
+    if (mapping.state === 'available') {
+      const response = await command(mapping.file, ['serve', '--bg', '--yes', '--https=' + plan.port, '--set-path=/', plan.target],
+        budget(config, 'tailscale', 'serveTimeoutMs', 15000));
+      if (!response.ok) {
+        const authorization = officialAuthorization(response.stdout + '\n' + response.stderr);
+        if (authorization) await writeJson(planPath(config, 'tailscale'), { ...plan, authorization });
+        return view('tailscale', authorization ? 'needs-authorization' : 'unavailable', { authorizationAvailable: Boolean(authorization) });
+      }
+      const installed = await tailscaleMapping(config, plan.port);
+      if (installed.state !== 'configured' || installed.nodeId !== plan.nodeId || !installed.background) return view('tailscale', 'mapping-unconfirmed');
+      owner = 'summon';
+      created = true;
     }
-    const installed = await tailscaleMapping(config, plan.port);
-    if (installed.state !== 'configured' || installed.nodeId !== plan.nodeId || !installed.background) return view('tailscale', 'mapping-unconfirmed');
-    owner = 'summon';
+    const entry = { origin: plan.origin, owner, port: plan.port, nodeId: plan.nodeId, target: plan.target };
+    const probe = await probeRoute(config, 'tailscale', plan.origin);
+    if (!probe.reachable) {
+      if (created && !sameMapping) await removeTailscaleMapping(config, entry);
+      return view('tailscale', 'unreachable', { origin: plan.origin, registered: false, error: probe });
+    }
+    entries.tailscale = entry;
+    return view('tailscale', 'registered', { origin: plan.origin, owner, reachable: true });
+  });
+  if (result.state === 'registered' && !sameMapping && previous?.owner === 'summon') {
+    try { await removeTailscaleMapping(config, previous); }
+    catch (error) { result.cleanupPending = error.message; }
   }
-  entries.tailscale = { origin: plan.origin, owner, port: plan.port, nodeId: plan.nodeId, target: plan.target };
-  await writeRemoteAccess(config.dataRoot, entries);
-  return view('tailscale', 'registered', { origin: plan.origin, owner, reachable: await probeRoute(config, plan.origin) });
+  return result;
+}
+
+async function writeTunnelToken(path, token) {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, token, { mode: 0o600, flag: 'wx' });
+    await rename(temporary, path);
+  } finally { await rm(temporary, { force: true }); }
 }
 
 async function applyCloudflare(config, plan, entries, token) {
-  if (plan.owner === 'summon') {
-    const path = tunnelTokenPath(config.dataRoot);
-    if (token) {
-      if (!/^[A-Za-z0-9_+=/-]{40,8192}$/.test(token)) throw new Error('请通过隐藏输入提交有效的隧道令牌。');
-      await stopService(config, 'cloudflared');
-      await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-      await writeFile(path, token + '\n', { mode: 0o600 });
-    } else if (!entries.cloudflare) throw new Error('请通过私有文件或隐藏输入提供隧道令牌。');
-    entries.cloudflare = { origin: plan.origin, owner: plan.owner, target: plan.target, pending: true };
-    await writeRemoteAccess(config.dataRoot, entries);
-    try { await launchService(config, 'cloudflared', { timeoutMs: 10000 }); }
-    catch { return view('cloudflare', 'connector-unavailable', { owner: plan.owner, origin: plan.origin }); }
-    for (let attempt = 0; attempt < 10; attempt++) {
-      if (await cloudflareConnection(config) === 'connected') break;
-      if (attempt === 9) return view('cloudflare', 'waiting-connector', { owner: plan.owner, origin: plan.origin });
-      await pause(750);
+  if (token != null && token !== '' && (typeof token !== 'string' || !token.trim() || Buffer.byteLength(token) > 8192 || /[\x00-\x1f\x7f]/.test(token))) {
+    throw new Error('请通过隐藏输入提交有效的隧道令牌。');
+  }
+  const path = tunnelTokenPath(config.dataRoot), previous = entries.cloudflare;
+  const wasManaged = previous?.owner === 'summon';
+  const managed = plan.owner === 'summon';
+  const launch = () => launchService(config, 'cloudflared', { timeoutMs: budget(config, 'cloudflare', 'startupTimeoutMs', 10000) });
+  const oldToken = managed ? await readFile(path).catch(error => { if (error.code === 'ENOENT') return null; throw error; }) : null;
+  if (managed && !token && (!wasManaged || !oldToken)) throw new Error('请通过私有文件或隐藏输入提供隧道令牌。');
+  let rotated = false, started = false, stopped = false, committed = false;
+  try {
+    const result = await verifyRemoteCandidate(config.dataRoot, entries, plan, async () => {
+      if (managed) {
+        if (token) {
+          await stopService(config, 'cloudflared');
+          stopped = wasManaged;
+          await writeTunnelToken(path, token + '\n');
+          rotated = true;
+        }
+        try { await launch(); started = true; }
+        catch { return view('cloudflare', 'connector-unavailable', { owner: plan.owner, origin: plan.origin }); }
+      }
+      const deadline = Date.now() + budget(config, 'cloudflare', 'routeTimeoutMs', 10000);
+      let probe;
+      do {
+        probe = await probeRoute(config, 'cloudflare', plan.origin);
+        if (probe.reachable || !managed) break;
+        await pause(750);
+      } while (Date.now() < deadline);
+      if (probe.reachable && wasManaged && !managed) {
+        await stopService(config, 'cloudflared');
+        stopped = true;
+        probe = await probeRoute(config, 'cloudflare', plan.origin);
+      }
+      if (!probe.reachable) return view('cloudflare', managed ? 'waiting-connector' : 'unreachable',
+        { owner: plan.owner, origin: plan.origin, registered: false, error: probe });
+      entries.cloudflare = { origin: plan.origin, owner: plan.owner, target: plan.target };
+      return view('cloudflare', 'reachable', { origin: plan.origin, owner: plan.owner, registered: true, reachable: true });
+    });
+    committed = result.state === 'reachable';
+    if (committed && wasManaged && !managed) {
+      await rm(path, { force: true }).catch(error => { result.cleanupPending = error.message; });
+    }
+    return result;
+  } finally {
+    if (!committed) {
+      if (rotated || started && !wasManaged) await stopService(config, 'cloudflared');
+      if (rotated && oldToken) await writeTunnelToken(path, oldToken);
+      else if (rotated) await rm(path, { force: true });
+      if (stopped && wasManaged) await launch();
     }
   }
-  entries.cloudflare = { origin: plan.origin, owner: plan.owner, target: plan.target };
-  await writeRemoteAccess(config.dataRoot, entries);
-  return remoteStatus(config, 'cloudflare');
 }
 
 export function applyRemote(config, provider, { planId, confirm, token } = {}) {
@@ -216,15 +280,7 @@ export function revokeRemote(config, provider, { confirm } = {}) {
       if (provider === 'cloudflare') {
         await stopService(config, 'cloudflared');
         await rm(tunnelTokenPath(config.dataRoot), { force: true });
-      } else {
-        const mapping = await tailscaleMapping(config, entry.port);
-        if (mapping.nodeId !== entry.nodeId || mapping.origin !== entry.origin || mapping.target !== entry.target
-          || !['available', 'configured'].includes(mapping.state)) throw new Error('原 Serve 映射的归属无法确认。请先检查部署机上的配置。');
-        if (mapping.state === 'configured' && mapping.background) {
-          const result = await command(mapping.file, ['serve', '--bg', '--yes', '--https=' + entry.port, '--set-path=/', 'off']);
-          if (!result.ok) throw new Error('Tailscale 没有撤销这条 Serve 映射。');
-        }
-      }
+      } else await removeTailscaleMapping(config, entry);
     }
     delete entries[provider];
     await writeRemoteAccess(config.dataRoot, entries);

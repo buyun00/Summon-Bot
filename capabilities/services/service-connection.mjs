@@ -1,63 +1,95 @@
+import { isDeepStrictEqual } from 'node:util';
 import { validateToolArguments } from '@earendil-works/pi-ai';
-import { loadServiceMethods } from './service-transport.mjs';
+import { fieldPath, httpTool, loadServiceMethods } from './service-transport.mjs';
 import { keyOf, reject } from '../platform/contract.mjs';
-import { connectionAllowed, plain } from './connection-records.mjs';
+import { plain } from './connection-records.mjs';
 import { operationRecords, settled } from './session-processes.mjs';
 
 const environmentName = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const fieldPath = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
+const publicHeaders = new Set(['accept', 'accept-language', 'content-type', 'content-language', 'prefer']);
+const effects = new Set(['read', 'write', 'process', 'external']);
 const at = (value, path) => path?.split('.').reduce((part, key) =>
   part !== null && typeof part === 'object' && Object.hasOwn(part, key) ? part[key] : undefined, value);
 const nativeId = value => ['number', 'string'].includes(typeof value) && String(value).length > 0 && String(value).length <= 512
   ? String(value) : undefined;
 const statuses = ['completed', 'failed', 'stopped', 'running', 'needs_input'];
 export const mcpTasksUnsupported = 'mcp_tasks_unsupported';
+export const mcpMethodUnsupported = 'mcp_method_unsupported';
 
-export const networkDefinitions = entry => entry.kind === 'http' ? entry.config.tools || [entry.config] : [entry.config];
+const networkDefinitions = entry => entry.kind === 'http' ? entry.config.tools ?? [entry.config] : [entry.config];
+const validPath = value => typeof value === 'string' && fieldPath.test(value);
+export function serviceMethod(entry, name) {
+  if (entry.kind !== 'http') return entry.config;
+  const definitions = networkDefinitions(entry);
+  const matching = Array.isArray(definitions) ? definitions.filter(definition => definition?.name === name) : [];
+  if (matching.length > 1) reject('ambiguous_service_method', 'The HTTP method name is registered more than once', 409);
+  return matching[0];
+}
+
 export function credentialNames(entry) {
-  if (entry.kind === 'cli' || entry.kind === 'codex') return entry.config.credential_refs || [];
-  return networkDefinitions(entry).filter(plain).flatMap(definition =>
-    [...Object.values(definition.headersEnv || {}), ...Object.values(definition.env || {}).map(ref => ref?.env)].filter(Boolean));
+  if (!plain(entry.config)) return [];
+  if (entry.kind === 'cli' || entry.kind === 'codex') {
+    return Array.isArray(entry.config.credential_refs) ? entry.config.credential_refs.filter(ref => typeof ref === 'string') : [];
+  }
+  const definitions = networkDefinitions(entry);
+  return Array.isArray(definitions) ? definitions.filter(plain).flatMap(definition =>
+    [...Object.values(definition.headersEnv || {}), ...Object.values(definition.env || {}).map(ref => ref?.env)]
+      .filter(ref => typeof ref === 'string')) : [];
+}
+
+function assertDefinition(entry, definition) {
+  if (!plain(definition) || definition.type && definition.type !== entry.kind) reject('invalid_connection', 'Invalid protocol configuration');
+  if (['headers', 'headersEnv', 'env'].some(key => definition[key] !== undefined && !plain(definition[key])) ||
+      Object.entries(definition.headers || {}).some(([header, value]) => !publicHeaders.has(header.toLowerCase()) || typeof value !== 'string') ||
+      Object.values(definition.headersEnv || {}).some(ref => typeof ref !== 'string' || !environmentName.test(ref)) ||
+      Object.entries(definition.env || {}).some(([name, ref]) => !environmentName.test(name) || !plain(ref) ||
+        typeof ref.env !== 'string' || !environmentName.test(ref.env)) ||
+      Object.keys(definition).some(key => /^(?:token|password|secret|authorization|api[_-]?key)$/i.test(key))) {
+    reject('invalid_credential', 'Use server-side environment references for connection credentials');
+  }
+  try {
+    new Headers(definition.headers);
+    new Headers(Object.fromEntries(Object.keys(definition.headersEnv || {}).map(header => [header, ''])));
+  } catch { reject('invalid_connection', 'Invalid configured HTTP header'); }
+  if (definition.url) {
+    let url;
+    try { url = new URL(definition.url); } catch { reject('invalid_connection', 'Specify a valid service URL'); }
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password ||
+        [...url.searchParams.keys()].some(key => /token|secret|password|api.?key/i.test(key))) {
+      reject('invalid_credential', 'The service URL must use HTTP(S) with credential references');
+    }
+  }
+  if (entry.kind === 'http') {
+    if (typeof definition.name !== 'string' || !definition.name || typeof definition.description !== 'string' ||
+        definition.inputSchema?.type !== 'object' || typeof definition.url !== 'string') {
+      reject('invalid_connection', 'HTTP methods require a name, description, object schema and URL');
+    }
+    try { httpTool(definition); } catch (error) { reject('invalid_connection', error.message); }
+  } else if (!(definition.transport === 'http' && typeof definition.url === 'string') &&
+      !(definition.transport === 'stdio' && typeof definition.command === 'string' && definition.command.trim())) {
+    reject('invalid_connection', 'MCP transport must specify an HTTP URL or a stdio command');
+  }
+  if (definition.args !== undefined && (!Array.isArray(definition.args) || definition.args.some(value => typeof value !== 'string' ||
+      /^--?(?:token|password|secret|api[_-]?key)(?:=|$)/i.test(value)))) {
+    reject('invalid_connection', 'Stdio arguments must be strings with credential references in the environment');
+  }
+  if (definition.timeoutMs !== undefined && (!Number.isInteger(definition.timeoutMs) || definition.timeoutMs < 1 || definition.timeoutMs > 300000))
+    reject('invalid_connection', 'Capability timeoutMs must be an integer from 1 to 300000');
+  if (definition.effect !== undefined && !effects.has(definition.effect)) reject('invalid_connection', 'Unknown service method effect');
 }
 
 export function assertServiceConfig(entry) {
   const definitions = networkDefinitions(entry);
   if (!Array.isArray(definitions) || !definitions.length || definitions.length > 128) reject('invalid_connection', 'Specify 1–128 protocol definitions');
-  for (const definition of definitions) {
-    if (!plain(definition) || definition.type && definition.type !== entry.kind) reject('invalid_connection', 'Invalid protocol configuration');
-    if (Object.keys(definition.headers || {}).length || Object.values(definition.headersEnv || {}).some(ref => !environmentName.test(ref)) ||
-        Object.values(definition.env || {}).some(ref => !plain(ref) || !environmentName.test(ref.env)) ||
-        Object.keys(definition).some(key => /^(?:token|password|secret|authorization|api[_-]?key)$/i.test(key))) {
-      reject('invalid_credential', 'Use server-side environment references for connection credentials');
-    }
-    if (definition.url) {
-      let url;
-      try { url = new URL(definition.url); } catch { reject('invalid_connection', 'Specify a valid service URL'); }
-      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password ||
-          [...url.searchParams.keys()].some(key => /token|secret|password|api.?key/i.test(key))) {
-        reject('invalid_credential', 'The service URL must use HTTP(S) with credential references');
-      }
-    }
-    if (entry.kind === 'http') {
-      if (typeof definition.name !== 'string' || typeof definition.description !== 'string' ||
-          definition.inputSchema?.type !== 'object' || typeof definition.url !== 'string') {
-        reject('invalid_connection', 'HTTP methods require a name, description, object schema and URL');
-      }
-    } else if (!(definition.transport === 'http' && typeof definition.url === 'string') &&
-        !(definition.transport === 'stdio' && typeof definition.command === 'string' && definition.command.trim())) {
-      reject('invalid_connection', 'MCP transport must specify an HTTP URL or a stdio command');
-    }
-    if (definition.args !== undefined && (!Array.isArray(definition.args) || definition.args.some(value => typeof value !== 'string' ||
-        /^--?(?:token|password|secret|api[_-]?key)(?:=|$)/i.test(value)))) {
-      reject('invalid_connection', 'Stdio arguments must be strings with credential references in the environment');
-    }
-  }
+  for (const definition of definitions) assertDefinition(entry, definition);
+  if (entry.kind === 'http' && new Set(definitions.map(item => item.name)).size !== definitions.length)
+    reject('invalid_connection', 'Configured HTTP method names must be unique');
   const lifecycle = entry.config.lifecycle;
   if (!lifecycle) return;
-  if (entry.kind !== 'http' || !plain(lifecycle) || !fieldPath.test(lifecycle.operation_id_path || '') ||
-      !fieldPath.test(lifecycle.status_path || '') || !plain(lifecycle.statuses) ||
+  if (entry.kind !== 'http' || !plain(lifecycle) || !validPath(lifecycle.operation_id_path) ||
+      !validPath(lifecycle.status_path) || !plain(lifecycle.statuses) ||
       Object.values(lifecycle.statuses).some(status => !statuses.includes(status)) ||
-      lifecycle.request_id_path && !fieldPath.test(lifecycle.request_id_path)) {
+      lifecycle.request_id_path && !validPath(lifecycle.request_id_path)) {
     reject('invalid_connection', 'Invalid HTTP asynchronous operation mapping');
   }
   if (lifecycle.method_arguments && (!plain(lifecycle.method_arguments) ||
@@ -73,6 +105,17 @@ export function assertServiceConfig(entry) {
     reject('invalid_connection', 'HTTP operation status must use an actual read-only request');
 }
 
+function waitForSource(pending, signal) {
+  if (!signal) return pending;
+  signal.throwIfAborted();
+  let abort;
+  const cancelled = new Promise((_, reject) => {
+    abort = () => reject(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+  });
+  return Promise.race([pending, cancelled]).finally(() => signal.removeEventListener('abort', abort));
+}
+
 export class ServiceConnections {
   constructor(host) {
     this.host = host;
@@ -80,25 +123,63 @@ export class ServiceConnections {
     this.lifetime = new AbortController();
   }
 
-  async source(entry, actor, workspace = this.host.workspace, signal) {
-    const id = keyOf(entry.id, entry.revision, actor.id, workspace);
-    let pending = this.sources.get(id);
-    if (!pending) {
-      const config = networkDefinitions(entry).map(({ taskContext, lifecycle, methods, ...definition }) => ({ ...definition, type: entry.kind }));
-      pending = loadServiceMethods(config, { botId: actor.id, workspace, signal: this.lifetime.signal,
-        redact: text => this.host.clean(text) });
-      this.sources.set(id, pending);
-      pending.catch(() => { if (this.sources.get(id) === pending) this.sources.delete(id); });
+  load(entry, definition, actor, workspace, signal) {
+    assertDefinition(entry, definition);
+    return loadServiceMethods([{ ...definition, type: entry.kind }], { botId: actor.id, workspace,
+      signal: signal ? AbortSignal.any([this.lifetime.signal, signal]) : this.lifetime.signal,
+      redact: text => this.host.clean(text, []) });
+  }
+
+  sourceKey(entry, actor, workspace) { return keyOf(entry.id, actor.kind, actor.id, workspace); }
+
+  async source(entry, actor, workspace, signal) {
+    signal?.throwIfAborted();
+    const id = this.sourceKey(entry, actor, workspace);
+    let source = this.sources.get(id);
+    if (source && !isDeepStrictEqual(source.config, entry.config)) {
+      void this.retire(id);
+      source = null;
     }
-    signal?.throwIfAborted();
-    const source = await pending;
-    signal?.throwIfAborted();
-    return source;
+    if (!source) {
+      const controller = new AbortController();
+      source = { controller, config: entry.config, waiting: 0 };
+      source.pending = this.load(entry, entry.config, actor, workspace, controller.signal)
+        .then(loaded => { source.loaded = loaded; return loaded; })
+        .catch(error => {
+          if (this.sources.get(id) === source) this.sources.delete(id);
+          throw error;
+        });
+      this.sources.set(id, source);
+    }
+    source.waiting++;
+    try {
+      return await waitForSource(source.pending, signal);
+    } finally {
+      source.waiting--;
+      if (!source.waiting && !source.loaded && this.sources.get(id) === source) {
+        void this.retire(id);
+      }
+    }
   }
 
   async methods(entry, actor, workspace, signal) {
+    if (entry.kind === 'http') {
+      const definitions = networkDefinitions(entry);
+      return Array.isArray(definitions) ? definitions.flatMap(definition => {
+        if (typeof definition?.name !== 'string' || !definition.name) return [];
+        const method = { id: definition.name, name: definition.name, description: definition.description, input_schema: definition.inputSchema };
+        try {
+          serviceMethod(entry, definition.name);
+          assertDefinition(entry, definition);
+          return [method];
+        } catch (error) {
+          return [{ id: definition.name, name: definition.name, status: 'unsupported', code: error.code, error: error.message }];
+        }
+      }) : [];
+    }
     const source = await this.source(entry, actor, workspace, signal);
     return source.tools.map(tool => ({ id: tool.name, name: tool.name, description: tool.description, input_schema: tool.inputSchema,
+      ...(tool.unavailable ? { status: 'unsupported', code: mcpMethodUnsupported, error: tool.unavailable } : {}),
       ...(tool.requiresTasks ? { status: 'unsupported', code: mcpTasksUnsupported, task_support: 'required' } : {}) }));
   }
 
@@ -106,22 +187,33 @@ export class ServiceConnections {
     if (!plain(input) || typeof input.method !== 'string' || input.arguments !== undefined && !plain(input.arguments) ||
         Object.keys(input).some(key => !['method', 'arguments'].includes(key)))
       reject('invalid_service_input', 'Service input requires a method and optional arguments object');
-    const source = await this.source(entry, actor, workspace, signal);
-    const tool = source.tools.find(item => item.name === input.method);
-    if (!tool) reject('method_not_found', 'The connection does not expose this protocol method', 404);
-    if (tool.requiresTasks) reject(mcpTasksUnsupported, 'This MCP method requires the Tasks extension, which this connection does not support', 409);
-    const args = validateToolArguments({ name: tool.name, parameters: tool.inputSchema },
-      { id: callId, name: tool.name, arguments: input.arguments || {} });
     signal?.throwIfAborted();
-    await beforeSubmit();
-    signal?.throwIfAborted();
+    const http = entry.kind === 'http';
+    let source;
     try {
-      return await tool.execute(args, { ...context, signal });
-    } catch (error) {
-      if (entry.kind === 'mcp' && ['CAPABILITY_UNAVAILABLE', 'REMOTE_OUTCOME_UNKNOWN'].includes(error.code)) {
-        void this.disconnect(entry.id);
+      if (http) {
+        const definition = serviceMethod(entry, input.method);
+        if (!definition) reject('method_not_found', 'The connection does not expose this HTTP method', 404);
+        source = await this.load(entry, definition, actor, workspace, signal);
+      } else {
+        source = await this.source(entry, actor, workspace, signal);
       }
+      const tool = source.tools.find(item => item.name === input.method);
+      if (!tool) reject('method_not_found', 'The connection does not expose this protocol method', 404);
+      if (tool.unavailable) reject(mcpMethodUnsupported, tool.unavailable, 409);
+      if (tool.requiresTasks) reject(mcpTasksUnsupported, 'This MCP method requires the Tasks extension, which this connection does not support', 409);
+      const args = validateToolArguments({ name: tool.name, parameters: tool.inputSchema },
+        { id: callId, name: tool.name, arguments: input.arguments || {} });
+      return await tool.execute(args, { ...context, beforeSubmit, signal });
+    } catch (error) {
+      if (!http && source && ['CAPABILITY_UNAVAILABLE', 'REMOTE_OUTCOME_UNKNOWN'].includes(error.code)) {
+        const id = this.sourceKey(entry, actor, workspace);
+        if (this.sources.get(id)?.loaded === source) void this.retire(id);
+      }
+      if (error.code === 'connection_credential_missing') error.message = `${input.method}: ${error.message}`;
       throw error;
+    } finally {
+      if (http) await source?.close();
     }
   }
 
@@ -152,34 +244,31 @@ export class ServiceConnections {
       ...(operation.request_id ? { request_id: operation.request_id } : {}) };
     const parameters = fields ? Object.fromEntries(Object.entries(fields).flatMap(([name, field]) =>
       Object.hasOwn(values, field) && values[field] !== undefined && values[field] !== null ? [[name, values[field]]] : [])) : args;
-    let carriedTarget = false;
-    const context = {};
-    if (kind === 'steer' || kind === 'reply') {
-      const required = kind === 'reply' ? ['operation_id', 'input', 'request_id'] : ['operation_id', 'input'];
-      const bindings = Object.entries(fields || { input: 'input', operation_id: 'operation_id', request_id: 'request_id' });
-      context.onRequestFields = (sent, sentArgs) => {
-        carriedTarget = required.every(value => bindings.some(([name, field]) => field === value &&
-          (value === 'input' ? sent.has(name) || [...sent].some(path => path.startsWith(name + '.')) :
-            sent.has(name) && nativeId(sentArgs[name]) === nativeId(values[value]))));
-      };
-    }
+    const inputCall = kind === 'steer' || kind === 'reply';
+    const required = ['operation_id', ...(inputCall ? ['input'] : []), ...(kind === 'reply' ? ['request_id'] : [])];
+    const bindings = Object.entries(fields || { input: 'input', operation_id: 'operation_id', request_id: 'request_id' });
+    const context = { onRequestFields(sent, sentArgs) {
+      const missing = required.find(value => !bindings.some(([name, field]) => field === value &&
+        (value === 'input' ? sent.has(name) || [...sent].some(path => path.startsWith(name + '.')) :
+          sent.has(name) && nativeId(sentArgs[name]) === nativeId(values[value]))));
+      if (missing) reject('service_target_unmapped', `The selected HTTP method does not send the original ${missing}`, 409);
+    } };
     const result = await this.invoke(entry, session.execution_actor, operation.cwd, { method, arguments: parameters }, callId, beforeSubmit, signal, context);
     const facts = this.facts(entry, result, operation);
-    const echoedId = carriedTarget && nativeId(at(result?.details ?? result?.structuredContent ?? result, lifecycle.operation_id_path));
+    const echoedId = inputCall && nativeId(at(result?.details ?? result?.structuredContent ?? result, lifecycle.operation_id_path));
     return echoedId && echoedId === String(operation.operation_id) && !facts.rejected && facts.status !== 'unknown'
       ? { ...facts, confirmed_operation_id: echoedId } : facts;
   }
 
   async refresh(operation, entry, session) {
     if (this.host.locks.has(session.id)) return operation;
-    if (!entry.config.lifecycle?.status_method || !operation.operation_id || !connectionAllowed(entry, session.execution_actor)) return operation;
+    if (!entry.config.lifecycle?.status_method || !operation.operation_id) return operation;
     if (this.lifetime.signal.aborted || operation.last_poll_at && Date.now() - Date.parse(operation.last_poll_at) < 1500) return operation;
     operation = this.host.saveOperation(operation, { last_poll_at: new Date().toISOString() });
     try {
-      const facts = await this.step(entry, session, operation, entry.config.lifecycle.status_method, undefined, operation.id, () => {
-        const fresh = this.host.requireUsable(this.host.get(entry.id), session.execution_actor);
-        if (fresh.revision !== entry.revision) reject('connection_binding_changed', 'Connection changed during observation', 409);
-      });
+      const method = entry.config.lifecycle.status_method;
+      const facts = await this.step(entry, session, operation, method, undefined, operation.id,
+        () => this.host.requireObservation(entry, session, operation, method));
       const latest = this.host.store.get(operationRecords, operation.id);
       if (this.host.locks.has(session.id) || latest?.last_poll_at !== operation.last_poll_at || latest?.updatedAt !== operation.updatedAt) return latest || operation;
       if (facts.rejected) return operation;
@@ -188,17 +277,20 @@ export class ServiceConnections {
     } catch { return operation; }
   }
 
+  async retire(id) {
+    const source = this.sources.get(id);
+    if (!source) return;
+    this.sources.delete(id);
+    source.controller.abort();
+    try { await (await source.pending).close(); } catch { /* Failed initialization already closed its transport. */ }
+  }
+
   async disconnect(connectionId) {
-    const retired = [...this.sources].filter(([id]) => JSON.parse(id)[0] === connectionId);
-    await Promise.allSettled(retired.map(async ([id, source]) => {
-      this.sources.delete(id);
-      await (await source).close();
-    }));
+    await Promise.all([...this.sources.keys()].filter(id => JSON.parse(id)[0] === connectionId).map(id => this.retire(id)));
   }
 
   async close() {
     this.lifetime.abort();
-    await Promise.allSettled([...this.sources.values()].map(async source => (await source).close()));
-    this.sources.clear();
+    await Promise.all([...this.sources.keys()].map(id => this.retire(id)));
   }
 }

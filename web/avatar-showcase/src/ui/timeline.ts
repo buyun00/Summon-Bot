@@ -65,13 +65,7 @@ export function ticksFor(total: number, scale: number): Array<{ t: number; major
 /**
  * Plafond du nombre de graduations. Garde-fou et non reglage.
  *
- * `parseCycles` borne deja la taille d'un montage relu, mais cette fonction ne doit pas
- * dependre de ce garde-la pour rester bornee : elle rend un objet par graduation et le
- * composant un `<span>` par objet, donc une duree aberrante — un montage bricole a la
- * main, un zoom extreme — se paie en centaines de milliers de noeuds et l'onglet fige.
- *
- * Deux mille couvre trente minutes de montage au zoom le plus fin, soit bien plus que ce
- * que `MAX_BLOCS` autorise a relire. La regle est de toute facon plus large que l'ecran :
- * la piste defile, elle n'affiche jamais tout.
+ * Le composant cree un nœud par graduation. La limite s'applique a chaque
+ * page visible de la piste, qui defile pour les montages longs.
  */
 const MAX_TICKS = 2000

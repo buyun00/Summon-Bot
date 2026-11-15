@@ -12,7 +12,8 @@ struct CreateBotView: View {
     @State private var errorMessage: String?
 
     private var canSubmit: Bool {
-        !busy && store.protocolReady && (createdBot != nil || !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !busy && store.protocolReady && (createdBot != nil || (!title.isEmpty && title.utf16.count <= 100))
     }
 
     private var buttonColor: Color {
@@ -38,11 +39,17 @@ struct CreateBotView: View {
                 VStack(spacing: 28) {
                     GreetingAvatar(avatar: avatar)
                         .padding(.top, 28).padding(.bottom, 10)
-                    TextField("为 Bot 取个名字", text: $name)
-                        .summonFont(.title3, weight: .medium).multilineTextAlignment(.center)
-                        .padding(18).background(SummonTheme.surface, in: RoundedRectangle(cornerRadius: 22))
-                        .onChange(of: name) { _, value in name = String(value.prefix(100)) }
-                    AvatarPicker(avatar: $avatar)
+                    if let createdBot {
+                        Text("\(createdBot.name) 已创建")
+                    } else {
+                        TextField("为 Bot 取个名字", text: $name)
+                            .summonFont(.title3, weight: .medium).multilineTextAlignment(.center)
+                            .padding(18).background(SummonTheme.surface, in: RoundedRectangle(cornerRadius: 22))
+                        if name.trimmingCharacters(in: .whitespacesAndNewlines).utf16.count > 100 {
+                            InlineError(message: "Bot 名称不能超过 100 个字符。")
+                        }
+                        AvatarPicker(avatar: $avatar)
+                    }
                     if let errorMessage { InlineError(message: errorMessage) }
                 }.padding(24)
             }

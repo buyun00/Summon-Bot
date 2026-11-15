@@ -7,6 +7,12 @@ mkdir -p "$SIGNING_DIR" "$HOME/Library/MobileDevice/Provisioning Profiles"
 python3 - <<'PY'
 import base64, os, pathlib, re
 root = pathlib.Path(os.environ['SIGNING_DIR'])
+names = ['SUMMON_APPLE_TEAM_ID', 'SUMMON_IOS_DISTRIBUTION_P12_BASE64',
+         'SUMMON_IOS_DISTRIBUTION_P12_PASSWORD', 'SUMMON_IOS_APP_PROFILE_BASE64',
+         'ASC_KEY_ID', 'ASC_ISSUER_ID', 'ASC_PRIVATE_KEY']
+missing = [name for name in names if not os.environ.get(name)]
+if missing:
+    raise SystemExit('Missing signing and upload configuration: ' + ', '.join(missing))
 for name, filename in [('SUMMON_IOS_DISTRIBUTION_P12_BASE64', 'distribution.p12'),
                        ('SUMMON_IOS_APP_PROFILE_BASE64', 'app.mobileprovision')]:
     try:
@@ -44,4 +50,5 @@ IPAS=("$SIGNING_DIR/export/"*.ipa)
 if [ "${#IPAS[@]}" -ne 1 ]; then echo 'Expected exactly one IPA' >&2; exit 1; fi
 API_PRIVATE_KEYS_DIR="$SIGNING_DIR" xcrun altool --upload-app --type ios \
   --file "${IPAS[0]}" --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
-echo 'Upload accepted; Apple processing and internal distribution are still pending.' >> "$GITHUB_STEP_SUMMARY"
+printf 'Apple accepted version %s (build %s). Internal distribution is pending.\n' \
+  "$(cat "$SIGNING_DIR/version")" "$(cat "$SIGNING_DIR/build")" >> "$GITHUB_STEP_SUMMARY"

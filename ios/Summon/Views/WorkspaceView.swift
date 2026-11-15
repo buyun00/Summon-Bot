@@ -261,6 +261,7 @@ struct SummonReferencePicker: View {
     let roomID: String
     let onSelect: (SummonReference) -> Void
     @State private var files: [SummonJSONValue] = []
+    @State private var fileID = ""
     @State private var error: String?
 
     var body: some View {
@@ -272,6 +273,13 @@ struct SummonReferencePicker: View {
                     if let ref = SummonReference(file["ref"]) {
                         Button(file["path"].string ?? store.label(ref)) { onSelect(ref); dismiss() }
                     }
+                }
+                Section("按文件 ID 引用") {
+                    TextField("文件 ID", text: $fileID).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    Button("加入消息") {
+                        onSelect(SummonReference(kind: "file", id: fileID.trimmingCharacters(in: .whitespacesAndNewlines)))
+                        dismiss()
+                    }.disabled(fileID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
             .navigationTitle("引用资料")
@@ -556,7 +564,7 @@ private struct SummonNativeInput: View {
             if let question = option.question { Text(question) }
             if option.choices.isEmpty {
                 TextField("输入", text: $text, axis: .vertical).lineLimit(2...8)
-                Toggle("JSON 输入", isOn: $asJSON)
+                if option.target["kind"].string == "service_call" { Toggle("JSON 输入", isOn: $asJSON) }
             } else {
                 Picker("回答", selection: $text) {
                     Text("选择回答").tag("")
@@ -568,7 +576,7 @@ private struct SummonNativeInput: View {
             Button(option.label) {
                 Task {
                     do {
-                        let input: SummonJSONValue = asJSON
+                        let input: SummonJSONValue = asJSON && option.choices.isEmpty && option.target["kind"].string == "service_call"
                             ? try JSONDecoder().decode(SummonJSONValue.self, from: Data(text.utf8)) : .string(text)
                         error = nil
                         await submit(input)
@@ -635,18 +643,30 @@ private struct SummonExecutionEditor: View {
     @State private var directory = ""
     @State private var input = ""
     @State private var json = false
+    @State private var model = ""
+    @State private var effort = ""
     @State private var clientID = SummonStore.newID()
+    private var isCodex: Bool { connections.first { $0["id"].string == engine }?["protocol"].string == "codex" }
 
     var body: some View {
         SummonEditorForm(title: "打开执行会话", canSave: !engine.isEmpty && !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, load: {
             async let engines = store.list("/api/connections")
             async let workspaces = store.list("/api/workspaces")
             connections = try await engines.filter { $0["id"].string != "pi" && $0["available"].bool != false }
-            directories = try await workspaces
+            directories = (try? await workspaces) ?? []
             engine = connections.first?["id"].string ?? ""
         }, save: {
-            let value: SummonJSONValue = json
-                ? try JSONDecoder().decode(SummonJSONValue.self, from: Data(input.utf8)) : .string(input)
+            let value: SummonJSONValue
+            if isCodex {
+                var binding: [String: SummonJSONValue] = ["text": .string(input)]
+                let modelID = model.trimmingCharacters(in: .whitespacesAndNewlines)
+                let level = effort.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !modelID.isEmpty { binding["model"] = .string(modelID) }
+                if !level.isEmpty { binding["effort"] = .string(level) }
+                value = .object(binding)
+            } else {
+                value = json ? try JSONDecoder().decode(SummonJSONValue.self, from: Data(input.utf8)) : .string(input)
+            }
             var body: [String: SummonJSONValue] = ["engine": .string(engine), "input": value]
             if !directory.isEmpty { body["workspace"] = SummonReference(kind: "workspace", id: directory).json }
             _ = try await store.request(path: "/api/executions", method: "POST", body: .object(body), clientID: clientID)
@@ -659,13 +679,18 @@ private struct SummonExecutionEditor: View {
                 Text("选择目录").tag("")
                 ForEach(directories, id: \.prettyPrinted) { item in Text(item["name"].stringValue).tag(item["id"].stringValue) }
             }
-            Toggle("JSON 输入", isOn: $json)
+            if isCodex {
+                TextField("模型", text: $model, prompt: Text("留空使用连接配置")).textInputAutocapitalization(.never).autocorrectionDisabled()
+                TextField("推理强度", text: $effort, prompt: Text("留空使用连接默认值")).textInputAutocapitalization(.never).autocorrectionDisabled()
+            } else { Toggle("JSON 输入", isOn: $json) }
             TextField("输入", text: $input, axis: .vertical).lineLimit(5...12)
         }
         .onChange(of: engine) { _, _ in clientID = SummonStore.newID() }
         .onChange(of: directory) { _, _ in clientID = SummonStore.newID() }
         .onChange(of: input) { _, _ in clientID = SummonStore.newID() }
         .onChange(of: json) { _, _ in clientID = SummonStore.newID() }
+        .onChange(of: model) { _, _ in clientID = SummonStore.newID() }
+        .onChange(of: effort) { _, _ in clientID = SummonStore.newID() }
     }
 }
 
@@ -721,13 +746,15 @@ private struct SummonWakeupEditor: View {
     @State private var mode = "all"
     @State private var eventType = "message"
     @State private var authorID = ""
+    @State private var referenceKind = ""
+    @State private var referenceID = ""
     @State private var at = Date()
     @State private var interval = ""
     @State private var enabled = true
 
     private var rule: SummonJSONValue { item["rule"] }
     private var bots: [SummonBot] {
-        if let space, space.kind == "room", let room = store.room(id: space.id) {
+        if let room = store.room(id: roomID) {
             return store.bots.filter { room.members.contains($0.id) }
         }
         return store.bots
@@ -751,10 +778,10 @@ private struct SummonWakeupEditor: View {
                     Text("仅 @ 或回复").tag("mentions")
                 }
             } else {
-                if space?.kind != "room" {
-                    Picker("会话范围", selection: $roomID) {
-                        Text("全部可访问空间").tag("")
-                        ForEach(store.rooms) { room in Text(room.name).tag(room.id) }
+                Picker("会话范围", selection: $roomID) {
+                    Text("全部可访问空间").tag("")
+                    ForEach(store.rooms.filter { item == .null || $0.members.contains(botID) || $0.id == roomID }) { room in
+                        Text(room.name).tag(room.id)
                     }
                 }
                 if kind == "time" {
@@ -766,20 +793,32 @@ private struct SummonWakeupEditor: View {
                         Text("任意").tag("")
                         Text(store.settings.userName).tag("user")
                         ForEach(bots) { bot in Text(bot.name).tag(bot.id) }
+                        if let saved = rule["author"]["id"].string, saved != "user", !bots.contains(where: { $0.id == saved }) {
+                            Text(saved + " · 当前作者").tag(saved)
+                        }
                     }
+                    TextField("对象类型（可选）", text: $referenceKind).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    TextField("对象 ID（可选）", text: $referenceID).textInputAutocapitalization(.never).autocorrectionDisabled()
                 }
             }
             Toggle("启用", isOn: $enabled)
         }.onAppear {
-            botID = item["bot_id"].string ?? (space?.kind == "bot" ? space?.id : nil) ?? bots.first?.id ?? ""
             kind = rule["kind"].string ?? "event"
-            roomID = rule["room"].string ?? rule["room"]["id"].string ?? rule["scope"]["id"].string ?? (space?.kind == "room" ? space?.id : nil) ?? ""
+            roomID = rule["room"].string ?? rule["room"]["id"].string
+                ?? (rule["scope"]["kind"].string == "room" ? rule["scope"]["id"].string : nil)
+                ?? (item == .null && space?.kind == "room" ? space?.id : nil) ?? ""
+            botID = item["bot_id"].string ?? (space?.kind == "bot" ? space?.id : nil) ?? bots.first?.id ?? ""
             mode = rule["mode"].string ?? "all"
             eventType = rule["type"].string ?? "message"
             authorID = rule["author"]["id"].string ?? ""
+            referenceKind = rule["ref"]["kind"].stringValue
+            referenceID = rule["ref"]["id"].stringValue
             at = SummonDate.parse(rule["at"].string) ?? Date()
             interval = rule["interval_ms"].int.map { String(Double($0) / 60_000) } ?? ""
             enabled = item["enabled"].bool ?? true
+        }
+        .onChange(of: roomID) { _, _ in
+            if item == .null && !bots.contains(where: { $0.id == botID }) { botID = "" }
         }
     }
 
@@ -792,18 +831,27 @@ private struct SummonWakeupEditor: View {
         case "time":
             settings["at"] = .string(ISO8601DateFormatter().string(from: at))
             if !interval.isEmpty {
-                guard let minutes = Double(interval), minutes.isFinite, minutes >= 1, minutes < Double(Int.max) / 60_000 else {
-                    throw SummonAPIError.http(0, "请输入有效的重复间隔。")
+                let stored = rule["interval_ms"].int
+                let initial = stored.map { String(Double($0) / 60_000) }
+                let milliseconds = initial == interval ? stored.map(Double.init) : Double(interval).map { ($0 * 60_000).rounded() }
+                guard let milliseconds, milliseconds >= 1000, milliseconds <= 9_007_199_254_740_991 else {
+                    throw SummonAPIError.http(0, "重复间隔至少为 1 秒。")
                 }
-                settings["interval_ms"] = .number((minutes * 60_000).rounded())
+                settings["interval_ms"] = .number(milliseconds)
             }
             if !roomID.isEmpty { settings["scope"] = SummonReference(kind: "room", id: roomID).json }
             else if rule["scope"]["kind"].string != "room", rule["scope"].object != nil { settings["scope"] = rule["scope"] }
         default:
             settings["type"] = .string(eventType.trimmingCharacters(in: .whitespacesAndNewlines))
             if !roomID.isEmpty { settings["room"] = .string(roomID) }
-            if !authorID.isEmpty { settings["author"] = SummonReference(kind: authorID == "user" ? "user" : "bot", id: authorID).json }
-            if rule["ref"].object != nil { settings["ref"] = rule["ref"] }
+            if !authorID.isEmpty {
+                settings["author"] = authorID == rule["author"]["id"].string
+                    ? rule["author"] : SummonReference(kind: authorID == "user" ? "user" : "bot", id: authorID).json
+            }
+            let type = referenceKind.trimmingCharacters(in: .whitespacesAndNewlines)
+            let id = referenceID.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard type.isEmpty == id.isEmpty else { throw SummonAPIError.http(0, "请同时填写对象类型和 ID。") }
+            if !type.isEmpty { settings["ref"] = SummonReference(kind: type, id: id).json }
         }
         var body: [String: SummonJSONValue] = ["bot": .string(botID), "event_or_time": .object(settings), "enabled": .bool(enabled)]
         if let id = item["id"].string, let revision = item["revision"].int {
@@ -822,6 +870,7 @@ private struct SummonConnectionEditor: View {
     @State private var config = "{}"
     @State private var enabled = true
     @State private var allowed: Set<String> = []
+    @State private var allBots = false
 
     var body: some View {
         SummonEditorForm(title: item == .null ? "新增连接" : "执行连接设置",
@@ -832,36 +881,59 @@ private struct SummonConnectionEditor: View {
                 Picker("协议", selection: $kind) {
                     ForEach(["codex", "cli", "mcp", "http"], id: \.self) { Text($0).tag($0) }
                 }
-                TextField("连接配置 JSON", text: $config, axis: .vertical)
-                    .lineLimit(4...12).autocorrectionDisabled().textInputAutocapitalization(.never)
             }
+            TextField(item == .null ? "连接配置 JSON" : "要修改的连接配置（JSON）", text: $config,
+                      prompt: item == .null ? nil : Text("留空保留连接配置"), axis: .vertical)
+                .lineLimit(4...12).autocorrectionDisabled().textInputAutocapitalization(.never)
             Toggle("启用", isOn: $enabled)
             Section("允许使用的 Bot") {
-                ForEach(store.bots) { bot in
-                    Toggle(bot.name, isOn: Binding(get: { allowed.contains(bot.id) }, set: {
-                        if $0 { allowed.insert(bot.id) } else { allowed.remove(bot.id) }
-                    }))
+                Toggle("允许所有 Bot 使用", isOn: $allBots)
+                if !allBots {
+                    ForEach(store.bots) { bot in grant(bot.id, title: bot.name) }
+                    ForEach(hiddenGrants, id: \.self) { id in grant(id, title: id + " · 现有授权") }
                 }
             }
         }.onAppear {
             name = item["name"].string ?? ""; description = item["description"].string ?? ""
             enabled = item["enabled"].bool ?? true
-            allowed = Set((item["allowed_bot_ids"].array ?? []).compactMap(\.string))
+            let previous = Set((item["allowed_bot_ids"].array ?? []).compactMap(\.string))
+            allBots = previous.contains("*")
+            allowed = previous.subtracting(["*"])
+            config = item == .null ? "{}" : ""
         }
+    }
+
+    private var hiddenGrants: [String] {
+        let visible = Set(store.bots.map(\.id))
+        return (item["allowed_bot_ids"].array ?? []).compactMap(\.string)
+            .filter { $0 != "*" && !visible.contains($0) }.sorted()
+    }
+
+    private func grant(_ id: String, title: String) -> some View {
+        Toggle(title, isOn: Binding(get: { allowed.contains(id) }, set: {
+            if $0 { allowed.insert(id) } else { allowed.remove(id) }
+        }))
     }
 
     private func save() async throws {
         var body: [String: SummonJSONValue] = ["name": .string(name.trimmingCharacters(in: .whitespacesAndNewlines)),
-            "description": .string(description), "enabled": .bool(enabled), "allowed_bot_ids": .array(allowed.sorted().map(SummonJSONValue.string))]
+            "description": .string(description), "enabled": .bool(enabled),
+            "allowed_bot_ids": .array((allBots ? ["*"] : allowed.sorted()).map(SummonJSONValue.string))]
+        let configText = config.trimmingCharacters(in: .whitespacesAndNewlines)
         if let id = item["id"].string, let revision = item["revision"].int {
             body["revision"] = .number(Double(revision))
+            if !configText.isEmpty { body["config_patch"] = try parseConfig(configText) }
             _ = try await store.request(path: "/api/connections/" + SummonAPIClient.component(id), method: "PATCH", body: .object(body))
         } else {
-            let value = try JSONDecoder().decode(SummonJSONValue.self, from: Data(config.utf8))
-            guard value.object != nil else { throw SummonAPIError.http(0, "连接配置需要一个 JSON 对象。") }
-            body["kind"] = .string(kind); body["config"] = value
+            body["kind"] = .string(kind); body["config"] = try parseConfig(configText)
             _ = try await store.request(path: "/api/connections", method: "POST", body: .object(body))
         }
+    }
+
+    private func parseConfig(_ text: String) throws -> SummonJSONValue {
+        guard let value = try? JSONDecoder().decode(SummonJSONValue.self, from: Data(text.utf8)),
+              value.object != nil else { throw SummonAPIError.http(0, "连接配置需要一个 JSON 对象。") }
+        return value
     }
 }
 

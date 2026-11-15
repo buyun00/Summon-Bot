@@ -70,6 +70,7 @@ const en: typeof fr = {
     play: 'Start playback',
     pause: 'Stop playback',
     addAnimation: 'Add an animation',
+    blockLimit: 'Up to {limit} animations per cycle',
     preview: 'Preview',
     export: 'Export the montage',
     zoom: 'Track zoom',
@@ -95,8 +96,15 @@ const en: typeof fr = {
     defaultName: 'Default cycle',
     newName: 'My cycle',
     menuNew: 'New cycle',
+    limit: 'Creation limit of {limit} cycles reached',
     menuRenameAria: 'Rename {name}',
     menuRemoveAria: 'Delete {name}'
+  },
+
+  pages: {
+    previous: 'Previous page',
+    next: 'Next page',
+    range: '{first}–{last} / {total}'
   },
 
   units: {

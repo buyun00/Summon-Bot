@@ -5,9 +5,9 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { serveClientReleases } from './releases.mjs';
 import { createWebAuth } from './auth.mjs';
-import { matchesOrigin, originForHost } from './origins.mjs';
+import { matchesOrigin, originForHost, workspaceOrigin } from './origins.mjs';
 import { workspaceProof } from './workspace-probe.mjs';
-import { createTest21Game } from './test21-game.mjs';
+import { createGameExports, gamePrefix } from './game-exports.mjs';
 
 const defaultFrontend = fileURLToPath(new URL('../frontend/', import.meta.url));
 const assets = new Map([
@@ -21,7 +21,6 @@ const assets = new Map([
   ...['icon-192', 'icon-512', 'icon-maskable-192', 'icon-maskable-512', 'apple-touch-icon']
     .map(name => [`/icons/${name}.png`, [`icons/${name}.png`, 'image/png']]),
 ]);
-const api = /^\/api\/(?:bootstrap|health|state|stream|push|usage|model-settings|workspace-profiles|bots|rooms|wakeups|executions|files|attachments|connections|workspaces|calls|platform)(?:\/|$)/;
 const hopHeaders = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade']);
 const json = (res, status, value) => {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'private, no-store, no-transform', 'X-Content-Type-Options': 'nosniff' });
@@ -38,36 +37,61 @@ const showcaseMime = new Map([
 
 /** The Web process owns only HTTP/static assets. Business state and Agents stay outside. */
 export async function startWeb({ host = '127.0.0.1', port = 8787, getRemoteOrigins = async () => [], frontendRoot = defaultFrontend,
-  gatewayUrl, gatewayToken, accessToken, clientReleaseRoot, webRelease, test21WebExportRoot, requestTimeoutMs = 120000 } = {}) {
+  gatewayUrl, gatewayToken, accessToken, clientReleaseRoot, webRelease, gameExports, requestTimeoutMs = 120000 } = {}) {
   const authorize = createWebAuth(accessToken);
-  const game = createTest21Game(test21WebExportRoot);
+  const games = createGameExports(gameExports, accessToken);
   const upstream = new URL(gatewayUrl);
   if (!['http:', 'https:'].includes(upstream.protocol) || upstream.username || upstream.password) throw new Error('Invalid gateway URL');
   if (!gatewayToken) throw new Error('gatewayToken is required');
   // Keep symbol definitions in the document so rerendered icons never reload an external SVG.
-  const modelIconSprite = (await readFile(join(frontendRoot, 'icons/ai-brands.svg'), 'utf8'))
-    .replace('<svg ', '<svg aria-hidden="true" focusable="false" style="position:absolute;width:0;height:0;overflow:hidden;pointer-events:none;fill:currentColor;stroke:none" ');
+  let modelIconSprite;
+  const loadModelIconSprite = () => modelIconSprite ??= readFile(join(frontendRoot, 'icons/ai-brands.svg'), 'utf8')
+    .then(sprite => sprite.replace('<svg ', '<svg aria-hidden="true" focusable="false" style="position:absolute;width:0;height:0;overflow:hidden;pointer-events:none;fill:currentColor;stroke:none" '))
+    .catch(error => {
+      console.warn(`Model icons unavailable: ${error.code || error.message}`);
+      return '';
+    });
   const active = new Set();
   let closing = false;
+  async function remoteMappings() {
+    let entries;
+    try { entries = await getRemoteOrigins(); }
+    catch { return []; }
+    if (!Array.isArray(entries)) return [];
+    return entries.flatMap(entry => {
+      try { return [{ origin: workspaceOrigin(entry.origin, { httpsOnly: true }), provider: entry.provider, probeOnly: entry.probeOnly === true }]; }
+      catch { return []; }
+    });
+  }
   const server = createServer(async (req, res) => {
     try {
       if (closing) return json(res, 503, { error: '工作区正在更新', code: 'updating' });
       const localOrigins = [host, ...(host === '127.0.0.1' ? ['localhost'] : [])].map(name => `http://${name}:${server.address().port}`);
-      const remote = await getRemoteOrigins();
-      const requestOrigin = originForHost(req.headers.host, [...remote, ...localOrigins]);
+      const localOrigin = originForHost(req.headers.host, localOrigins);
+      const mappings = localOrigin ? [] : await remoteMappings();
+      const requestOrigin = localOrigin || originForHost(req.headers.host, mappings.map(entry => entry.origin));
       if (!requestOrigin || !req.url?.startsWith('/') || req.url.startsWith('//')) return json(res, 403, { error: '工作区地址未登记' });
-      if (req.headers['tailscale-funnel-request'] === '?1') return json(res, 403, { error: '工作区使用私网 Tailscale Serve' });
+      const funnel = req.headers['tailscale-funnel-request'] === '?1';
+      const matched = mappings.filter(entry => entry.origin === requestOrigin);
+      if (funnel && matched.some(entry => entry.provider === 'tailscale')) {
+        return json(res, 403, { error: '工作区使用私网 Tailscale Serve' });
+      }
       const url = new URL(req.url, requestOrigin);
       if (url.origin !== requestOrigin) return json(res, 403, { error: '工作区地址未登记' });
-      const local = localOrigins.includes(requestOrigin) && !req.headers['x-forwarded-host'] && !req.headers.forwarded;
+      if (matched.length && matched.every(entry => entry.probeOnly)
+        && (req.method !== 'GET' || url.pathname !== '/auth/instance')) {
+        return json(res, 403, { error: '工作区地址未登记' });
+      }
+      const local = Boolean(localOrigin) && !funnel && !req.headers['x-forwarded-host'] && !req.headers.forwarded;
       // The device's update feed contains public packages and has no workspace credentials.
       const origin = req.headers.origin;
       const releaseRequest = url.pathname === '/api/releases' || url.pathname.startsWith('/api/releases/');
-      const localRelease = releaseRequest && local && (!origin || [requestOrigin, ...remote].some(item => matchesOrigin(origin, item)));
+      const localRelease = releaseRequest && local && (!origin || matchesOrigin(origin, requestOrigin)
+        || (await remoteMappings()).some(entry => !entry.probeOnly && matchesOrigin(origin, entry.origin)));
       if (localRelease && await serveClientReleases(req, res, url, clientReleaseRoot, webRelease, { local, origin })) return;
-      const gameRequest = game && requestOrigin === game.origin && url.pathname.startsWith(game.prefix);
-      // An opaque sandbox cannot use the workspace session. Only this signed bundle route accepts its requests.
-      if (gameRequest && url.pathname.startsWith(game.bundlePrefix)) return await game.serveFile(req, res, url);
+      const game = games.find(game => requestOrigin === game.origin && url.pathname.startsWith(game.prefix));
+      // The sandbox uses a bundle ticket instead of a workspace session.
+      if (game && url.pathname.startsWith(game.bundlePrefix)) return await game.serveFile(req, res, url);
       if (origin !== undefined && !matchesOrigin(origin, requestOrigin)) return json(res, 403, { error: '只接受同源工作台请求' });
       if (req.method === 'GET' && url.pathname === '/auth/instance') {
         const challenge = url.searchParams.get('challenge') || '';
@@ -81,8 +105,10 @@ export async function startWeb({ host = '127.0.0.1', port = 8787, getRemoteOrigi
         res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store', 'Service-Worker-Allowed': '/' });
         res.end(req.method === 'HEAD' ? undefined : script); return;
       }
-      if (!authorize(req, res, url, requestOrigin)) return;
-      if (gameRequest) return await game.serveLauncher(req, res, url);
+      const page = Boolean(game) || url.pathname === showcasePrefix || url.pathname === showcasePrefix.slice(0, -1);
+      if (!authorize(req, res, url, requestOrigin, { page })) return;
+      if (game) return await game.serveLauncher(req, res, url);
+      if (url.pathname.startsWith(gamePrefix)) return json(res, 404, { error: '找不到已发布资源' });
       if (releaseRequest && await serveClientReleases(req, res, url, clientReleaseRoot, webRelease, { local })) return;
       if (url.pathname === showcasePrefix.slice(0, -1)) {
         res.writeHead(302, { Location: showcasePrefix }); res.end(); return;
@@ -102,31 +128,15 @@ export async function startWeb({ host = '127.0.0.1', port = 8787, getRemoteOrigi
         res.end(req.method === 'HEAD' ? undefined : content); return;
       }
       if (url.pathname.startsWith('/api/')) {
-        if (!api.test(url.pathname)) return json(res, 404, { error: '找不到接口' });
         if (!['GET', 'HEAD', 'POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method)) return json(res, 405, { error: '不支持此方法' });
-        let body;
-        if (!['GET', 'HEAD'].includes(req.method)) {
-          if (!req.headers['content-type']?.toLowerCase().startsWith('application/json')) return json(res, 415, { error: '请求需要 application/json' });
-          const limit = req.method === 'POST' && url.pathname === '/api/attachments' ? 29 * 1024 * 1024 : 1024 * 1024;
-          const chunks = []; let size = 0;
-          for await (const chunk of req) {
-            size += chunk.length;
-            if (size > limit) return json(res, 413, { error: '请求超过允许大小' });
-            chunks.push(chunk);
-          }
-          body = Buffer.concat(chunks);
-          let value;
-          try { value = body.length ? JSON.parse(body.toString('utf8')) : {}; }
-          catch { return json(res, 400, { error: 'JSON 格式错误' }); }
-          if (!value || typeof value !== 'object' || Array.isArray(value)) return json(res, 400, { error: '请求应为 JSON 对象' });
-          if (!body.length) body = Buffer.from('{}');
-        }
+        const writes = !['GET', 'HEAD'].includes(req.method);
         const target = new URL(`${url.pathname}${url.search}`, upstream);
         const headers = { Authorization: `Bearer ${gatewayToken}`, Accept: req.headers.accept || '*/*' };
         if (typeof req.headers['x-summon-protocol'] === 'string') headers['X-Summon-Protocol'] = req.headers['x-summon-protocol'];
         if (typeof req.headers['x-summon-client-id'] === 'string') headers['X-Summon-Client-Id'] = req.headers['x-summon-client-id'];
         if (typeof req.headers['last-event-id'] === 'string') headers['Last-Event-ID'] = req.headers['last-event-id'];
-        if (body) { headers['Content-Type'] = 'application/json'; headers['Content-Length'] = body.length; }
+        if (writes && req.headers['content-type']) headers['Content-Type'] = req.headers['content-type'];
+        if (writes && req.headers['content-length']) headers['Content-Length'] = req.headers['content-length'];
         const outgoing = (target.protocol === 'https:' ? httpsRequest : httpRequest)(target, { method: req.method, headers }, incoming => {
           const responseHeaders = Object.fromEntries(Object.entries(incoming.headers).filter(([key]) => !hopHeaders.has(key.toLowerCase()) && key.toLowerCase() !== 'set-cookie'));
           // Preserve the upstream JSON/stream bytes through public proxies.
@@ -141,16 +151,19 @@ export async function startWeb({ host = '127.0.0.1', port = 8787, getRemoteOrigi
         outgoing.once('close', () => active.delete(outgoing));
         outgoing.once('error', () => { if (!res.headersSent) json(res, 502, { error: '工作区暂不可达' }); else res.destroy(); });
         if (url.pathname !== '/api/stream') outgoing.setTimeout(requestTimeoutMs, () => outgoing.destroy(new Error('Gateway request timed out')));
+        req.once('error', error => outgoing.destroy(error));
         res.once('close', () => outgoing.destroy());
-        outgoing.end(body);
+        if (writes) req.pipe(outgoing);
+        else outgoing.end();
         return;
       }
       const entry = assets.get(url.pathname);
       if (!entry || !['GET', 'HEAD'].includes(req.method)) { res.writeHead(404); res.end('Not found'); return; }
       const [filename, mime] = entry;
       const asset = await readFile(join(frontendRoot, filename));
+      const sprite = filename === 'index.html' ? await loadModelIconSprite() : '';
       const content = filename === 'index.html'
-        ? Buffer.from(asset.toString('utf8').replace('<!-- MODEL_ICON_SPRITE -->', () => modelIconSprite))
+        ? Buffer.from(asset.toString('utf8').replace('<!-- MODEL_ICON_SPRITE -->', () => sprite))
         : asset;
       res.writeHead(200, { 'Content-Type': mime.startsWith('image/') ? mime : `${mime}; charset=utf-8`, 'Content-Length': content.length,
         'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });

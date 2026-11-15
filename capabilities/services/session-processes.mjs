@@ -1,10 +1,11 @@
 import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, unlink, writeFile } from 'node:fs/promises';
-import { basename, isAbsolute, join } from 'node:path';
+import { extname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { reject } from '../platform/contract.mjs';
+import { codexBridge } from './connection-launch.mjs';
 import { connectionAuthorized, connectionRecords } from './connection-records.mjs';
 
 export const operationRecords = 'session-operations';
@@ -42,7 +43,8 @@ export async function processPage(path, offset, limit, lines = false) {
     if (!buffer.length) return { text: '', next_offset: offset, more: false };
     const { bytesRead } = await file.read(buffer, 0, buffer.length, offset);
     let end = bytesRead;
-    if (lines) end = buffer.lastIndexOf(10, bytesRead - 1) + 1;
+    const newline = lines && bytesRead ? buffer.lastIndexOf(10, bytesRead - 1) + 1 : 0;
+    if (newline) end = newline;
     else if (offset + bytesRead < size && bytesRead) end = utf8End(buffer, bytesRead);
     return { text: buffer.toString('utf8', 0, end), next_offset: offset + end, more: offset + end < size };
   } finally { await file.close(); }
@@ -53,7 +55,7 @@ export function operationDirectory(dataRoot, operation) {
   return join(dataRoot, 'capabilities', 'native-executions', operation.instance_id);
 }
 
-export async function observeExitedCodexLaunch(dataRoot, operation) {
+export async function observeExitedCodexLaunch(dataRoot, operation, { runtimePath = process.execPath, bridgePath = codexBridge } = {}) {
   const { instance_id: nonce, runner_pid: runnerPid, child_pid: bridgePid } = operation;
   const submitted = Date.parse(operation.submitted_at);
   if (process.platform !== 'win32' || operation.protocol !== 'codex' || operation.status !== 'unknown' ||
@@ -71,9 +73,10 @@ export async function observeExitedCodexLaunch(dataRoot, operation) {
       processPage(join(directory, 'events.jsonl'), 0, 512),
     ]);
     if (final || launch?.nonce !== nonce || launch.protocol !== 'codex' || launch.sessionId || launch.cwd !== operation.cwd ||
-        launch.guard?.session_id !== operation.session_id || basename(launch.file).toLowerCase() !== 'node.exe' ||
-        launch.args?.length !== 2 || !launch.args.every(isAbsolute) ||
-        basename(launch.args[0]).toLowerCase() !== 'app-server.mjs' || basename(launch.args[1]).toLowerCase() !== 'codex.exe' ||
+        launch.guard?.session_id !== operation.session_id || launch.guard.connection_id !== operation.connection_id ||
+        launch.guard.binding_version !== (operation.connection_binding_version ?? 1) || relative(launch.file, runtimePath) !== '' ||
+        launch.args?.length !== 2 || !launch.args.every(isAbsolute) || relative(launch.args[0], bridgePath) !== '' ||
+        extname(launch.args[1]).toLowerCase() !== '.exe' ||
         started.trim() !== String(runnerPid)) return null;
     const initial = JSON.parse(launch.input).summonStart;
     if (!initial || initial.callId !== (operation.launch_call_id ?? operation.id) || initial.sessionId) return null;
@@ -91,19 +94,17 @@ export async function observeExitedCodexLaunch(dataRoot, operation) {
     if (startedEvent.type !== 'started' || startedEvent.pid !== bridgePid || startedEvent.nativeSessionId ||
         !(submitted <= Date.parse(startedEvent.at) && Date.parse(startedEvent.at) <= lastHeartbeat)) return null;
 
-    // Exclude surviving processes linked to either recorded PID and native Codex
-    // processes that might remain after an unrecorded intermediate parent exited.
+    // The executable is direct, so the app-server is a child of this bridge.
+    // Query its recorded owners and direct descendants using creation times to
+    // distinguish processes that reused an ID after the recorded submission.
     const shell = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
     const program = String.raw`
 $ErrorActionPreference = 'Stop'
-$owners = ${runnerPid}, ${bridgePid}
-$since = [DateTimeOffset]::FromUnixTimeMilliseconds(${submitted}).UtcDateTime
-$processes = Get-CimInstance -ClassName Win32_Process -Property Name,ProcessId,ParentProcessId,CreationDate
-if (-not $processes) { exit 1 }
+$filter = 'ProcessId=${runnerPid} OR ProcessId=${bridgePid} OR ParentProcessId=${runnerPid} OR ParentProcessId=${bridgePid}'
+$latestStart = [DateTimeOffset]::FromUnixTimeMilliseconds(${submissionMarker + 1000}).UtcDateTime
+$processes = Get-CimInstance -ClassName Win32_Process -Filter $filter -Property ProcessId,ParentProcessId,CreationDate
 $live = $processes | Where-Object {
-  $_.ProcessId -in $owners -or $_.ParentProcessId -in $owners -or
-    ($_.Name -match '^(codex(?:-.*)?|mxc(?:-.*)?)\.exe$' -and
-      (-not $_.CreationDate -or $_.CreationDate.ToUniversalTime() -ge $since))
+  -not $_.CreationDate -or $_.CreationDate.ToUniversalTime() -le $latestStart
 } | Select-Object -First 1
 if ($live) { exit 1 }
 [Console]::Write('exited')`;

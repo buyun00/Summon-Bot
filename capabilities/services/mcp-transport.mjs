@@ -46,63 +46,72 @@ export async function connectMcpTools(definition, {
 
   const client = new Client({ name: `summon-bot-${botId}`, version: '1.0.0' }, { capabilities: {} });
   client.onerror = () => {}; // Individual protocol requests retain their errors.
-  let closed = false, connected = false;
+  let closed = false, connected = false, closing;
   client.onclose = () => { connected = false; };
-  const close = async () => {
-    if (closed) return;
+  const close = () => closing ??= (async () => {
     closed = true; connected = false;
     try { await client.close(); } finally { await transport.close(); }
-  };
+  })();
+  const abortDiscovery = () => { void close().catch(() => {}); };
   try {
     signal?.throwIfAborted();
+    signal?.addEventListener('abort', abortDiscovery, { once: true });
     await client.connect(transport, options(signal));
+    signal?.throwIfAborted();
     connected = true;
-    const tools = [], remoteTools = [], cursors = new Set(), names = new Set();
+    const tools = [], remoteTools = new Map(), ambiguous = new Set(), cursors = new Set();
     let cursor;
     do {
       signal?.throwIfAborted();
       const page = await client.listTools(cursor ? { cursor } : undefined, options(signal));
       for (const remote of page.tools) {
-        const name = remote.name;
-        if (names.has(name)) throw new Error('MCP server reported duplicate method names');
-        if (remote.inputSchema?.type !== 'object') throw new Error(`MCP tool ${name} requires an object input schema`);
-        names.add(name);
-        remoteTools.push(remote);
-        const effect = definition.toolEffects?.[remote.name] || definition.effect || (remote.annotations?.readOnlyHint === true ? 'read' : 'external');
-        const requiresTasks = remote.execution?.taskSupport === 'required';
-        tools.push({ name, description: redact(remote.description || `MCP tool ${remote.name}`),
-          inputSchema: remote.inputSchema, effect, requiresTasks,
-          async execute(args, context = {}) {
-            if (closed || !connected) throw Object.assign(new Error('MCP capability is disconnected; refresh the connection before use'), { code: 'CAPABILITY_UNAVAILABLE' });
-            context.signal?.throwIfAborted();
-            // The SDK validates actual CallToolResult content, structuredContent
-            // and isError; image/resource blocks are not flattened to text.
-            try { return await client.callTool({ name: remote.name, arguments: args }, undefined, options(context.signal, context.onProgress)); }
-            catch (error) {
-              // Explicit tool isError results remain ordinary failed receipts.
-              // A lost/invalid reply, timeout or disconnect after dispatch cannot
-              // establish whether a remote mutation happened. Do not reconnect
-              // and resend it. Only definite transport/protocol rejections are
-              // known failures here; malformed successful replies stay unknown.
-              const rejection = (Number.isInteger(error.code) && error.code >= 400 && error.code < 500) ||
-                (error instanceof McpError && ![ErrorCode.ConnectionClosed, ErrorCode.RequestTimeout].includes(error.code) &&
-                  !/output schema|structured content/i.test(error.message));
-              if (effect !== 'read' && !rejection) {
-                throw Object.assign(new Error(`${error?.message || String(error)}. The remote outcome is unknown; query the original operation or external state before another write. This request was not retried.`),
-                  { name: error?.name || 'Error', outcomeUnknown: true, code: 'REMOTE_OUTCOME_UNKNOWN' });
-              }
-              throw error;
-            }
-          },
-        });
+        if (remoteTools.has(remote.name)) ambiguous.add(remote.name);
+        else remoteTools.set(remote.name, remote);
       }
       cursor = page.nextCursor;
       if (cursor && cursors.has(cursor)) throw new Error('MCP tool pagination repeated a cursor');
       if (cursor) cursors.add(cursor);
     } while (cursor);
+    const validated = [];
+    for (const [name, remote] of remoteTools) {
+      if (ambiguous.has(name) || remote.inputSchema?.type !== 'object') {
+        tools.push({ name, unavailable: ambiguous.has(name) ? 'MCP server reported duplicate method names' :
+          'MCP method requires an object input schema' });
+        continue;
+      }
+      validated.push(remote);
+      const effect = definition.toolEffects?.[remote.name] || definition.effect || (remote.annotations?.readOnlyHint === true ? 'read' : 'external');
+      const requiresTasks = remote.execution?.taskSupport === 'required';
+      tools.push({ name, description: redact(remote.description || `MCP tool ${remote.name}`),
+        inputSchema: remote.inputSchema, effect, requiresTasks,
+        async execute(args, context = {}) {
+          if (closed || !connected) throw Object.assign(new Error('MCP capability is disconnected; refresh the connection before use'), { code: 'CAPABILITY_UNAVAILABLE' });
+          context.signal?.throwIfAborted();
+          await context.beforeSubmit?.();
+          // The SDK validates actual CallToolResult content, structuredContent
+          // and isError; image/resource blocks are not flattened to text.
+          try { return await client.callTool({ name: remote.name, arguments: args }, undefined, options(context.signal, context.onProgress)); }
+          catch (error) {
+            // Explicit tool isError results remain ordinary failed receipts.
+            // A lost/invalid reply, timeout or disconnect after dispatch cannot
+            // establish whether a remote mutation happened. Do not reconnect
+            // and resend it. Only definite transport/protocol rejections are
+            // known failures here; malformed successful replies stay unknown.
+            const rejection = (Number.isInteger(error.code) && error.code >= 400 && error.code < 500) ||
+              (error instanceof McpError && ![ErrorCode.ConnectionClosed, ErrorCode.RequestTimeout].includes(error.code) &&
+                !/output schema|structured content/i.test(error.message));
+            if (effect !== 'read' && !rejection) {
+              throw Object.assign(new Error(`${error?.message || String(error)}. The remote outcome is unknown; query the original operation or external state before another write. This request was not retried.`),
+                { name: error?.name || 'Error', outcomeUnknown: true, code: 'REMOTE_OUTCOME_UNKNOWN' });
+            }
+            throw error;
+          }
+        },
+      });
+    }
     // The SDK refreshes its output-schema cache for each listTools page. Retain
     // validation for every tool, including those returned before the last page.
-    client.cacheToolMetadata(remoteTools);
+    client.cacheToolMetadata(validated);
     return { tools, close, serverInfo: client.getServerVersion() };
   } catch (error) {
     await close().catch(() => {});
@@ -111,5 +120,5 @@ export async function connectMcpTools(definition, {
     failure.name = error?.name || 'Error';
     if (error?.code !== undefined) failure.code = error.code;
     throw failure;
-  }
+  } finally { signal?.removeEventListener('abort', abortDiscovery); }
 }

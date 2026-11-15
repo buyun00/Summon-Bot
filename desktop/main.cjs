@@ -13,7 +13,8 @@ const localUpdateFeed = new URL(release.updatePath, 'http://127.0.0.1:8787').hre
 const [releasePlatform, releaseArch] = release.updatePath.split('/').filter(Boolean).slice(-2);
 const remoteUpdateFeed = `https://github.com/${release.githubRepository}/releases/download/client-${releasePlatform}-${releaseArch}/`;
 let window, timer, checking;
-let workspace = null, candidate = null, setup = { section: 'unpacking', error: '' }, busy = false;
+let workspace = null, candidate = null, setup = { section: 'instances', error: '' }, selectionWarning = '';
+const workspaceOperations = new Set();
 let update = { status: 'idle', currentVersion: app.getVersion() };
 
 function setUpdate(value) {
@@ -24,11 +25,13 @@ const webOrigin = url => { try { return new URL(url).origin; } catch { return nu
 const isWeb = url => workspace?.origin && webOrigin(url) === workspace.origin;
 function trusted(event, local = false) {
   if (!window || event.sender !== window.webContents || !event.senderFrame || event.senderFrame !== window.webContents.mainFrame
-    || !(local ? event.senderFrame.url === setupUrl : isWeb(event.senderFrame.url))) throw new Error('Untrusted desktop request');
+    || !(local ? event.senderFrame.url === setupUrl : isWeb(event.senderFrame.url) && new URL(event.senderFrame.url).pathname === '/')) {
+    throw new Error('Untrusted desktop request');
+  }
 }
 
-function showSetup(section = 'unpacking', error = '') {
-  if (section === 'unpacking') candidate = null;
+function showSetup(section = 'instances', error = '') {
+  if (section === 'instances') candidate = null;
   setup = { section, error };
   if (!window || window.isDestroyed()) return;
   if (window.webContents.getURL() === setupUrl) window.webContents.send('summon:workspace-setup-state');
@@ -42,7 +45,7 @@ async function showWorkspace(target, selection) {
   const previousSetup = setup;
   await target.loadURL(url.href).catch(() => {
     if (target === window && !target.isDestroyed() && setup === previousSetup) {
-      showSetup('instances', '暂时无法打开工作区。请重试或选择其他实例。');
+      showSetup('retry', '暂时无法打开工作区。');
     }
   });
 }
@@ -61,7 +64,7 @@ async function continueWorkspace(target) {
 }
 
 function connectionError(error, selection) {
-  const section = selection?.mode === 'remote' && error.code === 'WORKSPACE_LOGIN_REQUIRED' ? 'remote' : 'instances';
+  const section = selection?.mode === 'remote' && error.code === 'WORKSPACE_LOGIN_REQUIRED' ? 'remote' : selection ? 'retry' : 'instances';
   showSetup(section, error.message);
 }
 
@@ -70,9 +73,13 @@ async function restoreWorkspace(target) {
   try {
     const { readWorkspaceSelection } = await desktopSettings();
     const selection = await readWorkspaceSelection(profile);
-    if (target !== window) return;
+    if (target !== window || setup !== previousSetup) return;
     workspace = selection;
-    if (setup === previousSetup) await continueWorkspace(target);
+    if (!selection) return;
+    showSetup('retry', '正在连接上次使用的工作区…');
+    const connecting = setup;
+    try { await continueWorkspace(target); }
+    catch (error) { if (target === window && setup === connecting) connectionError(error, selection); }
   } catch (error) {
     if (target === window && setup === previousSetup) connectionError(error, workspace);
   }
@@ -81,7 +88,12 @@ async function restoreWorkspace(target) {
 async function rememberWorkspace(target, { mode, origin }, workspaceId) {
   const selection = { mode, origin, workspaceId };
   const { saveWorkspaceSelection } = await desktopSettings();
-  await saveWorkspaceSelection(profile, selection);
+  selectionWarning = '';
+  try { await saveWorkspaceSelection(profile, selection); }
+  catch (error) {
+    selectionWarning = '已打开工作区，无法保存本次选择。';
+    console.warn(selectionWarning, error.code || error.message);
+  }
   if (target !== window) return;
   workspace = selection;
   await showWorkspace(target, selection);
@@ -93,7 +105,6 @@ function installSetupProtocol() {
     ['/setup.js', [join(__dirname, 'setup.js'), 'text/javascript']],
     ['/setup.css', [join(__dirname, 'setup.css'), 'text/css']],
     ['/startup-art.png', [join(__dirname, 'startup-art.png'), 'image/png']],
-    ['/avatars.js', [join(runtime, 'web/frontend/avatars.js'), 'text/javascript']],
     ['/icon.png', [join(runtime, 'web/frontend/icons/icon-192.png'), 'image/png']],
   ]);
   protocol.handle('summon-setup', async request => {
@@ -105,8 +116,8 @@ function installSetupProtocol() {
     } });
   });
 }
-async function checkForUpdates() {
-  if (checking || ['downloading', 'downloaded'].includes(update.status)) return update;
+async function checkForUpdates({ force = false } = {}) {
+  if (checking || update.status === 'downloading' || !force && update.status === 'downloaded') return update;
   if (!app.isPackaged) return update;
   checking = true;
   setUpdate({ status: 'checking', message: '', percent: 0 });
@@ -151,20 +162,26 @@ async function checkForUpdates() {
   return update;
 }
 function requestInstall() {
-  if (!window || update.status !== 'downloaded') return;
+  if (!window) return;
+  if (update.status === 'manual') return openUpdateDownload();
+  if (update.status !== 'downloaded') return;
   if (window.webContents.getURL() === setupUrl) autoUpdater.quitAndInstall(false, true);
   else window.webContents.send('summon:request-install');
+}
+function openUpdateDownload() {
+  if (update.status !== 'manual' || ![localUpdateFeed, remoteUpdateFeed].some(feed => update.downloadUrl?.startsWith(feed))) return false;
+  void shell.openExternal(update.downloadUrl).catch(() => {});
+  return true;
 }
 function createWindow() {
   const target = window = new BrowserWindow({
     title: 'Summon Bot', width: 1280, height: 900, minWidth: 680, minHeight: 560,
-    backgroundColor: '#fdfdfc', show: false, autoHideMenuBar: process.platform !== 'darwin',
+    backgroundColor: '#fdfdfc', autoHideMenuBar: process.platform !== 'darwin',
     titleBarStyle: 'hidden',
     titleBarOverlay: { color: '#00000000', symbolColor: '#4b5045', height: 44 },
     ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 16, y: 16 } } : {}),
     webPreferences: { preload: join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true },
   });
-  target.once('ready-to-show', () => target.show());
   target.on('closed', () => { if (target === window) window = null; });
   target.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//.test(url)) shell.openExternal(url).catch(() => {});
@@ -177,13 +194,14 @@ function createWindow() {
   target.webContents.session.setPermissionRequestHandler((_contents, permission, callback) => callback(permission === 'clipboard-sanitized-write'));
   target.webContents.on('did-fail-load', (_event, code, _description, url, isMainFrame) => {
     if (target !== window || !isMainFrame || code === -3 || !isWeb(url)) return;
-    showSetup('instances', '暂时无法连接工作区。请重试或选择其他实例。');
+    showSetup('retry', '暂时无法连接工作区。');
   });
   target.webContents.on('did-navigate', (_event, url, status) => {
     if (target !== window || !isWeb(url) || new URL(url).pathname !== '/' || status < 400) return;
     if (status === 401 && workspace.mode === 'remote') showSetup('remote', '工作区登录已失效，请重新连接该实例。');
-    else showSetup('instances', '工作区页面暂不可用。请重试或选择其他实例。');
+    else showSetup('retry', status === 503 ? '工作区当前无法响应（HTTP 503）。' : '工作区页面暂不可用（HTTP ' + status + '）。');
   });
+  showSetup();
   void restoreWorkspace(target);
 }
 autoUpdater.autoDownload = false;
@@ -197,21 +215,24 @@ autoUpdater.on('update-downloaded', info => setUpdate({ status: 'downloaded', ve
 autoUpdater.on('error', error => {
   if (!checking) setUpdate({ status: 'error', message: error.message });
 });
-ipcMain.handle('summon:desktop-info', event => { trusted(event); return { version: app.getVersion(), platform: process.platform, arch: process.arch, windowControlsOverlay: true, localWorkspace: workspace?.mode === 'local', update }; });
+ipcMain.handle('summon:desktop-info', event => { trusted(event); return { version: app.getVersion(), platform: process.platform, arch: process.arch, windowControlsOverlay: true, localWorkspace: workspace?.mode === 'local', selectionWarning, update }; });
 ipcMain.handle('summon:open-workspace-setup', (event, section) => {
   trusted(event);
-  if (!busy) showSetup(workspace?.mode === 'local' && ['cloudflare', 'tailscale'].includes(section) ? section : 'unpacking');
+  if (!workspaceOperations.has('workspace')) showSetup(workspace?.mode === 'local' && ['cloudflare', 'tailscale'].includes(section) ? section : 'instances');
 });
 ipcMain.handle('summon:workspace-info', event => {
   trusted(event, true);
-  return { ...setup, workspace, candidate, update, localAvailable: process.platform === 'win32' };
+  return { ...setup, workspace, candidate, update, selectionWarning, localAvailable: process.platform === 'win32' };
 });
 ipcMain.handle('summon:workspace-action', async (event, command, input = {}) => {
   trusted(event, true);
-  if (busy) throw new Error('另一个设置操作正在进行。');
-  busy = true;
+  const operation = command === 'access' ? input.action === 'status' ? null : 'access'
+    : command === 'authorize' || command === 'choose-instance' ? null : 'workspace';
+  if (operation && workspaceOperations.has(operation)) throw new Error('该项设置正在更新，请稍后重试。');
+  if (operation) workspaceOperations.add(operation);
   const target = window;
   try {
+    if (command === 'choose-instance') return showSetup();
     if (command === 'continue') {
       try { await continueWorkspace(target); }
       catch (error) { if (target === window) connectionError(error, workspace); }
@@ -275,12 +296,12 @@ ipcMain.handle('summon:workspace-action', async (event, command, input = {}) => 
       return { opened: Boolean(url) };
     }
     throw new Error('未知的工作区操作。');
-  } finally { busy = false; }
+  } finally { if (operation) workspaceOperations.delete(operation); }
 });
-ipcMain.handle('summon:check-update', event => { trusted(event, event.senderFrame?.url === setupUrl); return checkForUpdates(); });
+ipcMain.handle('summon:check-update', event => { trusted(event, event.senderFrame?.url === setupUrl); return checkForUpdates({ force:true }); });
 ipcMain.handle('summon:install-update', event => {
   trusted(event, event.senderFrame?.url === setupUrl);
-  if (update.status === 'manual' && [localUpdateFeed, remoteUpdateFeed].some(feed => update.downloadUrl?.startsWith(feed))) { shell.openExternal(update.downloadUrl); return true; }
+  if (update.status === 'manual') return openUpdateDownload();
   if (update.status !== 'downloaded') return false;
   setImmediate(() => autoUpdater.quitAndInstall(true, true)); return true;
 });
@@ -291,13 +312,13 @@ else {
     installSetupProtocol();
     createWindow();
     const clientMenu = { label: 'Summon Bot', submenu: [
-      { label: '切换工作区…', click: () => { if (!busy) showSetup(); } },
+      { label: '切换工作区…', click: () => { if (!workspaceOperations.has('workspace')) showSetup(); } },
       { type: 'separator' },
       { label: '检查更新', click: () => {
-        if (window?.webContents.getURL() === setupUrl) void checkForUpdates();
+        if (window?.webContents.getURL() === setupUrl) void checkForUpdates({ force:true });
         else window?.webContents.send('summon:open-updates');
       } },
-      { label: '重启并更新', click: requestInstall }, { type: 'separator' }, { role: 'quit' },
+      { label: release.updateMode === 'manual' ? '下载更新' : '重启并更新', click: requestInstall }, { type: 'separator' }, { role: 'quit' },
     ] };
     Menu.setApplicationMenu(Menu.buildFromTemplate([clientMenu, { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' }]));
     timer = setInterval(checkForUpdates, 4 * 60 * 60 * 1000); timer.unref();

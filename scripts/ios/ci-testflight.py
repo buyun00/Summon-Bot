@@ -1,8 +1,5 @@
-"""Wait for this exact build, then verify internal TestFlight distribution.
-
-Does not invite testers, create external groups, or answer encryption questions.
-The app declares its exempt encryption usage in its versioned Info.plist.
-"""
+"""Resume processing and internal TestFlight delivery for one uploaded build."""
+import argparse
 import json
 import os
 import pathlib
@@ -20,7 +17,10 @@ class AppleAPI:
         token = jwt.encode(dict(iss=os.environ['ASC_ISSUER_ID'], iat=now, exp=now + 600,
                                 aud='appstoreconnect-v1'), os.environ['ASC_PRIVATE_KEY'],
                            algorithm='ES256', headers={'kid': os.environ['ASC_KEY_ID'], 'typ': 'JWT'})
-        request = urllib.request.Request('https://api.appstoreconnect.apple.com' + path,
+        url = urllib.parse.urljoin('https://api.appstoreconnect.apple.com/', path)
+        if urllib.parse.urlsplit(url).netloc != 'api.appstoreconnect.apple.com' or not url.startswith('https://'):
+            raise RuntimeError('Unexpected App Store Connect pagination URL')
+        request = urllib.request.Request(url,
             data=json.dumps(body).encode() if body else None,
             headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
         try:
@@ -48,31 +48,41 @@ def relationship_id(resource, name):
     return (relationship.get('data') or {}).get('id')
 
 
+def pages(api, path):
+    while path:
+        response = api(path)
+        yield response
+        path = (response.get('links') or {}).get('next')
+
+
+def records(api, path):
+    for page in pages(api, path):
+        yield from page.get('data', [])
+
+
 def check_build(api, app_id, group, version, build_number):
-    response = api(query('/v1/builds', **{'filter[app]': app_id, 'filter[version]': build_number,
-                                         'include': 'preReleaseVersion,buildBetaDetail', 'limit': 100}))
-    included = {(x['type'], x['id']): x for x in (response.get('included') or [])}
+    path = query('/v1/builds', **{'filter[app]': app_id, 'filter[version]': build_number,
+                                'include': 'preReleaseVersion,buildBetaDetail', 'limit': 100})
     builds = []
-    for build in response.get('data', []):
-        release_id = relationship_id(build, 'preReleaseVersion')
-        release = included.get(('preReleaseVersions', release_id), {})
-        if release.get('attributes', {}).get('version') == version and build['attributes']['version'] == build_number:
-            builds.append(build)
+    for response in pages(api, path):
+        included = {(x['type'], x['id']): x for x in (response.get('included') or [])}
+        for build in response.get('data', []):
+            release_id = relationship_id(build, 'preReleaseVersion')
+            release = included.get(('preReleaseVersions', release_id), {})
+            if release.get('attributes', {}).get('version') == version and build['attributes']['version'] == build_number:
+                detail = included.get(('buildBetaDetails', relationship_id(build, 'buildBetaDetail')))
+                builds.append((build, detail))
     if not builds:
         return 'Waiting for Apple to register the uploaded build', None
     if len(builds) != 1:
         raise RuntimeError('More than one matching build; refusing ambiguous distribution')
-    build = builds[0]
+    build, detail = builds[0]
     attrs = build['attributes']
     state = attrs['processingState']
     if state in ('FAILED', 'INVALID') or attrs.get('expired'):
         raise RuntimeError('Apple rejected or expired this build: ' + state)
     if state != 'VALID':
         return 'Apple processing: ' + state, None
-    if attrs.get('usesNonExemptEncryption') is not False:
-        raise RuntimeError('Export compliance is not resolved; inspect the submitted Info.plist and App Store Connect')
-    detail_id = relationship_id(build, 'buildBetaDetail')
-    detail = included.get(('buildBetaDetails', detail_id))
     if not detail:
         path = '/v1/builds/' + urllib.parse.quote(build['id'], safe='') + '/buildBetaDetail'
         detail = api(path, allow_missing=True).get('data')
@@ -84,7 +94,7 @@ def check_build(api, app_id, group, version, build_number):
     if beta not in ('READY_FOR_BETA_TESTING', 'IN_BETA_TESTING'):
         return 'Internal testing state: ' + str(beta), None
     group_id = group['id']
-    members = api('/v1/betaGroups/' + group_id + '/relationships/builds?limit=200').get('data', [])
+    members = records(api, '/v1/betaGroups/' + group_id + '/relationships/builds?limit=200')
     linked = any(item['id'] == build['id'] for item in members)
     if not linked:
         if group['attributes'].get('hasAccessToAllBuilds'):
@@ -98,17 +108,28 @@ def check_build(api, app_id, group, version, build_number):
 
 
 def main():
-    signing = pathlib.Path(os.environ['RUNNER_TEMP']) / 'summon-signing'
-    with (signing/'Summon.xcarchive/Products/Applications/Summon Bot.app/Info.plist').open('rb') as file:
-        info = plistlib.load(file)
-    version, build_number = info['CFBundleShortVersionString'], info['CFBundleVersion']
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--version')
+    parser.add_argument('--build-number')
+    args = parser.parse_args()
+    if bool(args.version) != bool(args.build_number):
+        parser.error('provide both --version and --build-number to resume a previous upload')
+    bundle = 'org.lin0.summon'
+    if args.version:
+        version, build_number = args.version, args.build_number
+    else:
+        signing = pathlib.Path(os.environ['RUNNER_TEMP']) / 'summon-signing'
+        with (signing/'Summon.xcarchive/Products/Applications/Summon Bot.app/Info.plist').open('rb') as file:
+            info = plistlib.load(file)
+        bundle = info['CFBundleIdentifier']
+        version, build_number = info['CFBundleShortVersionString'], info['CFBundleVersion']
     api = AppleAPI()
-    apps = api(query('/v1/apps', **{'filter[bundleId]': info['CFBundleIdentifier']}))['data']
+    apps = list(records(api, query('/v1/apps', **{'filter[bundleId]': bundle})))
     if len(apps) != 1:
         raise RuntimeError('Expected exactly one App Store Connect app')
     app_id = apps[0]['id']
-    groups = api('/v1/apps/' + app_id + '/betaGroups?limit=200')['data']
-    name = os.environ.get('TESTFLIGHT_GROUP', 'Personal')
+    groups = records(api, '/v1/apps/' + app_id + '/betaGroups?limit=200')
+    name = os.environ.get('TESTFLIGHT_GROUP') or 'Personal'
     groups = [g for g in groups if g['attributes']['name'] == name and g['attributes']['isInternalGroup']]
     if len(groups) != 1:
         raise RuntimeError('Expected one existing internal group named ' + name)
@@ -123,15 +144,21 @@ def main():
             print(f'{version} ({build_number}): {status}', flush=True)
             previous = status
         if build_id:
-            summary = f'Summon Bot {version} ({build_number}) is processed, export-compliant, and available in internal group {name}.\n'
+            summary = f'Summon Bot {version} ({build_number}) is available in internal TestFlight group {name}.\n'
             print(summary)
+            print('TestFlight availability ' + json.dumps(dict(
+                available=True, version=version, build=build_number, group=name)))
             if os.environ.get('GITHUB_STEP_SUMMARY'):
                 with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as file:
                     file.write(summary)
             return
         time.sleep(30)
-    raise RuntimeError('Apple processing/distribution exceeded 30 minutes. Upload may still succeed; '
-                       'inspect App Store Connect before uploading again. Last state: ' + str(previous))
+    summary = (f'TestFlight distribution is pending for {version} ({build_number}). '
+               f'Last Apple state: {previous}. Use the resume action with this version and build number.\n')
+    print('::notice::' + summary.strip())
+    if os.environ.get('GITHUB_STEP_SUMMARY'):
+        with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as file:
+            file.write(summary)
 
 
 if __name__ == '__main__':

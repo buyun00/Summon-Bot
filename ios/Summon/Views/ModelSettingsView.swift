@@ -130,7 +130,22 @@ struct ModelQuotaDetailsView: View {
                 if let error { Section { Text(error).foregroundStyle(.orange) } }
                 Section("当前额度") { ModelUsageDetails(item: store.modelSummary["chat"]) }
                 Section("默认模型连接") {
-                    ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in Button { draft = entry; login = .null } label: { HStack(spacing: 12) { ModelBrandImage(item: entry); VStack(alignment: .leading) { Text(entry["name"].stringValue); Text(entry["model"].stringValue).summonFont(.caption).foregroundStyle(.secondary) }; Spacer(); if entry["active"].bool == true { Text("当前").foregroundStyle(modelTint) } } } }
+                    ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
+                        Button { draft = entry; login = .null } label: {
+                            HStack(spacing: 12) {
+                                ModelBrandImage(item: entry)
+                                VStack(alignment: .leading) {
+                                    Text(entry["name"].stringValue)
+                                    Text(entry["model"].stringValue).summonFont(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                VStack(alignment: .trailing) {
+                                    if entry["active"].bool == true { Text("默认").foregroundStyle(modelTint) }
+                                    if entry["configured"].bool == false { Text("待连接").foregroundStyle(.secondary) }
+                                }.summonFont(.caption)
+                            }
+                        }
+                    }
                     Menu("添加连接") { ForEach(["codex", "grok", "api"], id: \.self) { kind in Button(kind == "codex" ? "Codex 订阅" : kind == "grok" ? "Grok 订阅" : "通用 API") { draft = .object(["kind": .string(kind), "name": .string(kind == "codex" ? "Codex 订阅" : kind == "grok" ? "Grok 订阅" : "通用 API"), "model": .string(kind == "codex" ? "gpt-6-luna" : kind == "grok" ? "grok-4.7" : "")]); login = .null } } }
                 }
                 if draft.object != nil {
@@ -138,7 +153,10 @@ struct ModelQuotaDetailsView: View {
                         save: { payload in run { try await save(payload) } },
                         importCodex: { run { data = try await store.request(path: "/api/model-settings/local/import", method: "POST", body: .object(["kind": draft["kind"]])); draft = entries.first { $0["id"].stringValue == data["importedId"].stringValue } ?? .null; try await store.refreshModelUsage(force: true) } },
                         authorize: { run { login = try await store.request(path: "/api/model-settings/connections/\(component(selected["id"]))/login", method: "POST", body: .object([:])) } },
-                        activate: { run { data = try await store.request(path: "/api/model-settings/active", method: "POST", body: .object(["id": selected["id"]])); try await store.refreshModelUsage(force: true) } },
+                        setDefault: { id in run {
+                            data = try await store.request(path: "/api/model-settings/active", method: "POST", body: .object(["id": id]))
+                            try await store.refreshModelUsage(force: true)
+                        } },
                         remove: { run { data = try await store.request(path: "/api/model-settings/connections/\(component(selected["id"]))", method: "DELETE"); draft = entries.first { $0["active"].bool == true } ?? .null; try await store.refreshModelUsage(force: true) } },
                         discover: { try await store.request(path: "/api/model-settings/connections/\(component(selected["id"]))/models?discover=1")["models"].array ?? [] })
                         .id("\(draft["id"].stringValue)-\(draft["kind"].stringValue)-\(selected["configured"].stringValue)")
@@ -154,19 +172,47 @@ struct ModelQuotaDetailsView: View {
     }
     private func component(_ value: SummonJSONValue) -> String { SummonAPIClient.component(value.stringValue) }
     private func run(_ action: @escaping @MainActor () async throws -> Void) { guard !busy else { return }; Task { busy = true; error = nil; defer { busy = false }; do { try await action() } catch { if !Task.isCancelled { self.error = error.localizedDescription } } } }
-    private func reload() async throws { data = try await store.request(path: "/api/model-settings"); if draft.object == nil { draft = entries.first { $0["active"].bool == true } ?? .null }; try await store.refreshModelUsage() }
+    private func reload() async throws {
+        data = try await store.request(path: "/api/model-settings")
+        if draft.object == nil { draft = entries.first { $0["active"].bool == true } ?? entries.first ?? .null }
+        try await store.refreshModelUsage()
+    }
     private func save(_ payload: SummonJSONValue) async throws {
         let ids = Set(entries.map { $0["id"].stringValue })
         data = try await store.request(path: "/api/model-settings/connections", method: "POST", body: payload)
         guard let entry = entries.first(where: { payload["id"].string != nil ? $0["id"] == payload["id"] : !ids.contains($0["id"].stringValue) }) else { return }
         draft = entry
-        if entry["kind"].stringValue == "api" { data = try await store.request(path: "/api/model-settings/active", method: "POST", body: .object(["id": entry["id"]])) }
-        else if entry["configured"].bool != true { login = try await store.request(path: "/api/model-settings/connections/\(component(entry["id"]))/login", method: "POST", body: .object([:])) }
+        if entry["kind"].stringValue != "api", entry["configured"].bool != true {
+            login = try await store.request(path: "/api/model-settings/connections/\(component(entry["id"]))/login", method: "POST", body: .object([:]))
+        }
         try await store.refreshModelUsage(force: true)
     }
     private func pollLogin() async {
         guard ["starting", "waiting"].contains(login["status"].stringValue) else { return }
         do { while !Task.isCancelled { try await Task.sleep(for: .seconds(2)); let result = try await store.request(path: "/api/model-settings/connections/\(component(login["id"]))/login"); login = result; if !["starting", "waiting"].contains(result["status"].stringValue) { if result["status"].stringValue == "completed" { try await reload() }; break } } } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+    }
+}
+
+@MainActor struct ModelThinkingField: View {
+    let label: String
+    let defaultLabel: String
+    let suggestions: [SummonJSONValue]?
+    @Binding var value: String
+
+    var body: some View {
+        let levels = suggestions?.compactMap(\.string) ?? ["minimal", "low", "medium", "high", "xhigh", "max"]
+        let options = (["off"] + levels).reduce(into: [String]()) { values, level in
+            if !level.isEmpty, !values.contains(level) { values.append(level) }
+        }
+        HStack {
+            TextField(label, text: $value, prompt: Text(defaultLabel)).textInputAutocapitalization(.never).autocorrectionDisabled()
+            Menu {
+                Button(defaultLabel) { value = "" }
+                ForEach(options, id: \.self) { level in Button(level == "off" ? "关闭思考" : level) { value = level } }
+            } label: {
+                Image(systemName: "chevron.up.chevron.down").accessibilityLabel("选择\(label)")
+            }
+        }
     }
 }
 
@@ -178,19 +224,37 @@ struct ModelQuotaDetailsView: View {
     let save: (SummonJSONValue) -> Void
     let importCodex: () -> Void
     let authorize: () -> Void
-    let activate: () -> Void
+    let setDefault: (SummonJSONValue) -> Void
     let remove: () -> Void
     let discover: () async throws -> [SummonJSONValue]
     @State private var fields: [String: SummonJSONValue] = [:]
     @State private var choices: [SummonJSONValue] = []
     @State private var error: String?
     private var kind: String { entry["kind"].stringValue }
+    private var modelChoices: [SummonJSONValue] {
+        let preset = presets.first { $0["id"].string == fields["provider"]?.string }
+        let ids = Set(choices.compactMap { $0["id"].string })
+        return choices + (preset?["models"].array ?? []).filter { !ids.contains($0["id"].stringValue) }
+    }
+    private var thinkingLevels: [SummonJSONValue]? {
+        let model = fields["model"]?.stringValue
+        return modelChoices.first { $0["id"].string == model }?["thinkingLevels"].array
+            ?? (model == selected["model"].string ? selected["thinkingLevels"].array : nil)
+    }
     private func binding(_ key: String) -> Binding<String> { Binding(get: { fields[key]?.stringValue ?? "" }, set: { fields[key] = .string($0) }) }
     var body: some View {
         Section("连接配置") {
             TextField("连接名称", text: binding("name"))
             if kind == "api" {
-                Picker("服务商", selection: Binding(get: { fields["provider"]?.stringValue ?? "openai-compatible" }, set: { value in fields["provider"] = .string(value); if let preset = presets.first(where: { $0["id"].stringValue == value }) { fields["baseUrl"] = preset["baseUrl"]; fields["api"] = preset["api"] } })) { ForEach(Array(presets.enumerated()), id: \.offset) { _, preset in Text(preset["name"].stringValue).tag(preset["id"].stringValue) } }
+                TextField("服务商 ID", text: binding("provider")).textInputAutocapitalization(.never).autocorrectionDisabled()
+                Menu("应用服务商预设") {
+                    ForEach(presets, id: \.prettyPrinted) { preset in
+                        Button(preset["name"].stringValue) {
+                            fields["provider"] = preset["id"]; fields["baseUrl"] = preset["baseUrl"]; fields["api"] = preset["api"]
+                            choices = []
+                        }
+                    }
+                }
                 Picker("接口协议", selection: binding("api")) { Text("OpenAI Chat Completions").tag("openai-completions"); Text("OpenAI Responses").tag("openai-responses"); Text("Anthropic Messages").tag("anthropic-messages") }
                 TextField("API 地址", text: binding("baseUrl")).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                 SecureField(selected["configured"].bool == true ? "API Key（留空保留）" : "API Key", text: binding("apiKey")).textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -202,23 +266,28 @@ struct ModelQuotaDetailsView: View {
             }
             TextField("默认模型 ID", text: binding("model")).textInputAutocapitalization(.never).autocorrectionDisabled()
             if selected.object != nil { Button("获取模型目录") { Task { do { choices = try await discover() } catch { self.error = error.localizedDescription } } } }
-            if !choices.isEmpty { Menu("选择模型") { ForEach(Array(choices.enumerated()), id: \.offset) { _, choice in Button(choice["name"].string ?? choice["id"].stringValue) { fields["model"] = choice["id"] } } } }
-            Picker("思考强度", selection: binding("thinkingLevel")) { Text("关闭思考").tag("off"); Text("低").tag("low"); Text("中").tag("medium"); Text("高").tag("high"); Text("很高").tag("xhigh"); Text("最高").tag("max") }
+            if !modelChoices.isEmpty { Menu("选择模型") { ForEach(Array(modelChoices.enumerated()), id: \.offset) { _, choice in Button(choice["name"].string ?? choice["id"].stringValue) { fields["model"] = choice["id"] } } } }
+            ModelThinkingField(label: "思考强度", defaultLabel: "供应商默认", suggestions: thinkingLevels, value: binding("thinkingLevel"))
             TextField("上下文上限 · Token", text: binding("contextWindow"), prompt: Text("留空使用模型默认")).keyboardType(.numberPad)
             TextField("输出上限 · Token", text: binding("maxTokens"), prompt: Text("留空使用模型默认")).keyboardType(.numberPad)
             if kind == "api" { TextField("余额查询路径（可选）", text: binding("balancePath")).textInputAutocapitalization(.never); TextField("余额 JSON 字段（可选）", text: binding("balanceField")).textInputAutocapitalization(.never); TextField("余额币种（默认 USD）", text: binding("balanceCurrency")) }
             if let error { Text(error).foregroundStyle(.orange) }
-            Button(busy ? "正在保存…" : "保存配置") {
+            Button(busy ? "正在保存…" : kind == "api" || selected["configured"].bool == true ? "保存配置" : "保存并授权") {
                 var payload = fields
-                for key in ["usage", "identity", "configured", "active", "effectiveBudget"] { payload.removeValue(forKey: key) }
+                for key in ["usage", "identity", "configured", "active", "effectiveBudget", "thinkingLevels"] { payload.removeValue(forKey: key) }
                 for key in ["contextWindow", "maxTokens"] { payload[key] = fields[key] ?? .null }
+                let level = fields["thinkingLevel"]?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                payload["thinkingLevel"] = level.isEmpty ? .null : .string(level)
                 save(.object(payload))
             }
-            if selected["configured"].bool == true && selected["active"].bool != true { Button("用于 Pi 聊天", action: activate) }
-            if selected.object != nil && selected["active"].bool != true { Button("移除此连接", role: .destructive, action: remove) }
+            if let id = selected["id"].string {
+                let isDefault = selected["active"].bool == true
+                Button(isDefault ? "取消默认" : "设为默认") { setDefault(isDefault ? .null : .string(id)) }
+                if !isDefault { Button("移除此连接", role: .destructive, action: remove) }
+            }
         }.disabled(busy).onAppear {
             fields = entry.object ?? [:]; fields["apiKey"] = .string("")
-            for (key, value) in ["provider": SummonJSONValue.string("openai-compatible"), "api": .string("openai-completions"), "thinkingLevel": .string("high")] { if fields[key] == nil { fields[key] = value } }
+            for (key, value) in ["provider": SummonJSONValue.string("openai-compatible"), "api": .string("openai-completions")] { if fields[key] == nil { fields[key] = value } }
         }
     }
 }

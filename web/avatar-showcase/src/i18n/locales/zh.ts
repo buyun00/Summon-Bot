@@ -74,6 +74,7 @@ const zh: typeof fr = {
     play: '开始播放',
     pause: '停止播放',
     addAnimation: '添加动画',
+    blockLimit: '每个序列最多添加 {limit} 个动画',
     preview: '预览',
     export: '导出动画序列',
     zoom: '轨道缩放',
@@ -98,8 +99,15 @@ const zh: typeof fr = {
     defaultName: '默认序列',
     newName: '我的序列',
     menuNew: '新建序列',
+    limit: '已达到 {limit} 条序列的创建上限',
     menuRenameAria: '重命名 {name}',
     menuRemoveAria: '删除 {name}'
+  },
+
+  pages: {
+    previous: '上一页',
+    next: '下一页',
+    range: '{first}–{last} / {total}'
   },
 
   units: {

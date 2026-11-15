@@ -36,6 +36,10 @@ export async function localExecutable(path) {
   return { file: path, canonicalFile: file, name: executableName(path), size: info.size, modifiedAt: info.mtimeMs };
 }
 
+export function codexCredentials({ credential_refs: authorizedEnv = [] }) {
+  return { authorizedEnv, env: Object.fromEntries(authorizedEnv.map(name => [name, { env: name }])) };
+}
+
 export function nativeEnvironment(references = {}, authorized = [], { codex = false } = {}) {
   if (!references || Array.isArray(references) || typeof references !== 'object') fail('Environment must map variable names to existing credential references');
   const base = /^(?:PATH|PATHEXT|COMSPEC|SYSTEMROOT|SYSTEMDRIVE|WINDIR|HOME|USERPROFILE|HOMEDRIVE|HOMEPATH|APPDATA|LOCALAPPDATA|PROGRAMDATA|PROGRAMFILES(?:\(X86\))?|PROGRAMW6432|TEMP|TMP|TMPDIR|USER|USERNAME|LANG|LANGUAGE|LC_[A-Z_]+|SHELL|TERM|XDG_(?:CONFIG|DATA|CACHE|STATE|RUNTIME)_HOME)$/i;
@@ -43,21 +47,27 @@ export function nativeEnvironment(references = {}, authorized = [], { codex = fa
   if (codex && process.env.CODEX_HOME) env.CODEX_HOME = process.env.CODEX_HOME;
   const secrets = [];
   for (const [key, ref] of Object.entries(references)) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(ref?.env || '')) fail('Use {env: NAME} credential references');
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof ref?.env !== 'string' ||
+        !/^[A-Za-z_][A-Za-z0-9_]*$/.test(ref.env)) fail('Use {env: NAME} credential references');
     if (!authorized.includes(ref.env)) fail('Credential reference is not bound to this native resource', 403);
-    if (/^(?:PATH|PATHEXT|COMSPEC|SYSTEMROOT|HOME|USERPROFILE|NODE_OPTIONS|LD_PRELOAD|DYLD_.+)$/i.test(key)) fail('Native credential references cannot override process setup variables');
+    if (/^(?:PATH|PATHEXT|COMSPEC|SYSTEMROOT|HOME|USERPROFILE|CODEX_HOME|NODE_OPTIONS|LD_PRELOAD|DYLD_.+)$/i.test(key))
+      fail('Native credential references cannot override process setup variables');
     const value = process.env[ref.env];
-    if (value === undefined) fail('A referenced native credential is not configured', 409);
+    if (value === undefined) fail(`Native credential reference ${ref.env} is not configured`, 409);
     env[key] = value;
     if (value) secrets.push(value);
   }
   return { env, secrets };
 }
 
-export function redactNative(text, secrets = []) {
+export function redactNativeCredentials(text, secrets = []) {
   let result = String(text ?? '');
   for (const secret of secrets.filter(Boolean)) result = result.split(secret).join('[redacted]');
-  return result
+  return result;
+}
+
+export function redactNative(text, secrets) {
+  return redactNativeCredentials(text, secrets)
     .replace(/-----BEGIN (?:[A-Z ]+)?PRIVATE KEY-----[\s\S]*?(?:-----END (?:[A-Z ]+)?PRIVATE KEY-----|$)/g, '[redacted]')
     .replace(/\bsk-[a-zA-Z0-9_-]{12,}\b/g, '[redacted]')
     .replace(/((?:authorization|password|passwd|(?:access|refresh)[_-]?token|api[_-]?key|client[_-]?secret)["']?\s*[:=]\s*["']?(?:Bearer )?)[^\s"',}]+/gi, '$1[redacted]');

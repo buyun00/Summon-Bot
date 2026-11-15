@@ -341,7 +341,11 @@ private fun MessageRow(store: SummonStore, roomID: String, message: SummonMessag
                     if (pending.status == "sending") Text("正在发送…", style = MaterialTheme.typography.labelSmall)
                     else {
                         Text(pending.error ?: "保存状态待确认", color = Color(0xFFFF9F0A), style = MaterialTheme.typography.labelSmall)
-                        TextButton(enabled = store.protocolReady && roomID !in store.sendingRoomIDs,
+                        if (pending.status == "rejected") TextButton(onClick = {
+                            try { store.restoreRejectedMessage(pending) }
+                            catch (failure: Exception) { error = failure.localizedMessage }
+                        }) { Text("转回草稿") }
+                        else TextButton(enabled = store.protocolReady && roomID !in store.sendingRoomIDs,
                             onClick = { scope.launch { store.retryMessage(pending.clientID) } }) { Text("查询并重试") }
                     }
                 } else if (message.isOwn) {

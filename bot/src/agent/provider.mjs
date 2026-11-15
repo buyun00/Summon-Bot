@@ -1,25 +1,47 @@
-import { AssistantMessageEventStream, clampThinkingLevel, getCurrentTools, normalizeContext } from '@earendil-works/pi-ai';
+import { AssistantMessageEventStream, getCurrentTools, normalizeContext } from '@earendil-works/pi-ai';
 import { randomUUID } from 'node:crypto';
 import { zstdDecompressSync } from 'node:zlib';
 import { modelConnection, connectionRuntime, modelError, officialDeepSeekCompletions, supportsOpenAIRoomCache } from './connections.mjs';
 import { reportedUsage, referenceCost } from './usage.mjs';
 
 const connectionWaitMs = 180000;
-const wireReasoningEfforts = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+const wireReasoningEffort = value => typeof value === 'string' && /^[a-z][a-z0-9_-]{0,31}$/i.test(value) ? value : null;
+const budgetThinkingLevels = new Set(['minimal', 'low', 'medium', 'high']);
 const codexTerminalEvents = new Set(['response.done', 'response.completed', 'response.incomplete', 'response.failed']);
 const timeoutError = phase => Object.assign(new Error(`Model request timed out during ${phase}`), { code: 'MODEL_DEADLINE' });
 
-function serializedReasoning(payload, model, deepseek) {
-  const responses = model.api === 'openai-responses' || model.api === 'openai-codex-responses';
-  const topLevel = responses ? payload?.reasoning?.effort : payload?.reasoning_effort;
-  // The Responses adapter can carry the active effort in a final configuration update.
-  // Earlier updates preserve past turns, and the top-level effort can remain fixed for caching.
-  const update = model.api === 'openai-responses' && model.compat?.supportsMidConvoEffort && Array.isArray(payload?.input)
-    ? payload.input.findLast(item => item?.type === 'configuration_update' && item.reasoning?.effort !== undefined)
-    : undefined;
-  if (update) return { effort: update.reasoning.effort, topLevel, source: 'configuration_update' };
-  if (deepseek && payload?.thinking?.type === 'disabled') return { effort: 'disabled', topLevel, source: 'thinking.type' };
-  return { effort: topLevel, topLevel, source: responses ? 'reasoning.effort' : 'reasoning_effort' };
+function serializedReasoning(payload) {
+  const fields = [['reasoning.effort', payload?.reasoning?.effort], ['reasoning_effort', payload?.reasoning_effort],
+    ['output_config.effort', payload?.output_config?.effort], ['thinking', typeof payload?.thinking === 'string' ? payload.thinking : undefined]];
+  const [source, topLevel] = fields.find(([, value]) => value !== undefined) || [];
+  if (payload?.thinking?.type === 'disabled') return { effort: 'disabled', topLevel, source: 'thinking.type' };
+  if (topLevel === undefined) {
+    const toggles = [['enable_thinking', payload?.enable_thinking], ['reasoning.enabled', payload?.reasoning?.enabled],
+      ['chat_template_kwargs.enable_thinking', payload?.chat_template_kwargs?.enable_thinking],
+      ['chat_template_args.enable_thinking', payload?.chat_template_args?.enable_thinking]];
+    const disabled = toggles.find(([, value]) => value === false);
+    if (disabled) return { effort: 'disabled', topLevel, source: disabled[0] };
+  }
+  return { effort: topLevel, topLevel, source };
+}
+
+function hasReasoningDialect(payload) {
+  return ['reasoning', 'reasoning_effort', 'thinking', 'enable_thinking', 'chat_template_kwargs', 'chat_template_args'].some(key => Object.hasOwn(payload, key));
+}
+
+function providerDefaults(payload) {
+  const { reasoning, reasoning_effort, thinking, enable_thinking, output_config, ...body } = payload;
+  if (output_config) {
+    const { effort, ...config } = output_config;
+    if (Object.keys(config).length) body.output_config = config;
+  }
+  for (const key of ['chat_template_kwargs', 'chat_template_args']) {
+    if (body[key] && Object.hasOwn(body[key], 'enable_thinking')) {
+      const { enable_thinking, ...settings } = body[key];
+      body[key] = settings;
+    }
+  }
+  return body;
 }
 
 function readWirePayload(body, headers) {
@@ -108,7 +130,8 @@ export class ModelProvider {
     const output = new AssistantMessageEventStream(), controller = new AbortController();
     const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
     const deadline = new AbortController(), requestSignal = AbortSignal.any([signal, deadline.signal]);
-    const { timeoutMs: totalWaitMs, onPayload, onProviderStreamEvent, roomCache, requireEffort, usageContext, beforeFetch, ...streamOptions } = options;
+    const { timeoutMs: totalWaitMs, onPayload, onProviderStreamEvent, roomCache, reasoning: requestedReasoning = null,
+      usageContext, beforeFetch, ...streamOptions } = options;
     this.controllers.add(controller);
     const started = Date.now(), secrets = new Set();
     let record, received, ended = false, wireUsage, usageSource, stageTimer, totalTimer;
@@ -122,7 +145,16 @@ export class ModelProvider {
     const cleanError = error => {
       let message = String(error?.message || error);
       for (const secret of secrets) if (secret) message = message.split(secret).join('[redacted]');
-      return this.config.redact({ message: modelError(message) }).message;
+      return (this.config.redact.error || this.config.redact)({ message: modelError(message) }).message;
+    };
+    const persist = () => {
+      if (!record) return;
+      try { this.config.recordUsage?.(record); }
+      catch {
+        if (record.usageWriteFailed) return;
+        record.usageWriteFailed = true;
+        this.config.reportUsageError?.();
+      }
     };
     void (async () => {
       try {
@@ -131,22 +163,29 @@ export class ModelProvider {
         const responses = model.api === 'openai-responses';
         const codex = model.api === 'openai-codex-responses';
         const responsesProtocol = responses || codex;
-        // A fixed effort belongs in the request-level Responses field for every turn of this binding.
-        const wireModel = requireEffort && responses && model.compat?.supportsMidConvoEffort
-          ? { ...model, compat: { ...model.compat, supportsMidConvoEffort: false } } : model;
+        const anthropic = model.api === 'anthropic-messages';
+        const completions = model.api === 'openai-completions';
+        const thinking = requestedReasoning !== null && requestedReasoning !== 'off';
+        const useThinkingBudget = anthropic && !model.compat?.forceAdaptiveThinking && budgetThinkingLevels.has(requestedReasoning);
+        const effort = model.thinkingLevelMap?.[requestedReasoning] ?? (requestedReasoning === 'off' ? 'none'
+          : anthropic && requestedReasoning === 'minimal' ? 'low' : requestedReasoning);
+        // Pass named efforts through the SDK without rounding new provider levels.
+        const wireModel = { ...model, reasoning: requestedReasoning !== null || model.reasoning,
+          compat: { ...model.compat, ...(responses || anthropic ? { supportsMidConvoEffort: false } : {}),
+            ...(anthropic && thinking && !useThinkingBudget ? { forceAdaptiveThinking: true } : {}) },
+          thinkingLevelMap: { ...model.thinkingLevelMap, low: effort, ...(requestedReasoning === 'off' ? { off: effort } : {}) } };
         const runtime = connectionRuntime(connection, undefined, wireModel);
         const cacheRoomHistory = roomCache?.current && streamOptions.cacheRetention !== 'none' && supportsOpenAIRoomCache(connection, model);
         let roomCacheThroughMessageId;
-        const requestedReasoning = options.reasoning || 'off';
-        const fastest = model.thinkingLevelMap?.off === null ? ['low', 'medium', 'high'].find(level => model.thinkingLevelMap[level] != null) : null;
-        const reasoning = clampThinkingLevel(model, requestedReasoning === 'off' && fastest ? fastest : requestedReasoning);
-        const thinking = reasoning !== 'off', idleWaitMs = thinking ? 300000 : 180000;
-        const expectedEffort = requireEffort && (responsesProtocol || deepseek) && thinking
-          ? model.thinkingLevelMap?.[requireEffort] ?? requireEffort : null;
+        const reasoning = thinking ? (useThinkingBudget ? requestedReasoning : 'low') : undefined;
+        const idleWaitMs = requestedReasoning === 'off' ? 180000 : 300000;
+        const explicitEffort = requestedReasoning !== null && !useThinkingBudget;
         const validateReasoning = payload => {
-          const result = serializedReasoning(payload, model, deepseek);
-          if (expectedEffort !== null && result.effort !== expectedEffort)
-            throw new Error(`Model ${model.id} did not serialize the configured reasoning effort ${requireEffort}`);
+          const result = serializedReasoning(payload);
+          const disabled = requestedReasoning === 'off' && result.effort === 'disabled';
+          if (explicitEffort && result.effort !== effort && !disabled ||
+              useThinkingBudget && (payload?.thinking?.type !== 'enabled' || !Number.isSafeInteger(payload.thinking.budget_tokens)))
+            throw new Error(`Model ${model.id} did not serialize the configured reasoning effort ${requestedReasoning}`);
           return result;
         };
         const observeUsage = (event, source) => {
@@ -166,10 +205,10 @@ export class ModelProvider {
           purpose: usageContext?.purpose || 'other', provider: connection.kind === 'api' ? connection.provider : connection.kind,
           connectionId: connection.id, billingMode: connection.kind === 'api' ? 'api' : 'subscription',
           model: model.id, requestedModel: model.id, sentModel: null, responseModel: null, startedAt: new Date(started).toISOString(), status: 'pending', ...reportedUsage(null),
-          thinking, thinkingLevel: reasoning, sentReasoningEffort: null, sentReasoningEffortSource: null, sentTopLevelReasoningEffort: null,
+          thinking, thinkingLevel: requestedReasoning, sentReasoningEffort: null, sentReasoningEffortSource: null, sentTopLevelReasoningEffort: null,
           api: model.api, contextWindow: model.contextWindow, requestedOutputTokens: maxTokens,
           messageCount: context.messages?.length || 0, toolCount: getCurrentTools(normalizeContext(context).messages).length, maxOutputTokens: null };
-        const persist = () => this.config.recordUsage?.(record); persist();
+        persist();
         waitFor('connection', connectionWaitMs);
         if (totalWaitMs) totalTimer = setTimeout(() => {
           record.timeoutPhase = 'total-budget'; deadline.abort(timeoutError('total-budget'));
@@ -189,8 +228,16 @@ export class ModelProvider {
           onPayload: async (payload, model) => {
             const replacement = await onPayload?.(payload, model);
             const original = replacement ?? payload;
-            const cached = cacheRoomHistory ? roomCacheRequest(original, roomCache) : null;
-            const sent = cached?.payload ?? original;
+            let withReasoning = original;
+            if (requestedReasoning === null) withReasoning = providerDefaults(original);
+            else if (responsesProtocol) withReasoning = { ...original, reasoning: { ...original.reasoning, effort } };
+            else if (deepseek) {
+              const { reasoning_effort, ...body } = original;
+              withReasoning = { ...body, thinking: { ...body.thinking, type: thinking ? 'enabled' : 'disabled' },
+                ...(thinking ? { reasoning_effort: effort } : {}) };
+            } else if (completions && !hasReasoningDialect(original)) withReasoning = { ...original, reasoning_effort: effort };
+            const cached = cacheRoomHistory ? roomCacheRequest(withReasoning, roomCache) : null;
+            const sent = cached?.payload ?? withReasoning;
             roomCacheThroughMessageId = cached?.throughMessageId;
             record.toolNames = Array.isArray(sent?.tools) ? sent.tools.map(tool => tool.name ?? tool.function?.name).filter(Boolean) : [];
             record.toolCount = record.toolNames.length;
@@ -206,16 +253,16 @@ export class ModelProvider {
             const wire = readWirePayload(init?.body, headers);
             if (typeof wire?.model === 'string' && wire.model !== model.id)
               throw new Error(`The provider serialized a different model for ${model.id}`);
-            const efforts = validateReasoning(wire);
+            const efforts = wire ? validateReasoning(wire) : serializedReasoning();
             await beforeFetch?.();
             if (typeof wire?.model === 'string') record.sentModel = wire.model;
             if (Array.isArray(wire?.tools)) {
               record.toolNames = wire.tools.map(tool => tool.name ?? tool.function?.name).filter(Boolean);
               record.toolCount = record.toolNames.length;
             }
-            record.sentReasoningEffort = wireReasoningEfforts.has(efforts.effort) || efforts.effort === 'disabled' ? efforts.effort : null;
+            record.sentReasoningEffort = wireReasoningEffort(efforts.effort);
             record.sentReasoningEffortSource = record.sentReasoningEffort === null ? null : efforts.source;
-            record.sentTopLevelReasoningEffort = wireReasoningEfforts.has(efforts.topLevel) ? efforts.topLevel : null;
+            record.sentTopLevelReasoningEffort = wireReasoningEffort(efforts.topLevel);
             persist();
             const response = await fetch(input, { ...init, redirect: 'error' });
             record.httpStatus = response.status;
@@ -281,7 +328,7 @@ export class ModelProvider {
             if (wireUsage) Object.assign(record, reportedUsage(providerUsage(wireUsage, model.api)), { usageSource });
             Object.assign(record, { status: cancelled ? 'cancelled' : 'failed', finishReason: cancelled ? 'aborted' : 'error',
               error: message, finishedAt: new Date().toISOString(), latencyMs: Date.now() - started });
-            try { this.config.recordUsage?.(record); } catch {}
+            persist();
           }
           const failure = received || { role: 'assistant', content: [], api: model.api, provider: model.provider, model: model.id,
             usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, timestamp: Date.now() };

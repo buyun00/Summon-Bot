@@ -48,7 +48,7 @@ fun WorkspaceConnectionGuide(store: SummonStore, scope: CoroutineScope) {
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), visualTransformation = PasswordVisualTransformation(), enabled = !saving)
             Button(enabled = !saving && token.isNotBlank(), onClick = {
                 val credential = token.trim()
-                token = ""; saving = true; error = null
+                saving = true; error = null
                 scope.launch {
                     try { store.saveConnection(address, credential) }
                     catch (cancelled: CancellationException) { throw cancelled }

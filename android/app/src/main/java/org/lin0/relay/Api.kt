@@ -13,7 +13,9 @@ import java.net.URI
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
-class SummonApiException(message: String, val status: Int? = null) : Exception(message) {
+class SummonApiException(message: String, val status: Int? = null, val code: String? = null) : Exception(message) {
+    val interruptsProtocol: Boolean get() = status == 426 || status == 503 && code == "updating"
+
     companion object {
         val invalidURL = SummonApiException("请输入完整的 Summon Bot 服务地址，例如 https://summon.example.com。")
         val noConnection = SummonApiException("请先在设置中连接 Summon Bot 服务。")
@@ -23,8 +25,15 @@ class SummonApiException(message: String, val status: Int? = null) : Exception(m
         val tooManyAttachments = SummonApiException("每条消息最多附加 8 个文件。")
         val missingAttachment = SummonApiException("本机暂存的附件已不可用。")
 
-        fun http(status: Int, message: String): SummonApiException =
-            SummonApiException(if (message.isEmpty()) "请求失败（$status）" else message, status)
+        fun http(status: Int, message: String, code: String? = null): SummonApiException =
+            SummonApiException(when {
+                status in 300..399 -> "服务返回重定向，请在设置中填写最终服务地址。"
+                message.isEmpty() -> "请求失败（$status）"
+                else -> message
+            }, status, code)
+
+        fun fromResponse(status: Int, error: SummonJson?): SummonApiException =
+            http(status, error?.get("error")?.stringValue.orEmpty(), error?.get("code")?.string)
     }
 }
 
@@ -43,7 +52,7 @@ class SummonApiClient(val baseURL: URI, private val token: String, val workspace
         val request = build("/api/bootstrap", "GET", null, "application/json")
         probe.newCall(request).execute().use { response ->
             val payload = runCatching { SummonJson.parse(response.body?.string().orEmpty()) }.getOrNull()
-            if (!response.isSuccessful) throw SummonApiException.http(response.code, payload?.get("error")?.stringValue.orEmpty())
+            if (!response.isSuccessful) throw SummonApiException.fromResponse(response.code, payload)
             return SummonBootstrap.parse(payload ?: throw SummonApiException.invalidResponse)
         }
     }
@@ -52,7 +61,7 @@ class SummonApiClient(val baseURL: URI, private val token: String, val workspace
         val (responseBody, code) = execute(path, method, body, "application/json", clientID)
         if (code !in 200..299) {
             val error = runCatching { SummonJson.parse(responseBody) }.getOrNull()
-            throw SummonApiException.http(code, error?.get("error")?.stringValue.orEmpty())
+            throw SummonApiException.fromResponse(code, error)
         }
         return try {
             SummonJson.parse(responseBody)
@@ -77,7 +86,7 @@ class SummonApiClient(val baseURL: URI, private val token: String, val workspace
             val payload = response.body?.bytes() ?: ByteArray(0)
             if (!response.isSuccessful) {
                 val error = runCatching { SummonJson.parse(payload.toString(Charsets.UTF_8)) }.getOrNull()
-                throw SummonApiException.http(response.code, error?.get("error")?.stringValue.orEmpty())
+                throw SummonApiException.fromResponse(response.code, error)
             }
             return payload
         }
@@ -89,7 +98,7 @@ class SummonApiClient(val baseURL: URI, private val token: String, val workspace
             if (!response.isSuccessful) {
                 val payload = response.body?.string().orEmpty()
                 val error = runCatching { SummonJson.parse(payload) }.getOrNull()
-                throw SummonApiException.http(response.code, error?.get("error")?.stringValue.orEmpty())
+                throw SummonApiException.fromResponse(response.code, error)
             }
             val root = File(context.cacheDir, "SummonDownloads/${UUID.randomUUID()}").apply { mkdirs() }
             val safe = name.replace(Regex("""[/\\]"""), "_").replace(Regex("""[\u0000-\u001F]"""), "")
@@ -149,15 +158,9 @@ class SummonApiClient(val baseURL: URI, private val token: String, val workspace
             if (uri.host.isNullOrEmpty() || uri.userInfo != null || uri.rawQuery != null || uri.rawFragment != null) {
                 throw SummonApiException.invalidURL
             }
-            if (scheme == "http" && !allowsLocalHttp(uri.host)) throw SummonApiException.invalidURL
             var path = uri.rawPath ?: ""
             while (path.endsWith("/")) path = path.dropLast(1)
             return URI(scheme, uri.userInfo, uri.host, uri.port, path, null, null)
-        }
-
-        private fun allowsLocalHttp(host: String): Boolean {
-            val name = host.trim().lowercase().trimEnd('.')
-            return name == "localhost" || name.endsWith(".local") || !name.contains('.')
         }
 
         fun component(value: String): String = buildString {
@@ -182,9 +185,13 @@ class SummonEventStream(private val client: SummonApiClient) {
             val response = call.execute()
             response.use {
                 val type = it.header("Content-Type")?.lowercase().orEmpty()
-                if (!it.isSuccessful || !type.startsWith("text/event-stream")) {
-                    throw SummonApiException.http(it.code, "实时连接失败（${it.code}）")
+                if (!it.isSuccessful) {
+                    val payload = if (type.startsWith("application/json")) {
+                        runCatching { SummonJson.parse(it.peekBody(16_384).string()) }.getOrNull()
+                    } else null
+                    throw SummonApiException.fromResponse(it.code, payload)
                 }
+                if (!type.startsWith("text/event-stream")) throw SummonApiException.invalidResponse
                 val parser = SummonSseParser()
                 val stream = it.body?.byteStream() ?: throw SummonApiException.invalidResponse
                 val buffer = ByteArray(8192)

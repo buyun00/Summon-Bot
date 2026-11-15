@@ -343,8 +343,15 @@ private struct MessageRow: View {
                     } else {
                         VStack(alignment: .trailing, spacing: 6) {
                             Text(pending.error ?? "保存状态待确认").summonFont(.caption2).foregroundStyle(.orange)
-                            Button("查询并重试") { Task { await store.retryMessage(clientID: pending.clientID) } }
-                                .summonFont(.caption).buttonStyle(.glass).disabled(!store.protocolReady || store.sendingRoomIDs.contains(roomID))
+                            if pending.status == "rejected" {
+                                Button("转回草稿") {
+                                    do { try store.restoreRejectedMessage(pending) }
+                                    catch { failure = error.localizedDescription }
+                                }.summonFont(.caption).buttonStyle(.glass)
+                            } else {
+                                Button("查询并重试") { Task { await store.retryMessage(clientID: pending.clientID) } }
+                                    .summonFont(.caption).buttonStyle(.glass).disabled(!store.protocolReady || store.sendingRoomIDs.contains(roomID))
+                            }
                         }
                     }
                 } else if message.isOwn {

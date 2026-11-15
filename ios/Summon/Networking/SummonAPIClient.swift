@@ -3,7 +3,7 @@ import Foundation
 enum SummonAPIError: LocalizedError, Sendable {
     case invalidURL
     case noConnection
-    case http(Int, String)
+    case http(Int, String, code: String? = nil)
     case protocolUnavailable(String)
     case invalidResponse
     case invalidReceipt
@@ -16,7 +16,7 @@ enum SummonAPIError: LocalizedError, Sendable {
         switch self {
         case .invalidURL: return "请输入完整的 Summon Bot 服务地址，例如 https://summon.example.com。"
         case .noConnection: return "请先在设置中连接 Summon Bot 服务。"
-        case .http(let status, let message): return message.isEmpty ? "请求失败（\(status)）" : message
+        case .http(let status, let message, _): return message.isEmpty ? "请求失败（\(status)）" : message
         case .protocolUnavailable(let message): return message
         case .invalidResponse: return "服务返回了无法读取的内容，请确认地址指向 Summon Bot 服务。"
         case .invalidReceipt: return "消息尚未确认送达，请手动重试确认。"
@@ -24,6 +24,13 @@ enum SummonAPIError: LocalizedError, Sendable {
         case .tooManyAttachments: return "每条消息最多附加 8 个文件。"
         case .emptyMessage: return "请输入消息或添加附件或引用。"
         case .missingAttachment: return "本机暂存的附件已不可用。"
+        }
+    }
+
+    var interruptsProtocol: Bool {
+        switch self {
+        case .http(426, _, _), .http(503, _, "updating"): return true
+        default: return false
         }
     }
 }
@@ -159,8 +166,16 @@ struct SummonAPIClient: Sendable {
     private func validate(response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse else { throw SummonAPIError.invalidResponse }
         guard (200..<300).contains(http.statusCode) else {
-            let error = try? JSONDecoder().decode(SummonJSONValue.self, from: data)
-            throw SummonAPIError.http(http.statusCode, error?["error"].stringValue ?? "")
+            throw Self.responseError(http, data: data)
         }
+    }
+
+    static func responseError(_ response: HTTPURLResponse, data: Data) -> SummonAPIError {
+        let status = response.statusCode
+        if (300..<400).contains(status) {
+            return .http(status, "服务返回重定向，请在设置中填写最终服务地址。")
+        }
+        let error = try? JSONDecoder().decode(SummonJSONValue.self, from: data)
+        return .http(status, error?["error"].stringValue ?? "", code: error?["code"].string)
     }
 }

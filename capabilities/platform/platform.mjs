@@ -11,6 +11,8 @@ import { Executions, conversationRecords, sessionRecords } from './executions.mj
 import { HostResources } from './resources.mjs';
 
 const normalize = (value, kind) => typeof value === 'string' ? { kind, id: value } : value;
+const revokedAuthority = new Set(['session_authority_revoked', 'workspace_changed', 'connection_binding_changed', 'model_binding_changed']);
+const inactiveSessions = new Set(['completed', 'failed', 'stopped', 'unsupported', 'cancelled', 'not_submitted', 'idle']);
 export const profileMatches = (record, context) => (record?.workspaceProfileId ?? null) === (context.workspaceProfileId ?? null);
 const inside = (root, path) => {
   const part = relative(root, path);
@@ -264,10 +266,12 @@ export class SummonPlatform {
         }
         return [...new Set(ids)];
       };
-      const models = this.models.catalog().connections.filter(item => profileMatches(item, context));
-      const workspaces = this.workspaceRecords().filter(item => profileMatches(item, context));
-      const model_ids = input.model_ids === undefined ? previous.model_ids : validate(input.model_ids, value => models.some(model => model.id === value));
-      const workspace_ids = input.workspace_ids === undefined ? previous.workspace_ids : validate(input.workspace_ids, value => workspaces.some(item => item.id === value));
+      let models;
+      const model_ids = input.model_ids === undefined ? previous.model_ids : validate(input.model_ids, value =>
+        previous.model_ids?.includes(value) || (models ??= this.models.catalog().connections)
+          .some(model => model.id === value && profileMatches(model, context)));
+      const workspace_ids = input.workspace_ids === undefined ? previous.workspace_ids : validate(input.workspace_ids, value =>
+        previous.workspace_ids?.includes(value) || this.workspaceRecords().some(item => item.id === value && profileMatches(item, context)));
       return this.store.save('platform-access', { id, model_ids, workspace_ids, revision: (previous.revision ?? 0) + 1 });
     });
   }
@@ -390,9 +394,11 @@ export class SummonPlatform {
   }
 
   activeSessions(exclude) {
-    return this.store.list(sessionRecords).filter(item => item.id !== exclude &&
-      !['completed', 'failed', 'stopped', 'unsupported', 'cancelled', 'not_submitted', 'idle'].includes(item.status) &&
-      (item.status !== 'unknown' || item.safe_to_disconnect !== true)).length;
+    return this.store.list(sessionRecords).filter(item => item.id !== exclude && this.isActiveSession(item)).length;
+  }
+
+  isActiveSession(session) {
+    return !inactiveSessions.has(session.status) && (session.status !== 'unknown' || session.safe_to_disconnect !== true);
   }
 
   context(context) {
@@ -556,7 +562,7 @@ export class SummonPlatform {
           this.settleBotInBackground(result.id, result.control);
         } else this.runtime.wake();
       }
-      if (name === 'configure_room') await this.revokeSessions();
+      if (name === 'configure_room' && args.remove_members?.length) await this.revokeSessions({ kind: 'room', id: result.id });
       return { result, call_id: record.id };
     } catch (error) {
       this.calls.fail(record.id, error);
@@ -596,8 +602,17 @@ export class SummonPlatform {
       return result;
     }
     if (name === 'save_file') {
+      const action = this.runtime.materials.prepareSave(args, context);
+      if (action?.no_change) {
+        const { projection: file } = this.files.getProjection(action.target.id, context);
+        assertRevision(file.revision, args.revision);
+        this.calls.bind(call.id, { target: file.ref,
+          material: { batch_id: action.batch_id, item_keys: action.item_keys, outcome: 'no_change' } });
+        return { id: file.id, ref: file.ref, revision: file.revision, status: 'no_change' };
+      }
       const file = this.files.save(args, context, call.id, workspaceFile);
-      this.calls.bind(call.id, { target: file.ref });
+      this.calls.bind(call.id, { target: file.ref, ...(action && file.id === action.target.id ?
+        { material: { batch_id: action.batch_id, item_keys: action.item_keys, outcome: 'written' } } : {}) });
       this.emit('file', file.ref);
       return file;
     }
@@ -718,13 +733,43 @@ export class SummonPlatform {
       .finally(() => this.botStops.delete(task));
   }
 
-  async revokeSessions() {
+  sessionDependsOn(session, ref) {
+    const resources = session.resource_refs ?? [];
+    if (ref.kind === 'bot') return sameIdentity(session.execution_actor, ref) &&
+      (ref.model_ids.includes(session.model_binding?.connection_id ?? session.model?.connection_id) ||
+        ref.workspace_ids.includes(session.workspace_ref?.id) ||
+        resources.some(item => item.kind === 'workspace' && ref.workspace_ids.includes(item.id)));
+    if (ref.kind === 'model') return session.model_binding?.connection_id === ref.id || session.model?.connection_id === ref.id;
+    if (ref.kind === 'connection') return session.engine === ref.id || resources.some(item => sameRef(item, ref));
+    if (ref.kind === 'workspace') return sameRef(session.workspace_ref, ref) || resources.some(item => sameRef(item, ref));
+    if (ref.kind !== 'room') return false;
+    if (sameRef(session.space, ref)) return true;
+    return resources.some(item => {
+      if (item.kind === 'file') {
+        const file = this.files.get(item.id);
+        return file ? sameRef(file.space, ref) : this.room.attachmentRooms(item.id).some(room => room.id === ref.id);
+      }
+      if (item.kind !== 'event') return false;
+      const event = this.store.get('platform-events', item.id) ?? this.store.get('messages', item.id);
+      const target = event?.target;
+      return sameRef(event?.space, ref) || event?.roomId === ref.id ||
+        ['session', 'conversation'].includes(target?.kind) && sameRef(this.executions.record(target)?.space, ref);
+    });
+  }
+
+  async revokeSessions(affected) {
     const releases = [];
     for (const session of this.store.list(sessionRecords)) {
       if (session.authority_revoked) continue;
-      try { this.assertSessionAuthority(session); }
-      catch {
-        const active = ['opening', 'submitted', 'running', 'needs_input', 'awaiting_input', 'unknown'].includes(session.status);
+      try {
+        if (!this.sessionDependsOn(session, affected)) continue;
+        this.assertSessionAuthority(session);
+      } catch (error) {
+        if (!revokedAuthority.has(error.code)) {
+          this.emit('execution.authority_unavailable', { session_id: session.id });
+          continue;
+        }
+        const active = this.isActiveSession(session);
         const call = this.store.transaction(() => {
           const record = active ? this.calls.begin('revoke_session', { actor: user }).record : null;
           this.store.save(sessionRecords, { id: session.id, authority_revoked: true, revocation_call_id: record?.id ?? null,

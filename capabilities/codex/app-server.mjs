@@ -102,27 +102,57 @@ function nativePrompt(message) {
       ...(!command ? filesByItem.get(p.itemId) || [] : []), p.cwd, p.grantRoot,
       p.additionalPermissions && JSON.stringify(p.additionalPermissions), p.reason].filter(Boolean).join('\n');
     const choices = (!requireReadOnly && text.length <= 4_000 ? [accept, deny, cancel] : [deny, cancel])
-      .filter(value => !command || !p.availableDecisions?.length || p.availableDecisions.includes(value.id));
-    if (!choices.length) return send({ id, result: { decision: 'decline' } });
+      .filter(value => !command || p.availableDecisions == null ||
+        Array.isArray(p.availableDecisions) && p.availableDecisions.includes(value.id));
+    if (!choices.length) return send({ id, error: { code: -32602, message: 'No native approval decision is available in this session' } });
     return { kind: 'approval', choices, text, answer: decision => ({ decision }) };
   }
   if (method === 'item/tool/requestUserInput') {
-    const questions = p.questions || [];
-    if (!questions.length || questions.some(question => question.isSecret)) return send({ id, result: { answers: {} } });
+    const supplied = Array.isArray(p.questions) ? p.questions : [];
+    const questions = supplied.filter(question => question?.isSecret !== true);
+    const secretInputUnavailable = questions.length !== supplied.length;
+    if (!questions.length) {
+      const reason = secretInputUnavailable ? '当前会话没有接收保密回答的通道。' : 'Codex 未提供可回答的问题。';
+      emit('progress', { turnId, text: reason });
+      return send({ id, error: { code: -32602, message: reason } });
+    }
+    if (questions.some(question => typeof question?.id !== 'string' || !question.id ||
+        typeof question.question !== 'string' || !question.question ||
+        question.options != null && (!Array.isArray(question.options) ||
+          question.options.some(option => typeof option?.label !== 'string' || !option.label))) ||
+        new Set(questions.map(question => question.id)).size !== questions.length) {
+      return send({ id, error: { code: -32602, message: 'Codex returned an invalid question or option' } });
+    }
     const simple = questions.length === 1;
-    const choices = simple && !questions[0].isOther ? (questions[0].options || []).map(option => choice(option.label, option.label)) : [];
+    const choices = simple && !questions[0].isOther
+      ? (questions[0].options || []).map(option => choice(option.label, option.label)) : [];
     const text = questions.map((question, index) => (simple ? '' : (index + 1) + '. ') + question.question +
       (question.options?.length && !choices.length ? '\n' + question.options.map(option => option.label).join(' / ') : '')).join('\n');
-    return { kind: 'question', choices, text: text + (simple ? '' : '\n请按题目顺序每行回复一项。'),
-      answer: answer => ({ answers: Object.fromEntries(questions.map((question, index) =>
-        [question.id, { answers: [simple ? answer : answer.split(/\r?\n/)[index]?.trim() || ''] }])) }) };
+    return { kind: 'question', choices,
+      text: [text, !simple && '请按题目顺序每行回复一项。', secretInputUnavailable && '保密问题需要使用支持保密输入的通道。']
+        .filter(Boolean).join('\n'),
+      answer: answer => {
+        const values = simple ? [answer] : answer.split(/\r?\n/);
+        if (values.length !== questions.length || questions.some((question, index) => !values[index]?.trim() ||
+            !question.isOther && question.options?.length && !question.options.some(option => option.label === values[index]))) {
+          throw new Error('请为每个显示的问题提供一个有效回答，并使用原选项文字。');
+        }
+        return { answers: Object.fromEntries(questions.map((question, index) => [question.id, { answers: [values[index]] }])) };
+      } };
   }
   if (method === 'mcpServer/elicitation/request') {
     const form = p.mode !== 'url';
     return { kind: 'question', choices: form ? [] : [choice('accept', '已完成'), deny, cancel],
       text: [p.message, p.url, form ? '请回复所要求的 JSON 表单，或输入「拒绝」。' : '请处理链接中的请求，再回复结果。'].filter(Boolean).join('\n'),
-      answer: text => form ? text === '拒绝' ? { action: 'decline', content: null } : { action: 'accept', content: JSON.parse(text) } :
-        { action: text, content: null } };
+      answer: text => {
+        if (!form) return { action: text, content: null };
+        if (text === '拒绝') return { action: 'decline', content: null };
+        const invalid = '请提供有效的 JSON 对象，或输入「拒绝」。';
+        let content;
+        try { content = JSON.parse(text); } catch { throw new Error(invalid); }
+        if (!content || typeof content !== 'object' || Array.isArray(content)) throw new Error(invalid);
+        return { action: 'accept', content };
+      } };
   }
   send({ id, error: { code: -32601, message: 'This Codex app-server request is unsupported' } });
 }
@@ -258,23 +288,18 @@ async function initialize() {
   await rpc('initialize', { clientInfo: { name: 'summon-bot', title: 'Summon Bot', version: '1' },
     capabilities: { experimentalApi: true } });
   send({ method: 'initialized' });
-  return rpc('account/read', { refreshToken: false });
 }
 
 async function start({ text, sessionId, readOnly = false, callId, model, effort, guard, storePath }) {
   requireReadOnly = readOnly;
   guardDb = new DatabaseSync(storePath, { readOnly: true, timeout: 3000 });
-  const { account, requiresOpenaiAuth } = await initialize();
-  if (!account && requiresOpenaiAuth)
-    return finish('failed', 'Codex CLI 需要登录。请先在部署机运行 codex login。');
+  await initialize();
   if (stopping) return finish('stopped');
   if (!allowed(guard)) return finish('not_submitted', 'Session control or connection access changed before creating the thread');
   const cwd = process.cwd();
   const binding = { ...(model ? { model } : {}), ...(effort ? { config: { model_reasoning_effort: effort } } : {}) };
-  if (!sessionId) {
-    threadSubmitted = true;
-    emit('thread-submitting');
-  }
+  threadSubmitted = true;
+  emit('thread-submitting');
   const response = await rpc(sessionId ? 'thread/resume' : 'thread/start', { cwd, ...binding,
     ...(sessionId ? { threadId: sessionId, excludeTurns: true } : { ephemeral: false, threadSource: 'automation', allowProviderModelFallback: false }) });
   if (!response.thread?.id || sessionId && response.thread.id !== sessionId)

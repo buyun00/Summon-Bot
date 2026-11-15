@@ -12,9 +12,12 @@ export class Deliveries {
     Object.assign(this, { store, resources, emit, canReadEvent, canReadWait, canReadReference, manager });
     store.db.exec(`CREATE INDEX IF NOT EXISTS platform_delivery_status ON records (json_extract(data,'$.status')) WHERE kind='platform-deliveries';
       CREATE INDEX IF NOT EXISTS platform_delivery_event ON records (json_extract(data,'$.event.id')) WHERE kind='platform-deliveries'`);
-    this.queueUsage = store.db.prepare(`SELECT count(*) AS used FROM records WHERE kind='platform-deliveries' AND
-      json_extract(data,'$.status') IN ('pending','unknown','received') AND COALESCE(json_array_length(data,'$.wait_refs'),0)=0`);
-    this.pendingRecords = store.db.prepare(`SELECT data FROM records WHERE kind='platform-deliveries' AND json_extract(data,'$.status') IN ('pending','unknown') ORDER BY rowid`);
+    this.returningRecords = store.db.prepare(`SELECT data FROM records WHERE kind='platform-deliveries'
+      AND json_extract(data,'$.status') IN ('pending','unknown') AND COALESCE(json_extract(data,'$.retry_at'),0)<=?
+      AND (json_extract(data,'$.status')='unknown' OR COALESCE(json_array_length(data,'$.wait_refs'),0)>0) ORDER BY rowid`);
+    this.pendingRecords = store.db.prepare(`SELECT data FROM records WHERE kind='platform-deliveries'
+      AND json_extract(data,'$.status')='pending' AND COALESCE(json_extract(data,'$.retry_at'),0)<=?
+      AND COALESCE(json_array_length(data,'$.wait_refs'),0)=0 ORDER BY rowid LIMIT ?`);
     this.eventRecords = store.db.prepare(`SELECT data FROM records WHERE kind='platform-deliveries' AND json_extract(data,'$.event.id')=? ORDER BY rowid`);
   }
 
@@ -129,28 +132,14 @@ export class Deliveries {
     };
     for (const wait of waits) entry(wait.bot_id).waits.push(wait);
     for (const wakeup of matchWakeups ? this.store.list(wakeupRecords) : []) {
-      if (this.matches(wakeup, event) && this.canReadEvent(wakeup.bot_id, event)) {
-        entry(wakeup.bot_id).matches.push({ id: wakeup.id, revision: wakeup.revision, kind: wakeup.rule.kind });
-      }
+      if (!this.matches(wakeup, event)) continue;
+      try { if (!this.canReadEvent(wakeup.bot_id, event)) continue; }
+      catch { /* Delivery will recheck access before the event reaches an inbox. */ }
+      entry(wakeup.bot_id).matches.push({ id: wakeup.id, revision: wakeup.revision, kind: wakeup.rule.kind });
     }
     const existing = this.deliveriesFor(event.id);
-    const additional = [...byBot].filter(([botId, links]) => !links.waits.length && !existing.some(item => item.bot_id === botId && item.event.id === event.id)).length;
-    if (event.type === 'call.receipt') {
-      const used = this.queueUsage.get().used;
-      let capacity = Math.max(0, this.resources.limits.queue - used);
-      for (const [botId, links] of byBot) {
-        if (links.waits.length || existing.some(item => item.bot_id === botId && item.event.id === event.id)) continue;
-        if (capacity > 0) capacity--;
-        else byBot.delete(botId);
-      }
-    } else if (additional && !waits.length) this.assertQueue(additional);
     if (event.type !== 'message' && !this.store.get('platform-events', event.id)) this.store.save('platform-events', event);
     for (const [botId, links] of byBot) this.enqueue(botId, event, links.matches, links.waits, existing);
-  }
-
-  assertQueue(additional = 1) {
-    const used = this.queueUsage.get().used;
-    this.resources.assertCapacity('queue', used, additional);
   }
 
   enqueue(botId, event, matches, waits, deliveries = this.deliveriesFor(event.id)) {
@@ -171,7 +160,6 @@ export class Deliveries {
         const { bot_id, rule } = wakeup;
         if (rule.scope && !this.canReadReference(rule.scope, { actor: { kind: 'bot', id: bot_id },
           workspaceProfileId: this.manager.get(bot_id).workspaceProfileId ?? null })) continue;
-        try { this.assertQueue(); } catch (error) { if (error.code === 'resource_limit') break; throw error; }
         const platform = { kind: 'platform', id: 'platform' };
         const event = this.store.save('platform-events', { id: keyOf('time', wakeup.id, wakeup.next_due), kind: 'event', type: 'wakeup.time',
           author: platform, bot_id, space: rule.scope?.kind === 'room' || rule.scope?.kind === 'bot' ? rule.scope : { kind: 'bot', id: bot_id },
@@ -225,13 +213,19 @@ export class Deliveries {
     if (this.flushing) return;
     this.flushing = true;
     try {
-      for (const row of this.pendingRecords.all()) {
+      const now = Date.now();
+      const deliveries = [...this.returningRecords.all(now), ...this.pendingRecords.all(now, this.resources.limits.queue)];
+      for (const row of deliveries) {
         const delivery = JSON.parse(row.data);
-        if (!['pending', 'unknown'].includes(delivery.status) || delivery.retry_at && delivery.retry_at > Date.now()) continue;
         const { id, bot_id, event, wait_refs = [], revision = 1, match_sources = [] } = delivery;
-        const readable = this.canReadEvent(bot_id, event);
-        const waitAccess = new Map(wait_refs.map(wait => [wait.id, readable &&
-          (!wait.input_call_id || this.canReadWait(wait, event))]));
+        let readable, waitAccess;
+        try {
+          readable = this.canReadEvent(bot_id, event);
+          waitAccess = new Map(wait_refs.map(wait => [wait.id, readable && (!wait.input_call_id || this.canReadWait(wait, event))]));
+        } catch {
+          this.updateDelivery(id, revision, { retry_at: Date.now() + 1000 });
+          continue;
+        }
         const read = readable && (!wait_refs.length || match_sources.length > 0 || [...waitAccess.values()].some(Boolean));
         let prior;
         try { prior = delivery.status === 'unknown' ? await runtime.inboxReceipt(bot_id, id) : null; }
@@ -251,7 +245,7 @@ export class Deliveries {
         }
         const body = read ? event : { id: event.id, kind: 'event', type: event.type, call_id: event.call_id, status: event.status,
           result_position: event.result_position, result_access: 'revoked', time: event.time, author: event.author };
-        this.updateDelivery(id, revision, { status: 'unknown', sent_wait_access: Object.fromEntries(waitAccess) });
+        if (!this.updateDelivery(id, revision, { status: 'unknown', sent_wait_access: Object.fromEntries(waitAccess) })) continue;
         let result;
         try { result = await runtime.receive({ id, bot_id, event: body, match_sources, wait_refs, revision }); }
         catch (error) {

@@ -3,6 +3,8 @@ globalThis.SummonModels = (() => {
   const view = { data: null, summary: null, editor: null, choices: [], error: '', busy: false, login: null, loadedAt: 0, quotaId: null };
   let bindings, loginTimer, usageTimer, loading, invalidateSidebar;
   const kinds = { codex: 'Codex 订阅', grok: 'Grok 订阅', api: '通用 API' };
+  const commonThinkingLevels = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+  const thinkingChoices = (levels, current) => [...new Set(['off', ...(levels ?? commonThinkingLevels), current].filter(Boolean))];
   const formatMoney = balance => {
     if (!balance || !Number.isFinite(balance.amount)) return '';
     try { return new Intl.NumberFormat('zh-CN', { style: 'currency', currency: balance.currency || 'USD', maximumFractionDigits: 2 }).format(balance.amount); }
@@ -98,7 +100,20 @@ globalThis.SummonModels = (() => {
   }
   const defaults = kind => ({ kind, name: kinds[kind], model: kind === 'codex' ? 'gpt-6-luna' : kind === 'grok' ? 'grok-4.7' : '',
     provider: kind === 'api' ? 'openai-compatible' : kind === 'grok' ? 'xai' : 'openai-codex', api: kind === 'api' ? 'openai-completions' : 'openai-responses',
-    baseUrl: '', thinkingLevel: 'high', apiKey: '' });
+    baseUrl: '', thinkingLevel: null, apiKey: '' });
+  function selectedEditor(data) {
+    const entry = data.connections.find(item => item.id === data.activeId) ?? data.connections[0];
+    return entry ? { ...entry, apiKey: '' } : null;
+  }
+  function modelChoices(data, editor) {
+    const preset = data.presets.find(item => item.id === editor?.provider);
+    return [...new Map([...(preset?.models || []), ...view.choices].map(item => [item.id, item])).values()];
+  }
+  function editorThinkingChoices(choices, editor, selected) {
+    const levels = choices.find(item => item.id === editor?.model)?.thinkingLevels
+      ?? (editor?.model === selected?.model ? selected?.thinkingLevels : undefined);
+    return thinkingChoices(levels, editor?.thinkingLevel);
+  }
   function start(provided) {
     bindings = provided;
     if (!usageTimer) {
@@ -112,7 +127,7 @@ globalThis.SummonModels = (() => {
     if (loading) return loading;
     loading = api('/api/model-settings').then(data => {
       view.data = data; view.loadedAt = Date.now(); view.summary = data; view.error = '';
-      if (!view.editor) view.editor = { ...data.connections.find(item => item.id === data.activeId), apiKey: '' };
+      if (!view.editor) view.editor = selectedEditor(data);
     }).catch(error => { view.error = error.message; }).finally(() => { loading = null; });
     return loading;
   }
@@ -122,24 +137,30 @@ globalThis.SummonModels = (() => {
     const input = (label, name, value, options = {}) => `<label class="models-field"><span>${label}</span><input name="${name}" ${options.type ? `type="${options.type}"` : ''} value="${esc(value ?? '')}" ${options.required ? 'required' : ''} ${options.placeholder ? `placeholder="${esc(options.placeholder)}"` : ''} ${options.list ? `list="${options.list}"` : ''} ${options.type === 'password' ? 'autocomplete="new-password"' : ''} ${options.type === 'number' ? 'min="128" step="1"' : ''}></label>`;
     const select = (label, name, values, current) => `<label class="models-field"><span>${label}</span><select name="${name}">${values.map(([value, title]) => `<option value="${esc(value)}" ${current === value ? 'selected' : ''}>${esc(title)}</option>`).join('')}</select></label>`;
     const selected = editor?.id ? data.connections.find(item => item.id === editor.id) : null;
+    const defaultAction = selected ? `<button class="secondary-button" type="button"
+      data-action="${selected.active ? 'models-deactivate' : 'models-activate'}" data-id="${esc(selected.id)}"
+      ${view.busy ? 'disabled' : ''}>${selected.active ? '取消默认' : '设为默认'}</button>` : '';
+    const choices = modelChoices(data, editor);
+    const thinkingHints = editorThinkingChoices(choices, editor, selected);
     const login = view.login?.id === editor?.id ? view.login : null;
     const waiting = login && ['starting', 'waiting'].includes(login.status);
     const localLogin = ['codex-local', 'grok-local'].includes(editor?.authMode), localBrand = editor?.kind === 'codex' ? 'Codex' : 'Grok';
     const authorization = editor && editor.kind !== 'api' ? `<div class="models-auth-panel"><div><strong>${selected?.configured ? '订阅已连接' : '连接你的订阅'}</strong><p>${localLogin ? `使用这台机器的 ${localBrand} 登录。` : '授权完成后，Pi 可以直接使用此账号的模型。'}</p></div>${!selected ? `<button type="button" class="secondary-button" data-action="models-import-${esc(editor.kind)}">导入本机 ${localBrand} 登录</button>` : ''}${selected && !localLogin ? `<button type="button" class="secondary-button" data-action="models-login" data-id="${esc(editor.id)}" ${waiting || view.busy ? 'disabled' : ''}>${selected.configured ? '重新授权' : '授权订阅'}</button>` : ''}
       ${waiting ? `<div class="models-device-code"><span>${login.status === 'starting' ? '正在获取授权码…' : '在授权页面输入此代码'}</span>${login.userCode ? `<strong>${esc(login.userCode)}</strong>` : ''}${login.verificationUri ? `<a class="primary-button" href="${esc(login.verificationUri)}" target="_blank" rel="noopener noreferrer">打开授权页面 ${icon('link', 14)}</a>` : ''}<button type="button" class="text-button" data-action="models-cancel-login" data-id="${esc(editor.id)}">取消授权</button></div>` : ''}${login?.error ? `<p class="models-inline-error">${esc(login.error)}</p>` : ''}</div>` : '';
     const form = editor ? `<section class="models-editor"><div class="models-section-heading"><div><p class="models-eyebrow">${esc(kinds[editor.kind])}</p><h2>${editor.id ? esc(editor.name) : '添加模型'}</h2></div>${selected?.active ? '<span class="model-active-badge">当前模型</span>' : ''}</div>
-      <form id="model-connection-form"><input type="hidden" name="kind" value="${esc(editor.kind)}">${input('连接名称', 'name', editor.name, { required: true })}
-      ${editor.kind === 'api' ? `${select('服务商', 'provider', data.presets.map(item => [item.id, item.name]), editor.provider)}${select('接口协议', 'api', [['openai-completions', 'OpenAI Chat Completions'], ['openai-responses', 'OpenAI Responses'], ['anthropic-messages', 'Anthropic Messages']], editor.api)}${input('API 地址', 'baseUrl', editor.baseUrl, { required: true, type: 'url', placeholder: 'https://api.example.com/v1' })}${input('API Key', 'apiKey', editor.apiKey, { type: 'password', placeholder: selected?.configured ? '已保存；留空保持当前 Key' : '输入 API Key' })}<label class="models-checkbox"><input name="allowNoKey" type="checkbox" ${editor.allowNoKey ? 'checked' : ''}>这个服务无需 API Key</label>` : authorization}
+      <form id="model-connection-form"><input type="hidden" name="kind" value="${esc(editor.kind)}">${input('连接名称', 'name', editor.name)}
+      ${editor.kind === 'api' ? `${input('服务商 ID', 'provider', editor.provider)}${select('应用服务商预设', 'preset', [['', '选择预设'], ...data.presets.map(item => [item.id, item.name])], '')}${select('接口协议', 'api', [['openai-completions', 'OpenAI Chat Completions'], ['openai-responses', 'OpenAI Responses'], ['anthropic-messages', 'Anthropic Messages']], editor.api)}${input('API 地址', 'baseUrl', editor.baseUrl, { required: true, type: 'url', placeholder: 'https://api.example.com/v1' })}${input('API Key', 'apiKey', editor.apiKey, { type: 'password', placeholder: selected?.configured ? '已保存；留空保持当前 Key' : '输入 API Key' })}<label class="models-checkbox"><input name="allowNoKey" type="checkbox" ${editor.allowNoKey ? 'checked' : ''}>这个服务无需 API Key</label>` : authorization}
       <div class="models-field-heading"><span>模型</span>${selected ? `<button type="button" class="text-button" data-action="models-discover" data-id="${esc(selected.id)}">${editor.kind === 'api' ? '获取模型目录' : '查看可选模型'}</button>` : ''}</div>
-      <input class="models-model-input" name="model" list="models-choices" value="${esc(editor.model)}" placeholder="填写或选择模型 ID" required><datalist id="models-choices">${view.choices.map(item => `<option value="${esc(item.id)}">${esc(item.name || item.id)}</option>`).join('')}</datalist>
+      <input class="models-model-input" name="model" list="models-choices" value="${esc(editor.model)}" placeholder="填写或选择模型 ID" ${editor.kind === 'api' ? 'required' : ''}><datalist id="models-choices">${choices.map(item => `<option value="${esc(item.id)}">${esc(item.name || item.id)}</option>`).join('')}</datalist>
       <p class="models-field-hint">可以直接填写模型 ID；可用范围由当前账号决定。</p>
-      ${select('思考强度', 'thinkingLevel', [['off', '关闭思考'], ['low', '低'], ['medium', '中'], ['high', '高'], ['xhigh', '很高'], ['max', '最高']], editor.thinkingLevel)}
+      ${input('思考强度', 'thinkingLevel', editor.thinkingLevel, { placeholder: '留空使用供应商默认', list: 'models-thinking-levels' })}
+      <datalist id="models-thinking-levels">${thinkingHints.map(level => `<option value="${esc(level)}">${level === 'off' ? '关闭思考' : esc(level)}</option>`).join('')}</datalist>
       <details class="models-advanced"><summary>上下文与余额查询</summary><div class="models-form-grid">${input('上下文上限 · Token', 'contextWindow', editor.contextWindow, { type: 'number', placeholder: '留空使用模型默认' })}${input('输出上限 · Token', 'maxTokens', editor.maxTokens, { type: 'number', placeholder: '留空使用模型默认' })}</div>${editor.kind === 'api' ? `<p class="models-field-hint">DeepSeek 与 OpenRouter 自动读取余额。其他服务可填写自己的余额接口。</p>${input('余额查询路径', 'balancePath', editor.balancePath, { placeholder: '/account/balance' })}<div class="models-form-grid">${input('余额 JSON 字段', 'balanceField', editor.balanceField, { placeholder: 'data.balance' })}${input('币种', 'balanceCurrency', editor.balanceCurrency || 'USD', { placeholder: 'USD' })}</div>` : ''}</details>
-      <div class="models-form-actions"><button class="primary-button" type="submit" ${view.busy ? 'disabled' : ''}>${view.busy ? '正在保存…' : editor.kind === 'api' ? '保存为默认模型' : selected?.configured ? '保存配置' : '保存并授权'}</button>${selected?.configured && !selected.active ? `<button class="secondary-button" type="button" data-action="models-activate" data-id="${esc(selected.id)}" ${view.busy ? 'disabled' : ''}>设为默认</button>` : ''}${selected && !selected.active ? `<button class="text-button models-remove" type="button" data-action="models-remove" data-id="${esc(selected.id)}" ${view.busy ? 'disabled' : ''}>移除此连接</button>` : ''}</div></form></section>` : '';
+      <div class="models-form-actions"><button class="primary-button" type="submit" ${view.busy ? 'disabled' : ''}>${view.busy ? '正在保存…' : editor.kind === 'api' || selected?.configured ? '保存配置' : '保存并授权'}</button>${defaultAction}${selected && !selected.active ? `<button class="text-button models-remove" type="button" data-action="models-remove" data-id="${esc(selected.id)}" ${view.busy ? 'disabled' : ''}>移除此连接</button>` : ''}</div></form></section>` : '';
     return `<div class="page models-page"><header class="models-header"><div><button class="text-button" data-action="navigate" data-view="chat">${icon('back', 16)}返回聊天</button><p class="models-eyebrow">SETTINGS / MODELS</p><h1>模型连接</h1><p>查看和配置 Pi 使用的模型连接。</p></div><button class="secondary-button" data-action="models-refresh-usage" ${view.busy ? 'disabled' : ''}>${icon('refresh', 15)}刷新额度</button></header>
       ${view.error ? `<p class="models-inline-error" role="alert">${esc(view.error)}</p>` : ''}
-      <div class="models-engine-overview"><section class="models-engine-card"><div class="models-engine-title"><span class="model-source-dot"></span><h2>默认模型</h2><span>Pi</span></div><strong>${esc(active?.name || '尚未选择')}</strong><p>${esc(active?.model || '')}</p>${usageBody(summary.chat?.usage, esc)}</section></div>
-      <div class="models-configuration"><section class="models-connections"><div class="models-section-heading"><h2>模型连接</h2><span>${data.connections.length}</span></div><div class="models-add-types">${Object.entries(kinds).map(([kind, label]) => `<button data-action="models-new" data-kind="${kind}" ${view.busy ? 'disabled' : ''}>${icon('plus', 14)}${label}</button>`).join('')}</div><div class="models-connection-list">${data.connections.map(item => `<button class="models-connection ${editor?.id === item.id ? 'selected' : ''}" data-action="models-edit" data-id="${esc(item.id)}"><span class="models-provider-monogram ${item.kind}">${globalThis.SummonModelIcons.svg(item, 22)}</span><span><strong>${esc(item.name)}</strong><small>${esc(item.model)}</small><small>${esc(kinds[item.kind])}${item.identity ? ` · ${esc(item.identity)}` : ''}</small></span>${item.active ? '<i class="models-selected-dot" title="当前模型"></i>' : !item.configured ? '<small class="models-unconfigured">待连接</small>' : ''}</button>`).join('')}</div><p class="models-list-note">当前工作区的 Pi 使用这里选择的模型。</p></section>${form}</div></div>`;
+      <div class="models-engine-overview"><section class="models-engine-card"><div class="models-engine-title"><span class="model-source-dot"></span><h2>默认模型</h2><span>Pi</span></div><strong>${esc(active?.name || '尚未选择')}</strong><p>${esc(active?.model || '')}</p>${active?.configured === false ? '<small class="model-usage-note">待连接</small>' : usageBody(summary.chat?.usage, esc)}</section></div>
+      <div class="models-configuration"><section class="models-connections"><div class="models-section-heading"><h2>模型连接</h2><span>${data.connections.length}</span></div><div class="models-add-types">${Object.entries(kinds).map(([kind, label]) => `<button data-action="models-new" data-kind="${kind}" ${view.busy ? 'disabled' : ''}>${icon('plus', 14)}${label}</button>`).join('')}</div><div class="models-connection-list">${data.connections.map(item => `<button class="models-connection ${editor?.id === item.id ? 'selected' : ''}" data-action="models-edit" data-id="${esc(item.id)}"><span class="models-provider-monogram ${item.kind}">${globalThis.SummonModelIcons.svg(item, 22)}</span><span><strong>${esc(item.name)}</strong><small>${esc(item.model)}</small><small>${esc(kinds[item.kind])}${item.identity ? ` · ${esc(item.identity)}` : ''}</small></span>${item.configured === false ? '<small class="models-unconfigured">待连接</small>' : ''}${item.active ? '<i class="models-selected-dot" role="img" aria-label="当前默认" title="当前默认"></i>' : ''}</button>`).join('')}</div><p class="models-list-note">当前工作区的 Pi 使用这里选择的模型。</p></section>${form}</div></div>`;
   }
   async function updateUsage(force) {
     if (!bindings) return;
@@ -148,7 +169,7 @@ globalThis.SummonModels = (() => {
   }
   async function fetchChoices(id, discover = false) {
     const value = await bindings.api(`/api/model-settings/connections/${encodeURIComponent(id)}/models${discover ? '?discover=1' : ''}`);
-    view.choices = value.models || [];
+    if (view.editor?.id === id) view.choices = value.models || [];
   }
   async function pollLogin(id) {
     clearTimeout(loginTimer);
@@ -170,14 +191,16 @@ globalThis.SummonModels = (() => {
   async function submit(form) {
     if (view.busy) return;
     const payload = { ...view.editor, ...Object.fromEntries(new FormData(form)), allowNoKey: form.elements.allowNoKey?.checked === true };
+    delete payload.preset;
+    delete payload.thinkingLevels;
+    payload.thinkingLevel = payload.thinkingLevel.trim() || null;
     const previousIds = new Set(view.data.connections.map(item => item.id));
     view.busy = true; view.error = ''; bindings.render();
     try {
       view.data = await bindings.api('/api/model-settings/connections', 'POST', payload);
       const entry = view.data.connections.find(item => payload.id ? item.id === payload.id : !previousIds.has(item.id));
       view.editor = { ...entry, apiKey: '' }; view.summary = view.data;
-      if (entry.kind === 'api') { view.data = await bindings.api('/api/model-settings/active', 'POST', { id: entry.id }); view.summary = view.data; bindings.toast('模型已更新'); }
-      else if (!entry.configured) await beginLogin(entry.id);
+      if (entry.kind !== 'api' && !entry.configured) await beginLogin(entry.id);
       else bindings.toast('模型配置已保存');
       await bindings.refresh?.();
     } catch (error) { view.error = error.message; bindings.toast(error.message, true); }
@@ -202,8 +225,16 @@ globalThis.SummonModels = (() => {
         view.editor = { ...view.data.connections.find(item => item.id === view.data.importedId), apiKey: '' }; view.summary = view.data;
         await fetchChoices(view.editor.id); provided.toast(`已导入本机 ${kind === 'codex' ? 'Codex' : 'Grok'} 登录`);
       }
-      if (action === 'models-activate') { view.busy = true; view.data = await provided.api('/api/model-settings/active', 'POST', { id: element.dataset.id }); view.summary = view.data; provided.toast('Pi 模型已切换'); await provided.refresh?.(); }
-      if (action === 'models-remove') { view.busy = true; view.data = await provided.api(`/api/model-settings/connections/${encodeURIComponent(element.dataset.id)}`, 'DELETE', {}); view.editor = { ...view.data.connections.find(item => item.id === view.data.activeId), apiKey: '' }; view.summary = view.data; }
+      if (action === 'models-activate' || action === 'models-deactivate') {
+        const id = action === 'models-deactivate' ? null : element.dataset.id;
+        view.busy = true;
+        view.data = await provided.api('/api/model-settings/active', 'POST', { id });
+        view.summary = view.data;
+        view.quotaId = null;
+        provided.toast(id === null ? '已取消 Pi 默认模型' : '已设为 Pi 默认模型');
+        await provided.refresh?.();
+      }
+      if (action === 'models-remove') { view.busy = true; view.data = await provided.api(`/api/model-settings/connections/${encodeURIComponent(element.dataset.id)}`, 'DELETE', {}); view.editor = selectedEditor(view.data); view.summary = view.data; }
       if (action === 'models-login') await beginLogin(element.dataset.id);
       if (action === 'models-cancel-login') { clearTimeout(loginTimer); view.login = await provided.api(`/api/model-settings/connections/${encodeURIComponent(element.dataset.id)}/login`, 'DELETE', {}); }
     } catch (error) { view.error = error.message; provided.toast(error.message, true); }
@@ -216,16 +247,26 @@ globalThis.SummonModels = (() => {
     event.preventDefault(); void submit(event.target);
   });
   document.addEventListener('input', event => {
-    if (!event.target.closest('#model-connection-form') || !view.editor || !event.target.name) return;
+    if (!event.target.closest('#model-connection-form') || !view.editor || !event.target.name || event.target.name === 'preset') return;
     view.editor[event.target.name] = event.target.type === 'checkbox' ? event.target.checked : event.target.value;
   });
   document.addEventListener('change', event => {
     if (!event.target.closest('#model-connection-form') || !view.editor) return;
-    if (event.target.name === 'provider') {
+    if (event.target.name === 'preset') {
       const preset = view.data.presets.find(item => item.id === event.target.value);
-      Object.assign(view.editor, { provider: event.target.value, baseUrl: preset?.baseUrl || '', api: preset?.api || 'openai-completions' });
+      if (!preset) return;
+      Object.assign(view.editor, { provider: preset.id, baseUrl: preset.baseUrl, api: preset.api });
+      view.choices = [];
       bindings.render();
     }
+    if (event.target.name === 'model' || event.target.name === 'provider') {
+      if (event.target.name === 'provider') view.choices = [];
+      const choices = modelChoices(view.data, view.editor);
+      const selected = view.data.connections.find(item => item.id === view.editor.id && item.provider === view.editor.provider);
+      document.querySelector('#models-choices')?.replaceChildren(...choices.map(item => new Option(item.name || item.id, item.id)));
+      document.querySelector('#models-thinking-levels')?.replaceChildren(...editorThinkingChoices(choices, view.editor, selected)
+        .map(level => new Option(level === 'off' ? '关闭思考' : level, level)));
+    }
   });
-  return { sidebar, start, load, render, act, sync: summary => { if (summary) view.summary = summary; }, current: () => view.summary, bind: provided => { bindings = provided; } };
+  return { sidebar, start, load, render, act, thinkingChoices, sync: summary => { if (summary) view.summary = summary; }, current: () => view.summary, bind: provided => { bindings = provided; } };
 })();

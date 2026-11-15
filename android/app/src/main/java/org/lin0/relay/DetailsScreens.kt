@@ -77,6 +77,15 @@ fun BotDetailsScreen(store: SummonStore, botID: String, onBack: () -> Unit) {
     LaunchedEffect(botID, store.protocolReady) {
         if (!store.protocolReady) return@LaunchedEffect
         try {
+            access = store.request(accessPath)
+            selectedModels = access["model_ids"].array.orEmpty().mapNotNull { it.string }.toSet()
+            selectedDirs = access["workspace_ids"].array.orEmpty().mapNotNull { it.string }.toSet()
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (failure: Exception) { error = failure.localizedMessage }
+    }
+    LaunchedEffect(botID, store.protocolReady) {
+        if (!store.protocolReady) return@LaunchedEffect
+        try {
             val latest = SummonBot.parse(store.read(ref))
             if (current?.revision == null) {
                 name = latest.name; instructions = latest.instructions.orEmpty(); avatar = latest.resolvedAvatar
@@ -86,12 +95,9 @@ fun BotDetailsScreen(store: SummonStore, botID: String, onBack: () -> Unit) {
                 index = latest.materialIndex?.id.orEmpty()
             }
             current = latest
-            access = store.request(accessPath)
             models = store.request("/api/model-settings")["connections"].array.orEmpty()
             directories = store.list("/api/workspaces")
             files = store.list("/api/files?bot=" + SummonApiClient.component(botID))
-            selectedModels = access["model_ids"].array.orEmpty().mapNotNull { it.string }.toSet()
-            selectedDirs = access["workspace_ids"].array.orEmpty().mapNotNull { it.string }.toSet()
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (failure: Exception) { error = failure.localizedMessage }
     }
@@ -106,8 +112,8 @@ fun BotDetailsScreen(store: SummonStore, botID: String, onBack: () -> Unit) {
         AvatarPicker(avatar) { avatar = it }
         TextButton(enabled = !busy, onClick = { photo.launch(photoRequest()) }) { Text("使用自己的图片") }
         val enabled = !busy && store.protocolReady && current?.revision != null
-        Button(enabled = enabled, onClick = {
-            run { current?.let { current = store.updateBot(it, "avatar" to avatar.toJson()) } }
+        Button(enabled = !busy && store.protocolReady, onClick = {
+            run { current = store.setAvatar(avatar, botID) }
         }) { Text("保存头像") }
         Text("Bot 设置", style = MaterialTheme.typography.titleMedium)
         SummonTextField("名称", name, { name = it })
@@ -118,24 +124,34 @@ fun BotDetailsScreen(store: SummonStore, botID: String, onBack: () -> Unit) {
                 id to (item["name"].string ?: id)
             } else null
         }
-        SummonChoice("模型连接", connection, connections) { connection = it }
+        val retainedConnection = current?.model?.get("connection_id")?.string
+        val connectionOptions = if (retainedConnection != null && connections.none { it.first == retainedConnection }) {
+            connections + (retainedConnection to "$retainedConnection · 当前绑定")
+        } else connections
+        SummonChoice("模型连接", connection, connectionOptions) { connection = it }
         if (connection.isNotEmpty()) {
             SummonTextField("模型名称", model, { model = it })
-            SummonChoice("推理强度", thinking,
-                listOf("" to "连接默认值") + listOf("off", "low", "medium", "high", "xhigh", "max").map { it to it }) { thinking = it }
+            val entry = models.firstOrNull { it["id"].string == connection }
+            val known = model.isBlank() || model == entry?.get("model")?.string
+            ModelThinkingField("推理强度", "继承连接", thinking, entry?.get("thinkingLevels")?.array.takeIf { known }) { thinking = it }
         }
-        SummonChoice("选材索引", index, listOf("" to "未选择") + files.mapNotNull { file ->
+        val indexes = listOf("" to "未选择") + files.mapNotNull { file ->
             file["id"].string?.let { it to (file["path"].string ?: it) }
-        }) { index = it }
+        }
+        val existingIndex = current?.materialIndex?.id
+        val indexOptions = if (existingIndex != null && indexes.none { it.first == existingIndex }) {
+            indexes + (existingIndex to "$existingIndex · 当前索引")
+        } else indexes
+        SummonChoice("选材索引", index, indexOptions) { index = it }
         Button(enabled = enabled && name.isNotBlank(), onClick = {
             val before = current ?: return@Button
             val changes = mutableMapOf<String, SummonJson>("name" to SummonJson.Str(name.trim()), "instructions" to SummonJson.Str(instructions))
-            if (connection != before.model["connection_id"].string.orEmpty() || model != before.model["id"].string.orEmpty() ||
-                thinking != before.model["thinking_level"].string.orEmpty()) {
+            if (connection != before.model["connection_id"].string.orEmpty() || model.trim() != before.model["id"].string.orEmpty() ||
+                thinking.trim() != before.model["thinking_level"].string.orEmpty()) {
                 changes["model"] = if (connection.isEmpty()) SummonJson.Null else SummonJson.Obj(buildMap {
                     put("connection_id", SummonJson.Str(connection))
                     if (model.isNotBlank()) put("id", SummonJson.Str(model.trim()))
-                    if (thinking.isNotEmpty()) put("thinking_level", SummonJson.Str(thinking))
+                    if (thinking.isNotBlank()) put("thinking_level", SummonJson.Str(thinking.trim()))
                 })
             }
             if (index != before.materialIndex?.id.orEmpty()) {
@@ -158,9 +174,9 @@ fun BotDetailsScreen(store: SummonStore, botID: String, onBack: () -> Unit) {
         }
         access["revision"].int?.let { revision ->
             Text("资源权限", style = MaterialTheme.typography.titleMedium)
-            SummonResourceSelection("模型连接", models, selectedModels) { selectedModels = it }
-            SummonResourceSelection("执行目录", directories, selectedDirs) { selectedDirs = it }
-            Button(enabled = enabled, onClick = {
+            SummonResourceSelection("模型连接", models, selectedModels, access["model_ids"].array.orEmpty().mapNotNull { it.string }.toSet()) { selectedModels = it }
+            SummonResourceSelection("执行目录", directories, selectedDirs, access["workspace_ids"].array.orEmpty().mapNotNull { it.string }.toSet()) { selectedDirs = it }
+            Button(enabled = !busy && store.protocolReady, onClick = {
                 run {
                     access = store.request(accessPath, "PATCH", SummonJson.obj("revision" to revision.numOrNull(),
                         "model_ids" to selectedModels.sorted().toJsonStrings(), "workspace_ids" to selectedDirs.sorted().toJsonStrings()))
@@ -176,13 +192,14 @@ fun BotDetailsScreen(store: SummonStore, botID: String, onBack: () -> Unit) {
 }
 
 @Composable
-internal fun SummonResourceSelection(title: String, items: List<SummonJson>, selected: Set<String>, update: (Set<String>) -> Unit) {
+internal fun SummonResourceSelection(title: String, items: List<SummonJson>, selected: Set<String>, retained: Set<String> = selected, update: (Set<String>) -> Unit) {
     Text(title, style = MaterialTheme.typography.labelLarge)
-    items.forEach { item ->
-        val id = item["id"].string ?: return@forEach
+    val visible = items.mapNotNull { item -> item["id"].string?.let { it to (item["name"].string ?: it) } }
+    val hidden = (retained - visible.map { it.first }.toSet()).sorted().map { it to "$it · 现有授权" }
+    (visible + hidden).forEach { (id, name) ->
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Checkbox(checked = id in selected, onCheckedChange = { update(if (it) selected + id else selected - id) })
-            Text(item["name"].string ?: id)
+            Text(name)
         }
     }
 }
@@ -192,6 +209,8 @@ fun RoomDetailsScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     val room = store.room(roomID)
     var editing by remember(roomID) { mutableStateOf<SummonRoom?>(null) }
+    var leave by remember(roomID) { mutableStateOf<SummonRoom?>(null) }
+    var leaving by remember(roomID) { mutableStateOf(false) }
     var botID by remember(roomID) { mutableStateOf<String?>(null) }
     var section by remember(roomID) { mutableStateOf<WorkspaceSection?>(null) }
     var ref by remember(roomID) { mutableStateOf<SummonReference?>(null) }
@@ -244,10 +263,26 @@ fun RoomDetailsScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
             TextButton(onClick = { section = WorkspaceSection.Files }) { Text("群资料") }
             TextButton(onClick = { section = WorkspaceSection.Wakeups }) { Text("订阅与提醒") }
             TextButton(onClick = { section = WorkspaceSection.Executions }) { Text("执行会话和内部对话") }
+            if (room.isGroup && "user" in room.members) {
+                TextButton(enabled = store.protocolReady && room.revision != null && !leaving, onClick = { leave = room }) { Text("退出群聊") }
+            }
         }
         error?.let { SummonError(it) }
     }
     ref?.let { SummonReferenceDialog(store, it) { ref = null } }
+    leave?.let { target ->
+        androidx.compose.material3.AlertDialog(onDismissRequest = { if (!leaving) leave = null }, title = { Text("退出群聊？") },
+            text = { Text(target.name) },
+            confirmButton = { TextButton(enabled = !leaving, onClick = {
+                leaving = true
+                scope.launch {
+                    try { store.leaveRoom(target); leave = null; onBack() }
+                    catch (failure: Exception) { leave = null; error = failure.localizedMessage }
+                    finally { leaving = false }
+                }
+            }) { Text("退出群聊") } },
+            dismissButton = { TextButton(enabled = !leaving, onClick = { leave = null }) { Text("取消") } })
+    }
 }
 
 @Composable

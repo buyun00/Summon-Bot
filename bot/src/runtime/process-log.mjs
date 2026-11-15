@@ -101,36 +101,51 @@ export function createProcessLog(directory, input = {}) {
 
 const captureKey = Symbol.for('summon.process-log.capture');
 /** Explicit process-wide output capture for CLI/service hosts, not embedded Bots. */
-export function installProcessLog(directory, config, { tee = true } = {}) {
-  if (process[captureKey]) throw new Error('Process output already has a log owner');
-  const log = createProcessLog(directory, config), originals = { stdout: process.stdout.write, stderr: process.stderr.write };
+export function installProcessLog(directory, config, { tee = true, onWarning } = {}) {
+  const warn = error => {
+    const message = `Process log unavailable: ${String(error.message || error).replace(/[\r\n]+/g, ' ').slice(0, 400)}`;
+    const stderr = process[captureKey]?.stderr || process.stderr.write;
+    try { stderr.call(process.stderr, message + '\n'); } catch {}
+    onWarning?.(message);
+  };
+  let log;
+  try {
+    if (process[captureKey]) throw new Error('Process output already has a log owner');
+    log = createProcessLog(directory, config);
+  } catch (error) {
+    warn(error);
+    return;
+  }
+  const originals = { stdout: process.stdout.write, stderr: process.stderr.write };
   let closed = false, timer;
   const restore = () => {
     clearInterval(timer); process.removeListener('exit', onExit);
     process.stdout.write = originals.stdout; process.stderr.write = originals.stderr;
     delete process[captureKey];
   };
-  const fatal = error => {
-    restore(); closed = true; try { log.close(); } catch {}
-    const failure = Object.assign(new Error(`Process logging failed: ${error.message}`, { cause: error }), { code: 'PROCESS_LOG_FAILED' });
-    originals.stderr.call(process.stderr, `${failure.stack}\n`);
-    // A caught console/write error must not leave an apparently healthy process
-    // silently running without its configured log. OS ownership dies with it.
-    process.nextTick(() => { throw failure; }); return failure;
+  const degrade = error => {
+    try { handle.close(); } catch {}
+    warn(error);
   };
-  const onExit = () => { try { handle.close(); } catch (error) { originals.stderr.call(process.stderr, `Process log flush failed: ${error.message}\n`); process.exitCode = 1; } };
+  const onExit = () => handle.close();
   const handle = {
     ...log,
-    close() { if (closed) return; closed = true; restore(); log.close(); },
+    close() {
+      if (closed) return;
+      closed = true;
+      restore();
+      try { log.close(); } catch (error) { warn(error); }
+    },
   };
-  process[captureKey] = handle;
+  process[captureKey] = { stderr: originals.stderr };
   for (const channel of ['stdout', 'stderr']) process[channel].write = function (chunk, encoding, callback) {
     if (typeof encoding === 'function') { callback = encoding; encoding = undefined; }
-    try { log.write(chunk, encoding || 'utf8', channel); } catch (error) { throw fatal(error); }
+    try { log.write(chunk, encoding || 'utf8', channel); }
+    catch (error) { degrade(error); return originals[channel].call(this, chunk, encoding, callback); }
     if (tee) return originals[channel].call(this, chunk, encoding, callback);
     if (callback) process.nextTick(callback); return true;
   };
-  timer = setInterval(() => { try { log.maintain(); } catch (error) { fatal(error); } }, log.config.sweepIntervalMs); timer.unref();
+  timer = setInterval(() => { try { log.maintain(); } catch (error) { degrade(error); } }, log.config.sweepIntervalMs); timer.unref();
   process.once('exit', onExit);
   return handle;
 }

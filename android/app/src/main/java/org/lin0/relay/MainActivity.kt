@@ -48,18 +48,13 @@ class SummonViewModel(app: Application) : AndroidViewModel(app) {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        try { SummonBrandingMigration.run(this) }
-        catch (error: Exception) {
-            android.app.AlertDialog.Builder(this)
-                .setTitle("无法迁移本机设置")
-                .setMessage(error.localizedMessage ?: "请重新打开 Summon Bot 后重试。")
-                .setPositiveButton("关闭") { _, _ -> finish() }
-                .setOnCancelListener { finish() }
-                .show()
-            return
-        }
+        val migrationWarning = try { SummonBrandingMigration.run(this); null }
+        catch (error: Exception) { error.localizedMessage ?: "部分本机设置等待迁移。" }
         enableEdgeToEdge()
         setContent { SummonApp() }
+        if (migrationWarning != null) {
+            android.widget.Toast.makeText(this, migrationWarning, android.widget.Toast.LENGTH_LONG).show()
+        }
     }
 }
 

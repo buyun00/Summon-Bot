@@ -231,7 +231,7 @@ data class SummonWorkspaceProfile(val id: String, val name: String)
 
 data class SummonBootstrap(val protocolVersion: Int, val updating: Boolean, val version: String?, val releasesUrl: String?,
     val workspaceProfiles: List<SummonWorkspaceProfile>?) {
-    val ready: Boolean get() = protocolVersion == SummonApiClient.PROTOCOL_VERSION && !updating
+    val ready: Boolean get() = protocolVersion == SummonApiClient.PROTOCOL_VERSION
     val notice: String?
         get() = when {
             updating -> "服务正在更新。草稿和待确认的发送已保留。"

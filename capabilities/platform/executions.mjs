@@ -33,6 +33,13 @@ const roomMember = (members, actor) => members.includes(actor.id);
 const granted = (values, actor, members, roomId) => values?.some(principal => principal.kind === 'room_members'
   ? principal.id === roomId && roomMember(members, actor) : sameIdentity(principal, actor));
 
+function unconfirmedPiSubmission(call) {
+  if (call.status === 'submitted') return !call.result_ref;
+  if (call.status !== 'unknown') return false;
+  return call.result?.code === 'pi_submission_unconfirmed' ||
+    call.result_ref?.id === keyOf('call', call.id, keyOf('submission', call.id, 'unknown'));
+}
+
 export class Executions {
   constructor({ store, platform, calls, resources }) { Object.assign(this, { store, platform, calls, resources }); }
 
@@ -143,8 +150,9 @@ export class Executions {
     if (target.kind === 'session' && base.can_submit) {
       try { this.platform.assertSessionAuthority(current); }
       catch (error) {
-        if (!error.status) throw error;
         base.can_submit = false;
+        base.last_error = error.code === 'session_authority_revoked' ? { code: error.code, message: 'Session authority was revoked' }
+          : { code: 'session_authority_unavailable', message: 'The Session authority could not be verified' };
       }
     }
     const inputTargets = observation.input_targets || current.input_targets || [];
@@ -203,10 +211,54 @@ export class Executions {
   }
 
   bindSubmission(callId, session, context) {
+    if (!session || session.engine === 'pi') {
+      this.calls.bind(callId, { status: 'submitted', pi_writer_pid: process.pid });
+      return;
+    }
     this.store.transaction(() => {
       this.calls.reserveExternal(callId, this.resources);
-      const resource = session?.engine === 'pi' || !session ? null : this.resources.acquire('external', this.platform.resourceSource(context, session), { id: callId });
-      if (resource) this.calls.bind(callId, { lease_id: resource.id });
+      const resource = this.resources.acquire('external', this.platform.resourceSource(context, session), { id: callId });
+      this.calls.bind(callId, { lease_id: resource.id });
+    });
+  }
+
+  pendingPiSubmissions() {
+    return this.store.list(callRecords).flatMap(call => {
+      if (!call.target || !unconfirmedPiSubmission(call) ||
+          (call.tool !== 'open_session' && (call.tool !== 'send_input' || !call.input_id))) return [];
+      const target = this.record(call.target);
+      if (!target) return [];
+      if (call.target.kind === 'session' && target.engine === 'pi' && target.execution_actor?.id) return [{
+        call_id: call.id, writer_pid: call.pi_writer_pid, bot_id: target.execution_actor.id,
+        session_id: target.id, conversation_id: target.conversation_id || target.id,
+      }];
+      if (call.target.kind === 'conversation' && target.bot_id) return [{
+        call_id: call.id, writer_pid: call.pi_writer_pid, bot_id: target.bot_id, conversation_id: target.id,
+      }];
+      return [];
+    });
+  }
+
+  reconcilePiSubmission(submission, outcome, facts) {
+    return this.store.transaction(() => {
+      const call = this.calls.get(submission.call_id);
+      if (!unconfirmedPiSubmission(call)) return true;
+      if (outcome === 'unknown') {
+        if (!call.result_ref) this.calls.bind(call.id, { status: 'unknown',
+          result: { status: 'unknown', code: 'pi_submission_unconfirmed' }, result_ref: { kind: 'call', id: call.id } });
+        return false;
+      }
+      const session = submission.session_id && this.record(call.target);
+      if (outcome === 'not_submitted') {
+        const receipt = { status: outcome, position: keyOf('pi', call.id, outcome), safe_to_disconnect: true };
+        if (session?.latest_call_id === call.id) this.saveFacts(session.id, call.id, receipt);
+        this.calls.recordReceipt(call.id, receipt, call.target);
+      } else {
+        if (call.status === 'unknown') this.calls.bind(call.id, { status: 'submitted', result_ref: null });
+        this.applyResponse(session, call.id, { status: 'submitted', ...facts });
+      }
+      if (call.input_id) this.settleInput(call.input_id, call.id, resultStatus(outcome));
+      return true;
     });
   }
 
@@ -251,9 +303,9 @@ export class Executions {
         this.active(latest, args.control_version);
         if (target.kind === 'session') this.platform.assertCanSubmit(context, latest);
         this.platform.assertRunAllowed(context, { allowUser: true });
-        if (target.kind === 'session' && args.kind === 'next') {
+        if (target.kind === 'session' && args.kind === 'next' && !this.platform.isActiveSession(latest)) {
           this.resources.assertCapacity('sessions', this.platform.activeSessions(target.id));
-          this.store.save(sessionRecords, { id: target.id, status: 'submitted' });
+          this.store.save(sessionRecords, { id: target.id, status: 'submitted', latest_call_id: call.id });
         }
         this.bindSubmission(call.id, target.kind === 'session' ? latest : null, context);
         this.store.save(inputRecords, { id: inputKey, status: 'submitted' });
@@ -427,11 +479,14 @@ export class Executions {
       const call = this.calls.get(callId);
       const known = call.status === 'prepared' || error.beforeSubmit === true;
       const status = known ? 'failed' : 'unknown';
-      if (session && call.result_ref?.kind !== 'event') this.saveFacts(session.id, callId, { status, safe_to_disconnect: known });
+      const current = session && call.target && this.record(call.target);
+      if (current?.latest_call_id === callId && call.result_ref?.kind !== 'event')
+        this.saveFacts(session.id, callId, { status, safe_to_disconnect: known });
       if (known) {
         this.calls.bind(callId, { status: 'prepared' });
         this.calls.fail(callId, error);
-        if (inputId && this.store.get(inputRecords, inputId)?.status === 'prepared') this.settleInput(inputId, callId, 'not_submitted');
+        if (inputId && ['prepared', 'submitted'].includes(this.store.get(inputRecords, inputId)?.status))
+          this.settleInput(inputId, callId, 'not_submitted');
       } else if (call.status === 'submitted') {
         this.calls.recordReceipt(callId, { status: 'unknown', position: keyOf('submission', callId, 'unknown'), output: errorResult(error) }, call.target);
       }

@@ -5,13 +5,14 @@ import { isAbsolute, join } from 'node:path';
 import { workspaceOrigin } from '../../web/backend/origins.mjs';
 import { readJson } from '../build/files.mjs';
 import { bundledNode, launchService, serviceRoot } from './system.mjs';
-import { readRemoteAccess, registerCustomRemote } from './remote-config.mjs';
+import { readRemoteAccess, registerCustomRemote, remoteCandidate, usableRemoteAccess } from './remote-config.mjs';
 import { terminateTree } from '../../bot/src/runtime/process-tools.mjs';
 
 export const tunnelTokenPath = dataRoot => join(serviceRoot(dataRoot, 'cloudflared'), 'tunnel-token');
 export const cloudflareInstall = 'https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/';
 export const tailscaleInstall = 'https://tailscale.com/download';
 const windows = process.platform === 'win32';
+const connectorTimeout = (value, fallback) => Number.isSafeInteger(value) && value > 0 && value <= 300000 ? value : fallback;
 
 export function installedBinary(name) {
   const override = process.env['SUMMON_' + name.toUpperCase() + '_BIN'];
@@ -24,9 +25,10 @@ export function installedBinary(name) {
   return candidates.find(path => path && isAbsolute(path) && existsSync(path));
 }
 
-export function safeEnvironment() {
-  const names = /^(?:path|pathext|systemroot|windir|systemdrive|comspec|temp|tmp|tmpdir|home|userprofile|appdata|localappdata|programfiles|programdata|code[x]_home)$/i;
-  return Object.fromEntries(Object.entries(process.env).filter(([key]) => names.test(key)));
+export function safeEnvironment(extra = []) {
+  const names = /^(?:path|pathext|systemroot|windir|systemdrive|comspec|temp|tmp|tmpdir|home|userprofile|appdata|localappdata|programfiles|programdata|codex_home|https?_proxy|no_proxy|all_proxy|ssl_cert_(?:file|dir)|node_extra_ca_certs)$/i;
+  const selected = new Set(Array.isArray(extra) ? extra.filter(key => typeof key === 'string') : []);
+  return Object.fromEntries(Object.entries(process.env).filter(([key]) => names.test(key) || selected.has(key)));
 }
 
 async function loopbackPort() {
@@ -37,7 +39,7 @@ async function loopbackPort() {
   return port;
 }
 
-async function spawnAuxiliary(file, args, { env, cwd, ipc, url, discoverOrigin }, onExit) {
+async function spawnAuxiliary(file, args, { env, cwd, ipc, url, discoverOrigin, startupTimeoutMs = 45000 }, onExit) {
   const child = spawn(file, args, { env, cwd, windowsHide: true, detached: discoverOrigin && !windows, stdio: ipc ? ['ignore', 'ignore', 'ignore', 'ipc'] : 'ignore' });
   let exited;
   const completion = new Promise(ready => {
@@ -46,7 +48,7 @@ async function spawnAuxiliary(file, args, { env, cwd, ipc, url, discoverOrigin }
   });
   let originTimer;
   const originReady = discoverOrigin && new Promise((ready, reject) => {
-    originTimer = setTimeout(() => reject(new Error('远程桥接脚本尚未返回可用地址。')), 45000);
+    originTimer = setTimeout(() => reject(new Error('远程桥接脚本尚未返回可用地址。')), startupTimeoutMs);
     child.on('message', message => {
       if (message?.type === 'remote-ready') {
         try { ready(workspaceOrigin(message.origin, { httpsOnly: true })); } catch (error) { reject(error); }
@@ -82,16 +84,21 @@ export async function startAuxiliary(config, type, onExit) {
   if (type === 'remote-bridge') {
     const bridge = await readJson(join(cwd, 'config.json'));
     const bridgePath = bridge.builtin === 'quick-tunnel' ? join(config.releaseRoot, 'scripts', 'installation', 'quick-tunnel.mjs') : bridge.bridgePath;
-    const service = await spawnAuxiliary(bundledNode(config.releaseRoot), [bridgePath, ...bridge.arguments], {
-      env: { ...env, SUMMON_WEB_URL: 'http://127.0.0.1:' + config.web.port }, cwd, ipc: true, discoverOrigin: true,
+    const service = await spawnAuxiliary(bundledNode(config.releaseRoot), [bridgePath, ...(bridge.arguments || [])], {
+      env: { ...safeEnvironment(bridge.environment), SUMMON_WEB_URL: 'http://127.0.0.1:' + config.web.port },
+      cwd, ipc: true, discoverOrigin: true, startupTimeoutMs: connectorTimeout(bridge.startupTimeoutMs, 45000),
     }, onExit);
     try {
-      await registerCustomRemote(config, { ...bridge, bridgePath, origin: service.url });
+      const result = await registerCustomRemote(config, { ...bridge, bridgePath, origin: service.url });
+      if (!result.registered) throw new Error(result.error?.message || '远程桥接未能连接当前工作区。');
       return service;
     } catch (error) { await service.close(); throw error; }
   }
-  const entry = (await readRemoteAccess(config.dataRoot)).cloudflare;
-  if (entry?.owner !== 'summon') throw new Error('此 Cloudflare 隧道由外部管理。');
+  const entries = await readRemoteAccess(config.dataRoot);
+  const pending = remoteCandidate(entries);
+  if (entries.cloudflare?.owner !== 'summon' && !(pending?.provider === 'cloudflare' && pending.owner === 'summon')) {
+    throw new Error('此 Cloudflare 隧道由外部管理。');
+  }
   const file = installedBinary('cloudflared');
   if (!file) throw new Error('请在部署机安装 cloudflared。');
   const metrics = '127.0.0.1:' + await loopbackPort();
@@ -99,15 +106,29 @@ export async function startAuxiliary(config, type, onExit) {
     { env, cwd, url: 'http://' + metrics }, onExit);
 }
 
-export async function restoreAuxiliaries(config) {
-  const result = {};
-  const entry = (await readRemoteAccess(config.dataRoot)).cloudflare;
-  if (entry?.owner === 'summon' && !entry.pending) {
-    result.cloudflare = await launchService(config, 'cloudflared', { timeoutMs: 10000 }).then(() => 'running', () => 'unavailable');
-  }
-  const custom = (await readRemoteAccess(config.dataRoot)).custom;
-  if (custom?.owner === 'summon' && custom.bridgePath) {
-    result.custom = await launchService(config, 'remote-bridge', { timeoutMs: 150000 }).then(() => 'running', () => 'unavailable');
-  }
-  return result;
+export async function restoreAuxiliaries(config, report, { isClosing } = {}) {
+  const entries = await usableRemoteAccess(config.dataRoot, message => report('configuration', { state: 'unavailable', message }));
+  const restore = async (type, timeoutMs) => {
+    if (isClosing?.()) return;
+    report(type, { state: 'starting' });
+    try {
+      const service = await launchService(config, type, { timeoutMs, onExit: () => report(type, { state: 'stopped' }) });
+      report(type, { state: service.state, pid: service.pid });
+    } catch (error) {
+      report(type, { state: 'unavailable', code: error.code || error.name });
+    }
+  };
+  const restoreBridge = async () => {
+    try {
+      const bridge = await readJson(join(serviceRoot(config.dataRoot, 'remote-bridge'), 'config.json'));
+      await restore('remote-bridge', connectorTimeout(bridge.startupTimeoutMs, 45000) + 105000);
+    } catch (error) {
+      report('remote-bridge', { state: 'unavailable', code: error.code || error.name });
+    }
+  };
+  await Promise.all([
+    entries.cloudflare?.owner === 'summon' && !entries.cloudflare.pending
+      && restore('cloudflared', connectorTimeout(config.remoteAccess?.cloudflare?.startupTimeoutMs, 10000)),
+    entries.custom?.owner === 'summon' && entries.custom.bridgePath && !entries.custom.pending && restoreBridge(),
+  ]);
 }

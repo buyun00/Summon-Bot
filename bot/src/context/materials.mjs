@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { now, recordKey, refKey, sameRef, runtimeRecords as R } from '../storage/runtime-records.mjs';
+import { now, recordKey, refKey, sameRef, runtimeFailure, runtimeRecords as R } from '../storage/runtime-records.mjs';
 import { textMessage } from './projection.mjs';
 
 const scopeKinds = new Set(['bot', 'room', 'conversation', 'session']);
@@ -12,15 +12,6 @@ function parseIndex(file) {
   try {
     const index = JSON.parse(file.content);
     return Array.isArray(index?.items) ? index : null;
-  } catch { return null; }
-}
-
-function resultObject(value) {
-  let text = typeof value === 'string' ? value.trim() : '';
-  if (text.startsWith('```json\n') && text.endsWith('\n```')) text = text.slice(8, -4);
-  try {
-    const result = JSON.parse(text);
-    return result && typeof result === 'object' && !Array.isArray(result) ? result : null;
   } catch { return null; }
 }
 
@@ -40,7 +31,15 @@ export class MaterialRuntime {
   read(ref, context) {
     if (!isRef(ref, 'file')) return null;
     try { return this.runtime.platform.files.read(ref.id, context); }
-    catch (error) { if ([403, 404].includes(error.status)) return null; throw error; }
+    catch (error) {
+      if (![403, 404].includes(error.status)) this.runtime.emit('engine.material_unavailable', { ref });
+      return null;
+    }
+  }
+
+  readable(ref, context) {
+    try { return this.runtime.platform.canReadReference(ref, context); }
+    catch { return false; }
   }
 
   snapshot(inbox, root, context, scope) {
@@ -63,7 +62,7 @@ export class MaterialRuntime {
         if (!applies.length || scope && !scope.some(ref => applies.some(own => sameRef(own, ref)))) continue;
         const material = this.read(row.material_ref, context);
         const materialRef = isRef(row.material_ref, 'file') ? row.material_ref : null;
-        const sourceRefs = refs(row.source_refs).filter(ref => this.runtime.platform.canReadReference(ref, context));
+        const sourceRefs = refs(row.source_refs).filter(ref => this.readable(ref, context));
         const targetRef = isRef(row.target_ref, 'file') ? row.target_ref : null;
         const skillFile = this.read(row.skill?.ref, context);
         const skill = skillFile && typeof row.skill.name === 'string' && typeof row.skill.description === 'string' ?
@@ -83,7 +82,7 @@ export class MaterialRuntime {
         if (!prior) inbox.store.putRecord(R.selection, { id: selection.id, signature });
         const materialRevision = material?.revision ?? (materialRef ? null : row.revision);
         const key = recordKey(file.id, row.id, row.revision, materialRef?.id ?? null, materialRevision, itemScope(selection, inbox.botId).map(refKey), targetRef?.id ?? null);
-        const content = materialRef ? material?.content : note;
+        const content = materialRef ? material?.content : selection.note;
         entries.push({ ...selection, note, author: file.author, index_revision: file.revision, source_refs: sourceRefs,
           material_revision: materialRevision, material_author: material?.author, content, material_truncated: Boolean(material?.next_cursor), skill, key });
       }
@@ -100,11 +99,11 @@ export class MaterialRuntime {
       const batch = inbox.store.getRecord(R.batch, run.material_batch_id);
       const snapshot = sameRef(bot.material_index_ref, batch.root) ? this.snapshot(inbox, batch.root, context).entries : [];
       const latest = new Map(snapshot.map(item => [item.key, item]));
-      const items = batch.items.map(item => latest.get(item.key)).filter(Boolean);
+      const items = batch.items.filter(item => !inbox.store.getRecord(R.consumption, item.key)).map(item => latest.get(item.key)).filter(Boolean);
       return { fact: textMessage({ type: 'selected_materials', batch_id: batch.id, target: batch.target,
         items: items.map(({ item_id, index_ref, material_ref, material_revision, note, content, source_refs }) =>
           ({ item_id, index_ref, material_ref, material_revision, note, content, source_refs })),
-        instructions: 'Read the target and consolidate the selected material if useful. Return a JSON object. For items that needed no change, include {"no_change":{"item_ids":["actual IDs"],"observed_target_revision":1}}. For items incorporated by saving the target, include {"processed_item_ids":["actual IDs"],"call_id":"the save_file call ID","target_revision":2}. Both sets can be present. Include only the supplied items you actually handled. Tool calls use their ordinary parameters.',
+        instructions: 'Read the target and consolidate the selected material. When you save the target, list the item IDs you incorporated in save_file.material_items. To record that specific items need no edits, call save_file for the target with material_items, the revision you read, and content_or_source set to {"no_change":true}. Your final reply can be ordinary text.',
       }, Date.parse(batch.created_at)) };
     }
     const root = conversation.session_id ? conversation.binding.material_index_ref : bot.material_index_ref;
@@ -128,7 +127,8 @@ export class MaterialRuntime {
     const pending = [], unchanged = [];
     for (const item of snapshot.entries) {
       const state = { key: item.id, material_revision: item.material_revision, selection_revision: item.selection_revision,
-        skill_revision: item.skill?.revision, issue: item.issue || (item.material_revision === null ? 'material_unavailable' : null) };
+        skill_revision: item.skill?.revision, issue: item.issue || (item.material_revision === null ? 'material_unavailable' :
+          item.material_truncated ? 'material_incomplete' : null) };
       const before = previous.get(state.key);
       const revised = !before || before.material_revision !== state.material_revision || before.skill_revision !== state.skill_revision || before.issue !== state.issue;
       let priorRevision;
@@ -190,10 +190,11 @@ export class MaterialRuntime {
       const prior = inbox.store.listRecords(R.batch).find(batch => ['partial', 'interrupted'].includes(batch.state) && batch.target.id === target.id &&
         batch.target.revision === target.revision && batch.items.some(item => item.key === seed.key) && Date.parse(batch.retry_at) > Date.now());
       if (prior) continue;
-      let budget = 22000;
+      // Batch smaller items together and give a single larger item its own turn.
+      let budget = Math.max(22000, seed.content.length + 300);
       const items = [];
-      for (const item of selected.filter(item => sameRef(item.target_ref, seed.target_ref) &&
-        JSON.stringify(item.applies_to) === JSON.stringify(seed.applies_to))) {
+      for (const item of [seed, ...selected.filter(item => item !== seed && sameRef(item.target_ref, seed.target_ref) &&
+        JSON.stringify(item.applies_to) === JSON.stringify(seed.applies_to))]) {
         if (item.content.length + 300 > budget || items.length >= 12 || items.some(value => value.item_id === item.item_id)) continue;
         budget -= item.content.length + 300;
         items.push(item);
@@ -215,9 +216,11 @@ export class MaterialRuntime {
   recovered(job) {
     const run = job.inbox.run(job.runId);
     if (!run.material_batch_id) return null;
+    this.finish(job, false);
     const batch = job.inbox.store.getRecord(R.batch, run.material_batch_id);
-    if (batch.result) return { text: batch.result, eventIds: [] };
     const last = job.inbox.transcript(run.id).at(-1);
+    if (batch.state === 'committed') return { text: contentOf(last), model: last?.model, response_id: last?.responseId, eventIds: [] };
+    if (batch.result) return { text: batch.result, eventIds: [] };
     if (last?.role === 'assistant' && last.stopReason === 'stop' && typeof contentOf(last) === 'string')
       return { text: contentOf(last), model: last.model, response_id: last.responseId, eventIds: [] };
     return null;
@@ -227,51 +230,71 @@ export class MaterialRuntime {
     const { inbox, runId } = job;
     const batchId = inbox.run(runId).material_batch_id;
     if (!batchId) return;
+    this.finish(job, false);
     const batch = inbox.store.getRecord(R.batch, batchId);
     if (batch.state === 'prepared') inbox.store.putRecord(R.batch, { ...batch, state: 'interrupted', retry_at: new Date(Date.now() + 300000).toISOString() });
   }
 
-  async finish(job, result) {
+  prepareSave(args, context) {
+    const noChange = args.content_or_source?.no_change === true;
+    const job = context.origin && this.runtime.active.get(context.origin.conversation_id);
+    const run = job && job.runId === context.origin.run_id ? job.inbox.run(job.runId) : null;
+    const batch = run?.material_batch_id && job.inbox.store.getRecord(R.batch, run.material_batch_id);
+    const explicit = noChange || args.material_items !== undefined;
+    if (!batch || !sameRef(args.space, batch.target.space) || args.path !== batch.target.path) {
+      if (explicit) throw runtimeFailure('material_target_unavailable', 'The requested File is outside this material selection', 409);
+      return null;
+    }
+    const selected = new Set(args.material_items ?? []);
+    if (!explicit && batch.items.length === 1) selected.add(batch.items[0].item_id);
+    if (!selected.size) {
+      if (explicit) throw runtimeFailure('material_items_required', 'Identify the selected material items handled by this operation', 400);
+      return null;
+    }
+    const bot = this.runtime.platform.getBot(job.inbox.botId);
+    const current = sameRef(bot.material_index_ref, batch.root) ? this.snapshot(job.inbox, batch.root, context).entries : [];
+    const currentKeys = new Set(current.filter(item => item.selected && !item.issue && !item.material_truncated && typeof item.content === 'string').map(item => item.key));
+    const items = batch.items.filter(item => selected.has(item.item_id) && currentKeys.has(item.key));
+    if (items.length !== selected.size && explicit)
+      throw runtimeFailure('material_selection_changed', 'One or more selected material items are no longer available', 409);
+    return items.length ? { batch_id: batch.id, target: batch.target, item_keys: items.map(item => item.key), no_change: noChange } : null;
+  }
+
+  finish(job, final = true) {
     const { inbox, runId } = job;
     const run = inbox.run(runId);
     if (!run.material_batch_id) return;
-    let batch = inbox.store.getRecord(R.batch, run.material_batch_id);
+    const batch = inbox.store.getRecord(R.batch, run.material_batch_id);
     if (['committed', 'partial'].includes(batch.state)) return;
-    if (batch.state !== 'result_saved') batch = inbox.store.putRecord(R.batch, { ...batch, state: 'result_saved', result: result.text });
-    const payload = resultObject(batch.result);
-    const ids = value => new Set(Array.isArray(value) ? value.filter(id => typeof id === 'string') : []);
-    const processed = ids(payload?.processed_item_ids), unchanged = ids(payload?.no_change?.item_ids);
-    const context = this.runtime.platform.context(job.context());
-    const target = this.read(batch.target.ref, context);
-    const bot = this.runtime.platform.getBot(inbox.botId);
-    const current = sameRef(bot.material_index_ref, batch.root) ? this.snapshot(inbox, batch.root, context).entries : [];
-    const pendingWrite = inbox.calls(runId).some(call => call.tool === 'save_file' && call.args?.path === batch.target.path &&
-      sameRef(call.args?.space, batch.target.space) && ['prepared', 'submitting', 'unknown', 'submitted'].includes(call.state));
-    const call = typeof payload?.call_id === 'string' ? inbox.store.getRecord(R.call, payload.call_id) : null;
-    let applied;
-    if (processed.size && call?.run_id === runId && call.tool === 'save_file') applied = await this.runtime.readFor(job, { kind: 'call', id: call.id });
-    if (call?.state === 'unknown' && !applied) throw Object.assign(new Error('The original material write result is not yet available'), { code: 'call_result_unknown', status: 503 });
-    const revision = payload?.target_revision;
-    const savedRevision = positiveRevision(revision) && this.runtime.platform.store.get('platform-file-revisions', recordKey(batch.target.id, revision));
-    const written = applied?.status === 'completed' && applied.result?.id === batch.target.id &&
-      applied.result?.revision === revision && target && savedRevision?.call_id === call?.id;
-    const noChange = target?.revision === payload?.no_change?.observed_target_revision &&
-      (target?.revision === batch.target.revision || written && target.revision === revision) && !pendingWrite;
-    job.check();
+    const platform = this.runtime.platform.store;
+    const actions = new Map();
+    for (const local of inbox.calls(runId)) {
+      if (local.tool !== 'save_file') continue;
+      const call = platform.get('platform-calls', local.id);
+      if (call?.status !== 'completed' || call.origin?.run_id !== runId || call.result?.id !== batch.target.id ||
+          call.material?.batch_id !== batch.id || !positiveRevision(call.result.revision)) continue;
+      const revision = call.result.revision;
+      const { outcome, item_keys } = call.material;
+      if (outcome === 'written') {
+        if (platform.get('platform-file-revisions', recordKey(batch.target.id, revision))?.call_id !== call.id) continue;
+      } else if (outcome !== 'no_change' || call.result.status !== 'no_change') continue;
+      for (const key of item_keys) actions.set(key, { outcome, revision, call_id: call.id });
+    }
     inbox.store.transaction(() => {
       const consumed = [];
       for (const item of batch.items) {
-        if (!current.some(entry => entry.key === item.key)) continue;
-        const outcome = written && processed.has(item.item_id) ? 'written' : noChange && unchanged.has(item.item_id) ? 'no_change' : null;
-        if (!outcome) continue;
+        if (inbox.store.getRecord(R.consumption, item.key)) { consumed.push(item.key); continue; }
+        const action = actions.get(item.key);
+        if (!action) continue;
         const value = { id: item.key, bot_id: inbox.botId, item_id: item.item_id, index_ref: item.index_ref, target_ref: batch.target.ref,
-          target_revision: outcome === 'written' ? revision : target.revision, scope: itemScope(item, inbox.botId), selection_revision: item.selection_revision,
-          material_revision: item.material_revision, material_ref: item.material_ref, outcome, call_id: outcome === 'written' ? call.id : null,
+          target_revision: action.revision, scope: itemScope(item, inbox.botId), selection_revision: item.selection_revision,
+          material_revision: item.material_revision, material_ref: item.material_ref, outcome: action.outcome, call_id: action.call_id,
           batch_id: batch.id, run_id: runId, consumed_at: now() };
         inbox.store.putRecord(R.consumption, value);
         consumed.push(item.key);
       }
       const complete = consumed.length === batch.items.length;
+      if (!complete && !final) return;
       inbox.store.putRecord(R.batch, { ...batch, state: complete ? 'committed' : 'partial', consumed,
         finished_at: now(), retry_at: complete ? null : new Date(Date.now() + 300000).toISOString() });
     });
@@ -288,7 +311,7 @@ export class MaterialRuntime {
       if (!inbox) continue;
       const candidates = id ? [inbox.store.getRecord(R.consumption, id)].filter(Boolean) : inbox.store.listRecords(R.consumption);
       results.push(...candidates.filter(item => (!scope || item.scope?.some(ref => sameRef(ref, scope)) || sameRef(scope, item.target_ref)) &&
-        [item.index_ref, item.target_ref, item.material_ref].filter(Boolean).every(ref => this.runtime.platform.canReadReference(ref, context)))
+        [item.index_ref, item.target_ref, item.material_ref].filter(Boolean).every(ref => this.readable(ref, context)))
         .map(record => ({ ...record, kind: 'material_consumption' })));
     }
     return results;

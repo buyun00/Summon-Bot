@@ -31,36 +31,22 @@ function Invoke-SummonStart($installation) {
     if ($RespectIntent) { $summonArgs += '--respect-intent' }
     & $summonNode @summonArgs
 }
-if ($RespectIntent -and $Foreground) {
-    $summonLogRoot = Join-Path $DataRoot 'web\logs'
-    New-Item -ItemType Directory -Path $summonLogRoot -Force | Out-Null
-    # Keep the task's PowerShell host alive if its Node watchdog is killed.
-    # Windows' failure retry did not fire for this on-demand task in production.
-    while ($true) {
-        $installation = Read-SummonInstallation
-        if ($installation.Blocked) { exit 0 }
-        $summonIntent = Get-Content -LiteralPath (Join-Path $DataRoot 'config\deployment.json') -Raw | ConvertFrom-Json
-        if ($summonIntent.runIntent -eq 'stopped') { exit 0 }
-        $summonExit = 1
-        try {
-            Invoke-SummonStart $installation *>> (Join-Path $summonLogRoot 'startup.log')
-            $summonExit = $LASTEXITCODE
-        } catch {
-            Add-Content -LiteralPath (Join-Path $summonLogRoot 'startup.log') -Value ('{0} launcher child failed: {1}' -f [DateTime]::UtcNow.ToString('o'), $_.Exception.Message)
-        }
-        if ((Read-SummonInstallation).Blocked) { exit 0 }
-        $summonIntent = Get-Content -LiteralPath (Join-Path $DataRoot 'config\deployment.json') -Raw | ConvertFrom-Json
-        if ($summonIntent.runIntent -eq 'stopped') { exit 0 }
-        Add-Content -LiteralPath (Join-Path $summonLogRoot 'startup.log') -Value ('{0} launcher watchdog exited ({1}); restarting in 60 seconds' -f [DateTime]::UtcNow.ToString('o'), $summonExit)
-        Start-Sleep -Seconds 60
-    }
-} else {
-    $installation = Read-SummonInstallation
-    if ($installation.Blocked) { throw "Summon Bot installation is ${installation.Phase}. Continue it before starting the service." }
-    Invoke-SummonStart $installation
+$installation = Read-SummonInstallation
+if ($installation.Blocked) {
+    if ($RespectIntent -and $Foreground) { exit 0 }
+    throw "Summon Bot installation is $($installation.Phase). Continue it before starting the service."
 }
+Invoke-SummonStart $installation
 if ($LASTEXITCODE -ne 0) { throw "Summon Bot failed to start ($LASTEXITCODE). Check managed service logs." }
 if (!$Foreground) {
-    $summonTask = Get-ScheduledTask -TaskName 'Summon Bot' -ErrorAction SilentlyContinue
-    if ($summonTask -and $summonTask.State -ne 'Running') { Start-ScheduledTask -InputObject $summonTask }
+    if ($RespectIntent) {
+        $summonIntent = Get-Content -LiteralPath (Join-Path $DataRoot 'config\deployment.json') -Raw | ConvertFrom-Json
+        if ($summonIntent.runIntent -eq 'stopped') { return }
+    }
+    try {
+        $summonTask = Get-ScheduledTask -TaskName 'Summon Bot' -TaskPath '\' -ErrorAction SilentlyContinue
+        if ($summonTask -and $summonTask.State -ne 'Running') { Start-ScheduledTask -InputObject $summonTask }
+    } catch {
+        Write-Warning ('Summon Bot started, but the scheduled watchdog could not start: ' + $_.Exception.Message)
+    }
 }

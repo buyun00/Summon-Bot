@@ -31,13 +31,15 @@ export class UsageLedger {
   constructor(path) {
     mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
-    this.db.exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;
+    try {
+      this.db.exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL;
       CREATE TABLE IF NOT EXISTS model_usage(id TEXT NOT NULL,bot_id TEXT NOT NULL,started_at TEXT NOT NULL,purpose TEXT NOT NULL,model TEXT NOT NULL,status TEXT NOT NULL,room_id TEXT,data TEXT NOT NULL,PRIMARY KEY(bot_id,id));
       CREATE INDEX IF NOT EXISTS model_usage_started ON model_usage(started_at);
       CREATE INDEX IF NOT EXISTS model_usage_room ON model_usage(room_id,started_at);
       CREATE TABLE IF NOT EXISTS usage_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS provider_usage(id TEXT PRIMARY KEY,day TEXT NOT NULL,data TEXT NOT NULL);`);
-    this.db.prepare("INSERT OR IGNORE INTO usage_meta VALUES('collectionStartedAt',?)").run(new Date().toISOString());
+      this.db.prepare("INSERT OR IGNORE INTO usage_meta VALUES('collectionStartedAt',?)").run(new Date().toISOString());
+    } catch (error) { this.db.close(); throw error; }
   }
   save(record) {
     this.db.prepare(`INSERT INTO model_usage(id,bot_id,started_at,purpose,model,status,room_id,data) VALUES(?,?,?,?,?,?,?,?)

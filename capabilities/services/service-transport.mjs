@@ -5,7 +5,8 @@ const isRecord = value => value !== null && typeof value === 'object' && !Array.
 
 function environmentValue(name) {
   if (typeof name !== 'string' || !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) throw new TypeError('Invalid environment reference');
-  if (process.env[name] === undefined) throw new Error(`Required environment variable ${name} is not configured`);
+  if (process.env[name] === undefined) throw Object.assign(new Error(`Credential reference ${name} is not configured`),
+    { code: 'connection_credential_missing', status: 409 });
   return process.env[name];
 }
 
@@ -16,23 +17,22 @@ function credentials(definition, secrets) {
     const authorization = value.match(/^(?:Bearer|Basic)\s+(.+)$/i);
     if (authorization) secrets.add(authorization[1]);
   };
-  for (const key of ['headers', 'headersEnv', 'env']) if (definition[key] !== undefined && !isRecord(definition[key])) throw new TypeError(`${key} must be an object`);
   const headers = new Headers();
-  for (const [key, value] of Object.entries(definition.headers || {})) {
-    if (typeof value !== 'string') throw new TypeError('Configured HTTP header values must be strings');
-    headers.set(key, value); remember(value);
-  }
-  for (const [key, reference] of Object.entries(definition.headersEnv || {})) {
-    const value = environmentValue(reference);
-    headers.set(key, value); remember(value);
+  const stdio = definition.type === 'mcp' && definition.transport === 'stdio';
+  if (!stdio) {
+    for (const [key, value] of Object.entries(definition.headers || {})) headers.set(key, value);
+    for (const [key, reference] of Object.entries(definition.headersEnv || {})) {
+      const value = environmentValue(reference);
+      headers.set(key, value); remember(value);
+    }
   }
   const environment = {};
-  for (const [key, configured] of Object.entries(definition.env || {})) {
-    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key)) throw new TypeError('Invalid configured environment name');
-    const value = isRecord(configured) ? environmentValue(configured.env) : configured;
-    if (typeof value !== 'string') throw new TypeError('Configured environment values must be strings or {env: name} references');
-    environment[key] = value;
-    if (value && (isRecord(configured) || /token|secret|password|api.?key|credential/i.test(key))) remember(value);
+  if (stdio) {
+    for (const [key, configured] of Object.entries(definition.env || {})) {
+      const value = environmentValue(configured.env);
+      environment[key] = value;
+      remember(value);
+    }
   }
   return { headers: Object.fromEntries(headers), environment };
 }
@@ -74,7 +74,7 @@ function toolResult(value, redact, type) {
   return { content: [{ type: 'text', text: typeof cleaned === 'string' ? cleaned : JSON.stringify(cleaned ?? null) }], details: cleaned };
 }
 
-const fieldPath = /^[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*$/;
+export const fieldPath = /^[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*$/;
 function inputField(input, path) {
   return path.split('.').reduce((value, part) => value !== null && typeof value === 'object' && Object.hasOwn(value, part) ? value[part] : undefined, input);
 }
@@ -94,13 +94,13 @@ function unknownOutcome(error) {
     { name: error?.name || 'Error', outcomeUnknown: true, code: 'REMOTE_OUTCOME_UNKNOWN', ...(error?.status === undefined ? {} : { status: error.status }) });
 }
 
-function httpTool(definition, headers) {
+export function httpTool(definition, headers = {}) {
   const baseUrl = new URL(definition.url);
   if (!['http:', 'https:'].includes(baseUrl.protocol) || baseUrl.username || baseUrl.password) throw new TypeError('HTTP tools require an HTTP(S) URL without embedded credentials');
   const method = String(definition.method || 'POST').toUpperCase();
   if (!['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].includes(method)) throw new TypeError('Unsupported HTTP method');
   if (definition.bodyMode !== undefined && !['arguments', 'raw', 'none'].includes(definition.bodyMode)) throw new TypeError('HTTP bodyMode must be arguments, raw or none');
-  const request = definition.request || {};
+  const request = definition.request ?? {};
   if (!isRecord(request) || Object.keys(request).some(key => !['path', 'query', 'body'].includes(key))) throw new TypeError('HTTP request accepts path, query and body mappings');
   const pathMapping = request.path === undefined ? {} : fieldMap(request.path, 'HTTP request.path');
   const queryMapping = request.query === undefined ? null : fieldMap(request.query, 'HTTP request.query');
@@ -110,7 +110,8 @@ function httpTool(definition, headers) {
   const placeholders = [...baseUrl.pathname.matchAll(/(?:\{|%7B)([a-zA-Z0-9_-]+)(?:\}|%7D)/gi)].map(match => match[1]);
   if (/(?:\{|\}|%7[BD])/i.test(baseUrl.origin + baseUrl.search + baseUrl.hash)) throw new TypeError('HTTP URL placeholders are only allowed in the pathname');
   if (Object.keys(pathMapping).some(name => !placeholders.includes(name))) throw new TypeError('HTTP request.path contains a name absent from the URL pathname');
-  const pathFields = new Set(placeholders.map(name => (pathMapping[name] || name).split('.')[0]));
+  const fieldFor = name => Object.hasOwn(pathMapping, name) ? pathMapping[name] : name;
+  const pathFields = new Set(placeholders.map(name => fieldFor(name).split('.')[0]));
   const effect = definition.effect || (['GET', 'HEAD', 'OPTIONS'].includes(method) ? 'read' : 'external');
   return { ...definition, effect,
     async execute(args, context) {
@@ -123,7 +124,7 @@ function httpTool(definition, headers) {
         return value;
       };
       url.pathname = baseUrl.pathname.replace(/(?:\{|%7B)([a-zA-Z0-9_-]+)(?:\}|%7D)/gi, (_match, name) => {
-        const path = pathMapping[name] || name;
+        const path = fieldFor(name);
         const value = read(path);
         if (!['string', 'number', 'boolean'].includes(typeof value) || value === '' || value === '.' || value === '..') throw new TypeError(`Missing or invalid HTTP path parameter: ${name}`);
         sentFields?.add(path);
@@ -147,11 +148,16 @@ function httpTool(definition, headers) {
           for (const [name, value] of Object.entries(args)) if (value !== undefined && value !== null) sentFields.add(name);
         }
       }
-      context.signal?.throwIfAborted();
+      const outbound = new Request(url, {
+        method, headers: requestHeaders, redirect: 'error', signal: context.signal, ...(body === undefined ? {} : { body }),
+      });
       context.onRequestFields?.(sentFields, args);
+      context.signal?.throwIfAborted();
+      await context.beforeSubmit?.();
+      context.signal?.throwIfAborted();
       let response, text;
       try {
-        response = await fetch(url, { method, headers: requestHeaders, redirect: 'error', signal: context.signal, ...(body === undefined ? {} : { body }) });
+        response = await fetch(outbound);
         text = await response.text();
       } catch (error) {
         // fetch/body-read failure gives no durable result for a mutation. Never
@@ -224,12 +230,16 @@ export async function loadServiceMethods(definitions = [], { botId, workspace, s
       signal?.throwIfAborted();
       if (!Array.isArray(loaded?.tools)) throw new TypeError('Capability factory must return tools');
       for (const tool of loaded.tools) {
+        if (definition.type === 'mcp' && tool.unavailable) {
+          tools.push({ name: tool.name, unavailable: redact(tool.unavailable) });
+          continue;
+        }
         const effect = tool.effect || 'external';
         if (typeof tool?.name !== 'string' || !tool.name || typeof tool.description !== 'string' || tool.inputSchema?.type !== 'object' ||
             typeof tool.execute !== 'function' || !effects.has(effect)) throw new TypeError('Invalid configured tool definition');
         if (names.has(tool.name)) throw new Error(`Configured tool name collision: ${tool.name}`);
         names.add(tool.name);
-        tools.push({ name: tool.name, description: redact(tool.description), inputSchema: sanitizeValue(tool.inputSchema, redact), effect,
+        tools.push({ name: tool.name, description: redact(tool.description), inputSchema: tool.inputSchema, effect,
           ...(definition.type === 'mcp' && tool.requiresTasks ? { requiresTasks: true } : {}),
           async execute(args, context = {}) {
             const executionSignal = signals(context.signal, AbortSignal.timeout(timeout));

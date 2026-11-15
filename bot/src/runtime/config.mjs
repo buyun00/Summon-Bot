@@ -21,17 +21,28 @@ export function createRedactor(config) {
   if (model.apiKeyEnv && process.env[model.apiKeyEnv]) secrets.add(process.env[model.apiKeyEnv]);
   const files = model.connectionStore ? ['deployment.json', 'model-credentials.json'].map(name => resolve(dirname(model.connectionStore), name)) : [];
   function refresh() {
+    let readable = true;
     for (const path of files) {
-      try { visit(JSON.parse(readFileSync(path, 'utf8'))); }
-      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      try {
+        const source = JSON.parse(readFileSync(path, 'utf8'));
+        if (source && typeof source === 'object' && !Array.isArray(source)) visit(source);
+        else readable = false;
+      } catch (error) { if (error.code !== 'ENOENT') readable = false; }
     }
+    return readable;
   }
-  refresh();
-  return value => {
+  function redact(value) {
     if (value === undefined) return undefined;
-    refresh();
     let text = JSON.stringify(value);
-    for (const secret of secrets) text = text.split(secret).join('[redacted]');
+    for (const secret of secrets) text = text.split(JSON.stringify(secret).slice(1, -1)).join('[redacted]');
     return JSON.parse(text.replace(/\bsk-[a-zA-Z0-9_-]{12,}\b/g, '[redacted]'));
+  }
+  const clean = value => { refresh(); return redact(value); };
+  clean.error = (value, message = 'The Summon host could not complete this operation') => {
+    if (refresh()) return redact(value);
+    if (typeof value === 'string') return message;
+    const { status, code } = value;
+    return redact({ status, code, message });
   };
+  return clean;
 }

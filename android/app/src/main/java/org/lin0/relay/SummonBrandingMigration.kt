@@ -8,8 +8,15 @@ import java.io.IOException
 
 object SummonBrandingMigration {
     fun run(context: Context) {
-        movePreferences(context, "RelayNative.connection.v1", "SummonNative.connection.v1")
-        movePreferences(context, "RelayNative.display", "SummonNative.display")
+        val connection = runCatching { movePreferences(context, "RelayNative.connection.v1", "SummonNative.connection.v1") }
+        val display = runCatching { movePreferences(context, "RelayNative.display", "SummonNative.display") }
+        val credentials = runCatching { moveCredentials(context) }
+        connection.getOrThrow()
+        credentials.getOrThrow()
+        display.getOrThrow()
+    }
+
+    private fun moveCredentials(context: Context) {
         val previousName = "relay_connection_tokens"
         if (!File(context.applicationInfo.dataDir, "shared_prefs/$previousName.xml").exists()) return
         val masterKey = MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
@@ -21,10 +28,13 @@ object SummonBrandingMigration {
         val previous = encrypted(previousName)
         val current = encrypted("summon_connection_tokens")
         val editor = current.edit()
+        var unresolved = false
         for ((key, value) in previous.all) {
-            if (!current.contains(key) && value is String) editor.putString(key, value)
+            if (current.contains(key)) continue
+            if (value is String) editor.putString(key, value) else unresolved = true
         }
         if (!editor.commit()) throw IOException("无法保存迁移后的连接凭据")
+        if (unresolved) throw IOException("部分旧连接凭据等待迁移")
         if (!context.deleteSharedPreferences(previousName)) throw IOException("无法移除已迁移的连接凭据")
     }
 
@@ -33,6 +43,7 @@ object SummonBrandingMigration {
         if (previous.all.isEmpty()) return
         val current = context.getSharedPreferences(currentName, Context.MODE_PRIVATE)
         val editor = current.edit()
+        var unresolved = false
         for ((oldKey, value) in previous.all) {
             val key = oldKey.replace("RelayNative", "SummonNative")
             if (current.contains(key)) continue
@@ -42,10 +53,15 @@ object SummonBrandingMigration {
                 is Long -> editor.putLong(key, value)
                 is Float -> editor.putFloat(key, value)
                 is Boolean -> editor.putBoolean(key, value)
-                else -> throw IOException("无法迁移本机设置项")
+                is Set<*> -> {
+                    val strings = value.filterIsInstance<String>()
+                    if (strings.size == value.size) editor.putStringSet(key, strings.toSet()) else unresolved = true
+                }
+                else -> unresolved = true
             }
         }
         if (!editor.commit()) throw IOException("无法保存迁移后的本机设置")
+        if (unresolved) throw IOException("部分旧设置项等待迁移")
         if (!context.deleteSharedPreferences(previousName)) throw IOException("无法移除已迁移的本机设置")
     }
 }

@@ -34,9 +34,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import java.net.URLEncoder
 import java.text.NumberFormat
 import java.util.Locale
 import java.time.Instant
@@ -56,34 +53,33 @@ fun TokenUsageScreen(store: SummonStore, onBack: () -> Unit) {
     var dimension by remember { mutableStateOf("bots") }
     var sort by remember { mutableStateOf("totalTokens") }
     var sortMenu by remember { mutableStateOf(false) }
-    var selectedKind by remember { mutableStateOf<String?>(null) }
-    var selectedID by remember { mutableStateOf("") }
-    var selectedName by remember { mutableStateOf("") }
-    var offset by remember { mutableIntStateOf(0) }
+    val workspace = store.settings.baseURL to store.settings.workspaceID
+    var selectedKind by remember(workspace) { mutableStateOf<String?>(null) }
+    var selectedID by remember(workspace) { mutableStateOf("") }
+    var selectedName by remember(workspace) { mutableStateOf("") }
+    var offset by remember(workspace) { mutableIntStateOf(0) }
     var revision by remember { mutableIntStateOf(0) }
-    var overview by remember { mutableStateOf<SummonJson>(SummonJson.Null) }
-    var detail by remember { mutableStateOf<SummonJson>(SummonJson.Null) }
+    var overview by remember(workspace) { mutableStateOf<SummonJson>(SummonJson.Null) }
+    var detail by remember(workspace) { mutableStateOf<SummonJson>(SummonJson.Null) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(period, selectedKind, selectedID, offset, revision, store.settings.baseURL) {
+    LaunchedEffect(period, selectedKind, selectedID, offset, revision, workspace, store.protocolReady) {
+        if (!store.protocolReady) return@LaunchedEffect
         loading = true; error = null; detail = SummonJson.Null
         try {
-            val result = withContext(Dispatchers.IO) {
-                val client = SummonApiClient(SummonApiClient.normalized(store.settings.baseURL), store.savedToken)
-                val all = client.requestJson("/api/usage?period=$period&limit=25")
-                val filter = selectedKind?.let { "&${if (it == "bot") "botId" else "roomId"}=${URLEncoder.encode(selectedID, "UTF-8")}" }.orEmpty()
-                val current = if (selectedKind == null && offset == 0) all else client.requestJson("/api/usage?period=$period&limit=25&offset=$offset$filter")
-                all to current
-            }
-            overview = result.first; detail = result.second
+            val endpoint = "/api/usage?period=$period&limit=25"
+            val all = store.request(endpoint)
+            val key = if (selectedKind == "bot") "botId" else "roomId"
+            val filter = if (selectedKind != null) "&$key=${SummonApiClient.component(selectedID)}" else ""
+            overview = all
+            detail = if (selectedKind == null && offset == 0) all else store.request("$endpoint&offset=$offset$filter")
         } catch (failure: Exception) {
             if (failure is CancellationException) throw failure
             error = failure.message ?: "暂时无法读取统计。"
         } finally { loading = false }
     }
-    val ranking = (if (dimension == "bots") overview["bots"].array.orEmpty() else overview["rooms"].array.orEmpty().filter {
-        if (dimension == "dm") it["kind"].stringValue == "dm" else it["kind"].stringValue !in listOf("dm", "unassigned")
-    }).sortedByDescending { (it[sort] as? SummonJson.Num)?.value ?: 0.0 }
+    val ranking = overview[if (dimension == "bots") "bots" else "rooms"].array.orEmpty()
+        .sortedByDescending { (it[sort] as? SummonJson.Num)?.value ?: 0.0 }
     Scaffold(containerColor = Color.Black, topBar = {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
@@ -118,7 +114,7 @@ fun TokenUsageScreen(store: SummonStore, onBack: () -> Unit) {
             item { Text("本机已记录用量", style = MaterialTheme.typography.titleMedium); UsageTotals(overview["totals"]) }
             item {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    listOf("bots" to "Bot", "dm" to "单聊", "group" to "群聊").forEach { (id, title) ->
+                    listOf("bots" to "Bot", "rooms" to "会话").forEach { (id, title) ->
                         TextButton(onClick = { dimension = id; selectedKind = null; offset = 0 }) { Text(if (dimension == id) "● $title" else title) }
                     }
                     androidx.compose.foundation.layout.Box {

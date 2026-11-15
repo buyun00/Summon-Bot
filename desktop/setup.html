@@ -4,40 +4,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Summon Bot · 欢迎</title>
 <link rel="stylesheet" href="setup.css">
-<script defer src="avatars.js"></script>
 <script defer src="setup.js"></script>
 <body>
   <header class="titlebar"><img src="icon.png" alt=""><span>Summon Bot</span></header>
-  <main id="welcome" hidden>
+  <section id="release-controls" aria-label="客户端更新"></section>
+  <main id="welcome">
     <div class="welcome-heading">
       <h1 id="title" tabindex="-1">选择实例</h1>
     </div>
     <div id="conversation" role="log" aria-label="设置说明"></div>
     <div id="controls"></div>
     <p id="status" role="status"></p>
-  </main>
-  <main id="unpacking" hidden aria-labelledby="unpacking-title">
-    <div class="unpacking-heading">
-      <h1 id="unpacking-title">拆开你的工作区</h1>
-    </div>
-    <div class="parcel">
-      <div class="parcel-inside" aria-hidden="true"></div>
-      <div class="parcel-bot" aria-hidden="true"></div>
-      <div class="parcel-lid" aria-hidden="true"></div>
-      <div class="parcel-front">
-        <div class="parcel-label" aria-hidden="true">
-          <span>SUMMON BOT<strong>你的工作区</strong></span>
-          <svg width="31" height="27" viewBox="0 0 31 27" fill="none">
-            <path d="M7 19V4M3 8l4-4 4 4m12 11V4m-4 4 4-4 4 4M3 24h24" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
-        </div>
-        <div class="parcel-strip" aria-hidden="true"></div>
-      </div>
-    </div>
-    <div class="unpacking-caption">
-      <p id="unpacking-detail">开箱后选择实例和工作区。</p>
-      <div id="parcel-actions" class="buttons"></div>
-    </div>
   </main>
   <main id="startup" hidden aria-labelledby="startup-label">
     <svg class="startup-art" viewBox="0 0 1536 1024" preserveAspectRatio="xMidYMid slice" aria-hidden="true">

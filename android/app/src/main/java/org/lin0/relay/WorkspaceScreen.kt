@@ -187,6 +187,7 @@ private fun SummonRecordRow(title: String, subtitle: String, open: () -> Unit) {
 @Composable
 fun SummonReferencePicker(store: SummonStore, roomID: String, onSelect: (SummonReference) -> Unit, onDismiss: () -> Unit) {
     var files by remember(roomID) { mutableStateOf<List<SummonJson>>(emptyList()) }
+    var fileID by remember(roomID) { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
     LaunchedEffect(roomID, store.protocolReady) {
@@ -196,12 +197,15 @@ fun SummonReferencePicker(store: SummonStore, roomID: String, onSelect: (SummonR
         finally { loading = false }
     }
     AlertDialog(onDismissRequest = onDismiss, title = { Text("引用资料") }, confirmButton = {
+        TextButton(enabled = fileID.isNotBlank(), onClick = { onSelect(SummonReference("file", fileID.trim())) }) { Text("加入消息") }
+    }, dismissButton = {
         TextButton(onClick = onDismiss) { Text("取消") }
     }, text = {
         Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
             if (loading) CircularProgressIndicator()
             error?.let { SummonError(it) }
             if (!loading && error == null && files.isEmpty()) Text("暂无可引用的群资料")
+            SummonTextField("文件 ID", fileID, { fileID = it })
             files.forEach { file ->
                 val ref = SummonReference.parse(file["ref"]) ?: return@forEach
                 TextButton(onClick = { onSelect(ref) }) { Text(file["path"].string ?: store.label(ref)) }
@@ -453,15 +457,16 @@ private fun NativeInput(option: SummonInputOption, disabled: Boolean, submit: (S
         .mapNotNull { option.target[it].takeUnless { it == SummonJson.Null }?.stringValue }
     SelectionContainer { Text(target.joinToString(" · "), color = Color.Gray, style = MaterialTheme.typography.bodySmall) }
     option.question?.let { Text(it) }
+    val structured = option.choices.isEmpty() && option.target["kind"].string == "service_call"
     if (option.choices.isEmpty()) {
         SummonTextField("输入", input, { input = it }, multiline = true, enabled = !disabled)
-        Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(checked = json, onCheckedChange = { json = it }); Text("JSON 输入") }
+        if (structured) SummonToggle("JSON 输入", json) { json = it }
     } else SummonChoice("回答", input, option.choices.mapNotNull {
         it["id"].string?.let { id -> id to (it["label"].string ?: id) }
     }) { input = it }
     Button(enabled = !disabled && input.isNotBlank(), onClick = {
         try {
-            val value = if (json) SummonJson.parse(input) else SummonJson.Str(input)
+            val value = if (structured && json) SummonJson.parse(input) else SummonJson.Str(input)
             error = null
             submit(value)
         } catch (_: Exception) { error = "JSON 输入格式无效。" }

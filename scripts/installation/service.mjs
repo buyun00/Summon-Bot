@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs, readJson, writeJson } from '../build/files.mjs';
 import { acquireServiceLock } from './service-lock.mjs';
 import { installProcessLog } from '@summon/bot/process-log';
-import { readRemoteAccess, remoteOrigins } from './remote-config.mjs';
+import { usableRemoteAccess, remoteOrigins } from './remote-config.mjs';
 import { serviceFolders, serviceRoot as rootForService, serviceRunPath } from './system.mjs';
 import { assertInstallationWritable, dataFormat, readInstallationState } from './installation-state.mjs';
 import { installationStatus } from './drain.mjs';
@@ -29,11 +29,16 @@ try {
   if (config.dataFormat !== dataFormat) throw new Error('The selected deployment uses another data format');
   const type = options.type;
   if (!Object.hasOwn(serviceFolders, type)) throw new Error('Unknown managed service type');
+  const auxiliary = type === 'cloudflared' || type === 'remote-bridge';
   const serviceRoot = rootForService(config.dataRoot, type);
   runPath = serviceRunPath(config.dataRoot, type);
   ownership = await acquireServiceLock(config.dataRoot, type, () => record || { pid: process.pid, bootId, state: 'starting', releaseRoot: config.releaseRoot });
   await assertInstallationWritable(config.dataRoot, config.releaseRoot);
-  processLog = installProcessLog(join(serviceRoot, 'logs'), { ...config.logs, ...config[type]?.logs });
+  if (auxiliary && (await readJson(resolve(options.config))).runIntent === 'stopped') throw new Error(`${type} startup cancelled by the saved stop intent`);
+  let logWarning;
+  const auxiliaries = {};
+  processLog = installProcessLog(join(serviceRoot, 'logs'), { ...config.logs, ...config[type]?.logs },
+    { onWarning: message => { logWarning = message; } });
   // Node's fatal stderr path can bypass the redirected stream on Windows.
   // Observe without swallowing the exception or leaving a broken service alive.
   process.on('uncaughtExceptionMonitor', (error, origin) => {
@@ -42,7 +47,8 @@ try {
   const authorized = value => { const expected = Buffer.from(`Bearer ${config.controlToken}`), actual = Buffer.from(value || ''); return actual.length === expected.length && timingSafeEqual(actual, expected); };
   control = createServer(async (req, res) => {
     if (!authorized(req.headers.authorization)) return json(res, 401, { error: 'Unauthorized' });
-    if (req.method === 'GET' && req.url === '/health') return json(res, 200, { ...record, state: closing ? 'stopping' : 'ready' });
+    if (req.method === 'GET' && req.url === '/health') return json(res, 200, { ...record, state: closing ? 'stopping' : 'ready',
+      ...(logWarning ? { logWarning } : {}), ...(type === 'web' ? { auxiliaries } : {}) });
     if (type === 'gateway' && req.url === '/installation' && ['GET', 'POST'].includes(req.method)) {
       try { return json(res, 200, await installationStatus(app, await readInstallationState(config.dataRoot), record, req.method)); }
       catch (error) { return json(res, 409, { code: error.code || 'installation_drain_error', error: error.message }); }
@@ -74,7 +80,7 @@ try {
   } else if (type === 'web') {
     const { startWeb } = await import(pathToFileURL(join(config.releaseRoot, 'web/backend/server.mjs')));
     const gateway = await readJson(join(config.dataRoot, 'capabilities/gateway/run/current.json'));
-    const webOptions = { ...config.web, dataRoot: config.dataRoot, getRemoteOrigins: () => remoteOrigins(config.dataRoot),
+    const webOptions = { ...config.web, dataRoot: config.dataRoot, getRemoteOrigins: () => remoteOrigins(config.dataRoot, { includeCandidates: true }),
       clientReleaseRoot: join(config.dataRoot, 'client-releases'),
       webRelease: await readJson(join(config.releaseRoot, 'release.json')),
       frontendRoot: join(config.releaseRoot, 'web/frontend'), gatewayUrl: gateway.url, gatewayToken: config.gatewayToken };
@@ -82,8 +88,8 @@ try {
       app = await startWeb(webOptions);
     } catch (error) {
       if (error.code !== 'EADDRINUSE' || config.web.autoPort !== true || config.web.host !== '127.0.0.1') throw error;
-      const remote = await readRemoteAccess(config.dataRoot);
-      if (Object.values(remote).some(entry => entry?.origin)) {
+      const remote = await usableRemoteAccess(config.dataRoot);
+      if (Object.keys(remote).length) {
         throw new Error('本机端口 ' + config.web.port + ' 已被占用。远程入口依赖该端口，请释放后重试。');
       }
       app = await startWeb({ ...webOptions, port: 0 });
@@ -95,7 +101,9 @@ try {
     }
   } else {
     const { startAuxiliary } = await import('./auxiliaries.mjs');
-    app = await startAuxiliary(config, type, () => void shutdown().catch(() => { process.exitCode = 1; }));
+    app = await startAuxiliary(config, type, () => {
+      if (record) void shutdown().catch(() => { process.exitCode = 1; });
+    });
   }
   await new Promise((ready, reject) => { control.once('error', reject); control.listen(0, '127.0.0.1', ready); });
   record = { type, pid: process.pid, bootId, url: app.url, state: 'ready', releaseRoot: config.releaseRoot,
@@ -103,6 +111,12 @@ try {
   await writeJson(runPath, record);
   console.log(JSON.stringify({ type: `${type}.ready`, pid: process.pid, bootId, url: app.url }));
   notify({ ...record, type: 'ready' });
+  if (type === 'web') {
+    const report = (name, details) => { auxiliaries[name] = details; };
+    void import('./auxiliaries.mjs').then(({ restoreAuxiliaries }) =>
+      restoreAuxiliaries(config, report, { isClosing: () => closing }))
+      .catch(error => report('configuration', { state: 'unavailable', code: error.code || error.name }));
+  }
 } catch (error) {
   notify({ type: 'error', code: error.code, message: error.message });
   await app?.close().catch(() => {});

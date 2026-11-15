@@ -11,7 +11,7 @@ struct SummonEventStream: Sendable {
     let client: SummonAPIClient
 
     func consume(_ receive: @escaping @Sendable (SummonStreamEvent) async -> Void) async throws {
-        var request = try client.makeRequest(path: "/api/stream?protocol=(SummonAPIClient.protocolVersion)")
+        var request = try client.makeRequest(path: "/api/stream?protocol=\(SummonAPIClient.protocolVersion)")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -24,11 +24,19 @@ struct SummonEventStream: Sendable {
         let session = URLSession(configuration: configuration, delegate: SummonConnectionProbe(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         let (bytes, response) = try await session.bytes(for: request)
-        guard let http = response as? HTTPURLResponse,
-              (200..<300).contains(http.statusCode),
-              http.value(forHTTPHeaderField: "Content-Type")?.lowercased().hasPrefix("text/event-stream") == true else {
-            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            throw SummonAPIError.http(status, "实时连接失败（\(status)）")
+        guard let http = response as? HTTPURLResponse else { throw SummonAPIError.invalidResponse }
+        if !(200..<300).contains(http.statusCode) {
+            var data = Data()
+            if http.value(forHTTPHeaderField: "Content-Type")?.lowercased().hasPrefix("application/json") == true {
+                for try await byte in bytes {
+                    data.append(byte)
+                    if data.count >= 16_384 { break }
+                }
+            }
+            throw SummonAPIClient.responseError(http, data: data)
+        }
+        guard http.value(forHTTPHeaderField: "Content-Type")?.lowercased().hasPrefix("text/event-stream") == true else {
+            throw SummonAPIError.invalidResponse
         }
         // SSE uses blank lines as frame delimiters. Parse the bytes explicitly so
         // line adaptation cannot remove those delimiters or join separate events.

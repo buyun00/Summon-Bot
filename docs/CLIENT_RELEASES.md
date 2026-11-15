@@ -29,7 +29,7 @@ npm run release:version
 npm run release:all
 ```
 
-该命令先从当前提交准备 Windows 本机包，再构建和安装同一提交的 Web 与后端。涉及协议切换时，安装器核对各 GitHub 下载地址已经提供同一提交的发行物，并核对 iOS 工作流已完成对应 TestFlight 内部分发。首次需要桌面依赖时执行 `npm ci --prefix desktop --no-audit --no-fund`。
+该命令用同一提交构建 Windows 本机包和正式 Web 与后端。同协议发布先更新 Web，客户端沿各自渠道交付。协议切换先准备 Windows 本机包，再由安装器核对对应 GitHub 下载和 TestFlight 内测组的实际可用状态。已有 App Store Connect 配置时直接查询 Apple，否则使用同提交发行任务中的 Apple 分发结果。首次准备桌面构建依赖可运行 `npm ci --prefix desktop --ignore-scripts --no-audit --no-fund`。
 
 也可分别执行：
 
@@ -46,7 +46,7 @@ npm run release:web -- --committed-only
 
 [Client releases 工作流](../.github/workflows/client-releases.yml) 在主分支的 `release.json` 版本变更时运行，客户端改动在定稿时一并递增版本；也可手动选择 `cloud`、`macos`、`android` 或 `windows`。`cloud` 和版本推送均构建 Windows、macOS 和 Android；各平台的 GitHub 发行物直接由对应 runner 构建发布。工作流只安装依赖、构建和发布，不运行测试，不创建后端或预览服务。
 
-macOS 使用 GitHub 的 Mac runner 构建 仅支持 Apple Silicon 的 arm64 DMG/ZIP，不再支持 Intel。使用付费 Apple Developer 团队的 Developer ID Application 证书签名，启用 Hardened Runtime，并完成 Apple 公证和 App 票据附加。缺少证书或公证失败时停止发布；准备方法见 [macOS 签名与公证](MACOS_SIGNING.md)。客户端仍提示新版本并打开 DMG 下载，由用户覆盖安装。
+GitHub 的 Mac runner 为 Apple Silicon 构建 arm64 DMG。正式包使用 Developer ID Application 签名和 Hardened Runtime，完成 Apple 公证并附加票据。候选构建可在缺少签名材料时生成。客户端提示新版本并打开 DMG 下载，由用户覆盖安装。 [macOS 签名与公证](MACOS_SIGNING.md)
 
 Android 使用 Linux runner、Java 17 和仓库的 Gradle wrapper 构建正式 APK。必须沿用现有签名身份，在 GitHub Actions Secrets 中配置：
 
@@ -54,7 +54,7 @@ Android 使用 Linux runner、Java 17 和仓库的 Gradle wrapper 构建正式 A
 - `SUMMON_ANDROID_KEY_ALIAS`：现有别名。
 - `SUMMON_ANDROID_STORE_PASSWORD`、`SUMMON_ANDROID_KEY_PASSWORD`：现有密码。
 
-正式签名原件继续留在正式数据根的私有签名配置中，GitHub 仅持有加密 Secrets；密钥和密码不进入源码、日志或发行物。CI 缺少签名配置时直接报告错误，不生成新身份。构建完成后 APK 直接发布 GitHub，不回传正式主机。
+正式签名原件留在正式数据根的私有签名配置中。GitHub 使用加密 Secrets。本机和 CI 的 APK 都沿用现有签名配置，缺少凭据时会报告错误。GitHub Actions 直接发布正式 APK。
 
 ## 客户端更新
 

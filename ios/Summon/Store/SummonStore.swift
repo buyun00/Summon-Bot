@@ -37,6 +37,7 @@ final class SummonStore {
     @ObservationIgnored private var recoveryTask: Task<Void, Never>?
     @ObservationIgnored private var persistenceTask: Task<Void, Never>?
     @ObservationIgnored private var roomReads: Set<String> = []
+    @ObservationIgnored private var olderReadsWaiting: Set<String> = []
     @ObservationIgnored private var connectionGeneration = 0
     @ObservationIgnored private var pushGeneration: Int?
     @ObservationIgnored private var historyEpoch: String?
@@ -89,6 +90,7 @@ final class SummonStore {
         refreshTask?.cancel(); refreshTask = nil
         recoveryTask?.cancel(); recoveryTask = nil
         roomReads.removeAll()
+        olderReadsWaiting.removeAll()
         isConnected = false
         protocolReady = false
         isLoading = false
@@ -102,36 +104,41 @@ final class SummonStore {
         persistNow()
     }
 
-    func saveConnection(baseURL: String, token: String, userName: String? = nil) async throws {
+    func saveConnection(baseURL: String, token: String) async throws {
         let url = try SummonAPIClient.normalizedURL(baseURL)
         let endpoint = url.absoluteString
         let newToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
         let changed = endpoint != settings.baseURL
         let newClient = SummonAPIClient(baseURL: url, token: newToken, workspaceID: changed ? nil : settings.workspaceID)
-        let startup: SummonBootstrap
+        let startup: SummonBootstrap?
         do { startup = try await newClient.bootstrap(probe: true) }
+        catch let error as URLError where [.timedOut, .notConnectedToInternet, .cannotFindHost, .cannotConnectToHost,
+                                          .networkConnectionLost, .dnsLookupFailed].contains(error.code) { startup = nil }
+        catch SummonAPIError.http(503, _, "updating") { startup = nil }
         catch { throw startupError(error) }
         let previousToken = savedToken
         try SummonKeychain.save(token: newToken, for: endpoint)
         if changed || newToken != previousToken { SummonPush.shared.changeServer() }
         disconnect()
-        if changed { clearWorkspace() }
+        if changed { clearWorkspace(); profiles = [] }
         settings = SummonConnectionSettings(baseURL: endpoint,
-            userName: userName?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? settings.userName, workspaceID: newClient.workspaceID)
+            userName: settings.userName, workspaceID: newClient.workspaceID)
         if let data = try? JSONEncoder().encode(settings) { defaults.set(data, forKey: settingsKey) }
         client = newClient
         if changed { restoreSnapshot() }
-        acceptStartup(startup)
+        if let startup { acceptStartup(startup) }
+        else { protocolNotice = "连接已保存，等待服务响应。" }
         errorMessage = nil
         persistNow()
-        await start()
+        if startup != nil { await start() }
+        else { Task { await start() } }
     }
 
     func selectWorkspace(_ id: String?) async throws {
         guard id != settings.workspaceID, let url = try? SummonAPIClient.normalizedURL(settings.baseURL) else { return }
         let next = SummonAPIClient(baseURL: url, token: savedToken, workspaceID: id)
         let startup = try await next.bootstrap(probe: true)
-        guard startup.ready else { throw SummonAPIError.protocolUnavailable(startup.notice ?? "暂时无法切换工作区。") }
+        guard startup.ready, !startup.updating else { throw SummonAPIError.protocolUnavailable(startup.notice ?? "暂时无法切换工作区。") }
         disconnect()
         clearWorkspace()
         settings.workspaceID = id
@@ -158,8 +165,8 @@ final class SummonStore {
                 guard connection == connectionGeneration else { throw CancellationError() }
                 try await selectWorkspace(profile)
                 return
-            } catch SummonAPIError.http(404, _) { continue }
-            catch SummonAPIError.http(403, _) { continue }
+            } catch SummonAPIError.http(404, _, _) { continue }
+            catch SummonAPIError.http(403, _, _) { continue }
         }
         throw SummonAPIError.http(404, "推送中的会话已不可用。")
     }
@@ -183,7 +190,7 @@ final class SummonStore {
             }
         }
         do {
-            if !protocolReady {
+            if !protocolReady || protocolNotice != nil {
                 let startup = try await client.bootstrap(probe: true)
                 guard connection == connectionGeneration, !Task.isCancelled else { return }
                 acceptStartup(startup)
@@ -224,21 +231,23 @@ final class SummonStore {
     }
 
     private func startupError(_ error: Error) -> Error {
-        if case SummonAPIError.http(404, _) = error {
+        if case SummonAPIError.http(404, _, nil) = error {
             return SummonAPIError.protocolUnavailable("正在等待服务支持当前协议。草稿和待确认的发送已保留。")
         }
-        if case SummonAPIError.http(503, _) = error {
+        if case SummonAPIError.http(503, _, "updating") = error {
             return SummonAPIError.protocolUnavailable("服务正在更新。草稿和待确认的发送已保留。")
         }
         return error
     }
 
     private func handle(_ error: Error) {
-        if case SummonAPIError.http(let status, _) = error, [426, 503].contains(status) {
+        if case SummonAPIError.http(426, _, _) = error {
             protocolReady = false
             isConnected = false
-            protocolNotice = status == 503 ? "服务正在更新。草稿和待确认的发送已保留。" : "正在重新检查服务协议。"
+            protocolNotice = "正在重新检查服务协议。"
             scheduleRefresh()
+        } else if case SummonAPIError.http(503, _, "updating") = error {
+            protocolNotice = "服务正在更新。草稿和待确认的发送已保留。"
         } else { errorMessage = error.localizedDescription }
     }
 
@@ -293,9 +302,22 @@ final class SummonStore {
     func canLoadOlder(_ id: String) -> Bool { cursors[id] != nil }
 
     func loadRoom(_ id: String, older: Bool = false) async {
-        guard protocolReady, let client, roomReads.insert(id).inserted else { return }
+        guard protocolReady, let client else { return }
+        guard roomReads.insert(id).inserted else {
+            if older { olderReadsWaiting.insert(id) }
+            return
+        }
         let connection = connectionGeneration
-        defer { if connection == connectionGeneration { roomReads.remove(id) } }
+        defer {
+            if connection == connectionGeneration {
+                roomReads.remove(id)
+                if olderReadsWaiting.remove(id) != nil, activeRoomID == id {
+                    Task {
+                        if connection == connectionGeneration, activeRoomID == id { await loadRoom(id, older: true) }
+                    }
+                }
+            }
+        }
         let cursor = older ? cursors[id] : nil
         if older && cursor == nil { return }
         let suffix = cursor.map { "?cursor=\(SummonAPIClient.component($0))" } ?? ""
@@ -318,7 +340,7 @@ final class SummonStore {
             let confirmed = Set(snapshot.messages.filter(\.isOwn).compactMap(\.clientId))
             let staged = pendingMessages.filter { $0.roomID == id && confirmed.contains($0.clientID) }.flatMap(\.attachments)
             pendingMessages.removeAll { $0.roomID == id && confirmed.contains($0.clientID) }
-            if !staged.isEmpty, persistNow() { staged.forEach(discardStagedAttachment) }
+            if !staged.isEmpty, persistComposer() { staged.forEach(discardStagedAttachment) }
             schedulePersistence()
             lastSyncAt = Date()
         } catch {
@@ -359,7 +381,10 @@ final class SummonStore {
     }
 
     func setAvatar(_ avatar: SummonAvatar, bot: SummonBot) async throws -> SummonBot {
-        try await updateBot(bot, changes: ["avatar": try Self.json(avatar)])
+        let result = try await business(SummonBot.self, "/api/bots/\(SummonAPIClient.component(bot.id))", "PATCH",
+                                        .object(["avatar": try Self.json(avatar)]), clientID: Self.newID())
+        upsertBot(result)
+        return result
     }
 
     func createGroup(name: String, members: [String]) async throws -> SummonRoom {
@@ -371,11 +396,21 @@ final class SummonStore {
     }
 
     func updateRoom(_ room: SummonRoom, name: String, members: [String]) async throws {
-        try await changeRoom(room, [
-            "title": .string(name),
+        let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        var changes: [String: SummonJSONValue] = [
             "add_members": .array(members.filter { !room.members.contains($0) }.map(SummonJSONValue.string)),
             "remove_members": .array(room.members.filter { $0 != "user" && !members.contains($0) }.map(SummonJSONValue.string))
-        ])
+        ]
+        if !title.isEmpty, title != room.name { changes["title"] = .string(title) }
+        try await changeRoom(room, changes)
+    }
+
+    func leaveRoom(_ room: SummonRoom) async throws {
+        try await changeRoom(room, ["remove_members": .array([.string("user")])])
+        rooms.removeAll { $0.id == room.id }
+        if activeRoomID == room.id { activeRoomID = nil }
+        if selectedRoomID == room.id { selectedRoomID = nil }
+        schedulePersistence()
     }
 
     func setPin(_ ref: SummonReference, in room: SummonRoom, remove: Bool) async throws {
@@ -420,30 +455,45 @@ final class SummonStore {
         await deliver(clientID, queryFirst: true)
     }
 
+    func restoreRejectedMessage(_ item: SummonPendingMessage) throws {
+        let id = item.roomID
+        guard pendingMessages.contains(where: { $0.clientID == item.clientID && $0.status == "rejected" }) else { return }
+        guard draft(for: id).isEmpty, draftAttachments[id]?.isEmpty != false, draftMentions[id]?.isEmpty != false,
+              draftReferences[id]?.isEmpty != false, draftReplies[id] == nil else {
+            throw SummonAPIError.http(0, "请先保存或清空输入框里的草稿，再恢复这条消息。")
+        }
+        let message = item.message
+        drafts[id] = message.content; draftAttachments[id] = message.attachments
+        draftMentions[id] = message.mentions; draftReferences[id] = message.references; draftReplies[id] = message.replyTo
+        pendingMessages.removeAll { $0.clientID == item.clientID }
+        persistComposer()
+    }
+
     private func deliver(_ id: String, queryFirst: Bool) async {
         guard protocolReady, let client, let item = pendingMessages.first(where: { $0.id == id }),
-              item.status != "sent", sendingRoomIDs.insert(item.roomID).inserted else { return }
+              !["sent", "rejected"].contains(item.status), sendingRoomIDs.insert(item.roomID).inserted else { return }
         let connection = connectionGeneration
         defer {
             if connection == connectionGeneration {
                 sendingRoomIDs.remove(item.roomID)
                 if pendingMessages.first(where: { $0.id == id })?.status == "sending" {
                     updatePending(id) { $0.status = "failed"; $0.error = protocolNotice ?? "保存状态待确认。" }
-                    persistNow()
+                    persistComposer()
                 }
             }
         }
         updatePending(id) { $0.status = "sending"; $0.error = nil }
-        guard persistNow() else {
+        guard persistComposer() else {
             updatePending(id) { $0.status = "failed"; $0.error = "本机发送记录无法保存。" }
             return
         }
+        var submittingMessage = false
         do {
             let path = Self.roomPath(item.roomID) + "/messages"
             var receipt: SummonReceipt?
             if queryFirst {
                 do { receipt = try await client.request(SummonReceipt.self, path: path + "/receipt?clientId=\(SummonAPIClient.component(id))") }
-                catch SummonAPIError.http(404, _) { }
+                catch SummonAPIError.http(404, _, _) { }
             }
             if receipt == nil {
                 let message = item.message
@@ -458,6 +508,7 @@ final class SummonStore {
                     "attachments": .array(attachments), "references": .array(message.references.map(\.json)),
                     "mentions": .array(message.mentions.map(SummonJSONValue.string))]
                 if let reply = message.replyTo { body["reply_to"] = SummonReference(kind: "event", id: reply).json }
+                submittingMessage = true
                 receipt = try await client.request(SummonReceipt.self, path: path, method: "POST", body: .object(body), clientID: id)
             }
             guard connection == connectionGeneration else { return }
@@ -466,13 +517,16 @@ final class SummonStore {
             deliveries[receipt.message.id] = receipt.deliveries
             updatePending(id) { $0.message = receipt.message; $0.status = "sent"; $0.error = nil }
             if let index = rooms.firstIndex(where: { $0.id == item.roomID }) { rooms[index].lastMessage = receipt.message }
-            if persistNow() { item.attachments.forEach(discardStagedAttachment) }
+            if persistComposer() { item.attachments.forEach(discardStagedAttachment) }
+            schedulePersistence()
             scheduleRefresh()
         } catch {
             guard connection == connectionGeneration else { return }
-            updatePending(id) { $0.status = "failed"; $0.error = error.localizedDescription }
-            persistNow()
-            if case SummonAPIError.http(let status, _) = error, [426, 503].contains(status) { handle(error) }
+            var rejected = false
+            if submittingMessage, case SummonAPIError.http(let status, _, _) = error { rejected = [400, 413, 415, 422].contains(status) }
+            updatePending(id) { $0.status = rejected ? "rejected" : "failed"; $0.error = error.localizedDescription }
+            persistComposer()
+            if (error as? SummonAPIError)?.interruptsProtocol == true { handle(error) }
         }
     }
 
@@ -547,7 +601,9 @@ final class SummonStore {
     func list(_ path: String) async throws -> [SummonJSONValue] {
         var cursor: String?
         var items: [SummonJSONValue] = []
+        var visited = Set<String>()
         repeat {
+            if let cursor, !visited.insert(cursor).inserted { break }
             let endpoint = path + (cursor.map { (path.contains("?") ? "&" : "?") + "cursor=" + SummonAPIClient.component($0) } ?? "")
             let page = try await request(path: endpoint)
             items += page["items"].array ?? []
@@ -570,7 +626,7 @@ final class SummonStore {
             guard connection == connectionGeneration else { throw CancellationError() }
             return result
         } catch {
-            if connection == connectionGeneration, case SummonAPIError.http(let status, _) = error, [426, 503].contains(status) {
+            if connection == connectionGeneration, (error as? SummonAPIError)?.interruptsProtocol == true {
                 handle(error)
             }
             throw error
@@ -583,7 +639,7 @@ final class SummonStore {
         streamTask = Task { [weak self] in
             var delay: UInt64 = 1
             while !Task.isCancelled, let self, self.foreground, connection == self.connectionGeneration {
-                if !self.protocolReady { await self.refresh() }
+                if !self.protocolReady || self.protocolNotice != nil { await self.refresh() }
                 if self.protocolReady {
                     let started = ContinuousClock.now
                     do {
@@ -593,7 +649,7 @@ final class SummonStore {
                     } catch {
                         guard !Task.isCancelled, connection == self.connectionGeneration else { return }
                         self.isConnected = false
-                        if case SummonAPIError.http(let status, _) = error, [426, 503].contains(status) { self.handle(error) }
+                        if (error as? SummonAPIError)?.interruptsProtocol == true { self.handle(error) }
                         if started.duration(to: ContinuousClock.now) >= .seconds(30) { delay = 1 }
                     }
                 }
@@ -672,6 +728,13 @@ final class SummonStore {
         var bots: [SummonBot]
         var rooms: [SummonRoom]
         var messageHistory: [String: [SummonMessage]]
+        var profiles: [SummonWorkspaceProfile]?
+        var savedAt: Date
+    }
+
+    private struct LocalComposer: Codable {
+        var endpoint: String
+        var workspaceID: String?
         var pendingMessages: [SummonPendingMessage]
         var drafts: [String: String]
         var draftAttachments: [String: [SummonAttachment]]
@@ -679,7 +742,6 @@ final class SummonStore {
         var draftReplies: [String: String]
         var draftReferences: [String: [SummonReference]]?
         var draftTargets: [String: String]?
-        var savedAt: Date
     }
 
     private var snapshotURL: URL? {
@@ -699,26 +761,35 @@ final class SummonStore {
         let legacyURL = storageDirectory?.appending(path: "workspace.json")
         let decoder = JSONDecoder()
         var convertedURL: URL?
-        var saved: LocalSnapshot?
+        var snapshotData: Data?
         if let url = snapshotURL, let data = try? Data(contentsOf: url) {
-            saved = try? decoder.decode(LocalSnapshot.self, from: data)
+            snapshotData = data
         } else if settings.workspaceID == nil, let url = legacyURL, let data = try? Data(contentsOf: url) {
-            saved = try? decoder.decode(LocalSnapshot.self, from: data)
+            snapshotData = data
             convertedURL = url
         }
-        guard let saved, saved.endpoint == settings.baseURL, saved.workspaceID == settings.workspaceID else { return }
-        historyEpoch = saved.historyEpoch
-        bots = saved.bots; rooms = saved.rooms; messageHistory = saved.messageHistory
-        pendingMessages = saved.pendingMessages.map { entry in
-            guard entry.status == "sending" || entry.status == "queued" else { return entry }
-            var value = entry; value.status = "failed"; value.error = "上次发送的保存状态待确认。"; return value
+        let saved = snapshotData.flatMap { try? decoder.decode(LocalSnapshot.self, from: $0) }
+        if let saved, saved.endpoint == settings.baseURL, saved.workspaceID == settings.workspaceID {
+            historyEpoch = saved.historyEpoch
+            bots = saved.bots; rooms = saved.rooms; messageHistory = saved.messageHistory
+            if let found = saved.profiles { profiles = found }
+            lastSyncAt = saved.savedAt
         }
-        drafts = saved.drafts; draftAttachments = saved.draftAttachments
-        draftMentions = saved.draftMentions ?? saved.draftTargets?.mapValues { [$0] } ?? [:]
-        draftReplies = saved.draftReplies
-        draftReferences = saved.draftReferences ?? [:]
-        lastSyncAt = saved.savedAt
-        if let convertedURL, persistNow() { try? FileManager.default.removeItem(at: convertedURL) }
+        let composerURL = snapshotURL?.deletingLastPathComponent().appending(path: "composer.json")
+        let composerData = composerURL.flatMap { try? Data(contentsOf: $0) } ?? snapshotData
+        if let composerData, let composer = try? decoder.decode(LocalComposer.self, from: composerData),
+           composer.endpoint == settings.baseURL, composer.workspaceID == settings.workspaceID {
+            pendingMessages = composer.pendingMessages.map { entry in
+                guard entry.status == "sending" || entry.status == "queued" else { return entry }
+                var value = entry; value.status = "failed"; value.error = "上次发送的保存状态待确认。"; return value
+            }
+            drafts = composer.drafts; draftAttachments = composer.draftAttachments
+            draftMentions = composer.draftMentions ?? composer.draftTargets?.mapValues { [$0] } ?? [:]
+            draftReplies = composer.draftReplies
+            draftReferences = composer.draftReferences ?? [:]
+        }
+        if let convertedURL, saved?.endpoint == settings.baseURL, saved?.workspaceID == settings.workspaceID,
+           persistNow() { try? FileManager.default.removeItem(at: convertedURL) }
     }
 
     private func schedulePersistence() {
@@ -730,22 +801,39 @@ final class SummonStore {
     }
 
     @discardableResult
+    private func persistComposer() -> Bool {
+        guard let folder = snapshotURL?.deletingLastPathComponent() else { return false }
+        let composer = LocalComposer(endpoint: settings.baseURL, workspaceID: settings.workspaceID,
+            pendingMessages: pendingMessages, drafts: drafts, draftAttachments: draftAttachments,
+            draftMentions: draftMentions, draftReplies: draftReplies, draftReferences: draftReferences, draftTargets: nil)
+        do {
+            try saveLocal(composer, to: folder.appending(path: "composer.json"))
+            return true
+        } catch {
+            errorMessage = "无法保存本机草稿和发送记录：\(error.localizedDescription)"
+            return false
+        }
+    }
+
+    @discardableResult
     private func persistNow() -> Bool {
         persistenceTask?.cancel()
         persistenceTask = nil
-        guard let url = snapshotURL else { return false }
+        guard let url = snapshotURL, persistComposer() else { return false }
         let saved = LocalSnapshot(endpoint: settings.baseURL, workspaceID: settings.workspaceID, historyEpoch: historyEpoch, bots: bots, rooms: rooms,
-            messageHistory: messageHistory.mapValues { Array($0.suffix(100)) }, pendingMessages: pendingMessages, drafts: drafts,
-            draftAttachments: draftAttachments, draftMentions: draftMentions, draftReplies: draftReplies,
-            draftReferences: draftReferences, draftTargets: nil, savedAt: lastSyncAt ?? Date())
+            messageHistory: messageHistory.mapValues { Array($0.suffix(100)) }, profiles: profiles, savedAt: lastSyncAt ?? Date())
         do {
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try JSONEncoder().encode(saved).write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            try saveLocal(saved, to: url)
             return true
         } catch {
-            errorMessage = "无法保存本机草稿：\(error.localizedDescription)"
+            errorMessage = "无法更新本机聊天缓存：\(error.localizedDescription)"
             return false
         }
+    }
+
+    private func saveLocal(_ value: some Encodable, to url: URL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder().encode(value).write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }
 }
 

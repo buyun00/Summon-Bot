@@ -25,11 +25,12 @@ async function entries(folder) {
 }
 async function candidate(root) {
   const manifest = await readJson(join(root, 'release-manifest.json'));
-  if (manifest.format !== 3 || manifest.dataFormat !== dataFormat || manifest.application !== 'summon-bot' ||
-      !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(manifest.buildId) || !Number.isSafeInteger(manifest.buildNumber) ||
-      !Number.isSafeInteger(manifest.protocolVersion)) {
-    throw new Error('This build does not carry the current Summon Bot installation format');
-  }
+  if (manifest.application !== 'summon-bot') throw new Error('This package is not a Summon Bot installation');
+  if (manifest.format !== 3) throw new Error(`Unsupported installation manifest format: ${manifest.format}`);
+  if (manifest.dataFormat !== dataFormat) throw new Error(`Package data format ${manifest.dataFormat} does not match ${dataFormat}`);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(manifest.buildId || '')) throw new Error('Invalid release buildId');
+  if (!Number.isSafeInteger(manifest.buildNumber)) throw new Error('Invalid release buildNumber');
+  if (!Number.isSafeInteger(manifest.protocolVersion)) throw new Error('Invalid release protocolVersion');
   return manifest;
 }
 
@@ -75,9 +76,9 @@ async function cleanReleases({ appRoot, sourceRoot, destination }) {
 }
 
 async function startSelected(config, appRoot, previousIntent) {
-  if (previousIntent === 'stopped') return 'stopped';
+  if (previousIntent === 'stopped' || config.runIntent === 'stopped') return 'stopped';
   if (process.platform === 'win32') {
-    await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', join(appRoot, 'Start.ps1'), '-DataRoot', config.dataRoot],
+    await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', join(appRoot, 'Start.ps1'), '-DataRoot', config.dataRoot, '-RespectIntent'],
       { windowsHide: true, timeout: 420000 });
   } else {
     await startSystem(config, { respectIntent: true });
@@ -86,15 +87,14 @@ async function startSelected(config, appRoot, previousIntent) {
 }
 
 export async function installRelease({ releaseRoot, appRoot, dataRoot, sourceRoot, defaultCwd, publicOrigin = '', port = 8787,
-  onCopyProgress, onProgress } = {}) {
+  onCopyProgress, onProgress, replacePending = false, drainTimeoutMs, signal } = {}) {
+  signal?.throwIfAborted();
   releaseRoot = resolve(releaseRoot);
   appRoot = resolve(appRoot);
   dataRoot = resolve(dataRoot);
   if (within(appRoot, dataRoot) || within(dataRoot, appRoot) || within(releaseRoot, dataRoot) || within(dataRoot, releaseRoot)) {
     throw new Error('Business data must be separate from the application and build');
   }
-  // A packaged executable on Windows holds its own file open until it exits.
-  if (within(join(appRoot, 'releases'), process.execPath)) throw new Error('Run the installer with Node outside the installed release directories');
   if (sourceRoot) {
     sourceRoot = resolve(sourceRoot);
     const source = await readJson(join(sourceRoot, 'package.json'));
@@ -104,8 +104,24 @@ export async function installRelease({ releaseRoot, appRoot, dataRoot, sourceRoo
   const destination = join(appRoot, 'releases', manifest.buildId);
   await mkdir(dataRoot, { recursive: true });
   await mkdir(appRoot, { recursive: true });
-  if (within(await realpath(appRoot), await realpath(dataRoot)) || within(await realpath(dataRoot), await realpath(appRoot))) {
-    throw new Error('Application and data roots resolve into each other');
+  const [actualApp, actualData, actualPackage] = await Promise.all([realpath(appRoot), realpath(dataRoot), realpath(releaseRoot)]);
+  if ([actualApp, actualPackage].some(root => within(root, actualData) || within(actualData, root))) {
+    throw new Error('Application, package and business data must resolve to separate directories');
+  }
+  const releases = join(appRoot, 'releases');
+  await mkdir(releases, { recursive: true });
+  const actualReleases = await realpath(releases);
+  if (actualReleases === actualApp || !within(actualApp, actualReleases)) throw new Error('Installed releases resolve outside the application directory');
+  const actualDestination = await realpath(destination).catch(error => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (actualDestination && (actualDestination === actualReleases || !within(actualReleases, actualDestination))) {
+    throw new Error('Installation target resolves outside the release directory');
+  }
+  // Windows keeps the invoking runtime executable open until the installer exits.
+  if (process.platform === 'win32' && within(actualReleases, await realpath(process.execPath))) {
+    throw new Error('Run the installer with Node outside the installed release directories');
   }
   const bootId = randomUUID();
   const ownership = await acquireServiceLock(dataRoot, 'installation', () => ({ pid: process.pid, bootId, state: 'installing' }));
@@ -116,17 +132,16 @@ export async function installRelease({ releaseRoot, appRoot, dataRoot, sourceRoo
     if (state?.phase === 'done' && state.target_build === manifest.buildId) {
       return { ...selected, sourceCommit: manifest.sourceCommit, runtimeState: deployment.runIntent };
     }
-    if (!state || state.phase === 'done') {
+    const rebuildingSelected = replacePending && state?.phase === 'runtime_ready' && state.target_build !== manifest.buildId;
+    if (!state || state.phase === 'done' || rebuildingSelected) {
       let previousManifest;
       if (deployment) {
         if (!selected || resolve(selected.releaseRoot) !== resolve(deployment.releaseRoot)) throw new Error('The running deployment and installation pointer disagree');
         previousManifest = await candidate(deployment.releaseRoot);
         const owner = currentWriters(deployment);
         const gateway = await owner.gateway();
-        if (gateway.state === 'stopped') {
-          await owner.assertStopped();
-        } else {
-          const result = await installationRequest(deployment, gateway);
+        if (gateway.state === 'ready') {
+          const result = await installationRequest(deployment, gateway, 'GET', signal);
           if (result.supportsDrain !== true) throw new Error('The current gateway lacks a protocol drain handler');
         }
       }
@@ -134,19 +149,30 @@ export async function installRelease({ releaseRoot, appRoot, dataRoot, sourceRoo
         await assertClientAvailability({ dataRoot, release: await readJson(join(releaseRoot, 'release.json')), expected: manifest });
       }
       await stageRelease(releaseRoot, destination, manifest, onCopyProgress);
+      signal?.throwIfAborted();
       state = await writeInstallationState(dataRoot, { schemaVersion: 1, phase: 'prepared', migration_id: randomUUID(),
         target_build: manifest.buildId, target_format: manifest.dataFormat, release_root: destination, previous_release: deployment?.releaseRoot ?? null,
         previousIntent: deployment?.runIntent ?? 'running', source_root: sourceRoot ?? deployment?.sourceRoot ?? null });
       onProgress?.({ phase: state.phase, buildId: manifest.buildId });
     } else if (state.target_build !== manifest.buildId || resolve(state.release_root) !== destination) {
-      throw new Error(`Continue installation ${state.target_build} with its staged release`);
+      if (!replacePending) throw new Error(`Continue installation ${state.target_build} with its staged release, or use --replace-pending with a repaired build`);
+      const previousManifest = state.previous_release && await candidate(state.previous_release);
+      if (previousManifest && previousManifest.protocolVersion !== manifest.protocolVersion) {
+        await assertClientAvailability({ dataRoot, release: await readJson(join(releaseRoot, 'release.json')), expected: manifest });
+      }
+      await stageRelease(releaseRoot, destination, manifest, onCopyProgress);
+      signal?.throwIfAborted();
+      state = await writeInstallationState(dataRoot, { ...state, target_build: manifest.buildId,
+        target_format: manifest.dataFormat, release_root: destination, phase: state.phase === 'data_ready' ? 'converting' : state.phase });
+      onProgress?.({ phase: state.phase, buildId: manifest.buildId });
     }
 
     const previous = state.previous_release ? { ...deployment, dataRoot, releaseRoot: state.previous_release } : null;
     const owner = previous && currentWriters(previous);
     if (state.phase === 'prepared') state = await enterDrain({ dataRoot, state, previous, owner });
     if (state.phase === 'draining') {
-      state = await finishDrain({ dataRoot, state, previous, owner, onProgress });
+      state = await finishDrain({ dataRoot, state, previous, owner, onProgress, timeoutMs: drainTimeoutMs, signal });
+      signal?.throwIfAborted();
       state = await advanceInstallation(dataRoot, state, 'converting');
       onProgress?.({ phase: state.phase, buildId: manifest.buildId });
     }
@@ -170,20 +196,37 @@ export async function installRelease({ releaseRoot, appRoot, dataRoot, sourceRoo
       state = await advanceInstallation(dataRoot, state, 'runtime_ready', { selected_at: selection.selectedAt });
       onProgress?.({ phase: state.phase, buildId: manifest.buildId });
     }
+    signal?.throwIfAborted();
     const activeConfig = await readJson(deploymentPath(dataRoot));
     const runtimeState = await startSelected(activeConfig, appRoot, state.previousIntent);
-    await cleanReleases({ appRoot, sourceRoot: state.source_root, destination });
-    await unlink(join(dataRoot, 'config', `deployment.${state.migration_id}.json`)).catch(error => { if (error.code !== 'ENOENT') throw error; });
+    try {
+      await cleanReleases({ appRoot, sourceRoot: state.source_root, destination });
+      await unlink(join(dataRoot, 'config', `deployment.${state.migration_id}.json`)).catch(error => { if (error.code !== 'ENOENT') throw error; });
+    } catch (error) {
+      return { ...selection, sourceCommit: manifest.sourceCommit, runtimeState, cleanupPending: error.message };
+    }
     await writeInstallationState(dataRoot, { schemaVersion: 1, phase: 'done', target_build: manifest.buildId,
       target_format: manifest.dataFormat, release_root: destination });
     return { ...selection, sourceCommit: manifest.sourceCommit, runtimeState };
   } finally { await ownership.close(); }
 }
 
+export async function runInstallation(options) {
+  const controller = new AbortController();
+  const abort = () => controller.abort(Object.assign(new Error('Installation paused. Run the same release command to resume.'), { code: 'INSTALLATION_INTERRUPTED' }));
+  process.once('SIGINT', abort);
+  process.once('SIGTERM', abort);
+  try { return await installRelease({ ...options, signal: controller.signal }); }
+  catch (error) { controller.signal.throwIfAborted(); throw error; }
+  finally { process.removeListener('SIGINT', abort); process.removeListener('SIGTERM', abort); }
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const { options } = parseArgs(process.argv.slice(2));
-  installRelease({ releaseRoot: options['release-root'], appRoot: options['app-root'], dataRoot: options['data-root'],
+  runInstallation({ releaseRoot: options['release-root'], appRoot: options['app-root'], dataRoot: options['data-root'],
     sourceRoot: options['source-root'], defaultCwd: options.cwd, publicOrigin: options['public-origin'], port: options.port,
+    replacePending: options['replace-pending'] === true,
+    drainTimeoutMs: Number(options['drain-timeout-ms']),
     onProgress: result => console.log(JSON.stringify(result)),
   }).then(result => console.log(JSON.stringify(result, null, 2))).catch(error => { console.error(error.message); process.exitCode = 1; });
 }

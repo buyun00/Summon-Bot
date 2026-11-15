@@ -195,11 +195,22 @@ function renderMessageAttachments(items = []) {
 function renderAttachmentDrafts() {
   const items = attachmentDrafts();
   if (!items.length) return '';
-  return `<div class="attachment-drafts" aria-label="待发送附件">${items.map(item => `<div class="attachment-draft ${item.status === 'error' ? 'attachment-error' : ''}">${item.preview || item.attachment?.previewUrl ? `<img src="${esc(item.preview || attachmentUrl(item.attachment, true))}" alt="">` : icon('file', 26)}<span class="attachment-draft-copy"><strong>${esc(item.name)}</strong><small role="status">${esc(item.status === 'uploading' ? '正在上传…' : item.status === 'error' ? item.error : attachmentSize(item.size))}</small></span>${item.status === 'error' ? `<button type="button" class="icon-button" data-action="retry-attachment" data-id="${esc(item.key)}" aria-label="重试上传 ${esc(item.name)}">${icon('refresh', 18)}</button>` : ''}<button type="button" class="icon-button" data-action="remove-attachment" data-id="${esc(item.key)}" aria-label="移除附件 ${esc(item.name)}" ${ui.sendingRooms.has(ui.roomId) ? 'disabled' : ''}>${icon('close', 18)}</button></div>`).join('')}</div>`;
+  return `<div class="attachment-drafts" aria-label="待发送附件">${items.map(item => {
+    const preview = item.preview || attachmentUrl(item.attachment, true);
+    const status = { uploading:'正在上传…', staged:'已在本机暂存', error:item.error }[item.status] ?? attachmentSize(item.size);
+    const canUpload = item.file && ['error','staged'].includes(item.status);
+    return `<div class="attachment-draft ${item.status === 'error' ? 'attachment-error' : ''}">
+      ${preview ? `<img src="${esc(preview)}" alt="">` : icon('file', 26)}
+      <span class="attachment-draft-copy"><strong>${esc(item.name)}</strong><small role="status">${esc(status)}</small></span>
+      ${canUpload ? `<button type="button" class="icon-button" data-action="retry-attachment" data-id="${esc(item.key)}"
+        aria-label="上传 ${esc(item.name)}" ${ui.protocolReady ? '' : 'disabled'}>${icon('upload', 18)}</button>` : ''}
+      <button type="button" class="icon-button" data-action="remove-attachment" data-id="${esc(item.key)}"
+        aria-label="移除附件 ${esc(item.name)}" ${ui.sendingRooms.has(ui.roomId) ? 'disabled' : ''}>${icon('close', 18)}</button></div>`;
+  }).join('')}</div>`;
 }
 function chooseAttachments() {
   const roomId = ui.roomId;
-  if (!roomById(roomId) || !ui.protocolReady || ui.sendingRooms.has(roomId)) return;
+  if (!roomById(roomId) || ui.sendingRooms.has(roomId)) return;
   const input = document.createElement('input');
   input.type = 'file'; input.hidden = true; input.multiple = true;
   // The system picker owns the photo/camera/file choices; avoid a second menu.
@@ -210,16 +221,18 @@ function chooseAttachments() {
   ui.menu = null; render();
 }
 async function addAttachments(roomId, files) {
+  if (!roomById(roomId)) return;
   const items = ui.draftAttachments[roomId] ||= [], added = [];
   for (const file of files) {
     if (items.length >= attachmentLimit) { toast('每条消息最多添加 8 个附件。', true); break; }
     if (file.size > attachmentMaxBytes) { toast(`${file.name} 超过 20 MB，请选择小一些的文件。`, true); continue; }
-    const item = { key: globalThis.crypto?.randomUUID?.() || `file-${Date.now()}-${Math.random().toString(36).slice(2)}`, file, name: file.name, size: file.size, status: 'uploading',
+    const item = { key: newClientId(), file, name: file.name, size: file.size, status: 'staged',
       preview: /^image\/(png|jpeg|gif|webp)$/.test(file.type) ? URL.createObjectURL(file) : '' };
     items.push(item); added.push(item);
   }
   render();
-  for (const item of added) if (attachmentDrafts(roomId).includes(item)) await uploadAttachment(roomId, item);
+  void persistClientSession();
+  for (const item of added) if (ui.protocolReady && attachmentDrafts(roomId).includes(item)) await uploadAttachment(roomId, item);
 }
 async function uploadAttachment(roomId, item) {
   item.status = 'uploading'; item.error = ''; render();
@@ -284,15 +297,20 @@ async function sendLocalMessage(entry, scrollToEnd = false) {
       try { receipt = await api(path + '/receipt?clientId=' + encodeURIComponent(entry.clientId)); }
       catch (error) { if (error.status !== 404) throw error; }
     }
-    if (!receipt) receipt = await api(path, 'POST', { ...entry.payload, clientId: entry.clientId });
+    if (!receipt) {
+      try { receipt = await api(path, 'POST', { ...entry.payload, clientId: entry.clientId }); }
+      catch (error) {
+        error.messageRejected = [400,413,415,422].includes(error.status);
+        throw error;
+      }
+    }
     const message = receipt.message;
-    if (!message?.id || message.clientId !== entry.clientId || message.roomId !== entry.roomId) throw new Error('服务器回执不完整');
+    if (!message?.id || message.clientId !== entry.clientId || message.roomId !== entry.roomId || message.senderId !== 'user') throw new Error('服务器回执不完整');
     entry.message = message; entry.status = 'saved';
     if (ui.roomId === entry.roomId && Array.isArray(receipt.deliveries)) ui.roomDeliveries.set(message.id, receipt.deliveries);
   } catch (error) {
     if (ui.localMessages[entry.roomId]?.[entry.clientId] === entry) {
-      const refused = error.status >= 400 && error.status < 500 && ![401,408,426].includes(error.status);
-      entry.status = refused ? 'rejected' : 'unconfirmed';
+      entry.status = error.messageRejected ? 'rejected' : 'unconfirmed';
       entry.error = entry.status === 'rejected' ? '服务器未受理。' + error.message : error.message;
     }
   } finally {
@@ -394,7 +412,7 @@ async function api(path, method = 'GET', body, { sync = false, clientId } = {}) 
       if (clientId) headers['X-Summon-Client-Id'] = clientId;
       if (body !== undefined) headers['Content-Type'] = 'application/json';
       response = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: controller.signal });
-      if (response.status === 401) { location.replace(workspacePath('/')); throw new Error('请重新输入访问 Token'); }
+      if (response.status === 401) { location.reload(); throw new Error('请重新输入访问 Token'); }
       if (sync) { deadline(90000); data = await readSyncBody(response, () => deadline(90000)); }
       else data = await response.json();
     } catch (error) {
@@ -603,6 +621,10 @@ async function handshake() {
   let startup;
   try { startup = await api('/api/bootstrap'); }
   catch (error) {
+    if (error.code === 'workspace_not_found') {
+      setProtocol(false, '此工作区已不可用，请从设置切换到主工作区。');
+      return false;
+    }
     if (error.status !== 404) throw error;
     setProtocol(false, protocolMessage('protocol_mismatch', {}));
     return false;
@@ -613,6 +635,7 @@ async function handshake() {
     return false;
   }
   ui.protocolReady = true;
+  if (!startup.updating && Array.isArray(startup.workspaceProfiles)) ui.workspaceProfiles = startup.workspaceProfiles;
   ui.protocolNotice = startup.updating ? protocolMessage('updating', startup) : '';
   if (!stream) {
     stream = new EventSource(workspacePath('/api/stream?protocol=' + protocolVersion));
@@ -709,8 +732,14 @@ async function loadCurrent() {
     return;
   }
   if (ui.view === 'connections') {
-    const [connections, workspaces] = await Promise.all([api('/api/connections'), readList('/api/workspaces')]);
-    if (current()) Object.assign(state, { connections:connections.items, limits:connections.limits, limitsRevision:connections.limits_revision, resourceUsage:connections.usage, workspaces });
+    const first = await api('/api/connections');
+    if (!current()) return;
+    Object.assign(state, { connections:first.items, limits:first.limits, limitsRevision:first.limits_revision, resourceUsage:first.usage });
+    const [connections, workspaces] = await Promise.allSettled([readList('/api/connections',first),readList('/api/workspaces')]);
+    if (current()) {
+      if (connections.status === 'fulfilled') state.connections = connections.value;
+      if (workspaces.status === 'fulfilled') state.workspaces = workspaces.value;
+    }
     return;
   }
   if (ui.view !== 'chat' || !ui.roomId) return;
@@ -753,6 +782,10 @@ async function loadOlderMessages() {
   const id = ui.roomId, baseline = ui.messageCache.get(id);
   if (!baseline?.historyCursor) return;
   const response = await api(roomPath(id) + '/messages?cursor=' + encodeURIComponent(baseline.historyCursor));
+  if (response.historyEpoch !== ui.historyEpoch || response.historyEpoch !== baseline.snapshot.historyEpoch) {
+    scheduleRefresh();
+    return;
+  }
   const current = ui.messageCache.get(id);
   if (!current || !roomById(id) || current.historyCursor !== baseline.historyCursor) return;
   const seen = new Set(current.messages.map(message => message.id));
@@ -837,7 +870,7 @@ function restoreClientSession(saved) {
     if (typeof key === 'string' && typeof entry?.text === 'string') ui.executionInputs.set(key,entry);
   for (const [id, entries] of Object.entries(saved.attachments || {})) {
     ui.draftAttachments[id] = entries.filter(entry => entry.status === 'ready' && attachmentUrl(entry.attachment) || entry.file instanceof File)
-      .slice(0, attachmentLimit).map(entry => entry.status === 'ready' ? entry : { ...entry, status:'error', error:'上传尚未确认，可重试' });
+      .map(entry => ['ready','staged'].includes(entry.status) ? entry : { ...entry, status:'error', error:'上传尚未确认，可重试' });
   }
   for (const [roomId, entries] of Object.entries(saved.localMessages || {})) for (const entry of entries) {
     if (typeof entry?.clientId !== 'string' || !entry.payload || !entry.message) continue;
@@ -903,19 +936,35 @@ async function navigate(view) {
 
 function setListPage(kind, page, append = false) {
   const pages = ui.listPages ||= {};
+  const current = pages[kind];
+  const key = item => item.execution_ref ? refKey(item.execution_ref) : item.id;
   if (append) {
-    const unique = new Map([...state[kind], ...page.items].map(item => [item.execution_ref ? refKey(item.execution_ref) : item.id, item]));
+    const unique = new Map([...state[kind], ...page.items].map(item => [key(item), item]));
     state[kind] = [...unique.values()];
-  } else state[kind] = page.items;
-  pages[kind] = page;
+    pages[kind] = { ...current, ...page, extended:true,
+      next_cursor:page.next_cursor === current.next_cursor ? null : page.next_cursor };
+    return;
+  }
+  const firstItems = new Set(page.items.map(key));
+  if (current?.extended && current.firstCursor === page.next_cursor) {
+    const retained = state[kind].filter(item => !current.firstItems.has(key(item)) && !firstItems.has(key(item)));
+    state[kind] = [...page.items, ...retained];
+    pages[kind] = { ...current, firstItems };
+  } else {
+    state[kind] = page.items;
+    pages[kind] = { ...page, firstItems, firstCursor:page.next_cursor };
+  }
 }
 
-async function readList(endpoint) {
+async function readList(endpoint, firstPage) {
   let cursor;
-  const items = [];
+  const items = [], visited = new Set();
   do {
+    if (visited.has(cursor)) { console.warn('服务返回了重复的分页游标', endpoint.split('?')[0]); break; }
+    visited.add(cursor);
     const query = cursor ? (endpoint.includes('?') ? '&cursor=' : '?cursor=') + encodeURIComponent(cursor) : '';
-    const page = await api(endpoint + query);
+    const page = firstPage ?? await api(endpoint + query);
+    firstPage = undefined;
     items.push(...page.items);
     cursor = page.next_cursor;
   } while (cursor);
@@ -951,9 +1000,9 @@ function openRoomEdit() {
   const room = roomById(ui.roomId);
   if (!room) return;
   const old = room.members.filter(id => id !== 'user');
-  openModal('编辑会话', '', field('会话名称', 'title', room.name, { required:true }) + memberChoices(old), async data => {
-    const selected = data.getAll('members'), previous = old.filter(id => botById(id));
-    await api(roomPath(room.id), 'PATCH', { revision:room.revision, title:data.get('title').trim(),
+  openModal('编辑会话', '', field('会话名称', 'title', room.name, { placeholder:'留空保留原名称' }) + memberChoices(old), async data => {
+    const selected = data.getAll('members'), previous = old.filter(id => botById(id)), title = data.get('title').trim();
+    await api(roomPath(room.id), 'PATCH', { revision:room.revision, ...(title && title !== room.name ? { title } : {}),
       add_members:selected.filter(id => !old.includes(id)), remove_members:previous.filter(id => !selected.includes(id)) });
   });
 }
@@ -969,34 +1018,58 @@ async function openBotEdit(bot) {
   if (!bot) return;
   const model = typeof bot.model === 'object' ? bot.model : {};
   const path = '/api/bots/' + encodeURIComponent(bot.id);
-  const [settings, access] = await Promise.all([api('/api/model-settings'),api(path + '/access')]);
+  const [settings, access, files] = await Promise.all([
+    api('/api/model-settings').catch(() => ({ connections:[] })),
+    api(path + '/access').catch(() => ({ model_ids:[] })),
+    readList('/api/files?bot=' + encodeURIComponent(bot.id)).catch(() => []),
+  ]);
   const currentId = model?.connection_id || '';
   const options = [{ value:'', label:'未绑定模型' }, ...settings.connections.filter(item => access.model_ids.includes(item.id) || item.id === currentId)
     .map(item => ({ value:item.id, label:item.name || item.id }))];
+  if (currentId && !options.some(item => item.value === currentId)) options.push({ value:currentId, label:currentId + ' · 当前绑定' });
+  const materialId = bot.material_index_ref?.id || '';
+  const materialOptions = [{ value:'',label:'未选择' }, ...files.map(item => ({ value:item.id,label:item.path || item.name || item.id }))];
+  if (materialId && !materialOptions.some(item => item.value === materialId)) materialOptions.push({ value:materialId,label:materialId + ' · 当前索引' });
   openModal('编辑 Bot', '', field('名称','name',bot.name,{ required:true }) + field('行为指令','instructions',bot.instructions || '',{ type:'textarea',rows:5 }) +
-    selectField('模型连接','connection_id',options,model?.connection_id || (typeof bot.model === 'string' ? bot.model : '')) +
-    field('模型名称','model_id',model?.id || '') + selectField('推理强度','thinking_level',[
-      { value:'',label:'连接默认值' }, ...['off','low','medium','high','xhigh','max'].map(value => ({ value,label:value })),
-    ],model?.thinking_level || ''), async data => {
-    const connection_id = data.get('connection_id'), id = data.get('model_id').trim(), thinking_level = data.get('thinking_level');
+    selectField('模型连接','connection_id',options,currentId) +
+    field('模型名称','model_id',model?.id || '',{ placeholder:'留空使用连接配置' }) +
+    field('推理强度','thinking_level',model?.thinking_level || '',{ placeholder:'留空继承连接',list:'bot-thinking-levels' }) +
+    '<datalist id="bot-thinking-levels"></datalist>' + selectField('选材索引','material_index',materialOptions,materialId), async data => {
+    const connection_id = data.get('connection_id'), id = data.get('model_id').trim(), thinking_level = data.get('thinking_level').trim();
     const binding = connection_id ? { connection_id, ...(id ? { id } : {}), ...(thinking_level ? { thinking_level } : {}) } : null;
     const current = bot.model;
-    const sameBinding = current?.connection_id === binding?.connection_id && current?.id === binding?.id && current?.thinking_level === binding?.thinking_level;
+    const sameBinding = current?.connection_id === binding?.connection_id && current?.id === binding?.id
+      && (current?.thinking_level ?? null) === (binding?.thinking_level ?? null);
     await api(path, 'PATCH', {
       revision:bot.revision, name:data.get('name').trim(), instructions:data.get('instructions'), ...(sameBinding ? {} : { model:binding }),
+      ...(data.get('material_index') !== materialId ? { material_index_ref:data.get('material_index') ? { kind:'file',id:data.get('material_index') } : null } : {}),
     });
   });
+  const form = $('#modal-form'), levels = $('#bot-thinking-levels', form);
+  const updateLevels = () => {
+    const entry = settings.connections.find(item => item.id === form.elements.connection_id.value);
+    const known = !form.elements.model_id.value.trim() || form.elements.model_id.value.trim() === entry?.model;
+    const values = globalThis.SummonModels.thinkingChoices(known ? entry?.thinkingLevels : undefined, form.elements.thinking_level.value);
+    levels.replaceChildren(...values.map(value => new Option(value === 'off' ? '关闭思考' : value, value)));
+  };
+  form.elements.connection_id.addEventListener('change', updateLevels);
+  form.elements.model_id.addEventListener('input', updateLevels);
+  updateLevels();
 }
 
 function resourceChoices(name, records, ids) {
-  return `<fieldset class="form-field member-options"><legend>${esc(name)}</legend>${records.map(item => `<label class="member-choice">
+  const options = [...records, ...ids.filter(id => id !== '*' && !records.some(item => item.id === id))
+    .map(id => ({ id, name: id + ' · 现有授权' }))];
+  return `<fieldset class="form-field member-options"><legend>${esc(name)}</legend>${options.map(item => `<label class="member-choice">
     <span>${esc(item.name || item.id)}${item.path ? `<small>${esc(item.path)}</small>` : ''}</span>
     <input type="checkbox" name="${esc(name)}" value="${esc(item.id)}" ${ids.includes(item.id) ? 'checked' : ''}></label>`).join('')}</fieldset>`;
 }
 
 async function editBotAccess(bot) {
   const path = '/api/bots/' + encodeURIComponent(bot.id) + '/access';
-  const [access, models, workspaces] = await Promise.all([api(path),api('/api/model-settings'),readList('/api/workspaces')]);
+  const [access, models, workspaces] = await Promise.all([
+    api(path), api('/api/model-settings').catch(() => ({ connections:[] })), readList('/api/workspaces').catch(() => []),
+  ]);
   const permissions = resourceChoices('模型连接',models.connections,access.model_ids) + resourceChoices('执行目录',workspaces,access.workspace_ids);
   openModal(bot.name + ' 的资源权限','',permissions,async data => {
     await api(path,'PATCH',{ revision:access.revision, model_ids:data.getAll('模型连接'), workspace_ids:data.getAll('执行目录') });
@@ -1017,27 +1090,32 @@ function editConnection(item) {
   const available = state.bots.map(bot => ({ id:bot.id,name:bot.name }));
   const basic = field('名称','name',item?.name || '',{ required:true }) + field('说明','description',item?.description || '') +
     `<label class="checkbox-line"><input type="checkbox" name="enabled" ${item?.enabled !== false ? 'checked' : ''}>启用</label>`;
-  const configuration = item ? '' : selectField('协议','kind',['codex','cli','mcp','http'].map(value => ({value,label:value})),'codex') +
+  const configuration = item ? field('要修改的连接配置（JSON）','config','',{ type:'textarea',rows:6,placeholder:'留空保留连接配置' })
+    : selectField('协议','kind',['codex','cli','mcp','http'].map(value => ({value,label:value})),'codex') +
     `<div data-native-connection>${field('可执行文件','file','',{ placeholder:'绝对路径' })}
     ${field('实际可执行文件','canonical_file','',{ placeholder:'如果已通过链接安装，填写其实际路径' })}</div>` +
     field('其他连接设置（JSON）','config','{}',{ type:'textarea',rows:6,required:true });
   const everyone = `<label class="checkbox-line"><input type="checkbox" name="all_bots" ${item?.allowed_bot_ids?.includes('*') ? 'checked' : ''}>允许所有 Bot 使用</label>`;
   openModal(item ? '执行连接设置' : '新增执行连接','',basic + configuration + everyone + resourceChoices('允许使用的 Bot',available,item?.allowed_bot_ids || []),async data => {
     const selected = data.getAll('允许使用的 Bot');
-    const retained = (item?.allowed_bot_ids || []).filter(id => id !== '*' && !available.some(bot => bot.id === id));
     const input = { name:data.get('name').trim(), description:data.get('description'), enabled:data.has('enabled'),
-      allowed_bot_ids:data.has('all_bots') ? ['*'] : [...selected,...retained] };
-    if (!item) {
-      const kind = data.get('kind'), config = JSON.parse(data.get('config'));
+      allowed_bot_ids:data.has('all_bots') ? ['*'] : selected };
+    const raw = data.get('config').trim();
+    if (raw || !item) {
+      const config = JSON.parse(raw);
       if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('连接设置须为 JSON 对象。');
-      if (['codex','cli'].includes(kind)) {
-        const file = data.get('file').trim(), canonical = data.get('canonical_file').trim();
-        if (file) config.file = file;
-        if (canonical || file) config.canonical_file = canonical || file;
+      if (item) input.config_patch = config;
+      else {
+        const kind = data.get('kind');
+        if (['codex','cli'].includes(kind)) {
+          const file = data.get('file').trim(), canonical = data.get('canonical_file').trim();
+          if (file) config.file = file;
+          if (canonical || file) config.canonical_file = canonical || file;
+        }
+        Object.assign(input,{ kind,config });
       }
-      Object.assign(input,{ kind,config });
     }
-    else input.revision = item.revision;
+    if (item) input.revision = item.revision;
     await api('/api/connections' + (item ? '/' + encodeURIComponent(item.id) : ''),item ? 'PATCH' : 'POST',input);
   });
   if (!item) {
@@ -1067,15 +1145,13 @@ async function openExecutionForm() {
   if (!engines.length) { toast('先配置一个可用的执行连接。'); return; }
   const choices = [{ value:'',label:'选择目录' }, ...workspaces.map(item => ({ value:item.id,label:item.name + ' · ' + item.path }))];
   const engineOptions = engines.map(item => ({ value:item.id,label:item.name || item.id }));
-  const codex = `<div class="form-row" data-codex-binding>${field('模型','model','',{ placeholder:'留空采用连接配置' })}${selectField('推理强度','effort',[
-    { value:'',label:'连接默认值' }, ...['low','medium','high','xhigh','max'].map(value => ({ value,label:value })),
-  ],'')}</div>`;
+  const codex = `<div class="form-row" data-codex-binding>${field('模型','model','',{ placeholder:'留空采用连接配置' })}${field('推理强度','effort','',{ placeholder:'留空使用连接默认值' })}</div>`;
   openModal('打开执行会话','',selectField('连接','engine',engineOptions,engineOptions[0].value) + selectField('执行目录','workspace',choices,'') +
     codex + selectField('输入格式','format',[{value:'text',label:'文本'},{value:'json',label:'JSON'}],'text') +
     field('输入','input','',{ type:'textarea',rows:6,required:true }),async data => {
     const engine = data.get('engine'), workspace = data.get('workspace'), raw = data.get('input');
     const isCodex = engines.find(item => item.id === engine).protocol === 'codex';
-    const model = data.get('model').trim(), effort = data.get('effort');
+    const model = data.get('model').trim(), effort = data.get('effort').trim();
     const input = data.get('format') === 'json' && !isCodex ? JSON.parse(raw) : isCodex
       ? { text:raw, ...(model ? { model } : {}), ...(effort ? { effort } : {}) } : raw;
     const detail = await api('/api/executions','POST',{ engine,input,
@@ -1118,62 +1194,85 @@ function openWakeupEdit(item, roomId) {
       wakeupRequest(item,{ event_or_time:{ kind:'room_base', room:rule.room, mode:data.get('mode') } }));
     return;
   }
-  const room = roomById(roomId || rule?.room || rule?.scope?.id);
-  const bots = room ? botOptions().filter(bot => room.members.includes(bot.value)) : botOptions();
-  const rooms = [{ value:'',label:'全部可访问空间' }, ...state.rooms.map(value => ({ value:value.id,label:value.name }))];
+  const selectedRoomId = item ? rule?.room?.id || rule?.room || (rule?.scope?.kind === 'room' ? rule.scope.id : '') : roomId;
+  const room = roomById(selectedRoomId);
+  const botsIn = scopedRoom => scopedRoom ? botOptions().filter(bot => scopedRoom.members.includes(bot.value)) : botOptions();
+  const bots = botsIn(room);
+  const rooms = [{ value:'',label:'全部可访问空间' }, ...state.rooms
+    .filter(room => !item || room.members.includes(item.bot_id) || room.id === selectedRoomId)
+    .map(value => ({ value:value.id,label:value.name }))];
+  if (selectedRoomId && !rooms.some(option => option.value === selectedRoomId)) rooms.push({ value:selectedRoomId,label:'当前会话范围' });
   const next = rule?.at ? new Date(rule.at) : null;
   const refId = rule?.ref?.id || '';
   const localTime = next && Number.isFinite(next.valueOf()) ? new Date(next.valueOf() - next.getTimezoneOffset() * 60000).toISOString().slice(0,16) : '';
   const kind = rule?.kind || 'event';
   const author = rule?.author?.id;
-  const types = ['message','file.revised','call.receipt'];
-  if (rule?.type && !types.includes(rule.type)) types.push(rule.type);
+  const eventTypes = ['message','file.revised','call.receipt'];
+  const intervalMinutes = rule?.interval_ms ? String(rule.interval_ms / 60000) : '';
   openModal(item ? '编辑订阅' : '新增订阅或提醒', '', (item ? '' : selectField('订阅类型','kind',[
     { value:'event',label:'事件订阅' },{ value:'time',label:'定时提醒' },
-  ],kind)) + (item ? '' : selectField('接收 Bot','bot',bots,bots[0]?.value)) +
-    selectField('会话范围','room',rooms,room?.id || '') + `<div class="form-row" data-wakeup-kind="event">
-    ${selectField('事件','event_type',types.map(value => ({ value,label:value })),rule?.type || 'message')}
-    ${selectField('作者','author',[{ value:'',label:'任意' },{ value:'user',label:ownerName() },...botOptions()],author || '')}</div>
+  ],kind)) + (item ? '' : selectField('接收 Bot','bot',[{value:'',label:'选择 Bot'},...bots],bots[0]?.value ?? '')) +
+    selectField('会话范围','room',rooms,selectedRoomId || '') + `<div class="form-row" data-wakeup-kind="event">
+    ${field('事件类型','event_type',rule?.type || 'message',{ list:'wakeup-event-types' })}
+    <datalist id="wakeup-event-types">${eventTypes.map(value => `<option value="${value}"></option>`).join('')}</datalist>
+    ${selectField('作者','author',[],author || '')}</div>
     <div class="form-row" data-wakeup-kind="event">
-    ${selectField('对象类型','ref_kind',[{value:'',label:'任意'},...['room','event','file','session','conversation','call'].map(value => ({value,label:refType[value]}))],rule?.ref?.kind || '')}
+    ${field('对象类型','ref_kind',rule?.ref?.kind || '',{ placeholder:'选填' })}
     ${field('对象 ID','ref_id',refId,{ placeholder:'选填' })}</div>
     <div class="form-row" data-wakeup-kind="time">${field('提醒时间','at',localTime,{ type:'datetime-local' })}
-    ${field('重复间隔（分钟）','interval',rule?.interval_ms ? rule.interval_ms / 60000 : '',{ type:'number', min:1 })}</div>`, async data => {
+    ${field('重复间隔（分钟）','interval',intervalMinutes,{ type:'number',step:'any' })}</div>`, async data => {
     const chosen = data.get('kind') || kind, roomId = data.get('room');
     let event_or_time;
     if (chosen === 'time') {
-      const at = new Date(data.get('at')), interval = Number(data.get('interval') || 0);
+      const at = new Date(data.get('at')), minutes = data.get('interval');
+      const interval = minutes === intervalMinutes && rule?.interval_ms ? rule.interval_ms : Math.round(Number(minutes) * 60000);
       if (!Number.isFinite(at.valueOf())) throw new Error('请选择提醒时间。');
-      event_or_time = { kind:'time', at:at.toISOString(), ...(interval ? { interval_ms:interval * 60000 } : {}),
-        ...(roomId ? { scope:roomRef(roomId) } : {}) };
+      if (minutes && (!Number.isSafeInteger(interval) || interval < 1000)) throw new Error('重复间隔至少为 1 秒。');
+      const scope = roomId ? roomRef(roomId) : rule?.scope?.kind !== 'room' ? rule?.scope : null;
+      event_or_time = { kind:'time', at:at.toISOString(), ...(minutes ? { interval_ms:interval } : {}), ...(scope ? { scope } : {}) };
     } else {
-      const author = data.get('author'), refKind = data.get('ref_kind'), refId = data.get('ref_id').trim();
+      const author = data.get('author'), refKind = data.get('ref_kind').trim(), refId = data.get('ref_id').trim();
       if (Boolean(refKind) !== Boolean(refId)) throw new Error('请选择对象类型并填写对应的 ID。');
-      event_or_time = { kind:'event', type:data.get('event_type'), ...(roomId ? { room:roomId } : {}),
-        ...(author ? { author:{ kind:author === 'user' ? 'user' : 'bot', id:author } } : {}), ...(refKind ? { ref:{ kind:refKind,id:refId } } : {}) };
+      const identity = author === rule?.author?.id ? rule.author : { kind:author === 'user' ? 'user' : 'bot',id:author };
+      event_or_time = { kind:'event', type:data.get('event_type').trim(), ...(roomId ? { room:roomId } : {}),
+        ...(author ? { author:identity } : {}), ...(refKind ? { ref:{ kind:refKind,id:refId } } : {}) };
     }
     if (item) await wakeupRequest(item,{ event_or_time });
-    else await api('/api/wakeups','POST',{ bot:{ kind:'bot',id:data.get('bot') }, event_or_time });
+    else {
+      if (!data.get('bot')) throw new Error('请选择接收 Bot。');
+      await api('/api/wakeups','POST',{ bot:{ kind:'bot',id:data.get('bot') }, event_or_time });
+    }
   });
   const form = $('#modal-form');
   const showKind = () => { for (const row of $$('[data-wakeup-kind]',form)) row.hidden = row.dataset.wakeupKind !== (form.elements.kind?.value || kind); };
   form.elements.kind?.addEventListener('change', showKind); showKind();
+  const updatePeople = (initial = false) => {
+    const options = botsIn(roomById(form.elements.room.value));
+    const populate = (name, choices, value) => {
+      const element = form.elements[name];
+      if (!element) return;
+      element.replaceChildren(...choices.map(item => new Option(item.label,item.value)));
+      element.value = choices.some(item => item.value === value) ? value : '';
+    };
+    const authors = [{value:'',label:'任意'},{value:'user',label:ownerName()},...options];
+    if (author && !authors.some(item => item.value === author)) authors.push({ value:author,label:author + ' · 当前作者' });
+    populate('bot',[{value:'',label:'选择 Bot'},...options],form.elements.bot?.value);
+    populate('author',authors,initial ? author || '' : form.elements.author.value);
+  };
+  form.elements.room.addEventListener('change', () => updatePeople());
+  updatePeople(true);
 }
 
 async function addReference() {
   const room = roomById(ui.roomId);
   if (!room) return;
-  const items = await readList('/api/files?room=' + encodeURIComponent(room.id));
-  const options = items.map(item => ({ value:refKey(item.ref), label:item.name || item.path }));
-  if (!options.length) {
-    openModal('添加资料引用','',field('文件 ID','file_id','',{ required:true }),data => {
-      addDraftReference(room.id,{ kind:'file',id:data.get('file_id').trim() });
-    },'加入消息');
-    return;
-  }
-  openModal('添加资料引用','',selectField('资料','file',options,options[0].value),data => {
-    const [kind,id] = JSON.parse(data.get('file'));
-    addDraftReference(room.id,{ kind,id });
+  const items = await readList('/api/files?room=' + encodeURIComponent(room.id)).catch(() => []);
+  if (ui.roomId !== room.id) return;
+  const options = [{ value:'',label:'选择资料' }, ...items.map(item => ({ value:item.id, label:item.name || item.path }))];
+  openModal('添加资料引用','',selectField('资料','file',options,'') + field('文件 ID','file_id','',{ placeholder:'也可直接填写可引用的文件 ID' }),data => {
+    const id = data.get('file_id').trim() || data.get('file');
+    if (id) addDraftReference(room.id,{ kind:'file',id });
+    else throw new Error('请选择资料或填写文件 ID。');
   },'加入消息');
 }
 
@@ -1211,7 +1310,8 @@ function configurePin(ref, remove) {
 function restoreMessageDraft(entry) {
   if (entry?.status !== 'rejected') return;
   const { roomId,clientId,payload,message } = entry;
-  if (ui.drafts[roomId] || attachmentDrafts(roomId).length || ui.draftReferences[roomId]?.length)
+  if (ui.drafts[roomId] || attachmentDrafts(roomId).length || ui.draftReferences[roomId]?.length
+    || ui.draftTargets[roomId]?.length || ui.reply?.roomId === roomId)
     throw new Error('请先保存或清空输入框里的草稿，再恢复这条消息。');
   ui.drafts[roomId] = payload.text;
   ui.draftTargets[roomId] = payload.mentions || [];
@@ -1251,6 +1351,16 @@ async function act(action, element) {
   if (action === 'close-modal') return closeModal();
   if (action === 'client-downloads') return window.SummonClients?.open(ui.releasesUrl);
   if (action === 'desktop-workspace') return window.SummonDesktop?.openWorkspaceSetup();
+  if (action === 'web-workspace') {
+    const options = [{ value:'',label:'主工作区' }, ...(ui.workspaceProfiles || []).map(profile => ({ value:profile.id,label:profile.name }))];
+    return openModal('切换工作区', '', selectField('工作区','workspace',options,workspaceProfile || ''), async data => {
+      await persistClientSession();
+      const url = new URL(location.href), workspace = data.get('workspace');
+      if (workspace) url.searchParams.set('workspace', workspace);
+      else url.searchParams.delete('workspace');
+      location.assign(url);
+    }, '打开工作区');
+  }
   if (action === 'update-app') { await persistClientSession(); location.reload(); return; }
   if (action === 'display-settings') return openDisplaySettings();
   if (action === 'copy-display-diagnostics') {
@@ -1305,13 +1415,18 @@ async function act(action, element) {
   if (action === 'remove-attachment') return removeAttachment(id);
   if (action === 'retry-attachment') {
     const item = attachmentDrafts().find(item => item.key === id);
-    if (item?.file && item.status === 'error') return uploadAttachment(ui.roomId,item);
+    if (ui.protocolReady && item?.file && ['error','staged'].includes(item.status)) return uploadAttachment(ui.roomId,item);
     return;
   }
   if (action === 'pin' || action === 'unpin') { await configurePin(ref,action === 'unpin'); return refresh(); }
   if (action === 'copy-conversation') {
-    await navigator.clipboard.writeText(ui.messages.map(message => nameOf(message.senderId) + ' · ' + formatTime(message.createdAt,true) + '\n' + message.content).join('\n\n'));
-    return toast('会话文字已复制');
+    const text = ui.messages.map(message => nameOf(message.senderId) + ' · ' + formatTime(message.createdAt,true) + '\n' + message.content).join('\n\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      return toast('已复制当前加载的会话文字');
+    } catch {
+      return openModal('复制已加载的会话文字', '', `<textarea class="execution-output" rows="10" aria-label="已加载的会话文字" readonly>${esc(text)}</textarea>`);
+    }
   }
   if (action === 'new-bot') return openCreateBot();
   if (action === 'edit-bot') return openBotEdit(botById(id));
@@ -1348,7 +1463,8 @@ async function act(action, element) {
   if (action === 'more-execution-output') {
     const detail = ui.executionDetail, selected = detail.execution_ref;
     const next = await api(executionPath(selected) + '?cursor=' + encodeURIComponent(detail.next_cursor));
-    if (sameRef(ui.executionRef,selected) && ui.executionDetail.next_cursor === detail.next_cursor) {
+    if (sameRef(ui.executionRef,selected) && ui.executionDetail?.next_cursor === detail.next_cursor
+      && (next.next_cursor !== detail.next_cursor || next.messages?.length || next.output_page?.text)) {
       const pages = detail.output_pages || (detail.output_page ? [detail.output_page] : []);
       const nextPage = next.output_page?.text ? [next.output_page] : [];
       ui.executionDetail = { ...next,messages:[...(detail.messages || []),...(next.messages || [])],output_pages:[...pages,...nextPage] }; render();
@@ -1361,9 +1477,10 @@ async function act(action, element) {
   if (action === 'add-wakeup' || action === 'edit-wakeup') return openWakeupEdit(wakeupById(id),element.dataset.room);
   if (action === 'toggle-wakeup') { const item = wakeupById(id); await wakeupRequest(item,{ enabled:!item.enabled }); return refresh(); }
   if (action === 'more-list') {
-    const page = ui.listPages[kind], endpoint = element.dataset.endpoint;
+    const page = ui.listPages[kind], endpoint = element.dataset.endpoint, navigation = ui.navigationSeq;
+    if (!page?.next_cursor) return;
     const next = await api(endpoint + '?cursor=' + encodeURIComponent(page.next_cursor));
-    if (ui.listPages[kind] === page) { setListPage(kind,next,true); render(); }
+    if (navigation === ui.navigationSeq && ui.listPages[kind]?.next_cursor === page.next_cursor) { setListPage(kind,next,true); render(); }
     return;
   }
   if (action === 'open-connection') return openReference({ kind:'connection',id });
@@ -1372,8 +1489,8 @@ async function act(action, element) {
   if (action === 'edit-limits') return openHostLimits();
 }
 function field(label, name, value = '', options = {}) {
-  const { type = 'text', placeholder = '', help = '', required = false, rows, min } = options;
-  const control = type === 'textarea' ? `<textarea id="field-${name}" name="${name}" ${required ? 'required' : ''} ${rows ? `rows="${rows}"` : ''} placeholder="${esc(placeholder)}">${esc(value)}</textarea>` : `<input id="field-${name}" name="${name}" type="${type}" value="${esc(value)}" ${required ? 'required' : ''} ${min != null ? `min="${min}"` : ''} placeholder="${esc(placeholder)}">`;
+  const { type = 'text', placeholder = '', help = '', required = false, rows, min, list, step } = options;
+  const control = type === 'textarea' ? `<textarea id="field-${name}" name="${name}" ${required ? 'required' : ''} ${rows ? `rows="${rows}"` : ''} placeholder="${esc(placeholder)}">${esc(value)}</textarea>` : `<input id="field-${name}" name="${name}" type="${type}" value="${esc(value)}" ${required ? 'required' : ''} ${min != null ? `min="${min}"` : ''} ${list ? `list="${esc(list)}"` : ''} ${step ? `step="${step}"` : ''} placeholder="${esc(placeholder)}">`;
   return `<div class="form-field"><label for="field-${name}">${esc(label)}</label>${control}${help ? `<small>${esc(help)}</small>` : ''}</div>`;
 }
 function selectField(label, name, options, value, help = '') { return `<div class="form-field"><label for="field-${name}">${label}</label><select id="field-${name}" name="${name}">${options.map(option => `<option value="${esc(option.value)}" ${option.value === value ? 'selected' : ''}>${esc(option.label)}</option>`).join('')}</select>${help ? `<small>${esc(help)}</small>` : ''}</div>`; }
@@ -1404,6 +1521,7 @@ document.addEventListener('click', event => {
   if (button && !button.disabled) act(button.dataset.action, button).catch(error => toast(error.message, true));
 });
 document.addEventListener('keydown', event => { if (event.key === 'Escape') closeFloatingMenus(); });
+document.addEventListener('summon-selection-warning', event => toast(event.detail, true));
 document.addEventListener('input', event => {
   if (event.target.id === 'display-zoom') return changeDisplayPreference('zoom', Number(event.target.value));
   if (event.target.id === 'display-font') return changeDisplayPreference('font', Number(event.target.value));
@@ -1411,9 +1529,10 @@ document.addEventListener('input', event => {
   if (event.target.id === 'message-input') { ui.drafts[event.target.form.dataset.roomId] = event.target.value; resizeComposer(event.target); persistClientSession(); }
   if (event.target.id === 'room-search') { ui.roomQuery = event.target.value; renderTopbar(); }
   const form = event.target.closest('.execution-input-form');
-  if (form && event.target.name === 'input') {
+  if (form && ['input','structured'].includes(event.target.name)) {
     const entry = ui.executionInputs.get(form.dataset.input) || {};
-    entry.text = event.target.value;
+    if (event.target.name === 'structured') entry.structured = event.target.checked;
+    else entry.text = event.target.value;
     ui.executionInputs.set(form.dataset.input, entry);
     persistClientSession();
   }
@@ -1451,13 +1570,19 @@ async function submitExecutionInput(form) {
   if (!text.length) return;
   const entry = ui.executionInputs.get(option.key) || {};
   if (entry.busy || entry.submitted) return;
-  if (entry.submittedText !== text) entry.clientId = newClientId();
-  Object.assign(entry,{ text,submittedText:text,busy:true }); ui.executionInputs.set(option.key,entry);
+  const structured = form.elements.structured?.checked === true;
+  let input = text;
+  if (structured) {
+    try { input = JSON.parse(text); }
+    catch { throw new Error('JSON 输入格式无效。'); }
+  }
+  if (entry.submittedText !== text || (entry.submittedStructured === true) !== structured) entry.clientId = newClientId();
+  Object.assign(entry,{ text,structured,submittedText:text,submittedStructured:structured,busy:true }); ui.executionInputs.set(option.key,entry);
   render();
   try {
     await persistClientSession();
     const receipt = await api('/api/executions/input','POST',{ target:detail.execution_ref,kind:option.kind,control_version:detail.control_version,
-      input_target:option.input_target,input:text },{ clientId:entry.clientId });
+      input_target:option.input_target,input },{ clientId:entry.clientId });
     entry.receipt = { status:receipt.status, call_id:receipt.call_id };
     entry.submitted = !['unknown','prepared','not_submitted','failed','unsupported'].includes(receipt.status);
     await refresh();
@@ -1591,7 +1716,8 @@ function renderTopbar() {
   const menu = ui.menu === 'create' ? `<div class="context-menu create-menu"><button data-action="new-bot">${icon('person', 19)}创建 Bot</button><button data-action="new-room">${icon('people', 19)}创建群聊</button></div>` : '';
   const settings = ui.menu === 'apps' ? `<div class="context-menu apps-menu">
     ${tabs.filter(tab => tab.id !== 'chat').map(tab => `<button data-action="navigate" data-view="${tab.id}">${icon(tab.icon, 19)}${tab.title}</button>`).join('')}
-    ${window.SummonDesktop?.openWorkspaceSetup ? `<button data-action="desktop-workspace">${icon('computer', 19)}切换工作区</button>` : ''}
+    ${window.SummonDesktop?.openWorkspaceSetup ? `<button data-action="desktop-workspace">${icon('computer', 19)}切换工作区</button>`
+      : workspaceProfile || ui.workspaceProfiles?.length ? `<button data-action="web-workspace">${icon('computer', 19)}切换工作区</button>` : ''}
     <button data-action="display-settings">${icon('settings', 19)}显示设置</button>
     <button data-action="client-downloads">${icon('install', 19)}客户端下载与更新</button>
     <button data-action="update-app">${icon('refresh', 19)}刷新页面</button></div>` : '';
@@ -1721,7 +1847,7 @@ function renderChat() {
     return divider + renderChatMessage(message, timeline, grouped, isGroup);
   }).join('');
   const chatMenu = ui.menu === 'chat-menu' ? `<div class="context-menu chat-menu">
-    <button data-action="toggle-details">${icon('info',19)}会话详情</button><button data-action="copy-conversation">${icon('copy',19)}复制会话文字</button>
+    <button data-action="toggle-details">${icon('info',19)}会话详情</button><button data-action="copy-conversation">${icon('copy',19)}复制已加载文字</button>
     <button data-action="edit-room">${icon('edit',19)}编辑会话</button><button data-action="leave-room">退出会话</button></div>` : '';
   const titleTag = window.SummonDesktop ? 'div' : 'button';
   const titleAction = window.SummonDesktop ? '' : `data-action="toggle-details" aria-expanded="${!!ui.detailOpen}"`;
@@ -1761,7 +1887,7 @@ function renderChatComposer(room, members) {
     ${references.length ? `<div class="reference-list draft-references">${references.map(ref => `<span>${renderReference(ref)}
       <button type="button" class="icon-button" aria-label="移除引用" data-action="remove-reference" data-kind="${esc(ref.kind)}" data-id="${esc(ref.id)}">${icon('close',14)}</button></span>`).join('')}</div>` : ''}
     <form id="message-form" class="composer" data-room-id="${esc(room.id)}">
-      <button class="composer-plus" type="button" data-action="attach-file" aria-label="添加附件" ${!ui.protocolReady || ui.sendingRooms.has(room.id) ? 'disabled' : ''}>${icon('plus',22)}</button>
+      <button class="composer-plus" type="button" data-action="attach-file" aria-label="添加附件" ${ui.sendingRooms.has(room.id) ? 'disabled' : ''}>${icon('plus',22)}</button>
       <textarea id="message-input" name="content" rows="1" maxlength="16000" aria-label="消息内容" placeholder="发消息…">${esc(ui.drafts[room.id] || '')}</textarea>
       <div class="composer-tools"><div class="menu-anchor">${members.length ? `<button class="composer-mention ${mentions.length ? 'has-target' : ''}" type="button"
         data-action="toggle-mention-menu" aria-label="@ 成员" aria-expanded="${ui.menu === 'mentions'}">${mentions.length ? esc(mentions.map(id => '@' + nameOf(id)).join(' ')) : '@'}</button>${menu}` : ''}</div>
@@ -1859,7 +1985,12 @@ async function loadExecution(ref) {
 
 function inputOptions(detail) {
   return (detail.input_targets || []).flatMap(option => (option.kinds || []).filter(kind => Object.hasOwn(inputActions, kind))
-    .map(kind => ({ ...option, kind, key: JSON.stringify([detail.execution_ref, detail.control_version, kind, option.input_target]) })));
+    .map(kind => {
+      const requestId = option.input_target?.request_id;
+      const request = requestId == null ? null : detail.pending_input?.find(item => item.id === requestId);
+      return { ...option, kind, question:request?.text ?? option.question, choices:request?.choices ?? option.choices,
+        key:JSON.stringify([detail.execution_ref,detail.control_version,kind,option.input_target]) };
+    }));
 }
 
 function renderInputOption(option, index) {
@@ -1870,9 +2001,10 @@ function renderInputOption(option, index) {
   const choices = option.choices || [];
   return `<form class="execution-input-form" data-input="${esc(option.key)}"><label for="${id}">${inputActions[option.kind]}</label>
     <small>${esc(inputLabels[target.kind] || target.kind)} · ${esc(nativeId)}${target.request_id ? ` · 请求 ${esc(target.request_id)}` : ''}</small>
-    ${question ? `<p>${esc(question)}</p>` : ''}
+    ${question ? `<p class="execution-input-question">${esc(question)}</p>` : ''}
     ${choices.length ? `<select name="input" id="${id}" required><option value="">选择回答</option>${choices.map(choice => `<option value="${esc(choice.id)}" ${pending?.text === choice.id ? 'selected' : ''}>${esc(choice.label || choice.id)}</option>`).join('')}</select>`
-      : `<textarea id="${id}" name="input" rows="2" required>${esc(pending?.text || '')}</textarea>`}
+      : `<textarea id="${id}" name="input" rows="2" required>${esc(pending?.text || '')}</textarea>
+        ${target.kind === 'service_call' ? `<label class="checkbox-line"><input type="checkbox" name="structured" ${pending?.structured ? 'checked' : ''}>JSON 输入</label>` : ''}`}
     ${pending?.receipt?.status ? `<small>原输入回执 · ${esc(labels[pending.receipt.status] || pending.receipt.status)}</small>` : ''}
     <button class="primary-button" type="submit" ${!ui.protocolReady || pending?.busy || pending?.submitted ? 'disabled' : ''}>${pending?.submitted ? '已提交' : inputActions[option.kind]}</button></form>`;
 }
@@ -1909,8 +2041,7 @@ function renderExecutionDetail(detail) {
     ${ui.stopResults ? `<ul class="execution-stop-results">${ui.stopResults.map(item => `<li>${esc(refLabel(item.target))} · ${esc(stopLabels[item.control.stop_status] || item.control.stop_status)}</li>`).join('')}</ul>` : ''}
     ${inputOptions(detail).map(renderInputOption).join('')}
     ${output || logs || streamOutput ? `<h3>输入与输出</h3>${output}${logs}${streamOutput}` : ''}
-    ${detail.next_cursor && (detail.output_page?.more || !detail.output_page || ['running','needs_input','submitted'].includes(detail.status))
-      ? '<button data-action="more-execution-output" class="text-button">读取后续日志</button>' : ''}`;
+    ${detail.next_cursor ? '<button data-action="more-execution-output" class="text-button">读取后续日志</button>' : ''}`;
 }
 
 function trackedList(kind, endpoint, renderRow) {
@@ -2006,7 +2137,7 @@ function renderAvatarPicker(mode = 'create') {
   const saveStatus = save?.error ? `<div class="avatar-save-status error" role="status">头像尚未保存<button type="button" data-action="avatar-save-retry">重试</button><small>${esc(save.error)}</small></div>` : save && (save.running || save.savedVersion !== save.version) ? '<div class="avatar-save-status" role="status">正在保存…</div>' : mode === 'edit' ? '<div class="avatar-save-status" aria-hidden="true"></div>' : ''; 
   const picker = `<div class="shape-grid">${window.SummonAvatars.shapes.map(shape => `<button type="button" class="shape-choice ${selected.shape === shape.id && !selected.image ? 'selected' : ''}" data-action="avatar-shape" data-shape="${shape.id}" data-mode="${mode}" aria-label="${shape.label}" aria-pressed="${selected.shape === shape.id}">${face({ ...selected, shape: shape.id, image: null }, 52, { static: true })}<small>${shape.label}</small></button>`).join('')}</div><div class="crew-palettes">${window.SummonAvatars.templates.map(p => `<button type="button" data-action="avatar-template" data-template="${p.id}" data-mode="${mode}" title="${p.name}" aria-label="${p.name}" aria-pressed="${selected.color === p.color && selected.secondary === p.secondary}" style="background:linear-gradient(135deg,${p.color} 82%,${p.secondary} 82%)">${p.name}</button>`).join('')}</div><details class="crew-custom" ${ui.avatarCustomOpen ? 'open' : ''}><summary>自定义颜色</summary>${[['color','纸片颜色'],['secondary','衬纸颜色'],['ink','边线颜色'],['paper','眼睛留白']].map(([key,label])=>`<label>${label}<input type="color" data-avatar-custom="${key}" data-mode="${mode}" value="${selected[key]}"></label>`).join('')}</details>`;
 
-  return `${saveStatus}<div class="avatar-picker ${mode === 'create' ? 'create-picker' : ''}">${mode === 'edit' ? `<div class="avatar-tabs">${[{ id: 'bot', label: 'Bot' }, { id: 'generate', label: '生成' }, { id: 'upload', label: '上传' }].map(item => `<button type="button" class="${tab === item.id ? 'active' : ''}" data-action="avatar-tab" data-tab="${item.id}">${item.label}</button>`).join('')}<button class="avatar-reset" type="button" data-action="avatar-reset">重置</button></div>` : ''}${mode === 'create' || tab === 'bot' ? picker : tab === 'generate' ? `<div class="avatar-tool"><p>随机组合造型与颜色</p><button class="secondary-button" data-action="avatar-random" type="button">${icon('spark', 18)}生成一个造型</button></div>` : `<div class="avatar-tool"><p>使用自己的图片</p><label class="upload-label" for="avatar-upload">${icon('upload', 23)}选择图片</label><input id="avatar-upload" type="file" accept="image/png,image/jpeg,image/webp" hidden><small>PNG、JPG 或 WebP，将缩放后保存在本机</small></div>`}</div>`;
+  return `${saveStatus}<div class="avatar-picker ${mode === 'create' ? 'create-picker' : ''}">${mode === 'edit' ? `<div class="avatar-tabs">${[{ id: 'bot', label: 'Bot' }, { id: 'generate', label: '生成' }, { id: 'upload', label: '上传' }].map(item => `<button type="button" class="${tab === item.id ? 'active' : ''}" data-action="avatar-tab" data-tab="${item.id}">${item.label}</button>`).join('')}<button class="avatar-reset" type="button" data-action="avatar-reset">重置</button></div>` : ''}${mode === 'create' || tab === 'bot' ? picker : tab === 'generate' ? `<div class="avatar-tool"><p>随机组合造型与颜色</p><button class="secondary-button" data-action="avatar-random" type="button">${icon('spark', 18)}生成一个造型</button></div>` : `<div class="avatar-tool"><p>使用自己的图片</p><label class="upload-label" for="avatar-upload">${icon('upload', 23)}选择图片</label><input id="avatar-upload" type="file" accept="image/*" hidden><small>所选图片将缩放为头像</small></div>`}</div>`;
 }
 function openCreateBot() {
   window.SummonAvatars?.release('slot:create-preview');
@@ -2068,7 +2199,6 @@ document.addEventListener('change', async event => {
   if (!file || !botId) return;
   const revision = ++ui.avatarSelectionRevision;
   try {
-    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) throw new Error('请选择 PNG、JPG 或 WebP 图片。');
     const source = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = () => reject(new Error('无法读取图片。')); reader.readAsDataURL(file); });
     const img = await new Promise((resolve, reject) => { const image = new Image(); image.onload = () => resolve(image); image.onerror = () => reject(new Error('无法打开这张图片。')); image.src = source; });
     const canvas = document.createElement('canvas'), ratio = Math.min(1, 256 / Math.max(img.width, img.height));

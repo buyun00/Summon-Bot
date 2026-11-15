@@ -40,17 +40,7 @@ export const MIN_BLOCK = Math.max(...STATES.map((s) => s.morph))
  */
 export const MAX_BLOCK = 10
 
-/**
- * Combien de blocs et de montages on accepte, a l'edition comme a la relecture.
- *
- * Ce ne sont pas des limites de produit mais des bornes contre un stockage hostile, qui
- * est modifiable et tient quelques megaoctets alors que rien en aval n'est dimensionne
- * pour ca : un seul cycle de 150 000 blocs, soit environ 4 Mo de JSON, donne 1 500 000 s
- * de duree, autant de graduations a allouer et une piste de 29 700 000 px de large.
- * L'onglet figeait en entrant dans la vue Animations.
- *
- * 200 blocs font une demi-heure de montage, largement au-dela de tout usage.
- */
+/** Limites d'ajout et taille des pages d'edition pour les montages deja stockes. */
 export const MAX_BLOCS = 200
 export const MAX_CYCLES = 50
 
@@ -127,14 +117,7 @@ export function blockAt(blocks: Block[], t: number): { index: number; elapsed: n
   return { index: blocks.length - 1, elapsed: 0 }
 }
 
-/**
- * Ajoute une animation a la fin du montage (palette de droite ou carte « + »).
- *
- * Plafonnee a `MAX_BLOCS`, comme la relecture. Sans ca l'editeur laissait construire un
- * montage plus grand que ce que le stockage rend au rechargement, et le travail
- * disparaissait en silence — une borne de relecture qui n'est pas aussi une borne d'edition
- * est un piege, pas une protection.
- */
+/** Ajoute une animation a la fin du montage dans la limite d'edition. */
 export function blocksWith(blocks: Block[], state: StateId): Block[] {
   if (blocks.length >= MAX_BLOCS) return blocks
   return [...blocks, makeBlock(state)]
@@ -184,22 +167,19 @@ function parseBlock(raw: unknown): Block | null {
   return { state: state as StateId, duration: clampDuration(state as StateId, duration) }
 }
 
-function parseCycle(raw: unknown, seen: Cycle[]): Cycle | null {
+function parseCycle(raw: unknown): Cycle | null {
   if (typeof raw !== 'object' || raw === null) return null
   const { id, name, blocks } = raw as { id?: unknown; name?: unknown; blocks?: unknown }
   if (typeof id !== 'string' || !id) return null
   // le nom peut etre vide — c'est le montage d'amorce, qui suit la langue
   if (typeof name !== 'string') return null
   if (!Array.isArray(blocks)) return null
-  // on tronque AVANT de relire : valider 150 000 blocs pour n'en garder que 200 serait
-  // faire le travail qu'on cherche justement a eviter
-  const kept = blocks
-    .slice(0, MAX_BLOCS)
-    .map(parseBlock)
-    .filter((b): b is Block => b !== null)
-  if (!kept.length) return null
-  if (seen.some((c) => c.id === id)) return null
-  return { id, name, blocks: kept }
+  const restored: Block[] = []
+  for (const entry of blocks) {
+    const block = parseBlock(entry)
+    if (block) restored.push(block)
+  }
+  return restored.length ? { id, name, blocks: restored } : null
 }
 
 /**
@@ -217,9 +197,13 @@ export function parseCycles(raw: string | null): Cycle[] {
   }
   if (!Array.isArray(data)) return []
   const out: Cycle[] = []
-  for (const item of data.slice(0, MAX_CYCLES)) {
-    const cycle = parseCycle(item, out)
-    if (cycle) out.push(cycle)
+  const seen = new Set<string>()
+  for (const item of data) {
+    const cycle = parseCycle(item)
+    if (cycle && !seen.has(cycle.id)) {
+      seen.add(cycle.id)
+      out.push(cycle)
+    }
   }
   return out
 }

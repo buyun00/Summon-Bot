@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as pause } from 'node:timers/promises';
 import { inputRecords, observeExitedCodexLaunch, operationRecords, settled } from '../../capabilities/services/session-processes.mjs';
-import { inspectService, stopService } from './system.mjs';
+import { bundledNode, inspectService, stopService } from './system.mjs';
 import { inspectServiceLock } from './service-lock.mjs';
 import { advanceInstallation, writeInstallationState } from './installation-state.mjs';
 
@@ -19,13 +19,22 @@ const stoppedDrain = (state, exited) => ({
   started_calls: state.drain?.started_calls || [], active: [], ready: true, intake_closed: true,
   ...(exited.length ? { exited_writers: exited } : {}),
 });
+const nativeOwner = config => ({
+  runtimePath: bundledNode(config.releaseRoot),
+  bridgePath: join(config.releaseRoot, 'capabilities', 'codex', 'app-server.mjs'),
+});
 
-export async function installationRequest(config, service, method = 'GET') {
+export async function installationRequest(config, service, method = 'GET', signal) {
   if (!service?.controlUrl || !['127.0.0.1', '[::1]'].includes(new URL(service.controlUrl).hostname)) {
-    throw failure('The current gateway has no local installation control endpoint');
+    throw failure(`Gateway PID ${service?.pid ?? 'unknown'} has no reachable local installation control endpoint (${service?.state ?? 'unknown'})`);
   }
+  if (!service.releaseRoot || resolve(service.releaseRoot) !== resolve(config.releaseRoot)) {
+    throw failure(`Gateway PID ${service.pid} belongs to release ${service.releaseRoot || 'unknown'}; expected ${config.releaseRoot}`);
+  }
+  const timeout = AbortSignal.timeout(10000);
   const response = await fetch(new URL('/installation', service.controlUrl), {
-    method, headers: { Authorization: `Bearer ${config.controlToken}` }, signal: AbortSignal.timeout(10000),
+    method, redirect: 'error', headers: { Authorization: `Bearer ${config.controlToken}` },
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
   });
   if (!response.ok) throw failure(`Gateway installation control returned HTTP ${response.status}`);
   const result = await response.json();
@@ -33,50 +42,45 @@ export async function installationRequest(config, service, method = 'GET') {
   return result;
 }
 
-export async function enterDrain({ dataRoot, state, previous, owner }) {
-  if (!previous) return advanceInstallation(dataRoot, state, 'draining', { cutoff: new Date().toISOString(), drain: { started_calls: [], active: [], ready: true } });
-  const gateway = await owner.gateway();
-  if (gateway.state === 'stopped') {
-    const exited = await owner.assertStopped();
-    return advanceInstallation(dataRoot, state, 'draining', { cutoff: state.cutoff || new Date().toISOString(),
-      intake_closed: true, drain: stoppedDrain(state, exited) });
-  } else {
-    const support = await installationRequest(previous, gateway);
-    if (support.supportsDrain !== true) throw failure('The running gateway cannot drain installations using its current protocol');
-  }
+export function enterDrain({ dataRoot, state }) {
   return advanceInstallation(dataRoot, state, 'draining', { cutoff: state.cutoff || new Date().toISOString() });
 }
 
-export async function finishDrain({ dataRoot, state, previous, owner, onProgress }) {
+export async function finishDrain({ dataRoot, state, previous, owner, onProgress, timeoutMs = 180000, signal }) {
   if (!previous) return state;
+  const deadline = Date.now() + (Number.isSafeInteger(timeoutMs) && timeoutMs > 0 ? timeoutMs : 180000);
   const sameReport = (left, right) => JSON.stringify(left) === JSON.stringify(right);
-  for (;;) {
+  const stopOptions = { deadline, signal, onProgress };
+  let waiting;
+  while (Date.now() < deadline) {
+    signal?.throwIfAborted();
     const gateway = await owner.gateway();
     if (gateway.state === 'stopped') {
-      if (state.intake_closed && state.drain?.ready && state.drain.intake_closed) await owner.stop();
-      const exited = await owner.assertStopped({ drain: state.drain });
-      if (exited) {
-        return writeInstallationState(dataRoot, { ...state, intake_closed: true, drain: stoppedDrain(state, exited) });
-      }
-      return state;
+      await owner.stop(stopOptions);
+      const exited = await owner.assertStopped({ drain: state.drain }) ?? state.drain?.exited_writers ?? [];
+      return writeInstallationState(dataRoot, { ...state, intake_closed: true, drain: stoppedDrain(state, exited) });
     }
-    if (gateway.state === 'stopping' && state.intake_closed && state.drain?.ready && state.drain.intake_closed) {
-      await owner.stop();
-      await owner.assertStopped({ drain: state.drain });
-      return state;
+    if (gateway.state !== 'ready') {
+      const observed = `gateway PID ${gateway.pid} (${gateway.state})`;
+      if (waiting !== observed) onProgress?.({ phase: state.phase, writer: observed });
+      waiting = observed;
+      await pause(Math.max(0, Math.min(1500, deadline - Date.now())), undefined, { signal });
+      continue;
     }
-    if (gateway.state !== 'ready') throw failure(`The gateway owner is ${gateway.state}; drain status remains unknown`);
-    const facts = await installationRequest(previous, gateway, 'POST');
+    waiting = undefined;
+    const facts = await installationRequest(previous, gateway, 'POST', signal);
     if (facts.migration_id !== state.migration_id || !Array.isArray(facts.active) || typeof facts.ready !== 'boolean') {
       throw failure('The gateway has not confirmed the current installation window');
     }
-    const active = facts.active.map(call => ({ kind: String(call.kind), id: String(call.id), status: String(call.status) }));
+    const active = facts.active.map(call => ({ kind: String(call.kind), id: String(call.id), status: String(call.status),
+      ...(call.instance_id || call.native?.instance_id ? { instance_id: String(call.instance_id || call.native.instance_id) } : {}),
+      ...(call.pid ? { pid: call.pid } : {}) }));
     const started = (facts.started_calls || active).map(call => ({ kind: String(call.kind), id: String(call.id) }));
     // A disappeared report can also be a real receipt or a lost observation.
     // Keep the last proof until the closed-window pass can check the store.
     const witnesses = new Map((state.drain?.exited_writers || []).map(writer => [writer.call_id, writer]));
     const observed = active.filter(codexLaunchIsUnknown).map(item => item.id);
-    const exited = (await observeExitedWriters(dataRoot, [...witnesses.keys(), ...observed]))
+    const exited = (await observeExitedWriters(dataRoot, [...witnesses.keys(), ...observed], nativeOwner(previous)))
       .filter(writer => !witnesses.has(writer.call_id) || sameWriter(writer, witnesses.get(writer.call_id)));
     for (const writer of exited) witnesses.set(writer.call_id, writer);
     const confirmed = new Set(exited.map(writer => writer.call_id));
@@ -91,20 +95,27 @@ export async function finishDrain({ dataRoot, state, previous, owner, onProgress
       state = await writeInstallationState(dataRoot, { ...state, drain });
       onProgress?.({ phase: state.phase, drain });
     }
-    if (!drain.ready) { await pause(2500); continue; }
+    if (!drain.ready) { await pause(Math.max(0, Math.min(2500, deadline - Date.now())), undefined, { signal }); continue; }
     if (!state.intake_closed) {
       state = await writeInstallationState(dataRoot, { ...state, intake_closed: true });
       continue;
     }
     if (facts.intake_closed !== true) throw failure('The gateway did not close intake for the final stop');
-    if (!await confirmWriterBoundary(dataRoot, state.drain)) { await pause(2500); continue; }
-    await owner.stop();
+    if (!await confirmWriterBoundary(dataRoot, state.drain, nativeOwner(previous))) {
+      await pause(Math.max(0, Math.min(2500, deadline - Date.now())), undefined, { signal });
+      continue;
+    }
+    await owner.stop(stopOptions);
     await owner.assertStopped({ drain: state.drain });
     return state;
   }
+  const active = state.drain?.active?.map(item => `${item.kind} ${item.id} (${item.status})`).join(', ');
+  throw failure(`Installation drain paused for build ${state.target_build}: ${waiting || active || 'writer exit not confirmed'}. Run the same release command to resume.`,
+    'INSTALLATION_DRAIN_TIMEOUT');
 }
 
-async function observeStoppedNativeWriters(dataRoot) {
+export async function observeStoppedNativeWriters(config) {
+  const { dataRoot } = config;
   const path = join(dataRoot, 'capabilities', 'chatroom', 'state.sqlite');
   if (!existsSync(path)) return [];
   const db = new DatabaseSync(path, { readOnly: true });
@@ -114,18 +125,19 @@ async function observeStoppedNativeWriters(dataRoot) {
     const operations = records.all(operationRecords).map(row => JSON.parse(row.data));
     const inputs = records.all(inputRecords).map(row => JSON.parse(row.data));
     uncertain = operations.filter(item => item.submitted_at && !hasWriterBoundary(item));
-    pending = inputs.find(item => !item.receipt && ['writing', 'submitted'].includes(item.status));
+    pending = inputs.find(item => !item.migrated && !item.receipt && ['writing', 'submitted'].includes(item.status));
   } finally { db.close(); }
-  const exited = await observeExitedWriters(dataRoot, uncertain.map(item => item.id));
+  const exited = await observeExitedWriters(dataRoot, uncertain.map(item => item.id), nativeOwner(config));
   const confirmed = new Set(exited.map(item => item.call_id));
   const unsettled = pending || uncertain.find(item => !confirmed.has(item.id));
   if (unsettled) {
-    throw failure(`The stopped gateway left execution ${unsettled.id} without a confirmed writer boundary`, 'INSTALLATION_ACTIVE_WRITER');
+    throw failure(`The stopped gateway left ${pending ? 'input' : 'execution'} ${unsettled.id} (${unsettled.status}) without a confirmed writer boundary`,
+      'INSTALLATION_ACTIVE_WRITER');
   }
   return exited;
 }
 
-async function observeExitedWriters(dataRoot, callIds) {
+async function observeExitedWriters(dataRoot, callIds, owner) {
   if (!callIds.length) return [];
   const db = new DatabaseSync(join(dataRoot, 'capabilities', 'chatroom', 'state.sqlite'), { readOnly: true });
   try {
@@ -133,6 +145,7 @@ async function observeExitedWriters(dataRoot, callIds) {
     const pendingInput = db.prepare(`
       SELECT 1 FROM records WHERE kind=? AND json_extract(data,'$.operation_id')=?
         AND json_extract(data,'$.status') IN ('writing','submitted') AND json_extract(data,'$.receipt') IS NULL
+        AND COALESCE(json_extract(data,'$.migrated'), 0) = 0
       LIMIT 1`);
     const read = id => !pendingInput.get(inputRecords, id) && getOperation.get(operationRecords, id)?.data;
     const exited = [];
@@ -142,7 +155,7 @@ async function observeExitedWriters(dataRoot, callIds) {
       const operation = JSON.parse(record);
       if (operation.protocol !== 'codex' || !operation.instance_id) continue;
       const boundary = hasWriterBoundary(operation) ||
-        operation.status === 'unknown' && await observeExitedCodexLaunch(dataRoot, operation);
+        operation.status === 'unknown' && await observeExitedCodexLaunch(dataRoot, operation, owner);
       if (boundary && read(id) === record) {
         exited.push({ call_id: id, instance_id: operation.instance_id, runner_pid: operation.runner_pid ?? null,
           bridge_pid: operation.child_pid ?? null, submitted_at: operation.submitted_at });
@@ -152,31 +165,43 @@ async function observeExitedWriters(dataRoot, callIds) {
   } finally { db.close(); }
 }
 
-async function confirmWriterBoundary(dataRoot, drain) {
+async function confirmWriterBoundary(dataRoot, drain, owner) {
   const previous = drain?.exited_writers || [];
-  const current = await observeExitedWriters(dataRoot, previous.map(item => item.call_id));
+  const current = await observeExitedWriters(dataRoot, previous.map(item => item.call_id), owner);
   return current.length === previous.length && current.every((item, index) => sameWriter(item, previous[index]));
 }
 
 export function currentWriters(config) {
   const types = ['web', 'gateway', 'cloudflared', 'remote-bridge'];
+  const passive = ['watchdog', 'remote-access-operation'];
   return {
     gateway: () => inspectService(config, 'gateway'),
-    async stop() {
-      for (const type of types) await stopService(config, type, { waitForExit: true });
-      while (await inspectServiceLock(config.dataRoot, 'watchdog')) await pause(150);
-    },
-    async assertStopped({ drain } = {}) {
+    async stop({ deadline, signal, onProgress }) {
       for (const type of types) {
-        if ((await inspectService(config, type)).state !== 'stopped') {
-          throw failure(`The selected deployment still has a ${type} writer`, 'INSTALLATION_ACTIVE_WRITER');
+        signal?.throwIfAborted();
+        onProgress?.({ phase: 'draining', service: type });
+        await stopService(config, type, { timeoutMs: Math.max(1, deadline - Date.now()), signal });
+      }
+      for (const type of passive) {
+        let lastOwner;
+        for (;;) {
+          signal?.throwIfAborted();
+          const owner = await inspectServiceLock(config.dataRoot, type);
+          if (!owner) break;
+          if (Date.now() >= deadline) throw failure(`${type} PID ${owner.pid} is still active (${owner.state}); resume after it exits`, 'INSTALLATION_ACTIVE_WRITER');
+          if (lastOwner !== owner.pid) onProgress?.({ phase: 'draining', service: type, pid: owner.pid, state: owner.state });
+          lastOwner = owner.pid;
+          await pause(Math.max(0, Math.min(250, deadline - Date.now())), undefined, { signal });
         }
       }
-      if (await inspectServiceLock(config.dataRoot, 'remote-access-operation')) {
-        throw failure('A remote access configuration writer is still active', 'INSTALLATION_ACTIVE_WRITER');
+    },
+    async assertStopped({ drain } = {}) {
+      for (const type of [...types, ...passive]) {
+        const owner = await inspectServiceLock(config.dataRoot, type);
+        if (owner) throw failure(`${type} PID ${owner.pid} still owns the service (${owner.state})`, 'INSTALLATION_ACTIVE_WRITER');
       }
-      if (!drain?.ready || !drain.intake_closed) return observeStoppedNativeWriters(config.dataRoot);
-      if (!await confirmWriterBoundary(config.dataRoot, drain)) {
+      if (!drain?.ready || !drain.intake_closed) return observeStoppedNativeWriters(config);
+      if (!await confirmWriterBoundary(config.dataRoot, drain, nativeOwner(config))) {
         throw failure('The disconnected Codex launch no longer has a confirmed writer boundary', 'INSTALLATION_ACTIVE_WRITER');
       }
     },

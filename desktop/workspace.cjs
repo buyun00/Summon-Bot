@@ -42,8 +42,9 @@ async function login(session, origin, token, local) {
   if (response.status === 401) throw new Error(local
     ? '本机正式实例拒绝了部署配置中的访问令牌。' : '工作区访问令牌无效。');
   const { name, secure } = sessionCookie(origin);
-  const cookie = response.headers.get('set-cookie')?.split(';', 1)[0] || '';
-  const value = cookie.startsWith(name + '=') ? cookie.slice(name.length + 1) : '';
+  const cookie = response.headers.getSetCookie().map(value => value.split(';', 1)[0])
+    .find(value => value.startsWith(name + '='));
+  const value = cookie?.slice(name.length + 1) || '';
   if (!response.ok || !/^[A-Za-z0-9._-]{1,160}$/.test(value)) throw new Error('该地址没有返回有效的 Summon Bot 登录会话。');
   try {
     await session.cookies.set({ url: origin + '/', name, value, path: '/', secure, httpOnly: true,

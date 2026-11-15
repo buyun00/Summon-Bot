@@ -89,7 +89,7 @@ export class Calls {
   }
 
   reserveExternal(id, limits) {
-    const count = this.store.list(callRecords).filter(call => call.external &&
+    const count = this.store.list(callRecords).filter(call => call.external && call.lease_id &&
       (call.status === 'submitted' || call.status === 'unknown' && call.safe_to_disconnect !== true)).length;
     limits.assertCapacity('reserved_calls', count);
     return this.store.save(callRecords, { id, external: true, status: 'submitted' });

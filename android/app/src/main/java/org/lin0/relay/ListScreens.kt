@@ -318,17 +318,20 @@ private fun SettingsSheet(store: SummonStore, updater: SummonAppUpdater, onDismi
             Spacer(Modifier.height(16.dp))
             Text("个人信息", color = Color(0xFF8E8E93))
             OutlinedTextField(userName, { userName = it }, label = { Text("显示名称") }, modifier = Modifier.fillMaxWidth())
+            TextButton(enabled = userName != store.settings.userName, onClick = {
+                store.setUserName(userName); userName = store.settings.userName
+            }) { Text("保存显示名称") }
             Spacer(Modifier.height(12.dp))
             Text("服务连接", color = Color(0xFF8E8E93))
             OutlinedTextField(baseURL, { baseURL = it }, label = { Text("https://你的工作区地址") }, modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), singleLine = true)
             OutlinedTextField(token, { token = it }, label = { Text("工作区访问令牌") }, modifier = Modifier.fillMaxWidth(), visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), singleLine = true)
-            Text("使用部署机提供的 HTTPS 地址和访问令牌。令牌保存在系统加密存储中。", color = Color(0xFF8E8E93), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 8.dp))
-            if (store.profiles.isNotEmpty()) {
+            Text("使用部署机提供的 HTTPS 地址和访问令牌。本机回环及 .local 地址可使用 HTTP。令牌保存在系统加密存储中。", color = Color(0xFF8E8E93), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 8.dp))
+            if (store.profiles.isNotEmpty() || store.settings.workspaceID != null) {
                 Text("工作区", style = MaterialTheme.typography.titleMedium)
                 val choices = listOf(SummonWorkspaceProfile("", "默认工作区")) + store.profiles
                 choices.forEach { profile ->
                     val id = profile.id.ifEmpty { null }
-                    TextButton(enabled = !saving && store.protocolReady, onClick = {
+                    TextButton(enabled = !saving && id != store.settings.workspaceID, onClick = {
                         saving = true; error = null
                         scope.launch {
                             try { store.selectWorkspace(id); onDismiss() }
@@ -345,7 +348,7 @@ private fun SettingsSheet(store: SummonStore, updater: SummonAppUpdater, onDismi
             Button(onClick = {
                 scope.launch {
                     saving = true; error = null
-                    try { store.saveConnection(baseURL, token, userName); onDismiss() }
+                    try { store.saveConnection(baseURL, token); onDismiss() }
                     catch (exception: Exception) { error = exception.message }
                     finally { saving = false }
                 }
@@ -378,8 +381,14 @@ fun CreateBotSheet(store: SummonStore, onOpenRoom: (String) -> Unit, onDismiss: 
             Text("创建新 Bot", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(16.dp))
             GreetingAvatar(avatar)
-            OutlinedTextField(name, { name = it.take(100) }, placeholder = { Text("为 Bot 取个名字") }, modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp))
-            AvatarPicker(avatar) { avatar = it }
+            val savedBot = created
+            val title = name.trim()
+            if (savedBot == null) {
+                OutlinedTextField(name, { name = it }, placeholder = { Text("为 Bot 取个名字") },
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp))
+                if (title.length > 100) Text("Bot 名称不能超过 100 个字符。", color = Color(0xFFFF9F0A))
+                AvatarPicker(avatar) { avatar = it }
+            } else Text("${savedBot.name} 已创建", Modifier.padding(vertical = 16.dp))
             error?.let { Text(it, color = Color(0xFFFF9F0A)) }
             Button(onClick = {
                 scope.launch {
@@ -391,7 +400,8 @@ fun CreateBotSheet(store: SummonStore, onOpenRoom: (String) -> Unit, onDismiss: 
                     } catch (exception: Exception) { error = exception.message }
                     finally { busy = false }
                 }
-            }, enabled = !busy && store.protocolReady && name.isNotBlank(), modifier = Modifier.fillMaxWidth().padding(top = 18.dp)) {
+            }, enabled = !busy && store.protocolReady && (created != null || title.isNotEmpty() && title.length <= 100),
+                modifier = Modifier.fillMaxWidth().padding(top = 18.dp)) {
                 Text(if (created == null) "创建" else "打开聊天")
             }
             Spacer(Modifier.height(24.dp))

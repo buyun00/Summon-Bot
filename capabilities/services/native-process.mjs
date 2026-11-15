@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { nativeCommand, nativeEnvironment, redactNative } from './native-host.mjs';
+import { nativeCommand, nativeEnvironment, redactNative, redactNativeCredentials } from './native-host.mjs';
 import { guardStillMatches } from './session-processes.mjs';
 import { terminateTree } from '../../bot/src/runtime/process-tools.mjs';
 
@@ -52,6 +52,14 @@ const record = patch => {
 };
 const event = (type, value) => append('events.jsonl', JSON.stringify({ type, at: now(), ...value }) + '\n');
 const field = (value, size) => typeof value === 'string' ? clean(value).slice(0, size) : null;
+const maxNativeLine = 262_144;
+const nativeText = (value, limit) => typeof value === 'string' && value.length > 0 && value.length <= limit && !value.includes('\0');
+const credentialFree = value => redactNativeCredentials(value, secrets) === value;
+
+function unsupportedRequest(error, requestId) {
+  record({ error, code: 'native_request_unsupported', status: 'awaiting-input' });
+  event('input-error', { requestId, error });
+}
 
 function protocolLine(line) {
   if (!eventProtocol || !line.trim().startsWith('{')) return;
@@ -121,15 +129,24 @@ function protocolLine(line) {
     event('input-result', result);
   }
   if (message.type === 'request' && !stopping) {
-    const id = field(message.id, 256), text = field(message.text, 4000);
-    if (!id || !text || state.pending.some(item => item.id === id) || state.pending.length >= 32) return;
-    const choices = Array.isArray(message.choices) ? message.choices.slice(0, 12)
-      .filter(choice => field(choice?.id, 256) && field(choice?.label, 256))
-      .map(choice => ({ id: field(choice.id, 256), label: field(choice.label, 256) })) : [];
     if (codex && message.turnId !== state.nativeTurnId) return;
-    const request = { id, text, turnId: state.nativeTurnId,
+    const id = nativeText(message.id, 256) && credentialFree(message.id) ? message.id : undefined;
+    if (id && state.pending.some(item => item.id === id)) return;
+    if (message.isSecret === true) return unsupportedRequest('The native question requires a channel that can protect secret input', id);
+    if (!id || !nativeText(message.text, 32_768))
+      return unsupportedRequest('The native request has an invalid ID or exceeds the question size limit', id);
+    if (state.pending.length >= 32) return unsupportedRequest('The native process has more than 32 unanswered requests', id);
+    const options = message.choices ?? [];
+    if (!Array.isArray(options) || options.some(choice => !nativeText(choice?.id, 32_768) ||
+        !nativeText(choice?.label, 32_768) || !credentialFree(choice.id)) ||
+        new Set(options.map(choice => choice.id)).size !== options.length) {
+      return unsupportedRequest('The native request provided invalid, ambiguous, or unsupported choices', id);
+    }
+    const choices = options.map(choice => ({ id: choice.id, label: clean(choice.label) }));
+    const request = { id, text: clean(message.text), turnId: state.nativeTurnId,
       kind: ['question', 'approval', 'login'].includes(message.kind) ? message.kind : 'question', choices };
-    if (request.kind === 'approval' && !choices.length) return;
+    if (request.kind === 'approval' && !choices.length)
+      return unsupportedRequest('The native approval does not offer a supported decision', id);
     record({ status: 'awaiting-input', pending: [...state.pending, request] });
     event('request', { request });
   }
@@ -147,11 +164,22 @@ function protocolLine(line) {
 }
 
 function pipe(stream, name) {
-  let buffer = '';
+  let buffer = '', fragmented = false;
   stream.setEncoding('utf8');
-  const line = value => {
+  const line = (value, complete = true) => {
     append(name, clean(value));
-    if (name === 'stdout.log') protocolLine(value);
+    if (name === 'stdout.log' && eventProtocol && !fragmented) {
+      if (complete && value.length <= maxNativeLine) protocolLine(value);
+      else if (/^\s*\{\s*"summonEvent"\s*:/.test(value)) {
+        const error = 'The native protocol event exceeds the size limit and was not decoded';
+        if (/"type"\s*:\s*"request"/.test(value.slice(0, 1024))) unsupportedRequest(error);
+        else {
+          record({ error, code: 'native_event_unsupported' });
+          event('input-error', { error });
+        }
+      }
+    }
+    fragmented = !complete;
   };
   stream.on('data', chunk => {
     buffer += chunk;
@@ -159,8 +187,8 @@ function pipe(stream, name) {
       line(buffer.slice(0, end + 1));
       buffer = buffer.slice(end + 1);
     }
-    if (buffer.length > 262_144) {
-      append(name, clean(buffer.slice(0, -65_536)));
+    if (buffer.length > maxNativeLine) {
+      line(buffer.slice(0, -65_536), false);
       buffer = buffer.slice(-65_536);
     }
   });
@@ -210,12 +238,20 @@ async function applyCommand(command, path) {
     receipt({ status: 'requested' });
     if (eventProtocol) {
       void writeInput(JSON.stringify({ summonInput: { type: 'stop', id: command.id } }) + '\n').catch(() => {});
-      if (!codex) stopTimer = setTimeout(() => { if (!finished) void terminateTree(child); }, 3000);
-    } else void terminateTree(child);
+      if (!codex) stopTimer = setTimeout(() => {
+        if (!finished && child.exitCode === null && child.signalCode === null) void terminateTree(child);
+      }, 3000);
+    } else if (child.exitCode === null && child.signalCode === null) void terminateTree(child);
     return;
   }
   if (stopping || finished || !state.stdinOpen || !child.stdin.writable || !allowed(command.guard)) {
     receipt({ status: 'not_submitted', error: 'The process input is closed or its authorization changed' }); return;
+  }
+  if (!nativeText(command.text, 32_768)) {
+    receipt({ status: 'not_submitted', error: 'The native input must be text of up to 32768 characters without NUL' }); return;
+  }
+  if (!credentialFree(command.text)) {
+    receipt({ status: 'not_submitted', error: 'Use the configured process credential reference' }); return;
   }
   if (codex && (!state.nativeTurnId || command.expectedTurnId !== state.nativeTurnId || state.nativeOutcome)) {
     receipt({ status: 'rejected', error: 'The requested Codex turn is no longer active' }); return;
@@ -276,7 +312,7 @@ function start() {
       pollTask = poll().catch(error => event('supervisor-error', { error: clean(error.message) })).finally(() => { pollTask = null; });
     }, 750);
   });
-  child.once('error', error => finish({ status: 'failed', error: clean(error.message) }));
+  child.once('error', error => finish({ status: state.startedAt ? 'failed' : 'not_submitted', error: clean(error.message) }));
   if (codex) child.once('exit', drainExitedBridge);
   child.once('close', (exitCode, exitSignal) => finish({
     status: codex ? state.nativeOutcome || (state.nativeTurnId || state.turnSubmitted || state.threadSubmitted ? 'unknown' : stopping ? 'stopped' : 'failed') :
@@ -285,4 +321,4 @@ function start() {
 }
 
 try { start(); }
-catch (error) { finish({ status: 'failed', error: clean(error.message) }); }
+catch (error) { finish({ status: child ? 'failed' : 'not_submitted', error: clean(error.message) }); }
