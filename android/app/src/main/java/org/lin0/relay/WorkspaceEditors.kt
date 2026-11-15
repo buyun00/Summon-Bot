@@ -342,7 +342,7 @@ internal fun LimitsEditor(store: SummonStore, close: () -> Unit) {
 }
 
 @Composable
-private fun SummonToggle(label: String, enabled: Boolean, update: (Boolean) -> Unit) {
+internal fun SummonToggle(label: String, enabled: Boolean, update: (Boolean) -> Unit) {
     Row(Modifier.padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
         Checkbox(enabled, update)
         Text(label)

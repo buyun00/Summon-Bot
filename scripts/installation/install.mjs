@@ -1,9 +1,8 @@
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { copyFile, mkdir, mkdtemp, readdir, realpath, rename, unlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 import { copyTree, parseArgs, readJson, within, writeJson } from '../build/files.mjs';
 import { assertClientAvailability } from '../release/availability.mjs';
 import { removeInside } from '../release/repository.mjs';
@@ -13,7 +12,6 @@ import { stageConfiguration } from './configuration.mjs';
 import { acquireServiceLock } from './service-lock.mjs';
 import { createDeployment, deploymentPath, startSystem } from './system.mjs';
 
-const run = promisify(execFile);
 const launchers = ['Start.ps1', 'Start-Hidden.vbs', 'Stop.ps1', 'Run.cmd'];
 const readOptional = async path => {
   try { return await readJson(path); }
@@ -78,8 +76,25 @@ async function cleanReleases({ appRoot, sourceRoot, destination }) {
 async function startSelected(config, appRoot, previousIntent) {
   if (previousIntent === 'stopped' || config.runIntent === 'stopped') return 'stopped';
   if (process.platform === 'win32') {
-    await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', join(appRoot, 'Start.ps1'), '-DataRoot', config.dataRoot, '-RespectIntent'],
-      { windowsHide: true, timeout: 420000 });
+    const args = ['-NoProfile', '-NonInteractive', '-File', join(appRoot, 'Start.ps1'), '-DataRoot', config.dataRoot, '-RespectIntent'];
+    await new Promise((accept, reject) => {
+      const launcher = spawn('powershell.exe', args, { windowsHide: true, stdio: ['ignore', 'inherit', 'inherit'] });
+      const timer = setTimeout(() => {
+        launcher.kill();
+        reject(new Error('The Windows launcher did not exit before its startup deadline'));
+      }, 420000);
+      launcher.once('error', error => {
+        clearTimeout(timer);
+        reject(error);
+      });
+      // A detached service can retain an inherited console handle. The launcher
+      // exit reports startup, independently of when all its handles close.
+      launcher.once('exit', (code, signal) => {
+        clearTimeout(timer);
+        if (code === 0) accept();
+        else reject(new Error(`The Windows launcher exited with ${code ?? signal}`));
+      });
+    });
   } else {
     await startSystem(config, { respectIntent: true });
   }
