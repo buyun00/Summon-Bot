@@ -356,14 +356,12 @@ export class SummonPlatform {
       reject('workspace_forbidden', 'The shared workspace must be explicitly selected as a resource', 403);
     }
     if (workspace && !selected.some(ref => sameRef(ref, workspace.ref))) selected.push(workspace.ref);
+    if (sharing && engine !== 'pi') selected.push({ kind: 'connection', id: engine });
     const resource_refs = [...new Map(selected.map(ref => [keyOf(ref.kind, ref.id), ref])).values()];
     if (!this.canUseConnection(actor, engine, context) || !this.canUseResources(actor, resource_refs, context)) {
       reject('execution_resources_forbidden', 'The requested execution resources are unavailable', 403);
     }
     if (engine !== 'pi' && !connection?.enabled) reject('connection_unavailable', 'Execution connection is unavailable', 409);
-    if (sharing && engine !== 'pi' && !resource_refs.some(ref => sameRef(ref, { kind: 'connection', id: engine }))) {
-      reject('execution_resources_forbidden', 'The shared execution connection must be explicitly selected as a resource', 403);
-    }
     if (sharing && !this.roomMembers(space.id).every(member => resource_refs.filter(ref => ref.kind === 'file' || ref.kind === 'event')
       .every(ref => this.canReadReference(ref, this.principalContext(identity(member), context.workspaceProfileId))))) {
       reject('share_forbidden', 'The shared execution materials must be available to the Room audience', 403);

@@ -59,7 +59,9 @@ const definitions = [
   ['configure_room', 'Update the title, membership and pins in one Room revision.',
     object({ room: refOrId, revision: integer, title: text, add_members: array(principal), remove_members: array(principal),
       pin_add: array(ref), pin_remove: array(ref) }, ['room', 'revision'])],
-  ['open_session', 'Open an actual Pi or external execution. Explicit sharing requires Room access and a resource scope.',
+  ['open_session', 'Open a Pi or external execution. For a private Session from a Room conversation, omit space and sharing. ' +
+    'To share the Session, set space to an accessible Room, specify sharing.readers, sharing.submitters and sharing.controllers, ' +
+    'and pass resource_refs, including the workspace grant when using a workspace. The selected external engine is included in shared resources.',
     object({ engine: refOrId, input: value, workspace: { anyOf: [ref, text] }, space: ref,
       sharing: object({ readers: array(principal), submitters: array(principal), controllers: array(principal) }, ['readers', 'submitters', 'controllers']),
       resource_refs: array(ref) }, ['engine', 'input'])],
