@@ -8,7 +8,8 @@ import { guardStillMatches } from '../services/session-processes.mjs';
 const [executable, mode, originalThread, originalTurn, originalCall] = process.argv.slice(2);
 const command = nativeCommand(executable, ['app-server', '--stdio']);
 const server = spawn(command.file, command.args, { ...command.options, cwd: process.cwd(),
-  windowsHide: true, stdio: ['pipe', 'pipe', 'inherit'] });
+  windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+server.stderr.pipe(process.stderr, { end: false });
 const input = createInterface({ input: process.stdin });
 const output = createInterface({ input: server.stdout });
 const emit = (type, fields = {}) => process.stdout.write(JSON.stringify({ summonEvent: { type, ...fields } }) + '\n');
@@ -16,6 +17,7 @@ const textInput = text => [{ type: 'text', text }];
 const requests = new Map(), prompts = new Map();
 let nextId = 0, threadId, turnId, finalText, lastMessage, terminal, modelRerouted, ending = false;
 let threadSubmitted = false, turnSubmitted = false;
+let serverClosed = false, shutdownTimer;
 const filesByItem = new Map();
 let starting = true, stopping = false, requireReadOnly = false, guardDb;
 
@@ -53,10 +55,19 @@ function finish(status, error) {
   if (!mode) emit('outcome', { status, error });
   process.exitCode = status === 'completed' || status === 'stopped' ? 0 : 1;
   input.close();
-  process.stdin.pause();
+  process.stdin.destroy();
+  if (serverClosed) return;
   server.stdin.end();
-  const timer = setTimeout(() => { if (server.exitCode === null) server.kill(); }, 1_000);
-  timer.unref();
+  // Allow outstanding RPC replies to drain. A descendant can keep the
+  // server's pipe open after the server itself has exited.
+  shutdownTimer = setTimeout(() => {
+    if (server.exitCode === null && server.signalCode === null) server.kill();
+    output.close();
+    server.stdin.destroy();
+    server.stdout.destroy();
+    server.stderr.destroy();
+    disconnected('Codex app-server transport closed before acknowledging the request');
+  }, 1_000);
 }
 
 function bindTurn(turn) {
@@ -148,7 +159,7 @@ function observe(method, p) {
         emit('progress', { ...lastMessage, turnId, phase: item.phase });
     }
   }
-  if (method === 'turn/completed' && p.turn?.id === turnId) {
+  if (method === 'turn/completed' && turnId && p.turn?.id === turnId) {
     terminal = p.turn;
     const final = finalText || lastMessage;
     if (final?.text) emit('result', { ...final, turnId, confirmed: terminal.status === 'completed' && !modelRerouted });
@@ -160,6 +171,7 @@ function observe(method, p) {
 output.on('line', line => {
   let message;
   try { message = JSON.parse(line); } catch { process.stderr.write(line + '\n'); return; }
+  if (ending && message.method) return;
   if (message.method && message.id !== undefined) {
     try {
       const prompt = nativePrompt(message);
@@ -191,7 +203,11 @@ function disconnected(error) {
 
 server.on('error', error => disconnected(error.message));
 server.stdin.on('error', error => disconnected(error.message));
-server.on('close', () => disconnected('Codex app-server closed before confirming the outcome'));
+server.once('close', () => {
+  serverClosed = true;
+  clearTimeout(shutdownTimer);
+  disconnected('Codex app-server closed before confirming the outcome');
+});
 
 async function interrupt() {
   if (turnId && !ending) await rpc('turn/interrupt', { threadId, turnId }).catch(error => process.stderr.write(error.message + '\n'));

@@ -21,7 +21,7 @@ const append = (name, text) => appendFileSync(join(directory, name), text, { mod
 // If the launching service lost its receipt it must never start this action a second time.
 writeFileSync(own, String(process.pid), { flag: 'wx', mode: 0o600 });
 
-let child, timer, stopTimer, pollTask, stopping = false, finished = false, heartbeatBlocked = false, secrets = [];
+let child, timer, stopTimer, drainTimer, pollTask, stopping = false, finished = false, heartbeatBlocked = false, secrets = [];
 const nativeInputs = new Map(), answers = new Set();
 const state = { nonce: manifest.nonce, runnerPid: process.pid, status: 'starting', pending: [],
   stdinOpen: false, nativeSessionId: manifest.sessionId || null };
@@ -99,8 +99,9 @@ function protocolLine(line) {
       output: field(message.output, 4000), exitCode: Number.isInteger(exitCode) ? exitCode : null });
   }
   if (codex && message.type === 'outcome' && ['completed', 'failed', 'stopped', 'unknown', 'not_submitted', 'unsupported'].includes(message.status)) {
-    record({ nativeOutcome: message.status, error: field(message.error, 4000) });
+    record({ nativeOutcome: message.status, stdinOpen: false, error: field(message.error, 4000) });
     event('outcome', { status: message.status, nativeTurnId: state.nativeTurnId, error: state.error });
+    drainExitedBridge();
   }
   if (codex && message.type === 'model-rerouted' && message.turnId === state.nativeTurnId) {
     const reroute = { from: field(message.from, 128), to: field(message.to, 128), reason: field(message.reason, 256) };
@@ -171,6 +172,7 @@ function finish(patch) {
   finished = true;
   clearInterval(timer);
   clearTimeout(stopTimer);
+  clearTimeout(drainTimer);
   const settle = () => {
     guardDb?.close();
     event('exit', { status: patch.status, exitCode: patch.exitCode, exitSignal: patch.exitSignal, error: patch.error ?? state.error });
@@ -178,6 +180,17 @@ function finish(patch) {
   };
   if (pollTask) void pollTask.then(settle);
   else settle();
+}
+
+function drainExitedBridge() {
+  if (!codex || finished || drainTimer || !state.nativeOutcome ||
+      child.exitCode === null && child.signalCode === null) return;
+  // The bridge reported an outcome and has exited. Close our ends of
+  // inherited pipes if their remaining copies do not deliver EOF.
+  drainTimer = setTimeout(() => {
+    child.stdout.destroy();
+    child.stderr.destroy();
+  }, 1_000);
 }
 
 function writeInput(text) {
@@ -264,6 +277,7 @@ function start() {
     }, 750);
   });
   child.once('error', error => finish({ status: 'failed', error: clean(error.message) }));
+  if (codex) child.once('exit', drainExitedBridge);
   child.once('close', (exitCode, exitSignal) => finish({
     status: codex ? state.nativeOutcome || (state.nativeTurnId || state.turnSubmitted || state.threadSubmitted ? 'unknown' : stopping ? 'stopped' : 'failed') :
       stopping ? 'stopped' : exitCode === 0 ? 'completed' : 'failed', exitCode, exitSignal,
