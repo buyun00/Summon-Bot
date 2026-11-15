@@ -14,6 +14,7 @@ export { connectionRecords } from './connection-records.mjs';
 
 const codexStatus = { completed: 'completed', interrupted: 'stopped', failed: 'failed' };
 const nativeKind = kind => kind === 'cli' || kind === 'codex';
+const stdioMcp = entry => entry.kind === 'mcp' && entry.config.transport === 'stdio';
 const actorOf = context => context?.actor || context;
 const callSession = (session, call) => ({ id: call.id, session_id: session.id, submitted_by: call.submitted_by });
 const text = value => typeof value === 'string' && value.length > 0 && value.length <= 32_768 && !value.includes('\0');
@@ -113,7 +114,24 @@ export class SummonConnections {
         args: 'argument strings', stdin: 'optional text', keep_input: 'optional boolean', file_args: 'optional file argument roles' },
       direct_arguments: canSupplyProcessArguments(entry, actor), file_operands: await nativeFileOperands(), methods });
     }
-    return { ...summary, methods: await this.services.methods(entry, actor, context?.signal) };
+    let cwd = this.workspace;
+    if (stdioMcp(entry)) {
+      this.requireUsable(entry, actor, { runtime: false });
+      const session = context?.session ? this.current(context.session) : undefined;
+      try {
+        cwd = await this.serviceWorkingDirectory(entry, session, { fromSession: Boolean(session) });
+      } catch (error) {
+        if (error.code !== 'scoped_process_unsupported') throw error;
+        return { ...summary, status: 'unsupported', code: error.code, error: this.clean(error.message) };
+      }
+      this.assertRunning(context?.signal);
+      const current = this.requireUsable(this.get(entry.id), actor);
+      if (current.revision !== entry.revision)
+        reject('connection_binding_changed', 'The service connection changed before method discovery', 409);
+      if (session && this.current(session).authority_revoked)
+        reject('session_authority_revoked', 'The Session no longer has its assigned execution authority', 403);
+    }
+    return { ...summary, methods: await this.services.methods(entry, actor, cwd, context?.signal) };
   }
 
   settings(context) {
@@ -202,17 +220,20 @@ export class SummonConnections {
     });
   }
 
+  async serviceWorkingDirectory(entry, session = {}, options) {
+    const workspace = await executionWorkspace(session, entry, this, options);
+    if (stdioMcp(entry) && (workspace.isReadOnly || workspace.hasFileScope))
+      reject('scoped_process_unsupported', 'This MCP stdio process cannot enforce the Session’s file restrictions', 403);
+    return workspace.cwd;
+  }
+
   async startService(entry, session, call, input, beforeSubmit, signal) {
     const operation = this.store.save(operationRecords, { ...callSession(session, call), protocol: 'service',
       launch_call_id: call.id, connection_id: entry.id, execution_actor: session.execution_actor,
       connection_binding_version: entry.binding_version ?? 1, status: 'prepared', input_revision: (session.input_revision || 0) + 1 });
     let started = false;
     try {
-      const local = entry.kind === 'mcp' && entry.config.transport === 'stdio';
-      const workspace = local || session.workspace ? await executionWorkspace(session, entry, this) : null;
-      if (local && (workspace.isReadOnly || workspace.hasFileScope))
-        reject('scoped_process_unsupported', 'This MCP stdio process cannot enforce the Session’s file restrictions', 403);
-      const cwd = workspace?.cwd ?? this.workspace;
+      const cwd = stdioMcp(entry) || session.workspace ? await this.serviceWorkingDirectory(entry, session) : this.workspace;
       this.active.set(operation.id, true);
       const result = await this.services.invoke(entry, session.execution_actor, cwd, input, call.id, async () => {
         this.assertRunning(signal);
@@ -237,8 +258,9 @@ export class SummonConnections {
     } catch (error) {
       const unsupported = !started && [mcpTasksUnsupported, 'scoped_process_unsupported'].includes(error.code);
       const unknown = started && (error.outcomeUnknown || signal?.aborted || error.name === 'AbortError');
+      const code = unsupported || !started && error.code === 'workspace_required' ? error.code : undefined;
       const saved = this.saveOperation(operation, { status: unsupported ? 'unsupported' : unknown ? 'unknown' : started ? 'failed' : 'not_submitted',
-        runtime_ended: !unknown, error: this.clean(error.message), ...(unsupported ? { code: error.code } : {}) });
+        runtime_ended: !unknown, error: this.clean(error.message), ...(code ? { code } : {}) });
       return this.operationFacts(saved, session);
     } finally { this.active.delete(operation.id); }
   }

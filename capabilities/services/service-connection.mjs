@@ -96,8 +96,8 @@ export class ServiceConnections {
     return source;
   }
 
-  async methods(entry, actor, signal) {
-    const source = await this.source(entry, actor, undefined, signal);
+  async methods(entry, actor, workspace, signal) {
+    const source = await this.source(entry, actor, workspace, signal);
     return source.tools.map(tool => ({ id: tool.name, name: tool.name, description: tool.description, input_schema: tool.inputSchema,
       ...(tool.requiresTasks ? { status: 'unsupported', code: mcpTasksUnsupported, task_support: 'required' } : {}) }));
   }

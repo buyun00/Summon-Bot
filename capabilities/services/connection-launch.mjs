@@ -43,7 +43,7 @@ export function codexInput(input, configured = {}, binding) {
   return { text: requireText(data.text, 100_000), model, effort };
 }
 
-export async function executionWorkspace(session, entry, { workspace, dataRoot }) {
+export async function executionWorkspace(session, entry, { workspace, dataRoot }, { fromSession = false } = {}) {
   const scope = session.workspace;
   const selected = scope?.path;
   const granted = session.workspace_ref?.kind === 'workspace' && session.resource_refs?.some(ref =>
@@ -53,6 +53,9 @@ export async function executionWorkspace(session, entry, { workspace, dataRoot }
   if (selected && !granted) reject('workspace_forbidden', 'The workspace has no persisted execution grant', 403);
   if (!selected && session.sharing && entry.kind !== 'http' && !(entry.kind === 'mcp' && entry.config.transport === 'http'))
     reject('workspace_forbidden', 'This shared connection requires an explicit workspace grant', 403);
+  if (!selected && !entry.config.workspace_root && entry.kind === 'mcp' && entry.config.transport === 'stdio' &&
+      (fromSession || session.origin_execution?.kind === 'session'))
+    reject('workspace_required', 'Select an authorized workspace or use an MCP stdio connection with a configured working directory', 409);
   const root = scope?.root || entry.config.workspace_root || workspace;
   const target = selected || root;
   const requestedPolicy = session.path_policy || scope?.path_policy || {};
