@@ -8,6 +8,11 @@ export const files = 'platform-files';
 export const fileRevisions = 'platform-file-revisions';
 const maximumFileBytes = 20 * 1024 * 1024;
 
+function rejectFileSize(size) {
+  reject('file_too_large', `File exceeds the storage size limit of ${maximumFileBytes} bytes`, 413,
+    { max_bytes: maximumFileBytes, size_bytes: size });
+}
+
 function filePath(value) {
   if (typeof value !== 'string' || !value || value.length > 500 || /[\\:\p{Cc}]/u.test(value) || value.split('/').some(part => !part || part === '.' || part === '..')) {
     reject('invalid_path', 'File path must be a relative path within its space');
@@ -34,7 +39,7 @@ export class Files {
     const handle = await open(checked, 'r');
     try {
       const size = await handle.stat();
-      if (!size.isFile() || size.size > maximumFileBytes) reject('file_too_large', 'File exceeds the storage size limit', 413);
+      if (!size.isFile() || size.size > maximumFileBytes) rejectFileSize(size.size);
       const actual = await checkPath(name, { file: true });
       const verified = await lstat(actual);
       if (!verified.isFile() || size.nlink !== 1 || verified.ino !== size.ino || verified.dev !== size.dev || !samePath(actual, checked)) {
@@ -160,7 +165,7 @@ export class Files {
       }
     }
     if (typeof content === 'string') size = Buffer.byteLength(content);
-    if (!Number.isSafeInteger(size) || size > maximumFileBytes) reject('file_too_large', 'File exceeds the storage size limit', 413);
+    if (!Number.isSafeInteger(size) || size > maximumFileBytes) rejectFileSize(size);
     const id = before?.id || callId;
     const revision = (before?.revision || 0) + 1;
     const saved = this.store.save(files, { id, space, path, revision, size, author: context.actor, sources, content, attachment_id, blob,
