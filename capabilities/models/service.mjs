@@ -27,12 +27,15 @@ export class ModelConnections {
   }
   async initialize() {
     if (!existsSync(this.path)) {
-      const original = this.initialModel || {};
-      await saveModelJson(this.path, { schemaVersion: 1, activeId: 'api-deepseek', environmentFile: join(this.dataRoot, 'config', 'runtime.env'),
-        connections: [{ id: 'api-deepseek', kind: 'api', name: original.provider === 'deepseek' ? 'DeepSeek' : '现有 API', provider: original.provider || 'openai-compatible',
-          api: original.api || 'openai-completions', baseUrl: original.baseUrl || 'https://api.deepseek.com/v1', model: original.model || 'deepseek-flash',
-          apiKeyEnv: original.apiKeyEnv, contextWindow: original.contextWindow, maxTokens: original.maxTokens, thinkingLevel: original.thinkingLevel || 'high' }] });
-      if (original.apiKey) await this.credentials.modify('api-deepseek', async () => ({ type: 'api_key', key: original.apiKey }));
+      const original = this.initialModel;
+      const configured = original?.baseUrl && original.model;
+      const activeId = configured ? 'api-deepseek' : null;
+      const connections = configured ? [{ id: activeId, kind: 'api', name: original.provider === 'deepseek' ? 'DeepSeek' : '现有 API',
+        provider: original.provider || 'openai-compatible', api: original.api || 'openai-completions', baseUrl: original.baseUrl, model: original.model,
+        apiKeyEnv: original.apiKeyEnv, allowNoKey: original.allowNoKey, contextWindow: original.contextWindow,
+        maxTokens: original.maxTokens, thinkingLevel: original.thinkingLevel || 'high' }] : [];
+      await saveModelJson(this.path, { schemaVersion: 1, activeId, environmentFile: join(this.dataRoot, 'config', 'runtime.env'), connections });
+      if (activeId && original.apiKey) await this.credentials.modify(activeId, async () => ({ type: 'api_key', key: original.apiKey }));
     }
     try { this.usage = JSON.parse(await readFile(this.usagePath, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     this.startUsage();
@@ -337,6 +340,7 @@ export class ModelConnections {
     const catalog = this.catalog();
     const ids = profileId === undefined ? [...new Set([catalog.activeId, ...Object.values(catalog.activeByProfile || {})])].filter(Boolean)
       : [this.activeId(catalog, profileId)].filter(Boolean);
+    if (!ids.length) return this.summary(profileId);
     await Promise.all(ids.map(id => this.refreshOne(id, force)));
     const commit = (this.usageWrite || Promise.resolve()).catch(() => {}).then(() => saveModelJson(this.usagePath, this.usage));
     this.usageWrite = commit;

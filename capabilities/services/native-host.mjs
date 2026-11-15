@@ -36,10 +36,11 @@ export async function localExecutable(path) {
   return { file: path, canonicalFile: file, name: executableName(path), size: info.size, modifiedAt: info.mtimeMs };
 }
 
-export function nativeEnvironment(references = {}, authorized = []) {
+export function nativeEnvironment(references = {}, authorized = [], { codex = false } = {}) {
   if (!references || Array.isArray(references) || typeof references !== 'object') fail('Environment must map variable names to existing credential references');
   const base = /^(?:PATH|PATHEXT|COMSPEC|SYSTEMROOT|SYSTEMDRIVE|WINDIR|HOME|USERPROFILE|HOMEDRIVE|HOMEPATH|APPDATA|LOCALAPPDATA|PROGRAMDATA|PROGRAMFILES(?:\(X86\))?|PROGRAMW6432|TEMP|TMP|TMPDIR|USER|USERNAME|LANG|LANGUAGE|LC_[A-Z_]+|SHELL|TERM|XDG_(?:CONFIG|DATA|CACHE|STATE|RUNTIME)_HOME)$/i;
   const env = Object.fromEntries(Object.entries(cleanEnvironment()).filter(([key]) => base.test(key)));
+  if (codex && process.env.CODEX_HOME) env.CODEX_HOME = process.env.CODEX_HOME;
   const secrets = [];
   for (const [key, ref] of Object.entries(references)) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(ref?.env || '')) fail('Use {env: NAME} credential references');
@@ -62,8 +63,8 @@ export function redactNative(text, secrets = []) {
     .replace(/((?:authorization|password|passwd|(?:access|refresh)[_-]?token|api[_-]?key|client[_-]?secret)["']?\s*[:=]\s*["']?(?:Bearer )?)[^\s"',}]+/gi, '$1[redacted]');
 }
 
-export async function inspectNative(file, args, cwd, { signal, timeoutMs = 4000, env: refs, authorizedEnv } = {}) {
-  const { env, secrets } = nativeEnvironment(refs, authorizedEnv);
+export async function inspectNative(file, args, cwd, { signal, timeoutMs = 4000, env: refs, authorizedEnv, codex } = {}) {
+  const { env, secrets } = nativeEnvironment(refs, authorizedEnv, { codex });
   const command = nativeCommand(file, nativeArgs(args));
   signal?.throwIfAborted();
   const startedAt = new Date().toISOString();

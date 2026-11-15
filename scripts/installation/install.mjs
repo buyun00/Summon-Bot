@@ -154,7 +154,8 @@ export async function installRelease({ releaseRoot, appRoot, dataRoot, sourceRoo
       await owner?.assertStopped({ drain: state.drain });
       const { defaultLimits } = await import(new URL('../../capabilities/platform/resources.mjs', import.meta.url));
       const current = deployment || createDeployment({ dataRoot, releaseRoot: destination, defaultCwd, port });
-      await mkdir(current.defaultCwd, { recursive: true });
+      const localWorkspace = join(dataRoot, 'workspace');
+      if (!deployment && current.defaultCwd === localWorkspace) await mkdir(localWorkspace, { recursive: true });
       await stageConfiguration({ dataRoot, state, deployment: current, defaultLimits, publicOrigin });
       state = await advanceInstallation(dataRoot, state, 'data_ready');
     }

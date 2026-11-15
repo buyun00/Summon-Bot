@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { isAbsolute, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { idOf, keyOf, reject, sameRef, user } from '../platform/contract.mjs';
 import { canSupplyProcessArguments, codexBridge, codexInput, connectionExecutable, executionWorkspace, prepareProcess } from './connection-launch.mjs';
-import { connectionAllowed, connectionRecords, executionRecords, plain, validateConnection } from './connection-records.mjs';
+import { connectionAllowed, connectionAuthorized, connectionRecords, executionRecords, plain, validateConnection } from './connection-records.mjs';
 import { inspectNative, redactNative } from './native-host.mjs';
 import { nativeFileOperands } from './native-references.mjs';
 import { assertServiceConfig, credentialNames, mcpTasksUnsupported, ServiceConnections } from './service-connection.mjs';
@@ -66,11 +66,11 @@ export class SummonConnections {
     });
   }
 
-  requireUsable(entry, actor) {
-    if (!connectionAllowed(entry, actor)) reject('connection_forbidden', 'The connection is unavailable for this actor', 403);
-    if (!this.available(entry)) reject('connection_unavailable', 'The connection or a required credential is unavailable', 409);
-    if (!(entry.dependencies || []).every(id => connectionAllowed(this.get(id), actor)))
-      reject('connection_forbidden', 'A required connection is outside the caller’s grants', 403);
+  authorized(entry, actor) { return connectionAuthorized(entry, actor, id => this.get(id)); }
+
+  requireUsable(entry, actor, { runtime = true } = {}) {
+    if (!this.authorized(entry, actor)) reject('connection_forbidden', 'The connection or a dependency is outside the caller’s grants', 403);
+    if (runtime && !this.available(entry)) reject('connection_unavailable', 'The connection executable or a required resource is unavailable', 409);
     return entry;
   }
 
@@ -84,9 +84,9 @@ export class SummonConnections {
     return actor;
   }
 
-  summary(entry) {
+  summary(entry, { checkAvailability = true } = {}) {
     return this.clean({ kind: 'connection', protocol: entry.kind, id: entry.id, name: entry.name, description: entry.description,
-      revision: entry.revision, enabled: entry.enabled, available: this.available(entry), version: entry.version });
+      revision: entry.revision, enabled: entry.enabled, ...(checkAvailability ? { available: this.available(entry) } : {}), version: entry.version });
   }
 
   find(context, query = '') {
@@ -139,11 +139,7 @@ export class SummonConnections {
     validateConnection(entry);
     if (typeof entry.name !== 'string' || !entry.name.trim()) reject('invalid_connection', 'Connection name is required');
     if (previous && previous.kind !== entry.kind) reject('connection_binding_conflict', 'Use a new id for another connection protocol', 409);
-    if (nativeKind(entry.kind)) {
-      await connectionExecutable(entry, this.workspace, this.dataRoot);
-      if (entry.config.workspace_root && !isAbsolute(entry.config.workspace_root))
-        reject('invalid_connection', 'Workspace root must be an absolute host path');
-    } else assertServiceConfig(entry);
+    if (!nativeKind(entry.kind)) assertServiceConfig(entry);
     const changed = previous && !isDeepStrictEqual(bindingConfig(previous), bindingConfig(entry));
     const record = this.store.transaction(() => {
       if (this.get(id)?.revision !== previous?.revision) reject('revision_conflict', 'Connection settings changed', 409);
@@ -151,15 +147,15 @@ export class SummonConnections {
         binding_version: (previous?.binding_version ?? 1) + Number(Boolean(changed)) });
     });
     if (!nativeKind(record.kind)) void this.services.disconnect(id);
-    return this.summary(record);
+    return this.summary(record, { checkAvailability: false });
   }
 
-  entryFor(session, call) {
+  entryFor(session, call, options) {
     const id = typeof session.engine === 'string' ? session.engine : session.engine?.id;
-    const entry = this.requireUsable(this.get(session.connection_id || id), session.execution_actor);
+    const entry = this.requireUsable(this.get(session.connection_id || id), session.execution_actor, options);
     if ((entry.workspaceProfileId ?? null) !== (session.workspaceProfileId ?? null))
       reject('connection_forbidden', 'The connection does not belong to this Session’s workspace profile', 403);
-    if (call) this.requireUsable(entry, call.submitted_by);
+    if (call) this.requireUsable(entry, call.submitted_by, options);
     if (session.connection_binding_version !== undefined && session.connection_binding_version !== (entry.binding_version ?? 1))
       reject('connection_binding_changed', 'The original Session’s connection settings changed', 409);
     return entry;
@@ -175,12 +171,12 @@ export class SummonConnections {
   async startProcess(entry, session, call, input, beforeSubmit, signal, prior = null) {
     const guard = makeProcessGuard(session, entry, call);
     const launch = await prepareProcess({ host: this, entry, session, call, input, prior, guard });
-    if (prior && (launch.cwd !== prior.cwd || prior.workspace_scope && !isDeepStrictEqual(prior.workspace_scope, launch.scope)))
-      reject('workspace_binding_changed', 'The Codex thread’s original workspace scope changed', 409);
+    if (prior && launch.cwd !== prior.cwd)
+      reject('workspace_binding_changed', 'The Codex thread’s original working directory changed', 409);
     const operation = this.store.save(operationRecords, { ...callSession(session, call), protocol: launch.protocol,
       instance_id: randomUUID(), launch_call_id: call.id, cwd: launch.cwd, connection_id: entry.id,
       connection_binding_version: entry.binding_version ?? 1, execution_actor: session.execution_actor,
-      thread_id: prior?.thread_id, binding: prior?.binding, workspace_scope: launch.scope, status: 'prepared',
+      thread_id: prior?.thread_id, binding: prior?.binding, status: 'prepared',
       input_revision: (prior?.input_revision ?? session.input_revision ?? 0) + 1 });
     const started = await this.processes.launch(operation, launch, () => {
       this.assertRunning(signal);
@@ -213,7 +209,10 @@ export class SummonConnections {
     let started = false;
     try {
       const local = entry.kind === 'mcp' && entry.config.transport === 'stdio';
-      const cwd = local || session.workspace ? (await executionWorkspace(session, entry, this)).cwd : this.workspace;
+      const workspace = local || session.workspace ? await executionWorkspace(session, entry, this) : null;
+      if (local && (workspace.isReadOnly || workspace.hasFileScope))
+        reject('scoped_process_unsupported', 'This MCP stdio process cannot enforce the Session’s file restrictions', 403);
+      const cwd = workspace?.cwd ?? this.workspace;
       this.active.set(operation.id, true);
       const result = await this.services.invoke(entry, session.execution_actor, cwd, input, call.id, async () => {
         this.assertRunning(signal);
@@ -236,10 +235,10 @@ export class SummonConnections {
       const saved = this.saveOperation(operation, this.services.facts(entry, result));
       return this.operationFacts(saved, session);
     } catch (error) {
-      const unsupported = !started && error.code === mcpTasksUnsupported;
+      const unsupported = !started && [mcpTasksUnsupported, 'scoped_process_unsupported'].includes(error.code);
       const unknown = started && (error.outcomeUnknown || signal?.aborted || error.name === 'AbortError');
       const saved = this.saveOperation(operation, { status: unsupported ? 'unsupported' : unknown ? 'unknown' : started ? 'failed' : 'not_submitted',
-        runtime_ended: !unknown, error: this.clean(error.message), ...(unsupported ? { code: mcpTasksUnsupported } : {}) });
+        runtime_ended: !unknown, error: this.clean(error.message), ...(unsupported ? { code: error.code } : {}) });
       return this.operationFacts(saved, session);
     } finally { this.active.delete(operation.id); }
   }
@@ -265,12 +264,12 @@ export class SummonConnections {
   async reconcileCodex(operation, session) {
     if (Date.now() - (operation.last_lookup_at ? Date.parse(operation.last_lookup_at) : 0) < 15_000) return operation;
     const entry = this.get(operation.connection_id);
-    if (!connectionAllowed(entry, session.execution_actor) || !this.available(entry)) return operation;
+    if (!this.authorized(entry, session.execution_actor) || !this.available(entry)) return operation;
     const attempt = this.saveOperation(operation, { last_lookup_at: new Date().toISOString() });
     try {
       const file = await connectionExecutable(entry, operation.cwd, this.dataRoot, session.path_policy);
       const outcome = await inspectNative(process.execPath, [codexBridge, file, 'history', operation.thread_id,
-        operation.turn_id || '', operation.original_operation_id || operation.id], operation.cwd, { timeoutMs: 15_000 });
+        operation.turn_id || '', operation.original_operation_id || operation.id], operation.cwd, { timeoutMs: 15_000, codex: true });
       if (outcome.exitCode !== 0) return attempt;
       const history = JSON.parse(outcome.stdout);
       if (history.threadId !== operation.thread_id || (operation.turn_id && operation.turn_id !== history.turnId)) return attempt;
@@ -284,7 +283,7 @@ export class SummonConnections {
 
   targets(operation, session, ignoreCallId) {
     const entry = this.get(operation.connection_id);
-    if (session.control.state !== 'active' || session.authority_revoked || !this.available(entry) || operation.revoked_at ||
+    if (session.control.state !== 'active' || session.authority_revoked || !this.authorized(entry, session.execution_actor) || operation.revoked_at ||
         operation.connection_binding_version !== undefined && operation.connection_binding_version !== (entry.binding_version ?? 1)) return [];
     if (settled(operation.status)) {
       if (operation.protocol === 'codex' && operation.status !== 'unknown' && operation.runtime_ended && operation.thread_id &&
@@ -375,7 +374,7 @@ export class SummonConnections {
   input({ session, call, kind, input_target, input, beforeSubmit, signal }) {
     return this.serial(session.id, async () => {
       this.assertRunning(signal);
-      const entry = this.entryFor(this.current(session), call);
+      const entry = this.entryFor(this.current(session), call, { runtime: false });
       const previousLaunch = this.store.get(operationRecords, call.id);
       if (previousLaunch) return this.operationFacts(await this.refresh(previousLaunch, session), session);
       const prior = this.store.get(inputRecords, call.id);
@@ -387,14 +386,17 @@ export class SummonConnections {
       const check = async () => {
         this.assertRunning(signal);
         const current = this.current(session);
-        const connection = this.entryFor(current, call);
+        const connection = this.entryFor(current, call, { runtime: kind === 'next' || operation.protocol === 'service' });
         if ((connection.binding_version ?? 1) !== (entry.binding_version ?? 1))
           reject('connection_binding_changed', 'The original connection changed before input submission', 409);
         const fresh = await this.refresh(operation, current);
         this.assertTarget(fresh, current, kind, input_target, call.id);
         await beforeSubmit();
       };
-      if (kind === 'next') return this.startProcess(entry, session, call, input, check, signal, operation);
+      if (kind === 'next') {
+        this.requireUsable(entry, session.execution_actor);
+        return this.startProcess(entry, session, call, input, check, signal, operation);
+      }
       if (operation.protocol === 'service') return this.stepService(entry, session, operation, call, kind, input_target, input, check, signal);
       const value = operation.protocol === 'codex' && kind === 'steer' ? codexInput(input, {}, operation.binding).text : input;
       if (!text(value) || this.clean(value) !== value) reject('invalid_input', 'Input must be valid text without inline credentials');
@@ -537,7 +539,7 @@ export class SummonConnections {
   }
 
   locallyAuthorized(session, operation, entry) {
-    if (!connectionAllowed(entry, session.execution_actor) || !entry.enabled || session.authority_revoked ||
+    if (!this.authorized(entry, session.execution_actor) || session.authority_revoked ||
         (entry.workspaceProfileId ?? null) !== (session.workspaceProfileId ?? null) ||
         operation.connection_binding_version !== undefined && operation.connection_binding_version !== (entry.binding_version ?? 1)) return false;
     if (session.sharing && !this.store.get('rooms', session.space.id)?.members?.includes(session.owner.id)) return false;

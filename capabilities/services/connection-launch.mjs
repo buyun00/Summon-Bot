@@ -1,4 +1,4 @@
-import { isAbsolute, join, parse, resolve } from 'node:path';
+import { join, parse, resolve } from 'node:path';
 import { realpath } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { assertPathPolicy, createPathAccess, insideProtectedDirectory, pathWithin, samePath, sensitivePath } from '../../bot/src/capabilities/file-policy.mjs';
@@ -6,7 +6,7 @@ import { reject } from '../platform/contract.mjs';
 import { checkedNativeArguments, hasExplicitFileScope } from './native-file-arguments.mjs';
 import { localExecutable, nativeArgs, nativeCommand, nativeEnvironment } from './native-host.mjs';
 import { checkedNativeReference } from './native-references.mjs';
-import { plain } from './connection-records.mjs';
+import { plain, validateNativePaths } from './connection-records.mjs';
 
 export const codexBridge = fileURLToPath(new URL('../codex/app-server.mjs', import.meta.url));
 const programRoot = fileURLToPath(new URL('../../', import.meta.url));
@@ -71,13 +71,12 @@ export async function executionWorkspace(session, entry, { workspace, dataRoot }
       pathWithin(cwd, releaseRoot) || pathWithin(releaseRoot, cwd))
     reject('workspace_forbidden', 'The execution workspace overlaps a protected host directory', 403);
   if (!isReadOnly) await checked(cwd, { directory: true, operations: ['write'], alternative: true });
-  return { cwd, checked, accessPolicy, isReadOnly };
+  return { cwd, checked, accessPolicy, isReadOnly, hasFileScope: hasExplicitFileScope(requestedPolicy) };
 }
 
 export async function connectionExecutable(entry, cwd, dataRoot, policy = {}) {
+  validateNativePaths(entry.config);
   const { file, canonical_file: expected } = entry.config;
-  if (typeof file !== 'string' || !isAbsolute(file) || typeof expected !== 'string' || !isAbsolute(expected))
-    reject('invalid_connection', 'The connection must be bound to a registered absolute executable path');
   const operations = ['execute'];
   assertPathPolicy(file, policy, { operations, alternative: true });
   const actual = await localExecutable(file);
@@ -89,41 +88,20 @@ export async function connectionExecutable(entry, cwd, dataRoot, policy = {}) {
   return actual.canonicalFile;
 }
 
-async function codexScope(workspace) {
-  const { cwd, checked, accessPolicy, isReadOnly } = workspace;
-  const filesystem = Object.create(null);
-  for (const grant of accessPolicy.grants || []) {
-    const write = grant.operations.includes('write');
-    if (!write && !grant.operations.includes('read')) continue;
-    const path = await checked(grant.path, { directory: grant.kind === 'directory', file: grant.kind === 'file',
-      operations: [write ? 'write' : 'read'], exists: !write, alternative: true });
-    filesystem[path] = write ? 'write' : 'read';
-  }
-  for (const deny of accessPolicy.deniedPaths || []) {
-    if (deny.operations?.every(op => op === 'publish')) continue;
-    const writeOnly = deny.operations?.every(op => op === 'write' || op === 'publish');
-    const path = resolve(cwd, deny.path);
-    if (!writeOnly || pathWithin(cwd, path) || Object.keys(filesystem).some(root => pathWithin(root, path)))
-      filesystem[path] = writeOnly ? 'read' : 'deny';
-  }
-  return { filesystem, workspaceMode: isReadOnly ? 'read' : 'write' };
-}
-
 export async function prepareProcess({ host, entry, session, call, input, prior, guard }) {
-  const workspace = await executionWorkspace(session, entry, host);
-  const { cwd, checked, accessPolicy, isReadOnly } = workspace;
+  const { cwd, checked, accessPolicy, isReadOnly, hasFileScope } = await executionWorkspace(session, entry, host);
   const executable = await connectionExecutable(entry, cwd, host.dataRoot, accessPolicy);
   const storePath = host.store.path;
   if (entry.kind === 'codex') {
+    if (hasFileScope)
+      reject('scoped_process_unsupported', 'Codex cannot confirm these explicit file path restrictions in its native configuration', 403);
     const expected = prior?.binding;
     if (prior && (!expected?.model || !expected?.effort)) reject('codex_binding_unavailable', 'The original Codex model and effort are unavailable', 409);
     const payload = codexInput(input, entry.config, expected);
     if (host.clean(payload.text) !== payload.text) reject('invalid_codex_input', 'Use configured credentials for Codex execution');
-    const scope = await codexScope(workspace);
-    Object.assign(scope.filesystem, Object.fromEntries([host.dataRoot, programRoot].map(path => [path, 'deny'])));
-    return { file: process.execPath, args: [codexBridge, executable], cwd, guard, storePath, scope, keepInput: true, protocol: 'codex',
+    return { file: process.execPath, args: [codexBridge, executable], cwd, guard, storePath, keepInput: true, protocol: 'codex',
       sessionId: prior?.thread_id || null,
-      input: JSON.stringify({ summonStart: { ...payload, sessionId: prior?.thread_id || null, scope,
+      input: JSON.stringify({ summonStart: { ...payload, sessionId: prior?.thread_id || null, ...(isReadOnly ? { readOnly: true } : {}),
         callId: call.id, guard, storePath } }) + '\n' };
   }
   if (!plain(input) || Object.keys(input).some(key => !['method', 'parameters', 'args', 'stdin', 'keep_input', 'file_args'].includes(key)))
@@ -149,10 +127,12 @@ export async function prepareProcess({ host, entry, session, call, input, prior,
     requireText(stdin, 32_768);
     if (host.clean(stdin) !== stdin) reject('invalid_cli_input', 'Use configured credential references for process input');
   }
-  if ((isReadOnly || hasExplicitFileScope(accessPolicy)) &&
+  if (isReadOnly)
+    reject('scoped_process_unsupported', 'This CLI process cannot enforce the workspace’s read-only grant', 403);
+  if (hasFileScope &&
       (method?.script || keepInput || stdin !== undefined || /\.(?:cmd|bat|ps1)$/i.test(executable)))
     reject('scoped_process_unsupported', 'This process input mode cannot enforce the Session’s file restrictions', 403);
-  const args = await checkedNativeArguments({ argv, templateArgs, fileArgs, effect: isReadOnly || method?.effect === 'read' ? 'read' : 'write', cwd,
+  const args = await checkedNativeArguments({ argv, templateArgs, fileArgs, effect: method?.effect === 'read' ? 'read' : 'write', cwd,
     policy: accessPolicy, checkedPath: checked, resolveReference: id => checkedNativeReference(id,
       { policy: accessPolicy, protectedDirectories: [host.dataRoot] }) });
   if (args.some(value => host.clean(value) !== value)) reject('invalid_cli_input', 'Use configured credential references for process arguments');

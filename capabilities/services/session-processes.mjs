@@ -5,6 +5,7 @@ import { basename, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { reject } from '../platform/contract.mjs';
+import { connectionAuthorized, connectionRecords } from './connection-records.mjs';
 
 export const operationRecords = 'session-operations';
 export const inputRecords = 'session-inputs';
@@ -278,7 +279,7 @@ export function guardStillMatches(db, guard) {
     const row = db.prepare('SELECT data FROM records WHERE kind=? AND id=?').get(kind, id);
     return row && JSON.parse(row.data);
   };
-  const connection = get('platform-connections', guard.connection_id);
+  const connection = get(connectionRecords, guard.connection_id);
   const session = get('platform-sessions', guard.session_id);
   if (!connection?.enabled || (connection.binding_version ?? 1) !== guard.binding_version || !session ||
       (connection.workspaceProfileId ?? null) !== (session.workspaceProfileId ?? null) || session.authority_revoked ||
@@ -297,10 +298,10 @@ export function guardStillMatches(db, guard) {
     if (selected?.control?.state !== 'active' || selected.control.control_version !== control.control_version) return false;
   }
   for (const actor of guard.actors || []) {
+    if (!connectionAuthorized(connection, actor, id => get(connectionRecords, id))) return false;
     if (actor.kind === 'user') continue;
     const bot = get('platform-bots', actor.id);
-    if (!bot || (bot.workspaceProfileId ?? null) !== (session.workspaceProfileId ?? null) ||
-        !connection.allowed_bot_ids?.includes('*') && !connection.allowed_bot_ids?.includes(actor.id)) return false;
+    if (!bot || (bot.workspaceProfileId ?? null) !== (session.workspaceProfileId ?? null)) return false;
     if (guard.workspace_id && !get('platform-access', actor.id)?.workspace_ids?.includes(guard.workspace_id)) return false;
   }
   if (guard.room_owner && !get('rooms', guard.room_id)?.members?.includes(guard.room_owner)) return false;

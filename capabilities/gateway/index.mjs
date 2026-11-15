@@ -103,7 +103,7 @@ export async function startGateway(options = {}) {
   if (history?.status && history.status !== 'complete') throw new Error('Offline history maintenance is incomplete');
   const historyEpoch = history?.historyEpoch ?? null;
   const clients = new Set(), requests = new Set(), stores = [];
-  let platform, runtime, models, connections, push, usage, server, url, timer, activeTick, closeTask, installation;
+  let platform, runtime, models, connections, push, usage, server, url, timer, activeTick, activeConnectionTick, closeTask, installation;
   let closing = false;
   let drainSnapshot;
   function store(name) {
@@ -140,8 +140,14 @@ export async function startGateway(options = {}) {
   }
   async function tick() {
     const state = await readInstallationState(dataRoot);
+    if (closing) return;
     applyWindow(state);
     if (state && ['converting', 'data_ready'].includes(state.phase)) return;
+    if (!platform.draining && !activeConnectionTick) {
+      activeConnectionTick = Promise.resolve().then(() => connections.tick())
+        .catch(error => console.error(`Summon external Session observation failed (${error.code || error.name})`))
+        .finally(() => { activeConnectionTick = null; });
+    }
     await platform.tick({ observations: !platform.draining, deliveries: !installation?.intake_closed });
   }
   function queueTick() {
@@ -155,7 +161,7 @@ export async function startGateway(options = {}) {
       for (const client of clients) client.end();
       const closed = server?.listening ? new Promise(done => server.close(done)) : null;
       server?.closeIdleConnections();
-      await Promise.allSettled([...requests, activeTick]);
+      await Promise.allSettled([...requests, activeTick, activeConnectionTick]);
       await Promise.allSettled([runtime?.close(), connections?.close(), models?.close(), push?.close()]);
       await Promise.allSettled([...(platform?.botStops || [])]);
       await closed;

@@ -1,3 +1,4 @@
+import { isAbsolute } from 'node:path';
 import { reject } from '../platform/contract.mjs';
 
 export const connectionRecords = 'platform-connections';
@@ -10,6 +11,24 @@ export function connectionAllowed(entry, actor) {
   return Boolean(entry && actor && (actor.kind === 'user' || entry.allowed_bot_ids?.includes('*') || entry.allowed_bot_ids?.includes(actor.id)));
 }
 
+export function connectionAuthorized(entry, actor, getConnection, seen = new Set()) {
+  if (!entry?.enabled || seen.has(entry.id) || !connectionAllowed(entry, actor)) return false;
+  const visited = new Set([...seen, entry.id]);
+  return (entry.dependencies || []).every(id => {
+    const dependency = getConnection(id);
+    return (dependency?.workspaceProfileId ?? null) === (entry.workspaceProfileId ?? null) &&
+      connectionAuthorized(dependency, actor, getConnection, visited);
+  });
+}
+
+export function validateNativePaths({ file, canonical_file, workspace_root }) {
+  const absolute = path => typeof path === 'string' && isAbsolute(path) && !path.includes('\0');
+  if (!absolute(file) || !absolute(canonical_file))
+    reject('invalid_connection', 'The connection must be bound to a registered absolute executable path');
+  if (workspace_root && !absolute(workspace_root))
+    reject('invalid_connection', 'Workspace root must be an absolute host path');
+}
+
 export function validateConnection(entry) {
   if (!kinds.includes(entry.kind) || !plain(entry.config)) reject('invalid_connection', 'Invalid connection kind or configuration');
   if (!Array.isArray(entry.allowed_bot_ids) || entry.allowed_bot_ids.some(id => typeof id !== 'string' || !id)) {
@@ -20,6 +39,7 @@ export function validateConnection(entry) {
     reject('invalid_connection', 'Invalid connection dependencies');
   }
   if (entry.kind === 'cli' || entry.kind === 'codex') {
+    validateNativePaths(entry.config);
     const { credential_refs, methods, allow_arguments, workspace_write, model, effort } = entry.config;
     if (credential_refs !== undefined && (!Array.isArray(credential_refs) ||
         credential_refs.some(name => typeof name !== 'string' || !envName.test(name)))) reject('invalid_connection', 'Invalid native credential references');

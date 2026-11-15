@@ -6,12 +6,7 @@ import { nativeCommand } from '../services/native-host.mjs';
 import { guardStillMatches } from '../services/session-processes.mjs';
 
 const [executable, mode, originalThread, originalTurn, originalCall] = process.argv.slice(2);
-const windows = process.platform === 'win32';
-const mxcUnavailable = 'codex_mxc_unavailable';
-// Legacy Windows sandboxing rejects a root-deny profile. Select MXC for this
-// adapter process so it can keep the same restricted-read policy.
-const sandboxArgs = windows && !mode ? ['-c', 'windows.sandbox=mxc'] : [];
-const command = nativeCommand(executable, ['app-server', '--stdio', ...sandboxArgs]);
+const command = nativeCommand(executable, ['app-server', '--stdio']);
 const server = spawn(command.file, command.args, { ...command.options, cwd: process.cwd(),
   windowsHide: true, stdio: ['pipe', 'pipe', 'inherit'] });
 const input = createInterface({ input: process.stdin });
@@ -22,7 +17,7 @@ const requests = new Map(), prompts = new Map();
 let nextId = 0, threadId, turnId, finalText, lastMessage, terminal, modelRerouted, ending = false;
 let threadSubmitted = false, turnSubmitted = false;
 const filesByItem = new Map();
-let starting = true, stopping = false, guardDb;
+let starting = true, stopping = false, requireReadOnly = false, guardDb;
 
 function allowed(guard) {
   try { return guardStillMatches(guardDb, guard); } catch { return false; }
@@ -46,7 +41,7 @@ function rpc(method, params, timeoutMs = 20_000) {
   });
 }
 
-function finish(status, error, code) {
+function finish(status, error) {
   if (ending) return;
   ending = true;
   for (const prompt of prompts.values()) {
@@ -55,7 +50,7 @@ function finish(status, error, code) {
   }
   prompts.clear();
   guardDb?.close();
-  if (!mode) emit('outcome', { status, error, code });
+  if (!mode) emit('outcome', { status, error });
   process.exitCode = status === 'completed' || status === 'stopped' ? 0 : 1;
   input.close();
   process.stdin.pause();
@@ -74,6 +69,7 @@ function bindTurn(turn) {
 }
 
 const choice = (id, label) => ({ id, label });
+const accept = choice('accept', '仅本次允许');
 const deny = choice('decline', '拒绝');
 const cancel = choice('cancel', '取消操作');
 
@@ -82,25 +78,22 @@ function nativePrompt(message) {
   if (p?.threadId !== threadId || !turnId || p?.turnId && p.turnId !== turnId)
     return send({ id, error: { code: -32602, message: 'Request is outside this Codex turn' } });
   if (method === 'item/permissions/requestApproval') {
-    const permissions = p.permissions || {}, files = permissions.fileSystem;
-    const requested = [...(files?.read || []), ...(files?.write || []),
-      ...(files?.entries || []).map(entry => entry.path?.path || entry.path?.pattern)].filter(Boolean);
-    return { kind: 'approval', choices: [deny, cancel], text: ['Codex 请求扩大当前会话的权限。',
-      ...requested, permissions.network?.enabled && '网络访问', p.reason,
-      '该请求超出当前会话的执行权限。'].filter(Boolean).join('\n'),
-      answer: () => ({ permissions: {}, scope: 'turn' }) };
+    const permissions = p.permissions || {};
+    const text = ['Codex 请求本轮权限', JSON.stringify(permissions), p.cwd, p.reason].filter(Boolean).join('\n');
+    const choices = !requireReadOnly && Object.keys(permissions).length && text.length <= 4_000 ? [accept, deny, cancel] : [deny, cancel];
+    return { kind: 'approval', choices, text, answer: decision => ({ permissions: decision === 'accept' ? permissions : {}, scope: 'turn' }) };
   }
   if (method === 'item/commandExecution/requestApproval' || method === 'item/fileChange/requestApproval') {
     const command = method === 'item/commandExecution/requestApproval';
-    const cwd = command && p.cwd ? relative(process.cwd(), p.cwd) : '';
-    const scopeChange = p.additionalPermissions || p.networkApprovalContext || p.grantRoot ||
-      cwd === '..' || cwd.startsWith('../') || cwd.startsWith('..\\') || isAbsolute(cwd);
-    const choices = [!scopeChange && choice('accept', '仅本次允许'), deny, cancel]
-      .filter(value => value && (!command || !p.availableDecisions?.length || p.availableDecisions.includes(value.id)));
+    const network = p.networkApprovalContext;
+    const text = [network ? 'Codex 请求访问网络' : command ? 'Codex 请求执行以下命令' : 'Codex 请求批准这项文件修改',
+      network ? [network.protocol, network.host].filter(Boolean).join(' ') : p.command,
+      ...(!command ? filesByItem.get(p.itemId) || [] : []), p.cwd, p.grantRoot,
+      p.additionalPermissions && JSON.stringify(p.additionalPermissions), p.reason].filter(Boolean).join('\n');
+    const choices = (!requireReadOnly && text.length <= 4_000 ? [accept, deny, cancel] : [deny, cancel])
+      .filter(value => !command || !p.availableDecisions?.length || p.availableDecisions.includes(value.id));
     if (!choices.length) return send({ id, result: { decision: 'decline' } });
-    return { kind: 'approval', choices, text: [command ? 'Codex 请求执行以下命令' : 'Codex 请求批准这项文件修改',
-      p.command, ...(!command ? filesByItem.get(p.itemId) || [] : []), p.cwd, p.grantRoot, p.reason].filter(Boolean).join('\n'),
-      answer: decision => ({ decision }) };
+    return { kind: 'approval', choices, text, answer: decision => ({ decision }) };
   }
   if (method === 'item/tool/requestUserInput') {
     const questions = p.questions || [];
@@ -125,7 +118,7 @@ function nativePrompt(message) {
 
 function observe(method, p) {
   if (p?.threadId !== threadId) return;
-  if (method === 'turn/started') bindTurn(p.turn);
+  if (method === 'turn/started' && turnSubmitted) bindTurn(p.turn);
   if (method === 'model/rerouted' && p.turnId === turnId && p.fromModel !== p.toModel) {
     modelRerouted = { from: p.fromModel, to: p.toModel, reason: p.reason };
     emit('model-rerouted', { turnId, ...modelRerouted });
@@ -252,85 +245,45 @@ async function initialize() {
   return rpc('account/read', { refreshToken: false });
 }
 
-async function checkModel(model, effort) {
-  if (!model) return;
-  let cursor;
-  const cursors = new Set();
-  do {
-    const page = await rpc('model/list', { limit: 100, includeHidden: false, ...(cursor ? { cursor } : {}) });
-    const match = page.data.find(item => item.model === model);
-    if (match) {
-      if (effort && !match.supportedReasoningEfforts?.some(value => value.reasoningEffort === effort))
-        throw new Error(`Codex model ${model} does not support reasoning effort ${effort}`);
-      return;
-    }
-    cursor = page.nextCursor;
-    if (cursor && cursors.has(cursor)) throw new Error('Codex model list repeated a cursor');
-    if (cursor) cursors.add(cursor);
-  } while (cursor);
-  throw new Error(`Codex did not advertise model ${model}`);
-}
-
-async function start({ text, sessionId, scope, callId, model, effort, guard, storePath }) {
+async function start({ text, sessionId, readOnly = false, callId, model, effort, guard, storePath }) {
+  requireReadOnly = readOnly;
   guardDb = new DatabaseSync(storePath, { readOnly: true, timeout: 3000 });
   const { account, requiresOpenaiAuth } = await initialize();
   if (!account && requiresOpenaiAuth)
     return finish('failed', 'Codex CLI 需要登录。请先在部署机运行 codex login。');
-  if (windows) {
-    // Readiness describes setup. The thread request must still prepare the scoped sandbox.
-    const [readiness, effective] = await Promise.all([
-      rpc('windowsSandbox/readiness', {}),
-      rpc('config/read', { includeLayers: false, cwd: process.cwd() }),
-    ]);
-    if (readiness.status !== 'ready' || effective.config?.windows?.sandbox !== 'mxc')
-      return finish('not_submitted', 'Codex requires Windows MXC for this restricted workspace', mxcUnavailable);
-  }
-  await checkModel(model, effort);
   if (stopping) return finish('stopped');
   if (!allowed(guard)) return finish('not_submitted', 'Session control or connection access changed before creating the thread');
-  const profile = 'summon-session';
-  const policy = { permissions: profile, runtimeWorkspaceRoots: [process.cwd()], cwd: process.cwd(), multiAgentMode: 'explicitRequestOnly',
-    approvalPolicy: { granular: { sandbox_approval: false, rules: true, skill_approval: true, request_permissions: true, mcp_elicitations: true } },
-    approvalsReviewer: 'user' };
-  const config = { ...(effort ? { model_reasoning_effort: effort } : {}), web_search: 'disabled',
-    default_permissions: profile, permissions: { [profile]: { extends: ':workspace',
-    filesystem: { ':minimal': 'read', ':root': 'deny', ':workspace_roots': { '.': scope.workspaceMode, '.git': 'read', '.codex': 'read',
-      '.agents': 'read', '.aws': 'deny', '.env': 'deny', '.ssh': 'deny' },
-      ...scope.filesystem },
-    network: { enabled: false } } } };
+  const cwd = process.cwd();
+  const binding = { ...(model ? { model } : {}), ...(effort ? { config: { model_reasoning_effort: effort } } : {}) };
   if (!sessionId) {
     threadSubmitted = true;
     emit('thread-submitting');
   }
-  let response;
-  try {
-    response = await rpc(sessionId ? 'thread/resume' : 'thread/start', { ...policy, config, ...(model ? { model } : {}),
-      ...(sessionId ? { threadId: sessionId, excludeTurns: true } : { ephemeral: false, threadSource: 'automation', allowProviderModelFallback: false }) });
-  } catch (error) {
-    if (windows && !error.unconfirmed && (error.message.includes('native MXC is unavailable on this executor') ||
-        error.message.includes('this Windows build cannot enforce native MXC deny paths')))
-      return finish('failed', error.message, mxcUnavailable);
-    throw error;
-  }
+  const response = await rpc(sessionId ? 'thread/resume' : 'thread/start', { cwd, ...binding,
+    ...(sessionId ? { threadId: sessionId, excludeTurns: true } : { ephemeral: false, threadSource: 'automation', allowProviderModelFallback: false }) });
   if (!response.thread?.id || sessionId && response.thread.id !== sessionId)
     throw new Error('Codex did not confirm the intended thread');
   threadId = response.thread.id;
-  const scoped = response.activePermissionProfile?.id === profile && response.cwd && relative(process.cwd(), response.cwd) === '';
+  const cwdMatched = typeof response.cwd === 'string' && isAbsolute(response.cwd) && relative(cwd, response.cwd) === '';
+  const readOnlyMatched = !readOnly || response.sandbox?.type === 'readOnly' &&
+    (response.approvalPolicy === 'never' || response.approvalsReviewer === 'user');
   const matched = (!model || response.model === model) && (!effort || response.reasoningEffort === effort);
-  emit('session', { sessionId: threadId, model: response.model, effort: response.reasoningEffort, bindingRejected: !scoped || !matched });
-  if (!scoped)
-    throw new Error('Codex did not apply the scoped permissions profile and working directory');
-  if (!matched)
-    throw new Error(`Codex applied ${response.model || '(unknown model)'} / ${response.reasoningEffort || '(unknown effort)'} instead of the requested binding`);
+  emit('session', { sessionId: threadId, model: response.model, effort: response.reasoningEffort,
+    bindingRejected: !cwdMatched || !matched || !readOnlyMatched });
   if (sessionId && response.thread.status?.type === 'active') {
     emit('thread-active', { sessionId: threadId });
     return finish('unknown', 'The original Codex thread is still active');
   }
+  if (!cwdMatched) throw new Error('Codex did not confirm the selected working directory');
+  if (!matched)
+    throw new Error(`Codex applied ${response.model || '(unknown model)'} / ${response.reasoningEffort || '(unknown effort)'} instead of the requested binding`);
+  if (!readOnlyMatched)
+    return finish('unsupported', 'Codex did not confirm a read-only sandbox without automatic approval for this workspace');
   if (stopping) return finish('stopped');
   if (!allowed(guard)) return finish('not_submitted', 'Session control or connection access changed before starting the turn');
   turnSubmitted = true;
   emit('turn-submitting', { sessionId: threadId });
-  const receipt = await rpc('turn/start', { ...policy, threadId, input: textInput(text), clientUserMessageId: callId,
+  const receipt = await rpc('turn/start', { threadId, input: textInput(text), clientUserMessageId: callId,
     ...(response.model ? { model: response.model } : {}), ...(response.reasoningEffort ? { effort: response.reasoningEffort } : {}) });
   bindTurn(receipt.turn);
   if (!turnId) return finish('unknown', 'Codex did not confirm the turn identity');

@@ -276,14 +276,13 @@ export class SummonPlatform {
     return (refs || []).every(ref => this.canReadReference(ref, { ...this.principalContext(actor), ...context, actor }));
   }
 
-  assertSessionAuthority(session) {
+  assertSessionAuthority(session, { checkWorkspacePath = false } = {}) {
     if (session.authority_revoked || session.sharing && !this.roomMembers(session.space.id).includes(session.owner.id)) {
       reject('session_authority_revoked', 'The Session no longer has its assigned execution authority', 403);
     }
     const connection = session.engine !== 'pi' ? this.store.get('platform-connections', session.engine) : null;
     const authority = this.principalContext(session.execution_actor, session.workspaceProfileId);
-    if (session.engine !== 'pi' && (!connection?.enabled || !this.connections.available(connection)) ||
-        !this.canUseConnection(session.execution_actor, session.engine, authority) ||
+    if (session.engine !== 'pi' && (!profileMatches(connection, authority) || !this.connections.authorized(connection, authority.actor)) ||
         session.engine === 'pi' && session.model && !this.canUseModel(session.execution_actor, session.model.connection_id, authority) ||
         !this.canUseResources(session.execution_actor, session.resource_refs, authority)) {
       reject('session_authority_revoked', 'The Session no longer has its assigned execution resources', 403);
@@ -293,10 +292,18 @@ export class SummonPlatform {
       reject('workspace_forbidden', 'This native Session has no current workspace grant', 403);
     }
     if (oldWorkspace?.path) {
-      const workspace = this.workspace(session.workspace_ref, authority);
-      const canonicalPath = this.authorizedDirectory(oldWorkspace.path);
-      if (canonicalPath !== oldWorkspace.path || !inside(workspace.root, canonicalPath) || workspace.root !== oldWorkspace.root ||
-          oldWorkspace.write && !workspace.write) reject('workspace_changed', 'The fixed native workspace authority has changed', 409);
+      const ref = session.workspace_ref;
+      const grant = this.workspaceRecords().find(item => ref?.kind === 'workspace' && item.id === ref.id && profileMatches(item, authority));
+      if (!grant || !this.workspaceAvailable(ref.id, authority.actor, authority) || oldWorkspace.write && grant.write === false ||
+          grant.revision !== undefined && relative(oldWorkspace.root, grant.path) !== '') {
+        reject('workspace_changed', 'The fixed native workspace authority has changed', 409);
+      }
+      if (checkWorkspacePath) {
+        const workspace = this.workspace(ref, authority);
+        const canonicalPath = this.authorizedDirectory(oldWorkspace.path);
+        if (canonicalPath !== oldWorkspace.path || !inside(workspace.root, canonicalPath) || workspace.root !== oldWorkspace.root ||
+            oldWorkspace.write && !workspace.write) reject('workspace_changed', 'The fixed native workspace authority has changed', 409);
+      }
     }
     if (session.connection_binding_version !== undefined && this.store.get('platform-connections', session.engine)?.binding_version !== session.connection_binding_version) {
       reject('connection_binding_changed', 'The fixed native connection settings have changed', 409);
@@ -313,7 +320,7 @@ export class SummonPlatform {
 
   assertCanSubmit(context, session) {
     if (!session || session.control.state !== 'active') reject('execution_paused', 'Execution is paused', 409);
-    this.assertSessionAuthority(session);
+    this.assertSessionAuthority(session, { checkWorkspacePath: true });
     this.assertRunAllowed(context, { allowUser: true, allowDraining: context.allowDraining });
     const initiating = context.submitted_by && !sameIdentity(context.submitted_by, context.actor) ?
       this.principalContext(identity(context.submitted_by), context.workspaceProfileId) : null;
@@ -353,7 +360,7 @@ export class SummonPlatform {
     if (!this.canUseConnection(actor, engine, context) || !this.canUseResources(actor, resource_refs, context)) {
       reject('execution_resources_forbidden', 'The requested execution resources are unavailable', 403);
     }
-    if (engine !== 'pi' && !this.connections.available(connection)) reject('connection_unavailable', 'Execution connection is unavailable', 409);
+    if (engine !== 'pi' && !connection?.enabled) reject('connection_unavailable', 'Execution connection is unavailable', 409);
     if (sharing && engine !== 'pi' && !resource_refs.some(ref => sameRef(ref, { kind: 'connection', id: engine }))) {
       reject('execution_resources_forbidden', 'The shared execution connection must be explicitly selected as a resource', 403);
     }
@@ -747,7 +754,6 @@ export class SummonPlatform {
 
   async tick({ observations = true, deliveries = true } = {}) {
     if (!this.draining && observations) this.deliveries.tickTime();
-    await this.connections.tick();
     if (deliveries) await this.deliveries.flush(this.runtime);
   }
 

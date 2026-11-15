@@ -98,9 +98,9 @@ function protocolLine(line) {
       files: Array.isArray(message.files) ? message.files.slice(0, 20).map(file => field(file, 512)) : undefined,
       output: field(message.output, 4000), exitCode: Number.isInteger(exitCode) ? exitCode : null });
   }
-  if (codex && message.type === 'outcome' && ['completed', 'failed', 'stopped', 'unknown', 'not_submitted'].includes(message.status)) {
-    record({ nativeOutcome: message.status, error: field(message.error, 4000), code: field(message.code, 128) });
-    event('outcome', { status: message.status, nativeTurnId: state.nativeTurnId, error: state.error, code: state.code ?? undefined });
+  if (codex && message.type === 'outcome' && ['completed', 'failed', 'stopped', 'unknown', 'not_submitted', 'unsupported'].includes(message.status)) {
+    record({ nativeOutcome: message.status, error: field(message.error, 4000) });
+    event('outcome', { status: message.status, nativeTurnId: state.nativeTurnId, error: state.error });
   }
   if (codex && message.type === 'model-rerouted' && message.turnId === state.nativeTurnId) {
     const reroute = { from: field(message.from, 128), to: field(message.to, 128), reason: field(message.reason, 256) };
@@ -238,7 +238,7 @@ async function poll() {
 
 function start() {
   if (!allowed(manifest.guard)) return finish({ status: 'not_submitted', error: 'The Session or connection changed before process launch' });
-  const environment = nativeEnvironment(manifest.env, manifest.authorizedEnv);
+  const environment = nativeEnvironment(manifest.env, manifest.authorizedEnv, { codex });
   secrets = environment.secrets;
   const command = nativeCommand(manifest.file, manifest.args);
   record({});

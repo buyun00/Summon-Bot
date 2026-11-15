@@ -24,8 +24,7 @@ export function createDeployment({ dataRoot, releaseRoot, defaultCwd, port = 878
   return { schemaVersion: 4, dataFormat, dataRoot, releaseRoot, defaultCwd: resolve(defaultCwd || join(dataRoot, 'workspace')),
     runIntent: 'running', gatewayToken: token(), controlToken: token(),
     environmentFile: join(dataRoot, 'config', 'runtime.env'), web: { host: '127.0.0.1', port: Number(port), accessToken: token() },
-    gateway: { host: '127.0.0.1', port: 0 },
-    model: { provider: 'deepseek', model: 'deepseek-flash', baseUrl: 'https://api.deepseek.com/v1', apiKeyEnv: 'DEEPSEEK_API_KEY', contextWindow: 1048576, maxTokens: 393216, thinkingLevel: 'high' } };
+    gateway: { host: '127.0.0.1', port: 0 } };
 }
 
 export async function deploymentEnvironment(config) {
@@ -78,7 +77,7 @@ export async function launchService(config, type, { foreground = false, timeoutM
   await assertInstallationWritable(config.dataRoot, config.releaseRoot);
   const child = spawn(existsSync(bundled) ? bundled : process.execPath,
     [entry, '--type', type, '--config', deploymentPath(config.dataRoot)],
-    { cwd: config.defaultCwd, env, detached: !foreground, windowsHide: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    { cwd: config.releaseRoot, env, detached: !foreground, windowsHide: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
   let failure, stopping;
   const abort = () => { stopping ||= terminateTree(child); };
   signal?.addEventListener('abort', abort, { once: true });
