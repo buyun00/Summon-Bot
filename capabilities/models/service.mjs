@@ -16,6 +16,7 @@ const windowLabel = minutes => minutes === 10080 ? '每周' : minutes === 300 ? 
 const amount = (value, currency) => number(value) === null ? null : { amount: number(value), currency };
 const requireEntry = (catalog, id) => { const entry = catalog.connections.find(item => item.id === id); if (!entry) throw new Error('找不到这个模型连接'); return entry; };
 const sameProfile = (entry, id) => (entry.workspaceProfileId ?? null) === (id ?? null);
+const validModelId = id => typeof id === 'string' && id.length > 0 && id.length <= 200 && !/[\u0000-\u001f]/.test(id);
 
 /** Model credentials and account usage belong to the existing host, outside Bot conversation history. */
 export class ModelConnections {
@@ -71,11 +72,9 @@ export class ModelConnections {
     const connectionId = requested?.connection_id || (selection == null ? this.activeId(catalog, profileId) : idOf(selection, 'connection'));
     if (!connectionId) return null;
     const entry = this.scopedEntry(catalog, connectionId, profileId);
-    const id = requested?.id || entry.model;
-    const choices = modelChoices(entry.kind, entry.provider);
-    if (id !== entry.model && !choices.some(choice => choice.id === id && choice.api === entry.api)) {
-      reject('model_unsupported', 'This model is not configured or supported by the selected connection', 409);
-    }
+    const selectedId = requested?.id || entry.model;
+    const id = typeof selectedId === 'string' ? selectedId.trim() : '';
+    if (!validModelId(id)) reject('invalid_model_id', 'Choose a valid model ID');
     const thinking_level = requested?.thinking_level || (entry.reasoning === false ? 'off' : entry.thinkingLevel || 'high');
     const optional = { ...entry, model: id, thinkingLevel: thinking_level };
     const model = connectionModel(optional);
@@ -149,7 +148,7 @@ export class ModelConnections {
         thinkingLevel: input.thinkingLevel || previous?.thinkingLevel || 'high',
         allowNoKey: input.kind === 'api' && input.allowNoKey === true,
         ...(input.kind === 'api' ? { balancePath: String(input.balancePath ?? previous?.balancePath ?? '').trim(), balanceField: String(input.balanceField ?? previous?.balanceField ?? '').trim(), balanceCurrency: String(input.balanceCurrency || previous?.balanceCurrency || 'USD').slice(0, 8) } : {}) };
-      if (!entry.model || entry.model.length > 200 || /[\u0000-\u001f]/.test(entry.model)) throw new Error('请填写有效的模型 ID');
+      if (!validModelId(entry.model)) throw new Error('请填写有效的模型 ID');
       if (!['off', 'low', 'medium', 'high', 'xhigh', 'max'].includes(entry.thinkingLevel)) throw new Error('无效的思考强度');
       const endpoint = new URL(entry.baseUrl);
       if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new Error('请填写不含凭据、查询参数的模型 API 地址');
