@@ -1,5 +1,6 @@
-import { mkdir } from 'node:fs/promises';
+import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { catalogMaintainerRole } from '../../roles/index.mjs';
 import { defaultPaperAvatar, normalizePaperAvatar } from '../shared/avatar-style.mjs';
 import { assertRevision, idOf, reject, sameIdentity, sameRef, user } from '../platform/contract.mjs';
 
@@ -42,8 +43,8 @@ function instructionsOf(value) {
 }
 
 export class BotManager {
-  constructor({ store, dataRoot, resources, models, canUseModel }) {
-    Object.assign(this, { store, dataRoot, resources, models, canUseModel });
+  constructor({ store, dataRoot, resources, models, canUseModel, maintenanceConnection }) {
+    Object.assign(this, { store, dataRoot, resources, models, canUseModel, maintenanceConnection });
   }
 
   list() { return this.store.list(botRecords); }
@@ -63,9 +64,35 @@ export class BotManager {
     return !bot.connection_initializer && (actor.kind === 'user' || actor.id === bot.id || sameIdentity(actor, bot.owner));
   }
 
+  maintainers() {
+    return this.list().filter(bot => !bot.archivedAt && !bot.connection_initializer &&
+      bot.built_in_role?.id === catalogMaintainerRole && bot.built_in_role.connection_id);
+  }
+
+  maintainer(connection) {
+    return this.maintainers().find(bot => (bot.workspaceProfileId ?? null) === (connection.workspaceProfileId ?? null) &&
+      bot.built_in_role.connection_id === connection.id);
+  }
+
+  roleOf(args, context, botId) {
+    const { role_id: id, role_connection_id: connectionId } = args;
+    if (id !== catalogMaintainerRole) {
+      if (connectionId !== undefined) reject('invalid_bot_role', 'Select the CLI maintenance duty when specifying its connection');
+      return id == null ? id : { id };
+    }
+    const connection = this.maintenanceConnection(connectionId, context);
+    const assigned = this.maintainer(connection);
+    if (assigned && assigned.id !== botId) {
+      reject('connection_maintainer_exists', 'This connection already has a maintenance Bot', 409,
+        { maintainer: { kind: 'bot', id: assigned.id } });
+    }
+    return { id, connection_id: connection.id };
+  }
+
   view(bot, actor, { details = true } = {}) {
     const base = { kind: 'bot', id: bot.id, name: bot.name, avatar: bot.avatar ? normalizePaperAvatar(bot.avatar) : defaultPaperAvatar(bot.id),
-      enabled: bot.enabled, created_at: bot.createdAt, updated_at: bot.updatedAt };
+      enabled: bot.enabled, created_at: bot.createdAt, updated_at: bot.updatedAt,
+      ...(bot.built_in_role ? { role_id: bot.built_in_role.id } : {}) };
     if (!details || !this.canConfigure(actor, bot)) return base;
     const target = { kind: 'bot', id: bot.id };
     return { ...base, instructions: bot.instructions, model: bot.model, revision: bot.revision, control: bot.control,
@@ -73,23 +100,23 @@ export class BotManager {
       resume_ref: canResume(actor, bot.control, bot.owner) ? resumeReference(target, bot.control) : null };
   }
 
-  async create(id, args, context, beforeSave) {
+  create(id, args, context, beforeSave) {
     const { actor, workspaceProfileId } = context;
     const name = cleanName(args.name), instructions = instructionsOf(args.instructions);
-    const implicitModel = args.model === undefined;
-    let model = this.models.selectBinding(args.model, workspaceProfileId);
-    if (model && !this.canUseModel(actor, model.connection_id, context)) {
-      if (!implicitModel) reject('connection_forbidden', 'Model connection is not available to this caller', 403);
-      model = null;
-    }
-    await mkdir(this.directory(id), { recursive: true });
     return this.store.transaction(() => {
       beforeSave();
       const saved = this.store.get(botRecords, id);
       if (saved) return saved;
+      const role = this.roleOf(args, context, id);
+      let model = this.models.selectBinding(args.model, workspaceProfileId);
+      if (model && !this.canUseModel(actor, model.connection_id, context)) {
+        if (args.model !== undefined) reject('connection_forbidden', 'Model connection is not available to this caller', 403);
+        model = null;
+      }
       this.resources.assertCapacity('bots', this.list().filter(bot => !bot.connection_initializer).length);
+      mkdirSync(this.directory(id), { recursive: true });
       const record = this.store.save(botRecords, { id, name, instructions, model, owner: actor, revision: 1, workspaceProfileId: workspaceProfileId ?? null,
-        enabled: true, control: activeControl(), material_index_ref: null });
+        enabled: true, control: activeControl(), material_index_ref: null, ...(role ? { built_in_role: role } : {}) });
       if (model) this.store.save('platform-access', { id, model_ids: [model.connection_id], connection_ids: [], workspace_ids: [] });
       return record;
     });
@@ -106,6 +133,9 @@ export class BotManager {
     const changes = {};
     if (args.name !== undefined) changes.name = cleanName(args.name);
     if (args.instructions !== undefined) changes.instructions = instructionsOf(args.instructions);
+    const role = this.roleOf(args, context, id);
+    if (role !== undefined && (role?.id !== before.built_in_role?.id || role?.connection_id !== before.built_in_role?.connection_id))
+      changes.built_in_role = role;
     if (args.model !== undefined) {
       const model = this.models.selectBinding(args.model, workspaceProfileId);
       const target = { kind: 'bot', id };

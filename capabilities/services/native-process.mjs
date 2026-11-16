@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { appendFileSync, existsSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { nativeCommand, nativeEnvironment, redactNative, redactNativeCredentials } from './native-host.mjs';
+import { nativeCommand, nativeEnvironment, nativeSpawnFailureCode, redactNative, redactNativeCredentials } from './native-host.mjs';
 import { guardStillMatches, heartbeatExpiryMs } from './session-processes.mjs';
 import { terminateTree } from '../../bot/src/runtime/process-tools.mjs';
 import { samePath } from '../../bot/src/capabilities/file-policy.mjs';
@@ -127,7 +127,8 @@ function protocolLine(line) {
       output: field(message.output, 4000), exitCode: Number.isInteger(exitCode) ? exitCode : null });
   }
   if (reportsOutcome && message.type === 'outcome' && ['completed', 'failed', 'stopped', 'unknown', 'not_submitted', 'unsupported'].includes(message.status)) {
-    record({ nativeOutcome: message.status, stdinOpen: false, error: field(message.error, 4000) });
+    record({ nativeOutcome: message.status, stdinOpen: false, error: field(message.error, 4000),
+      ...(codex && message.status === 'failed' && message.code === 'native_spawn_failed' ? { code: 'native_spawn_failed' } : {}) });
     event('outcome', { status: message.status, nativeTurnId: state.nativeTurnId, error: state.error });
     drainExitedBridge();
   }
@@ -317,16 +318,26 @@ async function poll() {
 
 function start() {
   if (!allowed(manifest.guard)) return finish({ status: 'not_submitted', error: 'The Session or connection changed before process launch' });
-  if (manifest.guard?.executable_bindings && !manifest.guard.executable_bindings.every(({ file, canonical_file }) => {
-    try { return samePath(realpathSync(file), canonical_file) && samePath(realpathSync(canonical_file), canonical_file); }
-    catch { return false; }
-  })) return finish({ status: 'not_submitted', error: 'The selected executable binding changed before process launch' });
+  const bindingError = 'The selected executable binding changed before process launch';
+  let executableUnchanged;
+  try {
+    executableUnchanged = (manifest.guard?.executable_bindings ?? []).every(({ file, canonical_file }) =>
+      samePath(realpathSync(file), canonical_file) && samePath(realpathSync(canonical_file), canonical_file));
+  } catch (error) {
+    const code = ['ENOENT', 'ENOTDIR'].includes(error.code) ? 'connection_unavailable' : undefined;
+    return finish({ status: 'not_submitted', error: bindingError, code });
+  }
+  if (!executableUnchanged) return finish({ status: 'not_submitted', error: bindingError, code: 'executable_binding_changed' });
   const environment = nativeEnvironment(manifest.env, manifest.authorizedEnv, { codex });
   secrets = environment.secrets;
   const command = nativeCommand(manifest.file, promptFile ? [...manifest.args, promptFile] : manifest.args);
   record({});
-  child = spawn(command.file, command.args, { ...command.options, cwd: manifest.cwd, env: environment.env,
-    windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] });
+  try {
+    child = spawn(command.file, command.args, { ...command.options, cwd: manifest.cwd, env: environment.env,
+      windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] });
+  } catch (error) {
+    return finish({ status: 'not_submitted', error: clean(error.message), code: nativeSpawnFailureCode(error) });
+  }
   child.stdin.on('error', () => { if (!finished) record({ stdinOpen: false }); });
   child.stdin.once('close', () => { if (!finished) record({ stdinOpen: false }); });
   pipe(child.stdout, 'stdout.log');
@@ -346,7 +357,8 @@ function start() {
       pollTask = poll().catch(error => event('supervisor-error', { error: clean(error.message) })).finally(() => { pollTask = null; });
     }, 750);
   });
-  child.once('error', error => finish({ status: state.startedAt ? 'failed' : 'not_submitted', error: clean(error.message) }));
+  child.once('error', error => finish({ status: state.startedAt ? 'failed' : 'not_submitted', error: clean(error.message),
+    ...(!state.startedAt && !stopping ? { code: nativeSpawnFailureCode(error) } : {}) }));
   if (reportsOutcome) child.once('exit', drainExitedBridge);
   child.once('close', async (exitCode, exitSignal) => {
     const terminal = { exitCode, exitSignal };

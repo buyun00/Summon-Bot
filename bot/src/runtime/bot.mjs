@@ -181,7 +181,11 @@ export class BotRuntime {
   async receive(delivery) {
     if (this.closed) return { accepted: false, retryable: true, code: 'runtime_closed' };
     this.platform.getBot(delivery.bot_id);
-    const receipt = (await this.inbox(delivery.bot_id)).receive(delivery);
+    const inbox = await this.inbox(delivery.bot_id);
+    if (delivery.event.type === 'connection.failure' &&
+        !this.platform.canReadEvent(delivery.event, this.platform.principalContext(botRef(delivery.bot_id))))
+      return { accepted: false, retryable: false, code: 'access_revoked' };
+    const receipt = inbox.receive(delivery);
     if (receipt.processed || receipt.waits.length) setImmediate(() => {
       if (!this.closed) this.consumeDeliveries(this.inboxes.get(delivery.bot_id), [receipt.event_id]);
     });
@@ -409,7 +413,7 @@ export class BotRuntime {
     if (!bot.model || !this.platform.canUseModel(botRef(bot.id), bot.model.connection_id)) {
       throw runtimeFailure('connection_forbidden', 'The Bot has no authorized model connection', 403);
     }
-    return { name: bot.name, instructions: bot.instructions, revision: bot.revision,
+    return { name: bot.name, instructions: bot.instructions, revision: bot.revision, built_in_role: bot.built_in_role ?? null,
       model: bindModel(this.model, bot.model), material_index_ref: bot.material_index_ref };
   }
 
@@ -503,6 +507,7 @@ export class BotRuntime {
     const control = record()?.control || conversation.control;
     const actor = botRef(bot.id);
     const session = conversation.session_id ? sessionRef(conversation.session_id) : null;
+    const builtInRole = binding.built_in_role;
     const botVersion = bot.control?.control_version;
     const controls = [{ target: botRef(bot.id), control_version: botVersion }, { target, control_version: control.control_version }];
     if (session) controls.push({ target: session, control_version: authority?.control?.control_version });
@@ -533,7 +538,7 @@ export class BotRuntime {
     const job = { inbox, conversation, runId: run.id, binding, controller, signal: controller.signal, context, check, accepting: true,
       sameAuthorizationView,
       view: () => {
-        const view = this.authorizationView(context(), conversation, inbox, inbox.run(run.id));
+        const view = this.authorizationView(context(), conversation, inbox, inbox.run(run.id), builtInRole);
         inbox.attachReturnWaits(conversation.id, run.id, view.pending_return_waits);
         return view;
       },
@@ -546,21 +551,23 @@ export class BotRuntime {
     return job;
   }
 
-  authorizationView(context, conversation, inbox, run) {
+  authorizationView(context, conversation, inbox, run, builtInRole) {
     const view = this.platform.executionView(context);
     const access = this.platform.accessFor(context.actor);
     const profile = this.platform.principalContext(context.actor);
     const rooms = view.session ? [view.session.space].filter(space => space.kind === 'room') :
       this.platform.room.rooms(context.actor.id, profile).map(room => room.ref).sort((left, right) => left.id.localeCompare(right.id));
     const scope = [conversation.space, profile.workspaceProfileId ?? null, rooms, view.resources ?? [], scopeGrants(access)];
+    const roleConnectionId = view.connection_ids?.includes(builtInRole?.connection_id) ? builtInRole.connection_id : null;
+    if (roleConnectionId) scope.push({ role_connection_id: roleConnectionId });
     if (view.revoked_return_waits?.length) scope.push(view.revoked_return_waits);
     const canReadPiInput = event => !view.session || this.canReadPiInput(event, view.session);
-    const revokedInputs = sortedIds([...run.pending_event_ids, ...run.injected_event_ids].filter(id => {
-      const event = inbox.event(id);
-      return event?.type === 'pi.input' && !canReadPiInput(event);
-    }));
+    const events = sortedIds([...run.pending_event_ids, ...run.injected_event_ids]).map(id => inbox.event(id)).filter(Boolean);
+    const revokedInputs = events.filter(event => event.type === 'pi.input' && !canReadPiInput(event)).map(event => event.id);
     if (revokedInputs.length) scope.push({ revoked_inputs: revokedInputs });
-    return { ...view, canReadPiInput, view_revision: recordKey(...scope) };
+    const revokedConnectionEvents = events.filter(event => event.type === 'connection.failure' && !view.canReadEvent(event)).map(event => event.id);
+    if (revokedConnectionEvents.length) scope.push({ revoked_connection_events: revokedConnectionEvents });
+    return { ...view, role_connection_id: roleConnectionId, canReadPiInput, view_revision: recordKey(...scope) };
   }
 
   canReadPiInput(event, session) {
@@ -685,6 +692,7 @@ export class BotRuntime {
     const conversation = this.register(inbox, inbox.putConversation({ id: session.conversation_id || session.id,
       kind: 'pi', owner: session.owner, session_id: session.id, open_call_id: session.open_call_id || session.latest_call_id,
       space: session.space, binding: { model, instructions, name: bot.name, revision: session.bot_revision,
+        built_in_role: session.built_in_role ?? null,
         material_index_ref: session.sharing ? null : bot.material_index_ref }, input_revision: session.input_revision || 0 }));
     return { inbox, bot, conversation };
   }

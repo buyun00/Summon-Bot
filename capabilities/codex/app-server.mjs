@@ -3,7 +3,7 @@ import { createInterface } from 'node:readline';
 import { isAbsolute, relative } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { appServerArgs } from '../connectors/codex.mjs';
-import { nativeCommand } from '../services/native-host.mjs';
+import { nativeCommand, nativeSpawnFailureCode } from '../services/native-host.mjs';
 import { guardStillMatches } from '../services/session-processes.mjs';
 
 const [executable, action, ...launchArgs] = process.argv.slice(2);
@@ -46,7 +46,7 @@ function rpc(method, params, timeoutMs = 20_000) {
   });
 }
 
-function finish(status, error) {
+function finish(status, error, code) {
   if (ending) return;
   ending = true;
   for (const prompt of prompts.values()) {
@@ -55,7 +55,7 @@ function finish(status, error) {
   }
   prompts.clear();
   guardDb?.close();
-  if (!mode) emit('outcome', { status, error });
+  if (!mode) emit('outcome', { status, error, code });
   process.exitCode = status === 'completed' || status === 'stopped' ? 0 : 1;
   input.close();
   process.stdin.destroy();
@@ -225,16 +225,16 @@ output.on('line', line => {
   }
 });
 
-function disconnected(error) {
+function disconnected(error, code) {
   for (const request of requests.values()) {
     clearTimeout(request.timer);
     request.reject(Object.assign(new Error(error), { unconfirmed: true }));
   }
   requests.clear();
-  if (!ending) finish(threadSubmitted || turnSubmitted ? 'unknown' : 'failed', error);
+  if (!ending) finish(threadSubmitted || turnSubmitted ? 'unknown' : 'failed', error, code);
 }
 
-server.on('error', error => disconnected(error.message));
+server.on('error', error => disconnected(error.message, !server.pid && !stopping ? nativeSpawnFailureCode(error) : undefined));
 server.stdin.on('error', error => disconnected(error.message));
 server.once('close', () => {
   serverClosed = true;

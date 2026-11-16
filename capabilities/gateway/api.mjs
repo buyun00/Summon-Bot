@@ -175,7 +175,7 @@ export function createApi({ platform, room, attachments, models, profiles, conne
         const items = connections.settings(userContext);
         const result = { ...await list('connection', params), ...(selectedProfile ? {} : {
           limits: usage.limits, limits_revision: platform.resources.readLimits().revision, usage }) };
-        return { ...result, items: result.items.map(item => items.find(connection => connection.id === item.id) || item) };
+        return { ...result, items: result.items.map(item => ({ ...item, ...items.find(connection => connection.id === item.id) })) };
       }
       if (method === 'POST') return platform.configureExecutionConnection(args, userContext);
     }

@@ -8,11 +8,13 @@ import { reject } from '../platform/contract.mjs';
 import { codexBridge } from '../connectors/codex.mjs';
 import { connectionAuthorized, connectionRecords } from './connection-records.mjs';
 import { allowsConnection } from './executable-scope.mjs';
+import { nativeSpawnFailureCode } from './native-host.mjs';
 
 export const operationRecords = 'session-operations';
 export const inputRecords = 'session-inputs';
 export const heartbeatExpiryMs = 15_000;
 export const settled = status => ['completed', 'failed', 'stopped', 'unknown', 'unsupported', 'not_submitted'].includes(status);
+export const connectionStartupFailures = Object.freeze(['connection_unavailable', 'executable_binding_changed', 'connection_binding_changed', 'native_spawn_failed']);
 const worker = fileURLToPath(new URL('./native-process.mjs', import.meta.url));
 const executeFile = promisify(execFile);
 
@@ -146,7 +148,8 @@ export class SessionProcesses {
     } catch (error) {
       if (script) await unlink(script).catch(() => {});
       return this.save(operation, { status: 'not_submitted', runtime_ended: true,
-        finished_at: new Date().toISOString(), error: this.clean(error.message) });
+        finished_at: new Date().toISOString(), error: this.clean(error.message),
+        code: connectionStartupFailures.includes(error.code) ? error.code : undefined });
     }
     // After this boundary a restart can only inspect the original instance.
     this.save(operation, { status: 'starting', submitted_at: new Date().toISOString() });
@@ -159,7 +162,7 @@ export class SessionProcesses {
     } catch (error) {
       if (script) await unlink(script).catch(() => {});
       return this.save(operation, { status: 'not_submitted', runtime_ended: true,
-        finished_at: new Date().toISOString(), error: this.clean(error.message) });
+        finished_at: new Date().toISOString(), error: this.clean(error.message), code: nativeSpawnFailureCode(error) });
     }
     child.unref();
     return this.save(operation, { runner_pid: child.pid });

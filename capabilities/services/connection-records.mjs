@@ -43,6 +43,10 @@ export function validateConnection(entry) {
   if (!Array.isArray(entry.allowed_bot_ids) || entry.allowed_bot_ids.some(id => typeof id !== 'string' || !id)) {
     reject('invalid_connection', 'Specify the granted Bot identities');
   }
+  if (entry.repair_bot_ids !== undefined && (!['cli', 'codex'].includes(entry.kind) || !Array.isArray(entry.repair_bot_ids) ||
+      entry.repair_bot_ids.some(id => typeof id !== 'string' || !id || id === '*' ||
+        !entry.allowed_bot_ids.includes(id) && !entry.allowed_bot_ids.includes('*'))))
+    reject('invalid_connection', 'Repair grants require named Bots with access to this CLI connection');
   if (typeof entry.enabled !== 'boolean') reject('invalid_connection', 'Connection enabled must be a boolean');
   if (entry.dependencies && (!Array.isArray(entry.dependencies) || entry.dependencies.some(id => typeof id !== 'string' || !id))) {
     reject('invalid_connection', 'Invalid connection dependencies');

@@ -2,20 +2,23 @@ import { realpathSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, parse, relative, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { bindModel } from '../../bot/src/agent/model.mjs';
+import { catalogMaintainerRole } from '../../roles/index.mjs';
 import { BotManager, activeControl, botRecords } from '../bot-management/service.mjs';
 import { ConnectionInitializer } from '../connectors/initialization.mjs';
 import { Files } from '../filesystem/files.mjs';
 import { Calls, isWaitOrigin, waitRecords } from './calls.mjs';
 import { assertRevision, connectionSetupTool, idOf, identity, keyOf, page, readTools, reject, sameIdentity, sameRef, user, validateTool } from './contract.mjs';
-import { Deliveries } from './delivery.mjs';
+import { Deliveries, wakeupRecords } from './delivery.mjs';
 import { Executions, conversationRecords, sessionRecords } from './executions.mjs';
 import { HostResources } from './resources.mjs';
 import { allowsConnection, enclosesExecutableScope, executableScope } from '../services/executable-scope.mjs';
 import { localExecutable } from '../services/native-host.mjs';
+import { connectionStartupFailures } from '../services/session-processes.mjs';
 
 const normalize = (value, kind) => typeof value === 'string' ? { kind, id: value } : value;
 const revokedAuthority = new Set(['session_authority_revoked', 'workspace_changed', 'connection_binding_changed', 'model_binding_changed']);
 const inactiveSessions = new Set(['completed', 'failed', 'stopped', 'unsupported', 'cancelled', 'not_submitted', 'idle']);
+const setupBotTools = new Set(['create_bot', 'configure_bot', 'set_wakeup']);
 const setupResponse = (result, call) => ({ ...result, call_id: call.id, ...(call.target ? { target: call.target, execution_ref: call.target } : {}) });
 export const profileMatches = (record, context) => (record?.workspaceProfileId ?? null) === (context.workspaceProfileId ?? null);
 const inside = (root, path) => {
@@ -28,7 +31,9 @@ export class SummonPlatform {
     Object.assign(this, { store, dataRoot, releaseRoot, models, attachments, emit });
     this.draining = false;
     this.resources = new HostResources(store, limits);
-    this.manager = new BotManager({ store, dataRoot, resources: this.resources, models, canUseModel: (actor, id, context) => this.canUseModel(actor, id, context) });
+    this.manager = new BotManager({ store, dataRoot, resources: this.resources, models,
+      canUseModel: (actor, id, context) => this.canUseModel(actor, id, context),
+      maintenanceConnection: (id, context) => this.maintenanceConnection(id, context) });
     this.deliveries = new Deliveries({ store, resources: this.resources, manager: this.manager, emit,
       canReadEvent: (botId, event) => this.canReadEvent(event, this.principalContext({ kind: 'bot', id: botId })),
       canReadWait: (wait, event) => this.canReadReturnWait(wait, event.target),
@@ -83,6 +88,42 @@ export class SummonPlatform {
     return Boolean(entry && profileMatches(entry, profile) && allowsConnection(context.executable_scope, entry, id => this.connections.get(id)) &&
       (actor.kind === 'user' || entry.enabled &&
       (entry.allowed_bot_ids?.includes('*') || entry.allowed_bot_ids?.includes(actor.id))));
+  }
+
+  maintenanceConnection(value, context) {
+    const id = idOf(value, 'connection');
+    const entry = this.connections.get(id);
+    if (!['cli', 'codex'].includes(entry?.kind) || !this.canUseConnection(context.actor, id, context))
+      reject('connection_forbidden', 'Choose a native CLI connection in this workspace and your execution grants', 403);
+    return entry;
+  }
+
+  connectionMaintenance(entry, maintainer) {
+    if (!['cli', 'codex'].includes(entry?.kind)) return {};
+    const bot = maintainer === undefined ? this.manager.maintainer(entry) : maintainer;
+    if (!bot || !profileMatches(bot, entry)) return { maintainer: null };
+    const actor = { kind: 'bot', id: bot.id };
+    const can_use = this.connections.authorized(entry, actor);
+    return { maintainer: { ...actor, enabled: bot.enabled, can_use,
+      can_repair: can_use && (entry.config.initialized_for === bot.id || entry.repair_bot_ids?.includes(bot.id) === true) } };
+  }
+
+  noteConnectionFailure(source, call, { status, code, input_status }) {
+    if (!source || !['failed', 'not_submitted'].includes(status) || !connectionStartupFailures.includes(code) ||
+        input_status !== undefined || !['open_session', 'send_input'].includes(call.tool) || call.connection_failure_event_id) return;
+    const session = this.store.get(sessionRecords, source.id);
+    if (!session || session.authority_revoked || session.control?.state !== 'active') return;
+    const connection = this.connections.get(session.connection_id ?? session.engine);
+    if (!['cli', 'codex'].includes(connection?.kind) || !profileMatches(connection, session) ||
+        !this.connections.authorized(connection, session.execution_actor)) return;
+    const binding_version = connection.binding_version ?? 1;
+    if (session.connection_binding_version !== binding_version) return;
+    const ref = { kind: 'connection', id: connection.id };
+    const id = randomUUID();
+    this.calls.bind(call.id, { connection_failure_event_id: id });
+    this.deliveries.queueEvent({ id, kind: 'event', type: 'connection.failure', target: ref, ref, status, code, binding_version,
+      workspaceProfileId: session.workspaceProfileId, author: { kind: 'platform', id: 'platform' }, time: new Date().toISOString() },
+    [], true, session.execution_actor?.id);
   }
 
   visibleBot(bot, context) {
@@ -143,6 +184,11 @@ export class SummonPlatform {
 
   canReadEvent(event, context) {
     if (event.result_access === 'revoked') return false;
+    if (event.type === 'connection.failure') {
+      const connection = event.ref?.kind === 'connection' && this.connections.get(event.ref.id);
+      return Boolean(connection && event.binding_version === (connection.binding_version ?? 1) &&
+        profileMatches(event, context) && this.canReadReference(event.ref, context));
+    }
     if (event.call_id && event.target) {
       const call = this.store.get('platform-calls', event.call_id);
       const waits = call?.return_refs || [];
@@ -396,6 +442,7 @@ export class SummonPlatform {
         source_space: context.conversation?.space || null,
         execution_actor: actor, submitted_by: actor, model, model_binding: binding,
         instructions: sharing ? '' : context.session?.instructions ?? bot?.instructions ?? '',
+        ...(engine === 'pi' ? { built_in_role: sharing ? null : (context.session ? context.session.built_in_role : bot.built_in_role) ?? null } : {}),
         bot_revision: bot?.revision ?? null, sharing, resource_refs, workspace: workspace ? { path: workspace.path, root: workspace.root, write: workspace.write } : null,
         workspace_ref: workspace?.ref ?? null, status: 'opening', native: null, input_targets: [], input_revision: 0,
         ...(context.executable_scope !== undefined ? { executable_scope: context.executable_scope } : {}),
@@ -476,6 +523,7 @@ export class SummonPlatform {
     const waits = this.calls.returnWaits(context.origin, context.actor);
     const revoked_return_waits = waits.filter(wait => !this.canReadReturnWait(wait, wait.target)).map(wait => wait.id).sort();
     return { actor: context.actor, resources: context.resource_refs, session: context.session, conversation: context.conversation,
+      connection_ids: sharedConnections.map(([id]) => id),
       view_revision: keyOf(rooms, context.session?.id, context.session?.control.control_version, access?.revision, sharedConnections, permitted),
       unfinished_calls: this.calls.unfinishedFor(context.conversation.id, context.actor),
       pending_return_waits: waits.filter(wait => ['waiting', 'pending_delivery', 'received'].includes(wait.status)),
@@ -527,12 +575,13 @@ export class SummonPlatform {
     const current = value.id && this.connections.get(value.id);
     if (current && !this.canUseConnection(user, value.id, context))
       reject('connection_not_found', 'Connection is unavailable', 404);
-    if (Array.isArray(value.allowed_bot_ids) && value.allowed_bot_ids.some(id => id !== '*' && !current?.allowed_bot_ids?.includes(id) &&
-        !this.manager.list().some(bot => bot.id === id && (this.visibleBot(bot, context) ||
-          bot.connection_initializer && id === context.initializer_id && profileMatches(bot, context))))) {
+    const inWorkspace = id => this.manager.list().some(bot => bot.id === id && (this.visibleBot(bot, context) ||
+      bot.connection_initializer && id === context.initializer_id && profileMatches(bot, context)));
+    for (const field of ['allowed_bot_ids', 'repair_bot_ids']) if (Array.isArray(value[field]) &&
+      value[field].some(id => !(field === 'allowed_bot_ids' && id === '*') && !current?.[field]?.includes(id) && !inWorkspace(id)))
       reject('invalid_connection', 'Connection grant includes a Bot outside this workspace');
-    }
-    const result = await this.connections.configure({ ...value, id: value.id ?? randomUUID(), workspaceProfileId: context.workspaceProfileId }, context, onSave);
+    const result = await this.connections.configure({ ...value, id: value.id ?? randomUUID(), workspaceProfileId: context.workspaceProfileId }, context,
+      saved => onSave?.({ ...saved, ...this.connectionMaintenance(this.connections.get(saved.id)) }));
     if (current) {
       const updated = this.connections.get(result.id);
       const removedGrant = current.allowed_bot_ids?.some(id => !updated?.allowed_bot_ids?.includes(id));
@@ -540,7 +589,7 @@ export class SummonPlatform {
         await this.revokeSessions({ kind: 'connection', id: result.id });
     }
     this.emit('connection');
-    return result;
+    return { ...result, ...this.connectionMaintenance(this.connections.get(result.id)) };
   }
 
   async startConnectionSetup(args, input, clientId) {
@@ -607,9 +656,7 @@ export class SummonPlatform {
   }
 
   canRepairConnection(input) {
-    const context = this.context(input);
-    return this.connectionInitializer.managed(context).some(entry => this.canUseConnection(context.actor, entry.id, context) &&
-      this.connections.authorized(entry, context.actor));
+    return this.connectionInitializer.managed(this.context(input)).length > 0;
   }
 
   requireConnectionSetup(input, args) {
@@ -624,7 +671,6 @@ export class SummonPlatform {
 
     const submittedBy = this.principalContext(identity(context.submitted_by ?? context.actor), context.workspaceProfileId);
     const authorized = this.connectionInitializer.managed(context).filter(entry =>
-      this.canUseConnection(context.actor, entry.id, context) && this.connections.authorized(entry, context.actor) &&
       this.canUseConnection(submittedBy.actor, entry.id, submittedBy) && this.connections.authorized(entry, submittedBy.actor));
     if (!args?.connection && authorized.length && ['guide', 'discover'].includes(args?.action)) return { repair: true, connections: authorized };
     const connection = args?.connection && authorized.find(entry => entry.id === idOf(args.connection, 'connection'));
@@ -635,6 +681,29 @@ export class SummonPlatform {
     return { repair: true, connection, connections: [connection], executables: boundPaths, workspace: connection.config.workspace_root };
   }
 
+  assertSetupBotTool(name, args, context) {
+    const setup = this.requireConnectionSetup(context, { action: 'discover' });
+    if (setup.repair) reject('initialization_forbidden', 'Bot provisioning requires the active host setup', 403);
+    const target = name === 'create_bot' ? null : this.getBot(idOf(args.bot, 'bot'));
+    if (target && (!profileMatches(target, context) || !this.manager.canConfigure(context.actor, target)))
+      reject('configuration_forbidden', 'This Bot is outside the initialization scope', 403);
+    const priorConnectionId = target?.built_in_role?.connection_id;
+    const connectionId = args.role_connection_id ?? priorConnectionId;
+    if (priorConnectionId && priorConnectionId !== connectionId &&
+        !this.connectionInitializer.setupOwns(this.connections.get(priorConnectionId), context, setup))
+      reject('configuration_forbidden', 'The Bot’s current maintenance connection is outside this setup', 403);
+    if (!this.connectionInitializer.setupOwns(this.connections.get(connectionId), context, setup) ||
+        name === 'create_bot' && args.role_id !== catalogMaintainerRole ||
+        name === 'configure_bot' && args.role_id !== undefined && args.role_id !== catalogMaintainerRole)
+      reject('initialization_forbidden', 'Use the CLI maintenance duty for a connection in this setup', 403);
+    if (name === 'set_wakeup') {
+      const rule = args.event_or_time ?? this.store.get(wakeupRecords, args.id)?.rule;
+      if (rule?.kind !== 'event' || rule.type !== 'connection.failure' || rule.room ||
+          !sameRef(rule.ref, { kind: 'connection', id: connectionId }))
+        reject('initialization_forbidden', 'The embedded initializer can subscribe this Bot to its CLI failure events', 403);
+    }
+  }
+
   async executeTool(name, args, input) {
     validateTool(name, args);
     const context = this.context(input);
@@ -642,8 +711,11 @@ export class SummonPlatform {
     if (context.actor.kind === 'bot') {
       if (!readTools.has(name) && !context.call_id) reject('call_id_required', 'A writable invocation requires a host call ID', 400);
       this.assertRunAllowed(context);
-      if (this.getBot(context.actor.id).connection_initializer && name !== connectionSetupTool.name && !connectionSetupTool.executionTools.includes(name))
-        reject('initialization_forbidden', 'The embedded Pi identity only has execution setup and session capabilities', 403);
+      if (this.getBot(context.actor.id).connection_initializer) {
+        if (name !== connectionSetupTool.name && !connectionSetupTool.executionTools.includes(name))
+          reject('initialization_forbidden', 'This embedded Pi invocation is outside the execution setup scope', 403);
+        if (setupBotTools.has(name)) this.assertSetupBotTool(name, args, context);
+      }
     }
     if (readTools.has(name)) return { result: await this[name](args, context), call_id: null };
     const setup = name === connectionSetupTool.name ? this.requireConnectionSetup(context, args) : null;
@@ -666,7 +738,7 @@ export class SummonPlatform {
       }
       if (name === 'create_bot') {
         if (context.session) reject('configuration_forbidden', 'This Session cannot create Bot identities', 403);
-        const bot = await this.manager.create(`bot-${record.id}`, args, context, () => this.assertRunAllowed(context));
+        const bot = this.manager.create(`bot-${record.id}`, args, context, () => this.assertRunAllowed(context));
         this.calls.bind(record.id, { target: { kind: 'bot', id: bot.id } });
         const result = this.calls.finish(record.id, 'completed', this.manager.view(bot, context.actor));
         this.emit('bot', result);
@@ -696,7 +768,7 @@ export class SummonPlatform {
         const value = this.write(name, args, context, record, workspaceFile);
         return this.calls.finish(record.id, 'completed', value);
       });
-      if (name === 'configure_bot') {
+      if (name === 'configure_bot' && Object.keys(args).some(key => !['bot', 'revision', 'role_id', 'role_connection_id'].includes(key))) {
         if (result.control.state === 'paused' && result.control.stop_status === 'pending') {
           this.settleBotInBackground(result.id, result.control);
         } else this.runtime.wake();
@@ -798,7 +870,10 @@ export class SummonPlatform {
       case 'connection': {
         const needle = query?.trim().toLowerCase();
         const pi = { kind: 'connection', id: 'pi', name: 'Pi', protocol: 'pi', enabled: true, available: true };
-        items = (await this.connections.find(this.connectionContext(context), query)).filter(item => this.canUseConnection(actor, item.id, context));
+        const visible = (await this.connections.find(this.connectionContext(context), query)).filter(item => this.canUseConnection(actor, item.id, context));
+        const maintainers = new Map(this.manager.maintainers().filter(bot => profileMatches(bot, context))
+          .map(bot => [bot.built_in_role.connection_id, bot]));
+        items = visible.map(item => ({ ...item, ...this.connectionMaintenance(this.connections.get(item.id), maintainers.get(item.id) ?? null) }));
         if (!needle || needle === 'pi') items = [pi, ...items];
         break;
       }
@@ -850,8 +925,14 @@ export class SummonPlatform {
       case 'event': return this.store.get('platform-events', ref.id) ?? this.room.read(args, context.actor.id, context);
       case 'file': return this.files.readObject(ref.id, context, args.cursor, args.limit);
       case 'session': case 'conversation': return this.executions.read(ref, context, args);
-      case 'connection': return ref.id === 'pi' ? { kind: 'connection', id: 'pi', name: 'Pi', protocol: 'pi',
-        input: 'text or structured input for a new Pi conversation', operations: ['steer', 'next', 'stop'] } : this.connections.read(ref.id, this.connectionContext(context));
+      case 'connection': {
+        if (ref.id === 'pi') return { kind: 'connection', id: 'pi', name: 'Pi', protocol: 'pi',
+          input: 'text or structured input for a new Pi conversation', operations: ['steer', 'next', 'stop'] };
+        const observed = await this.connections.read(ref.id, this.connectionContext(context));
+        const entry = this.connections.get(ref.id);
+        return ['cli', 'codex'].includes(entry?.kind) && this.canUseConnection(context.actor, ref.id, context)
+          ? { ...observed, ...this.connectionMaintenance(entry) } : observed;
+      }
       case 'call': return this.calls.view(this.calls.get(ref.id), context);
       case 'wakeup': return this.deliveries.list(context).find(item => item.id === ref.id);
       case 'workspace': return this.workspaceRecords().find(item => item.id === ref.id);

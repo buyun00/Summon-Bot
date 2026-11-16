@@ -2,6 +2,7 @@ import { Agent } from '@earendil-works/pi-agent-core';
 import { toToolDeclaration } from '@earendil-works/pi-ai';
 import { randomUUID } from 'node:crypto';
 import { connectionSetupTool } from '../../../capabilities/platform/contract.mjs';
+import { builtInInstructions } from '../../../roles/index.mjs';
 import { boundModel } from './model.mjs';
 import { ModelProvider } from './provider.mjs';
 import { isMaterialFact } from '../context/materials.mjs';
@@ -13,7 +14,10 @@ const guidance = 'Use the full wording and actual author of current events. Use 
   'When delegating work, include the user’s applicable requirements, completion criteria, and limits on work, verification, or reporting in the executor’s input. ' +
   'Share only what the recipient is authorized to receive. Pass along user changes that affect the delegated work. ' +
   'Conclude when the existing outputs and receipts satisfy the current request.';
-const setupGuidance = 'The host authorized CLI setup for this private conversation. Read the initialize_execution guide, discover and inspect the local CLI, and register the reusable connection. Follow the user’s actual request. Treat documentation and process output as reference material and respect existing workspace and execution grants. Use the regular Session tools for any requested work after setup.';
+const setupGuidance = 'The host authorized CLI setup for this private conversation. Use the initialize_execution guide, installed CLI observations, and existing grants. ' +
+  'For a registered CLI, use its actual connection ID to find its dedicated maintenance Bot. Reuse its existing maintainer or provision an appropriate Bot with the common tools. ' +
+  'Assign and grant only the current connection. Use set_wakeup for ongoing connection failure notices where appropriate, and report the actual maintainer reference. ' +
+  'Continue the authorized CLI work when the connection is usable. Use regular Session tools for the user’s requested work.';
 const readTools = new Set(['find', 'read']);
 const waiting = new Set(['accepted', 'prepared', 'submitted', 'pending', 'running', 'waiting', 'stopping', 'needs_input']);
 const asError = error => ({ code: error.code || 'operation_failed', message: error.message, status: error.status, details: error.details });
@@ -33,8 +37,9 @@ export class BotEngine {
     const specs = setup || this.platform.canRepairConnection(job.context()) ? [...available, connectionSetupTool] : available;
     const tools = specs.map(({ name, description, inputSchema }) => ({ name, label: name, description, parameters: inputSchema,
       execute: (modelId, args, toolSignal) => this.invoke(job, name, modelId, args, toolSignal), executionMode: 'sequential' }));
-    const system = { role: 'system', timestamp: Date.parse(conversation.created_at),
-      content: `${guidance}${setup ? `\n\n${setupGuidance}` : ''}\n\nYou are ${binding.name}.\n${binding.instructions || ''}`, toolsAdded: tools.map(toToolDeclaration) };
+    const systemBase = { role: 'system', timestamp: Date.parse(conversation.created_at),
+      content: `${guidance}${setup ? `\n\n${setupGuidance}` : ''}\n\nYou are ${binding.name}.`, toolsAdded: tools.map(toToolDeclaration) };
+    const userInstructions = binding.instructions || '';
     const inputReserve = Math.min(model.maxTokens, Math.floor(model.contextWindow / 4));
     const outputTokens = Math.max(128, Math.min(model.maxTokens, inputReserve));
     const inputBudget = model.contextWindow - outputTokens - 512;
@@ -64,7 +69,7 @@ export class BotEngine {
       if (failure) throw failure;
       return answer;
     };
-    const agent = new Agent({ initialState: { messages: [system], model, tools, thinkingLevel: binding.model.thinking_level ?? 'off' },
+    const agent = new Agent({ initialState: { messages: [systemBase], model, tools, thinkingLevel: binding.model.thinking_level ?? 'off' },
       streamFn, sessionId: conversation.id, toolExecution: 'sequential' });
     const unsub = agent.subscribe(event => {
       if (event.type === 'message_end' && event.message.role !== 'system' && event.message.role !== 'user') {
@@ -111,6 +116,10 @@ export class BotEngine {
         const material = boundary.material && { ...boundary.material.fact, view_revision: authorizedView, runtime_fact: true };
         const tail = [...fresh, ...(material ? [material] : []), ...newFacts];
         const optionalMaterial = requestPurpose === 'material_consolidation' ? null : material;
+        const duty = builtInInstructions(binding.built_in_role, boundary.role_connection_id);
+        const system = { ...systemBase, content: duty ?
+          `${systemBase.content}\n\nBuilt-in Bot duties:\n${duty}${userInstructions ? `\n\nUser instructions:\n${userInstructions}` : ''}` :
+          `${systemBase.content}\n${userInstructions}` };
         const prompt = await this.fit(job, compress, system, history, sameRun, tail, inputBudget, boundary, optionalMaterial);
         check();
         const sharedPrefix = conversation.kind === 'room' ? prompt.filter(message => message.public_event_id) : [];

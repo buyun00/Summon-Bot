@@ -124,7 +124,7 @@ export class Deliveries {
     this.queueEvent(event);
   }
 
-  queueEvent(event, waits = [], matchWakeups = true) {
+  queueEvent(event, waits = [], matchWakeups = true, excludedBotId) {
     const byBot = new Map();
     const entry = id => {
       if (!byBot.has(id)) byBot.set(id, { matches: [], waits: [] });
@@ -132,6 +132,7 @@ export class Deliveries {
     };
     for (const wait of waits) entry(wait.bot_id).waits.push(wait);
     for (const wakeup of matchWakeups ? this.store.list(wakeupRecords) : []) {
+      if (wakeup.bot_id === excludedBotId) continue;
       if (!this.matches(wakeup, event)) continue;
       try { if (!this.canReadEvent(wakeup.bot_id, event)) continue; }
       catch { /* Delivery will recheck access before the event reaches an inbox. */ }

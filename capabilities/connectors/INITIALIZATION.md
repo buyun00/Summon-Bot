@@ -28,6 +28,16 @@ Pi 使用当前工作区已配置的模型完成初始化。模型连接用于 P
 
 普通任务发现接口变化时，可用 `initialize_execution` 查阅并修正该 Pi 已有授权的连接。登记时保留它绑定的执行文件、项目范围和协议。只更新同一连接的适配时，可以从已结算且有确认 ID 的 Session 继续。
 
+## CLI 专责维护
+
+接入 CLI 时通过 `find` 或 `read` 查看已登记连接的 `maintainer`。有负责人时按该 Bot 引用复用。没有负责人时，根据当前授权使用 `create_bot` 选择 `role_id: "catalog-maintainer"` 和这个 `role_connection_id`，或用 `configure_bot` 把职责分给有权管理的现有 Bot。为维护工作单独选用当前工作区已获准的模型。一个连接同时只有一个当前负责人。
+
+在宿主授权的初始化会话中，`initialize_execution` 的 `grant_access` 可以对本次范围内的连接给指定 Bot 授权。传入实际的 `connection`、当前 `revision`、目标 `bot` ID 和 `access`。`use` 授权调用，`repair` 同时授权在同一绑定范围内探测与维护。已有调用授权和原初始化身份随重复登记保留。依赖、直参和工作目录使用各自的授权。宿主也可用现有连接设置的 `allowed_bot_ids` 和 `repair_bot_ids` 向同工作区的 Bot 授权。连接已可调用时，正常执行可以继续。
+
+维护 Bot 可经同一工作区的普通房间收请求。需要故障通知时，用 `set_wakeup` 设置该 Bot 的 `event_or_time`，例如 `{ "kind": "event", "type": "connection.failure", "ref": { "kind": "connection", "id": "实际连接 ID" } }`。通过 `find` 查看该 Bot 的现有 `wakeup` 后再调整。宿主确认的连接级启动故障会带上连接引用、绑定版本、原失败状态和错误类别。事件沿现有投递和收件记录进入维护 Bot 的私有运行，接收和读取时复核当前连接绑定。原任务输入、输出、工作目录和凭据按原授权保留。
+
+对已有原生方法的原始 CLI，可读取登记方法，获得修复授权后可 `inspect` 实际帮助、用 `register` 和当前连接修订更新检测版本。原生方法的参数、文件和环境配置由宿主通过现有连接设置修改。Codex 协议连接从类型选择内置适配，检测时保留原本的执行文件、项目范围和用户的模型设置。维护者可用 `save_file` 保存有来源的适用方法，在获准的房间用 `send` 分享结果。
+
 ## 适配脚本约定
 
 接口需要脚本时，在 `adapter.source` 提交 Node.js ES 模块，并在 `adapter.runner` 指定一个已有直接参数权限的原生解释器连接。解释器和目标 CLI 均遵循此工作的执行范围、调用者及目录授权。需要续接的脚本可声明 `adapter.resume`。

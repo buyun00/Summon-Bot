@@ -10,7 +10,7 @@ import { removeInside } from '../release/repository.mjs';
 export const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const directories = ['bot', 'web', 'capabilities', 'roles', 'skills', 'scripts/build', 'scripts/installation', 'scripts/maintenance', 'scripts/release'];
 const rootFiles = ['package.json', 'package-lock.json', 'release.json', 'README.md', 'README.zh-CN.md', 'AGENTS.md', 'Start.ps1', 'Start-Hidden.vbs', 'Stop.ps1', 'Run.cmd'];
-const docsFiles = ['ARCHITECTURE.md', 'DEPLOYMENT.md', 'OPERATIONS.md', 'DEVELOPMENT.md', 'CLIENT_RELEASES.md', 'MODEL_CONNECTIONS.md', 'IOS_TESTFLIGHT.md', 'MACOS_SIGNING.md'];
+const docsFiles = ['ARCHITECTURE.md', 'DEPLOYMENT.md', 'OPERATIONS.md', 'DEVELOPMENT.md', 'CLIENT_RELEASES.md', 'MODEL_CONNECTIONS.md', 'EGGBOT.md', 'IOS_TESTFLIGHT.md', 'MACOS_SIGNING.md'];
 const include = name => !name.split('/').some(part => ['node_modules', '.git', '.relay', 'test', 'tests', 'coverage', 'dist'].includes(part)
   || /^\.env(?:\.|$)/.test(part) || /(?:\.sqlite(?:-\w+)?|\.log|\.tmp)$/.test(part));
 

@@ -1,3 +1,5 @@
+import { roleIds } from '../../roles/index.mjs';
+
 export const protocolVersion = 2;
 
 const text = { type: 'string' };
@@ -49,8 +51,9 @@ const definitions = [
       object({ source: object({ kind: oneOf('workspace'), id: text }, ['kind', 'id']), path: text }, ['source', 'path']),
       object({ no_change: oneOf(true) }, ['no_change'])] },
       revision: integer, sources: array(ref), material_items: array(text) }, ['space', 'path', 'content_or_source'])],
-  ['create_bot', 'Create a Bot with instructions and an optional configured default model connection.',
-    object({ name: text, instructions: text, model }, ['name', 'instructions'])],
+  ['create_bot', 'Create a Bot with user instructions, an optional authorized model connection, and an optional built-in duty (role_id). ' +
+    'For catalog-maintainer pass the exact native role_connection_id from read. A duty does not grant access.',
+    object({ name: text, instructions: text, model, role_id: oneOf(...roleIds), role_connection_id: text }, ['name', 'instructions'])],
   ['configure_bot', 'Change a Bot configuration at its current revision. An explicit resume reference is required to re-enable a paused Bot. ' +
     'When asked to remember or correct something for future work, read your Bot for its revision, private_space and material_index_ref. ' +
     'If the index reference is empty, use save_file in private_space (for example memory/index.json) to save ordinary JSON such as ' +
@@ -59,8 +62,10 @@ const definitions = [
     'For an existing index, read it before editing and save with the current File revision. Increment the revision of a changed item. ' +
     'To request a separate background consolidation, set "selected":true on the specific item in the registered index and set its ' +
     '"target_ref" to the actual reference of an existing, accessible knowledge File. The runtime processes selected items when their ' +
-    'scope is idle. Use find with kind "material_consumption" to check the recorded outcome.',
+    'scope is idle. Use find with kind "material_consumption" to check the recorded outcome. ' +
+    'Set role_id to select a built-in duty, or null to clear it. For catalog-maintainer use role_connection_id. User instructions are a separate setting.',
     object({ bot: refOrId, revision: integer, name: text, instructions: text, model, enabled: flag, resume_ref: resumeRef,
+      role_id: oneOf(...roleIds, null), role_connection_id: text,
       material_index_ref: { anyOf: [ref, { type: 'null' }] } }, ['bot', 'revision'])],
   ['create_room', 'Create a Room with the specified members, including you as creator.',
     object({ members: array(principal), title: text }, ['members'])],
@@ -92,13 +97,15 @@ const adapterRecipe = object({ args: array(text), resume_args: array(text), stdi
   session_id: text, progress: text, result: text, error: text, complete_when: eventMatch, success_when: eventMatch }, ['args', 'output']);
 const launchArguments = object({ common: array(text), start: array(text), resume: array(text) });
 export const connectionSetupTool = Object.freeze({ name: 'initialize_execution',
-  executionTools: Object.freeze(['find', 'read', 'open_session', 'send_input', 'stop_session', 'save_file']),
+  executionTools: Object.freeze(['find', 'read', 'open_session', 'send_input', 'stop_session', 'save_file', 'create_bot', 'configure_bot', 'set_wakeup']),
   description: 'Initialize a host-authorized CLI connection. Read the general guide, discover installed connectors and inspect the actual executable. ' +
     'In ordinary work use discover to identify your existing authorized connections. For repair, pass the existing connection id string and revision. ' +
-    'Use adapter.arguments to add native flags while keeping the built-in connector. Use source or documentation to investigate interface changes.',
-  inputSchema: object({ action: oneOf('guide', 'discover', 'inspect', 'source', 'documentation', 'register'), connector: text,
+    'Use adapter.arguments to add native flags while keeping the built-in connector. Use source or documentation to investigate interface changes. ' +
+    'During host-authorized setup, grant_access can give one Bot use or repair authority on a registered connection in this setup.',
+  inputSchema: object({ action: oneOf('guide', 'discover', 'inspect', 'source', 'documentation', 'register', 'grant_access'), connector: text,
     command: text, executable: text, help_topic: text, offset: integer,
     connection: { ...text, description: 'The id string of the existing connection from discover or find.' }, revision: integer,
+    bot: { ...text, description: 'The Bot id string to grant access to.' }, access: oneOf('use', 'repair'),
     name: text, adapter: { anyOf: [object({ arguments: launchArguments }, ['arguments']), object({ recipe: adapterRecipe }, ['recipe']),
       object({ source: text, runner: refOrId, resume: flag }, ['source', 'runner'])] } }, ['action']) });
 const byName = new Map([...tools, connectionSetupTool].map(tool => [tool.name, tool]));

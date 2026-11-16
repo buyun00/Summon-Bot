@@ -478,6 +478,7 @@ export class Executions {
       if (terminal.has(facts.status)) {
         this.calls.bind(callId, { safe_to_disconnect: facts.safe_to_disconnect });
         this.calls.finish(callId, facts.status, facts);
+        this.platform.noteConnectionFailure(session, call, facts);
         if (call.lease_id) this.resources.finish(call.lease_id, { outcome: facts.status });
       } else {
         if (call.status === 'prepared') throw new Error('Adapter accepted an execution before saving the submission');
@@ -498,6 +499,7 @@ export class Executions {
       if (known) {
         this.calls.bind(callId, { status: 'prepared' });
         this.calls.fail(callId, error);
+        if (call.result_ref?.kind !== 'event') this.platform.noteConnectionFailure(current, call, { status, code: error.code });
         if (inputId && ['prepared', 'submitted'].includes(this.store.get(inputRecords, inputId)?.status))
           this.settleInput(inputId, callId, 'not_submitted');
       } else if (call.status === 'submitted') {
@@ -538,9 +540,10 @@ export class Executions {
       const existing = this.store.get('platform-events', eventId);
       if (existing) return existing;
       const advances = mayAdvanceReceipt(call, facts.status);
-      if (advances && target?.kind === 'session') this.saveFacts(target.id, callId, facts);
+      const session = advances && target?.kind === 'session' ? this.saveFacts(target.id, callId, facts) : null;
       const event = this.calls.recordReceipt(callId, facts, target);
       if (!advances) return event;
+      this.platform.noteConnectionFailure(session, call, facts);
       if (call.input_id) this.settleInput(call.input_id, callId, resultStatus(facts.status));
       if (call.lease_id && (terminal.has(facts.status) && (facts.status !== 'unknown' || facts.safe_to_disconnect === true) ||
           ['needs_input', 'awaiting_input'].includes(facts.status))) {

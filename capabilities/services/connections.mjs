@@ -97,7 +97,7 @@ export class SummonConnections {
 
   summary(entry, available = entry.enabled ? undefined : false) {
     return { kind: 'connection', protocol: entry.kind, id: entry.id, name: entry.name, description: entry.description,
-      revision: entry.revision, enabled: entry.enabled, ...(available === undefined ? {} : { available }), version: entry.version ?? entry.config.detected_version };
+      revision: entry.revision, enabled: entry.enabled, ...(available === undefined ? {} : { available }), version: entry.config.detected_version ?? entry.version };
   }
 
   find(context, query = '') {
@@ -164,13 +164,14 @@ export class SummonConnections {
   settings(context) {
     if (actorOf(context)?.kind !== 'user') reject('connection_forbidden', 'Connection settings require the host user', 403);
     const entries = this.store.list(connectionRecords).filter(entry => (entry.workspaceProfileId ?? null) === (context.workspaceProfileId ?? null));
-    return this.clean(entries.map(entry => ({ ...this.summary(entry), allowed_bot_ids: entry.allowed_bot_ids, dependencies: entry.dependencies })), []);
+    return this.clean(entries.map(entry => ({ ...this.summary(entry), allowed_bot_ids: entry.allowed_bot_ids,
+      repair_bot_ids: entry.repair_bot_ids, dependencies: entry.dependencies })), []);
   }
 
   async configure(input, context, onSave) {
     if (actorOf(context)?.kind !== 'user') reject('connection_forbidden', 'Connection settings require the host user', 403);
     if (!plain(input) || Object.keys(input).some(key => !['id', 'name', 'description', 'kind', 'config', 'config_patch', 'revision',
-      'enabled', 'allowed_bot_ids', 'dependencies', 'workspaceProfileId'].includes(key))) reject('invalid_connection', 'Invalid connection settings');
+      'enabled', 'allowed_bot_ids', 'repair_bot_ids', 'dependencies', 'workspaceProfileId'].includes(key))) reject('invalid_connection', 'Invalid connection settings');
     const id = idOf(input.id, 'connection');
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(id) || id === 'pi') reject('invalid_connection', 'Invalid managed connection identity');
     const previous = this.get(id);
@@ -186,6 +187,8 @@ export class SummonConnections {
     }
     const entry = { ...previous, ...submitted, id, enabled: submitted.enabled ?? previous?.enabled ?? true,
       allowed_bot_ids: submitted.allowed_bot_ids ?? previous?.allowed_bot_ids ?? [], workspaceProfileId: profile };
+    if (submitted.repair_bot_ids === undefined && Array.isArray(entry.allowed_bot_ids) && !entry.allowed_bot_ids.includes('*') && entry.repair_bot_ids)
+      entry.repair_bot_ids = entry.repair_bot_ids.filter(id => entry.allowed_bot_ids.includes(id));
     validateConnection(entry);
     if (typeof entry.name !== 'string' || !entry.name.trim()) reject('invalid_connection', 'Connection name is required');
     if (previous && previous.kind !== entry.kind) reject('connection_binding_conflict', 'Use a new id for another connection protocol', 409);

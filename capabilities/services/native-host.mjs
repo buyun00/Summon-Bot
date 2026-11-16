@@ -9,6 +9,8 @@ const windows = process.platform === 'win32';
 const windowsExtensions = ['.exe', '.com', '.cmd', '.bat', '.ps1'];
 const executableName = path => windows ? basename(path, extname(path)).toLowerCase() : basename(path);
 const validArg = value => typeof value === 'string' && value.length <= 32_768 && !value.includes('\0');
+export const nativeSpawnFailureCode = error => ['ENOENT', 'ENOTDIR', 'ENOEXEC'].includes(error.code) ? 'native_spawn_failed' : undefined;
+
 export function nativeArgs(value = []) {
   if (!Array.isArray(value) || value.length > 128 || value.some(arg => !validArg(arg))) fail('Expected an array of up to 128 process arguments');
   return value;
