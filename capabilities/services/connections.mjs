@@ -3,8 +3,9 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { idOf, keyOf, reject, sameRef, user } from '../platform/contract.mjs';
-import { canSupplyProcessArguments, codexBridge, codexInput, connectionExecutable, executionWorkspace, prepareProcess } from './connection-launch.mjs';
-import { connectionAllowed, connectionAuthorized, connectionRecords, executionRecords, plain, validateConnection } from './connection-records.mjs';
+import { codexBridge } from '../connectors/codex.mjs';
+import { codexInput, connectionExecutable, executionWorkspace, prepareProcess } from './connection-launch.mjs';
+import { canSupplyProcessArguments, connectionAllowed, connectionAuthorized, connectionRecords, executionRecords, plain, validateConnection } from './connection-records.mjs';
 import { codexCredentials, inspectNative, redactNative } from './native-host.mjs';
 import { nativeFileOperands } from './native-references.mjs';
 import { assertServiceConfig, credentialNames, mcpMethodUnsupported, mcpTasksUnsupported, serviceMethod, ServiceConnections } from './service-connection.mjs';
@@ -19,8 +20,12 @@ const actorOf = context => context?.actor || context;
 const callSession = (session, call) => ({ id: call.id, session_id: session.id, submitted_by: call.submitted_by });
 const text = value => typeof value === 'string' && value.length > 0 && value.length <= 32_768 && !value.includes('\0');
 function bindingConfig(entry) {
-  const { model, effort, credential_refs, headersEnv, env, tools, ...binding } = entry.config;
-  return { ...binding, ...(!nativeKind(entry.kind) && Array.isArray(tools) ?
+  const { model, effort, credential_refs, headersEnv, env, tools, adapter, app_server_stdio, launch_arguments, detected_version, setup_key,
+    initialized_for, ...binding } = entry.config;
+  // Adapters can update how they call the same executable. Changing the vendor
+  // protocol or the trusted interpreter changes what the connection authorizes.
+  return { ...binding, ...(adapter ? { adapter: { connector: adapter.connector ?? null, runner: adapter.runner ?? null } } : {}),
+    ...(!nativeKind(entry.kind) && Array.isArray(tools) ?
     { tools: tools.map(tool => {
       if (!plain(tool)) return tool;
       const { headersEnv, env, ...settings } = tool;
@@ -92,7 +97,7 @@ export class SummonConnections {
 
   summary(entry, available = entry.enabled ? undefined : false) {
     return { kind: 'connection', protocol: entry.kind, id: entry.id, name: entry.name, description: entry.description,
-      revision: entry.revision, enabled: entry.enabled, ...(available === undefined ? {} : { available }), version: entry.version };
+      revision: entry.revision, enabled: entry.enabled, ...(available === undefined ? {} : { available }), version: entry.version ?? entry.config.detected_version };
   }
 
   find(context, query = '') {
@@ -114,6 +119,7 @@ export class SummonConnections {
     if (entry.kind === 'codex') return this.clean({ ...summary, input: { text: 'string', model: 'optional exact model id', effort: 'optional reasoning effort' },
       operations: ['reply', 'steer', 'next', 'stop'], ...(entry.config.model ? { model: entry.config.model, effort: entry.config.effort } : {}) }, [entry]);
     if (entry.kind === 'cli') {
+      if (entry.config.adapter) return { ...summary, input: { text: 'string' }, operations: entry.config.adapter.resume ? ['next', 'stop'] : ['stop'] };
       const methods = (entry.config.methods || []).map(({ id, name, description, args, file_args, keep_input }) =>
         ({ id, name, description, args, file_args, keep_input }));
       return this.clean({ ...summary, input: { method: 'optional configured method', parameters: 'optional method parameters',
@@ -161,7 +167,7 @@ export class SummonConnections {
     return this.clean(entries.map(entry => ({ ...this.summary(entry), allowed_bot_ids: entry.allowed_bot_ids, dependencies: entry.dependencies })), []);
   }
 
-  async configure(input, context) {
+  async configure(input, context, onSave) {
     if (actorOf(context)?.kind !== 'user') reject('connection_forbidden', 'Connection settings require the host user', 403);
     if (!plain(input) || Object.keys(input).some(key => !['id', 'name', 'description', 'kind', 'config', 'config_patch', 'revision',
       'enabled', 'allowed_bot_ids', 'dependencies', 'workspaceProfileId'].includes(key))) reject('invalid_connection', 'Invalid connection settings');
@@ -188,8 +194,10 @@ export class SummonConnections {
     const changed = previous && !isDeepStrictEqual(bindingConfig(previous), bindingConfig(entry));
     const record = this.store.transaction(() => {
       if (this.get(id)?.revision !== previous?.revision) reject('revision_conflict', 'Connection settings changed', 409);
-      return this.store.save(connectionRecords, { ...entry, revision: (previous?.revision || 0) + 1,
+      const saved = this.store.save(connectionRecords, { ...entry, revision: (previous?.revision || 0) + 1,
         binding_version: (previous?.binding_version ?? 1) + Number(Boolean(changed)) });
+      onSave?.(this.clean(this.summary(saved), []));
+      return saved;
     });
     if (record.kind === 'mcp' && previous && (!record.enabled || configChanged))
       void this.services.disconnect(id);
@@ -237,11 +245,13 @@ export class SummonConnections {
     const guard = makeProcessGuard(session, entry, call);
     const launch = await prepareProcess({ host: this, entry, session, call, input, prior, guard });
     if (prior && launch.cwd !== prior.cwd)
-      reject('workspace_binding_changed', 'The Codex thread’s original working directory changed', 409);
+      reject('workspace_binding_changed', 'The native session’s original working directory changed', 409);
     const operation = this.store.save(operationRecords, { ...callSession(session, call), protocol: launch.protocol,
       instance_id: randomUUID(), launch_call_id: call.id, cwd: launch.cwd, connection_id: entry.id,
       connection_binding_version: entry.binding_version ?? 1, execution_actor: session.execution_actor,
-      thread_id: prior?.thread_id, binding: prior?.binding, status: 'prepared',
+      app_server_launch: launch.appServerLaunch,
+      thread_id: prior?.thread_id, requested_native_id: launch.managedAdapter ? launch.sessionId ?? undefined : undefined,
+      binding: prior?.binding, status: 'prepared',
       input_revision: (prior?.input_revision ?? session.input_revision ?? 0) + 1 });
     const started = await this.processes.launch(operation, launch, () => {
       this.assertRunning(signal);
@@ -353,8 +363,11 @@ export class SummonConnections {
       const current = this.requireObservation(entry, session, operation);
       if (!isDeepStrictEqual(current.config.credential_refs, entry.config.credential_refs)) return attempt;
       const credentials = codexCredentials(entry.config);
+      const originalLaunch = operation.app_server_launch;
       const outcome = await inspectNative(process.execPath, [codexBridge, file, 'history', operation.thread_id,
-        operation.turn_id || '', operation.original_operation_id || operation.id], operation.cwd, { timeoutMs: 15_000, codex: true, ...credentials });
+        operation.turn_id || '', operation.original_operation_id || operation.id,
+        originalLaunch?.mode ?? entry.config.app_server_stdio ?? 'flag', ...(originalLaunch?.args || [])],
+      operation.cwd, { timeoutMs: 15_000, codex: true, ...credentials });
       if (outcome.exitCode !== 0) return attempt;
       const history = JSON.parse(outcome.stdout);
       if (history.threadId !== operation.thread_id || (operation.turn_id && operation.turn_id !== history.turnId)) return attempt;
@@ -374,8 +387,10 @@ export class SummonConnections {
     if (session.control.state !== 'active' || session.authority_revoked || !this.authorized(entry, session.execution_actor) || operation.revoked_at ||
         operation.connection_binding_version !== undefined && operation.connection_binding_version !== (entry.binding_version ?? 1)) return [];
     if (settled(operation.status)) {
-      if (operation.protocol === 'codex' && operation.status !== 'unknown' && operation.runtime_ended && operation.thread_id &&
-          !operation.binding_rejected && session.workspace?.path && session.workspace_ref)
+      const resumable = operation.protocol === 'codex' ? operation.thread_id && !operation.binding_rejected :
+        entry.config.adapter?.resume && (operation.original_native_id || operation.requested_native_id) &&
+        ['completed', 'failed', 'stopped'].includes(operation.status);
+      if (resumable && operation.status !== 'unknown' && operation.runtime_ended && session.workspace?.path && session.workspace_ref)
         return [{ input_target: { kind: 'idle_input', input_revision: operation.input_revision }, kinds: ['next'] }];
       return [];
     }
@@ -410,7 +425,7 @@ export class SummonConnections {
       model: operation.binding?.model, effort: operation.binding?.effort, reroute: operation.reroute } : operation.protocol === 'service' ?
       { protocol: 'service', call_id: operation.id, ...(operation.operation_id ? { operation_id: String(operation.operation_id) } : {}) } :
       { protocol: 'cli', instance_id: operation.instance_id, launch_call_id: operation.launch_call_id, pid: operation.child_pid,
-        operation_id: operation.original_native_id };
+        operation_id: operation.original_native_id, requested_operation_id: operation.requested_native_id };
     const pending = operation.pending?.length ? operation.pending : undefined;
     const facts = this.clean({ status, session_status: status, native, input_revision: operation.input_revision, safe_to_disconnect: this.safeToDisconnect(operation),
       ...(operation.result ? { output: operation.result } : operation.error ?
@@ -422,7 +437,7 @@ export class SummonConnections {
 
   observationKey(operation, status) {
     const inputIssue = ['native_request_unsupported', 'native_event_unsupported'].includes(operation.code) ? [operation.code] : [];
-    const position = keyOf(status, operation.thread_id, operation.turn_id, operation.operation_id, operation.request_id, ...inputIssue,
+    const position = keyOf(status, operation.thread_id, operation.turn_id, operation.operation_id ?? operation.original_native_id, operation.request_id, ...inputIssue,
       ...(operation.pending || []).map(item => item.id));
     return status === 'unknown' && this.safeToDisconnect(operation) ? keyOf(position, 'runtime_ended') : position;
   }

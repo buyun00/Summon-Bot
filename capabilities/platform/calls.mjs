@@ -49,6 +49,7 @@ export class Calls {
         workspaceProfileId: context.workspaceProfileId ?? null,
         origin_bot: context.actor.kind === 'bot' ? context.actor.id : null, origin: context.origin || null,
         source_event_ids: context.origin?.event_ids ?? [], target: null, controls: context.controls || [],
+        ...(context.executable_scope !== undefined ? { executable_scope: context.executable_scope } : {}),
         client_id: context.clientId || null, charge_account: 'host', status: 'prepared', result_ref: null, return_refs: [] });
       if (context.clientId) this.store.save('platform-client-calls', { id: keyOf(context.actor.kind, context.actor.id, context.workspaceProfileId ?? null, context.clientId), call_id: id });
       if (context.origin?.conversation_id) this.addWait(id, { bot_id: context.actor.id, ...context.origin });

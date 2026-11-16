@@ -177,8 +177,9 @@ export function createApi({ platform, room, attachments, models, profiles, conne
           limits: usage.limits, limits_revision: platform.resources.readLimits().revision, usage }) };
         return { ...result, items: result.items.map(item => items.find(connection => connection.id === item.id) || item) };
       }
-      if (method === 'POST') return settingsConnection(args);
+      if (method === 'POST') return platform.configureExecutionConnection(args, userContext);
     }
+    if (path === '/api/connections/initialize' && method === 'POST') return platform.startConnectionSetup(args, userContext, clientId);
     if (path === '/api/connections/limits') {
       if (selectedProfile) reject('scope_unavailable', 'Host limits are available in the main workspace', 404);
       if (method === 'GET') return platform.resources.readLimits();
@@ -192,7 +193,7 @@ export function createApi({ platform, room, attachments, models, profiles, conne
     if ((match = path.match(/^\/api\/connections\/([^/]+)$/))) {
       const ref = routeRef('connection', match[1]);
       if (method === 'GET') return read(ref, params);
-      if (method === 'PATCH') return settingsConnection({ ...args, id: ref.id });
+      if (method === 'PATCH') return platform.configureExecutionConnection({ ...args, id: ref.id }, userContext);
     }
     if (path === '/api/workspaces') {
       if (method === 'GET') return list('workspace', params);
@@ -232,25 +233,5 @@ export function createApi({ platform, room, attachments, models, profiles, conne
     if (method === 'GET' && (match = path.match(/^\/api\/calls\/([^/]+)$/))) return read(routeRef('call', match[1]), params);
     return undefined;
 
-    async function settingsConnection(value) {
-      if (value.workspaceProfileId !== undefined) reject('invalid_connection', 'Connection workspace is assigned by the host');
-      const current = value.id && connections.get(value.id);
-      if (current && !platform.canUseConnection(user, value.id, userContext)) {
-        reject('connection_not_found', 'Connection is unavailable', 404);
-      }
-      if (Array.isArray(value.allowed_bot_ids) && value.allowed_bot_ids.some(id => id !== '*' && !current?.allowed_bot_ids?.includes(id) &&
-          !platform.listBots().some(bot => bot.id === id && platform.visibleBot(bot, userContext)))) {
-        reject('invalid_connection', 'Connection grant includes a Bot outside this workspace');
-      }
-      const result = await connections.configure({ ...value, id: value.id ?? randomUUID(), workspaceProfileId: selectedProfile }, userContext);
-      if (current) {
-        const updated = connections.get(result.id);
-        const removedGrant = current.allowed_bot_ids?.some(id => !updated?.allowed_bot_ids?.includes(id));
-        if (!updated || current.enabled && !updated.enabled || removedGrant || (current.binding_version ?? 1) !== (updated.binding_version ?? 1))
-          await platform.revokeSessions({ kind: 'connection', id: result.id });
-      }
-      emit('connection');
-      return result;
-    }
   };
 }

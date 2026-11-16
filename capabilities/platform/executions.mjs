@@ -1,6 +1,7 @@
 import { activeControl, assertResume, canResume, resumeReference } from '../bot-management/service.mjs';
 import { assertRevision, identity, keyOf, reject, sameIdentity, sameRef } from './contract.mjs';
 import { callRecords, errorResult, mayAdvanceReceipt } from './calls.mjs';
+import { allowsConnection, enclosesExecutableScope, executableScope } from '../services/executable-scope.mjs';
 
 export const sessionRecords = 'platform-sessions';
 export const conversationRecords = 'platform-conversations';
@@ -69,6 +70,7 @@ export class Executions {
     }
     return this.store.save(conversationRecords, { id: record.id, bot_id: record.bot_id, space: record.space ?? actor,
       owner: record.owner ?? actor, session_id: record.session_id ?? null, workspaceProfileId: this.platform.principalContext(actor).workspaceProfileId,
+      ...(record.connection_setup ? { connection_setup: record.connection_setup } : {}),
       control: activeControl(), input_revision: record.input_revision ?? 0 });
   }
 
@@ -78,6 +80,14 @@ export class Executions {
     const selected = context.workspaceProfileId === undefined ? this.platform.principalContext(actor).workspaceProfileId : context.workspaceProfileId;
     const actual = record.workspaceProfileId ?? this.platform.spaceProfile(record.space, record.owner);
     if (actual !== selected) return false;
+    if (context.executable_scope !== undefined) {
+      const native = target.kind === 'session' && record.engine !== 'pi';
+      const get = id => this.platform.connections.get(id);
+      const internalScope = target.kind === 'session' ? record.executable_scope : executableScope({ conversation: record,
+        session: record.session_id && this.record({ kind: 'session', id: record.session_id }) });
+      if (native ? !allowsConnection(context.executable_scope, get(record.engine), get) :
+          !enclosesExecutableScope(context.executable_scope, internalScope)) return false;
+    }
     if (session) {
       const current = { kind: 'session', id: session.id };
       const child = target.kind === 'session' && sameRef(record.origin_execution, current);
@@ -86,6 +96,7 @@ export class Executions {
     if (actor.kind === 'user') return true;
     if (target.kind === 'conversation') {
       if (record.bot_id !== actor.id) return false;
+      if (record.connection_setup && context.origin?.conversation_id !== record.id) return false;
       return record.space?.kind !== 'room' || this.platform.roomMembers(record.space.id).includes(actor.id);
     }
     if (sameIdentity(record.owner, actor)) return !record.sharing || this.platform.roomMembers(record.space.id).includes(actor.id);
@@ -225,7 +236,7 @@ export class Executions {
   pendingPiSubmissions() {
     return this.store.list(callRecords).flatMap(call => {
       if (!call.target || !unconfirmedPiSubmission(call) ||
-          (call.tool !== 'open_session' && (call.tool !== 'send_input' || !call.input_id))) return [];
+          (call.tool !== 'open_session' && (!['send_input', 'initialize_connections'].includes(call.tool) || !call.input_id))) return [];
       const target = this.record(call.target);
       if (!target) return [];
       if (call.target.kind === 'session' && target.engine === 'pi' && target.execution_actor?.id) return [{
@@ -265,6 +276,8 @@ export class Executions {
   async submit(args, context, call) {
     const { target } = args;
     const record = this.require(target, context, args.kind === 'resume' ? 'control' : 'input');
+    if (record.connection_setup && context.actor.kind !== 'user')
+      reject('initialization_forbidden', 'Only the host user can submit input to connection initialization', 403);
     if (args.kind === 'resume') return this.resume(args, context, call, record);
     if (args.input === undefined || args.input === null || !args.input_target || args.resume_ref) {
       reject('input_target_required', 'Input and a current typed input target are required');

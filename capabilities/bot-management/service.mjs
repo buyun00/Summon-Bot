@@ -60,7 +60,7 @@ export class BotManager {
   }
 
   canConfigure(actor, bot) {
-    return actor.kind === 'user' || actor.id === bot.id || sameIdentity(actor, bot.owner);
+    return !bot.connection_initializer && (actor.kind === 'user' || actor.id === bot.id || sameIdentity(actor, bot.owner));
   }
 
   view(bot, actor, { details = true } = {}) {
@@ -87,7 +87,7 @@ export class BotManager {
       beforeSave();
       const saved = this.store.get(botRecords, id);
       if (saved) return saved;
-      this.resources.assertCapacity('bots', this.list().length);
+      this.resources.assertCapacity('bots', this.list().filter(bot => !bot.connection_initializer).length);
       const record = this.store.save(botRecords, { id, name, instructions, model, owner: actor, revision: 1, workspaceProfileId: workspaceProfileId ?? null,
         enabled: true, control: activeControl(), material_index_ref: null });
       if (model) this.store.save('platform-access', { id, model_ids: [model.connection_id], connection_ids: [], workspace_ids: [] });

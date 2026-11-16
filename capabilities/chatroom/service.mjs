@@ -137,7 +137,7 @@ export class ChatroomService {
     for (const member of members) {
       if (member === actor || member === 'user') continue;
       const bot = this.manager.get(member);
-      if (bot.archivedAt || (bot.workspaceProfileId ?? null) !== workspaceProfileId) fail('此 Bot 无法加入会话', 403);
+      if (bot.connection_initializer || bot.archivedAt || (bot.workspaceProfileId ?? null) !== workspaceProfileId) fail('此 Bot 无法加入会话', 403);
     }
   }
 

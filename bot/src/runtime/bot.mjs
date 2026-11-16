@@ -233,6 +233,12 @@ export class BotRuntime {
     return inbox.putConversation({ ...conversation, registered: true, control: current.control });
   }
 
+  async connectionSetupConversation(bot, id, setup) {
+    const inbox = await this.inbox(bot.id);
+    return this.register(inbox, inbox.putConversation({ id, kind: 'connection_setup', space: botRef(bot.id),
+      owner: { kind: 'user', id: 'user' }, connection_setup: setup, embedded_initializer: bot.connection_initializer === true }));
+  }
+
   async dispatch(inbox, bot) {
     const snapshot = inbox.pending();
     const settled = new Set(snapshot.filter(route => this.settledProgress(inbox, route)));

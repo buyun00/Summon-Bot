@@ -1,10 +1,11 @@
 import { spawn } from 'node:child_process';
-import { appendFileSync, existsSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { nativeCommand, nativeEnvironment, redactNative, redactNativeCredentials } from './native-host.mjs';
-import { guardStillMatches } from './session-processes.mjs';
+import { guardStillMatches, heartbeatExpiryMs } from './session-processes.mjs';
 import { terminateTree } from '../../bot/src/runtime/process-tools.mjs';
+import { samePath } from '../../bot/src/capabilities/file-policy.mjs';
 
 const directory = process.argv[2];
 const manifest = JSON.parse(readFileSync(join(directory, 'launch.json'), 'utf8'));
@@ -21,12 +22,17 @@ const append = (name, text) => appendFileSync(join(directory, name), text, { mod
 // If the launching service lost its receipt it must never start this action a second time.
 writeFileSync(own, String(process.pid), { flag: 'wx', mode: 0o600 });
 
-let child, timer, stopTimer, drainTimer, pollTask, stopping = false, finished = false, heartbeatBlocked = false, secrets = [];
+let child, timer, stopTimer, stopTree, drainTimer, pollTask, heartbeatFailure, stopping = false, finished = false, secrets = [];
 const nativeInputs = new Map(), answers = new Set();
+const heartbeatDelays = new Set();
+const managedAdapter = manifest.managedAdapter === true;
 const state = { nonce: manifest.nonce, runnerPid: process.pid, status: 'starting', pending: [],
-  stdinOpen: false, nativeSessionId: manifest.sessionId || null };
+  stdinOpen: false, nativeSessionId: managedAdapter ? null : manifest.sessionId || null };
 const codex = manifest.protocol === 'codex';
 const eventProtocol = codex || manifest.protocol === 'summon-jsonl';
+const reportsOutcome = codex || managedAdapter;
+const promptFile = manifest.usesPromptFile === true ? join(directory, 'connector-prompt.txt') : null;
+const adapterFile = manifest.cleanupAdapter === true ? join(directory, 'adapter.mjs') : null;
 let guardDb;
 function allowed(guard) {
   if (!guard) return true;
@@ -40,15 +46,28 @@ const record = patch => {
   Object.assign(state, patch, { observedAt: now() });
   try {
     json(heartbeatPath, state);
-    heartbeatBlocked = false;
   } catch (error) {
     if (process.platform !== 'win32' || error.syscall !== 'rename' || !['EACCES', 'EPERM', 'EBUSY'].includes(error.code)) throw error;
-    // A reader can delay replacing the heartbeat on Windows. Keep supervising
-    // the child and publish its final snapshot separately if replacement is blocked.
-    if (state.finishedAt) renameSync(heartbeatPath + '.' + process.pid + '.tmp', finishedPath);
-    if (!heartbeatBlocked) event('state-write-delayed', { error: clean(error.code) });
-    heartbeatBlocked = true;
+    if (state.finishedAt) {
+      // Publish the terminal snapshot separately when the heartbeat is locked.
+      renameSync(heartbeatPath + '.' + process.pid + '.tmp', finishedPath);
+      return;
+    }
+    const failure = heartbeatFailure ??= { since: Date.now(), reported: false };
+    const delay = `${state.status}:${error.code}`;
+    if (!heartbeatDelays.has(delay)) {
+      event('state-write-delayed', { status: state.status, error: error.code });
+      heartbeatDelays.add(delay);
+    }
+    const elapsedMs = Date.now() - failure.since;
+    if (!failure.reported && elapsedMs >= heartbeatExpiryMs) {
+      event('state-write-unavailable', { status: state.status, error: error.code, elapsedMs });
+      failure.reported = true;
+    }
+    return;
   }
+  if (heartbeatFailure?.reported) event('state-write-restored', { status: state.status, elapsedMs: Date.now() - heartbeatFailure.since });
+  heartbeatFailure = undefined;
 };
 const event = (type, value) => append('events.jsonl', JSON.stringify({ type, at: now(), ...value }) + '\n');
 const field = (value, size) => typeof value === 'string' ? clean(value).slice(0, size) : null;
@@ -76,6 +95,7 @@ function protocolLine(line) {
   }
   if (!codex && message.type === 'session' && field(message.sessionId, 512)) {
     const nativeSessionId = field(message.sessionId, 512);
+    if (managedAdapter && manifest.sessionId && nativeSessionId !== manifest.sessionId) return;
     if (!state.nativeSessionId || state.nativeSessionId === nativeSessionId) {
       record({ nativeSessionId });
       event('session', { nativeSessionId, ref: field(message.ref, 1024) });
@@ -106,7 +126,7 @@ function protocolLine(line) {
       files: Array.isArray(message.files) ? message.files.slice(0, 20).map(file => field(file, 512)) : undefined,
       output: field(message.output, 4000), exitCode: Number.isInteger(exitCode) ? exitCode : null });
   }
-  if (codex && message.type === 'outcome' && ['completed', 'failed', 'stopped', 'unknown', 'not_submitted', 'unsupported'].includes(message.status)) {
+  if (reportsOutcome && message.type === 'outcome' && ['completed', 'failed', 'stopped', 'unknown', 'not_submitted', 'unsupported'].includes(message.status)) {
     record({ nativeOutcome: message.status, stdinOpen: false, error: field(message.error, 4000) });
     event('outcome', { status: message.status, nativeTurnId: state.nativeTurnId, error: state.error });
     drainExitedBridge();
@@ -203,15 +223,23 @@ function finish(patch) {
   clearTimeout(drainTimer);
   const settle = () => {
     guardDb?.close();
+    for (const scratch of [promptFile, adapterFile].filter(Boolean)) {
+      try { unlinkSync(scratch); }
+      catch (error) { if (error.code !== 'ENOENT') event('connector-cleanup-error', { error: clean(error.code) }); }
+    }
     event('exit', { status: patch.status, exitCode: patch.exitCode, exitSignal: patch.exitSignal, error: patch.error ?? state.error });
-    record({ ...patch, stdinOpen: false, finishedAt: now(), pending: [] });
+    try { record({ ...patch, stdinOpen: false, finishedAt: now(), pending: [] }); }
+    catch (error) {
+      process.exitCode = 1;
+      event('terminal-state-write-failed', { status: patch.status, code: error.code, syscall: error.syscall, error: clean(error.message) });
+    }
   };
   if (pollTask) void pollTask.then(settle);
   else settle();
 }
 
 function drainExitedBridge() {
-  if (!codex || finished || drainTimer || !state.nativeOutcome ||
+  if (!reportsOutcome || finished || drainTimer || !state.nativeOutcome ||
       child.exitCode === null && child.signalCode === null) return;
   // The bridge reported an outcome and has exited. Close our ends of
   // inherited pipes if their remaining copies do not deliver EOF.
@@ -236,7 +264,9 @@ async function applyCommand(command, path) {
     stopping = true;
     record({ status: 'stopping' });
     receipt({ status: 'requested' });
-    if (eventProtocol) {
+    if (managedAdapter) {
+      if (child.exitCode === null && child.signalCode === null) stopTree = terminateTree(child);
+    } else if (eventProtocol) {
       void writeInput(JSON.stringify({ summonInput: { type: 'stop', id: command.id } }) + '\n').catch(() => {});
       if (!codex) stopTimer = setTimeout(() => {
         if (!finished && child.exitCode === null && child.signalCode === null) void terminateTree(child);
@@ -287,9 +317,13 @@ async function poll() {
 
 function start() {
   if (!allowed(manifest.guard)) return finish({ status: 'not_submitted', error: 'The Session or connection changed before process launch' });
+  if (manifest.guard?.executable_bindings && !manifest.guard.executable_bindings.every(({ file, canonical_file }) => {
+    try { return samePath(realpathSync(file), canonical_file) && samePath(realpathSync(canonical_file), canonical_file); }
+    catch { return false; }
+  })) return finish({ status: 'not_submitted', error: 'The selected executable binding changed before process launch' });
   const environment = nativeEnvironment(manifest.env, manifest.authorizedEnv, { codex });
   secrets = environment.secrets;
-  const command = nativeCommand(manifest.file, manifest.args);
+  const command = nativeCommand(manifest.file, promptFile ? [...manifest.args, promptFile] : manifest.args);
   record({});
   child = spawn(command.file, command.args, { ...command.options, cwd: manifest.cwd, env: environment.env,
     windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] });
@@ -313,11 +347,19 @@ function start() {
     }, 750);
   });
   child.once('error', error => finish({ status: state.startedAt ? 'failed' : 'not_submitted', error: clean(error.message) }));
-  if (codex) child.once('exit', drainExitedBridge);
-  child.once('close', (exitCode, exitSignal) => finish({
-    status: codex ? state.nativeOutcome || (state.nativeTurnId || state.turnSubmitted || state.threadSubmitted ? 'unknown' : stopping ? 'stopped' : 'failed') :
-      stopping ? 'stopped' : exitCode === 0 ? 'completed' : 'failed', exitCode, exitSignal,
-  }));
+  if (reportsOutcome) child.once('exit', drainExitedBridge);
+  child.once('close', async (exitCode, exitSignal) => {
+    const terminal = { exitCode, exitSignal };
+    if (managedAdapter && stopping && !['completed', 'failed', 'not_submitted', 'unsupported'].includes(state.nativeOutcome)) {
+      const verified = await stopTree;
+      if (verified) return finish({ ...terminal, status: 'stopped' });
+      return finish({ ...terminal, status: 'unknown', stopUnconfirmed: true,
+        error: 'The CLI process exited, but termination of its owned process tree was not confirmed' });
+    }
+    const fallback = codex && (state.nativeTurnId || state.turnSubmitted || state.threadSubmitted) ? 'unknown' : stopping ? 'stopped' :
+      managedAdapter ? 'unknown' : !codex && exitCode === 0 ? 'completed' : 'failed';
+    finish({ ...terminal, status: state.nativeOutcome || fallback });
+  });
 }
 
 try { start(); }

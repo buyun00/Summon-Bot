@@ -5,11 +5,13 @@ import { extname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { reject } from '../platform/contract.mjs';
-import { codexBridge } from './connection-launch.mjs';
+import { codexBridge } from '../connectors/codex.mjs';
 import { connectionAuthorized, connectionRecords } from './connection-records.mjs';
+import { allowsConnection } from './executable-scope.mjs';
 
 export const operationRecords = 'session-operations';
 export const inputRecords = 'session-inputs';
+export const heartbeatExpiryMs = 15_000;
 export const settled = status => ['completed', 'failed', 'stopped', 'unknown', 'unsupported', 'not_submitted'].includes(status);
 const worker = fileURLToPath(new URL('./native-process.mjs', import.meta.url));
 const executeFile = promisify(execFile);
@@ -75,7 +77,9 @@ export async function observeExitedCodexLaunch(dataRoot, operation, { runtimePat
     if (final || launch?.nonce !== nonce || launch.protocol !== 'codex' || launch.sessionId || launch.cwd !== operation.cwd ||
         launch.guard?.session_id !== operation.session_id || launch.guard.connection_id !== operation.connection_id ||
         launch.guard.binding_version !== (operation.connection_binding_version ?? 1) || relative(launch.file, runtimePath) !== '' ||
-        launch.args?.length !== 2 || !launch.args.every(isAbsolute) || relative(launch.args[0], bridgePath) !== '' ||
+        !Array.isArray(launch.args) || launch.args.length < 2 || launch.args.slice(3).some(arg => typeof arg !== 'string' || !arg.startsWith('--')) ||
+        launch.args.length >= 3 && !['flag', 'default', 'listen'].includes(launch.args[2]) ||
+        !launch.args.slice(0, 2).every(isAbsolute) || relative(launch.args[0], bridgePath) !== '' ||
         extname(launch.args[1]).toLowerCase() !== '.exe' ||
         started.trim() !== String(runnerPid)) return null;
     const initial = JSON.parse(launch.input).summonStart;
@@ -132,27 +136,33 @@ export class SessionProcesses {
 
   async launch(operation, launch, beforeSubmit) {
     const directory = this.directory(operation);
+    const { adapterSource, ...manifest } = launch;
+    const script = adapterSource !== undefined ? join(directory, 'adapter.mjs') : null;
     try {
       await mkdir(join(directory, 'inputs'), { recursive: true, mode: 0o700 });
-      await atomic(join(directory, 'launch.json'), { ...launch, nonce: operation.instance_id });
+      if (script) await writeFile(script, adapterSource, { mode: 0o600, flag: 'wx' });
+      await atomic(join(directory, 'launch.json'), { ...manifest, ...(script ? { args: [script], cleanupAdapter: true } : {}), nonce: operation.instance_id });
       await beforeSubmit();
     } catch (error) {
+      if (script) await unlink(script).catch(() => {});
       return this.save(operation, { status: 'not_submitted', runtime_ended: true,
         finished_at: new Date().toISOString(), error: this.clean(error.message) });
     }
     // After this boundary a restart can only inspect the original instance.
     this.save(operation, { status: 'starting', submitted_at: new Date().toISOString() });
+    let child;
     try {
-      const child = spawn(process.execPath, [worker, directory], {
+      child = spawn(process.execPath, [worker, directory], {
         detached: true, windowsHide: true, stdio: 'ignore', env: process.env,
       });
       await new Promise((ok, fail) => { child.once('spawn', ok); child.once('error', fail); });
-      child.unref();
-      return this.save(operation, { runner_pid: child.pid });
     } catch (error) {
+      if (script) await unlink(script).catch(() => {});
       return this.save(operation, { status: 'not_submitted', runtime_ended: true,
         finished_at: new Date().toISOString(), error: this.clean(error.message) });
     }
+    child.unref();
+    return this.save(operation, { runner_pid: child.pid });
   }
 
   async refresh(operation) {
@@ -165,7 +175,7 @@ export class SessionProcesses {
     const state = final?.finishedAt && settled(final.status) && matches(final) && (!operation.child_pid || final.pid === operation.child_pid)
       ? final : heartbeat;
     if (matches(state)) {
-      const stale = !settled(state.status) && Date.now() - Date.parse(state.observedAt) > 15_000;
+      const stale = !settled(state.status) && Date.now() - Date.parse(state.observedAt) > heartbeatExpiryMs;
       const status = stale ? 'unknown' : state.status;
       if (status === 'unknown' && operation.recovered_at || stale && operation.runtime_exit_observed_at) return operation;
       if (stale && operation.protocol === 'codex' && operation.status === 'unknown' && !operation.thread_id && !operation.turn_attempted &&
@@ -188,7 +198,8 @@ export class SessionProcesses {
       if (!stale) this.nextExitObservation.delete(operation.instance_id);
       if (operation.status === status && operation.observed_at === state.observedAt && operation.finished_at === (state.finishedAt ?? null) &&
           operation.stdin_open === (state.stdinOpen === true) && operation.turn_id === (state.nativeTurnId ?? operation.turn_id) &&
-          (operation.protocol !== 'codex' || operation.thread_id === (state.nativeSessionId || operation.thread_id)) &&
+          (operation.protocol === 'codex' ? operation.thread_id === (state.nativeSessionId || operation.thread_id) :
+            operation.original_native_id === (state.nativeSessionId || operation.original_native_id)) &&
           operation.binding_rejected === (state.bindingRejected === true)) return operation;
       return this.save(operation, { status, observed_at: state.observedAt, finished_at: state.finishedAt ?? null,
         runner_pid: state.runnerPid, child_pid: state.pid, exit_code: state.exitCode, exit_signal: state.exitSignal,
@@ -199,7 +210,7 @@ export class SessionProcesses {
         binding_rejected: state.bindingRejected === true, thread_attempted: state.threadSubmitted === true, thread_active: state.threadActive === true,
         turn_attempted: state.turnSubmitted === true, result: state.final, reroute: state.reroute,
         stop_verified: Boolean(state.finishedAt && status === 'stopped'),
-        runtime_ended: Boolean(state.finishedAt), runtime_exit_observed_at: null,
+        runtime_ended: Boolean(state.finishedAt && !state.stopUnconfirmed), runtime_exit_observed_at: null,
         error: stale ? 'The process heartbeat expired before a terminal result' : state.error,
         code: stale ? null : state.code });
     }
@@ -285,6 +296,8 @@ export function guardStillMatches(db, guard) {
   if (!connection?.enabled || (connection.binding_version ?? 1) !== guard.binding_version || !session ||
       (connection.workspaceProfileId ?? null) !== (session.workspaceProfileId ?? null) || session.authority_revoked ||
       session.control?.state !== 'active' || session.control.control_version !== guard.control_version) return false;
+  if ([session.executable_scope, guard.executable_scope].some(scope => !allowsConnection(scope, connection, id => get(connectionRecords, id))))
+    return false;
   if (guard.origin_conversation_id) {
     const origin = get('platform-conversations', guard.origin_conversation_id);
     if (origin?.control?.state !== 'active' || origin.control.control_version !== guard.origin_control_version) return false;
@@ -316,9 +329,10 @@ export function guardStillMatches(db, guard) {
 
 export function makeProcessGuard(session, connection, call) {
   const shared = session.space?.kind === 'room' && session.sharing;
-  const actors = [session.execution_actor, call.submitted_by].filter(Boolean);
+  const actors = [session.execution_actor, call.submitted_by, ...(connection.config.adapter?.runner ? [call.initiating_principal] : [])].filter(Boolean);
   return { session_id: session.id, connection_id: connection.id, binding_version: connection.binding_version ?? 1,
     control_version: session.control.control_version, actors, controls: call.controls, workspace_id: session.workspace_ref?.id,
+    executable_scope: call.executable_scope,
     ...(call.origin?.conversation_id && Number.isInteger(call.origin.control_version) ?
       { origin_conversation_id: call.origin.conversation_id, origin_control_version: call.origin.control_version } : {}),
     ...(shared ? { room_id: session.space.id, room_owner: session.owner.id,

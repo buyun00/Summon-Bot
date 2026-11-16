@@ -43,7 +43,7 @@ export function toolObservation(callId, value, isError = false) {
   const previewLimit = Math.max(0, limit - executionLength);
   const details = { ...execution, preview: raw.slice(0, previewLimit), characters: raw.length, truncated: true,
     ...(callId ? { result_ref: { kind: 'call', id: callId } } : {}), status: value?.status, target: value?.target,
-    next_cursor: value?.next_cursor, ref: value?.ref };
+    next_cursor: value?.next_cursor, ref: value?.ref, wait_guidance: value?.wait_guidance };
   return { content: [{ type: 'text', text: JSON.stringify(details) }], details, isError };
 }
 

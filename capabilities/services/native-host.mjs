@@ -69,7 +69,7 @@ export function redactNativeCredentials(text, secrets = []) {
 export function redactNative(text, secrets) {
   return redactNativeCredentials(text, secrets)
     .replace(/-----BEGIN (?:[A-Z ]+)?PRIVATE KEY-----[\s\S]*?(?:-----END (?:[A-Z ]+)?PRIVATE KEY-----|$)/g, '[redacted]')
-    .replace(/\bsk-[a-zA-Z0-9_-]{12,}\b/g, '[redacted]')
+    .replace(/\b(?:sk|xai)-[a-zA-Z0-9_-]{12,}\b/g, '[redacted]')
     .replace(/((?:authorization|password|passwd|(?:access|refresh)[_-]?token|api[_-]?key|client[_-]?secret)["']?\s*[:=]\s*["']?(?:Bearer )?)[^\s"',}]+/gi, '$1[redacted]');
 }
 

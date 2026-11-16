@@ -53,14 +53,14 @@ export function cleanEnvironment() {
 }
 
 export async function terminateTree(child) {
-  if (!child.pid) return;
+  if (!child.pid) return false;
   if (process.platform === 'win32') {
-    await new Promise(resolveDone => {
+    return new Promise(resolveDone => {
       const killer = spawn(join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe'), ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-      killer.once('error', () => { child.kill(); resolveDone(); });
-      killer.once('close', resolveDone);
+      killer.once('error', () => { child.kill(); resolveDone(false); });
+      killer.once('close', code => resolveDone(code === 0));
     });
-  } else {
-    try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
   }
+  try { process.kill(-child.pid, 'SIGKILL'); return true; }
+  catch { child.kill('SIGKILL'); return false; }
 }

@@ -2,11 +2,14 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { isAbsolute, relative } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { appServerArgs } from '../connectors/codex.mjs';
 import { nativeCommand } from '../services/native-host.mjs';
 import { guardStillMatches } from '../services/session-processes.mjs';
 
-const [executable, mode, originalThread, originalTurn, originalCall] = process.argv.slice(2);
-const command = nativeCommand(executable, ['app-server', '--stdio']);
+const [executable, action, ...launchArgs] = process.argv.slice(2);
+const mode = action === 'history' ? action : undefined;
+const [originalThread, originalTurn, originalCall, historyStdio, ...historyArgs] = mode ? launchArgs : [];
+const command = nativeCommand(executable, [...appServerArgs(mode ? historyStdio : action), ...(mode ? historyArgs : launchArgs)]);
 const server = spawn(command.file, command.args, { ...command.options, cwd: process.cwd(),
   windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
 server.stderr.pipe(process.stderr, { end: false });
