@@ -172,7 +172,7 @@ export async function startGateway(options = {}) {
   try {
     const records = store('chatroom');
     const sync = new IncrementalSync(store('gateway'));
-    const profiles = new WorkspaceProfiles(records);
+    const profiles = new WorkspaceProfiles(records, id => platform.initializeWorkspace(id));
     const attachments = new AttachmentStore(join(dataRoot, 'capabilities', 'chatroom'));
     models = await new ModelConnections({ dataRoot, model: options.model, emit }).initialize();
     const model = { connectionStore: models.path };
@@ -182,9 +182,11 @@ export async function startGateway(options = {}) {
     const room = new ChatroomService({ store: records, manager: platform.manager, attachments, platform, emit });
     connections = new SummonConnections({ store: records, dataRoot, workspace: options.defaultCwd || releaseRoot,
       assertSessionAuthority: (session, options) => platform.assertSessionAuthority(session, options),
+      onWorkEvent: (sessionId, callId, position, facts) => platform.roomWork.publish(sessionId, callId, position, facts),
       onEvent: (sessionId, callId, facts) => { const event = platform.recordReceipt(callId, facts, sessionId); emit('execution'); return event; } });
     runtime = new BotRuntime({ dataRoot, releaseRoot, model, platform, emit });
     platform.attach({ room, runtime, connections });
+    profiles.initialize();
     platform.resources.recoverModels();
     platform.recoverCalls();
     await runtime.initialize();

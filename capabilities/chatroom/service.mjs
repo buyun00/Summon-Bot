@@ -28,6 +28,7 @@ function titleOf(value, fallback) {
 }
 
 const refKey = ({ kind, id }) => JSON.stringify([kind, id]);
+const directMembers = members => members.length === 2 && members.includes('user');
 function rowMessage(row) {
   if (!row) return null;
   const message = JSON.parse(row.data);
@@ -87,8 +88,8 @@ export class ChatroomService {
   }
 
   projectRoom(room) {
-    const { id, name, members, pins, revision, workspaceProfileId, createdAt, updatedAt } = room;
-    return { id, ref: { kind: 'room', id }, name, members, pins, revision, workspaceProfileId, createdAt, updatedAt,
+    const { id, name, members, mode, pins, revision, workspaceProfileId, createdAt, updatedAt } = room;
+    return { id, ref: { kind: 'room', id }, name, members, mode, pins, revision, workspaceProfileId, createdAt, updatedAt,
       lastMessage: rowMessage(this.latestMessage.get(id)) };
   }
 
@@ -141,15 +142,19 @@ export class ChatroomService {
     }
   }
 
-  createRoom({ title, members }, actor, { workspaceProfileId = null, id = randomUUID() } = {}) {
+  createRoom({ title, members, mode }, actor, { workspaceProfileId = null, id = randomUUID() } = {}) {
     actor = identity(actor).id;
     const included = [...new Set([actor, ...list(members, '成员').map(member => identity(member).id)])];
     const saved = this.store.transaction(() => {
       if (this.store.get('rooms', id)) fail('会话 ID 已存在', 409);
       this.validateMembers(included, actor, workspaceProfileId);
+      mode ??= directMembers(included) ? 'direct' : 'group';
+      if (mode === 'direct' && !directMembers(included)) fail('私聊必须包含用户和一位 Bot');
       const fallback = included.filter(member => member !== 'user').map(member => this.manager.get(member).name).join('、');
+      const onboarding = mode === 'group' && this.manager.onboardingBot(workspaceProfileId);
+      if (onboarding?.enabled && !included.includes(onboarding.id)) included.push(onboarding.id);
       const room = this.store.save('rooms', {
-        id, name: titleOf(title, fallback.slice(0, 160) || '新会话'), members: included, pins: [], revision: 1, workspaceProfileId,
+        id, name: titleOf(title, fallback.slice(0, 160) || '新会话'), members: included, mode, pins: [], revision: 1, workspaceProfileId,
       });
       for (const member of included) if (member !== 'user') this.platform.ensureRoomBase(member, id);
       return room;
@@ -157,6 +162,20 @@ export class ChatroomService {
     const projection = this.projectRoom(saved);
     this.emit('room', projection);
     return projection;
+  }
+
+  enrollOnboardingBot(bot) {
+    this.store.transaction(() => {
+      for (const room of this.store.list('rooms')) {
+        if (room.mode !== 'group' || (room.workspaceProfileId ?? null) !== (bot.workspaceProfileId ?? null) ||
+            this.platform.deliveries.wasRemoved(bot.id, room.id)) continue;
+        if (!room.members.includes(bot.id)) {
+          this.store.save('rooms', { id: room.id, members: [...room.members, bot.id], revision: room.revision + 1 });
+          this.emit('room', { id: room.id });
+        }
+        this.platform.ensureRoomBase(bot.id, room.id);
+      }
+    });
   }
 
   configureRoom(id, input, actor, options = {}) {
@@ -175,6 +194,15 @@ export class ChatroomService {
       const removed = room.members.filter(member => remove.has(member));
       this.validateMembers(added, actor, room.workspaceProfileId ?? null);
       const members = [...room.members.filter(member => !remove.has(member)), ...added];
+      const mode = room.mode === 'direct' && members.length > 2 ? 'group' : room.mode;
+      if (mode === 'group' && room.mode === 'direct') {
+        const onboarding = this.manager.onboardingBot(room.workspaceProfileId ?? null);
+        if (onboarding?.enabled && !members.includes(onboarding.id) && !remove.has(onboarding.id) &&
+            !this.platform.deliveries.wasRemoved(onboarding.id, id)) {
+          members.push(onboarding.id);
+          added.push(onboarding.id);
+        }
+      }
       const pins = new Map(room.pins.map(ref => [refKey(ref), ref]));
       for (const key of pinRemove) pins.delete(key);
       for (const ref of pinAdd) {
@@ -183,7 +211,7 @@ export class ChatroomService {
         pins.set(refKey(ref), ref);
       }
       const updated = this.store.save('rooms', {
-        id, name: titleOf(input.title, room.name), members, pins: [...pins.values()], revision: room.revision + 1,
+        id, name: titleOf(input.title, room.name), members, mode, pins: [...pins.values()], revision: room.revision + 1,
       });
       for (const member of removed) if (member !== 'user') this.platform.removeRoomBase(member, id);
       for (const member of added) if (member !== 'user') this.platform.ensureRoomBase(member, id);

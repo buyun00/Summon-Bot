@@ -2,12 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { samePath } from '../../bot/src/capabilities/file-policy.mjs';
 import { idOf, keyOf, reject, sameRef, user } from '../platform/contract.mjs';
 import { codexBridge } from '../connectors/codex.mjs';
+import { protocolOf, sameBinding } from './connection-binding.mjs';
 import { codexInput, connectionExecutable, executionWorkspace, prepareProcess } from './connection-launch.mjs';
 import { canSupplyProcessArguments, connectionAllowed, connectionAuthorized, connectionRecords, executionRecords, plain, validateConnection } from './connection-records.mjs';
 import { codexCredentials, inspectNative, redactNative } from './native-host.mjs';
 import { nativeFileOperands } from './native-references.mjs';
+import { visibleProbe } from './native-probe.mjs';
 import { assertServiceConfig, credentialNames, mcpMethodUnsupported, mcpTasksUnsupported, serviceMethod, ServiceConnections } from './service-connection.mjs';
 import { inputRecords, makeProcessGuard, operationRecords, SessionProcesses, settled } from './session-processes.mjs';
 
@@ -19,9 +22,11 @@ const stdioMcp = entry => entry.kind === 'mcp' && entry.config.transport === 'st
 const actorOf = context => context?.actor || context;
 const callSession = (session, call) => ({ id: call.id, session_id: session.id, submitted_by: call.submitted_by });
 const text = value => typeof value === 'string' && value.length > 0 && value.length <= 32_768 && !value.includes('\0');
+const retainsMethods = (before = [], after = [], field) => before.every(method =>
+  after.some(next => next[field] === method[field] && isDeepStrictEqual(method, next)));
 function bindingConfig(entry) {
   const { model, effort, credential_refs, headersEnv, env, tools, adapter, app_server_stdio, launch_arguments, detected_version, setup_key,
-    initialized_for, ...binding } = entry.config;
+    initialized_for, methods, probe, ...binding } = entry.config;
   // Adapters can update how they call the same executable. Changing the vendor
   // protocol or the trusted interpreter changes what the connection authorizes.
   return { ...binding, ...(adapter ? { adapter: { connector: adapter.connector ?? null, runner: adapter.runner ?? null } } : {}),
@@ -34,9 +39,9 @@ function bindingConfig(entry) {
 }
 
 export class SummonConnections {
-  constructor({ store, dataRoot, workspace, assertSessionAuthority, onEvent }) {
+  constructor({ store, dataRoot, workspace, assertSessionAuthority, onEvent, onWorkEvent }) {
     if (!store || !dataRoot) throw new Error('Connection storage and data root are required');
-    Object.assign(this, { store, dataRoot, workspace: resolve(workspace || dataRoot, workspace ? '.' : 'workspace'), assertSessionAuthority, onEvent });
+    Object.assign(this, { store, dataRoot, workspace: resolve(workspace || dataRoot, workspace ? '.' : 'workspace'), assertSessionAuthority, onEvent, onWorkEvent });
     this.processes = new SessionProcesses({ store, dataRoot, clean: value => this.clean(value) });
     this.services = new ServiceConnections(this);
     this.active = new Map();
@@ -96,7 +101,7 @@ export class SummonConnections {
   }
 
   summary(entry, available = entry.enabled ? undefined : false) {
-    return { kind: 'connection', protocol: entry.kind, id: entry.id, name: entry.name, description: entry.description,
+    return { kind: 'connection', protocol: protocolOf(entry), id: entry.id, name: entry.name, description: entry.description,
       revision: entry.revision, enabled: entry.enabled, ...(available === undefined ? {} : { available }), version: entry.config.detected_version ?? entry.version };
   }
 
@@ -116,13 +121,22 @@ export class SummonConnections {
     const authorized = this.authorized(entry, actor);
     const available = !authorized ? false : nativeKind(entry.kind) ? this.available(entry) : undefined;
     const summary = this.clean(this.summary(entry, available), []);
-    if (entry.kind === 'codex') return this.clean({ ...summary, input: { text: 'string', model: 'optional exact model id', effort: 'optional reasoning effort' },
+    const nativeLocation = { file: entry.config.file, canonical_file: entry.config.canonical_file, workspace_root: entry.config.workspace_root,
+      ...(authorized && entry.config.probe ? { probe: visibleProbe(entry.config.probe) } : {}) };
+    if (entry.kind === 'codex') return this.clean({ ...summary, ...nativeLocation, input: { text: 'string', model: 'optional exact model id', effort: 'optional reasoning effort' },
       operations: ['reply', 'steer', 'next', 'stop'], ...(entry.config.model ? { model: entry.config.model, effort: entry.config.effort } : {}) }, [entry]);
     if (entry.kind === 'cli') {
-      if (entry.config.adapter) return { ...summary, input: { text: 'string' }, operations: entry.config.adapter.resume ? ['next', 'stop'] : ['stop'] };
-      const methods = (entry.config.methods || []).map(({ id, name, description, args, file_args, keep_input }) =>
-        ({ id, name, description, args, file_args, keep_input }));
-      return this.clean({ ...summary, input: { method: 'optional configured method', parameters: 'optional method parameters',
+      if (entry.config.ssh) {
+        const { host, port = 22, user, operations } = entry.config.ssh;
+        return this.clean({ ...summary, ...nativeLocation, remote: { host, port, user },
+          input: { method: 'configured SSH method', parameters: 'optional host-approved method values' },
+          methods: operations.map(({ id, name, description, parameters }) => ({ id, name, description, parameters })), direct_arguments: false }, [entry]);
+      }
+      if (entry.config.adapter) return this.clean({ ...summary, ...nativeLocation, input: { text: 'string' },
+        operations: entry.config.adapter.resume ? ['next', 'stop'] : ['stop'] }, [entry]);
+      const methods = (entry.config.methods || []).map(({ id, name, description, args, effect, file_args, keep_input }) =>
+        ({ id, name, description, args, effect, file_args, keep_input }));
+      return this.clean({ ...summary, ...nativeLocation, input: { method: 'optional configured method', parameters: 'optional method parameters',
         args: 'argument strings', stdin: 'optional text', keep_input: 'optional boolean', file_args: 'optional file argument roles' },
       direct_arguments: canSupplyProcessArguments(entry, actor),
       file_operands: authorized ? await nativeFileOperands() : [], methods }, [entry]);
@@ -131,7 +145,7 @@ export class SummonConnections {
     if (!authorized) return summary;
     const authorizeDiscovery = () => {
       this.assertRunning(context?.signal);
-      const session = context?.session && this.store.get(executionRecords, context.session.id);
+      const session = context?.session ? this.store.get(executionRecords, context.session.id) : undefined;
       const current = this.get(id);
       this.requireAccess(current, { ...context, actor, session });
       if (context?.session && (!session || session.authority_revoked))
@@ -165,13 +179,14 @@ export class SummonConnections {
     if (actorOf(context)?.kind !== 'user') reject('connection_forbidden', 'Connection settings require the host user', 403);
     const entries = this.store.list(connectionRecords).filter(entry => (entry.workspaceProfileId ?? null) === (context.workspaceProfileId ?? null));
     return this.clean(entries.map(entry => ({ ...this.summary(entry), allowed_bot_ids: entry.allowed_bot_ids,
-      repair_bot_ids: entry.repair_bot_ids, dependencies: entry.dependencies })), []);
+      repair_bot_ids: entry.repair_bot_ids, dependencies: entry.dependencies, maintainer_bot_id: entry.maintainer_bot_id ?? null })), []);
   }
 
   async configure(input, context, onSave) {
     if (actorOf(context)?.kind !== 'user') reject('connection_forbidden', 'Connection settings require the host user', 403);
     if (!plain(input) || Object.keys(input).some(key => !['id', 'name', 'description', 'kind', 'config', 'config_patch', 'revision',
-      'enabled', 'allowed_bot_ids', 'repair_bot_ids', 'dependencies', 'workspaceProfileId'].includes(key))) reject('invalid_connection', 'Invalid connection settings');
+      'enabled', 'allowed_bot_ids', 'repair_bot_ids', 'dependencies', 'workspaceProfileId', 'maintainer_bot_id'].includes(key)))
+      reject('invalid_connection', 'Invalid connection settings');
     const id = idOf(input.id, 'connection');
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(id) || id === 'pi') reject('invalid_connection', 'Invalid managed connection identity');
     const previous = this.get(id);
@@ -194,9 +209,26 @@ export class SummonConnections {
     if (previous && previous.kind !== entry.kind) reject('connection_binding_conflict', 'Use a new id for another connection protocol', 409);
     const configChanged = !previous || !isDeepStrictEqual(entry.config, previous.config);
     if (!nativeKind(entry.kind) && configChanged) assertServiceConfig(entry);
-    const changed = previous && !isDeepStrictEqual(bindingConfig(previous), bindingConfig(entry));
+    const changed = previous && (!isDeepStrictEqual(bindingConfig(previous), bindingConfig(entry)) ||
+      !retainsMethods(previous.config.methods, entry.config.methods, 'id'));
     const record = this.store.transaction(() => {
       if (this.get(id)?.revision !== previous?.revision) reject('revision_conflict', 'Connection settings changed', 409);
+      context.beforeConnectionSave?.(entry, previous);
+      if (!previous) {
+        const matches = this.store.list(connectionRecords).filter(item => sameBinding(item, entry));
+        const visible = matches.filter(item => !context.canSeeBinding || context.canSeeBinding(item));
+        if (matches.length > 1) reject('connection_binding_ambiguous', 'Choose an existing connection for this binding',
+          409, { candidates: this.clean(visible.map(item => this.summary(item)), []) });
+        if (matches.length) {
+          if (!visible.length) reject('connection_access_required', 'This binding is registered and requires a connection grant', 403);
+          onSave?.({ ...this.clean(this.summary(visible[0]), []), reused: true });
+          return visible[0];
+        }
+      }
+      if (previous && isDeepStrictEqual(entry, previous)) {
+        onSave?.(this.clean(this.summary(previous), []));
+        return previous;
+      }
       const saved = this.store.save(connectionRecords, { ...entry, revision: (previous?.revision || 0) + 1,
         binding_version: (previous?.binding_version ?? 1) + Number(Boolean(changed)) });
       onSave?.(this.clean(this.summary(saved), []));
@@ -204,7 +236,7 @@ export class SummonConnections {
     });
     if (record.kind === 'mcp' && previous && (!record.enabled || configChanged))
       void this.services.disconnect(id);
-    return this.clean(this.summary(record), []);
+    return { ...this.clean(this.summary(record), []), ...(record.id !== id ? { reused: true } : {}) };
   }
 
   entryFor(session, call, options) {
@@ -255,6 +287,7 @@ export class SummonConnections {
       app_server_launch: launch.appServerLaunch,
       thread_id: prior?.thread_id, requested_native_id: launch.managedAdapter ? launch.sessionId ?? undefined : undefined,
       binding: prior?.binding, status: 'prepared',
+      ...(session.group_work ? { work_program: entry.config.canonical_file, work_method: typeof input?.method === 'string' ? input.method : undefined } : {}),
       input_revision: (prior?.input_revision ?? session.input_revision ?? 0) + 1 });
     const started = await this.processes.launch(operation, launch, () => {
       this.assertRunning(signal);
@@ -284,6 +317,8 @@ export class SummonConnections {
     const workspace = await executionWorkspace(session, entry, this, options);
     if (stdioMcp(entry) && (workspace.isReadOnly || workspace.hasFileScope))
       reject('scoped_process_unsupported', 'This MCP stdio process cannot enforce the Session’s file restrictions', 403);
+    if (entry.config.canonical_command && !samePath(workspace.cwd, entry.config.workspace_root))
+      reject('workspace_forbidden', 'Use the registered MCP stdio launch directory', 403);
     return workspace.cwd;
   }
 
@@ -319,6 +354,9 @@ export class SummonConnections {
           this.store.transaction(() => {
             this.store.save('session-service-events', { id, operation_id: operation.id, position, progress });
             this.saveOperation(operation, { progress_position: position });
+            if (session.group_work && started) this.onWorkEvent?.(session.id, operation.id, ['progress', position], {
+              phase: 'progress', method: input.method, cwd, progress,
+            });
           });
         } catch (error) { console.error('Could not persist MCP progress', this.clean(error.message)); }
       } });
@@ -626,6 +664,41 @@ export class SummonConnections {
     this.saveOperation(operation, { signature });
   }
 
+  async publishWork(operation, session) {
+    if (!session.group_work || !this.onWorkEvent || operation.work_done || operation.revoked_at || operation.status === 'prepared') return;
+    const facts = this.operationFacts(operation, session);
+    const report = (position, data) => this.onWorkEvent(session.id, operation.id, position, {
+      program: operation.work_program, method: operation.work_method ?? operation.method, cwd: operation.cwd, ...data,
+    });
+    let offset = operation.work_offset ?? 0;
+    let more = false;
+    if (operation.instance_id) {
+      const page = await this.processes.output(operation, { stream: 'events', offset, limit: 65_536 });
+      for (const line of page.text.slice(0, page.text.lastIndexOf('\n') + 1).split('\n').slice(0, -1)) {
+        offset += Buffer.byteLength(line) + 1;
+        let event;
+        try { event = JSON.parse(line); } catch { continue; }
+        if (event.type !== 'tool' && !(event.type === 'item' && ['commandExecution', 'mcpToolCall'].includes(event.itemType))) continue;
+        const { itemId, phase, status, tool, itemType, command, text, output, exitCode } = event;
+        const position = itemId && itemId.length <= 72 ? ['item', itemId, phase, status] : ['log', offset];
+        report(position, { phase, status, tool: tool ?? itemType, command, text: (text ?? output)?.slice(0, 2000), exit_code: exitCode });
+      }
+      more = page.more || offset < page.next_offset;
+    }
+    const previous = operation.work_status;
+    const status = facts.status;
+    if (previous !== status) {
+      let diagnostic = facts.error;
+      if (!diagnostic && operation.instance_id && status === 'failed')
+        diagnostic = (await this.processes.output(operation, { stream: 'stderr', limit: 2048 })).text;
+      report(['status', status], { phase: 'execution', status, code: facts.code,
+        text: diagnostic?.slice(0, 2000), exit_code: operation.exit_code, http_status: operation.result?.http_status });
+    }
+    if (offset !== operation.work_offset || status !== previous || settled(status) && operation.runtime_ended && !more)
+      this.saveOperation(operation, { work_offset: offset, work_status: status,
+        work_done: settled(status) && operation.runtime_ended && !more });
+  }
+
   async publishInputs(operation, session, inputs = []) {
     for (const record of inputs) {
       let next = record;
@@ -693,9 +766,11 @@ export class SummonConnections {
         if (operation.id === current.id) continue;
         await this.publish(operation, session);
         await this.publishInputs(operation, session, inputs.get(operation.id));
+        await this.publishWork(operation, session);
       }
       await this.publish(current, session);
       await this.publishInputs(current, session, inputs.get(current.id));
+      await this.publishWork(current, session);
     });
     const results = await Promise.allSettled(checks);
     const failure = results.find(result => result.status === 'rejected');

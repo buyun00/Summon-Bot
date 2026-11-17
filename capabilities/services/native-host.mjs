@@ -4,6 +4,7 @@ import { constants } from 'node:fs';
 import { basename, extname, isAbsolute, join } from 'node:path';
 import { cleanEnvironment, terminateTree } from '../../bot/src/runtime/process-tools.mjs';
 import { fail } from '../shared/validation.mjs';
+import { pipeNativeText } from './windows-native-text.mjs';
 
 const windows = process.platform === 'win32';
 const windowsExtensions = ['.exe', '.com', '.cmd', '.bat', '.ps1'];
@@ -75,29 +76,31 @@ export function redactNative(text, secrets) {
     .replace(/((?:authorization|password|passwd|(?:access|refresh)[_-]?token|api[_-]?key|client[_-]?secret)["']?\s*[:=]\s*["']?(?:Bearer )?)[^\s"',}]+/gi, '$1[redacted]');
 }
 
-export async function inspectNative(file, args, cwd, { signal, timeoutMs = 4000, env: refs, authorizedEnv, codex } = {}) {
+export async function inspectNative(file, args, cwd, { signal, timeoutMs = 4000, env: refs, authorizedEnv, codex, encoding, input } = {}) {
   const { env, secrets } = nativeEnvironment(refs, authorizedEnv, { codex });
   const command = nativeCommand(file, nativeArgs(args));
   signal?.throwIfAborted();
   const startedAt = new Date().toISOString();
   const child = spawn(command.file, command.args, { ...command.options, env, cwd,
-    windowsHide: true, detached: !windows, stdio: ['ignore', 'pipe', 'pipe'] });
+    windowsHide: true, detached: !windows, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
   const output = { stdout: '', stderr: '' };
-  for (const name of Object.keys(output)) {
-    child[name].setEncoding('utf8');
-    child[name].on('data', chunk => { if (output[name].length < 65_536) output[name] += chunk.slice(0, 65_536 - output[name].length); });
-  }
+  const decoders = Object.entries(output).map(([name]) => [name, pipeNativeText(child[name], chunk => {
+    if (output[name].length < 65_536) output[name] += chunk.slice(0, 65_536 - output[name].length);
+  }, codex ? 'utf8' : encoding?.[name])]);
+  child.stdin?.on('error', () => { /* The process can close stdin before exiting. */ });
+  child.stdin?.end(input);
   let stopped;
   const stop = () => { stopped ||= terminateTree(child); };
   const timer = setTimeout(stop, timeoutMs);
   signal?.addEventListener('abort', stop, { once: true });
   try {
     const outcome = await new Promise(done => {
-      child.once('error', error => done({ error: redactNative(error.message, secrets) }));
+      child.once('error', error => done({ error: redactNative(error.message, secrets), code: nativeSpawnFailureCode(error) ?? error.code }));
       child.once('close', (exitCode, exitSignal) => done({ exitCode, exitSignal }));
     });
     return { file, args: args.map(arg => redactNative(arg, secrets)), startedAt, observedAt: new Date().toISOString(),
       ...outcome, ...(stopped ? { timeout: !signal?.aborted, interrupted: Boolean(signal?.aborted) } : {}),
+      encoding: Object.fromEntries(decoders.map(([name, used]) => [name, used()])),
       ...Object.fromEntries(Object.entries(output).map(([key, value]) => [key, redactNative(value, secrets)])) };
   } finally {
     clearTimeout(timer);

@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { catalogMaintainerRole } from '../../roles/index.mjs';
+import { catalogMaintainerRole, defaultBotRoles, toolOnboardingRole } from '../../roles/index.mjs';
 import { defaultPaperAvatar, normalizePaperAvatar } from '../shared/avatar-style.mjs';
 import { assertRevision, idOf, reject, sameIdentity, sameRef, user } from '../platform/contract.mjs';
 
@@ -43,8 +43,8 @@ function instructionsOf(value) {
 }
 
 export class BotManager {
-  constructor({ store, dataRoot, resources, models, canUseModel, maintenanceConnection }) {
-    Object.assign(this, { store, dataRoot, resources, models, canUseModel, maintenanceConnection });
+  constructor({ store, dataRoot, resources, models, canUseModel, maintenanceConnection, bindMaintenance }) {
+    Object.assign(this, { store, dataRoot, resources, models, canUseModel, maintenanceConnection, bindMaintenance });
   }
 
   list() { return this.store.list(botRecords); }
@@ -64,29 +64,56 @@ export class BotManager {
     return !bot.connection_initializer && (actor.kind === 'user' || actor.id === bot.id || sameIdentity(actor, bot.owner));
   }
 
-  maintainers() {
-    return this.list().filter(bot => !bot.archivedAt && !bot.connection_initializer &&
-      bot.built_in_role?.id === catalogMaintainerRole && bot.built_in_role.connection_id);
+  onboardingBot(workspaceProfileId) {
+    return this.list().find(bot => !bot.archivedAt && !bot.connection_initializer &&
+      (bot.workspaceProfileId ?? null) === workspaceProfileId && bot.built_in_role?.id === toolOnboardingRole);
+  }
+
+  ensureDefaults(workspaceProfileId) {
+    const existing = this.list().filter(bot => !bot.archivedAt && !bot.connection_initializer &&
+      (bot.workspaceProfileId ?? null) === workspaceProfileId);
+    const model = this.models.selectBinding(undefined, workspaceProfileId);
+    let changed = false;
+    const bots = Object.entries(defaultBotRoles).map(([role, name]) => {
+      const id = `bot-default-${role}-${workspaceProfileId ?? 'local'}`;
+      const bot = existing.find(item => item.built_in_role?.id === role) ?? this.store.get(botRecords, id);
+      if (!bot) {
+        changed = true;
+        return this.saveNew({ id, name, instructions: '', model, owner: user, workspaceProfileId,
+          built_in_role: { id: role }, ...(!model ? { default_model_pending: true } : {}) });
+      }
+      if (!model || !bot.default_model_pending || bot.archivedAt || bot.built_in_role?.id !== role) return bot;
+      const access = this.store.get('platform-access', bot.id);
+      this.store.save('platform-access', { id: bot.id, revision: (access?.revision ?? 0) + 1,
+        model_ids: [...new Set([...(access?.model_ids ?? []), model.connection_id])] });
+      changed = true;
+      return this.store.save(botRecords, { id: bot.id, model, revision: bot.revision + 1, default_model_pending: false });
+    });
+    return { bots, changed };
   }
 
   maintainer(connection) {
-    return this.maintainers().find(bot => (bot.workspaceProfileId ?? null) === (connection.workspaceProfileId ?? null) &&
-      bot.built_in_role.connection_id === connection.id);
+    const bot = connection?.maintainer_bot_id && this.store.get(botRecords, connection.maintainer_bot_id);
+    return bot && !bot.archivedAt && !bot.connection_initializer &&
+      (bot.workspaceProfileId ?? null) === (connection.workspaceProfileId ?? null) ? bot : null;
   }
 
-  roleOf(args, context, botId) {
-    const { role_id: id, role_connection_id: connectionId } = args;
-    if (id !== catalogMaintainerRole) {
-      if (connectionId !== undefined) reject('invalid_bot_role', 'Select the CLI maintenance duty when specifying its connection');
-      return id == null ? id : { id };
+  roleOf(id, context, bot) {
+    if ((id === toolOnboardingRole || id !== undefined && bot?.built_in_role?.id === toolOnboardingRole) && context.actor.kind !== 'user') {
+      reject('configuration_forbidden', 'The host selects the workspace tool onboarding Bot', 403);
     }
-    const connection = this.maintenanceConnection(connectionId, context);
-    const assigned = this.maintainer(connection);
-    if (assigned && assigned.id !== botId) {
-      reject('connection_maintainer_exists', 'This connection already has a maintenance Bot', 409,
-        { maintainer: { kind: 'bot', id: assigned.id } });
+    if (id === toolOnboardingRole) {
+      const current = this.onboardingBot(context.workspaceProfileId);
+      if (current && current.id !== bot?.id)
+        reject('onboarding_bot_exists', 'This workspace already has a tool onboarding Bot', 409, { bot: current.id });
     }
-    return { id, connection_id: connection.id };
+    return id == null ? id : { id };
+  }
+
+  assignment(args, context, role, reuse = false) {
+    if (args.role_connection_id === undefined) return null;
+    if (role?.id !== catalogMaintainerRole) reject('invalid_bot_role', 'Select the maintenance duty to bind this connection');
+    return this.maintenanceConnection(args.role_connection_id, context, args.connection_revision, reuse);
   }
 
   view(bot, actor, { details = true } = {}) {
@@ -100,6 +127,15 @@ export class BotManager {
       resume_ref: canResume(actor, bot.control, bot.owner) ? resumeReference(target, bot.control) : null };
   }
 
+  saveNew(value) {
+    const { id, model } = value;
+    mkdirSync(this.directory(id), { recursive: true });
+    const record = this.store.save(botRecords, { ...value, revision: 1, enabled: true,
+      control: activeControl(), material_index_ref: null });
+    if (model) this.store.save('platform-access', { id, model_ids: [model.connection_id], connection_ids: [], workspace_ids: [] });
+    return record;
+  }
+
   create(id, args, context, beforeSave) {
     const { actor, workspaceProfileId } = context;
     const name = cleanName(args.name), instructions = instructionsOf(args.instructions);
@@ -107,17 +143,19 @@ export class BotManager {
       beforeSave();
       const saved = this.store.get(botRecords, id);
       if (saved) return saved;
-      const role = this.roleOf(args, context, id);
+      const role = this.roleOf(args.role_id, context);
+      const connection = this.assignment(args, context, role, true);
+      const assigned = this.maintainer(connection);
+      if (assigned) return assigned;
       let model = this.models.selectBinding(args.model, workspaceProfileId);
       if (model && !this.canUseModel(actor, model.connection_id, context)) {
         if (args.model !== undefined) reject('connection_forbidden', 'Model connection is not available to this caller', 403);
         model = null;
       }
       this.resources.assertCapacity('bots', this.list().filter(bot => !bot.connection_initializer).length);
-      mkdirSync(this.directory(id), { recursive: true });
-      const record = this.store.save(botRecords, { id, name, instructions, model, owner: actor, revision: 1, workspaceProfileId: workspaceProfileId ?? null,
-        enabled: true, control: activeControl(), material_index_ref: null, ...(role ? { built_in_role: role } : {}) });
-      if (model) this.store.save('platform-access', { id, model_ids: [model.connection_id], connection_ids: [], workspace_ids: [] });
+      const record = this.saveNew({ id, name, instructions, model, owner: actor, workspaceProfileId: workspaceProfileId ?? null,
+        ...(role ? { built_in_role: role } : {}) });
+      if (connection) this.bindMaintenance(connection, record);
       return record;
     });
   }
@@ -133,9 +171,13 @@ export class BotManager {
     const changes = {};
     if (args.name !== undefined) changes.name = cleanName(args.name);
     if (args.instructions !== undefined) changes.instructions = instructionsOf(args.instructions);
-    const role = this.roleOf(args, context, id);
-    if (role !== undefined && (role?.id !== before.built_in_role?.id || role?.connection_id !== before.built_in_role?.connection_id))
-      changes.built_in_role = role;
+    const role = this.roleOf(args.role_id, context, before);
+    if (role !== undefined && role?.id !== before.built_in_role?.id) changes.built_in_role = role;
+    const connection = this.assignment(args, context, role === undefined ? before.built_in_role : role);
+    const maintainer = this.maintainer(connection);
+    if (maintainer && maintainer.id !== id)
+      reject('connection_maintainer_exists', 'This connection already has a maintenance Bot', 409,
+        { maintainer: { kind: 'bot', id: maintainer.id } });
     if (args.model !== undefined) {
       const model = this.models.selectBinding(args.model, workspaceProfileId);
       const target = { kind: 'bot', id };
@@ -143,6 +185,7 @@ export class BotManager {
         reject('connection_forbidden', 'Model connection is outside the Bot’s authorized range', 403);
       }
       changes.model = model;
+      if (before.default_model_pending) changes.default_model_pending = false;
     }
     if (args.material_index_ref !== undefined) {
       if (args.material_index_ref !== null) validateIndex(args.material_index_ref, id);
@@ -163,8 +206,9 @@ export class BotManager {
     } else if (args.resume_ref) {
       reject('invalid_control', 'Resume requires an explicit enable operation');
     }
-    if (!Object.keys(changes).length) return before;
-    return this.store.save(botRecords, { id, ...changes, revision: before.revision + 1 });
+    const bot = Object.keys(changes).length ? this.store.save(botRecords, { id, ...changes, revision: before.revision + 1 }) : before;
+    if (connection) this.bindMaintenance(connection, bot);
+    return bot;
   }
 
   settleStop(id, stopId, status) {

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { nativeCommand, nativeEnvironment, nativeSpawnFailureCode, redactNative, redactNativeCredentials } from './native-host.mjs';
 import { guardStillMatches, heartbeatExpiryMs } from './session-processes.mjs';
+import { pipeNativeText } from './windows-native-text.mjs';
 import { terminateTree } from '../../bot/src/runtime/process-tools.mjs';
 import { samePath } from '../../bot/src/capabilities/file-policy.mjs';
 
@@ -121,10 +122,14 @@ function protocolLine(line) {
   }
   if (codex && message.type === 'item' && message.turnId === state.nativeTurnId) {
     const { exitCode } = message;
-    event('item', { turnId: state.nativeTurnId, itemId: field(message.itemId, 512), itemType: field(message.itemType, 80),
+    event('item', { turnId: state.nativeTurnId, itemId: field(message.itemId, 512), itemType: field(message.itemType, 80), tool: field(message.tool, 120),
       status: field(message.status, 80), phase: field(message.phase, 80), command: field(message.command, 2000),
       files: Array.isArray(message.files) ? message.files.slice(0, 20).map(file => field(file, 512)) : undefined,
       output: field(message.output, 4000), exitCode: Number.isInteger(exitCode) ? exitCode : null });
+  }
+  if (!codex && message.type === 'tool') {
+    event('tool', { itemId: field(message.itemId, 512), tool: field(message.tool, 120),
+      phase: field(message.phase, 32), status: field(message.status, 32), command: field(message.command, 2000), text: field(message.text, 2000) });
   }
   if (reportsOutcome && message.type === 'outcome' && ['completed', 'failed', 'stopped', 'unknown', 'not_submitted', 'unsupported'].includes(message.status)) {
     record({ nativeOutcome: message.status, stdinOpen: false, error: field(message.error, 4000),
@@ -186,7 +191,6 @@ function protocolLine(line) {
 
 function pipe(stream, name) {
   let buffer = '', fragmented = false;
-  stream.setEncoding('utf8');
   const line = (value, complete = true) => {
     append(name, clean(value));
     if (name === 'stdout.log' && eventProtocol && !fragmented) {
@@ -202,7 +206,7 @@ function pipe(stream, name) {
     }
     fragmented = !complete;
   };
-  stream.on('data', chunk => {
+  const write = chunk => {
     buffer += chunk;
     for (let end = buffer.indexOf('\n'); end >= 0; end = buffer.indexOf('\n')) {
       line(buffer.slice(0, end + 1));
@@ -212,7 +216,11 @@ function pipe(stream, name) {
       line(buffer.slice(0, -65_536), false);
       buffer = buffer.slice(-65_536);
     }
-  });
+  };
+  if (eventProtocol) {
+    stream.setEncoding('utf8');
+    stream.on('data', write);
+  } else pipeNativeText(stream, write, manifest.encoding?.[name === 'stdout.log' ? 'stdout' : 'stderr']);
   stream.on('end', () => { if (buffer) line(buffer); });
 }
 

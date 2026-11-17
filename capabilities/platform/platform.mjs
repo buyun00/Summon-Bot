@@ -2,18 +2,22 @@ import { realpathSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, parse, relative, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { bindModel } from '../../bot/src/agent/model.mjs';
-import { catalogMaintainerRole } from '../../roles/index.mjs';
+import { catalogMaintainerRole, toolOnboardingRole } from '../../roles/index.mjs';
 import { BotManager, activeControl, botRecords } from '../bot-management/service.mjs';
 import { ConnectionInitializer } from '../connectors/initialization.mjs';
+import { executionEnvironment } from '../connectors/onboarding.mjs';
+import { normalizeOnboardingAccess, targetAllows } from '../connectors/onboarding-access.mjs';
 import { Files } from '../filesystem/files.mjs';
 import { Calls, isWaitOrigin, waitRecords } from './calls.mjs';
 import { assertRevision, connectionSetupTool, idOf, identity, keyOf, page, readTools, reject, sameIdentity, sameRef, user, validateTool } from './contract.mjs';
 import { Deliveries, wakeupRecords } from './delivery.mjs';
 import { Executions, conversationRecords, sessionRecords } from './executions.mjs';
 import { HostResources } from './resources.mjs';
+import { RoomWork } from './room-work.mjs';
 import { allowsConnection, enclosesExecutableScope, executableScope } from '../services/executable-scope.mjs';
 import { localExecutable } from '../services/native-host.mjs';
 import { connectionStartupFailures } from '../services/session-processes.mjs';
+import { protocolOf } from '../services/connection-binding.mjs';
 
 const normalize = (value, kind) => typeof value === 'string' ? { kind, id: value } : value;
 const revokedAuthority = new Set(['session_authority_revoked', 'workspace_changed', 'connection_binding_changed', 'model_binding_changed']);
@@ -33,7 +37,8 @@ export class SummonPlatform {
     this.resources = new HostResources(store, limits);
     this.manager = new BotManager({ store, dataRoot, resources: this.resources, models,
       canUseModel: (actor, id, context) => this.canUseModel(actor, id, context),
-      maintenanceConnection: (id, context) => this.maintenanceConnection(id, context) });
+      maintenanceConnection: (id, context, revision, reuse) => this.maintenanceConnection(id, context, revision, reuse),
+      bindMaintenance: (connection, bot) => this.bindMaintainer(connection, bot.id) });
     this.deliveries = new Deliveries({ store, resources: this.resources, manager: this.manager, emit,
       canReadEvent: (botId, event) => this.canReadEvent(event, this.principalContext({ kind: 'bot', id: botId })),
       canReadWait: (wait, event) => this.canReadReturnWait(wait, event.target),
@@ -42,6 +47,7 @@ export class SummonPlatform {
       canReadTarget: (actor, ref, context, call) => this.canReadCallResult(call, ref, { ...context, actor }),
       spaceFor: ref => ['session', 'conversation'].includes(ref?.kind) ? this.executions.record(ref)?.space : ref });
     this.executions = new Executions({ store, platform: this, calls: this.calls, resources: this.resources });
+    this.roomWork = new RoomWork(this);
     this.workspaces = workspaces;
   }
 
@@ -53,6 +59,16 @@ export class SummonPlatform {
       canWriteSpace: (actor, space, context) => this.canWriteSpace(actor, space, context),
       canReadReference: (ref, context) => this.canReadReference(ref, context),
       assertShareable: (ref, options) => this.assertShareable(ref, options), notify: event => this.deliveries.queueEvent(event) });
+  }
+
+  initializeWorkspace(workspaceProfileId) {
+    const { changed } = this.store.transaction(() => {
+      const defaults = this.manager.ensureDefaults(workspaceProfileId);
+      const onboarding = defaults.bots.find(bot => !bot.archivedAt && bot.enabled && bot.built_in_role?.id === toolOnboardingRole);
+      if (onboarding) this.room.enrollOnboardingBot(onboarding);
+      return defaults;
+    });
+    if (changed) this.emit('bot');
   }
 
   getBot(id) { return this.manager.get(id); }
@@ -75,9 +91,20 @@ export class SummonPlatform {
   }
 
 
-  canUseModel(actor, id, context = this.principalContext(actor)) {
-    return this.models.catalog().connections.some(item => item.id === id && profileMatches(item, context)) &&
-      (actor.kind === 'user' || Boolean(this.accessFor(actor).model_ids?.includes(id)));
+  modelAccessBlocker(actor, id, context = this.principalContext(actor)) {
+    if (!id) return { code: 'model_binding_required', message: 'The Bot needs an assigned model connection in this workspace' };
+    let available;
+    try { available = this.models.catalog().connections.some(item => item.id === id && profileMatches(item, context)); }
+    catch { return { code: 'model_catalog_unavailable', message: 'The workspace model catalog is unavailable' }; }
+    if (!available) return { code: 'model_connection_unavailable',
+      message: 'The configured model connection is unavailable in this Bot’s workspace; the host must restore an authorized binding here' };
+    if (actor.kind !== 'user' && !this.accessFor(actor).model_ids?.includes(id))
+      return { code: 'model_grant_required', message: 'The Bot needs a host grant for its configured model connection in this workspace' };
+    return null;
+  }
+
+  canUseModel(actor, id, context) {
+    return this.modelAccessBlocker(actor, id, context) === null;
   }
 
   canUseConnection(actor, id, context = {}) {
@@ -90,22 +117,82 @@ export class SummonPlatform {
       (entry.allowed_bot_ids?.includes('*') || entry.allowed_bot_ids?.includes(actor.id))));
   }
 
-  maintenanceConnection(value, context) {
+  maintenanceConnection(value, context, revision, reuse = false) {
     const id = idOf(value, 'connection');
     const entry = this.connections.get(id);
-    if (!['cli', 'codex'].includes(entry?.kind) || !this.canUseConnection(context.actor, id, context))
-      reject('connection_forbidden', 'Choose a native CLI connection in this workspace and your execution grants', 403);
+    if (!entry || !this.canUseConnection(context.actor, id, context))
+      reject('connection_forbidden', 'Choose an execution connection in this workspace and your grants', 403);
+    if (context.actor.kind !== 'user') {
+      const setup = this.requireConnectionSetup(context, { action: 'assign_maintainer', connection: id });
+      const allowed = setup.hostSetup && this.connectionInitializer.setupOwns(entry, context, setup);
+      if (!allowed) {
+        if (!setup.policy?.assign_maintainer || !targetAllows(setup.policy, entry))
+          reject('maintainer_assignment_forbidden', 'The host must authorize maintainer assignment for this binding', 403);
+        if (!(reuse && this.manager.maintainer(entry))) assertRevision(entry.revision, revision);
+      }
+    }
+    if (revision !== undefined && !(reuse && this.manager.maintainer(entry))) assertRevision(entry.revision, revision);
     return entry;
   }
 
-  connectionMaintenance(entry, maintainer) {
-    if (!['cli', 'codex'].includes(entry?.kind)) return {};
-    const bot = maintainer === undefined ? this.manager.maintainer(entry) : maintainer;
-    if (!bot || !profileMatches(bot, entry)) return { maintainer: null };
+  bindMaintainer(entry, botId) {
+    return entry.maintainer_bot_id === botId ? entry : this.store.save('platform-connections', {
+      id: entry.id, maintainer_bot_id: botId, revision: entry.revision + 1,
+    });
+  }
+
+  assignMaintainer(args, context, call) {
+    const bot = this.getBot(idOf(args.bot, 'bot'));
+    if (!profileMatches(bot, context) || bot.connection_initializer || bot.archivedAt)
+      reject('bot_not_found', 'Choose a Bot in the current workspace', 404);
+    const result = this.store.transaction(() => {
+      const entry = this.maintenanceConnection(args.connection, context, args.revision);
+      assertRevision(entry.revision, args.revision);
+      const saved = this.bindMaintainer(entry, bot.id);
+      this.calls.bind(call.id, { target: { kind: 'connection', id: saved.id } });
+      return this.calls.finish(call.id, 'completed', { ...this.connections.summary(saved), ...this.connectionMaintenance(saved) });
+    });
+    this.emit('connection');
+    return result;
+  }
+
+  repairableConnection(entry, context) {
+    if (!entry || !profileMatches(entry, context) || !this.canUseConnection(context.actor, entry.id, context) ||
+        !this.connections.authorized(entry, context.actor)) return false;
+    if (context.actor.kind === 'user') return true;
+    if (entry.config.initialized_for !== context.actor.id && !entry.repair_bot_ids?.includes(context.actor.id)) return false;
+    const submitter = identity(context.submitted_by ?? context.actor);
+    return sameIdentity(submitter, context.actor) || this.canUseConnection(submitter, entry.id, this.principalContext(submitter, context.workspaceProfileId)) &&
+      this.connections.authorized(entry, submitter);
+  }
+
+  probeRepairAllowed(entry, context) {
+    if (this.repairableConnection(entry, context)) return true;
+    const policy = this.accessFor(context.actor)?.execution_onboarding;
+    const submitter = this.principalContext(identity(context.submitted_by ?? context.actor), context.workspaceProfileId);
+    return Boolean(entry && policy?.submit && targetAllows(policy, entry) &&
+      this.canUseConnection(context.actor, entry.id, context) && this.connections.authorized(entry, context.actor) &&
+      this.canUseConnection(submitter.actor, entry.id, submitter) && this.connections.authorized(entry, submitter.actor));
+  }
+
+  connectionMaintenance(entry, context) {
+    if (!entry) return {};
+    const bot = this.manager.maintainer(entry);
+    const grants = input => {
+      const can_use = this.connections.authorized(entry, input.actor);
+      const policy = this.accessFor(input.actor)?.execution_onboarding;
+      const can_repair = this.repairableConnection(entry, input) ||
+        Boolean(can_use && policy?.submit && targetAllows(policy, entry));
+      return { can_use, can_repair };
+    };
+    const permissions = context ? grants(context) : {};
+    if (!bot) return { ...permissions, maintainer: null };
     const actor = { kind: 'bot', id: bot.id };
-    const can_use = this.connections.authorized(entry, actor);
-    return { maintainer: { ...actor, enabled: bot.enabled, can_use,
-      can_repair: can_use && (entry.config.initialized_for === bot.id || entry.repair_bot_ids?.includes(bot.id) === true) } };
+    const authority = this.principalContext(actor);
+    const blocker = bot.enabled ? this.modelAccessBlocker(actor, bot.model?.connection_id, authority) :
+      { code: 'bot_paused', message: 'The maintainer Bot is paused' };
+    return { ...permissions, maintainer: { ...actor, name: bot.name, enabled: bot.enabled, ...grants(authority),
+      run_status: blocker ? { status: 'blocked', ...blocker } : { status: 'configured' } } };
   }
 
   noteConnectionFailure(source, call, { status, code, input_status }) {
@@ -126,10 +213,69 @@ export class SummonPlatform {
     [], true, session.execution_actor?.id);
   }
 
+  probeMaintainer(entry) {
+    return this.manager.maintainer(entry) ?? this.manager.onboardingBot(entry.workspaceProfileId ?? null);
+  }
+
+  resolveProbeFailure(connectionId) {
+    const event = this.deliveries.openProbeFailure(connectionId);
+    if (!event) return;
+    this.store.save('platform-events', { id: event.id, resolved_at: new Date().toISOString() });
+    for (const delivery of this.deliveries.deliveriesFor(event.id)) {
+      if (delivery.status === 'pending')
+        this.deliveries.updateDelivery(delivery.id, delivery.revision ?? 1, { status: 'cancelled', code: 'probe_resolved' });
+    }
+  }
+
+  noteProbeFailure(entry, context, observed) {
+    const self = this.getBot(context.actor.id);
+    const recipient = this.probeMaintainer(entry);
+    if ((self.built_in_role?.id === toolOnboardingRole || recipient?.id === self.id) && this.probeRepairAllowed(entry, context))
+      return { status: 'self', bot: context.actor };
+    const blocked = (code, reason, bot) => ({ status: 'blocked', code, reason, ...(bot ? { bot } : {}) });
+    if (!recipient) return blocked('probe_maintainer_required', 'Select a repair Bot in this workspace');
+    const bot = { kind: 'bot', id: recipient.id };
+    const authority = this.principalContext(bot);
+    if (!recipient.enabled) return blocked('bot_paused', 'The assigned repair Bot is paused', bot);
+    const repairContext = sameIdentity(bot, context.actor) ? context : authority;
+    if (!this.canUseConnection(bot, entry.id, repairContext) || !this.connections.authorized(entry, bot))
+      return blocked('connection_use_required', 'The assigned repair Bot needs use access to the connection and its dependencies', bot);
+    if (!this.probeRepairAllowed(entry, repairContext))
+      return blocked('connection_repair_required', 'The assigned repair Bot needs repair authority for this connection', bot);
+    if (entry.config.workspace_root) {
+      try {
+        if (!this.workspace(entry.config.workspace_root, repairContext)?.write || entry.config.workspace_write === false)
+          return blocked('workspace_forbidden', 'The assigned repair Bot needs writable process access to the bound working directory', bot);
+      } catch (error) {
+        if (![403, 404].includes(error.status)) throw error;
+        return blocked(error.code, error.message, bot);
+      }
+    }
+    const model = this.modelAccessBlocker(bot, recipient.model?.connection_id, authority);
+    if (model) return blocked(model.code, model.message, bot);
+
+    const binding_version = entry.binding_version ?? 1;
+    const open = this.deliveries.openProbeFailure(entry.id);
+    if (open?.bot_id === bot.id && open.binding_version === binding_version)
+      return { status: 'already_requested', bot, event: { kind: 'event', id: open.id } };
+    if (open) this.resolveProbeFailure(entry.id);
+    const ref = { kind: 'connection', id: entry.id };
+    const id = randomUUID();
+    const event = { id, kind: 'event', type: 'connection.failure', code: 'probe_rule_mismatch', bot_id: bot.id,
+      target: ref, ref, space: bot, binding_version, connection_revision: entry.revision, workspaceProfileId: entry.workspaceProfileId,
+      author: { kind: 'platform', id: 'platform' }, time: new Date().toISOString(),
+      probe: this.connections.clean({ source: observed.probe_source, cwd: observed.cwd, issues: observed.issues,
+        observations: observed.observations.filter(item => ['version', 'help'].includes(item.purpose)) }) };
+    this.deliveries.queueEvent(event, [], false);
+    this.deliveries.enqueue(bot.id, event, [], []);
+    return { status: 'requested', bot, event: { kind: 'event', id } };
+  }
+
   visibleBot(bot, context) {
     if (!profileMatches(bot, context.workspaceProfileId === undefined ? this.principalContext(context.actor) : context)) return false;
     if (bot.connection_initializer) return sameIdentity(context.actor, { kind: 'bot', id: bot.id });
     if (context.session) return sameIdentity(context.actor, { kind: 'bot', id: bot.id });
+    if (bot.built_in_role?.id === toolOnboardingRole && !bot.archivedAt) return true;
     if (this.manager.canConfigure(context.actor, bot)) return true;
     return this.store.list('rooms').some(room => room.members.includes(context.actor.id) && room.members.includes(bot.id));
   }
@@ -184,10 +330,16 @@ export class SummonPlatform {
 
   canReadEvent(event, context) {
     if (event.result_access === 'revoked') return false;
+    if (event.type === 'work.tool') return this.roomWork.readable(event, context);
     if (event.type === 'connection.failure') {
       const connection = event.ref?.kind === 'connection' && this.connections.get(event.ref.id);
-      return Boolean(connection && event.binding_version === (connection.binding_version ?? 1) &&
-        profileMatches(event, context) && this.canReadReference(event.ref, context));
+      const readable = connection && event.binding_version === (connection.binding_version ?? 1) &&
+        profileMatches(event, context) && this.canReadReference(event.ref, context);
+      if (!readable) return false;
+      if (event.code !== 'probe_rule_mismatch' || context.actor.kind === 'user') return true;
+      const recipient = this.probeMaintainer(connection);
+      return recipient?.enabled && event.bot_id === context.actor.id && recipient.id === event.bot_id &&
+        this.probeRepairAllowed(connection, context);
     }
     if (event.call_id && event.target) {
       const call = this.store.get('platform-calls', event.call_id);
@@ -237,6 +389,9 @@ export class SummonPlatform {
     const principal = identity(actor);
     const caller = { workspaceProfileId: room.workspaceProfileId ?? null, ...context, actor: principal };
     if (!this.canReadReference(ref, caller)) reject('share_forbidden', 'This reference is unavailable to the sender', 403);
+    const work = ref.kind === 'event' && this.store.get('platform-events', ref.id);
+    if (work?.type === 'work.tool' && !sameRef(work.space, { kind: 'room', id: room.id }))
+      reject('share_forbidden', 'Tool observations belong to their original Room', 403);
     const file = ref.kind === 'file' ? this.files.get(ref.id) : null;
     if (file && sameRef(file.space, { kind: 'room', id: room.id })) return this.files.view(file);
     const event = ref.kind === 'event' ? this.store.get('messages', ref.id) : null;
@@ -308,7 +463,9 @@ export class SummonPlatform {
   }
 
   configureAccess(id, input, context) {
-    if (Object.keys(input).some(key => !['revision', 'model_ids', 'workspace_ids'].includes(key))) reject('invalid_access', 'Unsupported Bot resource setting');
+    if (context.actor.kind !== 'user') reject('configuration_forbidden', 'Only the host can grant Bot resources', 403);
+    if (Object.keys(input).some(key => !['revision', 'model_ids', 'workspace_ids', 'execution_onboarding'].includes(key)))
+      reject('invalid_access', 'Unsupported Bot resource setting');
     return this.store.transaction(() => {
       if (!this.visibleBot(this.getBot(id), context)) reject('bot_not_found', 'Bot not found', 404);
       const previous = this.store.get('platform-access', id) || { id, revision: 0, model_ids: [], workspace_ids: [] };
@@ -325,7 +482,9 @@ export class SummonPlatform {
           .some(model => model.id === value && profileMatches(model, context)));
       const workspace_ids = input.workspace_ids === undefined ? previous.workspace_ids : validate(input.workspace_ids, value =>
         previous.workspace_ids?.includes(value) || this.workspaceRecords().some(item => item.id === value && profileMatches(item, context)));
-      return this.store.save('platform-access', { id, model_ids, workspace_ids, revision: (previous.revision ?? 0) + 1 });
+      const execution_onboarding = input.execution_onboarding === undefined ? previous.execution_onboarding
+        : normalizeOnboardingAccess(input.execution_onboarding);
+      return this.store.save('platform-access', { id, model_ids, workspace_ids, execution_onboarding, revision: (previous.revision ?? 0) + 1 });
     });
   }
 
@@ -399,6 +558,7 @@ export class SummonPlatform {
       reject('session_scope_forbidden', 'A child Session must stay within the parent’s execution authority', 403);
     }
     const sharing = options.sharing(actor, space);
+    const group_work = this.roomWork.scope(args, context, sharing, space);
     const selected = [...(args.resource_refs || [])];
     if (selected.some(ref => !['connection', 'workspace', 'file', 'event'].includes(ref.kind))) {
       reject('invalid_resource', 'Session resources must be connections, directories, Files or Events');
@@ -447,6 +607,7 @@ export class SummonPlatform {
         workspace_ref: workspace?.ref ?? null, status: 'opening', native: null, input_targets: [], input_revision: 0,
         ...(context.executable_scope !== undefined ? { executable_scope: context.executable_scope } : {}),
         ...(connection ? { connection_binding_version: connection.binding_version ?? 1 } : {}), ...(engine === 'pi' ? { open_call_id: call.id } : {}),
+        execution_environment: executionEnvironment(connection), ...(group_work ? { group_work } : {}),
         control: activeControl(), origin_execution: context.session ? { kind: 'session', id: context.session.id } :
           context.origin?.conversation_id ? { kind: 'conversation', id: context.origin.conversation_id } : null, latest_call_id: call.id });
       this.calls.bind(call.id, { target: { kind: 'session', id: session.id }, session_id: session.id, execution_actor: actor });
@@ -519,11 +680,14 @@ export class SummonPlatform {
     const access = this.accessFor(context.actor);
     const sharedConnections = this.store.list('platform-connections').filter(item => this.canUseConnection(context.actor, item.id, context))
       .map(({ id, revision }) => [id, revision]);
+    const maintained_connection_ids = sharedConnections.map(([id]) => id)
+      .filter(id => this.connections.get(id).maintainer_bot_id === context.actor.id);
     const permitted = context.session?.resource_refs?.map(ref => [ref.kind, ref.id, this.canReadReference(ref, context)]) ?? [];
     const waits = this.calls.returnWaits(context.origin, context.actor);
     const revoked_return_waits = waits.filter(wait => !this.canReadReturnWait(wait, wait.target)).map(wait => wait.id).sort();
     return { actor: context.actor, resources: context.resource_refs, session: context.session, conversation: context.conversation,
       connection_ids: sharedConnections.map(([id]) => id),
+      maintained_connection_ids,
       view_revision: keyOf(rooms, context.session?.id, context.session?.control.control_version, access?.revision, sharedConnections, permitted),
       unfinished_calls: this.calls.unfinishedFor(context.conversation.id, context.actor),
       pending_return_waits: waits.filter(wait => ['waiting', 'pending_delivery', 'received'].includes(wait.status)),
@@ -580,7 +744,15 @@ export class SummonPlatform {
     for (const field of ['allowed_bot_ids', 'repair_bot_ids']) if (Array.isArray(value[field]) &&
       value[field].some(id => !(field === 'allowed_bot_ids' && id === '*') && !current?.[field]?.includes(id) && !inWorkspace(id)))
       reject('invalid_connection', 'Connection grant includes a Bot outside this workspace');
-    const result = await this.connections.configure({ ...value, id: value.id ?? randomUUID(), workspaceProfileId: context.workspaceProfileId }, context,
+    if (value.maintainer_bot_id !== undefined && value.maintainer_bot_id !== null) {
+      const bot = this.store.get(botRecords, value.maintainer_bot_id);
+      if (!bot || bot.archivedAt || bot.connection_initializer || !profileMatches(bot, context))
+        reject('invalid_connection', 'Choose a maintenance Bot in this workspace');
+    }
+    if (value.kind === 'ssh' && !value.config?.ssh && !value.config_patch?.ssh && !current?.config.ssh)
+      reject('invalid_ssh_binding', 'Specify the fixed SSH target and operations');
+    const submitted = value.kind === 'ssh' ? { ...value, kind: 'cli' } : value;
+    const result = await this.connections.configure({ ...submitted, id: value.id ?? randomUUID(), workspaceProfileId: context.workspaceProfileId }, context,
       saved => onSave?.({ ...saved, ...this.connectionMaintenance(this.connections.get(saved.id)) }));
     if (current) {
       const updated = this.connections.get(result.id);
@@ -614,7 +786,8 @@ export class SummonPlatform {
     if (args.bot !== undefined && !this.visibleBot(bot, context)) reject('bot_not_found', 'Select an existing Pi Bot in this workspace profile', 404);
     const actor = { kind: 'bot', id: bot.id };
     if (!bot.enabled) reject('bot_paused', 'The selected Pi Bot is paused', 409);
-    if (!bot.model || !this.canUseModel(actor, bot.model.connection_id, context)) reject('connection_unconfigured', 'The selected Pi Bot needs its existing model grant', 409);
+    const blocker = this.modelAccessBlocker(actor, bot.model?.connection_id);
+    if (blocker) reject('connection_unconfigured', blocker.message, 409, { reason: blocker.code });
     const workspace = requestedWorkspace && this.workspace(requestedWorkspace.path, { ...context, actor });
     const { record, existing } = this.calls.begin('initialize_connections', context);
     if (existing) return setupResponse(this.calls.replay(record, context), record);
@@ -655,8 +828,11 @@ export class SummonPlatform {
     });
   }
 
-  canRepairConnection(input) {
-    return this.connectionInitializer.managed(this.context(input)).length > 0;
+  canInitializeExecution(input) {
+    const context = this.context(input);
+    const role = this.getBot(context.actor.id).built_in_role?.id;
+    return [toolOnboardingRole, catalogMaintainerRole].includes(role) ||
+      Boolean(this.accessFor(context.actor).execution_onboarding) || this.connectionInitializer.managed(context).length > 0;
   }
 
   requireConnectionSetup(input, args) {
@@ -665,16 +841,43 @@ export class SummonPlatform {
     const setup = conversation?.connection_setup;
     const call = setup && this.store.get('platform-calls', conversation.id);
     if (context.actor.kind !== 'bot') reject('initialization_forbidden', 'Connection initialization requires a Pi run', 403);
+    const target = args.action === 'inspect' && args.target?.kind === 'connection' ? args.target : null;
+    const targetId = target && idOf(target, 'connection');
+    const connectionId = args.connection === undefined ? targetId : idOf(args.connection, 'connection');
+    if (targetId && targetId !== connectionId)
+      reject('connection_binding_conflict', 'Use the same connection ID in target and connection, or supply just one of them', 409);
+    const selected = connectionId && this.connections.get(connectionId);
+    if (target && (!this.canReadReference(target, context) || !this.connections.authorized(selected, context.actor)))
+      reject('environment_forbidden', 'The Bot needs use access to the target connection and its dependencies in this workspace and run scope', 403);
+
+    const role = this.getBot(context.actor.id).built_in_role?.id;
+    const policy = this.accessFor(context.actor).execution_onboarding;
     if (!context.session && sameIdentity(context.submitted_by, user) && sameRef(conversation?.space, context.actor) && call?.tool === 'initialize_connections' &&
         sameIdentity(call.submitted_by, user) && sameIdentity(call.execution_actor, context.actor) &&
-        sameRef(call.target, { kind: 'conversation', id: conversation.id }) && profileMatches(call, context)) return setup;
+        sameRef(call.target, { kind: 'conversation', id: conversation.id }) && profileMatches(call, context)) {
+      const connection = selected;
+      if (connection && !this.connectionInitializer.setupOwns(connection, context, setup) && !this.repairableConnection(connection, context) &&
+          !(policy && this.canUseConnection(context.actor, connection.id, context)))
+        reject('initialization_forbidden', 'The connection is outside this active setup and the Bot’s grants', 403);
+      return { ...setup, hostSetup: true, policy, connection };
+    }
 
-    const submittedBy = this.principalContext(identity(context.submitted_by ?? context.actor), context.workspaceProfileId);
-    const authorized = this.connectionInitializer.managed(context).filter(entry =>
-      this.canUseConnection(submittedBy.actor, entry.id, submittedBy) && this.connections.authorized(entry, submittedBy.actor));
-    if (!args?.connection && authorized.length && ['guide', 'discover'].includes(args?.action)) return { repair: true, connections: authorized };
-    const connection = args?.connection && authorized.find(entry => entry.id === idOf(args.connection, 'connection'));
-    if (!connection) reject('initialization_forbidden', 'Choose a previously authorized connection for repair', 403);
+    const authorized = this.connectionInitializer.managed(context);
+    const repair = this.repairableConnection(selected, context);
+    const connection = selected && this.canUseConnection(context.actor, selected.id, context) ? selected : null;
+    const onboarding = role === toolOnboardingRole || Boolean(policy);
+    if (['guide', 'discover'].includes(args.action) && (onboarding || role === catalogMaintainerRole || authorized.length))
+      return { onboarding, policy, connections: authorized, connection };
+    if (args.action === 'inspect') {
+      if (onboarding || repair) return { onboarding, policy, connection };
+      reject('initialization_forbidden', 'Inspect needs an existing connection repair grant or a host executable grant', 403);
+    }
+    if ((policy || repair) && (['upsert_method', 'assign_maintainer'].includes(args.action) ||
+        args.action === 'register' && args.protocol))
+      return { onboarding, policy, connection };
+    if (!connection || !repair || args.action === 'grant_access' || args.action === 'assign_maintainer' ||
+        args.action === 'register' && (args.protocol || !['cli', 'codex'].includes(protocolOf(connection))))
+      reject('initialization_forbidden', 'The requested submission requires an onboarding or existing repair grant', 403);
     const runnerId = connection.config.adapter?.runner?.id;
     const runner = runnerId && this.connections.get(runnerId);
     const boundPaths = [connection, runner].filter(Boolean).map(({ config }) => ({ file: config.file, canonical_file: config.canonical_file }));
@@ -683,23 +886,21 @@ export class SummonPlatform {
 
   assertSetupBotTool(name, args, context) {
     const setup = this.requireConnectionSetup(context, { action: 'discover' });
-    if (setup.repair) reject('initialization_forbidden', 'Bot provisioning requires the active host setup', 403);
+    if (!setup.hostSetup) reject('initialization_forbidden', 'Bot provisioning requires the active host setup', 403);
     const target = name === 'create_bot' ? null : this.getBot(idOf(args.bot, 'bot'));
     if (target && (!profileMatches(target, context) || !this.manager.canConfigure(context.actor, target)))
       reject('configuration_forbidden', 'This Bot is outside the initialization scope', 403);
-    const priorConnectionId = target?.built_in_role?.connection_id;
-    const connectionId = args.role_connection_id ?? priorConnectionId;
-    if (priorConnectionId && priorConnectionId !== connectionId &&
-        !this.connectionInitializer.setupOwns(this.connections.get(priorConnectionId), context, setup))
-      reject('configuration_forbidden', 'The Bot’s current maintenance connection is outside this setup', 403);
+    const rule = name === 'set_wakeup' ? args.event_or_time ?? this.store.get(wakeupRecords, args.id)?.rule : null;
+    const owned = target && this.store.list('platform-connections').filter(entry => entry.maintainer_bot_id === target.id &&
+      this.connectionInitializer.setupOwns(entry, context, setup));
+    const connectionId = args.role_connection_id ?? rule?.ref?.id ?? owned?.[0]?.id;
     if (!this.connectionInitializer.setupOwns(this.connections.get(connectionId), context, setup) ||
         name === 'create_bot' && args.role_id !== catalogMaintainerRole ||
         name === 'configure_bot' && args.role_id !== undefined && args.role_id !== catalogMaintainerRole)
       reject('initialization_forbidden', 'Use the CLI maintenance duty for a connection in this setup', 403);
     if (name === 'set_wakeup') {
-      const rule = args.event_or_time ?? this.store.get(wakeupRecords, args.id)?.rule;
       if (rule?.kind !== 'event' || rule.type !== 'connection.failure' || rule.room ||
-          !sameRef(rule.ref, { kind: 'connection', id: connectionId }))
+          !sameRef(rule.ref, { kind: 'connection', id: connectionId }) || !owned.some(entry => entry.id === connectionId))
         reject('initialization_forbidden', 'The embedded initializer can subscribe this Bot to its CLI failure events', 403);
     }
   }
@@ -738,10 +939,15 @@ export class SummonPlatform {
       }
       if (name === 'create_bot') {
         if (context.session) reject('configuration_forbidden', 'This Session cannot create Bot identities', 403);
-        const bot = this.manager.create(`bot-${record.id}`, args, context, () => this.assertRunAllowed(context));
-        this.calls.bind(record.id, { target: { kind: 'bot', id: bot.id } });
-        const result = this.calls.finish(record.id, 'completed', this.manager.view(bot, context.actor));
+        const result = this.store.transaction(() => {
+          const id = `bot-${record.id}`;
+          const bot = this.manager.create(id, args, context, () => this.assertRunAllowed(context));
+          if (bot.enabled && bot.built_in_role?.id === toolOnboardingRole) this.room.enrollOnboardingBot(bot);
+          this.calls.bind(record.id, { target: { kind: 'bot', id: bot.id } });
+          return this.calls.finish(record.id, 'completed', { ...this.manager.view(bot, context.actor), ...(bot.id !== id ? { reused: true } : {}) });
+        });
         this.emit('bot', result);
+        if (args.role_connection_id) this.emit('connection');
         return { result, call_id: record.id };
       }
       const source = name === 'save_file' ? args.content_or_source?.source : null;
@@ -768,7 +974,7 @@ export class SummonPlatform {
         const value = this.write(name, args, context, record, workspaceFile);
         return this.calls.finish(record.id, 'completed', value);
       });
-      if (name === 'configure_bot' && Object.keys(args).some(key => !['bot', 'revision', 'role_id', 'role_connection_id'].includes(key))) {
+      if (name === 'configure_bot' && result.control && Object.keys(args).some(key => !['bot', 'revision', 'role_id', 'role_connection_id', 'connection_revision'].includes(key))) {
         if (result.control.state === 'paused' && result.control.stop_status === 'pending') {
           this.settleBotInBackground(result.id, result.control);
         } else this.runtime.wake();
@@ -834,6 +1040,8 @@ export class SummonPlatform {
           reject('material_index_forbidden', 'The Bot cannot read this material index', 403);
         }
       });
+      if (bot.enabled && bot.built_in_role?.id === toolOnboardingRole) this.room.enrollOnboardingBot(bot);
+      if (args.role_connection_id) this.emit('connection');
       const result = this.manager.view(bot, actor);
       this.calls.bind(call.id, { target: { kind: 'bot', id: bot.id } });
       this.emit('bot', result);
@@ -871,9 +1079,7 @@ export class SummonPlatform {
         const needle = query?.trim().toLowerCase();
         const pi = { kind: 'connection', id: 'pi', name: 'Pi', protocol: 'pi', enabled: true, available: true };
         const visible = (await this.connections.find(this.connectionContext(context), query)).filter(item => this.canUseConnection(actor, item.id, context));
-        const maintainers = new Map(this.manager.maintainers().filter(bot => profileMatches(bot, context))
-          .map(bot => [bot.built_in_role.connection_id, bot]));
-        items = visible.map(item => ({ ...item, ...this.connectionMaintenance(this.connections.get(item.id), maintainers.get(item.id) ?? null) }));
+        items = visible.map(item => ({ ...item, ...this.connectionMaintenance(this.connections.get(item.id), context) }));
         if (!needle || needle === 'pi') items = [pi, ...items];
         break;
       }
@@ -930,8 +1136,8 @@ export class SummonPlatform {
           input: 'text or structured input for a new Pi conversation', operations: ['steer', 'next', 'stop'] };
         const observed = await this.connections.read(ref.id, this.connectionContext(context));
         const entry = this.connections.get(ref.id);
-        return ['cli', 'codex'].includes(entry?.kind) && this.canUseConnection(context.actor, ref.id, context)
-          ? { ...observed, ...this.connectionMaintenance(entry) } : observed;
+        if (!this.canUseConnection(context.actor, ref.id, context)) reject('connection_forbidden', 'The connection is unavailable', 403);
+        return { ...observed, ...this.connectionMaintenance(entry, context) };
       }
       case 'call': return this.calls.view(this.calls.get(ref.id), context);
       case 'wakeup': return this.deliveries.list(context).find(item => item.id === ref.id);

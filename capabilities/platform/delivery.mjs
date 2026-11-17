@@ -1,5 +1,6 @@
 import { assertRevision, idOf, identity, keyOf, reject, sameIdentity, sameRef } from './contract.mjs';
 import { waitRecords } from './calls.mjs';
+import { toolOnboardingRole } from '../../roles/index.mjs';
 
 export const wakeupRecords = 'platform-wakeups';
 export const deliveryRecords = 'platform-deliveries';
@@ -19,11 +20,21 @@ export class Deliveries {
       AND json_extract(data,'$.status')='pending' AND COALESCE(json_extract(data,'$.retry_at'),0)<=?
       AND COALESCE(json_array_length(data,'$.wait_refs'),0)=0 ORDER BY rowid LIMIT ?`);
     this.eventRecords = store.db.prepare(`SELECT data FROM records WHERE kind='platform-deliveries' AND json_extract(data,'$.event.id')=? ORDER BY rowid`);
+    this.openProbeRecord = store.db.prepare(`SELECT data FROM records WHERE kind='platform-events'
+      AND json_extract(data,'$.type')='connection.failure' AND json_extract(data,'$.code')='probe_rule_mismatch'
+      AND json_extract(data,'$.ref.id')=? AND json_extract(data,'$.resolved_at') IS NULL ORDER BY rowid DESC LIMIT 1`);
   }
 
   deliveriesFor(eventId) { return this.eventRecords.all(eventId).map(row => JSON.parse(row.data)); }
 
+  openProbeFailure(connectionId) {
+    const row = this.openProbeRecord.get(connectionId);
+    return row && JSON.parse(row.data);
+  }
+
   roomMembers(roomId) { return this.store.get('rooms', roomId)?.members ?? []; }
+
+  wasRemoved(botId, roomId) { return this.store.get(wakeupRecords, roomBaseId(botId, roomId))?.member_active === false; }
 
   ensureBase(botId, roomId) {
     const id = roomBaseId(botId, roomId);
@@ -36,8 +47,9 @@ export class Deliveries {
   removeBase(botId, roomId) {
     const id = roomBaseId(botId, roomId);
     const wakeup = this.store.get(wakeupRecords, id);
-    if (wakeup && wakeup.member_active !== false) {
-      this.store.save(wakeupRecords, { id, member_active: false, enabled: false, revision: wakeup.revision + 1 });
+    if (wakeup?.member_active !== false) {
+      this.store.save(wakeupRecords, { id, bot_id: botId, rule: wakeup?.rule ?? { kind: 'room_base', room: roomId, mode: 'all' },
+        member_active: false, enabled: false, revision: (wakeup?.revision ?? 0) + 1 });
     }
     for (const delivery of this.store.list(deliveryRecords)) {
       if (delivery.bot_id === botId && delivery.event.roomId === roomId && !delivery.wait_refs?.length && delivery.status === 'pending') {
@@ -107,6 +119,10 @@ export class Deliveries {
     if (!wakeup.enabled || wakeup.member_active === false || rule.kind === 'time' || !this.ruleUsable(rule, bot_id)) return false;
     if (event.type === 'message' && event.author.id === bot_id && event.author.kind === 'bot') return false;
     if (rule.kind === 'room_base') {
+      if (event.type === 'work.tool' && event.roomId === rule.room && rule.mode === 'all') {
+        const bot = this.store.get('platform-bots', bot_id);
+        return bot?.enabled && bot.built_in_role?.id === toolOnboardingRole;
+      }
       return event.type === 'message' && event.roomId === rule.room && (rule.mode === 'all' ||
         event.mentions?.includes(bot_id) || event.replyAuthorId === bot_id);
     }

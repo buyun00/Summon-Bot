@@ -34,7 +34,7 @@ const sessionEngine = { ...text, description: 'The connection id returned by fin
 const sessionWorkspace = { ...text, description: 'The id from find with kind workspace, or an authorized absolute project directory path. Use the value itself as text.' };
 const openSessionInput = object({ engine: sessionEngine, input: value, workspace: sessionWorkspace, space: ref,
   sharing: object({ readers: array(principal), submitters: array(principal), controllers: array(principal) }, ['readers', 'submitters', 'controllers']),
-  resource_refs: array(ref) }, ['engine', 'input']);
+  resource_refs: array(ref), work_room: refOrId, work_source: refOrId, private_work: flag, include_execution_guide: flag }, ['engine', 'input']);
 const publicOpenSessionInput = { ...openSessionInput, properties: { ...openSessionInput.properties, engine: refOrId, workspace: { anyOf: [ref, text] } } };
 
 const definitions = [
@@ -52,8 +52,8 @@ const definitions = [
       object({ no_change: oneOf(true) }, ['no_change'])] },
       revision: integer, sources: array(ref), material_items: array(text) }, ['space', 'path', 'content_or_source'])],
   ['create_bot', 'Create a Bot with user instructions, an optional authorized model connection, and an optional built-in duty (role_id). ' +
-    'For catalog-maintainer pass the exact native role_connection_id from read. A duty does not grant access.',
-    object({ name: text, instructions: text, model, role_id: oneOf(...roleIds), role_connection_id: text }, ['name', 'instructions'])],
+    'For dedicated maintenance, pass catalog-maintainer and the exact role_connection_id and connection_revision from read to bind it atomically. A duty does not grant use or repair access.',
+    object({ name: text, instructions: text, model, role_id: oneOf(...roleIds), role_connection_id: text, connection_revision: integer }, ['name', 'instructions'])],
   ['configure_bot', 'Change a Bot configuration at its current revision. An explicit resume reference is required to re-enable a paused Bot. ' +
     'When asked to remember or correct something for future work, read your Bot for its revision, private_space and material_index_ref. ' +
     'If the index reference is empty, use save_file in private_space (for example memory/index.json) to save ordinary JSON such as ' +
@@ -63,12 +63,12 @@ const definitions = [
     'To request a separate background consolidation, set "selected":true on the specific item in the registered index and set its ' +
     '"target_ref" to the actual reference of an existing, accessible knowledge File. The runtime processes selected items when their ' +
     'scope is idle. Use find with kind "material_consumption" to check the recorded outcome. ' +
-    'Set role_id to select a built-in duty, or null to clear it. For catalog-maintainer use role_connection_id. User instructions are a separate setting.',
+    'Set role_id to select a built-in duty, or null to clear it. The host selects the tool-onboarding duty. User instructions are a separate setting.',
     object({ bot: refOrId, revision: integer, name: text, instructions: text, model, enabled: flag, resume_ref: resumeRef,
-      role_id: oneOf(...roleIds, null), role_connection_id: text,
+      role_id: oneOf(...roleIds, null), role_connection_id: text, connection_revision: integer,
       material_index_ref: { anyOf: [ref, { type: 'null' }] } }, ['bot', 'revision'])],
-  ['create_room', 'Create a Room with the specified members, including you as creator.',
-    object({ members: array(principal), title: text }, ['members'])],
+  ['create_room', 'Create a Room with the specified members, including you as creator. Set mode to group for a group Room.',
+    object({ members: array(principal), title: text, mode: oneOf('group', 'direct') }, ['members'])],
   ['configure_room', 'Update the title, membership and pins in one Room revision.',
     object({ room: refOrId, revision: integer, title: text, add_members: array(principal), remove_members: array(principal),
       pin_add: array(ref), pin_remove: array(ref) }, ['room', 'revision'])],
@@ -78,6 +78,9 @@ const definitions = [
     'A private initialization can omit workspace to use its selected directory for a native CLI Session. ' +
     'To share the Session, set space to an accessible Room, specify sharing.readers, sharing.submitters and sharing.controllers, ' +
     'and pass resource_refs, including the workspace grant when using a workspace. The selected external engine is included in shared resources. ' +
+    'For work submitted on behalf of a Room, pass work_room and optionally the original Room message as work_source. This authorizes bounded tool observations in that Room and keeps the Session’s own permissions. ' +
+    'For work to remain private, omit work_room or explicitly set private_work on a shared Session. ' +
+    'Set include_execution_guide to append the installed Summon adapter guide to a text input. ' +
     'When the result registers a wait_ref, you can end the current turn and continue when its receipt arrives.',
     openSessionInput],
   ['send_input', 'Submit input to the actual input target and control version, or resume one explicitly paused execution. ' +
@@ -96,14 +99,38 @@ const eventMatch = object({ path: text, equals: { anyOf: [text, flag, integer] }
 const adapterRecipe = object({ args: array(text), resume_args: array(text), stdin: flag, output: oneOf('plain', 'json', 'jsonl'),
   session_id: text, progress: text, result: text, error: text, complete_when: eventMatch, success_when: eventMatch }, ['args', 'output']);
 const launchArguments = object({ common: array(text), start: array(text), resume: array(text) });
+const probeStream = oneOf('stdout', 'stderr', 'combined');
+const probeCommand = { args: array(text), exit_codes: array(integer) };
+const probeRunner = object({ id: text, binding_version: integer }, ['id', 'binding_version']);
+const cliProbe = object({
+  version: object({ ...probeCommand, read: object({ stream: probeStream, line: integer, word: integer }) }, ['args']),
+  help: object({ ...probeCommand, stream: probeStream }, ['args']),
+  encoding: object({ stdout: text, stderr: text }),
+  script: { anyOf: [object({ path: text, runner: probeRunner }, ['path', 'runner']),
+    object({ source: text, runner: probeRunner }, ['source', 'runner'])] },
+}, ['version', 'help']);
 export const connectionSetupTool = Object.freeze({ name: 'initialize_execution',
   executionTools: Object.freeze(['find', 'read', 'open_session', 'send_input', 'stop_session', 'save_file', 'create_bot', 'configure_bot', 'set_wakeup']),
-  description: 'Initialize a host-authorized CLI connection. Read the general guide, discover installed connectors and inspect the actual executable. ' +
-    'In ordinary work use discover to identify your existing authorized connections. For repair, pass the existing connection id string and revision. ' +
-    'Use adapter.arguments to add native flags while keeping the built-in connector. Use source or documentation to investigate interface changes. ' +
-    'During host-authorized setup, grant_access can give one Bot use or repair authority on a registered connection in this setup.',
-  inputSchema: object({ action: oneOf('guide', 'discover', 'inspect', 'source', 'documentation', 'register', 'grant_access'), connector: text,
-    command: text, executable: text, help_topic: text, offset: integer,
+  description: 'Read the installed Summon guide, discover or inspect tools in the authorized execution environment, and register or update a connection under existing grants. ' +
+    'Use target to ground discovery in a readable Session, connection or work event. Set query for name or capability, command for an executable name, or executable for a known absolute path. ' +
+    'To inspect a registered local CLI, pass its connection target or the connection ID. The probe uses that binding and needs its current repair grant or a host grant for its executable. Leave command and executable out. ' +
+    'Inspect uses the saved probe when present. To try a replacement, pass probe and the current revision; the receipt includes actual arguments, exit statuses, output and effective encodings. ' +
+    'With repair authority, diagnostic_args runs an additional one-off CLI command using the effective probe encoding. ' +
+    'Use register with protocol and config for a CLI, SSH, HTTP or MCP binding. For updates, explicitly pass the original connection ID and current revision. ' +
+    'To save a successful candidate, register with config.probe, config.detected_version and probe_call set to the candidate inspect call ID. The binding, maintainer and grants stay on the original connection. ' +
+    'To save the observed version of an existing CLI, use register with connection, revision, protocol:"cli" and config:{detected_version: inspect.version}. The version in read and the register receipt is the saved version. ' +
+    'Use upsert_method with connection, revision and method to update one method. Use the latest revision for each write. ' +
+    'Use assign_maintainer only with applicable authorization. Use source or documentation for adapter details. Hosted CLI setup also supports grant_access.',
+  inputSchema: object({ action: oneOf('guide', 'discover', 'inspect', 'source', 'documentation', 'register', 'upsert_method', 'assign_maintainer', 'grant_access'),
+    connector: text, target: { ...ref, description: 'For inspect, a readable connection target selects that binding. If connection is also present, both IDs must match. Session and work event targets supply the environment only.' },
+    workspace: refOrId, query: text, required_version: text,
+    command: text, executable: text, help_topic: text, offset: integer, protocol: oneOf('cli', 'codex', 'ssh', 'http', 'mcp'),
+    probe: { ...cliProbe, description: 'Candidate version and help rules for a registered CLI. read.line and read.word are zero-based. encoding maps stdout and stderr to an encoding name or auto.' },
+    diagnostic_args: { ...array(text), description: 'One-off arguments to check output in the same bound environment and encoding.' },
+    probe_call: { ...text, description: 'Call ID of a successful candidate inspect on this connection at this revision.' },
+    config: { type: 'object', additionalProperties: true,
+      description: 'Settings for the specified protocol. For a CLI version update, set detected_version to the non-empty version string returned by inspect.' },
+    method: { type: 'object', additionalProperties: true },
     connection: { ...text, description: 'The id string of the existing connection from discover or find.' }, revision: integer,
     bot: { ...text, description: 'The Bot id string to grant access to.' }, access: oneOf('use', 'repair'),
     name: text, adapter: { anyOf: [object({ arguments: launchArguments }, ['arguments']), object({ recipe: adapterRecipe }, ['recipe']),
@@ -144,8 +171,8 @@ function matches(schema, input) {
   switch (schema.type) {
     case 'object': {
       if (!input || typeof input !== 'object' || Array.isArray(input)) return false;
-      return schema.required.every(key => Object.hasOwn(input, key)) && Object.keys(input).every(key =>
-        Object.hasOwn(schema.properties, key) && matches(schema.properties[key], input[key]));
+      return (schema.required || []).every(key => Object.hasOwn(input, key)) && Object.keys(input).every(key =>
+        schema.properties && Object.hasOwn(schema.properties, key) ? matches(schema.properties[key], input[key]) : schema.additionalProperties === true);
     }
     case 'array': return Array.isArray(input) && input.length <= 1000 && input.every(item => matches(schema.items, item));
     case 'integer': return Number.isSafeInteger(input) && input >= schema.minimum && input <= (schema.maximum ?? Number.MAX_SAFE_INTEGER);
@@ -161,6 +188,22 @@ export function validateTool(name, args) {
   if (!tool) reject('tool_not_found', 'Unknown platform tool', 404);
   const schema = runtimeInputs.get(name) ?? tool.inputSchema;
   if (!matches(schema, args)) reject('invalid_arguments', `Invalid arguments for ${name}`);
+}
+
+export function validateCliProbe(probe) {
+  if (!matches(cliProbe, probe)) reject('invalid_probe', 'Specify version and help argument arrays, output rules and encodings');
+  const validCommand = ({ args, exit_codes }) => nativeProbeArgs(args) && (!exit_codes || exit_codes.length > 0 && exit_codes.length <= 16);
+  const { script } = probe;
+  if (!validCommand(probe.version) || !validCommand(probe.help) || script && (
+    !script.runner.id || script.runner.id.length > 128 || script.runner.binding_version < 1 ||
+    (script.path !== undefined ? !/^scripts[\\/][^\0]+\.mjs$/i.test(script.path) || script.path.length > 512 :
+      !script.source.trim() || script.source.length > 48_000 || script.source.includes('\0')))) {
+    reject('invalid_probe', 'Use bounded argument arrays, exit statuses and an authorized script runner');
+  }
+}
+
+export function nativeProbeArgs(args) {
+  return Array.isArray(args) && args.length <= 128 && args.every(arg => typeof arg === 'string' && arg.length <= 4096 && !arg.includes('\0'));
 }
 
 export function validateAdapterRecipe(recipe) {

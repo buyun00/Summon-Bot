@@ -2,6 +2,8 @@ import { activeControl, assertResume, canResume, resumeReference } from '../bot-
 import { assertRevision, identity, keyOf, reject, sameIdentity, sameRef } from './contract.mjs';
 import { callRecords, errorResult, mayAdvanceReceipt } from './calls.mjs';
 import { allowsConnection, enclosesExecutableScope, executableScope } from '../services/executable-scope.mjs';
+import { executionGuide } from '../connectors/initialization.mjs';
+import { operationRecords } from '../services/session-processes.mjs';
 
 export const sessionRecords = 'platform-sessions';
 export const conversationRecords = 'platform-conversations';
@@ -197,6 +199,15 @@ export class Executions {
   }
 
   async open(args, context, call) {
+    let input = args.input;
+    if (args.include_execution_guide) {
+      const text = typeof input === 'string' ? input : input?.text;
+      if (typeof text !== 'string' || !text.trim()) reject('invalid_input', 'Provide a text task for the execution guide');
+      const guide = await executionGuide();
+      const combined = `${text}\n\nSummon Bot ${guide.version} execution onboarding guide\n\n${guide.text}`;
+      input = typeof input === 'string' ? combined : { ...input, text: combined };
+      this.platform.assertRunAllowed(context);
+    }
     const session = this.platform.prepareSession(args, context, call, {
       sharing: (actor, space) => this.sharing(args, actor, space, context),
     });
@@ -210,7 +221,7 @@ export class Executions {
         this.bindSubmission(call.id, session, context);
         started = true;
       };
-      const options = { session, call: this.calls.get(call.id), input: args.input, beforeSubmit, signal: context.signal };
+      const options = { session, call: this.calls.get(call.id), input, beforeSubmit, signal: context.signal };
       const result = session.engine === 'pi' ? await this.platform.runtime.pi.start(options) : await this.platform.connections.open(options);
       facts = this.applyResponse(session, call.id, result);
     } catch (error) {
@@ -500,6 +511,9 @@ export class Executions {
         this.calls.bind(callId, { status: 'prepared' });
         this.calls.fail(callId, error);
         if (call.result_ref?.kind !== 'event') this.platform.noteConnectionFailure(current, call, { status, code: error.code });
+        if (current?.group_work && current.engine !== 'pi' && !this.store.get(operationRecords, callId))
+          this.platform.roomWork.publish(current.id, callId, ['status', 'not_submitted'], { phase: 'execution',
+            status: 'not_submitted', code: error.code, text: error.message?.slice(0, 2000) });
         if (inputId && ['prepared', 'submitted'].includes(this.store.get(inputRecords, inputId)?.status))
           this.settleInput(inputId, callId, 'not_submitted');
       } else if (call.status === 'submitted') {

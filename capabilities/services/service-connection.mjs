@@ -4,6 +4,7 @@ import { fieldPath, httpTool, loadServiceMethods } from './service-transport.mjs
 import { keyOf, reject } from '../platform/contract.mjs';
 import { plain } from './connection-records.mjs';
 import { operationRecords, settled } from './session-processes.mjs';
+import { connectionExecutable } from './connection-launch.mjs';
 
 const environmentName = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const publicHeaders = new Set(['accept', 'accept-language', 'content-type', 'content-language', 'prefer']);
@@ -123,8 +124,13 @@ export class ServiceConnections {
     this.lifetime = new AbortController();
   }
 
-  load(entry, definition, actor, workspace, signal) {
+  async load(entry, definition, actor, workspace, signal) {
     assertDefinition(entry, definition);
+    if (entry.kind === 'mcp' && definition.transport === 'stdio' && definition.canonical_command) {
+      const command = await connectionExecutable({ config: { file: definition.command, canonical_file: definition.canonical_command } },
+        workspace, this.host.dataRoot);
+      definition = { ...definition, command };
+    }
     return loadServiceMethods([{ ...definition, type: entry.kind }], { botId: actor.id, workspace,
       signal: signal ? AbortSignal.any([this.lifetime.signal, signal]) : this.lifetime.signal,
       redact: text => this.host.clean(text, []) });

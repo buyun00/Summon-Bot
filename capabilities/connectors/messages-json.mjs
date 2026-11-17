@@ -5,12 +5,19 @@ export function receiveMessages(message) {
   if (message.type === 'assistant' && !message.parent_tool_use_id) {
     const parts = Array.isArray(message.message?.content) ? message.message.content : [];
     const text = parts.filter(part => part.type === 'text' && typeof part.text === 'string').map(part => part.text).join('\n');
-    return { progress: text || parts.find(part => part.type === 'tool_use')?.name, itemId: message.message?.id };
+    const tools = parts.filter(part => part.type === 'tool_use').map(part => ({
+      itemId: part.id, tool: part.name, command: part.input?.command, phase: 'call',
+    }));
+    return { progress: text || tools[0]?.tool, itemId: message.message?.id, tools };
   }
   if (message.type === 'user' && Array.isArray(message.message?.content)) {
-    const failures = message.message.content.filter(part => part.type === 'tool_result' && part.is_error === true);
+    const results = message.message.content.filter(part => part.type === 'tool_result');
+    const failures = results.filter(part => part.is_error === true);
+    const tools = results.map(part => ({ itemId: part.tool_use_id, phase: 'result', status: part.is_error === true ? 'failed' : 'completed',
+      ...(part.is_error === true ? { text: typeof part.content === 'string' ? part.content : JSON.stringify(part.content) } : {}) }));
     if (failures.length) return { progress: failures.map(part => typeof part.content === 'string' ? part.content : JSON.stringify(part.content)).join('\n'),
-      phase: 'tool_failed', itemId: failures[0].tool_use_id };
+      phase: 'tool_failed', itemId: failures[0].tool_use_id, tools };
+    if (tools.length) return { tools };
   }
   if (message.type === 'result') return { sessionId: message.session_id, terminal: true,
     reason: message.stop_reason ?? message.subtype, text: message.result,

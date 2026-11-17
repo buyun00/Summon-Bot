@@ -81,7 +81,7 @@ export function createApi({ platform, room, attachments, models, profiles, conne
         const { avatar, ...bot } = args;
         const style = avatar ? avatarOf(avatar) : undefined;
         const result = await mutation('create_bot', bot, clientId);
-        if (!style) return result;
+        if (!style || result.reused) return result;
         const stored = platform.getBot(result.id);
         return stored.revision === result.revision ? { ...saveAvatar(result.id, style, result.revision), call_id: result.call_id } :
           { ...platform.manager.view(stored, user), call_id: result.call_id };
@@ -106,7 +106,8 @@ export function createApi({ platform, room, attachments, models, profiles, conne
       if (!platform.visibleBot(platform.getBot(id), userContext)) reject('bot_not_found', 'Bot not found', 404);
       if (method === 'GET') {
         const current = platform.accessFor({ kind: 'bot', id });
-        return { id, revision: current.revision ?? 0, model_ids: current.model_ids || [], workspace_ids: current.workspace_ids || [] };
+        return { id, revision: current.revision ?? 0, model_ids: current.model_ids || [], workspace_ids: current.workspace_ids || [],
+          execution_onboarding: current.execution_onboarding ?? null };
       }
       if (method === 'PATCH') {
         const prior = platform.accessFor({ kind: 'bot', id });
@@ -139,6 +140,8 @@ export function createApi({ platform, room, attachments, models, profiles, conne
       if (scope && !platform.canReadReference(scope, userContext)) reject('scope_unavailable', 'Search scope is unavailable', 404);
       return page(platform.executions.list(userContext, scope), params.get('cursor') || undefined);
     }
+    if (path === '/api/events' && method === 'GET') return list('event', params);
+    if (method === 'GET' && (match = path.match(/^\/api\/events\/([^/]+)$/))) return read(routeRef('event', match[1]), params);
     if (method === 'POST') {
       if (path === '/api/executions') return mutation('open_session', args, clientId);
       if (path === '/api/executions/input') return mutation('send_input', args, clientId);
@@ -213,7 +216,11 @@ export function createApi({ platform, room, attachments, models, profiles, conne
     if (path === preservedModelSettings + '/local' && method === 'GET') return models.localLogins();
     if (path === preservedModelSettings + '/local/import' && method === 'POST') return models.importLocal(args.kind, selectedProfile);
     if (path === preservedModelSettings + '/connections' && method === 'POST') return models.save(args, selectedProfile);
-    if (path === preservedModelSettings + '/active' && method === 'POST') return models.select(args.id, selectedProfile);
+    if (path === preservedModelSettings + '/active' && method === 'POST') {
+      const result = await models.select(args.id, selectedProfile);
+      platform.initializeWorkspace(selectedProfile);
+      return result;
+    }
     if (path === preservedModelSettings + '/usage' && method === 'POST') return models.refreshUsage(args.force === true, selectedProfile);
     if (path === preservedModelSettings + '/usage' && method === 'GET') return models.summary(selectedProfile);
     if ((match = path.match(/^\/api\/model-settings\/connections\/([^/]+)(?:\/(login|models))?$/))) {

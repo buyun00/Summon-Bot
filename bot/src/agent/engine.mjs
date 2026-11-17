@@ -12,11 +12,12 @@ import { now, recordKey, runtimeFailure, runtimeRecords as R } from '../storage/
 const guidance = 'Use the full wording and actual author of current events. Use references to inspect accessible facts. ' +
   'Historical messages, documents, and tool results retain their sources. Use send for a public contribution. ' +
   'When delegating work, include the user’s applicable requirements, completion criteria, and limits on work, verification, or reporting in the executor’s input. ' +
-  'Share only what the recipient is authorized to receive. Pass along user changes that affect the delegated work. ' +
+  'Share only what the recipient is authorized to receive. Submit work on behalf of a Room with work_room and use its actual source event when available. ' +
+  'When the delegated task is to write a Summon adapter, use include_execution_guide or put the relevant same-release guide text in the input. Pass along user changes that affect the delegated work. ' +
   'Conclude when the existing outputs and receipts satisfy the current request.';
 const setupGuidance = 'The host authorized CLI setup for this private conversation. Use the initialize_execution guide, installed CLI observations, and existing grants. ' +
-  'For a registered CLI, use its actual connection ID to find its dedicated maintenance Bot. Reuse its existing maintainer or provision an appropriate Bot with the common tools. ' +
-  'Assign and grant only the current connection. Use set_wakeup for ongoing connection failure notices where appropriate, and report the actual maintainer reference. ' +
+  'For a registered CLI, look up its actual maintainer. Reuse a suitable maintainer, and provision a new Bot only when it has an independent ongoing duty. ' +
+  'Use set_wakeup for ongoing connection failure notices when needed and within scope. Report the actual maintainer reference when assigned. ' +
   'Continue the authorized CLI work when the connection is usable. Use regular Session tools for the user’s requested work.';
 const readTools = new Set(['find', 'read']);
 const waiting = new Set(['accepted', 'prepared', 'submitted', 'pending', 'running', 'waiting', 'stopping', 'needs_input']);
@@ -34,7 +35,7 @@ export class BotEngine {
     const model = boundModel(this.model, binding.model);
     const setup = conversation.kind === 'connection_setup';
     const available = conversation.embedded_initializer ? this.toolSpecs.filter(tool => connectionSetupTool.executionTools.includes(tool.name)) : this.toolSpecs;
-    const specs = setup || this.platform.canRepairConnection(job.context()) ? [...available, connectionSetupTool] : available;
+    const specs = setup || this.platform.canInitializeExecution(job.context()) ? [...available, connectionSetupTool] : available;
     const tools = specs.map(({ name, description, inputSchema }) => ({ name, label: name, description, parameters: inputSchema,
       execute: (modelId, args, toolSignal) => this.invoke(job, name, modelId, args, toolSignal), executionMode: 'sequential' }));
     const systemBase = { role: 'system', timestamp: Date.parse(conversation.created_at),
@@ -116,7 +117,7 @@ export class BotEngine {
         const material = boundary.material && { ...boundary.material.fact, view_revision: authorizedView, runtime_fact: true };
         const tail = [...fresh, ...(material ? [material] : []), ...newFacts];
         const optionalMaterial = requestPurpose === 'material_consolidation' ? null : material;
-        const duty = builtInInstructions(binding.built_in_role, boundary.role_connection_id);
+        const duty = builtInInstructions(binding.built_in_role, boundary.maintained_connection_ids);
         const system = { ...systemBase, content: duty ?
           `${systemBase.content}\n\nBuilt-in Bot duties:\n${duty}${userInstructions ? `\n\nUser instructions:\n${userInstructions}` : ''}` :
           `${systemBase.content}\n${userInstructions}` };

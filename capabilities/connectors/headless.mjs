@@ -55,6 +55,10 @@ async function run({ executable, connector, settings, recipe, launchOptions, tex
     if (typeof event.delta === 'string') deltas = append(deltas, event.delta);
     if (typeof event.progress === 'string' && event.progress)
       emit('progress', { text: event.progress.slice(0, 4000), itemId: event.itemId, phase: event.phase });
+    for (const tool of event.tools ?? []) {
+      emit('tool', Object.fromEntries(Object.entries(tool).filter(([, value]) => typeof value === 'string')
+        .map(([key, value]) => [key, value.slice(0, 4000)])));
+    }
     if (typeof event.text === 'string') finalText = event.text.slice(-16000);
     if (event.terminal) { terminal = true; reason = event.reason; }
     if (event.error) error ||= String(event.error);

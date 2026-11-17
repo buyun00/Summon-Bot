@@ -28,11 +28,16 @@ export const grok = {
     switch (message.type) {
       case 'text': return { delta: message.data };
       case 'final_assistant_message': return { text: message.text ?? message.data };
-      case 'tool_call': return { progress: message.title || message.toolName, itemId: message.toolCallId, phase: message.status, boundary: true };
-      case 'tool_call_update': return message.status === 'failed' ? {
-        progress: typeof message.rawOutput === 'string' ? message.rawOutput : JSON.stringify(message.rawOutput ?? message.content ?? 'CLI tool failed'),
-        itemId: message.toolCallId, phase: 'tool_failed',
-      } : null;
+      case 'tool_call': return { progress: message.title || message.toolName, itemId: message.toolCallId, phase: message.status, boundary: true,
+        tools: [{ itemId: message.toolCallId, tool: message.toolName, status: message.status, phase: 'call',
+          command: message.command ?? message.input?.command ?? message.rawInput?.command, text: message.title }] };
+      case 'tool_call_update': {
+        const output = typeof message.rawOutput === 'string' ? message.rawOutput : JSON.stringify(message.rawOutput ?? message.content);
+        const failed = message.status === 'failed';
+        return { ...(failed ? { progress: output ?? 'CLI tool failed', itemId: message.toolCallId, phase: 'tool_failed' } : {}),
+          tools: [{ itemId: message.toolCallId, tool: message.toolName, status: message.status, phase: 'update',
+            ...(failed ? { text: output } : {}) }] };
+      }
       case 'error': return { error: message.message };
       case 'end': return { sessionId: message.sessionId, terminal: true, reason: message.stopReason };
       default: return format === 'json' && typeof message.stopReason === 'string' ?

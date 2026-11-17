@@ -3,6 +3,9 @@
   "version": "0.3.120",
   "private": true,
   "type": "module",
+  "dependencies": {
+    "iconv-lite": "0.7.3"
+  },
   "exports": {
     ".": "./gateway/index.mjs",
     "./platform": "./platform/platform.mjs",

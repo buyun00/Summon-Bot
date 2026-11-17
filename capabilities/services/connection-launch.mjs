@@ -12,6 +12,7 @@ import { codexCredentials, localExecutable, nativeArgs, nativeCommand, nativeEnv
 import { checkedNativeReference } from './native-references.mjs';
 import { canSupplyProcessArguments, plain, validateNativePaths } from './connection-records.mjs';
 import { allowsConnection, allowsExecutable } from './executable-scope.mjs';
+import { sshArguments, sshBinding } from './ssh-binding.mjs';
 
 const programRoot = fileURLToPath(new URL('../../', import.meta.url));
 const headlessBridge = fileURLToPath(new URL('../connectors/headless.mjs', import.meta.url));
@@ -130,6 +131,12 @@ export async function prepareProcess({ host, entry, session, call, input, prior,
   const executable = await connectionExecutable(entry, cwd, host.dataRoot, accessPolicy, credentialPaths);
   if (scopes.some(scope => scope !== undefined)) guard.executable_bindings = [{ file: entry.config.file, canonical_file: executable }];
   const storePath = host.store.path;
+  if (entry.config.ssh) {
+    if (isReadOnly || hasFileScope)
+      reject('scoped_process_unsupported', 'The SSH process cannot enforce the Session’s specific file restrictions', 403);
+    return { ...nativeCommand(executable, sshArguments(sshBinding(entry.config.ssh), input)),
+      cwd, guard, storePath, keepInput: false, protocol: 'stdin' };
+  }
   if (entry.kind === 'codex') {
     if (hasFileScope)
       reject('scoped_process_unsupported', 'Codex cannot confirm these explicit file path restrictions in its native configuration', 403);
@@ -223,5 +230,6 @@ export async function prepareProcess({ host, entry, session, call, input, prior,
   const { secrets } = nativeEnvironment(method?.env, authorizedEnv);
   requireCredentialReferences([...args, stdin], secrets);
   nativeCommand(file, args);
-  return { file, args, cwd, guard, storePath, input: stdin, keepInput, protocol, env: method?.env, authorizedEnv };
+  return { file, args, cwd, guard, storePath, input: stdin, keepInput, protocol, env: method?.env, authorizedEnv,
+    encoding: entry.config.probe?.encoding };
 }

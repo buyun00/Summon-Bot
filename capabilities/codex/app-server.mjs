@@ -180,7 +180,7 @@ function observe(method, p) {
   if (method === 'item/started' || method === 'item/completed') {
     if (!turnId || p.turnId !== turnId) return;
     const { item } = p, completed = method === 'item/completed';
-    const evidence = { itemId: item.id, turnId, itemType: item.type, status: item.status, exitCode: item.exitCode,
+    const evidence = { itemId: item.id, turnId, itemType: item.type, tool: item.tool, status: item.status, exitCode: item.exitCode,
       command: item.command, files: item.changes?.map(change => change.path), output: item.aggregatedOutput?.slice(-5_000) };
     if (item.type === 'fileChange') filesByItem.set(item.id, evidence.files || []);
     if (['commandExecution', 'fileChange', 'mcpToolCall'].includes(item.type))

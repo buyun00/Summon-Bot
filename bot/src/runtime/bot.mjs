@@ -182,7 +182,7 @@ export class BotRuntime {
     if (this.closed) return { accepted: false, retryable: true, code: 'runtime_closed' };
     this.platform.getBot(delivery.bot_id);
     const inbox = await this.inbox(delivery.bot_id);
-    if (delivery.event.type === 'connection.failure' &&
+    if (['connection.failure', 'work.tool'].includes(delivery.event.type) &&
         !this.platform.canReadEvent(delivery.event, this.platform.principalContext(botRef(delivery.bot_id))))
       return { accepted: false, retryable: false, code: 'access_revoked' };
     const receipt = inbox.receive(delivery);
@@ -410,9 +410,8 @@ export class BotRuntime {
 
   binding(bot, conversation) {
     if (conversation.binding) return conversation.binding;
-    if (!bot.model || !this.platform.canUseModel(botRef(bot.id), bot.model.connection_id)) {
-      throw runtimeFailure('connection_forbidden', 'The Bot has no authorized model connection', 403);
-    }
+    const blocker = this.platform.modelAccessBlocker(botRef(bot.id), bot.model?.connection_id);
+    if (blocker) throw runtimeFailure('connection_forbidden', blocker.message, 403);
     return { name: bot.name, instructions: bot.instructions, revision: bot.revision, built_in_role: bot.built_in_role ?? null,
       model: bindModel(this.model, bot.model), material_index_ref: bot.material_index_ref };
   }
@@ -507,7 +506,6 @@ export class BotRuntime {
     const control = record()?.control || conversation.control;
     const actor = botRef(bot.id);
     const session = conversation.session_id ? sessionRef(conversation.session_id) : null;
-    const builtInRole = binding.built_in_role;
     const botVersion = bot.control?.control_version;
     const controls = [{ target: botRef(bot.id), control_version: botVersion }, { target, control_version: control.control_version }];
     if (session) controls.push({ target: session, control_version: authority?.control?.control_version });
@@ -538,7 +536,7 @@ export class BotRuntime {
     const job = { inbox, conversation, runId: run.id, binding, controller, signal: controller.signal, context, check, accepting: true,
       sameAuthorizationView,
       view: () => {
-        const view = this.authorizationView(context(), conversation, inbox, inbox.run(run.id), builtInRole);
+        const view = this.authorizationView(context(), conversation, inbox, inbox.run(run.id));
         inbox.attachReturnWaits(conversation.id, run.id, view.pending_return_waits);
         return view;
       },
@@ -551,23 +549,22 @@ export class BotRuntime {
     return job;
   }
 
-  authorizationView(context, conversation, inbox, run, builtInRole) {
+  authorizationView(context, conversation, inbox, run) {
     const view = this.platform.executionView(context);
     const access = this.platform.accessFor(context.actor);
     const profile = this.platform.principalContext(context.actor);
     const rooms = view.session ? [view.session.space].filter(space => space.kind === 'room') :
       this.platform.room.rooms(context.actor.id, profile).map(room => room.ref).sort((left, right) => left.id.localeCompare(right.id));
     const scope = [conversation.space, profile.workspaceProfileId ?? null, rooms, view.resources ?? [], scopeGrants(access)];
-    const roleConnectionId = view.connection_ids?.includes(builtInRole?.connection_id) ? builtInRole.connection_id : null;
-    if (roleConnectionId) scope.push({ role_connection_id: roleConnectionId });
+    if (view.maintained_connection_ids?.length) scope.push({ maintained_connection_ids: view.maintained_connection_ids });
     if (view.revoked_return_waits?.length) scope.push(view.revoked_return_waits);
     const canReadPiInput = event => !view.session || this.canReadPiInput(event, view.session);
     const events = sortedIds([...run.pending_event_ids, ...run.injected_event_ids]).map(id => inbox.event(id)).filter(Boolean);
     const revokedInputs = events.filter(event => event.type === 'pi.input' && !canReadPiInput(event)).map(event => event.id);
     if (revokedInputs.length) scope.push({ revoked_inputs: revokedInputs });
-    const revokedConnectionEvents = events.filter(event => event.type === 'connection.failure' && !view.canReadEvent(event)).map(event => event.id);
-    if (revokedConnectionEvents.length) scope.push({ revoked_connection_events: revokedConnectionEvents });
-    return { ...view, role_connection_id: roleConnectionId, canReadPiInput, view_revision: recordKey(...scope) };
+    const revokedEvents = events.filter(event => ['connection.failure', 'work.tool'].includes(event.type) && !view.canReadEvent(event)).map(event => event.id);
+    if (revokedEvents.length) scope.push({ revoked_events: revokedEvents });
+    return { ...view, canReadPiInput, view_revision: recordKey(...scope) };
   }
 
   canReadPiInput(event, session) {

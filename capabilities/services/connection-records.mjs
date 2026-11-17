@@ -1,12 +1,14 @@
-import { isAbsolute } from 'node:path';
+import { basename, extname, isAbsolute } from 'node:path';
 import { reject, validateAdapterRecipe, validateLaunchArguments } from '../platform/contract.mjs';
 import { connectorFor } from '../connectors/registry.mjs';
+import { validateNativeProbe } from './native-probe.mjs';
+import { sshBinding } from './ssh-binding.mjs';
 
 export const connectionRecords = 'platform-connections';
 export const executionRecords = 'platform-sessions';
 export const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 export const canSupplyProcessArguments = (entry, actor) =>
-  actor?.kind === 'user' || entry.config.allow_arguments === true || entry.direct_bot_ids?.includes(actor?.id) === true;
+  !entry.config.ssh && (actor?.kind === 'user' || entry.config.allow_arguments === true || entry.direct_bot_ids?.includes(actor?.id) === true);
 const kinds = ['cli', 'codex', 'http', 'mcp'];
 const envName = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -43,24 +45,36 @@ export function validateConnection(entry) {
   if (!Array.isArray(entry.allowed_bot_ids) || entry.allowed_bot_ids.some(id => typeof id !== 'string' || !id)) {
     reject('invalid_connection', 'Specify the granted Bot identities');
   }
-  if (entry.repair_bot_ids !== undefined && (!['cli', 'codex'].includes(entry.kind) || !Array.isArray(entry.repair_bot_ids) ||
+  if (entry.repair_bot_ids !== undefined && (!Array.isArray(entry.repair_bot_ids) ||
       entry.repair_bot_ids.some(id => typeof id !== 'string' || !id || id === '*' ||
         !entry.allowed_bot_ids.includes(id) && !entry.allowed_bot_ids.includes('*'))))
-    reject('invalid_connection', 'Repair grants require named Bots with access to this CLI connection');
+    reject('invalid_connection', 'Repair grants require named Bots with access to this connection');
   if (typeof entry.enabled !== 'boolean') reject('invalid_connection', 'Connection enabled must be a boolean');
   if (entry.dependencies && (!Array.isArray(entry.dependencies) || entry.dependencies.some(id => typeof id !== 'string' || !id))) {
     reject('invalid_connection', 'Invalid connection dependencies');
   }
+  if (entry.config.probe != null) {
+    if (entry.config.ssh || !['cli', 'codex'].includes(entry.kind)) reject('invalid_probe', 'Probe rules require a local CLI');
+    validateNativeProbe(entry.config.probe);
+  }
   if (entry.kind === 'cli' || entry.kind === 'codex') {
     validateNativePaths(entry.config);
     const { credential_refs, methods, adapter, app_server_stdio, launch_arguments, allow_arguments, workspace_write, model, effort } = entry.config;
+    if (entry.config.ssh !== undefined) {
+      const file = entry.config.canonical_file;
+      if (entry.kind !== 'cli' || adapter || methods || allow_arguments || credential_refs?.length ||
+          basename(file, extname(file)).toLowerCase() !== 'ssh' || process.platform === 'win32' && extname(file).toLowerCase() !== '.exe')
+        reject('invalid_ssh_binding', 'SSH uses fixed operations for its registered target');
+      sshBinding(entry.config.ssh);
+    }
     if (credential_refs !== undefined && (!Array.isArray(credential_refs) ||
         credential_refs.some(name => typeof name !== 'string' || !envName.test(name)))) reject('invalid_connection', 'Invalid native credential references');
     if (allow_arguments !== undefined && typeof allow_arguments !== 'boolean' || workspace_write !== undefined && typeof workspace_write !== 'boolean')
       reject('invalid_connection', 'Invalid native workspace or argument access');
     if (methods !== undefined && (!Array.isArray(methods) || methods.some(method => !plain(method) ||
         typeof method.id !== 'string' || !method.id || !Array.isArray(method.args) ||
-        method.args.some(arg => typeof arg !== 'string') || method.env !== undefined && !plain(method.env))))
+        method.args.some(arg => typeof arg !== 'string') || method.env !== undefined && !plain(method.env)) ||
+        new Set(methods.map(method => method.id)).size !== methods.length))
       reject('invalid_connection', 'Native methods need an identity and argument template');
     if (adapter !== undefined) {
       const builtIn = connectorFor(adapter?.connector);

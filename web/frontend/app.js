@@ -990,7 +990,7 @@ function memberChoices(selected = []) {
 function openRoomForm() {
   openModal('创建会话', '', field('会话名称', 'title', '', { placeholder:'选填' }) + memberChoices(), async data => {
     const title = data.get('title').trim();
-    const room = await api('/api/rooms', 'POST', { members:data.getAll('members'), ...(title ? { title } : {}) });
+    const room = await api('/api/rooms', 'POST', { members:data.getAll('members'), mode:'group', ...(title ? { title } : {}) });
     state.rooms.push(room);
     await selectRoom(room.id);
   }, '创建');
@@ -1030,7 +1030,11 @@ async function openBotEdit(bot) {
   const materialId = bot.material_index_ref?.id || '';
   const materialOptions = [{ value:'',label:'未选择' }, ...files.map(item => ({ value:item.id,label:item.path || item.name || item.id }))];
   if (materialId && !materialOptions.some(item => item.value === materialId)) materialOptions.push({ value:materialId,label:materialId + ' · 当前索引' });
+  const role = bot.role_id || '';
+  const roles = [{ value:'', label:'普通 Bot' }, { value:'tool-onboarding', label:'工具接入' }, { value:'catalog-maintainer', label:'连接维护' }];
+  if (!roles.some(item => item.value === role)) roles.push({ value:role, label:role });
   openModal('编辑 Bot', '', field('名称','name',bot.name,{ required:true }) + field('行为指令','instructions',bot.instructions || '',{ type:'textarea',rows:5 }) +
+    selectField('内置职责','role_id',roles,role) +
     selectField('模型连接','connection_id',options,currentId) +
     field('模型名称','model_id',model?.id || '',{ placeholder:'留空使用连接配置' }) +
     field('推理强度','thinking_level',model?.thinking_level || '',{ placeholder:'留空继承连接',list:'bot-thinking-levels' }) +
@@ -1042,6 +1046,7 @@ async function openBotEdit(bot) {
       && (current?.thinking_level ?? null) === (binding?.thinking_level ?? null);
     await api(path, 'PATCH', {
       revision:bot.revision, name:data.get('name').trim(), instructions:data.get('instructions'), ...(sameBinding ? {} : { model:binding }),
+      ...(data.get('role_id') !== role ? { role_id:data.get('role_id') || null } : {}),
       ...(data.get('material_index') !== materialId ? { material_index_ref:data.get('material_index') ? { kind:'file',id:data.get('material_index') } : null } : {}),
     });
   });
@@ -1070,9 +1075,14 @@ async function editBotAccess(bot) {
   const [access, models, workspaces] = await Promise.all([
     api(path), api('/api/model-settings').catch(() => ({ connections:[] })), readList('/api/workspaces').catch(() => []),
   ]);
-  const permissions = resourceChoices('模型连接',models.connections,access.model_ids) + resourceChoices('执行目录',workspaces,access.workspace_ids);
+  const policy = access.execution_onboarding ? JSON.stringify(access.execution_onboarding,null,2) : '';
+  const permissions = resourceChoices('模型连接',models.connections,access.model_ids) + resourceChoices('执行目录',workspaces,access.workspace_ids) +
+    field('工具接入授权（JSON）','execution_onboarding',policy,{ type:'textarea',rows:6,placeholder:'{"discover":{"path":true}}',
+      help:'可设置发现范围、指定程序和服务目标，并授权提交配置或分配负责人。留空撤销工具接入授权。' });
   openModal(bot.name + ' 的资源权限','',permissions,async data => {
-    await api(path,'PATCH',{ revision:access.revision, model_ids:data.getAll('模型连接'), workspace_ids:data.getAll('执行目录') });
+    const raw = data.get('execution_onboarding').trim();
+    await api(path,'PATCH',{ revision:access.revision, model_ids:data.getAll('模型连接'), workspace_ids:data.getAll('执行目录'),
+      ...(raw !== policy ? { execution_onboarding:raw ? JSON.parse(raw) : null } : {}) });
   });
 }
 
@@ -1091,15 +1101,20 @@ function editConnection(item) {
   const basic = field('名称','name',item?.name || '',{ required:true }) + field('说明','description',item?.description || '') +
     `<label class="checkbox-line"><input type="checkbox" name="enabled" ${item?.enabled !== false ? 'checked' : ''}>启用</label>`;
   const configuration = item ? field('要修改的连接配置（JSON）','config','',{ type:'textarea',rows:6,placeholder:'留空保留连接配置' })
-    : selectField('协议','kind',['codex','cli','mcp','http'].map(value => ({value,label:value})),'codex') +
+    : selectField('协议','kind',['codex','cli','ssh','mcp','http'].map(value => ({value,label:value})),'codex') +
     `<div data-native-connection>${field('可执行文件','file','',{ placeholder:'绝对路径' })}
     ${field('实际可执行文件','canonical_file','',{ placeholder:'如果已通过链接安装，填写其实际路径' })}</div>` +
     field('其他连接设置（JSON）','config','{}',{ type:'textarea',rows:6,required:true });
   const everyone = `<label class="checkbox-line"><input type="checkbox" name="all_bots" ${item?.allowed_bot_ids?.includes('*') ? 'checked' : ''}>允许所有 Bot 使用</label>`;
-  openModal(item ? '执行连接设置' : '新增执行连接','',basic + configuration + everyone + resourceChoices('允许使用的 Bot',available,item?.allowed_bot_ids || []),async data => {
+  const maintainer = [{ value:'',label:'未分配' }, ...botOptions()];
+  const controls = selectField('负责人','maintainer_bot_id',maintainer,item?.maintainer_bot_id ?? '') + everyone +
+    resourceChoices('允许使用的 Bot',available,item?.allowed_bot_ids || []) +
+    resourceChoices('允许修复的 Bot',available,item?.repair_bot_ids || []);
+  openModal(item ? '执行连接设置' : '新增执行连接','',basic + configuration + controls,async data => {
     const selected = data.getAll('允许使用的 Bot');
     const input = { name:data.get('name').trim(), description:data.get('description'), enabled:data.has('enabled'),
-      allowed_bot_ids:data.has('all_bots') ? ['*'] : selected };
+      maintainer_bot_id:data.get('maintainer_bot_id') || null, allowed_bot_ids:data.has('all_bots') ? ['*'] : selected,
+      repair_bot_ids:data.getAll('允许修复的 Bot').filter(id => data.has('all_bots') || selected.includes(id)) };
     const raw = data.get('config').trim();
     if (raw || !item) {
       const config = JSON.parse(raw);
@@ -1107,7 +1122,7 @@ function editConnection(item) {
       if (item) input.config_patch = config;
       else {
         const kind = data.get('kind');
-        if (['codex','cli'].includes(kind)) {
+        if (['codex','cli','ssh'].includes(kind)) {
           const file = data.get('file').trim(), canonical = data.get('canonical_file').trim();
           if (file) config.file = file;
           if (canonical || file) config.canonical_file = canonical || file;
@@ -1120,7 +1135,7 @@ function editConnection(item) {
   });
   if (!item) {
     const form = $('#modal-form');
-    const sync = () => { $('[data-native-connection]',form).hidden = !['codex','cli'].includes(form.elements.kind.value); };
+    const sync = () => { $('[data-native-connection]',form).hidden = !['codex','cli','ssh'].includes(form.elements.kind.value); };
     form.elements.kind.addEventListener('change',sync); sync();
   }
 }
@@ -1296,7 +1311,8 @@ async function openReference(ref) {
     }
   }
   let value;
-  if (ref.kind === 'connection') value = await api('/api/connections/' + encodeURIComponent(ref.id));
+  if (ref.kind === 'event') value = await api('/api/events/' + encodeURIComponent(ref.id));
+  else if (ref.kind === 'connection') value = await api('/api/connections/' + encodeURIComponent(ref.id));
   else if (ref.kind === 'call') value = await api('/api/calls/' + encodeURIComponent(ref.id));
   else value = (await api('/api/platform/read','POST',{ arguments:{ ref } })).result;
   openModal(refType[ref.kind] || '引用','',`<pre class="execution-output">${esc(value.content ?? JSON.stringify(value,null,2))}</pre>`);
@@ -1384,7 +1400,7 @@ async function act(action, element) {
     const bot = botById(id);
     if (!bot) return;
     let room = botConversation(id);
-    if (!room) { room = await api('/api/rooms','POST',{ title:bot.name,members:[id] }); state.rooms.push(room); }
+    if (!room) { room = await api('/api/rooms','POST',{ title:bot.name,members:[id],mode:'direct' }); state.rooms.push(room); }
     return selectRoom(room.id);
   }
   if (action === 'toggle-details' || action === 'open-bot-details') {
@@ -1631,7 +1647,7 @@ function currentBot() {
 function profileBot() { return ui.profileBotId ? botById(ui.profileBotId) : currentBot(); }
 function currentAccent() { const bot = currentBot() || (roomById(ui.roomId)?.members || []).map(id => botById(id)).find(Boolean); return bot ? botAvatar(bot).color : '#222222'; }
 function ownerName() { return state.user?.name || state.owner?.name || 'Lin'; }
-function directRoom(room) { return room?.members?.length === 2 && room.members.includes('user'); }
+function directRoom(room) { return room?.mode ? room.mode === 'direct' : room?.members?.length === 2 && room.members.includes('user'); }
 function botActivity(bot) {
   if (bot.enabled === false) return { kind:'paused', text:'Bot 已暂停' };
   const execution = [...state.executions, ...(ui.roomExecutions || [])].find(item =>
@@ -2120,7 +2136,7 @@ function renderConnections() {
   const limits = state.limits, usage = state.resourceUsage;
   const amount = { ...usage, models:usage?.running_models, external:usage?.running_external };
   return `<div class="page">${pageHeader('<button class="secondary-button" data-action="edit-workspace">登记执行目录</button><button class="primary-button" data-action="edit-connection">新增连接</button>')}<div class="object-layout">
-    <section class="object-list">${state.connections.map(item => `<div class="profile-record"><strong>${esc(item.name || item.id)}</strong><small>${esc(item.protocol || item.kind || item.id)}</small>
+    <section class="object-list">${state.connections.map(item => `<div class="profile-record"><strong>${esc(item.name || item.id)}</strong><small>${esc(item.protocol || item.kind || item.id)}${item.maintainer ? ' · ' + esc(item.maintainer.name || nameOf(item.maintainer.id)) : ''}</small>
       <div class="connection-actions"><button class="text-button" data-action="open-connection" data-id="${esc(item.id)}">接入信息</button>
       ${item.id !== 'pi' ? `<button class="text-button" data-action="edit-connection" data-id="${esc(item.id)}">设置</button>` : ''}</div></div>`).join('') || '<p class="panel-empty">暂无执行连接</p>'}</section>
     <section class="object-detail"><div class="profile-section-heading"><h2>宿主资源</h2>
