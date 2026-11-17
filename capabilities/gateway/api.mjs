@@ -138,6 +138,11 @@ export function createApi({ platform, room, attachments, models, connections, pu
       return page(platform.executions.list(userContext, scope), params.get('cursor') || undefined);
     }
     if (path === '/api/events' && method === 'GET') return list('event', params);
+    if (method === 'GET' && (match = path.match(/^\/api\/events\/([^/]+)\/deliveries$/))) {
+      const ref = routeRef('event', match[1]);
+      if (!platform.canReadReference(ref, userContext)) reject('object_not_found', 'Event is unavailable', 404);
+      return { event: ref, deliveries: platform.eventDeliveries(ref.id) };
+    }
     if (method === 'GET' && (match = path.match(/^\/api\/events\/([^/]+)$/))) return read(routeRef('event', match[1]), params);
     if (method === 'POST') {
       if (path === '/api/executions') return mutation('open_session', args, clientId);
@@ -179,6 +184,12 @@ export function createApi({ platform, room, attachments, models, connections, pu
       if (method === 'POST') return platform.configureExecutionConnection(args, userContext);
     }
     if (path === '/api/connections/initialize' && method === 'POST') return platform.startConnectionSetup(args, userContext, clientId);
+    if (path === '/api/connections/usage' && method === 'GET') {
+      const period = params.has('from') || params.has('to') ? { from: params.get('from'), to: params.get('to') } :
+        params.get('period') ?? undefined;
+      return platform.find({ kind: 'connection_usage', scope: scopeOf(params), period, query: params.get('query') || undefined,
+        cursor: params.get('cursor') || undefined }, userContext);
+    }
     if (path === '/api/connections/limits') {
       if (method === 'GET') return platform.resources.readLimits();
       if (method === 'PATCH') {

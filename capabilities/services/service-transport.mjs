@@ -207,27 +207,15 @@ export async function loadServiceMethods(definitions = [], { botId, workspace, s
   };
   const lifetime = new AbortController();
   const signals = (...values) => AbortSignal.any([lifetime.signal, signal, ...values].filter(Boolean));
-  const closers = [], tools = [], names = new Set();
+  const closers = [], catalogs = [];
   let closing, serverInfo;
   const close = () => closing ||= (async () => {
     lifetime.abort(new Error('Configured capabilities are closed'));
     await Promise.allSettled(closers.reverse().map(dispose => Promise.resolve().then(dispose)));
   })();
-  try {
-    signal?.throwIfAborted();
-    for (const definition of definitions) {
-      if (!isRecord(definition)) throw new TypeError('Capability definition must be an object');
-      const timeout = definition.timeoutMs ?? 30000;
-      if (!Number.isInteger(timeout) || timeout < 1 || timeout > 300000) throw new TypeError('Capability timeoutMs must be an integer from 1 to 300000');
-      const resolved = credentials(definition, secrets);
-      let loaded;
-      if (definition.type === 'http') loaded = { tools: [httpTool(definition, resolved.headers)] };
-      else if (definition.type === 'mcp') {
-        loaded = await connectMcpTools(definition, { botId, workspace, signal: signals(), redact, ...resolved });
-      } else throw new TypeError('Connection type must be HTTP or MCP');
-      if (loaded?.serverInfo) serverInfo = sanitizeValue(loaded.serverInfo, redact);
-      if (loaded && typeof loaded.close === 'function') closers.push(() => loaded.close());
-      signal?.throwIfAborted();
+  const project = () => {
+    const tools = [], names = new Set();
+    for (const { definition, timeout, loaded } of catalogs) {
       if (!Array.isArray(loaded?.tools)) throw new TypeError('Capability factory must return tools');
       for (const tool of loaded.tools) {
         if (definition.type === 'mcp' && tool.unavailable) {
@@ -265,6 +253,34 @@ export async function loadServiceMethods(definitions = [], { botId, workspace, s
         });
       }
     }
-    return { tools, close, serverInfo };
+    return tools;
+  };
+  try {
+    signal?.throwIfAborted();
+    for (const definition of definitions) {
+      if (!isRecord(definition)) throw new TypeError('Capability definition must be an object');
+      const timeout = definition.timeoutMs ?? 30000;
+      if (!Number.isInteger(timeout) || timeout < 1 || timeout > 300000) throw new TypeError('Capability timeoutMs must be an integer from 1 to 300000');
+      const resolved = credentials(definition, secrets);
+      let loaded;
+      if (definition.type === 'http') loaded = { tools: [httpTool(definition, resolved.headers)] };
+      else if (definition.type === 'mcp') {
+        loaded = await connectMcpTools(definition, { botId, workspace, signal: signals(), redact, ...resolved });
+      } else throw new TypeError('Connection type must be HTTP or MCP');
+      if (loaded?.serverInfo) serverInfo = sanitizeValue(loaded.serverInfo, redact);
+      if (typeof loaded.close === 'function') closers.push(() => loaded.close());
+      catalogs.push({ definition, timeout, loaded });
+      signal?.throwIfAborted();
+    }
+    let tools = project();
+    return { get tools() { return tools; }, close, serverInfo,
+      connected: () => catalogs.every(({ loaded }) => loaded.connected?.() !== false),
+      async refresh() {
+        try {
+          await Promise.all(catalogs.map(({ loaded }) => loaded.refresh?.()));
+          tools = project();
+        } catch (error) { throw sanitizedError(error, redact); }
+      },
+    };
   } catch (error) { await close(); throw sanitizedError(error, redact); }
 }

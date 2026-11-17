@@ -3,7 +3,7 @@ import { stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { assertInstallationWritable, readInstallationState } from '../../../scripts/installation/installation-state.mjs';
 import { inspectServiceLock } from '../../../scripts/installation/service-lock.mjs';
-import { tools } from '../../../capabilities/platform/contract.mjs';
+import { repairRequestType, repairResultType, tools } from '../../../capabilities/platform/contract.mjs';
 import { deliveryRecords } from '../../../capabilities/platform/delivery.mjs';
 import { BotStore } from '../storage/store.mjs';
 import { Inbox } from '../storage/inbox.mjs';
@@ -24,17 +24,32 @@ const cleanError = error => ({ status: error.status, code: error.code, message: 
 const actorFor = call => call.submitted_by || { kind: 'user', id: 'user' };
 const sortedIds = values => [...new Set(values || [])].sort();
 const scopeGrants = access => [sortedIds(access?.model_ids), sortedIds(access?.workspace_ids)];
-function sameAuthorizationView(previous, current) {
+function canRetainAuthorizationView(previous, current) {
   if (previous === current) return true;
-  // Persisted transcripts retain the rights they were produced under.
+  // Added rooms or resources keep earlier receipts usable. Removed access still
+  // invalidates context produced under the broader authorization.
   try {
-    const scope = JSON.parse(previous);
-    if (!Array.isArray(scope) || scope.length < 5 || Array.isArray(scope[4])) return false;
-    scope[4] = scopeGrants(scope[4]);
-    return recordKey(...scope) === current;
+    const before = JSON.parse(previous);
+    const after = JSON.parse(current);
+    if (!Array.isArray(before) || !Array.isArray(after) || !sameRef(before[0], after[0])) return false;
+    const earlierDetails = before.slice(4);
+    const currentDetails = after.slice(4);
+    const earlierDuties = earlierDetails.find(detail => detail.maintained_connection_ids)?.maintained_connection_ids ?? [];
+    const currentDuties = currentDetails.find(detail => detail.maintained_connection_ids)?.maintained_connection_ids ?? [];
+    const grants = [[before[1], after[1]], [before[2], after[2]],
+      [before[3][0], after[3][0]], [before[3][1], after[3][1]], [earlierDuties, currentDuties]];
+    const retained = grants.every(([earlier, authorized]) => {
+      const allowed = new Set(authorized.map(value => recordKey(value)));
+      return earlier.every(value => allowed.has(recordKey(value)));
+    });
+    const earlierRevocations = earlierDetails.filter(detail => !detail.maintained_connection_ids);
+    const currentRevocations = currentDetails.filter(detail => !detail.maintained_connection_ids);
+    return retained && recordKey(...earlierRevocations) === recordKey(...currentRevocations);
   } catch { return false; }
 }
 const targetOption = (kind, value) => ({ kinds: [kind], input_target: value });
+const protectedEvents = new Set(['connection.failure', repairRequestType, 'work.tool']);
+const protectedEvent = event => protectedEvents.has(event.type) || event.result?.output?.type === repairResultType;
 const isTerminalReceipt = (event, wait) => event?.type === 'call.receipt' && event.call_id === wait.call_id && terminalCallStates.has(event.status);
 const callSettled = status => status !== 'unknown' && terminalCallStates.has(status);
 const roomEvent = message => ({ id: message.id, kind: 'event', type: 'message', space: { kind: 'room', id: message.roomId },
@@ -182,7 +197,7 @@ export class BotRuntime {
     if (this.closed) return { accepted: false, retryable: true, code: 'runtime_closed' };
     this.platform.getBot(delivery.bot_id);
     const inbox = await this.inbox(delivery.bot_id);
-    if (['connection.failure', 'work.tool'].includes(delivery.event.type) &&
+    if (protectedEvents.has(delivery.event.type) &&
         !this.platform.canReadEvent(delivery.event, { actor: botRef(delivery.bot_id) }))
       return { accepted: false, retryable: false, code: 'access_revoked' };
     const receipt = inbox.receive(delivery);
@@ -194,6 +209,16 @@ export class BotRuntime {
   }
 
   async inboxReceipt(botId, deliveryId) { return (await this.inbox(botId, { create: false }))?.receipt(deliveryId) || null; }
+
+  deliveryRuns(botId, eventId) {
+    const inbox = this.inboxes.get(botId);
+    if (!inbox) return [];
+    const ids = new Set(inbox.list(R.route, 'event_id', eventId).map(route => route.run_id).filter(Boolean));
+    return [...ids].flatMap(id => {
+      const run = inbox.run(id);
+      return run ? [{ run_id: id, state: run.state, starts: run.start_count ?? null, first_started_at: run.first_started_at ?? null }] : [];
+    });
+  }
 
   wake() {
     if (this.closed || this.draining || this.platform.draining || this.pumpTask) return;
@@ -428,7 +453,8 @@ export class BotRuntime {
       this.active.set(conversation.id, job);
       try {
         job.check();
-        inbox.putRun({ id: run.id, state: 'running', binding, retry_at: null, error: null, view_revision: run.view_revision });
+        inbox.putRun({ id: run.id, state: 'running', binding, retry_at: null, error: null, view_revision: run.view_revision,
+          first_started_at: run.first_started_at ?? now(), start_count: (run.start_count ?? 0) + 1 });
         this.emit('engine.started', refs);
         await this.recoverCalls(job);
         const storedOutcome = inbox.run(run.id).model_outcome;
@@ -436,7 +462,7 @@ export class BotRuntime {
         const canProcess = route => this.routeReady(inbox, route);
         const pendingNow = pendingForRun().filter(canProcess);
         const restored = storedOutcome && pendingNow.every(route => storedOutcome.eventIds.includes(route.event_id)) &&
-          sameAuthorizationView(inbox.run(run.id).model_outcome_uses_view, job.view().view_revision) ? storedOutcome : null;
+          canRetainAuthorizationView(inbox.run(run.id).model_outcome_uses_view, job.view().view_revision) ? storedOutcome : null;
         const result = this.materials.recovered(job) || restored || await this.engine.execute(job);
         job.check();
         this.materials.finish(job);
@@ -534,7 +560,7 @@ export class BotRuntime {
       this.platform.assertRunAllowed?.(context());
     };
     const job = { inbox, conversation, runId: run.id, binding, controller, signal: controller.signal, context, check, accepting: true,
-      sameAuthorizationView,
+      canRetainAuthorizationView,
       view: () => {
         const view = this.authorizationView(context(), conversation, inbox, inbox.run(run.id));
         inbox.attachReturnWaits(conversation.id, run.id, view.pending_return_waits);
@@ -561,7 +587,7 @@ export class BotRuntime {
     const events = sortedIds([...run.pending_event_ids, ...run.injected_event_ids]).map(id => inbox.event(id)).filter(Boolean);
     const revokedInputs = events.filter(event => event.type === 'pi.input' && !canReadPiInput(event)).map(event => event.id);
     if (revokedInputs.length) scope.push({ revoked_inputs: revokedInputs });
-    const revokedEvents = events.filter(event => ['connection.failure', 'work.tool'].includes(event.type) && !view.canReadEvent(event)).map(event => event.id);
+    const revokedEvents = events.filter(event => protectedEvent(event) && !view.canReadEvent(event)).map(event => event.id);
     if (revokedEvents.length) scope.push({ revoked_events: revokedEvents });
     return { ...view, canReadPiInput, view_revision: recordKey(...scope) };
   }
@@ -643,7 +669,7 @@ export class BotRuntime {
     const history_ref = sessionRef(conversation.session_id);
     const history = [];
     for (const past of inbox.runs(conversation.id)) {
-      if (past.id === runId || !sameAuthorizationView(past.view_revision, view.view_revision) || past.state !== 'completed') continue;
+      if (past.id === runId || !canRetainAuthorizationView(past.view_revision, view.view_revision) || past.state !== 'completed') continue;
       const inputs = past.processed_event_ids.map(id => inbox.event(id)).filter(event => event?.type === 'pi.input');
       if (inputs.some(event => !view.canReadPiInput(event))) continue;
       history.push(...inputs.map(event => ({ ...event, history_ref })));

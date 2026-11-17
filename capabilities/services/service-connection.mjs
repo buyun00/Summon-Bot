@@ -142,7 +142,7 @@ export class ServiceConnections {
     signal?.throwIfAborted();
     const id = this.sourceKey(entry, actor, workspace);
     let source = this.sources.get(id);
-    if (source && !isDeepStrictEqual(source.config, entry.config)) {
+    if (source && (!isDeepStrictEqual(source.config, entry.config) || source.loaded?.connected() === false)) {
       void this.retire(id);
       source = null;
     }
@@ -168,6 +168,20 @@ export class ServiceConnections {
     }
   }
 
+  async refreshMethods(entry, actor, workspace, source, signal) {
+    try {
+      await waitForSource(source.refresh(), signal);
+      return source;
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (source.connected() && !(entry.config.transport === 'http' && [404, 410].includes(error.status ?? error.code)))
+        throw error;
+      const id = this.sourceKey(entry, actor, workspace);
+      if (this.sources.get(id)?.loaded === source) void this.retire(id);
+      return this.source(entry, actor, workspace, signal);
+    }
+  }
+
   async methods(entry, actor, workspace, signal) {
     if (entry.kind === 'http') {
       const definitions = networkDefinitions(entry);
@@ -183,7 +197,9 @@ export class ServiceConnections {
         }
       }) : [];
     }
-    const source = await this.source(entry, actor, workspace, signal);
+    const cached = this.sources.get(this.sourceKey(entry, actor, workspace))?.loaded;
+    let source = await this.source(entry, actor, workspace, signal);
+    if (source === cached) source = await this.refreshMethods(entry, actor, workspace, source, signal);
     return source.tools.map(tool => ({ id: tool.name, name: tool.name, description: tool.description, input_schema: tool.inputSchema,
       ...(tool.unavailable ? { status: 'unsupported', code: mcpMethodUnsupported, error: tool.unavailable } : {}),
       ...(tool.requiresTasks ? { status: 'unsupported', code: mcpTasksUnsupported, task_support: 'required' } : {}) }));
@@ -204,7 +220,11 @@ export class ServiceConnections {
       } else {
         source = await this.source(entry, actor, workspace, signal);
       }
-      const tool = source.tools.find(item => item.name === input.method);
+      let tool = source.tools.find(item => item.name === input.method);
+      if (!tool && !http) {
+        source = await this.refreshMethods(entry, actor, workspace, source, signal);
+        tool = source.tools.find(item => item.name === input.method);
+      }
       if (!tool) reject('method_not_found', 'The connection does not expose this protocol method', 404);
       if (tool.unavailable) reject(mcpMethodUnsupported, tool.unavailable, 409);
       if (tool.requiresTasks) reject(mcpTasksUnsupported, 'This MCP method requires the Tasks extension, which this connection does not support', 409);

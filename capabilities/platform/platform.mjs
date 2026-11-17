@@ -9,7 +9,9 @@ import { executionEnvironment } from '../connectors/onboarding.mjs';
 import { normalizeOnboardingAccess, targetAllows } from '../connectors/onboarding-access.mjs';
 import { Files } from '../filesystem/files.mjs';
 import { Calls, isWaitOrigin, waitRecords } from './calls.mjs';
-import { assertRevision, connectionSetupTool, idOf, identity, keyOf, page, readTools, reject, sameIdentity, sameRef, user, validateTool } from './contract.mjs';
+import { ConnectionRepairs } from './connection-repairs.mjs';
+import { ConnectionUsage } from './connection-usage.mjs';
+import { assertRevision, connectionSetupTool, idOf, identity, keyOf, page, readTools, reject, repairRequestType, sameIdentity, sameRef, user, validateTool } from './contract.mjs';
 import { Deliveries, wakeupRecords } from './delivery.mjs';
 import { Executions, conversationRecords, sessionRecords } from './executions.mjs';
 import { HostResources } from './resources.mjs';
@@ -17,7 +19,7 @@ import { RoomWork } from './room-work.mjs';
 import { allowsConnection, enclosesExecutableScope, executableScope } from '../services/executable-scope.mjs';
 import { localExecutable } from '../services/native-host.mjs';
 import { connectionStartupFailures } from '../services/session-processes.mjs';
-import { protocolOf } from '../services/connection-binding.mjs';
+import { httpMethods, protocolOf } from '../services/connection-binding.mjs';
 
 const normalize = (value, kind) => typeof value === 'string' ? { kind, id: value } : value;
 const revokedAuthority = new Set(['session_authority_revoked', 'workspace_changed', 'connection_binding_changed', 'model_binding_changed']);
@@ -34,7 +36,7 @@ export class SummonPlatform {
     Object.assign(this, { store, dataRoot, releaseRoot, models, attachments, emit });
     this.draining = false;
     this.resources = new HostResources(store, limits);
-    this.manager = new BotManager({ store, dataRoot, resources: this.resources, models,
+    this.manager = new BotManager({ store, dataRoot, models,
       canUseModel: (actor, id) => this.canUseModel(actor, id),
       maintenanceConnection: (id, context, revision, reuse) => this.maintenanceConnection(id, context, revision, reuse),
       bindMaintenance: (connection, bot) => this.bindMaintainer(connection, bot.id) });
@@ -46,6 +48,8 @@ export class SummonPlatform {
       canReadTarget: (actor, ref, context, call) => this.canReadCallResult(call, ref, { ...context, actor }),
       spaceFor: ref => ['session', 'conversation'].includes(ref?.kind) ? this.executions.record(ref)?.space : ref });
     this.executions = new Executions({ store, platform: this, calls: this.calls, resources: this.resources });
+    this.repairs = new ConnectionRepairs(this);
+    this.connectionUsage = new ConnectionUsage(this);
     this.roomWork = new RoomWork(this);
     this.workspaces = workspaces;
   }
@@ -62,6 +66,7 @@ export class SummonPlatform {
 
   initializeDefaults() {
     const { changed } = this.store.transaction(() => this.manager.ensureDefaults());
+    this.room.ensureMaintenanceRoom(this.manager.onboardingBot());
     if (changed) this.emit('bot');
   }
 
@@ -71,6 +76,11 @@ export class SummonPlatform {
   removeRoomBase(botId, roomId) { return this.deliveries.removeBase(botId, roomId); }
   queueMessage(event) { return this.deliveries.queueMessage(event); }
   messageDeliveries(eventId) { return this.deliveries.messageDeliveries(eventId); }
+  eventDeliveries(eventId) {
+    return this.deliveries.messageDeliveries(eventId).map(delivery => ({
+      ...delivery, runs: this.runtime.deliveryRuns(delivery.bot_id, eventId),
+    }));
+  }
   consumeDelivery(botId, id, receipt) { return this.deliveries.consume(botId, id, receipt); }
   recordReceipt(callId, facts, sessionId) { return this.executions.receipt(sessionId, callId, facts); }
   roomMembers(id) { return this.deliveries.roomMembers(id); }
@@ -164,18 +174,15 @@ export class SummonPlatform {
     if (!entry) return {};
     const bot = this.manager.maintainer(entry);
     const grants = input => {
-      const can_use = this.connections.authorized(entry, input.actor);
-      const policy = this.accessFor(input.actor)?.execution_onboarding;
-      const can_repair = this.repairableConnection(entry, input) ||
-        Boolean(can_use && policy?.submit && targetAllows(policy, entry));
-      return { can_use, can_repair };
+      const can_use = this.canUseConnection(input.actor, entry.id, input) && this.connections.authorized(entry, input.actor);
+      return { can_use, can_repair: this.probeRepairAllowed(entry, input) };
     };
     const permissions = context ? grants(context) : {};
     if (!bot) return { ...permissions, maintainer: null };
     const actor = { kind: 'bot', id: bot.id };
     const blocker = bot.enabled ? this.modelAccessBlocker(actor, bot.model?.connection_id) :
       { code: 'bot_paused', message: 'The maintainer Bot is paused' };
-    return { ...permissions, maintainer: { ...actor, name: bot.name, enabled: bot.enabled, ...grants(authority),
+    return { ...permissions, maintainer: { ...actor, name: bot.name, enabled: bot.enabled, ...grants({ actor }),
       run_status: blocker ? { status: 'blocked', ...blocker } : { status: 'configured' } } };
   }
 
@@ -201,10 +208,29 @@ export class SummonPlatform {
     return this.manager.maintainer(entry) ?? this.manager.onboardingBot();
   }
 
+  repairBlocker(entry, recipient, context = { actor: { kind: 'bot', id: recipient.id } }) {
+    if (!recipient.enabled) return { code: 'bot_paused', message: 'The assigned repair Bot is paused' };
+    if (!this.repairs.canUse(entry, context))
+      return { code: 'connection_use_required', message: 'The assigned repair Bot needs use access to the connection and its dependencies' };
+    if (!this.probeRepairAllowed(entry, context))
+      return { code: 'connection_repair_required', message: 'The assigned repair Bot needs repair authority for this connection' };
+    if (entry.config.workspace_root) {
+      try {
+        if (!this.workspace(entry.config.workspace_root, context)?.write || entry.config.workspace_write === false)
+          return { code: 'workspace_forbidden', message: 'The assigned repair Bot needs writable process access to the bound working directory' };
+      } catch (error) {
+        if (![403, 404].includes(error.status)) throw error;
+        return { code: error.code, message: error.message };
+      }
+    }
+    return this.modelAccessBlocker(context.actor, recipient.model?.connection_id);
+  }
+
   resolveProbeFailure(connectionId) {
     const event = this.deliveries.openProbeFailure(connectionId);
     if (!event) return;
     this.store.save('platform-events', { id: event.id, resolved_at: new Date().toISOString() });
+    if (this.repairs.hasReports(event.id)) return;
     for (const delivery of this.deliveries.deliveriesFor(event.id)) {
       if (delivery.status === 'pending')
         this.deliveries.updateDelivery(delivery.id, delivery.revision ?? 1, { status: 'cancelled', code: 'probe_resolved' });
@@ -219,24 +245,8 @@ export class SummonPlatform {
     const blocked = (code, reason, bot) => ({ status: 'blocked', code, reason, ...(bot ? { bot } : {}) });
     if (!recipient) return blocked('probe_maintainer_required', 'Select a repair Bot');
     const bot = { kind: 'bot', id: recipient.id };
-    const authority = { actor: bot };
-    if (!recipient.enabled) return blocked('bot_paused', 'The assigned repair Bot is paused', bot);
-    const repairContext = sameIdentity(bot, context.actor) ? context : authority;
-    if (!this.canUseConnection(bot, entry.id, repairContext) || !this.connections.authorized(entry, bot))
-      return blocked('connection_use_required', 'The assigned repair Bot needs use access to the connection and its dependencies', bot);
-    if (!this.probeRepairAllowed(entry, repairContext))
-      return blocked('connection_repair_required', 'The assigned repair Bot needs repair authority for this connection', bot);
-    if (entry.config.workspace_root) {
-      try {
-        if (!this.workspace(entry.config.workspace_root, repairContext)?.write || entry.config.workspace_write === false)
-          return blocked('workspace_forbidden', 'The assigned repair Bot needs writable process access to the bound working directory', bot);
-      } catch (error) {
-        if (![403, 404].includes(error.status)) throw error;
-        return blocked(error.code, error.message, bot);
-      }
-    }
-    const model = this.modelAccessBlocker(bot, recipient.model?.connection_id);
-    if (model) return blocked(model.code, model.message, bot);
+    const blocker = this.repairBlocker(entry, recipient, sameIdentity(bot, context.actor) ? context : { actor: bot });
+    if (blocker) return blocked(blocker.code, blocker.message, bot);
 
     const binding_version = entry.binding_version ?? 1;
     const open = this.deliveries.openProbeFailure(entry.id);
@@ -251,7 +261,7 @@ export class SummonPlatform {
       probe: this.connections.clean({ source: observed.probe_source, cwd: observed.cwd, issues: observed.issues,
         observations: observed.observations.filter(item => ['version', 'help'].includes(item.purpose)) }) };
     this.deliveries.queueEvent(event, [], false);
-    this.deliveries.enqueue(bot.id, event, [], []);
+    this.deliveries.enqueue(bot.id, event, [{ id, revision: 1, kind: 'probe_rule_mismatch' }], []);
     return { status: 'requested', bot, event: { kind: 'event', id } };
   }
 
@@ -299,6 +309,7 @@ export class SummonPlatform {
 
   canReadCallResult(call, target, context) {
     if (!this.canReadReference(target, context)) return false;
+    if (call?.repair_request_id && !this.repairs.canReadResult(call, context)) return false;
     if (!context.origin) return true;
     const wait = call?.return_refs.map(id => this.store.get(waitRecords, id)).find(item => item?.input_call_id && item.bot_id === context.actor.id &&
       isWaitOrigin(item, context.origin));
@@ -308,7 +319,9 @@ export class SummonPlatform {
   canReadEvent(event, context) {
     if (event.result_access === 'revoked') return false;
     if (event.type === 'work.tool') return this.roomWork.readable(event, context);
+    if (event.type === repairRequestType) return this.repairs.canRead(event, context);
     if (event.type === 'connection.failure') {
+      if (this.repairs.hasReports(event.id)) return this.repairs.canRead(event, context);
       const connection = event.ref?.kind === 'connection' && this.connections.get(event.ref.id);
       const readable = connection && event.binding_version === (connection.binding_version ?? 1) &&
         this.canReadReference(event.ref, context);
@@ -327,7 +340,8 @@ export class SummonPlatform {
           return wait?.bot_id === context.actor.id && (!wait.input_call_id || (context.origin ? isWaitOrigin(wait, context.origin)
             : this.canReadReturnWait(wait, event.target)));
         }) ||
-        this.store.list('platform-wakeups').some(rule => rule.bot_id === context.actor.id && this.deliveries.matches(rule, event));
+        !call?.repair_request_id && this.store.list('platform-wakeups').some(rule =>
+          rule.bot_id === context.actor.id && this.deliveries.matches(rule, event));
       return watching && this.canReadCallResult(call, event.target, context);
     }
     if (event.bot_id && event.bot_id !== context.actor.id && context.actor.kind !== 'user') return false;
@@ -908,6 +922,10 @@ export class SummonPlatform {
         this.emit('execution', { call_id: record.id });
         return { result, call_id: record.id };
       }
+      if (name === 'send' && args.to?.kind === 'connection') {
+        const result = this.store.transaction(() => this.repairs.send(args, context, record));
+        return { result, call_id: record.id };
+      }
       if (name === 'create_bot') {
         if (context.session) reject('configuration_forbidden', 'This Session cannot create Bot identities', 403);
         const result = this.store.transaction(() => {
@@ -975,6 +993,8 @@ export class SummonPlatform {
       return this.room.configureRoom(id, { ...args, add_members: members(args.add_members), remove_members: members(args.remove_members) }, actor.id);
     }
     if (name === 'send') {
+      if (args.repair_key !== undefined || args.repair_outcome !== undefined)
+        reject('invalid_repair_message', 'Repair fields require a connection destination');
       const id = idOf(args.to, 'room');
       const space = { kind: 'room', id };
       if (!this.canWriteSpace(actor, space, context)) reject('room_forbidden', 'Room is not available for sending', 403);
@@ -1027,11 +1047,12 @@ export class SummonPlatform {
     reject('tool_not_found', 'Unknown writable tool', 404);
   }
 
-  async find({ kind, scope, query, cursor }, context) {
+  async find({ kind, scope, query, cursor, period }, context) {
     const { actor } = context;
     if (scope && !this.canReadReference(scope, context)) reject('scope_unavailable', 'Search scope is unavailable', 404);
     let items;
     switch (kind) {
+      case 'connection_usage': return this.connectionUsage.query({ scope, period, query, cursor }, context);
       case 'bot': items = this.manager.list().filter(bot => this.visibleBot(bot, context) && (!scope || scope.kind === 'room' && this.roomMembers(scope.id).includes(bot.id)))
         .map(bot => this.manager.view(bot, actor, { details: !context.session })); break;
       case 'room': items = this.room.rooms(actor.id).filter(room => this.canReadSpace(actor, { kind: 'room', id: room.id }, context))
@@ -1040,7 +1061,7 @@ export class SummonPlatform {
         const messages = this.room.rooms(actor.id).filter(room => (!scope || sameRef(scope, room.ref)) && this.canReadSpace(actor, room.ref, context))
           .flatMap(room => this.room.messages(room.id, actor.id));
         items = [...messages, ...this.store.list('platform-events').filter(event => this.canReadEvent(event, context) &&
-          (!scope || sameRef(event.space || event.target, scope)))]; break;
+          (!scope || sameRef(event.space || event.target, scope))).map(event => this.repairs.eventView(event, context))]; break;
       }
       case 'file': items = this.files.list(context, scope); break;
       case 'session': case 'conversation': items = this.executions.list(context, scope).filter(item => item.kind === kind); break;
@@ -1095,7 +1116,10 @@ export class SummonPlatform {
     switch (ref.kind) {
       case 'bot': return this.manager.view(this.getBot(ref.id), context.actor, { details: !context.session });
       case 'room': return this.room.read(args, context.actor.id);
-      case 'event': return this.store.get('platform-events', ref.id) ?? this.room.read(args, context.actor.id);
+      case 'event': {
+        const event = this.store.get('platform-events', ref.id);
+        return event ? this.repairs.eventView(event, context) : this.room.read(args, context.actor.id);
+      }
       case 'file': return this.files.readObject(ref.id, context, args.cursor, args.limit);
       case 'session': case 'conversation': return this.executions.read(ref, context, args);
       case 'connection': {
@@ -1104,7 +1128,10 @@ export class SummonPlatform {
         const observed = await this.connections.read(ref.id, this.connectionContext(context));
         const entry = this.connections.get(ref.id);
         if (!this.canUseConnection(context.actor, ref.id, context)) reject('connection_forbidden', 'The connection is unavailable', 403);
-        return { ...observed, ...this.connectionMaintenance(entry, context) };
+        const maintenance = this.connectionMaintenance(entry, context);
+        const http = entry.kind === 'http' && maintenance.can_repair ?
+          { service_url: entry.config.service_url, method_bindings: httpMethods(entry.config) } : {};
+        return { ...observed, ...this.connections.clean(http), ...maintenance };
       }
       case 'call': return this.calls.view(this.calls.get(ref.id), context);
       case 'wakeup': return this.deliveries.list(context).find(item => item.id === ref.id);
@@ -1198,7 +1225,10 @@ export class SummonPlatform {
   }
 
   async tick({ observations = true, deliveries = true } = {}) {
-    if (!this.draining && observations) this.deliveries.tickTime();
+    if (!this.draining && observations) {
+      this.repairs.reconcile();
+      this.deliveries.tickTime();
+    }
     if (deliveries) await this.deliveries.flush(this.runtime);
   }
 

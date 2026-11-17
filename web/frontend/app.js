@@ -148,7 +148,7 @@ const tabs = [
 const protocolVersion = 3;
 const state = { bots: [], rooms: [], executions: [], files: [], wakeups: [], connections: [], workspaces: [] };
 const resourceLabels = {
-  bots:'Bot 数量', sessions:'会话数量', models:'并发模型请求', external:'并发外部执行', queue:'待处理事件',
+  sessions:'会话数量', models:'并发模型请求', external:'并发外部执行', queue:'待处理事件',
   reserved_calls:'回执记录', period_ms:'统计周期（毫秒）', calls:'调用数', tokens:'Token', active_ms:'累计活跃时间（毫秒）',
 };
 const ui = {

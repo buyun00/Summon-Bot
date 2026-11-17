@@ -156,7 +156,7 @@ export class Calls {
     return call.result ?? { status: call.status, ref: { kind: 'call', id: call.id } };
   }
 
-  recordReceipt(id, receipt, target) {
+  recordReceipt(id, receipt, target, matchWakeups = true) {
     return this.store.transaction(() => {
       const call = this.get(id);
       const position = receipt.position ?? receipt.id;
@@ -171,7 +171,7 @@ export class Calls {
         result: { ...event.result, event: { kind: 'event', id: event.id } }, result_ref: { kind: 'event', id: event.id } });
       const waits = canAdvance ? call.return_refs.map(waitId => this.store.get(waitRecords, waitId)).filter(wait => wait &&
         !(wait.status === 'inline' && call.status !== 'unknown')) : [];
-      this.deliverWaits(event, waits);
+      this.deliverWaits(event, waits, matchWakeups);
       return event;
     });
   }
@@ -187,12 +187,14 @@ export class Calls {
 
   view(call, context) {
     if (!this.canRead(context.actor, call, context)) reject('call_not_found', 'Call not found', 404);
-    const { id, tool, submitted_by, initiating_principal, execution_actor, origin, source_event_ids, status, controls, target, result_ref, client_id } = call;
+    const { id, tool, submitted_by, initiating_principal, execution_actor, origin, source_event_ids, status, controls, target, result_ref, client_id,
+      repair_request_ids } = call;
     const targetReadable = !target || this.canReadTarget(context.actor, target, context, call);
     const own = context.actor.kind === 'user' || sameIdentity(context.actor, submitted_by);
     const wait_refs = call.return_refs.map(key => this.store.get(waitRecords, key)).filter(wait => wait &&
       (context.actor.kind === 'user' || wait.bot_id === context.actor.id) && (!context.session || wait.session_id === context.session.id));
-    return { kind: 'call', id, tool, submitted_by, initiating_principal, execution_actor, ...(own ? { origin, source_event_ids, client_id, controls } : {}),
+    return { kind: 'call', id, tool, submitted_by, initiating_principal, execution_actor,
+      ...(own ? { origin, source_event_ids, client_id, controls, repair_request_ids } : {}),
       status, target: targetReadable ? target : undefined, wait_refs, result_ref: targetReadable ? result_ref : null,
       result: targetReadable ? (own || !call.result ? call.result : {
         status: call.status, output: call.result.output, native: call.result.native, input_targets: call.result.input_targets,

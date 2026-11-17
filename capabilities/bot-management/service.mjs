@@ -43,8 +43,8 @@ function instructionsOf(value) {
 }
 
 export class BotManager {
-  constructor({ store, dataRoot, resources, models, canUseModel, maintenanceConnection, bindMaintenance }) {
-    Object.assign(this, { store, dataRoot, resources, models, canUseModel, maintenanceConnection, bindMaintenance });
+  constructor({ store, dataRoot, models, canUseModel, maintenanceConnection, bindMaintenance }) {
+    Object.assign(this, { store, dataRoot, models, canUseModel, maintenanceConnection, bindMaintenance });
   }
 
   list() { return this.store.list(botRecords); }
@@ -154,7 +154,6 @@ export class BotManager {
         if (args.model !== undefined) reject('connection_forbidden', 'Model connection is not available to this caller', 403);
         model = null;
       }
-      this.resources.assertCapacity('bots', this.list().filter(bot => !bot.connection_initializer).length);
       const record = this.saveNew({ id, name, instructions, model, owner: actor,
         ...(role ? { built_in_role: role } : {}) });
       if (connection) this.bindMaintenance(connection, record);

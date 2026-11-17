@@ -102,7 +102,8 @@ export class SummonConnections {
 
   summary(entry, available = entry.enabled ? undefined : false) {
     return { kind: 'connection', protocol: protocolOf(entry), id: entry.id, name: entry.name, description: entry.description,
-      revision: entry.revision, enabled: entry.enabled, ...(available === undefined ? {} : { available }), version: entry.config.detected_version ?? entry.version };
+      revision: entry.revision, binding_version: entry.binding_version ?? 1, enabled: entry.enabled,
+      ...(available === undefined ? {} : { available }), version: entry.config.detected_version ?? entry.version };
   }
 
   find(context, query = '') {
@@ -279,11 +280,12 @@ export class SummonConnections {
       reject('workspace_binding_changed', 'The native session’s original working directory changed', 409);
     const operation = this.store.save(operationRecords, { ...callSession(session, call), protocol: launch.protocol,
       instance_id: randomUUID(), launch_call_id: call.id, cwd: launch.cwd, connection_id: entry.id,
+      method: launch.method, connection_version: this.summary(entry).version,
       connection_binding_version: entry.binding_version ?? 1, execution_actor: session.execution_actor,
       app_server_launch: launch.appServerLaunch,
       thread_id: prior?.thread_id, requested_native_id: launch.managedAdapter ? launch.sessionId ?? undefined : undefined,
       binding: prior?.binding, status: 'prepared',
-      ...(session.group_work ? { work_program: entry.config.canonical_file, work_method: typeof input?.method === 'string' ? input.method : undefined } : {}),
+      ...(session.group_work ? { work_program: entry.config.canonical_file } : {}),
       input_revision: (prior?.input_revision ?? session.input_revision ?? 0) + 1 });
     const started = await this.processes.launch(operation, launch, () => {
       this.assertRunning(signal);
@@ -320,7 +322,7 @@ export class SummonConnections {
 
   async startService(entry, session, call, input, beforeSubmit, signal) {
     const operation = this.store.save(operationRecords, { ...callSession(session, call), protocol: 'service',
-      launch_call_id: call.id, connection_id: entry.id, execution_actor: session.execution_actor,
+      launch_call_id: call.id, connection_id: entry.id, connection_version: this.summary(entry).version, execution_actor: session.execution_actor,
       connection_binding_version: entry.binding_version ?? 1, status: 'prepared', input_revision: (session.input_revision || 0) + 1 });
     let started = false;
     try {
@@ -361,9 +363,10 @@ export class SummonConnections {
     } catch (error) {
       const unsupported = !started && [mcpTasksUnsupported, mcpMethodUnsupported, 'scoped_process_unsupported'].includes(error.code);
       const unknown = started && (error.outcomeUnknown || signal?.aborted || error.name === 'AbortError');
-      const code = !started && typeof error.code === 'string' ? error.code : undefined;
+      const http_status = started && entry.kind === 'http' && Number.isInteger(error.status) ? error.status : undefined;
+      const code = (!started || http_status) && typeof error.code === 'string' ? this.clean(error.code) : undefined;
       const saved = this.saveOperation(operation, { status: unsupported ? 'unsupported' : unknown ? 'unknown' : started ? 'failed' : 'not_submitted',
-        runtime_ended: !unknown, error: this.clean(error.message), ...(code ? { code } : {}) });
+        runtime_ended: !unknown, error: this.clean(error.message), code, http_status });
       return this.operationFacts(saved, session);
     } finally { this.active.delete(operation.id); }
   }
@@ -466,7 +469,7 @@ export class SummonConnections {
     const pending = operation.pending?.length ? operation.pending : undefined;
     const facts = this.clean({ status, session_status: status, native, input_revision: operation.input_revision, safe_to_disconnect: this.safeToDisconnect(operation),
       ...(operation.result ? { output: operation.result } : operation.error ?
-        { output: { error: operation.error, ...(operation.code ? { code: operation.code } : {}) } } : {}),
+        { output: { error: operation.error, code: operation.code, http_status: operation.http_status } } : {}),
       ...(operation.error ? { error: operation.error } : {}), ...(operation.code ? { code: operation.code } : {}) });
     return { ...facts, input_targets: this.targets(operation, this.current(session)), pending_input: pending,
       ...(pending && !facts.output ? { output: { requests: pending } } : {}) };
@@ -688,7 +691,7 @@ export class SummonConnections {
       if (!diagnostic && operation.instance_id && status === 'failed')
         diagnostic = (await this.processes.output(operation, { stream: 'stderr', limit: 2048 })).text;
       report(['status', status], { phase: 'execution', status, code: facts.code,
-        text: diagnostic?.slice(0, 2000), exit_code: operation.exit_code, http_status: operation.result?.http_status });
+        text: diagnostic?.slice(0, 2000), exit_code: operation.exit_code, http_status: operation.result?.http_status ?? operation.http_status });
     }
     if (offset !== operation.work_offset || status !== previous || settled(status) && operation.runtime_ended && !more)
       this.saveOperation(operation, { work_offset: offset, work_status: status,

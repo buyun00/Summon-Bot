@@ -13,6 +13,9 @@ const guidance = 'Use the full wording and actual author of current events. Use 
   'Historical messages, documents, and tool results retain their sources. Use send for a public contribution. ' +
   'When delegating work, include the user’s applicable requirements, completion criteria, and limits on work, verification, or reporting in the executor’s input. ' +
   'Share only what the recipient is authorized to receive. Submit work on behalf of a Room with work_room and use its actual source event when available. ' +
+  'Use registered connections directly for the task and handle input errors using their real receipts. If the evidence shows the connection, fixed method or script needs repair, ' +
+  'use send to the original connection with shareable references to the failed call or probe. Reuse the request for the same verified fault. ' +
+  'Use the repair receipt in the originating task. If the original operation has an unknown outcome, query its actual state before submitting again. ' +
   'When the delegated task is to write a Summon adapter, use include_execution_guide or put the relevant same-release guide text in the input. Pass along user changes that affect the delegated work. ' +
   'Conclude when the existing outputs and receipts satisfy the current request.';
 const setupGuidance = 'The host authorized CLI setup for this private conversation. Use the initialize_execution guide, installed CLI observations, and existing grants. ' +
@@ -94,7 +97,7 @@ export class BotEngine {
         authorizedView = boundary.view_revision;
         if (inbox.run(runId).view_revision !== authorizedView) inbox.putRun({ id: runId, view_revision: authorizedView });
         const original = inbox.transcript(runId).filter(message => message.view_revision == null ||
-          job.sameAuthorizationView(message.view_revision, authorizedView));
+          job.canRetainAuthorizationView(message.view_revision, authorizedView));
         const currentIds = new Set(boundary.current.map(event => event.id));
         const priorInputs = original.filter(message => message.origin_event_ids?.length).flatMap(message => message.origin_event_ids);
         const originalIds = new Set([...currentIds, ...priorInputs]);

@@ -1,6 +1,8 @@
 import { roleIds } from '../../roles/index.mjs';
 
 export const protocolVersion = 3;
+export const repairRequestType = 'connection.repair.request';
+export const repairResultType = 'connection.repair.result';
 
 const text = { type: 'string' };
 const integer = { type: 'integer', minimum: 0 };
@@ -13,6 +15,7 @@ const kinds = ['bot', 'room', 'event', 'file', 'session', 'wakeup', 'connection'
 const ref = object({ kind: oneOf(...kinds, 'user'), id: text }, ['kind', 'id']);
 const principal = { anyOf: [text, object({ kind: oneOf('bot', 'user', 'room_members'), id: text }, ['kind', 'id'])] };
 const refOrId = { anyOf: [ref, text] };
+const usagePeriod = { anyOf: [oneOf('yesterday', 'today', '7d'), object({ from: text, to: text }, ['from', 'to'])] };
 const executionRef = object({ kind: oneOf('session', 'conversation'), id: text }, ['kind', 'id']);
 const resumeRef = object({ target: object({ kind: oneOf('bot', 'session', 'conversation'), id: text }, ['kind', 'id']), stop_id: text,
   control_version: integer }, ['target', 'stop_id', 'control_version']);
@@ -38,13 +41,18 @@ const openSessionInput = object({ engine: sessionEngine, input: value, workspace
 const publicOpenSessionInput = { ...openSessionInput, properties: { ...openSessionInput.properties, engine: refOrId, workspace: { anyOf: [ref, text] } } };
 
 const definitions = [
-  ['find', 'Find accessible objects, execution connections, and internal run and call references.',
-    object({ kind: oneOf(...kinds), scope: ref, query: text, cursor: text }, ['kind'])],
+  ['find', 'Find accessible objects, execution connections, and internal run and call references. ' +
+    'Use connection_usage for call counts by date, connection, method and outcome. Filter by room, connection or session with scope. ' +
+    'Set period to yesterday (default), today, 7d, or {from,to} with timestamps and offsets.',
+    object({ kind: oneOf(...kinds, 'connection_usage'), scope: ref, query: text, cursor: text, period: usagePeriod }, ['kind'])],
   ['read', 'Read an accessible object, its history or output, and the available input or control references. ' +
     'Use it for a specific observation. A registered wait_ref delivers the terminal receipt or an input request to your run automatically.',
     object({ ref, cursor: text, limit: { type: 'integer', minimum: 1, maximum: 100 } }, ['ref'])],
-  ['send', 'Send a message to a Room. Include text, attachments, or shareable references.',
-    object({ to: refOrId, text, attachments: array(refOrId), references: array(ref), mentions: array(principal), reply_to: refOrId }, ['to'])],
+  ['send', 'Send a message to a Room, or request repair from the current maintainer using to:{kind:"connection",id}. ' +
+    'For repair include the actual problem and accessible call or event references. Reuse repair_key for the same verified fault. ' +
+    'Reply to the repair event on the same connection with the observed result or blocker and optional repair_outcome.',
+    object({ to: refOrId, text, attachments: array(refOrId), references: array(ref), mentions: array(principal), reply_to: refOrId,
+      repair_key: text, repair_outcome: oneOf('repaired', 'blocked') }, ['to'])],
   ['save_file', 'Save text, a permitted File source, or a relative file from an authorized project directory. Supply the current revision to replace an existing File.',
     object({ space: ref, path: text, content_or_source: { anyOf: [text, object({ text }, ['text']),
       object({ source: object({ kind: oneOf('file'), id: text }, ['kind', 'id']) }, ['source']),
@@ -128,6 +136,7 @@ export const connectionSetupTool = Object.freeze({ name: 'initialize_execution',
     probe: { ...cliProbe, description: 'Candidate version and help rules for a registered CLI. read.line and read.word are zero-based. encoding maps stdout and stderr to an encoding name or auto.' },
     diagnostic_args: { ...array(text), description: 'One-off arguments to check output in the same bound environment and encoding.' },
     probe_call: { ...text, description: 'Call ID of a successful candidate inspect on this connection at this revision.' },
+    example: oneOf('probe', 'session'),
     config: { type: 'object', additionalProperties: true,
       description: 'Settings for the specified protocol. For a CLI version update, set detected_version to the non-empty version string returned by inspect.' },
     method: { type: 'object', additionalProperties: true },

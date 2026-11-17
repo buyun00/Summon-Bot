@@ -350,7 +350,7 @@ internal fun SummonToggle(label: String, enabled: Boolean, update: (Boolean) -> 
 }
 
 internal fun resourceName(key: String): String = mapOf(
-    "bots" to "Bot 数量", "sessions" to "活动会话", "models" to "并发模型请求", "external" to "并发外部执行",
+    "sessions" to "活动会话", "models" to "并发模型请求", "external" to "并发外部执行",
     "queue" to "待处理事件", "reserved_calls" to "回执容量", "period_ms" to "周期（毫秒）", "calls" to "调用次数",
     "tokens" to "Token", "active_ms" to "活跃时间（毫秒）",
 )[key] ?: key

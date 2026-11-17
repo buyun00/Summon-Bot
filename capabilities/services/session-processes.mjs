@@ -138,7 +138,7 @@ export class SessionProcesses {
 
   async launch(operation, launch, beforeSubmit) {
     const directory = this.directory(operation);
-    const { adapterSource, ...manifest } = launch;
+    const { adapterSource, method, ...manifest } = launch;
     const script = adapterSource !== undefined ? join(directory, 'adapter.mjs') : null;
     try {
       await mkdir(join(directory, 'inputs'), { recursive: true, mode: 0o700 });

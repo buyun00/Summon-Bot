@@ -2,12 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { keyOf, reject } from './contract.mjs';
 
 export const defaultLimits = Object.freeze({
-  bots: 64, sessions: 48, models: 8, external: 8, queue: 512, reserved_calls: 128,
+  sessions: 48, models: 8, external: 8, queue: 512, reserved_calls: 128,
   period_ms: 3600000, calls: 2000, tokens: 10000000, active_ms: 28800000,
 });
 export const hostLimitsRecord = 'platform-host-limits';
 
-function normalizeLimits(input, fallback) {
+export function normalizeLimits(input, fallback = defaultLimits) {
   return Object.fromEntries(Object.entries(fallback).map(([key, defaultValue]) => {
     const value = input[key] ?? defaultValue;
     if (!Number.isSafeInteger(value) || value < (key === 'period_ms' ? 1000 : 0)) {
@@ -20,7 +20,7 @@ function normalizeLimits(input, fallback) {
 export class HostResources {
   constructor(store, limits = {}) {
     this.store = store;
-    this.limits = normalizeLimits(store.get(hostLimitsRecord, 'host')?.limits || {}, normalizeLimits(limits, defaultLimits));
+    this.limits = normalizeLimits(store.get(hostLimitsRecord, 'host')?.limits || {}, normalizeLimits(limits));
     this.store.db.exec(`CREATE INDEX IF NOT EXISTS platform_usage_end ON records (json_extract(data,'$.ended_at')) WHERE kind='platform-usage'`);
     this.currentUsage = this.store.db.prepare(`SELECT data FROM records WHERE kind='platform-usage' AND
       (json_extract(data,'$.ended_at') IS NULL OR json_extract(data,'$.ended_at')>=?)`);
@@ -52,7 +52,7 @@ export class HostResources {
   assertCapacity(key, used, count = 1) {
     if (used + count > this.limits[key]) {
       reject('resource_limit', `Host ${key} limit reached`, 429, { resource: key, limit: this.limits[key],
-        ...(key === 'queue' || key === 'bots' || key === 'sessions' || key === 'reserved_calls' ? {} : { resets_at: new Date(this.bounds().until).toISOString() }) });
+        ...(key === 'queue' || key === 'sessions' || key === 'reserved_calls' ? {} : { resets_at: new Date(this.bounds().until).toISOString() }) });
     }
   }
 

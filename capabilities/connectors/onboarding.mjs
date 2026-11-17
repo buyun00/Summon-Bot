@@ -393,12 +393,12 @@ export class ConnectionOnboarding {
       methods.map(item => item[field] === method[field] ? method : item) : [...methods, method];
     if (kind === 'cli' && !config.adapter) {
       const methods = config.methods ?? [];
-      const { effect, file_args } = methods.find(item => item.id === method.id) ?? {};
-      method = { ...(effect !== undefined ? { effect } : {}), ...(file_args !== undefined ? { file_args } : {}), ...method };
+      method = { ...methods.find(item => item.id === method.id), ...method };
       this.nativeMethod(method, config);
       config.methods = upsert(methods, 'id');
     } else if (kind === 'ssh') config.ssh = sshBinding({ ...config.ssh, operations: upsert(config.ssh.operations, 'id') });
     else if (kind === 'http') {
+      method = { ...httpMethods(config).find(item => item.name === method.name), ...method };
       if (!method.name || !httpTarget(method).url || Object.keys(method.headersEnv ?? {}).some(name => routedHeaders.test(name)))
         reject('invalid_connection', 'Specify an HTTP method name and the authorized URL and credential references');
       config.tools = upsert(httpMethods(config), 'name');

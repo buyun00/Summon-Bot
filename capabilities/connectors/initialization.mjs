@@ -13,9 +13,20 @@ import { ConnectionOnboarding, executionEnvironment } from './onboarding.mjs';
 
 const windows = process.platform === 'win32';
 const guide = new URL('../../skills/summon-execution-onboarding/SKILL.md', import.meta.url);
+const examples = Object.freeze({
+  probe: new URL('./examples/probe.mjs', guide),
+  session: new URL('./examples/session-adapter.mjs', guide),
+});
 const release = new URL('../../release.json', import.meta.url);
-export const executionGuide = async () => ({ path: fileURLToPath(guide),
-  version: JSON.parse(await readFile(release, 'utf8')).version, text: await readFile(guide, 'utf8') });
+export async function executionGuide({ example, includeExamples = false } = {}) {
+  const resource = example ? examples[example] : guide;
+  const version = JSON.parse(await readFile(release, 'utf8')).version;
+  let text = await readFile(resource, 'utf8');
+  if (includeExamples) for (const [name, path] of Object.entries(examples)) {
+    text += `\n\n${name} example\n\`\`\`js\n${await readFile(path, 'utf8')}\`\`\`\n`;
+  }
+  return { path: fileURLToPath(resource), version, text };
+}
 const pageText = (text, offset = 0) => ({ text: text.slice(offset, offset + 12_000),
   next_offset: offset + 12_000 < text.length ? offset + 12_000 : null });
 const names = /^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,119}$/;
@@ -124,7 +135,7 @@ export class ConnectionInitializer {
     if (action === 'grant_access') return this.grantAccess(args, context, setup, call, selected);
     if (connector && !definition) reject('connector_not_found', 'The built-in connector is unavailable', 404);
     if (action === 'guide') {
-      const { text, ...reference } = await executionGuide();
+      const { text, ...reference } = await executionGuide({ example: args.example });
       return { connector, ...reference, ...pageText(text, offset),
         ...(definition ? { connector_notes: await readFile(definition.guide, 'utf8') } : {}) };
     }
@@ -132,7 +143,8 @@ export class ConnectionInitializer {
       if (args.connection) {
         if (!selected) reject('connection_forbidden', 'This connection is outside the Pi initializer’s authority', 403);
         const adapter = selected.config.adapter;
-        return host.clean({ ...(adapter?.source !== undefined ? { ...pageText(adapter.source, offset), runner: adapter.runner.id } :
+        return host.clean({ ...(adapter?.source !== undefined ? { ...pageText(adapter.source, offset), runner: adapter.runner.id,
+          runner_binding: adapter.runner, resume: adapter.resume } :
           adapter?.recipe ? { recipe: adapter.recipe } : definition ? pageText(await readFile(definition.source, 'utf8'), offset) :
             await host.read(selected.id, this.platform.connectionContext(context))),
           ...(selected.config.launch_arguments ? { arguments: selected.config.launch_arguments } : {}),

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { fail } from '../shared/validation.mjs';
 import { assertRevision, idOf, identity } from '../platform/contract.mjs';
+import { botMaintenanceRoomId } from '../../roles/index.mjs';
 
 function list(value, label, maximum = 100) {
   if (value === undefined) return [];
@@ -139,6 +140,11 @@ export class ChatroomService {
       const bot = this.manager.get(member);
       if (bot.connection_initializer || bot.archivedAt) fail('此 Bot 无法加入会话', 403);
     }
+  }
+
+  ensureMaintenanceRoom(bot) {
+    if (!bot || bot.archivedAt || this.store.get('rooms', botMaintenanceRoomId)) return;
+    this.createRoom({ title: 'Bot 维护群', members: [bot.id], mode: 'group' }, 'user', { id: botMaintenanceRoomId });
   }
 
   createRoom({ title, members, mode }, actor, { id = randomUUID() } = {}) {

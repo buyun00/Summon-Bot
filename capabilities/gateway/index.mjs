@@ -65,8 +65,7 @@ function usageSnapshot(ledger, params, bots, rooms) {
   const roomId = params.has('roomId') ? params.get('roomId') || null : undefined;
   const offset = Number(params.get('offset') || 0), limit = Number(params.get('limit') || 25);
   if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) reject('invalid_page', 'Invalid usage page');
-  if (botId && allBots.some(item => item.id === botId) && !bots.some(item => item.id === botId) ||
-      roomId && !rooms.some(item => item.id === roomId)) reject('scope_unavailable', 'Usage scope is unavailable', 404);
+  if (roomId && !rooms.some(item => item.id === roomId)) reject('scope_unavailable', 'Usage scope is unavailable', 404);
   return ledger.snapshot(() => {
     const snapshot = readUsage(ledger.db, range, { roomId, botId, offset, limit });
     const botNames = new Map(bots.map(bot => [bot.id, bot.name]));

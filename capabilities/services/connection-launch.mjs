@@ -135,7 +135,7 @@ export async function prepareProcess({ host, entry, session, call, input, prior,
     if (isReadOnly || hasFileScope)
       reject('scoped_process_unsupported', 'The SSH process cannot enforce the Session’s specific file restrictions', 403);
     return { ...nativeCommand(executable, sshArguments(sshBinding(entry.config.ssh), input)),
-      cwd, guard, storePath, keepInput: false, protocol: 'stdin' };
+      cwd, guard, storePath, keepInput: false, protocol: 'stdin', method: input.method };
   }
   if (entry.kind === 'codex') {
     if (hasFileScope)
@@ -230,6 +230,6 @@ export async function prepareProcess({ host, entry, session, call, input, prior,
   const { secrets } = nativeEnvironment(method?.env, authorizedEnv);
   requireCredentialReferences([...args, stdin], secrets);
   nativeCommand(file, args);
-  return { file, args, cwd, guard, storePath, input: stdin, keepInput, protocol, env: method?.env, authorizedEnv,
+  return { file, args, cwd, guard, storePath, input: stdin, keepInput, protocol, method: method?.id, env: method?.env, authorizedEnv,
     encoding: entry.config.probe?.encoding };
 }

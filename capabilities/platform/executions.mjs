@@ -200,7 +200,7 @@ export class Executions {
     if (args.include_execution_guide) {
       const text = typeof input === 'string' ? input : input?.text;
       if (typeof text !== 'string' || !text.trim()) reject('invalid_input', 'Provide a text task for the execution guide');
-      const guide = await executionGuide();
+      const guide = await executionGuide({ includeExamples: true });
       const combined = `${text}\n\nSummon Bot ${guide.version} execution onboarding guide\n\n${guide.text}`;
       input = typeof input === 'string' ? combined : { ...input, text: combined };
       this.platform.assertRunAllowed(context);

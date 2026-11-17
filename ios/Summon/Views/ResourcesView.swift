@@ -250,7 +250,7 @@ private func wakeupTitle(_ rule: SummonJSONValue) -> String {
 }
 
 private func resourceName(_ key: String) -> String {
-    ["bots": "Bot 数量", "sessions": "活动会话", "models": "并发模型请求", "external": "并发外部执行",
+    ["sessions": "活动会话", "models": "并发模型请求", "external": "并发外部执行",
      "queue": "待处理事件", "reserved_calls": "回执容量", "period_ms": "周期（毫秒）", "calls": "调用次数",
      "tokens": "Token", "active_ms": "活跃时间（毫秒）"][key] ?? key
 }

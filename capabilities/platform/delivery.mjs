@@ -1,6 +1,6 @@
 import { assertRevision, idOf, identity, keyOf, reject, sameIdentity, sameRef } from './contract.mjs';
 import { waitRecords } from './calls.mjs';
-import { toolOnboardingRole } from '../../roles/index.mjs';
+import { botMaintenanceRoomId, toolOnboardingRole } from '../../roles/index.mjs';
 
 export const wakeupRecords = 'platform-wakeups';
 export const deliveryRecords = 'platform-deliveries';
@@ -40,7 +40,10 @@ export class Deliveries {
     const id = roomBaseId(botId, roomId);
     const previous = this.store.get(wakeupRecords, id);
     if (previous && previous.member_active !== false) return previous;
-    return this.store.save(wakeupRecords, { id, bot_id: botId, rule: { kind: 'room_base', room: roomId, mode: 'all' },
+    const group = this.store.get('rooms', roomId)?.mode === 'group';
+    const onboarding = this.store.get('platform-bots', botId)?.built_in_role?.id === toolOnboardingRole;
+    const mode = roomId === botMaintenanceRoomId || group && onboarding ? 'mentions' : 'all';
+    return this.store.save(wakeupRecords, { id, bot_id: botId, rule: { kind: 'room_base', room: roomId, mode },
       member_active: true, enabled: true, revision: (previous?.revision ?? 0) + 1 });
   }
 
@@ -119,10 +122,6 @@ export class Deliveries {
     if (!wakeup.enabled || wakeup.member_active === false || rule.kind === 'time' || !this.ruleUsable(rule, bot_id)) return false;
     if (event.type === 'message' && event.author.id === bot_id && event.author.kind === 'bot') return false;
     if (rule.kind === 'room_base') {
-      if (event.type === 'work.tool' && event.roomId === rule.room && rule.mode === 'all') {
-        const bot = this.store.get('platform-bots', bot_id);
-        return bot?.enabled && bot.built_in_role?.id === toolOnboardingRole;
-      }
       return event.type === 'message' && event.roomId === rule.room && (rule.mode === 'all' ||
         event.mentions?.includes(bot_id) || event.replyAuthorId === bot_id);
     }

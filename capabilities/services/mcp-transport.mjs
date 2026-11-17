@@ -53,12 +53,8 @@ export async function connectMcpTools(definition, {
     try { await client.close(); } finally { await transport.close(); }
   })();
   const abortDiscovery = () => { void close().catch(() => {}); };
-  try {
-    signal?.throwIfAborted();
-    signal?.addEventListener('abort', abortDiscovery, { once: true });
-    await client.connect(transport, options(signal));
-    signal?.throwIfAborted();
-    connected = true;
+  async function listTools() {
+    if (closed || !connected) throw Object.assign(new Error('MCP capability is disconnected'), { code: 'CAPABILITY_UNAVAILABLE' });
     const tools = [], remoteTools = new Map(), ambiguous = new Set(), cursors = new Set();
     let cursor;
     do {
@@ -112,7 +108,23 @@ export async function connectMcpTools(definition, {
     // The SDK refreshes its output-schema cache for each listTools page. Retain
     // validation for every tool, including those returned before the last page.
     client.cacheToolMetadata(validated);
-    return { tools, close, serverInfo: client.getServerVersion() };
+    return tools;
+  }
+
+  try {
+    signal?.throwIfAborted();
+    signal?.addEventListener('abort', abortDiscovery, { once: true });
+    await client.connect(transport, options(signal));
+    signal?.throwIfAborted();
+    connected = true;
+    let tools = await listTools(), refreshing;
+    return {
+      get tools() { return tools; },
+      refresh: () => refreshing ??= listTools().then(next => { tools = next; }).finally(() => { refreshing = null; }),
+      connected: () => !closed && connected,
+      close,
+      serverInfo: client.getServerVersion(),
+    };
   } catch (error) {
     await close().catch(() => {});
     // No original cause or server stderr is exposed: either can carry secrets.
