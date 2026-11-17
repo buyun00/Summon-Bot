@@ -4,7 +4,7 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
 import { readJson, writeJson } from '../build/files.mjs';
-import { workspaceOrigin } from '../../web/backend/origins.mjs';
+import { instanceOrigin } from '../../web/backend/origins.mjs';
 import { cloudflareInstall, installedBinary, safeEnvironment, tailscaleInstall, tunnelTokenPath } from './auxiliaries.mjs';
 import { acquireServiceLock } from './service-lock.mjs';
 import { inspectService, launchService, stopService } from './system.mjs';
@@ -58,7 +58,7 @@ async function tailscaleMapping(config, port) {
   let configJSON;
   try { configJSON = JSON.parse(served.stdout) || {}; } catch { return { state: 'unavailable' }; }
   const hostPort = dns + ':' + port;
-  const origin = workspaceOrigin('https://' + hostPort, { httpsOnly: true });
+  const origin = instanceOrigin('https://' + hostPort, { httpsOnly: true });
   const settings = [configJSON, ...Object.values(configJSON.Foreground || {})];
   if (settings.some(item => item.AllowFunnel?.[hostPort] || item.TCP?.[port] && !item.TCP[port].HTTPS)) {
     return { state: 'conflict', origin };
@@ -134,7 +134,7 @@ export function prepareRemote(config, provider, input = {}) {
       return view(provider, 'prepared', { planId: plan.id, origin: plan.origin, target, reuse: plan.reuse,
         owner: (existing?.origin === plan.origin && existing?.owner) || (plan.reuse ? 'external' : 'summon') });
     }
-    const origin = workspaceOrigin(input.origin || existing?.origin, { httpsOnly: true });
+    const origin = instanceOrigin(input.origin || existing?.origin, { httpsOnly: true });
     const owner = input.owner || existing?.owner || 'external';
     if (!['external', 'summon'].includes(owner)) throw new Error('请选择由外部或 Summon 管理。');
     if (owner === 'summon' && !installedBinary('cloudflared')) return view(provider, 'missing');

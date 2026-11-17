@@ -2,8 +2,6 @@ import { callRecords } from './calls.mjs';
 import { idOf, identity, keyOf, reject, sameRef } from './contract.mjs';
 import { executionRecords } from '../services/connection-records.mjs';
 
-const sameProfile = (record, profile) => record && (record.workspaceProfileId ?? null) === (profile ?? null);
-
 export class RoomWork {
   constructor(platform) { this.platform = platform; }
 
@@ -24,7 +22,7 @@ export class RoomWork {
       if (args.work_room) reject('room_work_forbidden', 'Select a group Room for work observations', 403);
       return null;
     }
-    const submitter = platform.principalContext(identity(context.submitted_by ?? context.actor), context.workspaceProfileId);
+    const submitter = { actor: identity(context.submitted_by ?? context.actor) };
     if (!platform.canReadSpace(context.actor, room, context) || !platform.canReadSpace(submitter.actor, room, submitter) ||
         sharing && !sameRef(room, space))
       reject('room_work_forbidden', 'Work observations require the actual Room and membership', 403);
@@ -40,13 +38,12 @@ export class RoomWork {
     const { platform } = this;
     const session = platform.store.get(executionRecords, event.execution?.id);
     const work = session?.group_work;
-    return Boolean(work && sameProfile(event, context.workspaceProfileId) && sameProfile(session, context.workspaceProfileId) &&
-      sameRef(work.room, event.space) && platform.canReadSpace(context.actor, work.room, context));
+    return Boolean(work && sameRef(work.room, event.space) && platform.canReadSpace(context.actor, work.room, context));
   }
 
   canPublish(session) {
     const room = session.group_work?.room && this.platform.store.get('rooms', session.group_work.room.id);
-    return Boolean(!session.authority_revoked && sameProfile(room, session.workspaceProfileId) && room.members.includes(session.owner.id));
+    return Boolean(!session.authority_revoked && room && room.members.includes(session.owner.id));
   }
 
   publish(sessionId, callId, position, fact) {
@@ -54,14 +51,14 @@ export class RoomWork {
     const { store } = platform;
     const session = store.get(executionRecords, sessionId);
     const call = store.get(callRecords, callId);
-    if (!session || !this.canPublish(session) || !sameProfile(call, session.workspaceProfileId) ||
+    if (!session || !this.canPublish(session) || !call ||
         !sameRef(call.target, { kind: 'session', id: session.id })) return;
     const id = keyOf('work.tool', callId, position);
     if (store.get('platform-events', id)) return;
     const { room, source } = session.group_work;
     const event = platform.connections.clean({
       kind: 'event', type: 'work.tool', id, space: room, roomId: room.id,
-      workspaceProfileId: session.workspaceProfileId, author: { kind: 'platform', id: 'platform' },
+      author: { kind: 'platform', id: 'platform' },
       execution: { kind: 'session', id: session.id }, call_ref: { kind: 'call', id: callId },
       source, executor: session.execution_actor, connection: { kind: 'connection', id: session.engine },
       environment: { ...session.execution_environment, cwd: fact.cwd ?? session.workspace?.path, workspace: session.workspace_ref },

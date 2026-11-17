@@ -145,15 +145,7 @@ const tabs = [
   { id:'wakeups', title:'订阅与提醒', icon:'clock' }, { id:'connections', title:'执行连接', icon:'link' },
   { id:'models', title:'模型与用量', icon:'computer' }, { id:'usage', title:'Token 统计', icon:'layers' },
 ];
-const protocolVersion = 2;
-const workspaceProfile = new URLSearchParams(location.search).get('workspace');
-const workspaceKey = key => workspaceProfile ? key + ':' + workspaceProfile : key;
-function workspacePath(path) {
-  if (!workspaceProfile) return path;
-  const url = new URL(path, location.origin);
-  url.searchParams.set('workspace', workspaceProfile);
-  return url.pathname + url.search;
-}
+const protocolVersion = 3;
 const state = { bots: [], rooms: [], executions: [], files: [], wakeups: [], connections: [], workspaces: [] };
 const resourceLabels = {
   bots:'Bot 数量', sessions:'会话数量', models:'并发模型请求', external:'并发外部执行', queue:'待处理事件',
@@ -175,7 +167,7 @@ const sendBusy = (roomId = ui.roomId) => !ui.protocolReady || ui.sendingRooms.ha
 function attachmentSize(bytes) { return bytes < 1024 * 1024 ? `${Math.max(1, Math.ceil(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`; }
 function attachmentUrl(item, preview = false) {
   const path = preview ? item?.previewUrl : item?.url;
-  if (typeof path === 'string' && /^\/api\/attachments\/[a-z0-9-]+(?:\/preview)?$/i.test(path)) return workspacePath(path);
+  if (typeof path === 'string' && /^\/api\/attachments\/[a-z0-9-]+(?:\/preview)?$/i.test(path)) return path;
   return '';
 }
 function renderMessageAttachments(items = []) {
@@ -185,7 +177,7 @@ function renderMessageAttachments(items = []) {
     const title = '<span><strong>' + esc(name) + '</strong><small>' + (item.size == null ? '' : attachmentSize(item.size)) + '</small></span>';
     if (item.unavailable) return '<span class="message-attachment">' + icon('file', 24) + '<span>' + esc(name) + ' · 文件不可用</span></span>';
     if (!url) return '<button type="button" class="message-attachment" data-action="open-file" data-id="' + esc(item.id) + '">' + icon('file', 24) + title + '</button>';
-    const view = typeof item.openUrl === 'string' && /^\/api\/attachments\/[a-z0-9-]+\/view$/i.test(item.openUrl) ? workspacePath(item.openUrl) : '';
+    const view = typeof item.openUrl === 'string' && /^\/api\/attachments\/[a-z0-9-]+\/view$/i.test(item.openUrl) ? item.openUrl : '';
     return '<div><a class="message-attachment ' + (thumbnail ? 'has-image' : '') + '" href="' + esc(url) + '" download="' + esc(name) + '">' +
       (thumbnail ? '<img src="' + esc(thumbnail) + '" alt="' + esc(name) + '" loading="lazy">' : icon('file', 24)) + title + '</a>' +
       (view ? '<a class="text-button" href="' + esc(view) + '" target="_blank" rel="noopener noreferrer">打开预览</a>' : '') + '</div>';
@@ -254,9 +246,7 @@ function removeAttachment(key) {
   if (item?.preview) URL.revokeObjectURL(item.preview);
   ui.draftAttachments[ui.roomId] = items.filter(item => item.key !== key); render();
 }
-const updateDraftKey = workspaceKey('summon:update-drafts');
-let savedUpdateSession = null;
-try { savedUpdateSession = JSON.parse(sessionStorage.getItem(updateDraftKey) || localStorage.getItem(updateDraftKey) || 'null'); } catch {}
+const updateDraftKey = 'summon:update-drafts';
 
 function localRoomMessages(roomId) { return Object.values(ui.localMessages[roomId] || {}); }
 function reconcileRoomMessages(roomId, remote) {
@@ -396,8 +386,7 @@ async function readSyncBody(response, progress) {
 }
 async function api(path, method = 'GET', body, { sync = false, clientId } = {}) {
   const bootstrap = path === '/api/bootstrap';
-  if (!bootstrap && !ui.protocolReady) throw new Error(ui.protocolNotice || '正在连接工作区');
-  path = workspacePath(path);
+  if (!bootstrap && !ui.protocolReady) throw new Error(ui.protocolNotice || '正在连接 Summon');
   for (let attempt = 0; ; attempt++) {
     let response, data;
     const controller = new AbortController();
@@ -603,7 +592,7 @@ const filePath = id => '/api/files/' + encodeURIComponent(id);
 let stream = null;
 
 function protocolMessage(code, data) {
-  if (code === 'updating' || data.updating) return '工作区正在更新。草稿和待确认的发送已保留。';
+  if (code === 'updating' || data.updating) return 'Summon 正在更新。草稿和待确认的发送已保留。';
   const expected = Number(data.protocolVersion ?? data.details?.protocolVersion);
   if (expected > protocolVersion) return '此页面需要更新。刷新页面后可继续操作，草稿会保留。';
   return '等待服务器升级到此客户端所需的协议。草稿和待确认的发送已保留。';
@@ -621,10 +610,6 @@ async function handshake() {
   let startup;
   try { startup = await api('/api/bootstrap'); }
   catch (error) {
-    if (error.code === 'workspace_not_found') {
-      setProtocol(false, '此工作区已不可用，请从设置切换到主工作区。');
-      return false;
-    }
     if (error.status !== 404) throw error;
     setProtocol(false, protocolMessage('protocol_mismatch', {}));
     return false;
@@ -635,10 +620,9 @@ async function handshake() {
     return false;
   }
   ui.protocolReady = true;
-  if (!startup.updating && Array.isArray(startup.workspaceProfiles)) ui.workspaceProfiles = startup.workspaceProfiles;
   ui.protocolNotice = startup.updating ? protocolMessage('updating', startup) : '';
   if (!stream) {
-    stream = new EventSource(workspacePath('/api/stream?protocol=' + protocolVersion));
+    stream = new EventSource('/api/stream?protocol=' + protocolVersion);
     stream.onopen = () => { ui.streamConnected = true; scheduleRefresh(); };
     stream.onmessage = scheduleRefresh;
     for (const type of ['change', 'state', 'message', 'room', 'delivery', 'execution']) stream.addEventListener(type, scheduleRefresh);
@@ -662,14 +646,14 @@ async function refresh(force = false) {
       render();
       return;
     }
-    if (force) ui.workspaceCursor = null;
-    const synced = await requestSyncedSnapshot('/api/state', { snapshot:ui.workspaceSnapshot, cursor:ui.workspaceCursor });
+    if (force) ui.stateCursor = null;
+    const synced = await requestSyncedSnapshot('/api/state', { snapshot:ui.stateSnapshot, cursor:ui.stateCursor });
     if (!synced) return;
-    ui.workspaceSnapshot = synced.snapshot; ui.workspaceCursor = synced.cursor;
+    ui.stateSnapshot = synced.snapshot; ui.stateCursor = synced.cursor;
     Object.assign(state, synced.snapshot);
     globalThis.SummonModels.sync(state.modelSettings);
     globalThis.SummonModels.bind({ api,render,toast,refresh });
-    void globalThis.SummonCache?.writeWorkspace(synced);
+    void globalThis.SummonCache?.writeState(synced);
     if (!roomById(ui.roomId)) {
       ui.roomId = state.rooms.find(room => room.members.includes('user'))?.id ?? null;
       ui.reply = null;
@@ -685,7 +669,7 @@ async function refresh(force = false) {
     render();
     await loadCurrent();
     syncRetryAt = syncRetryDelay = 0;
-    showConnection(ui.protocolNotice || (ui.streamConnected ? '' : '正在同步工作区'));
+    showConnection(ui.protocolNotice || (ui.streamConnected ? '' : '正在同步会话'));
     render();
   } catch (error) {
     syncRetryDelay = Math.min(30000, syncRetryDelay ? syncRetryDelay * 2 : 2000);
@@ -820,7 +804,7 @@ async function acceptHistoryEpoch(response, generation) {
   if (generation !== ui.historyGeneration || ui.retiredHistoryEpochs.has(epoch)) { scheduleRefresh(); return false; }
   ui.retiredHistoryEpochs.add(ui.historyEpoch); ui.historyEpoch = epoch; ui.historyGeneration++;
   ui.messages = []; ui.roomDeliveries.clear(); ui.messagesRoomId = null;
-  ui.messageCache.clear(); ui.workspaceSnapshot = null; ui.workspaceCursor = null;
+  ui.messageCache.clear(); ui.stateSnapshot = null; ui.stateCursor = null;
   await globalThis.SummonCache?.resetHistory(epoch, clientSessionSnapshot());
   return true;
 }
@@ -899,17 +883,19 @@ function restoreClientSession(saved) {
   }
 }
 
-async function restoreCachedWorkspace() {
+async function restoreCachedState() {
   const cache = globalThis.SummonCache;
   try {
     await cache?.ready();
-    const [workspace, session] = await Promise.all([cache?.readWorkspace(), cache?.readSession()]);
-    ui.historyEpoch = workspace?.snapshot.historyEpoch ?? session?.historyEpoch ?? savedUpdateSession?.historyEpoch ?? null;
+    const [cached, session] = await Promise.all([cache?.readState(), cache?.readSession()]);
+    let savedUpdateSession;
+    try { savedUpdateSession = JSON.parse(sessionStorage.getItem(updateDraftKey) || localStorage.getItem(updateDraftKey) || 'null'); } catch {}
+    ui.historyEpoch = cached?.snapshot.historyEpoch ?? session?.historyEpoch ?? savedUpdateSession?.historyEpoch ?? null;
     restoreClientSession(session);
     if (savedUpdateSession) restoreClientSession({ ...session, ...savedUpdateSession, attachments: { ...session?.attachments, ...savedUpdateSession.attachments } });
-    if (workspace) {
-      ui.workspaceSnapshot = workspace.snapshot; ui.workspaceCursor = workspace.cursor;
-      Object.assign(state, workspace.snapshot);
+    if (cached) {
+      ui.stateSnapshot = cached.snapshot; ui.stateCursor = cached.cursor;
+      Object.assign(state, cached.snapshot);
       globalThis.SummonModels.sync(state.modelSettings);
       if (!roomById(ui.roomId)) ui.roomId = state.rooms[0]?.id ?? null;
       await restoreRoomMessages(ui.roomId);
@@ -1366,17 +1352,7 @@ async function act(action, element) {
   if (action === 'refresh') return refresh(true);
   if (action === 'close-modal') return closeModal();
   if (action === 'client-downloads') return window.SummonClients?.open(ui.releasesUrl);
-  if (action === 'desktop-workspace') return window.SummonDesktop?.openWorkspaceSetup();
-  if (action === 'web-workspace') {
-    const options = [{ value:'',label:'主工作区' }, ...(ui.workspaceProfiles || []).map(profile => ({ value:profile.id,label:profile.name }))];
-    return openModal('切换工作区', '', selectField('工作区','workspace',options,workspaceProfile || ''), async data => {
-      await persistClientSession();
-      const url = new URL(location.href), workspace = data.get('workspace');
-      if (workspace) url.searchParams.set('workspace', workspace);
-      else url.searchParams.delete('workspace');
-      location.assign(url);
-    }, '打开工作区');
-  }
+  if (action === 'desktop-connection') return window.SummonDesktop?.openConnectionSettings();
   if (action === 'update-app') { await persistClientSession(); location.reload(); return; }
   if (action === 'display-settings') return openDisplaySettings();
   if (action === 'copy-display-diagnostics') {
@@ -1663,12 +1639,12 @@ function roomPreview(room) {
 function roomReadMarkers() {
   if (ui.readMarkersEpoch !== ui.historyEpoch || !ui.readMarkers) {
     ui.readMarkersEpoch = ui.historyEpoch;
-    try { const saved = JSON.parse(localStorage.getItem(workspaceKey('summon:room-read-markers:v1'))); ui.readMarkers = saved?.historyEpoch === (ui.historyEpoch ?? null) ? saved.rooms || {} : {}; }
+    try { const saved = JSON.parse(localStorage.getItem('summon:room-read-markers:v1')); ui.readMarkers = saved?.historyEpoch === (ui.historyEpoch ?? null) ? saved.rooms || {} : {}; }
     catch { ui.readMarkers = {}; }
   }
   return ui.readMarkers;
 }
-function saveRoomReadMarkers() { try { localStorage.setItem(workspaceKey('summon:room-read-markers:v1'), JSON.stringify({ historyEpoch: ui.historyEpoch ?? null, rooms: ui.readMarkers })); } catch {} }
+function saveRoomReadMarkers() { try { localStorage.setItem('summon:room-read-markers:v1', JSON.stringify({ historyEpoch: ui.historyEpoch ?? null, rooms: ui.readMarkers })); } catch {} }
 function markCurrentRoomRead() {
   if (ui.view !== 'chat' || document.hidden || displayMedia.matches && !ui.mobileRoom || ui.messagesRoomId !== ui.roomId) return;
   const last = ui.messages.at(-1);
@@ -1732,8 +1708,7 @@ function renderTopbar() {
   const menu = ui.menu === 'create' ? `<div class="context-menu create-menu"><button data-action="new-bot">${icon('person', 19)}创建 Bot</button><button data-action="new-room">${icon('people', 19)}创建群聊</button></div>` : '';
   const settings = ui.menu === 'apps' ? `<div class="context-menu apps-menu">
     ${tabs.filter(tab => tab.id !== 'chat').map(tab => `<button data-action="navigate" data-view="${tab.id}">${icon(tab.icon, 19)}${tab.title}</button>`).join('')}
-    ${window.SummonDesktop?.openWorkspaceSetup ? `<button data-action="desktop-workspace">${icon('computer', 19)}切换工作区</button>`
-      : workspaceProfile || ui.workspaceProfiles?.length ? `<button data-action="web-workspace">${icon('computer', 19)}切换工作区</button>` : ''}
+    ${window.SummonDesktop?.openConnectionSettings ? `<button data-action="desktop-connection">${icon('computer', 19)}实例连接</button>` : ''}
     <button data-action="display-settings">${icon('settings', 19)}显示设置</button>
     <button data-action="client-downloads">${icon('install', 19)}客户端下载与更新</button>
     <button data-action="update-app">${icon('refresh', 19)}刷新页面</button></div>` : '';
@@ -2097,7 +2072,7 @@ function renderFiles() {
   const item = ui.fileDetail;
   const rows = trackedList('files','/api/files', file => `<button class="profile-record record-button" data-action="open-file" data-id="${esc(file.id)}">
     <strong>${esc(file.name || file.path)}</strong><small>${esc(file.space ? refLabel(file.space) : '')} · 修订 ${esc(file.revision)}</small></button>`);
-  const link = typeof item?.url === 'string' && item.url === filePath(item.id) + '/download' ? workspacePath(item.url) : attachmentUrl(item);
+  const link = typeof item?.url === 'string' && item.url === filePath(item.id) + '/download' ? item.url : attachmentUrl(item);
   const detail = item ? `<h2>${esc(item.path || item.name)}</h2><p>修订 ${esc(item.revision)}</p><div class="execution-actions">
     ${link ? `<a href="${esc(link)}" download>下载</a>` : ''}${item.path && typeof item.content === 'string' && !item.next_cursor ? `<button class="secondary-button" data-action="edit-file" data-id="${esc(item.id)}">编辑</button>` : ''}</div>
     ${typeof item.content === 'string' ? `<pre class="execution-output">${esc(item.content)}</pre>` :
@@ -2294,7 +2269,7 @@ const initialView = location.hash.slice(1);
 if (tabs.some(tab => tab.id === initialView)) ui.view = initialView;
 applyDisplayPreferences();
 renderTopbar();
-void restoreCachedWorkspace().then(() => refresh());
+void restoreCachedState().then(() => refresh());
 setInterval(() => { if (!ui.streamConnected && navigator.onLine && !document.hidden) scheduleRefresh(); }, 3000);
 window.addEventListener('offline', () => { setProtocol(false, '当前离线。草稿和待确认的发送已保留。'); persistClientSession(); });
 window.addEventListener('online', scheduleRefresh);

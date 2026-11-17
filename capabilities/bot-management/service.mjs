@@ -64,22 +64,25 @@ export class BotManager {
     return !bot.connection_initializer && (actor.kind === 'user' || actor.id === bot.id || sameIdentity(actor, bot.owner));
   }
 
-  onboardingBot(workspaceProfileId) {
-    return this.list().find(bot => !bot.archivedAt && !bot.connection_initializer &&
-      (bot.workspaceProfileId ?? null) === workspaceProfileId && bot.built_in_role?.id === toolOnboardingRole);
+  defaultBot(role, bots = this.list()) {
+    const matches = bots.filter(bot => !bot.archivedAt && !bot.connection_initializer && bot.built_in_role?.id === role);
+    return matches.find(bot => bot.id === `bot-default-${role}-local`) ?? matches[0];
   }
 
-  ensureDefaults(workspaceProfileId) {
-    const existing = this.list().filter(bot => !bot.archivedAt && !bot.connection_initializer &&
-      (bot.workspaceProfileId ?? null) === workspaceProfileId);
-    const model = this.models.selectBinding(undefined, workspaceProfileId);
+  onboardingBot() {
+    return this.defaultBot(toolOnboardingRole);
+  }
+
+  ensureDefaults() {
+    const existing = this.list();
+    const model = this.models.selectBinding();
     let changed = false;
     const bots = Object.entries(defaultBotRoles).map(([role, name]) => {
-      const id = `bot-default-${role}-${workspaceProfileId ?? 'local'}`;
-      const bot = existing.find(item => item.built_in_role?.id === role) ?? this.store.get(botRecords, id);
+      const id = `bot-default-${role}-local`;
+      const bot = this.defaultBot(role, existing) ?? this.store.get(botRecords, id);
       if (!bot) {
         changed = true;
-        return this.saveNew({ id, name, instructions: '', model, owner: user, workspaceProfileId,
+        return this.saveNew({ id, name, instructions: '', model, owner: user,
           built_in_role: { id: role }, ...(!model ? { default_model_pending: true } : {}) });
       }
       if (!model || !bot.default_model_pending || bot.archivedAt || bot.built_in_role?.id !== role) return bot;
@@ -94,18 +97,17 @@ export class BotManager {
 
   maintainer(connection) {
     const bot = connection?.maintainer_bot_id && this.store.get(botRecords, connection.maintainer_bot_id);
-    return bot && !bot.archivedAt && !bot.connection_initializer &&
-      (bot.workspaceProfileId ?? null) === (connection.workspaceProfileId ?? null) ? bot : null;
+    return bot && !bot.archivedAt && !bot.connection_initializer ? bot : null;
   }
 
   roleOf(id, context, bot) {
     if ((id === toolOnboardingRole || id !== undefined && bot?.built_in_role?.id === toolOnboardingRole) && context.actor.kind !== 'user') {
-      reject('configuration_forbidden', 'The host selects the workspace tool onboarding Bot', 403);
+      reject('configuration_forbidden', 'The host selects the tool onboarding Bot', 403);
     }
-    if (id === toolOnboardingRole) {
-      const current = this.onboardingBot(context.workspaceProfileId);
+    if (id === toolOnboardingRole && bot?.built_in_role?.id !== toolOnboardingRole) {
+      const current = this.onboardingBot();
       if (current && current.id !== bot?.id)
-        reject('onboarding_bot_exists', 'This workspace already has a tool onboarding Bot', 409, { bot: current.id });
+        reject('onboarding_bot_exists', 'A tool onboarding Bot is already assigned', 409, { bot: current.id });
     }
     return id == null ? id : { id };
   }
@@ -137,7 +139,7 @@ export class BotManager {
   }
 
   create(id, args, context, beforeSave) {
-    const { actor, workspaceProfileId } = context;
+    const { actor } = context;
     const name = cleanName(args.name), instructions = instructionsOf(args.instructions);
     return this.store.transaction(() => {
       beforeSave();
@@ -147,13 +149,13 @@ export class BotManager {
       const connection = this.assignment(args, context, role, true);
       const assigned = this.maintainer(connection);
       if (assigned) return assigned;
-      let model = this.models.selectBinding(args.model, workspaceProfileId);
-      if (model && !this.canUseModel(actor, model.connection_id, context)) {
+      let model = this.models.selectBinding(args.model);
+      if (model && !this.canUseModel(actor, model.connection_id)) {
         if (args.model !== undefined) reject('connection_forbidden', 'Model connection is not available to this caller', 403);
         model = null;
       }
       this.resources.assertCapacity('bots', this.list().filter(bot => !bot.connection_initializer).length);
-      const record = this.saveNew({ id, name, instructions, model, owner: actor, workspaceProfileId: workspaceProfileId ?? null,
+      const record = this.saveNew({ id, name, instructions, model, owner: actor,
         ...(role ? { built_in_role: role } : {}) });
       if (connection) this.bindMaintenance(connection, record);
       return record;
@@ -161,10 +163,10 @@ export class BotManager {
   }
 
   configure(args, context, callId, validateIndex) {
-    const { actor, workspaceProfileId } = context;
+    const { actor } = context;
     const id = idOf(args.bot, 'bot');
     const before = this.get(id);
-    if (!this.canConfigure(actor, before) || (before.workspaceProfileId ?? null) !== workspaceProfileId) {
+    if (!this.canConfigure(actor, before)) {
       reject('configuration_forbidden', 'Bot configuration is not available to this caller', 403);
     }
     assertRevision(before.revision, args.revision);
@@ -179,9 +181,9 @@ export class BotManager {
       reject('connection_maintainer_exists', 'This connection already has a maintenance Bot', 409,
         { maintainer: { kind: 'bot', id: maintainer.id } });
     if (args.model !== undefined) {
-      const model = this.models.selectBinding(args.model, workspaceProfileId);
+      const model = this.models.selectBinding(args.model);
       const target = { kind: 'bot', id };
-      if (model && (!this.canUseModel(actor, model.connection_id, context) || !this.canUseModel(target, model.connection_id))) {
+      if (model && (!this.canUseModel(actor, model.connection_id) || !this.canUseModel(target, model.connection_id))) {
         reject('connection_forbidden', 'Model connection is outside the Bot’s authorized range', 403);
       }
       changes.model = model;

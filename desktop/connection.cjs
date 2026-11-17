@@ -7,7 +7,7 @@ const runtime = join(process.resourcesPath, 'summon-runtime');
 const node = join(runtime, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node');
 const desktopScript = join(runtime, 'scripts/installation/desktop.mjs');
 const desktopSettings = () => import(pathToFileURL(desktopScript).href);
-const setupUrl = 'summon-setup://workspace/index.html';
+const setupUrl = 'summon-setup://connection/index.html';
 
 function localAccess(profile, input) {
   return new Promise((resolve, reject) => {
@@ -36,11 +36,11 @@ function sessionCookie(origin) {
 }
 
 async function login(session, origin, token, local) {
-  const { bearerHeader, workspaceRequest } = await desktopSettings();
-  const response = await workspaceRequest(origin, '/auth/session', { method: 'POST', headers: bearerHeader(token) });
+  const { bearerHeader, instanceRequest } = await desktopSettings();
+  const response = await instanceRequest(origin, '/auth/session', { method: 'POST', headers: bearerHeader(token) });
   if (response.status === 429) throw new Error('认证尝试过于频繁，请稍后重试。');
   if (response.status === 401) throw new Error(local
-    ? '本机正式实例拒绝了部署配置中的访问令牌。' : '工作区访问令牌无效。');
+    ? '本机正式实例拒绝了部署配置中的访问令牌。' : '实例访问令牌无效。');
   const { name, secure } = sessionCookie(origin);
   const cookie = response.headers.getSetCookie().map(value => value.split(';', 1)[0])
     .find(value => value.startsWith(name + '='));
@@ -49,28 +49,28 @@ async function login(session, origin, token, local) {
   try {
     await session.cookies.set({ url: origin + '/', name, value, path: '/', secure, httpOnly: true,
       sameSite: 'strict', expirationDate: Date.now() / 1000 + 30 * 86400 });
-  } catch { throw new Error('无法保存工作区登录会话。'); }
+  } catch { throw new Error('无法保存实例登录会话。'); }
 }
 
-async function workspaceProfiles(session, origin, createId) {
-  const { loginRequired, requestWorkspaceProfiles } = await desktopSettings();
+async function checkLogin(session, origin) {
+  const { loginRequired, instanceBootstrap } = await desktopSettings();
   const { name, secure } = sessionCookie(origin);
   const cookies = await session.cookies.get({ url: origin + '/', name });
   const cookie = cookies.find(item => item.httpOnly && item.secure === secure && item.hostOnly && item.path === '/'
     && /^[A-Za-z0-9._-]{1,160}$/.test(item.value));
   if (!cookie) throw loginRequired();
-  return requestWorkspaceProfiles(origin, { Cookie: name + '=' + cookie.value }, createId);
+  return instanceBootstrap(origin, { Cookie: name + '=' + cookie.value });
 }
 
-async function prepareWorkspace(session, selection, token) {
+async function prepareConnection(session, selection, token) {
   const local = selection.mode === 'local';
   if (!local && token) await login(session, selection.origin, token, false);
-  try { return await workspaceProfiles(session, selection.origin); }
+  try { return await checkLogin(session, selection.origin); }
   catch (error) {
-    if (!local || error.code !== 'WORKSPACE_LOGIN_REQUIRED') throw error;
-    const { formalWorkspaceToken } = await desktopSettings();
-    await login(session, selection.origin, await formalWorkspaceToken(), true);
-    return workspaceProfiles(session, selection.origin);
+    if (!local || error.code !== 'INSTANCE_LOGIN_REQUIRED') throw error;
+    const { formalInstanceToken } = await desktopSettings();
+    await login(session, selection.origin, await formalInstanceToken(), true);
+    return checkLogin(session, selection.origin);
   }
 }
 
@@ -88,4 +88,4 @@ async function authorizationUrl(provider) {
   return null;
 }
 
-module.exports = { runtime, setupUrl, desktopSettings, localAccess, prepareWorkspace, workspaceProfiles, authorizationUrl };
+module.exports = { runtime, setupUrl, desktopSettings, localAccess, prepareConnection, authorizationUrl };

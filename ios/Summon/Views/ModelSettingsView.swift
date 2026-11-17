@@ -163,7 +163,7 @@ struct ModelQuotaDetailsView: View {
                 }
                 if ["starting", "waiting"].contains(login["status"].stringValue) { Section("订阅授权") { Text(login["userCode"].stringValue).summonFont(.title2).textSelection(.enabled); if let url = URL(string: login["verificationUri"].stringValue), ["https", "http"].contains(url.scheme ?? "") { Link("打开授权页面", destination: url) }; Button("取消授权") { run { login = try await store.request(path: "/api/model-settings/connections/\(component(login["id"]))/login", method: "DELETE") } } } }
                 if !login["error"].stringValue.isEmpty { Text(login["error"].stringValue).foregroundStyle(.orange) }
-                Section { Text("当前工作区的 Pi 使用这里选择的默认模型。").summonFont(.caption).foregroundStyle(.secondary) }
+                Section { Text("新建 Bot 使用这里选择的默认模型。").summonFont(.caption).foregroundStyle(.secondary) }
             }.navigationTitle("模型与用量").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } }; ToolbarItem(placement: .topBarTrailing) { Button("刷新") { run { try await store.refreshModelUsage(force: true); try await reload() } }.disabled(busy) } }
                 .task(id: store.protocolReady) { guard store.protocolReady else { return }; do { try await reload() } catch { if !Task.isCancelled { self.error = error.localizedDescription } } }

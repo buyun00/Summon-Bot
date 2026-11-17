@@ -21,14 +21,20 @@ async function entries(folder) {
   try { return await readdir(folder, { withFileTypes: true }); }
   catch (error) { if (error.code === 'ENOENT') return []; throw error; }
 }
-async function candidate(root) {
+async function readManifest(root) {
   const manifest = await readJson(join(root, 'release-manifest.json'));
   if (manifest.application !== 'summon-bot') throw new Error('This package is not a Summon Bot installation');
   if (manifest.format !== 3) throw new Error(`Unsupported installation manifest format: ${manifest.format}`);
-  if (manifest.dataFormat !== dataFormat) throw new Error(`Package data format ${manifest.dataFormat} does not match ${dataFormat}`);
+  if (!Number.isSafeInteger(manifest.dataFormat)) throw new Error('Invalid release dataFormat');
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(manifest.buildId || '')) throw new Error('Invalid release buildId');
   if (!Number.isSafeInteger(manifest.buildNumber)) throw new Error('Invalid release buildNumber');
   if (!Number.isSafeInteger(manifest.protocolVersion)) throw new Error('Invalid release protocolVersion');
+  return manifest;
+}
+
+async function candidate(root) {
+  const manifest = await readManifest(root);
+  if (manifest.dataFormat !== dataFormat) throw new Error('Package data format does not match the installer');
   return manifest;
 }
 
@@ -154,7 +160,7 @@ export async function installRelease({ releaseRoot, appRoot, dataRoot, sourceRoo
       let previousManifest;
       if (deployment) {
         if (!selected || resolve(selected.releaseRoot) !== resolve(deployment.releaseRoot)) throw new Error('The running deployment and installation pointer disagree');
-        previousManifest = await candidate(deployment.releaseRoot);
+        previousManifest = await readManifest(deployment.releaseRoot);
         const owner = currentWriters(deployment);
         const gateway = await owner.gateway();
         if (gateway.state === 'ready') {
@@ -173,7 +179,7 @@ export async function installRelease({ releaseRoot, appRoot, dataRoot, sourceRoo
       onProgress?.({ phase: state.phase, buildId: manifest.buildId });
     } else if (state.target_build !== manifest.buildId || resolve(state.release_root) !== destination) {
       if (!replacePending) throw new Error(`Continue installation ${state.target_build} with its staged release, or use --replace-pending with a repaired build`);
-      const previousManifest = state.previous_release && await candidate(state.previous_release);
+      const previousManifest = state.previous_release && await readManifest(state.previous_release);
       if (previousManifest && previousManifest.protocolVersion !== manifest.protocolVersion) {
         await assertClientAvailability({ dataRoot, release: await readJson(join(releaseRoot, 'release.json')), expected: manifest });
       }
@@ -197,8 +203,12 @@ export async function installRelease({ releaseRoot, appRoot, dataRoot, sourceRoo
       await owner?.assertStopped({ drain: state.drain });
       const { defaultLimits } = await import(new URL('../../capabilities/platform/resources.mjs', import.meta.url));
       const current = deployment || createDeployment({ dataRoot, releaseRoot: destination, defaultCwd, port });
-      const localWorkspace = join(dataRoot, 'workspace');
-      if (!deployment && current.defaultCwd === localWorkspace) await mkdir(localWorkspace, { recursive: true });
+      const localDirectory = join(dataRoot, 'workspace');
+      if (!deployment && current.defaultCwd === localDirectory) await mkdir(localDirectory, { recursive: true });
+      if (deployment?.dataFormat === 2) {
+        const { mergeWorkspaceProfiles } = await import('./merge-workspace-profiles.mjs');
+        await mergeWorkspaceProfiles(dataRoot);
+      }
       await stageConfiguration({ dataRoot, state, deployment: current, defaultLimits, publicOrigin });
       state = await advanceInstallation(dataRoot, state, 'data_ready');
     }

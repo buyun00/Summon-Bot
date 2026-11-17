@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { avatarOf } from '../shared/validation.mjs';
 import { botRecords } from '../bot-management/service.mjs';
 import { assertRevision, page, protocolVersion, reject, user } from '../platform/contract.mjs';
@@ -26,11 +25,9 @@ function callResponse(result, callId) {
   return callId ? { ...result, call_id: callId } : result;
 }
 
-export function createApi({ platform, room, attachments, models, profiles, connections, push, sync, historyEpoch, emit, getUsage }) {
+export function createApi({ platform, room, attachments, models, connections, push, sync, historyEpoch, emit, getUsage }) {
   return async function route(method, path, params, body, clientHeader) {
-    if (path === '/api/workspace-profiles' && method === 'POST') return profiles.create(body.id ?? randomUUID());
-    const selectedProfile = params.has('workspace') ? profiles.get(params.get('workspace')).id : null;
-    const userContext = { actor: user, workspaceProfileId: selectedProfile };
+    const userContext = { actor: user };
     const list = (kind, params) => platform.find({ kind, scope: scopeOf(params), query: params.get('query') || undefined,
       cursor: params.get('cursor') || undefined }, userContext);
     const read = (ref, params) => {
@@ -65,9 +62,9 @@ export function createApi({ platform, room, attachments, models, profiles, conne
     }
     if (method === 'GET' && path === '/api/state') {
       const state = { bots: platform.listBots().filter(bot => platform.visibleBot(bot, userContext)).map(bot => platform.manager.view(bot, user)),
-        rooms: room.rooms(user.id, userContext), workspaceProfileId: selectedProfile,
-        modelSettings: models.summary(selectedProfile), historyEpoch, limits: platform.resources.limits, protocolVersion };
-      return snapshot(selectedProfile ? 'workspace:' + selectedProfile : 'workspace', state, params);
+        rooms: room.rooms(user.id),
+        modelSettings: models.summary(), historyEpoch, limits: platform.resources.limits, protocolVersion };
+      return snapshot('state', state, params);
     }
     if (method === 'GET' && path === '/api/usage') return getUsage(params, userContext);
     if (path === '/api/push/status' && method === 'GET') return push.status();
@@ -121,12 +118,12 @@ export function createApi({ platform, room, attachments, models, profiles, conne
     }
     if ((match = path.match(/^\/api\/rooms\/([^/]+)(?:\/(messages)(\/receipt)?)?$/))) {
       const ref = routeRef('room', match[1]);
-      if (method === 'GET' && match[3]) return room.receipt(ref.id, params.get('clientId'), user.id, userContext);
+      if (method === 'GET' && match[3]) return room.receipt(ref.id, params.get('clientId'), user.id);
       if (method === 'GET') {
         const result = await read(ref, params);
         const deliveries = Object.fromEntries(result.messages.map(item => [item.id, platform.messageDeliveries(item.id)]));
         const value = { ...result, deliveries, historyEpoch };
-        return match[2] ? snapshot('room:' + (selectedProfile ? selectedProfile + ':' : '') + ref.id, value, params) : value;
+        return match[2] ? snapshot('room:' + ref.id, value, params) : value;
       }
       if (method === 'POST' && match[2] && !match[3]) return mutation('send', { ...args, to: ref }, clientId);
       if (method === 'PATCH' && !match[2]) return mutation('configure_room', { ...args, room: ref }, clientId);
@@ -161,30 +158,28 @@ export function createApi({ platform, room, attachments, models, profiles, conne
       const { record, existing } = platform.calls.begin('upload_attachment', { ...userContext, clientId });
       if (existing && record.status !== 'prepared') return platform.calls.replay(record, userContext);
       try {
-        const result = await attachments.upload(args, { ownerId: user.id, workspaceProfileId: selectedProfile, id: record.id });
+        const result = await attachments.upload(args, { ownerId: user.id, id: record.id });
         return platform.calls.finish(record.id, 'completed', result);
       } catch (error) { platform.calls.fail(record.id, error); throw error; }
     }
     if (['GET', 'HEAD'].includes(method) && (match = path.match(/^\/api\/attachments\/([^/]+)(?:\/(preview|view))?$/))) {
       const id = decodeURIComponent(match[1]);
-      room.attachment(id, user.id, userContext);
+      room.attachment(id, user.id);
       const file = await attachments.read(id, match[2] === 'view' ? 'view' : match[2] === 'preview');
-      room.attachment(id, user.id, userContext);
+      room.attachment(id, user.id);
       return file;
     }
     if (path === '/api/connections') {
       if (method === 'GET') {
         const usage = platform.resources.snapshot();
         const items = connections.settings(userContext);
-        const result = { ...await list('connection', params), ...(selectedProfile ? {} : {
-          limits: usage.limits, limits_revision: platform.resources.readLimits().revision, usage }) };
+        const result = { ...await list('connection', params), limits: usage.limits, limits_revision: platform.resources.readLimits().revision, usage };
         return { ...result, items: result.items.map(item => ({ ...item, ...items.find(connection => connection.id === item.id) })) };
       }
       if (method === 'POST') return platform.configureExecutionConnection(args, userContext);
     }
     if (path === '/api/connections/initialize' && method === 'POST') return platform.startConnectionSetup(args, userContext, clientId);
     if (path === '/api/connections/limits') {
-      if (selectedProfile) reject('scope_unavailable', 'Host limits are available in the main workspace', 404);
       if (method === 'GET') return platform.resources.readLimits();
       if (method === 'PATCH') {
         if (Object.keys(args).some(key => key !== 'revision' && key !== 'limits')) reject('invalid_resource_limit', 'Unsupported host resource setting');
@@ -200,7 +195,7 @@ export function createApi({ platform, room, attachments, models, profiles, conne
     }
     if (path === '/api/workspaces') {
       if (method === 'GET') return list('workspace', params);
-      if (method === 'POST') return platform.configureWorkspace(args, userContext);
+      if (method === 'POST') return platform.configureWorkspace(args);
     }
     if ((match = path.match(/^\/api\/workspaces\/([^/]+)$/))) {
       const ref = routeRef('workspace', match[1]);
@@ -212,23 +207,23 @@ export function createApi({ platform, room, attachments, models, profiles, conne
         return result;
       }
     }
-    if (path === preservedModelSettings && method === 'GET') return models.snapshot(selectedProfile);
+    if (path === preservedModelSettings && method === 'GET') return models.snapshot();
     if (path === preservedModelSettings + '/local' && method === 'GET') return models.localLogins();
-    if (path === preservedModelSettings + '/local/import' && method === 'POST') return models.importLocal(args.kind, selectedProfile);
-    if (path === preservedModelSettings + '/connections' && method === 'POST') return models.save(args, selectedProfile);
+    if (path === preservedModelSettings + '/local/import' && method === 'POST') return models.importLocal(args.kind);
+    if (path === preservedModelSettings + '/connections' && method === 'POST') return models.save(args);
     if (path === preservedModelSettings + '/active' && method === 'POST') {
-      const result = await models.select(args.id, selectedProfile);
-      platform.initializeWorkspace(selectedProfile);
+      const result = await models.select(args.id);
+      platform.initializeDefaults();
       return result;
     }
-    if (path === preservedModelSettings + '/usage' && method === 'POST') return models.refreshUsage(args.force === true, selectedProfile);
-    if (path === preservedModelSettings + '/usage' && method === 'GET') return models.summary(selectedProfile);
+    if (path === preservedModelSettings + '/usage' && method === 'POST') return models.refreshUsage(args.force === true);
+    if (path === preservedModelSettings + '/usage' && method === 'GET') return models.summary();
     if ((match = path.match(/^\/api\/model-settings\/connections\/([^/]+)(?:\/(login|models))?$/))) {
       const [, encoded, action] = match;
       const id = decodeURIComponent(encoded);
-      models.scopedEntry(models.catalog(), id, selectedProfile);
+      models.requireConnection(models.catalog(), id);
       if (method === 'DELETE' && !action) {
-        const result = await models.remove(id, selectedProfile);
+        const result = await models.remove(id);
         await platform.revokeSessions({ kind: 'model', id });
         return result;
       }

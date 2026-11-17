@@ -27,17 +27,17 @@ export class Calls {
       AND json_extract(data,'$.run_id')=? AND json_extract(data,'$.input_call_id') IS NOT NULL`);
   }
 
-  clientCall(actor, clientId, profile) {
-    const id = this.store.get('platform-client-calls', keyOf(actor.kind, actor.id, profile ?? null, clientId))?.call_id;
+  clientCall(actor, clientId) {
+    const id = this.store.get('platform-client-calls', keyOf(actor.kind, actor.id, clientId))?.call_id;
     return id && this.store.get(callRecords, id);
   }
 
   begin(name, context) {
     return this.store.transaction(() => {
-      const prior = context.clientId ? this.clientCall(context.actor, context.clientId, context.workspaceProfileId)
+      const prior = context.clientId ? this.clientCall(context.actor, context.clientId)
         : context.call_id && this.store.get(callRecords, context.call_id);
       if (prior) {
-        if (!sameIdentity(prior.submitted_by, context.actor) || (prior.workspaceProfileId ?? null) !== (context.workspaceProfileId ?? null) || prior.tool !== name ||
+        if (!sameIdentity(prior.submitted_by, context.actor) || prior.tool !== name ||
           prior.origin?.conversation_id !== context.origin?.conversation_id || prior.origin?.run_id !== context.origin?.run_id) {
           reject('call_conflict', 'This request identity belongs to another invocation', 409);
         }
@@ -46,12 +46,11 @@ export class Calls {
       const id = context.call_id || randomUUID();
       const record = this.store.save(callRecords, { id, tool: name, submitted_by: context.actor, execution_actor: context.actor,
         initiating_principal: context.submitted_by || context.actor,
-        workspaceProfileId: context.workspaceProfileId ?? null,
         origin_bot: context.actor.kind === 'bot' ? context.actor.id : null, origin: context.origin || null,
         source_event_ids: context.origin?.event_ids ?? [], target: null, controls: context.controls || [],
         ...(context.executable_scope !== undefined ? { executable_scope: context.executable_scope } : {}),
         client_id: context.clientId || null, charge_account: 'host', status: 'prepared', result_ref: null, return_refs: [] });
-      if (context.clientId) this.store.save('platform-client-calls', { id: keyOf(context.actor.kind, context.actor.id, context.workspaceProfileId ?? null, context.clientId), call_id: id });
+      if (context.clientId) this.store.save('platform-client-calls', { id: keyOf(context.actor.kind, context.actor.id, context.clientId), call_id: id });
       if (context.origin?.conversation_id) this.addWait(id, { bot_id: context.actor.id, ...context.origin });
       return { record: this.get(id), existing: false };
     });
@@ -71,7 +70,7 @@ export class Calls {
       if (saved) return saved;
       const wait = this.store.save(waitRecords, { id: waitId, call_id: id, bot_id: origin.bot_id,
         conversation_id: origin.conversation_id, run_id: origin.run_id, control_version: origin.control_version,
-        session_id: origin.session_id || null, workspaceProfileId: call.workspaceProfileId,
+        session_id: origin.session_id || null,
         ...(origin.input_call_id ? { input_call_id: origin.input_call_id, initiating_principal: origin.initiating_principal } : {}),
         target: call.target, status: 'waiting', result_position: null });
       this.store.save(callRecords, { id, return_refs: [...call.return_refs, wait.id] });
@@ -181,8 +180,7 @@ export class Calls {
     const waits = call.return_refs.map(id => this.store.get(waitRecords, id)).filter(wait =>
       wait?.bot_id === actor.id && (!wait.input_call_id || isWaitOrigin(wait, context.origin)));
     const hasOrigin = actor.kind === 'user' || sameIdentity(actor, call.submitted_by) || waits.length > 0;
-    const profile = call.workspaceProfileId ?? (call.origin_bot ? this.store.get('platform-bots', call.origin_bot)?.workspaceProfileId : null) ?? null;
-    return profile === (context.workspaceProfileId ?? null) && hasOrigin &&
+    return hasOrigin &&
       (!context.session || sameRef(context.session, call.target) || call.origin?.session_id === context.session.id ||
         waits.some(wait => wait.input_call_id && wait.session_id === context.session.id));
   }

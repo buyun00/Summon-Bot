@@ -88,7 +88,7 @@ private fun SummonApp(model: SummonViewModel = viewModel()) {
         )) {
             Surface(Modifier.fillMaxSize(), color = Color.Black) {
                 if (store.settings.baseURL.isBlank()) {
-                    WorkspaceConnectionGuide(store, model.viewModelScope)
+                    SummonConnectionGuide(store, model.viewModelScope)
                     return@Surface
                 }
                 val nav = rememberNavController()
@@ -104,7 +104,7 @@ private fun SummonApp(model: SummonViewModel = viewModel()) {
                             onOpenUsage = { nav.navigate("usage") },
                             onOpenModels = { nav.navigate("models") },
                             onOpenRoom = { id -> nav.navigate("chat/${URLEncoder.encode(id, "UTF-8")}") },
-                            onOpenWorkspace = { section -> nav.navigate("workspace/${section.name}") },
+                            onOpenResource = { section -> nav.navigate("resources/${section.name}") },
                         )
                     }
                     composable("chat/{roomId}", arguments = listOf(navArgument("roomId") { type = NavType.StringType })) { entry ->
@@ -113,9 +113,9 @@ private fun SummonApp(model: SummonViewModel = viewModel()) {
                     }
                     composable("usage") { TokenUsageScreen(store) { nav.popBackStack() } }
                     composable("models") { ModelSettingsScreen(store) { nav.popBackStack() } }
-                    composable("workspace/{section}") { entry ->
-                        val section = runCatching { WorkspaceSection.valueOf(entry.arguments?.getString("section").orEmpty()) }.getOrDefault(WorkspaceSection.Bots)
-                        WorkspaceScreen(store, section, onBack = { nav.popBackStack() })
+                    composable("resources/{section}") { entry ->
+                        val section = runCatching { ResourceSection.valueOf(entry.arguments?.getString("section").orEmpty()) }.getOrDefault(ResourceSection.Bots)
+                        ResourcesScreen(store, section, onBack = { nav.popBackStack() })
                     }
                 }
             }

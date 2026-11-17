@@ -198,7 +198,7 @@ private fun modelGauge(item: SummonJson): ModelGaugeData {
                 TextButton(onClick = { perform { login = store.request("/api/model-settings/connections/${SummonApiClient.component(login["id"].stringValue)}/login", "DELETE") } }) { Text("取消授权") }
             }
             if (login["error"].stringValue.isNotBlank()) Text(login["error"].stringValue, color = Color(0xFFD3A074))
-            Text("当前工作区的 Pi 使用这里选择的默认模型。", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+            Text("新建 Bot 使用这里选择的默认模型。", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
         }
     }
 }

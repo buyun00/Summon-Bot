@@ -5,15 +5,15 @@ description: 发现、复用、登记和维护本发行版 Summon Bot 的 CLI、
 
 # Summon Bot 执行连接接入
 
-用 `find {kind:"connection"}` 和 `read` 核对同一工作区的连接、`revision`、可用方法、`can_use`、`can_repair` 和 `maintainer`。随后用 `initialize_execution` 的 `discover` 按 `query`、`command` 或绝对 `executable` 查实际安装。给出已有 Session、连接或群工具事件的 `target` 可核对执行地点。发现结果的 `environment` 和 `scope` 对应该观察的主机、查找范围和工作目录。远端没有相应观察时，反馈需要远端资料。用 `discover.required_version` 对照确切的登记版本字符串。
+用 `find {kind:"connection"}` 和 `read` 核对当前可访问的连接、`revision`、可用方法、`can_use`、`can_repair` 和 `maintainer`。随后用 `initialize_execution` 的 `discover` 按 `query`、`command` 或绝对 `executable` 查实际安装。给出已有 Session、连接或群工具事件的 `target` 可核对执行地点。发现结果的 `environment` 和 `scope` 对应该观察的主机、查找范围和工作目录。远端没有相应观察时，反馈需要远端资料。用 `discover.required_version` 对照确切的登记版本字符串。
 
 用 `initialize_execution {action:"inspect",target:{kind:"connection",id:"原连接 ID"},help_topic:"子命令"}` 探测已登记本机 CLI 的实装版本和帮助，也可直接传 `connection` ID。两个字段同时传时必须指向同一连接。工具使用该连接的绑定路径，无需再填 `command` 或 `executable`。`observations` 记录各次探测的退出状态。Session 和群工具事件只提供执行地点。探测原连接需要能读取和使用该连接，以及原连接的维修权或宿主对同一程序的探测授权。若探测因授权被拒绝，先用 `read` 核对原连接的权限，再说明缺少哪项授权。
 
-实际绑定已有可用方法时，向请求方提供其可调用的入口。增补原连接的方法时确认实际负责人，交接原连接 ID、方法 ID、修订和可共享的来源。交接前看 `maintainer.can_repair` 和 `maintainer.run_status`。`run_status.status:"blocked"` 时保留原负责人，按返回的原因说明需要恢复的条件。`"configured"` 表示已启用且有当前工作区内的已授权模型连接；是否接手以实际回复和回执为准。连接可由同一个 Bot 维护多项。用当前 `revision` 提交修改。登记返回 `reused:true` 时读回原对象；存在多个候选时，根据真实环境、项目和账号选择。创建专责 Bot 时，用获准的 `create_bot` 和 `role_id:"catalog-maintainer"`、`role_connection_id`、`connection_revision` 一次创建并关联；已有 Bot 用 `assign_maintainer`（`connection`、`revision`、`bot`）或宿主连接设置分配。
+实际绑定已有可用方法时，向请求方提供其可调用的入口。增补原连接的方法时确认实际负责人，交接原连接 ID、方法 ID、修订和可共享的来源。交接前看 `maintainer.can_repair` 和 `maintainer.run_status`。`run_status.status:"blocked"` 时保留原负责人，按返回的原因说明需要恢复的条件。`"configured"` 表示已启用且有Bot 已获授权的模型连接；是否接手以实际回复和回执为准。连接可由同一个 Bot 维护多项。用当前 `revision` 提交修改。登记返回 `reused:true` 时读回原对象；存在多个候选时，根据真实环境、项目和账号选择。创建专责 Bot 时，用获准的 `create_bot` 和 `role_id:"catalog-maintainer"`、`role_connection_id`、`connection_revision` 一次创建并关联；已有 Bot 用 `assign_maintainer`（`connection`、`revision`、`bot`）或宿主连接设置分配。
 
 ## 宿主授权
 
-正式启动和工作区初始化会复用或创建本工作区的接口 Bot（`tool-onboarding`）。Bot「资源权限」中的工具接入授权对应 `/api/bots/{id}/access` 的 `execution_onboarding`。查询和更新使用本工作区及当前权限 `revision`。可从以下授权开始。
+Summon 启动时会复用或创建默认接口 Bot（`tool-onboarding`）。群聊协作按群成员处理。Bot「资源权限」中的工具接入授权对应 `/api/bots/{id}/access` 的 `execution_onboarding`。查询和更新使用 Bot ID 与当前权限 `revision`。可从以下授权开始。
 
 ```json
 {

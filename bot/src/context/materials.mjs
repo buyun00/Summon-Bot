@@ -176,7 +176,7 @@ export class MaterialRuntime {
       ['pending', 'running', 'waiting', 'interrupted', 'retry'].includes(inbox.run(batch.run_id)?.state));
     if (current) return;
     const actor = { kind: 'bot', id: bot.id };
-    const context = this.runtime.platform.principalContext(actor);
+    const context = { actor };
     const { entries } = this.snapshot(inbox, bot.material_index_ref, context);
     const selected = entries.filter(item => item.selected && item.key && !item.material_truncated && typeof item.content === 'string' &&
       !item.issue && !inbox.store.getRecord(R.consumption, item.key));
@@ -306,7 +306,6 @@ export class MaterialRuntime {
     const results = [];
     for (const botId of botIds) {
       const bot = this.runtime.platform.getBot(botId);
-      if ((bot.workspaceProfileId ?? null) !== (context.workspaceProfileId ?? null)) continue;
       const inbox = await this.runtime.inbox(botId, { create: false });
       if (!inbox) continue;
       const candidates = id ? [inbox.store.getRecord(R.consumption, id)].filter(Boolean) : inbox.store.listRecords(R.consumption);

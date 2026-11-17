@@ -67,7 +67,7 @@ export class Deliveries {
   list(context, scope) {
     return this.store.list(wakeupRecords).filter(wakeup => {
       const bot = this.store.get('platform-bots', wakeup.bot_id);
-      if (!bot || (bot.workspaceProfileId ?? null) !== (context.workspaceProfileId ?? null) || wakeup.member_active === false ||
+      if (!bot || wakeup.member_active === false ||
           !this.ruleUsable(wakeup.rule, wakeup.bot_id) || !this.manager.canConfigure(context.actor, bot)) return false;
       if (scope?.kind === 'bot') return wakeup.bot_id === scope.id;
       if (scope?.kind === 'room') return wakeup.rule.room === scope.id;
@@ -78,7 +78,7 @@ export class Deliveries {
   set(args, context, callId) {
     const botId = idOf(args.bot, 'bot');
     const bot = this.manager.get(botId);
-    if ((bot.workspaceProfileId ?? null) !== (context.workspaceProfileId ?? null) || !this.canManage(botId, context.actor)) {
+    if (!this.canManage(botId, context.actor)) {
       reject('wakeup_forbidden', 'Wakeup changes are unavailable for this Bot', 403);
     }
     if (context.session) reject('wakeup_forbidden', 'This Session has no Bot subscription configuration authority', 403);
@@ -88,7 +88,7 @@ export class Deliveries {
     else if (args.revision !== undefined) assertRevision(null, args.revision);
     if (!args.event_or_time && (!current || args.enabled === undefined)) reject('invalid_wakeup', 'Specify a Wakeup rule or change enabled');
     const rule = { ...(args.event_or_time || current.rule) };
-    const targetContext = { actor: { kind: 'bot', id: botId }, workspaceProfileId: bot.workspaceProfileId ?? null };
+    const targetContext = { actor: { kind: 'bot', id: botId } };
     if (rule.room) {
       rule.room = idOf(rule.room, 'room');
       if (!this.roomMembers(rule.room).includes(context.actor.id) || !this.ruleUsable(rule, botId)) {
@@ -175,8 +175,7 @@ export class Deliveries {
       for (const wakeup of this.store.list(wakeupRecords)) {
         if (!wakeup.enabled || wakeup.rule.kind !== 'time' || wakeup.next_due == null || wakeup.next_due > now) continue;
         const { bot_id, rule } = wakeup;
-        if (rule.scope && !this.canReadReference(rule.scope, { actor: { kind: 'bot', id: bot_id },
-          workspaceProfileId: this.manager.get(bot_id).workspaceProfileId ?? null })) continue;
+        if (rule.scope && !this.canReadReference(rule.scope, { actor: { kind: 'bot', id: bot_id } })) continue;
         const platform = { kind: 'platform', id: 'platform' };
         const event = this.store.save('platform-events', { id: keyOf('time', wakeup.id, wakeup.next_due), kind: 'event', type: 'wakeup.time',
           author: platform, bot_id, space: rule.scope?.kind === 'room' || rule.scope?.kind === 'bot' ? rule.scope : { kind: 'bot', id: bot_id },

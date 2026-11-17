@@ -78,7 +78,7 @@ export class SummonConnections {
     const visited = new Set([...seen, entry.id]);
     return (entry.dependencies || []).every(id => {
       const dependency = this.get(id);
-      return (dependency?.workspaceProfileId ?? null) === (entry.workspaceProfileId ?? null) && this.available(dependency, visited);
+      return this.available(dependency, visited);
     });
   }
 
@@ -177,7 +177,7 @@ export class SummonConnections {
 
   settings(context) {
     if (actorOf(context)?.kind !== 'user') reject('connection_forbidden', 'Connection settings require the host user', 403);
-    const entries = this.store.list(connectionRecords).filter(entry => (entry.workspaceProfileId ?? null) === (context.workspaceProfileId ?? null));
+    const entries = this.store.list(connectionRecords);
     return this.clean(entries.map(entry => ({ ...this.summary(entry), allowed_bot_ids: entry.allowed_bot_ids,
       repair_bot_ids: entry.repair_bot_ids, dependencies: entry.dependencies, maintainer_bot_id: entry.maintainer_bot_id ?? null })), []);
   }
@@ -185,23 +185,20 @@ export class SummonConnections {
   async configure(input, context, onSave) {
     if (actorOf(context)?.kind !== 'user') reject('connection_forbidden', 'Connection settings require the host user', 403);
     if (!plain(input) || Object.keys(input).some(key => !['id', 'name', 'description', 'kind', 'config', 'config_patch', 'revision',
-      'enabled', 'allowed_bot_ids', 'repair_bot_ids', 'dependencies', 'workspaceProfileId', 'maintainer_bot_id'].includes(key)))
+      'enabled', 'allowed_bot_ids', 'repair_bot_ids', 'dependencies', 'maintainer_bot_id'].includes(key)))
       reject('invalid_connection', 'Invalid connection settings');
     const id = idOf(input.id, 'connection');
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(id) || id === 'pi') reject('invalid_connection', 'Invalid managed connection identity');
     const previous = this.get(id);
     if (previous && input.revision !== previous.revision) reject('revision_conflict', 'Connection settings changed', 409, { revision: previous.revision });
-    const { revision, workspaceProfileId = null, config_patch, ...submitted } = input;
-    const profile = context?.workspaceProfileId ?? null;
-    if (workspaceProfileId !== profile || previous && (previous.workspaceProfileId ?? null) !== profile)
-      reject('connection_forbidden', 'Connection settings belong to another workspace profile', 403);
+    const { revision, config_patch, ...submitted } = input;
     if (config_patch !== undefined) {
       if (!previous || !plain(config_patch) || Object.hasOwn(submitted, 'config'))
         reject('invalid_connection', 'Supply a config_patch object for an existing connection without replacing config');
       submitted.config = { ...previous.config, ...config_patch };
     }
     const entry = { ...previous, ...submitted, id, enabled: submitted.enabled ?? previous?.enabled ?? true,
-      allowed_bot_ids: submitted.allowed_bot_ids ?? previous?.allowed_bot_ids ?? [], workspaceProfileId: profile };
+      allowed_bot_ids: submitted.allowed_bot_ids ?? previous?.allowed_bot_ids ?? [] };
     if (submitted.repair_bot_ids === undefined && Array.isArray(entry.allowed_bot_ids) && !entry.allowed_bot_ids.includes('*') && entry.repair_bot_ids)
       entry.repair_bot_ids = entry.repair_bot_ids.filter(id => entry.allowed_bot_ids.includes(id));
     validateConnection(entry);
@@ -242,8 +239,7 @@ export class SummonConnections {
   entryFor(session, call, options) {
     const id = typeof session.engine === 'string' ? session.engine : session.engine?.id;
     const entry = this.get(session.connection_id || id);
-    if (!entry || (entry.workspaceProfileId ?? null) !== (session.workspaceProfileId ?? null))
-      reject('connection_forbidden', 'The connection does not belong to this Session’s workspace profile', 403);
+    if (!entry) reject('connection_forbidden', 'The Session connection is unavailable', 403);
     if (call) this.requireUsable(entry, call.submitted_by, { runtime: false });
     if (session.connection_binding_version !== undefined && session.connection_binding_version !== (entry.binding_version ?? 1))
       reject('connection_binding_changed', 'The original Session’s connection settings changed', 409);
@@ -632,7 +628,7 @@ export class SummonConnections {
     if (operation.protocol === 'service') {
       const entry = this.get(operation.connection_id);
       if (!entry?.config.lifecycle?.stop_method || !operation.operation_id) return { status: 'unsupported' };
-      if (operation.session_id !== session.id || (entry.workspaceProfileId ?? null) !== (session.workspaceProfileId ?? null) ||
+      if (operation.session_id !== session.id ||
           operation.connection_binding_version !== (entry.binding_version ?? 1))
         return { status: 'unknown', error: 'The original service operation cannot be reached with its connection binding' };
       const stopCall = { ...call, id: keyOf('stop', session.id, call.id, operation.id) };
@@ -727,12 +723,11 @@ export class SummonConnections {
   locallyAuthorized(session, operation, entry) {
     const actor = session.execution_actor;
     if (!this.authorized(entry, actor) || session.authority_revoked ||
-        (entry.workspaceProfileId ?? null) !== (session.workspaceProfileId ?? null) ||
         operation.connection_binding_version !== undefined && operation.connection_binding_version !== (entry.binding_version ?? 1)) return false;
     if (session.sharing && !this.store.get('rooms', session.space.id)?.members?.includes(session.owner.id)) return false;
     if (actor.kind === 'user') return true;
     const bot = this.store.get('platform-bots', actor.id);
-    return Boolean(bot && (bot.workspaceProfileId ?? null) === (session.workspaceProfileId ?? null) &&
+    return Boolean(bot &&
       (!session.workspace_ref || this.store.get('platform-access', actor.id)?.workspace_ids?.includes(session.workspace_ref.id)));
   }
 

@@ -43,7 +43,6 @@ class SummonStore(private val app: Context) {
         private set
     var isConnected by mutableStateOf(false)
         private set
-    var profiles by mutableStateOf<List<SummonWorkspaceProfile>>(emptyList())
         private set
     var protocolReady by mutableStateOf(false)
         private set
@@ -84,8 +83,13 @@ class SummonStore(private val app: Context) {
 
     init {
         val saved = prefs.getString(SETTINGS_KEY, null)
-        if (saved != null) settings = runCatching { SummonConnectionSettings.parse(SummonJson.parse(saved)) }.getOrDefault(settings)
-        client = runCatching { SummonApiClient(SummonApiClient.normalized(settings.baseURL), savedToken, settings.workspaceID) }.getOrNull()
+        if (saved != null) runCatching {
+            val previous = SummonJson.parse(saved)
+            settings = SummonConnectionSettings.parse(previous)
+            if (previous.obj?.containsKey("workspaceID") == true)
+                prefs.edit().putString(SETTINGS_KEY, settings.toJson().encode().toString()).apply()
+        }
+        client = runCatching { SummonApiClient(SummonApiClient.normalized(settings.baseURL), savedToken) }.getOrNull()
         restoreSnapshot()
     }
 
@@ -124,7 +128,7 @@ class SummonStore(private val app: Context) {
         val url = SummonApiClient.normalized(baseURL)
         val endpoint = url.toString()
         val changed = endpoint != settings.baseURL
-        val newClient = SummonApiClient(url, token.trim(), if (changed) null else settings.workspaceID)
+        val newClient = SummonApiClient(url, token.trim())
         val startup = try { withContext(Dispatchers.IO) { newClient.bootstrap() } }
         catch (error: SummonApiException) {
             if (error.status == 503 && error.code == "updating") null else throw SummonApiException(startupError(error))
@@ -134,8 +138,8 @@ class SummonStore(private val app: Context) {
         catch (_: java.net.SocketException) { null }
         SummonKeystore.save(app, token.trim(), endpoint)
         disconnect()
-        if (changed) { clearWorkspace(); profiles = emptyList() }
-        settings = SummonConnectionSettings(endpoint, settings.userName, newClient.workspaceID)
+        if (changed) clearServerState()
+        settings = SummonConnectionSettings(endpoint, settings.userName)
         prefs.edit().putString(SETTINGS_KEY, settings.toJson().encode().toString()).apply()
         client = newClient
         if (changed) restoreSnapshot()
@@ -143,23 +147,6 @@ class SummonStore(private val app: Context) {
         errorMessage = null
         persistNow()
         if (startup != null) start() else scope.launch { start() }
-    }
-
-    suspend fun selectWorkspace(id: String?) {
-        if (settings.workspaceID == id) return
-        val api = SummonApiClient(SummonApiClient.normalized(settings.baseURL), savedToken, id)
-        val startup = withContext(Dispatchers.IO) { api.bootstrap() }
-        if (!startup.ready || startup.updating) throw SummonApiException(startup.notice ?: "暂时无法切换工作区。")
-        disconnect()
-        clearWorkspace()
-        settings = settings.copy(workspaceID = id)
-        prefs.edit().putString(SETTINGS_KEY, settings.toJson().encode().toString()).apply()
-        client = api
-        restoreSnapshot()
-        acceptStartup(startup)
-        errorMessage = null
-        persistNow()
-        start()
     }
 
     fun setUserName(name: String) {
@@ -206,7 +193,6 @@ class SummonStore(private val app: Context) {
     }
 
     private fun acceptStartup(startup: SummonBootstrap) {
-        if (!startup.updating) startup.workspaceProfiles?.let { profiles = it }
         protocolReady = startup.ready
         protocolNotice = startup.notice
         needsClientUpdate = startup.protocolVersion > SummonApiClient.PROTOCOL_VERSION
@@ -569,7 +555,7 @@ class SummonStore(private val app: Context) {
 
     private fun apiClient(): SummonApiClient {
         val api = client ?: throw SummonApiException.noConnection
-        if (!protocolReady) throw SummonApiException(protocolNotice ?: "正在连接工作区。")
+        if (!protocolReady) throw SummonApiException(protocolNotice ?: "正在连接实例。")
         return api
     }
 
@@ -644,7 +630,7 @@ class SummonStore(private val app: Context) {
         pendingMessages = pendingMessages.map { if (it.clientID == id) change(it) else it }
     }
 
-    private fun clearWorkspace() {
+    private fun clearServerState() {
         bots = emptyList(); rooms = emptyList(); messageHistory = emptyMap(); deliveries = emptyMap(); cursors = emptyMap()
         pendingMessages = emptyList(); drafts = emptyMap(); draftAttachments = emptyMap(); draftMentions = emptyMap()
         draftReplies = emptyMap(); draftReferences = emptyMap(); activeRoomID = null; historyEpoch = null; lastSyncAt = null
@@ -653,54 +639,69 @@ class SummonStore(private val app: Context) {
 
     private fun snapshotFile(): File? {
         if (settings.baseURL.isEmpty()) return null
-        val keyText = settings.workspaceID?.let { settings.baseURL + "|" + it } ?: settings.baseURL
-        val key = android.util.Base64.encodeToString(keyText.toByteArray(), android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE)
-        val directory = key.chunked(120).fold(File(storageDirectory, "workspaces")) { root, part -> File(root, part) }
+        val key = android.util.Base64.encodeToString(settings.baseURL.toByteArray(), android.util.Base64.NO_WRAP or android.util.Base64.URL_SAFE)
+        val directory = key.chunked(120).fold(File(storageDirectory, "instances")) { root, part -> File(root, part) }
         return File(directory, "snapshot.json")
     }
 
     private fun restoreSnapshot() {
         val current = snapshotFile() ?: return
-        val old = File(storageDirectory, "workspace.json")
-        val useLegacy = settings.workspaceID == null && !current.exists() && old.exists()
-        val source = if (useLegacy) old else current
-        val snapshot = readLocal(source)
-        if (snapshot != null) {
-            runCatching {
-                historyEpoch = snapshot["historyEpoch"].string
-                bots = snapshot["bots"].array.orEmpty().map(SummonBot::parse)
-                rooms = snapshot["rooms"].array.orEmpty().map { SummonRoom.parse(it, stored = true) }
-                messageHistory = snapshot["messageHistory"].obj.orEmpty().mapValues { (_, list) ->
-                    list.array.orEmpty().map { SummonMessage.parse(it, stored = true) }
-                }
-                snapshot["profiles"].array?.let { items ->
-                    profiles = items.mapNotNull { item -> item["id"].string?.let { id -> SummonWorkspaceProfile(id, item["name"].string ?: id) } }
-                }
-                lastSyncAt = (snapshot["savedAt"] as? SummonJson.Num)?.value?.toLong()
-                    ?: parseSummonDate(snapshot["savedAt"].string)?.toEpochMilli()
-            }
+        val composerFile = File(current.parentFile, "composer.json")
+        val cached = readLocal(current)
+        if (cached != null) {
+            loadSnapshot(cached)
+            readLocal(composerFile)?.let(::loadComposer)
+            return
         }
-        val saved = readLocal(File(current.parentFile, "composer.json")) ?: snapshot
-        if (saved != null) {
-            runCatching {
-                pendingMessages = saved["pendingMessages"].array.orEmpty().map(SummonPendingMessage::parse).map {
-                    if (it.status in listOf("sending", "queued")) it.copy(status = "failed", error = "上次发送的保存状态待确认。") else it
-                }
-                drafts = saved["drafts"].obj.orEmpty().mapValues { it.value.stringValue }
-                draftAttachments = saved["draftAttachments"].obj.orEmpty().mapValues { it.value.array.orEmpty().map(SummonAttachment::parse) }
-                draftMentions = saved["draftMentions"].obj?.mapValues { it.value.array.orEmpty().mapNotNull { entry -> entry.string } }
-                    ?: saved["draftTargets"].obj.orEmpty().mapValues { listOfNotNull(it.value.string) }
-                draftReferences = saved["draftReferences"].obj.orEmpty().mapValues { it.value.array.orEmpty().mapNotNull(SummonReference::parse) }
-                draftReplies = saved["draftReplies"].obj.orEmpty().mapValues { it.value.stringValue }
-            }.onSuccess {
-                if (useLegacy && snapshot != null && persistNow()) old.delete()
-            }
+
+        val candidates = sequenceOf(File(storageDirectory, "workspace.json")) +
+            File(storageDirectory, "workspaces").walkTopDown()
+                .filter { it.isFile && it.name in setOf("snapshot.json", "composer.json") }
+        val records = candidates.mapNotNull { path -> readLocal(path)?.let { path to it } }
+            .sortedBy { it.first.lastModified() }.toList()
+        val snapshots = records.filter { it.first.name != "composer.json" && it.second["rooms"].array != null }
+            .sortedBy { snapshotTime(it.second) ?: it.first.lastModified() }
+        val epoch = snapshots.lastOrNull()?.second?.get("historyEpoch")?.string
+        snapshots.filter { it.second["historyEpoch"].string == epoch }.forEach { loadSnapshot(it.second) }
+        val composerDirectories = records.filter { it.first.name == "composer.json" }.map { it.first.parent }.toSet()
+        records.filter { it.first.name == "composer.json" || it.first.parent !in composerDirectories }
+            .forEach { loadComposer(it.second) }
+        readLocal(composerFile)?.let(::loadComposer)
+        if (records.isNotEmpty() && persistNow()) records.forEach { (path, _) -> path.delete() }
+    }
+
+    private fun snapshotTime(snapshot: SummonJson): Long? =
+        (snapshot["savedAt"] as? SummonJson.Num)?.value?.toLong()
+            ?: parseSummonDate(snapshot["savedAt"].string)?.toEpochMilli()
+
+    private fun loadSnapshot(snapshot: SummonJson) {
+        historyEpoch = snapshot["historyEpoch"].string
+        bots = (bots + snapshot["bots"].array.orEmpty().map(SummonBot::parse)).associateBy { it.id }.values.toList()
+        rooms = (rooms + snapshot["rooms"].array.orEmpty().map { SummonRoom.parse(it, stored = true) }).associateBy { it.id }.values.toList()
+        messageHistory = messageHistory + snapshot["messageHistory"].obj.orEmpty().mapValues { (_, list) ->
+            list.array.orEmpty().map { SummonMessage.parse(it, stored = true) }
         }
+        lastSyncAt = snapshotTime(snapshot)
+    }
+
+    private fun loadComposer(saved: SummonJson) {
+        val messages = saved["pendingMessages"].array.orEmpty().map(SummonPendingMessage::parse).map {
+            if (it.status in listOf("sending", "queued")) it.copy(status = "failed", error = "上次发送的保存状态待确认。") else it
+        }
+        pendingMessages = (pendingMessages + messages).associateBy { it.roomID to it.clientID }.values.toList()
+        drafts = drafts + saved["drafts"].obj.orEmpty().mapValues { it.value.stringValue }
+        draftAttachments = draftAttachments + saved["draftAttachments"].obj.orEmpty().mapValues { it.value.array.orEmpty().map(SummonAttachment::parse) }
+        val mentions = saved["draftMentions"].obj?.mapValues { it.value.array.orEmpty().mapNotNull { entry -> entry.string } }
+            ?: saved["draftTargets"].obj.orEmpty().mapValues { listOfNotNull(it.value.string) }
+        draftMentions = draftMentions + mentions
+        draftReferences = draftReferences + saved["draftReferences"].obj.orEmpty().mapValues { it.value.array.orEmpty().mapNotNull(SummonReference::parse) }
+        draftReplies = draftReplies + saved["draftReplies"].obj.orEmpty().mapValues { it.value.stringValue }
     }
 
     private fun readLocal(source: File): SummonJson? =
         runCatching { SummonJson.parse(AtomicFile(source).readFully().toString(Charsets.UTF_8)) }.getOrNull()
-            ?.takeIf { it["endpoint"].string == settings.baseURL && it["workspaceID"].string == settings.workspaceID }
+            ?.takeIf { it["endpoint"].string == settings.baseURL }
+
     private fun schedulePersistence() {
         persistenceJob?.cancel()
         persistenceJob = scope.launch {
@@ -716,19 +717,18 @@ class SummonStore(private val app: Context) {
         if (!persistComposer()) return false
         val cachedMessages = messageHistory.mapValues { SummonJson.Arr(it.value.takeLast(100).map(SummonMessage::toJson)) }
         val snapshot = SummonJson.obj(
-            "endpoint" to SummonJson.Str(settings.baseURL), "workspaceID" to settings.workspaceID.strOrNull(), "historyEpoch" to historyEpoch.strOrNull(),
+            "endpoint" to SummonJson.Str(settings.baseURL), "historyEpoch" to historyEpoch.strOrNull(),
             "bots" to SummonJson.Arr(bots.map(SummonBot::toJson)), "rooms" to SummonJson.Arr(rooms.map(SummonRoom::toJson)),
             "messageHistory" to SummonJson.Obj(cachedMessages),
-            "profiles" to SummonJson.Arr(profiles.map { SummonJson.obj("id" to SummonJson.Str(it.id), "name" to SummonJson.Str(it.name)) }),
             "savedAt" to SummonJson.Num((lastSyncAt ?: System.currentTimeMillis()).toDouble()),
         )
         return writeLocal(target, snapshot, "无法更新本机聊天缓存")
     }
 
     private fun persistComposer(): Boolean {
-        val workspace = snapshotFile() ?: return false
+        val target = snapshotFile() ?: return false
         val composer = SummonJson.obj(
-            "endpoint" to SummonJson.Str(settings.baseURL), "workspaceID" to settings.workspaceID.strOrNull(),
+            "endpoint" to SummonJson.Str(settings.baseURL),
             "pendingMessages" to SummonJson.Arr(pendingMessages.map(SummonPendingMessage::toJson)),
             "drafts" to SummonJson.Obj(drafts.mapValues { SummonJson.Str(it.value) }),
             "draftAttachments" to SummonJson.Obj(draftAttachments.mapValues { SummonJson.Arr(it.value.map(SummonAttachment::toJson)) }),
@@ -736,7 +736,7 @@ class SummonStore(private val app: Context) {
             "draftReplies" to SummonJson.Obj(draftReplies.mapValues { SummonJson.Str(it.value) }),
             "draftReferences" to SummonJson.Obj(draftReferences.mapValues { SummonJson.Arr(it.value.map(SummonReference::toJson)) }),
         )
-        return writeLocal(File(workspace.parentFile, "composer.json"), composer, "无法保存本机草稿和发送记录")
+        return writeLocal(File(target.parentFile, "composer.json"), composer, "无法保存本机草稿和发送记录")
     }
 
     private fun writeLocal(target: File, value: SummonJson, errorPrefix: String): Boolean {

@@ -12,7 +12,7 @@ struct ConversationListView: View {
     @State private var showCreateBot = false
     @State private var showCreateRoom = false
     @State private var showModels = false
-    @State private var workspaceSection: WorkspaceSection?
+    @State private var resourceSection: ResourceSection?
     @State private var openingBot = false
     @State private var openingPush = false
 
@@ -93,7 +93,7 @@ struct ConversationListView: View {
             .onChange(of: SummonPush.shared.destinationRoomID, initial: true) { _, _ in openNotification() }
             .onChange(of: store.protocolReady) { _, _ in openNotification() }
             .onChange(of: store.settings) { old, new in
-                if old.baseURL != new.baseURL || old.workspaceID != new.workspaceID { path = [] }
+                if old.baseURL != new.baseURL { path = [] }
             }
             .summonSheet(isPresented: $showSettings) { ConnectionSettingsView() }
             .summonSheet(isPresented: $showUsage) { TokenUsageView() }
@@ -105,7 +105,7 @@ struct ConversationListView: View {
             }
             .summonSheet(isPresented: $showCreateRoom) { CreateRoomView { room in openRoom(room.id) } }
             .summonSheet(isPresented: $showModels) { ModelSettingsView() }
-            .summonSheet(item: $workspaceSection) { section in WorkspaceView(section: section) }
+            .summonSheet(item: $resourceSection) { section in ResourcesView(section: section) }
         }
     }
 
@@ -145,7 +145,7 @@ struct ConversationListView: View {
     private enum ProfileDestination {
         case usage, settings, models
         case quota(SummonJSONValue)
-        case workspace(WorkspaceSection)
+        case resource(ResourceSection)
     }
 
     private var profileMenu: some View {
@@ -160,8 +160,8 @@ struct ConversationListView: View {
                 profileMenuButton("设置", symbol: "gearshape", destination: .settings)
                 profileMenuButton("模型与用量", symbol: "cpu", destination: .models)
                 Divider().padding(.vertical, 6)
-                ForEach(WorkspaceSection.allCases) { section in
-                    profileMenuButton(section.title, symbol: section.symbol, destination: .workspace(section))
+                ForEach(ResourceSection.allCases) { section in
+                    profileMenuButton(section.title, symbol: section.symbol, destination: .resource(section))
                 }
             }.padding(12)
         }
@@ -191,7 +191,7 @@ struct ConversationListView: View {
         case .settings: showSettings = true
         case .models: showModels = true
         case .quota(let item): quotaItem = item
-        case .workspace(let section): workspaceSection = section
+        case .resource(let section): resourceSection = section
         }
     }
 

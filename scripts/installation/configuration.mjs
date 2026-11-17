@@ -1,12 +1,12 @@
 import { join } from 'node:path';
 import { readJson, writeJson } from '../build/files.mjs';
 import { readRemoteAccess, writeRemoteAccess } from './remote-config.mjs';
-import { workspaceOrigin } from '../../web/backend/origins.mjs';
+import { instanceOrigin } from '../../web/backend/origins.mjs';
 
 export async function stageConfiguration({ dataRoot, state, deployment, defaultLimits, publicOrigin }) {
   if (state.phase !== 'converting') throw new Error('Installation must prepare configuration before selecting the runtime');
   if (publicOrigin) {
-    const origin = workspaceOrigin(publicOrigin, { httpsOnly: true });
+    const origin = instanceOrigin(publicOrigin, { httpsOnly: true });
     const access = await readRemoteAccess(dataRoot).catch(error => {
       console.warn(`Public origin unchanged: cannot read remote-access.json (${error.code || error.name})`);
     });

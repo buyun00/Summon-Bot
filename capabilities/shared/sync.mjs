@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-const WORKSPACE_COLLECTIONS = ['bots', 'rooms', 'executions', 'files', 'wakeups', 'connections'];
+const STATE_COLLECTIONS = ['bots', 'rooms', 'executions', 'files', 'wakeups', 'connections'];
 const ROOM_COLLECTIONS = ['messages'];
 const emptyPatch = () => ({ values: {}, collections: {} });
 const equal = (left, right) => JSON.stringify(left) === JSON.stringify(right);
@@ -29,7 +29,7 @@ export function* syncPages(value) {
 }
 
 // Group scalar/object branches separately from record collections. In particular,
-// changing a lane counter never resends runtime.jobs or the entire workspace.
+// changing a lane counter never resends runtime.jobs or the entire instance snapshot.
 function valuesOf(snapshot, collectionPaths) {
   const values = {};
   const walk = (value, prefix = '') => {
@@ -126,7 +126,7 @@ export class IncrementalSync {
   }
 
   respond(scope, snapshot, since) {
-    const collectionPaths = scope === 'workspace' || scope.startsWith('workspace:') ? WORKSPACE_COLLECTIONS
+    const collectionPaths = scope === 'state' ? STATE_COLLECTIONS
       : scope.startsWith('room:') ? ROOM_COLLECTIONS : null;
     if (!collectionPaths) throw new TypeError('Unknown incremental sync scope');
     // Normalize once so undefined fields cannot differ from their persisted JSON.

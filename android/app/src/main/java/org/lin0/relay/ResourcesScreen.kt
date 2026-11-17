@@ -37,7 +37,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 @Composable
-fun WorkspaceScreen(store: SummonStore, section: WorkspaceSection, onBack: () -> Unit, space: SummonReference? = null) {
+fun ResourcesScreen(store: SummonStore, section: ResourceSection, onBack: () -> Unit, space: SummonReference? = null) {
     val scope = rememberCoroutineScope()
     val path = section.path + (space?.let { "?" + it.kind + "=" + SummonApiClient.component(it.id) }).orEmpty()
     var items by remember(path) { mutableStateOf<List<SummonJson>>(emptyList()) }
@@ -53,9 +53,9 @@ fun WorkspaceScreen(store: SummonStore, section: WorkspaceSection, onBack: () ->
         if (loading || !store.protocolReady) return
         loading = true; error = null
         try {
-            if (section == WorkspaceSection.Bots) store.refresh()
+            if (section == ResourceSection.Bots) store.refresh()
             else items = store.list(path)
-            if (section == WorkspaceSection.Connections) {
+            if (section == ResourceSection.Connections) {
                 hosts = store.request("/api/connections")
                 directories = store.list("/api/workspaces")
             }
@@ -79,11 +79,11 @@ fun WorkspaceScreen(store: SummonStore, section: WorkspaceSection, onBack: () ->
         Row {
             TextButton(enabled = !loading && store.protocolReady, onClick = { scope.launch { reload() } }) { Text("刷新") }
             if (store.protocolReady) when (section) {
-                WorkspaceSection.Bots -> TextButton(onClick = { createBot = true }) { Text("创建 Bot") }
-                WorkspaceSection.Executions -> if (space == null) TextButton(onClick = { editor = EditorRoute("execution") }) { Text("打开执行会话") }
-                WorkspaceSection.Files -> TextButton(onClick = { editor = EditorRoute("file") }) { Text("新增资料") }
-                WorkspaceSection.Wakeups -> TextButton(onClick = { editor = EditorRoute("wakeup") }) { Text("新增订阅或提醒") }
-                WorkspaceSection.Connections -> {
+                ResourceSection.Bots -> TextButton(onClick = { createBot = true }) { Text("创建 Bot") }
+                ResourceSection.Executions -> if (space == null) TextButton(onClick = { editor = EditorRoute("execution") }) { Text("打开执行会话") }
+                ResourceSection.Files -> TextButton(onClick = { editor = EditorRoute("file") }) { Text("新增资料") }
+                ResourceSection.Wakeups -> TextButton(onClick = { editor = EditorRoute("wakeup") }) { Text("新增订阅或提醒") }
+                ResourceSection.Connections -> {
                     TextButton(onClick = { editor = EditorRoute("connection") }) { Text("新增连接") }
                     TextButton(onClick = { editor = EditorRoute("directory") }) { Text("登记执行目录") }
                 }
@@ -93,27 +93,27 @@ fun WorkspaceScreen(store: SummonStore, section: WorkspaceSection, onBack: () ->
         error?.let { SummonError(it) }
         if (!store.protocolReady) store.protocolNotice?.let { SummonError(it) }
         when (section) {
-            WorkspaceSection.Bots -> store.bots.forEach { bot ->
+            ResourceSection.Bots -> store.bots.forEach { bot ->
                 TextButton(onClick = { detail = SummonReference("bot", bot.id) }) {
                     MemberAvatar(bot, 32.dp)
                     Text(bot.name + if (bot.isPaused) " · 已暂停" else "", Modifier.padding(start = 10.dp))
                 }
             }
-            WorkspaceSection.Executions -> items.forEach { item ->
+            ResourceSection.Executions -> items.forEach { item ->
                 val ref = SummonReference.parse(item["execution_ref"]) ?: return@forEach
                 SummonRecordRow(executionTitle(store, item),
                     summonStatus(item["status"].stringValue) + " · " + summonStatus(item["control"]["state"].stringValue)) { detail = ref }
             }
-            WorkspaceSection.Files -> items.forEach { item ->
+            ResourceSection.Files -> items.forEach { item ->
                 val ref = SummonReference.parse(item["ref"]) ?: return@forEach
                 SummonRecordRow(item["path"].string ?: store.label(ref), "修订 " + item["revision"].stringValue) { detail = ref }
             }
-            WorkspaceSection.Wakeups -> {
+            ResourceSection.Wakeups -> {
                 val (basic, extra) = items.partition { it["rule"]["kind"].string == "room_base" }
                 WakeupRows(store, "基础关注", basic) { editor = EditorRoute("wakeup", it) }
                 WakeupRows(store, "自定义订阅与提醒", extra) { editor = EditorRoute("wakeup", it) }
             }
-            WorkspaceSection.Connections -> {
+            ResourceSection.Connections -> {
                 Text("执行连接", style = MaterialTheme.typography.titleMedium)
                 items.forEach { item ->
                     val id = item["id"].string ?: return@forEach
@@ -140,7 +140,7 @@ fun WorkspaceScreen(store: SummonStore, section: WorkspaceSection, onBack: () ->
                 }
             }
         }
-        if (!loading && items.isEmpty() && section in listOf(WorkspaceSection.Files, WorkspaceSection.Executions)) Text("暂无记录", color = Color.Gray)
+        if (!loading && items.isEmpty() && section in listOf(ResourceSection.Files, ResourceSection.Executions)) Text("暂无记录", color = Color.Gray)
     }
 
     if (createBot) CreateBotSheet(store, onOpenRoom = { }, onDismiss = { createBot = false })

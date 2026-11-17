@@ -113,7 +113,7 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
                     val current = store.draftAttachments[roomID].orEmpty()
                     if (current.size >= 8) { localError = "每条消息最多添加 8 个附件。"; break }
                     val file = store.stageAttachment(uri)
-                    if (settings.baseURL != store.settings.baseURL || settings.workspaceID != store.settings.workspaceID) {
+                    if (settings.baseURL != store.settings.baseURL) {
                         store.discardStagedAttachment(file)
                         break
                     }

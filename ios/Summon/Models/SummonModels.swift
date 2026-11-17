@@ -152,7 +152,7 @@ struct SummonReceipt: Decodable, Sendable {
     var deliveries: [SummonDelivery]
 }
 
-struct SummonWorkspace: Decodable, Sendable {
+struct SummonState: Decodable, Sendable {
     var historyEpoch: String?
     var bots: [SummonBot]
     var rooms: [SummonRoom]
@@ -167,17 +167,11 @@ struct SummonRoomSnapshot: Decodable, Sendable {
     var cursor: String?
 }
 
-struct SummonWorkspaceProfile: Codable, Identifiable, Equatable, Sendable {
-    let id: String
-    let name: String
-}
-
 struct SummonBootstrap: Decodable, Equatable, Sendable {
     let protocolVersion: Int
     let updating: Bool
     let version: String?
     let releasesUrl: String?
-    let workspaceProfiles: [SummonWorkspaceProfile]?
 
     var ready: Bool { protocolVersion == SummonAPIClient.protocolVersion }
 
@@ -235,7 +229,6 @@ struct SummonPendingMessage: Codable, Identifiable, Equatable, Sendable {
 struct SummonConnectionSettings: Codable, Equatable, Sendable {
     var baseURL: String = ""
     var userName: String = "Lin"
-    var workspaceID: String?
 }
 
 enum SummonJSONValue: Codable, Equatable, Sendable {

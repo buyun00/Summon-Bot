@@ -1,20 +1,19 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
-if (location.protocol === 'summon-setup:' && location.host === 'workspace') {
+if (location.protocol === 'summon-setup:' && location.host === 'connection') {
   contextBridge.exposeInMainWorld('SummonSetup', Object.freeze({
-    info: () => ipcRenderer.invoke('summon:workspace-info'),
+    info: () => ipcRenderer.invoke('summon:connection-info'),
     checkForUpdates: () => ipcRenderer.invoke('summon:check-update'),
     installUpdate: () => ipcRenderer.invoke('summon:install-update'),
     onUpdate: callback => { ipcRenderer.on('summon:update-state', (_event, state) => callback(state)); },
-    action: (command, input) => ipcRenderer.invoke('summon:workspace-action', command, input),
-    onSetup: callback => { ipcRenderer.on('summon:workspace-setup-state', () => callback()); },
-    onProgress: callback => { ipcRenderer.on('summon:workspace-progress', (_event, progress) => callback(progress)); },
+    action: (command, input) => ipcRenderer.invoke('summon:connection-action', command, input),
+    onSetup: callback => { ipcRenderer.on('summon:connection-setup-state', () => callback()); },
   }));
 } else if (location.pathname === '/') contextBridge.exposeInMainWorld('SummonDesktop', Object.freeze({
   getInfo: () => ipcRenderer.invoke('summon:desktop-info'),
   checkForUpdates: () => ipcRenderer.invoke('summon:check-update'),
   installUpdate: () => ipcRenderer.invoke('summon:install-update'),
-  openWorkspaceSetup: section => ipcRenderer.invoke('summon:open-workspace-setup', section),
+  openConnectionSettings: section => ipcRenderer.invoke('summon:open-connection-setup', section),
   onOpenUpdates: callback => {
     const listener = () => callback();
     ipcRenderer.on('summon:open-updates', listener);

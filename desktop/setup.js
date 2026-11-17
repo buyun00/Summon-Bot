@@ -5,11 +5,7 @@ const controls = document.querySelector('#controls');
 const status = document.querySelector('#status');
 const welcome = document.querySelector('#welcome');
 const title = document.querySelector('#title');
-const startup = document.querySelector('#startup');
-const startupBand = startup.querySelector('.startup-band');
-const startupLabel = document.querySelector('#startup-label');
-const startupDetail = document.querySelector('#startup-detail');
-let workspace, candidate, localAvailable, busy = false;
+let connection, localAvailable, busy = false;
 const releaseControls = document.querySelector('#release-controls');
 
 function say(text) {
@@ -113,7 +109,6 @@ async function perform(action) {
 }
 
 function showWelcome(label) {
-  startup.hidden = true;
   welcome.hidden = false;
   title.textContent = label;
   transcript.replaceChildren();
@@ -123,26 +118,18 @@ function showWelcome(label) {
 }
 
 function showRetry() {
-  showWelcome('连接工作区');
-  if (workspace) say(workspace.origin);
-  buttons(button('重试当前工作区', () => setup.action('continue'), true),
+  showWelcome('连接实例');
+  if (connection) say(connection.origin);
+  buttons(button('重试当前实例', () => setup.action('continue'), true),
     button('选择其他实例', () => setup.action('choose-instance')));
-}
-
-async function connect(command, input) {
-  candidate = await setup.action(command, input);
-  showWorkspaces();
 }
 
 function showInstances() {
   showWelcome('选择实例');
-  if (localAvailable) buttons(button('本机正式实例', () => connect('prepare-local'), true));
+  if (localAvailable) buttons(button('本机正式实例', () => setup.action('connect-local'), true));
   buttons(button('连接已有实例', showRemote, !localAvailable));
-  if (workspace?.mode === 'remote') {
-    buttons(button('使用上次连接的实例', () => connect('prepare-current')));
-  }
-  if (workspace) buttons(button('回到当前工作区', () => setup.action('continue')));
-  if (workspace?.mode === 'local') {
+  if (connection) buttons(button('回到当前实例', () => setup.action('continue')));
+  if (connection?.mode === 'local') {
     buttons(button('Cloudflare Tunnel', () => showAccess('cloudflare')), button('Tailscale Serve', () => showAccess('tailscale')));
   }
 }
@@ -150,50 +137,11 @@ function showInstances() {
 function showRemote() {
   showWelcome('连接已有实例');
   say('访问令牌由实例部署者提供。已登录的实例可沿用当前会话。');
-  const previous = candidate?.mode === 'remote' ? candidate : workspace?.mode === 'remote' ? workspace : null;
+  const previous = connection?.mode === 'remote' ? connection : null;
   form([field('实例地址', 'address', { type: 'url', placeholder: 'https://', value: previous?.origin || '', required: true }),
     field('访问令牌', 'token', { type: 'password' })],
-    '连接实例', values => connect('prepare-remote', { address: values.address.trim(), token: values.token.trim() }));
+    '连接实例', values => setup.action('connect-remote', { address: values.address.trim(), token: values.token.trim() }));
   buttons(button('返回实例选择', showInstances));
-}
-
-function showWorkspaces() {
-  showWelcome('选择工作区');
-  say(candidate.mode === 'local' ? '本机正式实例\n' + candidate.origin : candidate.origin);
-  buttons(button('新建工作区', createWorkspace, true));
-  const list = document.createElement('section');
-  list.className = 'workspace-list';
-  list.setAttribute('aria-label', '已有工作区');
-  const current = workspace?.origin === candidate.origin ? workspace : null;
-  for (const { id, name } of [{ id: null, name: '默认工作区' }, ...candidate.profiles]) {
-    const item = button(name, () => setup.action('open-workspace', { workspaceId: id }));
-    if (current && current.workspaceId === id) item.setAttribute('aria-current', 'true');
-    if (id) {
-      const code = document.createElement('small');
-      code.textContent = id.slice(-8);
-      item.append(code);
-    }
-    list.append(item);
-  }
-  controls.append(list);
-  const back = [button('更换实例', showInstances)];
-  if (workspace) back.push(button('回到当前工作区', () => setup.action('continue')));
-  buttons(...back);
-}
-
-async function createWorkspace() {
-  welcome.hidden = true;
-  startup.hidden = false;
-  startupBand.removeAttribute('data-ready');
-  startupBand.removeAttribute('aria-valuenow');
-  startupLabel.textContent = '正在创建工作区…';
-  startupDetail.textContent = '';
-  try {
-    await setup.action('create-workspace');
-  } catch (error) {
-    showWorkspaces();
-    throw error;
-  }
 }
 
 const statusText = {
@@ -201,7 +149,7 @@ const statusText = {
   'needs-https': '请先在 tailnet 启用 HTTPS。', 'needs-authorization': '需要在官方授权页确认 HTTPS，然后回到这里重试。',
   conflict: '所选端口已有其他映射或启用了 Funnel。请使用未占用的 HTTPS 端口。',
   configured: '检测到可复用的现有 Serve 映射。', available: '可以准备新的入口。',
-  registered: '入口已登记。', reachable: '可以通过该地址访问这个工作区。',
+  registered: '入口已登记。', reachable: '可以通过该地址访问这个实例。',
   stopped: '本机连接器已停止。', unavailable: '暂时无法读取或修改配置，请检查组件、登录和本机权限。',
   'waiting-connector': '正在等待 cloudflared 连接到 Cloudflare。', 'connector-unavailable': 'cloudflared 启动失败，请检查版本和令牌。',
   'mapping-unconfirmed': '暂时无法确认 Serve 映射，请查询状态后再试。', revoked: '已撤销该入口的登记。',
@@ -209,7 +157,7 @@ const statusText = {
 
 function describe(result) {
   say((statusText[result.state] || '请检查当前接入状态。') + (result.origin ? '\n' + result.origin : '')
-    + (result.reachable === false && result.registered ? '\n当前未能通过该地址访问这个工作区。请核对代理目标和网络。' : ''));
+    + (result.reachable === false && result.registered ? '\n当前未能通过该地址访问这个实例。请核对代理目标和网络。' : ''));
 }
 
 function accessLinks(provider, result) {
@@ -226,7 +174,7 @@ function accessLinks(provider, result) {
 }
 
 function accessNavigation() {
-  buttons(button('返回工作区', () => setup.action('continue')), button('返回实例选择', showInstances));
+  buttons(button('返回实例', () => setup.action('continue')), button('返回实例选择', showInstances));
 }
 
 async function showAccess(provider) {
@@ -265,7 +213,7 @@ function confirmAccess(provider, plan) {
     accessLinks(provider, result);
     if (['registered', 'reachable'].includes(result.state)) {
       controls.replaceChildren();
-      buttons(button('回到工作区', () => setup.action('continue'), true), button('查看接入设置', () => showAccess(provider)));
+      buttons(button('回到实例', () => setup.action('continue'), true), button('查看接入设置', () => showAccess(provider)));
     }
   });
   buttons(button('返回', () => showAccess(provider)));
@@ -274,9 +222,8 @@ function confirmAccess(provider, plan) {
 async function open() {
   try {
     const info = await setup.info();
-    ({ workspace, candidate, localAvailable } = info);
+    ({ connection, localAvailable } = info);
     if (info.section === 'retry') showRetry();
-    else if (info.section === 'workspaces') showWorkspaces();
     else if (info.section === 'remote') showRemote();
     else if (['cloudflare', 'tailscale'].includes(info.section)) await perform(() => showAccess(info.section));
     else showInstances();
@@ -288,13 +235,6 @@ async function open() {
   }
 }
 
-setup.onProgress(stage => {
-  if (stage !== 'ready' || startup.hidden) return;
-  startupBand.setAttribute('data-ready', '');
-  startupBand.setAttribute('aria-valuenow', '100');
-  startupLabel.textContent = '工作区已就绪';
-  startupDetail.textContent = '正在打开工作区…';
-});
 setup.onUpdate(renderUpdates);
 setup.onSetup(() => void open());
 void open();

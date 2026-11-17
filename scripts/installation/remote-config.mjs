@@ -2,8 +2,8 @@ import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { setTimeout as pause } from 'node:timers/promises';
 import { readJson, writeJson } from '../build/files.mjs';
-import { workspaceOrigin } from '../../web/backend/origins.mjs';
-import { workspaceProof } from '../../web/backend/workspace-probe.mjs';
+import { instanceOrigin } from '../../web/backend/origins.mjs';
+import { instanceProof } from '../../web/backend/instance-probe.mjs';
 import { acquireServiceLock } from './service-lock.mjs';
 import { assertInstallationWritable } from './installation-state.mjs';
 
@@ -37,7 +37,7 @@ function validEntries(entries, onWarning) {
     if (name === candidateKey) continue;
     try {
       if (typeof entry?.origin !== 'string') throw new Error('Missing remote origin');
-      result[name] = { ...entry, origin: workspaceOrigin(entry.origin, { httpsOnly: true }) };
+      result[name] = { ...entry, origin: instanceOrigin(entry.origin, { httpsOnly: true }) };
     } catch {
       onWarning?.(`Ignored invalid remote origin for ${name.replace(/[\r\n]/g, ' ').slice(0, 60)}`);
     }
@@ -60,7 +60,7 @@ export async function remoteOrigins(dataRoot, { includeCandidates = false } = {}
     .map(([provider, entry]) => ({ origin: entry.origin, provider }));
   const candidate = includeCandidates && remoteCandidate(entries);
   if (candidate && ['cloudflare', 'tailscale', 'custom'].includes(candidate.provider)) {
-    try { result.push({ origin: workspaceOrigin(candidate.origin, { httpsOnly: true }), provider: candidate.provider, probeOnly: true }); }
+    try { result.push({ origin: instanceOrigin(candidate.origin, { httpsOnly: true }), provider: candidate.provider, probeOnly: true }); }
     catch {}
   }
   return result;
@@ -86,7 +86,7 @@ export async function inspectRemoteOrigin(config, origin, { signal, timeoutMs = 
     const response = await fetch(url, { redirect: 'error', signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
     if (!response.ok) return { reachable: false, status: response.status, code: 'REMOTE_HTTP_ERROR', message: '远程入口返回 HTTP ' + response.status + '。请检查代理目标及 Host 转发。' };
     const body = await response.json().catch(() => null);
-    if (body?.proof !== workspaceProof(config.web.accessToken, challenge)) return { reachable: false, status: response.status, code: 'REMOTE_INSTANCE_MISMATCH', message: '远程入口没有返回当前工作区的身份，请检查它转发到的实例。' };
+    if (body?.proof !== instanceProof(config.web.accessToken, challenge)) return { reachable: false, status: response.status, code: 'REMOTE_INSTANCE_MISMATCH', message: '远程入口没有返回当前实例的身份，请检查它转发到的实例。' };
     return { reachable: true, status: response.status };
   } catch (error) {
     signal?.throwIfAborted();
@@ -101,7 +101,7 @@ export async function probeRemoteOrigin(config, origin) {
 export async function registerCustomRemote(config, input, { signal } = {}) {
   await assertInstallationWritable(config.dataRoot, config.releaseRoot);
   signal?.throwIfAborted();
-  const origin = workspaceOrigin(input.origin, { httpsOnly: true });
+  const origin = instanceOrigin(input.origin, { httpsOnly: true });
   const lock = await acquireServiceLock(config.dataRoot, 'remote-access-operation', () => ({ pid: process.pid, bootId: 'custom-remote', state: 'working' }));
   try {
     await assertInstallationWritable(config.dataRoot, config.releaseRoot);

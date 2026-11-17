@@ -27,8 +27,7 @@ export function connectionAuthorized(entry, actor, getConnection, seen = new Set
   }
   return (entry.dependencies || []).every(id => {
     const dependency = getConnection(id);
-    return (dependency?.workspaceProfileId ?? null) === (entry.workspaceProfileId ?? null) &&
-      connectionAuthorized(dependency, actor, getConnection, visited);
+    return connectionAuthorized(dependency, actor, getConnection, visited);
   });
 }
 
@@ -37,7 +36,7 @@ export function validateNativePaths({ file, canonical_file, workspace_root }) {
   if (!absolute(file) || !absolute(canonical_file))
     reject('invalid_connection', 'The connection must be bound to a registered absolute executable path');
   if (workspace_root && !absolute(workspace_root))
-    reject('invalid_connection', 'Workspace root must be an absolute host path');
+    reject('invalid_connection', 'The working directory must be an absolute host path');
 }
 
 export function validateConnection(entry) {

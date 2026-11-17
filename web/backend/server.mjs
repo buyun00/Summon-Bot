@@ -5,8 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { serveClientReleases } from './releases.mjs';
 import { createWebAuth } from './auth.mjs';
-import { matchesOrigin, originForHost, workspaceOrigin } from './origins.mjs';
-import { workspaceProof } from './workspace-probe.mjs';
+import { matchesOrigin, originForHost, instanceOrigin } from './origins.mjs';
+import { instanceProof } from './instance-probe.mjs';
 import { createGameExports, gamePrefix } from './game-exports.mjs';
 
 const defaultFrontend = fileURLToPath(new URL('../frontend/', import.meta.url));
@@ -59,44 +59,44 @@ export async function startWeb({ host = '127.0.0.1', port = 8787, getRemoteOrigi
     catch { return []; }
     if (!Array.isArray(entries)) return [];
     return entries.flatMap(entry => {
-      try { return [{ origin: workspaceOrigin(entry.origin, { httpsOnly: true }), provider: entry.provider, probeOnly: entry.probeOnly === true }]; }
+      try { return [{ origin: instanceOrigin(entry.origin, { httpsOnly: true }), provider: entry.provider, probeOnly: entry.probeOnly === true }]; }
       catch { return []; }
     });
   }
   const server = createServer(async (req, res) => {
     try {
-      if (closing) return json(res, 503, { error: '工作区正在更新', code: 'updating' });
+      if (closing) return json(res, 503, { error: '实例正在更新', code: 'updating' });
       const localOrigins = [host, ...(host === '127.0.0.1' ? ['localhost'] : [])].map(name => `http://${name}:${server.address().port}`);
       const localOrigin = originForHost(req.headers.host, localOrigins);
       const mappings = localOrigin ? [] : await remoteMappings();
       const requestOrigin = localOrigin || originForHost(req.headers.host, mappings.map(entry => entry.origin));
-      if (!requestOrigin || !req.url?.startsWith('/') || req.url.startsWith('//')) return json(res, 403, { error: '工作区地址未登记' });
+      if (!requestOrigin || !req.url?.startsWith('/') || req.url.startsWith('//')) return json(res, 403, { error: '实例地址未登记' });
       const funnel = req.headers['tailscale-funnel-request'] === '?1';
       const matched = mappings.filter(entry => entry.origin === requestOrigin);
       if (funnel && matched.some(entry => entry.provider === 'tailscale')) {
-        return json(res, 403, { error: '工作区使用私网 Tailscale Serve' });
+        return json(res, 403, { error: '实例使用私网 Tailscale Serve' });
       }
       const url = new URL(req.url, requestOrigin);
-      if (url.origin !== requestOrigin) return json(res, 403, { error: '工作区地址未登记' });
+      if (url.origin !== requestOrigin) return json(res, 403, { error: '实例地址未登记' });
       if (matched.length && matched.every(entry => entry.probeOnly)
         && (req.method !== 'GET' || url.pathname !== '/auth/instance')) {
-        return json(res, 403, { error: '工作区地址未登记' });
+        return json(res, 403, { error: '实例地址未登记' });
       }
       const local = Boolean(localOrigin) && !funnel && !req.headers['x-forwarded-host'] && !req.headers.forwarded;
-      // The device's update feed contains public packages and has no workspace credentials.
+      // The device's update feed contains public packages and has no instance credentials.
       const origin = req.headers.origin;
       const releaseRequest = url.pathname === '/api/releases' || url.pathname.startsWith('/api/releases/');
       const localRelease = releaseRequest && local && (!origin || matchesOrigin(origin, requestOrigin)
         || (await remoteMappings()).some(entry => !entry.probeOnly && matchesOrigin(origin, entry.origin)));
       if (localRelease && await serveClientReleases(req, res, url, clientReleaseRoot, webRelease, { local, origin })) return;
       const game = games.find(game => requestOrigin === game.origin && url.pathname.startsWith(game.prefix));
-      // The sandbox uses a bundle ticket instead of a workspace session.
+      // The sandbox uses a bundle ticket instead of a instance session.
       if (game && url.pathname.startsWith(game.bundlePrefix)) return await game.serveFile(req, res, url);
       if (origin !== undefined && !matchesOrigin(origin, requestOrigin)) return json(res, 403, { error: '只接受同源工作台请求' });
       if (req.method === 'GET' && url.pathname === '/auth/instance') {
         const challenge = url.searchParams.get('challenge') || '';
-        return /^[A-Za-z0-9_-]{43}$/.test(challenge) ? json(res, 200, { proof: workspaceProof(accessToken, challenge) })
-          : json(res, 400, { error: '无效的工作区探测请求' });
+        return /^[A-Za-z0-9_-]{43}$/.test(challenge) ? json(res, 200, { proof: instanceProof(accessToken, challenge) })
+          : json(res, 400, { error: '无效的实例探测请求' });
       }
       if (url.pathname === '/sw.js' && ['GET', 'HEAD'].includes(req.method)) {
         // Old workers must be able to retire after their login expires. Host/Origin checks still apply.
@@ -149,7 +149,7 @@ export async function startWeb({ host = '127.0.0.1', port = 8787, getRemoteOrigi
         });
         active.add(outgoing);
         outgoing.once('close', () => active.delete(outgoing));
-        outgoing.once('error', () => { if (!res.headersSent) json(res, 502, { error: '工作区暂不可达' }); else res.destroy(); });
+        outgoing.once('error', () => { if (!res.headersSent) json(res, 502, { error: '实例暂不可达' }); else res.destroy(); });
         if (url.pathname !== '/api/stream') outgoing.setTimeout(requestTimeoutMs, () => outgoing.destroy(new Error('Gateway request timed out')));
         req.once('error', error => outgoing.destroy(error));
         res.once('close', () => outgoing.destroy());

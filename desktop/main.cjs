@@ -3,7 +3,7 @@ const { join } = require('node:path');
 const { readFile } = require('node:fs/promises');
 const { autoUpdater } = require('electron-updater');
 const release = require('./release.json');
-const { runtime, setupUrl, desktopSettings, localAccess, prepareWorkspace, workspaceProfiles, authorizationUrl } = require('./workspace.cjs');
+const { runtime, setupUrl, desktopSettings, localAccess, prepareConnection, authorizationUrl } = require('./connection.cjs');
 // Keep the existing profile directory while changing the product's visible name.
 app.setPath('userData', join(app.getPath('appData'), 'Relay'));
 app.setName('Summon Bot');
@@ -13,8 +13,8 @@ const localUpdateFeed = new URL(release.updatePath, 'http://127.0.0.1:8787').hre
 const [releasePlatform, releaseArch] = release.updatePath.split('/').filter(Boolean).slice(-2);
 const remoteUpdateFeed = `https://github.com/${release.githubRepository}/releases/download/client-${releasePlatform}-${releaseArch}/`;
 let window, timer, checking;
-let workspace = null, candidate = null, setup = { section: 'instances', error: '' }, selectionWarning = '';
-const workspaceOperations = new Set();
+let connection = null, setup = { section: 'instances', error: '' }, selectionWarning = '';
+const connectionOperations = new Set();
 let update = { status: 'idle', currentVersion: app.getVersion() };
 
 function setUpdate(value) {
@@ -22,7 +22,7 @@ function setUpdate(value) {
   if (window && !window.isDestroyed()) window.webContents.send('summon:update-state', update);
 }
 const webOrigin = url => { try { return new URL(url).origin; } catch { return null; } };
-const isWeb = url => workspace?.origin && webOrigin(url) === workspace.origin;
+const isWeb = url => connection?.origin && webOrigin(url) === connection.origin;
 function trusted(event, local = false) {
   if (!window || event.sender !== window.webContents || !event.senderFrame || event.senderFrame !== window.webContents.mainFrame
     || !(local ? event.senderFrame.url === setupUrl : isWeb(event.senderFrame.url) && new URL(event.senderFrame.url).pathname === '/')) {
@@ -31,72 +31,65 @@ function trusted(event, local = false) {
 }
 
 function showSetup(section = 'instances', error = '') {
-  if (section === 'instances') candidate = null;
   setup = { section, error };
   if (!window || window.isDestroyed()) return;
-  if (window.webContents.getURL() === setupUrl) window.webContents.send('summon:workspace-setup-state');
+  if (window.webContents.getURL() === setupUrl) window.webContents.send('summon:connection-setup-state');
   else window.loadURL(setupUrl).catch(() => {});
 }
 
-async function showWorkspace(target, selection) {
+async function showConnection(target, selection) {
   if (target !== window || target.isDestroyed()) return;
   const url = new URL('/', selection.origin);
-  if (selection.workspaceId) url.searchParams.set('workspace', selection.workspaceId);
   const previousSetup = setup;
   await target.loadURL(url.href).catch(() => {
     if (target === window && !target.isDestroyed() && setup === previousSetup) {
-      showSetup('retry', '暂时无法打开工作区。');
+      showSetup('retry', '暂时无法打开实例。');
     }
   });
 }
 
-async function continueWorkspace(target) {
-  const selection = workspace;
+async function continueConnection(target) {
+  const selection = connection;
   if (!selection) return showSetup();
   const previousSetup = setup;
-  const profiles = await prepareWorkspace(target.webContents.session, selection);
+  await prepareConnection(target.webContents.session, selection);
   if (target !== window || setup !== previousSetup) return;
-  if (selection.workspaceId && !profiles.some(item => item.id === selection.workspaceId)) {
-    candidate = { mode: selection.mode, origin: selection.origin, profiles };
-    return showSetup('workspaces', '上次选择的工作区已不可用，请重新选择。');
-  }
-  await showWorkspace(target, selection);
+  await showConnection(target, selection);
 }
 
 function connectionError(error, selection) {
-  const section = selection?.mode === 'remote' && error.code === 'WORKSPACE_LOGIN_REQUIRED' ? 'remote' : selection ? 'retry' : 'instances';
+  const section = selection?.mode === 'remote' && error.code === 'INSTANCE_LOGIN_REQUIRED' ? 'remote' : selection ? 'retry' : 'instances';
   showSetup(section, error.message);
 }
 
-async function restoreWorkspace(target) {
+async function restoreConnection(target) {
   const previousSetup = setup;
   try {
-    const { readWorkspaceSelection } = await desktopSettings();
-    const selection = await readWorkspaceSelection(profile);
+    const { readDesktopConnection } = await desktopSettings();
+    const selection = await readDesktopConnection(profile);
     if (target !== window || setup !== previousSetup) return;
-    workspace = selection;
+    connection = selection;
     if (!selection) return;
-    showSetup('retry', '正在连接上次使用的工作区…');
+    showSetup('retry', '正在连接上次使用的实例…');
     const connecting = setup;
-    try { await continueWorkspace(target); }
+    try { await continueConnection(target); }
     catch (error) { if (target === window && setup === connecting) connectionError(error, selection); }
   } catch (error) {
-    if (target === window && setup === previousSetup) connectionError(error, workspace);
+    if (target === window && setup === previousSetup) connectionError(error, connection);
   }
 }
 
-async function rememberWorkspace(target, { mode, origin }, workspaceId) {
-  const selection = { mode, origin, workspaceId };
-  const { saveWorkspaceSelection } = await desktopSettings();
+async function rememberConnection(target, selection) {
+  const { saveDesktopConnection } = await desktopSettings();
   selectionWarning = '';
-  try { await saveWorkspaceSelection(profile, selection); }
+  try { await saveDesktopConnection(profile, selection); }
   catch (error) {
-    selectionWarning = '已打开工作区，无法保存本次选择。';
+    selectionWarning = '已打开实例，无法保存本次选择。';
     console.warn(selectionWarning, error.code || error.message);
   }
   if (target !== window) return;
-  workspace = selection;
-  await showWorkspace(target, selection);
+  connection = selection;
+  await showConnection(target, selection);
 }
 
 function installSetupProtocol() {
@@ -104,11 +97,10 @@ function installSetupProtocol() {
     ['/index.html', [join(__dirname, 'setup.html'), 'text/html']],
     ['/setup.js', [join(__dirname, 'setup.js'), 'text/javascript']],
     ['/setup.css', [join(__dirname, 'setup.css'), 'text/css']],
-    ['/startup-art.png', [join(__dirname, 'startup-art.png'), 'image/png']],
     ['/icon.png', [join(runtime, 'web/frontend/icons/icon-192.png'), 'image/png']],
   ]);
   protocol.handle('summon-setup', async request => {
-    const url = new URL(request.url), asset = url.host === 'workspace' && assets.get(url.pathname);
+    const url = new URL(request.url), asset = url.host === 'connection' && assets.get(url.pathname);
     if (!asset || request.method !== 'GET') return new Response(null, { status: 404 });
     return new Response(await readFile(asset[0]), { headers: {
       'Content-Type': asset[1], 'Cache-Control': 'no-store',
@@ -188,21 +180,21 @@ function createWindow() {
     return { action: 'deny' };
   });
   target.webContents.on('will-frame-navigate', event => {
-    if (event.isMainFrame ? !isWeb(event.url) : webOrigin(event.url) !== workspace?.origin) event.preventDefault();
+    if (event.isMainFrame ? !isWeb(event.url) : webOrigin(event.url) !== connection?.origin) event.preventDefault();
   });
   target.webContents.on('will-redirect', event => { if (!isWeb(event.url)) event.preventDefault(); });
   target.webContents.session.setPermissionRequestHandler((_contents, permission, callback) => callback(permission === 'clipboard-sanitized-write'));
   target.webContents.on('did-fail-load', (_event, code, _description, url, isMainFrame) => {
     if (target !== window || !isMainFrame || code === -3 || !isWeb(url)) return;
-    showSetup('retry', '暂时无法连接工作区。');
+    showSetup('retry', '暂时无法连接实例。');
   });
   target.webContents.on('did-navigate', (_event, url, status) => {
     if (target !== window || !isWeb(url) || new URL(url).pathname !== '/' || status < 400) return;
-    if (status === 401 && workspace.mode === 'remote') showSetup('remote', '工作区登录已失效，请重新连接该实例。');
-    else showSetup('retry', status === 503 ? '工作区当前无法响应（HTTP 503）。' : '工作区页面暂不可用（HTTP ' + status + '）。');
+    if (status === 401 && connection.mode === 'remote') showSetup('remote', '实例登录已失效，请重新连接该实例。');
+    else showSetup('retry', status === 503 ? '实例当前无法响应（HTTP 503）。' : '实例页面暂不可用（HTTP ' + status + '）。');
   });
   showSetup();
-  void restoreWorkspace(target);
+  void restoreConnection(target);
 }
 autoUpdater.autoDownload = false;
 autoUpdater.autoInstallOnAppQuit = false;
@@ -215,79 +207,52 @@ autoUpdater.on('update-downloaded', info => setUpdate({ status: 'downloaded', ve
 autoUpdater.on('error', error => {
   if (!checking) setUpdate({ status: 'error', message: error.message });
 });
-ipcMain.handle('summon:desktop-info', event => { trusted(event); return { version: app.getVersion(), platform: process.platform, arch: process.arch, windowControlsOverlay: true, localWorkspace: workspace?.mode === 'local', selectionWarning, update }; });
-ipcMain.handle('summon:open-workspace-setup', (event, section) => {
+ipcMain.handle('summon:desktop-info', event => { trusted(event); return { version: app.getVersion(), platform: process.platform, arch: process.arch, windowControlsOverlay: true, localInstance: connection?.mode === 'local', selectionWarning, update }; });
+ipcMain.handle('summon:open-connection-setup', (event, section) => {
   trusted(event);
-  if (!workspaceOperations.has('workspace')) showSetup(workspace?.mode === 'local' && ['cloudflare', 'tailscale'].includes(section) ? section : 'instances');
+  if (!connectionOperations.has('connection')) showSetup(connection?.mode === 'local' && ['cloudflare', 'tailscale'].includes(section) ? section : 'instances');
 });
-ipcMain.handle('summon:workspace-info', event => {
+ipcMain.handle('summon:connection-info', event => {
   trusted(event, true);
-  return { ...setup, workspace, candidate, update, selectionWarning, localAvailable: process.platform === 'win32' };
+  return { ...setup, connection, update, selectionWarning, localAvailable: process.platform === 'win32' };
 });
-ipcMain.handle('summon:workspace-action', async (event, command, input = {}) => {
+ipcMain.handle('summon:connection-action', async (event, command, input = {}) => {
   trusted(event, true);
   const operation = command === 'access' ? input.action === 'status' ? null : 'access'
-    : command === 'authorize' || command === 'choose-instance' ? null : 'workspace';
-  if (operation && workspaceOperations.has(operation)) throw new Error('该项设置正在更新，请稍后重试。');
-  if (operation) workspaceOperations.add(operation);
+    : command === 'authorize' || command === 'choose-instance' ? null : 'connection';
+  if (operation && connectionOperations.has(operation)) throw new Error('该项设置正在更新，请稍后重试。');
+  if (operation) connectionOperations.add(operation);
   const target = window;
   try {
     if (command === 'choose-instance') return showSetup();
     if (command === 'continue') {
-      try { await continueWorkspace(target); }
-      catch (error) { if (target === window) connectionError(error, workspace); }
+      try { await continueConnection(target); }
+      catch (error) { if (target === window) connectionError(error, connection); }
       return;
     }
-    if (command === 'prepare-local' || command === 'prepare-remote' || command === 'prepare-current') {
-      const { formalOrigin, remoteWorkspaceOrigin } = await desktopSettings();
-      let selection = workspace;
-      if (command === 'prepare-local') {
+    if (command === 'connect-local' || command === 'connect-remote') {
+      const { formalOrigin, remoteInstanceOrigin } = await desktopSettings();
+      let selection = connection;
+      if (command === 'connect-local') {
         if (process.platform !== 'win32') throw new Error('请通过 HTTPS 连接已有实例。');
         selection = { mode: 'local', origin: formalOrigin };
-      } else if (command === 'prepare-remote') {
-        selection = { mode: 'remote', origin: remoteWorkspaceOrigin(input.address) };
+      } else if (command === 'connect-remote') {
+        selection = { mode: 'remote', origin: remoteInstanceOrigin(input.address) };
       }
       if (!selection) throw new Error('请先选择一个实例。');
-      const token = command === 'prepare-remote' ? input.token : undefined;
-      let profiles;
-      try { profiles = await prepareWorkspace(target.webContents.session, selection, token); }
+      const token = command === 'connect-remote' ? input.token : undefined;
+      const previousSetup = setup;
+      try { await prepareConnection(target.webContents.session, selection, token); }
       catch (error) {
-        if (command === 'prepare-remote' && !token && error.code === 'WORKSPACE_LOGIN_REQUIRED') {
+        if (command === 'connect-remote' && !token && error.code === 'INSTANCE_LOGIN_REQUIRED')
           throw new Error('请输入该实例的访问令牌。');
-        }
         throw error;
       }
-      if (target !== window) return;
-      return candidate = { mode: selection.mode, origin: selection.origin, profiles };
-    }
-    if (command === 'open-workspace' || command === 'create-workspace') {
-      const connection = candidate;
-      if (!connection) throw new Error('请先连接实例。');
-      if (command === 'open-workspace') {
-        const workspaceId = input.workspaceId ?? null;
-        if (workspaceId !== null && !connection.profiles.some(item => item.id === workspaceId)) throw new Error('请选择列表中的工作区。');
-        return await rememberWorkspace(target, connection, workspaceId);
-      }
-      const { reserveWorkspaceCreation } = await desktopSettings();
-      const session = target.webContents.session;
-      const id = await reserveWorkspaceCreation(profile, connection);
-      let created;
-      try { created = await workspaceProfiles(session, connection.origin, id); }
-      catch (error) {
-        if (error.code !== 'WORKSPACE_LOGIN_REQUIRED') throw error;
-        if (connection.mode === 'remote') {
-          if (target === window) connectionError(error, connection);
-          return;
-        }
-        await prepareWorkspace(session, connection);
-        created = await workspaceProfiles(session, connection.origin, id);
-      }
-      if (!connection.profiles.some(item => item.id === id)) connection.profiles.unshift(created);
-      if (target === window && target.webContents.getURL() === setupUrl) target.webContents.send('summon:workspace-progress', 'ready');
-      return await rememberWorkspace(target, connection, id);
+      if (target === window && setup === previousSetup) return rememberConnection(target, selection);
+      return;
     }
     if (command === 'access' || command === 'authorize') {
-      if (workspace?.mode !== 'local') throw new Error('请在部署机配置本机远程访问。');
+      if (connection?.mode !== 'local') throw new Error('请在部署机配置本机远程访问。');
       if (command === 'access') {
         return await localAccess(profile, { ...input, dataRoot: undefined });
       }
@@ -295,8 +260,8 @@ ipcMain.handle('summon:workspace-action', async (event, command, input = {}) => 
       if (url) await shell.openExternal(url);
       return { opened: Boolean(url) };
     }
-    throw new Error('未知的工作区操作。');
-  } finally { if (operation) workspaceOperations.delete(operation); }
+    throw new Error('未知的实例操作。');
+  } finally { if (operation) connectionOperations.delete(operation); }
 });
 ipcMain.handle('summon:check-update', event => { trusted(event, event.senderFrame?.url === setupUrl); return checkForUpdates({ force:true }); });
 ipcMain.handle('summon:install-update', event => {
@@ -312,7 +277,7 @@ else {
     installSetupProtocol();
     createWindow();
     const clientMenu = { label: 'Summon Bot', submenu: [
-      { label: '切换工作区…', click: () => { if (!workspaceOperations.has('workspace')) showSetup(); } },
+      { label: '实例连接…', click: () => { if (!connectionOperations.has('connection')) showSetup(); } },
       { type: 'separator' },
       { label: '检查更新', click: () => {
         if (window?.webContents.getURL() === setupUrl) void checkForUpdates({ force:true });

@@ -68,9 +68,9 @@ export class Files {
     const file = this.get(id);
     if (context.session && !context.resource_refs?.some(ref => sameRef(ref, { kind: 'file', id })) &&
         !sameRef(file?.created_in, { kind: 'session', id: context.session.id })) return false;
-    if (file) return this.canReadSpace(context.actor, file.space, { workspaceProfileId: context.workspaceProfileId });
+    if (file) return this.canReadSpace(context.actor, file.space);
     try {
-      this.room.attachment(id, context.actor.id, { workspaceProfileId: context.workspaceProfileId });
+      this.room.attachment(id, context.actor.id);
       return true;
     } catch (error) {
       if ([403, 404].includes(error.status)) return false;
@@ -88,7 +88,7 @@ export class Files {
     if (!this.canRead(id, context)) reject('file_not_found', 'File is unavailable', 404);
     const file = this.get(id);
     if (file) return { file, projection: this.view(file) };
-    const attachment = this.attachments.project(this.room.attachment(id, context.actor.id, { workspaceProfileId: context.workspaceProfileId }));
+    const attachment = this.attachments.project(this.room.attachment(id, context.actor.id));
     return { file, projection: { ...attachment, kind: 'file', id, ref: { kind: 'file', id }, revision: 1 } };
   }
 

@@ -1,6 +1,6 @@
 import { roleIds } from '../../roles/index.mjs';
 
-export const protocolVersion = 2;
+export const protocolVersion = 3;
 
 const text = { type: 'string' };
 const integer = { type: 'integer', minimum: 0 };
@@ -77,7 +77,7 @@ const definitions = [
     'For workspace, pass the id returned by find with kind workspace, or an authorized absolute project directory path. ' +
     'A private initialization can omit workspace to use its selected directory for a native CLI Session. ' +
     'To share the Session, set space to an accessible Room, specify sharing.readers, sharing.submitters and sharing.controllers, ' +
-    'and pass resource_refs, including the workspace grant when using a workspace. The selected external engine is included in shared resources. ' +
+    'and pass resource_refs, including the execution directory grant when using a directory. The selected external engine is included in shared resources. ' +
     'For work submitted on behalf of a Room, pass work_room and optionally the original Room message as work_source. This authorizes bounded tool observations in that Room and keeps the Session’s own permissions. ' +
     'For work to remain private, omit work_room or explicitly set private_work on a shared Session. ' +
     'Set include_execution_guide to append the installed Summon adapter guide to a text input. ' +

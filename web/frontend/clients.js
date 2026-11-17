@@ -19,7 +19,7 @@
       document.dispatchEvent(new CustomEvent('summon-selection-warning', { detail:value.selectionWarning }));
     }
     desktop = value; desktopUpdate = value.update; syncWindowChrome();
-    document.documentElement.dataset.localWorkspace = String(value.localWorkspace === true);
+    document.documentElement.dataset.localInstance = String(value.localInstance === true);
   }
   const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
   const size = bytes => bytes ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : '';

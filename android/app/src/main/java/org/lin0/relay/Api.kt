@@ -37,7 +37,7 @@ class SummonApiException(message: String, val status: Int? = null, val code: Str
     }
 }
 
-class SummonApiClient(val baseURL: URI, private val token: String, val workspaceID: String? = null) {
+class SummonApiClient(val baseURL: URI, private val token: String) {
     private val http = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
@@ -130,10 +130,7 @@ class SummonApiClient(val baseURL: URI, private val token: String, val workspace
 
     private fun build(path: String, method: String, body: SummonJson?, accept: String, clientID: String? = null): Request {
         if (!path.startsWith("/api/") || path.contains("\\")) throw SummonApiException.invalidURL
-        val base = baseURL.toString().trimEnd('/') + path
-        val suffix = workspaceID?.takeUnless { path == "/api/workspace-profiles" || path.startsWith("/api/push/") }
-            ?.let { (if ("?" in path) "&" else "?") + "workspace=" + component(it) }.orEmpty()
-        val url = base + suffix
+        val url = baseURL.toString().trimEnd('/') + path
         val builder = Request.Builder().url(url).header("Accept", accept)
         if (path != "/api/bootstrap") builder.header("X-Summon-Protocol", PROTOCOL_VERSION.toString())
         if (clientID != null) builder.header("X-Summon-Client-Id", clientID)
@@ -144,7 +141,7 @@ class SummonApiClient(val baseURL: URI, private val token: String, val workspace
     }
 
     companion object {
-        const val PROTOCOL_VERSION = 2
+        const val PROTOCOL_VERSION = 3
 
         fun normalized(value: String): URI {
             val cleaned = value.trim()

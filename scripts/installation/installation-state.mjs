@@ -1,7 +1,7 @@
 import { join, resolve } from 'node:path';
 import { readJson, writeJson } from '../build/files.mjs';
 
-export const dataFormat = 2;
+export const dataFormat = 3;
 export const installationStatePath = dataRoot => join(resolve(dataRoot), 'config', 'installation_state.json');
 const phases = ['prepared', 'draining', 'converting', 'data_ready', 'runtime_ready', 'done'];
 const canStart = new Set(['runtime_ready', 'done']);

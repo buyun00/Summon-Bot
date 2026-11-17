@@ -77,19 +77,19 @@ export class ChatroomService {
     `);
   }
 
-  room(id, actor, { workspaceProfileId } = {}) {
+  room(id, actor) {
     id = idOf(id, 'room');
     actor = identity(actor).id;
     const room = this.store.get('rooms', id);
-    if (!room || workspaceProfileId !== undefined && (room.workspaceProfileId ?? null) !== workspaceProfileId)
+    if (!room)
       fail('会话不存在', 404);
     if (!room.members.includes(actor)) fail('无权访问这个会话', 403);
     return room;
   }
 
   projectRoom(room) {
-    const { id, name, members, mode, pins, revision, workspaceProfileId, createdAt, updatedAt } = room;
-    return { id, ref: { kind: 'room', id }, name, members, mode, pins, revision, workspaceProfileId, createdAt, updatedAt,
+    const { id, name, members, mode, pins, revision, createdAt, updatedAt } = room;
+    return { id, ref: { kind: 'room', id }, name, members, mode, pins, revision, createdAt, updatedAt,
       lastMessage: rowMessage(this.latestMessage.get(id)) };
   }
 
@@ -104,29 +104,28 @@ export class ChatroomService {
     return message;
   }
 
-  rooms(actor, options = {}) {
+  rooms(actor) {
     actor = identity(actor).id;
-    const { workspaceProfileId } = options;
     return this.store.list('rooms')
-      .filter(room => room.members.includes(actor) && (workspaceProfileId === undefined || (room.workspaceProfileId ?? null) === workspaceProfileId))
+      .filter(room => room.members.includes(actor))
       .map(room => this.projectRoom(room));
   }
 
-  messages(id, actor, options = {}) {
-    const room = this.room(id, actor, options);
+  messages(id, actor) {
+    const room = this.room(id, actor);
     return this.roomMessages.all(room.id).map(rowMessage);
   }
 
-  read({ ref, cursor, limit = 40 }, actor, options = {}) {
+  read({ ref, cursor, limit = 40 }, actor) {
     if (ref?.kind === 'event') {
       const event = this.projectMessage(this.messageRow.get(ref.id));
       if (!event) fail('消息不存在', 404);
-      this.room(event.roomId, actor, options);
+      this.room(event.roomId, actor);
       return event;
     }
     if (ref?.kind !== 'room') fail('需要会话或消息引用');
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) fail('消息页大小须为 1 至 100');
-    const room = this.room(ref.id, actor, options);
+    const room = this.room(ref.id, actor);
     const before = cursor == null ? null : this.messageRow.get(identifier(cursor, '消息游标'));
     if (cursor != null && (!before || rowMessage(before).roomId !== room.id)) fail('消息游标已失效', 409);
     const rows = this.messagePage.all(room.id, before?.sequence ?? null, before?.created_at ?? null, before?.sequence ?? null, limit + 1);
@@ -134,27 +133,27 @@ export class ChatroomService {
     return { room: this.projectRoom(room), messages, cursor: rows.length > limit ? messages[0].id : null };
   }
 
-  validateMembers(members, actor, workspaceProfileId) {
+  validateMembers(members, actor) {
     for (const member of members) {
       if (member === actor || member === 'user') continue;
       const bot = this.manager.get(member);
-      if (bot.connection_initializer || bot.archivedAt || (bot.workspaceProfileId ?? null) !== workspaceProfileId) fail('此 Bot 无法加入会话', 403);
+      if (bot.connection_initializer || bot.archivedAt) fail('此 Bot 无法加入会话', 403);
     }
   }
 
-  createRoom({ title, members, mode }, actor, { workspaceProfileId = null, id = randomUUID() } = {}) {
+  createRoom({ title, members, mode }, actor, { id = randomUUID() } = {}) {
     actor = identity(actor).id;
     const included = [...new Set([actor, ...list(members, '成员').map(member => identity(member).id)])];
     const saved = this.store.transaction(() => {
       if (this.store.get('rooms', id)) fail('会话 ID 已存在', 409);
-      this.validateMembers(included, actor, workspaceProfileId);
+      this.validateMembers(included, actor);
       mode ??= directMembers(included) ? 'direct' : 'group';
       if (mode === 'direct' && !directMembers(included)) fail('私聊必须包含用户和一位 Bot');
       const fallback = included.filter(member => member !== 'user').map(member => this.manager.get(member).name).join('、');
-      const onboarding = mode === 'group' && this.manager.onboardingBot(workspaceProfileId);
+      const onboarding = mode === 'group' && this.manager.onboardingBot();
       if (onboarding?.enabled && !included.includes(onboarding.id)) included.push(onboarding.id);
       const room = this.store.save('rooms', {
-        id, name: titleOf(title, fallback.slice(0, 160) || '新会话'), members: included, mode, pins: [], revision: 1, workspaceProfileId,
+        id, name: titleOf(title, fallback.slice(0, 160) || '新会话'), members: included, mode, pins: [], revision: 1,
       });
       for (const member of included) if (member !== 'user') this.platform.ensureRoomBase(member, id);
       return room;
@@ -164,21 +163,7 @@ export class ChatroomService {
     return projection;
   }
 
-  enrollOnboardingBot(bot) {
-    this.store.transaction(() => {
-      for (const room of this.store.list('rooms')) {
-        if (room.mode !== 'group' || (room.workspaceProfileId ?? null) !== (bot.workspaceProfileId ?? null) ||
-            this.platform.deliveries.wasRemoved(bot.id, room.id)) continue;
-        if (!room.members.includes(bot.id)) {
-          this.store.save('rooms', { id: room.id, members: [...room.members, bot.id], revision: room.revision + 1 });
-          this.emit('room', { id: room.id });
-        }
-        this.platform.ensureRoomBase(bot.id, room.id);
-      }
-    });
-  }
-
-  configureRoom(id, input, actor, options = {}) {
+  configureRoom(id, input, actor) {
     id = idOf(id, 'room');
     actor = identity(actor).id;
     const add = new Set(list(input.add_members, '添加成员').map(member => identity(member).id));
@@ -188,15 +173,15 @@ export class ChatroomService {
     const pinRemove = new Set(references(input.pin_remove, '移除置顶').map(refKey));
     if (pinAdd.some(ref => pinRemove.has(refKey(ref)))) fail('同一引用不能同时添加和移除');
     const saved = this.store.transaction(() => {
-      const room = this.room(id, actor, options);
+      const room = this.room(id, actor);
       assertRevision(room.revision, input.revision);
       const added = [...add].filter(member => !room.members.includes(member));
       const removed = room.members.filter(member => remove.has(member));
-      this.validateMembers(added, actor, room.workspaceProfileId ?? null);
+      this.validateMembers(added, actor);
       const members = [...room.members.filter(member => !remove.has(member)), ...added];
       const mode = room.mode === 'direct' && members.length > 2 ? 'group' : room.mode;
       if (mode === 'group' && room.mode === 'direct') {
-        const onboarding = this.manager.onboardingBot(room.workspaceProfileId ?? null);
+        const onboarding = this.manager.onboardingBot();
         if (onboarding?.enabled && !members.includes(onboarding.id) && !remove.has(onboarding.id) &&
             !this.platform.deliveries.wasRemoved(onboarding.id, id)) {
           members.push(onboarding.id);
@@ -234,12 +219,11 @@ export class ChatroomService {
     return this.attachmentMessages.all(id).map(row => this.store.get('rooms', row.roomId)).filter(Boolean);
   }
 
-  attachment(id, actor, { workspaceProfileId } = {}) {
+  attachment(id, actor) {
     actor = identity(actor).id;
     const file = this.attachments.get(id);
-    const inWorkspace = room => workspaceProfileId === undefined || (room.workspaceProfileId ?? null) === workspaceProfileId;
-    const owned = file.ownerId === actor && (workspaceProfileId === undefined || (file.workspaceProfileId ?? null) === workspaceProfileId);
-    const shared = this.attachmentRooms(id).some(room => inWorkspace(room) && room.members.includes(actor));
+    const owned = file.ownerId === actor;
+    const shared = this.attachmentRooms(id).some(room => room.members.includes(actor));
     if (!owned && !shared) fail('无权读取这个附件', 403);
     return file;
   }
@@ -251,7 +235,7 @@ export class ChatroomService {
     const callId = options.callId;
     let inserted = false;
     const result = this.store.transaction(() => {
-      const room = this.room(id, actor, options);
+      const room = this.room(id, actor);
       const eventId = options.eventId || callId || randomUUID();
       const existing = rowMessage(this.messageRow.get(eventId));
       if (existing) {
@@ -277,7 +261,7 @@ export class ChatroomService {
       const attachmentRefs = references(input.attachments, '附件', 'file');
       const attachments = this.attachments.resolve(attachmentRefs, (ref, file) => {
         const sameRoom = this.attachmentRooms(ref.id).some(source => source.id === id);
-        const owned = file?.ownerId === actor && (file.workspaceProfileId ?? null) === (room.workspaceProfileId ?? null);
+        const owned = file?.ownerId === actor;
         if (file && (sameRoom || owned)) return { ...this.attachments.project(file), grants_room_access: true };
         const sharedFile = this.assertShareable(ref, room, actor);
         if (file) return { ...this.attachments.project(file), grants_room_access: false };
@@ -303,10 +287,10 @@ export class ChatroomService {
     return { message, deliveries: this.platform.messageDeliveries(message.id) };
   }
 
-  receipt(id, clientId, actor, options = {}) {
+  receipt(id, clientId, actor) {
     id = idOf(id, 'room');
     actor = identity(actor).id;
-    this.room(id, actor, options);
+    this.room(id, actor);
     const message = this.projectMessage(this.messageByClient.get(id, actor, identifier(clientId, '客户端发送 ID')));
     if (!message) fail('尚无此发送记录', 404);
     return this.messageReceipt(message);

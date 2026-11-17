@@ -27,7 +27,7 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun WorkspaceConnectionGuide(store: SummonStore, scope: CoroutineScope) {
+fun SummonConnectionGuide(store: SummonStore, scope: CoroutineScope) {
     var address by remember { mutableStateOf("") }
     var token by remember { mutableStateOf("") }
     var awaitingToken by remember { mutableStateOf(false) }
@@ -40,7 +40,7 @@ fun WorkspaceConnectionGuide(store: SummonStore, scope: CoroutineScope) {
     ) {
         Text("Summon Bot", style = MaterialTheme.typography.labelLarge)
         Text("连接 Summon Bot", style = MaterialTheme.typography.headlineMedium)
-        Text("输入部署者提供的工作区地址和访问令牌。")
+        Text("输入部署者提供的实例地址和访问令牌。")
         if (awaitingToken) {
             Text(address, color = Color.Gray)
             Text("接下来输入部署者给你的访问令牌。")
@@ -55,10 +55,10 @@ fun WorkspaceConnectionGuide(store: SummonStore, scope: CoroutineScope) {
                     catch (failure: Exception) { error = failure.localizedMessage }
                     finally { saving = false }
                 }
-            }) { Text(if (saving) "正在连接…" else "连接工作区") }
+            }) { Text(if (saving) "正在连接…" else "连接实例") }
             TextButton(enabled = !saving, onClick = { awaitingToken = false; token = ""; error = null }) { Text("更改地址") }
         } else {
-            OutlinedTextField(address, { address = it }, label = { Text("https://你的工作区地址") }, modifier = Modifier.fillMaxWidth(),
+            OutlinedTextField(address, { address = it }, label = { Text("https://你的实例地址") }, modifier = Modifier.fillMaxWidth(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), singleLine = true)
             Button(enabled = address.isNotBlank(), onClick = {
                 try { address = SummonApiClient.normalized(address).toString(); awaitingToken = true; error = null }

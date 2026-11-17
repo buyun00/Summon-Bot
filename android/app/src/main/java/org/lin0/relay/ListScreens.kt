@@ -97,7 +97,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
-enum class WorkspaceSection(val title: String, val icon: ImageVector, val path: String) {
+enum class ResourceSection(val title: String, val icon: ImageVector, val path: String) {
     Bots("成员", Icons.Filled.Groups, "/api/bots"),
     Executions("执行会话", Icons.Filled.Terminal, "/api/executions"),
     Files("资料", Icons.Filled.Folder, "/api/files"),
@@ -113,7 +113,7 @@ fun ConversationListScreen(
     onOpenUsage: () -> Unit,
     onOpenModels: () -> Unit,
     onOpenRoom: (String) -> Unit,
-    onOpenWorkspace: (WorkspaceSection) -> Unit,
+    onOpenResource: (ResourceSection) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     var query by remember { mutableStateOf("") }
@@ -156,8 +156,8 @@ fun ConversationListScreen(
                         DropdownMenuItem(text = { Text("设置") }, leadingIcon = { Icon(Icons.Filled.Settings, null) }, onClick = { menu = false; showSettings = true })
                         DropdownMenuItem(text = { Text("模型与用量") }, leadingIcon = { Icon(Icons.Filled.Memory, null) }, onClick = { menu = false; onOpenModels() })
                         HorizontalDivider(Modifier.padding(vertical = 6.dp))
-                        WorkspaceSection.entries.forEach { section ->
-                            DropdownMenuItem(text = { Text(section.title) }, leadingIcon = { Icon(section.icon, null) }, onClick = { menu = false; onOpenWorkspace(section) })
+                        ResourceSection.entries.forEach { section ->
+                            DropdownMenuItem(text = { Text(section.title) }, leadingIcon = { Icon(section.icon, null) }, onClick = { menu = false; onOpenResource(section) })
                         }
                     }
                 }
@@ -323,24 +323,9 @@ private fun SettingsSheet(store: SummonStore, updater: SummonAppUpdater, onDismi
             }) { Text("保存显示名称") }
             Spacer(Modifier.height(12.dp))
             Text("服务连接", color = Color(0xFF8E8E93))
-            OutlinedTextField(baseURL, { baseURL = it }, label = { Text("https://你的工作区地址") }, modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), singleLine = true)
-            OutlinedTextField(token, { token = it }, label = { Text("工作区访问令牌") }, modifier = Modifier.fillMaxWidth(), visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), singleLine = true)
+            OutlinedTextField(baseURL, { baseURL = it }, label = { Text("https://你的实例地址") }, modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), singleLine = true)
+            OutlinedTextField(token, { token = it }, label = { Text("实例访问令牌") }, modifier = Modifier.fillMaxWidth(), visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), singleLine = true)
             Text("使用部署机提供的 HTTPS 地址和访问令牌。本机回环及 .local 地址可使用 HTTP。令牌保存在系统加密存储中。", color = Color(0xFF8E8E93), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 8.dp))
-            if (store.profiles.isNotEmpty() || store.settings.workspaceID != null) {
-                Text("工作区", style = MaterialTheme.typography.titleMedium)
-                val choices = listOf(SummonWorkspaceProfile("", "默认工作区")) + store.profiles
-                choices.forEach { profile ->
-                    val id = profile.id.ifEmpty { null }
-                    TextButton(enabled = !saving && id != store.settings.workspaceID, onClick = {
-                        saving = true; error = null
-                        scope.launch {
-                            try { store.selectWorkspace(id); onDismiss() }
-                            catch (failure: Exception) { error = failure.localizedMessage }
-                            finally { saving = false }
-                        }
-                    }) { Text((if (id == store.settings.workspaceID) "✓  " else "") + profile.name) }
-                }
-            }
             Text("实时消息  ${if (store.isConnected) "已连接" else "未连接"}")
             Text("Bot  ${store.bots.size}")
             Text("会话  ${store.rooms.size}")

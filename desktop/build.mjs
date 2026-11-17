@@ -7,7 +7,7 @@ import { readJson, writeJson } from '../scripts/build/files.mjs';
 import { removeInside } from '../scripts/release/repository.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const shellFiles = ['main.cjs', 'preload.cjs', 'workspace.cjs', 'setup.html', 'setup.css', 'setup.js', 'startup-art.png', 'package.json'];
+const shellFiles = ['main.cjs', 'preload.cjs', 'connection.cjs', 'setup.html', 'setup.css', 'setup.js', 'package.json'];
 const macIcon = 'ios/Summon/Assets.xcassets/SummonIcon.imageset/summon-icon.png';
 
 export async function buildDesktop({ platform, arch, output, candidate, commit }) {

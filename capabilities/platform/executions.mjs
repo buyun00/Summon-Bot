@@ -71,7 +71,7 @@ export class Executions {
       if (!session || !sameIdentity(session.execution_actor, actor)) reject('session_conflict', 'Conversation does not belong to the Session', 409);
     }
     return this.store.save(conversationRecords, { id: record.id, bot_id: record.bot_id, space: record.space ?? actor,
-      owner: record.owner ?? actor, session_id: record.session_id ?? null, workspaceProfileId: this.platform.principalContext(actor).workspaceProfileId,
+      owner: record.owner ?? actor, session_id: record.session_id ?? null,
       ...(record.connection_setup ? { connection_setup: record.connection_setup } : {}),
       control: activeControl(), input_revision: record.input_revision ?? 0 });
   }
@@ -79,9 +79,6 @@ export class Executions {
   permission(target, record, context, operation = 'read') {
     if (!record) return false;
     const { actor, session } = context;
-    const selected = context.workspaceProfileId === undefined ? this.platform.principalContext(actor).workspaceProfileId : context.workspaceProfileId;
-    const actual = record.workspaceProfileId ?? this.platform.spaceProfile(record.space, record.owner);
-    if (actual !== selected) return false;
     if (context.executable_scope !== undefined) {
       const native = target.kind === 'session' && record.engine !== 'pi';
       const get = id => this.platform.connections.get(id);
@@ -459,7 +456,6 @@ export class Executions {
 
     const operation = this.store.get(callRecords, confirmed.operation_call_id);
     if (!operation || operation.id === call.id || operation.status === 'prepared' ||
-        (operation.workspaceProfileId ?? null) !== (call.workspaceProfileId ?? null) ||
         !this.sameOperationTarget(operation.target, call.target, input.input_target.kind === 'pi_run') ||
         !matchesOperation(operation, input.input_target)) return;
     if (operation.tool !== 'open_session') {

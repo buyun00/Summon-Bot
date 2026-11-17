@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { existsSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { workspaceOrigin } from '../../web/backend/origins.mjs';
+import { instanceOrigin } from '../../web/backend/origins.mjs';
 import { readJson } from '../build/files.mjs';
 import { bundledNode, launchService, serviceRoot } from './system.mjs';
 import { readRemoteAccess, registerCustomRemote, remoteCandidate, usableRemoteAccess } from './remote-config.mjs';
@@ -51,7 +51,7 @@ async function spawnAuxiliary(file, args, { env, cwd, ipc, url, discoverOrigin, 
     originTimer = setTimeout(() => reject(new Error('远程桥接脚本尚未返回可用地址。')), startupTimeoutMs);
     child.on('message', message => {
       if (message?.type === 'remote-ready') {
-        try { ready(workspaceOrigin(message.origin, { httpsOnly: true })); } catch (error) { reject(error); }
+        try { ready(instanceOrigin(message.origin, { httpsOnly: true })); } catch (error) { reject(error); }
       }
       if (message?.type === 'remote-error') reject(new Error(String(message.message || '远程桥接启动失败。').slice(0, 300)));
     });
@@ -90,7 +90,7 @@ export async function startAuxiliary(config, type, onExit) {
     }, onExit);
     try {
       const result = await registerCustomRemote(config, { ...bridge, bridgePath, origin: service.url });
-      if (!result.registered) throw new Error(result.error?.message || '远程桥接未能连接当前工作区。');
+      if (!result.registered) throw new Error(result.error?.message || '远程桥接未能连接当前实例。');
       return service;
     } catch (error) { await service.close(); throw error; }
   }

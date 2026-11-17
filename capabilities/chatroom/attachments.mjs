@@ -28,7 +28,7 @@ export class AttachmentStore {
     return join(this.root, id);
   }
 
-  async upload(input, { ownerId, workspaceProfileId = null, id = randomUUID() }) {
+  async upload(input, { ownerId, id = randomUUID() }) {
     if (typeof input.name !== 'string' || !input.name.trim() || input.name.length > 240 || /[\\/\x00-\x1f\x7f]/.test(input.name)) fail('附件文件名无效');
     if (typeof input.data !== 'string' || input.data.length > Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4) fail('附件不能超过 20 MB', 413);
     if (input.data.length % 4 !== 0 || /[^A-Za-z0-9+/=]/.test(input.data) || input.data.slice(0, -2).includes('=')) fail('附件数据必须为有效的 Base64');
@@ -38,7 +38,7 @@ export class AttachmentStore {
     const detected = rasterType(bytes);
     const declared = typeof input.mimeType === 'string' && /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i.test(input.mimeType) ? input.mimeType.toLowerCase() : 'application/octet-stream';
     this.directory(id);
-    const record = { id, name: input.name.trim(), mimeType: detected || declared, size: bytes.length, ownerId, workspaceProfileId,
+    const record = { id, name: input.name.trim(), mimeType: detected || declared, size: bytes.length, ownerId,
       ref: { kind: 'file', id }, revision: 1,
       url: `/api/attachments/${id}`, ...(detected ? { previewUrl: `/api/attachments/${id}/preview` } : {}),
       ...(openable(input.name.trim()) ? { openUrl: `/api/attachments/${id}/view` } : {}), createdAt: new Date().toISOString() };
@@ -52,7 +52,7 @@ export class AttachmentStore {
       await rename(staging, directory);
     } catch (error) {
       const previous = this.find(id);
-      if (!previous || previous.ownerId !== ownerId || (previous.workspaceProfileId ?? null) !== workspaceProfileId) throw error;
+      if (!previous || previous.ownerId !== ownerId) throw error;
       return this.project(previous);
     } finally {
       await Promise.all([rm(join(staging, 'data'), { force: true }), rm(join(staging, 'metadata.json'), { force: true })]);

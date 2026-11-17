@@ -53,17 +53,17 @@ fun TokenUsageScreen(store: SummonStore, onBack: () -> Unit) {
     var dimension by remember { mutableStateOf("bots") }
     var sort by remember { mutableStateOf("totalTokens") }
     var sortMenu by remember { mutableStateOf(false) }
-    val workspace = store.settings.baseURL to store.settings.workspaceID
-    var selectedKind by remember(workspace) { mutableStateOf<String?>(null) }
-    var selectedID by remember(workspace) { mutableStateOf("") }
-    var selectedName by remember(workspace) { mutableStateOf("") }
-    var offset by remember(workspace) { mutableIntStateOf(0) }
+    val endpoint = store.settings.baseURL
+    var selectedKind by remember(endpoint) { mutableStateOf<String?>(null) }
+    var selectedID by remember(endpoint) { mutableStateOf("") }
+    var selectedName by remember(endpoint) { mutableStateOf("") }
+    var offset by remember(endpoint) { mutableIntStateOf(0) }
     var revision by remember { mutableIntStateOf(0) }
-    var overview by remember(workspace) { mutableStateOf<SummonJson>(SummonJson.Null) }
-    var detail by remember(workspace) { mutableStateOf<SummonJson>(SummonJson.Null) }
+    var overview by remember(endpoint) { mutableStateOf<SummonJson>(SummonJson.Null) }
+    var detail by remember(endpoint) { mutableStateOf<SummonJson>(SummonJson.Null) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(period, selectedKind, selectedID, offset, revision, workspace, store.protocolReady) {
+    LaunchedEffect(period, selectedKind, selectedID, offset, revision, endpoint, store.protocolReady) {
         if (!store.protocolReady) return@LaunchedEffect
         loading = true; error = null; detail = SummonJson.Null
         try {

@@ -66,13 +66,13 @@ export async function executionWorkspace(session, entry, { workspace, dataRoot }
   const granted = session.workspace_ref?.kind === 'workspace' && session.resource_refs?.some(ref =>
     ref.kind === 'workspace' && ref.id === session.workspace_ref.id);
   if (!selected && (entry.kind === 'cli' || entry.kind === 'codex'))
-    reject('workspace_required', 'This native Session has no persisted workspace grant', 409);
+    reject('workspace_required', 'This native Session has no persisted execution directory grant', 409);
   if (selected && !granted) reject('workspace_forbidden', 'The workspace has no persisted execution grant', 403);
   if (!selected && session.sharing && entry.kind !== 'http' && !(entry.kind === 'mcp' && entry.config.transport === 'http'))
-    reject('workspace_forbidden', 'This shared connection requires an explicit workspace grant', 403);
+    reject('workspace_forbidden', 'This shared connection requires an explicit execution directory grant', 403);
   if (!selected && !entry.config.workspace_root && entry.kind === 'mcp' && entry.config.transport === 'stdio' &&
       (fromSession || session.origin_execution?.kind === 'session'))
-    reject('workspace_required', 'Select an authorized workspace or use an MCP stdio connection with a configured working directory', 409);
+    reject('workspace_required', 'Select an authorized execution directory or use an MCP stdio connection with a configured working directory', 409);
   const root = scope?.root || entry.config.workspace_root || workspace;
   const target = selected || root;
   const requestedPolicy = session.path_policy || scope?.path_policy || {};
@@ -87,7 +87,7 @@ export async function executionWorkspace(session, entry, { workspace, dataRoot }
     protectedPath: path => credentialPaths.some(root => pathWithin(root, path)), accessPolicy });
   const cwd = await checked(target, { directory: true, operations: ['read'], alternative: true });
   const connectionRoot = entry.config.workspace_root && await realpath(entry.config.workspace_root);
-  if (connectionRoot && !pathWithin(connectionRoot, cwd)) reject('workspace_forbidden', 'The workspace is outside the connection’s granted directory', 403);
+  if (connectionRoot && !pathWithin(connectionRoot, cwd)) reject('workspace_forbidden', 'The working directory is outside the connection’s granted directory', 403);
   const isReadOnly = scope?.write === false || entry.config.workspace_write === false;
   if (samePath(cwd, parse(cwd).root) || pathWithin(cwd, dataRoot) || pathWithin(cwd, releaseRoot) || pathWithin(releaseRoot, cwd))
     reject('workspace_forbidden', 'The execution workspace overlaps a protected host directory', 403);
@@ -174,7 +174,7 @@ export async function prepareProcess({ host, entry, session, call, input, prior,
       for (const actor of [session.execution_actor, call.submitted_by, call.initiating_principal].filter(Boolean))
         host.requireUsable(entry, actor);
       const runnerWorkspace = await executionWorkspace(session, runner, host);
-      if (runnerWorkspace.isReadOnly) reject('workspace_forbidden', 'The native script runner requires a writable workspace grant', 403);
+      if (runnerWorkspace.isReadOnly) reject('workspace_forbidden', 'The native script runner requires a writable execution directory grant', 403);
       interpreter = await connectionExecutable(runner, cwd, host.dataRoot, accessPolicy, credentialPaths);
       guard.executable_bindings ??= [{ file: entry.config.file, canonical_file: executable }];
       guard.executable_bindings.push({ file: runner.config.file, canonical_file: interpreter });

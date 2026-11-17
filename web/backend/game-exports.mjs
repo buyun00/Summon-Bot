@@ -2,7 +2,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { lstat, open, realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import { workspaceOrigin } from './origins.mjs';
+import { instanceOrigin } from './origins.mjs';
 
 export const gamePrefix = '/api/games/';
 const idPattern = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
@@ -135,7 +135,7 @@ iframe{display:block}
       try {
         const scope = `${origin}${bundlePrefix}${version}/${ticket}/`;
         const connect = Array.isArray(manifest.connectOrigins) ? manifest.connectOrigins.flatMap(value => {
-          try { return [workspaceOrigin(value, { httpsOnly: true })].filter(value => value !== origin); }
+          try { return [instanceOrigin(value, { httpsOnly: true })].filter(value => value !== origin); }
           catch { return []; }
         }) : [];
         const policy = [
@@ -163,7 +163,7 @@ export function createGameExports(entries, accessToken) {
     try {
       const { id, root, title } = entry;
       if (typeof id !== 'string' || !idPattern.test(id) || typeof root !== 'string' || !isAbsolute(root)) return [];
-      const origin = workspaceOrigin(entry.origin);
+      const origin = instanceOrigin(entry.origin);
       return [createGame({ id, root: resolve(root), origin, title: typeof title === 'string' ? title : id }, accessToken)];
     } catch { return []; }
   });

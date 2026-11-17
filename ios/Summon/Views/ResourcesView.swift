@@ -1,7 +1,7 @@
 import SwiftUI
 import QuickLook
 
-enum WorkspaceSection: String, CaseIterable, Identifiable {
+enum ResourceSection: String, CaseIterable, Identifiable {
     case bots, executions, files, wakeups, connections
     var id: String { rawValue }
     var title: String {
@@ -43,9 +43,9 @@ struct SummonProtocolNotice: View {
     }
 }
 
-struct WorkspaceView: View {
+struct ResourcesView: View {
     @Environment(\.dismiss) private var dismiss
-    let section: WorkspaceSection
+    let section: ResourceSection
 
     var body: some View {
         NavigationStack {
@@ -57,7 +57,7 @@ struct WorkspaceView: View {
 
 struct SummonObjectList: View {
     @Environment(SummonStore.self) private var store
-    let section: WorkspaceSection
+    let section: ResourceSection
     var space: SummonReference? = nil
     @State private var items: [SummonJSONValue] = []
     @State private var hosts = SummonJSONValue.null

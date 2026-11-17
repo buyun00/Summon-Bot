@@ -33,29 +33,13 @@ struct ConnectionSettingsView: View {
                     Button("显示设置", systemImage: "textformat.size") { showDisplay = true }
                 }
                 Section {
-                    TextField("https://你的工作区地址", text: $baseURL)
+                    TextField("https://你的实例地址", text: $baseURL)
                         .keyboardType(.URL).textContentType(.URL)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    SecureField("工作区访问令牌", text: $token)
+                    SecureField("实例访问令牌", text: $token)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                 } header: { Text("服务连接") } footer: {
                     Text("使用部署机提供的 HTTPS 地址和访问令牌。令牌保存在 iOS 钥匙串中。")
-                }
-                if !store.profiles.isEmpty || store.settings.workspaceID != nil {
-                    Section("工作区") {
-                        Button {
-                            changeWorkspace(nil)
-                        } label: {
-                            Label("默认工作区", systemImage: store.settings.workspaceID == nil ? "checkmark.circle.fill" : "circle")
-                        }.disabled(saving || store.settings.workspaceID == nil)
-                        ForEach(store.profiles) { profile in
-                            Button {
-                                changeWorkspace(profile.id)
-                            } label: {
-                                Label(profile.name, systemImage: store.settings.workspaceID == profile.id ? "checkmark.circle.fill" : "circle")
-                            }.disabled(saving || store.settings.workspaceID == profile.id)
-                        }
-                    }
                 }
                 Section("消息通知") {
                     Text(SummonPush.shared.status).foregroundStyle(.secondary)
@@ -97,15 +81,6 @@ struct ConnectionSettingsView: View {
 
     private var appVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "" }
 
-    private func changeWorkspace(_ id: String?) {
-        saving = true; errorMessage = nil
-        Task {
-            defer { saving = false }
-            do { try await store.selectWorkspace(id); dismiss() }
-            catch { errorMessage = error.localizedDescription }
-        }
-    }
-
     private func save() async {
         saving = true; errorMessage = nil
         defer { saving = false }
@@ -129,13 +104,13 @@ struct SummonConnectionGuideView: View {
             VStack(alignment: .leading, spacing: 18) {
                 Image("SummonIcon").resizable().frame(width: 52, height: 52).clipShape(RoundedRectangle(cornerRadius: 14))
                 Text("连接 Summon Bot").font(.largeTitle.bold())
-                Text("输入部署者提供的工作区地址和访问令牌。")
+                Text("输入部署者提供的实例地址和访问令牌。")
                     .padding(14).background(SummonTheme.surface, in: RoundedRectangle(cornerRadius: 16))
                 if awaitingToken {
                     Text(address).foregroundStyle(.secondary)
                     Text("接下来输入部署者给你的访问令牌。")
                     SecureField("访问令牌", text: $token).textFieldStyle(.roundedBorder)
-                    Button("连接工作区") {
+                    Button("连接实例") {
                         let credential = token.trimmingCharacters(in: .whitespacesAndNewlines)
                         saving = true; failure = nil
                         Task {
@@ -146,7 +121,7 @@ struct SummonConnectionGuideView: View {
                     }.buttonStyle(.borderedProminent).disabled(saving || token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Button("更改地址") { awaitingToken = false; token = ""; failure = nil }.disabled(saving)
                 } else {
-                    TextField("https://你的工作区地址", text: $address)
+                    TextField("https://你的实例地址", text: $address)
                         .keyboardType(.URL).textContentType(.URL).textInputAutocapitalization(.never)
                         .autocorrectionDisabled().textFieldStyle(.roundedBorder)
                     Button("继续") {

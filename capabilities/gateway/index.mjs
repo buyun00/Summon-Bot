@@ -11,7 +11,6 @@ import { assertInstallationWritable, readInstallationState } from '../../scripts
 import { AttachmentStore, MAX_ATTACHMENT_REQUEST_BYTES } from '../chatroom/attachments.mjs';
 import { ChatroomService } from '../chatroom/service.mjs';
 import { ModelConnections } from '../models/service.mjs';
-import { WorkspaceProfiles } from '../models/workspace-profiles.mjs';
 import { protocolVersion, reject, user } from '../platform/contract.mjs';
 import { SummonPlatform } from '../platform/platform.mjs';
 import { SummonConnections } from '../services/connections.mjs';
@@ -60,7 +59,7 @@ function acceptsDuringDrain(path) {
     /^\/api\/rooms\/[^/]+\/messages$/.test(path);
 }
 
-function usageSnapshot(ledger, params, bots, rooms, allBots, selectedProfile) {
+function usageSnapshot(ledger, params, bots, rooms) {
   const range = usageRange(params.get('period') || 'today');
   const botId = params.get('botId') || null;
   const roomId = params.has('roomId') ? params.get('roomId') || null : undefined;
@@ -69,8 +68,7 @@ function usageSnapshot(ledger, params, bots, rooms, allBots, selectedProfile) {
   if (botId && allBots.some(item => item.id === botId) && !bots.some(item => item.id === botId) ||
       roomId && !rooms.some(item => item.id === roomId)) reject('scope_unavailable', 'Usage scope is unavailable', 404);
   return ledger.snapshot(() => {
-    const scope = selectedProfile ? { botIds: bots.map(item => item.id) } : { excludeBotIds: allBots.filter(item => item.workspaceProfileId).map(item => item.id) };
-    const snapshot = readUsage(ledger.db, range, { roomId, botId, offset, limit, ...scope });
+    const snapshot = readUsage(ledger.db, range, { roomId, botId, offset, limit });
     const botNames = new Map(bots.map(bot => [bot.id, bot.name]));
     const roomNames = new Map(rooms.map(room => [room.id, room.name]));
     const botUsage = snapshot.bots.map(row => ({ ...row, id: row.key, name: botNames.get(row.key) || row.name || row.key,
@@ -79,9 +77,9 @@ function usageSnapshot(ledger, params, bots, rooms, allBots, selectedProfile) {
       if (!botUsage.some(row => row.id === bot.id)) botUsage.push({ ...finishUsageTotals(emptyUsageTotals()), id: bot.id, name: bot.name, kind: 'bot' });
     }
     const roomUsage = snapshot.rooms.map(row => ({ ...row, id: row.key, name: roomNames.get(row.key) || row.name || '未归属会话', kind: 'room' }));
-    const providerReports = (selectedProfile ? [] : ledger.providerReports(range)).map(report => {
+    const providerReports = ledger.providerReports(range).map(report => {
       const from = new Date(`${report.day}T00:00:00+08:00`).toISOString();
-      const local = readUsage(ledger.db, { from, to: new Date(Date.parse(from) + 86400000).toISOString() }, { detail: false, ...scope }).totals;
+      const local = readUsage(ledger.db, { from, to: new Date(Date.parse(from) + 86400000).toISOString() }, { detail: false }).totals;
       return { ...report, localCalls: local.calls, localTokens: local.totalTokens, localCostMin: local.costMin, localCostMax: local.costMax,
         localPricedCalls: local.pricedCalls, differenceCalls: report.calls - local.calls, differenceTokens: report.totalTokens - local.totalTokens,
         tokenCoverage: report.totalTokens ? local.totalTokens / report.totalTokens : null };
@@ -172,7 +170,6 @@ export async function startGateway(options = {}) {
   try {
     const records = store('chatroom');
     const sync = new IncrementalSync(store('gateway'));
-    const profiles = new WorkspaceProfiles(records, id => platform.initializeWorkspace(id));
     const attachments = new AttachmentStore(join(dataRoot, 'capabilities', 'chatroom'));
     models = await new ModelConnections({ dataRoot, model: options.model, emit }).initialize();
     const model = { connectionStore: models.path };
@@ -186,18 +183,18 @@ export async function startGateway(options = {}) {
       onEvent: (sessionId, callId, facts) => { const event = platform.recordReceipt(callId, facts, sessionId); emit('execution'); return event; } });
     runtime = new BotRuntime({ dataRoot, releaseRoot, model, platform, emit });
     platform.attach({ room, runtime, connections });
-    profiles.initialize();
+    platform.initializeDefaults();
     platform.resources.recoverModels();
     platform.recoverCalls();
     await runtime.initialize();
     push = await new PushService({ openStore: () => store('push'), messages: records, dataRoot, historyEpoch }).initialize();
-    const api = createApi({ platform, room, attachments, models, profiles, connections, push, sync, historyEpoch, emit,
+    const api = createApi({ platform, room, attachments, models, connections, push, sync, historyEpoch, emit,
       getUsage: (params, context) => {
         if (!runtime.usage || runtime.usageRecoveryFailed) reject('usage_unavailable', 'The local usage report is unavailable', 503);
-        const all = platform.listBots(), bots = all.filter(bot => platform.visibleBot(bot, context));
-        const rooms = room.rooms(user.id, context);
+        const bots = platform.listBots().filter(bot => platform.visibleBot(bot, context));
+        const rooms = room.rooms(user.id);
         try {
-          const report = usageSnapshot(runtime.usage, params, bots, rooms, all, context.workspaceProfileId);
+          const report = usageSnapshot(runtime.usage, params, bots, rooms);
           if (runtime.usageIncomplete) report.coverage.writeFailures = true;
           return report;
         }
@@ -218,10 +215,7 @@ export async function startGateway(options = {}) {
           applyWindow(currentInstall);
           if (path === '/api/bootstrap' && req.method === 'GET') {
             const updating = platform.draining || closing || ['converting', 'data_ready'].includes(currentInstall?.phase);
-            const workspaceProfile = !updating && params.has('workspace') ? profiles.get(params.get('workspace')) : null;
-            return json(res, 200, { protocolVersion, updating, version: release?.version ?? options.version ?? null, releasesUrl: '/api/releases',
-              workspaceProfiles: updating ? [] : profiles.list().map(({ id, name }) => ({ id, name })),
-              workspaceProfile: workspaceProfile ? { id: workspaceProfile.id, name: workspaceProfile.name } : null });
+            return json(res, 200, { protocolVersion, updating, version: release?.version ?? options.version ?? null, releasesUrl: '/api/releases' });
           }
           if (closing) reject('updating', 'Summon Bot is stopping', 503);
           if (!path.startsWith('/api/')) reject('not_found', 'Route not found', 404);

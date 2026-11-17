@@ -297,7 +297,7 @@ export function guardStillMatches(db, guard) {
   const connection = get(connectionRecords, guard.connection_id);
   const session = get('platform-sessions', guard.session_id);
   if (!connection?.enabled || (connection.binding_version ?? 1) !== guard.binding_version || !session ||
-      (connection.workspaceProfileId ?? null) !== (session.workspaceProfileId ?? null) || session.authority_revoked ||
+      session.authority_revoked ||
       session.control?.state !== 'active' || session.control.control_version !== guard.control_version) return false;
   if ([session.executable_scope, guard.executable_scope].some(scope => !allowsConnection(scope, connection, id => get(connectionRecords, id))))
     return false;
@@ -307,7 +307,6 @@ export function guardStillMatches(db, guard) {
   }
   const workspace = guard.workspace_id && get('platform-workspaces', guard.workspace_id);
   if (workspace && (workspace.path !== session.workspace?.root ||
-      (workspace.workspaceProfileId ?? null) !== (session.workspaceProfileId ?? null) ||
       session.workspace?.write && workspace.write === false)) return false;
   for (const control of guard.controls || []) {
     const kinds = { session: 'platform-sessions', conversation: 'platform-conversations', bot: 'platform-bots' };
@@ -318,7 +317,7 @@ export function guardStillMatches(db, guard) {
     if (!connectionAuthorized(connection, actor, id => get(connectionRecords, id))) return false;
     if (actor.kind === 'user') continue;
     const bot = get('platform-bots', actor.id);
-    if (!bot || (bot.workspaceProfileId ?? null) !== (session.workspaceProfileId ?? null)) return false;
+    if (!bot) return false;
     if (guard.workspace_id && !get('platform-access', actor.id)?.workspace_ids?.includes(guard.workspace_id)) return false;
   }
   if (guard.room_owner && !get('rooms', guard.room_id)?.members?.includes(guard.room_owner)) return false;

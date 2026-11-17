@@ -20,7 +20,6 @@ const canInspectHere = environment => environment.kind === 'local' && isDeepStri
 const windows = process.platform === 'win32';
 const programName = path => (windows ? basename(path, extname(path)) : basename(path)).toLowerCase();
 const native = entry => entry && ['cli', 'codex'].includes(entry.kind);
-const sameProfile = (entry, context) => (entry.workspaceProfileId ?? null) === context.workspaceProfileId;
 const inPaths = (paths, file) => paths.some(path => pathKey(path) === pathKey(file));
 const namePattern = /^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,119}$/;
 const routedHeaders = /^(?:host|forwarded|x-forwarded-.*|connection|proxy-.*|upgrade|transfer-encoding|content-length)$/i;
@@ -46,8 +45,8 @@ export function executionEnvironment(entry) {
 export class ConnectionOnboarding {
   constructor(platform) { this.platform = platform; }
 
-  entries(context) {
-    return this.platform.store.list(connectionRecords).filter(entry => sameProfile(entry, context));
+  entries() {
+    return this.platform.store.list(connectionRecords);
   }
 
   visible(entry, context) {
@@ -85,8 +84,8 @@ export class ConnectionOnboarding {
     const term = args.query?.trim().toLowerCase() || '';
     if (command !== undefined && !namePattern.test(command) || executable !== undefined && (!isAbsolute(executable) || executable.includes('\0')))
       reject('invalid_executable', 'Use a command name or absolute executable path');
-    const visible = this.entries(context).filter(entry => this.visible(entry, context));
-    const registeredNative = this.entries(context).filter(native);
+    const visible = this.entries().filter(entry => this.visible(entry, context));
+    const registeredNative = this.entries().filter(native);
     const eligible = file => allowsExecutable(context.executable_scope, file) &&
       (!setup.executables || allowsExecutable(setup.executables, file));
     const described = visible.filter(entry => native(entry) && eligible(entry.config.canonical_file) &&
@@ -378,7 +377,7 @@ export class ConnectionOnboarding {
     const inspection = args.probe_call && this.platform.store.get('platform-calls', args.probe_call);
     const candidate = inspection?.probe_verification;
     if (!candidate || inspection.status !== 'completed' || inspection.tool !== 'initialize_execution' || !sameIdentity(inspection.submitted_by, context.actor) ||
-        !sameProfile(inspection, context) || inspection.target?.id !== previous.id ||
+        inspection.target?.id !== previous.id ||
         candidate.revision !== previous.revision || !isDeepStrictEqual(candidate.rules, args.config.probe) ||
         candidate.version !== args.config.detected_version)
       reject('probe_observation_required', 'Use the probe_call of a successful candidate inspect with the same probe, detected_version and current connection revision', 409);
@@ -409,7 +408,7 @@ export class ConnectionOnboarding {
 
   save(input, context, call, probeUpdate) {
     return this.platform.configureExecutionConnection(input, {
-      actor: user, workspaceProfileId: context.workspaceProfileId,
+      actor: user,
       canSeeBinding: entry => this.visible(entry, context),
       beforeConnectionSave: (entry, previous) => {
         this.platform.assertRunAllowed(context);

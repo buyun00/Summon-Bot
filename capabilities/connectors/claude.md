@@ -1,6 +1,6 @@
 # Claude Code
 
-连接器 ID 是 `claude-code`，命令为 `claude`。Windows 安装可包含 npm shim 和 npm 包内的 `claude.exe`，连接器优先使用可直接启动的可执行文件。CLI 使用本机 Claude Code 登录，宿主用户也可配置原生凭据引用。Pi 继续使用该工作区现有的模型配置。
+连接器 ID 是 `claude-code`，命令为 `claude`。Windows 安装可包含 npm shim 和 npm 包内的 `claude.exe`，连接器优先使用可直接启动的可执行文件。CLI 使用本机 Claude Code 登录，宿主用户也可配置原生凭据引用。Pi 沿用 Bot 的模型绑定。
 
 以 `--print` 从 stdin 提交文本，按本机帮助选择 `stream-json`、JSON 或文本。流式模式需要时使用 `--verbose`。沿用 Claude Code 当前权限设置。有 `--permission-prompts none` 时由 CLI 处理需要互动许可的请求，并呈现实际的权限拒绝。
 

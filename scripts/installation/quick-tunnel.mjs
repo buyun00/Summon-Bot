@@ -5,7 +5,7 @@ import { installedBinary, safeEnvironment } from './auxiliaries.mjs';
 import { terminateTree } from '../../bot/src/runtime/process-tools.mjs';
 
 const target = new URL(process.env.SUMMON_WEB_URL);
-if (target.protocol !== 'http:' || target.hostname !== '127.0.0.1') throw new Error('远程桥需要本机工作区地址。');
+if (target.protocol !== 'http:' || target.hostname !== '127.0.0.1') throw new Error('远程桥需要本机实例地址。');
 const file = process.argv[2] || installedBinary('cloudflared');
 if (!file) {
   process.send?.({ type: 'remote-error', message: '未找到 cloudflared，请由 Pi 安装后继续，或传入可执行文件路径。' });

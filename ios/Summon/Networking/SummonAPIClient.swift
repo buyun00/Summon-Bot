@@ -45,16 +45,14 @@ final class SummonConnectionProbe: NSObject, URLSessionTaskDelegate {
 }
 
 struct SummonAPIClient: Sendable {
-    static let protocolVersion = 2
+    static let protocolVersion = 3
     let baseURL: URL
-    let workspaceID: String?
     private let token: String
     private let session: URLSession
 
-    init(baseURL: URL, token: String, workspaceID: String? = nil) {
+    init(baseURL: URL, token: String) {
         self.baseURL = baseURL
         self.token = token
-        self.workspaceID = workspaceID
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 120
         configuration.timeoutIntervalForResource = 180
@@ -99,10 +97,7 @@ struct SummonAPIClient: Sendable {
 
     func makeRequest(path: String, method: String = "GET", body: SummonJSONValue? = nil, clientID: String? = nil) throws -> URLRequest {
         guard path.hasPrefix("/api/"), !path.contains("\\"),
-              var components = URLComponents(string: baseURL.absoluteString + path) else { throw SummonAPIError.invalidURL }
-        if let workspaceID, path != "/api/workspace-profiles", !path.hasPrefix("/api/push/") {
-            components.queryItems = (components.queryItems ?? []) + [URLQueryItem(name: "workspace", value: workspaceID)]
-        }
+              let components = URLComponents(string: baseURL.absoluteString + path) else { throw SummonAPIError.invalidURL }
         guard let url = components.url else { throw SummonAPIError.invalidURL }
         var request = URLRequest(url: url)
         request.httpMethod = method

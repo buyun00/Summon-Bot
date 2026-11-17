@@ -1,24 +1,23 @@
 (() => {
   'use strict';
 
-  const workspaceId = new URLSearchParams(location.search).get('workspace');
-  const workspaceScope = workspaceId ? 'workspace:' + workspaceId : 'workspace';
-  const roomScope = id => 'room:' + (workspaceId ? workspaceId + ':' : '') + id;
+  const stateScope = 'state';
+  const roomScope = id => 'room:' + id;
   const roomPrefix = roomScope('');
-  const databaseName = 'summon-workspace-v1' + (workspaceId ? '-' + workspaceId : '');
+  const databaseName = 'summon-state-v1';
   const collectionPaths = {
-    workspace: ['bots', 'rooms', 'executions', 'files', 'wakeups', 'connections'],
+    state: ['bots', 'rooms', 'executions', 'files', 'wakeups', 'connections'],
     room: ['messages'],
   };
   const valuePaths = {
-    workspace: ['historyEpoch', 'workspaceProfileId', 'modelSettings', 'limits', 'protocolVersion'],
+    state: ['historyEpoch', 'modelSettings', 'limits', 'protocolVersion'],
     room: ['historyEpoch', 'room', 'cursor', 'deliveries'],
   };
   const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
   const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
   const copy = value => typeof structuredClone === 'function' ? structuredClone(value) : JSON.parse(JSON.stringify(value));
   const getPath = (value, path) => path.split('.').reduce((parent, key) => object(parent) && own(parent, key) ? parent[key] : undefined, value);
-  const kindOf = scope => scope === workspaceScope ? 'workspace'
+  const kindOf = scope => scope === stateScope ? 'state'
     : typeof scope === 'string' && scope.startsWith(roomPrefix) && scope.length > roomPrefix.length ? 'room' : null;
   const validId = id => typeof id === 'string' && id.length > 0;
 
@@ -34,15 +33,14 @@
   function snapshotValid(snapshot, scope) {
     const kind = kindOf(scope);
     if (!kind || !object(snapshot)) return false;
-    if (kind === 'workspace' && (snapshot.protocolVersion !== 2 || (snapshot.workspaceProfileId ?? null) !== (workspaceId ?? null)
-      || !Array.isArray(snapshot.bots) || !Array.isArray(snapshot.rooms))) return false;
+    if (kind === 'state' && (snapshot.protocolVersion !== 3 || !Array.isArray(snapshot.bots) || !Array.isArray(snapshot.rooms))) return false;
     if (kind === 'room' && (!object(snapshot.room) || snapshot.room.id !== scope.slice(roomPrefix.length) || !Number.isSafeInteger(snapshot.room.revision)
       || !Array.isArray(snapshot.room.pins) || !Array.isArray(snapshot.messages) || !object(snapshot.deliveries))) return false;
     return valuePaths[kind].every(path => {
       const value = getPath(snapshot, path);
       if (value === undefined) return true;
-      if (path === 'historyEpoch' || path === 'cursor' || path === 'workspaceProfileId') return value === null || validId(value);
-      if (path === 'protocolVersion') return value === 2;
+      if (path === 'historyEpoch' || path === 'cursor') return value === null || validId(value);
+      if (path === 'protocolVersion') return value === 3;
       return object(value);
     }) && collectionPaths[kind].every(path => {
       const value = getPath(snapshot, path);
@@ -117,8 +115,8 @@
       const finish = error => { clearTimeout(timer); error ? reject(error) : resolve(); };
       const timer = setTimeout(() => { try { tx?.abort(); } catch {} finish(new Error('清除历史缓存超时')); }, 2500);
       try {
-        tx = db.transaction(['workspace', 'rooms', 'session'], 'readwrite');
-        for (const name of ['workspace', 'rooms', 'session']) tx.objectStore(name).clear();
+        tx = db.transaction(['state', 'rooms', 'session'], 'readwrite');
+        for (const name of ['state', 'rooms', 'session']) tx.objectStore(name).clear();
         tx.objectStore('session').put(record, 'current');
         tx.oncomplete = () => finish();
         tx.onerror = tx.onabort = () => finish(tx.error || new Error('无法清除历史缓存'));
@@ -196,7 +194,7 @@
         request = window.indexedDB.open(databaseName, 1);
         request.onupgradeneeded = () => {
           const db = request.result;
-          for (const store of ['workspace', 'rooms', 'session']) if (!db.objectStoreNames.contains(store)) db.createObjectStore(store);
+          for (const store of ['state', 'rooms', 'session']) if (!db.objectStoreNames.contains(store)) db.createObjectStore(store);
         };
         request.onsuccess = () => void finish(request.result);
         request.onerror = () => void finish(null, request.error || '无法打开本地存储');
@@ -313,8 +311,8 @@
   window.SummonCache = Object.freeze({
     ready, applySync, resetHistory, removeRoom,
     get status() { return { ...storageStatus }; },
-    readWorkspace: () => read('workspace', 'current', record => recordValid(record, workspaceScope)),
-    writeWorkspace: value => write('workspace', 'current', snapshotRecord(value), record => recordValid(record, workspaceScope)),
+    readState: () => read('state', 'current', record => recordValid(record, stateScope)),
+    writeState: value => write('state', 'current', snapshotRecord(value), record => recordValid(record, stateScope)),
     readRoom: roomId => validId(roomId) ? read('rooms', roomId, record => recordValid(record, roomScope(roomId))) : Promise.resolve(null),
     writeRoom: (roomId, value) => validId(roomId) ? write('rooms', roomId, snapshotRecord(value), record => recordValid(record, roomScope(roomId))) : Promise.resolve(false),
     readSession: async () => (await read('session', 'current', sessionValid))?.value || null,

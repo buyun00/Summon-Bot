@@ -43,7 +43,6 @@ export function bindingOf(entry) {
 }
 
 export function sameBinding(left, right) {
-  if ((left.workspaceProfileId ?? null) !== (right.workspaceProfileId ?? null)) return false;
   const binding = bindingOf(left);
   return Boolean(binding && isDeepStrictEqual(binding, bindingOf(right)));
 }

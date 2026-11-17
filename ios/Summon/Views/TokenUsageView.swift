@@ -37,8 +37,8 @@ struct TokenUsageView: View {
     @State private var errorMessage: String?
     private let purposes = ["chat": "聊天", "activity": "快速任务说明", "work": "工作执行", "routing": "群聊路由", "compress": "上下文压缩", "compact": "上下文压缩", "organize": "记忆整理", "assemble": "上下文组装", "other": "其他调用"]
     private let statuses = ["succeeded": "完成", "failed": "失败", "cancelled": "取消", "pending": "调用中", "unknown": "结果未知"]
-    private var workspaceKey: String { store.settings.baseURL + "|" + (store.settings.workspaceID ?? "") }
-    private var requestKey: String { "\(workspaceKey):\(period):\(selectedKind ?? "all"):\(selectedID):\(offset):\(revision)" }
+    private var endpoint: String { store.settings.baseURL }
+    private var requestKey: String { "\(endpoint):\(period):\(selectedKind ?? "all"):\(selectedID):\(offset):\(revision)" }
     private var ranking: [SummonJSONValue] {
         let rows = overview[dimension == "bots" ? "bots" : "rooms"].array ?? []
         return rows.sorted { ($0[sort].usageNumberValue ?? 0) > ($1[sort].usageNumberValue ?? 0) }
@@ -75,7 +75,7 @@ struct TokenUsageView: View {
             }
             .task(id: requestKey) { await load() }
             .refreshable { await load() }
-            .onChange(of: workspaceKey) { _, _ in selectedKind = nil; selectedID = ""; selectedName = ""; offset = 0; overview = .null; detail = .null }
+            .onChange(of: endpoint) { _, _ in selectedKind = nil; selectedID = ""; selectedName = ""; offset = 0; overview = .null; detail = .null }
             .onChange(of: period) { _, _ in selectedKind = nil; selectedID = ""; offset = 0; overview = .null; detail = .null }
             .onChange(of: dimension) { _, _ in selectedKind = nil; selectedID = ""; offset = 0 }
         }

@@ -227,10 +227,8 @@ data class SummonReceipt(val message: SummonMessage, val deliveries: List<Summon
     }
 }
 
-data class SummonWorkspaceProfile(val id: String, val name: String)
 
-data class SummonBootstrap(val protocolVersion: Int, val updating: Boolean, val version: String?, val releasesUrl: String?,
-    val workspaceProfiles: List<SummonWorkspaceProfile>?) {
+data class SummonBootstrap(val protocolVersion: Int, val updating: Boolean, val version: String?, val releasesUrl: String?) {
     val ready: Boolean get() = protocolVersion == SummonApiClient.PROTOCOL_VERSION
     val notice: String?
         get() = when {
@@ -245,10 +243,6 @@ data class SummonBootstrap(val protocolVersion: Int, val updating: Boolean, val 
             json["protocolVersion"].int ?: throw SummonApiException.invalidResponse,
             json["updating"].bool ?: throw SummonApiException.invalidResponse,
             json["version"].string, json["releasesUrl"].string,
-            json["workspaceProfiles"].array?.mapNotNull { item ->
-                val id = item["id"].string ?: return@mapNotNull null
-                SummonWorkspaceProfile(id, item["name"].string ?: id)
-            },
         )
     }
 }
@@ -306,19 +300,16 @@ data class SummonPendingMessage(
 data class SummonConnectionSettings(
     val baseURL: String = "",
     val userName: String = "Lin",
-    val workspaceID: String? = null,
 ) {
     fun toJson(): SummonJson = SummonJson.obj(
         "baseURL" to SummonJson.Str(baseURL),
         "userName" to SummonJson.Str(userName),
-        "workspaceID" to workspaceID.strOrNull(),
     )
 
     companion object {
         fun parse(json: SummonJson): SummonConnectionSettings = SummonConnectionSettings(
             baseURL = json["baseURL"].string ?: "",
             userName = json["userName"].string?.ifBlank { "Lin" } ?: "Lin",
-            workspaceID = json["workspaceID"].string,
         )
     }
 }

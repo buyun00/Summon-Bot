@@ -57,7 +57,7 @@ fun BotDetailsScreen(store: SummonStore, botID: String, onBack: () -> Unit) {
     var files by remember(botID) { mutableStateOf<List<SummonJson>>(emptyList()) }
     var selectedModels by remember(botID) { mutableStateOf<Set<String>>(emptySet()) }
     var selectedDirs by remember(botID) { mutableStateOf<Set<String>>(emptySet()) }
-    var detail by remember(botID) { mutableStateOf<WorkspaceSection?>(null) }
+    var detail by remember(botID) { mutableStateOf<ResourceSection?>(null) }
     var busy by remember(botID) { mutableStateOf(false) }
     var error by remember(botID) { mutableStateOf<String?>(null) }
     val ref = SummonReference("bot", botID)
@@ -103,7 +103,7 @@ fun BotDetailsScreen(store: SummonStore, botID: String, onBack: () -> Unit) {
     }
     val page = detail
     if (page != null) {
-        WorkspaceScreen(store, page, onBack = { detail = null }, space = ref)
+        ResourcesScreen(store, page, onBack = { detail = null }, space = ref)
         return
     }
 
@@ -183,9 +183,9 @@ fun BotDetailsScreen(store: SummonStore, botID: String, onBack: () -> Unit) {
                 }
             }) { Text("保存资源权限") }
         }
-        TextButton(onClick = { detail = WorkspaceSection.Files }) { Text("私有资料") }
-        TextButton(onClick = { detail = WorkspaceSection.Executions }) { Text("内部对话和执行会话") }
-        TextButton(onClick = { detail = WorkspaceSection.Wakeups }) { Text("订阅与提醒") }
+        TextButton(onClick = { detail = ResourceSection.Files }) { Text("私有资料") }
+        TextButton(onClick = { detail = ResourceSection.Executions }) { Text("内部对话和执行会话") }
+        TextButton(onClick = { detail = ResourceSection.Wakeups }) { Text("订阅与提醒") }
         if (busy) CircularProgressIndicator()
         error?.let { SummonError(it) }
     }
@@ -212,7 +212,7 @@ fun RoomDetailsScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
     var leave by remember(roomID) { mutableStateOf<SummonRoom?>(null) }
     var leaving by remember(roomID) { mutableStateOf(false) }
     var botID by remember(roomID) { mutableStateOf<String?>(null) }
-    var section by remember(roomID) { mutableStateOf<WorkspaceSection?>(null) }
+    var section by remember(roomID) { mutableStateOf<ResourceSection?>(null) }
     var ref by remember(roomID) { mutableStateOf<SummonReference?>(null) }
     var error by remember(roomID) { mutableStateOf<String?>(null) }
     val space = SummonReference("room", roomID)
@@ -225,7 +225,7 @@ fun RoomDetailsScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
         return
     }
     if (page != null) {
-        WorkspaceScreen(store, page, onBack = { section = null }, space = space)
+        ResourcesScreen(store, page, onBack = { section = null }, space = space)
         return
     }
     if (editingRoom != null) {
@@ -260,9 +260,9 @@ fun RoomDetailsScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
                     }) { Text("移除") }
                 }
             }
-            TextButton(onClick = { section = WorkspaceSection.Files }) { Text("群资料") }
-            TextButton(onClick = { section = WorkspaceSection.Wakeups }) { Text("订阅与提醒") }
-            TextButton(onClick = { section = WorkspaceSection.Executions }) { Text("执行会话和内部对话") }
+            TextButton(onClick = { section = ResourceSection.Files }) { Text("群资料") }
+            TextButton(onClick = { section = ResourceSection.Wakeups }) { Text("订阅与提醒") }
+            TextButton(onClick = { section = ResourceSection.Executions }) { Text("执行会话和内部对话") }
             if (room.isGroup && "user" in room.members) {
                 TextButton(enabled = store.protocolReady && room.revision != null && !leaving, onClick = { leave = room }) { Text("退出群聊") }
             }

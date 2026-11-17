@@ -129,7 +129,7 @@ D:/Relay-Bot-data/bots/<botId>/
     references/                按需引用的资料
     scripts/                   实际需要时沉淀的脚本
   artifacts/                   工作产物
-  workspace/                   自身工作区
+  workspace/                   Bot 私有项目目录
 ```
 
 这里没有新增环境或数据根。已安装的通用 Skill 可以作为起始资料；本 Bot 的持续积累保存在自己的数据目录。

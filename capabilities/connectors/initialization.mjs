@@ -85,8 +85,8 @@ export class ConnectionInitializer {
       reject('connection_forbidden', 'Grant access within the current host-authorized CLI setup', 403);
     const bot = this.platform.getBot(idOf(args.bot, 'bot'));
     const actor = { kind: 'bot', id: bot.id };
-    if ((bot.workspaceProfileId ?? null) !== context.workspaceProfileId || !this.platform.manager.canConfigure(context.actor, bot))
-      reject('configuration_forbidden', 'Choose a Bot you can configure in this workspace', 403);
+    if (!this.platform.manager.canConfigure(context.actor, bot))
+      reject('configuration_forbidden', 'Choose a Bot you can configure', 403);
     if (!['use', 'repair'].includes(args.access)) reject('invalid_arguments', 'Specify use or repair access');
     if (args.revision !== entry.revision) reject('revision_conflict', 'Connection settings changed', 409, { revision: entry.revision });
     const allowed_bot_ids = [...new Set([...entry.allowed_bot_ids, bot.id])];
@@ -100,7 +100,7 @@ export class ConnectionInitializer {
     if (allowed_bot_ids.length === entry.allowed_bot_ids.length && repair_bot_ids.length === (entry.repair_bot_ids?.length ?? 0))
       return complete({ ...host.clean(host.summary(entry), []), ...this.platform.connectionMaintenance(entry) });
     return this.platform.configureExecutionConnection({ id: entry.id, revision: args.revision, allowed_bot_ids, repair_bot_ids },
-      { actor: user, workspaceProfileId: context.workspaceProfileId, initializer_id: context.actor.id }, complete);
+      { actor: user, initializer_id: context.actor.id }, complete);
   }
 
   async run(args, context, setup, call) {
@@ -237,7 +237,6 @@ export class ConnectionInitializer {
       const runnerId = idOf(args.adapter.runner, 'connection');
       const runner = host.get(runnerId);
       if (runner?.kind !== 'cli' || runner.config.adapter || runnerId === id ||
-          (runner.workspaceProfileId ?? null) !== context.workspaceProfileId ||
           !host.authorized(runner, context.actor) || !canSupplyProcessArguments(runner, context.actor) ||
           !allowsExecutable(setup.executables, runner.config.canonical_file) || setup.repair && runnerId !== previous?.config.adapter?.runner?.id)
         reject('script_runner_forbidden', 'Use the existing native runner and direct argument grant for this Pi', 403);
@@ -256,7 +255,7 @@ export class ConnectionInitializer {
       ...(config.adapter?.runner ? [config.adapter.runner.id] : [])])];
     return this.platform.configureExecutionConnection({ id, revision: previous?.revision, kind, name,
       description: previous?.description ?? description(name), config, dependencies, ...(!previous ? { allowed_bot_ids: [context.actor.id] } : {}) },
-    { actor: user, workspaceProfileId: context.workspaceProfileId, initializer_id: context.actor.id,
+    { actor: user, initializer_id: context.actor.id,
       canSeeBinding: entry => this.platform.canUseConnection(context.actor, entry.id, context),
       beforeConnectionSave: () => this.platform.requireConnectionSetup(context, args) }, result => {
       this.platform.calls.bind(call.id, { target: { kind: 'connection', id: result.id } });

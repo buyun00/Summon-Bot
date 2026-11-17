@@ -183,7 +183,7 @@ export class BotRuntime {
     this.platform.getBot(delivery.bot_id);
     const inbox = await this.inbox(delivery.bot_id);
     if (['connection.failure', 'work.tool'].includes(delivery.event.type) &&
-        !this.platform.canReadEvent(delivery.event, this.platform.principalContext(botRef(delivery.bot_id))))
+        !this.platform.canReadEvent(delivery.event, { actor: botRef(delivery.bot_id) }))
       return { accepted: false, retryable: false, code: 'access_revoked' };
     const receipt = inbox.receive(delivery);
     if (receipt.processed || receipt.waits.length) setImmediate(() => {
@@ -552,10 +552,9 @@ export class BotRuntime {
   authorizationView(context, conversation, inbox, run) {
     const view = this.platform.executionView(context);
     const access = this.platform.accessFor(context.actor);
-    const profile = this.platform.principalContext(context.actor);
     const rooms = view.session ? [view.session.space].filter(space => space.kind === 'room') :
-      this.platform.room.rooms(context.actor.id, profile).map(room => room.ref).sort((left, right) => left.id.localeCompare(right.id));
-    const scope = [conversation.space, profile.workspaceProfileId ?? null, rooms, view.resources ?? [], scopeGrants(access)];
+      this.platform.room.rooms(context.actor.id).map(room => room.ref).sort((left, right) => left.id.localeCompare(right.id));
+    const scope = [conversation.space, rooms, view.resources ?? [], scopeGrants(access)];
     if (view.maintained_connection_ids?.length) scope.push({ maintained_connection_ids: view.maintained_connection_ids });
     if (view.revoked_return_waits?.length) scope.push(view.revoked_return_waits);
     const canReadPiInput = event => !view.session || this.canReadPiInput(event, view.session);
@@ -568,12 +567,12 @@ export class BotRuntime {
   }
 
   canReadPiInput(event, session) {
-    const author = this.platform.principalContext(event.author, session.workspaceProfileId);
+    const author = { actor: event.author };
     const target = sessionRef(session.id);
     if (!this.platform.executions.permission(target, session, author, 'input') ||
         !this.platform.canUseResources(author.actor, session.resource_refs, author)) return false;
     if (!event.initiating_principal || sameRef(event.initiating_principal, event.author)) return true;
-    const initiating = this.platform.principalContext(event.initiating_principal, session.workspaceProfileId);
+    const initiating = { actor: event.initiating_principal };
     return this.platform.canUseResources(initiating.actor, session.resource_refs, initiating);
   }
 
@@ -605,7 +604,7 @@ export class BotRuntime {
     let history = [];
     const facts = [];
     if (conversation.space.kind === 'room' && !conversation.session_id) {
-      const messages = this.platform.room.messages(conversation.space.id, context.actor.id, this.platform.principalContext(context.actor)).map(roomEvent);
+      const messages = this.platform.room.messages(conversation.space.id, context.actor.id).map(roomEvent);
       let through = run.public_prefix_through;
       if (through === undefined) {
         const first = messages.findIndex(message => run.pending_event_ids.includes(message.id));

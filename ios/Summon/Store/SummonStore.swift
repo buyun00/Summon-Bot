@@ -18,7 +18,6 @@ final class SummonStore {
     private(set) var isLoading = false
     private(set) var isRefreshing = false
     private(set) var isConnected = false
-    private(set) var profiles: [SummonWorkspaceProfile] = []
     private(set) var protocolReady = false
     private(set) var protocolNotice: String?
     private(set) var needsClientUpdate = false
@@ -55,9 +54,15 @@ final class SummonStore {
         do { try SummonBrandingMigration.run() }
         catch { errorMessage = "无法迁移本机连接设置：\(error.localizedDescription)" }
         if let data = defaults.data(forKey: settingsKey),
-           let saved = try? JSONDecoder().decode(SummonConnectionSettings.self, from: data) { settings = saved }
+           let saved = try? JSONDecoder().decode(SummonConnectionSettings.self, from: data) {
+            settings = saved
+            if let previous = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               previous.keys.contains("workspaceID"), let updated = try? JSONEncoder().encode(saved) {
+                defaults.set(updated, forKey: settingsKey)
+            }
+        }
         if let url = try? SummonAPIClient.normalizedURL(settings.baseURL) {
-            client = SummonAPIClient(baseURL: url, token: savedToken, workspaceID: settings.workspaceID)
+            client = SummonAPIClient(baseURL: url, token: savedToken)
         }
         if let root = try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                                    appropriateFor: nil, create: true) {
@@ -109,7 +114,7 @@ final class SummonStore {
         let endpoint = url.absoluteString
         let newToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
         let changed = endpoint != settings.baseURL
-        let newClient = SummonAPIClient(baseURL: url, token: newToken, workspaceID: changed ? nil : settings.workspaceID)
+        let newClient = SummonAPIClient(baseURL: url, token: newToken)
         let startup: SummonBootstrap?
         do { startup = try await newClient.bootstrap(probe: true) }
         catch let error as URLError where [.timedOut, .notConnectedToInternet, .cannotFindHost, .cannotConnectToHost,
@@ -120,9 +125,9 @@ final class SummonStore {
         try SummonKeychain.save(token: newToken, for: endpoint)
         if changed || newToken != previousToken { SummonPush.shared.changeServer() }
         disconnect()
-        if changed { clearWorkspace(); profiles = [] }
+        if changed { clearServerState() }
         settings = SummonConnectionSettings(baseURL: endpoint,
-            userName: settings.userName, workspaceID: newClient.workspaceID)
+            userName: settings.userName)
         if let data = try? JSONEncoder().encode(settings) { defaults.set(data, forKey: settingsKey) }
         client = newClient
         if changed { restoreSnapshot() }
@@ -134,41 +139,15 @@ final class SummonStore {
         else { Task { await start() } }
     }
 
-    func selectWorkspace(_ id: String?) async throws {
-        guard id != settings.workspaceID, let url = try? SummonAPIClient.normalizedURL(settings.baseURL) else { return }
-        let next = SummonAPIClient(baseURL: url, token: savedToken, workspaceID: id)
-        let startup = try await next.bootstrap(probe: true)
-        guard startup.ready, !startup.updating else { throw SummonAPIError.protocolUnavailable(startup.notice ?? "暂时无法切换工作区。") }
-        disconnect()
-        clearWorkspace()
-        settings.workspaceID = id
-        if let data = try? JSONEncoder().encode(settings) { defaults.set(data, forKey: settingsKey) }
-        client = next
-        restoreSnapshot()
-        acceptStartup(startup)
-        errorMessage = nil
-        persistNow()
-        await start()
-    }
-
     func openPushRoom(_ id: String) async throws {
         if room(id: id) != nil { return }
-        guard protocolReady, let url = try? SummonAPIClient.normalizedURL(settings.baseURL) else {
-            throw SummonAPIError.protocolUnavailable(protocolNotice ?? "正在连接工作区。")
+        guard protocolReady, let client else {
+            throw SummonAPIError.protocolUnavailable(protocolNotice ?? "正在连接实例。")
         }
         let connection = connectionGeneration
-        let candidates: [String?] = [nil] + profiles.map { Optional($0.id) }
-        for profile in candidates where profile != settings.workspaceID {
-            let probe = SummonAPIClient(baseURL: url, token: savedToken, workspaceID: profile)
-            do {
-                _ = try await probe.request(SummonRoomSnapshot.self, path: Self.roomPath(id) + "?limit=1")
-                guard connection == connectionGeneration else { throw CancellationError() }
-                try await selectWorkspace(profile)
-                return
-            } catch SummonAPIError.http(404, _, _) { continue }
-            catch SummonAPIError.http(403, _, _) { continue }
-        }
-        throw SummonAPIError.http(404, "推送中的会话已不可用。")
+        let snapshot = try await client.request(SummonRoomSnapshot.self, path: Self.roomPath(id) + "?limit=1")
+        guard connection == connectionGeneration else { throw CancellationError() }
+        if room(id: id) == nil { rooms.append(snapshot.room) }
     }
 
     func setUserName(_ name: String) {
@@ -196,7 +175,7 @@ final class SummonStore {
                 acceptStartup(startup)
                 guard startup.ready else { return }
             }
-            let state = try await client.request(SummonWorkspace.self, path: "/api/state")
+            let state = try await client.request(SummonState.self, path: "/api/state")
             guard connection == connectionGeneration, !Task.isCancelled else { return }
             if historyEpoch != state.historyEpoch {
                 messageHistory = [:]
@@ -224,7 +203,6 @@ final class SummonStore {
     }
 
     private func acceptStartup(_ startup: SummonBootstrap) {
-        if let profiles = startup.workspaceProfiles, !startup.updating { self.profiles = profiles }
         protocolReady = startup.ready
         protocolNotice = startup.notice
         needsClientUpdate = startup.protocolVersion > SummonAPIClient.protocolVersion
@@ -614,7 +592,7 @@ final class SummonStore {
 
     private func apiClient() throws -> SummonAPIClient {
         guard let client else { throw SummonAPIError.noConnection }
-        guard protocolReady else { throw SummonAPIError.protocolUnavailable(protocolNotice ?? "正在连接工作区。") }
+        guard protocolReady else { throw SummonAPIError.protocolUnavailable(protocolNotice ?? "正在连接实例。") }
         return client
     }
 
@@ -691,7 +669,7 @@ final class SummonStore {
         }
     }
 
-    private func clearWorkspace() {
+    private func clearServerState() {
         bots = []; rooms = []; messageHistory = [:]; deliveries = [:]; cursors = [:]
         pendingMessages = []; drafts = [:]; draftAttachments = [:]; draftMentions = [:]; draftReplies = [:]; draftReferences = [:]
         selectedRoomID = nil; activeRoomID = nil; historyEpoch = nil; lastSyncAt = nil; modelSummary = .null
@@ -723,18 +701,15 @@ final class SummonStore {
 
     private struct LocalSnapshot: Codable {
         var endpoint: String
-        var workspaceID: String?
         var historyEpoch: String?
         var bots: [SummonBot]
         var rooms: [SummonRoom]
         var messageHistory: [String: [SummonMessage]]
-        var profiles: [SummonWorkspaceProfile]?
         var savedAt: Date
     }
 
     private struct LocalComposer: Codable {
         var endpoint: String
-        var workspaceID: String?
         var pendingMessages: [SummonPendingMessage]
         var drafts: [String: String]
         var draftAttachments: [String: [SummonAttachment]]
@@ -746,50 +721,83 @@ final class SummonStore {
 
     private var snapshotURL: URL? {
         guard let directory = storageDirectory, !settings.baseURL.isEmpty else { return nil }
-        let key = settings.workspaceID.map { settings.baseURL + "|" + $0 } ?? settings.baseURL
-        let encoded = Data(key.utf8).base64EncodedString()
+        let encoded = Data(settings.baseURL.utf8).base64EncodedString()
             .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "+", with: "-")
         let pieces = stride(from: 0, to: encoded.count, by: 120).map { offset in
             let start = encoded.index(encoded.startIndex, offsetBy: offset)
             return String(encoded[start..<encoded.index(start, offsetBy: min(120, encoded.count - offset))])
         }
-        let target = pieces.reduce(directory.appending(path: "workspaces")) { $0.appending(path: $1) }
+        let target = pieces.reduce(directory.appending(path: "instances")) { $0.appending(path: $1) }
         return target.appending(path: "snapshot.json")
     }
 
     private func restoreSnapshot() {
-        let legacyURL = storageDirectory?.appending(path: "workspace.json")
+        guard let url = snapshotURL, let directory = storageDirectory else { return }
+        let files = FileManager.default
         let decoder = JSONDecoder()
-        var convertedURL: URL?
-        var snapshotData: Data?
-        if let url = snapshotURL, let data = try? Data(contentsOf: url) {
-            snapshotData = data
-        } else if settings.workspaceID == nil, let url = legacyURL, let data = try? Data(contentsOf: url) {
-            snapshotData = data
-            convertedURL = url
+        func decode<Value: Decodable>(_ type: Value.Type, _ path: URL) -> Value? {
+            guard let data = try? Data(contentsOf: path) else { return nil }
+            return try? decoder.decode(type, from: data)
         }
-        let saved = snapshotData.flatMap { try? decoder.decode(LocalSnapshot.self, from: $0) }
-        if let saved, saved.endpoint == settings.baseURL, saved.workspaceID == settings.workspaceID {
-            historyEpoch = saved.historyEpoch
-            bots = saved.bots; rooms = saved.rooms; messageHistory = saved.messageHistory
-            if let found = saved.profiles { profiles = found }
-            lastSyncAt = saved.savedAt
-        }
-        let composerURL = snapshotURL?.deletingLastPathComponent().appending(path: "composer.json")
-        let composerData = composerURL.flatMap { try? Data(contentsOf: $0) } ?? snapshotData
-        if let composerData, let composer = try? decoder.decode(LocalComposer.self, from: composerData),
-           composer.endpoint == settings.baseURL, composer.workspaceID == settings.workspaceID {
-            pendingMessages = composer.pendingMessages.map { entry in
-                guard entry.status == "sending" || entry.status == "queued" else { return entry }
-                var value = entry; value.status = "failed"; value.error = "上次发送的保存状态待确认。"; return value
+        let composerURL = url.deletingLastPathComponent().appending(path: "composer.json")
+        if let snapshot = decode(LocalSnapshot.self, url), snapshot.endpoint == settings.baseURL {
+            loadSnapshot(snapshot)
+            if let composer = decode(LocalComposer.self, composerURL), composer.endpoint == settings.baseURL {
+                loadComposer(composer)
             }
-            drafts = composer.drafts; draftAttachments = composer.draftAttachments
-            draftMentions = composer.draftMentions ?? composer.draftTargets?.mapValues { [$0] } ?? [:]
-            draftReplies = composer.draftReplies
-            draftReferences = composer.draftReferences ?? [:]
+            return
         }
-        if let convertedURL, saved?.endpoint == settings.baseURL, saved?.workspaceID == settings.workspaceID,
-           persistNow() { try? FileManager.default.removeItem(at: convertedURL) }
+
+        let legacy = files.enumerator(at: directory.appending(path: "workspaces"),
+            includingPropertiesForKeys: [.contentModificationDateKey], options: .skipsHiddenFiles)?
+            .compactMap { $0 as? URL }.filter { ["snapshot.json", "composer.json"].contains($0.lastPathComponent) } ?? []
+        let candidates = [directory.appending(path: "workspace.json")] + legacy
+        var converted = Set<URL>()
+        let snapshots = candidates.compactMap { path -> LocalSnapshot? in
+            guard let value = decode(LocalSnapshot.self, path), value.endpoint == settings.baseURL else { return nil }
+            converted.insert(path)
+            return value
+        }.sorted { $0.savedAt < $1.savedAt }
+        if let newest = snapshots.last {
+            for snapshot in snapshots where snapshot.historyEpoch == newest.historyEpoch { loadSnapshot(snapshot) }
+        }
+        let composers = candidates.compactMap { path -> (Date, LocalComposer)? in
+            guard let value = decode(LocalComposer.self, path), value.endpoint == settings.baseURL else { return nil }
+            if path.lastPathComponent == "snapshot.json",
+               decode(LocalComposer.self, path.deletingLastPathComponent().appending(path: "composer.json"))?.endpoint == settings.baseURL {
+                return nil
+            }
+            converted.insert(path)
+            let date = (try? path.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return (date, value)
+        }.sorted { $0.0 < $1.0 }
+        for (_, composer) in composers { loadComposer(composer) }
+        if let composer = decode(LocalComposer.self, composerURL), composer.endpoint == settings.baseURL { loadComposer(composer) }
+        if !converted.isEmpty, persistNow() {
+            for path in converted { try? files.removeItem(at: path) }
+        }
+    }
+
+    private func loadSnapshot(_ saved: LocalSnapshot) {
+        historyEpoch = saved.historyEpoch
+        let botIDs = Set(saved.bots.map(\.id)), roomIDs = Set(saved.rooms.map(\.id))
+        bots = bots.filter { !botIDs.contains($0.id) } + saved.bots
+        rooms = rooms.filter { !roomIDs.contains($0.id) } + saved.rooms
+        messageHistory.merge(saved.messageHistory) { _, latest in latest }
+        lastSyncAt = saved.savedAt
+    }
+
+    private func loadComposer(_ composer: LocalComposer) {
+        let ids = Set(composer.pendingMessages.map(\.id))
+        pendingMessages = pendingMessages.filter { !ids.contains($0.id) } + composer.pendingMessages.map { entry in
+            guard entry.status == "sending" || entry.status == "queued" else { return entry }
+            var value = entry; value.status = "failed"; value.error = "上次发送的保存状态待确认。"; return value
+        }
+        drafts.merge(composer.drafts) { _, latest in latest }
+        draftAttachments.merge(composer.draftAttachments) { _, latest in latest }
+        draftMentions.merge(composer.draftMentions ?? composer.draftTargets?.mapValues { [$0] } ?? [:]) { _, latest in latest }
+        draftReplies.merge(composer.draftReplies) { _, latest in latest }
+        draftReferences.merge(composer.draftReferences ?? [:]) { _, latest in latest }
     }
 
     private func schedulePersistence() {
@@ -803,7 +811,7 @@ final class SummonStore {
     @discardableResult
     private func persistComposer() -> Bool {
         guard let folder = snapshotURL?.deletingLastPathComponent() else { return false }
-        let composer = LocalComposer(endpoint: settings.baseURL, workspaceID: settings.workspaceID,
+        let composer = LocalComposer(endpoint: settings.baseURL,
             pendingMessages: pendingMessages, drafts: drafts, draftAttachments: draftAttachments,
             draftMentions: draftMentions, draftReplies: draftReplies, draftReferences: draftReferences, draftTargets: nil)
         do {
@@ -820,8 +828,8 @@ final class SummonStore {
         persistenceTask?.cancel()
         persistenceTask = nil
         guard let url = snapshotURL, persistComposer() else { return false }
-        let saved = LocalSnapshot(endpoint: settings.baseURL, workspaceID: settings.workspaceID, historyEpoch: historyEpoch, bots: bots, rooms: rooms,
-            messageHistory: messageHistory.mapValues { Array($0.suffix(100)) }, profiles: profiles, savedAt: lastSyncAt ?? Date())
+        let saved = LocalSnapshot(endpoint: settings.baseURL, historyEpoch: historyEpoch, bots: bots, rooms: rooms,
+            messageHistory: messageHistory.mapValues { Array($0.suffix(100)) }, savedAt: lastSyncAt ?? Date())
         do {
             try saveLocal(saved, to: url)
             return true
