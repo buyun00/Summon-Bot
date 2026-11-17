@@ -43,7 +43,6 @@ class SummonStore(private val app: Context) {
         private set
     var isConnected by mutableStateOf(false)
         private set
-        private set
     var protocolReady by mutableStateOf(false)
         private set
     var protocolNotice by mutableStateOf<String?>(null)
