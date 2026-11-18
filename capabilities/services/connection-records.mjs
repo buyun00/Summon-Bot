@@ -8,12 +8,12 @@ export const connectionRecords = 'platform-connections';
 export const executionRecords = 'platform-sessions';
 export const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 export const canSupplyProcessArguments = (entry, actor) =>
-  !entry.config.ssh && (actor?.kind === 'user' || entry.config.allow_arguments === true || entry.direct_bot_ids?.includes(actor?.id) === true);
+  !entry.config.ssh && (actor?.kind === 'user' || entry.config.allow_arguments === true);
 const kinds = ['cli', 'codex', 'http', 'mcp'];
 const envName = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 export function connectionAllowed(entry, actor) {
-  return Boolean(entry && actor && (actor.kind === 'user' || entry.allowed_bot_ids?.includes('*') || entry.allowed_bot_ids?.includes(actor.id)));
+  return Boolean(entry && (actor?.kind === 'user' || actor?.kind === 'bot' && entry.enabled));
 }
 
 export function connectionAuthorized(entry, actor, getConnection, seen = new Set()) {
@@ -41,13 +41,9 @@ export function validateNativePaths({ file, canonical_file, workspace_root }) {
 
 export function validateConnection(entry) {
   if (!kinds.includes(entry.kind) || !plain(entry.config)) reject('invalid_connection', 'Invalid connection kind or configuration');
-  if (!Array.isArray(entry.allowed_bot_ids) || entry.allowed_bot_ids.some(id => typeof id !== 'string' || !id)) {
-    reject('invalid_connection', 'Specify the granted Bot identities');
-  }
   if (entry.repair_bot_ids !== undefined && (!Array.isArray(entry.repair_bot_ids) ||
-      entry.repair_bot_ids.some(id => typeof id !== 'string' || !id || id === '*' ||
-        !entry.allowed_bot_ids.includes(id) && !entry.allowed_bot_ids.includes('*'))))
-    reject('invalid_connection', 'Repair grants require named Bots with access to this connection');
+      entry.repair_bot_ids.some(id => typeof id !== 'string' || !id || id === '*')))
+    reject('invalid_connection', 'Repair grants require named Bots');
   if (typeof entry.enabled !== 'boolean') reject('invalid_connection', 'Connection enabled must be a boolean');
   if (entry.dependencies && (!Array.isArray(entry.dependencies) || entry.dependencies.some(id => typeof id !== 'string' || !id))) {
     reject('invalid_connection', 'Invalid connection dependencies');

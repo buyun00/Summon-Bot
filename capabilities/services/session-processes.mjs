@@ -5,6 +5,7 @@ import { extname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { reject } from '../platform/contract.mjs';
+import { workspaceGranted } from '../platform/workspace-access.mjs';
 import { codexBridge } from '../connectors/codex.mjs';
 import { connectionAuthorized, connectionRecords } from './connection-records.mjs';
 import { allowsConnection } from './executable-scope.mjs';
@@ -315,10 +316,10 @@ export function guardStillMatches(db, guard) {
   }
   for (const actor of guard.actors || []) {
     if (!connectionAuthorized(connection, actor, id => get(connectionRecords, id))) return false;
+    if (guard.workspace_id && !workspaceGranted(get, actor, guard.workspace_id, session.project_room, session.room_workspace_id)) return false;
     if (actor.kind === 'user') continue;
     const bot = get('platform-bots', actor.id);
     if (!bot) return false;
-    if (guard.workspace_id && !get('platform-access', actor.id)?.workspace_ids?.includes(guard.workspace_id)) return false;
   }
   if (guard.room_owner && !get('rooms', guard.room_id)?.members?.includes(guard.room_owner)) return false;
   if (guard.submitting_id && guard.submitting_id !== guard.room_owner) {
@@ -331,7 +332,8 @@ export function guardStillMatches(db, guard) {
 
 export function makeProcessGuard(session, connection, call) {
   const shared = session.space?.kind === 'room' && session.sharing;
-  const actors = [session.execution_actor, call.submitted_by, ...(connection.config.adapter?.runner ? [call.initiating_principal] : [])].filter(Boolean);
+  const actors = [session.execution_actor, call.submitted_by,
+    ...(session.room_workspace_id || connection.config.adapter?.runner ? [call.initiating_principal] : [])].filter(Boolean);
   return { session_id: session.id, connection_id: connection.id, binding_version: connection.binding_version ?? 1,
     control_version: session.control.control_version, actors, controls: call.controls, workspace_id: session.workspace_ref?.id,
     executable_scope: call.executable_scope,

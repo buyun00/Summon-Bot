@@ -37,9 +37,9 @@ Summon 启动时会复用或创建默认接口 Bot（`tool-onboarding`）。群�
 | MCP stdio | `{protocol:"mcp",transport:"stdio",command,args,workspace_root,account,env,credential_refs}` |
 | SSH | `{protocol:"ssh",executable,ssh:{host,port,user,identity_file,operations:[{id,command}]}}` |
 
-普通 CLI 以宿主上的真实可执行路径、协议、执行目录范围和凭据范围匹配。HTTP 按 `service_url` 与账号区分，MCP 还看传输和 stdio 启动配置。SSH 比较实际远端、端口、账号和密钥选择。登记时用 `initialize_execution {action:"register",protocol,name,config}`。Bot 登记的连接初始调用授权给登记的 Bot，宿主按需设置 `allowed_bot_ids` 与 `repair_bot_ids`。宿主发起的私有 CLI 初始化仍可用 `grant_access` 为其管理范围内的连接授予 `use` 或 `repair`。
+普通 CLI 以宿主上的真实可执行路径、协议、执行目录范围和凭据范围匹配。HTTP 按 `service_url` 与账号区分，MCP 还看传输和 stdio 启动配置。SSH 比较实际远端、端口、账号和密钥选择。登记时用 `initialize_execution {action:"register",protocol,name,config}`。启用的工具及其依赖供全体 Bot 发现和调用。宿主可用 `repair_bot_ids` 指定修复者，在私有 CLI 初始化中也可用 `grant_access` 授予修复权限。
 
-分派后由对应专责 Bot 日常写入。用 `read` 核对总接口 Bot 和专责 Bot 的实际使用与维修权。宿主设置时同时核对 `repair_bot_ids`、初始化授权和覆盖同一目标的 `execution_onboarding.submit`。解释器连接需要单独的直参授权，执行目录使用现有目录授权。
+分派后由对应专责 Bot 日常维护。用 `read` 核对连接用法和维修权。宿主设置时可核对 `repair_bot_ids`、初始化授权和覆盖同一目标的 `execution_onboarding.submit`。脚本依赖的解释器连接需支持直接传参。群项目任务从发起群取得执行目录，组内成员可通过同一接入调用工具。
 
 更新原连接的配置时，用 `register` 带上原 `connection` ID、当前 `revision`、`protocol` 和待修改的 `config` 字段。`inspect.version` 是实装版本，`read.version` 是登记版本。确认本机 CLI 的实装版本有变化后，可只提交版本更新。
 
@@ -186,7 +186,7 @@ const reply = {
 };
 ```
 
-发起者用 `send` 提交 `request`，可以用同一个 `repair_key` 关联已经确认是同一故障的不同调用。专责 Bot 用 `read` 查维修事件及补充来源，然后用 `send` 提交 `reply`。收到结果后从原调用的实际状态继续。结果不明时先读原操作。代群友提交时沿原群消息反馈。
+发起者调用 `send({message: request})`，可以用同一个 `repair_key` 关联已经确认是同一故障的不同调用。专责 Bot 用 `read` 查维修事件及补充来源，然后调用 `send({message: reply})`。收到结果后从原调用的实际状态继续。结果不明时先读原操作。代群友提交时沿原群消息反馈。
 
 ## Bot 维护群
 

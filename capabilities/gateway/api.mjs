@@ -33,7 +33,8 @@ export function createApi({ platform, room, attachments, models, connections, pu
     const read = (ref, params) => {
       const limit = params.has('limit') ? Number(params.get('limit')) : undefined;
       if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)) reject('invalid_page', 'Invalid page size');
-      return platform.read({ ref, cursor: params.get('cursor') || undefined, limit }, userContext);
+      return platform.read({ ref, cursor: params.get('cursor') || undefined, limit,
+        ...(ref.kind === 'workspace' && params.has('path') && { path: params.get('path') }) }, userContext);
     };
     const mutation = async (name, body, clientId) => {
       const { result, call_id } = await platform.executeTool(name, body, { ...userContext, clientId });

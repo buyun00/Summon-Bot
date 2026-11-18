@@ -79,6 +79,12 @@ export class Executions {
   permission(target, record, context, operation = 'read') {
     if (!record) return false;
     const { actor, session } = context;
+    const execution = target.kind === 'session' ? record : record.session_id && this.record({ kind: 'session', id: record.session_id });
+    if (execution?.project_room && actor.kind !== 'user') {
+      const origin = this.platform.projectRoom(context);
+      if (origin && !sameRef(origin, execution.project_room)) return false;
+      if (execution.room_workspace_id && !this.platform.roomMembers(execution.project_room.id).includes(actor.id)) return false;
+    }
     if (context.executable_scope !== undefined) {
       const native = target.kind === 'session' && record.engine !== 'pi';
       const get = id => this.platform.connections.get(id);
@@ -114,6 +120,11 @@ export class Executions {
   active(record, version) {
     assertRevision(record.control.control_version, version, 'control_version');
     if (record.control.state !== 'active') reject('execution_paused', 'Execution is paused', 409, { control_version: record.control.control_version });
+  }
+
+  checkSubmitResources(target, record, context) {
+    const session = target.kind === 'session' ? record : record.session_id && this.record({ kind: 'session', id: record.session_id });
+    if (session) this.platform.assertCanSubmit(context, session);
   }
 
   list(context, scope) {
@@ -291,12 +302,12 @@ export class Executions {
       reject('input_target_required', 'Input and a current typed input target are required');
     }
     this.active(record, args.control_version);
-    if (target.kind === 'session') this.platform.assertCanSubmit(context, record);
+    this.checkSubmitResources(target, record, context);
     if (this.platform.draining && args.kind !== 'reply') reject('updating', 'New execution input is temporarily paused', 503);
     const fresh = async () => {
       const current = this.require(target, context, 'input');
       this.active(current, args.control_version);
-      if (target.kind === 'session') this.platform.assertCanSubmit(context, current);
+      this.checkSubmitResources(target, current, context);
       const observation = await this.inspect(target, current);
       const observed = observation.input_targets ?? current.input_targets ?? [];
       this.assertTarget(args, target, observed);
@@ -322,7 +333,7 @@ export class Executions {
         if (currentInput?.status === 'submitted') return;
         if (currentInput?.status !== 'prepared') reject('input_cancelled', 'The queued input was invalidated', 409);
         this.active(latest, args.control_version);
-        if (target.kind === 'session') this.platform.assertCanSubmit(context, latest);
+        this.checkSubmitResources(target, latest, context);
         this.platform.assertRunAllowed(context, { allowUser: true });
         if (target.kind === 'session' && args.kind === 'next' && !this.platform.isActiveSession(latest)) {
           this.resources.assertCapacity('sessions', this.platform.activeSessions(target.id));
@@ -363,7 +374,8 @@ export class Executions {
       const current = this.require(target, context, 'control');
       assertRevision(current.control.control_version, args.control_version, 'control_version');
       assertResume(context.actor, target, current.control, args.resume_ref, before.owner);
-      if (target.kind === 'session') this.platform.assertSessionAuthority(current);
+      const session = target.kind === 'session' ? current : current.session_id && this.record({ kind: 'session', id: current.session_id });
+      if (session) this.platform.assertSessionAuthority(session);
       const saved = this.saveControl(target, { ...current.control, state: 'active', control_version: current.control.control_version + 1 });
       this.calls.bind(call.id, { target });
       return saved;

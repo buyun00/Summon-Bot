@@ -1,6 +1,8 @@
 import { lstat, open } from 'node:fs/promises';
-import { posix } from 'node:path';
-import { createPathAccess, samePath } from '../../bot/src/capabilities/file-policy.mjs';
+import { closeSync, lstatSync, openSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { dirname, join, posix } from 'node:path';
+import { createAuthorizedDirectory, createPathAccess, samePath } from '../../bot/src/capabilities/file-policy.mjs';
 import { documentText } from '../chatroom/document-text.mjs';
 import { assertRevision, keyOf, reject, sameRef } from '../platform/contract.mjs';
 
@@ -29,7 +31,7 @@ export class Files {
 
   async collectWorkspaceFile(source, path, workspace, protectedDirectories) {
     const name = filePath(path);
-    const checkPath = createPathAccess({ workspace: workspace.root, projectOnly: true, protectedDirectories });
+    const checkPath = createPathAccess({ workspace: workspace.root, projectOnly: true, protectedDirectories, accessPolicy: workspace.path_policy });
     let checked;
     try { checked = await checkPath(name, { file: true }); }
     catch (error) {
@@ -56,8 +58,50 @@ export class Files {
       if (offset !== bytes.length || confirmed.size !== size.size || confirmed.mtimeMs !== size.mtimeMs) {
         reject('file_source_changed', 'The workspace file changed during reading', 409);
       }
-      return { bytes, root: workspace.root, source, path: name };
+      return { bytes, root: workspace.root, source, path: name, revision: Math.round(confirmed.mtimeMs * 1000) };
     } finally { await handle.close(); }
+  }
+
+  async readWorkspace(args, workspace, protectedDirectories, authorize) {
+    const file = await this.collectWorkspaceFile(args.ref, args.path, workspace, protectedDirectories);
+    authorize();
+    const projection = { ref: args.ref, path: file.path, revision: file.revision, size: file.bytes.length };
+    let content;
+    if (!file.bytes.includes(0)) {
+      try { content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(file.bytes); } catch { content = undefined; }
+    }
+    return this.pageText(projection, content, args.cursor, args.limit);
+  }
+
+  async prepareWorkspaceWrite(args, content, workspace, protectedDirectories, authorize) {
+    const path = filePath(args.path);
+    if (typeof content !== 'string' && !Buffer.isBuffer(content)) reject('invalid_arguments', 'Supply text or a File source to write a project file');
+    const size = Buffer.byteLength(content);
+    if (size > maximumFileBytes) rejectFileSize(size);
+    const check = createPathAccess({ workspace: workspace.root, projectOnly: true, protectedDirectories, accessPolicy: workspace.path_policy });
+    const target = await createAuthorizedDirectory(path, (name, options) => {
+      authorize();
+      return check(name, options);
+    }, { parentOfFile: true });
+    // Commit the checked replacement synchronously with the call receipt and live Room authorization.
+    return () => {
+      authorize();
+      const parent = dirname(target);
+      if (!samePath(realpathSync(parent), parent) || !samePath(join(workspace.root, path), target))
+        reject('workspace_changed', 'Project file location has changed', 409);
+      const before = lstatSync(target, { throwIfNoEntry: false });
+      if (before && (!before.isFile() || before.nlink !== 1)) reject('file_write_forbidden', 'Select a regular project file', 403);
+      if (args.revision !== undefined) assertRevision(before ? Math.round(before.mtimeMs * 1000) : null, args.revision);
+      const temporary = join(parent, '.summon-' + randomUUID() + '.tmp');
+      const fd = openSync(temporary, 'wx', before?.mode ?? 0o600);
+      let committed = false;
+      try {
+        try { writeFileSync(fd, content); } finally { closeSync(fd); }
+        renameSync(temporary, target);
+        committed = true;
+        return { ref: args.space, path, size, revision: Math.round(lstatSync(target).mtimeMs * 1000) };
+      } finally { if (!committed) unlinkSync(temporary); }
+    };
   }
 
   list(context, scope) {

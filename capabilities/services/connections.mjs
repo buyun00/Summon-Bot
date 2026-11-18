@@ -3,7 +3,8 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { samePath } from '../../bot/src/capabilities/file-policy.mjs';
-import { idOf, keyOf, reject, sameRef, user } from '../platform/contract.mjs';
+import { idOf, keyOf, reject, user } from '../platform/contract.mjs';
+import { workspaceGranted } from '../platform/workspace-access.mjs';
 import { codexBridge } from '../connectors/codex.mjs';
 import { protocolOf, sameBinding } from './connection-binding.mjs';
 import { codexInput, connectionExecutable, executionWorkspace, prepareProcess } from './connection-launch.mjs';
@@ -92,9 +93,6 @@ export class SummonConnections {
 
   requireAccess(entry, context) {
     const actor = actorOf(context);
-    if (context?.session?.resource_refs && context.session.engine !== entry?.id &&
-        !context.session.resource_refs.some(ref => sameRef(ref, { kind: 'connection', id: entry?.id })))
-      reject('connection_forbidden', 'The connection is outside the Session’s resource grants', 403);
     if (!connectionAllowed(entry, actor)) reject('connection_not_found', 'Connection is unavailable', 404);
     if (context?.allow && !context.allow(entry.id)) reject('connection_forbidden', 'Connection is unavailable in this execution context', 403);
     return actor;
@@ -110,9 +108,7 @@ export class SummonConnections {
     const term = String(query || '').trim().toLowerCase();
     const actor = actorOf(context);
     const matching = this.store.list(connectionRecords).filter(entry => [entry.id, entry.kind, entry.name, entry.description]
-      .some(value => String(value || '').toLowerCase().includes(term)) && connectionAllowed(entry, actor) && (!context?.allow || context.allow(entry.id)) &&
-      (!context?.session?.resource_refs || context.session.engine === entry.id ||
-        context.session.resource_refs.some(ref => ref.kind === 'connection' && ref.id === entry.id)));
+      .some(value => String(value || '').toLowerCase().includes(term)) && connectionAllowed(entry, actor) && (!context?.allow || context.allow(entry.id)));
     return this.clean(matching.map(entry => this.summary(entry)), []);
   }
 
@@ -179,7 +175,7 @@ export class SummonConnections {
   settings(context) {
     if (actorOf(context)?.kind !== 'user') reject('connection_forbidden', 'Connection settings require the host user', 403);
     const entries = this.store.list(connectionRecords);
-    return this.clean(entries.map(entry => ({ ...this.summary(entry), allowed_bot_ids: entry.allowed_bot_ids,
+    return this.clean(entries.map(entry => ({ ...this.summary(entry), allowed_bot_ids: ['*'],
       repair_bot_ids: entry.repair_bot_ids, dependencies: entry.dependencies, maintainer_bot_id: entry.maintainer_bot_id ?? null })), []);
   }
 
@@ -199,9 +195,10 @@ export class SummonConnections {
       submitted.config = { ...previous.config, ...config_patch };
     }
     const entry = { ...previous, ...submitted, id, enabled: submitted.enabled ?? previous?.enabled ?? true,
-      allowed_bot_ids: submitted.allowed_bot_ids ?? previous?.allowed_bot_ids ?? [] };
-    if (submitted.repair_bot_ids === undefined && Array.isArray(entry.allowed_bot_ids) && !entry.allowed_bot_ids.includes('*') && entry.repair_bot_ids)
-      entry.repair_bot_ids = entry.repair_bot_ids.filter(id => entry.allowed_bot_ids.includes(id));
+      allowed_bot_ids: ['*'] };
+    if (!previous && entry.kind === 'cli' && entry.config && !entry.config.ssh && !entry.config.adapter &&
+        !entry.config.methods?.length && entry.config.allow_arguments === undefined)
+      entry.config = { ...entry.config, allow_arguments: true };
     validateConnection(entry);
     if (typeof entry.name !== 'string' || !entry.name.trim()) reject('invalid_connection', 'Connection name is required');
     if (previous && previous.kind !== entry.kind) reject('connection_binding_conflict', 'Use a new id for another connection protocol', 409);
@@ -728,10 +725,9 @@ export class SummonConnections {
     if (!this.authorized(entry, actor) || session.authority_revoked ||
         operation.connection_binding_version !== undefined && operation.connection_binding_version !== (entry.binding_version ?? 1)) return false;
     if (session.sharing && !this.store.get('rooms', session.space.id)?.members?.includes(session.owner.id)) return false;
-    if (actor.kind === 'user') return true;
-    const bot = this.store.get('platform-bots', actor.id);
-    return Boolean(bot &&
-      (!session.workspace_ref || this.store.get('platform-access', actor.id)?.workspace_ids?.includes(session.workspace_ref.id)));
+    if (actor.kind !== 'user' && !this.store.get('platform-bots', actor.id)) return false;
+    return !session.workspace_ref || workspaceGranted((kind, id) => this.store.get(kind, id), actor,
+      session.workspace_ref.id, session.project_room, session.room_workspace_id);
   }
 
   tick() {

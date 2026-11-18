@@ -1,4 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import { assertRevision, idOf, identity, keyOf, reject, sameIdentity, sameRef } from './contract.mjs';
+import { messageEvent } from '../chatroom/service.mjs';
 import { waitRecords } from './calls.mjs';
 import { botMaintenanceRoomId, toolOnboardingRole } from '../../roles/index.mjs';
 
@@ -7,10 +9,14 @@ export const deliveryRecords = 'platform-deliveries';
 const roomBaseId = (botId, roomId) => keyOf('room_base', botId, roomId);
 const unique = (values, key) => [...new Map(values.map(value => [key(value), value])).values()];
 const handledWaitStates = new Set(['processed', 'cancelled', 'access_revoked']);
+const defaultObservationCount = 20;
+const platformAuthor = { kind: 'platform', id: 'platform' };
+const positionOf = ({ id, sequence }) => ({ id, sequence });
+function publicWakeup({ observation, ...wakeup }) { return { ...wakeup, kind: 'wakeup' }; }
 
 export class Deliveries {
-  constructor({ store, resources, emit, canReadEvent, canReadWait, canReadReference, manager }) {
-    Object.assign(this, { store, resources, emit, canReadEvent, canReadWait, canReadReference, manager });
+  constructor({ store, resources, emit, canReadEvent, canReadWait, canReadReference, manager, chatroom }) {
+    Object.assign(this, { store, resources, emit, canReadEvent, canReadWait, canReadReference, manager, chatroom });
     store.db.exec(`CREATE INDEX IF NOT EXISTS platform_delivery_status ON records (json_extract(data,'$.status')) WHERE kind='platform-deliveries';
       CREATE INDEX IF NOT EXISTS platform_delivery_event ON records (json_extract(data,'$.event.id')) WHERE kind='platform-deliveries'`);
     this.returningRecords = store.db.prepare(`SELECT data FROM records WHERE kind='platform-deliveries'
@@ -39,12 +45,32 @@ export class Deliveries {
   ensureBase(botId, roomId) {
     const id = roomBaseId(botId, roomId);
     const previous = this.store.get(wakeupRecords, id);
-    if (previous && previous.member_active !== false) return previous;
     const group = this.store.get('rooms', roomId)?.mode === 'group';
-    const onboarding = this.store.get('platform-bots', botId)?.built_in_role?.id === toolOnboardingRole;
-    const mode = roomId === botMaintenanceRoomId || group && onboarding ? 'mentions' : 'all';
-    return this.store.save(wakeupRecords, { id, bot_id: botId, rule: { kind: 'room_base', room: roomId, mode },
-      member_active: true, enabled: true, revision: (previous?.revision ?? 0) + 1 });
+    const role = this.store.get('platform-bots', botId)?.built_in_role?.id;
+    const observes = group && roomId !== botMaintenanceRoomId && role === 'eggbot';
+    const active = previous && previous.member_active !== false;
+    if (active && Boolean(previous.observation) === observes) return previous;
+    const mode = roomId === botMaintenanceRoomId || group && (role === toolOnboardingRole || observes) ? 'mentions' : 'all';
+    const rule = { kind: 'room_base', room: roomId, mode, ...(observes && { message_count: defaultObservationCount }) };
+    return this.store.save(wakeupRecords, { id, bot_id: botId, rule,
+      observation: observes ? { generation: randomUUID(), ...this.chatroom().observationStart(roomId, botId) } : null,
+      member_active: true, enabled: active ? previous.enabled : true, revision: (previous?.revision ?? 0) + 1 });
+  }
+
+  syncObserverMemberships(botId) {
+    for (const room of this.store.list('rooms')) {
+      if (room.mode !== 'group') continue;
+      for (const member of room.members) {
+        if (member === 'user' || botId && member !== botId) continue;
+        if (botId || this.store.get('platform-bots', member)?.built_in_role?.id === 'eggbot') this.ensureBase(member, room.id);
+      }
+    }
+  }
+
+  roomObservation(botId, roomId) {
+    if (!this.roomMembers(roomId).includes(botId)) return null;
+    const base = this.store.get(wakeupRecords, roomBaseId(botId, roomId));
+    return base?.member_active && base.observation ? base.observation : null;
   }
 
   removeBase(botId, roomId) {
@@ -52,7 +78,7 @@ export class Deliveries {
     const wakeup = this.store.get(wakeupRecords, id);
     if (wakeup?.member_active !== false) {
       this.store.save(wakeupRecords, { id, bot_id: botId, rule: wakeup?.rule ?? { kind: 'room_base', room: roomId, mode: 'all' },
-        member_active: false, enabled: false, revision: (wakeup?.revision ?? 0) + 1 });
+        member_active: false, enabled: false, observation: null, revision: (wakeup?.revision ?? 0) + 1 });
     }
     for (const delivery of this.store.list(deliveryRecords)) {
       if (delivery.bot_id === botId && delivery.event.roomId === roomId && !delivery.wait_refs?.length && delivery.status === 'pending') {
@@ -70,12 +96,12 @@ export class Deliveries {
   list(context, scope) {
     return this.store.list(wakeupRecords).filter(wakeup => {
       const bot = this.store.get('platform-bots', wakeup.bot_id);
-      if (!bot || wakeup.member_active === false ||
+      if (!bot || wakeup.member_active === false || wakeup.observation && !this.roomMembers(wakeup.rule.room).includes(context.actor.id) ||
           !this.ruleUsable(wakeup.rule, wakeup.bot_id) || !this.manager.canConfigure(context.actor, bot)) return false;
       if (scope?.kind === 'bot') return wakeup.bot_id === scope.id;
-      if (scope?.kind === 'room') return wakeup.rule.room === scope.id;
+      if (scope?.kind === 'room') return wakeup.rule.room === scope.id || sameRef(wakeup.rule.scope, scope);
       return !scope;
-    }).map(wakeup => ({ ...wakeup, kind: 'wakeup' }));
+    }).map(publicWakeup);
   }
 
   set(args, context, callId) {
@@ -86,35 +112,54 @@ export class Deliveries {
     }
     if (context.session) reject('wakeup_forbidden', 'This Session has no Bot subscription configuration authority', 403);
     const current = args.id ? this.store.get(wakeupRecords, args.id) : null;
-    if (args.id && (!current || current.bot_id !== botId || current.member_active === false)) reject('wakeup_not_found', 'Wakeup is unavailable', 404);
+    if (args.id !== undefined && (!current || current.bot_id !== botId || current.member_active === false))
+      reject('wakeup_not_found', 'Use an existing wakeup ID and revision to edit. Omit both when creating a wakeup.', 404);
     if (current) assertRevision(current.revision, args.revision);
     else if (args.revision !== undefined) assertRevision(null, args.revision);
     if (!args.event_or_time && (!current || args.enabled === undefined)) reject('invalid_wakeup', 'Specify a Wakeup rule or change enabled');
     const rule = { ...(args.event_or_time || current.rule) };
     const targetContext = { actor: { kind: 'bot', id: botId } };
+    for (const ref of [rule.scope, rule.ref].filter(Boolean)) {
+      if (!this.canReadReference(ref, context) || !this.canReadReference(ref, targetContext)) reject('wakeup_forbidden', 'Wakeup reference is unavailable', 403);
+    }
+    if (rule.kind === 'event' && rule.type === 'work.tool' && rule.ref) {
+      if (rule.ref.kind === 'event') {
+        const anchor = this.store.get('platform-events', rule.ref.id);
+        if (anchor?.type !== 'work.tool' || rule.room && idOf(rule.room, 'room') !== anchor.roomId)
+          reject('invalid_wakeup', 'Select a published work.tool event in the work Room');
+        rule.room ??= anchor.roomId;
+      } else if (!['session', 'call'].includes(rule.ref.kind)) {
+        reject('invalid_wakeup', 'Select a published work.tool event, its session, or its call');
+      }
+    }
     if (rule.room) {
       rule.room = idOf(rule.room, 'room');
       if (!this.roomMembers(rule.room).includes(context.actor.id) || !this.ruleUsable(rule, botId)) {
         reject('wakeup_forbidden', 'Room membership is required for this Wakeup', 403);
       }
     }
-    if (rule.author) rule.author = identity(rule.author);
-    for (const ref of [rule.scope, rule.ref].filter(Boolean)) {
-      if (!this.canReadReference(ref, context) || !this.canReadReference(ref, targetContext)) reject('wakeup_forbidden', 'Wakeup reference is unavailable', 403);
-    }
+    if (rule.author) rule.author = rule.author === 'platform' || sameIdentity(rule.author, platformAuthor) ? platformAuthor : identity(rule.author);
     if (current && (current.rule.kind !== rule.kind || rule.kind === 'room_base' && current.rule.room !== rule.room)) {
       reject('wakeup_conflict', 'Wakeup category and its base Room are fixed', 409);
     }
     const id = current?.id || (rule.kind === 'room_base' ? roomBaseId(botId, rule.room) : callId);
     const duplicate = !current && this.store.get(wakeupRecords, id);
     if (duplicate) assertRevision(duplicate.revision, args.revision);
+    if (rule.kind === 'room_base') {
+      if (rule.message_count !== undefined && (!current?.observation || !Number.isSafeInteger(rule.message_count) || rule.message_count < 1))
+        reject('invalid_wakeup', 'Use a positive message count for an EggBot in a group Room');
+      if (current?.observation) rule.message_count ??= current.rule.message_count;
+    }
     const at = rule.kind === 'time' ? Date.parse(rule.at) : null;
     if (at !== null && !Number.isFinite(at)) reject('invalid_wakeup', 'Specify a valid time for this Wakeup');
     const next_due = args.event_or_time ? at : current.next_due;
     if (rule.kind === 'time' && args.enabled && next_due === null) reject('wakeup_time_required', 'Set the next time for an expired Wakeup', 409);
+    const restart = current?.observation && !current.enabled && args.enabled === true;
     const saved = this.store.save(wakeupRecords, { id, bot_id: botId, rule, next_due,
+      ...(restart && { observation: { generation: randomUUID(), ...this.chatroom().observationStart(rule.room, botId) } }),
       enabled: args.enabled ?? current?.enabled ?? true, revision: (current?.revision || 0) + 1, member_active: true });
-    return { ...saved, kind: 'wakeup' };
+    if (saved.observation && saved.enabled) this.queueDueObservation(saved);
+    return publicWakeup(saved);
   }
 
   matches(wakeup, event) {
@@ -126,17 +171,76 @@ export class Deliveries {
         event.mentions?.includes(bot_id) || event.replyAuthorId === bot_id);
     }
     return rule.type === event.type && (!rule.room || event.roomId === rule.room || sameRef(event.space, { kind: 'room', id: rule.room })) &&
-      (!rule.author || sameIdentity(event.author, rule.author)) && (!rule.ref || sameRef(event.ref || event.target, rule.ref));
+      (!rule.author || sameIdentity(event.author, rule.author)) && (!rule.ref || this.matchesEventRef(rule.ref, event));
+  }
+
+  matchesEventRef(ref, event) {
+    if (event.type !== 'work.tool') return sameRef(ref, event.ref || event.target);
+    if (ref.kind !== 'event') return sameRef(ref, event.execution) || sameRef(ref, event.call_ref);
+    // A published observation can identify work for Room members with no access to the private Session.
+    const anchor = this.store.get('platform-events', ref.id);
+    return anchor?.type === 'work.tool' && sameRef(anchor.space, event.space) && sameRef(anchor.execution, event.execution);
   }
 
   queueMessage(message) {
-    const author = message.senderId === 'user' ? { kind: 'user', id: 'user' }
-      : message.senderId === 'system' ? { kind: 'platform', id: 'platform' } : { kind: 'bot', id: message.senderId };
-    const event = { id: message.id, type: 'message', kind: 'event', roomId: message.roomId, space: { kind: 'room', id: message.roomId },
-      author, time: message.createdAt, sequence: message.sequence, text: message.content, content: message.content,
-      mentions: message.mentions, reply_to: message.replyTo, replyAuthorId: message.replyAuthorId, attachments: message.attachments,
-      references: message.references, call_id: message.callId };
-    this.queueEvent(event);
+    this.queueEvent(messageEvent(message));
+  }
+
+  countDue(base) {
+    const { room, message_count } = base.rule;
+    return this.chatroom().countedMessage(room, base.bot_id, base.observation.through?.sequence ?? 0, message_count);
+  }
+
+  observationMatch(base, event) {
+    const { observation, bot_id, rule } = base;
+    if (!base.enabled || !base.member_active || rule.room !== event.roomId ||
+        event.author.id === bot_id || !this.canReadEvent(bot_id, event) ||
+        event.sequence <= (observation.through?.sequence ?? 0)) return null;
+    const reasons = [];
+    const first = observation.first_user && event.author.kind === 'user';
+    if (first) reasons.push('first_user');
+    if (event.mentions?.includes(bot_id)) reasons.push('mention');
+    if (event.replyAuthorId === bot_id) reasons.push('reply');
+    if (rule.mode === 'all') reasons.push('all');
+    if (!observation.pending && (!observation.first_user || first) && ['user','bot'].includes(event.author.kind) &&
+        this.countDue(base)) reasons.push('message_count');
+    if (!reasons.length) return null;
+    if (first || !observation.pending) this.store.save(wakeupRecords, { id: base.id, observation: { ...observation,
+      first_user: observation.first_user && !first, pending: observation.pending ?? positionOf(event) } });
+    return { id: base.id, revision: base.revision, kind: rule.kind, generation: observation.generation, reasons };
+  }
+
+  queueDueObservation(base) {
+    if (!base.enabled || base.observation.pending || base.observation.first_user) return;
+    const due = this.countDue(base);
+    if (!due) return;
+    const event = messageEvent(due);
+    const match = this.observationMatch(base, event);
+    if (match) this.enqueue(base.bot_id, event, [match], []);
+  }
+
+  finishObservation(botId, roomId, result) {
+    return this.store.transaction(() => {
+      const id = roomBaseId(botId, roomId);
+      const base = this.store.get(wakeupRecords, id);
+      const state = this.roomObservation(botId, roomId);
+      if (!state || state.generation !== result.generation) return false;
+      if (state.checkpoint?.id === result.checkpoint.id) return true;
+      if (!samePosition(state.through, result.from) || (state.checkpoint?.id ?? null) !== result.base_checkpoint)
+        return (state.through?.sequence ?? 0) >= (result.through?.sequence ?? 0);
+      const through = result.through ?? state.through;
+      const pending = state.pending?.sequence > (through?.sequence ?? 0) ? state.pending : null;
+      const observation = { ...state, through, pending, checkpoint: { id: result.checkpoint.id, run_id: result.checkpoint.run_id } };
+      const saved = this.store.save(wakeupRecords, { id: base.id, observation });
+      this.queueDueObservation(saved);
+      return true;
+    });
+  }
+
+  releaseSuspendedObservation(botId, roomId, eventIds) {
+    const state = this.roomObservation(botId, roomId);
+    if (state?.pending && eventIds.includes(state.pending.id)) this.store.save(wakeupRecords, {
+      id: roomBaseId(botId, roomId), observation: { ...state, pending: null } });
   }
 
   queueEvent(event, waits = [], matchWakeups = true, excludedBotId) {
@@ -148,6 +252,11 @@ export class Deliveries {
     for (const wait of waits) entry(wait.bot_id).waits.push(wait);
     for (const wakeup of matchWakeups ? this.store.list(wakeupRecords) : []) {
       if (wakeup.bot_id === excludedBotId) continue;
+      if (wakeup.observation && event.type === 'message') {
+        const match = this.observationMatch(wakeup, event);
+        if (match) entry(wakeup.bot_id).matches.push(match);
+        continue;
+      }
       if (!this.matches(wakeup, event)) continue;
       try { if (!this.canReadEvent(wakeup.bot_id, event)) continue; }
       catch { /* Delivery will recheck access before the event reaches an inbox. */ }
@@ -175,9 +284,8 @@ export class Deliveries {
         if (!wakeup.enabled || wakeup.rule.kind !== 'time' || wakeup.next_due == null || wakeup.next_due > now) continue;
         const { bot_id, rule } = wakeup;
         if (rule.scope && !this.canReadReference(rule.scope, { actor: { kind: 'bot', id: bot_id } })) continue;
-        const platform = { kind: 'platform', id: 'platform' };
         const event = this.store.save('platform-events', { id: keyOf('time', wakeup.id, wakeup.next_due), kind: 'event', type: 'wakeup.time',
-          author: platform, bot_id, space: rule.scope?.kind === 'room' || rule.scope?.kind === 'bot' ? rule.scope : { kind: 'bot', id: bot_id },
+          author: platformAuthor, bot_id, space: rule.scope?.kind === 'room' || rule.scope?.kind === 'bot' ? rule.scope : { kind: 'bot', id: bot_id },
           ref: rule.scope || null, time: new Date(wakeup.next_due).toISOString() });
         this.enqueue(bot_id, event, [{ id: wakeup.id, revision: wakeup.revision, kind: 'time' }], []);
         const next_due = rule.interval_ms ? wakeup.next_due + (Math.floor((now - wakeup.next_due) / rule.interval_ms) + 1) * rule.interval_ms : null;
@@ -302,3 +410,5 @@ export class Deliveries {
     });
   }
 }
+
+const samePosition = (left, right) => (left?.sequence ?? 0) === (right?.sequence ?? 0) && left?.id === right?.id;

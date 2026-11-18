@@ -973,22 +973,32 @@ function memberChoices(selected = []) {
     <span>${esc(bot.name)}</span><input type="checkbox" name="members" value="${esc(bot.id)}" ${selected.includes(bot.id) ? 'checked' : ''}></label>`).join('')}</fieldset>`;
 }
 
-function openRoomForm() {
-  openModal('创建会话', '', field('会话名称', 'title', '', { placeholder:'选填' }) + memberChoices(), async data => {
+async function roomWorkspaceField(current) {
+  const choices = (await readList('/api/workspaces')).filter(item => item.write !== false || item.id === current);
+  return selectField('群项目目录', 'workspace', [{ value:'', label:'未绑定' },
+    ...choices.map(item => ({ value:item.id, label:item.name + ' · ' + item.path }))],current || '');
+}
+
+async function openRoomForm() {
+  const workspaceField = await roomWorkspaceField();
+  openModal('创建会话', '', field('会话名称', 'title', '', { placeholder:'选填' }) + workspaceField + memberChoices(), async data => {
     const title = data.get('title').trim();
-    const room = await api('/api/rooms', 'POST', { members:data.getAll('members'), mode:'group', ...(title ? { title } : {}) });
+    const workspace = data.get('workspace');
+    const room = await api('/api/rooms', 'POST', { members:data.getAll('members'), mode:'group', ...(workspace ? {workspace} : {}), ...(title ? { title } : {}) });
     state.rooms.push(room);
     await selectRoom(room.id);
   }, '创建');
 }
 
-function openRoomEdit() {
+async function openRoomEdit() {
   const room = roomById(ui.roomId);
   if (!room) return;
   const old = room.members.filter(id => id !== 'user');
-  openModal('编辑会话', '', field('会话名称', 'title', room.name, { placeholder:'留空保留原名称' }) + memberChoices(old), async data => {
+  const workspaceField = room.mode === 'group' ? await roomWorkspaceField(room.workspace?.id) : '';
+  openModal('编辑会话', '', field('会话名称', 'title', room.name, { placeholder:'留空保留原名称' }) + workspaceField + memberChoices(old), async data => {
     const selected = data.getAll('members'), previous = old.filter(id => botById(id)), title = data.get('title').trim();
     await api(roomPath(room.id), 'PATCH', { revision:room.revision, ...(title && title !== room.name ? { title } : {}),
+      ...(workspaceField && data.get('workspace') !== (room.workspace?.id || '') ? {workspace:data.get('workspace') || null} : {}),
       add_members:selected.filter(id => !old.includes(id)), remove_members:previous.filter(id => !selected.includes(id)) });
   });
 }
@@ -1020,6 +1030,7 @@ async function openBotEdit(bot) {
   const roles = [{ value:'', label:'普通 Bot' }, { value:'tool-onboarding', label:'工具接入' }, { value:'catalog-maintainer', label:'连接维护' }];
   if (!roles.some(item => item.value === role)) roles.push({ value:role, label:role });
   openModal('编辑 Bot', '', field('名称','name',bot.name,{ required:true }) + field('行为指令','instructions',bot.instructions || '',{ type:'textarea',rows:5 }) +
+    field('团队公开职责','public_duty',bot.public_duty || '') +
     selectField('内置职责','role_id',roles,role) +
     selectField('模型连接','connection_id',options,currentId) +
     field('模型名称','model_id',model?.id || '',{ placeholder:'留空使用连接配置' }) +
@@ -1032,6 +1043,7 @@ async function openBotEdit(bot) {
       && (current?.thinking_level ?? null) === (binding?.thinking_level ?? null);
     await api(path, 'PATCH', {
       revision:bot.revision, name:data.get('name').trim(), instructions:data.get('instructions'), ...(sameBinding ? {} : { model:binding }),
+      ...(data.get('public_duty').trim() !== (bot.public_duty || '') ? {public_duty:data.get('public_duty').trim()} : {}),
       ...(data.get('role_id') !== role ? { role_id:data.get('role_id') || null } : {}),
       ...(data.get('material_index') !== materialId ? { material_index_ref:data.get('material_index') ? { kind:'file',id:data.get('material_index') } : null } : {}),
     });
@@ -1091,16 +1103,12 @@ function editConnection(item) {
     `<div data-native-connection>${field('可执行文件','file','',{ placeholder:'绝对路径' })}
     ${field('实际可执行文件','canonical_file','',{ placeholder:'如果已通过链接安装，填写其实际路径' })}</div>` +
     field('其他连接设置（JSON）','config','{}',{ type:'textarea',rows:6,required:true });
-  const everyone = `<label class="checkbox-line"><input type="checkbox" name="all_bots" ${item?.allowed_bot_ids?.includes('*') ? 'checked' : ''}>允许所有 Bot 使用</label>`;
   const maintainer = [{ value:'',label:'未分配' }, ...botOptions()];
-  const controls = selectField('负责人','maintainer_bot_id',maintainer,item?.maintainer_bot_id ?? '') + everyone +
-    resourceChoices('允许使用的 Bot',available,item?.allowed_bot_ids || []) +
+  const controls = selectField('负责人','maintainer_bot_id',maintainer,item?.maintainer_bot_id ?? '') +
     resourceChoices('允许修复的 Bot',available,item?.repair_bot_ids || []);
   openModal(item ? '执行连接设置' : '新增执行连接','',basic + configuration + controls,async data => {
-    const selected = data.getAll('允许使用的 Bot');
     const input = { name:data.get('name').trim(), description:data.get('description'), enabled:data.has('enabled'),
-      maintainer_bot_id:data.get('maintainer_bot_id') || null, allowed_bot_ids:data.has('all_bots') ? ['*'] : selected,
-      repair_bot_ids:data.getAll('允许修复的 Bot').filter(id => data.has('all_bots') || selected.includes(id)) };
+      maintainer_bot_id:data.get('maintainer_bot_id') || null, repair_bot_ids:data.getAll('允许修复的 Bot') };
     const raw = data.get('config').trim();
     if (raw || !item) {
       const config = JSON.parse(raw);
@@ -1191,8 +1199,10 @@ function wakeupRequest(item, data) { return api('/api/wakeups','POST',{ bot:{ ki
 function openWakeupEdit(item, roomId) {
   const rule = item?.rule;
   if (rule?.kind === 'room_base') {
-    openModal('基础关注', '', selectField('关注范围','mode',[{value:'all',label:'所有消息'},{value:'mentions',label:'仅 @ 或回复'}],rule.mode), data =>
-      wakeupRequest(item,{ event_or_time:{ kind:'room_base', room:rule.room, mode:data.get('mode') } }));
+    const count = rule.message_count;
+    openModal('基础关注', '', selectField('关注范围','mode',[{value:'all',label:'所有消息'},{value:'mentions',label:count ? '@ 或回复' : '仅 @ 或回复'}],rule.mode) +
+      (count ? field('累计多少条新消息后回看','message_count',count,{ type:'number', min:1, step:1, required:true }) : ''), data =>
+      wakeupRequest(item,{ event_or_time:{ ...rule, mode:data.get('mode'), ...(count && { message_count:Number(data.get('message_count')) }) } }));
     return;
   }
   const selectedRoomId = item ? rule?.room?.id || rule?.room || (rule?.scope?.kind === 'room' ? rule.scope.id : '') : roomId;
@@ -1921,7 +1931,7 @@ function renderDetailPanel(room, bot) {
       <div class="profile-section-heading"><span>自定义订阅</span><button class="icon-button" data-action="add-wakeup" data-room="${esc(room.id)}" aria-label="添加订阅">${icon('plus',20)}</button></div>
       ${extra.map(renderWakeupRow).join('') || '<p class="panel-empty">没有自定义订阅</p>'}
       ${wakeups.length && !runnable.length ? '<p class="panel-empty">当前没有启用的消息关注可唤醒 Bot。</p>'
-        : runnable.length && !allMessages ? '<p class="panel-empty">本群消息仅按上方定向关注和筛选条件唤醒。</p>' : ''}`;
+        : runnable.length && !allMessages && !runnable.some(item => item.rule.message_count) ? '<p class="panel-empty">本群消息仅按上方定向关注和筛选条件唤醒。</p>' : ''}`;
   }
   return `<aside class="detail-panel" data-section="${esc(tab + ':' + (bot?.id || room.id))}"><div class="detail-panel-inner">
     <div class="detail-panel-toolbar"><button class="round-button" data-action="close-details" aria-label="关闭详情">${icon('close',24)}</button></div>
@@ -2084,7 +2094,8 @@ function renderFiles() {
 }
 
 function describeWakeup(rule) {
-  if (rule.kind === 'room_base') return rule.mode === 'all' ? '所有消息' : '仅 @ 或回复';
+  if (rule.kind === 'room_base') return rule.mode === 'all' ? '所有消息' :
+    rule.message_count ? `@ 或回复，或累计 ${rule.message_count} 条新消息` : '仅 @ 或回复';
   if (rule.kind === 'event') return [rule.type === 'message' ? '消息' : rule.type, !rule.room && '所有可访问会话',
     rule.author && '作者 · ' + nameOf(rule.author.id), rule.ref && refLabel(rule.ref)].filter(Boolean).join(' · ');
   return formatTime(rule.at,true) + (rule.interval_ms ? ' · 每 ' + rule.interval_ms / 60000 + ' 分钟' : ' · 单次');

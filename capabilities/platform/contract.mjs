@@ -12,9 +12,21 @@ const oneOf = (...values) => ({ enum: values });
 const array = items => ({ type: 'array', items });
 const object = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const kinds = ['bot', 'room', 'event', 'file', 'session', 'wakeup', 'connection', 'conversation', 'call', 'wait', 'workspace', 'material_consumption'];
-const ref = object({ kind: oneOf(...kinds, 'user'), id: text }, ['kind', 'id']);
-const principal = { anyOf: [text, object({ kind: oneOf('bot', 'user', 'room_members'), id: text }, ['kind', 'id'])] };
+const typedRef = (...types) => object({ kind: oneOf(...types), id: text }, ['kind', 'id']);
+const ref = typedRef(...kinds, 'user');
+const principal = { anyOf: [text, typedRef('bot', 'user', 'room_members')] };
 const refOrId = { anyOf: [ref, text] };
+const roomOrId = { anyOf: [typedRef('room'), text] };
+const eventOrId = { anyOf: [typedRef('event'), text] };
+const references = array(ref);
+const roomMessageFields = { text, attachments: array(refOrId), references, mentions: array(principal), reply_to: eventOrId };
+const repairMessageFields = { to: typedRef('connection'), text, references };
+const repairOutcome = oneOf('repaired', 'blocked');
+const sendMessage = { anyOf: [
+  object({ to: roomOrId, ...roomMessageFields }, ['to']),
+  object({ ...repairMessageFields, repair_key: text }, ['to', 'text']),
+  object({ ...repairMessageFields, reply_to: eventOrId, repair_outcome: repairOutcome }, ['to', 'text', 'reply_to']),
+] };
 const usagePeriod = { anyOf: [oneOf('yesterday', 'today', '7d'), object({ from: text, to: text }, ['from', 'to'])] };
 const executionRef = object({ kind: oneOf('session', 'conversation'), id: text }, ['kind', 'id']);
 const resumeRef = object({ target: object({ kind: oneOf('bot', 'session', 'conversation'), id: text }, ['kind', 'id']), stop_id: text,
@@ -26,11 +38,30 @@ const inputTarget = { anyOf: [
   object({ kind: oneOf('service_call'), call_id: text, request_id: text, operation_id: text }, ['kind', 'call_id']),
   object({ kind: oneOf('idle_input'), input_revision: integer }, ['kind', 'input_revision']),
 ] };
-const wakeupRule = { anyOf: [
-  object({ kind: oneOf('room_base'), room: refOrId, mode: oneOf('all', 'mentions') }, ['kind', 'room', 'mode']),
-  object({ kind: oneOf('event'), room: refOrId, type: text, author: principal, ref }, ['kind', 'type']),
-  object({ kind: oneOf('time'), at: text, interval_ms: { type: 'integer', minimum: 1000 }, scope: ref }, ['kind', 'at']),
+const subscriptionRules = [
+  object({ kind: oneOf('room_base'), room: roomOrId, mode: oneOf('all', 'mentions'),
+    message_count: { type: 'integer', minimum: 1, description: 'New messages between EggBot observations in this group. The default is 20.' } }, ['kind', 'room', 'mode']),
+  object({ kind: oneOf('event'), room: roomOrId, type: text,
+    author: { anyOf: [text, typedRef('bot', 'user'), object({ kind: oneOf('platform'), id: oneOf('platform') }, ['kind', 'id'])],
+      description: 'Optional event publisher. work.tool is published by platform.' },
+    ref: { ...ref, description: 'For work.tool, use the observed work.tool event reference to follow that execution in its Room. A readable session or call reference can also select that session or call.' },
+  }, ['kind', 'type']),
+];
+const timeFields = { at: { ...text, description: 'Due timestamp with time zone.' },
+  scope: { ...ref, description: 'Use the Room reference for a reminder about that conversation.' } };
+const interval = { type: 'integer', minimum: 1000 };
+const wakeupRule = { anyOf: [...subscriptionRules,
+  object({ kind: oneOf('time'), ...timeFields }, ['kind', 'at']),
+  object({ kind: oneOf('recurring_time'), ...timeFields, interval_ms: interval }, ['kind', 'at', 'interval_ms']),
 ] };
+const wakeupSelection = { anyOf: [oneOf('new'), object({
+  id: { ...text, minLength: 1 }, revision: { type: 'integer', minimum: 1 },
+}, ['id', 'revision'])] };
+
+function wakeupPlatformArgs({ subscription, ...args }) {
+  if (args.event_or_time?.kind === 'recurring_time') args.event_or_time = { ...args.event_or_time, kind: 'time' };
+  return subscription === 'new' ? args : { ...args, ...subscription };
+}
 const model = { anyOf: [refOrId, object({ connection_id: text, id: text,
   thinking_level: { anyOf: [text, { type: 'null' }] } }, ['connection_id']), { type: 'null' }] };
 const sessionEngine = { ...text, description: 'The connection id returned by find with kind connection. Use pi to open a Pi Session.' };
@@ -41,27 +72,26 @@ const openSessionInput = object({ engine: sessionEngine, input: value, workspace
 const publicOpenSessionInput = { ...openSessionInput, properties: { ...openSessionInput.properties, engine: refOrId, workspace: { anyOf: [ref, text] } } };
 
 const definitions = [
-  ['find', 'Find accessible objects, execution connections, and internal run and call references. ' +
+  ['find', 'Find accessible objects, execution connections, and internal run and call references. EggBot can search the team directory by name or public duty. Use a Room scope for its members. ' +
     'Use connection_usage for call counts by date, connection, method and outcome. Filter by room, connection or session with scope. ' +
     'Set period to yesterday (default), today, 7d, or {from,to} with timestamps and offsets.',
     object({ kind: oneOf(...kinds, 'connection_usage'), scope: ref, query: text, cursor: text, period: usagePeriod }, ['kind'])],
-  ['read', 'Read an accessible object, its history or output, and the available input or control references. ' +
+  ['read', 'Read an accessible object, its history or output, and the available input or control references. For a workspace, add a relative path to read a project text file. ' +
     'Use it for a specific observation. A registered wait_ref delivers the terminal receipt or an input request to your run automatically.',
-    object({ ref, cursor: text, limit: { type: 'integer', minimum: 1, maximum: 100 } }, ['ref'])],
-  ['send', 'Send a message to a Room, or request repair from the current maintainer using to:{kind:"connection",id}. ' +
-    'For repair include the actual problem and accessible call or event references. Reuse repair_key for the same verified fault. ' +
-    'Reply to the repair event on the same connection with the observed result or blocker and optional repair_outcome.',
-    object({ to: refOrId, text, attachments: array(refOrId), references: array(ref), mentions: array(principal), reply_to: refOrId,
-      repair_key: text, repair_outcome: oneOf('repaired', 'blocked') }, ['to'])],
-  ['save_file', 'Save text, a permitted File source, or a relative file from an authorized project directory. Supply the current revision to replace an existing File.',
+    object({ ref, path: text, cursor: text, limit: { type: 'integer', minimum: 1, maximum: 100 } }, ['ref'])],
+  ['send', 'Publish to a Room using message:{to:{kind:"room",id},text}, with optional attachments, references, mentions or reply_to. ' +
+    'For a verified connection fault, address the message to {kind:"connection",id} with the problem and shareable references. ' +
+    'Reuse repair_key when requesting repair of the same fault. The maintainer replies to the repair event on that connection with reply_to and an optional repair_outcome.',
+    object({ message: sendMessage }, ['message']), ({ message }) => message],
+  ['save_file', 'Save text, a permitted File source, or a relative file from an authorized project directory. Supply the current revision to replace an existing File. To write project text or copy a shared attachment for a tool, set space to the workspace ref and path to a relative file name. Use the revision from read to detect concurrent edits.',
     object({ space: ref, path: text, content_or_source: { anyOf: [text, object({ text }, ['text']),
       object({ source: object({ kind: oneOf('file'), id: text }, ['kind', 'id']) }, ['source']),
       object({ source: object({ kind: oneOf('workspace'), id: text }, ['kind', 'id']), path: text }, ['source', 'path']),
       object({ no_change: oneOf(true) }, ['no_change'])] },
       revision: integer, sources: array(ref), material_items: array(text) }, ['space', 'path', 'content_or_source'])],
-  ['create_bot', 'Create a Bot with user instructions, an optional authorized model connection, and an optional built-in duty (role_id). ' +
+  ['create_bot', 'Create a Bot with private instructions, public_duty for team directory searches, an optional authorized model connection, and an optional built-in duty (role_id). ' +
     'For dedicated maintenance, pass catalog-maintainer and the exact role_connection_id and connection_revision from read to bind it atomically. A duty does not grant use or repair access.',
-    object({ name: text, instructions: text, model, role_id: oneOf(...roleIds), role_connection_id: text, connection_revision: integer }, ['name', 'instructions'])],
+    object({ name: text, public_duty: text, instructions: text, model, role_id: oneOf(...roleIds), role_connection_id: text, connection_revision: integer }, ['name', 'instructions'])],
   ['configure_bot', 'Change a Bot configuration at its current revision. An explicit resume reference is required to re-enable a paused Bot. ' +
     'When asked to remember or correct something for future work, read your Bot for its revision, private_space and material_index_ref. ' +
     'If the index reference is empty, use save_file in private_space (for example memory/index.json) to save ordinary JSON such as ' +
@@ -72,20 +102,20 @@ const definitions = [
     '"target_ref" to the actual reference of an existing, accessible knowledge File. The runtime processes selected items when their ' +
     'scope is idle. Use find with kind "material_consumption" to check the recorded outcome. ' +
     'Set role_id to select a built-in duty, or null to clear it. The host selects the tool-onboarding duty. User instructions are a separate setting.',
-    object({ bot: refOrId, revision: integer, name: text, instructions: text, model, enabled: flag, resume_ref: resumeRef,
+    object({ bot: refOrId, revision: integer, name: text, public_duty: text, instructions: text, model, enabled: flag, resume_ref: resumeRef,
       role_id: oneOf(...roleIds, null), role_connection_id: text, connection_revision: integer,
       material_index_ref: { anyOf: [ref, { type: 'null' }] } }, ['bot', 'revision'])],
-  ['create_room', 'Create a Room with the specified members, including you as creator. Set mode to group for a group Room.',
-    object({ members: array(principal), title: text, mode: oneOf('group', 'direct') }, ['members'])],
-  ['configure_room', 'Update the title, membership and pins in one Room revision.',
-    object({ room: refOrId, revision: integer, title: text, add_members: array(principal), remove_members: array(principal),
+  ['create_room', 'Create a Room with the specified members, including you as creator. A group can bind one writable project workspace shared by current members.',
+    object({ members: array(principal), title: text, mode: oneOf('group', 'direct'), workspace: refOrId }, ['members'])],
+  ['configure_room', 'Update the title, membership, pins or project workspace in one Room revision. The host can bind a writable project directory or set workspace:null to unbind.',
+    object({ room: refOrId, revision: integer, title: text, workspace: { anyOf: [ref, text, { type: 'null' }] }, add_members: array(principal), remove_members: array(principal),
       pin_add: array(ref), pin_remove: array(ref) }, ['room', 'revision'])],
   ['open_session', 'Open a Pi or external execution. For a private Session from a Room conversation, omit space and sharing. ' +
     'For engine, use the id string returned by find with kind connection, including pi for a Pi Session. ' +
-    'For workspace, pass the id returned by find with kind workspace, or an authorized absolute project directory path. ' +
+    'Pi and native executions default to their originating group’s bound workspace. For workspace, pass its id from find or an authorized absolute project directory path. ' +
     'A private initialization can omit workspace to use its selected directory for a native CLI Session. ' +
     'To share the Session, set space to an accessible Room, specify sharing.readers, sharing.submitters and sharing.controllers, ' +
-    'and pass resource_refs, including the execution directory grant when using a directory. The selected external engine is included in shared resources. ' +
+    'and pass resource_refs. The bound group workspace and the selected external engine are included automatically. Include other directory grants explicitly. ' +
     'For work submitted on behalf of a Room, pass work_room and optionally the original Room message as work_source. This authorizes bounded tool observations in that Room and keeps the Session’s own permissions. ' +
     'For work to remain private, omit work_room or explicitly set private_work on a shared Session. ' +
     'Set include_execution_guide to append the installed Summon adapter guide to a text input. ' +
@@ -97,11 +127,16 @@ const definitions = [
       input_target: inputTarget, resume_ref: resumeRef }, ['target', 'kind', 'control_version'])],
   ['stop_session', 'Pause an execution and request actual interruption for the selected scope.',
     object({ target: executionRef, control_version: integer, scope: oneOf('target', 'target_and_owned_calls') }, ['target', 'control_version'])],
-  ['set_wakeup', 'Set a Bot’s one Room base subscription, an extra event subscription, or a time reminder.',
-    object({ bot: refOrId, event_or_time: wakeupRule, id: text, revision: integer, enabled: flag }, ['bot'])],
+  ['set_wakeup', 'Create an event subscription or time reminder with subscription:"new" and event_or_time. The platform returns its ID and revision. ' +
+    'To change an existing subscription (including a Room base), find or read the wakeup and pass subscription:{id,revision} with its current values, then the new rule or enabled flag. ' +
+    'Use kind:"time" for a single reminder. Choose kind:"recurring_time" and an interval only for an explicitly repeating reminder. ' +
+    'To follow one published job, use kind:"event", type:"work.tool", its Room, and ref:{kind:"event",id} from a visible work.tool observation. Read the status and output on delivery.',
+    object({ bot: { anyOf: [typedRef('bot'), text] }, subscription: wakeupSelection, event_or_time: wakeupRule, enabled: flag },
+      ['bot', 'subscription']), wakeupPlatformArgs],
 ];
 
-export const tools = Object.freeze(definitions.map(([name, description, inputSchema]) => Object.freeze({ name, description, inputSchema })));
+export const tools = Object.freeze(definitions.map(([name, description, inputSchema, toPlatformArgs]) =>
+  Object.freeze({ name, description, inputSchema, toPlatformArgs })));
 export const toolNames = Object.freeze(tools.map(tool => tool.name));
 const eventMatch = object({ path: text, equals: { anyOf: [text, flag, integer] } }, ['path', 'equals']);
 const adapterRecipe = object({ args: array(text), resume_args: array(text), stdin: flag, output: oneOf('plain', 'json', 'jsonl'),
@@ -145,7 +180,12 @@ export const connectionSetupTool = Object.freeze({ name: 'initialize_execution',
     name: text, adapter: { anyOf: [object({ arguments: launchArguments }, ['arguments']), object({ recipe: adapterRecipe }, ['recipe']),
       object({ source: text, runner: refOrId, resume: flag }, ['source', 'runner'])] } }, ['action']) });
 const byName = new Map([...tools, connectionSetupTool].map(tool => [tool.name, tool]));
-const runtimeInputs = new Map([['open_session', publicOpenSessionInput], [connectionSetupTool.name, {
+const runtimeInputs = new Map([
+  ['send', object({ to: refOrId, ...roomMessageFields, repair_key: text, repair_outcome: repairOutcome }, ['to'])],
+  ['set_wakeup', object({ bot: refOrId, event_or_time: { anyOf: [...subscriptionRules,
+    object({ kind: oneOf('time'), ...timeFields, interval_ms: interval }, ['kind', 'at'])] },
+    id: text, revision: integer, enabled: flag }, ['bot'])],
+  ['open_session', publicOpenSessionInput], [connectionSetupTool.name, {
   ...connectionSetupTool.inputSchema, properties: { ...connectionSetupTool.inputSchema.properties, connection: refOrId },
 }]]);
 export const readTools = new Set(['find', 'read']);

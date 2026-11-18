@@ -256,7 +256,8 @@ export class ConnectionOnboarding {
     if (typeof config.file !== 'string' || !isAbsolute(config.file) || Object.keys(proposed).some(key => !nativeKeys.includes(key)))
       reject('invalid_connection', 'Specify an absolute executable and supported native settings');
     const found = await localExecutable(config.file);
-    config = { ...config, file: found.file, canonical_file: found.canonicalFile, ...(!previous ? { allow_arguments: false } : {}) };
+    config = { ...config, file: found.file, canonical_file: found.canonicalFile,
+      ...(!previous ? { allow_arguments: protocol === 'cli' && !config.adapter && !config.methods?.length } : {}) };
     await connectionExecutable({ config }, this.platform.dataRoot, this.platform.dataRoot);
     if (!allowsExecutable(context.executable_scope, found.canonicalFile))
       reject('executable_scope_forbidden', 'The executable is outside the current execution scope', 403);
@@ -366,8 +367,7 @@ export class ConnectionOnboarding {
     const dependencies = [...new Set([...(previous?.dependencies ?? []).filter(id => id !== priorRunner),
       ...(config.adapter?.runner ? [config.adapter.runner.id] : [])])];
     return this.save({ id: previous?.id ?? call.id, revision: args.revision, kind, name, config,
-      dependencies: probeUpdate ? previous.dependencies : dependencies,
-      ...(!previous ? { allowed_bot_ids: [context.actor.id] } : {}) }, context, call, probeUpdate ? args : undefined);
+      dependencies: probeUpdate ? previous.dependencies : dependencies }, context, call, probeUpdate ? args : undefined);
   }
 
   verifyProbeUpdate(args, previous, context) {

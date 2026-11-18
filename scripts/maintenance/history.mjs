@@ -12,7 +12,7 @@ import { observeStoppedNativeWriters } from '../installation/drain.mjs';
 
 const fail = (message, code = 'HISTORY_CLEANUP_REFUSED') => Object.assign(new Error(message), { code });
 const domains = Object.freeze({
-  chatroom: ['messages', 'platform-events', 'platform-deliveries', 'platform-calls', 'platform-waits',
+  chatroom: ['messages', 'room-public-history', 'platform-events', 'platform-deliveries', 'platform-calls', 'platform-waits',
     'platform-client-calls', 'platform-sessions', 'platform-conversations', 'platform-inputs', 'session-operations', 'session-inputs', 'session-service-events'],
   gateway: [],
 });
@@ -118,6 +118,9 @@ function clearDomain(path, domain, warnings) {
     try {
       for (const kind of domains[domain]) result.records[kind] = Number(db.prepare('DELETE FROM records WHERE kind=?').run(kind).changes);
       if (domain === 'chatroom') {
+        result.updated.observations = Number(db.prepare(`UPDATE records SET data=json_set(data,'$.observation',
+          json_object('generation',lower(hex(randomblob(16))),'through',NULL,'start_sequence',0,'work_start',0,'first_user',json('true'),'pending',NULL))
+          WHERE kind='platform-wakeups' AND json_type(data,'$.observation')='object'`).run().changes);
         result.updated.rooms = Number(db.prepare(`UPDATE records SET data=json_set(data,'$.pins',
           json(COALESCE((SELECT json_group_array(json(pin.value)) FROM json_each(data,'$.pins') AS pin
           WHERE json_extract(pin.value,'$.kind')<>'event'),'[]')))

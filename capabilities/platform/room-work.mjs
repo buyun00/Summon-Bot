@@ -23,13 +23,15 @@ export class RoomWork {
       return null;
     }
     const submitter = { actor: identity(context.submitted_by ?? context.actor) };
-    if (!platform.canReadSpace(context.actor, room, context) || !platform.canReadSpace(submitter.actor, room, submitter) ||
+    const inherited = sameRef(context.session?.project_room, room);
+    if (!(inherited ? platform.roomMembers(room.id).includes(context.actor.id) : platform.canReadSpace(context.actor, room, context)) ||
+        !platform.canReadSpace(submitter.actor, room, submitter) ||
         sharing && !sameRef(room, space))
       reject('room_work_forbidden', 'Work observations require the actual Room and membership', 403);
     const source = args.work_source ? idOf(args.work_source, 'event') :
       context.origin?.event_ids?.findLast(id => platform.store.get('messages', id)?.roomId === room.id);
     const message = source && platform.store.get('messages', source);
-    if (source && (message?.roomId !== room.id || !platform.canReadReference({ kind: 'event', id: source }, context)))
+    if (source && (message?.roomId !== room.id || !inherited && !platform.canReadReference({ kind: 'event', id: source }, context)))
       reject('room_work_source_forbidden', 'Choose an accessible original message in the work Room', 403);
     return { room, source: message ? { kind: 'event', id: message.id } : null };
   }

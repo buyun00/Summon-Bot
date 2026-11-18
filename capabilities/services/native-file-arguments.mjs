@@ -28,7 +28,7 @@ function fileOperand(value, { prefix = '', suffix = '' }) {
     return value.slice(prefix.length, suffix.length ? -suffix.length : undefined);
 }
 
-export async function checkedNativeArguments({ argv, fileArgs, effect, cwd, hasFileScope, checkedPath, resolveReference }) {
+export async function checkedNativeArguments({ argv, fileArgs, effect, cwd, hasFileScope, projectWorkspace, checkedPath, resolveReference }) {
   const roles = nativeFileArgs(fileArgs, argv.length, effect);
   const byIndex = new Map(roles.map(item => [item.index, item]));
   const result = [...argv];
@@ -36,14 +36,16 @@ export async function checkedNativeArguments({ argv, fileArgs, effect, cwd, hasF
     const definition = byIndex.get(index);
     if (!definition) {
       if (isNativeReference(value)) throw fileAccessDenied(cwd, 'invalid_native_reference_operand', { argumentIndex: index });
-      if (hasFileScope) {
+      if (hasFileScope || projectWorkspace) {
         const operand = /^--?[a-z0-9_-]+=([^\n]+)$/i.exec(value)?.[1] ?? value;
         const absolute = isAbsolute(operand) && (process.platform !== 'win32' || parse(operand).root.length > 1);
-        if (absolute || /^\.{1,2}[\\/]/.test(operand)) {
+        if (hasFileScope && (absolute || /^\.{1,2}[\\/]/.test(operand))) {
           throw fileAccessDenied(cwd, 'undeclared_native_path_operand', {
             argumentIndex: index, instruction: 'Declare the exact file argument index and access using file_args.',
           });
         }
+        if (projectWorkspace && (absolute || operand.split(/[\\/]/).includes('..')))
+          await checkedPath(resolveFilePath(cwd, operand), { operations: [effect === 'read' ? 'read' : 'write'], exists: false });
       }
       continue;
     }

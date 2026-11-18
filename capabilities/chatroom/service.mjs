@@ -30,6 +30,7 @@ function titleOf(value, fallback) {
 
 const refKey = ({ kind, id }) => JSON.stringify([kind, id]);
 const directMembers = members => members.length === 2 && members.includes('user');
+const roomActivity = "(kind='messages' OR (kind='platform-events' AND json_extract(data,'$.type')='work.tool'))";
 function rowMessage(row) {
   if (!row) return null;
   const message = JSON.parse(row.data);
@@ -55,6 +56,10 @@ export class ChatroomService {
       SELECT rowid AS sequence,data FROM records
       WHERE kind='messages' AND json_extract(data,'$.roomId')=? ORDER BY created_at,rowid
     `);
+    this.publicMessages = store.db.prepare(`
+      SELECT rowid AS sequence,data FROM records WHERE kind='messages' AND json_extract(data,'$.roomId')=?
+      AND rowid>? AND rowid<=? ORDER BY rowid
+    `);
     this.messagePage = store.db.prepare(`
       SELECT rowid AS sequence,data FROM records
       WHERE kind='messages' AND json_extract(data,'$.roomId')=? AND (? IS NULL OR (created_at,rowid)<(?,?))
@@ -65,6 +70,15 @@ export class ChatroomService {
       WHERE kind='messages' AND json_extract(data,'$.roomId')=? ORDER BY created_at DESC,rowid DESC LIMIT 1
     `);
     this.messageRow = store.db.prepare("SELECT rowid AS sequence,created_at,data FROM records WHERE kind='messages' AND id=?");
+    store.db.exec(`CREATE INDEX IF NOT EXISTS room_observation_activity ON records(json_extract(data,'$.roomId')) WHERE ${roomActivity}`);
+    const roomRange = `FROM records WHERE ${roomActivity} AND json_extract(data,'$.roomId')=?`;
+    this.lastActivity = store.db.prepare(`SELECT id,rowid AS sequence ${roomRange} ORDER BY rowid DESC LIMIT 1`);
+    this.lastSavedMessage = store.db.prepare(`SELECT id,rowid AS sequence ${roomRange} AND kind='messages' ORDER BY rowid DESC LIMIT 1`);
+    this.activityRange = store.db.prepare(`SELECT kind,rowid AS sequence,data ${roomRange}
+      AND rowid>? AND rowid<=? AND (kind='messages' OR rowid>?) ORDER BY rowid`);
+    this.countMessage = store.db.prepare(`SELECT rowid AS sequence,data ${roomRange}
+      AND kind='messages' AND rowid>? AND json_extract(data,'$.senderId') NOT IN ('system',?)
+      ORDER BY rowid LIMIT 1 OFFSET ?`);
     this.messageByClient = store.db.prepare(`
       SELECT rowid AS sequence,data FROM records WHERE kind='messages'
       AND json_extract(data,'$.roomId')=? AND json_extract(data,'$.senderId')=? AND json_extract(data,'$.clientId')=?
@@ -90,7 +104,7 @@ export class ChatroomService {
 
   projectRoom(room) {
     const { id, name, members, mode, pins, revision, createdAt, updatedAt } = room;
-    return { id, ref: { kind: 'room', id }, name, members, mode, pins, revision, createdAt, updatedAt,
+    return { id, ref: { kind: 'room', id }, name, members, mode, pins, workspace: room.workspace ?? null, revision, createdAt, updatedAt,
       lastMessage: rowMessage(this.latestMessage.get(id)) };
   }
 
@@ -115,6 +129,54 @@ export class ChatroomService {
   messages(id, actor) {
     const room = this.room(id, actor);
     return this.roomMessages.all(room.id).map(rowMessage);
+  }
+
+  publicHistory(id, actor, end = this.observationEnd(id, actor)) {
+    this.room(id, actor);
+    const stored = this.store.get('room-public-history', id);
+    const summary = stored && stored.sequence <= end ? stored : null;
+    const messages = this.publicMessages.all(id, summary?.sequence ?? 0, end).map(rowMessage);
+    return { summary, messages, end };
+  }
+
+  savePublicSummary(roomId, actor, previous, through, summary) {
+    return this.store.transaction(() => {
+      this.room(roomId, actor);
+      const current = this.store.get('room-public-history', roomId);
+      if ((current?.through ?? null) !== (previous?.through ?? null)) return current;
+      const row = this.messageRow.get(through);
+      if (!row || rowMessage(row).roomId !== roomId || row.sequence <= (current?.sequence ?? 0))
+        fail('群公共摘要的原文位置已经变化', 409);
+      return this.store.save('room-public-history', { id: roomId, through, sequence: row.sequence, summary, time: Date.now() });
+    });
+  }
+
+  observationEnd(roomId, botId) {
+    this.room(roomId, botId);
+    return this.lastActivity.get(roomId)?.sequence ?? 0;
+  }
+
+  observationStart(roomId, botId) {
+    const work_start = this.observationEnd(roomId, botId);
+    const through = this.lastSavedMessage.get(roomId) ?? null;
+    return { through, start_sequence: through?.sequence ?? 0, work_start, first_user: !through, pending: null };
+  }
+
+  countedMessage(roomId, botId, after, count) {
+    this.room(roomId, botId);
+    return rowMessage(this.countMessage.get(roomId, after, botId, count - 1));
+  }
+
+  observationPage(roomId, context, after, until, workStart, limit = 64) {
+    this.room(roomId, context.actor);
+    const events = [];
+    for (const row of this.activityRange.iterate(roomId, after, until, workStart)) {
+      const event = row.kind === 'messages' ? messageEvent(rowMessage(row)) : { ...JSON.parse(row.data), sequence: row.sequence };
+      if (!this.platform.canReadEvent(event, context)) continue;
+      if (events.length === limit) return { events, more: true };
+      events.push(event);
+    }
+    return { events, more: false };
   }
 
   read({ ref, cursor, limit = 40 }, actor) {
@@ -147,7 +209,7 @@ export class ChatroomService {
     this.createRoom({ title: 'Bot 维护群', members: [bot.id], mode: 'group' }, 'user', { id: botMaintenanceRoomId });
   }
 
-  createRoom({ title, members, mode }, actor, { id = randomUUID() } = {}) {
+  createRoom({ title, members, mode, workspace }, actor, { id = randomUUID() } = {}) {
     actor = identity(actor).id;
     const included = [...new Set([actor, ...list(members, '成员').map(member => identity(member).id)])];
     const saved = this.store.transaction(() => {
@@ -160,6 +222,7 @@ export class ChatroomService {
       if (onboarding?.enabled && !included.includes(onboarding.id)) included.push(onboarding.id);
       const room = this.store.save('rooms', {
         id, name: titleOf(title, fallback.slice(0, 160) || '新会话'), members: included, mode, pins: [], revision: 1,
+        workspace: workspace == null ? null : this.platform.bindRoomWorkspace(workspace, actor, mode),
       });
       for (const member of included) if (member !== 'user') this.platform.ensureRoomBase(member, id);
       return room;
@@ -203,9 +266,11 @@ export class ChatroomService {
       }
       const updated = this.store.save('rooms', {
         id, name: titleOf(input.title, room.name), members, mode, pins: [...pins.values()], revision: room.revision + 1,
+        ...(input.workspace !== undefined && { workspace: this.platform.bindRoomWorkspace(input.workspace, actor, mode) }),
       });
       for (const member of removed) if (member !== 'user') this.platform.removeRoomBase(member, id);
-      for (const member of added) if (member !== 'user') this.platform.ensureRoomBase(member, id);
+      const changedMembers = mode !== room.mode ? members : added;
+      for (const member of changedMembers) if (member !== 'user') this.platform.ensureRoomBase(member, id);
       return updated;
     });
     const projection = this.projectRoom(saved);
@@ -301,4 +366,12 @@ export class ChatroomService {
     if (!message) fail('尚无此发送记录', 404);
     return this.messageReceipt(message);
   }
+}
+
+export function messageEvent(message) {
+  const author = message.senderId === 'system' ? { kind: 'platform', id: 'platform' } : identity(message.senderId);
+  return { id: message.id, type: 'message', kind: 'event', roomId: message.roomId, space: message.space,
+    author, time: message.createdAt, sequence: message.sequence, text: message.content, content: message.content,
+    mentions: message.mentions, reply_to: message.replyTo, replyAuthorId: message.replyAuthorId,
+    attachments: message.attachments, references: message.references, call_id: message.callId };
 }

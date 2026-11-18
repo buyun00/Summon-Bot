@@ -100,17 +100,16 @@ export class ConnectionInitializer {
       reject('configuration_forbidden', 'Choose a Bot you can configure', 403);
     if (!['use', 'repair'].includes(args.access)) reject('invalid_arguments', 'Specify use or repair access');
     if (args.revision !== entry.revision) reject('revision_conflict', 'Connection settings changed', 409, { revision: entry.revision });
-    const allowed_bot_ids = [...new Set([...entry.allowed_bot_ids, bot.id])];
     const repair_bot_ids = [...new Set([...(entry.repair_bot_ids || []), ...(args.access === 'repair' ? [bot.id] : [])])];
-    if (!host.authorized({ ...entry, allowed_bot_ids }, actor))
-      reject('dependency_access_required', 'The Bot needs its own grants for the required CLI dependencies', 403);
+    if (!host.authorized(entry, actor))
+      reject('dependency_unavailable', 'The connection or a required CLI dependency is unavailable', 409);
     const complete = result => {
       this.platform.calls.bind(call.id, { target: { kind: 'connection', id: entry.id } });
       return this.platform.calls.finish(call.id, 'completed', { ...result, bot: actor, access: args.access });
     };
-    if (allowed_bot_ids.length === entry.allowed_bot_ids.length && repair_bot_ids.length === (entry.repair_bot_ids?.length ?? 0))
+    if (repair_bot_ids.length === (entry.repair_bot_ids?.length ?? 0))
       return complete({ ...host.clean(host.summary(entry), []), ...this.platform.connectionMaintenance(entry) });
-    return this.platform.configureExecutionConnection({ id: entry.id, revision: args.revision, allowed_bot_ids, repair_bot_ids },
+    return this.platform.configureExecutionConnection({ id: entry.id, revision: args.revision, repair_bot_ids },
       { actor: user, initializer_id: context.actor.id }, complete);
   }
 
@@ -266,7 +265,7 @@ export class ConnectionInitializer {
     const dependencies = [...new Set([...(previous?.dependencies || []).filter(id => id !== previousRunner),
       ...(config.adapter?.runner ? [config.adapter.runner.id] : [])])];
     return this.platform.configureExecutionConnection({ id, revision: previous?.revision, kind, name,
-      description: previous?.description ?? description(name), config, dependencies, ...(!previous ? { allowed_bot_ids: [context.actor.id] } : {}) },
+      description: previous?.description ?? description(name), config, dependencies },
     { actor: user, initializer_id: context.actor.id,
       canSeeBinding: entry => this.platform.canUseConnection(context.actor, entry.id, context),
       beforeConnectionSave: () => this.platform.requireConnectionSetup(context, args) }, result => {

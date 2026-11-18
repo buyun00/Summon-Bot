@@ -40,7 +40,9 @@ const openAIExplicitCacheModels = new Set([
 // catalog reports 272K for these entries and omits GPT-6.1 Terra.
 const openAILongContextModels = new Set(['gpt-5.4', 'gpt-5.5', ...openAIExplicitCacheModels]);
 const openAILongContextBudget = { contextWindow: 1050000, maxTokens: 128000 };
-const terraModel = { id: 'gpt-6.1-terra', name: 'GPT-6.1 Terra', api: 'openai-responses', type: 'chat', input: ['text', 'image'] };
+// Pi emits strict:false for ordinary function tools when the Responses endpoint supports the flag.
+const terraModel = { id: 'gpt-6.1-terra', name: 'GPT-6.1 Terra', api: 'openai-responses', type: 'chat', input: ['text', 'image'],
+  compat: { supportsStrictMode: true } };
 export function readConnectionCatalog(path) {
   const catalog = JSON.parse(readFileSync(path, 'utf8'));
   if (!Array.isArray(catalog?.connections)) throw new Error('The model connections catalog is unavailable');

@@ -3,7 +3,7 @@ import { basename, dirname, isAbsolute, parse, relative, resolve, sep } from 'no
 import { randomUUID } from 'node:crypto';
 import { bindModel } from '../../bot/src/agent/model.mjs';
 import { catalogMaintainerRole, toolOnboardingRole } from '../../roles/index.mjs';
-import { BotManager, activeControl, botRecords } from '../bot-management/service.mjs';
+import { BotManager, activeControl, botRecords, directoryEntry } from '../bot-management/service.mjs';
 import { ConnectionInitializer } from '../connectors/initialization.mjs';
 import { executionEnvironment } from '../connectors/onboarding.mjs';
 import { normalizeOnboardingAccess, targetAllows } from '../connectors/onboarding-access.mjs';
@@ -16,10 +16,12 @@ import { Deliveries, wakeupRecords } from './delivery.mjs';
 import { Executions, conversationRecords, sessionRecords } from './executions.mjs';
 import { HostResources } from './resources.mjs';
 import { RoomWork } from './room-work.mjs';
+import { workspaceGranted } from './workspace-access.mjs';
 import { allowsConnection, enclosesExecutableScope, executableScope } from '../services/executable-scope.mjs';
 import { localExecutable } from '../services/native-host.mjs';
 import { connectionStartupFailures } from '../services/session-processes.mjs';
 import { httpMethods, protocolOf } from '../services/connection-binding.mjs';
+import { connectionAllowed } from '../services/connection-records.mjs';
 
 const normalize = (value, kind) => typeof value === 'string' ? { kind, id: value } : value;
 const revokedAuthority = new Set(['session_authority_revoked', 'workspace_changed', 'connection_binding_changed', 'model_binding_changed']);
@@ -40,7 +42,7 @@ export class SummonPlatform {
       canUseModel: (actor, id) => this.canUseModel(actor, id),
       maintenanceConnection: (id, context, revision, reuse) => this.maintenanceConnection(id, context, revision, reuse),
       bindMaintenance: (connection, bot) => this.bindMaintainer(connection, bot.id) });
-    this.deliveries = new Deliveries({ store, resources: this.resources, manager: this.manager, emit,
+    this.deliveries = new Deliveries({ store, resources: this.resources, manager: this.manager, emit, chatroom: () => this.room,
       canReadEvent: (botId, event) => this.canReadEvent(event, { actor: { kind: 'bot', id: botId } }),
       canReadWait: (wait, event) => this.canReadReturnWait(wait, event.target),
       canReadReference: (ref, context) => this.canReadReference(ref, context) });
@@ -67,6 +69,7 @@ export class SummonPlatform {
   initializeDefaults() {
     const { changed } = this.store.transaction(() => this.manager.ensureDefaults());
     this.room.ensureMaintenanceRoom(this.manager.onboardingBot());
+    this.store.transaction(() => this.deliveries.syncObserverMemberships());
     if (changed) this.emit('bot');
   }
 
@@ -104,12 +107,9 @@ export class SummonPlatform {
   canUseModel(actor, id) { return this.modelAccessBlocker(actor, id) === null; }
 
   canUseConnection(actor, id, context = {}) {
-    if (context.session && id !== context.session.engine && !context.resource_refs?.some(ref => sameRef(ref, { kind: 'connection', id }))) return false;
     if (id === 'pi') return true;
     const entry = this.store.get('platform-connections', id);
-    return Boolean(entry && allowsConnection(context.executable_scope, entry, id => this.connections.get(id)) &&
-      (actor.kind === 'user' || entry.enabled &&
-      (entry.allowed_bot_ids?.includes('*') || entry.allowed_bot_ids?.includes(actor.id))));
+    return connectionAllowed(entry, actor) && allowsConnection(context.executable_scope, entry, id => this.connections.get(id));
   }
 
   maintenanceConnection(value, context, revision, reuse = false) {
@@ -274,6 +274,11 @@ export class SummonPlatform {
     return this.store.list('rooms').some(room => room.members.includes(context.actor.id) && room.members.includes(bot.id));
   }
 
+  canFindTeam(context) {
+    return context.actor.kind === 'bot' && this.getBot(context.actor.id).built_in_role?.id === 'eggbot' &&
+      (!context.session || context.session.built_in_role?.id === 'eggbot');
+  }
+
   canReadSpace(actor, space, context = {}) {
     if (!space) return false;
     if (context.session && !sameRef(context.session.space, space) && !context.resource_refs?.some(ref => sameRef(ref, space))) return false;
@@ -303,8 +308,9 @@ export class SummonPlatform {
     if (!conversation || (conversation.session_id ?? null) !== (wait.session_id ?? null) ||
         wait.session_id && !session || !this.executions.permission(source, conversation, { ...context, origin: { conversation_id: wait.conversation_id } })) return false;
     const principal = wait.initiating_principal;
-    return this.canReadReference(target, { ...context, session, resource_refs: session?.resource_refs ?? [] }) &&
-      (!principal || sameIdentity(principal, actor) || this.canReadReference(target, { actor: principal }));
+    const sourceContext = { actor, conversation, session, resource_refs: session?.resource_refs ?? [] };
+    return this.canReadReference(target, sourceContext) && (!principal || sameIdentity(principal, actor) ||
+      this.canReadReference(target, { actor: principal, project_room: this.projectRoom(sourceContext) }));
   }
 
   canReadCallResult(call, target, context) {
@@ -356,7 +362,8 @@ export class SummonPlatform {
       case 'room': case 'user': return this.canReadSpace(actor, ref, context);
       case 'bot': {
         const record = this.store.get(botRecords, ref.id);
-        return Boolean(record && this.visibleBot(record, context));
+        return Boolean(record && (this.visibleBot(record, context) ||
+          !record.archivedAt && !record.connection_initializer && this.canFindTeam(context)));
       }
       case 'event': {
         const event = this.store.get('platform-events', ref.id) ?? this.store.get('messages', ref.id);
@@ -394,6 +401,23 @@ export class SummonPlatform {
 
   workspaceRecords() { return [...this.workspaces, ...this.store.list('platform-workspaces')]; }
 
+  projectRoom(context) {
+    if (context.project_room || context.session) return context.project_room ?? context.session.project_room;
+    const space = context.conversation?.space;
+    return space?.kind === 'room' && this.store.get('rooms', space.id)?.mode === 'group' ? space : null;
+  }
+
+  bindRoomWorkspace(value, actor, mode) {
+    const principal = identity(actor);
+    const id = value === null ? null : idOf(value, 'workspace');
+    if (id && mode !== 'group') reject('workspace_forbidden', 'Project directories are shared in group Rooms', 403);
+    if (principal.kind !== 'user') reject('workspace_forbidden', 'The host manages project directory sharing', 403);
+    if (!id) return null;
+    const workspace = this.workspace({ kind: 'workspace', id }, { actor: principal });
+    if (!workspace.write) reject('workspace_forbidden', 'Choose a writable project directory', 403);
+    return workspace.ref;
+  }
+
   authorizedDirectory(path) {
     if (typeof path !== 'string' || !isAbsolute(path)) reject('workspace_forbidden', 'Select an authorized project workspace', 403);
     let actual;
@@ -409,9 +433,13 @@ export class SummonPlatform {
   }
 
   workspaceAvailable(id, actor, context = {}) {
-    if (context.session && !context.resource_refs?.some(ref => sameRef(ref, { kind: 'workspace', id }))) return false;
+    if (context.session && !context.resource_refs?.some(ref => sameRef(ref, { kind: 'workspace', id }))) {
+      const session = context.session;
+      if (session.engine !== 'pi' || session.workspace_ref || !session.project_room || session.sharing && !sameRef(session.project_room, session.space) ||
+          this.store.get('rooms', session.project_room.id)?.workspace?.id !== id) return false;
+    }
     return this.workspaceRecords().some(item => item.id === id) &&
-      (actor.kind === 'user' || Boolean(this.accessFor(actor).workspace_ids?.includes(id)));
+      workspaceGranted((kind, key) => this.store.get(kind, key), actor, id, this.projectRoom(context), context.session?.room_workspace_id);
   }
 
   workspace(pathOrRef, context) {
@@ -430,6 +458,26 @@ export class SummonPlatform {
     const match = matches[0];
     if (!match) reject('workspace_forbidden', 'This directory is outside the caller’s grants', 403);
     return { ref: { kind: 'workspace', id: match.item.id }, path: actual, root: match.root, write: match.item.write !== false };
+  }
+
+  projectFileAccess(ref, context, write = false) {
+    this.assertRunAllowed(context);
+    const workspace = this.workspace(ref, context);
+    const session = context.session;
+    workspace.path_policy = session?.path_policy ?? session?.workspace?.path_policy;
+    if (session && sameRef(ref, session.workspace_ref)) {
+      workspace.root = session.workspace.path;
+      workspace.write &&= session.workspace.write;
+    }
+    const submitter = context.submitted_by;
+    if (write && !workspace.write || submitter && !sameIdentity(submitter, context.actor) &&
+        !this.workspaceAvailable(ref.id, identity(submitter), { project_room: this.projectRoom(context) }))
+      reject('workspace_forbidden', 'The project directory is unavailable for this operation', 403);
+    return workspace;
+  }
+
+  projectFileDirectories() {
+    return [this.dataRoot, basename(dirname(this.releaseRoot)) === 'releases' ? dirname(dirname(this.releaseRoot)) : this.releaseRoot];
   }
 
   configureWorkspace(input) {
@@ -485,7 +533,9 @@ export class SummonPlatform {
       reject('session_authority_revoked', 'The Session no longer has its assigned execution authority', 403);
     }
     const connection = session.engine !== 'pi' ? this.store.get('platform-connections', session.engine) : null;
-    const authority = { actor: session.execution_actor };
+    const authority = { actor: session.execution_actor, project_room: session.project_room };
+    if (session.room_workspace_id && this.store.get('rooms', session.project_room?.id)?.workspace?.id !== session.room_workspace_id)
+      reject('session_authority_revoked', 'The Room no longer shares the original project directory', 403);
     if (session.engine !== 'pi' && (!this.connections.authorized(connection, authority.actor) ||
         !allowsConnection(session.executable_scope, connection, id => this.connections.get(id))) ||
         session.engine === 'pi' && session.model && !this.canUseModel(session.execution_actor, session.model.connection_id) ||
@@ -527,10 +577,14 @@ export class SummonPlatform {
     if (!session || session.control.state !== 'active') reject('execution_paused', 'Execution is paused', 409);
     this.assertSessionAuthority(session, { checkWorkspacePath: true });
     this.assertRunAllowed(context, { allowUser: true, allowDraining: context.allowDraining });
+    const projectRoom = this.projectRoom(context);
+    if (session.project_room && projectRoom && !sameRef(session.project_room, projectRoom))
+      reject('workspace_forbidden', 'Continue this execution from the Room that started it', 403);
+    const submitContext = { ...context, project_room: session.project_room ?? projectRoom };
     const initiating = context.submitted_by && !sameIdentity(context.submitted_by, context.actor) ?
-      { actor: identity(context.submitted_by) } : null;
+      { actor: identity(context.submitted_by), project_room: submitContext.project_room } : null;
     if (session.engine === 'pi' && !enclosesExecutableScope(context.executable_scope, session.executable_scope) ||
-        !this.canUseConnection(context.actor, session.engine, context) || !this.canUseResources(context.actor, session.resource_refs, context) ||
+        !this.canUseConnection(context.actor, session.engine, context) || !this.canUseResources(context.actor, session.resource_refs, submitContext) ||
         initiating && (!this.canUseConnection(initiating.actor, session.engine, initiating) ||
           !this.canUseResources(initiating.actor, session.resource_refs, initiating))) {
       reject('execution_resources_forbidden', 'Input requires authorization for the Session’s execution resources', 403);
@@ -547,6 +601,11 @@ export class SummonPlatform {
     }
     const sharing = options.sharing(actor, space);
     const group_work = this.roomWork.scope(args, context, sharing, space);
+    const project_room = this.projectRoom(context) ?? (!context.session && sharing && this.store.get('rooms', space.id)?.mode === 'group' ? space : null);
+    const roomWorkspace = project_room && this.store.get('rooms', project_room.id)?.workspace;
+    const projectContext = { ...context, project_room };
+    if (sharing && roomWorkspace && !sameRef(project_room, space))
+      reject('workspace_forbidden', 'Share a project execution within its originating Room', 403);
     const selected = [...(args.resource_refs || [])];
     if (selected.some(ref => !['connection', 'workspace', 'file', 'event'].includes(ref.kind))) {
       reject('invalid_resource', 'Session resources must be connections, directories, Files or Events');
@@ -554,22 +613,27 @@ export class SummonPlatform {
     const connection = this.store.get('platform-connections', engine);
     const requiresWorkspace = ['cli', 'codex'].includes(connection?.kind);
     const setupWorkspace = context.conversation?.connection_setup?.workspace;
-    const workspaceSelection = args.workspace ?? (requiresWorkspace && !sharing ? setupWorkspace : undefined);
+    const usesDirectory = requiresWorkspace || engine === 'pi' || connection?.kind === 'mcp' && connection.config.transport === 'stdio' &&
+      !connection.config.canonical_command;
+    const inherited = roomWorkspace && context.session?.workspace?.path;
+    const workspaceSelection = args.workspace ?? (usesDirectory ? inherited || roomWorkspace || (!sharing && setupWorkspace) : undefined);
     if (requiresWorkspace && !workspaceSelection) reject('workspace_required', 'Choose an authorized execution directory for this connection', 409);
-    const workspace = this.workspace(workspaceSelection, context);
+    const workspace = this.workspace(workspaceSelection, projectContext);
+    if (context.session?.workspace && workspace && !inside(context.session.workspace.path, workspace.path))
+      reject('workspace_forbidden', 'A child Session must use the parent’s selected directory', 403);
     if (workspace && setupWorkspace && !inside(setupWorkspace, workspace.path))
       reject('workspace_forbidden', 'This initialization is scoped to the selected workspace', 403);
     if (workspace && connection?.config.workspace_root) {
       const entryRoot = this.authorizedDirectory(connection.config.workspace_root);
       if (!inside(entryRoot, workspace.path)) reject('workspace_forbidden', 'The project directory is outside the connection scope', 403);
     }
-    if (workspace && sharing && !selected.some(ref => sameRef(ref, workspace.ref))) {
+    if (workspace && sharing && !sameRef(roomWorkspace, workspace.ref) && !selected.some(ref => sameRef(ref, workspace.ref))) {
       reject('workspace_forbidden', 'The shared workspace must be explicitly selected as a resource', 403);
     }
     if (workspace && !selected.some(ref => sameRef(ref, workspace.ref))) selected.push(workspace.ref);
     if (sharing && engine !== 'pi') selected.push({ kind: 'connection', id: engine });
     const resource_refs = [...new Map(selected.map(ref => [keyOf(ref.kind, ref.id), ref])).values()];
-    if (!this.canUseConnection(actor, engine, context) || !this.canUseResources(actor, resource_refs, context)) {
+    if (!this.canUseConnection(actor, engine, context) || !this.canUseResources(actor, resource_refs, projectContext)) {
       reject('execution_resources_forbidden', 'The requested execution resources are unavailable', 403);
     }
     if (engine !== 'pi' && !connection?.enabled) reject('connection_unavailable', 'Execution connection is unavailable', 409);
@@ -586,7 +650,8 @@ export class SummonPlatform {
     return this.store.transaction(() => {
       this.resources.assertCapacity('sessions', this.activeSessions());
       const session = this.store.save(sessionRecords, { id: call.id, engine, space, owner: actor, bot_id: bot?.id ?? null,
-        source_space: context.conversation?.space || null,
+        source_space: project_room || context.conversation?.space || null, project_room,
+        ...(roomWorkspace && resource_refs.some(ref => sameRef(ref, roomWorkspace)) ? { room_workspace_id: roomWorkspace.id } : {}),
         execution_actor: actor, submitted_by: actor, model, model_binding: binding,
         instructions: sharing ? '' : context.session?.instructions ?? bot?.instructions ?? '',
         ...(engine === 'pi' ? { built_in_role: sharing ? null : (context.session ? context.session.built_in_role : bot.built_in_role) ?? null } : {}),
@@ -649,7 +714,7 @@ export class SummonPlatform {
       this.executions.active(live, version);
       this.assertSessionAuthority(live);
       if (context.submitted_by && !sameIdentity(context.actor, context.submitted_by)) {
-        const submitter = { actor: identity(context.submitted_by) };
+        const submitter = { actor: identity(context.submitted_by), project_room: live.project_room };
         if (!this.executions.permission({ kind: 'session', id: live.id }, live, submitter, 'input') ||
             !this.canUseResources(submitter.actor, live.resource_refs, submitter)) {
           reject('execution_resources_forbidden', 'Original submitter no longer has execution resources', 403);
@@ -726,8 +791,7 @@ export class SummonPlatform {
       reject('connection_not_found', 'Connection is unavailable', 404);
     const canGrant = id => this.manager.list().some(bot => bot.id === id && (this.visibleBot(bot, context) ||
       bot.connection_initializer && id === context.initializer_id));
-    for (const field of ['allowed_bot_ids', 'repair_bot_ids']) if (Array.isArray(value[field]) &&
-      value[field].some(id => !(field === 'allowed_bot_ids' && id === '*') && !current?.[field]?.includes(id) && !canGrant(id)))
+    if (Array.isArray(value.repair_bot_ids) && value.repair_bot_ids.some(id => !current?.repair_bot_ids?.includes(id) && !canGrant(id)))
       reject('invalid_connection', 'Connection grant includes an unavailable Bot');
     if (value.maintainer_bot_id !== undefined && value.maintainer_bot_id !== null) {
       const bot = this.store.get(botRecords, value.maintainer_bot_id);
@@ -741,8 +805,7 @@ export class SummonPlatform {
       saved => onSave?.({ ...saved, ...this.connectionMaintenance(this.connections.get(saved.id)) }));
     if (current) {
       const updated = this.connections.get(result.id);
-      const removedGrant = current.allowed_bot_ids?.some(id => !updated?.allowed_bot_ids?.includes(id));
-      if (!updated || current.enabled && !updated.enabled || removedGrant || (current.binding_version ?? 1) !== (updated.binding_version ?? 1))
+      if (!updated || current.enabled && !updated.enabled || (current.binding_version ?? 1) !== (updated.binding_version ?? 1))
         await this.revokeSessions({ kind: 'connection', id: result.id });
     }
     this.emit('connection');
@@ -938,23 +1001,37 @@ export class SummonPlatform {
         if (args.role_connection_id) this.emit('connection');
         return { result, call_id: record.id };
       }
+      if (name === 'save_file' && args.space.kind === 'workspace') {
+        const source = args.content_or_source?.source;
+        const authorize = () => {
+          const selected = this.projectFileAccess(args.space, context, true);
+          if (source) {
+            if (source.kind !== 'file' || !this.canReadReference(source, context))
+              reject('file_source_forbidden', 'Choose an accessible File to copy into the project directory', 403);
+            const room = this.projectRoom(context);
+            if (room) this.assertShareable(source, { actor: context.actor, room: this.room.room(room.id, context.actor), context });
+          }
+          return selected;
+        };
+        const workspace = authorize();
+        const content = source ? (await this.files.download(source.id, context)).bytes :
+          typeof args.content_or_source === 'string' ? args.content_or_source : args.content_or_source?.text;
+        const commit = await this.files.prepareWorkspaceWrite(args, content, workspace, this.projectFileDirectories(), () => {
+          if (authorize().root !== workspace.root) reject('workspace_changed', 'The project directory has moved', 409);
+        });
+        const result = this.store.transaction(() => {
+          const value = commit();
+          this.calls.bind(record.id, { target: args.space });
+          return this.calls.finish(record.id, 'completed', value);
+        });
+        return { result, call_id: record.id };
+      }
       const source = name === 'save_file' ? args.content_or_source?.source : null;
       let workspaceFile;
       if (source?.kind === 'workspace') {
-        const workspace = this.workspace(source, context);
-        const installRoot = basename(dirname(this.releaseRoot)) === 'releases' ? dirname(dirname(this.releaseRoot)) : this.releaseRoot;
-        if (context.session?.workspace && context.session.workspace_ref?.id === workspace.ref.id) {
-          workspace.root = context.session.workspace.path;
-        }
-        const delegated = context.submitted_by && !sameIdentity(context.actor, context.submitted_by) ?
-          { actor: identity(context.submitted_by) } : null;
-        if (delegated && !this.workspaceAvailable(workspace.ref.id, delegated.actor, delegated)) {
-          reject('workspace_forbidden', 'The original submitter lacks access to this execution directory', 403);
-        }
-        workspaceFile = await this.files.collectWorkspaceFile(source, args.content_or_source.path, workspace, [this.dataRoot, installRoot]);
-        this.assertRunAllowed(context);
-        const current = this.workspace(source, context);
-        if (!inside(current.root, workspaceFile.root) || delegated && !this.workspaceAvailable(workspace.ref.id, delegated.actor, delegated)) {
+        const workspace = this.projectFileAccess(source, context);
+        workspaceFile = await this.files.collectWorkspaceFile(source, args.content_or_source.path, workspace, this.projectFileDirectories());
+        if (this.projectFileAccess(source, context).root !== workspace.root) {
           reject('workspace_changed', 'The execution directory grant changed while collecting the file', 409);
         }
       }
@@ -967,7 +1044,7 @@ export class SummonPlatform {
           this.settleBotInBackground(result.id, result.control);
         } else this.runtime.wake();
       }
-      if (name === 'configure_room' && args.remove_members?.length) await this.revokeSessions({ kind: 'room', id: result.id });
+      if (name === 'configure_room' && (args.remove_members?.length || args.workspace !== undefined)) await this.revokeSessions({ kind: 'room', id: result.id });
       return { result, call_id: record.id };
     } catch (error) {
       this.calls.fail(record.id, error);
@@ -1025,11 +1102,14 @@ export class SummonPlatform {
     }
     if (name === 'configure_bot') {
       if (context.session) reject('configuration_forbidden', 'This Session has no Bot configuration authority', 403);
+      const previousRole = args.role_id !== undefined && this.getBot(idOf(args.bot, 'bot')).built_in_role?.id;
       const bot = this.manager.configure(args, context, call.id, (ref, id) => {
         if (ref.kind !== 'file' || !this.files.canRead(ref.id, context) || !this.files.canRead(ref.id, { actor: { kind: 'bot', id } })) {
           reject('material_index_forbidden', 'The Bot cannot read this material index', 403);
         }
       });
+      if (args.role_id !== undefined && previousRole !== args.role_id && (previousRole === 'eggbot' || args.role_id === 'eggbot'))
+        this.deliveries.syncObserverMemberships(bot.id);
       if (args.role_connection_id) this.emit('connection');
       const result = this.manager.view(bot, actor);
       this.calls.bind(call.id, { target: { kind: 'bot', id: bot.id } });
@@ -1053,8 +1133,14 @@ export class SummonPlatform {
     let items;
     switch (kind) {
       case 'connection_usage': return this.connectionUsage.query({ scope, period, query, cursor }, context);
-      case 'bot': items = this.manager.list().filter(bot => this.visibleBot(bot, context) && (!scope || scope.kind === 'room' && this.roomMembers(scope.id).includes(bot.id)))
-        .map(bot => this.manager.view(bot, actor, { details: !context.session })); break;
+      case 'bot': {
+        const team = this.canFindTeam(context);
+        const members = scope?.kind === 'room' ? new Set(this.roomMembers(scope.id)) : null;
+        items = this.manager.list().filter(bot => (!scope || members?.has(bot.id)) &&
+          (team ? !bot.archivedAt && !bot.connection_initializer : this.visibleBot(bot, context)))
+          .map(bot => team ? directoryEntry(bot) : this.manager.view(bot, actor, { details: !context.session }));
+        break;
+      }
       case 'room': items = this.room.rooms(actor.id).filter(room => this.canReadSpace(actor, { kind: 'room', id: room.id }, context))
         .map(room => ({ ...room, kind: 'room' })); break;
       case 'event': {
@@ -1073,8 +1159,14 @@ export class SummonPlatform {
         if (!needle || needle === 'pi') items = [pi, ...items];
         break;
       }
-      case 'workspace': items = this.workspaceRecords().filter(item => this.workspaceAvailable(item.id, actor, context))
-        .map(({ id, name, path, write, revision }) => ({ id, name, path, write, revision, kind: 'workspace' })); break;
+      case 'workspace': {
+        const origin = this.projectRoom(context);
+        const room = scope?.kind === 'room' && (actor.kind === 'user' || sameRef(origin, scope)) ? this.store.get('rooms', scope.id) : null;
+        items = this.workspaceRecords().filter(item => (!scope || room?.workspace?.id === item.id) &&
+          this.workspaceAvailable(item.id, actor, room ? { ...context, project_room: scope } : context))
+          .map(({ id, name, path, write, revision }) => ({ id, name, path, write, revision, kind: 'workspace' }));
+        break;
+      }
       case 'wakeup': items = this.deliveries.list(context, scope); break;
       case 'call': items = this.store.list('platform-calls').filter(call => this.calls.canRead(actor, call, context) &&
         (!scope || sameRef(call.target, scope) || scope.kind === 'conversation' && call.origin?.conversation_id === scope.id))
@@ -1087,14 +1179,13 @@ export class SummonPlatform {
     }
     if (items?.items) items = items.items;
     const needle = query?.trim().toLowerCase();
-    const filtered = needle && kind !== 'connection' ? items.filter(item => [item.id, item.name, item.path, item.content, item.text]
+    const filtered = needle && kind !== 'connection' ? items.filter(item => [item.id, item.name, item.path, item.content, item.text, item.public_duty, item.role_id]
       .some(value => typeof value === 'string' && value.toLowerCase().includes(needle))) : items;
     return page(filtered, cursor);
   }
 
   connectionContext(context) {
-    return { ...context, allow: id => this.canUseConnection(context.actor, id, context),
-      connection_ids: this.accessFor(context.actor)?.connection_ids ?? [] };
+    return { ...context, allow: id => this.canUseConnection(context.actor, id, context) };
   }
 
   async read(args, context) {
@@ -1114,7 +1205,10 @@ export class SummonPlatform {
     }
     if (!this.canReadReference(ref, context)) reject('object_not_found', 'Object is unavailable', 404);
     switch (ref.kind) {
-      case 'bot': return this.manager.view(this.getBot(ref.id), context.actor, { details: !context.session });
+      case 'bot': {
+        const bot = this.getBot(ref.id);
+        return this.visibleBot(bot, context) ? this.manager.view(bot, context.actor, { details: !context.session }) : directoryEntry(bot);
+      }
       case 'room': return this.room.read(args, context.actor.id);
       case 'event': {
         const event = this.store.get('platform-events', ref.id);
@@ -1135,7 +1229,13 @@ export class SummonPlatform {
       }
       case 'call': return this.calls.view(this.calls.get(ref.id), context);
       case 'wakeup': return this.deliveries.list(context).find(item => item.id === ref.id);
-      case 'workspace': return this.workspaceRecords().find(item => item.id === ref.id);
+      case 'workspace': {
+        if (args.path === undefined) return this.workspaceRecords().find(item => item.id === ref.id);
+        const workspace = this.projectFileAccess(ref, context);
+        return this.files.readWorkspace(args, workspace, this.projectFileDirectories(), () => {
+          if (this.projectFileAccess(ref, context).root !== workspace.root) reject('workspace_changed', 'The project directory has moved', 409);
+        });
+      }
       default: reject('object_not_found', 'Object is unavailable', 404);
     }
   }
@@ -1172,7 +1272,7 @@ export class SummonPlatform {
     }
     if (ref.kind === 'workspace') return sameRef(session.workspace_ref, ref) || resources.some(item => sameRef(item, ref));
     if (ref.kind !== 'room') return false;
-    if (sameRef(session.space, ref)) return true;
+    if (sameRef(session.space, ref) || sameRef(session.project_room, ref)) return true;
     return resources.some(item => {
       if (item.kind === 'file') {
         const file = this.files.get(item.id);

@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { catalogMaintainerRole, defaultBotRoles, toolOnboardingRole } from '../../roles/index.mjs';
+import { catalogMaintainerRole, defaultBotRoles, roleInstructions, toolOnboardingRole } from '../../roles/index.mjs';
 import { defaultPaperAvatar, normalizePaperAvatar } from '../shared/avatar-style.mjs';
 import { assertRevision, idOf, reject, sameIdentity, sameRef, user } from '../platform/contract.mjs';
 
@@ -40,6 +40,17 @@ function cleanName(name) {
 function instructionsOf(value) {
   if (typeof value !== 'string' || value.length > 100_000) reject('invalid_instructions', 'Invalid Bot instructions');
   return value;
+}
+
+function publicDuty(value) {
+  if (typeof value !== 'string' || value.length > 600) reject('invalid_public_duty', 'Public duty must be text of at most 600 characters');
+  return value.trim();
+}
+
+export function directoryEntry(bot) {
+  const role = bot.built_in_role?.id;
+  const duty = bot.public_duty || (Object.hasOwn(roleInstructions, role) ? roleInstructions[role].split('。')[0] : '');
+  return { kind: 'bot', id: bot.id, name: bot.name, public_duty: duty, enabled: bot.enabled, ...(role ? { role_id: role } : {}) };
 }
 
 export class BotManager {
@@ -119,9 +130,8 @@ export class BotManager {
   }
 
   view(bot, actor, { details = true } = {}) {
-    const base = { kind: 'bot', id: bot.id, name: bot.name, avatar: bot.avatar ? normalizePaperAvatar(bot.avatar) : defaultPaperAvatar(bot.id),
-      enabled: bot.enabled, created_at: bot.createdAt, updated_at: bot.updatedAt,
-      ...(bot.built_in_role ? { role_id: bot.built_in_role.id } : {}) };
+    const base = { ...directoryEntry(bot), avatar: bot.avatar ? normalizePaperAvatar(bot.avatar) : defaultPaperAvatar(bot.id),
+      created_at: bot.createdAt, updated_at: bot.updatedAt };
     if (!details || !this.canConfigure(actor, bot)) return base;
     const target = { kind: 'bot', id: bot.id };
     return { ...base, instructions: bot.instructions, model: bot.model, revision: bot.revision, control: bot.control,
@@ -134,7 +144,7 @@ export class BotManager {
     mkdirSync(this.directory(id), { recursive: true });
     const record = this.store.save(botRecords, { ...value, revision: 1, enabled: true,
       control: activeControl(), material_index_ref: null });
-    if (model) this.store.save('platform-access', { id, model_ids: [model.connection_id], connection_ids: [], workspace_ids: [] });
+    if (model) this.store.save('platform-access', { id, model_ids: [model.connection_id], workspace_ids: [] });
     return record;
   }
 
@@ -154,7 +164,7 @@ export class BotManager {
         if (args.model !== undefined) reject('connection_forbidden', 'Model connection is not available to this caller', 403);
         model = null;
       }
-      const record = this.saveNew({ id, name, instructions, model, owner: actor,
+      const record = this.saveNew({ id, name, instructions, model, owner: actor, public_duty: publicDuty(args.public_duty ?? ''),
         ...(role ? { built_in_role: role } : {}) });
       if (connection) this.bindMaintenance(connection, record);
       return record;
@@ -172,6 +182,7 @@ export class BotManager {
     const changes = {};
     if (args.name !== undefined) changes.name = cleanName(args.name);
     if (args.instructions !== undefined) changes.instructions = instructionsOf(args.instructions);
+    if (args.public_duty !== undefined) changes.public_duty = publicDuty(args.public_duty);
     const role = this.roleOf(args.role_id, context, before);
     if (role !== undefined && role?.id !== before.built_in_role?.id) changes.built_in_role = role;
     const connection = this.assignment(args, context, role === undefined ? before.built_in_role : role);

@@ -212,7 +212,8 @@ export async function prepareProcess({ host, entry, session, call, input, prior,
   if (hasFileScope &&
       (method?.script || keepInput || stdin !== undefined || /\.(?:cmd|bat|ps1)$/i.test(executable)))
     reject('scoped_process_unsupported', 'This process input mode cannot enforce the Session’s file restrictions', 403);
-  const args = await checkedNativeArguments({ argv, fileArgs, effect: method?.effect === 'read' ? 'read' : 'write', cwd, hasFileScope,
+  const args = await checkedNativeArguments({ argv, fileArgs, effect: method?.effect === 'read' ? 'read' : 'write', cwd,
+    hasFileScope, projectWorkspace: Boolean(session.room_workspace_id),
     checkedPath: checked, resolveReference: id => checkedNativeReference(id,
       { policy: accessPolicy, protectedDirectories: [host.dataRoot] }) });
   let file = executable;

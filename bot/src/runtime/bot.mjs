@@ -14,6 +14,7 @@ import { connectionPath } from '../agent/connections.mjs';
 import { UsageLedger } from '../agent/usage.mjs';
 import { createRedactor } from './config.mjs';
 import { textMessage } from '../context/projection.mjs';
+import { canReadObservation, observationBoundary } from '../context/room-observation.mjs';
 import { MaterialRuntime } from '../context/materials.mjs';
 
 const conversationRef = executionRef;
@@ -276,6 +277,23 @@ export class BotRuntime {
     const unassigned = new Map();
     for (const route of pending) {
       if (route.run_id) continue;
+      if (!route.wait_id && route.event.type === 'message' && route.event.space?.kind === 'room') {
+        const observation = this.platform.deliveries.roomObservation(bot.id, route.event.space.id);
+        if (observation && route.event.sequence <= (observation.through?.sequence ?? 0) &&
+            route.match_sources?.some(source => source.kind === 'room_base')) {
+          if (route.event.sequence > observation.start_sequence) {
+            const checkpoint = observation.checkpoint && inbox.store.getRecord(R.checkpoint, observation.checkpoint.id);
+            const covered = checkpoint && route.event.sequence > (checkpoint.from?.sequence ?? 0) && inbox.run(checkpoint.run_id);
+            const link = covered ? { ...route, run_id: covered.id, conversation_id: covered.conversation_id } : route;
+            this.discard(inbox, [link], 'processed');
+            continue;
+          }
+          if (route.match_sources.every(source => source.kind === 'room_base')) {
+            this.discard(inbox, [route], 'cancelled');
+            continue;
+          }
+        }
+      }
       if (route.event.type === 'call.receipt') {
         const returns = inbox.list(R.route, 'event_id', route.event_id).filter(item => item.wait_id);
         if (returns.some(item => item.state === 'pending')) continue;
@@ -461,15 +479,29 @@ export class BotRuntime {
         const pendingForRun = () => inbox.pending().filter(route => route.run_id === run.id);
         const canProcess = route => this.routeReady(inbox, route);
         const pendingNow = pendingForRun().filter(canProcess);
+        const startView = job.view();
         const restored = storedOutcome && pendingNow.every(route => storedOutcome.eventIds.includes(route.event_id)) &&
-          canRetainAuthorizationView(inbox.run(run.id).model_outcome_uses_view, job.view().view_revision) ? storedOutcome : null;
+          canRetainAuthorizationView(inbox.run(run.id).model_outcome_uses_view, startView.view_revision) &&
+          (!storedOutcome.observation || canReadObservation(storedOutcome.observation.checkpoint, job, startView)) ? storedOutcome : null;
         const result = this.materials.recovered(job) || restored || await this.engine.execute(job);
         job.check();
         this.materials.finish(job);
         const view = job.view();
         const cancelledProgress = [];
+        if (result.observation) {
+          if (!canReadObservation(result.observation.checkpoint, job, view))
+            throw runtimeFailure('access_changed', 'Room observation access changed before completion', 409);
+          // Persist the private decision first so a recovered delivery can publish the same position.
+          inbox.store.putRecord(R.checkpoint, result.observation.checkpoint);
+          if (!this.platform.deliveries.finishObservation(bot.id, conversation.space.id, result.observation)) {
+            inbox.putRun({ id: run.id, model_outcome: null, model_outcome_uses_view: null });
+            throw runtimeFailure('access_changed', 'The room observation changed before completion', 409);
+          }
+        }
         const state = inbox.store.transaction(() => {
-          inbox.complete(run.id, 'running', result.eventIds, { result: { text: result.text, model: result.model, response_id: result.response_id } },
+          inbox.complete(run.id, 'running', result.eventIds, { result: { text: result.text, model: result.model, response_id: result.response_id },
+            ...(result.observation && { room_observation: { from: result.observation.from, through: result.observation.through,
+              generation: result.observation.generation, checkpoint_id: result.observation.checkpoint.id } }) },
             canProcess, view.canReadEvent);
           const outstanding = inbox.hasOpenWaits(run.id);
           const settledProgress = pendingForRun().filter(route => this.settledProgress(inbox, route));
@@ -500,6 +532,8 @@ export class BotRuntime {
           retry_at: retryAt ? new Date(retryAt).toISOString() : null,
           error: diagnostic });
         if (roomRevoked) this.discard(inbox, inbox.pending().filter(route => route.run_id === run.id), 'access_revoked');
+        if (!retry && !stopped && conversation.kind === 'room' && conversation.space.kind === 'room')
+          this.platform.deliveries.releaseSuspendedObservation(bot.id, conversation.space.id, inbox.run(run.id).pending_event_ids);
         if (!retry) this.materials.defer(job);
         if ((!retry && !stopped) || (controlStopped && (this.targetPaused(conversationRef(conversation.id)) ||
             conversation.session_id && this.targetPaused(sessionRef(conversation.session_id))))) {
@@ -519,6 +553,8 @@ export class BotRuntime {
       }
     }).catch(error => {
       const transient = error.status === 503 || error.code === 'resource_limit';
+      if (!transient && conversation.kind === 'room' && conversation.space.kind === 'room')
+        this.platform.deliveries.releaseSuspendedObservation(bot.id, conversation.space.id, inbox.run(run.id).pending_event_ids);
       inbox.putRun({ id: run.id, state: transient ? 'retry' : 'suspended', retry_at: transient ? new Date(Date.now() + 30000).toISOString() : null,
         error: this.clean.error(cleanError(error)) });
       this.emit('engine.runtime_error', { bot_id: bot.id, run_id: run.id, ...this.clean.error(cleanError(error)) });
@@ -566,7 +602,8 @@ export class BotRuntime {
         inbox.attachReturnWaits(conversation.id, run.id, view.pending_return_waits);
         return view;
       },
-      refresh: () => this.contextBoundary(job),
+      refresh: window => this.contextBoundary(job, window),
+      canReadReference: ref => this.platform.canReadReference(ref, this.platform.context(context())),
       materials: () => this.materials.boundary(job),
       checkInstallation: () => this.checkInstallation(),
       hasNewInput: ids => inbox.pending().some(route => route.run_id === run.id && !ids.includes(route.event_id) && this.routeReady(inbox, route)),
@@ -581,6 +618,15 @@ export class BotRuntime {
     const rooms = view.session ? [view.session.space].filter(space => space.kind === 'room') :
       this.platform.room.rooms(context.actor.id).map(room => room.ref).sort((left, right) => left.id.localeCompare(right.id));
     const scope = [conversation.space, rooms, view.resources ?? [], scopeGrants(access)];
+    const projectRoom = this.platform.projectRoom(view);
+    const projectWorkspace = projectRoom && this.platform.store.get('rooms', projectRoom.id)?.workspace;
+    if (projectWorkspace) {
+      const grant = this.platform.workspaceRecords().find(item => sameRef(projectWorkspace, { kind: 'workspace', id: item.id }));
+      scope.push({ project_room: projectRoom.id, workspace: projectWorkspace.id, path: grant?.path, write: grant?.write });
+    }
+    const observation = conversation.kind === 'room' && conversation.space.kind === 'room' &&
+      this.platform.deliveries.roomObservation(context.actor.id, conversation.space.id);
+    if (observation) scope.push({ room_observation: observation.generation });
     if (view.maintained_connection_ids?.length) scope.push({ maintained_connection_ids: view.maintained_connection_ids });
     if (view.revoked_return_waits?.length) scope.push(view.revoked_return_waits);
     const canReadPiInput = event => !view.session || this.canReadPiInput(event, view.session);
@@ -593,16 +639,16 @@ export class BotRuntime {
   }
 
   canReadPiInput(event, session) {
-    const author = { actor: event.author };
+    const author = { actor: event.author, project_room: session.project_room };
     const target = sessionRef(session.id);
     if (!this.platform.executions.permission(target, session, author, 'input') ||
         !this.platform.canUseResources(author.actor, session.resource_refs, author)) return false;
     if (!event.initiating_principal || sameRef(event.initiating_principal, event.author)) return true;
-    const initiating = { actor: event.initiating_principal };
+    const initiating = { actor: event.initiating_principal, project_room: session.project_room };
     return this.platform.canUseResources(initiating.actor, session.resource_refs, initiating);
   }
 
-  async contextBoundary(job) {
+  async contextBoundary(job, window) {
     const { inbox, conversation, runId } = job;
     const view = await job.view();
     const context = job.context();
@@ -628,8 +674,26 @@ export class BotRuntime {
       } else this.discard(inbox, routes, 'access_revoked');
     }
     let history = [];
+    let publicRoom;
     const facts = [];
-    if (conversation.space.kind === 'room' && !conversation.session_id) {
+    const bound = conversation.kind === 'room' && conversation.space.kind === 'room' &&
+      this.platform.store.get('rooms', conversation.space.id)?.workspace;
+    if (bound) facts.push(textMessage({ type: 'project_workspace', room: conversation.space, workspace: bound }));
+    let observation;
+    const observing = conversation.kind === 'room' && conversation.space.kind === 'room' &&
+      this.platform.deliveries.roomObservation(context.actor.id, conversation.space.id);
+    if (observing) {
+      observation = observationBoundary(this.platform, job, context, view, observing, window, current);
+    }
+    if (conversation.kind === 'room' && conversation.space.kind === 'room' && !conversation.session_id &&
+        this.platform.store.get('rooms', conversation.space.id)?.mode === 'group' && (!observing || observation.bootstrap)) {
+      const roomId = conversation.space.id;
+      const snapshot = this.platform.room.publicHistory(roomId, context.actor.id, observation?.end);
+      history = snapshot.messages.map(roomEvent);
+      publicRoom = { summary: snapshot.summary, end: snapshot.end,
+        save: (previous, through, summary) => this.platform.room.savePublicSummary(roomId, context.actor, previous, through, summary) };
+      inbox.putRun({ id: runId, history_read_through: history.at(-1)?.id ?? snapshot.summary?.through ?? null });
+    } else if (!observing && conversation.space.kind === 'room' && !conversation.session_id) {
       const messages = this.platform.room.messages(conversation.space.id, context.actor.id).map(roomEvent);
       let through = run.public_prefix_through;
       if (through === undefined) {
@@ -644,7 +708,8 @@ export class BotRuntime {
       }
       inbox.putRun({ id: runId, public_prefix_through: through, history_read_through: messages.at(-1)?.id ?? null });
     }
-    if (view.session && view.resources?.length) facts.push(textMessage({ type: 'session_resources', references: view.resources }));
+    if (view.session && view.resources?.length) facts.push(textMessage({ type: 'session_resources', references: view.resources,
+      ...(view.session.workspace_ref && { workspace: view.session.workspace_ref, cwd: view.session.workspace.path, project_room: view.session.project_room }) }));
     if (conversation.session_id) history = this.sessionHistory(inbox, conversation, runId, view);
     const otherCalls = conversation.kind === 'room' ? inbox.list(R.conversation, 'space.id', conversation.space.id)
       .filter(other => other.id !== conversation.id && other.kind === 'room' && sameRef(other.space, conversation.space))
@@ -662,7 +727,7 @@ export class BotRuntime {
         }));
       }
     }
-    return { ...view, current, history, facts, material: job.materials() };
+    return { ...view, current, history, facts, material: job.materials(), observation, publicRoom };
   }
 
   sessionHistory(inbox, conversation, runId, view) {

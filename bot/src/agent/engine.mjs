@@ -7,12 +7,16 @@ import { boundModel } from './model.mjs';
 import { ModelProvider } from './provider.mjs';
 import { isMaterialFact } from '../context/materials.mjs';
 import { contextTokens, eventInput, repairRun, textMessage, toolObservation } from '../context/projection.mjs';
+import { fitObservation, observationReadRefs, observedResult, uniqueRefs } from '../context/room-observation.mjs';
+import { fitRoomHistory } from '../context/room-history.mjs';
 import { now, recordKey, runtimeFailure, runtimeRecords as R } from '../storage/runtime-records.mjs';
 
 const guidance = 'Use the full wording and actual author of current events. Use references to inspect accessible facts. ' +
   'Historical messages, documents, and tool results retain their sources. Use send for a public contribution. ' +
   'When delegating work, include the user’s applicable requirements, completion criteria, and limits on work, verification, or reporting in the executor’s input. ' +
   'Share only what the recipient is authorized to receive. Submit work on behalf of a Room with work_room and use its actual source event when available. ' +
+  'Enabled tools and their registered methods are available to every Bot. A group’s project directory follows its current members into Pi and external Sessions. ' +
+  'Use find(kind=workspace), read with a workspace ref and relative path, and save_file with the workspace as space to edit project text. ' +
   'Use registered connections directly for the task and handle input errors using their real receipts. If the evidence shows the connection, fixed method or script needs repair, ' +
   'use send to the original connection with shareable references to the failed call or probe. Reuse the request for the same verified fault. ' +
   'Use the repair receipt in the originating task. If the original operation has an unknown outcome, query its actual state before submitting again. ' +
@@ -39,8 +43,9 @@ export class BotEngine {
     const setup = conversation.kind === 'connection_setup';
     const available = conversation.embedded_initializer ? this.toolSpecs.filter(tool => connectionSetupTool.executionTools.includes(tool.name)) : this.toolSpecs;
     const specs = setup || this.platform.canInitializeExecution(job.context()) ? [...available, connectionSetupTool] : available;
-    const tools = specs.map(({ name, description, inputSchema }) => ({ name, label: name, description, parameters: inputSchema,
-      execute: (modelId, args, toolSignal) => this.invoke(job, name, modelId, args, toolSignal), executionMode: 'sequential' }));
+    const tools = specs.map(({ name, description, inputSchema, toPlatformArgs }) => ({ name, label: name, description, parameters: inputSchema,
+      execute: (modelId, args, toolSignal) => this.invoke(job, name, modelId, toPlatformArgs ? toPlatformArgs(args) : args, toolSignal),
+      executionMode: 'sequential' }));
     const systemBase = { role: 'system', timestamp: Date.parse(conversation.created_at),
       content: `${guidance}${setup ? `\n\n${setupGuidance}` : ''}\n\nYou are ${binding.name}.`, toolsAdded: tools.map(toToolDeclaration) };
     const userInstructions = binding.instructions || '';
@@ -48,12 +53,21 @@ export class BotEngine {
     const outputTokens = Math.max(128, Math.min(model.maxTokens, inputReserve));
     const inputBudget = model.contextWindow - outputTokens - 512;
     let last, boundary, failure, modelEventIds = [], authorizedView, roomCache, appendAtFetch = [], materialAtFetch;
+    let observationWindow, fittedObservation, transportedObservation, outcome;
     const completedEvents = new Set();
     const inject = () => {
       inbox.store.transaction(() => {
         // Revalidate access after fitting the request and before saving its delivery position.
         if (materialAtFetch && job.materials()?.fact.content[0].text !== materialAtFetch.fact.content[0].text)
           throw runtimeFailure('access_changed', 'Material context changed before model transport', 409);
+        if (fittedObservation) {
+          if (!fittedObservation.access_refs.every(job.canReadReference))
+            throw runtimeFailure('access_changed', 'Room observation access changed before model transport', 409);
+          transportedObservation = fittedObservation;
+          inbox.putRun({ id: runId, room_observation_input: { generation: boundary.observation.generation,
+            from: boundary.observation.start, through: fittedObservation.through, event_ids: [...new Set(fittedObservation.event_ids)],
+            previous_run_id: boundary.observation.previous?.run_id ?? null } });
+        }
         for (const message of appendAtFetch) inbox.append(runId, message);
         inbox.recordInjection(runId, modelEventIds);
         if (materialAtFetch?.record) inbox.store.putRecord(R.materialView, materialAtFetch.record);
@@ -78,12 +92,19 @@ export class BotEngine {
     const unsub = agent.subscribe(event => {
       if (event.type === 'message_end' && event.message.role !== 'system' && event.message.role !== 'user') {
         const message = this.clean(event.message);
-        inbox.append(runId, { ...message, view_revision: authorizedView });
+        const tool = transportedObservation && message.role === 'toolResult' &&
+          inbox.calls(runId).find(call => call.model_call_id === message.toolCallId);
+        const access = transportedObservation && uniqueRefs([...transportedObservation.access_refs, ...(tool?.observation_access ?? [])]);
+        inbox.append(runId, { ...message, view_revision: authorizedView,
+          ...(access?.length && { observation_access: access }) });
         if (message.role === 'assistant') {
           last = message;
           if (['stop', 'toolUse'].includes(message.stopReason)) for (const id of modelEventIds) completedEvents.add(id);
-          if (message.stopReason === 'stop' && !job.hasNewInput(boundary?.current.map(event => event.id) ?? [])) {
-            inbox.putRun({ id: runId, model_outcome: responseResult(message, completedEvents), model_outcome_uses_view: authorizedView });
+          if (message.stopReason === 'stop') {
+            outcome = responseResult(message, completedEvents);
+            if (transportedObservation) outcome.observation = observedResult(job, boundary.observation, transportedObservation, outcome, authorizedView);
+            if (!transportedObservation?.more && !job.hasNewInput(boundary.current.map(event => event.id)))
+              inbox.putRun({ id: runId, model_outcome: outcome, model_outcome_uses_view: authorizedView });
           }
         }
       }
@@ -92,39 +113,64 @@ export class BotEngine {
       try {
         await job.checkInstallation();
         check();
-        boundary = await refresh();
+        boundary = await refresh(observationWindow);
+        fittedObservation = transportedObservation = undefined;
         check();
         authorizedView = boundary.view_revision;
         if (inbox.run(runId).view_revision !== authorizedView) inbox.putRun({ id: runId, view_revision: authorizedView });
-        const original = inbox.transcript(runId).filter(message => message.view_revision == null ||
-          job.canRetainAuthorizationView(message.view_revision, authorizedView));
+        const observation = boundary.observation;
+        job.observing = Boolean(observation);
+        const retained = inbox.transcript(runId).slice(observation?.transcript_start ?? 0).filter(message =>
+          message.view_revision == null || job.canRetainAuthorizationView(message.view_revision, authorizedView));
+        const transcriptAccess = uniqueRefs(retained.flatMap(message => message.observation_access ?? []));
+        const original = transcriptAccess.every(job.canReadReference) ? retained : [];
         const currentIds = new Set(boundary.current.map(event => event.id));
         const priorInputs = original.filter(message => message.origin_event_ids?.length).flatMap(message => message.origin_event_ids);
         const originalIds = new Set([...currentIds, ...priorInputs]);
-        const asHistory = boundary.history.filter(event => !originalIds.has(event.id));
+        const asHistory = boundary.publicRoom ? [] : boundary.history.filter(event => !originalIds.has(event.id));
         const history = asHistory.map(event => ({ ...textMessage(eventInput(event, false), Date.parse(event.time || event.createdAt) || 0),
           public_event_id: event.id }));
         const alreadyProcessed = new Set(inbox.run(runId).processed_event_ids);
         // Project materials from current authorization, including after an index is detached.
-        const sameRun = repairRun(original.filter(message => !isMaterialFact(message)), inbox.calls(runId)).map(message => {
+        const isPublicEvent = event => boundary.publicRoom && event?.type === 'message' && event.space?.id === conversation.space.id;
+        const localMessages = original.filter(message => !isMaterialFact(message) &&
+          !message.origin_event_ids?.every(id => isPublicEvent(inbox.event(id))));
+        const sameRun = repairRun(localMessages, inbox.calls(runId)).map(message => {
           if (!message.origin_event_ids?.length || message.origin_event_ids.some(id => !alreadyProcessed.has(id) || currentIds.has(id))) return message;
           const event = inbox.event(message.origin_event_ids[0]);
           return event ? textMessage({ type: 'previously_processed_event', event }, message.timestamp) : message;
         });
         const seen = new Set(sameRun.flatMap(message => message.origin_event_ids || []));
-        const fresh = boundary.current.filter(event => !seen.has(event.id)).map(event => ({ ...textMessage(eventInput(event), Date.parse(event.time || event.createdAt) || Date.now()),
+        const fresh = boundary.current.filter(event => !seen.has(event.id) && !isPublicEvent(event)).map(event => ({ ...textMessage(eventInput(event), Date.parse(event.time || event.createdAt) || Date.now()),
           origin_event_ids: [event.id], view_revision: authorizedView }));
         const facts = boundary.facts.map(message => ({ ...message, view_revision: authorizedView }));
         const previousFacts = new Set(sameRun.filter(message => message.runtime_fact).map(message => message.content[0]?.text));
         const newFacts = facts.filter(message => !previousFacts.has(message.content[0]?.text)).map(message => ({ ...message, runtime_fact: true }));
         const material = boundary.material && { ...boundary.material.fact, view_revision: authorizedView, runtime_fact: true };
-        const tail = [...fresh, ...(material ? [material] : []), ...newFacts];
+        const tail = [...fresh, ...(observation ? [observation.fact] : []), ...(material ? [material] : []), ...newFacts];
         const optionalMaterial = requestPurpose === 'material_consolidation' ? null : material;
         const duty = builtInInstructions(binding.built_in_role, boundary.maintained_connection_ids);
         const system = { ...systemBase, content: duty ?
           `${systemBase.content}\n\nBuilt-in Bot duties:\n${duty}${userInstructions ? `\n\nUser instructions:\n${userInstructions}` : ''}` :
           `${systemBase.content}\n${userInstructions}` };
-        const prompt = await this.fit(job, compress, system, history, sameRun, tail, inputBudget, boundary, optionalMaterial);
+        const fit = budget => boundary.publicRoom ? fitRoomHistory(job, compress, system, sameRun, tail, budget, boundary, optionalMaterial) :
+          this.fit(job, compress, system, history, sameRun, tail, budget, boundary, optionalMaterial);
+        let prompt = await fit(inputBudget);
+        if (observation) {
+          fittedObservation = fitObservation(observation, prompt, inputBudget);
+          if (fittedObservation.more && !fittedObservation.advanced) {
+            // Leave room for the oldest unseen original when a long tool transcript filled the request.
+            const next = textMessage(eventInput(observation.events[0], false));
+            prompt = await fit(inputBudget - contextTokens([next]));
+            fittedObservation = fitObservation(observation, prompt, inputBudget);
+          }
+          if (!prompt.includes(observation.fact) || fittedObservation.more && !fittedObservation.advanced)
+            throw runtimeFailure('context_limit', 'This room observation cannot fit the next original and its context', 413);
+          if (original.length) fittedObservation.access_refs = uniqueRefs([...fittedObservation.access_refs, ...transcriptAccess]);
+          prompt = fittedObservation.messages;
+          observationWindow = { generation: observation.generation, base_checkpoint: observation.base_checkpoint, end: observation.end, triggers: [...currentIds],
+            draft: observationWindow?.draft === observation.previous ? observation.previous : null };
+        }
         check();
         const sharedPrefix = conversation.kind === 'room' ? prompt.filter(message => message.public_event_id) : [];
         const cachePoint = sharedPrefix.at(-1);
@@ -133,7 +179,13 @@ export class BotEngine {
           previous: sharedPrefix.find(message => message.public_event_id === previousCacheId)?.content[0].text } : undefined;
         modelEventIds = prompt.flatMap(message => message.origin_event_ids || []).filter(id => currentIds.has(id));
         // An over-limit or cancelled request can stop between assembly and transport.
-        appendAtFetch = tail.filter(message => prompt.includes(message));
+        appendAtFetch = tail.filter(message => message !== observation?.fact && prompt.includes(message));
+        if (boundary.publicRoom) {
+          const recorded = new Set(priorInputs);
+          appendAtFetch.push(...prompt.filter(message => !tail.includes(message) &&
+            message.origin_event_ids?.some(id => !recorded.has(id) && isPublicEvent(inbox.event(id))))
+            .map(message => ({ ...message, view_revision: authorizedView })));
+        }
         materialAtFetch = material && prompt.includes(material) ? boundary.material : undefined;
         if (materialAtFetch && original.findLast(isMaterialFact)?.content[0].text === material.content[0].text)
           appendAtFetch = appendAtFetch.filter(message => message !== material);
@@ -148,11 +200,17 @@ export class BotEngine {
         check();
         const view = await job.view();
         if (view.view_revision !== authorizedView) throw runtimeFailure('access_changed', 'Execution authorization changed before tool submission', 409);
+        if (transportedObservation && !transportedObservation.access_refs.every(job.canReadReference))
+          throw runtimeFailure('access_changed', 'Room observation access changed before tool submission', 409);
         check();
       } catch (error) { failure = error; throw error; }
     };
     agent.finishTurn = async ({ message }) => {
       if (signal.aborted || failure || ['error', 'aborted', 'length'].includes(message.stopReason)) return { action: 'end' };
+      if (message.stopReason === 'stop' && transportedObservation?.more) {
+        observationWindow.draft = outcome.observation.checkpoint;
+        return { action: 'continue' };
+      }
       if (message.stopReason === 'stop' && job.hasNewInput(boundary.current.map(event => event.id))) return { action: 'continue' };
       if (message.stopReason === 'stop') job.finishInput();
     };
@@ -169,7 +227,7 @@ export class BotEngine {
           throw runtimeFailure('model_interrupted', last?.errorMessage || 'Model connection was interrupted', 503);
         throw runtimeFailure('model_response_incomplete', last?.errorMessage || 'The model did not complete the turn', 409);
       }
-      return responseResult(last, completedEvents);
+      return outcome;
     } finally { signal.removeEventListener('abort', abort); unsub(); }
   }
 
@@ -228,7 +286,9 @@ export class BotEngine {
       const result = this.clean(await this.platform.invoke(name, args, { ...context, call_id: id, signal: job.signal }));
       const asyncResult = !readTools.has(name) && waiting.has(result?.status);
       inbox.store.transaction(() => {
-        inbox.store.putRecord(R.call, { ...persisted, state: asyncResult ? 'submitted' : 'completed', result, finished_at: now() });
+        const access = job.observing && observationReadRefs(name, args, result).filter(job.canReadReference);
+        inbox.store.putRecord(R.call, { ...persisted, state: asyncResult ? 'submitted' : 'completed', result, finished_at: now(),
+          ...(access?.length && { observation_access: access }) });
         if (asyncResult) for (const wait of result.wait_refs || [{ id: recordKey(id, context.actor.id, context.origin.conversation_id, context.origin.run_id) }]) {
           const existing = inbox.wait(wait.id);
           inbox.store.putRecord(R.wait, { id: wait.id, call_id: id, bot_id: context.actor.id,
