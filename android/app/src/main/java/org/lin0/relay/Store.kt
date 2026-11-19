@@ -55,6 +55,8 @@ class SummonStore(private val app: Context) {
         private set
     var modelSummary by mutableStateOf<SummonJson>(SummonJson.Null)
         private set
+    var roomExecutions by mutableStateOf<Map<String, List<SummonJson>>>(emptyMap())
+        private set
     var errorMessage by mutableStateOf<String?>(null)
 
     private var drafts by mutableStateOf<Map<String, String>>(emptyMap())
@@ -249,6 +251,11 @@ class SummonStore(private val app: Context) {
     }
 
     fun deliveryFacts(id: String): List<SummonDelivery> = deliveries[id].orEmpty()
+    fun executionsForRoom(id: String): List<SummonJson> = roomExecutions[id].orEmpty()
+    fun activeExecutionsForRoom(id: String): List<SummonJson> {
+        val live = setOf("running", "waiting", "queued", "needs_input", "awaiting_input")
+        return roomExecutions[id].orEmpty().filter { it["status"].stringValue in live }
+    }
     fun pendingMessage(message: SummonMessage): SummonPendingMessage? =
         pendingMessages.firstOrNull { it.clientID == message.clientId && it.roomID == message.roomId }
 
@@ -289,6 +296,11 @@ class SummonStore(private val app: Context) {
             if (staged.isNotEmpty() && persistComposer()) staged.forEach(::discardStagedAttachment)
             schedulePersistence()
             lastSyncAt = System.currentTimeMillis()
+            if (!older) {
+                runCatching { list("/api/executions?room=" + SummonApiClient.component(id)) }.getOrNull()?.let { execs ->
+                    if (connection == connectionGeneration) roomExecutions = roomExecutions + (id to execs)
+                }
+            }
         } catch (error: CancellationException) { throw error }
         catch (error: Exception) { if (connection == connectionGeneration && id == activeRoomID) handle(error) }
         finally {
@@ -630,7 +642,7 @@ class SummonStore(private val app: Context) {
     }
 
     private fun clearServerState() {
-        bots = emptyList(); rooms = emptyList(); messageHistory = emptyMap(); deliveries = emptyMap(); cursors = emptyMap()
+        bots = emptyList(); rooms = emptyList(); messageHistory = emptyMap(); deliveries = emptyMap(); cursors = emptyMap(); roomExecutions = emptyMap()
         pendingMessages = emptyList(); drafts = emptyMap(); draftAttachments = emptyMap(); draftMentions = emptyMap()
         draftReplies = emptyMap(); draftReferences = emptyMap(); activeRoomID = null; historyEpoch = null; lastSyncAt = null
         modelSummary = SummonJson.Null

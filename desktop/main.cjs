@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, Menu, shell, protocol } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, shell, protocol, nativeTheme } = require('electron');
 const { join } = require('node:path');
 const { readFile } = require('node:fs/promises');
 const { autoUpdater } = require('electron-updater');
@@ -165,12 +165,20 @@ function openUpdateDownload() {
   void shell.openExternal(update.downloadUrl).catch(() => {});
   return true;
 }
+function applyWindowTheme(target, dark) {
+  if (!target || target.isDestroyed()) return;
+  target.setBackgroundColor(dark ? '#0b0c10' : '#f8f6f1');
+  if (typeof target.setTitleBarOverlay === 'function') {
+    try { target.setTitleBarOverlay({ color: '#00000000', symbolColor: dark ? '#e6eaf4' : '#3a3832', height: 44 }); } catch {}
+  }
+}
 function createWindow() {
+  const initialDark = nativeTheme.shouldUseDarkColors;
   const target = window = new BrowserWindow({
     title: 'Summon Bot', width: 1280, height: 900, minWidth: 680, minHeight: 560,
-    backgroundColor: '#fdfdfc', autoHideMenuBar: process.platform !== 'darwin',
+    backgroundColor: initialDark ? '#0b0c10' : '#f8f6f1', autoHideMenuBar: process.platform !== 'darwin',
     titleBarStyle: 'hidden',
-    titleBarOverlay: { color: '#00000000', symbolColor: '#4b5045', height: 44 },
+    titleBarOverlay: { color: '#00000000', symbolColor: initialDark ? '#e6eaf4' : '#3a3832', height: 44 },
     ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 16, y: 16 } } : {}),
     webPreferences: { preload: join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true },
   });
@@ -208,6 +216,7 @@ autoUpdater.on('error', error => {
   if (!checking) setUpdate({ status: 'error', message: error.message });
 });
 ipcMain.handle('summon:desktop-info', event => { trusted(event); return { version: app.getVersion(), platform: process.platform, arch: process.arch, windowControlsOverlay: true, localInstance: connection?.mode === 'local', selectionWarning, update }; });
+ipcMain.handle('summon:set-theme', (event, dark) => { trusted(event); applyWindowTheme(window, Boolean(dark)); return true; });
 ipcMain.handle('summon:open-connection-setup', (event, section) => {
   trusted(event);
   if (!connectionOperations.has('connection')) showSetup(connection?.mode === 'local' && ['cloudflare', 'tailscale'].includes(section) ? section : 'instances');

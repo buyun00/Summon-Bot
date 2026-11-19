@@ -11,6 +11,7 @@ if (location.protocol === 'summon-setup:' && location.host === 'connection') {
   }));
 } else if (location.pathname === '/') contextBridge.exposeInMainWorld('SummonDesktop', Object.freeze({
   getInfo: () => ipcRenderer.invoke('summon:desktop-info'),
+  setTheme: dark => ipcRenderer.invoke('summon:set-theme', Boolean(dark)),
   checkForUpdates: () => ipcRenderer.invoke('summon:check-update'),
   installUpdate: () => ipcRenderer.invoke('summon:install-update'),
   openConnectionSettings: section => ipcRenderer.invoke('summon:open-connection-setup', section),

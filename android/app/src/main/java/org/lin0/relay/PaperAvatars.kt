@@ -149,36 +149,95 @@ fun BotAvatar(shape:String,color:String,image:String?=null,size:Dp=48.dp,modifie
     val displayed=if(enabled)frame else PaperLibrary.frame(model,motion,0f)
     val outline=displayed.outline?.let{points->Path().apply{moveTo(points[0],points[1]);var i=2;while(i+5<points.size){cubicTo(points[i],points[i+1],points[i+2],points[i+3],points[i+4],points[i+5]);i+=6};close()}} ?: remember(look){look.path()}
     val fibers=remember{val rows=PaperLibrary.data(context).getJSONArray("fibers");(0 until rows.length()).map{PaperLibrary.floats(rows.getJSONArray(it))}}
+    val isDarkGlass=LocalSummonIsDark.current
+    val pigmentHex=remember(color,shape){PaperLibrary.paperColor(context,color,shape).trim().uppercase()}
+    val glass=remember(pigmentHex,look.colors[0]){glassPaletteFor(pigmentHex,look.colors[0])}
     Canvas(modifier.size(size)){
         drawIntoCanvas{wrapper->
             // Reserve room for the paper backing and separator within this canvas.
             val scale=(this.size.width-inset.toPx()*2)/316*1.5f
             val c=wrapper.nativeCanvas;val save=c.save();c.translate(this.size.width/2,this.size.height/2);c.scale(scale,scale)
             val paint=android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply{strokeCap=android.graphics.Paint.Cap.ROUND;strokeJoin=android.graphics.Paint.Join.ROUND}
-            fun fill(path:Path,slot:Int){paint.style=android.graphics.Paint.Style.FILL;paint.color=look.colors[slot].toArgb();c.drawPath(path,paint)}
+            fun fill(path:Path,slot:Int){paint.shader=null;paint.style=android.graphics.Paint.Style.FILL;paint.color=look.colors[slot].toArgb();c.drawPath(path,paint)}
             fun matrix(a:FloatArray)=android.graphics.Matrix().apply{setValues(floatArrayOf(a[0],a[2],a[4],a[1],a[3],a[5],0f,0f,1f))}
+            val decoColor=if(isDarkGlass) glass.edge else look.colors[0].toArgb()
             val arcs=if(motion=="work")PaperLibrary.arcs(context,age) else displayed.arcs
-            fun drawDots(){for(dot in displayed.dots){paint.style=android.graphics.Paint.Style.FILL;paint.color=look.colors[0].toArgb();paint.alpha=(dot.alpha*255).toInt();if(dot.path!=null){val state=c.save();c.translate(dot.x,dot.y);c.rotate(dot.rotation);c.drawPath(dot.path,paint);c.restoreToCount(state)}else c.drawCircle(dot.x,dot.y,dot.radius,paint)};paint.alpha=255}
-            fun drawArcs(front:Boolean){for(a in arcs){paint.style=android.graphics.Paint.Style.STROKE;paint.color=look.colors[0].toArgb();paint.alpha=(a.alpha*255).toInt();paint.strokeWidth=a.width;c.drawPath(if(front)a.front else a.back,paint)};paint.alpha=255}
+            fun drawDots(){paint.shader=null;for(dot in displayed.dots){paint.style=android.graphics.Paint.Style.FILL;paint.color=decoColor;paint.alpha=(dot.alpha*255).toInt();if(dot.path!=null){val state=c.save();c.translate(dot.x,dot.y);c.rotate(dot.rotation);c.drawPath(dot.path,paint);c.restoreToCount(state)}else c.drawCircle(dot.x,dot.y,dot.radius,paint)};paint.alpha=255}
+            fun drawArcs(front:Boolean){paint.shader=null;for(a in arcs){paint.style=android.graphics.Paint.Style.STROKE;paint.color=decoColor;paint.alpha=(a.alpha*255).toInt();paint.strokeWidth=a.width;c.drawPath(if(front)a.front else a.back,paint)};paint.alpha=255}
             drawArcs(false)
             if(displayed.dotsBehind)drawDots()
             val material=c.saveLayerAlpha(null,(displayed.alpha*255).toInt())
             if(groupOutline!=null){
-                paint.style=android.graphics.Paint.Style.FILL_AND_STROKE;paint.color=groupOutline.toArgb();paint.strokeWidth=inset.toPx()/scale
-                val backOutline=c.save();c.translate(4.5f,5.5f);c.rotate(-3f);c.concat(matrix(displayed.body));c.drawPath(outline,paint);c.restoreToCount(backOutline)
+                paint.shader=null;paint.style=android.graphics.Paint.Style.FILL_AND_STROKE;paint.color=groupOutline.toArgb();paint.strokeWidth=inset.toPx()/scale
+                if(!isDarkGlass){
+                    val backOutline=c.save();c.translate(4.5f,5.5f);c.rotate(-3f);c.concat(matrix(displayed.body));c.drawPath(outline,paint);c.restoreToCount(backOutline)
+                }
                 c.drawPath(Path(outline).apply{transform(matrix(displayed.body))},paint)
             }
-            val back=c.save();c.translate(4.5f,5.5f);c.rotate(-3f);c.concat(matrix(displayed.body));fill(outline,1);c.restoreToCount(back)
             val body=Path(outline).apply{transform(matrix(displayed.body))}
-            fill(body,0);paint.style=android.graphics.Paint.Style.STROKE;paint.color=look.colors[2].toArgb();paint.alpha=40;paint.strokeWidth=.75f;c.drawPath(body,paint);paint.alpha=255
+            if(isDarkGlass){
+                paint.style=android.graphics.Paint.Style.FILL
+                paint.alpha=255
+                paint.shader=android.graphics.LinearGradient(0f,-115f,0f,115f,intArrayOf(glass.top,glass.mid,glass.bottom),floatArrayOf(0f,0.48f,1f),android.graphics.Shader.TileMode.CLAMP)
+                c.drawPath(body,paint)
+                paint.shader=null
+                paint.style=android.graphics.Paint.Style.STROKE
+                paint.color=glass.edge
+                paint.strokeWidth=max(2.2f, 2.0f / max(scale, 0.2f))
+                c.drawPath(body,paint)
+            } else {
+                val back=c.save();c.translate(4.5f,5.5f);c.rotate(-3f);c.concat(matrix(displayed.body));fill(outline,1);c.restoreToCount(back)
+                fill(body,0);paint.style=android.graphics.Paint.Style.STROKE;paint.color=look.colors[2].toArgb();paint.alpha=40;paint.strokeWidth=.75f;c.drawPath(body,paint);paint.alpha=255
+            }
             val face=c.save();c.clipPath(body)
-            paint.color=android.graphics.Color.WHITE;paint.alpha=25;paint.style=android.graphics.Paint.Style.STROKE;paint.strokeWidth=.45f
-            for(f in fibers){c.drawLine(f[0],f[1],f[0]+f[2],f[1]+f[3],paint)}
-            for(e in displayed.eyes){if(e.size<11)continue;val eye=c.save();c.concat(matrix(e.copyOfRange(4,10)));paint.style=android.graphics.Paint.Style.FILL;paint.color=look.colors[3].toArgb();paint.alpha=(e[10]*255).toInt();val r=min(e[2],e[3])/2;c.drawRoundRect(e[0],e[1],e[0]+e[2],e[1]+e[3],r,r,paint);c.restoreToCount(eye)}
+            if(!isDarkGlass){
+                paint.shader=null;paint.color=android.graphics.Color.WHITE;paint.alpha=25;paint.style=android.graphics.Paint.Style.STROKE;paint.strokeWidth=.45f
+                for(f in fibers){c.drawLine(f[0],f[1],f[0]+f[2],f[1]+f[3],paint)}
+            }
+            val eyeColor = if(isDarkGlass) 0xF5FFFFFF.toInt() else look.colors[3].toArgb()
+            paint.shader=null
+            for(e in displayed.eyes){if(e.size<11)continue;val eye=c.save();c.concat(matrix(e.copyOfRange(4,10)));paint.style=android.graphics.Paint.Style.FILL;paint.color=eyeColor;paint.alpha=(e[10]*(if(isDarkGlass) 245f else 255f)).toInt();val r=min(e[2],e[3])/2;c.drawRoundRect(e[0],e[1],e[0]+e[2],e[1]+e[3],r,r,paint);c.restoreToCount(eye)}
             paint.alpha=255;c.restoreToCount(face);c.restoreToCount(material)
             if(!displayed.dotsBehind)drawDots()
-            displayed.notification?.let{n->paint.style=android.graphics.Paint.Style.FILL;paint.color=android.graphics.Color.rgb(106,146,186);c.drawCircle(n[0],n[1],n[2],paint)}
+            displayed.notification?.let{n->paint.shader=null;paint.style=android.graphics.Paint.Style.FILL;paint.color=android.graphics.Color.rgb(106,146,186);c.drawCircle(n[0],n[1],n[2],paint)}
             drawArcs(true);c.restoreToCount(save)
         }
     }
+}
+
+private data class DarkGlassPalette(val top: Int, val mid: Int, val bottom: Int, val edge: Int)
+
+private val glassPresets: Map<String, Array<String>> = mapOf(
+    "#867399" to arrayOf("#C6AEE3", "#9C84BA", "#745D91", "#DEC9F7"),
+    "#597C91" to arrayOf("#8FC1DC", "#6594B0", "#466E87", "#B5DEF3"),
+    "#7D824B" to arrayOf("#BFC680", "#949C5C", "#6A703B", "#DCE3A2"),
+    "#B2634F" to arrayOf("#EC9982", "#C9735B", "#994D39", "#FFBDA9"),
+    "#648468" to arrayOf("#98C49E", "#709D76", "#4E7453", "#BEE4C3"),
+    "#4D5C69" to arrayOf("#8DA3B5", "#637788", "#445463", "#B5C9D9"),
+    "#898B80" to arrayOf("#C2C5B8", "#9A9D90", "#717468", "#DEE1D4"),
+    "#BC8053" to arrayOf("#F2B484", "#CE8E5E", "#9D663D", "#FFD2AE"),
+    "#A87932" to arrayOf("#E4B465", "#BE8C3E", "#8E6322", "#F8D390"),
+    "#AF7286" to arrayOf("#E9A8BE", "#C47E96", "#94566B", "#FFCADE"),
+    "#927057" to arrayOf("#CCA68A", "#A68064", "#7C5B44", "#E7C6AE"),
+    "#DED1B2" to arrayOf("#F7EDD4", "#DCD0B3", "#B0A282", "#FFF8E6"),
+)
+
+private fun glassPaletteFor(hex: String, fallback: Color): DarkGlassPalette {
+    val preset = glassPresets[hex]
+    if (preset != null) {
+        return DarkGlassPalette(
+            top = summonColor(preset[0]).copy(alpha = 0.86f).toArgb(),
+            mid = summonColor(preset[1]).copy(alpha = 0.76f).toArgb(),
+            bottom = summonColor(preset[2]).copy(alpha = 0.88f).toArgb(),
+            edge = summonColor(preset[3]).copy(alpha = 0.76f).toArgb(),
+        )
+    }
+    fun mix(c: Float, target: Float, t: Float): Float = (c + (target - c) * t).coerceIn(0f, 1f)
+    val r = fallback.red; val g = fallback.green; val b = fallback.blue
+    return DarkGlassPalette(
+        top = Color(mix(r, 1f, 0.36f), mix(g, 1f, 0.36f), mix(b, 1f, 0.36f), 0.86f).toArgb(),
+        mid = Color(mix(r, 1f, 0.14f), mix(g, 1f, 0.14f), mix(b, 1f, 0.14f), 0.76f).toArgb(),
+        bottom = Color(mix(r, 0f, 0.16f), mix(g, 0f, 0.16f), mix(b, 0f, 0.16f), 0.88f).toArgb(),
+        edge = Color(mix(r, 1f, 0.54f), mix(g, 1f, 0.54f), mix(b, 1f, 0.54f), 0.76f).toArgb(),
+    )
 }

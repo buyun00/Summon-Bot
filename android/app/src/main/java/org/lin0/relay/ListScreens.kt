@@ -35,6 +35,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Contrast
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Link
@@ -115,9 +116,11 @@ fun ConversationListScreen(
     onOpenRoom: (String) -> Unit,
     onOpenResource: (ResourceSection) -> Unit,
 ) {
+    val palette = LocalSummonPalette.current
     val scope = rememberCoroutineScope()
     var query by remember { mutableStateOf("") }
     var showSettings by remember { mutableStateOf(false) }
+    var showDisplay by remember { mutableStateOf(false) }
     var showCreateBot by remember { mutableStateOf(false) }
     var showCreateRoom by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
@@ -135,36 +138,45 @@ fun ConversationListScreen(
     val menuHeight = (LocalConfiguration.current.screenHeightDp * 100f / LocalSummonDisplay.current.zoom * .7f).dp
 
     Scaffold(
-        containerColor = Color.Black,
+        containerColor = palette.background,
         topBar = {
-            Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Box {
                     IconButton(onClick = { menu = true }, modifier = Modifier.size(44.dp).semantics {
                         contentDescription = "${store.settings.userName}，菜单，${if (store.isConnected) "已连接" else "正在连接"}"
                     }) {
                         Box(Modifier.size(36.dp)) {
-                            Image(painterResource(R.drawable.owner_paper_frame), null, Modifier.fillMaxSize())
-                            Image(painterResource(R.drawable.owner_avatar), null, Modifier.align(Alignment.Center).fillMaxSize(.74f).clip(CircleShape), contentScale = androidx.compose.ui.layout.ContentScale.Crop)
-                            Box(Modifier.align(Alignment.BottomEnd).padding(2.dp).size(8.dp).clip(CircleShape).background(if (store.isConnected) Color(0xFF93AD99) else Color.Gray).border(1.5.dp, Color(0xFFF5F5F3), CircleShape))
+                            Image(
+                                painterResource(R.drawable.owner_avatar),
+                                null,
+                                Modifier.align(Alignment.Center).size(34.dp).clip(CircleShape).border(1.dp, palette.bubbleStroke, CircleShape),
+                                contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                            )
+                            Box(
+                                Modifier.align(Alignment.BottomEnd).padding(1.dp).size(9.dp).clip(CircleShape)
+                                    .background(if (store.isConnected) palette.ok else palette.textTertiary)
+                                    .border(1.6.dp, palette.background, CircleShape),
+                            )
                         }
                     }
-                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, modifier = Modifier.width(264.dp).heightIn(max = menuHeight)) {
+                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }, modifier = Modifier.width(268.dp).heightIn(max = menuHeight)) {
                         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             ModelQuotaSignal(model, "默认模型", Modifier.weight(1f)) { menu = false; quotaItem = model }
                         }
                         DropdownMenuItem(text = { Text("Token 统计") }, leadingIcon = { Icon(Icons.Filled.BarChart, null) }, onClick = { menu = false; onOpenUsage() })
+                        DropdownMenuItem(text = { Text("显示与外观") }, leadingIcon = { Icon(Icons.Filled.Contrast, null) }, onClick = { menu = false; showDisplay = true })
                         DropdownMenuItem(text = { Text("设置") }, leadingIcon = { Icon(Icons.Filled.Settings, null) }, onClick = { menu = false; showSettings = true })
                         DropdownMenuItem(text = { Text("模型与用量") }, leadingIcon = { Icon(Icons.Filled.Memory, null) }, onClick = { menu = false; onOpenModels() })
-                        HorizontalDivider(Modifier.padding(vertical = 6.dp))
+                        HorizontalDivider(Modifier.padding(vertical = 6.dp), color = palette.hairline)
                         ResourceSection.entries.forEach { section ->
                             DropdownMenuItem(text = { Text(section.title) }, leadingIcon = { Icon(section.icon, null) }, onClick = { menu = false; onOpenResource(section) })
                         }
                     }
                 }
-                OutlinedTextField(value = query, onValueChange = { query = it }, placeholder = { Text("搜索") }, singleLine = true,
-                    leadingIcon = { Icon(Icons.Filled.Search, null) }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(24.dp))
+                OutlinedTextField(value = query, onValueChange = { query = it }, placeholder = { Text("搜索", color = palette.textTertiary) }, singleLine = true,
+                    leadingIcon = { Icon(Icons.Filled.Search, null, tint = palette.textSecondary) }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(24.dp))
                 Box {
-                    IconButton(onClick = { plus = true }, enabled = store.protocolReady) { Icon(Icons.Filled.Add, "新建", tint = Color.White) }
+                    IconButton(onClick = { plus = true }, enabled = store.protocolReady) { Icon(Icons.Filled.Add, "新建", tint = MaterialTheme.colorScheme.onBackground) }
                     DropdownMenu(expanded = plus, onDismissRequest = { plus = false }, modifier = Modifier.heightIn(max = menuHeight)) {
                         DropdownMenuItem(text = { Text("创建新 Bot") }, onClick = { plus = false; showCreateBot = true })
                         DropdownMenuItem(text = { Text("创建群聊") }, onClick = { plus = false; showCreateRoom = true })
@@ -183,7 +195,7 @@ fun ConversationListScreen(
                     }
                     store.protocolNotice?.let { notice ->
                         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
-                            Text(notice, color = Color(0xFFFF9F0A))
+                            Text(notice, color = palette.warn)
                             Row {
                                 TextButton(onClick = { scope.launch { store.refresh() } }) { Text("重新连接") }
                                 if (store.needsClientUpdate) TextButton(onClick = { showSettings = true }) { Text("客户端更新") }
@@ -192,15 +204,15 @@ fun ConversationListScreen(
                     }
                     store.errorMessage?.let { error ->
                         Row(Modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(error, color = Color(0xFFFF9F0A), modifier = Modifier.weight(1f))
+                            Text(error, color = palette.warn, modifier = Modifier.weight(1f))
                             TextButton(onClick = { scope.launch { store.refresh() } }) { Text("重连") }
                         }
                     } ?: run {
                         if (!store.isConnected && store.bots.isNotEmpty()) {
                             Row(Modifier.padding(20.dp, 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Filled.WifiOff, null, tint = Color(0xFF8E8E93))
+                                Icon(Icons.Filled.WifiOff, null, tint = palette.textSecondary)
                                 Spacer(Modifier.width(8.dp))
-                                Text("已显示本机记录，正在连接…", color = Color(0xFF8E8E93), style = MaterialTheme.typography.bodySmall)
+                                Text("已显示本机记录，正在连接…", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
                             }
                         }
                     }
@@ -223,30 +235,34 @@ fun ConversationListScreen(
                             } finally { opening = false }
                         }
                     }
+                    if (bot.id != contacts.lastOrNull()?.id) {
+                        HorizontalDivider(Modifier.padding(start = 88.dp), thickness = 0.6.dp, color = palette.hairline)
+                    }
                 }
                 if (store.bots.isEmpty() && store.rooms.isEmpty() && !store.isLoading && store.protocolReady) {
                     item {
                         Column(Modifier.fillMaxWidth().padding(top = 80.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                             Text("你的工作空间", style = MaterialTheme.typography.titleLarge)
-                            Text(if (store.errorMessage == null) "创建第一位 Bot，开始聊天。" else "暂时无法获取记录，请检查服务连接。", color = Color(0xFF8E8E93), modifier = Modifier.padding(16.dp))
+                            Text(if (store.errorMessage == null) "创建第一位 Bot，开始聊天。" else "暂时无法获取记录，请检查服务连接。", color = palette.textSecondary, modifier = Modifier.padding(16.dp))
                             Button(onClick = { showCreateBot = true }) { Text("创建 Bot") }
                             TextButton(onClick = { showSettings = true }) { Text("连接设置") }
                         }
                     }
                 } else if (contacts.isEmpty() && groups.isEmpty() && query.isNotEmpty()) {
-                    item { Text("没有与“$query”匹配的结果", modifier = Modifier.padding(24.dp), color = Color(0xFF8E8E93)) }
+                    item { Text("没有与“$query”匹配的结果", modifier = Modifier.padding(24.dp), color = palette.textSecondary) }
                 }
             }
         }
     }
     quotaItem?.let { item ->
-        ModalBottomSheet(onDismissRequest = { quotaItem = null }, containerColor = Color(0xFF1C231E)) {
+        ModalBottomSheet(onDismissRequest = { quotaItem = null }, containerColor = palette.surfaceElevated) {
             Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 ModelUsageDetails(item)
                 TextButton(onClick = { quotaItem = null; onOpenModels() }, modifier = Modifier.fillMaxWidth()) { Text("管理模型") }
             }
         }
     }
+    if (showDisplay) DisplaySettingsSheet { showDisplay = false }
     if (showSettings) SettingsSheet(store, updater) { showSettings = false }
     if (showCreateBot) CreateBotSheet(store, onOpenRoom) { showCreateBot = false }
     if (showCreateRoom) CreateRoomSheet(store, onOpenRoom) { showCreateRoom = false }
@@ -254,13 +270,14 @@ fun ConversationListScreen(
 
 @Composable
 private fun GroupGrid(groups: List<SummonRoom>, bots: List<SummonBot>, onOpen: (String) -> Unit) {
+    val palette = LocalSummonPalette.current
     Column(Modifier.padding(horizontal = 28.dp, vertical = 16.dp)) {
         groups.chunked(2).forEach { row ->
             Row(Modifier.fillMaxWidth()) {
                 row.forEach { room ->
                     Column(Modifier.weight(1f).clickable { onOpen(room.id) }.padding(vertical = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                         RoomAvatar(room, bots, 96.dp)
-                        Text(room.name, color = Color(0xFF8E8E93), maxLines = 1)
+                        Text(room.name, color = palette.textSecondary, maxLines = 1)
                     }
                 }
                 if (row.size == 1) Spacer(Modifier.weight(1f))
@@ -271,6 +288,7 @@ private fun GroupGrid(groups: List<SummonRoom>, bots: List<SummonBot>, onOpen: (
 
 @Composable
 private fun ContactRow(store: SummonStore, bot: SummonBot, onClick: () -> Unit) {
+    val palette = LocalSummonPalette.current
     val room = directRoom(store, bot)
     Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 22.dp, vertical = 19.dp), verticalAlignment = Alignment.CenterVertically) {
         MemberAvatar(bot, 50.dp)
@@ -278,10 +296,10 @@ private fun ContactRow(store: SummonStore, bot: SummonBot, onClick: () -> Unit) 
         Column(Modifier.weight(1f)) {
             Row {
                 Text(bot.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f), maxLines = 1)
-                Text(formatSummonTime(room?.lastMessage?.createdAt), color = Color(0xFF636366), style = MaterialTheme.typography.labelSmall)
+                Text(formatSummonTime(room?.lastMessage?.createdAt), color = palette.textTertiary, style = MaterialTheme.typography.labelSmall)
             }
             val preview = if (bot.isPaused) "已暂停" else preview(room, bot)
-            Text(preview, color = Color(0xFF8E8E93), maxLines = 1)
+            Text(preview, color = palette.textSecondary, maxLines = 1)
         }
     }
 }
@@ -298,6 +316,7 @@ private fun preview(room: SummonRoom?, bot: SummonBot): String {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SettingsSheet(store: SummonStore, updater: SummonAppUpdater, onDismiss: () -> Unit) {
+    val palette = LocalSummonPalette.current
     val scope = rememberCoroutineScope()
     val display = LocalSummonDisplay.current
     var baseURL by remember { mutableStateOf(store.settings.baseURL) }
@@ -305,31 +324,31 @@ private fun SettingsSheet(store: SummonStore, updater: SummonAppUpdater, onDismi
     var userName by remember { mutableStateOf(store.settings.userName) }
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Color(0xFF1C1C1E)) {
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = palette.surfaceElevated) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Image(painterResource(R.drawable.summon_icon), null, Modifier.size(52.dp).clip(RoundedCornerShape(14.dp)))
                 Spacer(Modifier.width(16.dp))
                 Column {
                     Text("Summon Bot", style = MaterialTheme.typography.titleMedium)
-                    Text("Android 原生客户端", color = Color(0xFF8E8E93))
+                    Text("Android 原生客户端", color = palette.textSecondary)
                 }
             }
             Spacer(Modifier.height(16.dp))
-            Text("个人信息", color = Color(0xFF8E8E93))
+            Text("个人信息", color = palette.textSecondary)
             OutlinedTextField(userName, { userName = it }, label = { Text("显示名称") }, modifier = Modifier.fillMaxWidth())
             TextButton(enabled = userName != store.settings.userName, onClick = {
                 store.setUserName(userName); userName = store.settings.userName
             }) { Text("保存显示名称") }
             Spacer(Modifier.height(12.dp))
-            Text("服务连接", color = Color(0xFF8E8E93))
+            Text("服务连接", color = palette.textSecondary)
             OutlinedTextField(baseURL, { baseURL = it }, label = { Text("https://你的实例地址") }, modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), singleLine = true)
             OutlinedTextField(token, { token = it }, label = { Text("实例访问令牌") }, modifier = Modifier.fillMaxWidth(), visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), singleLine = true)
-            Text("使用部署机提供的 HTTPS 地址和访问令牌。本机回环及 .local 地址可使用 HTTP。令牌保存在系统加密存储中。", color = Color(0xFF8E8E93), style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 8.dp))
+            Text("使用部署机提供的 HTTPS 地址和访问令牌。本机回环及 .local 地址可使用 HTTP。令牌保存在系统加密存储中。", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(vertical = 8.dp))
             Text("实时消息  ${if (store.isConnected) "已连接" else "未连接"}")
             Text("Bot  ${store.bots.size}")
             Text("会话  ${store.rooms.size}")
-            error?.let { Text(it, color = Color(0xFFFF9F0A), modifier = Modifier.padding(vertical = 6.dp)) }
+            error?.let { Text(it, color = palette.warn, modifier = Modifier.padding(vertical = 6.dp)) }
             Button(onClick = {
                 scope.launch {
                     saving = true; error = null
@@ -340,9 +359,9 @@ private fun SettingsSheet(store: SummonStore, updater: SummonAppUpdater, onDismi
             }, enabled = !saving && baseURL.isNotBlank(), modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
                 if (saving) CircularProgressIndicator(Modifier.size(18.dp)) else Text("保存并连接")
             }
-            Text("草稿和待确认的发送保存在这台设备。重新连接后，可按原发送记录查询保存状态。", color = Color(0xFF8E8E93), style = MaterialTheme.typography.bodySmall)
+            Text("草稿和待确认的发送保存在这台设备。重新连接后，可按原发送记录查询保存状态。", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
             Spacer(Modifier.height(20.dp))
-            Text("显示设置", style = MaterialTheme.typography.titleMedium)
+            Text("显示与外观", style = MaterialTheme.typography.titleMedium)
             DisplaySettingsControls()
             TextButton(onClick = { display.reset() }) { Text("恢复默认显示") }
             ClientUpdateSettings(updater)
@@ -355,13 +374,14 @@ private fun SettingsSheet(store: SummonStore, updater: SummonAppUpdater, onDismi
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun CreateBotSheet(store: SummonStore, onOpenRoom: (String) -> Unit, onDismiss: () -> Unit) {
+    val palette = LocalSummonPalette.current
     val scope = rememberCoroutineScope()
     var name by remember { mutableStateOf("") }
     var avatar by remember { mutableStateOf(SummonAvatar()) }
     var busy by remember { mutableStateOf(false) }
     var created by remember { mutableStateOf<SummonBot?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = Color.Black) {
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = palette.background) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Text("创建新 Bot", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(16.dp))
@@ -371,10 +391,10 @@ fun CreateBotSheet(store: SummonStore, onOpenRoom: (String) -> Unit, onDismiss: 
             if (savedBot == null) {
                 OutlinedTextField(name, { name = it }, placeholder = { Text("为 Bot 取个名字") },
                     modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp))
-                if (title.length > 100) Text("Bot 名称不能超过 100 个字符。", color = Color(0xFFFF9F0A))
+                if (title.length > 100) Text("Bot 名称不能超过 100 个字符。", color = palette.warn)
                 AvatarPicker(avatar) { avatar = it }
             } else Text("${savedBot.name} 已创建", Modifier.padding(vertical = 16.dp))
-            error?.let { Text(it, color = Color(0xFFFF9F0A)) }
+            error?.let { Text(it, color = palette.warn) }
             Button(onClick = {
                 scope.launch {
                     busy = true; error = null
@@ -397,13 +417,14 @@ fun CreateBotSheet(store: SummonStore, onOpenRoom: (String) -> Unit, onDismiss: 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AvatarPicker(avatar: SummonAvatar, onChange: (SummonAvatar) -> Unit) {
+    val palette = LocalSummonPalette.current
     val context = androidx.compose.ui.platform.LocalContext.current
     val templates = remember { PaperLibrary.data(context).getJSONArray("templates") }
     var custom by remember { mutableStateOf(false) }
     FlowRow(horizontalArrangement=Arrangement.spacedBy(8.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
         SummonAvatar.shapes.forEach { (id,label) ->
             val selected=avatar.image == null && PaperLibrary.role(avatar.shape)==id
-            Column(Modifier.width(68.dp).clip(RoundedCornerShape(10.dp)).background(if(selected) Color(0xFF454559) else Color.Transparent).summonPress { onChange(avatar.copy(shape=id,color=PaperLibrary.paperColor(context,avatar.color,avatar.shape),secondary="#E6DDC8",ink="#414A3C",paper="#FFFBF0",image=null)) }.padding(5.dp),horizontalAlignment=Alignment.CenterHorizontally) {
+            Column(Modifier.width(68.dp).clip(RoundedCornerShape(10.dp)).background(if(selected) palette.selectionBg else Color.Transparent).border(if(selected) 1.5.dp else 0.dp, if(selected) palette.ok else Color.Transparent, RoundedCornerShape(10.dp)).summonPress { onChange(avatar.copy(shape=id,color=PaperLibrary.paperColor(context,avatar.color,avatar.shape),secondary="#E6DDC8",ink="#414A3C",paper="#FFFBF0",image=null)) }.padding(5.dp),horizontalAlignment=Alignment.CenterHorizontally) {
                 BotAvatar(id,avatar.color,size=43.dp,secondary=avatar.secondary,ink=avatar.ink,paper=avatar.paper,animated=false)
                 Text(label,style=MaterialTheme.typography.labelSmall)
             }
@@ -414,8 +435,8 @@ fun AvatarPicker(avatar: SummonAvatar, onChange: (SummonAvatar) -> Unit) {
         for(i in 0 until templates.length()) {
             val t=templates.getJSONObject(i)
             val selected=avatar.color.equals(t.getString("color"),true) && avatar.secondary.equals(t.getString("secondary"),true)
-            Column(Modifier.width(68.dp).clip(RoundedCornerShape(8.dp)).background(if(selected) Color(0xFF454559) else Color.Transparent).summonPress { onChange(avatar.copy(color=t.getString("color"),secondary=t.getString("secondary"),ink=t.getString("ink"),paper=t.getString("paper"),image=null)) }.padding(4.dp)) {
-                Row { Box(Modifier.weight(1f).height(24.dp).background(summonColor(t.getString("color"))));Box(Modifier.weight(1f).height(24.dp).background(summonColor(t.getString("secondary")))) }
+            Column(Modifier.width(68.dp).clip(RoundedCornerShape(8.dp)).background(if(selected) palette.selectionBg else Color.Transparent).border(if(selected) 1.5.dp else 0.dp, if(selected) palette.ok else Color.Transparent, RoundedCornerShape(8.dp)).summonPress { onChange(avatar.copy(color=t.getString("color"),secondary=t.getString("secondary"),ink=t.getString("ink"),paper=t.getString("paper"),image=null)) }.padding(4.dp)) {
+                Row(Modifier.clip(RoundedCornerShape(5.dp))) { Box(Modifier.weight(1f).height(24.dp).background(summonColor(t.getString("color"))));Box(Modifier.weight(1f).height(24.dp).background(summonColor(t.getString("secondary")))) }
                 Text(t.getString("name"),style=MaterialTheme.typography.labelSmall)
             }
         }
@@ -450,12 +471,13 @@ private fun CrewColorField(label:String,value:String,onChange:(String)->Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CreateRoomSheet(store: SummonStore, onOpenRoom: (String) -> Unit, onDismiss: () -> Unit) {
+    val palette = LocalSummonPalette.current
     val scope = rememberCoroutineScope()
     var title by remember { mutableStateOf("") }
     var members by remember { mutableStateOf<Set<String>>(emptySet()) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = palette.surfaceElevated) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("创建群聊", style = MaterialTheme.typography.titleLarge)
             OutlinedTextField(title, { title = it }, label = { Text("群名称（可选）") }, singleLine = true, modifier = Modifier.fillMaxWidth())

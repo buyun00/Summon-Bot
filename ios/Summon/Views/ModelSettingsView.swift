@@ -1,7 +1,7 @@
 import SwiftUI
 import Foundation
 
-private let modelTint = Color(red: 0.58, green: 0.68, blue: 0.60)
+private let modelTint = SummonTheme.ok
 private extension SummonJSONValue {
     var modelNumber: Double? { if case .number(let value) = self, value.isFinite { return value }; return nil }
 }
@@ -52,19 +52,21 @@ private struct ModelGaugeData {
     }
 }
 struct ModelQuotaSignal: View {
+    @Environment(\.colorScheme) private var colorScheme
     let item: SummonJSONValue
     let label: String
     let action: () -> Void
     var body: some View {
         let gauge = ModelGaugeData(item)
+        let trackColor = colorScheme == .dark ? Color.white.opacity(0.14) : Color.black.opacity(0.10)
         Button(action: action) {
             VStack(spacing: 1) {
                 ZStack(alignment: .top) {
                     Canvas { context, _ in
                         var track = Path(); track.addArc(center: CGPoint(x: 32, y: 29), radius: 23, startAngle: .degrees(135), endAngle: .degrees(405), clockwise: false)
-                        context.stroke(track, with: .color(Color.white.opacity(0.13)), style: StrokeStyle(lineWidth: 3.2, lineCap: .round))
-                        if let remaining = gauge.ring, remaining > 0 { var progress = Path(); progress.addArc(center: CGPoint(x: 32, y: 29), radius: 23, startAngle: .degrees(135), endAngle: .degrees(135 + 270 * remaining / 100), clockwise: false); context.stroke(progress, with: .color(remaining < 10 ? .orange : modelTint), style: StrokeStyle(lineWidth: 3.2, lineCap: .round)) }
-                        if let dots = gauge.dots { for (index, point) in [CGPoint(x: 21, y: 49), CGPoint(x: 28.5, y: 51.5), CGPoint(x: 35.5, y: 51.5), CGPoint(x: 43, y: 49)].enumerated() { context.fill(Path(ellipseIn: CGRect(x: point.x - 1.9, y: point.y - 1.9, width: 3.8, height: 3.8)), with: .color(index < dots ? modelTint : Color.white.opacity(0.13))) } }
+                        context.stroke(track, with: .color(trackColor), style: StrokeStyle(lineWidth: 3.2, lineCap: .round))
+                        if let remaining = gauge.ring, remaining > 0 { var progress = Path(); progress.addArc(center: CGPoint(x: 32, y: 29), radius: 23, startAngle: .degrees(135), endAngle: .degrees(135 + 270 * remaining / 100), clockwise: false); context.stroke(progress, with: .color(remaining < 10 ? SummonTheme.warn : modelTint), style: StrokeStyle(lineWidth: 3.2, lineCap: .round)) }
+                        if let dots = gauge.dots { for (index, point) in [CGPoint(x: 21, y: 49), CGPoint(x: 28.5, y: 51.5), CGPoint(x: 35.5, y: 51.5), CGPoint(x: 43, y: 49)].enumerated() { context.fill(Path(ellipseIn: CGRect(x: point.x - 1.9, y: point.y - 1.9, width: 3.8, height: 3.8)), with: .color(index < dots ? modelTint : trackColor)) } }
                     }
                     if gauge.loading { ProgressView().controlSize(.small).tint(modelTint).frame(width: 24, height: 24).padding(.top, 16) }
                     else if gauge.showsBrand { ModelBrandImage(item: item).padding(.top, 16) }

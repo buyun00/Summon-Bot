@@ -6,7 +6,7 @@ struct BotWorkingIndicator: View {
     let bot: SummonBot?
     var name: String? = nil
     var status: String = "正在仔细分析"
-    var motion: String? = nil
+    var motion: String? = "work"
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
@@ -22,23 +22,23 @@ struct BotWorkingIndicator: View {
     }
 
     private var label: String {
-        [displayName, status].compactMap { $0 }.joined(separator: " ")
+        [displayName, status].compactMap { $0 }.joined(separator: " · ")
     }
 
     var body: some View {
-        HStack(spacing: 9) {
+        HStack(spacing: 10) {
             ZStack {
                 if let bot {
-                    MemberAvatar(bot: bot, size: 24, motion: motion)
+                    MemberAvatar(bot: bot, size: 28, motion: motion ?? "work")
                         .id(bot.id)
-                        .transition(.opacity)
+                        .transition(.scale(scale: 0.75).combined(with: .opacity))
                 } else {
                     ProgressView().controlSize(.small)
                         .transition(.opacity)
                 }
             }
-            .frame(width: 24, height: 28)
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: bot?.id)
+            .frame(width: 28, height: 28)
+            .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.78), value: bot?.id)
 
             ZStack(alignment: .leading) {
                 statusText
@@ -46,10 +46,10 @@ struct BotWorkingIndicator: View {
                     .overlay {
                         if animates {
                             TimelineView(.animation(minimumInterval: 1.0 / 24)) { context in
-                                let phase = CGFloat(context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 2.3) / 2.3)
+                                let phase = CGFloat(context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 2.1) / 2.1)
                                 GeometryReader { geometry in
-                                    let width = max(32, geometry.size.width * 0.65)
-                                    LinearGradient(colors: [.clear, Color.primary.opacity(0.85), .clear],
+                                    let width = max(36, geometry.size.width * 0.6)
+                                    LinearGradient(colors: [.clear, Color.primary.opacity(0.92), .clear],
                                                    startPoint: .leading, endPoint: .trailing)
                                         .frame(width: width)
                                         .offset(x: -width + (geometry.size.width + width) * phase)
@@ -67,9 +67,9 @@ struct BotWorkingIndicator: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .clipped()
-            .animation(.easeInOut(duration: reduceMotion ? 0.15 : 0.35), value: label)
+            .animation(.easeInOut(duration: reduceMotion ? 0.15 : 0.32), value: label)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 3)
         .onAppear { isVisible = true }
         .onDisappear { isVisible = false }
         .accessibilityElement(children: .ignore)
@@ -78,7 +78,7 @@ struct BotWorkingIndicator: View {
 
     private var statusText: some View {
         Text(label)
-            .summonFont(.subheadline)
+            .summonFont(.subheadline, weight: .medium)
             .lineLimit(1)
             .truncationMode(.tail)
             .frame(maxWidth: .infinity, alignment: .leading)

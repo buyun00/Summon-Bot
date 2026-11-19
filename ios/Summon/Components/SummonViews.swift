@@ -1,8 +1,69 @@
 import SwiftUI
+import UIKit
 
 enum SummonTheme {
-    static let background = Color(uiColor: .systemBackground)
-    static let surface = Color(uiColor: .secondarySystemBackground)
+    private static func dynamic(
+        light: (CGFloat, CGFloat, CGFloat, CGFloat),
+        dark: (CGFloat, CGFloat, CGFloat, CGFloat)
+    ) -> Color {
+        Color(uiColor: UIColor { traits in
+            let c = traits.userInterfaceStyle == .dark ? dark : light
+            return UIColor(red: c.0, green: c.1, blue: c.2, alpha: c.3)
+        })
+    }
+
+    static let background = dynamic(
+        light: (0.973, 0.965, 0.945, 1), // #F8F6F1
+        dark: (0.043, 0.047, 0.063, 1)   // #0B0C10
+    )
+    static let surface = dynamic(
+        light: (0.945, 0.933, 0.906, 1), // #F1EEE7
+        dark: (0.094, 0.102, 0.133, 1)   // #181A22
+    )
+    static let surfaceElevated = dynamic(
+        light: (1.0, 0.992, 0.973, 1),   // #FFFDF8
+        dark: (0.125, 0.137, 0.176, 1)   // #20232D
+    )
+    static let botBubble = dynamic(
+        light: (0.945, 0.933, 0.906, 0.96),
+        dark: (0.106, 0.114, 0.153, 0.90)
+    )
+    static let userBubble = dynamic(
+        light: (0.145, 0.137, 0.125, 1), // #252320
+        dark: (0.192, 0.212, 0.275, 0.94)
+    )
+    static let userBubbleText = dynamic(
+        light: (0.985, 0.976, 0.961, 1),
+        dark: (0.949, 0.957, 0.976, 1)
+    )
+    static let bubbleStroke = dynamic(
+        light: (0, 0, 0, 0.065),
+        dark: (1, 1, 1, 0.115)
+    )
+    static let hairline = dynamic(
+        light: (0, 0, 0, 0.07),
+        dark: (1, 1, 1, 0.09)
+    )
+    static let tint = dynamic(
+        light: (0.145, 0.137, 0.125, 1),
+        dark: (0.925, 0.941, 0.973, 1)
+    )
+    static let ok = dynamic(
+        light: (0.373, 0.482, 0.416, 1), // #5F7B6A
+        dark: (0.498, 0.761, 0.627, 1)   // #7FC2A0
+    )
+    static let warn = dynamic(
+        light: (0.776, 0.490, 0.231, 1), // #C67D3B
+        dark: (0.890, 0.655, 0.392, 1)   // #E3A764
+    )
+    static let codeBackground = dynamic(
+        light: (0.914, 0.894, 0.855, 1),
+        dark: (0.067, 0.075, 0.106, 0.96)
+    )
+    static let quoteBackground = dynamic(
+        light: (0, 0, 0, 0.045),
+        dark: (1, 1, 1, 0.07)
+    )
 }
 
 struct MemberAvatar: View {
@@ -40,9 +101,10 @@ struct RoomAvatar: View {
                     Group {
                         if id == "user" {
                             Text(String(store.settings.userName.prefix(1)))
-                                .font(.system(size: child * 0.25))
+                                .font(.system(size: child * 0.28, weight: .semibold))
+                                .foregroundStyle(.primary)
                                 .frame(width: child * 0.86, height: child * 0.86)
-                                .background(Color(uiColor: .systemGray5), in: Circle())
+                                .background(SummonTheme.surfaceElevated, in: Circle())
                                 .overlay(Circle().stroke(background, lineWidth: outlineWidth))
                                 .frame(width: child, height: child)
                         } else {

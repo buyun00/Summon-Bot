@@ -13,11 +13,21 @@ struct ChatView: View {
     @State private var staging = false
     @State private var showReferences = false
     @State private var showDetails = false
+    @State private var activeExecutionRef: SummonReference?
+    @State private var executionsExpanded = false
     @State private var localError: String?
     @State private var nearBottom = true
     @State private var userScrolling = false
     @State private var sentRevision = 0
     @FocusState private var composing: Bool
+
+    private struct ActiveBotItem: Identifiable, Equatable {
+        let id: String
+        let bot: SummonBot?
+        let name: String
+        let status: String
+        let ref: SummonReference?
+    }
 
     private var room: SummonRoom? { store.room(id: roomID) }
     private var draftText: Binding<String> {
@@ -31,9 +41,36 @@ struct ChatView: View {
         guard let room, !room.isGroup else { return nil }
         return room.members.compactMap { store.bot(id: $0) }.first
     }
+    private var roomBots: [SummonBot] {
+        room?.members.compactMap { store.bot(id: $0) } ?? []
+    }
     private var title: String { room?.name ?? "聊天" }
+    private var subtitle: String {
+        guard let room else { return "" }
+        if room.isGroup { return "\(roomBots.count) 位伙伴" }
+        if let bot = directBot { return bot.isPaused ? "已暂停" : "启用" }
+        return ""
+    }
+    private var roomExecutions: [SummonJSONValue] { store.executionsForRoom(roomID) }
+    private var activeBotItems: [ActiveBotItem] {
+        var seen = Set<String>()
+        var result: [ActiveBotItem] = []
+        for exec in store.activeExecutionsForRoom(roomID) {
+            let botID = exec["execution_actor"]["id"].string ?? exec["bot_id"].string ?? ""
+            let key = botID.isEmpty ? (exec["execution_ref"]["id"].string ?? exec.prettyPrinted) : botID
+            guard seen.insert(key).inserted else { continue }
+            let bot = botID.isEmpty ? nil : store.bot(id: botID)
+            let name = bot?.name ?? (botID.isEmpty ? "执行会话" : store.name(for: botID))
+            let status = SummonFormat.status(exec["status"].stringValue)
+            result.append(ActiveBotItem(id: key, bot: bot, name: name, status: status, ref: SummonReference(exec["execution_ref"])))
+        }
+        return result
+    }
+    private var pendingInputExecution: SummonJSONValue? {
+        roomExecutions.first { ["needs_input", "awaiting_input"].contains($0["status"].stringValue) }
+    }
     private var composerAccent: Color {
-        let bot = directBot ?? room?.members.compactMap { store.bot(id: $0) }.first
+        let bot = directBot ?? roomBots.first
         return Color(summonHex: bot?.resolvedAvatar.color ?? SummonAvatar().color)
     }
     private var hasMessageContent: Bool {
@@ -58,7 +95,10 @@ struct ChatView: View {
                             store.setDraftReply(message.id, for: roomID)
                             composing = true
                         }.id(message.id)
-                            .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 12)), removal: .identity))
+                            .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 10)), removal: .identity))
+                    }
+                    if !roomExecutions.isEmpty {
+                        executionDisclosure
                     }
                     Color.clear.frame(height: 18).id("conversation-bottom")
                 }
@@ -107,11 +147,36 @@ struct ChatView: View {
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .principal) {
                 Button { showDetails = true } label: {
-                    if let bot = directBot { MemberAvatar(bot: bot, size: 30) }
-                    else { Image(systemName: "info.circle") }
-                }.accessibilityLabel("会话详情")
+                    HStack(spacing: 8) {
+                        if let bot = directBot {
+                            MemberAvatar(bot: bot, size: 26)
+                        } else if let room {
+                            RoomAvatar(room: room, size: 26)
+                        }
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(title)
+                                .summonFont(.subheadline, weight: .semibold)
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                            if !subtitle.isEmpty {
+                                Text(subtitle)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(title)，查看会话详情")
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
@@ -129,6 +194,16 @@ struct ChatView: View {
             Task { await stagePhoto(item) }
         }
         .summonSheet(isPresented: $showDetails) { NavigationStack { RoomDetailsView(roomID: roomID) } }
+        .summonSheet(item: $activeExecutionRef) { ref in
+            NavigationStack {
+                SummonExecutionView(ref: ref)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("关闭") { activeExecutionRef = nil }
+                        }
+                    }
+            }
+        }
         .summonSheet(isPresented: $showReferences) {
             SummonReferencePicker(roomID: roomID) { ref in
                 if !references.contains(ref) { store.setDraftReferences(references + [ref], for: roomID) }
@@ -136,11 +211,94 @@ struct ChatView: View {
         }
     }
 
+    private var executionDisclosure: some View {
+        DisclosureGroup(isExpanded: $executionsExpanded) {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(roomExecutions.enumerated()), id: \.offset) { _, exec in
+                    if let ref = SummonReference(exec["execution_ref"]) {
+                        let status = exec["status"].stringValue
+                        let actorID = exec["execution_actor"]["id"].string ?? exec["bot_id"].string
+                        let actorName = actorID.map { store.name(for: $0) } ?? "执行会话"
+                        let engineName = exec["kind"].string == "conversation" ? "内部对话" : (exec["engine"].string ?? "执行")
+                        Button { activeExecutionRef = ref } label: {
+                            HStack(spacing: 10) {
+                                if let actorID, let bot = store.bot(id: actorID) {
+                                    MemberAvatar(bot: bot, size: 22, motion: ["running", "waiting", "queued"].contains(status) ? "work" : "idle")
+                                }
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("\(engineName) · \(actorName)")
+                                        .summonFont(.footnote, weight: .medium)
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(1)
+                                    Text(SummonFormat.status(status))
+                                        .summonFont(.caption2)
+                                        .foregroundStyle(status == "completed" ? SummonTheme.ok : (status == "needs_input" || status == "awaiting_input") ? SummonTheme.warn : .secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .padding(.vertical, 6)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .padding(.top, 6)
+        } label: {
+            Label("执行过程（\(roomExecutions.count)）", systemImage: "terminal")
+                .summonFont(.caption, weight: .medium)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(SummonTheme.surface, in: RoundedRectangle(cornerRadius: 16))
+        .overlay { RoundedRectangle(cornerRadius: 16).stroke(SummonTheme.bubbleStroke, lineWidth: 0.7) }
+    }
+
     private var composer: some View {
-        VStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 8) {
             if let error = localError { InlineError(message: error).padding(.horizontal, 20) }
             if let notice = store.protocolNotice {
                 SummonProtocolNotice(notice: notice, needsUpdate: store.needsClientUpdate)
+            }
+            if !activeBotItems.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(activeBotItems) { item in
+                        Button {
+                            if let ref = item.ref { activeExecutionRef = ref }
+                            else { showDetails = true }
+                        } label: {
+                            BotWorkingIndicator(bot: item.bot, name: item.name, status: item.status, motion: "work")
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 18)
+                .transition(.opacity.combined(with: .offset(y: reduceMotion ? 0 : 6)))
+            }
+            if let pendingExec = pendingInputExecution, let ref = SummonReference(pendingExec["execution_ref"]) {
+                Button { activeExecutionRef = ref } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "questionmark.circle.fill")
+                            .foregroundStyle(SummonTheme.warn)
+                        Text("有待处理的确认或输入请求")
+                            .summonFont(.caption, weight: .medium)
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        Text("去回复")
+                            .summonFont(.caption, weight: .semibold)
+                            .foregroundStyle(SummonTheme.warn)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+                    .glassEffect(.regular, in: .rect(cornerRadius: 16))
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 14)
+                .transition(.opacity.combined(with: .offset(y: reduceMotion ? 0 : 6)))
             }
             if let replyID {
                 HStack {
@@ -149,7 +307,11 @@ struct ChatView: View {
                     Spacer()
                     Button("取消回复", systemImage: "xmark.circle.fill") { store.setDraftReply(nil, for: roomID) }
                         .labelStyle(.iconOnly)
-                }.padding(.horizontal, 22)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(SummonTheme.surface, in: RoundedRectangle(cornerRadius: 14))
+                .padding(.horizontal, 14)
             }
             if !files.isEmpty || !references.isEmpty || !mentions.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -222,7 +384,9 @@ struct ChatView: View {
                     }
                 }.padding(.horizontal, 14).padding(.bottom, 8)
             }
-        }.padding(.top, 8)
+        }
+        .padding(.top, 8)
+        .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.82), value: activeBotItems)
     }
 
     private func draftToken(_ title: String, icon: String, remove: @escaping () -> Void) -> some View {
@@ -312,37 +476,70 @@ private struct MessageRow: View {
                 }.foregroundStyle(.secondary)
                 if let replyID = message.replyTo,
                    let quoted = store.messagesForRoom(roomID).first(where: { $0.id == replyID }) {
-                    Text("\(store.name(for: quoted.senderId))：\(quoted.content)").summonFont(.caption).lineLimit(3)
-                        .foregroundStyle(.secondary).padding(10)
-                        .background(SummonTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+                    HStack(spacing: 8) {
+                        Capsule()
+                            .fill(SummonTheme.ok)
+                            .frame(width: 2.5)
+                        Text("\(store.name(for: quoted.senderId))：\(quoted.content)")
+                            .summonFont(.caption)
+                            .lineLimit(3)
+                            .foregroundStyle(.secondary)
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(SummonTheme.quoteBackground, in: RoundedRectangle(cornerRadius: 12))
                 }
                 if let replyID = message.replyTo, !store.messagesForRoom(roomID).contains(where: { $0.id == replyID }) {
                     Button("查看引用的消息") { reference = SummonReference(kind: "event", id: replyID) }.summonFont(.caption)
                 }
                 if !message.mentions.isEmpty {
-                    Text(message.mentions.map { "@" + store.name(for: $0) }.joined(separator: " ")).summonFont(.caption)
+                    HStack(spacing: 6) {
+                        ForEach(message.mentions, id: \.self) { id in
+                            Text("@" + store.name(for: id))
+                                .summonFont(.caption2, weight: .medium)
+                                .foregroundStyle(SummonTheme.ok)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(SummonTheme.ok.opacity(0.14), in: Capsule())
+                        }
+                    }
                 }
                 if !message.content.isEmpty {
-                    Text(.init(message.content))
-                        .textSelection(.enabled)
-                        .padding(.horizontal, message.isOwn ? 14 : 0)
-                        .padding(.vertical, message.isOwn ? 14 : 12)
-                        .background {
-                            // Grow the bot bubble around the existing text area, preserving its line width.
-                            RoundedRectangle(cornerRadius: 21).fill(SummonTheme.surface)
-                                .padding(.horizontal, message.isOwn ? 0 : -10)
+                    let bubbleShape = UnevenRoundedRectangle(
+                        topLeadingRadius: 20,
+                        bottomLeadingRadius: message.isOwn ? 20 : 6,
+                        bottomTrailingRadius: message.isOwn ? 6 : 20,
+                        topTrailingRadius: 20
+                    )
+                    MessageContentView(text: message.content, isOwn: message.isOwn)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 11)
+                        .background(message.isOwn ? SummonTheme.userBubble : SummonTheme.botBubble, in: bubbleShape)
+                        .overlay {
+                            if !message.isOwn {
+                                bubbleShape.stroke(SummonTheme.bubbleStroke, lineWidth: 0.7)
+                            }
                         }
                 }
                 ForEach(message.attachments) { attachment in AttachmentRow(attachment: attachment) }
                 ForEach(message.references, id: \.self) { ref in
-                    Button(store.label(ref), systemImage: "link") { reference = ref }.summonFont(.caption)
+                    Button { reference = ref } label: {
+                        Label(store.label(ref), systemImage: "link")
+                            .summonFont(.caption)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(SummonTheme.surface, in: Capsule())
+                            .overlay { Capsule().stroke(SummonTheme.bubbleStroke, lineWidth: 0.6) }
+                    }
+                    .buttonStyle(.plain)
                 }
                 if let pending, pending.status != "sent" {
                     if pending.status == "sending" {
                         Label("正在发送…", systemImage: "clock").summonFont(.caption2).foregroundStyle(.secondary)
                     } else {
                         VStack(alignment: .trailing, spacing: 6) {
-                            Text(pending.error ?? "保存状态待确认").summonFont(.caption2).foregroundStyle(.orange)
+                            Text(pending.error ?? "保存状态待确认").summonFont(.caption2).foregroundStyle(SummonTheme.warn)
                             if pending.status == "rejected" {
                                 Button("转回草稿") {
                                     do { try store.restoreRejectedMessage(pending) }
@@ -356,11 +553,15 @@ private struct MessageRow: View {
                     }
                 } else if message.isOwn {
                     let facts = store.deliveryFacts(message.id)
-                    DisclosureGroup("消息已保存") {
-                        ForEach(facts, id: \.bot_id) { fact in
-                            Text("\(store.name(for: fact.bot_id)) · \(SummonFormat.status(fact.status))").summonFont(.caption2)
-                        }
-                    }.summonFont(.caption2).foregroundStyle(.secondary)
+                    if !facts.isEmpty {
+                        DisclosureGroup("消息已保存") {
+                            ForEach(facts, id: \.bot_id) { fact in
+                                Text("\(store.name(for: fact.bot_id)) · \(SummonFormat.status(fact.status))").summonFont(.caption2)
+                            }
+                        }.summonFont(.caption2).foregroundStyle(.secondary)
+                    } else {
+                        Text("消息已保存").summonFont(.caption2).foregroundStyle(.tertiary)
+                    }
                 }
                 if let failure { InlineError(message: failure) }
             }
@@ -385,7 +586,143 @@ private struct MessageRow: View {
                 ShareLink(item: message.content)
             }
         }
-        .sheet(item: $reference) { ref in NavigationStack { SummonReferenceView(ref: ref) } }
+        .summonSheet(item: $reference) { ref in NavigationStack { SummonReferenceView(ref: ref) } }
+    }
+}
+
+private enum MessageSegment: Identifiable {
+    case text(id: Int, value: String)
+    case code(id: Int, language: String, code: String)
+
+    var id: Int {
+        switch self {
+        case .text(let id, _): id
+        case .code(let id, _, _): id
+        }
+    }
+
+    static func parse(_ source: String) -> [MessageSegment] {
+        let lines = source.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var segments: [MessageSegment] = []
+        var textLines: [String] = []
+        var codeLines: [String] = []
+        var inCode = false
+        var language = ""
+        var nextID = 0
+
+        func flushText() {
+            let joined = textLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !joined.isEmpty {
+                segments.append(.text(id: nextID, value: joined))
+                nextID += 1
+            }
+            textLines.removeAll()
+        }
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("```") {
+                if inCode {
+                    segments.append(.code(id: nextID, language: language, code: codeLines.joined(separator: "\n")))
+                    nextID += 1
+                    codeLines.removeAll()
+                    language = ""
+                    inCode = false
+                } else {
+                    flushText()
+                    language = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+                    inCode = true
+                }
+            } else if inCode {
+                codeLines.append(line)
+            } else {
+                textLines.append(line)
+            }
+        }
+        if inCode {
+            segments.append(.code(id: nextID, language: language, code: codeLines.joined(separator: "\n")))
+        } else {
+            flushText()
+        }
+        return segments.isEmpty ? [.text(id: 0, value: source)] : segments
+    }
+}
+
+private struct MessageContentView: View {
+    let text: String
+    let isOwn: Bool
+
+    var body: some View {
+        let segments = MessageSegment.parse(text)
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(segments) { segment in
+                switch segment {
+                case .text(_, let value):
+                    markdownText(value)
+                        .foregroundStyle(isOwn ? SummonTheme.userBubbleText : Color.primary)
+                        .textSelection(.enabled)
+                case .code(_, let language, let code):
+                    CodeBlockCard(language: language, code: code)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func markdownText(_ value: String) -> some View {
+        if let attributed = try? AttributedString(
+            markdown: value,
+            options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        ) {
+            Text(attributed)
+        } else {
+            Text(value)
+        }
+    }
+}
+
+private struct CodeBlockCard: View {
+    let language: String
+    let code: String
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(language.isEmpty ? "代码" : language.uppercased())
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    UIPasteboard.general.string = code
+                    copied = true
+                    Task {
+                        try? await Task.sleep(for: .milliseconds(1400))
+                        copied = false
+                    }
+                } label: {
+                    Label(copied ? "已复制" : "复制", systemImage: copied ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(copied ? SummonTheme.ok : .secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(SummonTheme.hairline).frame(height: 0.6)
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                Text(code)
+                    .font(.system(size: 13, design: .monospaced))
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+                    .padding(12)
+            }
+        }
+        .background(SummonTheme.codeBackground, in: RoundedRectangle(cornerRadius: 12))
+        .overlay { RoundedRectangle(cornerRadius: 12).stroke(SummonTheme.bubbleStroke, lineWidth: 0.7) }
     }
 }
 

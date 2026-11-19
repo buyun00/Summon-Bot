@@ -353,5 +353,5 @@ internal fun SummonTextField(label: String, text: String, update: (String) -> Un
 
 @Composable
 internal fun SummonError(error: String) {
-    Text(error, color = Color(0xFFFF9F0A), style = MaterialTheme.typography.bodySmall)
+    Text(error, color = LocalSummonPalette.current.warn, style = MaterialTheme.typography.bodySmall)
 }

@@ -5,6 +5,7 @@ struct ConversationListView: View {
     @State private var path: [String] = []
     @State private var query = ""
     @State private var showSettings = false
+    @State private var showDisplay = false
     @State private var showUsage = false
     @State private var showProfileMenu = false
     @State private var profileDestination: ProfileDestination?
@@ -34,7 +35,15 @@ struct ConversationListView: View {
                 LazyVStack(spacing: 0) {
                     connectionStatus
                     if !groups.isEmpty { groupGrid }
-                    ForEach(contacts) { bot in contact(bot) }
+                    ForEach(contacts) { bot in
+                        contact(bot)
+                        if bot.id != contacts.last?.id {
+                            Rectangle()
+                                .fill(SummonTheme.hairline)
+                                .frame(height: 0.5)
+                                .padding(.leading, 88)
+                        }
+                    }
                     if store.bots.isEmpty && store.rooms.isEmpty && !store.isLoading && store.protocolReady {
                         ContentUnavailableView {
                             Label("你的工作空间", systemImage: "bubble.left.and.bubble.right")
@@ -58,17 +67,15 @@ struct ConversationListView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button { showProfileMenu.toggle() } label: {
-                        ZStack {
-                            Image("OwnerPaperFrame").resizable().scaledToFit()
-                            Image("OwnerAvatar").resizable().scaledToFill()
-                                .frame(width: 36 * 0.74, height: 36 * 0.74).clipShape(.circle)
-                        }
-                            .frame(width: 36, height: 36)
+                        Image("OwnerAvatar").resizable().scaledToFill()
+                            .frame(width: 34, height: 34)
+                            .clipShape(.circle)
+                            .overlay { Circle().strokeBorder(SummonTheme.bubbleStroke, lineWidth: 1) }
                             .overlay(alignment: .bottomTrailing) {
-                                Circle().fill(store.isConnected ? Color(red: 0.58, green: 0.68, blue: 0.60) : .gray)
-                                    .frame(width: 8, height: 8)
-                                    .overlay { Circle().strokeBorder(Color(red: 0.96, green: 0.96, blue: 0.95), lineWidth: 1.5) }
-                                    .padding(2)
+                                Circle().fill(store.isConnected ? SummonTheme.ok : .gray)
+                                    .frame(width: 9, height: 9)
+                                    .overlay { Circle().strokeBorder(SummonTheme.background, lineWidth: 1.8) }
+                                    .offset(x: 1, y: 1)
                             }
                     }
                     .buttonStyle(.plain)
@@ -96,6 +103,7 @@ struct ConversationListView: View {
                 if old.baseURL != new.baseURL { path = [] }
             }
             .summonSheet(isPresented: $showSettings) { ConnectionSettingsView() }
+            .summonSheet(isPresented: $showDisplay) { SummonDisplaySettingsView() }
             .summonSheet(isPresented: $showUsage) { TokenUsageView() }
             .summonSheet(isPresented: Binding(get: { quotaItem != nil }, set: { if !$0 { quotaItem = nil } })) { if let quotaItem { ModelQuotaDetailsView(item: quotaItem) } }
             .summonSheet(isPresented: $showCreateBot) {
@@ -143,7 +151,7 @@ struct ConversationListView: View {
     }
 
     private enum ProfileDestination {
-        case usage, settings, models
+        case usage, display, settings, models
         case quota(SummonJSONValue)
         case resource(ResourceSection)
     }
@@ -157,6 +165,7 @@ struct ConversationListView: View {
                     }
                 }.padding(.vertical, 8)
                 profileMenuButton("Token 统计", symbol: "chart.bar", destination: .usage)
+                profileMenuButton("显示与外观", symbol: "circle.lefthalf.filled", destination: .display)
                 profileMenuButton("设置", symbol: "gearshape", destination: .settings)
                 profileMenuButton("模型与用量", symbol: "cpu", destination: .models)
                 Divider().padding(.vertical, 6)
@@ -166,8 +175,7 @@ struct ConversationListView: View {
             }.padding(12)
         }
         .scrollBounceBehavior(.basedOnSize)
-        .frame(width: 264, height: 456)
-        .background(SummonTheme.surface)
+        .frame(width: 268, height: 492)
     }
 
     private func profileMenuButton(_ title: String, symbol: String, destination: ProfileDestination) -> some View {
@@ -188,6 +196,7 @@ struct ConversationListView: View {
         profileDestination = nil
         switch destination {
         case .usage: showUsage = true
+        case .display: showDisplay = true
         case .settings: showSettings = true
         case .models: showModels = true
         case .quota(let item): quotaItem = item

@@ -28,6 +28,7 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SummonConnectionGuide(store: SummonStore, scope: CoroutineScope) {
+    val palette = LocalSummonPalette.current
     var address by remember { mutableStateOf("") }
     var token by remember { mutableStateOf("") }
     var awaitingToken by remember { mutableStateOf(false) }
@@ -42,7 +43,7 @@ fun SummonConnectionGuide(store: SummonStore, scope: CoroutineScope) {
         Text("连接 Summon Bot", style = MaterialTheme.typography.headlineMedium)
         Text("输入部署者提供的实例地址和访问令牌。")
         if (awaitingToken) {
-            Text(address, color = Color.Gray)
+            Text(address, color = palette.textSecondary)
             Text("接下来输入部署者给你的访问令牌。")
             OutlinedTextField(token, { token = it }, label = { Text("访问令牌") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), visualTransformation = PasswordVisualTransformation(), enabled = !saving)
@@ -65,6 +66,6 @@ fun SummonConnectionGuide(store: SummonStore, scope: CoroutineScope) {
                 catch (failure: Exception) { error = failure.localizedMessage }
             }) { Text("继续") }
         }
-        error?.let { Text(it, color = Color(0xFFFF9F0A)) }
+        error?.let { Text(it, color = palette.warn) }
     }
 }

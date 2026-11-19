@@ -98,10 +98,11 @@ fun MemberAvatar(bot:SummonBot?,size:Dp=48.dp,modifier:Modifier=Modifier,motion:
 
 @Composable
 fun RoomAvatar(room: SummonRoom, bots: List<SummonBot>, size: Dp = 86.dp, background: Color = androidx.compose.material3.MaterialTheme.colorScheme.background) {
+    val palette = LocalSummonPalette.current
     val members = room.members.filter { id -> id == "user" || bots.any { it.id == id } }.take(4)
     Box(Modifier.size(size), contentAlignment = androidx.compose.ui.Alignment.Center) {
         if (members.isEmpty()) {
-            Box(Modifier.size(size * 0.55f).clip(androidx.compose.foundation.shape.CircleShape).background(Color(0xFF3A3A3C)))
+            Box(Modifier.size(size * 0.55f).clip(androidx.compose.foundation.shape.CircleShape).background(palette.surface))
         } else {
             members.forEachIndexed { index, id ->
                 val child = if (members.size == 1) size else size * (if (members.size == 2) 0.66f else 0.58f)
@@ -118,25 +119,58 @@ fun RoomAvatar(room: SummonRoom, bots: List<SummonBot>, size: Dp = 86.dp, backgr
                 }
                 Box(Modifier.offset(x, y).size(child), contentAlignment = androidx.compose.ui.Alignment.Center) {
                     if (id == "user") {
-                        androidx.compose.material3.Text("我", modifier = Modifier.size(child * 0.86f).clip(androidx.compose.foundation.shape.CircleShape).background(Color(0xFFE8E8E8)).border(outlineWidth,background,androidx.compose.foundation.shape.CircleShape).wrapContentSize(), color = Color(0xFF555555))
+                        androidx.compose.material3.Text(
+                            "我",
+                            modifier = Modifier.size(child * 0.86f).clip(androidx.compose.foundation.shape.CircleShape)
+                                .background(palette.surfaceElevated)
+                                .border(outlineWidth, background, androidx.compose.foundation.shape.CircleShape)
+                                .wrapContentSize(),
+                            color = androidx.compose.material3.MaterialTheme.colorScheme.onSurface,
+                        )
                     } else {
-                        MemberAvatar(bots.first { it.id == id }, child, groupOutline=background)
+                        MemberAvatar(bots.first { it.id == id }, child, groupOutline = background)
                     }
                 }
             }
         }
     }
-
 }
 
 @Composable
-fun BotWorkingIndicator(bot: SummonBot?, name: String?, status: String, motion: String? = null) {
-    androidx.compose.foundation.layout.Row(verticalAlignment=androidx.compose.ui.Alignment.CenterVertically) {
-        MemberAvatar(bot,28.dp,motion=motion)
-        androidx.compose.foundation.layout.Spacer(Modifier.size(9.dp))
-        androidx.compose.foundation.layout.Column {
-            (name ?: bot?.name)?.let { androidx.compose.material3.Text(it,style=androidx.compose.material3.MaterialTheme.typography.labelMedium) }
-            androidx.compose.material3.Text(status,color=Color(0xFFAEAEB2),maxLines=2)
+fun BotWorkingIndicator(bot: SummonBot?, name: String?, status: String, motion: String? = "work") {
+    val palette = LocalSummonPalette.current
+    val baseColor = palette.textSecondary
+    val shineColor = androidx.compose.material3.MaterialTheme.colorScheme.onBackground
+    val transition = rememberInfiniteTransition(label = "bot-shimmer")
+    val offset by transition.animateFloat(
+        initialValue = -180f,
+        targetValue = 540f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 2100, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "shimmer-x",
+    )
+    val label = listOfNotNull(name?.takeIf { it.isNotBlank() } ?: bot?.name, status.takeIf { it.isNotBlank() }).joinToString(" · ")
+    val shimmerBrush = androidx.compose.ui.graphics.Brush.linearGradient(
+        colors = listOf(baseColor, shineColor, baseColor),
+        start = androidx.compose.ui.geometry.Offset(offset - 120f, 0f),
+        end = androidx.compose.ui.geometry.Offset(offset + 120f, 0f),
+    )
+    Row(
+        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+        modifier = Modifier.padding(vertical = 3.dp),
+    ) {
+        if (bot != null) {
+            MemberAvatar(bot, 28.dp, motion = motion ?: "work")
+        } else {
+            androidx.compose.material3.CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = palette.ok)
         }
+        Spacer(Modifier.size(10.dp))
+        androidx.compose.material3.Text(
+            text = label,
+            maxLines = 1,
+            style = androidx.compose.material3.MaterialTheme.typography.bodySmall.copy(brush = shimmerBrush),
+        )
     }
 }

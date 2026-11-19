@@ -36,7 +36,6 @@ import java.util.Locale
 import kotlin.math.ceil
 import kotlin.math.roundToInt
 
-private val modelGreen = Color(0xFF93AD99)
 private fun SummonJson.modelNumber(): Double? = (this as? SummonJson.Num)?.value?.takeIf { it.isFinite() }
 private fun modelMoney(value: SummonJson): String {
     val amount = value["amount"].modelNumber() ?: return "—"
@@ -57,11 +56,12 @@ private class ModelBrandCatalog(context: android.content.Context) {
     }
 }
 @Composable private fun ModelBrand(item: SummonJson, modifier: Modifier = Modifier.size(24.dp)) {
+    val palette = LocalSummonPalette.current
     val context = LocalContext.current
     val catalog = remember(context) { ModelBrandCatalog(context) }
     val brand = catalog.brand(item)
     val resource = remember(brand) { context.resources.getIdentifier("ai_$brand", "drawable", context.packageName) }
-    Image(painterResource(if (resource != 0) resource else R.drawable.ai_ai), null, modifier, colorFilter = ColorFilter.tint(modelGreen))
+    Image(painterResource(if (resource != 0) resource else R.drawable.ai_ai), null, modifier, colorFilter = ColorFilter.tint(palette.ok))
 }
 private data class ModelGaugeData(val ring: Double?, val dots: Int?, val value: String, val loading: Boolean = false, val showsBrand: Boolean = true)
 private fun modelGauge(item: SummonJson): ModelGaugeData {
@@ -78,6 +78,7 @@ private fun modelGauge(item: SummonJson): ModelGaugeData {
     return ModelGaugeData(percent, short?.let { ceil((it["remainingPercent"].modelNumber() ?: 0.0).coerceIn(0.0, 100.0) / 25).toInt() }, if (short != null) "" else percent?.let { "${it.roundToInt()}%" } ?: "—")
 }
 @Composable fun ModelQuotaSignal(item: SummonJson, label: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val palette = LocalSummonPalette.current
     val gauge = modelGauge(item)
     Column(modifier.clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick).padding(vertical = 3.dp).semantics { contentDescription = "$label ${item["name"].stringValue} ${gauge.value}，查看额度" }, horizontalAlignment = Alignment.CenterHorizontally) {
         Box(Modifier.size(64.dp, 59.dp)) {
@@ -86,42 +87,44 @@ private fun modelGauge(item: SummonJson): ModelGaugeData {
                 val stroke = Stroke(3.2f * scale, cap = StrokeCap.Round)
                 val top = androidx.compose.ui.geometry.Offset(9f * scale, 6f * scale)
                 val circle = androidx.compose.ui.geometry.Size(46f * scale, 46f * scale)
-                drawArc(Color(0xFF3B443D), 135f, 270f, false, top, circle, style = stroke)
-                gauge.ring?.let { drawArc(if (it < 10) Color(0xFFD3A074) else modelGreen, 135f, (270 * it / 100).toFloat(), false, top, circle, style = stroke) }
-                gauge.dots?.let { dots -> listOf(21f to 49f, 28.5f to 51.5f, 35.5f to 51.5f, 43f to 49f).forEachIndexed { index, (x, y) -> drawCircle(if (index < dots) modelGreen else Color(0xFF3B443D), 1.9f * scale, androidx.compose.ui.geometry.Offset(x * scale, y * scale)) } }
+                drawArc(palette.quotaTrack, 135f, 270f, false, top, circle, style = stroke)
+                gauge.ring?.let { drawArc(if (it < 10) palette.warn else palette.ok, 135f, (270 * it / 100).toFloat(), false, top, circle, style = stroke) }
+                gauge.dots?.let { dots -> listOf(21f to 49f, 28.5f to 51.5f, 35.5f to 51.5f, 43f to 49f).forEachIndexed { index, (x, y) -> drawCircle(if (index < dots) palette.ok else palette.quotaTrack, 1.9f * scale, androidx.compose.ui.geometry.Offset(x * scale, y * scale)) } }
             }
-            if (gauge.loading) CircularProgressIndicator(Modifier.align(Alignment.TopCenter).padding(top = 18.dp).size(20.dp), color = modelGreen, strokeWidth = 2.dp)
+            if (gauge.loading) CircularProgressIndicator(Modifier.align(Alignment.TopCenter).padding(top = 18.dp).size(20.dp), color = palette.ok, strokeWidth = 2.dp)
             else if (gauge.showsBrand) ModelBrand(item, Modifier.align(Alignment.TopCenter).padding(top = 16.dp).size(24.dp))
-            if (gauge.value.isNotEmpty()) Text(gauge.value, modifier = Modifier.align(Alignment.TopCenter).padding(top = 43.dp), color = modelGreen, fontSize = 11.sp)
+            if (gauge.value.isNotEmpty()) Text(gauge.value, modifier = Modifier.align(Alignment.TopCenter).padding(top = 43.dp), color = palette.ok, fontSize = 11.sp)
         }
-        Text(label, color = modelGreen, fontSize = 10.sp, letterSpacing = 1.sp)
+        Text(label, color = palette.ok, fontSize = 10.sp, letterSpacing = 1.sp)
     }
 }
 @Composable fun ModelUsageDetails(item: SummonJson) {
+    val palette = LocalSummonPalette.current
     val usage = item["usage"]
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         ModelBrand(item, Modifier.size(32.dp))
-        Column { Text(item["name"].stringValue.ifBlank { "模型与用量" }, style = MaterialTheme.typography.titleMedium); Text(item["model"].stringValue, color = Color.Gray, style = MaterialTheme.typography.bodySmall) }
+        Column { Text(item["name"].stringValue.ifBlank { "模型与用量" }, style = MaterialTheme.typography.titleMedium); Text(item["model"].stringValue, color = palette.textSecondary, style = MaterialTheme.typography.bodySmall) }
     }
-    (usage["balances"].array.orEmpty() + listOfNotNull(usage["balance"].takeIf { it is SummonJson.Obj })).forEach { Text(modelMoney(it), style = MaterialTheme.typography.headlineSmall, color = modelGreen) }
+    (usage["balances"].array.orEmpty() + listOfNotNull(usage["balance"].takeIf { it is SummonJson.Obj })).forEach { Text(modelMoney(it), style = MaterialTheme.typography.headlineSmall, color = palette.ok) }
     usage["windows"].array.orEmpty().forEach { window ->
         val remaining = window["remainingPercent"].modelNumber()
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(window["name"].stringValue); Text(remaining?.let { "${it.roundToInt()}% 剩余" } ?: "—", color = modelGreen) }
-        if (remaining != null) LinearProgressIndicator(progress = { (remaining / 100).coerceIn(0.0, 1.0).toFloat() }, modifier = Modifier.fillMaxWidth(), color = modelGreen)
-        if (window["resetsAt"].stringValue.isNotBlank()) Text("重置：${window["resetsAt"].stringValue}", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(window["name"].stringValue); Text(remaining?.let { "${it.roundToInt()}% 剩余" } ?: "—", color = palette.ok) }
+        if (remaining != null) LinearProgressIndicator(progress = { (remaining / 100).coerceIn(0.0, 1.0).toFloat() }, modifier = Modifier.fillMaxWidth(), color = palette.ok)
+        if (window["resetsAt"].stringValue.isNotBlank()) Text("重置：${window["resetsAt"].stringValue}", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
     }
-    if (usage["credits"].modelNumber() != null) Text("附加点数 ${usage["credits"].stringValue} credits", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
-    if (usage["unlimited"].bool == true) Text("额外额度不设限", color = modelGreen)
-    if (usage["status"].stringValue == "not_connected") Text(usage["note"].stringValue, color = Color.Gray, style = MaterialTheme.typography.bodySmall)
-    else if (usage["status"].stringValue == "unconfigured") Text("选择默认模型后读取额度", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
-    else if (usage["status"].stringValue == "loading") Text("正在读取额度…", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
-    else if (usage["status"].stringValue in listOf("shared", "unsupported")) Text(usage["note"].stringValue, color = Color.Gray, style = MaterialTheme.typography.bodySmall)
-    else if (usage["status"].stringValue == "error") Text(if (usage["stale"].bool == true) "上次读取 · 当前暂未更新" else usage["error"].stringValue, color = Color(0xFFD3A074))
-    else if (usage["windows"].array.orEmpty().isEmpty() && usage["balances"].array.orEmpty().isEmpty() && usage["balance"] !is SummonJson.Obj) Text("供应商未返回额度数值", color = Color.Gray)
-    if (usage["checkedAt"].stringValue.isNotBlank()) Text("更新于 ${usage["checkedAt"].stringValue}", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+    if (usage["credits"].modelNumber() != null) Text("附加点数 ${usage["credits"].stringValue} credits", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
+    if (usage["unlimited"].bool == true) Text("额外额度不设限", color = palette.ok)
+    if (usage["status"].stringValue == "not_connected") Text(usage["note"].stringValue, color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
+    else if (usage["status"].stringValue == "unconfigured") Text("选择默认模型后读取额度", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
+    else if (usage["status"].stringValue == "loading") Text("正在读取额度…", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
+    else if (usage["status"].stringValue in listOf("shared", "unsupported")) Text(usage["note"].stringValue, color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
+    else if (usage["status"].stringValue == "error") Text(if (usage["stale"].bool == true) "上次读取 · 当前暂未更新" else usage["error"].stringValue, color = palette.warn)
+    else if (usage["windows"].array.orEmpty().isEmpty() && usage["balances"].array.orEmpty().isEmpty() && usage["balance"] !is SummonJson.Obj) Text("供应商未返回额度数值", color = palette.textSecondary)
+    if (usage["checkedAt"].stringValue.isNotBlank()) Text("更新于 ${usage["checkedAt"].stringValue}", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
 }
 
 @Composable fun ModelSettingsScreen(store: SummonStore, onBack: () -> Unit) {
+    val palette = LocalSummonPalette.current
     val scope = rememberCoroutineScope()
     val uriHandler = LocalUriHandler.current
     var data by remember { mutableStateOf<SummonJson>(SummonJson.Null) }
@@ -137,11 +140,11 @@ private fun modelGauge(item: SummonJson): ModelGaugeData {
             try { while (isActive) { delay(2000); val result = store.request("/api/model-settings/connections/${SummonApiClient.component(login["id"].stringValue)}/login"); login = result; if (result["status"].stringValue !in listOf("starting", "waiting")) { if (result["status"].stringValue == "completed") reload(); break } } } catch (e: Exception) { if (e is CancellationException) throw e; error = e.localizedMessage }
         }
     }
-    Scaffold(topBar = { Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { TextButton(onClick = onBack) { Text("返回") }; Text("模型与用量", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium); TextButton(enabled = !busy && store.protocolReady, onClick = { perform { store.refreshModelUsage(true); reload() } }) { Text("刷新") } } }) { padding ->
+    Scaffold(containerColor = palette.background, topBar = { Row(Modifier.fillMaxWidth().statusBarsPadding(), verticalAlignment = Alignment.CenterVertically) { TextButton(onClick = onBack) { Text("返回") }; Text("模型与用量", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium); TextButton(enabled = !busy && store.protocolReady, onClick = { perform { store.refreshModelUsage(true); reload() } }) { Text("刷新") } } }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            error?.let { Text(it, color = Color(0xFFD3A074)) }
+            error?.let { Text(it, color = palette.warn) }
             if (store.modelSummary["chat"].obj != null) {
-                Surface(shape = RoundedCornerShape(18.dp), color = Color(0xFF1C231E)) {
+                Surface(shape = RoundedCornerShape(18.dp), color = palette.surface) {
                     Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         ModelUsageDetails(store.modelSummary["chat"])
                     }
@@ -152,16 +155,17 @@ private fun modelGauge(item: SummonJson): ModelGaugeData {
                 listOf("codex" to "Codex 订阅", "grok" to "Grok 订阅", "api" to "通用 API").forEach { (kind, title) -> TextButton(enabled = !busy, onClick = { draft = SummonJson.obj("kind" to SummonJson.Str(kind), "name" to SummonJson.Str(title), "model" to SummonJson.Str(when(kind) { "codex" -> "gpt-6-luna"; "grok" -> "grok-4.7"; else -> "" })); login = SummonJson.Null }) { Text("+ $title", fontSize = 12.sp) } }
             }
             data["connections"].array.orEmpty().forEach { item ->
-                Surface(shape = RoundedCornerShape(12.dp), color = if (draft["id"].stringValue == item["id"].stringValue) Color(0xFF24362A) else Color(0xFF1C1C1E), modifier = Modifier.fillMaxWidth().clickable { draft = item; login = SummonJson.Null }) {
+                val isSelected = draft["id"].stringValue == item["id"].stringValue
+                Surface(shape = RoundedCornerShape(14.dp), color = if (isSelected) palette.selectionBg else palette.surface, modifier = Modifier.fillMaxWidth().clickable { draft = item; login = SummonJson.Null }) {
                     Row(Modifier.padding(14.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                         ModelBrand(item)
                         Column(Modifier.weight(1f)) {
                             Text(item["name"].stringValue)
-                            Text(item["model"].stringValue, color = Color.Gray, fontSize = 12.sp)
+                            Text(item["model"].stringValue, color = palette.textSecondary, fontSize = 12.sp)
                         }
                         Column(horizontalAlignment = Alignment.End) {
-                            if (item["active"].bool == true) Text("默认", color = modelGreen, fontSize = 12.sp)
-                            if (item["configured"].bool == false) Text("待连接", color = Color.Gray, fontSize = 12.sp)
+                            if (item["active"].bool == true) Text("默认", color = palette.ok, fontSize = 12.sp)
+                            if (item["configured"].bool == false) Text("待连接", color = palette.textSecondary, fontSize = 12.sp)
                         }
                     }
                 }
@@ -197,8 +201,8 @@ private fun modelGauge(item: SummonJson): ModelGaugeData {
                 if (login["verificationUri"].stringValue.isNotBlank()) Button(onClick = { uriHandler.openUri(login["verificationUri"].stringValue) }) { Text("打开授权页面") }
                 TextButton(onClick = { perform { login = store.request("/api/model-settings/connections/${SummonApiClient.component(login["id"].stringValue)}/login", "DELETE") } }) { Text("取消授权") }
             }
-            if (login["error"].stringValue.isNotBlank()) Text(login["error"].stringValue, color = Color(0xFFD3A074))
-            Text("新建 Bot 使用这里选择的默认模型。", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+            if (login["error"].stringValue.isNotBlank()) Text(login["error"].stringValue, color = palette.warn)
+            Text("新建 Bot 使用这里选择的默认模型。", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
         }
     }
 }
@@ -221,6 +225,7 @@ internal fun ModelThinkingField(
 }
 
 @Composable private fun ModelConnectionForm(entry: SummonJson, selected: SummonJson, presets: List<SummonJson>, busy: Boolean, onSave: (SummonJson) -> Unit, onImport: () -> Unit, onAuthorize: () -> Unit, onSetDefault: (SummonJson) -> Unit, onRemove: () -> Unit, onDiscover: suspend () -> List<SummonJson>) {
+    val palette = LocalSummonPalette.current
     val scope = rememberCoroutineScope()
     val kind = entry["kind"].stringValue
     var fields by remember { mutableStateOf(entry.obj.orEmpty().toMutableMap().apply {
@@ -246,7 +251,7 @@ internal fun ModelThinkingField(
         field("API 地址", "baseUrl"); field(if (selected["configured"].bool == true) "API Key（留空保留）" else "API Key", "apiKey", true)
         Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(checked = fields["allowNoKey"]?.bool == true, onCheckedChange = { set("allowNoKey", SummonJson.Bool(it)) }); Text("这个服务无需 API Key") }
     } else {
-        Text(if (selected["configured"].bool == true) "订阅已连接" else "保存后通过设备码授权", color = modelGreen)
+        Text(if (selected["configured"].bool == true) "订阅已连接" else "保存后通过设备码授权", color = palette.ok)
         if (selected !is SummonJson.Obj) TextButton(enabled = !busy, onClick = onImport) { Text("导入服务器上的 ${if (kind == "codex") "Codex" else "Grok"} 登录") }
         if (selected is SummonJson.Obj && selected["authMode"].stringValue !in setOf("codex-local", "grok-local")) TextButton(enabled = !busy, onClick = onAuthorize) { Text("授权订阅") }
     }
@@ -266,7 +271,7 @@ internal fun ModelThinkingField(
     field("上下文上限（留空使用模型默认）", "contextWindow")
     field("输出上限（留空使用模型默认）", "maxTokens")
     if (kind == "api") { field("余额查询路径（可选）", "balancePath"); field("余额 JSON 字段（可选）", "balanceField"); field("余额币种（默认 USD）", "balanceCurrency") }
-    localError?.let { Text(it, color = Color(0xFFD3A074)) }
+    localError?.let { Text(it, color = palette.warn) }
     Button(enabled = !busy, modifier = Modifier.fillMaxWidth(), onClick = {
         val payload = (fields - listOf("usage", "identity", "configured", "active", "effectiveBudget", "thinkingLevels")).toMutableMap()
         for (key in listOf("contextWindow", "maxTokens")) payload[key] = fields[key] ?: SummonJson.Null

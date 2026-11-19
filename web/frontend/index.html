@@ -3,9 +3,16 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#f9f9fa">
-  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#f8f6f1">
+  <meta name="color-scheme" content="light dark">
   <title>Summon Bot</title>
+  <script>
+    try {
+      const m = localStorage.getItem('summon:theme:v1') || 'system';
+      const dark = m === 'dark' || (m === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+      if (dark) { document.documentElement.classList.add('dark'); document.querySelector('meta[name="theme-color"]')?.setAttribute('content', '#0b0c10'); }
+    } catch {}
+  </script>
   <link rel="apple-touch-icon" sizes="180x180" type="image/png" href="/icons/apple-touch-icon.png?v=summon-paper-20261103">
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png?v=summon-paper-20261103">
   <link rel="stylesheet" href="/style.css">
@@ -16,6 +23,7 @@
   <link rel="stylesheet" href="/usage.css">
   <link rel="stylesheet" href="/models.css">
   <link rel="stylesheet" href="/typography.css">
+  <link rel="stylesheet" href="/cybercab.css">
   <script defer src="/branding-migration.js"></script>
   <script defer src="/avatars.js"></script>
   <script defer src="/summon-brand.js"></script>
@@ -29,6 +37,23 @@
 </head>
 <body>
   <!-- MODEL_ICON_SPRITE -->
+  <!-- Flat Luminous Frosted-Glass Linear Tints for Dark Mode Bloub Avatars (12 Summon Palettes) -->
+  <svg aria-hidden="true" focusable="false" style="position:absolute;width:0;height:0;overflow:hidden;pointer-events:none">
+    <defs>
+      <linearGradient id="glass-violet" gradientUnits="userSpaceOnUse" x1="0" y1="-100" x2="0" y2="100"><stop offset="0%" stop-color="#9a80c6"/><stop offset="100%" stop-color="#604b88"/></linearGradient>
+      <linearGradient id="glass-mist" gradientUnits="userSpaceOnUse" x1="0" y1="-100" x2="0" y2="100"><stop offset="0%" stop-color="#6ca0c2"/><stop offset="100%" stop-color="#3f6985"/></linearGradient>
+      <linearGradient id="glass-olive" gradientUnits="userSpaceOnUse" x1="0" y1="-100" x2="0" y2="100"><stop offset="0%" stop-color="#969e5a"/><stop offset="100%" stop-color="#5e6635"/></linearGradient>
+      <linearGradient id="glass-clay" gradientUnits="userSpaceOnUse" x1="0" y1="-100" x2="0" y2="100"><stop offset="0%" stop-color="#cf755e"/><stop offset="100%" stop-color="#8c4837"/></linearGradient>
+      <linearGradient id="glass-sage" gradientUnits="userSpaceOnUse" x1="0" y1="-100" x2="0" y2="100"><stop offset="0%" stop-color="#6ba17a"/><stop offset="100%" stop-color="#416b4d"/></linearGradient>
+      <linearGradient id="glass-graphite" gradientUnits="userSpaceOnUse" x1="0" y1="-100" x2="0" y2="100"><stop offset="0%" stop-color="#70889e"/><stop offset="100%" stop-color="#46596b"/></linearGradient>
+      <linearGradient id="glass-stone" gradientUnits="userSpaceOnUse" x1="0" y1="-100" x2="0" y2="100"><stop offset="0%" stop-color="#989b8e"/><stop offset="100%" stop-color="#64675d"/></linearGradient>
+      <linearGradient id="glass-apricot" gradientUnits="userSpaceOnUse" x1="0" y1="-100" x2="0" y2="100"><stop offset="0%" stop-color="#d69564"/><stop offset="100%" stop-color="#94603a"/></linearGradient>
+      <linearGradient id="glass-ochre" gradientUnits="userSpaceOnUse" x1="0" y1="-100" x2="0" y2="100"><stop offset="0%" stop-color="#cca04e"/><stop offset="100%" stop-color="#8a6523"/></linearGradient>
+      <linearGradient id="glass-rose" gradientUnits="userSpaceOnUse" x1="0" y1="-100" x2="0" y2="100"><stop offset="0%" stop-color="#cb88a0"/><stop offset="100%" stop-color="#8a5266"/></linearGradient>
+      <linearGradient id="glass-kraft" gradientUnits="userSpaceOnUse" x1="0" y1="-100" x2="0" y2="100"><stop offset="0%" stop-color="#b28c6e"/><stop offset="100%" stop-color="#745740"/></linearGradient>
+      <linearGradient id="glass-natural" gradientUnits="userSpaceOnUse" x1="0" y1="-100" x2="0" y2="100"><stop offset="0%" stop-color="#d6c8a8"/><stop offset="100%" stop-color="#9c8f73"/></linearGradient>
+    </defs>
+  </svg>
   <div class="app-shell">
     <aside id="contact-sidebar" class="contact-sidebar" aria-label="会话与 Bot"></aside>
     <div class="workspace">
@@ -37,6 +62,7 @@
     </div>
   </div>
   <dialog id="modal" class="modal"><div id="modal-content"></div></dialog>
+  <div id="lightbox" class="lightbox" hidden aria-modal="true" role="dialog"></div>
   <div id="toasts" class="toasts" aria-live="polite"></div>
 </body>
 </html>

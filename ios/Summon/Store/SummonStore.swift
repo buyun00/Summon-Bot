@@ -24,6 +24,7 @@ final class SummonStore {
     private(set) var sendingRoomIDs: Set<String> = []
     private(set) var lastSyncAt: Date?
     private(set) var modelSummary: SummonJSONValue = .null
+    private(set) var roomExecutions: [String: [SummonJSONValue]] = [:]
     var errorMessage: String?
 
     private var messageHistory: [String: [SummonMessage]] = [:]
@@ -273,6 +274,11 @@ final class SummonStore {
     }
 
     func deliveryFacts(_ id: String) -> [SummonDelivery] { deliveries[id] ?? [] }
+    func executionsForRoom(_ id: String) -> [SummonJSONValue] { roomExecutions[id] ?? [] }
+    func activeExecutionsForRoom(_ id: String) -> [SummonJSONValue] {
+        let live: Set<String> = ["running", "waiting", "queued", "needs_input", "awaiting_input"]
+        return (roomExecutions[id] ?? []).filter { live.contains($0["status"].stringValue) }
+    }
     func pendingMessage(for message: SummonMessage) -> SummonPendingMessage? {
         pendingMessages.first { $0.clientID == message.clientId && $0.roomID == message.roomId }
     }
@@ -321,6 +327,12 @@ final class SummonStore {
             if !staged.isEmpty, persistComposer() { staged.forEach(discardStagedAttachment) }
             schedulePersistence()
             lastSyncAt = Date()
+            if !older {
+                if let execs = try? await list("/api/executions?room=" + SummonAPIClient.component(id)),
+                   connection == connectionGeneration, !Task.isCancelled {
+                    roomExecutions[id] = execs
+                }
+            }
         } catch {
             if connection == connectionGeneration, id == activeRoomID, !Task.isCancelled { handle(error) }
         }
@@ -670,7 +682,7 @@ final class SummonStore {
     }
 
     private func clearServerState() {
-        bots = []; rooms = []; messageHistory = [:]; deliveries = [:]; cursors = [:]
+        bots = []; rooms = []; messageHistory = [:]; deliveries = [:]; cursors = [:]; roomExecutions = [:]
         pendingMessages = []; drafts = [:]; draftAttachments = [:]; draftMentions = [:]; draftReplies = [:]; draftReferences = [:]
         selectedRoomID = nil; activeRoomID = nil; historyEpoch = nil; lastSyncAt = nil; modelSummary = .null
     }

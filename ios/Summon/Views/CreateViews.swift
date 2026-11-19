@@ -44,7 +44,9 @@ struct CreateBotView: View {
                     } else {
                         TextField("为 Bot 取个名字", text: $name)
                             .summonFont(.title3, weight: .medium).multilineTextAlignment(.center)
-                            .padding(18).background(SummonTheme.surface, in: RoundedRectangle(cornerRadius: 22))
+                            .padding(18)
+                            .background(SummonTheme.surface, in: RoundedRectangle(cornerRadius: 22))
+                            .overlay { RoundedRectangle(cornerRadius: 22).stroke(SummonTheme.bubbleStroke, lineWidth: 0.8) }
                         if name.trimmingCharacters(in: .whitespacesAndNewlines).utf16.count > 100 {
                             InlineError(message: "Bot 名称不能超过 100 个字符。")
                         }

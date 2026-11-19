@@ -30,7 +30,7 @@ struct ConnectionSettingsView: View {
                         .disabled(userName == store.settings.userName)
                 }
                 Section {
-                    Button("显示设置", systemImage: "textformat.size") { showDisplay = true }
+                    Button("显示与外观", systemImage: "circle.lefthalf.filled") { showDisplay = true }
                 }
                 Section {
                     TextField("https://你的实例地址", text: $baseURL)

@@ -13,8 +13,6 @@ struct SummonApp: App {
                 else { ConversationListView() }
             }
                 .environment(store)
-                .preferredColorScheme(.dark)
-                .tint(.white)
                 .task { await store.start() }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active { Task { await store.reconnect() } }

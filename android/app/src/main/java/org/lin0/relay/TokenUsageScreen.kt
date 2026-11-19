@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -78,10 +79,11 @@ fun TokenUsageScreen(store: SummonStore, onBack: () -> Unit) {
             error = failure.message ?: "暂时无法读取统计。"
         } finally { loading = false }
     }
+    val palette = LocalSummonPalette.current
     val ranking = overview[if (dimension == "bots") "bots" else "rooms"].array.orEmpty()
         .sortedByDescending { (it[sort] as? SummonJson.Num)?.value ?: 0.0 }
-    Scaffold(containerColor = Color.Black, topBar = {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+    Scaffold(containerColor = palette.background, topBar = {
+        Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") }
             Text("Token 统计", Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
             TextButton(onClick = { revision++ }, enabled = !loading) { Text("刷新") }
@@ -96,20 +98,20 @@ fun TokenUsageScreen(store: SummonStore, onBack: () -> Unit) {
                 }
             }
             if (loading) item { CircularProgressIndicator() }
-            error?.let { item { Text(it, color = Color(0xFFFF9F0A)) } }
+            error?.let { item { Text(it, color = palette.warn) } }
             items(overview["providerReports"].array.orEmpty()) { report ->
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("${report["day"].stringValue} · 供应商用量对照", style = MaterialTheme.typography.titleMedium)
-                    Text("DeepSeek · ${report["billingLabel"].stringValue} · 用户截图人工记录", color = Color(0xFF8E8E93), style = MaterialTheme.typography.bodySmall)
+                    Text("DeepSeek · ${report["billingLabel"].stringValue} · 用户截图人工记录", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
                     UsageLine("截图请求 / Token", "${usageNumber(report["calls"])} / ${usageNumber(report["totalTokens"])}")
                     UsageLine("截图消费 · CNY", "¥${(report["amount"] as? SummonJson.Num)?.value?.let { String.format(Locale.CHINA, "%.2f", it) }.orEmpty()}")
                     UsageLine("本机请求 / Token", "${usageNumber(report["localCalls"])} / ${usageNumber(report["localTokens"])}")
                     UsageLine("差额 · 请求 / Token", "${usageNumber(report["differenceCalls"])} / ${usageNumber(report["differenceTokens"])}")
-                    Text("本机明细覆盖 ${usageRate(report["tokenCoverage"])}。缺失部分未分摊到 Bot 或会话，不能据此计算全天缓存命中率。", style = MaterialTheme.typography.bodySmall, color = Color(0xFF8E8E93))
+                    Text("本机明细覆盖 ${usageRate(report["tokenCoverage"])}。缺失部分未分摊到 Bot 或会话，不能据此计算全天缓存命中率。", style = MaterialTheme.typography.bodySmall, color = palette.textSecondary)
                 }
             }
             if (overview["coverage"]["includesUntrackedHistory"].bool == true) item {
-                Text("采集启用前只回填仍保留的调用，历史已清理部分无法追溯。", style = MaterialTheme.typography.bodySmall, color = Color(0xFFFF9F0A))
+                Text("采集启用前只回填仍保留的调用，历史已清理部分无法追溯。", style = MaterialTheme.typography.bodySmall, color = palette.warn)
             }
             item { Text("本机已记录用量", style = MaterialTheme.typography.titleMedium); UsageTotals(overview["totals"]) }
             item {
@@ -130,14 +132,14 @@ fun TokenUsageScreen(store: SummonStore, onBack: () -> Unit) {
             items(ranking) { row ->
                 Column(Modifier.fillMaxWidth().clickable { selectedKind = if (dimension == "bots") "bot" else "room"; selectedID = row["id"].stringValue; selectedName = row["name"].stringValue; offset = 0 }.padding(vertical = 8.dp)) {
                     UsageLine(row["name"].stringValue, "${usageNumber(row["totalTokens"])} Token")
-                    Text("输入 ${usageNumber(row["inputTokens"])} / 输出 ${usageNumber(row["outputTokens"])} · 命中 ${usageRate(row["cacheHitRate"])} · ${usageNumber(row["calls"])} 次", color = Color(0xFF8E8E93), style = MaterialTheme.typography.bodySmall)
+                    Text("输入 ${usageNumber(row["inputTokens"])} / 输出 ${usageNumber(row["outputTokens"])} · 命中 ${usageRate(row["cacheHitRate"])} · ${usageNumber(row["calls"])} 次", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
                 }
             }
             item {
-                HorizontalDivider(); Text(selectedKind?.let { selectedName } ?: "全部调用明细", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 16.dp))
+                HorizontalDivider(color = palette.hairline); Text(selectedKind?.let { selectedName } ?: "全部调用明细", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 16.dp))
                 if (selectedKind != null) { TextButton(onClick = { selectedKind = null; offset = 0 }) { Text("查看全部") }; UsageTotals(detail["totals"]) }
             }
-            if ((detail["totals"]["unreportedCalls"].int ?: 0) > 0) item { Text("部分调用没有完整 Token 回执，缺失部分不按零消耗计算。", color = Color(0xFFFF9F0A), style = MaterialTheme.typography.bodySmall) }
+            if ((detail["totals"]["unreportedCalls"].int ?: 0) > 0) item { Text("部分调用没有完整 Token 回执，缺失部分不按零消耗计算。", color = palette.warn, style = MaterialTheme.typography.bodySmall) }
             listOf("purposes" to "消耗来源", "models" to "模型", "days" to "每日用量").forEach { (key, title) ->
                 item { Text(title, style = MaterialTheme.typography.titleSmall) }
                 items(detail[key].array.orEmpty()) { row -> UsageLine(if (key == "purposes") usagePurposes[row["key"].stringValue] ?: row["key"].stringValue else row["key"].stringValue, "${usageNumber(row["totalTokens"])} · ${usageNumber(row["calls"])} 次") }
@@ -147,13 +149,13 @@ fun TokenUsageScreen(store: SummonStore, onBack: () -> Unit) {
                 var expanded by remember(request["botId"].stringValue, request["id"].stringValue) { mutableStateOf(false) }
                 Column(Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                     UsageLine("${request["botName"].stringValue} · ${usagePurposes[request["purpose"].stringValue] ?: request["purpose"].stringValue}", usageNumber(request["totalTokens"]))
-                    Text("${usageTime(request["startedAt"])} · ${usageStatuses[request["status"].stringValue] ?: request["status"].stringValue}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF8E8E93))
+                    Text("${usageTime(request["startedAt"])} · ${usageStatuses[request["status"].stringValue] ?: request["status"].stringValue}", style = MaterialTheme.typography.bodySmall, color = palette.textSecondary)
                     if (expanded) {
                         UsageLine("模型", request["model"].stringValue)
                         UsageLine("输入 / 输出", "${usageNumber(request["inputTokens"])} / ${usageNumber(request["outputTokens"])}")
                         UsageLine("缓存命中 / 未命中", "${usageNumber(request["cacheHitTokens"])} / ${usageNumber(request["cacheMissTokens"])}")
                         UsageLine("推理 Token（包含在输出内）", usageNumber(request["reasoningTokens"]))
-                        if (request["error"].stringValue.isNotBlank()) Text(request["error"].stringValue, color = Color(0xFFFF9F0A), style = MaterialTheme.typography.bodySmall)
+                        if (request["error"].stringValue.isNotBlank()) Text(request["error"].stringValue, color = palette.warn, style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
@@ -162,7 +164,7 @@ fun TokenUsageScreen(store: SummonStore, onBack: () -> Unit) {
                     TextButton(onClick = { offset = (offset - 25).coerceAtLeast(0) }, enabled = offset > 0 && !loading) { Text("上一页") }
                     TextButton(onClick = { offset += 25 }, enabled = detail["hasMore"].bool == true && !loading) { Text("下一页") }
                 }
-                Text("命中率只代表留存明细。输入缓存与输出分别统计，推理 Token 包含在输出内。USD 参考费与截图 CNY 消费不直接比较。", color = Color(0xFF8E8E93), style = MaterialTheme.typography.bodySmall)
+                Text("命中率只代表留存明细。输入缓存与输出分别统计，推理 Token 包含在输出内。USD 参考费与截图 CNY 消费不直接比较。", color = palette.textSecondary, style = MaterialTheme.typography.bodySmall)
             }
         }
     }

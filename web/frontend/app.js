@@ -6,7 +6,41 @@ const $ = (selector, root = document) => {
 };
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)].filter(node => !node.closest('[data-motion-ghost]'));
 // Display preferences are local to this browser and independent for each layout.
-const UI_BUILD = '2026.11.15';
+const UI_BUILD = '2026.11.20';
+const themePreferenceKey = 'summon:theme:v1';
+const systemDarkMedia = matchMedia('(prefers-color-scheme: dark)');
+let themePreference = (() => {
+  try { const value = localStorage.getItem(themePreferenceKey); return ['system', 'light', 'dark'].includes(value) ? value : 'system'; }
+  catch { return 'system'; }
+})();
+const isDarkTheme = () => themePreference === 'dark' || (themePreference === 'system' && systemDarkMedia.matches);
+function applyTheme() {
+  const dark = isDarkTheme();
+  document.documentElement.classList.toggle('dark', dark);
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', dark ? '#0b0c10' : '#f8f6f1');
+  window.SummonDesktop?.setTheme?.(dark);
+  for (const button of $$('[data-action="toggle-theme"]')) {
+    const iconEl = $('.theme-icon', button), labelEl = $('.theme-label', button);
+    if (iconEl) iconEl.textContent = dark ? '☀' : '☾';
+    if (labelEl) labelEl.textContent = dark ? '浅色纸片' : '暗色玻璃';
+  }
+  for (const button of $$('[data-action="set-theme"]')) {
+    const active = button.dataset.theme === themePreference;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  }
+}
+function setThemePreference(mode) {
+  if (!['system', 'light', 'dark'].includes(mode)) return;
+  themePreference = mode;
+  try { localStorage.setItem(themePreferenceKey, mode); } catch {}
+  applyTheme();
+}
+function toggleThemePreference() {
+  setThemePreference(isDarkTheme() ? 'light' : 'dark');
+}
+systemDarkMedia.addEventListener('change', () => { if (themePreference === 'system') applyTheme(); });
+applyTheme();
 let displayDiagnosticSnapshot = null;
 function readViewportUnits() {
   const probe = document.createElement('div');
@@ -99,8 +133,8 @@ function openDisplaySettings() {
   displayDiagnosticSnapshot = captureDisplayDiagnostics();
   ui.menu = null; renderTopbar();
   const modal = $('#modal'); captureMotion($('#modal-content')); modal.classList.remove('create-bot-modal');
-  $('#modal-content').innerHTML = `<div class="display-settings"><div class="modal-header"><div><h2 id="display-device">显示设置</h2><p id="display-save-status"></p></div><button class="icon-button" data-action="close-modal" aria-label="关闭">${icon('close', 22)}</button></div><div class="display-settings-body"><div class="display-setting"><div class="display-setting-label"><label for="display-zoom">页面缩放</label><output id="display-zoom-value" for="display-zoom"></output></div><p>一起调整头像、控件、间距与文字的大小。</p><input id="display-zoom" type="range" min="50" max="160" step="1" aria-label="页面缩放"><div class="display-presets"><button data-action="display-preset" data-zoom="85">紧凑 85%</button><button data-action="display-preset" data-zoom="100">默认 100%</button><button data-action="display-preset" data-zoom="115">宽松 115%</button></div></div><div class="display-setting"><div class="display-setting-label"><label for="display-font">文字大小</label><output id="display-font-value" for="display-font"></output></div><p>全站统一调整聊天、统计、管理页面及操作记录的文字大小。</p><input id="display-font" type="range" min="90" max="160" step="5" aria-label="文字大小"><div class="display-range-labels"><span>较小 90%</span><span>较大 160%</span></div></div><div class="display-text-preview"><strong>显示效果预览</strong><p>聊天内容、工具调用与操作结果</p><code>Bot 正在读取文件…</code><small class="display-build">界面版本：${UI_BUILD}</small><button class="text-button" data-action="copy-display-diagnostics">复制显示诊断</button></div></div><div class="modal-footer"><button class="secondary-button" data-action="display-reset">恢复默认</button><button class="primary-button" data-action="close-modal">完成</button></div></div>`;
-  syncDisplaySettingsControls(); showModal(modal);
+  $('#modal-content').innerHTML = `<div class="display-settings"><div class="modal-header"><div><h2 id="display-device">显示设置</h2><p id="display-save-status"></p></div><button class="icon-button" data-action="close-modal" aria-label="关闭">${icon('close', 22)}</button></div><div class="display-settings-body"><div class="display-setting"><div class="display-setting-label"><span>外观材质</span></div><p>浅色采用暖棉纸片风，暗色切换磨砂类玻璃与扁平彩透头像。</p><div class="display-theme-bar" role="group" aria-label="外观材质"><button type="button" data-action="set-theme" data-theme="system">跟随系统</button><button type="button" data-action="set-theme" data-theme="light">☀ 浅色纸片</button><button type="button" data-action="set-theme" data-theme="dark">☾ 暗色玻璃</button></div></div><div class="display-setting"><div class="display-setting-label"><label for="display-zoom">页面缩放</label><output id="display-zoom-value" for="display-zoom"></output></div><p>一起调整头像、控件、间距与文字的大小。</p><input id="display-zoom" type="range" min="50" max="160" step="1" aria-label="页面缩放"><div class="display-presets"><button data-action="display-preset" data-zoom="85">紧凑 85%</button><button data-action="display-preset" data-zoom="100">默认 100%</button><button data-action="display-preset" data-zoom="115">宽松 115%</button></div></div><div class="display-setting"><div class="display-setting-label"><label for="display-font">文字大小</label><output id="display-font-value" for="display-font"></output></div><p>全站统一调整聊天、统计、管理页面及操作记录的文字大小。</p><input id="display-font" type="range" min="90" max="160" step="5" aria-label="文字大小"><div class="display-range-labels"><span>较小 90%</span><span>较大 160%</span></div></div><div class="display-text-preview"><strong>显示效果预览</strong><p>聊天内容、工具调用与操作结果</p><code>Bot 正在读取文件…</code><small class="display-build">界面版本：${UI_BUILD}</small><button class="text-button" data-action="copy-display-diagnostics">复制显示诊断</button></div></div><div class="modal-footer"><button class="secondary-button" data-action="display-reset">恢复默认</button><button class="primary-button" data-action="close-modal">完成</button></div></div>`;
+  syncDisplaySettingsControls(); applyTheme(); showModal(modal);
 }
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const icons = {
@@ -178,8 +212,12 @@ function renderMessageAttachments(items = []) {
     if (item.unavailable) return '<span class="message-attachment">' + icon('file', 24) + '<span>' + esc(name) + ' · 文件不可用</span></span>';
     if (!url) return '<button type="button" class="message-attachment" data-action="open-file" data-id="' + esc(item.id) + '">' + icon('file', 24) + title + '</button>';
     const view = typeof item.openUrl === 'string' && /^\/api\/attachments\/[a-z0-9-]+\/view$/i.test(item.openUrl) ? item.openUrl : '';
-    return '<div><a class="message-attachment ' + (thumbnail ? 'has-image' : '') + '" href="' + esc(url) + '" download="' + esc(name) + '">' +
-      (thumbnail ? '<img src="' + esc(thumbnail) + '" alt="' + esc(name) + '" loading="lazy">' : icon('file', 24)) + title + '</a>' +
+    if (thumbnail) {
+      return '<div><button type="button" class="message-attachment has-image" data-action="preview-image" data-src="' + esc(thumbnail) + '" data-download="' + esc(url) + '" data-name="' + esc(name) + '">' +
+        '<img src="' + esc(thumbnail) + '" alt="' + esc(name) + '" loading="lazy">' + title + '</button></div>';
+    }
+    return '<div><a class="message-attachment" href="' + esc(url) + '" download="' + esc(name) + '">' +
+      icon('file', 24) + title + '</a>' +
       (view ? '<a class="text-button" href="' + esc(view) + '" target="_blank" rel="noopener noreferrer">打开预览</a>' : '') + '</div>';
   });
   return '<div class="message-attachments">' + cards.join('') + '</div>';
@@ -337,7 +375,16 @@ function botById(id) { return state.bots.find(bot => bot.id === id); }
 function roomById(id) { return state.rooms.find(room => room.id === id); }
 function nameOf(id) { return id === 'user' ? ownerName() : botById(id)?.name || (['system', 'platform'].includes(id) ? 'Summon 平台' : id || 'Summon 平台'); }
 function statusPill(value) { return `<span class="status ${esc(value)}">${esc(labels[value] || value || '未知')}</span>`; }
-function pageHeader(buttons = '') { return `<div class="page-header"><div><button class="text-button" data-action="navigate" data-view="chat">${icon('back', 17)}返回聊天</button><h1>${esc(tabs.find(tab => tab.id === ui.view)?.title)}</h1></div><div class="page-tools">${buttons}</div></div>`; }
+function renderThemeToggleButton() {
+  const dark = isDarkTheme();
+  return `<button type="button" class="float-pill-btn" data-action="toggle-theme" title="切换浅色纸片 / 暗色玻璃"><span class="theme-icon">${dark ? '☀' : '☾'}</span><span class="theme-label">${dark ? '浅色纸片' : '暗色玻璃'}</span></button>`;
+}
+function renderPageNavBar(activeView = ui.view) {
+  const shortTitles = { members:'成员', executions:'执行', files:'资料', wakeups:'订阅', connections:'连接', models:'模型', usage:'用量' };
+  return `<nav class="page-nav-bar" aria-label="页面导航"><div class="page-nav-left"><button type="button" class="float-pill-btn" data-action="navigate" data-view="chat">${icon('back', 15)}<span>聊天</span></button><div class="page-nav-tabs">${tabs.filter(tab => tab.id !== 'chat').map(tab => `<button type="button" class="${activeView === tab.id ? 'active' : ''}" data-action="navigate" data-view="${tab.id}">${shortTitles[tab.id] || tab.title}</button>`).join('')}</div></div>${renderThemeToggleButton()}</nav>`;
+}
+window.SummonPageNav = renderPageNavBar;
+function pageHeader(buttons = '') { return `${renderPageNavBar()}<div class="page-header"><div><h1>${esc(tabs.find(tab => tab.id === ui.view)?.title)}</h1></div><div class="page-tools">${buttons}</div></div>`; }
 function toast(message, error = false) {
   if ($$('.toast').some(node => node.textContent === message)) return;
   const node = document.createElement('div'); node.className = `toast${error ? ' error' : ''}`; node.textContent = message; $('#toasts').append(node);
@@ -1358,6 +1405,28 @@ async function act(action, element) {
   const ref = { kind,id };
   if (action.startsWith('usage-')) return globalThis.SummonUsage.act(action,element,api,render);
   if (action.startsWith('models-')) return globalThis.SummonModels.act(action,element,{ api,render,toast,refresh });
+  if (action === 'toggle-theme') return toggleThemePreference();
+  if (action === 'set-theme') return setThemePreference(element.dataset.theme);
+  if (action === 'toggle-sidebar') { $('.app-shell')?.classList.toggle('sidebar-collapsed'); return; }
+  if (action === 'back-to-room-details') { ui.profileBotId = null; ui.detailTab = 'details'; ui.avatarEditing = false; render(); await loadCurrent(); return render(); }
+  if (action === 'copy-code') {
+    const code = element.closest('.code-block')?.querySelector('pre code')?.textContent || '';
+    await navigator.clipboard?.writeText(code);
+    const before = element.textContent; element.textContent = '✓ 已复制';
+    setTimeout(() => { if (element.isConnected) element.textContent = before; }, 1400);
+    return;
+  }
+  if (action === 'copy-message') {
+    const text = element.closest('.bubble-column')?.querySelector('.message-content')?.textContent || '';
+    await navigator.clipboard?.writeText(text);
+    return toast('已复制消息文字');
+  }
+  if (action === 'preview-image') {
+    const lb = $('#lightbox'); if (!lb) return;
+    lb.innerHTML = `<div class="lightbox-card"><div style="display:flex;justify-content:space-between;align-items:center;gap:12px"><strong>${esc(element.dataset.name || '图片预览')}</strong><div style="display:flex;align-items:center;gap:8px"><a class="secondary-button" href="${esc(element.dataset.download || element.dataset.src)}" download="${esc(element.dataset.name || '')}">下载原图</a><button type="button" class="icon-button" data-action="close-lightbox" aria-label="关闭">${icon('close', 18)}</button></div></div><img src="${esc(element.dataset.src)}" alt="${esc(element.dataset.name || '')}"></div>`;
+    lb.hidden = false; return;
+  }
+  if (action === 'close-lightbox') { const lb = $('#lightbox'); if (lb) { lb.hidden = true; lb.innerHTML = ''; } return; }
   if (action === 'navigate') return navigate(element.dataset.view);
   if (action === 'refresh') return refresh(true);
   if (action === 'close-modal') return closeModal();
@@ -1518,11 +1587,19 @@ function closeFloatingMenus() {
   for (const button of document.querySelectorAll('[data-action="toggle-apps"],[data-action="toggle-create"],[data-action="toggle-chat-menu"],[data-action="toggle-mention-menu"]')) button.setAttribute('aria-expanded', 'false');
 }
 document.addEventListener('click', event => {
+  if (event.target.id === 'lightbox') { event.target.hidden = true; event.target.innerHTML = ''; return; }
+  if (event.target.closest('summon-wordmark') && ui.view !== 'chat') { void navigate('chat'); return; }
   const button = event.target.closest('[data-action]');
   if (ui.menu && (!event.target.closest('.menu-anchor,.context-menu') || button?.closest('.context-menu'))) closeFloatingMenus();
   if (button && !button.disabled) act(button.dataset.action, button).catch(error => toast(error.message, true));
 });
-document.addEventListener('keydown', event => { if (event.key === 'Escape') closeFloatingMenus(); });
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape') {
+    closeFloatingMenus();
+    const lb = $('#lightbox'); if (lb && !lb.hidden) { lb.hidden = true; lb.innerHTML = ''; }
+    if (ui.detailOpen && !$('#modal')?.open) { ui.detailOpen = false; ui.profileBotId = null; render(); }
+  }
+});
 document.addEventListener('summon-selection-warning', event => toast(event.detail, true));
 document.addEventListener('input', event => {
   if (event.target.id === 'display-zoom') return changeDisplayPreference('zoom', Number(event.target.value));
@@ -1766,15 +1843,21 @@ function renderTopbar() {
 }
 
 function richText(value) {
-  const blocks = String(value || '').split(/```(?:[\w-]+)?\n?([\s\S]*?)```/g);
-  return blocks.map((part, i) => {
-    if (i % 2) return `<pre><code>${esc(part.trim())}</code></pre>`;
-    return part.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*)/g).map((segment, index) => {
-      if (index % 2 && segment.startsWith('`')) return `<code>${esc(segment.slice(1, -1))}</code>`;
-      if (index % 2) return `<strong>${esc(segment.slice(2, -2))}</strong>`;
-      return esc(segment);
-    }).join('').replace(/^[-*] (.+)$/gm, '<span class="markdown-li">$1</span>');
-  }).join('');
+  const regex = /```([\w+-]*)\n?([\s\S]*?)```/g;
+  let result = '', last = 0, match;
+  const formatInline = text => text.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*)/g).map((segment, index) => {
+    if (index % 2 && segment.startsWith('`')) return `<code>${esc(segment.slice(1, -1))}</code>`;
+    if (index % 2) return `<strong>${esc(segment.slice(2, -2))}</strong>`;
+    return esc(segment);
+  }).join('').replace(/^[-*] (.+)$/gm, '<span class="markdown-li">$1</span>');
+  while ((match = regex.exec(String(value || ''))) !== null) {
+    if (match.index > last) result += formatInline(String(value).slice(last, match.index));
+    const lang = match[1] || 'code', code = match[2].replace(/\n$/, '');
+    result += `<div class="code-block"><div class="code-head"><span>${esc(lang)}</span><button type="button" class="code-copy" data-action="copy-code">复制</button></div><pre><code>${esc(code)}</code></pre></div>`;
+    last = regex.lastIndex;
+  }
+  if (last < String(value || '').length) result += formatInline(String(value).slice(last));
+  return result;
 }
 function botMention(id, label) {
   const bot = botById(id); if (!bot) return esc(label || nameOf(id));
@@ -1816,6 +1899,7 @@ function renderChatMessage(message, timeline, grouped, isGroup) {
     <strong>${esc(parent ? nameOf(parent.senderId) : '引用消息')}</strong><span>${esc(parent ? messagePreview(parent) : '查看原文')}</span></button>` : '';
   const actions = message._delivery ? '' : `<div class="bubble-actions">
     <button data-action="reply-message" data-id="${esc(message.id)}" title="回复" aria-label="回复">${icon('back',16)}</button>
+    <button data-action="copy-message" data-id="${esc(message.id)}" title="复制" aria-label="复制">${icon('copy',15)}</button>
     <button data-action="${pinned ? 'unpin' : 'pin'}" data-kind="event" data-id="${esc(message.id)}" title="${pinned ? '取消置顶' : '置顶'}" aria-label="${pinned ? '取消置顶' : '置顶'}">${icon('pin',16)}</button>
   </div>`;
   return `<article data-message-id="${esc(message.id)}" data-motion-key="message:${esc(message.clientId || message.id)}"
@@ -1847,21 +1931,15 @@ function renderChat() {
     previousDay = day;
     return divider + renderChatMessage(message, timeline, grouped, isGroup);
   }).join('');
-  const chatMenu = ui.menu === 'chat-menu' ? `<div class="context-menu chat-menu">
-    <button data-action="toggle-details">${icon('info',19)}会话详情</button><button data-action="copy-conversation">${icon('copy',19)}复制已加载文字</button>
-    <button data-action="edit-room">${icon('edit',19)}编辑会话</button><button data-action="leave-room">退出会话</button></div>` : '';
-  const titleTag = window.SummonDesktop ? 'div' : 'button';
-  const titleAction = window.SummonDesktop ? '' : `data-action="toggle-details" aria-expanded="${!!ui.detailOpen}"`;
-  const header = `<div class="floating-header"><button class="mobile-back icon-button" data-action="room-back" aria-label="返回会话">${icon('chevronBack',23)}</button>
-    <${titleTag} class="chat-title-pill" ${titleAction}>${bot ? avatar(bot.id,32,'slot:title') : groupAvatar(room,32,'slot:title-group')}
-      <span class="chat-title-copy"><strong>${esc(title)}</strong></span></${titleTag}>
-    <div class="chat-header-actions">${room ? `<div class="header-members" aria-label="会话成员">${members.slice(0,4).map(member =>
-      `<button class="header-member" data-action="open-bot-details" data-id="${esc(member.id)}" aria-label="查看 ${esc(member.name)}">${avatar(member.id,28,'header:' + member.id)}</button>`).join('')}</div>
-      <button class="header-details ${ui.detailOpen ? 'active' : ''}" data-action="toggle-details" aria-label="会话详情">${icon('panel',19)}<span>详情</span></button>
-      <div class="mobile-chat-actions menu-anchor"><button class="round-button" data-action="toggle-chat-menu" aria-label="会话操作" aria-expanded="${ui.menu === 'chat-menu'}">${icon('more',22)}</button>${chatMenu}</div>` : ''}</div></div>`;
+  const subtitle = isGroup ? `${members.length} 位伙伴` : bot ? botActivity(bot).text : '';
+  const header = `<div class="floating-header"><div class="header-left"><button class="mobile-back icon-button" data-action="room-back" aria-label="返回会话">${icon('chevronBack',23)}</button>
+    <button type="button" class="sidebar-toggle-btn" data-action="toggle-sidebar" title="收起 / 展开侧栏" aria-label="收起 / 展开侧栏">${icon('panel',18)}</button></div>
+    ${room ? `<button type="button" class="chat-title-pill" data-action="toggle-details" aria-expanded="${!!ui.detailOpen}" title="展开右侧会话详情侧栏">${bot ? avatar(bot.id,30,'slot:title') : groupAvatar(room,30,'slot:title-group')}
+      <span class="chat-title-copy"><strong>${esc(title)}</strong>${subtitle ? `<small>${esc(subtitle)}</small>` : ''}</span></button>` : ''}
+    <div class="chat-header-actions">${renderThemeToggleButton()}</div></div>`;
   const pins = room?.pins?.length ? `<div class="room-pins"><strong>置顶</strong>${room.pins.map(ref => renderReference(ref)).join('')}</div>` : '';
   const executions = ui.roomExecutions || [];
-  const active = executions.length ? `<details class="conversation-activity" data-execution-disclosure ${ui.openRoomExecution === room.id ? 'open' : ''}><summary>执行过程</summary>
+  const active = executions.length ? `<details class="conversation-activity" data-execution-disclosure ${ui.openRoomExecution === room.id ? 'open' : ''}><summary>执行过程（${executions.length}）</summary>
     ${executions.map(renderExecutionRow).join('')}</details>` : '';
   const body = room ? `<div class="messages ${isGroup ? 'group-messages' : ''}" role="log" aria-label="聊天记录">${pins}
       ${ui.historyCursor ? '<button class="text-button room-history" data-action="older-messages">更早的消息</button>' : ''}
@@ -1877,6 +1955,34 @@ function selectedMentions(room) {
   return (Array.isArray(value) ? value : value ? [value] : []).filter(id => room.members.includes(id));
 }
 
+function renderFloatingBotActivity(room, members) {
+  const liveStatuses = new Set(['running', 'waiting', 'queued', 'needs_input', 'awaiting_input']);
+  const seen = new Set(), items = [];
+  for (const exec of ui.roomExecutions || []) {
+    if (!liveStatuses.has(exec.status)) continue;
+    const botId = exec.execution_actor?.id || exec.bot_id;
+    if (!botId || !botById(botId) || seen.has(botId)) continue;
+    seen.add(botId);
+    const statusText = labels[exec.status] || '正在处理';
+    items.push({ botId, label: `${nameOf(botId)} · ${statusText}`, ref: exec.execution_ref });
+  }
+  for (const member of members) {
+    if (seen.has(member.id)) continue;
+    const act = botActivity(member);
+    if (['running', 'waiting'].includes(act.kind)) {
+      seen.add(member.id);
+      items.push({ botId: member.id, label: `${member.name} · ${act.text}`, ref: null });
+    }
+  }
+  if (!items.length) return '';
+  return `<div class="bot-activity-dock" aria-live="polite">${items.map(item => {
+    const attrs = item.ref
+      ? `data-action="open-execution" data-kind="${esc(item.ref.kind)}" data-id="${esc(item.ref.id)}"`
+      : `data-action="open-bot-details" data-id="${esc(item.botId)}"`;
+    return `<div class="bot-activity-row"><button type="button" class="activity-trigger" ${attrs}>${face(botAvatar(item.botId), 30, { key: `dock:${room.id}:${item.botId}`, identity: `bot:${item.botId}`, state: 'work' })}<span class="shimmer-status">${esc(item.label)}</span></button></div>`;
+  }).join('')}</div>`;
+}
+
 function renderChatComposer(room, members) {
   const mentions = selectedMentions(room), references = ui.draftReferences[room.id] || [];
   const menu = ui.menu === 'mentions' ? `<div class="mention-menu context-menu" aria-label="@ 成员">${members.map(member => `<button type="button"
@@ -1884,12 +1990,13 @@ function renderChatComposer(room, members) {
       ${avatar(member.id,32,'')}<span>${esc(member.name)}</span>${mentions.includes(member.id) ? icon('check',16) : ''}</button>`).join('')}</div>` : '';
   const reply = ui.reply?.roomId === room.id ? `<div class="reply-preview">${avatar(ui.reply.senderId,25,'')}<span>回复 ${esc(nameOf(ui.reply.senderId))}
     · ${esc(messagePreview(ui.reply))}</span><button type="button" class="icon-button" data-action="cancel-reply" aria-label="取消回复">${icon('close',16)}</button></div>` : '';
-  return `<div class="composer-wrap">${reply}${renderAttachmentDrafts()}
+  const floatingActivity = renderFloatingBotActivity(room, members);
+  return `<div class="composer-wrap">${floatingActivity}${reply}${renderAttachmentDrafts()}
     ${references.length ? `<div class="reference-list draft-references">${references.map(ref => `<span>${renderReference(ref)}
       <button type="button" class="icon-button" aria-label="移除引用" data-action="remove-reference" data-kind="${esc(ref.kind)}" data-id="${esc(ref.id)}">${icon('close',14)}</button></span>`).join('')}</div>` : ''}
     <form id="message-form" class="composer" data-room-id="${esc(room.id)}">
       <button class="composer-plus" type="button" data-action="attach-file" aria-label="添加附件" ${ui.sendingRooms.has(room.id) ? 'disabled' : ''}>${icon('plus',22)}</button>
-      <textarea id="message-input" name="content" rows="1" maxlength="16000" aria-label="消息内容" placeholder="发消息…">${esc(ui.drafts[room.id] || '')}</textarea>
+      <textarea id="message-input" name="content" rows="1" maxlength="16000" aria-label="消息内容" placeholder="给 ${esc(room.name)} 发消息">${esc(ui.drafts[room.id] || '')}</textarea>
       <div class="composer-tools"><div class="menu-anchor">${members.length ? `<button class="composer-mention ${mentions.length ? 'has-target' : ''}" type="button"
         data-action="toggle-mention-menu" aria-label="@ 成员" aria-expanded="${ui.menu === 'mentions'}">${mentions.length ? esc(mentions.map(id => '@' + nameOf(id)).join(' ')) : '@'}</button>${menu}` : ''}</div>
         <button class="icon-button" type="button" data-action="add-reference" title="添加资料引用" aria-label="添加资料引用">${icon('link',18)}</button></div>
@@ -1933,11 +2040,18 @@ function renderDetailPanel(room, bot) {
       ${wakeups.length && !runnable.length ? '<p class="panel-empty">当前没有启用的消息关注可唤醒 Bot。</p>'
         : runnable.length && !allMessages && !runnable.some(item => item.rule.message_count) ? '<p class="panel-empty">本群消息仅按上方定向关注和筛选条件唤醒。</p>' : ''}`;
   }
+  const showBackToRoom = Boolean(bot && !directRoom(room));
+  const toolbarLeft = showBackToRoom
+    ? `<button type="button" class="text-button" data-action="back-to-room-details">${icon('back', 15)} 返回群聊</button>`
+    : `<span class="subtle" style="font-size:var(--text-caption)">${bot ? (ui.avatarEditing ? '编辑头像' : '伙伴详情') : '会话详情'}</span>`;
+  const footer = bot
+    ? `<div class="detail-panel-footer"><button type="button" class="secondary-button" data-action="edit-bot" data-id="${esc(bot.id)}">编辑 Bot</button><button type="button" class="secondary-button" data-action="bot-access" data-id="${esc(bot.id)}">资源权限</button>${renderBotControls(bot)}</div>`
+    : `<div class="detail-panel-footer"><button type="button" class="secondary-button" data-action="edit-room">编辑会话</button><button type="button" class="secondary-button" data-action="copy-conversation">复制文字</button><button type="button" class="text-button" data-action="leave-room">退出会话</button></div>`;
   return `<aside class="detail-panel" data-section="${esc(tab + ':' + (bot?.id || room.id))}"><div class="detail-panel-inner">
-    <div class="detail-panel-toolbar"><button class="round-button" data-action="close-details" aria-label="关闭详情">${icon('close',24)}</button></div>
-    <div class="profile-identity">${bot ? `<button class="profile-avatar" data-action="edit-avatar" aria-label="编辑头像">${face(ui.avatarEditing ? ui.avatarDraft : botAvatar(bot),104,{ key:'slot:profile',preview:true })}</button>` : groupAvatar(room,104)}
+    <div class="detail-panel-toolbar">${toolbarLeft}<button class="round-button" data-action="close-details" aria-label="关闭详情">${icon('close',20)}</button></div>
+    <div class="profile-identity">${bot ? `<button class="profile-avatar" data-action="edit-avatar" aria-label="编辑头像" title="点击实时编辑头像">${face(ui.avatarEditing ? ui.avatarDraft : botAvatar(bot),104,{ key:'slot:profile',preview:true,followPointer:true })}</button>` : groupAvatar(room,92)}
       <h2>${esc(bot?.name || room.name)}</h2></div><nav class="profile-tabs" aria-label="详情分类">${tabs.map(item => `<button class="${tab === item.id ? 'active' : ''}" data-action="detail-tab" data-tab="${item.id}">${item.label}</button>`).join('')}</nav>
-    <div class="detail-panel-body">${body}</div></div></aside>`;
+    <div class="detail-panel-body">${body}</div>${footer}</div></aside>`;
 }
 
 const inputActions = { reply:'回答', steer:'追加输入', next:'继续输入' };
@@ -1951,7 +2065,8 @@ function renderExecutionRow(item) {
   const ref = item.execution_ref;
   const status = item.status || 'unknown';
   const error = executionError(item);
-  return `<button class="profile-record record-button execution-row" data-action="open-execution" data-kind="${esc(ref.kind)}" data-id="${esc(ref.id)}">
+  const selected = sameRef(ui.executionRef, ref);
+  return `<button class="profile-record record-button execution-row ${selected ? 'selected' : ''}" data-action="open-execution" data-kind="${esc(ref.kind)}" data-id="${esc(ref.id)}">
     <strong>${esc(executionTitle(item))}</strong>
     <small>${esc([item.bot_id && nameOf(item.bot_id), labels[status] || status, item.control?.state === 'paused' && '控制已暂停'].filter(Boolean).join(' · '))}</small>
     ${error ? `<small class="execution-error">${esc(error)}</small>` : ''}</button>`;
@@ -2064,10 +2179,10 @@ function renderBotControls(bot) {
 
 function renderMembers() {
   const bot = botById(ui.botId);
-  const rows = state.bots.map(item => `<button class="profile-record record-button member-row" data-action="select-bot" data-id="${esc(item.id)}">
+  const rows = state.bots.map(item => `<button class="profile-record record-button member-row ${item.id === ui.botId ? 'selected' : ''}" data-action="select-bot" data-id="${esc(item.id)}">
     ${avatar(item.id,40)}<span><strong>${esc(item.name)}</strong><small>${esc(botActivity(item).text)}</small></span></button>`).join('');
   const controls = bot ? `<h2>${esc(bot.name)}</h2><p class="profile-prompt">${esc(bot.instructions || '')}</p><div class="execution-actions">
-    <button class="secondary-button" data-action="dm-bot" data-id="${esc(bot.id)}">发消息</button><button class="secondary-button" data-action="edit-bot" data-id="${esc(bot.id)}">编辑</button>
+    <button class="primary-button" data-action="dm-bot" data-id="${esc(bot.id)}">发消息</button><button class="secondary-button" data-action="edit-bot" data-id="${esc(bot.id)}">编辑</button>
     <button class="secondary-button" data-action="bot-access" data-id="${esc(bot.id)}">资源权限</button>${renderBotControls(bot)}</div>` : '';
   return `<div class="page">${pageHeader('<button class="primary-button" data-action="new-bot">创建 Bot</button>')}
     <div class="object-layout"><section class="object-list">${rows || '<p class="panel-empty">暂无 Bot</p>'}</section><section class="object-detail">${controls}</section></div></div>`;
@@ -2080,7 +2195,7 @@ async function loadFile(id, cursor) {
 
 function renderFiles() {
   const item = ui.fileDetail;
-  const rows = trackedList('files','/api/files', file => `<button class="profile-record record-button" data-action="open-file" data-id="${esc(file.id)}">
+  const rows = trackedList('files','/api/files', file => `<button class="profile-record record-button ${file.id === ui.fileId ? 'selected' : ''}" data-action="open-file" data-id="${esc(file.id)}">
     <strong>${esc(file.name || file.path)}</strong><small>${esc(file.space ? refLabel(file.space) : '')} · 修订 ${esc(file.revision)}</small></button>`);
   const link = typeof item?.url === 'string' && item.url === filePath(item.id) + '/download' ? item.url : attachmentUrl(item);
   const detail = item ? `<h2>${esc(item.path || item.name)}</h2><p>修订 ${esc(item.revision)}</p><div class="execution-actions">
@@ -2149,7 +2264,7 @@ function openCreateBot() {
   ui.avatarDraft = window.SummonAvatars.normalize({ shape: 'cercle',color:'#7D824B' });
   ui.menu = null; render();
   const modal = $('#modal'); captureMotion($('#modal-content')); modal.classList.add('create-bot-modal');
-  $('#modal-content').innerHTML = `<div class="modal-header"><h2>创建新 Bot</h2><button class="icon-button" data-action="close-modal" aria-label="关闭">${icon('close', 24)}</button></div><form id="modal-form" class="create-bot-form"><div class="create-bot-body"><button type="button" id="create-avatar-preview" class="create-avatar-preview" data-action="avatar-greet" aria-label="和 Bot 打招呼">${face(ui.avatarDraft, 144, { key: 'slot:create-preview', identity: 'create-preview', preview: true, intro: true })}</button><input id="create-bot-name" name="name" placeholder="给你的 Bot 起个名字" aria-label="Bot 名字" required maxlength="100" autocomplete="off"><div class="create-picker-scroll"><div id="create-avatar-picker">${renderAvatarPicker('create')}</div><div class="form-error" role="alert"></div></div></div><div class="modal-footer"><button class="secondary-button" type="button" data-action="close-modal">取消</button><button id="create-bot-submit" class="primary-button" type="submit" disabled>创建</button></div></form>`;
+  $('#modal-content').innerHTML = `<div class="modal-header"><h2>创建新 Bot</h2><button class="icon-button" data-action="close-modal" aria-label="关闭">${icon('close', 24)}</button></div><form id="modal-form" class="create-bot-form"><div class="create-bot-body"><button type="button" id="create-avatar-preview" class="create-avatar-preview" data-action="avatar-greet" aria-label="和 Bot 打招呼">${face(ui.avatarDraft, 144, { key: 'slot:create-preview', identity: 'create-preview', preview: true, intro: true, followPointer: true })}</button><input id="create-bot-name" name="name" placeholder="给你的 Bot 起个名字" aria-label="Bot 名字" required maxlength="100" autocomplete="off"><div class="create-picker-scroll"><div id="create-avatar-picker">${renderAvatarPicker('create')}</div><div class="form-error" role="alert"></div></div></div><div class="modal-footer"><button class="secondary-button" type="button" data-action="close-modal">取消</button><button id="create-bot-submit" class="primary-button" type="submit" disabled>创建</button></div></form>`;
   $('#modal-form').onsubmit = async event => {
     event.preventDefault(); const form = event.target, button = $('#create-bot-submit', form), name = $('#create-bot-name', form).value.trim(), avatar = { ...ui.avatarDraft }; if (!name) return;
     button.disabled = true; $('.form-error', event.target).textContent = '';
@@ -2191,7 +2306,7 @@ async function persistAvatar() {
   return entry.promise;
 }
 function updateAvatarPicker(mode) {
-  if (mode === 'create') { const root = $('#modal-content'), motion = captureMotion(root); $('#create-avatar-preview').innerHTML = face(ui.avatarDraft, 144, { key: 'slot:create-preview', identity: 'create-preview', preview: true, intro: true }); $('#create-avatar-picker').innerHTML = renderAvatarPicker('create'); hydrateMotion(root, motion); }
+  if (mode === 'create') { const root = $('#modal-content'), motion = captureMotion(root); $('#create-avatar-preview').innerHTML = face(ui.avatarDraft, 144, { key: 'slot:create-preview', identity: 'create-preview', preview: true, followPointer: true }); $('#create-avatar-picker').innerHTML = renderAvatarPicker('create'); hydrateMotion(root, motion); }
   else return persistAvatar();
 }
 document.addEventListener('change', async event => {
