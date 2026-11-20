@@ -87,7 +87,7 @@ function readDisplayPreferences() {
   }
   catch { return normalizeDisplayPreferences(null); }
 }
-const displayMedia = matchMedia('(max-width:820px)');
+const displayMedia = matchMedia('(max-width:640px) and (pointer:coarse)');
 let displayPreferences = readDisplayPreferences();
 let displaySaved = true;
 const displayMode = () => window.SummonDesktop || !displayMedia.matches ? 'desktop' : 'mobile';
@@ -511,10 +511,22 @@ function installChatScrollTracking(messages, followBottom) {
     messages._summonChatScroll.schedule();
     return;
   }
-  let frame = 0, scrollFrom = 0, scrollStarted = 0, pointerY = null, draggingScrollbar = false;
+  let frame = 0, scrollFrom = 0, scrollStarted = 0, pointerY = null, draggingScrollbar = false, resizing = false;
   const tracking = { followBottom, lastTop: messages.scrollTop, stopped: false };
+  const pinToBottomSync = () => {
+    if (tracking.stopped || !messages.isConnected || !messages.clientHeight || !tracking.followBottom || scrollStarted) return;
+    resizing = true;
+    messages.scrollTop = Math.max(0, messages.scrollHeight - messages.clientHeight);
+    tracking.lastTop = messages.scrollTop;
+    resizing = false;
+  };
   const schedule = () => {
-    if (frame || tracking.stopped || !tracking.followBottom) return;
+    if (tracking.stopped || !tracking.followBottom) return;
+    if (!scrollStarted) {
+      pinToBottomSync();
+      return;
+    }
+    if (frame) return;
     frame = requestAnimationFrame(() => {
       frame = 0;
       if (tracking.stopped || !messages.isConnected || !messages.clientHeight || !tracking.followBottom) return;
@@ -526,9 +538,11 @@ function installChatScrollTracking(messages, followBottom) {
     });
   };
   const onScroll = () => {
+    if (resizing) return;
     const top = messages.scrollTop;
-    if (messages.scrollHeight - top - messages.clientHeight < 40) tracking.followBottom = true;
-    else if (draggingScrollbar) tracking.followBottom = false;
+    const distance = messages.scrollHeight - top - messages.clientHeight;
+    if (distance < 36) tracking.followBottom = true;
+    else if (!scrollStarted && (draggingScrollbar || top < tracking.lastTop - 2)) tracking.followBottom = false;
     tracking.lastTop = top;
   };
   messages.addEventListener('scroll', onScroll, { passive: true });
@@ -546,12 +560,11 @@ function installChatScrollTracking(messages, followBottom) {
   messages.addEventListener('keydown', onKey);
   messages.addEventListener('load', schedule, true);
   messages.addEventListener('error', schedule, true);
-  // Images, fonts and expanded content can change height after the first paint.
-  const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(schedule) : null;
+  // Adjust scrollTop synchronously inside ResizeObserver (before Paint) to prevent 1-frame vertical bounce during window resize.
+  const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(pinToBottomSync) : null;
   observer?.observe(messages);
   const composer = messages.parentElement.querySelector('.composer-wrap');
   if (composer) observer?.observe(composer);
-  for (const child of messages.children) observer?.observe(child);
   tracking.schedule = schedule;
   tracking.toBottom = (smooth = false) => {
     tracking.followBottom = true;
@@ -2224,12 +2237,7 @@ function renderMessageSummaries(message) {
 
 function renderDelivery(message) {
   if (message._delivery) return renderSendStatus(message);
-  if (message.senderId !== 'user') return '';
-  const rows = ui.roomDeliveries.get(message.id);
-  const deliveryText = { pending:'等待投递', unknown:'接收情况未知', received:'Bot 已接收', processed:'本轮已处理', access_revoked:'访问已撤销', rejected:'未受理' };
-  return `<details class="message-delivery" data-delivery-id="${esc(message.id)}" ${ui.expandedDeliveries?.has(message.id) ? 'open' : ''}><summary>消息已保存</summary>${rows?.length
-    ? rows.map(row => `<div>${esc(nameOf(row.bot_id))} · ${esc(deliveryText[row.status] || labels[row.status] || row.status)}</div>`).join('')
-    : '<div>暂无 Bot 接收记录</div>'}</details>`;
+  return '';
 }
 
 function renderChatMessage(message, timeline, grouped, isGroup) {
@@ -2237,7 +2245,11 @@ function renderChatMessage(message, timeline, grouped, isGroup) {
   const parent = timeline.find(item => item.id === message.replyTo);
   const pinned = roomById(ui.roomId)?.pins.some(ref => ref.kind === 'event' && ref.id === message.id);
   const mentions = message.mentions || [];
-  const identity = grouped ? '' : `<div class="message-identity"><strong>${esc(nameOf(sender))}</strong><time datetime="${esc(message.createdAt)}" title="${esc(formatTime(message.createdAt,true))}">${formatTime(message.createdAt)}</time></div>`;
+  const identity = own || grouped || (!isGroup && !platform) ? '' : `<div class="message-identity"><strong>${esc(nameOf(sender))}</strong><time datetime="${esc(message.createdAt)}" title="${esc(formatTime(message.createdAt,true))}">${formatTime(message.createdAt)}</time></div>`;
+  const ownTime = own && message.createdAt ? `<time class="outgoing-time" datetime="${esc(message.createdAt)}" title="${esc(formatTime(message.createdAt,true))}">${formatTime(message.createdAt)}</time>` : '';
+  const avatarSlot = own || (!isGroup && !platform) ? '' : grouped ? '<span class="message-avatar-spacer"></span>' : botById(sender)
+    ? `<button class="message-avatar-button" data-action="open-bot-details" data-id="${esc(sender)}" aria-label="查看 ${esc(nameOf(sender))}">${avatar(sender,36,'message:' + message.id)}</button>`
+    : `<span class="message-avatar">${avatar(sender,36,'message:' + message.id)}</span>`;
   const reply = message.replyTo ? `<button type="button" class="reply-quote" data-action="open-reference" data-kind="event" data-id="${esc(message.replyTo)}">
     <strong>${esc(parent ? nameOf(parent.senderId) : '引用消息')}</strong><span>${esc(parent ? messagePreview(parent) : '查看原文')}</span></button>` : '';
   const actions = message._delivery ? '' : `<div class="bubble-actions">
@@ -2248,14 +2260,13 @@ function renderChatMessage(message, timeline, grouped, isGroup) {
   return `<article data-message-id="${esc(message.id)}" data-motion-key="message:${esc(message.clientId || message.id)}"
       class="chat-message ${own ? 'outgoing' : 'incoming'} ${isGroup ? 'in-group' : 'direct-message'} ${grouped ? 'continuation' : ''} ${platform ? 'system-message' : ''}"
       style="--member-color:${own || platform ? 'var(--accent)' : esc(botAvatar(sender).color)}">
-    ${grouped ? '<span class="message-avatar-spacer"></span>' : botById(sender)
-      ? `<button class="message-avatar-button" data-action="open-bot-details" data-id="${esc(sender)}" aria-label="查看 ${esc(nameOf(sender))}">${avatar(sender,36,'message:' + message.id)}</button>`
-      : `<span class="message-avatar">${avatar(sender,36,'message:' + message.id)}</span>`}
+    ${avatarSlot}
     <div class="bubble-column">${identity}<div class="message-bubble" tabindex="0">${reply}
       ${mentions.length ? `<div class="bubble-target">${mentions.map(id => id === 'user' ? `<span>@${esc(ownerName())}</span>` : botMention(id)).join('')}</div>` : ''}
       ${message.content ? `<div class="message-content">${richText(message.content)}</div>` : ''}
       ${renderMessageAttachments(message.attachments)}
       ${message.references?.length ? `<div class="reference-list">${message.references.map(ref => renderReference(ref)).join('')}</div>` : ''}
+      ${ownTime}
     </div>${renderMessageSummaries(message)}${renderDelivery(message)}${actions}</div></article>`;
 }
 
@@ -2674,7 +2685,7 @@ document.addEventListener('change', async event => {
 // Use the visible phone viewport without replacing controls or interrupting IME input.
 function syncMobileViewport() {
   const viewport = window.visualViewport, root = document.documentElement;
-  if (!matchMedia('(max-width:820px)').matches) {
+  if (!displayMedia.matches) {
     root.style.removeProperty('--mobile-vh'); root.style.removeProperty('--mobile-vtop'); root.style.removeProperty('--mobile-page-top'); root.classList.remove('keyboard-open'); return;
   }
   const messages = $('.messages'), atBottom = messages && (messages._summonChatScroll?.followBottom || messages.scrollHeight - messages.scrollTop - messages.clientHeight < 40);

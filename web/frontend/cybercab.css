@@ -1245,38 +1245,43 @@ html.dark .display-theme-bar button.active { background: rgba(255,255,255,0.14);
 }
 .hidden-list-copy small { color: var(--muted); }
 
-/* ==================== 4-STAGE RESPONSIVE LAYOUT (NARROW RAIL -> MEDIUM -> WIDE -> EXTRA-WIDE) ==================== */
-/* Stage 4: Extra-Wide Cinema (> 1380px) */
-@media (min-width: 1381px) {
-  .contact-sidebar { width: 310px; }
-  .messages {
-    padding-left: max(64px, calc((100% - 780px) / 2));
-    padding-right: max(64px, calc((100% - 780px) / 2));
-  }
-  .composer-wrap {
-    padding-left: max(64px, calc((100% - 780px) / 2));
-    padding-right: max(64px, calc((100% - 780px) / 2));
-  }
+/* Outgoing message bottom-right timestamp (no user avatar or name header) */
+.outgoing-time {
+  display: block;
+  text-align: right;
+  font-size: calc(11px * var(--ui-font-scale, 1));
+  line-height: 1.25;
+  margin-top: 4px;
+  opacity: 0.72;
+  color: inherit;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
 }
 
-/* Stage 3: Standard Wide Centered (1081px - 1380px) */
-@media (max-width: 1380px) and (min-width: 1081px) {
-  .contact-sidebar { width: 300px; }
-  .messages {
-    padding-left: max(36px, calc((100% - 720px) / 2));
-    padding-right: max(36px, calc((100% - 720px) / 2));
-  }
-  .composer-wrap {
-    padding-left: max(36px, calc((100% - 720px) / 2));
-    padding-right: max(36px, calc((100% - 720px) / 2));
-  }
+/* ==================== CONTINUOUS VIDEO-MATCHED RESPONSIVE LAYOUT ==================== */
+.contact-sidebar {
+  width: 288px;
+  min-width: 288px;
+  max-width: 288px;
+  transition: none;
 }
-
-/* Stage 2: Medium Split Full-Bleed Chat (821px - 1080px) */
-@media (max-width: 1080px) and (min-width: 821px) {
-  .contact-sidebar { width: 290px; }
-  .messages { padding-left: 22px; padding-right: 22px; }
-  .composer-wrap { padding-left: 20px; padding-right: 20px; }
+.conversation {
+  --chat-lane: 760px;
+  --chat-edge: 24px;
+}
+.messages {
+  overflow-anchor: none;
+  padding: calc(var(--chat-header-height) + 18px) max(var(--chat-edge), calc((100% - var(--chat-lane)) / 2)) 22px !important;
+}
+.composer-wrap {
+  padding: 6px max(var(--chat-edge), calc((100% - var(--chat-lane)) / 2)) 22px !important;
+}
+.chat-message .bubble-column,
+.chat-message.in-group .bubble-column {
+  max-width: min(82%, 640px) !important;
+}
+.chat-message.outgoing .bubble-column {
+  max-width: min(74%, 560px) !important;
 }
 
 /* Shared Icon-Only Rail Styles (Manual sidebar-collapsed OR Stage 1 <= 820px) */
@@ -1352,6 +1357,9 @@ html.dark .display-theme-bar button.active { background: rgba(255,255,255,0.14);
   .app-shell,
   .app-shell.mobile-room,
   .app-shell.management-open {
+    position: relative !important;
+    inset: auto !important;
+    height: var(--ui-vh) !important;
     display: flex !important;
     flex-direction: row !important;
   }
@@ -1359,9 +1367,9 @@ html.dark .display-theme-bar button.active { background: rgba(255,255,255,0.14);
   .app-shell.mobile-room .contact-sidebar,
   .app-shell.management-open .contact-sidebar {
     display: flex !important;
-    width: 74px !important;
-    min-width: 74px !important;
-    max-width: 74px !important;
+    width: 72px !important;
+    min-width: 72px !important;
+    max-width: 72px !important;
     background: var(--sidebar) !important;
     border-right: 1px solid var(--line) !important;
     padding-top: env(safe-area-inset-top, 6px) !important;
@@ -1445,11 +1453,22 @@ html.dark .display-theme-bar button.active { background: rgba(255,255,255,0.14);
     right: calc(var(--window-controls-right-inset) + 12px) !important;
     max-width: min(176px, calc(100% - var(--window-controls-right-inset) - 48px)) !important;
   }
-  .messages {
-    padding: calc(var(--chat-header-height) + 16px) 16px 14px !important;
+  .conversation {
+    --chat-edge: 18px;
   }
-  .composer-wrap {
-    padding: 6px 14px max(14px, env(safe-area-inset-bottom, 0px)) !important;
+  .chat-message { margin: 0 0 22px !important; gap: 12px !important; }
+  .chat-message.continuation { margin-top: -14px !important; }
+  .message-bubble,
+  .outgoing .message-bubble,
+  .outgoing.in-group .message-bubble {
+    padding: 11px 16px !important;
+    border-radius: 20px !important;
+  }
+  .message-bubble { border-top-left-radius: 6px !important; }
+  .outgoing .message-bubble,
+  .outgoing.in-group .message-bubble { border-bottom-right-radius: 6px !important; }
+  .composer textarea {
+    font-size: calc(15px * var(--ui-font-scale, 1)) !important;
   }
   .object-layout, .models-configuration { grid-template-columns: 1fr; gap: 20px; }
   .object-detail, .models-editor { padding-left: 0; border-left: 0; border-top: 1px solid var(--line); padding-top: 20px; }
