@@ -7,7 +7,36 @@ export const textMessage = (value, timestamp = Date.now()) => ({ role: 'user', t
 export const contextTokens = messages => messages.reduce((total, message) =>
   total + Math.max(estimateTokens(message), Math.ceil(JSON.stringify(message).length / 3)), 0);
 
+export function isRoomMessageEvent(event, roomId) {
+  return event?.type === 'message' && (event.space?.kind === 'room' || Boolean(event.roomId)) &&
+    (!roomId || (event.space?.id ?? event.roomId) === roomId);
+}
+
+export function normalizeRoomMessage(event) {
+  const roomId = event.space?.id ?? event.roomId;
+  return {
+    id: event.id,
+    kind: 'event',
+    type: 'message',
+    space: { kind: 'room', id: roomId },
+    sequence: event.sequence,
+    time: event.time ?? event.createdAt,
+    author: event.author,
+    text: event.text ?? event.content ?? '',
+    attachments: event.attachments ?? [],
+    references: event.references ?? [],
+    mentions: event.mentions ?? [],
+    reply_to: event.reply_to ?? event.replyTo ?? null,
+  };
+}
+
+export function roomMessageInput(event) {
+  const normalized = normalizeRoomMessage(event);
+  return { type: 'room_message', event: normalized, ref: { kind: 'event', id: normalized.id } };
+}
+
 export function eventInput(event, current = true) {
+  if (isRoomMessageEvent(event)) return roomMessageInput(event);
   return { type: current ? 'current_event' : 'historical_entry', event,
     ref: event.history_ref || { kind: 'event', id: event.id } };
 }

@@ -16,6 +16,7 @@ import { createRedactor } from './config.mjs';
 import { textMessage } from '../context/projection.mjs';
 import { canReadObservation, observationBoundary } from '../context/room-observation.mjs';
 import { MaterialRuntime } from '../context/materials.mjs';
+import { FastReadRuntime } from './fast-read.mjs';
 
 const conversationRef = executionRef;
 const sessionRef = id => ({ kind: 'session', id });
@@ -88,6 +89,7 @@ export class BotRuntime {
         this.emit('engine.usage_unavailable');
       } });
     this.materials = new MaterialRuntime(this);
+    this.fastRead = new FastReadRuntime(this);
     const submissions = this.platform.executions.pendingPiSubmissions();
     if (submissions.length) {
       try { this.ownsGateway = (await inspectServiceLock(this.dataRoot, 'gateway'))?.pid === process.pid; }
@@ -275,6 +277,7 @@ export class BotRuntime {
     if (settled.size) this.discard(inbox, [...settled], 'cancelled');
     const pending = snapshot.filter(route => !settled.has(route));
     const unassigned = new Map();
+    const fastReadBatches = new Map();
     for (const route of pending) {
       if (route.run_id) continue;
       if (!route.wait_id && route.event.type === 'message' && route.event.space?.kind === 'room') {
@@ -303,11 +306,24 @@ export class BotRuntime {
         }
         if (this.targetPaused(route.event.target)) continue;
       }
+      if (this.fastRead?.needsFastRead(inbox, bot, route)) {
+        const roomId = route.event.space.id;
+        if (!fastReadBatches.has(roomId)) fastReadBatches.set(roomId, []);
+        fastReadBatches.get(roomId).push(route);
+        continue;
+      }
       const space = route.event.space || botRef(bot.id);
       const related = route.event.ref?.kind === 'conversation' ? route.event.ref : null;
       const key = recordKey(refKey(space), refKey(related));
       if (!unassigned.has(key)) unassigned.set(key, { space, related, routes: [] });
       unassigned.get(key).routes.push(route);
+    }
+    for (const [roomId, routes] of fastReadBatches) {
+      if (!this.platform.canReadSpace(botRef(bot.id), { kind: 'room', id: roomId }, { actor: botRef(bot.id) })) {
+        this.discard(inbox, routes, 'access_revoked');
+        continue;
+      }
+      this.fastRead.enqueue(inbox, bot, roomId, routes);
     }
     for (const { space, routes, related } of unassigned.values()) {
       if (space.kind === 'room' && !this.platform.canReadSpace(botRef(bot.id), space, { actor: botRef(bot.id) })) {
@@ -354,7 +370,7 @@ export class BotRuntime {
         continue;
       }
       if (eligible && conversation.kind === 'room') {
-        const fresh = inbox.pending().filter(route => !route.run_id && sameRef(route.event.space, conversation.space) &&
+        const fresh = inbox.pending().filter(route => !route.run_id && !this.fastRead?.needsFastRead(inbox, bot, route) && sameRef(route.event.space, conversation.space) &&
           (route.event.ref?.kind !== 'conversation' || route.event.ref.id === conversation.id) &&
           (route.event.type !== 'call.receipt' || !inbox.list(R.route, 'event_id', route.event_id).some(item => item.wait_id)));
         inbox.associate(run.id, fresh.slice(0, 32));
@@ -453,10 +469,12 @@ export class BotRuntime {
 
   binding(bot, conversation) {
     if (conversation.binding) return conversation.binding;
-    const blocker = this.platform.modelAccessBlocker(botRef(bot.id), bot.model?.connection_id);
+    const purpose = conversation.kind === 'fast_read' ? 'fast_read' : 'conversation';
+    const resolved = this.platform.models.resolveForBot(bot, purpose);
+    const blocker = this.platform.modelAccessBlocker(botRef(bot.id), resolved?.connection_id);
     if (blocker) throw runtimeFailure('connection_forbidden', blocker.message, 403);
-    return { name: bot.name, instructions: bot.instructions, revision: bot.revision, built_in_role: bot.built_in_role ?? null,
-      model: bindModel(this.model, bot.model), material_index_ref: bot.material_index_ref };
+    return { name: bot.name, instructions: bot.instructions, public_duty: bot.public_duty || '', revision: bot.revision,
+      built_in_role: bot.built_in_role ?? null, model: bindModel(this.model, resolved, purpose), material_index_ref: bot.material_index_ref };
   }
 
   launch(inbox, conversation, run, bot) {
@@ -686,27 +704,38 @@ export class BotRuntime {
       observation = observationBoundary(this.platform, job, context, view, observing, window, current);
     }
     if (conversation.kind === 'room' && conversation.space.kind === 'room' && !conversation.session_id &&
-        this.platform.store.get('rooms', conversation.space.id)?.mode === 'group' && (!observing || observation.bootstrap)) {
+        (!observing || observation.bootstrap)) {
       const roomId = conversation.space.id;
-      const snapshot = this.platform.room.publicHistory(roomId, context.actor.id, observation?.end);
-      history = snapshot.messages.map(roomEvent);
-      publicRoom = { summary: snapshot.summary, end: snapshot.end,
-        save: (previous, through, summary) => this.platform.room.savePublicSummary(roomId, context.actor, previous, through, summary) };
-      inbox.putRun({ id: runId, history_read_through: history.at(-1)?.id ?? snapshot.summary?.through ?? null });
-    } else if (!observing && conversation.space.kind === 'room' && !conversation.session_id) {
-      const messages = this.platform.room.messages(conversation.space.id, context.actor.id).map(roomEvent);
-      let through = run.public_prefix_through;
-      if (through === undefined) {
-        const first = messages.findIndex(message => run.pending_event_ids.includes(message.id));
-        through = messages[(first < 0 ? messages.length : first) - 1]?.id ?? null;
+      const locked = run.public_prefix_end !== undefined && run.public_prefix_end !== null;
+      const currentRoomSeqs = current
+        .filter(event => event.type === 'message' && event.space?.id === roomId && Number.isSafeInteger(event.sequence))
+        .map(event => event.sequence);
+      const latestEnd = observation?.end ?? Math.max(this.platform.room.observationEnd(roomId, context.actor.id), ...currentRoomSeqs);
+      let prefixEnd, prefixSummary, tailMessages = [];
+      if (!locked) {
+        const snapshot = this.platform.room.publicHistory(roomId, context.actor.id, latestEnd);
+        history = snapshot.messages.map(roomEvent);
+        prefixSummary = snapshot.summary;
+        prefixEnd = snapshot.end;
+      } else {
+        prefixEnd = run.public_prefix_end;
+        prefixSummary = run.public_prefix_summary ?? null;
+        history = this.platform.room.publicMessagesRange(roomId, context.actor.id, prefixSummary?.sequence ?? 0, prefixEnd)
+          .messages.map(roomEvent);
+        if (latestEnd > prefixEnd) {
+          tailMessages = this.platform.room.publicMessagesRange(roomId, context.actor.id, prefixEnd, latestEnd).messages
+            .map(message => ({ event: roomEvent(message), callId: message.callId ?? null }));
+        }
       }
-      const cut = through ? messages.findIndex(message => message.id === through) + 1 : 0;
-      history = messages.slice(0, cut);
-      const eventIds = new Set(run.pending_event_ids);
-      for (const event of messages.slice(cut).filter(event => !eventIds.has(event.id)).slice(-32)) {
-        facts.push(textMessage({ type: 'room_history', event }, Date.parse(event.time)));
-      }
-      inbox.putRun({ id: runId, public_prefix_through: through, history_read_through: messages.at(-1)?.id ?? null });
+      publicRoom = {
+        summary: prefixSummary,
+        end: prefixEnd,
+        latestEnd,
+        locked,
+        tailMessages,
+        save: (previous, through, summary) => this.platform.room.savePublicSummary(roomId, context.actor, previous, through, summary),
+      };
+      inbox.putRun({ id: runId, history_read_through: tailMessages.at(-1)?.event.id ?? history.at(-1)?.id ?? prefixSummary?.through ?? null });
     }
     if (view.session && view.resources?.length) facts.push(textMessage({ type: 'session_resources', references: view.resources,
       ...(view.session.workspace_ref && { workspace: view.session.workspace_ref, cwd: view.session.workspace.path, project_room: view.session.project_room }) }));
@@ -1000,14 +1029,23 @@ export class BotRuntime {
   stopBot(id) {
     const jobs = [...this.active.values()].filter(job => job.inbox.botId === id);
     for (const job of jobs) job.controller.abort(runtimeFailure('bot_paused', 'Bot was explicitly stopped'));
-    return Promise.all(jobs.map(job => job.done)).then(() => ({ status: 'stopped' }));
+    return Promise.all([...jobs.map(job => job.done), this.fastRead?.stopBot(id)]).then(() => ({ status: 'stopped' }));
   }
 
   setDraining(value) { this.draining = value; if (!value) this.wake(); }
-  beginDrain() { this.setDraining(true); return { running: [...this.active.values()].map(job => job.runId) }; }
+  beginDrain() {
+    this.setDraining(true);
+    return {
+      running: [...this.active.values()].map(job => job.runId),
+      fast_read: this.fastRead ? this.fastRead.drainActive().map(item => item.id) : [],
+    };
+  }
 
   drainStatus() {
-    const active = this.activeRuns().map(job => ({ ...job, id: job.run_id, kind: 'run', status: 'running' }));
+    const active = [
+      ...this.activeRuns().map(job => ({ ...job, id: job.run_id, kind: 'run', status: 'running' })),
+      ...(this.fastRead ? this.fastRead.drainActive() : []),
+    ];
     if (this.pumping) active.push({ id: 'bot-runtime', kind: 'runtime', status: 'writing' });
     for (const inbox of this.inboxes.values()) {
       this.flushInputs(inbox);
@@ -1031,8 +1069,9 @@ export class BotRuntime {
     clearInterval(this.interval);
     clearImmediate(this.scheduled);
     for (const job of this.active.values()) job.controller.abort(runtimeFailure('runtime_closed', 'Bot runtime is closing', 503));
+    const fastReadClose = this.fastRead?.close();
     this.engine?.stop();
-    await Promise.allSettled([this.pumpTask, ...this.opening.values(), ...this.starting.values()]);
+    await Promise.allSettled([this.pumpTask, fastReadClose, ...this.opening.values(), ...this.starting.values()]);
     for (const inbox of this.inboxes.values()) inbox.store.close();
     this.usage?.close();
   }

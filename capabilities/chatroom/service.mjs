@@ -51,6 +51,14 @@ export class ChatroomService {
       CREATE INDEX IF NOT EXISTS records_message_client ON records(
         json_extract(data,'$.roomId'),json_extract(data,'$.senderId'),json_extract(data,'$.clientId')
       ) WHERE kind='messages' AND json_extract(data,'$.clientId') IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS records_room_summary ON records(
+        json_extract(data,'$.roomId'),json_extract(data,'$.messageId')
+      ) WHERE kind='room-message-summaries';
+    `);
+    this.messageSummaryRows = store.db.prepare(`
+      SELECT data FROM records
+      WHERE kind='room-message-summaries' AND json_extract(data,'$.roomId')=? AND json_extract(data,'$.messageId')=?
+      ORDER BY rowid
     `);
     this.roomMessages = store.db.prepare(`
       SELECT rowid AS sequence,data FROM records
@@ -139,6 +147,12 @@ export class ChatroomService {
     return { summary, messages, end };
   }
 
+  publicMessagesRange(id, actor, afterSequence = 0, end = this.observationEnd(id, actor)) {
+    this.room(id, actor);
+    const messages = end > afterSequence ? this.publicMessages.all(id, afterSequence, end).map(rowMessage) : [];
+    return { messages, end };
+  }
+
   savePublicSummary(roomId, actor, previous, through, summary) {
     return this.store.transaction(() => {
       this.room(roomId, actor);
@@ -149,6 +163,37 @@ export class ChatroomService {
         fail('群公共摘要的原文位置已经变化', 409);
       return this.store.save('room-public-history', { id: roomId, through, sequence: row.sequence, summary, time: Date.now() });
     });
+  }
+
+  saveMessageSummary(roomId, messageId, botId, summary) {
+    roomId = idOf(roomId, 'room');
+    messageId = identifier(messageId, '消息 ID');
+    botId = identity(botId).id;
+    const text = typeof summary === 'string' ? summary.replace(/\s+/g, ' ').trim().slice(0, 240) : '';
+    if (!text) return null;
+    const saved = this.store.transaction(() => {
+      const row = this.messageRow.get(messageId);
+      if (!row || rowMessage(row).roomId !== roomId) return null;
+      const id = JSON.stringify([roomId, messageId, botId]);
+      const updated_at = new Date().toISOString();
+      return this.store.save('room-message-summaries', { id, roomId, messageId, bot_id: botId, summary: text, updated_at });
+    });
+    if (saved) this.emit('delivery');
+    return saved;
+  }
+
+  messageSummaries(roomId, messageIds) {
+    const result = {};
+    if (!Array.isArray(messageIds) || !messageIds.length) return result;
+    for (const messageId of messageIds) {
+      const rows = this.messageSummaryRows.all(roomId, messageId);
+      if (!rows.length) continue;
+      result[messageId] = rows.map(row => {
+        const { bot_id, summary, updated_at } = JSON.parse(row.data);
+        return { bot_id, summary, updated_at };
+      });
+    }
+    return result;
   }
 
   observationEnd(roomId, botId) {

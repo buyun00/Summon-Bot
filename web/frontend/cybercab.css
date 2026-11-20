@@ -570,6 +570,69 @@ html.dark .code-block { background: rgba(0, 0, 0, 0.34); }
 }
 .message-delivery.failed { color: var(--red); }
 
+/* Fast-Read UI Summary Disclosure (Collapsed by default under message bubbles) */
+.message-summaries {
+  margin-top: 5px;
+  max-width: min(560px, 100%);
+  color: var(--muted);
+  font-size: calc(12px * var(--ui-font-scale, 1));
+  line-height: 1.45;
+}
+.message-summaries > summary {
+  list-style: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--hover);
+  border: 1px solid var(--line);
+  color: var(--ink-2);
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.message-summaries > summary::-webkit-details-marker { display: none; }
+.message-summaries > summary:hover { background: var(--active); border-color: var(--composer-focus-border); }
+.message-summaries .summary-badge {
+  flex: none;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.message-summaries .summary-preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-2);
+}
+.message-summaries[open] > summary .summary-preview { display: none; }
+.message-summaries-list {
+  margin-top: 6px;
+  padding: 8px 11px;
+  border-radius: 12px;
+  background: var(--bubble-bot);
+  border: 1px solid var(--bubble-bot-border);
+  display: grid;
+  gap: 6px;
+  text-align: left;
+}
+.message-summary-item {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  align-items: baseline;
+  overflow-wrap: anywhere;
+}
+.message-summary-item strong {
+  color: var(--ink);
+  font-weight: 600;
+  flex: none;
+}
+.message-summary-item span { color: var(--ink-2); }
+.chat-message.outgoing .message-summaries { margin-left: auto; text-align: right; }
+
 /* Inline Interactive Panel (Pending Execution Inputs / Choices inside Chat) */
 .interact-panel {
   margin: 10px 0 18px;

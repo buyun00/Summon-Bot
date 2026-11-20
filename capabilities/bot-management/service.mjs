@@ -86,22 +86,25 @@ export class BotManager {
 
   ensureDefaults() {
     const existing = this.list();
-    const model = this.models.selectBinding();
+    const model = { mode: 'follow_default' };
+    const resolved = this.models.resolveForBot(model, 'conversation');
     let changed = false;
     const bots = Object.entries(defaultBotRoles).map(([role, name]) => {
       const id = `bot-default-${role}-local`;
       const bot = this.defaultBot(role, existing) ?? this.store.get(botRecords, id);
       if (!bot) {
         changed = true;
-        return this.saveNew({ id, name, instructions: '', model, owner: user,
-          built_in_role: { id: role }, ...(!model ? { default_model_pending: true } : {}) });
+        return this.saveNew({ id, name, instructions: '', model, owner: user, built_in_role: { id: role } });
       }
-      if (!model || !bot.default_model_pending || bot.archivedAt || bot.built_in_role?.id !== role) return bot;
-      const access = this.store.get('platform-access', bot.id);
-      this.store.save('platform-access', { id: bot.id, revision: (access?.revision ?? 0) + 1,
-        model_ids: [...new Set([...(access?.model_ids ?? []), model.connection_id])] });
-      changed = true;
-      return this.store.save(botRecords, { id: bot.id, model, revision: bot.revision + 1, default_model_pending: false });
+      if (resolved && bot.model?.mode === 'follow_default') {
+        const access = this.store.get('platform-access', bot.id);
+        if (!access?.model_ids?.includes(resolved.connection_id)) {
+          this.store.save('platform-access', { id: bot.id, revision: (access?.revision ?? 0) + 1,
+            model_ids: [...new Set([...(access?.model_ids ?? []), resolved.connection_id])],
+            workspace_ids: access?.workspace_ids ?? [] });
+        }
+      }
+      return bot;
     });
     return { bots, changed };
   }
@@ -134,9 +137,16 @@ export class BotManager {
       created_at: bot.createdAt, updated_at: bot.updatedAt };
     if (!details || !this.canConfigure(actor, bot)) return base;
     const target = { kind: 'bot', id: bot.id };
-    return { ...base, instructions: bot.instructions, model: bot.model, revision: bot.revision, control: bot.control,
-      material_index_ref: bot.material_index_ref || null, private_space: target,
+    return { ...base, instructions: bot.instructions, model: bot.model, effective_models: this.models.resolveAllForBot(bot),
+      revision: bot.revision, control: bot.control, material_index_ref: bot.material_index_ref || null, private_space: target,
       resume_ref: canResume(actor, bot.control, bot.owner) ? resumeReference(target, bot.control) : null };
+  }
+
+  modelConnectionIds(model) {
+    if (!model) return [];
+    const resolved = Object.values(this.models.resolveAllForBot(model)).map(item => item?.connection_id).filter(Boolean);
+    const direct = [model.connection_id, ...Object.values(model.purposes || {}).map(item => item?.connection_id)].filter(Boolean);
+    return [...new Set([...direct, ...resolved])];
   }
 
   saveNew(value) {
@@ -144,7 +154,8 @@ export class BotManager {
     mkdirSync(this.directory(id), { recursive: true });
     const record = this.store.save(botRecords, { ...value, revision: 1, enabled: true,
       control: activeControl(), material_index_ref: null });
-    if (model) this.store.save('platform-access', { id, model_ids: [model.connection_id], workspace_ids: [] });
+    const modelIds = this.modelConnectionIds(model);
+    if (modelIds.length) this.store.save('platform-access', { id, model_ids: modelIds, workspace_ids: [] });
     return record;
   }
 
@@ -160,7 +171,8 @@ export class BotManager {
       const assigned = this.maintainer(connection);
       if (assigned) return assigned;
       let model = this.models.selectBinding(args.model);
-      if (model && !this.canUseModel(actor, model.connection_id)) {
+      const neededIds = this.modelConnectionIds(model);
+      if (neededIds.some(connId => !this.canUseModel(actor, connId))) {
         if (args.model !== undefined) reject('connection_forbidden', 'Model connection is not available to this caller', 403);
         model = null;
       }
@@ -193,8 +205,17 @@ export class BotManager {
     if (args.model !== undefined) {
       const model = this.models.selectBinding(args.model);
       const target = { kind: 'bot', id };
-      if (model && (!this.canUseModel(actor, model.connection_id) || !this.canUseModel(target, model.connection_id))) {
+      const neededIds = this.modelConnectionIds(model);
+      if (actor.kind !== 'user' && neededIds.some(connId => !this.canUseModel(actor, connId) || !this.canUseModel(target, connId))) {
         reject('connection_forbidden', 'Model connection is outside the Bot’s authorized range', 403);
+      }
+      if (actor.kind === 'user' && neededIds.length) {
+        const access = this.store.get('platform-access', id) || {};
+        const merged = [...new Set([...(access.model_ids || []), ...neededIds])];
+        if (merged.length !== (access.model_ids || []).length) {
+          this.store.save('platform-access', { id, revision: (access.revision ?? 0) + 1,
+            model_ids: merged, workspace_ids: access.workspace_ids || [] });
+        }
       }
       changes.model = model;
       if (before.default_model_pending) changes.default_model_pending = false;

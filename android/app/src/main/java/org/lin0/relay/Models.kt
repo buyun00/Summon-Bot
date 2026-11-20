@@ -221,6 +221,22 @@ data class SummonDelivery(val botId: String, val status: String) {
     }
 }
 
+data class SummonMessageSummary(val botId: String, val summary: String, val updatedAt: String? = null) {
+    fun toJson(): SummonJson = SummonJson.obj(
+        "bot_id" to SummonJson.Str(botId),
+        "summary" to SummonJson.Str(summary),
+        "updated_at" to updatedAt.strOrNull(),
+    )
+
+    companion object {
+        fun list(json: SummonJson): List<SummonMessageSummary> = json.array.orEmpty().mapNotNull {
+            val id = it["bot_id"].string ?: return@mapNotNull null
+            val summary = it["summary"].string?.takeIf { text -> text.isNotBlank() } ?: return@mapNotNull null
+            SummonMessageSummary(id, summary, it["updated_at"].string)
+        }
+    }
+}
+
 data class SummonReceipt(val message: SummonMessage, val deliveries: List<SummonDelivery>) {
     companion object {
         fun parse(json: SummonJson): SummonReceipt = SummonReceipt(SummonMessage.parse(json["message"]), SummonDelivery.list(json["deliveries"]))

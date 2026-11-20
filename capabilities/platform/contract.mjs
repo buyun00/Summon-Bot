@@ -62,8 +62,18 @@ function wakeupPlatformArgs({ subscription, ...args }) {
   if (args.event_or_time?.kind === 'recurring_time') args.event_or_time = { ...args.event_or_time, kind: 'time' };
   return subscription === 'new' ? args : { ...args, ...subscription };
 }
-const model = { anyOf: [refOrId, object({ connection_id: text, id: text,
-  thinking_level: { anyOf: [text, { type: 'null' }] } }, ['connection_id']), { type: 'null' }] };
+const nullableText = { anyOf: [text, { type: 'null' }] };
+const purposeModelOverride = object({ connection_id: text, id: text, thinking_level: nullableText });
+const model = { anyOf: [
+  refOrId,
+  object({ mode: oneOf('follow_default') }, ['mode']),
+  object({ mode: oneOf('follow_connection'), connection_id: text }, ['mode', 'connection_id']),
+  object({ mode: oneOf('custom'), connection_id: text, id: text, thinking_level: nullableText,
+    purposes: object({ fast_read: purposeModelOverride, conversation: purposeModelOverride, pi_session: purposeModelOverride }) }, ['mode', 'connection_id']),
+  object({ connection_id: text, id: text, thinking_level: nullableText,
+    purposes: object({ fast_read: purposeModelOverride, conversation: purposeModelOverride, pi_session: purposeModelOverride }) }, ['connection_id']),
+  { type: 'null' },
+] };
 const sessionEngine = { ...text, description: 'The connection id returned by find with kind connection. Use pi to open a Pi Session.' };
 const sessionWorkspace = { ...text, description: 'The id from find with kind workspace, or an authorized absolute project directory path. Use the value itself as text.' };
 const openSessionInput = object({ engine: sessionEngine, input: value, workspace: sessionWorkspace, space: ref,
@@ -112,6 +122,7 @@ const definitions = [
       pin_add: array(ref), pin_remove: array(ref) }, ['room', 'revision'])],
   ['open_session', 'Open a Pi or external execution. For a private Session from a Room conversation, omit space and sharing. ' +
     'For engine, use the id string returned by find with kind connection, including pi for a Pi Session. ' +
+    'For an external Codex connection, inspect recommended_combinations from read(connection) and pick a (model, effort) pair matching task difficulty unless the user specifies otherwise. ' +
     'Pi and native executions default to their originating group’s bound workspace. For workspace, pass its id from find or an authorized absolute project directory path. ' +
     'A private initialization can omit workspace to use its selected directory for a native CLI Session. ' +
     'To share the Session, set space to an accessible Room, specify sharing.readers, sharing.submitters and sharing.controllers, ' +

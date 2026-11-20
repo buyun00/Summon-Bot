@@ -158,3 +158,10 @@
 .models-native-source progress { margin-inline: 8px; max-width: 45%; }
 .native-metric-table { overflow-x: auto; }
 .native-metric-table th, .native-metric-table td { padding: 6px 10px; text-align: start; }
+.message-summaries { margin-top: 5px; max-width: 100%; font-size: var(--text-caption); color: var(--muted); }
+.message-summaries > summary { list-style: none; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); }
+.message-summaries > summary::-webkit-details-marker { display: none; }
+.message-summaries .summary-preview { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.message-summaries[open] > summary .summary-preview { display: none; }
+.message-summaries-list { margin-top: 5px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); display: grid; gap: 5px; }
+.message-summary-item { display: flex; flex-wrap: wrap; gap: 4px 8px; overflow-wrap: anywhere; }

@@ -792,6 +792,7 @@ private fun MessageRow(store: SummonStore, roomID: String, message: SummonMessag
     var reference by remember { mutableStateOf<SummonReference?>(null) }
     var menu by remember { mutableStateOf(false) }
     var showDelivery by remember { mutableStateOf(false) }
+    var showSummaries by remember(message.id) { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (message.isOwn) Alignment.End else Alignment.Start) {
@@ -909,6 +910,77 @@ private fun MessageRow(store: SummonStore, roomID: String, message: SummonMessag
                         Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             Icon(Icons.Filled.Link, null, tint = palette.textSecondary, modifier = Modifier.size(14.dp))
                             Text(store.label(item), style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+                val summaries = store.summaryFacts(message.id)
+                if (saved && summaries.isNotEmpty()) {
+                    Column(
+                        horizontalAlignment = if (message.isOwn) Alignment.End else Alignment.Start,
+                        verticalArrangement = Arrangement.spacedBy(5.dp),
+                        modifier = Modifier.animateContentSize(),
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = palette.surface,
+                            border = BorderStroke(0.7.dp, palette.bubbleStroke),
+                            modifier = Modifier.clip(CircleShape).clickable { showSummaries = !showSummaries },
+                        ) {
+                            Row(
+                                Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Text(
+                                    if (summaries.size == 1) "快读摘要 · " + store.name(summaries[0].botId) else "快读摘要 · ${summaries.size} 位伙伴",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                    color = palette.textSecondary,
+                                    maxLines = 1,
+                                )
+                                if (!showSummaries) {
+                                    Text(
+                                        summaries.first().summary,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = palette.textSecondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false),
+                                    )
+                                }
+                                Icon(
+                                    if (showSummaries) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                                    if (showSummaries) "收起摘要" else "展开摘要",
+                                    tint = palette.textTertiary,
+                                    modifier = Modifier.size(15.dp),
+                                )
+                            }
+                        }
+                        if (showSummaries) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = palette.botBubble,
+                                border = BorderStroke(0.7.dp, palette.bubbleStroke),
+                            ) {
+                                Column(
+                                    Modifier.padding(horizontal = 11.dp, vertical = 8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    summaries.forEach { item ->
+                                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                            Text(
+                                                store.name(item.botId),
+                                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                            )
+                                            Text(
+                                                item.summary,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = palette.textSecondary,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

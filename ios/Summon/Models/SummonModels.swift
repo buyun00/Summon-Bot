@@ -147,6 +147,12 @@ struct SummonDelivery: Codable, Sendable {
     var status: String
 }
 
+struct SummonMessageSummary: Codable, Equatable, Sendable {
+    var bot_id: String
+    var summary: String
+    var updated_at: String?
+}
+
 struct SummonReceipt: Decodable, Sendable {
     var message: SummonMessage
     var deliveries: [SummonDelivery]
@@ -164,6 +170,7 @@ struct SummonRoomSnapshot: Decodable, Sendable {
     var room: SummonRoom
     var messages: [SummonMessage]
     var deliveries: [String: [SummonDelivery]]?
+    var summaries: [String: [SummonMessageSummary]]?
     var cursor: String?
 }
 

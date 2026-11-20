@@ -8,7 +8,7 @@ globalThis.SummonUsage = (() => {
     if (row.open) view.expanded.add(row.dataset.id); else view.expanded.delete(row.dataset.id);
   }, true);
   const periods = { today: '今天', yesterday: '昨天', '7d': '近 7 天', all: '累计' };
-  const purposes = { chat: '聊天', work: '工作执行', activity: '快速任务说明', routing: '群聊路由', compress: '上下文压缩', compact: '上下文压缩', organize: '记忆整理', assemble: '上下文组装', other: '其他调用' };
+  const purposes = { fast_read: '① 快读收件', conversation: '② 群主对话', pi_session: '③ 独立 Pi', compression: '公开历史压缩', material_consolidation: '④ 资料整理', chat: '聊天', work: '工作执行', activity: '快速任务说明', routing: '群聊路由', compress: '上下文压缩', compact: '上下文压缩', organize: '记忆整理', assemble: '上下文组装', other: '其他调用' };
   const statuses = { succeeded: '完成', failed: '失败', cancelled: '取消', pending: '调用中', unknown: '结果未知' };
   const number = value => value === null || value === undefined ? '—' : Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 0 });
   const percent = value => value === null || value === undefined ? '—' : `${(value * 100).toFixed(1)}%`;

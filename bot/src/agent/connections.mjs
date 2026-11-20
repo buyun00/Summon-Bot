@@ -35,18 +35,114 @@ const apis = { 'openai-completions': openAICompletionsApi, 'openai-responses': o
 const openAIExplicitCacheModels = new Set([
   'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra',
   'gpt-6-astra', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-luna',
+  'gpt-6.2-sol', 'gpt-6.2-astra',
 ]);
 // The direct API window includes input and output. The bundled Responses
-// catalog reports 272K for these entries and omits GPT-6.1 Terra.
+// catalog reports 272K for these entries and omits newer 6.1/6.2 entries.
 const openAILongContextModels = new Set(['gpt-5.4', 'gpt-5.5', ...openAIExplicitCacheModels]);
 const openAILongContextBudget = { contextWindow: 1050000, maxTokens: 128000 };
+const terraThinkingMap = Object.freeze({ off: 'none', minimal: null, low: 'low', medium: null, high: 'high', max: 'max' });
+const solAstraOpenAIMap = Object.freeze({ off: null, minimal: null, low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' });
+const solAstraCodexMap = Object.freeze({ off: null, minimal: 'low', low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' });
 // Pi emits strict:false for ordinary function tools when the Responses endpoint supports the flag.
-const terraModel = { id: 'gpt-6.1-terra', name: 'GPT-6.1 Terra', api: 'openai-responses', type: 'chat', input: ['text', 'image'],
-  compat: { supportsStrictMode: true } };
+const openAISupplementalModels = Object.freeze([
+  { id: 'gpt-6.1-terra', name: 'GPT-6.1 Terra', api: 'openai-responses', type: 'chat', reasoning: true, input: ['text', 'image'],
+    contextWindow: openAILongContextBudget.contextWindow, maxTokens: openAILongContextBudget.maxTokens,
+    thinkingLevelMap: terraThinkingMap, compat: { supportsStrictMode: true, supportsExplicitPromptCacheMode: true } },
+  { id: 'gpt-6.2-sol', name: 'GPT-6.2 Sol', api: 'openai-responses', type: 'chat', reasoning: true, input: ['text', 'image'],
+    contextWindow: openAILongContextBudget.contextWindow, maxTokens: openAILongContextBudget.maxTokens,
+    thinkingLevelMap: solAstraOpenAIMap, compat: { supportsStrictMode: true, supportsExplicitPromptCacheMode: true } },
+  { id: 'gpt-6.2-astra', name: 'GPT-6.2 Astra', api: 'openai-responses', type: 'chat', reasoning: true, input: ['text', 'image'],
+    contextWindow: openAILongContextBudget.contextWindow, maxTokens: openAILongContextBudget.maxTokens,
+    thinkingLevelMap: solAstraOpenAIMap, compat: { supportsStrictMode: true, supportsExplicitPromptCacheMode: true } },
+]);
+const codexSupplementalModels = Object.freeze([
+  { id: 'gpt-6.1-terra', name: 'GPT-6.1 Terra', api: 'openai-codex-responses', type: 'chat', reasoning: true, input: ['text', 'image'],
+    contextWindow: 500000, maxTokens: 128000, thinkingLevelMap: terraThinkingMap,
+    compat: { supportsOpenAIGrammarTools: true, supportsAdditionalTools: true, supportsToolSearch: true, supportsMidConvoSystemMessages: true } },
+  { id: 'gpt-6.2-sol', name: 'GPT-6.2 Sol', api: 'openai-codex-responses', type: 'chat', reasoning: true, input: ['text', 'image'],
+    contextWindow: 500000, maxTokens: 128000, thinkingLevelMap: solAstraCodexMap,
+    compat: { supportsOpenAIGrammarTools: true, supportsAdditionalTools: true, supportsToolSearch: true, supportsMidConvoSystemMessages: true } },
+  { id: 'gpt-6.2-astra', name: 'GPT-6.2 Astra', api: 'openai-codex-responses', type: 'chat', reasoning: true, input: ['text', 'image'],
+    contextWindow: 500000, maxTokens: 128000, thinkingLevelMap: solAstraCodexMap,
+    compat: { supportsOpenAIGrammarTools: true, supportsAdditionalTools: true, supportsToolSearch: true, supportsMidConvoSystemMessages: true } },
+]);
+
+export const modelPurposes = Object.freeze(['fast_read', 'conversation', 'pi_session']);
+export const purposeTemplateCategories = Object.freeze(['deepseek', 'openai', 'codex']);
+export function defaultPurposeDefaults() {
+  return {
+    deepseek: {
+      fast_read: { model: 'deepseek-flash', thinking_level: 'off' },
+      conversation: { model: 'deepseek-flash', thinking_level: 'high' },
+      pi_session: { model: 'deepseek-flash', thinking_level: 'max' },
+    },
+    openai: {
+      fast_read: { model: 'gpt-6.1-terra', thinking_level: 'off' },
+      conversation: { model: 'gpt-6.1-terra', thinking_level: 'high' },
+      pi_session: { model: 'gpt-6.2-sol', thinking_level: 'high' },
+    },
+    codex: {
+      fast_read: { model: 'gpt-6.1-terra', thinking_level: 'off' },
+      conversation: { model: 'gpt-6.1-terra', thinking_level: 'high' },
+      pi_session: { model: 'gpt-6.2-sol', thinking_level: 'high' },
+    },
+  };
+}
+export function defaultCodexRecommendations() {
+  return [
+    { model: 'gpt-6.2-sol', efforts: ['xhigh', 'max'] },
+    { model: 'gpt-6.2-astra', efforts: ['high', 'xhigh', 'max'] },
+  ];
+}
+export function purposeCategory(connection) {
+  if (!connection) return null;
+  if (connection.kind === 'codex') return 'codex';
+  if (connection.kind === 'api' && connection.provider === 'deepseek') return 'deepseek';
+  if (connection.kind === 'api' && connection.provider === 'openai' && (connection.api || 'openai-responses') === 'openai-responses') return 'openai';
+  return null;
+}
+export function templateProbeConnection(category) {
+  if (category === 'deepseek') return { id: 'template-deepseek', name: 'DeepSeek API', kind: 'api', provider: 'deepseek', api: 'openai-completions', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-flash' };
+  if (category === 'openai') return { id: 'template-openai', name: 'OpenAI API', kind: 'api', provider: 'openai', api: 'openai-responses', baseUrl: 'https://api.openai.com/v1', model: 'gpt-6.1-terra' };
+  if (category === 'codex') return { id: 'template-codex', name: 'Codex 订阅', kind: 'codex', provider: 'openai-codex', api: 'openai-codex-responses', baseUrl: 'https://chatgpt.com/backend-api', model: 'gpt-6.1-terra' };
+  return null;
+}
+export function normalizeModelCatalog(catalog) {
+  const defaults = defaultPurposeDefaults();
+  const savedDefaults = catalog?.purposeDefaults && typeof catalog.purposeDefaults === 'object' ? catalog.purposeDefaults : {};
+  const purposeDefaults = {};
+  for (const category of purposeTemplateCategories) {
+    purposeDefaults[category] = {};
+    for (const purpose of modelPurposes) {
+      const entry = savedDefaults[category]?.[purpose];
+      purposeDefaults[category][purpose] = entry?.model
+        ? { model: String(entry.model).trim(), thinking_level: entry.thinking_level ?? null }
+        : { ...defaults[category][purpose] };
+    }
+  }
+  const connectionPurposes = catalog?.connectionPurposes && typeof catalog.connectionPurposes === 'object' && !Array.isArray(catalog.connectionPurposes)
+    ? structuredClone(catalog.connectionPurposes) : {};
+  const savedCodex = catalog?.externalEngines?.codex?.recommended;
+  const recommended = Array.isArray(savedCodex) && savedCodex.length
+    ? savedCodex.filter(item => typeof item?.model === 'string' && item.model.trim() && Array.isArray(item.efforts) && item.efforts.length)
+      .map(item => ({ model: item.model.trim(), efforts: [...new Set(item.efforts.map(e => String(e).trim()).filter(Boolean))] }))
+    : defaultCodexRecommendations();
+  const { fastId, ...rest } = catalog;
+  return {
+    ...rest,
+    schemaVersion: 2,
+    autoGrantPurposeConnections: catalog?.autoGrantPurposeConnections !== false,
+    purposeDefaults,
+    connectionPurposes,
+    externalEngines: { ...(catalog?.externalEngines && typeof catalog.externalEngines === 'object' ? catalog.externalEngines : {}),
+      codex: { recommended: recommended.length ? recommended : defaultCodexRecommendations() } },
+  };
+}
 export function readConnectionCatalog(path) {
   const catalog = JSON.parse(readFileSync(path, 'utf8'));
   if (!Array.isArray(catalog?.connections)) throw new Error('The model connections catalog is unavailable');
-  return catalog;
+  return normalizeModelCatalog(catalog);
 }
 export async function saveModelJson(path, value) {
   await mkdir(dirname(path), { recursive: true });
@@ -67,7 +163,8 @@ export function officialDeepSeekCompletions(connection, api, baseUrl) {
     ['deepseek-flash', 'deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'].includes(connection.model);
 }
 export function terraResponses(connection, api, model = connection.model) {
-  return connection.kind === 'api' && connection.provider === 'openai' && api === 'openai-responses' && model === 'gpt-6.1-terra';
+  return (connection.kind === 'codex' && api === 'openai-codex-responses' ||
+    connection.kind === 'api' && connection.provider === 'openai' && api === 'openai-responses') && model === 'gpt-6.1-terra';
 }
 export function supportsOpenAIRoomCache(connection, model) {
   return connection.kind === 'api' && connection.provider === 'openai' && model.api === 'openai-responses' &&
@@ -81,9 +178,11 @@ export function connectionModel(connection) {
   const deepseek = officialDeepSeekCompletions(connection, api, baseUrl);
   const directOpenAI = connection.kind === 'api' && connection.provider === 'openai' && api === 'openai-responses' &&
     baseUrl?.replace(/\/+$/, '') === 'https://api.openai.com/v1' && openAILongContextModels.has(connection.model);
+  const supplemental = connection.kind === 'codex' ? codexSupplementalModels
+    : connection.kind === 'api' && connection.provider === 'openai' && api === 'openai-responses' ? openAISupplementalModels : [];
   const known = native?.getModels().find(model => model.api === api &&
     (model.id === connection.model || deepseek && model.id === 'deepseek-flash' && connection.model.startsWith('deepseek-v4-flash'))) ||
-    (directOpenAI && connection.model === terraModel.id ? terraModel : undefined);
+    supplemental.find(model => model.api === api && model.id === connection.model);
   // The official Completions schema gives exact powers of two. Pi's bundled
   // DeepSeek catalog uses the rounded marketing figures and sends a limit.
   const nativeWindow = deepseek ? 1048576 : directOpenAI ? openAILongContextBudget.contextWindow : known?.contextWindow;
@@ -99,20 +198,95 @@ export function connectionModel(connection) {
   const maxTokens = Math.min(customOutput ?? nativeDefault, outputTokenLimit);
   const budgetSource = { contextWindow: connection.contextWindow != null ? 'configured' : nativeWindow ? 'catalog' : 'default',
     maxTokens: customOutput != null ? 'configured' : nativeOutput ? 'catalog' : 'default' };
+  const resolvedThinkingMap = known?.thinkingLevelMap ?? (terraResponses(connection, api) ? terraThinkingMap : undefined);
+  const probe = known ? { ...known, ...(resolvedThinkingMap ? { thinkingLevelMap: resolvedThinkingMap } : {}) } : null;
   return { ...known, id: connection.model, name: known?.name || connection.model, type: 'chat', api,
     provider: connection.id || connection.provider, baseUrl,
     ...(connection.kind === 'grok' ? { headers: { ...known?.headers, ...grokProxyHeaders(connection) } } : {}),
     reasoning: connection.reasoning !== false, input: known?.input || ['text'], contextWindow, maxTokens, outputTokenLimit, budgetSource,
-    thinkingLevels: known?.reasoning !== undefined ? getSupportedThinkingLevels(known) : undefined,
-    // Keep the four supported levels distinct. Pi rounds medium up to high and xhigh up to max.
-    ...(terraResponses(connection, api) ? { thinkingLevelMap: { off: 'none', minimal: null, low: 'low', medium: null, high: 'high', max: 'max' } } : {}),
+    thinkingLevels: probe?.reasoning !== undefined ? getSupportedThinkingLevels(probe) : undefined,
+    ...(resolvedThinkingMap ? { thinkingLevelMap: resolvedThinkingMap } : {}),
     cost: connection.kind === 'api' ? known?.cost || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     ...(api === 'openai-completions' && !known ? { compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: false, maxTokensField: 'max_tokens' } } : {}) };
 }
+export function validateModelPurpose(connection, modelId, thinkingLevel) {
+  const effective = connectionModel({ ...connection, model: modelId, thinkingLevel: thinkingLevel ?? null });
+  if (thinkingLevel !== null && thinkingLevel !== undefined) {
+    if (Array.isArray(effective.thinkingLevels) && !effective.thinkingLevels.includes(thinkingLevel)) {
+      throw new Error(`模型 ${modelId}（${connection.name || connection.id}）不支持思考档 ${thinkingLevel}，可用档位：${effective.thinkingLevels.join(' / ')}`);
+    }
+  }
+  return effective;
+}
+export function resolveConnectionPurpose(catalog, connectionId, purpose = 'conversation', visited = new Set()) {
+  const normalized = normalizeModelCatalog(catalog);
+  const entry = normalized.connections.find(item => item.id === connectionId);
+  if (!entry) return null;
+  const override = !visited.has(connectionId) ? normalized.connectionPurposes?.[connectionId]?.[purpose] : null;
+  if (override && (override.model || override.connection_id || override.thinking_level !== undefined)) {
+    const targetId = override.connection_id || connectionId;
+    const target = normalized.connections.find(item => item.id === targetId);
+    if (!target) return null;
+    if (override.model) {
+      return { connection_id: target.id, id: override.model, thinking_level: override.thinking_level ?? null, source: 'connection_override' };
+    }
+    const nextVisited = new Set(visited);
+    nextVisited.add(connectionId);
+    const base = resolveConnectionPurpose(normalized, target.id, purpose, nextVisited);
+    return base ? { ...base, thinking_level: override.thinking_level !== undefined ? override.thinking_level : base.thinking_level, source: 'connection_override' } : null;
+  }
+  const category = purposeCategory(entry);
+  const template = category && normalized.purposeDefaults?.[category]?.[purpose];
+  if (template?.model) {
+    return { connection_id: entry.id, id: template.model, thinking_level: template.thinking_level ?? null, source: `template:${category}` };
+  }
+  const fallback = connectionModel(entry);
+  let thinking = entry.thinkingLevel ?? null;
+  if (purpose === 'fast_read' && fallback.thinkingLevels?.includes('off')) thinking = 'off';
+  else if (purpose === 'pi_session' && fallback.thinkingLevels?.includes('high')) thinking = 'high';
+  return { connection_id: entry.id, id: entry.model, thinking_level: thinking, source: 'connection_default' };
+}
+export function resolveBotModelSelection(catalog, botModel, purpose = 'conversation') {
+  if (!botModel) return null;
+  const normalized = normalizeModelCatalog(catalog);
+  if (botModel.mode === 'follow_default') {
+    return normalized.activeId ? resolveConnectionPurpose(normalized, normalized.activeId, purpose) : null;
+  }
+  if (botModel.mode === 'follow_connection') {
+    return botModel.connection_id ? resolveConnectionPurpose(normalized, botModel.connection_id, purpose) : null;
+  }
+  const override = botModel.purposes?.[purpose];
+  if (override && (override.connection_id || override.id || override.thinking_level !== undefined)) {
+    const connId = override.connection_id || botModel.connection_id;
+    if (!connId) return null;
+    const base = resolveConnectionPurpose(normalized, connId, purpose);
+    const id = override.id || (override.connection_id ? base?.id : (botModel.id || base?.id));
+    if (!id) return null;
+    const thinking_level = override.thinking_level !== undefined ? override.thinking_level
+      : override.id ? null : (override.connection_id ? (base?.thinking_level ?? null) : (botModel.thinking_level ?? base?.thinking_level ?? null));
+    return { connection_id: connId, id, thinking_level, source: 'bot_purpose_override' };
+  }
+  if (!botModel.connection_id) return null;
+  const entry = normalized.connections.find(item => item.id === botModel.connection_id);
+  if (!entry) return { connection_id: botModel.connection_id, id: botModel.id || '', thinking_level: botModel.thinking_level ?? null, source: 'bot_custom' };
+  if (botModel.id) {
+    let thinking = botModel.thinking_level ?? entry.thinkingLevel ?? null;
+    if (purpose === 'fast_read') {
+      const effective = connectionModel({ ...entry, model: botModel.id });
+      if (effective.thinkingLevels?.includes('off')) thinking = 'off';
+    }
+    return { connection_id: botModel.connection_id, id: botModel.id, thinking_level: thinking, source: 'bot_custom' };
+  }
+  const base = resolveConnectionPurpose(normalized, botModel.connection_id, purpose);
+  return base ? { ...base, thinking_level: botModel.thinking_level !== undefined && botModel.thinking_level !== null ? botModel.thinking_level : base.thinking_level, source: 'bot_custom' } : null;
+}
 export function modelChoices(kind, provider) {
   const models = factories[kind === 'api' ? provider : kind]?.().getModels() || [];
-  const catalog = kind === 'api' && provider === 'openai' && !models.some(model => model.id === terraModel.id && model.api === terraModel.api) ?
-    [...models, terraModel] : models;
+  const supplemental = kind === 'codex' ? codexSupplementalModels : kind === 'api' && provider === 'openai' ? openAISupplementalModels : [];
+  const catalog = [...models];
+  for (const extra of supplemental) {
+    if (!catalog.some(model => model.id === extra.id && model.api === extra.api)) catalog.push(extra);
+  }
   return catalog.map(model => {
     const budget = connectionModel({ kind, provider, model: model.id, api: model.api });
     return { id: model.id, name: model.name, contextWindow: budget.contextWindow, maxTokens: budget.outputTokenLimit,

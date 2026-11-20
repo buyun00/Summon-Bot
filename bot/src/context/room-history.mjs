@@ -1,4 +1,4 @@
-import { contextTokens, eventInput, textMessage } from './projection.mjs';
+import { contextTokens, roomMessageInput, textMessage } from './projection.mjs';
 import { runtimeFailure } from '../storage/runtime-records.mjs';
 
 // Only public Room messages and the previous public summary enter compression.
@@ -6,38 +6,46 @@ import { runtimeFailure } from '../storage/runtime-records.mjs';
 export async function fitRoomHistory(job, compress, system, transcript, tail, budget, boundary, optionalMaterial) {
   const { publicRoom, history } = boundary;
   const active = new Set(boundary.current.filter(e => e.type === 'message' && e.space?.id === job.conversation.space.id).map(e => e.id));
-  const originals = history.map(event => {
-    const current = active.has(event.id);
-    return { ...textMessage(eventInput(event, current), Date.parse(event.time)), public_event_id: event.id,
-      ...(current && { origin_event_ids: [event.id] }) };
-  });
+  const originals = history.map(event => ({
+    ...textMessage(roomMessageInput(event), Date.parse(event.time)),
+    public_event_id: event.id,
+  }));
   let privateTurn = [...transcript, ...tail];
   let summary = publicRoom.summary;
   let start = 0;
   while (true) {
     while (start < history.length && history[start].sequence <= (summary?.sequence ?? 0)) start++;
     const suffix = originals.slice(start);
-    const represented = new Set(suffix.filter(message => message.origin_event_ids).map(message => message.public_event_id));
-    const coveredInputs = [...active].filter(id => !represented.has(id));
+    const visiblePublicIds = new Set([
+      ...suffix.map(message => message.public_event_id),
+      ...privateTurn.filter(message => message.fork_public_event).map(message => message.public_event_id),
+    ]);
+    const coveredInputs = [...active].filter(id => !visiblePublicIds.has(id));
     const prefix = summary ? [textMessage({ type: 'derived_history', room: job.conversation.space.id,
       covered_through: summary.through, text: summary.summary }, summary.time)] : [];
-    if (coveredInputs.length) prefix.push({ ...textMessage({ type: 'current_room_inputs', references: coveredInputs.map(id => ({ kind: 'event', id })) }),
-      origin_event_ids: coveredInputs });
-    const fixed = [system, ...prefix, ...privateTurn];
-    if (contextTokens(fixed) + contextTokens(suffix) <= budget)
-      return [system, ...prefix, ...suffix, ...privateTurn];
+    const coveredNotice = coveredInputs.length ? [{
+      ...textMessage({ type: 'summarized_room_inputs', room: job.conversation.space.id,
+        references: coveredInputs.map(id => ({ kind: 'event', id })) }),
+      origin_event_ids: coveredInputs,
+    }] : [];
+    const fixed = [system, ...prefix, ...privateTurn, ...coveredNotice];
+    if (contextTokens(fixed) + contextTokens(suffix) <= budget) {
+      publicRoom.usedSummary = summary ?? null;
+      return [system, ...prefix, ...suffix, ...privateTurn, ...coveredNotice];
+    }
     if (optionalMaterial && privateTurn.includes(optionalMaterial)) {
       privateTurn = privateTurn.filter(message => message !== optionalMaterial);
       continue;
     }
     if (transcript.length && contextTokens(fixed) > budget / 2 && privateTurn.some(message => transcript.includes(message))) {
       const calls = job.inbox.calls(job.runId).map(call => ({ ref: { kind: 'call', id: call.id }, state: call.state, tool: call.tool }));
-      privateTurn = [...transcript.filter(msg => msg.origin_event_ids?.length || msg.runtime_fact), ...tail.filter(msg => msg !== optionalMaterial),
+      privateTurn = [...transcript.filter(msg => msg.origin_event_ids?.length || msg.runtime_fact || msg.fork_public_event),
+        ...tail.filter(msg => msg !== optionalMaterial),
         textMessage({ type: 'accessible_prior_calls', calls })];
       transcript = [];
       continue;
     }
-    if (start === history.length || contextTokens([system, ...privateTurn]) >= budget)
+    if (start === history.length || contextTokens([system, ...privateTurn, ...coveredNotice]) >= budget)
       throw runtimeFailure('context_limit', 'The active turn and Room summary exceed the model window', 413);
 
     const chunk = [];
@@ -49,7 +57,7 @@ export async function fitRoomHistory(job, compress, system, transcript, tail, bu
       const cost = contextTokens([originals[i]]);
       if (used + cost > budget && chunk.length === 0) break;
       if (chunk.length && used + cost > budget / 2) break;
-      chunk.push(eventInput(history[i], false));
+      chunk.push(roomMessageInput(history[i]));
       used += cost;
       remaining -= cost;
     }

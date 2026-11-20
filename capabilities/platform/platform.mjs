@@ -92,15 +92,34 @@ export class SummonPlatform {
     return actor.kind === 'user' ? null : this.store.get('platform-access', actor.id) || {};
   }
 
+  botModelConnectionId(bot, purpose = 'conversation') {
+    return this.models.resolveForBot(bot, purpose)?.connection_id ?? null;
+  }
+
   modelAccessBlocker(actor, id) {
     if (!id) return { code: 'model_binding_required', message: 'The Bot needs an assigned model connection' };
-    let available;
-    try { available = this.models.catalog().connections.some(item => item.id === id); }
+    let catalog;
+    try { catalog = this.models.catalog(); }
     catch { return { code: 'model_catalog_unavailable', message: 'The model catalog is unavailable' }; }
-    if (!available) return { code: 'model_connection_unavailable',
+    if (!catalog.connections.some(item => item.id === id)) return { code: 'model_connection_unavailable',
       message: 'The configured model connection is unavailable. Ask the host to restore the Bot’s model binding' };
-    if (actor.kind !== 'user' && !this.accessFor(actor).model_ids?.includes(id))
-      return { code: 'model_grant_required', message: 'The Bot needs a host grant for its configured model connection' };
+    if (actor.kind !== 'user') {
+      const explicit = this.accessFor(actor).model_ids || [];
+      if (!explicit.includes(id)) {
+        const autoGranted = catalog.autoGrantPurposeConnections !== false && (() => {
+          const bot = this.store.get(botRecords, actor.id);
+          if (!bot?.model) return false;
+          if (bot.model.mode === 'follow_default') {
+            return Object.values(this.models.resolveAllForBot(bot)).some(item => item?.connection_id === id);
+          }
+          if (bot.model.mode === 'follow_connection' && explicit.includes(bot.model.connection_id)) {
+            return Object.values(this.models.resolveAllForBot(bot)).some(item => item?.connection_id === id);
+          }
+          return false;
+        })();
+        if (!autoGranted) return { code: 'model_grant_required', message: 'The Bot needs a host grant for its configured model connection' };
+      }
+    }
     return null;
   }
 
@@ -180,7 +199,7 @@ export class SummonPlatform {
     const permissions = context ? grants(context) : {};
     if (!bot) return { ...permissions, maintainer: null };
     const actor = { kind: 'bot', id: bot.id };
-    const blocker = bot.enabled ? this.modelAccessBlocker(actor, bot.model?.connection_id) :
+    const blocker = bot.enabled ? this.modelAccessBlocker(actor, this.botModelConnectionId(bot)) :
       { code: 'bot_paused', message: 'The maintainer Bot is paused' };
     return { ...permissions, maintainer: { ...actor, name: bot.name, enabled: bot.enabled, ...grants({ actor }),
       run_status: blocker ? { status: 'blocked', ...blocker } : { status: 'configured' } } };
@@ -223,7 +242,7 @@ export class SummonPlatform {
         return { code: error.code, message: error.message };
       }
     }
-    return this.modelAccessBlocker(context.actor, recipient.model?.connection_id);
+    return this.modelAccessBlocker(context.actor, this.botModelConnectionId(recipient));
   }
 
   resolveProbeFailure(connectionId) {
@@ -644,9 +663,9 @@ export class SummonPlatform {
     const bot = actor.kind === 'bot' ? this.getBot(actor.id) : null;
     if (sharing && connection?.kind === 'cli') reject('unsupported_sharing', 'This CLI connection cannot enforce separate shared workspace permissions', 409);
     if (engine === 'pi' && !bot) reject('pi_actor_required', 'Open a Pi Session from an authorized Bot conversation', 409);
-    const model = engine === 'pi' ? (context.session?.model ?? bot.model) : null;
+    const model = engine === 'pi' ? (context.session?.model ?? this.models.resolveForBot(bot, 'pi_session')) : null;
     if (engine === 'pi' && (!model || !this.canUseModel(actor, model.connection_id))) reject('connection_unconfigured', 'The Pi execution model is unavailable', 409);
-    const binding = model ? context.session?.model_binding ?? bindModel({ connectionStore: this.models.path }, model) : null;
+    const binding = model ? context.session?.model_binding ?? bindModel({ connectionStore: this.models.path }, model, 'pi_session') : null;
     return this.store.transaction(() => {
       this.resources.assertCapacity('sessions', this.activeSessions());
       const session = this.store.save(sessionRecords, { id: call.id, engine, space, owner: actor, bot_id: bot?.id ?? null,
@@ -678,6 +697,16 @@ export class SummonPlatform {
   context(context) {
     const actor = identity(context.actor);
     const origin = context.origin;
+    if (actor.kind === 'bot' && origin?.conversation_kind === 'fast_read') {
+      if (!origin.run_id || !Array.isArray(origin.event_ids) || origin.space?.kind !== 'room' || typeof origin.space.id !== 'string' || !origin.space.id) {
+        reject('runtime_origin_required', 'A Bot fast-read invocation must have a host-provided room and source', 403);
+      }
+      const conversation = { id: origin.conversation_id || keyOf('fast_read', actor.id, origin.space.id), kind: 'fast_read', bot_id: actor.id, space: origin.space };
+      const control = (target, version) => ({ target,
+        control_version: context.controls?.find(value => sameRef(value.target, target))?.control_version ?? version });
+      const controls = [control(actor, this.getBot(actor.id).control.control_version)];
+      return { ...context, actor, origin, conversation, session: null, controls, resource_refs: [], executable_scope: null };
+    }
     if (actor.kind === 'bot' && (!origin?.conversation_id || !origin.run_id || !Array.isArray(origin.event_ids))) {
       reject('runtime_origin_required', 'A Bot invocation must have a host-provided run and source', 403);
     }
@@ -705,6 +734,10 @@ export class SummonPlatform {
     const bot = this.getBot(context.actor.id);
     if (!bot.enabled) reject('bot_paused', 'Bot is paused', 409);
     assertRevision(bot.control.control_version, context.controls.find(item => item.target.kind === 'bot')?.control_version, 'control_version');
+    if (context.conversation?.kind === 'fast_read') {
+      if (!this.canReadSpace(context.actor, context.conversation.space, context)) reject('room_forbidden', 'Room is not available for fast-read intake', 403);
+      return context;
+    }
     const target = { kind: 'conversation', id: context.conversation.id };
     const current = this.executions.require(target, context, 'input');
     this.executions.active(current, context.origin.control_version);
@@ -834,7 +867,7 @@ export class SummonPlatform {
     if (args.bot !== undefined && !this.visibleBot(bot, context)) reject('bot_not_found', 'Select an existing Pi Bot', 404);
     const actor = { kind: 'bot', id: bot.id };
     if (!bot.enabled) reject('bot_paused', 'The selected Pi Bot is paused', 409);
-    const blocker = this.modelAccessBlocker(actor, bot.model?.connection_id);
+    const blocker = this.modelAccessBlocker(actor, this.botModelConnectionId(bot));
     if (blocker) reject('connection_unconfigured', blocker.message, 409, { reason: blocker.code });
     const workspace = requestedWorkspace && this.workspace(requestedWorkspace.path, { ...context, actor });
     const { record, existing } = this.calls.begin('initialize_connections', context);
@@ -858,8 +891,9 @@ export class SummonPlatform {
   }
 
   connectionSetupIdentity(context, workspace) {
-    const model = this.models.selectBinding();
-    if (!model) reject('connection_unconfigured', 'Select an existing Pi model connection', 409);
+    const model = { mode: 'follow_default' };
+    const resolved = this.models.resolveForBot(model, 'conversation');
+    if (!resolved) reject('connection_unconfigured', 'Select an existing Pi model connection', 409);
     return this.store.transaction(() => {
       const previous = this.manager.list().find(bot => bot.connection_initializer);
       const record = previous && keyOf(previous.model) === keyOf(model) ? previous : this.store.save(botRecords, {
@@ -869,9 +903,9 @@ export class SummonPlatform {
       });
       const priorAccess = this.accessFor({ kind: 'bot', id: record.id });
       const workspace_ids = [...new Set([...(priorAccess.workspace_ids || []), ...(workspace ? [workspace.ref.id] : [])])];
-      if (!priorAccess.model_ids?.includes(model.connection_id) || workspace_ids.length !== (priorAccess.workspace_ids || []).length)
+      if (!priorAccess.model_ids?.includes(resolved.connection_id) || workspace_ids.length !== (priorAccess.workspace_ids || []).length)
         this.store.save('platform-access', { id: record.id, revision: (priorAccess.revision ?? 0) + 1,
-          model_ids: [model.connection_id], workspace_ids });
+          model_ids: [...new Set([...(priorAccess.model_ids || []), resolved.connection_id])], workspace_ids });
       return record;
     });
   }
@@ -958,6 +992,9 @@ export class SummonPlatform {
     const context = this.context(input);
     if (name === 'send_input' && args.kind === 'reply' && context.actor.kind === 'user') context.allowDraining = true;
     if (context.actor.kind === 'bot') {
+      if ((context.origin?.conversation_kind === 'fast_read' || context.conversation?.kind === 'fast_read') && !readTools.has(name)) {
+        reject('fast_read_readonly', 'Fast-read intake is read-only and cannot execute writable tools', 403);
+      }
       if (!readTools.has(name) && !context.call_id) reject('call_id_required', 'A writable invocation requires a host call ID', 400);
       this.assertRunAllowed(context);
       if (this.getBot(context.actor.id).connection_initializer) {
@@ -1074,6 +1111,9 @@ export class SummonPlatform {
         reject('invalid_repair_message', 'Repair fields require a connection destination');
       const id = idOf(args.to, 'room');
       const space = { kind: 'room', id };
+      if (actor.kind === 'bot' && (context.session || !context.conversation || context.conversation.kind !== 'room' || context.conversation.session_id)) {
+        reject('room_send_forbidden', 'Only the Bot’s main Room conversation can publish messages to a Room', 403);
+      }
       if (!this.canWriteSpace(actor, space, context)) reject('room_forbidden', 'Room is not available for sending', 403);
       const attachments = args.attachments?.map(ref => normalize(ref, 'file'));
       if (context.session) for (const ref of [...(attachments || []), ...(args.references || [])]) {
@@ -1223,9 +1263,12 @@ export class SummonPlatform {
         const entry = this.connections.get(ref.id);
         if (!this.canUseConnection(context.actor, ref.id, context)) reject('connection_forbidden', 'The connection is unavailable', 403);
         const maintenance = this.connectionMaintenance(entry, context);
+        const codexHints = entry.kind === 'codex'
+          ? { recommendation_mode: 'soft', recommended_combinations: this.models.codexRecommendations() }
+          : {};
         const http = entry.kind === 'http' && maintenance.can_repair ?
           { service_url: entry.config.service_url, method_bindings: httpMethods(entry.config) } : {};
-        return { ...observed, ...this.connections.clean(http), ...maintenance };
+        return { ...observed, ...codexHints, ...this.connections.clean(http), ...maintenance };
       }
       case 'call': return this.calls.view(this.calls.get(ref.id), context);
       case 'wakeup': return this.deliveries.list(context).find(item => item.id === ref.id);

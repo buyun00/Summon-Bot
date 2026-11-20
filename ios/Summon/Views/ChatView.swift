@@ -484,6 +484,7 @@ private struct MessageRow: View {
     private var pending: SummonPendingMessage? { store.pendingMessage(for: message) }
     @State private var reference: SummonReference?
     @State private var failure: String?
+    @State private var showSummaries = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -556,6 +557,54 @@ private struct MessageRow: View {
                             .overlay { Capsule().stroke(SummonTheme.bubbleStroke, lineWidth: 0.6) }
                     }
                     .buttonStyle(.plain)
+                }
+                let summaries = store.summaryFacts(message.id)
+                if (pending == nil || pending?.status == "sent"), !summaries.isEmpty {
+                    VStack(alignment: message.isOwn ? .trailing : .leading, spacing: 6) {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.18)) { showSummaries.toggle() }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Text(summaries.count == 1 ? "快读摘要 · \(store.name(for: summaries[0].bot_id))" : "快读摘要 · \(summaries.count) 位伙伴")
+                                    .summonFont(.caption2, weight: .semibold)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize()
+                                if !showSummaries, let preview = summaries.first?.summary, !preview.isEmpty {
+                                    Text(preview)
+                                        .summonFont(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                Image(systemName: showSummaries ? "chevron.up" : "chevron.down")
+                                    .summonFont(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(SummonTheme.surface, in: Capsule())
+                            .overlay { Capsule().stroke(SummonTheme.bubbleStroke, lineWidth: 0.6) }
+                        }
+                        .buttonStyle(.plain)
+                        if showSummaries {
+                            VStack(alignment: .leading, spacing: 6) {
+                                ForEach(summaries, id: \.bot_id) { item in
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(store.name(for: item.bot_id))
+                                            .summonFont(.caption2, weight: .semibold)
+                                            .foregroundStyle(.primary)
+                                        Text(item.summary)
+                                            .summonFont(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                }
+                            }
+                            .padding(.horizontal, 11)
+                            .padding(.vertical, 8)
+                            .background(SummonTheme.botBubble, in: RoundedRectangle(cornerRadius: 12))
+                            .overlay { RoundedRectangle(cornerRadius: 12).stroke(SummonTheme.bubbleStroke, lineWidth: 0.6) }
+                        }
+                    }
                 }
                 if let pending, pending.status != "sent" {
                     if pending.status == "sending" {

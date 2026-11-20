@@ -184,7 +184,7 @@ const resourceLabels = {
 };
 const ui = {
   view:'chat', roomId:null, botId:null, executionRef:null, executionDetail:null, fileId:null, fileDetail:null,
-  messages:[], roomDeliveries:new Map(), mobileRoom:false, reply:null, drafts:{}, draftTargets:{}, draftAttachments:{},
+  messages:[], roomDeliveries:new Map(), roomSummaries:new Map(), mobileRoom:false, reply:null, drafts:{}, draftTargets:{}, draftAttachments:{},
   draftReferences:{}, localMessages:{}, loading:true, refreshing:false, streamConnected:false, connectionNotice:'',
   detailOpen:false, detailTab:'details', profileBotId:null, avatarEditing:false, avatarDraft:null, avatarTab:'bot',
   avatarSelectionRevision:0, searchOpen:false, roomQuery:'', menu:null, sendingRooms:new Set(), navigationSeq:0,
@@ -771,7 +771,7 @@ async function loadCurrent() {
   const baseline = ui.messageCache.get(id);
   const synced = await requestSyncedSnapshot(roomPath(id) + '/messages', baseline);
   if (!synced || request !== ui.roomReadSeq[id] || !roomById(id)) return;
-  const { messages, deliveries, room, cursor } = synced.snapshot;
+  const { messages, deliveries, summaries = {}, room, cursor } = synced.snapshot;
   const earlier = (baseline?.earlier || []).filter(item => !messages.some(message => message.id === item.id));
   const cached = { ...synced, earlier, historyCursor: baseline?.earlier ? baseline.historyCursor : cursor, messages: [...earlier, ...messages] };
   ui.messageCache.set(id, cached);
@@ -779,7 +779,8 @@ async function loadCurrent() {
   reconcileRoomMessages(id, messages);
   if (ui.roomId !== id) return;
   ui.messagesRoomId = id; ui.messages = cached.messages; ui.historyCursor = cached.historyCursor;
-  ui.roomDeliveries = new Map([...ui.roomDeliveries, ...Object.entries(deliveries)]);
+  ui.roomDeliveries = new Map([...ui.roomDeliveries, ...Object.entries(deliveries || {})]);
+  ui.roomSummaries = new Map([...ui.roomSummaries, ...Object.entries(summaries || {})]);
   const index = state.rooms.findIndex(item => item.id === id);
   if (room && room.revision >= state.rooms[index].revision) state.rooms[index] = room;
   const roomRef = encodeURIComponent(id);
@@ -818,7 +819,8 @@ async function loadOlderMessages() {
   current.historyCursor = response.cursor;
   if (ui.roomId === id) {
     ui.messages = current.messages; ui.historyCursor = current.historyCursor;
-    ui.roomDeliveries = new Map([...ui.roomDeliveries, ...Object.entries(response.deliveries)]);
+    ui.roomDeliveries = new Map([...ui.roomDeliveries, ...Object.entries(response.deliveries || {})]);
+    ui.roomSummaries = new Map([...ui.roomSummaries, ...Object.entries(response.summaries || {})]);
     render();
   }
 }
@@ -834,6 +836,7 @@ async function restoreRoomMessages(id) {
   if (ui.roomId !== id || generation !== ui.historyGeneration) return;
   ui.messages = cached?.messages || []; ui.historyCursor = cached?.historyCursor; ui.messagesRoomId = cached ? id : null;
   ui.roomDeliveries = new Map(Object.entries(cached?.snapshot.deliveries || {}));
+  ui.roomSummaries = new Map(Object.entries(cached?.snapshot.summaries || {}));
   ui.roomExecutions = []; ui.roomWakeups = []; ui.roomFiles = [];
 }
 
@@ -843,7 +846,7 @@ async function acceptHistoryEpoch(response, generation) {
   if (epoch === ui.historyEpoch) return true;
   if (generation !== ui.historyGeneration || ui.retiredHistoryEpochs.has(epoch)) { scheduleRefresh(); return false; }
   ui.retiredHistoryEpochs.add(ui.historyEpoch); ui.historyEpoch = epoch; ui.historyGeneration++;
-  ui.messages = []; ui.roomDeliveries.clear(); ui.messagesRoomId = null;
+  ui.messages = []; ui.roomDeliveries.clear(); ui.roomSummaries.clear(); ui.messagesRoomId = null;
   ui.messageCache.clear(); ui.stateSnapshot = null; ui.stateCursor = null;
   await globalThis.SummonCache?.resetHistory(epoch, clientSessionSnapshot());
   return true;
@@ -2205,6 +2208,20 @@ function renderReference(ref, action = 'open-reference') {
   return `<button type="button" class="reference-chip" data-action="${action}" data-kind="${esc(ref.kind)}" data-id="${esc(ref.id)}">${icon(ref.kind === 'file' ? 'file' : 'link', 14)}<span>${esc(refLabel(ref))}</span></button>`;
 }
 
+function renderMessageSummaries(message) {
+  if (message._delivery) return '';
+  const items = ui.roomSummaries.get(message.id);
+  if (!items?.length) return '';
+  const open = ui.expandedSummaries?.has(message.id);
+  const badge = items.length === 1 ? `快读摘要 · ${nameOf(items[0].bot_id)}` : `快读摘要 · ${items.length} 位伙伴`;
+  const preview = items[0]?.summary || '';
+  return `<details class="message-summaries" data-summary-id="${esc(message.id)}" ${open ? 'open' : ''}>
+    <summary><span class="summary-badge">${esc(badge)}</span>${preview ? `<span class="summary-preview">${esc(preview)}</span>` : ''}</summary>
+    <div class="message-summaries-list">${items.map(item =>
+      `<div class="message-summary-item"><strong>${esc(nameOf(item.bot_id))}</strong><span>${esc(item.summary)}</span></div>`).join('')}</div>
+  </details>`;
+}
+
 function renderDelivery(message) {
   if (message._delivery) return renderSendStatus(message);
   if (message.senderId !== 'user') return '';
@@ -2239,7 +2256,7 @@ function renderChatMessage(message, timeline, grouped, isGroup) {
       ${message.content ? `<div class="message-content">${richText(message.content)}</div>` : ''}
       ${renderMessageAttachments(message.attachments)}
       ${message.references?.length ? `<div class="reference-list">${message.references.map(ref => renderReference(ref)).join('')}</div>` : ''}
-    </div>${renderDelivery(message)}${actions}</div></article>`;
+    </div>${renderMessageSummaries(message)}${renderDelivery(message)}${actions}</div></article>`;
 }
 
 function renderChat() {
@@ -2714,6 +2731,11 @@ document.addEventListener('toggle', event => {
     const expanded = ui.expandedDeliveries ||= new Set();
     if (detail.open) expanded.add(detail.dataset.deliveryId);
     else expanded.delete(detail.dataset.deliveryId);
+  }
+  if (detail.matches?.('[data-summary-id]')) {
+    const expanded = ui.expandedSummaries ||= new Set();
+    if (detail.open) expanded.add(detail.dataset.summaryId);
+    else expanded.delete(detail.dataset.summaryId);
   }
 },true);
 

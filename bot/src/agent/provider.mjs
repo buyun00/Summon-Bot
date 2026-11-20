@@ -135,6 +135,7 @@ export class ModelProvider {
     this.controllers.add(controller);
     const started = Date.now(), secrets = new Set();
     let record, received, ended = false, wireUsage, usageSource, stageTimer, totalTimer;
+    let failureTag = `${model.provider}/${model.id}${requestedReasoning !== null ? ` · effort=${requestedReasoning}` : ''}`;
     const waitFor = (phase, ms) => {
       clearTimeout(stageTimer);
       stageTimer = setTimeout(() => {
@@ -147,6 +148,7 @@ export class ModelProvider {
       for (const secret of secrets) if (secret) message = message.split(secret).join('[redacted]');
       return (this.config.redact.error || this.config.redact)({ message: modelError(message) }).message;
     };
+    const decorateError = message => !message || signal.aborted || message.includes(model.id) ? message : `${message} [${failureTag}]`;
     const persist = () => {
       if (!record) return;
       try { this.config.recordUsage?.(record); }
@@ -159,6 +161,7 @@ export class ModelProvider {
     void (async () => {
       try {
         const connection = modelConnection(this.config, this.config.connectionStore ? model.provider : undefined);
+        failureTag = `${connection.name || connection.id} · ${model.id}${requestedReasoning !== null ? ` · effort=${requestedReasoning}` : ''}`;
         const deepseek = officialDeepSeekCompletions({ ...connection, model: model.id }, model.api, model.baseUrl);
         const responses = model.api === 'openai-responses';
         const codex = model.api === 'openai-codex-responses';
@@ -314,7 +317,7 @@ export class ModelProvider {
               status: event.type === 'done' ? 'succeeded' : signal.aborted ? 'cancelled' : 'failed',
               finishedAt: new Date().toISOString(), latencyMs: Date.now() - started });
             if (event.type === 'error') {
-              received.errorMessage = cleanError(received.errorMessage || '模型调用失败'); record.error = received.errorMessage;
+              received.errorMessage = decorateError(cleanError(received.errorMessage || '模型调用失败')); record.error = received.errorMessage;
             }
             persist(); ended = true;
           }
@@ -323,7 +326,7 @@ export class ModelProvider {
         if (!ended) throw deadline.signal.reason || new Error('模型连接在完整响应前结束');
       } catch (error) {
         if (!ended) {
-          const message = cleanError(error), cancelled = signal.aborted;
+          const message = decorateError(cleanError(error)), cancelled = signal.aborted;
           if (record) {
             if (wireUsage) Object.assign(record, reportedUsage(providerUsage(wireUsage, model.api)), { usageSource });
             Object.assign(record, { status: cancelled ? 'cancelled' : 'failed', finishReason: cancelled ? 'aborted' : 'error',

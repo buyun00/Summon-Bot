@@ -1,6 +1,7 @@
 export const runtimeRecords = Object.freeze({
   event: 'inbox-event', delivery: 'inbox-delivery', route: 'inbox-route', conversation: 'conversation',
   run: 'run', wait: 'wait', call: 'call', transcript: 'transcript', checkpoint: 'context-checkpoint', input: 'pi-input',
+  fastRead: 'fast-read',
   materialView: 'material-view', batch: 'material-batch', consumption: 'material-consumption', selection: 'material-selection',
 });
 

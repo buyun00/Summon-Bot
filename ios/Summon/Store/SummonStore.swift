@@ -29,6 +29,7 @@ final class SummonStore {
 
     private var messageHistory: [String: [SummonMessage]] = [:]
     private var deliveries: [String: [SummonDelivery]] = [:]
+    private var messageSummaries: [String: [SummonMessageSummary]] = [:]
     private var cursors: [String: String] = [:]
 
     @ObservationIgnored private var client: SummonAPIClient?
@@ -181,6 +182,7 @@ final class SummonStore {
             if historyEpoch != state.historyEpoch {
                 messageHistory = [:]
                 deliveries = [:]
+                messageSummaries = [:]
                 cursors = [:]
             }
             historyEpoch = state.historyEpoch
@@ -274,6 +276,7 @@ final class SummonStore {
     }
 
     func deliveryFacts(_ id: String) -> [SummonDelivery] { deliveries[id] ?? [] }
+    func summaryFacts(_ id: String) -> [SummonMessageSummary] { messageSummaries[id] ?? [] }
     func executionsForRoom(_ id: String) -> [SummonJSONValue] { roomExecutions[id] ?? [] }
     func activeExecutionsForRoom(_ id: String) -> [SummonJSONValue] {
         let live: Set<String> = ["running", "waiting", "queued", "needs_input", "awaiting_input"]
@@ -321,6 +324,7 @@ final class SummonStore {
             if older || oldest == snapshot.messages.first?.id { cursors[id] = snapshot.cursor }
             else if cursors[id] == nil { cursors[id] = oldest }
             deliveries.merge(snapshot.deliveries ?? [:]) { _, new in new }
+            messageSummaries.merge(snapshot.summaries ?? [:]) { _, new in new }
             let confirmed = Set(snapshot.messages.filter(\.isOwn).compactMap(\.clientId))
             let staged = pendingMessages.filter { $0.roomID == id && confirmed.contains($0.clientID) }.flatMap(\.attachments)
             pendingMessages.removeAll { $0.roomID == id && confirmed.contains($0.clientID) }
@@ -682,7 +686,7 @@ final class SummonStore {
     }
 
     private func clearServerState() {
-        bots = []; rooms = []; messageHistory = [:]; deliveries = [:]; cursors = [:]; roomExecutions = [:]
+        bots = []; rooms = []; messageHistory = [:]; deliveries = [:]; messageSummaries = [:]; cursors = [:]; roomExecutions = [:]
         pendingMessages = []; drafts = [:]; draftAttachments = [:]; draftMentions = [:]; draftReplies = [:]; draftReferences = [:]
         selectedRoomID = nil; activeRoomID = nil; historyEpoch = nil; lastSyncAt = nil; modelSummary = .null
     }
@@ -717,6 +721,7 @@ final class SummonStore {
         var bots: [SummonBot]
         var rooms: [SummonRoom]
         var messageHistory: [String: [SummonMessage]]
+        var summaries: [String: [SummonMessageSummary]]?
         var savedAt: Date
     }
 
@@ -796,6 +801,7 @@ final class SummonStore {
         bots = bots.filter { !botIDs.contains($0.id) } + saved.bots
         rooms = rooms.filter { !roomIDs.contains($0.id) } + saved.rooms
         messageHistory.merge(saved.messageHistory) { _, latest in latest }
+        if let savedSummaries = saved.summaries { messageSummaries.merge(savedSummaries) { _, latest in latest } }
         lastSyncAt = saved.savedAt
     }
 
@@ -840,8 +846,11 @@ final class SummonStore {
         persistenceTask?.cancel()
         persistenceTask = nil
         guard let url = snapshotURL, persistComposer() else { return false }
+        let trimmedHistory = messageHistory.mapValues { Array($0.suffix(100)) }
+        let keptMessageIDs = Set(trimmedHistory.values.flatMap { $0.map(\.id) })
+        let trimmedSummaries = messageSummaries.filter { keptMessageIDs.contains($0.key) }
         let saved = LocalSnapshot(endpoint: settings.baseURL, historyEpoch: historyEpoch, bots: bots, rooms: rooms,
-            messageHistory: messageHistory.mapValues { Array($0.suffix(100)) }, savedAt: lastSyncAt ?? Date())
+            messageHistory: trimmedHistory, summaries: trimmedSummaries.isEmpty ? nil : trimmedSummaries, savedAt: lastSyncAt ?? Date())
         do {
             try saveLocal(saved, to: url)
             return true

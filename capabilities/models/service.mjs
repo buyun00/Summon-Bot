@@ -4,7 +4,9 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { idOf, reject } from '../platform/contract.mjs';
 import { connectionPath, readConnectionCatalog, saveModelJson, modelConnection, connectionModel, connectionRuntime,
-  ModelCredentialStore, localCodexAuthPath, localGrokAuthPath, localGrokLogin, grokProxyHeaders, codexCredential, decodeModelToken, modelChoices, modelError } from '../../bot/src/agent/connections.mjs';
+  ModelCredentialStore, localCodexAuthPath, localGrokAuthPath, localGrokLogin, grokProxyHeaders, codexCredential, decodeModelToken, modelChoices, modelError,
+  modelPurposes, purposeTemplateCategories, defaultCodexRecommendations, normalizeModelCatalog, templateProbeConnection,
+  validateModelPurpose, resolveConnectionPurpose, resolveBotModelSelection } from '../../bot/src/agent/connections.mjs';
 
 const number = value => value !== '' && value !== null && value !== undefined && Number.isFinite(Number(value)) ? Number(value) : null;
 const clamp = value => Math.min(100, Math.max(0, value));
@@ -35,8 +37,15 @@ export class ModelConnections {
         provider: original.provider || 'openai-compatible', api: original.api || 'openai-completions', baseUrl: original.baseUrl, model: original.model,
         apiKeyEnv: original.apiKeyEnv, allowNoKey: original.allowNoKey, contextWindow: original.contextWindow,
         maxTokens: original.maxTokens, thinkingLevel: original.thinkingLevel ?? null }] : [];
-      await saveModelJson(this.path, { schemaVersion: 1, activeId, environmentFile: join(this.dataRoot, 'config', 'runtime.env'), connections });
+      await saveModelJson(this.path, normalizeModelCatalog({ schemaVersion: 2, activeId, environmentFile: join(this.dataRoot, 'config', 'runtime.env'), connections }));
       if (activeId && original.apiKey) await this.credentials.modify(activeId, async () => ({ type: 'api_key', key: original.apiKey }));
+    } else {
+      try {
+        const raw = JSON.parse(await readFile(this.path, 'utf8'));
+        if (Array.isArray(raw?.connections) && (Object.hasOwn(raw, 'fastId') || raw.schemaVersion !== 2 || !raw.purposeDefaults || !raw.externalEngines?.codex?.recommended)) {
+          await saveModelJson(this.path, normalizeModelCatalog(raw));
+        }
+      } catch {}
     }
     try {
       const cached = JSON.parse(await readFile(this.usagePath, 'utf8'));
@@ -61,41 +70,110 @@ export class ModelConnections {
     if (!entry) reject('connection_not_found', 'Model connection is unavailable', 404);
     return entry;
   }
-  selectBinding(selection) {
-    if (selection === null) return null;
-    const requested = typeof selection === 'object' && Object.hasOwn(selection, 'connection_id') ? selection : null;
-    const implicit = selection === undefined;
-    let catalog;
-    try { catalog = this.catalog(); } catch (error) { if (implicit) return null; throw error; }
-    const connectionId = requested ? idOf(requested.connection_id, 'connection')
-      : implicit ? catalog.activeId : idOf(selection, 'connection');
-    if (!connectionId) return null;
-    const entry = implicit ? catalog.connections.find(item => item?.id === connectionId)
-      : this.requireConnection(catalog, connectionId);
-    if (!entry) return null;
-    const selectedId = requested?.id || entry.model;
-    const id = typeof selectedId === 'string' ? selectedId.trim() : '';
-    if (!validModelId(id)) {
-      if (implicit) return null;
-      reject('invalid_model_id', 'Choose a valid model ID');
+  resolveForBot(botOrModel, purpose = 'conversation') {
+    const botModel = botOrModel && typeof botOrModel === 'object' && Object.hasOwn(botOrModel, 'model') ? botOrModel.model : botOrModel;
+    if (!botModel) return null;
+    try { return resolveBotModelSelection(this.catalog(), botModel, purpose); }
+    catch { return null; }
+  }
+  resolveAllForBot(botOrModel) {
+    const botModel = botOrModel && typeof botOrModel === 'object' && Object.hasOwn(botOrModel, 'model') ? botOrModel.model : botOrModel;
+    if (!botModel) return { fast_read: null, conversation: null, pi_session: null };
+    try {
+      const catalog = this.catalog();
+      return Object.fromEntries(modelPurposes.map(purpose => [purpose, resolveBotModelSelection(catalog, botModel, purpose)]));
+    } catch {
+      return { fast_read: null, conversation: null, pi_session: null };
     }
-    const thinking_level = requested?.thinking_level ?? null;
+  }
+  codexRecommendations() {
+    try { return structuredClone(this.catalog().externalEngines.codex.recommended); }
+    catch { return defaultCodexRecommendations(); }
+  }
+  effectivePurposes(entry, catalog) {
+    return Object.fromEntries(modelPurposes.map(purpose => [purpose, resolveConnectionPurpose(catalog, entry.id, purpose)]));
+  }
+  selectBinding(selection) {
+    if (selection === undefined) return { mode: 'follow_default' };
+    if (selection === null) return null;
+    if (typeof selection === 'object' && !Array.isArray(selection) && selection.mode === 'follow_default') {
+      return { mode: 'follow_default' };
+    }
+    const catalog = this.catalog();
+    if (typeof selection === 'string' || (typeof selection === 'object' && !Array.isArray(selection) && selection.kind === 'connection')) {
+      const connectionId = idOf(selection, 'connection');
+      this.requireConnection(catalog, connectionId);
+      return { mode: 'follow_connection', connection_id: connectionId };
+    }
+    if (!selection || typeof selection !== 'object' || Array.isArray(selection)) {
+      reject('invalid_model_binding', 'Choose a valid model binding');
+    }
+    if (selection.mode === 'follow_connection') {
+      const connectionId = idOf(selection.connection_id, 'connection');
+      this.requireConnection(catalog, connectionId);
+      return { mode: 'follow_connection', connection_id: connectionId };
+    }
+    if (selection.mode !== undefined && selection.mode !== 'custom') {
+      reject('invalid_model_binding', 'Unsupported model binding mode');
+    }
+    const connectionId = idOf(selection.connection_id, 'connection');
+    const entry = this.requireConnection(catalog, connectionId);
+    const id = selection.id === undefined || selection.id === null || selection.id === '' ? undefined : String(selection.id).trim();
+    if (id !== undefined && !validModelId(id)) reject('invalid_model_id', 'Choose a valid model ID');
+    const thinking_level = selection.thinking_level === undefined || selection.thinking_level === '' ? null : selection.thinking_level;
     if (!validThinkingLevel(thinking_level)) reject('invalid_thinking_level', 'Choose a valid reasoning level');
-    return { connection_id: connectionId, id, thinking_level };
+    if (id !== undefined || thinking_level !== null) {
+      try { validateModelPurpose(entry, id || entry.model, thinking_level); }
+      catch (error) { reject('invalid_thinking_level', error.message); }
+    }
+    let purposes;
+    if (selection.purposes && typeof selection.purposes === 'object' && !Array.isArray(selection.purposes)) {
+      const next = {};
+      for (const purpose of modelPurposes) {
+        const item = selection.purposes[purpose];
+        if (!item || typeof item !== 'object') continue;
+        const targetConnId = item.connection_id ? idOf(item.connection_id, 'connection') : connectionId;
+        const targetConn = this.requireConnection(catalog, targetConnId);
+        const targetId = item.id === undefined || item.id === null || item.id === '' ? undefined : String(item.id).trim();
+        if (targetId !== undefined && !validModelId(targetId)) reject('invalid_model_id', 'Choose a valid model ID');
+        const targetThinking = item.thinking_level === undefined ? undefined : (item.thinking_level === '' ? null : item.thinking_level);
+        if (targetThinking !== undefined && !validThinkingLevel(targetThinking)) reject('invalid_thinking_level', 'Choose a valid reasoning level');
+        if (targetConnId === connectionId && targetId === undefined && targetThinking === undefined) continue;
+        const probeModel = targetId || resolveConnectionPurpose(catalog, targetConnId, purpose)?.id || targetConn.model;
+        if (targetThinking !== undefined) {
+          try { validateModelPurpose(targetConn, probeModel, targetThinking); }
+          catch (error) { reject('invalid_thinking_level', error.message); }
+        }
+        next[purpose] = {
+          ...(item.connection_id ? { connection_id: targetConnId } : {}),
+          ...(targetId !== undefined ? { id: targetId } : {}),
+          ...(targetThinking !== undefined ? { thinking_level: targetThinking } : {}),
+        };
+      }
+      if (Object.keys(next).length) purposes = next;
+    }
+    return {
+      mode: 'custom',
+      connection_id: connectionId,
+      ...(id !== undefined ? { id } : {}),
+      thinking_level,
+      ...(purposes ? { purposes } : {}),
+    };
   }
   async mutate(fn) {
     const result = this.writeChain.catch(() => {}).then(async () => {
-      const catalog = this.catalog(), value = await fn(catalog); await saveModelJson(this.path, catalog);
+      const catalog = this.catalog(), value = await fn(catalog); await saveModelJson(this.path, normalizeModelCatalog(catalog));
       this.emit('models.changed', {}); return value;
     });
     this.writeChain = result; return result;
   }
-  publicEntry(entry, activeId) {
+  publicEntry(entry, activeId, catalog) {
     const { id, kind, name, model, provider, baseUrl, api, thinkingLevel, allowNoKey, balancePath, balanceField, balanceCurrency,
       contextWindow, maxTokens, authMode, identity } = entry;
     const base = { id, kind, name, model, provider, baseUrl, api, thinkingLevel: thinkingLevel ?? null, allowNoKey, balancePath, balanceField, balanceCurrency,
       contextWindow, maxTokens, authMode, identity,
-      active: id === activeId, usage: this.usageFor(id) };
+      active: id === activeId, usage: this.usageFor(id),
+      ...(catalog ? { effectivePurposes: this.effectivePurposes(entry, catalog) } : {}) };
     try {
       const effective = connectionModel(entry);
       return { ...base, thinkingLevels: effective.thinkingLevels, effectiveBudget: { contextWindow: effective.contextWindow,
@@ -115,28 +193,112 @@ export class ModelConnections {
   summary() {
     try {
       const catalog = this.catalog(), activeId = catalog.activeId ?? null;
-      return { activeId, chat: activeId ? this.publicEntry(this.requireConnection(catalog, activeId), activeId)
+      return { activeId, chat: activeId ? this.publicEntry(this.requireConnection(catalog, activeId), activeId, catalog)
         : { name: '尚未选择模型', configured: false, usage: { status: 'unconfigured' } } };
     } catch { return { activeId: null, chat: unavailable }; }
   }
   async snapshot() {
     const catalog = this.catalog(), activeId = catalog.activeId;
     const connections = await Promise.all(catalog.connections.map(async entry => {
-      const summary = this.publicEntry(entry, activeId);
+      const summary = this.publicEntry(entry, activeId, catalog);
       if (summary.configured === false) return summary;
       if (entry.allowNoKey === true) return { ...summary, configured: true };
       try { return { ...summary, configured: Boolean(await this.credentials.read(entry.id)) }; }
       catch { return { ...summary, configured: false, credentialStatus: 'unavailable' }; }
     }));
     const summary = this.summary();
+    const mapChoice = ({ id, name, contextWindow, maxTokens, thinkingLevels }) => ({ id, name, contextWindow, maxTokens, thinkingLevels });
     return { ...summary, chat: { ...summary.chat, configured: connections.some(entry => entry.active && entry.configured) }, connections,
+      purposeDefaults: catalog.purposeDefaults,
+      connectionPurposes: catalog.connectionPurposes,
+      externalEngines: catalog.externalEngines,
+      autoGrantPurposeConnections: catalog.autoGrantPurposeConnections,
+      codexModels: modelChoices('codex', 'openai-codex').map(mapChoice),
       presets: [{ id: 'deepseek', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', api: 'openai-completions' },
         { id: 'openai', name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', api: 'openai-responses' },
         { id: 'anthropic', name: 'Anthropic', baseUrl: 'https://api.anthropic.com', api: 'anthropic-messages' },
         { id: 'xai', name: 'xAI', baseUrl: 'https://api.x.ai/v1', api: 'openai-responses' },
         { id: 'openrouter', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', api: 'openai-completions' },
         { id: 'openai-compatible', name: '其他 / 自定义地址', baseUrl: '', api: 'openai-completions' }].map(preset => ({ ...preset,
-          models: modelChoices('api', preset.id).map(({ id, name, contextWindow, maxTokens, thinkingLevels }) => ({ id, name, contextWindow, maxTokens, thinkingLevels })) })) };
+          models: modelChoices('api', preset.id).map(mapChoice) })) };
+  }
+  async savePurposes(input) {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('用途模型配置格式无效');
+    await this.mutate(catalog => {
+      if (input.autoGrantPurposeConnections !== undefined) {
+        catalog.autoGrantPurposeConnections = input.autoGrantPurposeConnections !== false;
+      }
+      if (input.purposeDefaults !== undefined) {
+        if (!input.purposeDefaults || typeof input.purposeDefaults !== 'object' || Array.isArray(input.purposeDefaults)) {
+          throw new Error('默认用途表格式无效');
+        }
+        for (const category of purposeTemplateCategories) {
+          if (!Object.hasOwn(input.purposeDefaults, category)) continue;
+          const row = input.purposeDefaults[category];
+          if (!row || typeof row !== 'object') throw new Error(`类别 ${category} 配置格式无效`);
+          const probe = templateProbeConnection(category);
+          for (const purpose of modelPurposes) {
+            if (!Object.hasOwn(row, purpose)) continue;
+            const cell = row[purpose];
+            const modelId = typeof cell?.model === 'string' ? cell.model.trim() : '';
+            const thinking = cell?.thinking_level === '' || cell?.thinking_level === undefined ? null : cell.thinking_level;
+            if (!validModelId(modelId)) throw new Error(`${probe.name} · ${purpose} 需填写有效的模型 ID`);
+            if (!validThinkingLevel(thinking)) throw new Error(`${probe.name} · ${purpose} 的思考强度无效`);
+            validateModelPurpose(probe, modelId, thinking);
+            catalog.purposeDefaults[category][purpose] = { model: modelId, thinking_level: thinking };
+          }
+        }
+      }
+      if (input.connectionPurposes !== undefined) {
+        if (!input.connectionPurposes || typeof input.connectionPurposes !== 'object' || Array.isArray(input.connectionPurposes)) {
+          throw new Error('单连接用途覆写格式无效');
+        }
+        for (const [connId, overrides] of Object.entries(input.connectionPurposes)) {
+          const baseConn = this.requireConnection(catalog, connId);
+          if (!overrides || typeof overrides !== 'object') {
+            delete catalog.connectionPurposes[connId];
+            continue;
+          }
+          const cleaned = {};
+          for (const purpose of modelPurposes) {
+            const cell = overrides[purpose];
+            if (!cell || typeof cell !== 'object') continue;
+            const targetConnId = typeof cell.connection_id === 'string' && cell.connection_id.trim() ? cell.connection_id.trim() : null;
+            const targetConn = targetConnId ? this.requireConnection(catalog, targetConnId) : baseConn;
+            const modelId = typeof cell.model === 'string' ? cell.model.trim() : '';
+            const hasThinking = Object.hasOwn(cell, 'thinking_level') && cell.thinking_level !== '';
+            const thinking = hasThinking ? cell.thinking_level : undefined;
+            if (!targetConnId && !modelId && thinking === undefined) continue;
+            if (modelId && !validModelId(modelId)) throw new Error(`${baseConn.name} · ${purpose} 需填写有效的模型 ID`);
+            if (thinking !== undefined && !validThinkingLevel(thinking)) throw new Error(`${baseConn.name} · ${purpose} 的思考强度无效`);
+            const effectiveModel = modelId || resolveConnectionPurpose(catalog, targetConn.id, purpose)?.id || targetConn.model;
+            if (thinking !== undefined) validateModelPurpose(targetConn, effectiveModel, thinking);
+            else if (modelId) connectionModel({ ...targetConn, model: modelId });
+            cleaned[purpose] = {
+              ...(targetConnId && targetConnId !== connId ? { connection_id: targetConnId } : {}),
+              ...(modelId ? { model: modelId } : {}),
+              ...(thinking !== undefined ? { thinking_level: thinking } : {}),
+            };
+          }
+          if (Object.keys(cleaned).length) catalog.connectionPurposes[connId] = cleaned;
+          else delete catalog.connectionPurposes[connId];
+        }
+      }
+      if (input.externalEngines?.codex?.recommended !== undefined) {
+        const list = input.externalEngines.codex.recommended;
+        if (!Array.isArray(list) || !list.length) throw new Error('外部 Codex 推荐组合至少需要保留一项');
+        const cleaned = list.map((item, idx) => {
+          const modelId = typeof item?.model === 'string' ? item.model.trim() : '';
+          if (!validModelId(modelId)) throw new Error(`外部 Codex 第 ${idx + 1} 项的模型 ID 无效`);
+          const rawEfforts = Array.isArray(item.efforts) ? item.efforts : String(item.efforts ?? '').split(/[,，\s]+/);
+          const efforts = [...new Set(rawEfforts.map(v => String(v).trim()).filter(Boolean))];
+          if (!efforts.length || efforts.some(e => !validThinkingLevel(e))) throw new Error(`外部 Codex 模型 ${modelId} 需要至少一个有效的思考档`);
+          return { model: modelId, efforts };
+        });
+        catalog.externalEngines.codex = { recommended: cleaned };
+      }
+    });
+    return this.snapshot();
   }
   async save(input) {
     if (!['api', 'codex', 'grok'].includes(input.kind)) throw new Error('请选择 Codex 订阅、Grok 订阅或通用 API');
@@ -147,7 +309,7 @@ export class ModelConnections {
       const previous = catalog.connections.find(item => item.id === id);
       if (previous && previous.kind !== input.kind) throw new Error('请为不同类型建立新的连接');
       const name = String(input.name || previous?.name || (input.kind === 'api' ? 'API' : input.kind === 'codex' ? 'Codex 订阅' : 'Grok 订阅')).trim().slice(0, 80);
-      const entry = { ...previous, id, kind: input.kind, name, model: String(input.model || previous?.model || (input.kind === 'codex' ? 'gpt-6-luna' : input.kind === 'grok' ? 'grok-4.7' : '')).trim(),
+      const entry = { ...previous, id, kind: input.kind, name, model: String(input.model || previous?.model || (input.kind === 'codex' ? 'gpt-6.1-terra' : input.kind === 'grok' ? 'grok-4.7' : '')).trim(),
         provider: input.kind === 'codex' ? 'openai-codex' : input.kind === 'grok' ? 'xai' : String(input.provider || previous?.provider || 'openai-compatible'),
         baseUrl: input.kind === 'codex' ? 'https://chatgpt.com/backend-api' : input.kind === 'grok' ? 'https://cli-chat-proxy.grok.com/v1' : String(input.baseUrl || previous?.baseUrl || '').trim().replace(/\/+$/, ''),
         api: input.kind === 'codex' ? 'openai-codex-responses' : input.kind === 'grok' ? 'openai-responses' : input.api || previous?.api || 'openai-completions',
@@ -165,7 +327,7 @@ export class ModelConnections {
         if (input[key] === null || input[key] === '') delete entry[key];
         else entry[key] = Number(input[key]);
       }
-      connectionModel(entry);
+      validateModelPurpose(entry, entry.model, entry.thinkingLevel);
       if (input.apiKey !== undefined && input.apiKey !== '' && (typeof input.apiKey !== 'string' || !input.apiKey.trim() || input.apiKey.length > 16000)) throw new Error('无效的 API Key');
       if (previous) catalog.connections[catalog.connections.indexOf(previous)] = entry; else catalog.connections.push(entry);
       if (input.apiKey !== undefined && input.apiKey !== '') {
@@ -194,6 +356,13 @@ export class ModelConnections {
       await this.credentials.delete(id);
       catalog.connections = catalog.connections.filter(entry => entry.id !== id);
       if (catalog.activeId === id) catalog.activeId = null;
+      delete catalog.connectionPurposes[id];
+      for (const [connId, overrides] of Object.entries(catalog.connectionPurposes)) {
+        for (const purpose of Object.keys(overrides)) {
+          if (overrides[purpose]?.connection_id === id) delete overrides[purpose];
+        }
+        if (!Object.keys(overrides).length) delete catalog.connectionPurposes[connId];
+      }
       this.clearUsage(id);
     });
     return this.snapshot();

@@ -62,6 +62,7 @@ class SummonStore(private val app: Context) {
     private var drafts by mutableStateOf<Map<String, String>>(emptyMap())
     private var messageHistory by mutableStateOf<Map<String, List<SummonMessage>>>(emptyMap())
     private var deliveries by mutableStateOf<Map<String, List<SummonDelivery>>>(emptyMap())
+    private var messageSummaries by mutableStateOf<Map<String, List<SummonMessageSummary>>>(emptyMap())
     private var cursors by mutableStateOf<Map<String, String>>(emptyMap())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var client: SummonApiClient? = null
@@ -172,7 +173,7 @@ class SummonStore(private val app: Context) {
             val state = withContext(Dispatchers.IO) { api.requestJson("/api/state") }
             if (connection != connectionGeneration) return
             val epoch = state["historyEpoch"].string
-            if (historyEpoch != epoch) { messageHistory = emptyMap(); deliveries = emptyMap(); cursors = emptyMap() }
+            if (historyEpoch != epoch) { messageHistory = emptyMap(); deliveries = emptyMap(); messageSummaries = emptyMap(); cursors = emptyMap() }
             historyEpoch = epoch
             bots = (state["bots"].array ?: throw SummonApiException.invalidResponse).map(SummonBot::parse)
             rooms = (state["rooms"].array ?: throw SummonApiException.invalidResponse).map { SummonRoom.parse(it) }
@@ -251,6 +252,7 @@ class SummonStore(private val app: Context) {
     }
 
     fun deliveryFacts(id: String): List<SummonDelivery> = deliveries[id].orEmpty()
+    fun summaryFacts(id: String): List<SummonMessageSummary> = messageSummaries[id].orEmpty()
     fun executionsForRoom(id: String): List<SummonJson> = roomExecutions[id].orEmpty()
     fun activeExecutionsForRoom(id: String): List<SummonJson> {
         val live = setOf("running", "waiting", "queued", "needs_input", "awaiting_input")
@@ -290,6 +292,7 @@ class SummonStore(private val app: Context) {
                 all.firstOrNull()?.id?.let { cursors = cursors + (id to it) }
             }
             deliveries = deliveries + snapshot["deliveries"].obj.orEmpty().mapValues { SummonDelivery.list(it.value) }
+            messageSummaries = messageSummaries + snapshot["summaries"].obj.orEmpty().mapValues { SummonMessageSummary.list(it.value) }
             val confirmed = page.filter(SummonMessage::isOwn).mapNotNull(SummonMessage::clientId).toSet()
             val staged = pendingMessages.filter { it.roomID == id && it.clientID in confirmed }.flatMap { it.message.attachments }
             pendingMessages = pendingMessages.filterNot { it.roomID == id && it.clientID in confirmed }
@@ -642,7 +645,7 @@ class SummonStore(private val app: Context) {
     }
 
     private fun clearServerState() {
-        bots = emptyList(); rooms = emptyList(); messageHistory = emptyMap(); deliveries = emptyMap(); cursors = emptyMap(); roomExecutions = emptyMap()
+        bots = emptyList(); rooms = emptyList(); messageHistory = emptyMap(); deliveries = emptyMap(); messageSummaries = emptyMap(); cursors = emptyMap(); roomExecutions = emptyMap()
         pendingMessages = emptyList(); drafts = emptyMap(); draftAttachments = emptyMap(); draftMentions = emptyMap()
         draftReplies = emptyMap(); draftReferences = emptyMap(); activeRoomID = null; historyEpoch = null; lastSyncAt = null
         modelSummary = SummonJson.Null
@@ -692,6 +695,7 @@ class SummonStore(private val app: Context) {
         messageHistory = messageHistory + snapshot["messageHistory"].obj.orEmpty().mapValues { (_, list) ->
             list.array.orEmpty().map { SummonMessage.parse(it, stored = true) }
         }
+        messageSummaries = messageSummaries + snapshot["summaries"].obj.orEmpty().mapValues { SummonMessageSummary.list(it.value) }
         lastSyncAt = snapshotTime(snapshot)
     }
 
@@ -726,11 +730,16 @@ class SummonStore(private val app: Context) {
         persistenceJob?.cancel(); persistenceJob = null
         val target = snapshotFile() ?: return false
         if (!persistComposer()) return false
-        val cachedMessages = messageHistory.mapValues { SummonJson.Arr(it.value.takeLast(100).map(SummonMessage::toJson)) }
+        val trimmedHistory = messageHistory.mapValues { it.value.takeLast(100) }
+        val keptMessageIDs = trimmedHistory.values.flatten().mapTo(mutableSetOf(), SummonMessage::id)
+        val cachedMessages = trimmedHistory.mapValues { SummonJson.Arr(it.value.map(SummonMessage::toJson)) }
+        val cachedSummaries = messageSummaries.filterKeys { it in keptMessageIDs }
+            .mapValues { SummonJson.Arr(it.value.map(SummonMessageSummary::toJson)) }
         val snapshot = SummonJson.obj(
             "endpoint" to SummonJson.Str(settings.baseURL), "historyEpoch" to historyEpoch.strOrNull(),
             "bots" to SummonJson.Arr(bots.map(SummonBot::toJson)), "rooms" to SummonJson.Arr(rooms.map(SummonRoom::toJson)),
             "messageHistory" to SummonJson.Obj(cachedMessages),
+            "summaries" to SummonJson.Obj(cachedSummaries),
             "savedAt" to SummonJson.Num((lastSyncAt ?: System.currentTimeMillis()).toDouble()),
         )
         return writeLocal(target, snapshot, "无法更新本机聊天缓存")
