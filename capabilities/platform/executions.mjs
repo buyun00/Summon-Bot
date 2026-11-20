@@ -4,7 +4,7 @@ import { callRecords, errorResult, mayAdvanceReceipt } from './calls.mjs';
 import { allowsConnection, enclosesExecutableScope, executableScope } from '../services/executable-scope.mjs';
 import { executionGuide } from '../connectors/initialization.mjs';
 import { operationRecords } from '../services/session-processes.mjs';
-import { forwardInputs, forwardMaterials } from './session-work.mjs';
+import { forwardInputs } from './session-work.mjs';
 
 export const sessionRecords = 'platform-sessions';
 export const conversationRecords = 'platform-conversations';
@@ -49,10 +49,10 @@ function compactPendingInput(pending) {
   return pending.map(item => ({
     id: item.id,
     kind: item.kind || null,
-    plain_text: item.plain_text === true,
-    question: compactText(item.question ?? item.text ?? item.prompt ?? '', 240),
+    plain_text: item.plain_text,
+    question: item.question ?? item.text ?? item.prompt,
     ...(Array.isArray(item.choices) && item.choices.length
-      ? { choices: item.choices.slice(0, 16).map(choice => ({ id: choice.id, label: choice.label ?? choice.id })) }
+      ? { choices: item.choices.map(choice => ({ id: choice.id, label: choice.label ?? choice.id })) }
       : {}),
     ...(item.schema ? { has_schema: true } : {}),
   }));
@@ -136,11 +136,7 @@ export class Executions {
     const execution = target.kind === 'session' ? record : record.session_id && this.record({ kind: 'session', id: record.session_id });
     if (execution?.project_room && actor.kind !== 'user') {
       const origin = this.platform.projectRoom(context);
-      if (origin && !sameRef(origin, execution.project_room)) {
-        const crossRoomFollowup = this.platform.isFollowupRoomAllowed(execution, origin);
-        const ownerInspect = operation === 'read' && !session && sameIdentity(execution.owner, actor);
-        if (!crossRoomFollowup && !ownerInspect) return false;
-      }
+      if (origin && !sameRef(origin, execution.project_room)) return false;
       if (execution.room_workspace_id && !this.platform.roomMembers(execution.project_room.id).includes(actor.id)) return false;
     }
     if (context.executable_scope !== undefined) {
@@ -188,7 +184,6 @@ export class Executions {
   list(context, scope) {
     return [{ kind: 'session', records: sessionRecords }, { kind: 'conversation', records: conversationRecords }].flatMap(({ kind, records }) =>
       this.store.list(records).filter(record => (!scope || sameRef(record.space, scope) || sameRef(record.source_space, scope) ||
-        scope.kind === 'room' && (sameRef(record.origin_room, scope) || (record.allowed_followup_rooms || []).includes(scope.id)) ||
         scope.kind === 'bot' && record.bot_id === scope.id) &&
         this.permission({ kind, id: record.id }, record, context)).map(record => this.baseView({ kind, id: record.id }, record, context)));
   }
@@ -208,7 +203,6 @@ export class Executions {
       ...(record.waiting_summary !== undefined ? { waiting_summary: record.waiting_summary } : {}),
       ...(record.last_output_summary ? { last_output_summary: record.last_output_summary } : {}),
       ...(record.acceptance_state ? { acceptance_state: record.acceptance_state } : {}),
-      ...(record.acceptance_delivery ? { acceptance_delivery: record.acceptance_delivery } : {}),
       ...(record.pending_delivery && (context.actor.kind === 'user' || sameIdentity(context.actor, record.owner)) ?
         { pending_delivery: record.pending_delivery } : {}),
       ...(Array.isArray(record.allowed_followup_rooms) ? { allowed_followup_rooms: record.allowed_followup_rooms } : {}),
@@ -384,8 +378,7 @@ export class Executions {
       const observed = observation.input_targets ?? current.input_targets ?? [];
       this.assertTarget(args, target, observed);
       if (context.origin?.fast_read_forward) {
-        const protocol = current.engine === 'pi' ? 'pi' : this.platform.connections.get(current.engine)?.kind;
-        const options = forwardInputs(observed, observation.pending_input ?? [], protocol);
+        const options = forwardInputs(observed, observation.pending_input ?? [], this.platform.connections.get(current.engine));
         if (!options.forwardable.some(option => option.kind === args.kind && sameInput(option.input_target, args.input_target)))
           reject('input_target_expired', 'The execution now requires a different input', 409);
       }
@@ -462,30 +455,23 @@ export class Executions {
     return this.baseView(target, record, context);
   }
 
-  managedSession(ref, context) {
-    const target = { kind: 'session', id: idOf(ref, 'session') };
-    const record = this.require(target, context, 'control');
-    if (context.actor.kind !== 'user' && record.origin_execution && !sameRef(record.origin_execution, context.session
+  configure(args, context, call) {
+    const target = { kind: 'session', id: idOf(args.target, 'session') };
+    const current = this.require(target, context, 'control');
+    if (context.actor.kind !== 'user' && current.origin_execution && !sameRef(current.origin_execution, context.session
       ? { kind: 'session', id: context.session.id } : { kind: 'conversation', id: context.conversation?.id })) {
       reject('session_owner_required', 'Manage this work from its direct parent conversation', 403);
     }
-    return record;
-  }
-
-  configure(args, context, call) {
-    const current = this.managedSession(args.target, context);
-    const target = { kind: 'session', id: current.id };
     const patch = { id: current.id };
     if (args.acceptance_state !== undefined) patch.acceptance_state = args.acceptance_state;
     if (args.acceptance_state === 'closed') patch.pending_delivery = null;
-    if (args.acceptance_state === 'open' && current.acceptance_state !== 'open') patch.acceptance_delivery = null;
     if (args.work_summary !== undefined) {
-      const cleaned = compactText(args.work_summary, 400);
+      const cleaned = args.work_summary.trim();
       if (!cleaned) reject('invalid_arguments', 'work_summary must be non-empty text');
       patch.work_summary = cleaned;
     }
     if (args.waiting_summary !== undefined) {
-      patch.waiting_summary = args.waiting_summary === null ? null : compactText(args.waiting_summary, 280);
+      patch.waiting_summary = args.waiting_summary?.trim() || null;
     }
     if (args.add_followup_rooms !== undefined || args.remove_followup_rooms !== undefined) {
       const next = new Set(Array.isArray(current.allowed_followup_rooms) ? current.allowed_followup_rooms : []);
@@ -610,14 +596,6 @@ export class Executions {
     this.store.transaction(() => {
       const call = this.calls.get(callId);
       this.confirmInput(call, confirmed_input);
-      if (session?.engine === 'pi' && call.origin?.fast_read_forward && facts.native?.run_id) {
-        const message = this.store.get('messages', call.source_event_ids[0]);
-        if (message) {
-          const current = this.record(call.target);
-          const refs = [...(current.followup_refs || []), ...forwardMaterials(message)];
-          this.store.save(sessionRecords, { id: session.id, followup_refs: [...new Map(refs.map(ref => [keyOf(ref.kind, ref.id), ref])).values()] });
-        }
-      }
       if (call.result_ref?.kind === 'event') return;
       if (session) this.saveFacts(session.id, callId, facts);
       if (facts.status === 'unknown' && call.status === 'submitted') {

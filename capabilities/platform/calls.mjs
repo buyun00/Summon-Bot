@@ -25,6 +25,20 @@ export class Calls {
     Object.assign(this, { store, deliver, canReadTarget, spaceFor, sessionMeta });
     this.linkedWaits = store.db.prepare(`SELECT data FROM records WHERE kind='platform-waits'
       AND json_extract(data,'$.run_id')=? AND json_extract(data,'$.input_call_id') IS NOT NULL`);
+    store.db.exec(`CREATE INDEX IF NOT EXISTS platform_forward_source ON records(json_extract(data,'$.source_event_ids[0]'))
+      WHERE kind='platform-calls' AND json_extract(data,'$.origin.fast_read_forward')=1`);
+  }
+
+  forwardsFor(botId, roomId, eventIds) {
+    const rows = this.store.db.prepare(`SELECT data FROM records WHERE kind='platform-calls'
+      AND json_extract(data,'$.origin.fast_read_forward')=1
+      AND json_extract(data,'$.source_event_ids[0]') IN (SELECT value FROM json_each(?))
+      AND json_extract(data,'$.origin.bot_id')=? AND json_extract(data,'$.origin.source_room.id')=?`)
+      .all(JSON.stringify(eventIds), botId, roomId);
+    return new Map(rows.map(({ data }) => {
+      const call = JSON.parse(data);
+      return [call.source_event_ids[0], call];
+    }));
   }
 
   clientCall(actor, clientId) {
@@ -208,8 +222,8 @@ export class Calls {
       }) : undefined, result_access: targetReadable ? 'available' : 'revoked' };
   }
 
-  unfinishedFor(conversationId, actor, runId) {
-    return this.store.list(callRecords).filter(call => call.origin?.conversation_id === conversationId && call.origin.run_id === runId && sameIdentity(call.submitted_by, actor) &&
+  unfinishedFor(conversationId, actor) {
+    return this.store.list(callRecords).filter(call => call.origin?.conversation_id === conversationId && sameIdentity(call.submitted_by, actor) &&
       ['prepared', 'submitted', 'unknown'].includes(call.status)).map(call => ({ kind: 'call', id: call.id, status: call.status, target: call.target }));
   }
 }

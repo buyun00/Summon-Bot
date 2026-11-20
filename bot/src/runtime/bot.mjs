@@ -5,7 +5,7 @@ import { assertInstallationWritable, readInstallationState } from '../../../scri
 import { inspectServiceLock } from '../../../scripts/installation/service-lock.mjs';
 import { repairRequestType, repairResultType, tools } from '../../../capabilities/platform/contract.mjs';
 import { deliveryRecords } from '../../../capabilities/platform/delivery.mjs';
-import { workGroup } from '../../../capabilities/platform/session-work.mjs';
+import { forwardMaterials, workGroup } from '../../../capabilities/platform/session-work.mjs';
 import { BotStore } from '../storage/store.mjs';
 import { Inbox } from '../storage/inbox.mjs';
 import { eventOrder, executionRef, now, recordKey, refKey, runtimeFailure, runtimeRecords as R, sameRef, terminalCallStates } from '../storage/runtime-records.mjs';
@@ -614,8 +614,16 @@ export class BotRuntime {
       const latest = inbox.run(run.id);
       const event_ids = latest.injected_event_ids;
       const source = event_ids.map(id => inbox.event(id)).find(event => event?.author?.kind === 'user');
+      const input_refs = session ? event_ids.flatMap(id => {
+        const event = inbox.event(id);
+        if (event?.type !== 'pi.input') return [];
+        const call = this.platform.store.get('platform-calls', event.call_id);
+        if (!call?.origin?.fast_read_forward || !sameRef(call.target, session) || !this.canReadPiInput(event, authority)) return [];
+        const message = this.platform.store.get('messages', call.source_event_ids[0]);
+        return message && this.platform.canReadSpace(actor, { kind: 'room', id: message.roomId }) ? forwardMaterials(message) : [];
+      }) : [];
       return { actor, execution_actor: actor, controls, submitted_by: latest.submitted_by || source?.author || actor,
-        signal: controller.signal, origin: { bot_id: bot.id, conversation_id: conversation.id, run_id: run.id,
+        input_refs, signal: controller.signal, origin: { bot_id: bot.id, conversation_id: conversation.id, run_id: run.id,
           event_ids, control_version: control.control_version, session_id: conversation.session_id || null } };
     };
     const check = () => {
@@ -761,7 +769,11 @@ export class BotRuntime {
     if (view.session && view.resources?.length) facts.push(textMessage({ type: 'session_resources', references: view.resources,
       ...(view.session.workspace_ref && { workspace: view.session.workspace_ref, cwd: view.session.workspace.path, project_room: view.session.project_room }) }));
     if (conversation.session_id) history = this.sessionHistory(inbox, conversation, runId, view);
-    if (view.unfinished_calls.length) facts.push(textMessage({ type: 'prior_call_facts', calls: view.unfinished_calls }));
+    const otherCalls = conversation.kind === 'room' ? inbox.list(R.conversation, 'space.id', conversation.space.id)
+      .filter(other => other.id !== conversation.id && other.kind === 'room' && sameRef(other.space, conversation.space))
+      .flatMap(other => this.platform.calls.unfinishedFor(other.id, context.actor)) : [];
+    const unfinished = [...view.unfinished_calls, ...otherCalls];
+    if (unfinished.length) facts.push(textMessage({ type: 'prior_call_facts', calls: unfinished }));
     const relevantGroups = new Set();
     const requestIds = new Set();
     for (const event of current) {
@@ -781,11 +793,10 @@ export class BotRuntime {
       // The event names an immutable receipt position. A newer receipt may already exist on the call.
       const result = event.result ?? observation.result;
       const content = JSON.stringify(result ?? null);
-      const limit = session ? 1600 : 12000;
       facts.push(textMessage({ type: 'call_result', call_id: event.call_id, tool: observation.tool, status: event.status, target,
         input_status: result?.input_status, session_status: result?.session_status,
         result_ref: { kind: 'event', id: event.id }, result_position: event.result_position,
-        result: content.length <= limit ? result : { preview: content.slice(0, limit), truncated: true } }));
+        result: content.length <= 12000 ? result : { preview: content.slice(0, 12000), truncated: true } }));
     }
     if (relevantGroups.size || requestIds.size || inbox.calls(runId).some(call => call.tool === 'open_session')) {
       const owned = this.platform.executions.directWork(conversation.id);
@@ -800,7 +811,7 @@ export class BotRuntime {
           origin_message_id: work.origin_message_id, sessions: [] });
         groups.get(key).sessions.push({ session_id: work.id, engine: work.engine, work_summary: work.work_summary,
           status: work.status, waiting_summary: work.waiting_summary, acceptance_state: work.acceptance_state,
-          acceptance_delivery: work.acceptance_delivery, latest_call_id: work.latest_call_id });
+          latest_call_id: work.latest_call_id });
       }
       for (const group of groups.values()) facts.push(textMessage(group));
     }

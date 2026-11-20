@@ -171,7 +171,7 @@ function protocolLine(line) {
     const choices = options.map(choice => ({ id: choice.id, label: clean(choice.label) }));
     const request = { id, text: clean(message.text), turnId: state.nativeTurnId,
       kind: ['question', 'approval', 'login'].includes(message.kind) ? message.kind : 'question', choices,
-      plain_text: !choices.length && !message.schema && (message.plain_text ?? (manifest.protocol !== 'codex' && message.kind === 'question')) === true };
+      plain_text: !choices.length && !message.schema && (message.plain_text ?? (manifest.protocol !== 'codex')) === true };
     if (request.kind === 'approval' && !choices.length)
       return unsupportedRequest('The native approval does not offer a supported decision', id);
     record({ status: 'awaiting-input', pending: [...state.pending, request] });

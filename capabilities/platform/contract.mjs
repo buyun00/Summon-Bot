@@ -19,8 +19,7 @@ const refOrId = { anyOf: [ref, text] };
 const roomOrId = { anyOf: [typedRef('room'), text] };
 const eventOrId = { anyOf: [typedRef('event'), text] };
 const references = array(ref);
-const roomMessageFields = { text, attachments: array(refOrId), references, mentions: array(principal), reply_to: eventOrId,
-  completed_sessions: array({ anyOf: [typedRef('session'), text] }) };
+const roomMessageFields = { text, attachments: array(refOrId), references, mentions: array(principal), reply_to: eventOrId };
 const repairMessageFields = { to: typedRef('connection'), text, references };
 const repairOutcome = oneOf('repaired', 'blocked');
 const sendMessage = { anyOf: [
@@ -94,7 +93,6 @@ const definitions = [
     'Use it for a specific observation. A registered wait_ref delivers the terminal receipt or an input request to your run automatically.',
     object({ ref, path: text, cursor: text, limit: { type: 'integer', minimum: 1, maximum: 100 } }, ['ref'])],
   ['send', 'Publish to a Room using message:{to:{kind:"room",id},text}, with optional attachments, references, mentions or reply_to. ' +
-    'On verified final delivery, include completed_sessions with your direct Session ids and reply_to the original question. The message and their acceptance are saved together. ' +
     'For a verified connection fault, address the message to {kind:"connection",id} with the problem and shareable references. ' +
     'Reuse repair_key when requesting repair of the same fault. The maintainer replies to the repair event on that connection with reply_to and an optional repair_outcome.',
     object({ message: sendMessage }, ['message']), ({ message }) => message],
@@ -138,7 +136,7 @@ const definitions = [
     'Set include_execution_guide to append the installed Summon adapter guide to a text input. ' +
     'When the result registers a wait_ref, you can end the current turn and continue when its receipt arrives.',
     openSessionInput],
-  ['configure_session', 'Update lightweight work metadata on an execution Session: set acceptance_state ("open" or "closed") once verified and delivered, update work_summary or waiting_summary, or explicitly add/remove allowed_followup_rooms for cross-Room follow-up forwarding.',
+  ['configure_session', 'Manage a direct child Session. Set acceptance_state to open or closed, update work_summary or waiting_summary, or add/remove follow-up Rooms.',
     configureSessionInput],
   ['send_input', 'Submit input to the actual input target and control version, or resume one explicitly paused execution. ' +
     'A registered wait_ref returns the asynchronous receipt to your run.',
