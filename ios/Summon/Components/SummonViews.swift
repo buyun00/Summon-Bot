@@ -80,14 +80,19 @@ struct MemberAvatar: View {
 }
 
 struct RoomAvatar: View {
-    @Environment(SummonStore.self) private var store
+    @Environment(SummonStore.self) private var store: SummonStore?
     let room: SummonRoom
     var size: CGFloat = 86
     var background: Color = SummonTheme.background
     var showOutline: Bool = true
+    var bots: [SummonBot]? = nil
+
+    private var resolvedBots: [SummonBot] {
+        bots ?? store?.bots ?? []
+    }
 
     private var members: [String] {
-        let botsOnly = room.members.filter { id in store.bots.contains { $0.id == id } }
+        let botsOnly = room.members.filter { id in resolvedBots.contains { $0.id == id } }
         if !botsOnly.isEmpty { return Array(botsOnly.prefix(4)) }
         return Array(room.members.filter { $0 == "user" }.prefix(1))
     }
@@ -113,7 +118,7 @@ struct RoomAvatar: View {
                                 }
                                 .frame(width: child, height: child)
                         } else {
-                            MemberAvatar(bot: store.bots.first { $0.id == id }, size: child, groupOutline: showOutline ? background : nil)
+                            MemberAvatar(bot: resolvedBots.first { $0.id == id }, size: child, groupOutline: showOutline ? background : nil)
                         }
                     }
                     .offset(x: xOffset(index), y: yOffset(index))

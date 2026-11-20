@@ -150,6 +150,7 @@ private enum DetailsSheetTarget: Identifiable {
 struct ConversationListView: View {
     @Environment(SummonStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage(SummonDisplayKey.appearance) private var appearanceRaw = SummonAppearance.system.rawValue
     @State private var path: [String] = []
     @State private var query = ""
     @State private var org = HomeOrganization()
@@ -559,6 +560,7 @@ struct ConversationListView: View {
                     .padding(.vertical, 4)
                 }
                 .buttonStyle(SummonPressStyle(compact: true))
+                .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 16))
                 .contextMenu {
                     entryContextMenu(entry)
                 } preview: {
@@ -571,7 +573,7 @@ struct ConversationListView: View {
     @ViewBuilder
     private func folderHeaderRow(id: String, title: String, customFolder: HomeFolder?) -> some View {
         let collapsed = org.isCollapsed(id)
-        Button {
+        let headerButton = Button {
             withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.84)) {
                 org.toggleCollapsed(id)
             }
@@ -589,15 +591,20 @@ struct ConversationListView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .contextMenu {
+
+        Group {
             if let customFolder {
-                Button("重命名分组", systemImage: "pencil") {
-                    renameFolderText = customFolder.name
-                    renamingFolder = customFolder
+                headerButton.contextMenu {
+                    Button("重命名分组", systemImage: "pencil") {
+                        renameFolderText = customFolder.name
+                        renamingFolder = customFolder
+                    }
+                    Button("删除分组", systemImage: "trash", role: .destructive) {
+                        org.deleteFolder(id: customFolder.id)
+                    }
                 }
-                Button("删除分组", systemImage: "trash", role: .destructive) {
-                    org.deleteFolder(id: customFolder.id)
-                }
+            } else {
+                headerButton
             }
         }
         .listRowInsets(EdgeInsets(top: 20, leading: 22, bottom: 8, trailing: 22))
@@ -634,6 +641,12 @@ struct ConversationListView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 14))
+        .contextMenu {
+            entryContextMenu(entry)
+        } preview: {
+            entryPreviewCard(entry)
+        }
         .listRowInsets(EdgeInsets(top: 15, leading: 20, bottom: 15, trailing: 20))
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
@@ -656,17 +669,14 @@ struct ConversationListView: View {
             }
             .tint(Color(uiColor: .systemGray2))
         }
-        .contextMenu {
-            entryContextMenu(entry)
-        } preview: {
-            entryPreviewCard(entry)
-        }
     }
 
     private func entryPreviewCard(_ entry: HomeEntry) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let botsSnapshot = store.bots
+        let scheme = (SummonAppearance(rawValue: appearanceRaw) ?? .system).colorScheme
+        return VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
-                entryAvatar(entry, size: 28)
+                entryAvatar(entry, size: 28, bots: botsSnapshot, background: SummonTheme.surfaceElevated)
                 Text(entry.title)
                     .summonFont(.headline)
                     .foregroundStyle(.primary)
@@ -698,14 +708,17 @@ struct ConversationListView: View {
             .padding(14)
         }
         .frame(width: 320, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
         .background(SummonTheme.surfaceElevated)
+        .preferredColorScheme(scheme)
+        .environment(store)
     }
 
     @ViewBuilder
-    private func entryAvatar(_ entry: HomeEntry, size: CGFloat) -> some View {
+    private func entryAvatar(_ entry: HomeEntry, size: CGFloat, bots: [SummonBot]? = nil, background: Color = SummonTheme.background) -> some View {
         switch entry.kind {
         case .room(let room):
-            RoomAvatar(room: room, size: size)
+            RoomAvatar(room: room, size: size, background: background, bots: bots)
         case .bot(let bot, _):
             MemberAvatar(bot: bot, size: size)
         }
