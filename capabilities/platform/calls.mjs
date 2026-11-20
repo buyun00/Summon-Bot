@@ -21,8 +21,8 @@ export function errorResult(error) {
 }
 
 export class Calls {
-  constructor({ store, deliver, canReadTarget, spaceFor }) {
-    Object.assign(this, { store, deliver, canReadTarget, spaceFor });
+  constructor({ store, deliver, canReadTarget, spaceFor, sessionMeta }) {
+    Object.assign(this, { store, deliver, canReadTarget, spaceFor, sessionMeta });
     this.linkedWaits = store.db.prepare(`SELECT data FROM records WHERE kind='platform-waits'
       AND json_extract(data,'$.run_id')=? AND json_extract(data,'$.input_call_id') IS NOT NULL`);
   }
@@ -124,9 +124,15 @@ export class Calls {
   saveReceiptEvent(call, receipt, target, position) {
     const result = { kind: 'call', id: call.id, status: receipt.status, target, output: receipt.output,
       input_targets: receipt.input_targets, native: receipt.native, safe_to_disconnect: receipt.safe_to_disconnect,
+      ...(receipt.input_status ? { input_status: receipt.input_status } : {}),
+      ...(receipt.session_status ? { session_status: receipt.session_status } : {}),
       ...(receipt.error ? { error: receipt.error } : {}) };
+    const meta = this.sessionMeta?.(target) || null;
     return this.store.save('platform-events', { id: keyOf('call', call.id, position), kind: 'event', type: 'call.receipt',
       author: { kind: 'platform', id: 'platform' }, call_id: call.id, target, space: this.spaceFor(target),
+      ...(meta?.origin_room ? { origin_room: meta.origin_room } : {}),
+      ...(meta?.origin_message_id ? { origin_message_id: meta.origin_message_id } : {}),
+      ...(meta?.owner_conversation_id ? { owner_conversation_id: meta.owner_conversation_id } : {}),
       result_position: position, status: receipt.status, result, time: new Date().toISOString() });
   }
 
@@ -170,7 +176,7 @@ export class Calls {
       if (canAdvance) this.store.save(callRecords, { id, status: terminal ? receipt.status : 'submitted', safe_to_disconnect: receipt.safe_to_disconnect,
         result: { ...event.result, event: { kind: 'event', id: event.id } }, result_ref: { kind: 'event', id: event.id } });
       const waits = canAdvance ? call.return_refs.map(waitId => this.store.get(waitRecords, waitId)).filter(wait => wait &&
-        !(wait.status === 'inline' && call.status !== 'unknown')) : [];
+        (wait.status !== 'inline' || call.status === 'unknown' || terminal && event.target?.kind === 'session')) : [];
       this.deliverWaits(event, waits, matchWakeups);
       return event;
     });
@@ -202,8 +208,8 @@ export class Calls {
       }) : undefined, result_access: targetReadable ? 'available' : 'revoked' };
   }
 
-  unfinishedFor(conversationId, actor) {
-    return this.store.list(callRecords).filter(call => call.origin?.conversation_id === conversationId && sameIdentity(call.submitted_by, actor) &&
+  unfinishedFor(conversationId, actor, runId) {
+    return this.store.list(callRecords).filter(call => call.origin?.conversation_id === conversationId && call.origin.run_id === runId && sameIdentity(call.submitted_by, actor) &&
       ['prepared', 'submitted', 'unknown'].includes(call.status)).map(call => ({ kind: 'call', id: call.id, status: call.status, target: call.target }));
   }
 }

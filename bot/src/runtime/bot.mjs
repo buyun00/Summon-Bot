@@ -5,6 +5,7 @@ import { assertInstallationWritable, readInstallationState } from '../../../scri
 import { inspectServiceLock } from '../../../scripts/installation/service-lock.mjs';
 import { repairRequestType, repairResultType, tools } from '../../../capabilities/platform/contract.mjs';
 import { deliveryRecords } from '../../../capabilities/platform/delivery.mjs';
+import { workGroup } from '../../../capabilities/platform/session-work.mjs';
 import { BotStore } from '../storage/store.mjs';
 import { Inbox } from '../storage/inbox.mjs';
 import { eventOrder, executionRef, now, recordKey, refKey, runtimeFailure, runtimeRecords as R, sameRef, terminalCallStates } from '../storage/runtime-records.mjs';
@@ -297,7 +298,7 @@ export class BotRuntime {
           }
         }
       }
-      if (route.event.type === 'call.receipt') {
+      if (!route.wait_id && route.event.type === 'call.receipt') {
         const returns = inbox.list(R.route, 'event_id', route.event_id).filter(item => item.wait_id);
         if (returns.some(item => item.state === 'pending')) continue;
         if (returns.length) {
@@ -305,6 +306,20 @@ export class BotRuntime {
           continue;
         }
         if (this.targetPaused(route.event.target)) continue;
+      }
+      if (route.wait_id) {
+        if (!this.routeReady(inbox, route)) continue;
+        const targetConversation = route.conversation_id ? inbox.conversation(route.conversation_id) : null;
+        if (!targetConversation) continue;
+        const space = targetConversation.space || route.event.space || botRef(bot.id);
+        const related = { kind: 'conversation', id: targetConversation.id };
+        const target = inbox.wait(route.wait_id)?.target;
+        const session = target?.kind === 'session' && this.platform.executions.record(target);
+        const receiptGroup = session ? workGroup(session) : recordKey(route.event.call_id);
+        const key = recordKey(refKey(space), refKey(related), receiptGroup);
+        if (!unassigned.has(key)) unassigned.set(key, { space, related, receiptGroup, routes: [] });
+        unassigned.get(key).routes.push(route);
+        continue;
       }
       if (this.fastRead?.needsFastRead(inbox, bot, route)) {
         const roomId = route.event.space.id;
@@ -325,7 +340,7 @@ export class BotRuntime {
       }
       this.fastRead.enqueue(inbox, bot, roomId, routes);
     }
-    for (const { space, routes, related } of unassigned.values()) {
+    for (const { space, routes, related, receiptGroup } of unassigned.values()) {
       if (space.kind === 'room' && !this.platform.canReadSpace(botRef(bot.id), space, { actor: botRef(bot.id) })) {
         this.discard(inbox, routes, 'access_revoked');
         continue;
@@ -336,11 +351,19 @@ export class BotRuntime {
       let conversation = retained ? (available(retained) ? retained : null) : conversations.reverse().find(available);
       if (retained && !conversation) continue;
       if (!conversation) conversation = this.register(inbox, inbox.putConversation({ id: randomUUID(), kind: 'room', space, owner: botRef(bot.id) }));
-      if (inbox.runs(conversation.id).some(run => run.state === 'waiting' && this.waitReady(inbox, run))) continue;
       const newRoutes = routes.slice(0, 32);
+      if (receiptGroup) {
+        const acceptance = inbox.runs(conversation.id).find(run => run.receipt_group === receiptGroup && activeRunStates.has(run.state));
+        if (acceptance) inbox.associate(acceptance.id, newRoutes);
+        else inbox.createRun(conversation, newRoutes, { receipt_group: receiptGroup });
+        continue;
+      }
       const running = this.active.get(conversation.id);
-      const retainedRun = inbox.runs(conversation.id).find(run => run.state === 'suspended');
-      if (running?.accepting && !running.signal.aborted && inbox.run(running.runId).pending_event_ids.length < 64)
+      const retainedRun = conversation.kind !== 'room' && inbox.runs(conversation.id).find(run => run.state === 'suspended');
+      const handlingWork = running && conversation.kind === 'room' && (inbox.run(running.runId).receipt_group ||
+        inbox.calls(running.runId).some(call => call.tool === 'open_session') ||
+        inbox.run(running.runId).pending_event_ids.some(id => inbox.event(id)?.type === 'call.receipt'));
+      if (!handlingWork && running?.accepting && !running.signal.aborted && inbox.run(running.runId).pending_event_ids.length < 64)
         inbox.associate(running.runId, newRoutes);
       else if (!running && !this.starting.has(conversation.id) && !inbox.runs(conversation.id).some(run =>
         ['pending', 'interrupted', 'retry'].includes(run.state))) {
@@ -368,12 +391,6 @@ export class BotRuntime {
       if (conversation.kind === 'material') {
         maintenance.push({ conversation, run });
         continue;
-      }
-      if (eligible && conversation.kind === 'room') {
-        const fresh = inbox.pending().filter(route => !route.run_id && !this.fastRead?.needsFastRead(inbox, bot, route) && sameRef(route.event.space, conversation.space) &&
-          (route.event.ref?.kind !== 'conversation' || route.event.ref.id === conversation.id) &&
-          (route.event.type !== 'call.receipt' || !inbox.list(R.route, 'event_id', route.event_id).some(item => item.wait_id)));
-        inbox.associate(run.id, fresh.slice(0, 32));
       }
       foreground.push(conversation);
       this.launch(inbox, conversation, inbox.run(run.id), bot);
@@ -439,6 +456,10 @@ export class BotRuntime {
 
   discard(inbox, routes, status) {
     const eventIds = [...new Set(routes.map(route => route.event_id))];
+    if (status === 'access_revoked') for (const route of routes) {
+      const event = route.event ?? inbox.event(route.event_id);
+      if (event?.type === 'call.receipt') this.platform.executions.retainUndelivered(event, inbox.botId);
+    }
     inbox.store.transaction(() => {
       for (const route of routes) {
         const { event, ...stored } = route;
@@ -740,21 +761,48 @@ export class BotRuntime {
     if (view.session && view.resources?.length) facts.push(textMessage({ type: 'session_resources', references: view.resources,
       ...(view.session.workspace_ref && { workspace: view.session.workspace_ref, cwd: view.session.workspace.path, project_room: view.session.project_room }) }));
     if (conversation.session_id) history = this.sessionHistory(inbox, conversation, runId, view);
-    const otherCalls = conversation.kind === 'room' ? inbox.list(R.conversation, 'space.id', conversation.space.id)
-      .filter(other => other.id !== conversation.id && other.kind === 'room' && sameRef(other.space, conversation.space))
-      .flatMap(other => this.platform.calls.unfinishedFor(other.id, context.actor)) : [];
-    const unknown = [...view.unfinished_calls, ...otherCalls];
-    if (unknown.length) facts.push(textMessage({ type: 'prior_call_facts', calls: unknown }));
-    for (const event of current) if (event.type === 'call.receipt' && event.call_id && event.result_access !== 'revoked') {
-      const observation = await this.readFor(job, { kind: 'call', id: event.call_id });
-      if (observation) {
-        const result = observation.result;
-        const content = JSON.stringify(result ?? null);
-        facts.push(textMessage({ type: 'call_result', call_id: event.call_id, status: observation.status,
-          target: observation.target, result_ref: observation.result_ref, result_access: observation.result_access,
-          result: content.length <= 12000 ? result : { preview: content.slice(0, 12000), truncated: true },
-        }));
+    if (view.unfinished_calls.length) facts.push(textMessage({ type: 'prior_call_facts', calls: view.unfinished_calls }));
+    const relevantGroups = new Set();
+    const requestIds = new Set();
+    for (const event of current) {
+      if (event.type === 'message') {
+        requestIds.add(event.id);
+        if (event.reply_to) requestIds.add(event.reply_to.id ?? event.reply_to);
+        const route = inbox.store.getRecord(R.route, recordKey(event.id, 'observation'));
+        if (route?.fast_read_forward_fallback) facts.push(textMessage({ type: 'forward_fallback', message_id: event.id,
+          reason: route.fast_read_forward_fallback, session_id: route.fast_read_forward_target, call_id: route.fast_read_forward_call_id }));
       }
+      if (event.type !== 'call.receipt' || !event.call_id || event.result_access === 'revoked') continue;
+      const observation = await this.readFor(job, { kind: 'call', id: event.call_id });
+      if (!observation || observation.result_access === 'revoked') continue;
+      const target = observation.target;
+      const session = target?.kind === 'session' && this.platform.executions.record(target);
+      if (session?.owner_conversation_id === conversation.id) relevantGroups.add(workGroup(session));
+      // The event names an immutable receipt position. A newer receipt may already exist on the call.
+      const result = event.result ?? observation.result;
+      const content = JSON.stringify(result ?? null);
+      const limit = session ? 1600 : 12000;
+      facts.push(textMessage({ type: 'call_result', call_id: event.call_id, tool: observation.tool, status: event.status, target,
+        input_status: result?.input_status, session_status: result?.session_status,
+        result_ref: { kind: 'event', id: event.id }, result_position: event.result_position,
+        result: content.length <= limit ? result : { preview: content.slice(0, limit), truncated: true } }));
+    }
+    if (relevantGroups.size || requestIds.size || inbox.calls(runId).some(call => call.tool === 'open_session')) {
+      const owned = this.platform.executions.directWork(conversation.id);
+      for (const work of owned) {
+        if (work.owner_run_id === runId || requestIds.has(work.origin_message_id)) relevantGroups.add(workGroup(work));
+      }
+      const groups = new Map();
+      for (const work of owned) {
+        const key = workGroup(work);
+        if (!relevantGroups.has(key)) continue;
+        if (!groups.has(key)) groups.set(key, { type: 'origin_work_status', origin_room: work.origin_room,
+          origin_message_id: work.origin_message_id, sessions: [] });
+        groups.get(key).sessions.push({ session_id: work.id, engine: work.engine, work_summary: work.work_summary,
+          status: work.status, waiting_summary: work.waiting_summary, acceptance_state: work.acceptance_state,
+          acceptance_delivery: work.acceptance_delivery, latest_call_id: work.latest_call_id });
+      }
+      for (const group of groups.values()) facts.push(textMessage(group));
     }
     return { ...view, current, history, facts, material: job.materials(), observation, publicRoom };
   }
@@ -974,16 +1022,21 @@ export class BotRuntime {
     return conversation ? this.inspectLocal(inbox, conversation, { ...options, sessionInput: true }) : { status: session.status || 'unknown', input_targets: [] };
   }
 
-  inspectLocal(inbox, conversation, { cursor, limit = 25, sessionInput = false } = {}) {
-    const runs = inbox.runs(conversation.id);
-    const current = inbox.conversation(conversation.id);
+  localInputState(inbox, conversation, sessionInput, last = this.latestRun(inbox.runs(conversation.id), conversation.id)) {
+    const revision = inbox.conversation(conversation.id).input_revision;
     const active = this.active.get(conversation.id);
-    const last = this.latestRun(runs, conversation.id);
     const summary = this.runSummary(conversation.id, last);
     const canAdvance = !active && !this.starting.has(conversation.id) &&
       (summary.status === 'idle' || summary.status === 'suspended' || sessionInput && summary.status === 'waiting');
     const target = active?.accepting ? [targetOption('steer', { kind: 'pi_run', run_id: active.runId })] : canAdvance ?
-      [targetOption('next', { kind: 'idle_input', input_revision: current.input_revision })] : [];
+      [targetOption('next', { kind: 'idle_input', input_revision: revision })] : [];
+    return { ...summary, input_targets: target, input_revision: revision };
+  }
+
+  inspectLocal(inbox, conversation, { cursor, limit = 25, sessionInput = false } = {}) {
+    const runs = inbox.runs(conversation.id);
+    const last = this.latestRun(runs, conversation.id);
+    const state = this.localInputState(inbox, conversation, sessionInput, last);
     const output = runs.flatMap(run => {
       const record = inbox.store.getRecord(R.transcript, run.id);
       const originals = record?.original_messages || [];
@@ -996,7 +1049,7 @@ export class BotRuntime {
     const slice = output.slice(after, after + limit);
     const rawOutput = last?.result?.text;
     const text = cursor || typeof rawOutput !== 'string' ? undefined : rawOutput.slice(0, 16000);
-    return { ...summary, input_targets: target, input_revision: current.input_revision, messages: slice, output: text,
+    return { ...state, messages: slice, output: text,
       next_cursor: after + slice.length < output.length ? slice.at(-1)?.id : null };
   }
 

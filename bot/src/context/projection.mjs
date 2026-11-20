@@ -37,6 +37,10 @@ export function roomMessageInput(event) {
 
 export function eventInput(event, current = true) {
   if (isRoomMessageEvent(event)) return roomMessageInput(event);
+  if (event.type === 'call.receipt' && event.target?.kind === 'session') {
+    const { result, ...receipt } = event;
+    return { type: current ? 'current_event' : 'historical_entry', event: receipt, ref: { kind: 'event', id: event.id } };
+  }
   return { type: current ? 'current_event' : 'historical_entry', event,
     ref: event.history_ref || { kind: 'event', id: event.id } };
 }

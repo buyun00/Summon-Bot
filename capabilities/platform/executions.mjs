@@ -1,9 +1,10 @@
 import { activeControl, assertResume, canResume, resumeReference } from '../bot-management/service.mjs';
-import { assertRevision, identity, keyOf, reject, sameIdentity, sameRef } from './contract.mjs';
+import { assertRevision, idOf, identity, keyOf, reject, sameIdentity, sameRef } from './contract.mjs';
 import { callRecords, errorResult, mayAdvanceReceipt } from './calls.mjs';
 import { allowsConnection, enclosesExecutableScope, executableScope } from '../services/executable-scope.mjs';
 import { executionGuide } from '../connectors/initialization.mjs';
 import { operationRecords } from '../services/session-processes.mjs';
+import { forwardInputs, forwardMaterials } from './session-work.mjs';
 
 export const sessionRecords = 'platform-sessions';
 export const conversationRecords = 'platform-conversations';
@@ -16,7 +17,7 @@ const inputFields = {
 
 const settledStop = (status, safe) => status === 'idle' || ['completed', 'failed', 'stopped', 'not_submitted'].includes(status) && safe === true;
 
-function sameInput(a, b) {
+export function sameInput(a, b) {
   return a?.kind === b?.kind && Boolean(inputFields[a?.kind]?.every(field => a[field] === b[field]));
 }
 
@@ -36,6 +37,36 @@ const roomMember = (members, actor) => members.includes(actor.id);
 const granted = (values, actor, members, roomId) => values?.some(principal => principal.kind === 'room_members'
   ? principal.id === roomId && roomMember(members, actor) : sameIdentity(principal, actor));
 
+function compactText(value, limit = 280) {
+  if (typeof value !== 'string') return null;
+  const cleaned = value.replace(/\s+/g, ' ').trim();
+  if (!cleaned) return null;
+  return cleaned.length <= limit ? cleaned : `${cleaned.slice(0, limit - 1)}…`;
+}
+
+function compactPendingInput(pending) {
+  if (!Array.isArray(pending) || !pending.length) return [];
+  return pending.map(item => ({
+    id: item.id,
+    kind: item.kind || null,
+    plain_text: item.plain_text === true,
+    question: compactText(item.question ?? item.text ?? item.prompt ?? '', 240),
+    ...(Array.isArray(item.choices) && item.choices.length
+      ? { choices: item.choices.slice(0, 16).map(choice => ({ id: choice.id, label: choice.label ?? choice.id })) }
+      : {}),
+    ...(item.schema ? { has_schema: true } : {}),
+  }));
+}
+
+function outputPreview(output) {
+  if (typeof output === 'string') return compactText(output, 280);
+  if (output && typeof output === 'object') {
+    if (typeof output.text === 'string') return compactText(output.text, 280);
+    if (typeof output.error === 'string') return compactText(output.error, 240);
+  }
+  return null;
+}
+
 function unconfirmedPiSubmission(call) {
   if (call.status === 'submitted') return !call.result_ref;
   if (call.status !== 'unknown') return false;
@@ -48,6 +79,29 @@ export class Executions {
 
   record(target) {
     return this.store.get(target.kind === 'session' ? sessionRecords : conversationRecords, target.id);
+  }
+
+  followupSessions(botId, roomId) {
+    return this.store.db.prepare(`SELECT data FROM records WHERE kind='platform-sessions'
+      AND json_extract(data,'$.owner.id')=? AND json_extract(data,'$.acceptance_state')='open'
+      AND json_extract(data,'$.origin_execution.kind')='conversation' AND
+      (json_extract(data,'$.origin_room.id')=? OR ? IN (SELECT value FROM json_each(data,'$.allowed_followup_rooms')))`)
+      .all(botId, roomId, roomId).map(row => JSON.parse(row.data));
+  }
+
+  directWork(conversationId) {
+    return this.store.db.prepare(`SELECT data FROM records WHERE kind='platform-sessions'
+      AND json_extract(data,'$.owner_conversation_id')=?`).all(conversationId).map(row => JSON.parse(row.data));
+  }
+
+  retainUndelivered(event, botId) {
+    const target = event.target ?? this.store.get(callRecords, event.call_id)?.target;
+    const session = target?.kind === 'session' && this.record(target);
+    if (!session?.origin_room || session.origin_execution?.kind !== 'conversation' || session.owner?.id !== botId ||
+        this.platform.canReadSpace(session.owner, session.origin_room) || session.pending_delivery?.receipt?.id === event.id) return;
+    this.store.save(sessionRecords, { id: session.id, pending_delivery: { reason: 'origin_room_unavailable',
+      origin_room: session.origin_room, origin_message_id: session.origin_message_id, call_id: event.call_id,
+      status: event.status, receipt: { kind: 'event', id: event.id } } });
   }
 
   sameOperationTarget(left, right, pi) {
@@ -70,7 +124,7 @@ export class Executions {
       const session = this.record({ kind: 'session', id: record.session_id });
       if (!session || !sameIdentity(session.execution_actor, actor)) reject('session_conflict', 'Conversation does not belong to the Session', 409);
     }
-    return this.store.save(conversationRecords, { id: record.id, bot_id: record.bot_id, space: record.space ?? actor,
+    return this.store.save(conversationRecords, { id: record.id, kind: record.kind, bot_id: record.bot_id, space: record.space ?? actor,
       owner: record.owner ?? actor, session_id: record.session_id ?? null,
       ...(record.connection_setup ? { connection_setup: record.connection_setup } : {}),
       control: activeControl(), input_revision: record.input_revision ?? 0 });
@@ -82,7 +136,11 @@ export class Executions {
     const execution = target.kind === 'session' ? record : record.session_id && this.record({ kind: 'session', id: record.session_id });
     if (execution?.project_room && actor.kind !== 'user') {
       const origin = this.platform.projectRoom(context);
-      if (origin && !sameRef(origin, execution.project_room)) return false;
+      if (origin && !sameRef(origin, execution.project_room)) {
+        const crossRoomFollowup = this.platform.isFollowupRoomAllowed(execution, origin);
+        const ownerInspect = operation === 'read' && !session && sameIdentity(execution.owner, actor);
+        if (!crossRoomFollowup && !ownerInspect) return false;
+      }
       if (execution.room_workspace_id && !this.platform.roomMembers(execution.project_room.id).includes(actor.id)) return false;
     }
     if (context.executable_scope !== undefined) {
@@ -130,6 +188,7 @@ export class Executions {
   list(context, scope) {
     return [{ kind: 'session', records: sessionRecords }, { kind: 'conversation', records: conversationRecords }].flatMap(({ kind, records }) =>
       this.store.list(records).filter(record => (!scope || sameRef(record.space, scope) || sameRef(record.source_space, scope) ||
+        scope.kind === 'room' && (sameRef(record.origin_room, scope) || (record.allowed_followup_rooms || []).includes(scope.id)) ||
         scope.kind === 'bot' && record.bot_id === scope.id) &&
         this.permission({ kind, id: record.id }, record, context)).map(record => this.baseView({ kind, id: record.id }, record, context)));
   }
@@ -141,10 +200,23 @@ export class Executions {
     const facts = conversation ? observation ?? this.platform.runtime.conversationSummary(record.id) : observation;
     const status = facts?.status || (conversation ? 'unknown' : record.status ?? 'idle');
     const error = conversation && facts?.last_error;
+    const sessionMeta = !conversation ? {
+      ...(record.origin_room && this.platform.canReadSpace(context.actor, record.origin_room, context) ? { origin_room: record.origin_room } : {}),
+      ...(record.origin_message_id ? { origin_message_id: record.origin_message_id } : {}),
+      ...(record.owner_conversation_id ? { owner_conversation_id: record.owner_conversation_id } : {}),
+      ...(record.work_summary ? { work_summary: record.work_summary } : {}),
+      ...(record.waiting_summary !== undefined ? { waiting_summary: record.waiting_summary } : {}),
+      ...(record.last_output_summary ? { last_output_summary: record.last_output_summary } : {}),
+      ...(record.acceptance_state ? { acceptance_state: record.acceptance_state } : {}),
+      ...(record.acceptance_delivery ? { acceptance_delivery: record.acceptance_delivery } : {}),
+      ...(record.pending_delivery && (context.actor.kind === 'user' || sameIdentity(context.actor, record.owner)) ?
+        { pending_delivery: record.pending_delivery } : {}),
+      ...(Array.isArray(record.allowed_followup_rooms) ? { allowed_followup_rooms: record.allowed_followup_rooms } : {}),
+    } : {};
     return { kind: target.kind, id: record.id, execution_ref: target, bot_id: record.bot_id, space: record.space, engine: record.engine,
       source_space: record.source_space && this.platform.canReadSpace(context.actor, record.source_space, context) ? record.source_space : undefined,
       model: record.model, execution_actor: record.execution_actor, submitted_by: record.submitted_by, latest_call_id: record.latest_call_id,
-      status, ...(error ? { last_error: { code: error.code, message: error.message } } : {}),
+      status, ...(error ? { last_error: { code: error.code, message: error.message } } : {}), ...sessionMeta,
       control, control_version: control.control_version, input_revision: record.input_revision,
       can_stop: controlled, can_submit: this.permission(target, record, context, 'input') && !record.authority_revoked,
       resume_ref: controlled && canResume(context.actor, control, record.owner) ? resumeReference(target, control) : null };
@@ -311,6 +383,12 @@ export class Executions {
       const observation = await this.inspect(target, current);
       const observed = observation.input_targets ?? current.input_targets ?? [];
       this.assertTarget(args, target, observed);
+      if (context.origin?.fast_read_forward) {
+        const protocol = current.engine === 'pi' ? 'pi' : this.platform.connections.get(current.engine)?.kind;
+        const options = forwardInputs(observed, observation.pending_input ?? [], protocol);
+        if (!options.forwardable.some(option => option.kind === args.kind && sameInput(option.input_target, args.input_target)))
+          reject('input_target_expired', 'The execution now requires a different input', 409);
+      }
       return current;
     };
     const current = await fresh();
@@ -382,6 +460,51 @@ export class Executions {
     });
     this.platform.runtime.wake();
     return this.baseView(target, record, context);
+  }
+
+  managedSession(ref, context) {
+    const target = { kind: 'session', id: idOf(ref, 'session') };
+    const record = this.require(target, context, 'control');
+    if (context.actor.kind !== 'user' && record.origin_execution && !sameRef(record.origin_execution, context.session
+      ? { kind: 'session', id: context.session.id } : { kind: 'conversation', id: context.conversation?.id })) {
+      reject('session_owner_required', 'Manage this work from its direct parent conversation', 403);
+    }
+    return record;
+  }
+
+  configure(args, context, call) {
+    const current = this.managedSession(args.target, context);
+    const target = { kind: 'session', id: current.id };
+    const patch = { id: current.id };
+    if (args.acceptance_state !== undefined) patch.acceptance_state = args.acceptance_state;
+    if (args.acceptance_state === 'closed') patch.pending_delivery = null;
+    if (args.acceptance_state === 'open' && current.acceptance_state !== 'open') patch.acceptance_delivery = null;
+    if (args.work_summary !== undefined) {
+      const cleaned = compactText(args.work_summary, 400);
+      if (!cleaned) reject('invalid_arguments', 'work_summary must be non-empty text');
+      patch.work_summary = cleaned;
+    }
+    if (args.waiting_summary !== undefined) {
+      patch.waiting_summary = args.waiting_summary === null ? null : compactText(args.waiting_summary, 280);
+    }
+    if (args.add_followup_rooms !== undefined || args.remove_followup_rooms !== undefined) {
+      const next = new Set(Array.isArray(current.allowed_followup_rooms) ? current.allowed_followup_rooms : []);
+      for (const roomRef of args.add_followup_rooms || []) {
+        const roomId = idOf(roomRef, 'room');
+        const room = this.platform.store.get('rooms', roomId);
+        if (!room || !this.platform.canReadSpace(context.actor, { kind: 'room', id: roomId }, context)) {
+          reject('room_forbidden', 'Cannot open follow-up to an inaccessible Room', 403);
+        }
+        next.add(roomId);
+      }
+      for (const roomRef of args.remove_followup_rooms || []) {
+        next.delete(idOf(roomRef, 'room'));
+      }
+      patch.allowed_followup_rooms = [...next];
+    }
+    const saved = this.store.save(sessionRecords, patch);
+    this.calls.bind(call.id, { target });
+    return this.baseView(target, saved, context);
   }
 
   saveControl(target, control) {
@@ -487,6 +610,14 @@ export class Executions {
     this.store.transaction(() => {
       const call = this.calls.get(callId);
       this.confirmInput(call, confirmed_input);
+      if (session?.engine === 'pi' && call.origin?.fast_read_forward && facts.native?.run_id) {
+        const message = this.store.get('messages', call.source_event_ids[0]);
+        if (message) {
+          const current = this.record(call.target);
+          const refs = [...(current.followup_refs || []), ...forwardMaterials(message)];
+          this.store.save(sessionRecords, { id: session.id, followup_refs: [...new Map(refs.map(ref => [keyOf(ref.kind, ref.id), ref])).values()] });
+        }
+      }
       if (call.result_ref?.kind === 'event') return;
       if (session) this.saveFacts(session.id, callId, facts);
       if (facts.status === 'unknown' && call.status === 'submitted') {
@@ -496,7 +627,8 @@ export class Executions {
       }
       if (terminal.has(facts.status)) {
         this.calls.bind(callId, { safe_to_disconnect: facts.safe_to_disconnect });
-        this.calls.finish(callId, facts.status, facts);
+        if (call.origin?.fast_read_forward) this.calls.recordReceipt(callId, { ...facts, position: 'inline' }, call.target);
+        else this.calls.finish(callId, facts.status, facts);
         this.platform.noteConnectionFailure(session, call, facts);
         if (call.lease_id) this.resources.finish(call.lease_id, { outcome: facts.status });
       } else {
@@ -540,8 +672,22 @@ export class Executions {
     const stop_status = ended ? 'stopped' : status === 'unknown' && session.control.stop_status === 'pending' ? 'unknown' : session.control.stop_status;
     const control = session.control.state === 'paused' ? { ...session.control, stop_status } : session.control;
     const call = this.calls.get(callId);
+    const pendingInput = facts.input_targets !== undefined || facts.pending_input !== undefined
+      ? compactPendingInput(facts.pending_input) : session.pending_input || [];
+    const preview = outputPreview(facts.output);
+    let waitingSummary = session.waiting_summary ?? null;
+    if (pendingInput.length) {
+      waitingSummary = compactText(pendingInput.map(item => item.question || item.kind || '等待输入').join('；'), 240);
+    } else if (['waiting', 'needs_input', 'awaiting_input', 'completed', 'idle'].includes(status) && preview && !facts.input_status) {
+      waitingSummary = preview;
+    } else if (facts.input_targets !== undefined && !facts.input_status) {
+      waitingSummary = null;
+    }
     const updated = this.store.save(sessionRecords, { id: sessionId, status, control, submitted_by: call.submitted_by,
       native: facts.native ? { ...session.native, ...facts.native } : session.native, input_targets: facts.input_targets ?? session.input_targets,
+      pending_input: pendingInput,
+      waiting_summary: waitingSummary,
+      ...(preview && !facts.input_status ? { last_output_summary: preview } : {}),
       safe_to_disconnect: facts.safe_to_disconnect,
       ...(session.authority_revoked && ended ? { revocation_stop: 'stopped' } : {}),
       input_revision: facts.input_revision ?? session.input_revision, latest_call_id: callId });

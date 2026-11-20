@@ -24,12 +24,15 @@ const roomLayerRules = [
   '- Preserve all non-conflicting rules from lower layers.',
   '- Scope and persistence: A one-off exception applies only to the current delivery and does not alter long-term rules. When an authorized user explicitly changes a long-term rule for this room or for this Bot across rooms, apply it now and persist it via material_index_ref (using save_file and configure_bot as documented in configure_bot) with applies_to set to the room or this Bot and source_refs pointing to the source message so it survives history compression.',
   '- Room timeline and turn targets: Public room messages appear once in publish order as room_message entries with stable formatting across turns; mid-turn interjections and async wakeup updates are appended to the current fork tail. The current_room_inputs entry lists the message IDs to handle in this turn—use the full wording, actual author, reply target, mentions, and references of those messages.',
+  '- For a delegated request, own the direct child Sessions you open. On a receipt, use origin_work_status for the original question and its siblings. Submitted means accepted for execution. Distinguish progress, input needed, failure, unknown delivery, and evidence that the requested work is complete. Use the receipt or artifact to check the actual completion criteria; read additional details when needed.',
+  '- Deliver verified results with send to origin_room, reply_to the origin_message_id and include completed_sessions for the children you have accepted. Check prior delivery and closed siblings on late receipts. Report a material correction once. If forwarding was uncertain, read its recorded call before taking further action.',
+  '- For a cross-room continuation, use find and read in your accessible Rooms. Ask the original owner_conversation_id via its current send_input target when its decision is needed. Use configure_session on your direct work to open or revoke follow-up Rooms. Follow-ups keep their original delivery destination.',
 ].join('\n');
 
 const generalDefaults = [
   'General defaults and runtime protocol:',
   '- Keep replies natural, direct, and grounded in accessible facts unless a higher layer specifies another style or format. Use send for a public contribution and references to inspect accessible facts.',
-  '- When delegating work, include the user’s applicable requirements, completion criteria, and limits on work, verification, or reporting in the executor’s input. Share only what the recipient is authorized to receive. Submit work on behalf of a Room with work_room and use its actual source event when available. Pass along user changes that affect the delegated work.',
+  '- Give each executor the original wording, goal, actual working directory, applicable limits, completion criteria and authorized material references. Supply work_summary and the specific origin_message_id for a Room request, especially in a batch. Use work_room for Room-visible observations. Manage your own direct children and return compact results to the conversation that delegated your work.',
   '- Enabled tools and their registered methods are available to every Bot. A group’s project directory follows its current members into Pi and external Sessions. Use find(kind=workspace), read with a workspace ref and relative path, and save_file with the workspace as space to edit project text.',
   '- Use registered connections directly for the task and handle input errors using their real receipts. For an external Codex connection, inspect recommended_combinations from read(connection) and pick a (model, effort) pair suited to task difficulty unless the user specifies otherwise. If the evidence shows the connection, fixed method, or script needs repair, use send to the original connection with shareable references to the failed call or probe. Reuse the request for the same verified fault and use the repair receipt in the originating task.',
   '- When the delegated task is to write a Summon adapter, use include_execution_guide or put the relevant same-release guide text in the input. Conclude when the existing outputs and receipts satisfy the current request.',
@@ -40,7 +43,7 @@ const setupGuidance = 'The host authorized CLI setup for this private conversati
   'Use set_wakeup for ongoing connection failure notices when needed and within scope. Report the actual maintainer reference when assigned. ' +
   'Continue the authorized CLI work when the connection is usable. Use regular Session tools for the user’s requested work.';
 
-const piSessionGuidance = 'You are running inside an independent Pi Session (background worker). You cannot publish public Room messages directly via send; return your verified findings, references, and final result in your final response so the owning Bot main conversation receives the receipt and decides what to publish. You may still use send addressed to {kind:"connection",id} for verified connection repair.';
+const piSessionGuidance = 'You are running inside an independent Pi Session. Use your tools and open and manage child Sessions when useful. Check their results yourself, then return your findings, references or blockers to your immediate parent. The Room main conversation handles public delivery. Use send to a connection for verified connection repair.';
 
 function buildSystemContent({ isRoomConversation, isPiSession, setup, binding, duty }) {
   const sections = [hardBoundaries];
@@ -65,7 +68,7 @@ function toolSpecForExecution(spec, { isPiSession }) {
   return {
     ...spec,
     description: 'For a verified connection fault, send a repair message addressed to {kind:"connection",id} with the problem and shareable references. ' +
-      'Independent Pi Sessions cannot publish messages to a Room; return your result in your final response so the owning main conversation can publish it.',
+      'Return independent Pi Session results to the immediate parent in your final response.',
     ...(connectionOnly.length ? {
       inputSchema: {
         ...spec.inputSchema,

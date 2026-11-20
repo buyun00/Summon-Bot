@@ -14,7 +14,7 @@ export class Inbox {
     return this.store.transaction(() => {
       const prior = this.store.getRecord(R.delivery, id);
       if (prior && prior.event_id !== event.id) throw runtimeFailure('delivery_conflict', 'Delivery identity belongs to another event');
-      const waitIds = [], affected = new Set();
+      const waitIds = [];
       for (const wait of wait_refs) {
         if (!wait?.id || wait.bot_id !== this.botId || !wait.run_id || !wait.conversation_id || !wait.call_id)
           throw runtimeFailure('invalid_wait', 'Call delivery requires the actual return relationship', 400);
@@ -24,11 +24,11 @@ export class Inbox {
         waitIds.push(wait.id);
         this.store.putRecord(R.wait, { ...original, ...wait, ...original && { status: original.status, result_position: original.result_position },
           event_ids: [...new Set([...(original?.event_ids || []), event.id])] });
-        const route = this.route(event.id, { wait_id: wait.id, conversation_id: wait.conversation_id, run_id: wait.run_id });
-        if (route.state === 'pending' && this.run(wait.run_id)) {
-          this.associate(wait.run_id, [route]);
-          affected.add(wait.run_id);
-        }
+        const targetRun = this.run(wait.run_id);
+        const reusableRun = targetRun && ['pending', 'running', 'waiting', 'retry', 'interrupted'].includes(targetRun.state) &&
+          targetRun.control_version === this.conversation(wait.conversation_id)?.control.control_version;
+        const route = this.route(event.id, { wait_id: wait.id, conversation_id: wait.conversation_id });
+        if (route.state === 'pending' && !route.run_id && reusableRun) this.associate(wait.run_id, [route]);
       }
       if (match_sources.length || wait_refs.length === 0) this.route(event.id, { match_sources });
       const saved = this.store.getRecord(R.event, event.id);
@@ -41,7 +41,6 @@ export class Inbox {
       this.store.putRecord(R.event, { id: event.id, event: projection, received_at: saved?.received_at || savedAt });
       this.store.putRecord(R.delivery, { id, event_id: event.id, bot_id, state: 'received', received_at: savedAt, revision: Math.max(prior?.revision || 0, revision),
         match_sources: matchSources(prior?.match_sources || [], match_sources), wait_refs: [...new Set([...(prior?.wait_refs || []), ...waitIds])] });
-      for (const runId of affected) if (this.run(runId).state === 'completed') this.putRun({ id: runId, state: 'waiting' });
       return this.receipt(id);
     });
   }

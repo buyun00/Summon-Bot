@@ -19,7 +19,8 @@ const refOrId = { anyOf: [ref, text] };
 const roomOrId = { anyOf: [typedRef('room'), text] };
 const eventOrId = { anyOf: [typedRef('event'), text] };
 const references = array(ref);
-const roomMessageFields = { text, attachments: array(refOrId), references, mentions: array(principal), reply_to: eventOrId };
+const roomMessageFields = { text, attachments: array(refOrId), references, mentions: array(principal), reply_to: eventOrId,
+  completed_sessions: array({ anyOf: [typedRef('session'), text] }) };
 const repairMessageFields = { to: typedRef('connection'), text, references };
 const repairOutcome = oneOf('repaired', 'blocked');
 const sendMessage = { anyOf: [
@@ -78,8 +79,11 @@ const sessionEngine = { ...text, description: 'The connection id returned by fin
 const sessionWorkspace = { ...text, description: 'The id from find with kind workspace, or an authorized absolute project directory path. Use the value itself as text.' };
 const openSessionInput = object({ engine: sessionEngine, input: value, workspace: sessionWorkspace, space: ref,
   sharing: object({ readers: array(principal), submitters: array(principal), controllers: array(principal) }, ['readers', 'submitters', 'controllers']),
-  resource_refs: array(ref), work_room: refOrId, work_source: refOrId, private_work: flag, include_execution_guide: flag }, ['engine', 'input']);
+  resource_refs: array(ref), work_room: refOrId, work_source: refOrId, origin_message_id: eventOrId, work_summary: text,
+  allowed_followup_rooms: array(roomOrId), private_work: flag, include_execution_guide: flag }, ['engine', 'input']);
 const publicOpenSessionInput = { ...openSessionInput, properties: { ...openSessionInput.properties, engine: refOrId, workspace: { anyOf: [ref, text] } } };
+const configureSessionInput = object({ target: refOrId, acceptance_state: oneOf('open', 'closed'), work_summary: text,
+  waiting_summary: nullableText, add_followup_rooms: array(roomOrId), remove_followup_rooms: array(roomOrId) }, ['target']);
 
 const definitions = [
   ['find', 'Find accessible objects, execution connections, and internal run and call references. EggBot can search the team directory by name or public duty. Use a Room scope for its members. ' +
@@ -90,6 +94,7 @@ const definitions = [
     'Use it for a specific observation. A registered wait_ref delivers the terminal receipt or an input request to your run automatically.',
     object({ ref, path: text, cursor: text, limit: { type: 'integer', minimum: 1, maximum: 100 } }, ['ref'])],
   ['send', 'Publish to a Room using message:{to:{kind:"room",id},text}, with optional attachments, references, mentions or reply_to. ' +
+    'On verified final delivery, include completed_sessions with your direct Session ids and reply_to the original question. The message and their acceptance are saved together. ' +
     'For a verified connection fault, address the message to {kind:"connection",id} with the problem and shareable references. ' +
     'Reuse repair_key when requesting repair of the same fault. The maintainer replies to the repair event on that connection with reply_to and an optional repair_outcome.',
     object({ message: sendMessage }, ['message']), ({ message }) => message],
@@ -129,9 +134,12 @@ const definitions = [
     'and pass resource_refs. The bound group workspace and the selected external engine are included automatically. Include other directory grants explicitly. ' +
     'For work submitted on behalf of a Room, pass work_room and optionally the original Room message as work_source. This authorizes bounded tool observations in that Room and keeps the Session’s own permissions. ' +
     'For work to remain private, omit work_room or explicitly set private_work on a shared Session. ' +
+    'Pass a concise work_summary (goal and completion criteria) and optionally origin_message_id (defaults to the current Room question) and allowed_followup_rooms (other Rooms allowed to send follow-up inputs). ' +
     'Set include_execution_guide to append the installed Summon adapter guide to a text input. ' +
     'When the result registers a wait_ref, you can end the current turn and continue when its receipt arrives.',
     openSessionInput],
+  ['configure_session', 'Update lightweight work metadata on an execution Session: set acceptance_state ("open" or "closed") once verified and delivered, update work_summary or waiting_summary, or explicitly add/remove allowed_followup_rooms for cross-Room follow-up forwarding.',
+    configureSessionInput],
   ['send_input', 'Submit input to the actual input target and control version, or resume one explicitly paused execution. ' +
     'A registered wait_ref returns the asynchronous receipt to your run.',
     object({ target: executionRef, kind: oneOf('reply', 'steer', 'next', 'resume'), control_version: integer, input: value,
