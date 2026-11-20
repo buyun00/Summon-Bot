@@ -6,6 +6,9 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -13,6 +16,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,16 +34,19 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -47,12 +55,13 @@ import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Contrast
+import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Groups
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.PushPin
@@ -60,6 +69,8 @@ import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -73,17 +84,17 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
-import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -98,10 +109,13 @@ import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -111,12 +125,16 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
+import kotlin.math.roundToInt
 
 enum class ResourceSection(val title: String, val icon: ImageVector, val path: String) {
     Bots("成员", Icons.Filled.Groups, "/api/bots"),
@@ -130,13 +148,24 @@ private data class HomeFolder(val id: String, val name: String, val keys: List<S
 
 private data class HomeOrg(
     val pinnedKeys: List<String> = emptyList(),
+    val hiddenKeys: List<String> = emptyList(),
     val folders: List<HomeFolder> = emptyList(),
     val collapsedIds: Set<String> = emptySet(),
 ) {
     fun isPinned(key: String) = key in pinnedKeys
+    fun isHidden(key: String) = key in hiddenKeys
     fun togglePin(key: String): HomeOrg = copy(
         pinnedKeys = if (key in pinnedKeys) pinnedKeys - key else pinnedKeys + key,
+        hiddenKeys = if (key in pinnedKeys) hiddenKeys else hiddenKeys - key,
     )
+    fun setHidden(key: String, hidden: Boolean): HomeOrg = if (hidden) {
+        copy(
+            pinnedKeys = pinnedKeys - key,
+            hiddenKeys = if (key in hiddenKeys) hiddenKeys else hiddenKeys + key,
+        )
+    } else {
+        copy(hiddenKeys = hiddenKeys - key)
+    }
     fun folderIdFor(key: String): String? = folders.firstOrNull { key in it.keys }?.id
     fun move(key: String, folderId: String?): HomeOrg = copy(
         folders = folders.map { folder ->
@@ -167,6 +196,7 @@ private data class HomeOrg(
         val prefs = context.getSharedPreferences("SummonNative.homeOrg", Context.MODE_PRIVATE)
         val obj = JSONObject()
         obj.put("pinnedKeys", JSONArray(pinnedKeys))
+        obj.put("hiddenKeys", JSONArray(hiddenKeys))
         obj.put("collapsedIds", JSONArray(collapsedIds.toList()))
         val arr = JSONArray()
         folders.forEach { f ->
@@ -183,6 +213,7 @@ private data class HomeOrg(
             return runCatching {
                 val obj = JSONObject(raw)
                 val pinned = obj.optJSONArray("pinnedKeys")?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty()
+                val hidden = obj.optJSONArray("hiddenKeys")?.let { a -> (0 until a.length()).map { a.getString(it) } }.orEmpty()
                 val collapsed = obj.optJSONArray("collapsedIds")?.let { a -> (0 until a.length()).map { a.getString(it) }.toSet() }.orEmpty()
                 val folders = obj.optJSONArray("folders")?.let { a ->
                     (0 until a.length()).map { idx ->
@@ -191,7 +222,7 @@ private data class HomeOrg(
                         HomeFolder(f.getString("id"), f.getString("name"), keys)
                     }
                 }.orEmpty()
-                HomeOrg(pinned, folders, collapsed)
+                HomeOrg(pinned, hidden, folders, collapsed)
             }.getOrDefault(HomeOrg())
         }
     }
@@ -207,10 +238,27 @@ private data class HomeEntry(
     val kind: HomeEntryKind,
     val title: String,
     val preview: String,
+    val fullPreview: String,
     val timestamp: String,
     val sortDate: String,
     val isPaused: Boolean,
-)
+) {
+    val roomId: String?
+        get() = when (kind) {
+            is HomeEntryKind.Room -> kind.room.id
+            is HomeEntryKind.Bot -> kind.directRoom?.id
+        }
+    val botId: String?
+        get() = when (kind) {
+            is HomeEntryKind.Room -> null
+            is HomeEntryKind.Bot -> kind.bot.id
+        }
+}
+
+private sealed interface HomeDetailsTarget {
+    data class Room(val id: String) : HomeDetailsTarget
+    data class Bot(val id: String) : HomeDetailsTarget
+}
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -234,17 +282,34 @@ fun ConversationListScreen(
 
     var showSettings by remember { mutableStateOf(false) }
     var showDisplay by remember { mutableStateOf(false) }
+    var showHidden by remember { mutableStateOf(false) }
     var showCreateBot by remember { mutableStateOf(false) }
     var showCreateRoom by remember { mutableStateOf(false) }
-    var showFolderManager by remember { mutableStateOf(false) }
+    var detailsTarget by remember { mutableStateOf<HomeDetailsTarget?>(null) }
     var actionEntry by remember { mutableStateOf<HomeEntry?>(null) }
+    var swipedRowKey by remember { mutableStateOf<String?>(null) }
     var newFolderTargetKey by remember { mutableStateOf<String?>(null) }
     var showNewFolderDialog by remember { mutableStateOf(false) }
     var newFolderName by remember { mutableStateOf("") }
+    var folderActionTarget by remember { mutableStateOf<HomeFolder?>(null) }
+    var renamingFolder by remember { mutableStateOf<HomeFolder?>(null) }
+    var renameFolderText by remember { mutableStateOf("") }
     var menu by remember { mutableStateOf(false) }
     var plus by remember { mutableStateOf(false) }
     var opening by remember { mutableStateOf(false) }
     var quotaItem by remember { mutableStateOf<SummonJson?>(null) }
+
+    when (val target = detailsTarget) {
+        is HomeDetailsTarget.Room -> {
+            RoomDetailsScreen(store, target.id) { detailsTarget = null }
+            return
+        }
+        is HomeDetailsTarget.Bot -> {
+            BotDetailsScreen(store, target.id) { detailsTarget = null }
+            return
+        }
+        null -> Unit
+    }
 
     val allEntries = remember(store.rooms, store.bots, store.settings.userName) {
         val directByBot = store.bots.mapNotNull { bot -> directRoom(store, bot)?.let { bot.id to it } }.toMap()
@@ -257,11 +322,15 @@ fun ConversationListScreen(
                 val summary = if (last != null) {
                     "${store.name(last.senderId)}：${messageSummary(last)}"
                 } else "开始聊天"
+                val full = if (last != null) {
+                    last.content.trim().ifEmpty { summary }
+                } else "还没有消息，点按开始对话。"
                 HomeEntry(
                     key = "room:${room.id}",
                     kind = HomeEntryKind.Room(room),
                     title = room.name,
                     preview = summary,
+                    fullPreview = full,
                     timestamp = formatSummonTime(last?.createdAt),
                     sortDate = last?.createdAt ?: room.updatedAt ?: room.createdAt.orEmpty(),
                     isPaused = false,
@@ -276,11 +345,17 @@ fun ConversationListScreen(
                 last != null -> messageSummary(last)
                 else -> "开始聊天"
             }
+            val full = when {
+                bot.isPaused -> "该 Bot 当前已暂停。"
+                last != null -> last.content.trim().ifEmpty { summary }
+                else -> "发一条消息给 ${bot.name}。"
+            }
             HomeEntry(
                 key = "bot:${bot.id}",
                 kind = HomeEntryKind.Bot(bot, room),
                 title = bot.name,
                 preview = summary,
+                fullPreview = full,
                 timestamp = formatSummonTime(last?.createdAt),
                 sortDate = last?.createdAt ?: room?.updatedAt ?: room?.createdAt.orEmpty(),
                 isPaused = bot.isPaused,
@@ -290,12 +365,16 @@ fun ConversationListScreen(
         (roomEntries + botEntries).sortedWith(compareByDescending<HomeEntry> { it.sortDate }.thenBy { it.title })
     }
 
+    val hiddenSet = remember(org.hiddenKeys) { org.hiddenKeys.toSet() }
+    val visibleEntries = remember(allEntries, hiddenSet) { allEntries.filterNot { it.key in hiddenSet } }
+    val hiddenEntries = remember(allEntries, hiddenSet) { allEntries.filter { it.key in hiddenSet } }
+
     val trimmedQuery = query.trim()
-    val filteredEntries = remember(allEntries, trimmedQuery) {
-        if (trimmedQuery.isEmpty()) allEntries
-        else allEntries.filter { it.title.contains(trimmedQuery, ignoreCase = true) || it.preview.contains(trimmedQuery, ignoreCase = true) }
+    val filteredEntries = remember(visibleEntries, trimmedQuery) {
+        if (trimmedQuery.isEmpty()) visibleEntries
+        else visibleEntries.filter { it.title.contains(trimmedQuery, ignoreCase = true) || it.preview.contains(trimmedQuery, ignoreCase = true) }
     }
-    val entryByKey = remember(allEntries) { allEntries.associateBy { it.key } }
+    val entryByKey = remember(visibleEntries) { visibleEntries.associateBy { it.key } }
     val pinnedEntries = if (trimmedQuery.isEmpty()) org.pinnedKeys.mapNotNull { entryByKey[it] } else emptyList()
     val pinnedSet = org.pinnedKeys.toSet()
     val unpinnedEntries = if (trimmedQuery.isEmpty()) filteredEntries.filterNot { it.key in pinnedSet } else filteredEntries
@@ -303,6 +382,7 @@ fun ConversationListScreen(
     val defaultEntries = unpinnedEntries.filterNot { it.key in assignedKeys }
 
     fun openEntry(entry: HomeEntry) {
+        swipedRowKey = null
         when (val kind = entry.kind) {
             is HomeEntryKind.Room -> onOpenRoom(kind.room.id)
             is HomeEntryKind.Bot -> {
@@ -328,7 +408,7 @@ fun ConversationListScreen(
     val menuHeight = (LocalConfiguration.current.screenHeightDp * 100f / LocalSummonDisplay.current.zoom * .7f).dp
     val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val topClearance = statusBarTop + 58.dp
-    val bottomClearance = 94.dp
+    val bottomClearance = 96.dp
 
     Box(Modifier.fillMaxSize().background(palette.background).imePadding()) {
         PullToRefreshBox(
@@ -374,7 +454,7 @@ fun ConversationListScreen(
                             )
                         }
                     },
-                contentPadding = PaddingValues(top = topClearance + 6.dp, bottom = bottomClearance + 12.dp),
+                contentPadding = PaddingValues(top = topClearance + 8.dp, bottom = bottomClearance + 14.dp),
             ) {
                 item(key = "status") {
                     if (store.isLoading && store.bots.isEmpty()) {
@@ -409,16 +489,19 @@ fun ConversationListScreen(
 
                 if (pinnedEntries.isNotEmpty()) {
                     item(key = "pinned-shelf") {
-                        Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
                             pinnedEntries.chunked(3).forEach { rowItems ->
-                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                                     rowItems.forEach { entry ->
                                         Column(
                                             Modifier.weight(1f).clip(RoundedCornerShape(16.dp))
-                                                .combinedClickable(onClick = { openEntry(entry) }, onLongClick = { actionEntry = entry })
+                                                .combinedClickable(
+                                                    onClick = { openEntry(entry) },
+                                                    onLongClick = { swipedRowKey = null; actionEntry = entry },
+                                                )
                                                 .padding(vertical = 4.dp),
                                             horizontalAlignment = Alignment.CenterHorizontally,
-                                            verticalArrangement = Arrangement.spacedBy(7.dp),
+                                            verticalArrangement = Arrangement.spacedBy(9.dp),
                                         ) {
                                             HomeEntryAvatar(entry, store.bots, 74.dp)
                                             Text(
@@ -439,17 +522,41 @@ fun ConversationListScreen(
 
                 if (trimmedQuery.isNotEmpty()) {
                     items(filteredEntries, key = { it.key }) { entry ->
-                        HomeConversationRow(entry, store.bots, onClick = { openEntry(entry) }, onLongClick = { actionEntry = entry })
+                        HomeConversationRow(
+                            entry = entry,
+                            bots = store.bots,
+                            isPinned = org.isPinned(entry.key),
+                            isSwipedOpen = swipedRowKey == entry.key,
+                            onSwipeOpenChanged = { open -> swipedRowKey = if (open) entry.key else if (swipedRowKey == entry.key) null else swipedRowKey },
+                            onClick = { openEntry(entry) },
+                            onLongClick = { swipedRowKey = null; actionEntry = entry },
+                            onTogglePin = { swipedRowKey = null; updateOrg(org.togglePin(entry.key)) },
+                            onHide = { swipedRowKey = null; updateOrg(org.setHidden(entry.key, true)) },
+                        )
                     }
                 } else {
                     if (defaultEntries.isNotEmpty()) {
                         val defaultCollapsed = "__default__" in org.collapsedIds
                         item(key = "folder-header-default") {
-                            FolderSectionHeader("主要", defaultCollapsed) { updateOrg(org.toggleCollapsed("__default__")) }
+                            FolderSectionHeader(
+                                title = "主要",
+                                collapsed = defaultCollapsed,
+                                onToggle = { updateOrg(org.toggleCollapsed("__default__")) },
+                            )
                         }
                         if (!defaultCollapsed) {
                             items(defaultEntries, key = { it.key }) { entry ->
-                                HomeConversationRow(entry, store.bots, onClick = { openEntry(entry) }, onLongClick = { actionEntry = entry })
+                                HomeConversationRow(
+                                    entry = entry,
+                                    bots = store.bots,
+                                    isPinned = org.isPinned(entry.key),
+                                    isSwipedOpen = swipedRowKey == entry.key,
+                                    onSwipeOpenChanged = { open -> swipedRowKey = if (open) entry.key else if (swipedRowKey == entry.key) null else swipedRowKey },
+                                    onClick = { openEntry(entry) },
+                                    onLongClick = { swipedRowKey = null; actionEntry = entry },
+                                    onTogglePin = { swipedRowKey = null; updateOrg(org.togglePin(entry.key)) },
+                                    onHide = { swipedRowKey = null; updateOrg(org.setHidden(entry.key, true)) },
+                                )
                             }
                         }
                     }
@@ -458,21 +565,36 @@ fun ConversationListScreen(
                         val folderEntries = unpinnedEntries.filter { it.key in folderKeySet }
                         val collapsed = folder.id in org.collapsedIds
                         item(key = "folder-header-${folder.id}") {
-                            FolderSectionHeader(folder.name, collapsed) { updateOrg(org.toggleCollapsed(folder.id)) }
+                            FolderSectionHeader(
+                                title = folder.name,
+                                collapsed = collapsed,
+                                onToggle = { updateOrg(org.toggleCollapsed(folder.id)) },
+                                onLongClick = { folderActionTarget = folder },
+                            )
                         }
                         if (!collapsed) {
                             if (folderEntries.isEmpty()) {
                                 item(key = "folder-empty-${folder.id}") {
                                     Text(
-                                        "长按会话可移入此文件夹",
+                                        "长按任意对话可移动到此分组",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = palette.textTertiary,
-                                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+                                        modifier = Modifier.padding(horizontal = 22.dp, vertical = 10.dp),
                                     )
                                 }
                             } else {
                                 items(folderEntries, key = { "${folder.id}:${it.key}" }) { entry ->
-                                    HomeConversationRow(entry, store.bots, onClick = { openEntry(entry) }, onLongClick = { actionEntry = entry })
+                                    HomeConversationRow(
+                                        entry = entry,
+                                        bots = store.bots,
+                                        isPinned = org.isPinned(entry.key),
+                                        isSwipedOpen = swipedRowKey == entry.key,
+                                        onSwipeOpenChanged = { open -> swipedRowKey = if (open) entry.key else if (swipedRowKey == entry.key) null else swipedRowKey },
+                                        onClick = { openEntry(entry) },
+                                        onLongClick = { swipedRowKey = null; actionEntry = entry },
+                                        onTogglePin = { swipedRowKey = null; updateOrg(org.togglePin(entry.key)) },
+                                        onHide = { swipedRowKey = null; updateOrg(org.setHidden(entry.key, true)) },
+                                    )
                                 }
                             }
                         }
@@ -538,6 +660,13 @@ fun ConversationListScreen(
                     DropdownMenuItem(text = { Text("显示与外观") }, leadingIcon = { Icon(Icons.Filled.Contrast, null) }, onClick = { menu = false; showDisplay = true })
                     DropdownMenuItem(text = { Text("设置") }, leadingIcon = { Icon(Icons.Filled.Settings, null) }, onClick = { menu = false; showSettings = true })
                     DropdownMenuItem(text = { Text("模型与用量") }, leadingIcon = { Icon(Icons.Filled.Memory, null) }, onClick = { menu = false; onOpenModels() })
+                    if (org.hiddenKeys.isNotEmpty()) {
+                        DropdownMenuItem(
+                            text = { Text("已隐藏对话（${org.hiddenKeys.size}）") },
+                            leadingIcon = { Icon(Icons.Filled.VisibilityOff, null) },
+                            onClick = { menu = false; showHidden = true },
+                        )
+                    }
                     HorizontalDivider(Modifier.padding(vertical = 6.dp), color = palette.hairline)
                     ResourceSection.entries.forEach { section ->
                         DropdownMenuItem(text = { Text(section.title) }, leadingIcon = { Icon(section.icon, null) }, onClick = { menu = false; onOpenResource(section) })
@@ -559,34 +688,27 @@ fun ConversationListScreen(
                 DropdownMenu(expanded = plus, onDismissRequest = { plus = false }, modifier = Modifier.heightIn(max = menuHeight)) {
                     DropdownMenuItem(text = { Text("创建新 Bot") }, onClick = { plus = false; showCreateBot = true })
                     DropdownMenuItem(text = { Text("创建群聊") }, onClick = { plus = false; showCreateRoom = true })
-                    HorizontalDivider(color = palette.hairline)
-                    DropdownMenuItem(text = { Text("新建文件夹") }, onClick = {
-                        plus = false
-                        newFolderTargetKey = null
-                        newFolderName = ""
-                        showNewFolderDialog = true
-                    })
                 }
             }
         }
 
-        // Floating bottom bar: left circular folder button + right translucent glass search pill
+        // Floating bottom bar: equal-height 48.dp circular Settings button + 48.dp Search capsule
         Box(
             Modifier.fillMaxWidth().align(Alignment.BottomCenter)
                 .background(Brush.verticalGradient(0f to Color.Transparent, 0.32f to palette.background.copy(alpha = 0.74f), 0.65f to palette.background.copy(alpha = 0.94f), 1f to palette.background))
                 .navigationBarsPadding()
                 .padding(start = 16.dp, end = 16.dp, top = 18.dp, bottom = 10.dp),
         ) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Surface(
                     shape = CircleShape,
                     color = palette.glassPill,
                     border = BorderStroke(0.8.dp, palette.bubbleStroke),
                     shadowElevation = 2.dp,
-                    modifier = Modifier.size(46.dp).clip(CircleShape).clickable { showFolderManager = true },
+                    modifier = Modifier.size(48.dp).clip(CircleShape).clickable { showSettings = true },
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Filled.GridView, "管理文件夹", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(20.dp))
+                        Icon(Icons.Filled.Settings, "设置", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(20.dp))
                     }
                 }
                 Surface(
@@ -594,27 +716,29 @@ fun ConversationListScreen(
                     color = palette.glassPill,
                     border = BorderStroke(0.8.dp, palette.bubbleStroke),
                     shadowElevation = 2.dp,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f).height(48.dp),
                 ) {
-                    Row(Modifier.padding(start = 12.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.Search, null, tint = palette.textSecondary, modifier = Modifier.size(20.dp))
-                        TextField(
-                            value = query,
-                            onValueChange = { query = it },
-                            placeholder = { Text("搜索", color = palette.textTertiary) },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f),
-                            colors = TextFieldDefaults.colors(
-                                focusedContainerColor = Color.Transparent,
-                                unfocusedContainerColor = Color.Transparent,
-                                disabledContainerColor = Color.Transparent,
-                                focusedIndicatorColor = Color.Transparent,
-                                unfocusedIndicatorColor = Color.Transparent,
-                                disabledIndicatorColor = Color.Transparent,
-                            ),
-                        )
+                    Row(
+                        Modifier.fillMaxSize().padding(start = 16.dp, end = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(Icons.Filled.Search, null, tint = palette.textSecondary, modifier = Modifier.size(19.dp))
+                        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                            if (query.isEmpty()) {
+                                Text("搜索", color = palette.textTertiary, style = MaterialTheme.typography.bodyLarge)
+                            }
+                            BasicTextField(
+                                value = query,
+                                onValueChange = { query = it },
+                                singleLine = true,
+                                textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+                                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
                         if (query.isNotEmpty()) {
-                            IconButton(onClick = { query = "" }, modifier = Modifier.size(32.dp)) {
+                            IconButton(onClick = { query = "" }, modifier = Modifier.size(30.dp)) {
                                 Icon(Icons.Filled.Close, "清除搜索", tint = palette.textTertiary, modifier = Modifier.size(16.dp))
                             }
                         }
@@ -625,65 +749,86 @@ fun ConversationListScreen(
     }
 
     actionEntry?.let { entry ->
-        val pinned = org.isPinned(entry.key)
-        val currentFolderId = org.folderIdFor(entry.key)
-        ModalBottomSheet(onDismissRequest = { actionEntry = null }, containerColor = palette.surfaceElevated) {
-            Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(entry.title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(bottom = 6.dp))
-                Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable {
-                        updateOrg(org.togglePin(entry.key))
-                        actionEntry = null
-                    }.padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Icon(Icons.Filled.PushPin, null, tint = palette.ok)
-                    Text(if (pinned) "取消置顶" else "置顶到顶部")
+        ConversationPreviewActionDialog(
+            entry = entry,
+            bots = store.bots,
+            org = org,
+            onDismiss = { actionEntry = null },
+            onTogglePin = {
+                updateOrg(org.togglePin(entry.key))
+                actionEntry = null
+            },
+            onMoveToFolder = { folderId ->
+                updateOrg(org.move(entry.key, folderId))
+                actionEntry = null
+            },
+            onCreateFolderForEntry = {
+                newFolderTargetKey = entry.key
+                newFolderName = ""
+                actionEntry = null
+                showNewFolderDialog = true
+            },
+            onOpenDetails = {
+                actionEntry = null
+                val roomId = entry.roomId
+                val botId = entry.botId
+                when {
+                    roomId != null -> detailsTarget = HomeDetailsTarget.Room(roomId)
+                    botId != null -> detailsTarget = HomeDetailsTarget.Bot(botId)
                 }
-                HorizontalDivider(color = palette.hairline)
-                Text("移到文件夹", style = MaterialTheme.typography.labelMedium, color = palette.textSecondary, modifier = Modifier.padding(top = 6.dp, start = 4.dp))
-                Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable {
-                        updateOrg(org.move(entry.key, null))
-                        actionEntry = null
-                    }.padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("主要（默认）", modifier = Modifier.weight(1f))
-                    if (currentFolderId == null) Icon(Icons.Filled.Check, null, tint = palette.ok)
-                }
-                org.folders.forEach { folder ->
-                    Row(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable {
-                            updateOrg(org.move(entry.key, folder.id))
-                            actionEntry = null
-                        }.padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(Icons.Filled.Folder, null, tint = palette.textSecondary, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(10.dp))
-                        Text(folder.name, modifier = Modifier.weight(1f))
-                        if (currentFolderId == folder.id) Icon(Icons.Filled.Check, null, tint = palette.ok)
-                    }
-                }
+            },
+            onHide = {
+                updateOrg(org.setHidden(entry.key, true))
+                actionEntry = null
+            },
+        )
+    }
+
+    folderActionTarget?.let { folder ->
+        AlertDialog(
+            onDismissRequest = { folderActionTarget = null },
+            title = { Text(folder.name) },
+            text = { Text("管理该分组，删除后其中的对话将回到“主要”。") },
+            confirmButton = {
                 TextButton(onClick = {
-                    newFolderTargetKey = entry.key
-                    newFolderName = ""
-                    actionEntry = null
-                    showNewFolderDialog = true
-                }) { Text("+ 新建文件夹并移入") }
-                Spacer(Modifier.height(16.dp))
-            }
-        }
+                    renameFolderText = folder.name
+                    renamingFolder = folder
+                    folderActionTarget = null
+                }) { Text("重命名") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        updateOrg(org.deleteFolder(folder.id))
+                        folderActionTarget = null
+                    }) { Text("删除分组", color = Color(0xFFE53935)) }
+                    TextButton(onClick = { folderActionTarget = null }) { Text("取消") }
+                }
+            },
+        )
+    }
+
+    renamingFolder?.let { folder ->
+        AlertDialog(
+            onDismissRequest = { renamingFolder = null },
+            title = { Text("重命名分组") },
+            text = { OutlinedTextField(renameFolderText, { renameFolderText = it }, singleLine = true) },
+            confirmButton = {
+                TextButton(enabled = renameFolderText.isNotBlank(), onClick = {
+                    updateOrg(org.renameFolder(folder.id, renameFolderText))
+                    renamingFolder = null
+                }) { Text("保存") }
+            },
+            dismissButton = { TextButton(onClick = { renamingFolder = null }) { Text("取消") } },
+        )
     }
 
     if (showNewFolderDialog) {
         AlertDialog(
             onDismissRequest = { showNewFolderDialog = false; newFolderTargetKey = null },
-            title = { Text("新建文件夹") },
+            title = { Text("新建分组") },
             text = {
-                OutlinedTextField(newFolderName, { newFolderName = it }, placeholder = { Text("如 Tech、工作") }, singleLine = true)
+                OutlinedTextField(newFolderName, { newFolderName = it }, placeholder = { Text("分组名称（如 Tech、工作）") }, singleLine = true)
             },
             confirmButton = {
                 TextButton(
@@ -704,9 +849,15 @@ fun ConversationListScreen(
         )
     }
 
-    if (showFolderManager) {
-        HomeFolderManagerSheet(org = org, entries = allEntries, bots = store.bots, onUpdate = ::updateOrg, onDismiss = { showFolderManager = false })
+    if (showHidden) {
+        HiddenConversationsSheet(
+            entries = hiddenEntries,
+            bots = store.bots,
+            onRestore = { key -> updateOrg(org.setHidden(key, false)) },
+            onDismiss = { showHidden = false },
+        )
     }
+
     quotaItem?.let { item ->
         ModalBottomSheet(onDismissRequest = { quotaItem = null }, containerColor = palette.surfaceElevated) {
             Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -721,13 +872,21 @@ fun ConversationListScreen(
     if (showCreateRoom) CreateRoomSheet(store, onOpenRoom) { showCreateRoom = false }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun FolderSectionHeader(title: String, collapsed: Boolean, onToggle: () -> Unit) {
+private fun FolderSectionHeader(
+    title: String,
+    collapsed: Boolean,
+    onToggle: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
+) {
     val palette = LocalSummonPalette.current
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onToggle).padding(horizontal = 20.dp, vertical = 10.dp),
+        Modifier.fillMaxWidth()
+            .combinedClickable(onClick = onToggle, onLongClick = onLongClick)
+            .padding(start = 22.dp, end = 22.dp, top = 20.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
     ) {
         Text(title, style = MaterialTheme.typography.labelLarge, color = palette.textSecondary)
         Icon(
@@ -749,135 +908,382 @@ private fun HomeEntryAvatar(entry: HomeEntry, bots: List<SummonBot>, size: Dp) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun HomeConversationRow(entry: HomeEntry, bots: List<SummonBot>, onClick: () -> Unit, onLongClick: () -> Unit) {
+private fun HomeConversationRow(
+    entry: HomeEntry,
+    bots: List<SummonBot>,
+    isPinned: Boolean,
+    isSwipedOpen: Boolean,
+    onSwipeOpenChanged: (Boolean) -> Unit,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    onTogglePin: () -> Unit,
+    onHide: () -> Unit,
+) {
     val palette = LocalSummonPalette.current
-    Row(
-        Modifier.fillMaxWidth()
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(horizontal = 20.dp, vertical = 11.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(Modifier.alpha(if (entry.isPaused) 0.45f else 1f)) {
-            HomeEntryAvatar(entry, bots, 48.dp)
+    val isDark = LocalSummonIsDark.current
+    val density = LocalDensity.current
+    val revealWidthPx = with(density) { 124.dp.toPx() }
+    var dragOffset by remember(entry.key) { mutableFloatStateOf(0f) }
+    var isDragging by remember(entry.key) { mutableStateOf(false) }
+
+    LaunchedEffect(isSwipedOpen) {
+        if (!isDragging) {
+            dragOffset = if (isSwipedOpen) -revealWidthPx else 0f
         }
-        Spacer(Modifier.width(14.dp))
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+    }
+
+    val animatedOffset by animateFloatAsState(
+        targetValue = dragOffset,
+        animationSpec = spring(dampingRatio = 0.85f, stiffness = 420f),
+        label = "rowSwipeOffset",
+    )
+    val currentOffset = if (isDragging) dragOffset else animatedOffset
+
+    Box(Modifier.fillMaxWidth()) {
+        if (currentOffset < -1f) {
+            Row(
+                Modifier.align(Alignment.CenterEnd).padding(end = 20.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = if (isDark) Color(0xFF565A63) else Color(0xFFA6AAB3),
+                    modifier = Modifier.size(46.dp).clip(CircleShape).clickable(onClick = onTogglePin),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Filled.PushPin,
+                            if (isPinned) "取消置顶" else "置顶",
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
+                Surface(
+                    shape = CircleShape,
+                    color = Color(0xFFE53935),
+                    modifier = Modifier.size(46.dp).clip(CircleShape).clickable(onClick = onHide),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Filled.VisibilityOff,
+                            "隐藏",
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
+            }
+        }
+
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .offset { IntOffset(currentOffset.roundToInt(), 0) }
+                .background(palette.background)
+                .pointerInput(entry.key, revealWidthPx) {
+                    detectHorizontalDragGestures(
+                        onDragStart = { isDragging = true },
+                        onHorizontalDrag = { _, dragAmount ->
+                            dragOffset = (dragOffset + dragAmount).coerceIn(-revealWidthPx, 0f)
+                        },
+                        onDragEnd = {
+                            isDragging = false
+                            val shouldOpen = dragOffset < -revealWidthPx * 0.42f
+                            dragOffset = if (shouldOpen) -revealWidthPx else 0f
+                            onSwipeOpenChanged(shouldOpen)
+                        },
+                        onDragCancel = {
+                            isDragging = false
+                            val shouldOpen = dragOffset < -revealWidthPx * 0.42f
+                            dragOffset = if (shouldOpen) -revealWidthPx else 0f
+                            onSwipeOpenChanged(shouldOpen)
+                        },
+                    )
+                }
+                .combinedClickable(
+                    onClick = {
+                        if (isSwipedOpen || dragOffset < -8f) {
+                            dragOffset = 0f
+                            onSwipeOpenChanged(false)
+                        } else {
+                            onClick()
+                        }
+                    },
+                    onLongClick = {
+                        dragOffset = 0f
+                        onSwipeOpenChanged(false)
+                        onLongClick()
+                    },
+                )
+                .padding(horizontal = 20.dp, vertical = 15.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.alpha(if (entry.isPaused) 0.45f else 1f)) {
+                HomeEntryAvatar(entry, bots, 52.dp)
+            }
+            Spacer(Modifier.width(15.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        entry.title,
+                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (entry.timestamp.isNotEmpty()) {
+                        Spacer(Modifier.width(8.dp))
+                        Text(entry.timestamp, color = palette.textTertiary, style = MaterialTheme.typography.labelSmall)
+                    }
+                }
                 Text(
-                    entry.title,
-                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
-                    modifier = Modifier.weight(1f),
+                    entry.preview,
+                    color = palette.textSecondary,
+                    style = MaterialTheme.typography.bodySmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                if (entry.timestamp.isNotEmpty()) {
-                    Spacer(Modifier.width(8.dp))
-                    Text(entry.timestamp, color = palette.textTertiary, style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConversationPreviewActionDialog(
+    entry: HomeEntry,
+    bots: List<SummonBot>,
+    org: HomeOrg,
+    onDismiss: () -> Unit,
+    onTogglePin: () -> Unit,
+    onMoveToFolder: (String?) -> Unit,
+    onCreateFolderForEntry: () -> Unit,
+    onOpenDetails: () -> Unit,
+    onHide: () -> Unit,
+) {
+    val palette = LocalSummonPalette.current
+    val pinned = org.isPinned(entry.key)
+    val currentFolderId = org.folderIdFor(entry.key)
+    var moveExpanded by remember { mutableStateOf(false) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onDismiss,
+                )
+                .padding(horizontal = 22.dp, vertical = 28.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(
+                Modifier
+                    .widthIn(max = 340.dp)
+                    .fillMaxWidth()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = {},
+                    ),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                // Preview Card
+                Surface(
+                    shape = RoundedCornerShape(24.dp),
+                    color = palette.surfaceElevated,
+                    border = BorderStroke(0.7.dp, palette.bubbleStroke),
+                    shadowElevation = 10.dp,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.fillMaxWidth()) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            HomeEntryAvatar(entry, bots, 28.dp)
+                            Text(
+                                entry.title,
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (entry.timestamp.isNotEmpty()) {
+                                Text(entry.timestamp, style = MaterialTheme.typography.labelSmall, color = palette.textTertiary)
+                            }
+                        }
+                        HorizontalDivider(thickness = 0.6.dp, color = palette.hairline)
+                        Box(Modifier.fillMaxWidth().padding(14.dp)) {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(palette.botBubble)
+                                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                            ) {
+                                Text(
+                                    entry.fullPreview,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 8,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Floating Context Menu Card
+                Surface(
+                    shape = RoundedCornerShape(22.dp),
+                    color = palette.surfaceElevated,
+                    border = BorderStroke(0.7.dp, palette.bubbleStroke),
+                    shadowElevation = 10.dp,
+                    modifier = Modifier.width(264.dp),
+                ) {
+                    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(vertical = 6.dp)) {
+                        PreviewMenuItem(
+                            icon = Icons.Filled.PushPin,
+                            label = if (pinned) "取消置顶" else "置顶",
+                            onClick = onTogglePin,
+                        )
+                        Row(
+                            Modifier.fillMaxWidth().clickable { moveExpanded = !moveExpanded }.padding(horizontal = 18.dp, vertical = 13.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Icon(Icons.Filled.Folder, null, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(19.dp))
+                            Text("移动到", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                            Icon(
+                                Icons.Filled.ExpandMore,
+                                null,
+                                tint = palette.textSecondary,
+                                modifier = Modifier.size(18.dp).rotate(if (moveExpanded) 0f else -90f),
+                            )
+                        }
+                        AnimatedVisibility(visible = moveExpanded) {
+                            Column(Modifier.fillMaxWidth().background(palette.surface.copy(alpha = 0.55f))) {
+                                FolderOptionRow("主要", selected = currentFolderId == null) { onMoveToFolder(null) }
+                                org.folders.forEach { folder ->
+                                    FolderOptionRow(folder.name, selected = currentFolderId == folder.id) { onMoveToFolder(folder.id) }
+                                }
+                                HorizontalDivider(color = palette.hairline, modifier = Modifier.padding(horizontal = 16.dp))
+                                Row(
+                                    Modifier.fillMaxWidth().clickable(onClick = onCreateFolderForEntry).padding(start = 34.dp, end = 18.dp, top = 11.dp, bottom = 11.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                ) {
+                                    Icon(Icons.Filled.CreateNewFolder, null, tint = palette.ok, modifier = Modifier.size(17.dp))
+                                    Text("新建分组", style = MaterialTheme.typography.bodyMedium, color = palette.ok)
+                                }
+                            }
+                        }
+                        if (entry.roomId != null) {
+                            PreviewMenuItem(
+                                icon = Icons.Filled.Info,
+                                label = "会话详情",
+                                onClick = onOpenDetails,
+                            )
+                        } else if (entry.botId != null) {
+                            PreviewMenuItem(
+                                icon = Icons.Filled.Tune,
+                                label = "Bot 设置",
+                                onClick = onOpenDetails,
+                            )
+                        }
+                        HorizontalDivider(color = palette.hairline, modifier = Modifier.padding(vertical = 4.dp))
+                        PreviewMenuItem(
+                            icon = Icons.Filled.VisibilityOff,
+                            label = "隐藏",
+                            tint = Color(0xFFE53935),
+                            onClick = onHide,
+                        )
+                    }
                 }
             }
-            Text(
-                entry.preview,
-                color = palette.textSecondary,
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
         }
+    }
+}
+
+@Composable
+private fun PreviewMenuItem(
+    icon: ImageVector,
+    label: String,
+    tint: Color = MaterialTheme.colorScheme.onSurface,
+    onClick: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 18.dp, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Icon(icon, null, tint = tint, modifier = Modifier.size(19.dp))
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = tint, modifier = Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun FolderOptionRow(name: String, selected: Boolean, onClick: () -> Unit) {
+    val palette = LocalSummonPalette.current
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(start = 34.dp, end = 18.dp, top = 10.dp, bottom = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Icon(Icons.Filled.Folder, null, tint = palette.textSecondary, modifier = Modifier.size(16.dp))
+        Text(name, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (selected) Icon(Icons.Filled.Check, null, tint = palette.ok, modifier = Modifier.size(16.dp))
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun HomeFolderManagerSheet(
-    org: HomeOrg,
+private fun HiddenConversationsSheet(
     entries: List<HomeEntry>,
     bots: List<SummonBot>,
-    onUpdate: (HomeOrg) -> Unit,
+    onRestore: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val palette = LocalSummonPalette.current
-    var newName by remember { mutableStateOf("") }
-    var editingFolderId by remember { mutableStateOf<String?>(null) }
-    var renamingFolder by remember { mutableStateOf<HomeFolder?>(null) }
-    var renameText by remember { mutableStateOf("") }
-
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         containerColor = palette.surfaceElevated,
     ) {
-        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            val activeFolder = org.folders.firstOrNull { it.id == editingFolderId }
-            if (activeFolder != null) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                    TextButton(onClick = { editingFolderId = null }) { Text("返回") }
-                    Text(activeFolder.name, style = MaterialTheme.typography.titleMedium)
-                    TextButton(onClick = onDismiss) { Text("完成") }
-                }
+        Column(
+            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text("已隐藏对话", style = MaterialTheme.typography.titleLarge)
+            if (entries.isEmpty()) {
+                Text("没有已隐藏的对话", color = palette.textSecondary, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(vertical = 12.dp))
+            } else {
                 entries.forEach { entry ->
-                    val included = entry.key in activeFolder.keys
                     Row(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable {
-                            onUpdate(org.move(entry.key, if (included) null else activeFolder.id))
-                        }.padding(vertical = 8.dp, horizontal = 6.dp),
+                        Modifier.fillMaxWidth().padding(vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
-                        HomeEntryAvatar(entry, bots, 34.dp)
-                        Text(entry.title, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        if (included) Icon(Icons.Filled.Check, null, tint = palette.ok)
+                        HomeEntryAvatar(entry, bots, 40.dp)
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(entry.title, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(entry.preview, style = MaterialTheme.typography.labelSmall, color = palette.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        OutlinedButton(onClick = { onRestore(entry.key) }) { Text("取消隐藏") }
                     }
                 }
-            } else {
-                Text("文件夹分栏", style = MaterialTheme.typography.titleLarge)
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(newName, { newName = it }, placeholder = { Text("新建文件夹名称") }, singleLine = true, modifier = Modifier.weight(1f))
-                    Button(enabled = newName.isNotBlank(), onClick = {
-                        val (next, _) = org.createFolder(newName)
-                        onUpdate(next)
-                        newName = ""
-                    }) { Text("添加") }
-                }
-                if (org.folders.isEmpty()) {
-                    Text("新建文件夹后可在此勾选分配会话，或在主界面长按任意会话置顶或归类。", style = MaterialTheme.typography.bodySmall, color = palette.textSecondary)
-                }
-                org.folders.forEach { folder ->
-                    Row(
-                        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { editingFolderId = folder.id }.padding(vertical = 8.dp, horizontal = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(Icons.Filled.Folder, null, tint = palette.textSecondary)
-                        Spacer(Modifier.width(10.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(folder.name, style = MaterialTheme.typography.bodyLarge)
-                            Text("${folder.keys.size} 个会话", style = MaterialTheme.typography.labelSmall, color = palette.textSecondary)
-                        }
-                        IconButton(onClick = { renamingFolder = folder; renameText = folder.name }) {
-                            Icon(Icons.Filled.Edit, "重命名", tint = palette.textSecondary, modifier = Modifier.size(18.dp))
-                        }
-                        IconButton(onClick = { onUpdate(org.deleteFolder(folder.id)) }) {
-                            Icon(Icons.Filled.Delete, "删除", tint = palette.textSecondary, modifier = Modifier.size(18.dp))
-                        }
-                    }
-                }
-                TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text("完成") }
             }
+            TextButton(onClick = onDismiss, modifier = Modifier.align(Alignment.End)) { Text("完成") }
             Spacer(Modifier.height(16.dp))
         }
-    }
-    renamingFolder?.let { folder ->
-        AlertDialog(
-            onDismissRequest = { renamingFolder = null },
-            title = { Text("重命名文件夹") },
-            text = { OutlinedTextField(renameText, { renameText = it }, singleLine = true) },
-            confirmButton = {
-                TextButton(enabled = renameText.isNotBlank(), onClick = {
-                    onUpdate(org.renameFolder(folder.id, renameText))
-                    renamingFolder = null
-                }) { Text("保存") }
-            },
-            dismissButton = { TextButton(onClick = { renamingFolder = null }) { Text("取消") } },
-        )
     }
 }
 

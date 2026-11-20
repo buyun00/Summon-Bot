@@ -43,6 +43,14 @@ struct PaperFrame {
     static let templates=data["templates"] as? [[String:String]] ?? []
     static let bodies=models.mapValues { CrewLibrary.path($0["body"] as? [[Any]] ?? []) }
     static let fibers=data["fibers"] as? [[Double]] ?? []
+    static let fibersPath: Path = {
+        var path = Path()
+        for fiber in fibers where fiber.count >= 4 {
+            path.move(to: CGPoint(x: fiber[0], y: fiber[1]))
+            path.addLine(to: CGPoint(x: fiber[0] + fiber[2], y: fiber[1] + fiber[3]))
+        }
+        return path
+    }()
     struct Clip { var duration:Double;var once:Bool;var pingpong:Bool;var rows:[PaperFrame] }
     static let clips:[String:[String:Clip]]=models.mapValues { model in
         ((model["frames"] as? [String:[String:Any]] ?? [:]).merging(data["sharedClips"] as? [String:[String:Any]] ?? [:]) { _,new in new }).mapValues { value in

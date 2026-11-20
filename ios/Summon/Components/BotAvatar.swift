@@ -20,12 +20,22 @@ struct BotAvatar:View {
     var ink:String?=nil
     var paper:String?=nil
     var motion:String="idle"
-    var animated:Bool=true
+    var animated:Bool=false
     var groupOutline:Color?=nil
     private var role:String {PaperLibrary.role(shape)}
+    private var shouldAnimate:Bool { !reduceMotion && decodedImage == nil && (animated || motion != "idle") }
+    @MainActor private static let decodedImageCache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 128
+        return cache
+    }()
     private var decodedImage:UIImage? {
-        guard let image,let comma=image.firstIndex(of:","),["data:image/png;base64","data:image/jpeg;base64","data:image/webp;base64"].contains(String(image[..<comma])),let bytes=Data(base64Encoded:String(image[image.index(after:comma)...])) else {return nil}
-        return UIImage(data:bytes)
+        guard let image else { return nil }
+        let key = image as NSString
+        if let cached = Self.decodedImageCache.object(forKey: key) { return cached }
+        guard let comma=image.firstIndex(of:","),["data:image/png;base64","data:image/jpeg;base64","data:image/webp;base64"].contains(String(image[..<comma])),let bytes=Data(base64Encoded:String(image[image.index(after:comma)...])), let decoded = UIImage(data:bytes) else {return nil}
+        Self.decodedImageCache.setObject(decoded, forKey: key)
+        return decoded
     }
     var body:some View {
         let inset = groupOutline == nil ? 0 : min(4, size * 0.08)
@@ -39,9 +49,9 @@ struct BotAvatar:View {
             }
             else {Canvas {context,bounds in draw(context,bounds)}}
         }.frame(width:size,height:size).accessibilityHidden(true)
-        .task(id: "\(shape)-\(color)-\(secondary ?? "")-\(ink ?? "")-\(paper ?? "")-\(reduceMotion)-\(animated)") {
+        .task(id: "\(shape)-\(color)-\(secondary ?? "")-\(ink ?? "")-\(paper ?? "")-\(shouldAnimate)") {
             let target = PaperLook.make(shape: shape, color: color, secondary: secondary, ink: ink, paper: paper)
-            guard let start = look, !reduceMotion else { look = target; return }
+            guard let start = look, shouldAnimate else { look = target; return }
             let began = Date.timeIntervalSinceReferenceDate
             while !Task.isCancelled {
                 let t = min(1, (Date.timeIntervalSinceReferenceDate - began)/0.42)
@@ -51,8 +61,8 @@ struct BotAvatar:View {
             }
         }
         .onChange(of:motion,initial:true) {_,value in driver.requested=value}
-        .task(id:"\(role)-\(scenePhase)-\(reduceMotion)-\(animated)-\(image == nil)") {
-            guard scenePhase == .active,!reduceMotion,animated,decodedImage == nil else {return}
+        .task(id:"\(role)-\(scenePhase)-\(shouldAnimate)") {
+            guard scenePhase == .active, shouldAnimate else {return}
             var last=Date.timeIntervalSinceReferenceDate
             while !Task.isCancelled {
                 do {try await Task.sleep(for:.milliseconds(33))} catch {break}
@@ -62,7 +72,7 @@ struct BotAvatar:View {
         }
     }
     private func draw(_ input:GraphicsContext,_ bounds:CGSize) {
-        let frame=animated && !reduceMotion ? driver.frame ?? PaperLibrary.frame(role:role,state:motion,time:0) : PaperLibrary.frame(role:role,state:motion,time:0)
+        let frame=shouldAnimate ? driver.frame ?? PaperLibrary.frame(role:role,state:motion,time:0) : PaperLibrary.frame(role:role,state:motion,time:0)
         let appearance = look ?? PaperLook.make(shape: shape, color: color, secondary: secondary, ink: ink, paper: paper)
         let body=frame.outlinePath ?? appearance.body,paint=appearance.color(0),backing=appearance.color(1),edge=appearance.color(2),eyes=appearance.color(3)
         // Keep the silhouette, paper backing and separator inside this member's canvas.
@@ -107,7 +117,7 @@ struct BotAvatar:View {
             var back=context;back.translateBy(x:4.5,y:5.5);back.rotate(by:.degrees(-3));back.concatenate(frame.transform);back.fill(body,with:.color(backing));back.stroke(body,with:.color(Color(summonHex:"#CFC4AB")),lineWidth:0.65)
             var material=context;material.concatenate(frame.transform);material.opacity=frame.alpha;material.fill(body,with:.color(paint));material.stroke(body,with:.color(edge.opacity(0.16)),lineWidth:0.75)
             var grain=material;grain.clip(to:body)
-            for fiber in PaperLibrary.fibers {var p=Path();p.move(to:CGPoint(x:fiber[0],y:fiber[1]));p.addLine(to:CGPoint(x:fiber[0]+fiber[2],y:fiber[1]+fiber[3]));grain.stroke(p,with:.color(.white.opacity(0.10)),lineWidth:0.45)}
+            grain.stroke(PaperLibrary.fibersPath,with:.color(.white.opacity(0.10)),lineWidth:0.45)
         }
         let eyeFill = isDarkGlass ? Color.white.opacity(0.96) : eyes
         var face=context;face.clip(to:body.applying(frame.transform))

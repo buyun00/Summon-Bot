@@ -105,7 +105,7 @@ object PaperLibrary {
 }
 
 @Composable
-fun BotAvatar(shape:String,color:String,image:String?=null,size:Dp=48.dp,modifier:Modifier=Modifier,secondary:String?=null,ink:String?=null,paper:String?=null,motion:String="idle",animated:Boolean=true,groupOutline:Color?=null){
+fun BotAvatar(shape:String,color:String,image:String?=null,size:Dp=48.dp,modifier:Modifier=Modifier,secondary:String?=null,ink:String?=null,paper:String?=null,motion:String="idle",animated:Boolean=false,groupOutline:Color?=null){
     val bitmap=remember(image){decodeDataImage(image)}
     val inset=if(groupOutline==null) 0.dp else minOf(4.dp,size*.08f)
     if(bitmap!=null){
@@ -124,10 +124,10 @@ fun BotAvatar(shape:String,color:String,image:String?=null,size:Dp=48.dp,modifie
     var look by remember{mutableStateOf(targetLook)}
     val requested by rememberUpdatedState(motion)
     val lifecycle by LocalLifecycleOwner.current.lifecycle.currentStateAsState()
-    val enabled=animated&&android.animation.ValueAnimator.areAnimatorsEnabled()
-    LaunchedEffect(targetLook){
+    val enabled=(animated || motion != "idle") && android.animation.ValueAnimator.areAnimatorsEnabled()
+    LaunchedEffect(targetLook, enabled){
         if(look === targetLook)return@LaunchedEffect
-        if(!android.animation.ValueAnimator.areAnimatorsEnabled()){look=targetLook;return@LaunchedEffect}
+        if(!enabled){look=targetLook;return@LaunchedEffect}
         val from=look;val start=withFrameNanos{it}
         while(isActive){val t=withFrameNanos{((it-start)/420_000_000f).coerceIn(0f,1f)};look=targetLook.blend(from,1-(1-t).pow(3));if(t>=1f)break}
     }

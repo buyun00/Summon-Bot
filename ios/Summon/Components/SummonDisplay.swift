@@ -38,12 +38,18 @@ struct SummonDisplayContainer<Content: View>: View {
 
     var body: some View {
         let scale = CGFloat(min(160, max(50, zoom)) / 100)
-        GeometryReader { geometry in
-            content
-                .summonFont(.body)
-                .frame(width: geometry.size.width / scale, height: geometry.size.height / scale)
-                .scaleEffect(scale, anchor: .topLeading)
-                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+        Group {
+            if abs(scale - 1.0) < 0.001 {
+                content.summonFont(.body)
+            } else {
+                GeometryReader { geometry in
+                    content
+                        .summonFont(.body)
+                        .frame(width: geometry.size.width / scale, height: geometry.size.height / scale)
+                        .scaleEffect(scale, anchor: .topLeading)
+                        .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
+                }
+            }
         }
         .preferredColorScheme(appearance.colorScheme)
         .tint(SummonTheme.tint)

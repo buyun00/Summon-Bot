@@ -154,27 +154,36 @@ struct InlineError: View {
     }
 }
 
+@MainActor
 enum SummonFormat {
+    private static let todayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "zh_CN")
+        f.dateFormat = "HH:mm"
+        return f
+    }()
+    private static let weekdayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "zh_CN")
+        f.dateFormat = "EEEE"
+        return f
+    }()
+    private static let monthDayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "zh_CN")
+        f.dateFormat = "M月d日"
+        return f
+    }()
+
     static func time(_ value: String?) -> String {
         guard let date = SummonDate.parse(value) else { return "" }
         let calendar = Calendar.current
-        if calendar.isDateInToday(date) {
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "zh_CN")
-            formatter.dateFormat = "HH:mm"
-            return formatter.string(from: date)
-        }
+        if calendar.isDateInToday(date) { return todayFormatter.string(from: date) }
         if calendar.isDateInYesterday(date) { return "昨天" }
         if let weekAgo = calendar.date(byAdding: .day, value: -6, to: calendar.startOfDay(for: Date())), date >= weekAgo {
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "zh_CN")
-            formatter.dateFormat = "EEEE"
-            return formatter.string(from: date)
+            return weekdayFormatter.string(from: date)
         }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "M月d日"
-        return formatter.string(from: date)
+        return monthDayFormatter.string(from: date)
     }
 
     static func status(_ value: String) -> String {

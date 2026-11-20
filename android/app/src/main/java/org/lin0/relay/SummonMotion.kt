@@ -39,6 +39,6 @@ fun GreetingAvatar(avatar: SummonAvatar) {
     Box(Modifier.summonPress { greeting++ }) {
         BotAvatar(avatar.shape,avatar.color,avatar.image,148.dp,
             modifier=Modifier.graphicsLayer{scaleX=size.value;scaleY=size.value;alpha=size.value.coerceIn(0f,1f)},
-            secondary=avatar.secondary,ink=avatar.ink,paper=avatar.paper,motion=expression)
+            secondary=avatar.secondary,ink=avatar.ink,paper=avatar.paper,motion=expression,animated=true)
     }
 }

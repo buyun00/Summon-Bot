@@ -13,27 +13,28 @@ fun parseSummonDate(value: String?): Instant? {
         .getOrNull()
 }
 
+private val fmtTime = DateTimeFormatter.ofPattern("HH:mm", Locale.SIMPLIFIED_CHINESE)
+private val fmtWeekday = DateTimeFormatter.ofPattern("EEEE", Locale.SIMPLIFIED_CHINESE)
+private val fmtMonthDay = DateTimeFormatter.ofPattern("M月d日", Locale.SIMPLIFIED_CHINESE)
+private val fmtFull = DateTimeFormatter.ofPattern("M月d日 HH:mm", Locale.SIMPLIFIED_CHINESE)
+
 fun formatSummonTime(value: String?): String {
     val instant = parseSummonDate(value) ?: return ""
     val zoned = instant.atZone(ZoneId.systemDefault())
     val date = zoned.toLocalDate()
     val today = LocalDate.now()
     return when {
-        date == today -> DateTimeFormatter.ofPattern("HH:mm", Locale.SIMPLIFIED_CHINESE).format(zoned)
+        date == today -> fmtTime.format(zoned)
         date == today.minusDays(1) -> "昨天"
-        date.isAfter(today.minusDays(7)) -> DateTimeFormatter.ofPattern("EEEE", Locale.SIMPLIFIED_CHINESE).format(zoned)
-        else -> DateTimeFormatter.ofPattern("M月d日", Locale.SIMPLIFIED_CHINESE).format(zoned)
+        date.isAfter(today.minusDays(7)) -> fmtWeekday.format(zoned)
+        else -> fmtMonthDay.format(zoned)
     }
 }
 
 fun formatSummonDate(value: String?, full: Boolean = false): String {
     val instant = parseSummonDate(value) ?: return value ?: "—"
     val zoned = instant.atZone(ZoneId.systemDefault())
-    return if (full) {
-        DateTimeFormatter.ofPattern("M月d日 HH:mm").format(zoned)
-    } else {
-        DateTimeFormatter.ofPattern("HH:mm").format(zoned)
-    }
+    return if (full) fmtFull.format(zoned) else fmtTime.format(zoned)
 }
 
 fun formatBytes(size: Int): String {
