@@ -84,6 +84,7 @@ struct RoomAvatar: View {
     let room: SummonRoom
     var size: CGFloat = 86
     var background: Color = SummonTheme.background
+    var showOutline: Bool = true
 
     private var members: [String] {
         Array(room.members.filter { id in id == "user" || store.bots.contains { $0.id == id } }.prefix(4))
@@ -105,10 +106,12 @@ struct RoomAvatar: View {
                                 .foregroundStyle(.primary)
                                 .frame(width: child * 0.86, height: child * 0.86)
                                 .background(SummonTheme.surfaceElevated, in: Circle())
-                                .overlay(Circle().stroke(background, lineWidth: outlineWidth))
+                                .overlay {
+                                    if showOutline { Circle().stroke(background, lineWidth: outlineWidth) }
+                                }
                                 .frame(width: child, height: child)
                         } else {
-                            MemberAvatar(bot: store.bots.first { $0.id == id }, size: child, groupOutline: background)
+                            MemberAvatar(bot: store.bots.first { $0.id == id }, size: child, groupOutline: showOutline ? background : nil)
                         }
                     }
                     .offset(x: xOffset(index), y: yOffset(index))

@@ -45,12 +45,6 @@ struct ChatView: View {
         room?.members.compactMap { store.bot(id: $0) } ?? []
     }
     private var title: String { room?.name ?? "聊天" }
-    private var subtitle: String {
-        guard let room else { return "" }
-        if room.isGroup { return "\(roomBots.count) 位伙伴" }
-        if let bot = directBot { return bot.isPaused ? "已暂停" : "启用" }
-        return ""
-    }
     private var roomExecutions: [SummonJSONValue] { store.executionsForRoom(roomID) }
     private var activeBotItems: [ActiveBotItem] {
         var seen = Set<String>()
@@ -106,6 +100,7 @@ struct ChatView: View {
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.24), value: messages.last?.id)
             }
             .scrollDismissesKeyboard(.interactively)
+            .scrollEdgeEffectStyle(.soft, for: .all)
             .defaultScrollAnchor(.bottom)
             .onScrollPhaseChange { _, phase in
                 switch phase {
@@ -134,49 +129,63 @@ struct ChatView: View {
             .onChange(of: messages.last?.id) { _, _ in
                 if nearBottom { withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) { proxy.scrollTo("conversation-bottom", anchor: .bottom) } }
             }
-            .overlay(alignment: .bottomTrailing) {
+            .overlay(alignment: .top) {
+                LinearGradient(
+                    stops: [
+                        .init(color: SummonTheme.background.opacity(0.95), location: 0.0),
+                        .init(color: SummonTheme.background.opacity(0.76), location: 0.48),
+                        .init(color: SummonTheme.background.opacity(0.26), location: 0.80),
+                        .init(color: SummonTheme.background.opacity(0.0), location: 1.0)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 118)
+                .ignoresSafeArea(edges: .top)
+                .allowsHitTesting(false)
+            }
+            .overlay(alignment: .bottom) {
                 if !nearBottom && !messages.isEmpty {
                     Button { nearBottom = true; withAnimation { proxy.scrollTo("conversation-bottom", anchor: .bottom) } } label: {
-                        Image(systemName: "arrow.down").frame(width: 26, height: 30)
-                    }.buttonStyle(.glass).buttonBorderShape(.circle).padding(16)
-                        .accessibilityLabel("回到最新消息")
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 14, weight: .semibold))
+                            .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.glass)
+                    .buttonBorderShape(.circle)
+                    .padding(.bottom, 2)
+                    .transition(.scale(scale: 0.85).combined(with: .opacity))
+                    .accessibilityLabel("回到最新消息")
                 }
             }
         }
         .background(SummonTheme.background)
-        .navigationTitle(title)
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(.hidden, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .principal) {
                 Button { showDetails = true } label: {
-                    HStack(spacing: 8) {
+                    HStack(spacing: 7) {
                         if let bot = directBot {
-                            MemberAvatar(bot: bot, size: 26)
+                            MemberAvatar(bot: bot, size: 24)
                         } else if let room {
-                            RoomAvatar(room: room, size: 26)
+                            RoomAvatar(room: room, size: 24, showOutline: false)
                         }
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(title)
-                                .summonFont(.subheadline, weight: .semibold)
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
-                            if !subtitle.isEmpty {
-                                Text(subtitle)
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                        }
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.tertiary)
+                        Text(title)
+                            .summonFont(.subheadline, weight: .semibold)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .contentShape(Capsule())
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 216)
+                    .glassEffect(.regular, in: Capsule())
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("\(title)，查看会话详情")
+                .buttonStyle(SummonPressStyle(compact: true))
+                .accessibilityLabel("\(title)，会话设置")
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) { composer }
@@ -385,7 +394,21 @@ struct ChatView: View {
                 }.padding(.horizontal, 14).padding(.bottom, 8)
             }
         }
-        .padding(.top, 8)
+        .padding(.top, 18)
+        .background(alignment: .bottom) {
+            LinearGradient(
+                stops: [
+                    .init(color: SummonTheme.background.opacity(0.0), location: 0.0),
+                    .init(color: SummonTheme.background.opacity(0.65), location: 0.24),
+                    .init(color: SummonTheme.background.opacity(0.92), location: 0.52),
+                    .init(color: SummonTheme.background.opacity(0.98), location: 1.0)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea(edges: .bottom)
+            .allowsHitTesting(false)
+        }
         .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.82), value: activeBotItems)
     }
 

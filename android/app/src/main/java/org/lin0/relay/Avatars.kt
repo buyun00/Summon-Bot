@@ -97,7 +97,13 @@ fun MemberAvatar(bot:SummonBot?,size:Dp=48.dp,modifier:Modifier=Modifier,motion:
 
 
 @Composable
-fun RoomAvatar(room: SummonRoom, bots: List<SummonBot>, size: Dp = 86.dp, background: Color = androidx.compose.material3.MaterialTheme.colorScheme.background) {
+fun RoomAvatar(
+    room: SummonRoom,
+    bots: List<SummonBot>,
+    size: Dp = 86.dp,
+    background: Color = androidx.compose.material3.MaterialTheme.colorScheme.background,
+    showOutline: Boolean = true,
+) {
     val palette = LocalSummonPalette.current
     val members = room.members.filter { id -> id == "user" || bots.any { it.id == id } }.take(4)
     Box(Modifier.size(size), contentAlignment = androidx.compose.ui.Alignment.Center) {
@@ -123,12 +129,12 @@ fun RoomAvatar(room: SummonRoom, bots: List<SummonBot>, size: Dp = 86.dp, backgr
                             "我",
                             modifier = Modifier.size(child * 0.86f).clip(androidx.compose.foundation.shape.CircleShape)
                                 .background(palette.surfaceElevated)
-                                .border(outlineWidth, background, androidx.compose.foundation.shape.CircleShape)
+                                .then(if (showOutline) Modifier.border(outlineWidth, background, androidx.compose.foundation.shape.CircleShape) else Modifier)
                                 .wrapContentSize(),
                             color = androidx.compose.material3.MaterialTheme.colorScheme.onSurface,
                         )
                     } else {
-                        MemberAvatar(bots.first { it.id == id }, child, groupOutline = background)
+                        MemberAvatar(bots.first { it.id == id }, child, groupOutline = if (showOutline) background else null)
                     }
                 }
             }

@@ -26,6 +26,8 @@ import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -35,6 +37,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -53,7 +56,6 @@ import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AlternateEmail
-import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
@@ -94,10 +96,17 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -124,12 +133,6 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
     val roomBots = room?.members?.mapNotNull { store.bot(it) }.orEmpty()
     val directBot = room?.takeIf { !it.isGroup }?.members?.firstNotNullOfOrNull { store.bot(it) }
     val title = room?.name ?: "聊天"
-    val subtitle = when {
-        room == null -> ""
-        room.isGroup -> "${roomBots.size} 位伙伴"
-        directBot != null -> if (directBot.isPaused) "已暂停" else "启用"
-        else -> ""
-    }
     val messages = store.messagesForRoom(roomID)
     val roomExecutions = store.executionsForRoom(roomID)
     val activeBotItems = remember(roomExecutions, store.bots) {
@@ -215,84 +218,77 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
             }
     }
 
-    Column(Modifier.fillMaxSize().background(palette.background).statusBarsPadding().navigationBarsPadding().imePadding()) {
-        // Floating translucent glass header — clicking room title directly opens full Room Details
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", tint = MaterialTheme.colorScheme.onBackground)
-            }
-            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                Surface(
-                    shape = CircleShape,
-                    color = palette.glassPill,
-                    border = BorderStroke(0.8.dp, palette.bubbleStroke),
-                    modifier = Modifier.clip(CircleShape).clickable { showDetails = true },
-                ) {
-                    Row(
-                        Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        if (directBot != null) {
-                            MemberAvatar(directBot, 26.dp)
-                        } else if (room != null) {
-                            RoomAvatar(room, store.bots, 26.dp, background = palette.glassPill)
-                        }
-                        Column(Modifier.widthIn(max = 190.dp)) {
-                            Text(
-                                title,
-                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            if (subtitle.isNotEmpty()) {
-                                Text(
-                                    subtitle,
-                                    fontSize = 11.sp,
-                                    color = palette.textSecondary,
-                                    maxLines = 1,
-                                )
-                            }
-                        }
-                        Icon(
-                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                            "会话详情",
-                            tint = palette.textTertiary,
-                            modifier = Modifier.size(16.dp),
-                        )
-                    }
-                }
-            }
-            Spacer(Modifier.width(48.dp))
-        }
+    val density = LocalDensity.current
+    val statusBarTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    var composerHeightPx by remember { mutableIntStateOf(0) }
+    val topBarClearance = statusBarTop + 62.dp
+    val bottomClearance = with(density) { composerHeightPx.toDp() }.coerceAtLeast(86.dp) + 12.dp
 
-        Box(Modifier.weight(1f)) {
-            LazyColumn(state = listState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp)) {
-                if (messages.isEmpty() && !store.isLoading) {
-                    item {
-                        Text(
-                            "开始聊天\n发一条消息给 $title。",
-                            color = palette.textSecondary,
-                            modifier = Modifier.padding(top = 70.dp, start = 4.dp),
+    Box(Modifier.fillMaxSize().background(palette.background).imePadding()) {
+        // Layer 1: Full-bleed chat stream with soft progressive fade at top & bottom edges
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
+                .drawWithContent {
+                    drawContent()
+                    val topFadePx = (topBarClearance + 22.dp).toPx().coerceAtMost(size.height * 0.35f)
+                    if (topFadePx > 1f) {
+                        drawRect(
+                            brush = Brush.verticalGradient(
+                                0f to Color.Transparent,
+                                0.55f to Color.Black.copy(alpha = 0.28f),
+                                1f to Color.Black,
+                                startY = 0f,
+                                endY = topFadePx,
+                            ),
+                            size = androidx.compose.ui.geometry.Size(size.width, topFadePx),
+                            blendMode = BlendMode.DstIn,
                         )
                     }
+                    val bottomFadePx = (bottomClearance + 26.dp).toPx().coerceAtMost(size.height * 0.42f)
+                    if (bottomFadePx > 1f) {
+                        val startY = (size.height - bottomFadePx).coerceAtLeast(0f)
+                        drawRect(
+                            brush = Brush.verticalGradient(
+                                0f to Color.Black,
+                                0.38f to Color.Black.copy(alpha = 0.35f),
+                                0.72f to Color.Black.copy(alpha = 0.08f),
+                                1f to Color.Transparent,
+                                startY = startY,
+                                endY = size.height,
+                            ),
+                            topLeft = androidx.compose.ui.geometry.Offset(0f, startY),
+                            size = androidx.compose.ui.geometry.Size(size.width, size.height - startY),
+                            blendMode = BlendMode.DstIn,
+                        )
+                    }
+                },
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = topBarClearance + 8.dp, bottom = bottomClearance),
+        ) {
+            if (messages.isEmpty() && !store.isLoading) {
+                item {
+                    Text(
+                        "开始聊天\n发一条消息给 $title。",
+                        color = palette.textSecondary,
+                        modifier = Modifier.padding(top = 70.dp, start = 4.dp),
+                    )
                 }
-                if (store.canLoadOlder(roomID)) {
-                    item {
-                        TextButton(onClick = { scope.launch { store.loadRoom(roomID, older = true) } }, enabled = store.protocolReady) {
-                            Text("加载更早消息")
-                        }
+            }
+            if (store.canLoadOlder(roomID)) {
+                item {
+                    TextButton(onClick = { scope.launch { store.loadRoom(roomID, older = true) } }, enabled = store.protocolReady) {
+                        Text("加载更早消息")
                     }
                 }
-                items(messages, key = { it.id }) { message ->
-                    MessageRow(store, roomID, message) { store.setDraftReply(message.id, roomID) }
-                    Spacer(Modifier.height(18.dp))
-                }
-                if (roomExecutions.isNotEmpty()) {
-                    item(key = "room-executions") {
+            }
+            items(messages, key = { it.id }) { message ->
+                MessageRow(store, roomID, message) { store.setDraftReply(message.id, roomID) }
+                Spacer(Modifier.height(18.dp))
+            }
+            if (roomExecutions.isNotEmpty()) {
+                item(key = "room-executions") {
                         Surface(
                             shape = RoundedCornerShape(16.dp),
                             color = palette.surface,
@@ -358,24 +354,123 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
                         Spacer(Modifier.height(12.dp))
                     }
                 }
+        }
+
+        // Layer 2: Soft top backdrop gradient + compact floating header capsule (no big bar, no top-right button)
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(topBarClearance + 18.dp)
+                .align(Alignment.TopCenter)
+                .background(
+                    Brush.verticalGradient(
+                        0f to palette.background.copy(alpha = 0.92f),
+                        0.55f to palette.background.copy(alpha = 0.58f),
+                        1f to Color.Transparent,
+                    )
+                ),
+        )
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(horizontal = 14.dp, vertical = 8.dp),
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = palette.glassPill,
+                border = BorderStroke(0.8.dp, palette.bubbleStroke),
+                shadowElevation = 2.dp,
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .clickable(onClick = onBack),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        "返回",
+                        tint = MaterialTheme.colorScheme.onBackground,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
             }
-            if (!nearBottom && messages.isNotEmpty()) {
-                Surface(
-                    shape = CircleShape,
-                    color = palette.glassPill,
-                    border = BorderStroke(0.8.dp, palette.bubbleStroke),
-                    modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp).clip(CircleShape).clickable {
-                        nearBottom = true
-                        scope.launch { listState.animateScrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)) }
-                    },
+            Surface(
+                shape = CircleShape,
+                color = palette.glassPill,
+                border = BorderStroke(0.8.dp, palette.bubbleStroke),
+                shadowElevation = 2.dp,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .clip(CircleShape)
+                    .clickable { showDetails = true },
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
-                    Icon(Icons.Filled.ArrowDownward, "回到最新消息", modifier = Modifier.padding(10.dp), tint = MaterialTheme.colorScheme.onSurface)
+                    if (directBot != null) {
+                        MemberAvatar(directBot, 24.dp)
+                    } else if (room != null) {
+                        RoomAvatar(room, store.bots, 24.dp, showOutline = false)
+                    }
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.widthIn(max = 190.dp),
+                    )
                 }
             }
         }
 
-        // Bottom composer column — floating top-left working Bot indicator directly above rock-steady pill composer
-        Column(Modifier.fillMaxWidth().padding(bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        // Layer 3: Soft bottom backdrop fade + centered scroll-to-bottom button + rock-steady glass pill composer
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .align(Alignment.BottomCenter),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            AnimatedVisibility(
+                visible = !nearBottom && messages.isNotEmpty(),
+                enter = fadeIn(),
+                exit = fadeOut(),
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = palette.glassPill,
+                    border = BorderStroke(0.8.dp, palette.bubbleStroke),
+                    shadowElevation = 2.dp,
+                    modifier = Modifier.padding(bottom = 8.dp).size(38.dp).clip(CircleShape).clickable {
+                        nearBottom = true
+                        scope.launch { listState.animateScrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)) }
+                    },
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(Icons.Filled.ExpandMore, "回到最新消息", tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(22.dp))
+                    }
+                }
+            }
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .background(
+                        Brush.verticalGradient(
+                            0f to Color.Transparent,
+                            0.28f to palette.background.copy(alpha = 0.72f),
+                            0.58f to palette.background.copy(alpha = 0.94f),
+                            1f to palette.background,
+                        )
+                    )
+                    .onSizeChanged { composerHeightPx = it.height }
+                    .navigationBarsPadding()
+                    .padding(top = 18.dp, bottom = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
             localError?.let { Text(it, color = palette.warn, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 20.dp)) }
             store.protocolNotice?.let { notice ->
                 Text(notice, color = palette.warn, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 20.dp))
@@ -545,6 +640,7 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
                         }
                     }
                 }
+            }
             }
         }
     }
