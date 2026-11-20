@@ -19,9 +19,10 @@ fun formatSummonTime(value: String?): String {
     val date = zoned.toLocalDate()
     val today = LocalDate.now()
     return when {
-        date == today -> DateTimeFormatter.ofLocalizedTime(java.time.format.FormatStyle.SHORT).withLocale(Locale.getDefault()).format(zoned)
+        date == today -> DateTimeFormatter.ofPattern("HH:mm", Locale.SIMPLIFIED_CHINESE).format(zoned)
         date == today.minusDays(1) -> "昨天"
-        else -> DateTimeFormatter.ofPattern("M月d日").format(zoned)
+        date.isAfter(today.minusDays(7)) -> DateTimeFormatter.ofPattern("EEEE", Locale.SIMPLIFIED_CHINESE).format(zoned)
+        else -> DateTimeFormatter.ofPattern("M月d日", Locale.SIMPLIFIED_CHINESE).format(zoned)
     }
 }
 

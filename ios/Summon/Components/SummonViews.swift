@@ -87,7 +87,9 @@ struct RoomAvatar: View {
     var showOutline: Bool = true
 
     private var members: [String] {
-        Array(room.members.filter { id in id == "user" || store.bots.contains { $0.id == id } }.prefix(4))
+        let botsOnly = room.members.filter { id in store.bots.contains { $0.id == id } }
+        if !botsOnly.isEmpty { return Array(botsOnly.prefix(4)) }
+        return Array(room.members.filter { $0 == "user" }.prefix(1))
     }
 
     var body: some View {
@@ -101,11 +103,11 @@ struct RoomAvatar: View {
                     let outlineWidth = min(4, child * 0.08)
                     Group {
                         if id == "user" {
-                            Text(String(store.settings.userName.prefix(1)))
-                                .font(.system(size: child * 0.28, weight: .semibold))
-                                .foregroundStyle(.primary)
+                            Image("OwnerAvatar")
+                                .resizable()
+                                .scaledToFill()
                                 .frame(width: child * 0.86, height: child * 0.86)
-                                .background(SummonTheme.surfaceElevated, in: Circle())
+                                .clipShape(Circle())
                                 .overlay {
                                     if showOutline { Circle().stroke(background, lineWidth: outlineWidth) }
                                 }
@@ -155,9 +157,24 @@ struct InlineError: View {
 enum SummonFormat {
     static func time(_ value: String?) -> String {
         guard let date = SummonDate.parse(value) else { return "" }
-        if Calendar.current.isDateInToday(date) { return date.formatted(date: .omitted, time: .shortened) }
-        if Calendar.current.isDateInYesterday(date) { return "昨天" }
-        return date.formatted(.dateTime.month().day())
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "zh_CN")
+            formatter.dateFormat = "HH:mm"
+            return formatter.string(from: date)
+        }
+        if calendar.isDateInYesterday(date) { return "昨天" }
+        if let weekAgo = calendar.date(byAdding: .day, value: -6, to: calendar.startOfDay(for: Date())), date >= weekAgo {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "zh_CN")
+            formatter.dateFormat = "EEEE"
+            return formatter.string(from: date)
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "M月d日"
+        return formatter.string(from: date)
     }
 
     static func status(_ value: String) -> String {

@@ -105,7 +105,8 @@ fun RoomAvatar(
     showOutline: Boolean = true,
 ) {
     val palette = LocalSummonPalette.current
-    val members = room.members.filter { id -> id == "user" || bots.any { it.id == id } }.take(4)
+    val botsOnly = room.members.filter { id -> bots.any { it.id == id } }
+    val members = (if (botsOnly.isNotEmpty()) botsOnly else room.members.filter { it == "user" }).take(4)
     Box(Modifier.size(size), contentAlignment = androidx.compose.ui.Alignment.Center) {
         if (members.isEmpty()) {
             Box(Modifier.size(size * 0.55f).clip(androidx.compose.foundation.shape.CircleShape).background(palette.surface))
@@ -125,13 +126,12 @@ fun RoomAvatar(
                 }
                 Box(Modifier.offset(x, y).size(child), contentAlignment = androidx.compose.ui.Alignment.Center) {
                     if (id == "user") {
-                        androidx.compose.material3.Text(
-                            "我",
+                        Image(
+                            androidx.compose.ui.res.painterResource(R.drawable.owner_avatar),
+                            null,
                             modifier = Modifier.size(child * 0.86f).clip(androidx.compose.foundation.shape.CircleShape)
-                                .background(palette.surfaceElevated)
-                                .then(if (showOutline) Modifier.border(outlineWidth, background, androidx.compose.foundation.shape.CircleShape) else Modifier)
-                                .wrapContentSize(),
-                            color = androidx.compose.material3.MaterialTheme.colorScheme.onSurface,
+                                .then(if (showOutline) Modifier.border(outlineWidth, background, androidx.compose.foundation.shape.CircleShape) else Modifier),
+                            contentScale = ContentScale.Crop,
                         )
                     } else {
                         MemberAvatar(bots.first { it.id == id }, child, groupOutline = if (showOutline) background else null)
