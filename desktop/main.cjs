@@ -175,7 +175,7 @@ function applyWindowTheme(target, dark) {
 function createWindow() {
   const initialDark = nativeTheme.shouldUseDarkColors;
   const target = window = new BrowserWindow({
-    title: 'Summon Bot', width: 1280, height: 900, minWidth: 680, minHeight: 560,
+    title: 'Summon Bot', width: 1280, height: 900, minWidth: 440, minHeight: 560,
     backgroundColor: initialDark ? '#0b0c10' : '#f8f6f1', autoHideMenuBar: process.platform !== 'darwin',
     titleBarStyle: 'hidden',
     titleBarOverlay: { color: '#00000000', symbolColor: initialDark ? '#e6eaf4' : '#3a3832', height: 44 },

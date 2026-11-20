@@ -2059,8 +2059,8 @@ function buildHomeEntries() {
 }
 function renderHomePinnedTile(entry) {
   const avatarHtml = entry.kind === 'room'
-    ? groupAvatar(entry.room, 48, `pinned:group:${entry.id}`)
-    : avatar(entry.id, 48, `pinned:${entry.id}`);
+    ? groupAvatar(entry.room, 60, `pinned:group:${entry.id}`)
+    : avatar(entry.id, 60, `pinned:${entry.id}`);
   const badge = entry.room ? unreadRoomBadge(entry.room) : '';
   return `<button type="button" class="pinned-tile ${entry.selected ? 'selected' : ''}" data-action="${entry.kind === 'room' ? 'select-room' : 'dm-bot'}" data-id="${esc(entry.id)}" data-home-key="${esc(entry.key)}" title="${esc(entry.title)}">
     <span class="pinned-tile-avatar">${avatarHtml}${badge}</span>
@@ -2105,15 +2105,15 @@ function renderTopbar() {
   } else {
     if (defaultEntries.length || !homeOrg.folders.length) {
       const collapsed = isFolderCollapsed('__default__');
-      contactsHtml += `<section class="sidebar-section"><button type="button" class="folder-header ${collapsed ? 'collapsed' : ''}" data-action="toggle-folder" data-id="__default__"><span>主要</span>${icon('chevronDown', 14)}</button>
-        ${collapsed ? '' : `<div class="bot-contacts">${defaultEntries.map(renderHomeEntryRow).join('') || '<p class="sidebar-empty">还没有对话</p>'}</div>`}</section>`;
+      contactsHtml += `<section class="sidebar-section folder-section ${collapsed ? 'is-collapsed' : ''}"><button type="button" class="folder-header ${collapsed ? 'collapsed' : ''}" data-action="toggle-folder" data-id="__default__"><span class="folder-header-label"><span>主要</span>${icon('chevronDown', 13)}</span><span class="folder-count">${defaultEntries.length}</span></button>
+        <div class="bot-contacts">${defaultEntries.map(renderHomeEntryRow).join('') || '<p class="sidebar-empty">还没有对话</p>'}</div></section>`;
     }
     for (const folder of homeOrg.folders) {
       const folderKeys = new Set(folder.keys || []);
       const folderEntries = unpinnedEntries.filter(entry => folderKeys.has(entry.key));
       const collapsed = isFolderCollapsed(folder.id);
-      contactsHtml += `<section class="sidebar-section"><button type="button" class="folder-header ${collapsed ? 'collapsed' : ''}" data-action="toggle-folder" data-id="${esc(folder.id)}" data-folder-id="${esc(folder.id)}"><span>${esc(folder.name)}</span>${icon('chevronDown', 14)}</button>
-        ${collapsed ? '' : `<div class="bot-contacts">${folderEntries.map(renderHomeEntryRow).join('') || '<p class="sidebar-empty">右键任意对话可移入此分组</p>'}</div>`}</section>`;
+      contactsHtml += `<section class="sidebar-section folder-section ${collapsed ? 'is-collapsed' : ''}"><button type="button" class="folder-header ${collapsed ? 'collapsed' : ''}" data-action="toggle-folder" data-id="${esc(folder.id)}" data-folder-id="${esc(folder.id)}"><span class="folder-header-label"><span>${esc(folder.name)}</span>${icon('chevronDown', 13)}</span><span class="folder-count">${folderEntries.length}</span></button>
+        <div class="bot-contacts">${folderEntries.map(renderHomeEntryRow).join('') || '<p class="sidebar-empty">右键任意对话可移入此分组</p>'}</div></section>`;
     }
   }
   const menu = ui.menu === 'create' ? `<div class="context-menu create-menu"><button data-action="new-bot">${icon('person', 19)}创建 Bot</button><button data-action="new-room">${icon('people', 19)}创建群聊</button></div>` : '';
@@ -2131,7 +2131,12 @@ function renderTopbar() {
         <button class="round-button" data-action="toggle-search" title="搜索" aria-label="搜索">${icon('search', 20)}</button></div>
       <div class="menu-anchor"><button class="round-button create-button" data-action="toggle-create" aria-label="新建" aria-expanded="${ui.menu === 'create'}">${icon('plus', 23)}</button>${menu}</div></div>
     <div class="contacts-scroll">${contactsHtml}</div>
-    <div class="sidebar-controls"><nav class="sidebar-shortcuts" aria-label="常用功能">
+    <div class="sidebar-controls">
+      <div class="rail-quick-actions">
+        <div class="menu-anchor"><button type="button" class="rail-action-btn" data-action="toggle-create" title="新建" aria-label="新建" aria-expanded="${ui.menu === 'create'}">${icon('plus', 20)}</button>${menu}</div>
+        <button type="button" class="rail-action-btn" data-action="display-settings" title="显示设置" aria-label="显示设置">${icon('settings', 18)}</button>
+      </div>
+      <nav class="sidebar-shortcuts" aria-label="常用功能">
       <button class="${ui.view === 'executions' ? 'selected' : ''}" data-action="navigate" data-view="executions">${icon('computer', 17)}<span>执行</span></button>
       <button class="${ui.view === 'files' ? 'selected' : ''}" data-action="navigate" data-view="files">${icon('knowledge', 17)}<span>资料</span></button></nav>
     <div class="sidebar-footer"><div class="menu-anchor sidebar-owner-anchor">
