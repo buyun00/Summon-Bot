@@ -156,6 +156,11 @@ const icons = {
   play: '<path d="m7 4 14 8-14 8V4Z"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10v.01"/>',
   panel: '<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M15 3v18"/>',
+  folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/>',
+  folderPlus: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/><path d="M12 10v6M9 13h6"/>',
+  eyeOff: '<path d="M17.94 17.94A10.1 10.1 0 0 1 12 19c-7 0-10-7-10-7a18.5 18.5 0 0 1 5.06-5.94M9.9 4.24A9.1 9.1 0 0 1 12 4c7 0 10 7 10 7a18.5 18.5 0 0 1-2.16 3.19"/><path d="m1 1 22 22"/>',
+  chevronDown: '<path d="m6 9 6 6 6-6"/>',
+  check: '<path d="m5 12 5 5L20 7"/>',
 };
 const icon = (name, size = 18) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" aria-hidden="true">${icons[name] || icons.chat}</svg>`;
 const labels = {
@@ -1045,37 +1050,88 @@ function leaveRoom() {
   },'退出');
 }
 
+function formatBotModelSummary(bot) {
+  const m = bot?.model;
+  const eff = bot?.effective_models;
+  const modeText = !m ? '未绑定模型' : m.mode === 'follow_default' ? '跟随默认用途表' : m.mode === 'follow_connection' ? '固定连接 · 用途跟表' : '显式固定';
+  if (!eff?.conversation) return modeText;
+  const fmt = item => item ? `${item.id}${item.thinking_level ? ` (${item.thinking_level})` : ''}` : '—';
+  return `${modeText} · ① ${fmt(eff.fast_read)} · ② ${fmt(eff.conversation)} · ③ ${fmt(eff.pi_session)}`;
+}
+
 async function openBotEdit(bot) {
   if (!bot) return;
-  const model = typeof bot.model === 'object' ? bot.model : {};
+  const model = bot.model && typeof bot.model === 'object' ? bot.model : null;
+  const initialMode = !model ? 'none' : model.mode === 'follow_default' ? 'follow_default' : model.mode === 'follow_connection' ? 'follow_connection' : 'custom';
   const path = '/api/bots/' + encodeURIComponent(bot.id);
-  const [settings, access, files] = await Promise.all([
+  const [settings, files] = await Promise.all([
     api('/api/model-settings').catch(() => ({ connections:[] })),
-    api(path + '/access').catch(() => ({ model_ids:[] })),
     readList('/api/files?bot=' + encodeURIComponent(bot.id)).catch(() => []),
   ]);
-  const currentId = model?.connection_id || '';
-  const options = [{ value:'', label:'未绑定模型' }, ...settings.connections.filter(item => access.model_ids.includes(item.id) || item.id === currentId)
-    .map(item => ({ value:item.id, label:item.name || item.id }))];
-  if (currentId && !options.some(item => item.value === currentId)) options.push({ value:currentId, label:currentId + ' · 当前绑定' });
+  const currentId = model?.connection_id || settings.activeId || settings.connections[0]?.id || '';
+  const connOptions = settings.connections.map(item => ({ value:item.id, label:`${item.name || item.id}${item.active ? '（默认）' : ''}` }));
+  if (currentId && !connOptions.some(item => item.value === currentId)) connOptions.push({ value:currentId, label:currentId + ' · 当前绑定' });
+  const optionalConnOptions = [{ value:'', label:'沿用主连接' }, ...connOptions];
   const materialId = bot.material_index_ref?.id || '';
   const materialOptions = [{ value:'',label:'未选择' }, ...files.map(item => ({ value:item.id,label:item.path || item.name || item.id }))];
   if (materialId && !materialOptions.some(item => item.value === materialId)) materialOptions.push({ value:materialId,label:materialId + ' · 当前索引' });
   const role = bot.role_id || '';
   const roles = [{ value:'', label:'普通 Bot' }, { value:'tool-onboarding', label:'工具接入' }, { value:'catalog-maintainer', label:'连接维护' }];
   if (!roles.some(item => item.value === role)) roles.push({ value:role, label:role });
+  const modes = [
+    { value:'follow_default', label:'跟随全局默认用途表（推荐）' },
+    { value:'follow_connection', label:'固定连接，用途跟表' },
+    { value:'custom', label:'显式固定 / 按用途覆盖' },
+    { value:'none', label:'未绑定模型' },
+  ];
+  const fastOv = model?.purposes?.fast_read || {};
+  const piOv = model?.purposes?.pi_session || {};
+  const purposeOverridesHtml = `<details class="models-advanced" data-model-custom><summary>按用途单独覆盖（可选，如 ① 快读指定其他连接）</summary>
+    <p class="form-help">① 快读（留空沿用主配置）</p>
+    ${selectField('快读连接','fast_connection_id',optionalConnOptions,fastOv.connection_id || '')}
+    ${field('快读模型','fast_model_id',fastOv.id || '',{ placeholder:'留空沿用连接/主模型' })}
+    ${field('快读思考档','fast_thinking_level',fastOv.thinking_level ?? '',{ placeholder:'例如 off',list:'bot-all-thinking-levels' })}
+    <p class="form-help">③ 独立 Pi（留空沿用主配置）</p>
+    ${selectField('Pi 连接','pi_connection_id',optionalConnOptions,piOv.connection_id || '')}
+    ${field('Pi 模型','pi_model_id',piOv.id || '',{ placeholder:'留空沿用连接/主模型' })}
+    ${field('Pi 思考档','pi_thinking_level',piOv.thinking_level ?? '',{ placeholder:'例如 high / max',list:'bot-all-thinking-levels' })}
+  </details>`;
   openModal('编辑 Bot', '', field('名称','name',bot.name,{ required:true }) + field('行为指令','instructions',bot.instructions || '',{ type:'textarea',rows:5 }) +
     field('团队公开职责','public_duty',bot.public_duty || '') +
     selectField('内置职责','role_id',roles,role) +
-    selectField('模型连接','connection_id',options,currentId) +
-    field('模型名称','model_id',model?.id || '',{ placeholder:'留空使用连接配置' }) +
-    field('推理强度','thinking_level',model?.thinking_level || '',{ placeholder:'留空继承连接',list:'bot-thinking-levels' }) +
-    '<datalist id="bot-thinking-levels"></datalist>' + selectField('选材索引','material_index',materialOptions,materialId), async data => {
-    const connection_id = data.get('connection_id'), id = data.get('model_id').trim(), thinking_level = data.get('thinking_level').trim();
-    const binding = connection_id ? { connection_id, ...(id ? { id } : {}), ...(thinking_level ? { thinking_level } : {}) } : null;
-    const current = bot.model;
-    const sameBinding = current?.connection_id === binding?.connection_id && current?.id === binding?.id
-      && (current?.thinking_level ?? null) === (binding?.thinking_level ?? null);
+    selectField('模型策略','model_mode',modes,initialMode) +
+    `<p class="form-help" data-bot-model-effective>${esc(formatBotModelSummary(bot))}</p>` +
+    `<div data-model-conn>${selectField('模型连接','connection_id',connOptions.length ? connOptions : [{ value:'',label:'暂无可用连接' }],currentId)}</div>` +
+    `<div data-model-custom>${field('模型名称','model_id',model?.id || '',{ placeholder:'留空使用连接配置' })}${field('推理强度','thinking_level',model?.thinking_level || '',{ placeholder:'留空继承连接',list:'bot-thinking-levels' })}</div>` +
+    purposeOverridesHtml +
+    '<datalist id="bot-thinking-levels"></datalist><datalist id="bot-all-thinking-levels">' +
+    ['off','minimal','low','medium','high','xhigh','max'].map(v => `<option value="${v}"></option>`).join('') +
+    '</datalist>' + selectField('选材索引','material_index',materialOptions,materialId), async data => {
+    const mode = data.get('model_mode');
+    const connection_id = data.get('connection_id');
+    const id = data.get('model_id').trim(), thinking_level = data.get('thinking_level').trim();
+    let binding = null;
+    if (mode === 'follow_default') binding = { mode:'follow_default' };
+    else if (mode === 'follow_connection') {
+      if (!connection_id) throw new Error('请选择一个模型连接');
+      binding = { mode:'follow_connection', connection_id };
+    } else if (mode === 'custom') {
+      if (!connection_id) throw new Error('请选择一个模型连接');
+      const purposes = {};
+      const readOv = prefix => {
+        const cid = data.get(prefix + '_connection_id').trim();
+        const mid = data.get(prefix + '_model_id').trim();
+        const tl = data.get(prefix + '_thinking_level').trim();
+        if (!cid && !mid && !tl) return null;
+        return { ...(cid ? { connection_id:cid } : {}), ...(mid ? { id:mid } : {}), ...(tl ? { thinking_level:tl } : {}) };
+      };
+      const f = readOv('fast'), p = readOv('pi');
+      if (f) purposes.fast_read = f;
+      if (p) purposes.pi_session = p;
+      binding = { mode:'custom', connection_id, ...(id ? { id } : {}), thinking_level:thinking_level || null,
+        ...(Object.keys(purposes).length ? { purposes } : {}) };
+    }
+    const sameBinding = JSON.stringify(bot.model ?? null) === JSON.stringify(binding ?? null);
     await api(path, 'PATCH', {
       revision:bot.revision, name:data.get('name').trim(), instructions:data.get('instructions'), ...(sameBinding ? {} : { model:binding }),
       ...(data.get('public_duty').trim() !== (bot.public_duty || '') ? {public_duty:data.get('public_duty').trim()} : {}),
@@ -1084,14 +1140,21 @@ async function openBotEdit(bot) {
     });
   });
   const form = $('#modal-form'), levels = $('#bot-thinking-levels', form);
+  const updateVisibility = () => {
+    const mode = form.elements.model_mode.value;
+    for (const el of $$('[data-model-conn]', form)) el.hidden = !['follow_connection','custom'].includes(mode);
+    for (const el of $$('[data-model-custom]', form)) el.hidden = mode !== 'custom';
+  };
   const updateLevels = () => {
     const entry = settings.connections.find(item => item.id === form.elements.connection_id.value);
     const known = !form.elements.model_id.value.trim() || form.elements.model_id.value.trim() === entry?.model;
     const values = globalThis.SummonModels.thinkingChoices(known ? entry?.thinkingLevels : undefined, form.elements.thinking_level.value);
     levels.replaceChildren(...values.map(value => new Option(value === 'off' ? '关闭思考' : value, value)));
   };
+  form.elements.model_mode.addEventListener('change', updateVisibility);
   form.elements.connection_id.addEventListener('change', updateLevels);
   form.elements.model_id.addEventListener('input', updateLevels);
+  updateVisibility();
   updateLevels();
 }
 
@@ -1394,6 +1457,36 @@ async function act(action, element) {
   if (action.startsWith('usage-')) return globalThis.SummonUsage.act(action,element,api,render);
   if (action.startsWith('models-')) return globalThis.SummonModels.act(action,element,{ api,render,toast,refresh });
   if (action === 'set-theme') return setThemePreference(element.dataset.theme);
+  if (action === 'toggle-folder') return toggleFolderCollapsed(id);
+  if (action === 'home-pin') return togglePinEntry(element.dataset.key);
+  if (action === 'home-move') return moveEntryToFolder(element.dataset.key, element.dataset.folder || null);
+  if (action === 'home-hide') return setHiddenEntry(element.dataset.key, true);
+  if (action === 'home-restore') { setHiddenEntry(element.dataset.key, false); return openHiddenConversationsModal(); }
+  if (action === 'manage-hidden') return openHiddenConversationsModal();
+  if (action === 'home-new-folder') {
+    const targetKey = element.dataset.key;
+    return openModal('新建分组', '', field('分组名称', 'name', '', { placeholder: '如 Tech、工作', required: true }), data => {
+      createHomeFolder(data.get('name'), targetKey);
+    }, '创建');
+  }
+  if (action === 'folder-rename') {
+    const folder = homeOrg.folders.find(f => f.id === id);
+    if (!folder) return;
+    return openModal('重命名分组', '', field('分组名称', 'name', folder.name, { required: true }), data => {
+      renameHomeFolder(id, data.get('name'));
+    }, '保存');
+  }
+  if (action === 'folder-delete') return deleteHomeFolder(id);
+  if (action === 'home-details') {
+    const roomId = element.dataset.room, botId = element.dataset.bot;
+    if (roomId) {
+      await selectRoom(roomId);
+      ui.detailOpen = true; ui.profileBotId = null;
+      return render();
+    }
+    if (botId) return act('open-bot-details', { dataset: { id: botId } });
+    return;
+  }
   if (action === 'toggle-sidebar') { $('.app-shell')?.classList.toggle('sidebar-collapsed'); return; }
   if (action === 'back-to-room-details') { ui.profileBotId = null; ui.detailTab = 'details'; ui.avatarEditing = false; render(); await loadCurrent(); return render(); }
   if (action === 'copy-code') {
@@ -1567,17 +1660,99 @@ function openModal(title, description, content, save, submitLabel = '保存') {
   showModal(modal);
 }
 function closeFloatingMenus() {
-  if (!ui.menu) return;
+  const hadMenu = Boolean(ui.menu);
   ui.menu = null;
-  ui.lastSidebarHtml = null;
-  for (const menu of document.querySelectorAll('.context-menu')) menu.remove();
+  if (hadMenu) ui.lastSidebarHtml = null;
+  for (const menu of document.querySelectorAll('.context-menu,.floating-context-menu')) menu.remove();
   for (const button of document.querySelectorAll('[data-action="toggle-apps"],[data-action="toggle-create"],[data-action="toggle-chat-menu"],[data-action="toggle-mention-menu"]')) button.setAttribute('aria-expanded', 'false');
 }
+function openFloatingContextMenu(x, y, html) {
+  closeFloatingMenus();
+  const menu = document.createElement('div');
+  menu.className = 'floating-context-menu';
+  menu.innerHTML = html;
+  document.body.append(menu);
+  const rect = menu.getBoundingClientRect();
+  const left = Math.max(10, Math.min(x, window.innerWidth - rect.width - 10));
+  const top = Math.max(10, Math.min(y, window.innerHeight - rect.height - 10));
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+}
+function openHomeEntryContextMenu(key, x, y) {
+  const entry = buildHomeEntries().find(item => item.key === key);
+  if (!entry) return;
+  const pinned = isPinnedEntry(key);
+  const currentFolder = folderIdForEntry(key);
+  const avatarHtml = entry.kind === 'room'
+    ? groupAvatar(entry.room, 28, `ctx:group:${entry.id}`)
+    : avatar(entry.id, 28, `ctx:${entry.id}`);
+  const folderOptions = `
+    <button type="button" class="floating-menu-sub-item" data-action="home-move" data-key="${esc(key)}" data-folder="">
+      ${icon('folder', 15)}<span>主要</span>${currentFolder === null ? icon('check', 15) : ''}
+    </button>
+    ${homeOrg.folders.map(f => `<button type="button" class="floating-menu-sub-item" data-action="home-move" data-key="${esc(key)}" data-folder="${esc(f.id)}">
+      ${icon('folder', 15)}<span>${esc(f.name)}</span>${currentFolder === f.id ? icon('check', 15) : ''}
+    </button>`).join('')}
+    <button type="button" class="floating-menu-sub-item accent" data-action="home-new-folder" data-key="${esc(key)}">
+      ${icon('folderPlus', 15)}<span>新建分组</span>
+    </button>`;
+  openFloatingContextMenu(x, y, `
+    <div class="floating-menu-preview">
+      <div class="floating-menu-preview-head">${avatarHtml}<strong>${esc(entry.title)}</strong></div>
+      <div class="floating-menu-preview-bubble">${esc(entry.fullPreview)}</div>
+    </div>
+    <button type="button" class="floating-menu-item" data-action="home-pin" data-key="${esc(key)}">${icon('pin', 16)}<span>${pinned ? '取消置顶' : '置顶'}</span></button>
+    <button type="button" class="floating-menu-item" data-action="home-toggle-move">${icon('folder', 16)}<span>移动到</span>${icon('chevronDown', 15)}</button>
+    <div class="floating-menu-sub" hidden>${folderOptions}</div>
+    ${entry.roomId ? `<button type="button" class="floating-menu-item" data-action="home-details" data-room="${esc(entry.roomId)}">${icon('info', 16)}<span>会话详情</span></button>`
+      : `<button type="button" class="floating-menu-item" data-action="home-details" data-bot="${esc(entry.botId)}">${icon('settings', 16)}<span>Bot 设置</span></button>`}
+    <div class="floating-menu-sep"></div>
+    <button type="button" class="floating-menu-item danger" data-action="home-hide" data-key="${esc(key)}">${icon('eyeOff', 16)}<span>隐藏</span></button>
+  `);
+}
+function openHomeFolderContextMenu(folderId, x, y) {
+  const folder = homeOrg.folders.find(f => f.id === folderId);
+  if (!folder) return;
+  openFloatingContextMenu(x, y, `
+    <button type="button" class="floating-menu-item" data-action="folder-rename" data-id="${esc(folder.id)}">${icon('edit', 16)}<span>重命名分组</span></button>
+    <button type="button" class="floating-menu-item danger" data-action="folder-delete" data-id="${esc(folder.id)}">${icon('close', 16)}<span>删除分组</span></button>
+  `);
+}
+function openHiddenConversationsModal() {
+  const hiddenSet = new Set(homeOrg.hiddenKeys);
+  const hidden = buildHomeEntries().filter(entry => hiddenSet.has(entry.key));
+  const body = hidden.length
+    ? `<div class="hidden-list">${hidden.map(entry => `<div class="hidden-list-row">
+        <div class="hidden-list-copy"><strong>${esc(entry.title)}</strong><small>${esc(entry.preview)}</small></div>
+        <button type="button" class="secondary-button" data-action="home-restore" data-key="${esc(entry.key)}">取消隐藏</button>
+      </div>`).join('')}</div>`
+    : '<p class="panel-empty">没有已隐藏的对话</p>';
+  openModal('已隐藏对话', '点击“取消隐藏”可恢复显示在侧栏列表中。', body);
+}
+document.addEventListener('contextmenu', event => {
+  const entryEl = event.target.closest('[data-home-key]');
+  if (entryEl) {
+    event.preventDefault();
+    openHomeEntryContextMenu(entryEl.dataset.homeKey, event.clientX, event.clientY);
+    return;
+  }
+  const folderEl = event.target.closest('.folder-header[data-folder-id]');
+  if (folderEl) {
+    event.preventDefault();
+    openHomeFolderContextMenu(folderEl.dataset.folderId, event.clientX, event.clientY);
+  }
+});
 document.addEventListener('click', event => {
   if (event.target.id === 'lightbox') { event.target.hidden = true; event.target.innerHTML = ''; return; }
   if (event.target.closest('summon-wordmark') && ui.view !== 'chat') { void navigate('chat'); return; }
   const button = event.target.closest('[data-action]');
-  if (ui.menu && (!event.target.closest('.menu-anchor,.context-menu') || button?.closest('.context-menu'))) closeFloatingMenus();
+  if (button?.dataset.action === 'home-toggle-move') {
+    const sub = button.nextElementSibling;
+    if (sub?.classList.contains('floating-menu-sub')) sub.hidden = !sub.hidden;
+    button.classList.toggle('expanded', !sub?.hidden);
+    return;
+  }
+  if (!event.target.closest('.menu-anchor,.context-menu,.floating-context-menu') || button?.closest('.context-menu,.floating-context-menu')) closeFloatingMenus();
   if (button && !button.disabled) act(button.dataset.action, button).catch(error => toast(error.message, true));
 });
 document.addEventListener('keydown', event => {
@@ -1751,37 +1926,201 @@ function renderContactTime(room) {
   const time = room?.lastMessage?.createdAt;
   return time ? `<time class="contact-time" datetime="${esc(time)}" title="${esc(formatTime(time, true))}">${esc(contactTime(time))}</time>` : '';
 }
-function renderGroupContact(room) {
-  const selected = room.id === ui.roomId && ui.view === 'chat';
-  return `<button class="group-tile ${selected ? 'selected' : ''}" data-action="select-room" data-id="${esc(room.id)}" ${selected ? 'aria-current="page"' : ''} title="${esc(room.name)}">
-    ${groupAvatar(room, 44, `sidebar:group:${room.id}`)}
-    <span class="group-copy"><span class="contact-heading"><strong>${esc(room.name)}</strong>${renderContactTime(room)}</span><span class="group-preview">${esc(roomPreview(room))}</span></span>
-    ${unreadRoomBadge(room)}
+const homeOrgStorageKey = 'summon:homeOrg:v1';
+function loadHomeOrg() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(homeOrgStorageKey) || '{}');
+    return {
+      pinnedKeys: Array.isArray(raw.pinnedKeys) ? raw.pinnedKeys : [],
+      hiddenKeys: Array.isArray(raw.hiddenKeys) ? raw.hiddenKeys : [],
+      folders: Array.isArray(raw.folders) ? raw.folders.filter(f => f && typeof f.id === 'string' && typeof f.name === 'string') : [],
+      collapsedIds: Array.isArray(raw.collapsedIds) ? raw.collapsedIds : [],
+    };
+  } catch {
+    return { pinnedKeys: [], hiddenKeys: [], folders: [], collapsedIds: [] };
+  }
+}
+let homeOrg = loadHomeOrg();
+function saveHomeOrg() {
+  try { localStorage.setItem(homeOrgStorageKey, JSON.stringify(homeOrg)); } catch {}
+}
+const isPinnedEntry = key => homeOrg.pinnedKeys.includes(key);
+const isHiddenEntry = key => homeOrg.hiddenKeys.includes(key);
+const isFolderCollapsed = id => homeOrg.collapsedIds.includes(id);
+const folderIdForEntry = key => homeOrg.folders.find(f => Array.isArray(f.keys) && f.keys.includes(key))?.id || null;
+function togglePinEntry(key) {
+  if (isPinnedEntry(key)) homeOrg.pinnedKeys = homeOrg.pinnedKeys.filter(k => k !== key);
+  else {
+    homeOrg.hiddenKeys = homeOrg.hiddenKeys.filter(k => k !== key);
+    homeOrg.pinnedKeys = [...homeOrg.pinnedKeys, key];
+  }
+  saveHomeOrg(); renderTopbar();
+}
+function setHiddenEntry(key, hidden) {
+  if (hidden) {
+    homeOrg.pinnedKeys = homeOrg.pinnedKeys.filter(k => k !== key);
+    if (!homeOrg.hiddenKeys.includes(key)) homeOrg.hiddenKeys = [...homeOrg.hiddenKeys, key];
+  } else {
+    homeOrg.hiddenKeys = homeOrg.hiddenKeys.filter(k => k !== key);
+  }
+  saveHomeOrg(); renderTopbar();
+}
+function moveEntryToFolder(key, folderId) {
+  homeOrg.folders = homeOrg.folders.map(f => {
+    const stripped = (f.keys || []).filter(k => k !== key);
+    return f.id === folderId ? { ...f, keys: [...stripped, key] } : { ...f, keys: stripped };
+  });
+  saveHomeOrg(); renderTopbar();
+}
+function toggleFolderCollapsed(id) {
+  if (isFolderCollapsed(id)) homeOrg.collapsedIds = homeOrg.collapsedIds.filter(x => x !== id);
+  else homeOrg.collapsedIds = [...homeOrg.collapsedIds, id];
+  saveHomeOrg(); renderTopbar();
+}
+function createHomeFolder(rawName, moveKey = null) {
+  const name = String(rawName || '').trim();
+  if (!name) return null;
+  const folder = { id: newClientId(), name, keys: moveKey ? [moveKey] : [] };
+  if (moveKey) homeOrg.folders = homeOrg.folders.map(f => ({ ...f, keys: (f.keys || []).filter(k => k !== moveKey) }));
+  homeOrg.folders = [...homeOrg.folders, folder];
+  saveHomeOrg(); renderTopbar();
+  return folder;
+}
+function renameHomeFolder(id, rawName) {
+  const name = String(rawName || '').trim();
+  if (!name) return;
+  homeOrg.folders = homeOrg.folders.map(f => f.id === id ? { ...f, name } : f);
+  saveHomeOrg(); renderTopbar();
+}
+function deleteHomeFolder(id) {
+  homeOrg.folders = homeOrg.folders.filter(f => f.id !== id);
+  homeOrg.collapsedIds = homeOrg.collapsedIds.filter(x => x !== id);
+  saveHomeOrg(); renderTopbar();
+}
+function buildHomeEntries() {
+  const dmByBot = new Map();
+  for (const bot of state.bots) {
+    const dm = botConversation(bot.id);
+    if (dm) dmByBot.set(bot.id, dm);
+  }
+  const primaryDirectIds = new Set([...dmByBot.values()].map(r => r.id));
+  const entries = [];
+  for (const room of state.rooms) {
+    if (primaryDirectIds.has(room.id)) continue;
+    const last = room.lastMessage;
+    const preview = last ? roomPreview(room) : '开始聊天';
+    const fullPreview = last?.content?.trim() || preview;
+    entries.push({
+      key: `room:${room.id}`,
+      kind: 'room',
+      id: room.id,
+      room,
+      roomId: room.id,
+      botId: null,
+      title: room.name,
+      preview,
+      fullPreview,
+      sortDate: conversationUpdatedAt(room),
+      running: false,
+      paused: false,
+      live: ui.streamConnected && !ui.connectionNotice,
+      selected: room.id === ui.roomId && ui.view === 'chat',
+    });
+  }
+  const activeBot = currentBot();
+  for (const bot of state.bots) {
+    const dm = dmByBot.get(bot.id) || null;
+    const activity = botActivity(bot);
+    const live = ui.streamConnected && !ui.connectionNotice;
+    const running = live && ['running', 'waiting'].includes(activity.kind);
+    const paused = activity.kind === 'paused';
+    const preview = running || paused ? activity.text : dm?.lastMessage ? roomPreview(dm) : '发起对话';
+    const fullPreview = paused ? '该 Bot 当前已暂停。' : dm?.lastMessage?.content?.trim() || preview;
+    entries.push({
+      key: `bot:${bot.id}`,
+      kind: 'bot',
+      id: bot.id,
+      bot,
+      room: dm,
+      roomId: dm?.id || null,
+      botId: bot.id,
+      title: bot.name,
+      preview,
+      fullPreview,
+      sortDate: conversationUpdatedAt(dm),
+      running,
+      paused,
+      live,
+      activity,
+      selected: ui.view === 'chat' && activeBot?.id === bot.id && !ui.profileBotId,
+    });
+  }
+  return entries.sort((a, b) => String(b.sortDate).localeCompare(String(a.sortDate)) || a.title.localeCompare(b.title, 'zh-Hans-CN'));
+}
+function renderHomePinnedTile(entry) {
+  const avatarHtml = entry.kind === 'room'
+    ? groupAvatar(entry.room, 48, `pinned:group:${entry.id}`)
+    : avatar(entry.id, 48, `pinned:${entry.id}`);
+  const badge = entry.room ? unreadRoomBadge(entry.room) : '';
+  return `<button type="button" class="pinned-tile ${entry.selected ? 'selected' : ''}" data-action="${entry.kind === 'room' ? 'select-room' : 'dm-bot'}" data-id="${esc(entry.id)}" data-home-key="${esc(entry.key)}" title="${esc(entry.title)}">
+    <span class="pinned-tile-avatar">${avatarHtml}${badge}</span>
+    <span class="pinned-tile-title">${esc(entry.title)}</span>
   </button>`;
 }
-function renderBotContact(bot, selectedBot) {
-  const activity = botActivity(bot), dm = botConversation(bot.id);
-  const live = ui.streamConnected && !ui.connectionNotice;
-  const running = live && ['running', 'waiting'].includes(activity.kind);
-  const preview = running || activity.kind === 'paused' ? activity.text : dm?.lastMessage ? roomPreview(dm) : '发起对话';
-  const selected = ui.view === 'chat' && selectedBot?.id === bot.id && !ui.profileBotId;
-  return `<button class="contact-row ${selected ? 'selected' : ''}" data-action="dm-bot" data-id="${esc(bot.id)}" ${selected ? 'aria-current="page"' : ''} style="--member-color:${esc(botAvatar(bot).color)}" title="${esc(bot.name)} · ${esc(live ? activity.text : '状态待同步')}">
-    <span class="contact-avatar-wrap">${avatar(bot.id, 44, `sidebar:${bot.id}`)}<i class="presence-dot ${live ? activity.kind : 'unknown'}" aria-hidden="true"></i></span>
-    <span class="contact-copy"><span class="contact-heading"><strong>${esc(bot.name)}</strong>${renderContactTime(dm)}</span><span class="contact-preview ${running ? 'is-working' : ''}">${esc(preview)}</span></span>
-    ${dm ? unreadRoomBadge(dm) : ''}
+function renderHomeEntryRow(entry) {
+  if (entry.kind === 'room') {
+    return `<button class="contact-row ${entry.selected ? 'selected' : ''}" data-action="select-room" data-id="${esc(entry.id)}" data-home-key="${esc(entry.key)}" ${entry.selected ? 'aria-current="page"' : ''} title="${esc(entry.title)}">
+      <span class="contact-avatar-wrap">${groupAvatar(entry.room, 44, `sidebar:group:${entry.id}`)}</span>
+      <span class="contact-copy"><span class="contact-heading"><strong>${esc(entry.title)}</strong>${renderContactTime(entry.room)}</span><span class="contact-preview">${esc(entry.preview)}</span></span>
+      ${unreadRoomBadge(entry.room)}
+    </button>`;
+  }
+  return `<button class="contact-row ${entry.selected ? 'selected' : ''}" data-action="dm-bot" data-id="${esc(entry.id)}" data-home-key="${esc(entry.key)}" ${entry.selected ? 'aria-current="page"' : ''} style="--member-color:${esc(botAvatar(entry.bot).color)}" title="${esc(entry.title)} · ${esc(entry.live ? entry.activity.text : '状态待同步')}">
+    <span class="contact-avatar-wrap">${avatar(entry.id, 44, `sidebar:${entry.id}`)}<i class="presence-dot ${entry.live ? entry.activity.kind : 'unknown'}" aria-hidden="true"></i></span>
+    <span class="contact-copy"><span class="contact-heading"><strong>${esc(entry.title)}</strong>${renderContactTime(entry.room)}</span><span class="contact-preview ${entry.running ? 'is-working' : ''}">${esc(entry.preview)}</span></span>
+    ${entry.room ? unreadRoomBadge(entry.room) : ''}
   </button>`;
 }
 function renderTopbar() {
   const sidebar = $('#contact-sidebar'), oldTop = $('.contacts-scroll')?.scrollTop || 0;
   const query = ui.roomQuery.trim().toLowerCase();
-  const matches = name => String(name).toLowerCase().includes(query);
-  const bots = state.bots.filter(bot => matches(bot.name)).sort((a, b) => recentConversations(botConversation(a.id), botConversation(b.id)));
-  const topDirect = new Set(state.bots.map(bot => botConversation(bot.id)?.id));
-  const rooms = state.rooms.filter(room => matches(room.name) && (!topDirect.has(room.id) || query && !bots.some(bot => botConversation(bot.id)?.id === room.id)))
-    .sort(recentConversations);
+  const allEntries = buildHomeEntries();
+  const hiddenSet = new Set(homeOrg.hiddenKeys);
+  const visibleEntries = allEntries.filter(entry => !hiddenSet.has(entry.key));
+  const filteredEntries = query
+    ? visibleEntries.filter(entry => entry.title.toLowerCase().includes(query) || entry.preview.toLowerCase().includes(query))
+    : visibleEntries;
+  const byKey = new Map(visibleEntries.map(entry => [entry.key, entry]));
+  const pinnedEntries = query ? [] : homeOrg.pinnedKeys.map(key => byKey.get(key)).filter(Boolean);
+  const pinnedSet = new Set(homeOrg.pinnedKeys);
+  const unpinnedEntries = query ? filteredEntries : filteredEntries.filter(entry => !pinnedSet.has(entry.key));
+  const assignedKeys = new Set(homeOrg.folders.flatMap(f => f.keys || []));
+  const defaultEntries = unpinnedEntries.filter(entry => !assignedKeys.has(entry.key));
+  let contactsHtml = '';
+  if (pinnedEntries.length) {
+    contactsHtml += `<section class="sidebar-section pinned-section"><div class="pinned-shelf">${pinnedEntries.map(renderHomePinnedTile).join('')}</div></section>`;
+  }
+  if (query) {
+    contactsHtml += `<section class="sidebar-section"><div class="bot-contacts">${filteredEntries.map(renderHomeEntryRow).join('') || '<p class="sidebar-empty">没有匹配的对话</p>'}</div></section>`;
+  } else {
+    if (defaultEntries.length || !homeOrg.folders.length) {
+      const collapsed = isFolderCollapsed('__default__');
+      contactsHtml += `<section class="sidebar-section"><button type="button" class="folder-header ${collapsed ? 'collapsed' : ''}" data-action="toggle-folder" data-id="__default__"><span>主要</span>${icon('chevronDown', 14)}</button>
+        ${collapsed ? '' : `<div class="bot-contacts">${defaultEntries.map(renderHomeEntryRow).join('') || '<p class="sidebar-empty">还没有对话</p>'}</div>`}</section>`;
+    }
+    for (const folder of homeOrg.folders) {
+      const folderKeys = new Set(folder.keys || []);
+      const folderEntries = unpinnedEntries.filter(entry => folderKeys.has(entry.key));
+      const collapsed = isFolderCollapsed(folder.id);
+      contactsHtml += `<section class="sidebar-section"><button type="button" class="folder-header ${collapsed ? 'collapsed' : ''}" data-action="toggle-folder" data-id="${esc(folder.id)}" data-folder-id="${esc(folder.id)}"><span>${esc(folder.name)}</span>${icon('chevronDown', 14)}</button>
+        ${collapsed ? '' : `<div class="bot-contacts">${folderEntries.map(renderHomeEntryRow).join('') || '<p class="sidebar-empty">右键任意对话可移入此分组</p>'}</div>`}</section>`;
+    }
+  }
   const menu = ui.menu === 'create' ? `<div class="context-menu create-menu"><button data-action="new-bot">${icon('person', 19)}创建 Bot</button><button data-action="new-room">${icon('people', 19)}创建群聊</button></div>` : '';
+  const hiddenCount = allEntries.filter(entry => hiddenSet.has(entry.key)).length;
   const settings = ui.menu === 'apps' ? `<div class="context-menu apps-menu">
     ${tabs.filter(tab => tab.id !== 'chat').map(tab => `<button data-action="navigate" data-view="${tab.id}">${icon(tab.icon, 19)}${tab.title}</button>`).join('')}
+    ${hiddenCount ? `<button data-action="manage-hidden">${icon('eyeOff', 19)}已隐藏对话（${hiddenCount}）</button>` : ''}
     ${window.SummonDesktop?.openConnectionSettings ? `<button data-action="desktop-connection">${icon('computer', 19)}实例连接</button>` : ''}
     <button data-action="display-settings">${icon('settings', 19)}显示设置</button>
     <button data-action="client-downloads">${icon('install', 19)}客户端下载与更新</button>
@@ -1791,12 +2130,7 @@ function renderTopbar() {
       <div class="search-slot ${ui.searchOpen ? 'open' : ''}">${ui.searchOpen ? `<input id="room-search" value="${esc(ui.roomQuery)}" placeholder="搜索会话与 Bot" aria-label="搜索会话与 Bot">` : ''}
         <button class="round-button" data-action="toggle-search" title="搜索" aria-label="搜索">${icon('search', 20)}</button></div>
       <div class="menu-anchor"><button class="round-button create-button" data-action="toggle-create" aria-label="新建" aria-expanded="${ui.menu === 'create'}">${icon('plus', 23)}</button>${menu}</div></div>
-    <div class="contacts-scroll"><section class="sidebar-section group-section"><div class="sidebar-section-heading"><h2 class="sidebar-section-title">会话</h2>
-      <button class="section-add icon-button" data-action="new-room" aria-label="创建群聊">${icon('plus', 16)}</button></div>
-      <div class="group-grid">${rooms.map(renderGroupContact).join('') || '<p class="sidebar-empty">没有会话</p>'}</div></section>
-      <section class="sidebar-section partner-section"><div class="sidebar-section-heading"><h2 class="sidebar-section-title">伙伴</h2>
-      <button class="section-add icon-button" data-action="new-bot" aria-label="创建 Bot">${icon('plus', 16)}</button></div>
-      <div class="bot-contacts">${bots.map(bot => renderBotContact(bot, currentBot())).join('') || '<p class="sidebar-empty">没有匹配的 Bot</p>'}</div></section></div>
+    <div class="contacts-scroll">${contactsHtml}</div>
     <div class="sidebar-controls"><nav class="sidebar-shortcuts" aria-label="常用功能">
       <button class="${ui.view === 'executions' ? 'selected' : ''}" data-action="navigate" data-view="executions">${icon('computer', 17)}<span>执行</span></button>
       <button class="${ui.view === 'files' ? 'selected' : ''}" data-action="navigate" data-view="files">${icon('knowledge', 17)}<span>资料</span></button></nav>
@@ -2011,7 +2345,7 @@ function renderDetailPanel(room, bot) {
   } else if (tab === 'pins') {
     body = room.pins.map(ref => `<div class="pin-row">${renderReference(ref)}<button class="text-button" data-action="unpin" data-kind="${esc(ref.kind)}" data-id="${esc(ref.id)}">取消置顶</button></div>`).join('') || '<p class="panel-empty">没有置顶</p>';
   } else if (bot) {
-    body = `<div class="profile-prompt">${esc(bot.instructions || '')}</div><div class="profile-more-actions">
+    body = `<p class="subtle" style="margin:0 0 10px;font-size:var(--text-caption)">${esc(formatBotModelSummary(bot))}</p><div class="profile-prompt">${esc(bot.instructions || '')}</div><div class="profile-more-actions">
       <button data-action="edit-bot" data-id="${esc(bot.id)}">编辑 Bot</button><button data-action="bot-access" data-id="${esc(bot.id)}">资源权限</button>${renderBotControls(bot)}</div>`;
   } else {
     const wakeups = ui.roomWakeups || [];
@@ -2168,7 +2502,7 @@ function renderMembers() {
   const bot = botById(ui.botId);
   const rows = state.bots.map(item => `<button class="profile-record record-button member-row ${item.id === ui.botId ? 'selected' : ''}" data-action="select-bot" data-id="${esc(item.id)}">
     ${avatar(item.id,40)}<span><strong>${esc(item.name)}</strong><small>${esc(botActivity(item).text)}</small></span></button>`).join('');
-  const controls = bot ? `<h2>${esc(bot.name)}</h2><p class="profile-prompt">${esc(bot.instructions || '')}</p><div class="execution-actions">
+  const controls = bot ? `<h2>${esc(bot.name)}</h2><p class="subtle" style="margin:6px 0 12px;font-size:var(--text-caption)">${esc(formatBotModelSummary(bot))}</p><p class="profile-prompt">${esc(bot.instructions || '')}</p><div class="execution-actions">
     <button class="primary-button" data-action="dm-bot" data-id="${esc(bot.id)}">发消息</button><button class="secondary-button" data-action="edit-bot" data-id="${esc(bot.id)}">编辑</button>
     <button class="secondary-button" data-action="bot-access" data-id="${esc(bot.id)}">资源权限</button>${renderBotControls(bot)}</div>` : '';
   return `<div class="page">${pageHeader('<button class="primary-button" data-action="new-bot">创建 Bot</button>')}
