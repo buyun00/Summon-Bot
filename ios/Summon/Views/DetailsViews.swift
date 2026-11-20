@@ -118,6 +118,7 @@ struct BotDetailsView: View {
             if let error { InlineError(message: error) }
         }
         .navigationTitle(bot?.name ?? "Bot")
+        .navigationBarTitleDisplayMode(.inline)
         .task(id: store.protocolReady) {
             if let bot, current == nil { populate(bot) }
             if store.protocolReady {
@@ -229,55 +230,203 @@ struct RoomDetailsView: View {
     @State private var error: String?
 
     private var room: SummonRoom? { store.room(id: roomID) }
+    private var directBot: SummonBot? {
+        guard let room, !room.isGroup else { return nil }
+        return room.members.compactMap { store.bot(id: $0) }.first
+    }
+    private var canEdit: Bool {
+        guard let room else { return false }
+        return store.protocolReady && room.revision != nil
+    }
 
     var body: some View {
-        Form {
-            if let room {
-                Section {
-                    HStack { Spacer(); RoomAvatar(room: room); Spacer() }.listRowBackground(Color.clear)
-                    LabeledContent("名称", value: room.name)
-                    Button("编辑名称和成员") { editing = true }.disabled(!store.protocolReady || room.revision == nil)
-                }
-                Section("成员") {
-                    ForEach(room.members, id: \.self) { id in
-                        if store.bot(id: id) != nil {
-                            NavigationLink { BotDetailsView(botID: id) } label: {
-                                Label { Text(store.name(for: id)) } icon: { MemberAvatar(bot: store.bot(id: id), size: 30) }
-                            }
-                        } else { Text(store.name(for: id)) }
+        ScrollView {
+            VStack(spacing: 22) {
+                if let room {
+                    let roomRef = SummonReference(kind: "room", id: roomID)
+                    // Hero
+                    VStack(spacing: 12) {
+                        if let bot = directBot {
+                            MemberAvatar(bot: bot, size: 88)
+                        } else {
+                            RoomAvatar(room: room, size: 92)
+                        }
+                        VStack(spacing: 4) {
+                            Text(room.name)
+                                .summonFont(.title2, weight: .semibold)
+                                .multilineTextAlignment(.center)
+                            Text(room.isGroup ? "\(room.members.count) 位成员" : (directBot?.isPaused == true ? "已暂停" : "私聊 · 启用"))
+                                .summonFont(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
                     }
-                }
-                Section("置顶") {
-                    if room.pins?.isEmpty != false { Text("暂无置顶").foregroundStyle(.secondary) }
-                    ForEach(room.pins ?? [], id: \.self) { ref in
-                        NavigationLink(store.label(ref)) { SummonReferenceView(ref: ref) }
-                            .swipeActions {
-                                Button("移除", role: .destructive) {
-                                    Task {
-                                        do { try await store.setPin(ref, in: room, remove: true) }
-                                        catch { self.error = error.localizedDescription }
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 8)
+
+                    // Quick action tiles
+                    HStack(spacing: 10) {
+                        if let bot = directBot {
+                            quickActionTile("Bot 设置", symbol: "slider.horizontal.3") {
+                                BotDetailsView(botID: bot.id)
+                            }
+                        }
+                        quickActionTile(room.isGroup ? "群资料" : "资料", symbol: "folder") {
+                            SummonObjectList(section: .files, space: roomRef)
+                        }
+                        quickActionTile("提醒", symbol: "clock") {
+                            SummonObjectList(section: .wakeups, space: roomRef)
+                        }
+                        quickActionTile("执行", symbol: "terminal") {
+                            SummonObjectList(section: .executions, space: roomRef)
+                        }
+                    }
+
+                    // Visual member avatar grid (group chats only — 1-on-1 already shows hero + Bot 设置)
+                    if room.isGroup || directBot == nil {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Text("成员")
+                                    .summonFont(.footnote, weight: .semibold)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Text("\(room.members.count)")
+                                    .summonFont(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .padding(.horizontal, 6)
+
+                            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 16) {
+                                ForEach(room.members, id: \.self) { id in
+                                    memberTile(id: id)
+                                }
+                                if canEdit {
+                                    Button { editing = true } label: {
+                                        VStack(spacing: 7) {
+                                            ZStack {
+                                                Circle()
+                                                    .fill(SummonTheme.surface)
+                                                    .frame(width: 48, height: 48)
+                                                Circle()
+                                                    .strokeBorder(SummonTheme.hairline, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                                                    .frame(width: 48, height: 48)
+                                                Image(systemName: "plus")
+                                                    .font(.system(size: 18, weight: .medium))
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                            Text("管理")
+                                                .summonFont(.caption2)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                        }
+                                        .frame(maxWidth: .infinity)
                                     }
-                                }.disabled(!store.protocolReady)
+                                    .buttonStyle(SummonPressStyle(compact: true))
+                                }
                             }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 16)
+                            .background(SummonTheme.surfaceElevated, in: RoundedRectangle(cornerRadius: 22))
+                            .overlay { RoundedRectangle(cornerRadius: 22).stroke(SummonTheme.bubbleStroke, lineWidth: 0.7) }
+                        }
                     }
-                }
-                Section {
-                    let ref = SummonReference(kind: "room", id: roomID)
-                    NavigationLink("群资料") { SummonObjectList(section: .files, space: ref) }
-                    NavigationLink("订阅与提醒") { SummonObjectList(section: .wakeups, space: ref) }
-                    NavigationLink("执行会话和内部对话") { SummonObjectList(section: .executions, space: ref) }
-                }
-                if room.isGroup && room.members.contains("user") {
-                    Section {
-                        Button("退出群聊", role: .destructive) { confirmsLeave = true }
-                            .disabled(!store.protocolReady || room.revision == nil || leaving)
+
+                    // Pinned items — only displayed when pins actually exist
+                    let pins = room.pins ?? []
+                    if !pins.isEmpty {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Text("置顶")
+                                    .summonFont(.footnote, weight: .semibold)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Text("\(pins.count)")
+                                    .summonFont(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .padding(.horizontal, 6)
+
+                            VStack(spacing: 0) {
+                                ForEach(Array(pins.enumerated()), id: \.element) { index, ref in
+                                    HStack(spacing: 10) {
+                                        NavigationLink { SummonReferenceView(ref: ref) } label: {
+                                            HStack(spacing: 10) {
+                                                Image(systemName: "pin.fill")
+                                                    .font(.system(size: 12))
+                                                    .foregroundStyle(SummonTheme.ok)
+                                                Text(store.label(ref))
+                                                    .summonFont(.subheadline)
+                                                    .foregroundStyle(.primary)
+                                                    .lineLimit(1)
+                                                Spacer()
+                                            }
+                                            .contentShape(Rectangle())
+                                        }
+                                        .buttonStyle(.plain)
+
+                                        Button {
+                                            Task {
+                                                do { try await store.setPin(ref, in: room, remove: true) }
+                                                catch { self.error = error.localizedDescription }
+                                            }
+                                        } label: {
+                                            Image(systemName: "xmark.circle.fill")
+                                                .font(.system(size: 16))
+                                                .foregroundStyle(.tertiary)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .disabled(!store.protocolReady)
+                                        .accessibilityLabel("取消置顶")
+                                    }
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 12)
+                                    if index < pins.count - 1 {
+                                        Rectangle()
+                                            .fill(SummonTheme.hairline)
+                                            .frame(height: 0.6)
+                                            .padding(.leading, 36)
+                                    }
+                                }
+                            }
+                            .background(SummonTheme.surfaceElevated, in: RoundedRectangle(cornerRadius: 20))
+                            .overlay { RoundedRectangle(cornerRadius: 20).stroke(SummonTheme.bubbleStroke, lineWidth: 0.7) }
+                        }
+                    }
+
+                    if let error { InlineError(message: error) }
+
+                    // Destructive leave button
+                    if room.isGroup && room.members.contains("user") {
+                        Button { confirmsLeave = true } label: {
+                            Text("退出群聊")
+                                .summonFont(.subheadline, weight: .medium)
+                                .foregroundStyle(.red)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 14)
+                                .background(Color.red.opacity(0.09), in: RoundedRectangle(cornerRadius: 16))
+                        }
+                        .buttonStyle(SummonPressStyle())
+                        .disabled(!canEdit || leaving)
+                        .padding(.top, 6)
                     }
                 }
             }
-            if let error { InlineError(message: error) }
+            .padding(.horizontal, 18)
+            .padding(.bottom, 28)
         }
-        .navigationTitle("会话详情")
-        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() } } }
+        .background(SummonTheme.background)
+        .navigationTitle("")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("关闭", systemImage: "xmark") { dismiss() }
+                    .labelStyle(.iconOnly)
+            }
+            if canEdit {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("编辑") { editing = true }
+                }
+            }
+        }
         .summonSheet(isPresented: $editing) { if let room { RoomEditView(room: room) } }
         .confirmationDialog("退出群聊？", isPresented: $confirmsLeave, titleVisibility: .visible) {
             Button("退出群聊", role: .destructive) {
@@ -290,6 +439,73 @@ struct RoomDetailsView: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private func memberTile(id: String) -> some View {
+        if id == "user" {
+            VStack(spacing: 7) {
+                Image("OwnerAvatar")
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 48, height: 48)
+                    .clipShape(Circle())
+                    .overlay { Circle().strokeBorder(SummonTheme.bubbleStroke, lineWidth: 0.8) }
+                Text(store.name(for: id))
+                    .summonFont(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+        } else if let bot = store.bot(id: id) {
+            NavigationLink { BotDetailsView(botID: id) } label: {
+                VStack(spacing: 7) {
+                    MemberAvatar(bot: bot, size: 48)
+                        .opacity(bot.isPaused ? 0.45 : 1)
+                    Text(bot.name)
+                        .summonFont(.caption2, weight: .medium)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(SummonPressStyle(compact: true))
+        } else {
+            VStack(spacing: 7) {
+                Circle()
+                    .fill(SummonTheme.surface)
+                    .frame(width: 48, height: 48)
+                    .overlay {
+                        Text(String(store.name(for: id).prefix(1)))
+                            .summonFont(.subheadline, weight: .medium)
+                            .foregroundStyle(.secondary)
+                    }
+                Text(store.name(for: id))
+                    .summonFont(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    private func quickActionTile<Destination: View>(_ title: String, symbol: String, @ViewBuilder destination: () -> Destination) -> some View {
+        NavigationLink(destination: destination) {
+            VStack(spacing: 7) {
+                Image(systemName: symbol)
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(.primary)
+                Text(title)
+                    .summonFont(.caption, weight: .medium)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background(SummonTheme.surfaceElevated, in: RoundedRectangle(cornerRadius: 18))
+            .overlay { RoundedRectangle(cornerRadius: 18).stroke(SummonTheme.bubbleStroke, lineWidth: 0.7) }
+        }
+        .buttonStyle(SummonPressStyle(compact: true))
     }
 }
 
@@ -308,14 +524,17 @@ private struct RoomEditView: View {
                 TextField("名称", text: $name)
                 Section("成员") {
                     ForEach(store.bots) { bot in
-                        Toggle(bot.name, isOn: Binding(get: { members.contains(bot.id) }, set: {
+                        Toggle(isOn: Binding(get: { members.contains(bot.id) }, set: {
                             if $0 { members.insert(bot.id) } else { members.remove(bot.id) }
-                        }))
+                        })) {
+                            Label { Text(bot.name) } icon: { MemberAvatar(bot: bot, size: 30) }
+                        }
                     }
                 }
                 if let error { InlineError(message: error) }
             }
             .navigationTitle("编辑会话")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {

@@ -4,21 +4,46 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -30,8 +55,16 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -206,8 +239,11 @@ internal fun SummonResourceSelection(title: String, items: List<SummonJson>, sel
 
 @Composable
 fun RoomDetailsScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
+    val palette = LocalSummonPalette.current
     val scope = rememberCoroutineScope()
     val room = store.room(roomID)
+    val directBot = room?.takeIf { !it.isGroup }?.members?.firstNotNullOfOrNull { store.bot(it) }
+    val canEdit = room != null && store.protocolReady && room.revision != null
     var editing by remember(roomID) { mutableStateOf<SummonRoom?>(null) }
     var leave by remember(roomID) { mutableStateOf<SummonRoom?>(null) }
     var leaving by remember(roomID) { mutableStateOf(false) }
@@ -233,41 +269,212 @@ fun RoomDetailsScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
         return
     }
 
-    SummonDetailsPage("会话详情", onBack) {
-        if (room != null) {
-            RoomAvatar(room, store.bots)
-            Text(room.name, style = MaterialTheme.typography.titleMedium)
-            TextButton(enabled = store.protocolReady && room.revision != null, onClick = { editing = room }) { Text("编辑名称和成员") }
-            Text("成员", style = MaterialTheme.typography.titleMedium)
-            room.members.forEach { id ->
-                if (store.bot(id) != null) {
-                    TextButton(onClick = { botID = id }) { Row(verticalAlignment = Alignment.CenterVertically) {
-                        MemberAvatar(store.bot(id), 30.dp)
-                        Text(store.name(id), Modifier.padding(start = 10.dp))
-                    } }
-                } else Text(store.name(id))
-            }
-            Text("置顶", style = MaterialTheme.typography.titleMedium)
-            if (room.pins.isEmpty()) Text("暂无置顶", color = Color.Gray)
-            room.pins.forEach { pin ->
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = { ref = pin }, modifier = Modifier.weight(1f)) { Text(store.label(pin)) }
-                    TextButton(enabled = store.protocolReady, onClick = {
-                        scope.launch {
-                            try { store.setPin(pin, room, remove = true); error = null }
-                            catch (failure: Exception) { error = failure.localizedMessage }
-                        }
-                    }) { Text("移除") }
+    BackHandler(onBack = onBack)
+    Column(Modifier.fillMaxSize().background(palette.background).statusBarsPadding().navigationBarsPadding()) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = palette.glassPill,
+                border = BorderStroke(0.8.dp, palette.bubbleStroke),
+                modifier = Modifier.size(40.dp).clip(CircleShape).clickable(onClick = onBack),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", tint = MaterialTheme.colorScheme.onBackground, modifier = Modifier.size(20.dp))
                 }
             }
-            TextButton(onClick = { section = ResourceSection.Files }) { Text("群资料") }
-            TextButton(onClick = { section = ResourceSection.Wakeups }) { Text("订阅与提醒") }
-            TextButton(onClick = { section = ResourceSection.Executions }) { Text("执行会话和内部对话") }
-            if (room.isGroup && "user" in room.members) {
-                TextButton(enabled = store.protocolReady && room.revision != null && !leaving, onClick = { leave = room }) { Text("退出群聊") }
+            if (canEdit) {
+                val editableRoom = room!!
+                Surface(
+                    shape = CircleShape,
+                    color = palette.glassPill,
+                    border = BorderStroke(0.8.dp, palette.bubbleStroke),
+                    modifier = Modifier.clip(CircleShape).clickable { editing = editableRoom },
+                ) {
+                    Text(
+                        "编辑",
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+                }
             }
         }
-        error?.let { SummonError(it) }
+
+        Column(
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
+        ) {
+            if (room != null) {
+                // Hero
+                Column(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (directBot != null) {
+                        MemberAvatar(directBot, 86.dp)
+                    } else {
+                        RoomAvatar(room, store.bots, 90.dp)
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            room.name,
+                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
+                            textAlign = TextAlign.Center,
+                        )
+                        Text(
+                            if (room.isGroup) "${room.members.size} 位成员" else if (directBot?.isPaused == true) "已暂停" else "私聊 · 启用",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = palette.textSecondary,
+                        )
+                    }
+                }
+
+                // Quick action tiles
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (directBot != null) {
+                        QuickActionTile("Bot 设置", Icons.Filled.Tune, Modifier.weight(1f)) { botID = directBot.id }
+                    }
+                    QuickActionTile(if (room.isGroup) "群资料" else "资料", Icons.Filled.Folder, Modifier.weight(1f)) { section = ResourceSection.Files }
+                    QuickActionTile("提醒", Icons.Filled.Schedule, Modifier.weight(1f)) { section = ResourceSection.Wakeups }
+                    QuickActionTile("执行", Icons.Filled.Terminal, Modifier.weight(1f)) { section = ResourceSection.Executions }
+                }
+
+                // Visual 4-column member grid (group rooms only)
+                if (room.isGroup || directBot == null) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("成员", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), color = palette.textSecondary)
+                            Text("${room.members.size}", style = MaterialTheme.typography.labelSmall, color = palette.textTertiary)
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(22.dp),
+                            color = palette.surfaceElevated,
+                            border = BorderStroke(0.7.dp, palette.bubbleStroke),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            val entries = buildList<String?> {
+                                addAll(room.members)
+                                if (canEdit) add(null) // null = manage/add tile
+                            }
+                            Column(Modifier.padding(horizontal = 14.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                                entries.chunked(4).forEach { rowItems ->
+                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        rowItems.forEach { memberId ->
+                                            if (memberId == null) {
+                                                Column(
+                                                    Modifier.weight(1f).clip(RoundedCornerShape(12.dp)).clickable { editing = room }.padding(vertical = 2.dp),
+                                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                                                ) {
+                                                    Box(
+                                                        Modifier.size(48.dp).clip(CircleShape).background(palette.surface).border(1.dp, palette.hairline, CircleShape),
+                                                        contentAlignment = Alignment.Center,
+                                                    ) {
+                                                        Icon(Icons.Filled.Add, "管理成员", tint = palette.textSecondary, modifier = Modifier.size(20.dp))
+                                                    }
+                                                    Text("管理", style = MaterialTheme.typography.labelSmall, color = palette.textSecondary, maxLines = 1)
+                                                }
+                                            } else if (memberId == "user") {
+                                                Column(
+                                                    Modifier.weight(1f).padding(vertical = 2.dp),
+                                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                                                ) {
+                                                    Image(
+                                                        painterResource(R.drawable.owner_avatar),
+                                                        null,
+                                                        Modifier.size(48.dp).clip(CircleShape).border(0.8.dp, palette.bubbleStroke, CircleShape),
+                                                        contentScale = ContentScale.Crop,
+                                                    )
+                                                    Text(store.name(memberId), style = MaterialTheme.typography.labelSmall, color = palette.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                }
+                                            } else {
+                                                val memberBot = store.bot(memberId)
+                                                Column(
+                                                    Modifier.weight(1f).clip(RoundedCornerShape(12.dp)).clickable(enabled = memberBot != null) { botID = memberId }.padding(vertical = 2.dp),
+                                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                                                ) {
+                                                    if (memberBot != null) {
+                                                        MemberAvatar(memberBot, 48.dp, modifier = Modifier.alpha(if (memberBot.isPaused) 0.45f else 1f))
+                                                    } else {
+                                                        Box(Modifier.size(48.dp).clip(CircleShape).background(palette.surface), contentAlignment = Alignment.Center) {
+                                                            Text(store.name(memberId).take(1), color = palette.textSecondary)
+                                                        }
+                                                    }
+                                                    Text(store.name(memberId), style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                }
+                                            }
+                                        }
+                                        repeat(4 - rowItems.size) { Spacer(Modifier.weight(1f)) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Pinned items — only displayed when pins actually exist
+                if (room.pins.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("置顶", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), color = palette.textSecondary)
+                            Text("${room.pins.size}", style = MaterialTheme.typography.labelSmall, color = palette.textTertiary)
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(20.dp),
+                            color = palette.surfaceElevated,
+                            border = BorderStroke(0.7.dp, palette.bubbleStroke),
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Column {
+                                room.pins.forEachIndexed { idx, pin ->
+                                    Row(
+                                        Modifier.fillMaxWidth().clickable { ref = pin }.padding(start = 14.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    ) {
+                                        Icon(Icons.Filled.PushPin, null, tint = palette.ok, modifier = Modifier.size(15.dp))
+                                        Text(store.label(pin), style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                        IconButton(
+                                            enabled = store.protocolReady,
+                                            onClick = {
+                                                scope.launch {
+                                                    try { store.setPin(pin, room, remove = true); error = null }
+                                                    catch (failure: Exception) { error = failure.localizedMessage }
+                                                }
+                                            },
+                                            modifier = Modifier.size(32.dp),
+                                        ) {
+                                            Icon(Icons.Filled.Close, "取消置顶", tint = palette.textTertiary, modifier = Modifier.size(16.dp))
+                                        }
+                                    }
+                                    if (idx < room.pins.lastIndex) {
+                                        HorizontalDivider(Modifier.padding(start = 38.dp), thickness = 0.6.dp, color = palette.hairline)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                error?.let { SummonError(it) }
+
+                if (room.isGroup && "user" in room.members) {
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = Color(0x18E53935),
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp).clip(RoundedCornerShape(16.dp))
+                            .clickable(enabled = canEdit && !leaving) { leave = room },
+                    ) {
+                        Box(Modifier.fillMaxWidth().padding(vertical = 14.dp), contentAlignment = Alignment.Center) {
+                            Text("退出群聊", color = Color(0xFFE53935), style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium))
+                        }
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+            }
+        }
     }
     ref?.let { SummonReferenceDialog(store, it) { ref = null } }
     leave?.let { target ->
@@ -286,6 +493,26 @@ fun RoomDetailsScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
 }
 
 @Composable
+private fun QuickActionTile(title: String, icon: ImageVector, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val palette = LocalSummonPalette.current
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = palette.surfaceElevated,
+        border = BorderStroke(0.7.dp, palette.bubbleStroke),
+        modifier = modifier.clip(RoundedCornerShape(18.dp)).clickable(onClick = onClick),
+    ) {
+        Column(
+            Modifier.fillMaxWidth().padding(vertical = 14.dp, horizontal = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Icon(icon, title, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(20.dp))
+            Text(title, style = MaterialTheme.typography.labelSmall, color = palette.textSecondary, maxLines = 1)
+        }
+    }
+}
+
+@Composable
 private fun RoomEditor(store: SummonStore, room: SummonRoom, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     var name by remember(room) { mutableStateOf(room.name) }
@@ -296,8 +523,10 @@ private fun RoomEditor(store: SummonStore, room: SummonRoom, onBack: () -> Unit)
         SummonTextField("名称", name, { name = it })
         Text("成员", style = MaterialTheme.typography.titleMedium)
         store.bots.forEach { bot ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(checked = bot.id in members, onCheckedChange = { members = if (it) members + bot.id else members - bot.id })
+                MemberAvatar(bot, 30.dp)
+                Spacer(Modifier.width(10.dp))
                 Text(bot.name)
             }
         }
