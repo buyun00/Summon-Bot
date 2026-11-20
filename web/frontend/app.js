@@ -515,9 +515,11 @@ function installChatScrollTracking(messages, followBottom) {
   const tracking = { followBottom, lastTop: messages.scrollTop, stopped: false };
   const pinToBottomSync = () => {
     if (tracking.stopped || !messages.isConnected || !messages.clientHeight || !tracking.followBottom || scrollStarted) return;
+    const end = Math.max(0, messages.scrollHeight - messages.clientHeight);
+    if (Math.abs(end - messages.scrollTop) <= 1) return;
     resizing = true;
-    messages.scrollTop = Math.max(0, messages.scrollHeight - messages.clientHeight);
-    tracking.lastTop = messages.scrollTop;
+    messages.scrollTop = end;
+    tracking.lastTop = end;
     resizing = false;
   };
   const schedule = () => {
@@ -2686,7 +2688,10 @@ document.addEventListener('change', async event => {
 function syncMobileViewport() {
   const viewport = window.visualViewport, root = document.documentElement;
   if (!displayMedia.matches) {
-    root.style.removeProperty('--mobile-vh'); root.style.removeProperty('--mobile-vtop'); root.style.removeProperty('--mobile-page-top'); root.classList.remove('keyboard-open'); return;
+    if (root.classList.contains('keyboard-open')) {
+      root.style.removeProperty('--mobile-vh'); root.style.removeProperty('--mobile-vtop'); root.style.removeProperty('--mobile-page-top'); root.classList.remove('keyboard-open');
+    }
+    return;
   }
   const messages = $('.messages'), atBottom = messages && (messages._summonChatScroll?.followBottom || messages.scrollHeight - messages.scrollTop - messages.clientHeight < 40);
   const zoom = Number(getComputedStyle(root).zoom) || 1;
@@ -2713,11 +2718,23 @@ function syncMobileViewport() {
   root.classList.toggle('keyboard-open', keyboardOpen);
   if (atBottom) messages._summonChatScroll?.schedule();
 }
-let viewportFrame = 0;
-function queueViewportSync() { cancelAnimationFrame(viewportFrame); viewportFrame = requestAnimationFrame(syncMobileViewport); }
+let viewportFrame = 0, resizeIdleTimer = 0;
+function markWindowResizing() {
+  document.documentElement.classList.add('summon-resizing');
+  clearTimeout(resizeIdleTimer);
+  resizeIdleTimer = setTimeout(() => {
+    document.documentElement.classList.remove('summon-resizing');
+    if (window.SummonAvatars) window.SummonAvatars.hydrate?.(document);
+  }, 140);
+}
+function queueViewportSync() {
+  if (!displayMedia.matches) return;
+  cancelAnimationFrame(viewportFrame);
+  viewportFrame = requestAnimationFrame(syncMobileViewport);
+}
 window.visualViewport?.addEventListener('resize', queueViewportSync);
 window.visualViewport?.addEventListener('scroll', queueViewportSync);
-window.addEventListener('resize', queueViewportSync);
+window.addEventListener('resize', () => { markWindowResizing(); queueViewportSync(); }, { passive: true });
 window.addEventListener('scroll', queueViewportSync, { passive: true });
 window.addEventListener('pageshow', queueViewportSync);
 window.addEventListener('orientationchange', queueViewportSync);
