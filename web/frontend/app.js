@@ -19,11 +19,6 @@ function applyTheme() {
   document.documentElement.classList.toggle('dark', dark);
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', dark ? '#0b0c10' : '#f8f6f1');
   window.SummonDesktop?.setTheme?.(dark);
-  for (const button of $$('[data-action="toggle-theme"]')) {
-    const iconEl = $('.theme-icon', button), labelEl = $('.theme-label', button);
-    if (iconEl) iconEl.textContent = dark ? '☀' : '☾';
-    if (labelEl) labelEl.textContent = dark ? '浅色纸片' : '暗色玻璃';
-  }
   for (const button of $$('[data-action="set-theme"]')) {
     const active = button.dataset.theme === themePreference;
     button.classList.toggle('active', active);
@@ -35,9 +30,6 @@ function setThemePreference(mode) {
   themePreference = mode;
   try { localStorage.setItem(themePreferenceKey, mode); } catch {}
   applyTheme();
-}
-function toggleThemePreference() {
-  setThemePreference(isDarkTheme() ? 'light' : 'dark');
 }
 systemDarkMedia.addEventListener('change', () => { if (themePreference === 'system') applyTheme(); });
 applyTheme();
@@ -375,13 +367,9 @@ function botById(id) { return state.bots.find(bot => bot.id === id); }
 function roomById(id) { return state.rooms.find(room => room.id === id); }
 function nameOf(id) { return id === 'user' ? ownerName() : botById(id)?.name || (['system', 'platform'].includes(id) ? 'Summon 平台' : id || 'Summon 平台'); }
 function statusPill(value) { return `<span class="status ${esc(value)}">${esc(labels[value] || value || '未知')}</span>`; }
-function renderThemeToggleButton() {
-  const dark = isDarkTheme();
-  return `<button type="button" class="float-pill-btn" data-action="toggle-theme" title="切换浅色纸片 / 暗色玻璃"><span class="theme-icon">${dark ? '☀' : '☾'}</span><span class="theme-label">${dark ? '浅色纸片' : '暗色玻璃'}</span></button>`;
-}
 function renderPageNavBar(activeView = ui.view) {
   const shortTitles = { members:'成员', executions:'执行', files:'资料', wakeups:'订阅', connections:'连接', models:'模型', usage:'用量' };
-  return `<nav class="page-nav-bar" aria-label="页面导航"><div class="page-nav-left"><button type="button" class="float-pill-btn" data-action="navigate" data-view="chat">${icon('back', 15)}<span>聊天</span></button><div class="page-nav-tabs">${tabs.filter(tab => tab.id !== 'chat').map(tab => `<button type="button" class="${activeView === tab.id ? 'active' : ''}" data-action="navigate" data-view="${tab.id}">${shortTitles[tab.id] || tab.title}</button>`).join('')}</div></div>${renderThemeToggleButton()}</nav>`;
+  return `<nav class="page-nav-bar" aria-label="页面导航"><div class="page-nav-left"><button type="button" class="float-pill-btn" data-action="navigate" data-view="chat">${icon('back', 15)}<span>聊天</span></button><div class="page-nav-tabs">${tabs.filter(tab => tab.id !== 'chat').map(tab => `<button type="button" class="${activeView === tab.id ? 'active' : ''}" data-action="navigate" data-view="${tab.id}">${shortTitles[tab.id] || tab.title}</button>`).join('')}</div></div></nav>`;
 }
 window.SummonPageNav = renderPageNavBar;
 function pageHeader(buttons = '') { return `${renderPageNavBar()}<div class="page-header"><div><h1>${esc(tabs.find(tab => tab.id === ui.view)?.title)}</h1></div><div class="page-tools">${buttons}</div></div>`; }
@@ -1405,7 +1393,6 @@ async function act(action, element) {
   const ref = { kind,id };
   if (action.startsWith('usage-')) return globalThis.SummonUsage.act(action,element,api,render);
   if (action.startsWith('models-')) return globalThis.SummonModels.act(action,element,{ api,render,toast,refresh });
-  if (action === 'toggle-theme') return toggleThemePreference();
   if (action === 'set-theme') return setThemePreference(element.dataset.theme);
   if (action === 'toggle-sidebar') { $('.app-shell')?.classList.toggle('sidebar-collapsed'); return; }
   if (action === 'back-to-room-details') { ui.profileBotId = null; ui.detailTab = 'details'; ui.avatarEditing = false; render(); await loadCurrent(); return render(); }
@@ -1936,7 +1923,7 @@ function renderChat() {
     <button type="button" class="sidebar-toggle-btn" data-action="toggle-sidebar" title="收起 / 展开侧栏" aria-label="收起 / 展开侧栏">${icon('panel',18)}</button></div>
     ${room ? `<button type="button" class="chat-title-pill" data-action="toggle-details" aria-expanded="${!!ui.detailOpen}" title="展开右侧会话详情侧栏">${bot ? avatar(bot.id,30,'slot:title') : groupAvatar(room,30,'slot:title-group')}
       <span class="chat-title-copy"><strong>${esc(title)}</strong>${subtitle ? `<small>${esc(subtitle)}</small>` : ''}</span></button>` : ''}
-    <div class="chat-header-actions">${renderThemeToggleButton()}</div></div>`;
+    <div class="chat-header-actions"></div></div>`;
   const pins = room?.pins?.length ? `<div class="room-pins"><strong>置顶</strong>${room.pins.map(ref => renderReference(ref)).join('')}</div>` : '';
   const executions = ui.roomExecutions || [];
   const active = executions.length ? `<details class="conversation-activity" data-execution-disclosure ${ui.openRoomExecution === room.id ? 'open' : ''}><summary>执行过程（${executions.length}）</summary>
