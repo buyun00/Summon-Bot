@@ -7,7 +7,7 @@ import { repairRequestType, repairResultType, tools } from '../../../capabilitie
 import { deliveryRecords } from '../../../capabilities/platform/delivery.mjs';
 import { waitRecords } from '../../../capabilities/platform/calls.mjs';
 import { forwardMaterials, workGroup } from '../../../capabilities/platform/session-work.mjs';
-import { privateRoomRead, publicationSources, withinPublicationRoom } from '../../../capabilities/platform/room-publication.mjs';
+import { inspectedPublicationSources, privateRoomRead, publicationSources, withinPublicationRoom } from '../../../capabilities/platform/room-publication.mjs';
 import { BotStore } from '../storage/store.mjs';
 import { Inbox } from '../storage/inbox.mjs';
 import { eventOrder, executionRef, now, recordKey, refKey, runtimeFailure, runtimeRecords as R, sameRef, terminalCallStates } from '../storage/runtime-records.mjs';
@@ -693,12 +693,14 @@ export class BotRuntime {
       const work = this.platform.executions.record(event.target);
       if (!work?.origin_room || !this.platform.canReadSpace(work.owner, work.origin_room)) continue;
       const retry = original.forward_recovery_call_id && this.platform.store.get('platform-calls', original.forward_recovery_call_id);
-      if (retry && !['not_submitted', 'failed', 'cancelled'].includes(retry.status)) continue;
+      if (retry && !['not_submitted', 'failed', 'cancelled', 'unknown'].includes(retry.status)) continue;
+      if (this.platform.executions.originalReplies(work).some(({ message }) =>
+        this.platform.store.get('platform-calls', message.callId)?.source_event_ids?.includes(id))) continue;
       const actions = job.inbox.calls(job.runId);
       if (actions.some(action => action.state === 'completed' && action.tool === 'send' &&
           action.result?.message?.roomId === work.origin_room.id && action.result.message.replyTo === work.origin_message_id)) continue;
       due.push({ original_call: original.id, source_event: original.source_event_ids[0], session: work.id,
-        origin_room: work.origin_room, original_question: work.origin_message_id, latest_attempt: retry?.id });
+        origin_room: work.origin_room, original_question: work.origin_message_id, latest_attempt: retry?.id, latest_status: retry?.status });
     }
     return due;
   }
@@ -733,6 +735,22 @@ export class BotRuntime {
   async publicationGrant(context, args, destination) {
     const job = this.active.get(context.conversation.id);
     if (job?.runId !== context.origin.run_id) return null;
+    if (context.conversation.space.id === destination.id) {
+      const ref = args.publication?.authorization;
+      if (!ref) return null;
+      const inspect = () => inspectedPublicationSources(this.platform, context, destination, job.inbox.calls(job.runId), ref.id ?? ref);
+      const source = inspect();
+      if (!source) return null;
+      const last = job.publication?.audience;
+      const reusable = last?.destination.id === destination.id && last.release?.authorization_id === source.candidates[0].id &&
+        JSON.stringify(last.release.versions) === JSON.stringify(source.versions);
+      const grant = reusable ? last.release : await this.engine.resolvePublicationGrant(job, destination, source);
+      const current = grant && inspect();
+      if (current && JSON.stringify(grant.versions) === JSON.stringify(current.versions) &&
+          grant.materials.every(part => current.facts.get(part.event_id)?.includes(part.text)))
+        return { ...grant, source_room: source.candidates[0].roomId };
+      return null;
+    }
     const sources = publicationSources(this.platform, args, context, destination);
     if (!sources.candidates.length) return null;
     const previous = job.publication?.audience;
@@ -758,6 +776,19 @@ export class BotRuntime {
     }
     if (!inspect) return null;
     return this.engine.resolvePublicationGrant(job, destination, sources);
+  }
+
+  publicFile(job, room, ref) {
+    if (ref?.kind !== 'file' || !withinPublicationRoom(this.platform, ref, room)) return false;
+    const context = this.platform.context(job.context());
+    try {
+      const destination = this.platform.room.room(room.id, context.actor.id);
+      this.platform.assertShareable(ref, { actor: context.actor, room: destination, context });
+      return this.platform.files.getProjection(ref.id, context).projection;
+    } catch (error) {
+      if ([403, 404, 409].includes(error.status)) return false;
+      throw error;
+    }
   }
 
   publicationEvidence(job, audience, includeHistory = true) {
@@ -786,12 +817,26 @@ export class BotRuntime {
         this.platform.roomWork.intakes(work, botRef(job.inbox.botId)).map(item => item.name) : [], accepts_followup: open });
     }
     const material = this.materials.publication(job, room);
-    const selection = JSON.stringify([locations, material?.content]);
+    const pages = new Map();
+    for (const call of calls) {
+      if (call.state !== 'completed' || call.tool !== 'read' || call.args.ref?.kind !== 'file') continue;
+      const result = call.result;
+      const file = this.publicFile(job, room, call.args.ref);
+      if (!file || file.id !== result?.id || file.revision !== result.revision) continue;
+      const cursor = Number(call.args.cursor ?? 0);
+      const content = typeof result.content === 'string' ? result.content.slice(0, 20000) : undefined;
+      pages.set(recordKey(file.id, cursor), { file: { kind: 'file', id: file.id }, name: file.name, revision: file.revision,
+        cursor, content, next_cursor: content && result.content.length > content.length ? String(cursor + content.length) : result.next_cursor,
+        content_status: result.content_status, ...(result.content_status === 'image' && { image_call: call.model_call_id }) });
+    }
+    const selectedPages = [...pages.values()];
+    const selection = JSON.stringify([locations, material?.content, selectedPages.map(page => [page.file.id, page.revision, page.cursor])]);
     if (!includeHistory) return { selection };
     const snapshot = this.platform.room.publicHistory(room.id, job.inbox.botId);
     const actions = audience.cross_room ? [] : calls.filter(call => ['save_file', 'configure_bot', 'open_session', 'configure_session'].includes(call.tool))
       .map(call => ({ action: call.tool, status: call.state, code: call.result?.code }));
-    return { history: snapshot.messages.map(roomEvent), material, summary: snapshot.summary, end: snapshot.end, locations, actions, selection };
+    return { history: snapshot.messages.map(roomEvent), material, summary: snapshot.summary, end: snapshot.end,
+      locations, actions, selection, pages: selectedPages };
   }
 
   syncDelivery(inbox, receipt) {
@@ -970,6 +1015,7 @@ export class BotRuntime {
       },
       refresh: window => this.contextBoundary(job, window),
       publicationEvidence: audience => this.publicationEvidence(job, audience),
+      publicFile: (room, ref) => this.publicFile(job, room, ref),
       outstandingReplies: ids => this.outstandingRoomReplies(inbox, conversation.space, ids),
       unsettledForwards: ids => this.unsettledForwardReturns(job, ids),
       canReadReference: ref => this.platform.canReadReference(ref, this.platform.context(context())),

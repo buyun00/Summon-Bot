@@ -6,7 +6,7 @@ export const textMessage = (value, timestamp = Date.now()) => ({ role: 'user', t
 
 export const contextTokens = messages => messages.reduce((total, message) =>
   total + Math.max(estimateTokens(message), Math.ceil(JSON.stringify(message).length / 3)) +
-    (message.role === 'toolResult' && message.toolName === 'read' && message.details?.content_status === 'image' ? 1200 : 0), 0);
+    (message.room_file_image_call || message.role === 'toolResult' && message.toolName === 'read' && message.details?.content_status === 'image' ? 1200 : 0), 0);
 
 export function isRoomMessageEvent(event, roomId) {
   return event?.type === 'message' && (event.space?.kind === 'room' || Boolean(event.roomId)) &&

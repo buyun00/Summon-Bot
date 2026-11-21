@@ -42,6 +42,52 @@ export function privateRoomRead(platform, name, args, result, room) {
     item.ref ?? item.execution_ref ?? { kind: args.kind, id: item.id }, room));
 }
 
+// A member answering in its own Room can cite a standing release that it
+// actually consulted elsewhere. That Room's question cannot grant the release.
+export function inspectedPublicationSources(platform, context, destination, calls, requested) {
+  const grant = platform.store.get('messages', requested);
+  if (!grant || grant.senderId !== 'user' || grant.roomId === destination.id ||
+      !platform.canReadReference({ kind: 'event', id: grant.id }, context)) return null;
+  const facts = new Map(), versions = { user_messages: [], results: [], deliveries: [], files: [] };
+  let inspected = false;
+  for (const call of calls.filter(call => call.state === 'completed')) {
+    const ref = call.args.ref, result = call.result;
+    const messages = call.tool === 'read' && ref?.kind === 'room' ? result?.messages :
+      call.tool === 'read' && ref?.kind === 'event' ? [result] :
+      call.tool === 'find' && call.args.kind === 'event' ? result?.items : [];
+    for (const item of messages || []) {
+      if (item?.roomId !== grant.roomId) continue;
+      const source = platform.store.get('messages', item.id);
+      if (source?.roomId !== grant.roomId) continue;
+      facts.set(source.id, source.content);
+      if (source.id === grant.id) inspected = true;
+    }
+    if (call.tool === 'read' && ref?.kind === 'file' && result?.id === ref.id && typeof result.content === 'string' &&
+        withinPublicationRoom(platform, ref, { kind: 'room', id: grant.roomId }) && platform.canReadReference(ref, context)) {
+      const file = platform.files.getProjection(ref.id, context).projection;
+      if (file.revision === result.revision) {
+        const key = JSON.stringify([ref.id, result.revision, call.args.cursor ?? 0]);
+        facts.set(key, result.content);
+        versions.files.push(key);
+      }
+    }
+  }
+  if (!inspected) return null;
+  const later = platform.store.db.prepare(`SELECT data FROM records WHERE kind='messages'
+    AND json_extract(data,'$.roomId')=? AND json_extract(data,'$.senderId')='user' AND created_at>? ORDER BY rowid`).all(grant.roomId, grant.createdAt);
+  const hostMessages = [grant];
+  for (const { data } of later) {
+    const item = JSON.parse(data);
+    if (item.replyTo === grant.id || item.content.includes(destination.name) ||
+        item.references?.some(ref => ref.kind === 'event' && ref.id === grant.id)) hostMessages.push(item);
+  }
+  versions.user_messages = hostMessages.map(item => item.id);
+  const requests = context.origin.event_ids.map(id => platform.store.get('messages', id))
+    .filter(item => item?.roomId === destination.id).map(item => ({ id: item.id, text: item.content }));
+  if (!requests.length) return null;
+  return { candidates: [grant], hostMessages, facts, versions, requests };
+}
+
 export function publicationSources(platform, args, context, destination) {
   const origin = context.conversation.space;
   const current = context.origin.event_ids.map(id => platform.store.get('messages', id)).filter(item => item?.roomId === origin.id);
@@ -128,6 +174,7 @@ export function publicationContext(platform, args, context, grant) {
     if (!release) reject('room_publication_unauthorized',
       'Sending to another Room requires a current instruction from the host naming that destination and what to publish. Reply in the requesting Room or use the authorized Session intake.', 403);
   }
+  if (!crossRoom && grant?.source_room) release = grant;
   const replyId = args.reply_to && idOf(args.reply_to, 'event');
   const reply = replyId && platform.store.get('messages', replyId);
   if (replyId && reply?.roomId !== to.id) reject('room_reply_unavailable', 'Choose a reply in the destination Room', 409);
@@ -135,7 +182,7 @@ export function publicationContext(platform, args, context, grant) {
   for (const ref of [...attachments, ...(args.references ?? [])]) {
     if (!withinPublicationRoom(platform, ref, to) && !release)
       reject('publication_source_unavailable', 'This reference belongs to a different audience.', 403);
-    if (crossRoom && !withinPublicationRoom(platform, ref, to)) {
+    if (release && !withinPublicationRoom(platform, ref, to)) {
       const instruction = platform.store.get('messages', release.authorization_id);
       if (!release.materials.some(part => part.event_id === ref.id && platform.store.get('messages', ref.id)?.content === part.text) &&
           !(instruction.attachments?.some(item => ref.kind === 'file' && item.id === ref.id) &&

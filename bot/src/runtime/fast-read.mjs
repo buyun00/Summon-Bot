@@ -291,7 +291,7 @@ export class FastReadRuntime {
     const receipt = call.result_ref?.kind === 'event' ? call.result_ref.id : null;
     const outcome = this.forwardOutcome(call);
     const patch = { fast_read_forward_status: call.status, fast_read_forward_receipt: receipt };
-    if (!outcome.ok && route.fast_read_decision === 'forward') {
+    if (!outcome.ok && (route.fast_read_decision === 'forward' || route.fast_read_forward_fallback)) {
       const wait = receipt && call.return_refs.map(id => this.platform.store.get('platform-waits', id))
         .find(item => item?.conversation_id === origin.conversation_id && item.run_id === origin.run_id &&
           item.latest_event_id === receipt && (item.status === 'processed' ||
@@ -300,7 +300,8 @@ export class FastReadRuntime {
       // queue the source Room separately when the call has no usable return.
       Object.assign(patch, { fast_read_forward_fallback: outcome.reason,
         fast_read_forward_handler: wait ? { wait_id: wait.id, conversation_id: wait.conversation_id, event_id: receipt } : { event_id: eventId } });
-      if (!wait) Object.assign(patch, { fast_read_decision: 'main', state: 'pending', processed_at: null });
+      if (!wait && route.fast_read_decision === 'forward')
+        Object.assign(patch, { fast_read_decision: 'main', state: 'pending', processed_at: null });
     }
     if (Object.entries(patch).some(([key, value]) => JSON.stringify(route[key]) !== JSON.stringify(value)))
       inbox.store.putRecord(R.route, { ...route, ...patch });

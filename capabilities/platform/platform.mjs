@@ -1093,7 +1093,8 @@ export class SummonPlatform {
         const guarded = !sameRef(to, context.conversation.space) || refs.some(ref => !withinPublicationRoom(this, ref, to)) ||
           this.runtime.requiresRoomDraft(context);
         if (guarded) {
-          const grant = !sameRef(to, context.conversation.space) && await this.runtime.publicationGrant(context, args, this.room.room(to.id, context.actor.id));
+          const grant = (!sameRef(to, context.conversation.space) || args.publication?.authorization) &&
+            await this.runtime.publicationGrant(context, args, this.room.room(to.id, context.actor.id));
           this.assertRunAllowed(context);
           const audience = publicationContext(this, args, context, grant);
           this.runtime.checkRoomPublication(context, audience, args);

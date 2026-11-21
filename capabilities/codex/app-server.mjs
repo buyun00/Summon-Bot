@@ -17,10 +17,10 @@ const input = createInterface({ input: process.stdin });
 const output = createInterface({ input: server.stdout });
 const emit = (type, fields = {}) => process.stdout.write(JSON.stringify({ summonEvent: { type, ...fields } }) + '\n');
 const textInput = text => [{ type: 'text', text }];
-const requests = new Map(), prompts = new Map();
+const requests = new Map(), prompts = new Map(), asyncItems = new Set();
 let nextId = 0, threadId, turnId, finalText, lastMessage, terminal, modelRerouted, ending = false;
 let threadSubmitted = false, turnSubmitted = false;
-let asyncCalls = 0, asyncQuestions = 0;
+let asyncCalls = 0;
 let serverClosed = false, shutdownTimer;
 const filesByItem = new Map();
 let starting = true, stopping = false, requireReadOnly = false, guardDb;
@@ -50,7 +50,7 @@ function rpc(method, params, timeoutMs = 20_000) {
 function finish(status, error, code) {
   if (ending) return;
   ending = true;
-  if (asyncCalls > asyncQuestions)
+  if (asyncCalls > asyncItems.size)
     emit('progress', { turnId, text: 'Codex 记录了异步提问调用，本轮未收到对应的可定位题文。可在原会话续投，要求 Codex 使用同步提问。' });
   for (const [id, prompt] of prompts) {
     if (prompt.asyncItem) {
@@ -187,12 +187,16 @@ function observe(method, p) {
   if (method === 'item/started' || method === 'item/completed') {
     if (!turnId || p.turnId !== turnId) return;
     const { item } = p, completed = method === 'item/completed';
-    if (completed && item.type === 'functionCallOutput' && item.name === 'request_user_input_async') asyncCalls++;
-    if (completed && item.type === 'agentMessage' && item.delivery === 'async' && item.questions?.length) {
+    if (completed && item.type === 'functionCallOutput' && item.name === 'request_user_input_async') {
+      asyncCalls++;
+      if (asyncCalls > asyncItems.size)
+        emit('progress', { turnId, text: '目前仅收到 Codex 的异步提问调用，仍在等待可答的原题。需要立即答复时，可请原执行者改用带真实备选、允许自填的同步表单。' });
+    }
+    if (item.type === 'agentMessage' && item.delivery === 'async' && item.questions?.length) {
       // An async question is a ThreadItem, not a server JSON-RPC request.
       // Its reply is a normal steer to the same live turn.
       const id = 'async/' + item.id;
-      if (prompts.has(id)) return;
+      if (asyncItems.has(id)) return;
       const questions = item.questions;
       if (typeof item.id !== 'string' || !item.id || !questions.every(q => typeof q?.title === 'string' && q.title.trim() &&
           (q.options == null || Array.isArray(q.options) && q.options.every(s => typeof s === 'string')))) {
@@ -200,7 +204,7 @@ function observe(method, p) {
         return;
       }
       const simple = questions.length === 1;
-      asyncQuestions++;
+      asyncItems.add(id);
       const text = questions.map((q, i) => (simple ? '' : (i + 1) + '. ') + q.title +
         (q.options?.length ? '\n' + q.options.join(' / ') + '（也可自填）' : '')).join('\n');
       prompts.set(id, { asyncItem: item.id, questions });
