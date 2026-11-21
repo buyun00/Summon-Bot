@@ -122,7 +122,7 @@ export function createApi({ platform, room, attachments, models, connections, pu
       if (method === 'GET' && match[3]) return room.receipt(ref.id, params.get('clientId'), user.id);
       if (method === 'GET') {
         const result = await read(ref, params);
-        const deliveries = Object.fromEntries(result.messages.map(item => [item.id, platform.messageDeliveries(item.id)]));
+        const deliveries = Object.fromEntries(result.messages.map(item => [item.id, platform.hostMessageDeliveries(item.id)]));
         const summaries = room.messageSummaries(ref.id, result.messages.map(item => item.id));
         const value = { ...result, deliveries, summaries, historyEpoch };
         return match[2] ? snapshot('room:' + ref.id, value, params) : value;

@@ -172,6 +172,14 @@ function fallbackDecisions(pendingIds) {
   return new Map(pendingIds.map(id => [id, { route: 'main', summary: null, fallback: true }]));
 }
 
+function permissionFallback(stage, connectionId) {
+  const preflight = stage === 'preflight';
+  return { stage, code: preflight ? 'model_grant_required' : 'connection_forbidden',
+    connection_id: connectionId, route: 'main', ...(preflight ? {} : { status: 403 }),
+    message: preflight ? `快读预检发现此 Bot 缺少模型连接 ${connectionId} 的授权。消息已转交群主对话。` :
+      `发送快读请求前，模型连接 ${connectionId} 的权限检查未通过（宿主 403）。消息已转交群主对话。` };
+}
+
 export class FastReadRuntime {
   constructor(runtime) {
     this.runtime = runtime;
@@ -348,7 +356,8 @@ export class FastReadRuntime {
       const blocker = this.platform.modelAccessBlocker(actor, resolved?.connection_id);
       if (!resolved || blocker) {
         return await this.commitFallback(inbox, bot, roomId, batch, check, controller,
-          blocker?.message || 'Fast-read model is unavailable', blocker?.code || 'connection_unconfigured');
+          blocker?.message || 'Fast-read model is unavailable', blocker?.code || 'connection_unconfigured',
+          blocker?.code === 'model_grant_required' ? permissionFallback('preflight', resolved.connection_id) : null);
       }
 
       const modelSelection = bindModel(this.runtime.model, resolved, 'fast_read');
@@ -474,7 +483,8 @@ export class FastReadRuntime {
               await this.runtime.checkInstallation();
               check();
               if (!this.platform.canUseModel(actor, modelSelection.connection_id)) {
-                throw runtimeFailure('connection_forbidden', 'The fast-read model connection is no longer authorized', 403);
+                throw runtimeFailure('connection_forbidden', 'The fast-read model connection is no longer authorized', 403,
+                  permissionFallback('before_fetch', modelSelection.connection_id));
               }
               boundModel(this.runtime.model, modelSelection);
             } catch (error) {
@@ -490,7 +500,7 @@ export class FastReadRuntime {
         lease.finish({ tokens, outcome: answer?.stopReason || 'unknown' });
       } catch (error) {
         lease.finish({ outcome: 'failed' });
-        throw error;
+        throw beforeFetchError || error;
       }
 
       if (beforeFetchError) throw beforeFetchError;
@@ -522,7 +532,8 @@ export class FastReadRuntime {
         return;
       }
       try {
-        await this.commitFallback(inbox, bot, roomId, batch, check, controller, error.message || 'Fast-read failed', code);
+        await this.commitFallback(inbox, bot, roomId, batch, check, controller, error.message || 'Fast-read failed', code,
+          code === 'connection_forbidden' && error.details?.stage === 'before_fetch' ? error.details : null);
       } catch (commitError) {
         if (!controller.signal.aborted && !['bot_paused', 'updating', 'runtime_closed', 'access_revoked', 'room_forbidden'].includes(commitError.code)) {
           throw commitError;
@@ -531,13 +542,13 @@ export class FastReadRuntime {
     }
   }
 
-  async commitFallback(inbox, bot, roomId, batch, check, controller, message, code) {
+  async commitFallback(inbox, bot, roomId, batch, check, controller, message, code, diagnostic) {
     const decisions = fallbackDecisions(batch.map(route => route.event_id));
     const room = { id: roomId, name: roomId };
-    await this.commitDecisions(inbox, bot, room, batch, decisions, null, check, controller, `${code}: ${message}`);
+    await this.commitDecisions(inbox, bot, room, batch, decisions, null, check, controller, `${code}: ${message}`, diagnostic);
   }
 
-  async commitDecisions(inbox, bot, room, batch, decisions, cacheThroughMessageId, check, controller, fallbackReason = null) {
+  async commitDecisions(inbox, bot, room, batch, decisions, cacheThroughMessageId, check, controller, fallbackReason = null, diagnostic = null) {
     const roomId = room.id;
     check();
     for (const route of batch) {
@@ -607,6 +618,7 @@ export class FastReadRuntime {
             ...live,
             fast_read_decision: 'main',
             ...(decision.fallback ? { fast_read_fallback: true } : {}),
+            ...(decision.fallback && diagnostic ? { fast_read_diagnostic: diagnostic } : {}),
             ...(forwardReason ? { fast_read_forward_fallback: forwardReason, fast_read_forward_target: decision.target,
               fast_read_forward_call_id: failedForward?.call_id } : {}),
             fast_read_at: now(),

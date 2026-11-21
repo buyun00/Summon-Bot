@@ -224,6 +224,12 @@ export class BotRuntime {
     });
   }
 
+  roomDeliveryDetails(botId, eventId) {
+    const route = this.inboxes.get(botId)?.store.getRecord(R.route, recordKey(eventId, 'observation'));
+    return { ...(route?.fast_read_diagnostic && { fast_read_diagnostic: route.fast_read_diagnostic }),
+      ...(route?.public_reply && { public_reply: route.public_reply }) };
+  }
+
   wake() {
     if (this.closed || this.draining || this.platform.draining || this.pumpTask) return;
     if (!this.scheduled) {

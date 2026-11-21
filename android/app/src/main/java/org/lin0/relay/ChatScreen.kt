@@ -1025,6 +1025,12 @@ private fun MessageRow(store: SummonStore, roomID: String, message: SummonMessag
                         }
                     }
                 }
+                store.deliveryFacts(message.id).forEach { fact ->
+                    fact.diagnostic?.let { diagnostic ->
+                        Text(store.name(fact.botId) + " · " + diagnostic,
+                            style = MaterialTheme.typography.labelSmall, color = palette.textSecondary)
+                    }
+                }
                 error?.let { Text(it, color = palette.warn, style = MaterialTheme.typography.bodySmall) }
             }
         }

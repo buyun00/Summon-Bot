@@ -2239,7 +2239,8 @@ function renderMessageSummaries(message) {
 
 function renderDelivery(message) {
   if (message._delivery) return renderSendStatus(message);
-  return '';
+  return (ui.roomDeliveries.get(message.id) || []).filter(item => item.fast_read_diagnostic).map(item =>
+    `<div class="message-delivery">${esc(nameOf(item.bot_id))} · ${esc(item.fast_read_diagnostic.message)}</div>`).join('');
 }
 
 function renderChatMessage(message, timeline, grouped, isGroup) {

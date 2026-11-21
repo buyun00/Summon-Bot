@@ -145,6 +145,11 @@ struct SummonRoom: Codable, Identifiable, Equatable, Sendable {
 struct SummonDelivery: Codable, Sendable {
     var bot_id: String
     var status: String
+    var fast_read_diagnostic: FastReadDiagnostic?
+
+    struct FastReadDiagnostic: Codable, Sendable {
+        var message: String
+    }
 }
 
 struct SummonMessageSummary: Codable, Equatable, Sendable {

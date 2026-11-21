@@ -635,6 +635,12 @@ private struct MessageRow: View {
                         Text("消息已保存").summonFont(.caption2).foregroundStyle(.tertiary)
                     }
                 }
+                ForEach(store.deliveryFacts(message.id), id: \.bot_id) { fact in
+                    if let diagnostic = fact.fast_read_diagnostic {
+                        Text("\(store.name(for: fact.bot_id)) · \(diagnostic.message)")
+                            .summonFont(.caption2).foregroundStyle(.secondary)
+                    }
+                }
                 if let failure { InlineError(message: failure) }
             }
             if !message.isOwn { Spacer(minLength: 20) }

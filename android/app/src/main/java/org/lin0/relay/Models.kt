@@ -211,12 +211,12 @@ data class SummonRoom(
     }
 }
 
-data class SummonDelivery(val botId: String, val status: String) {
+data class SummonDelivery(val botId: String, val status: String, val diagnostic: String?) {
     companion object {
         fun list(json: SummonJson): List<SummonDelivery> = json.array.orEmpty().mapNotNull {
             val id = it["bot_id"].string ?: return@mapNotNull null
             val status = it["status"].string ?: return@mapNotNull null
-            SummonDelivery(id, status)
+            SummonDelivery(id, status, it["fast_read_diagnostic"]["message"].string)
         }
     }
 }

@@ -93,8 +93,11 @@ export class SummonPlatform {
   removeRoomBase(botId, roomId) { return this.deliveries.removeBase(botId, roomId); }
   queueMessage(event) { return this.deliveries.queueMessage(event); }
   messageDeliveries(eventId) { return this.deliveries.messageDeliveries(eventId); }
+  hostMessageDeliveries(eventId) {
+    return this.messageDeliveries(eventId).map(item => ({ ...item, ...this.runtime.roomDeliveryDetails(item.bot_id, eventId) }));
+  }
   eventDeliveries(eventId) {
-    return this.deliveries.messageDeliveries(eventId).map(delivery => ({
+    return this.hostMessageDeliveries(eventId).map(delivery => ({
       ...delivery, runs: this.runtime.deliveryRuns(delivery.bot_id, eventId),
     }));
   }
