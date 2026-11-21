@@ -80,7 +80,6 @@ function toolSpecForExecution(spec, { isPiSession }) {
   };
 }
 const readTools = new Set(['find', 'read']);
-const waiting = new Set(['accepted', 'prepared', 'submitted', 'pending', 'running', 'waiting', 'stopping', 'needs_input']);
 const asError = error => ({ code: error.code || 'operation_failed', message: error.message, status: error.status, details: error.details });
 
 export class BotEngine {
@@ -428,17 +427,13 @@ export class BotEngine {
       const imageInput = name === 'read' && args.ref?.kind === 'file' && { supported: model.input.includes('image'),
         maxBytes: model.inputLimits?.images?.resize?.maxBytes };
       const result = this.clean(await this.platform.invoke(name, args, { ...context, call_id: id, signal: job.signal, imageInput }));
-      const asyncResult = !readTools.has(name) && waiting.has(result?.status);
+      const returnWaits = !readTools.has(name) && result?.call_id === id
+        ? (result.wait_refs ?? []).filter(wait => ['waiting', 'pending_delivery', 'received'].includes(wait.status)) : [];
       inbox.store.transaction(() => {
         const access = job.observing && observationReadRefs(name, args, result).filter(job.canReadReference);
-        inbox.store.putRecord(R.call, { ...persisted, state: asyncResult ? 'submitted' : 'completed', result, finished_at: now(),
+        inbox.store.putRecord(R.call, { ...persisted, state: returnWaits.length ? 'submitted' : 'completed', result, finished_at: now(),
           ...(access?.length && { observation_access: access }) });
-        if (asyncResult) for (const wait of result.wait_refs || [{ id: recordKey(id, context.actor.id, context.origin.conversation_id, context.origin.run_id) }]) {
-          const existing = inbox.wait(wait.id);
-          inbox.store.putRecord(R.wait, { id: wait.id, call_id: id, bot_id: context.actor.id,
-            conversation_id: context.origin.conversation_id, run_id: runId, control_version: context.origin.control_version,
-            target: result.target || result.execution_ref || result.session?.ref, status: 'waiting', ...existing });
-        }
+        inbox.attachReturnWaits(context.origin.conversation_id, runId, returnWaits);
       });
       return toolObservation(readTools.has(name) ? null : id, result);
     } catch (error) {

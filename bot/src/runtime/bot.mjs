@@ -148,15 +148,7 @@ export class BotRuntime {
       store.transaction(() => {
         for (const run of inbox.list(R.run, 'state', 'running')) inbox.putRun({ id: run.id, state: 'interrupted' });
         for (const conversation of store.listRecords(R.conversation)) this.syncConversationControl(inbox, conversation);
-        for (const wait of inbox.list(R.wait, 'status', 'waiting')) {
-          const published = this.platform.store.get(waitRecords, wait.id);
-          if (published?.status !== 'access_revoked' || published.bot_id !== botId || published.run_id !== wait.run_id ||
-              published.call_id !== wait.call_id || published.conversation_id !== wait.conversation_id ||
-              inbox.run(wait.run_id)?.conversation_id !== wait.conversation_id ||
-              published.latest_event_id !== wait.latest_event_id) continue;
-          const route = store.getRecord(R.route, recordKey(published.latest_event_id, wait.id));
-          if (route?.state === 'access_revoked') inbox.settleWait(route, route.state);
-        }
+        this.reconcileReturnWaits(inbox);
       });
     } catch (error) {
       try { store?.close(); } catch {}
@@ -169,6 +161,34 @@ export class BotRuntime {
       this.emit('engine.usage_unavailable', { bot_id: botId });
     }
     return inbox;
+  }
+
+  reconcileReturnWaits(inbox) {
+    const owners = new Set();
+    for (const wait of inbox.list(R.wait, 'status', 'waiting')) {
+      const published = this.platform.store.get(waitRecords, wait.id);
+      if (!published || published.bot_id !== inbox.botId || published.run_id !== wait.run_id ||
+          published.call_id !== wait.call_id || published.conversation_id !== wait.conversation_id ||
+          inbox.run(wait.run_id)?.conversation_id !== wait.conversation_id) continue;
+      if (published.status === 'inline') {
+        inbox.store.putRecord(R.wait, { ...wait, status: 'inline', result_position: published.result_position });
+        owners.add(wait.run_id);
+      } else if (published.status === 'access_revoked' && published.latest_event_id === wait.latest_event_id) {
+        const route = inbox.store.getRecord(R.route, recordKey(published.latest_event_id, wait.id));
+        if (route?.state === 'access_revoked') {
+          inbox.settleWait(route, route.state);
+          owners.add(wait.run_id);
+        }
+      }
+    }
+    for (const id of owners) {
+      const run = inbox.run(id);
+      const conversation = inbox.conversation(run.conversation_id);
+      if (run.state !== 'waiting' || !run.result || conversation?.kind !== 'room' || inbox.hasOpenWaits(id) ||
+          run.route_ids.some(route => inbox.store.getRecord(R.route, route)?.state === 'pending')) continue;
+      inbox.putRun({ id, state: 'completed' });
+      this.stageInputs(inbox, conversation, id, 'completed', run.result);
+    }
   }
 
   inputWriterFinished(pid) {
@@ -961,7 +981,8 @@ export class BotRuntime {
           for (const wait of actual.wait_refs || []) {
             if (wait.run_id !== runId) continue;
             const prior = inbox.wait(wait.id);
-            inbox.store.putRecord(R.wait, { ...wait, ...prior, target: wait.target || prior?.target });
+            inbox.store.putRecord(R.wait, { ...wait, ...prior, target: wait.target || prior?.target,
+              ...(wait.status === 'inline' && { status: 'inline', result_position: wait.result_position }) });
           }
         });
       } else if (record.state === 'prepared') inbox.store.putRecord(R.call, { ...record, state: 'not_submitted' });

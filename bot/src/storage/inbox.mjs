@@ -77,7 +77,7 @@ export class Inbox {
   }
 
   hasOpenWaits(runId) {
-    return this.waits(runId).some(wait => wait.status !== 'inline' && !settledRouteStates.has(wait.status) && !terminalCallStates.has(wait.status) &&
+    return this.waits(runId).some(wait => wait.status !== 'inline' && wait.status !== 'access_revoked' && !terminalCallStates.has(wait.status) &&
       this.store.getRecord(R.input, wait.call_id)?.run_id !== runId);
   }
 
