@@ -1,5 +1,39 @@
 import { idOf, reject, sameRef } from './contract.mjs';
 
+export function fieldLayout(materials, presentation, layout) {
+  if (!Array.isArray(layout) || !layout.length || layout.length > 100) return;
+  const used = new Set(), pieces = [];
+  for (const part of layout) {
+    if (Number.isInteger(part?.field) && materials[part.field] && !used.has(part.field)) {
+      pieces.push(materials[part.field].text);
+      used.add(part.field);
+    } else if (typeof part?.literal === 'string' && part.literal.length <= 240 &&
+        (/^[\s,，、;；|/]*$/u.test(part.literal) || presentation.some(text => text.includes(part.literal)))) {
+      pieces.push(part.literal);
+    } else return;
+  }
+  if (used.size === materials.length) return pieces.join('');
+}
+
+export function publicationFieldText(release, proposed) {
+  if (release.formatted !== undefined) return release.formatted;
+  const fields = release.materials.map(item => item.text);
+  if (fields.length === 1 && !release.format_literals?.length) return fields[0];
+  // Preserve the author's punctuation, line breaks and approved labels/units.
+  // Each factual value must occur intact and every gap must be licensed.
+  let rest = proposed ?? '';
+  const allowedGap = gap => {
+    for (const literal of release.format_literals ?? []) gap = gap.split(literal).join('');
+    return /^[\s,，、;；|/]*$/u.test(gap);
+  };
+  for (const field of fields) {
+    const at = rest.indexOf(field);
+    if (at < 0 || !allowedGap(rest.slice(0, at))) return fields.join(' ');
+    rest = rest.slice(at + field.length);
+  }
+  return allowedGap(rest) ? proposed : fields.join(' ');
+}
+
 // Determine the Room of the object actually returned by a read. A directory
 // lookup may return several different audiences in a single page.
 export function withinPublicationRoom(platform, ref, room, seen = new Set()) {
@@ -95,25 +129,42 @@ export function inspectedPublicationSources(platform, context, destination, call
   return { candidates, hostMessages: host, facts, factRooms, versions: { results: [], deliveries: [] }, versionsFor, requests };
 }
 
+export function roomQuestionLinks(platform, room, messages) {
+  const links = new Set();
+  const pending = messages.flatMap(item => [item.id, ...(item.senderId === 'user' || item.author?.kind === 'user' ?
+    (item.references ?? []).filter(ref => ref.kind === 'event').map(ref => ref.id) : [])]);
+  while (pending.length) {
+    const id = pending.pop();
+    if (links.has(id)) continue;
+    const message = platform.store.get('messages', id);
+    if (message?.roomId !== room.id) continue;
+    links.add(id);
+    if (message.replyTo) pending.push(message.replyTo);
+  }
+  return links;
+}
+
 export function publicationSources(platform, args, context, destination, localRoot) {
   const origin = context.conversation.space;
   const current = context.origin.event_ids.map(id => platform.store.get('messages', id)).filter(item => item?.roomId === origin.id);
   const receipts = context.origin.event_ids.map(id => platform.store.get('platform-events', id))
     .filter(event => event?.type === 'call.receipt' && event.owner_conversation_id === context.conversation.id);
-  const roots = new Set(current.flatMap(item => [item.id, item.replyTo]).filter(Boolean));
+  const roots = roomQuestionLinks(platform, origin, current);
   for (const event of receipts) if (sameRef(event.origin_room, origin)) roots.add(event.origin_message_id);
-  if (localRoot) roots.add(localRoot);
+  const localMessage = localRoot && platform.store.get('messages', localRoot);
+  const localLinks = localMessage && roomQuestionLinks(platform, origin, [localMessage]);
+  if (localLinks) for (const id of localLinks) roots.add(id);
   const owned = platform.executions.directWork(context.conversation.id).filter(work => sameRef(work.origin_room, origin) &&
-    (!localRoot || work.origin_message_id === localRoot) && (roots.has(work.origin_message_id) || work.owner_run_id === context.origin.run_id));
+    (!localRoot || localLinks?.has(work.origin_message_id)) && (roots.has(work.origin_message_id) || work.owner_run_id === context.origin.run_id));
   const questions = new Set(owned.map(work => work.origin_message_id));
-  if (localRoot && !questions.has(localRoot)) return null;
+  if (localRoot && !questions.size) return null;
   const requested = args.publication?.authorization && idOf(args.publication.authorization, 'event');
   if (questions.size > 1) {
     const source = requested && platform.store.get('messages', requested);
-    const root = source?.roomId === origin.id && (questions.has(source.id) ? source.id : source.replyTo);
-    if (!questions.has(root)) reject('publication_assignment_required', 'Select the host authorization for the specific original assignment.', 409);
+    const matching = source?.roomId === origin.id ? [...roomQuestionLinks(platform, origin, [source])].filter(id => questions.has(id)) : [];
+    if (matching.length !== 1) reject('publication_assignment_required', 'Select the host authorization for the specific original assignment.', 409);
     questions.clear();
-    questions.add(root);
+    questions.add(matching[0]);
   }
   const messages = new Map(current.map(message => [message.id, message]));
   for (const root of questions) {
@@ -127,7 +178,10 @@ export function publicationSources(platform, args, context, destination, localRo
   const names = platform.store.list('rooms').filter(room => room.members.includes(context.actor.id) && room.name === destination.name);
   const namesDestination = item => item.content.includes(destination.id) || names.length === 1 && item.content.includes(destination.name) ||
     item.references?.some(ref => ref.kind === 'room' && ref.id === destination.id);
-  const candidates = eligible.filter(item => (!requested || requested === item.id) && (localRoot ? item.id === localRoot : namesDestination(item)));
+  const selected = requested && eligible.find(item => item.id === requested);
+  const continuationRoots = selected && roomQuestionLinks(platform, origin, [selected]);
+  const candidates = eligible.filter(item => (!requested || requested === item.id || questions.has(item.id) && continuationRoots?.has(item.id)) &&
+    (localRoot ? questions.has(item.id) || item.id === requested : namesDestination(item)));
   // A later host message can change or withdraw a deferred grant without
   // replying to the original question. It can restrict this grant, never create it.
   const start = candidates.map(item => item.createdAt).sort()[0];
@@ -137,7 +191,7 @@ export function publicationSources(platform, args, context, destination, localRo
     for (const { data } of later) {
       const item = JSON.parse(data);
       if (!item.replyTo || namesDestination(item) || item.mentions?.includes(context.actor.id) ||
-          item.references?.some(ref => ref.kind === 'event' && questions.has(ref.id))) messages.set(item.id, item);
+          [...roomQuestionLinks(platform, origin, [item])].some(id => questions.has(id))) messages.set(item.id, item);
     }
   }
   const hostMessages = [...messages.values()].filter(item => item.senderId === 'user').sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -163,7 +217,7 @@ export function publicationSources(platform, args, context, destination, localRo
   }
   const versions = { user_messages: hostMessages.map(item => item.id), results, deliveries: [...deliveries] };
   const confirmed_delivery = deliveries.size > 0;
-  return { candidates, hostMessages, facts, versions, current, questions, confirmed_delivery, local_work: Boolean(localRoot) };
+  return { candidates, hostMessages, facts, versions, current, requested, questions, confirmed_delivery, local_work: Boolean(localRoot) };
 }
 
 export function publicationContext(platform, args, context, grant) {
@@ -189,10 +243,12 @@ export function publicationContext(platform, args, context, grant) {
   const reply = replyId && platform.store.get('messages', replyId);
   if (replyId && reply?.roomId !== to.id) reject('room_reply_unavailable', 'Choose a reply in the destination Room', 409);
   const attachments = (args.attachments ?? []).map(id => ({ kind: 'file', id: idOf(id, 'file') }));
+  if (crossRoom && release.fields_only && (attachments.length || args.references?.length || args.mentions?.length))
+    reject('publication_source_unavailable', 'The source authorized a field-only delivery. Send the fields to the named Room.', 403);
   for (const ref of [...attachments, ...(args.references ?? [])]) {
     if (!withinPublicationRoom(platform, ref, to) && !release)
       reject('publication_source_unavailable', 'This reference belongs to a different audience.', 403);
-    if (release && !withinPublicationRoom(platform, ref, to)) {
+    if (release && (crossRoom || !withinPublicationRoom(platform, ref, to))) {
       const instruction = platform.store.get('messages', release.authorization_id);
       if (!release.materials.some(part => part.event_id === ref.id && platform.store.get('messages', ref.id)?.content === part.text) &&
           !(instruction.attachments?.some(item => ref.kind === 'file' && item.id === ref.id) &&

@@ -56,6 +56,23 @@ export class RoomWork {
     });
   }
 
+  hostAmendments(session) {
+    if (!session.origin_room || !session.origin_message_id) return [];
+    return this.platform.store.db.prepare(`SELECT data FROM records WHERE kind='messages'
+      AND json_extract(data,'$.roomId')=? AND json_extract(data,'$.replyTo')=? AND json_extract(data,'$.senderId')='user'
+      ORDER BY rowid DESC LIMIT 8`).all(session.origin_room.id, session.origin_message_id).map(row => JSON.parse(row.data)).reverse();
+  }
+
+  materialStatus(session, ids) {
+    const attempts = this.materialAttempts(session.id, ids);
+    return ids.map(id => {
+      const attempt = attempts.find(item => !item.material_reference_only && (item.material_action_ids ?? item.material_source_ids).includes(id));
+      const input = attempt?.input_id && this.platform.store.get('platform-inputs', attempt.input_id);
+      return { source_event: id, input_status: input && input.call_id === attempt.id ? input.status : 'unconfirmed',
+        ...(attempt && { call_status: attempt.status }) };
+    });
+  }
+
   inputSources(args, context, session, call) {
     const { platform } = this;
     const requested = args.material_sources?.map(id => idOf(id, 'event'));
@@ -88,6 +105,12 @@ export class RoomWork {
     else {
       const local = incoming.filter(item => item.roomId === session.origin_room?.id);
       const related = local.filter(item => item.replyTo === session.origin_message_id || item.id === session.origin_message_id);
+      if (args.kind !== 'reply' && related.length) {
+        const later = this.hostAmendments(session).filter(item => item.createdAt > related.at(-1).createdAt);
+        if (later.length || related.filter(item => item.id !== session.origin_message_id).length > 1)
+          reject('material_source_required', 'Select the actual instruction or amendment in material_sources. For an independent instruction use an empty list.', 409,
+            { candidates: [...related, ...later].map(item => ({ id: item.id, time: item.createdAt, text: item.content.slice(0, 240) })) });
+      }
       ids = related.map(item => item.id);
     }
     if (ids.length > 12) reject('material_source_limit', 'Select up to twelve originals for this input.');
@@ -95,7 +118,7 @@ export class RoomWork {
       const message = platform.store.get('messages', id);
       if (!this.canHandOff(message, session, context.actor)) reject('material_source_forbidden', 'The source or its authorized intake is unavailable.', 403);
       if (message.roomId !== session.origin_room.id && !origin.fast_read_forward && !recovery) {
-        const forward = platform.calls.forwardsFor(context.actor.id, message.roomId, [id]).get(id);
+        const forward = platform.calls.forwardsFor(context.actor.id, message.roomId, [id], session.id).get(id);
         const authorized = incoming.some(item => item.senderId === 'user' && (item.replyTo === id ||
           item.references?.some(ref => sameRef(ref, { kind: 'event', id })) || item.content.includes(id)));
         if (forward?.target?.id !== session.id && !authorized)

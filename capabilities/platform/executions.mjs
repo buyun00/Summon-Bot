@@ -142,9 +142,10 @@ export class Executions {
   confirmedNonSubmission(call) {
     const input = call.input_id && this.store.get(inputRecords, call.input_id);
     return call.status === 'not_submitted' || call.submission_outcome === 'not_submitted' ||
-      input?.call_id === call.id && (input.status === 'not_submitted' || input.cancelled_before_dispatch === true) ||
+      input?.call_id === call.id && (input.status === 'not_submitted' || input.cancelled_before_dispatch === true ||
+        input.status === 'cancelled' && call.status === 'prepared' && !call.result_ref && !call.external && !call.pi_writer_pid) ||
       call.status === 'failed' && (call.result?.input_status === 'rejected' ||
-        !call.external && !call.pi_writer_pid && call.result_ref?.kind === 'call' && !call.result?.native);
+        !call.input_id && !call.external && !call.pi_writer_pid && call.result_ref?.kind === 'call' && !call.result?.native);
   }
 
   latestMaterialAttempt(original) {
@@ -176,7 +177,9 @@ export class Executions {
       reject('recovery_source_mismatch', 'Select the original material call for this work and owner.', 409);
     if (!explicit && (!work.id || args.kind === 'reply' || args.material_role === 'reference')) return;
     const sources = new Set(selected);
-    if (context.origin.fast_read_forward && selected.length) {
+    const directMaterial = args.material_role === 'handoff' || args.material_sources?.length &&
+      context.origin.event_ids.every(id => sources.has(id) || id === work.origin_message_id || !this.store.get('messages', id));
+    if (!explicit && (context.origin.fast_read_forward || directMaterial) && selected.length) {
       const prior = this.platform.roomWork.priorMaterialReceipts(work, attempt, selected);
       if (prior.length === sources.size)
         return { original: attempt, latest: this.calls.get(prior[0].call_id), receipts: prior };
@@ -235,7 +238,7 @@ export class Executions {
     const target = latest.target ?? original.origin.forward_target;
     if (!this.calls.canRead(context.actor, latest, context) || !this.platform.canReadCallResult(latest, target, context))
       reject('material_already_handled', 'This material already has a native input.', 409);
-    if (original.id !== latest.id) this.calls.bind(original.id, { forward_recovery_call_id: latest.id });
+    if (original.origin?.fast_read_forward && original.id !== latest.id) this.calls.bind(original.id, { forward_recovery_call_id: latest.id });
     this.calls.bind(attempt.id, { target, retained_input_call_id: latest.id });
     this.calls.addWait(latest.id, { ...context.origin, input_call_id: attempt.id, initiating_principal: attempt.initiating_principal });
     const input = latest.input_id && this.store.get(inputRecords, latest.input_id);

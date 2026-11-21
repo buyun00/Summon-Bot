@@ -16,7 +16,7 @@ import { Deliveries, wakeupRecords } from './delivery.mjs';
 import { Executions, conversationRecords, sessionRecords } from './executions.mjs';
 import { HostResources } from './resources.mjs';
 import { RoomWork } from './room-work.mjs';
-import { publicationContext, withinPublicationRoom } from './room-publication.mjs';
+import { publicationContext, publicationFieldText, roomQuestionLinks, withinPublicationRoom } from './room-publication.mjs';
 import { forwardMaterials } from './session-work.mjs';
 import { workspaceGranted } from './workspace-access.mjs';
 import { allowsConnection, enclosesExecutableScope, executableScope } from '../services/executable-scope.mjs';
@@ -1103,7 +1103,17 @@ export class SummonPlatform {
           const audience = publicationContext(this, args, context, grant);
           if (!this.runtime.checkRoomPublication(context, audience, args))
             reject('publication_view_required', 'No message has been sent. Complete this send using the audience, verified source fields and original request in your next input.', 409);
-          this.calls.bind(record.id, { publication_room: to, ...(audience.release && { publication_authority: audience.release.authorization_id }) });
+          const release = audience.release;
+          if (audience.cross_room && release.fields_only) args = { ...args, text: publicationFieldText(release, args.text) };
+          const replied = audience.reply_to && this.store.get('messages', audience.reply_to);
+          const replyCall = replied?.callId && this.store.get(callRecords, replied.callId);
+          const recipientRequest = replied && (replied.senderId !== context.actor.id || replyCall?.origin?.conversation_id !== context.conversation.id) ?
+            replied.id : null;
+          this.calls.bind(record.id, { publication_room: to, ...(release && { publication_authority: release.authorization_id,
+            publication_fields: release.materials, ...(audience.cross_room && { directed_publication: true,
+              publication_dispatch: release.dispatch_id ?? release.authorization_id, publication_key: keyOf(to.id, context.conversation.id,
+                release.authorization_id, release.dispatch_id ?? release.authorization_id, recipientRequest, release.materials,
+                release.formatted ?? release.presentation ?? []) }) }) });
         }
       }
       if (name === 'create_bot') {
@@ -1201,6 +1211,18 @@ export class SummonPlatform {
       }
       if (!this.canWriteSpace(actor, space, context)) reject('room_forbidden', 'Room is not available for sending', 403);
       let reply = normalize(args.reply_to, 'event');
+      const publication = this.calls.get(call.id);
+      if (publication.directed_publication) {
+        const prior = this.store.db.prepare(`SELECT data FROM records WHERE kind='platform-calls' AND id<>?
+          AND json_extract(data,'$.publication_key')=? AND json_extract(data,'$.status')='completed' ORDER BY rowid DESC LIMIT 1`)
+          .get(call.id, publication.publication_key);
+        const messageId = prior && JSON.parse(prior.data).result?.message?.id;
+        const message = messageId && this.store.get('messages', messageId);
+        if (message?.roomId === id && message.senderId === actor.id && publication.publication_fields.every(part => message.content.includes(part.text))) {
+          this.calls.bind(call.id, { target: space });
+          return { ...this.room.receiptForPublication(message.id, actor), already_delivered: true };
+        }
+      }
       if (!reply && !args.work_reply && actor.kind === 'bot' && sameRef(context.conversation.space, space)) {
         const due = this.runtime.outstandingRoomReplies(this.runtime.inboxes.get(actor.id), space, context.origin.event_ids);
         if (due.length === 1) reply = { kind: 'event', id: due[0].message_id };
@@ -1208,7 +1230,12 @@ export class SummonPlatform {
       const { reply: replyTo, work_reply, retained } = this.executions.roomReply(args, context, space, reply);
       const delivered = retained || actor.kind === 'bot' && this.runtime.recoveredRoomReply(context.origin, id, replyTo?.id);
       if (delivered) {
-        this.calls.bind(call.id, { target: space });
+        const work = args.work_reply?.stage === 'complete' && this.executions.record({ kind: 'session', id: idOf(args.work_reply.session, 'session') });
+        const selected = reply && this.store.get('messages', reply.id);
+        const covers = work?.acceptance_state === 'closed' && work.acceptance?.message_id === delivered.id &&
+          selected?.roomId === id && selected.createdAt <= delivered.createdAt && context.origin?.event_ids.includes(selected.id) &&
+          roomQuestionLinks(this, space, [selected]).has(work.origin_message_id);
+        this.calls.bind(call.id, { target: space, ...(covers && { answered_request: selected.id }) });
         return { ...this.room.messageReceipt(delivered), already_delivered: true,
           guidance: 'Use this confirmed delivery. For a substantive correction to delegated work use work_reply.stage=correction in its owning Room, or reply to the new source message.' };
       }
@@ -1219,8 +1246,10 @@ export class SummonPlatform {
       if (actor.kind === 'bot') this.resources.acquire('message', this.resourceSource(context), { id: call.id }).finish();
       this.calls.bind(call.id, { target: space, ...(work_reply && { work_reply }) });
       if (work_reply?.stage === 'correction') this.store.save(sessionRecords, { id: work_reply.session_id, retained_delivery: null });
+      const fields = publication.directed_publication ? publication.publication_fields.map(part => part.text)
+        .filter(text => args.text?.includes(text)) : [];
       return this.room.send(id, { ...args, attachments, reply_to: replyTo, mentions: members(args.mentions),
-        clientId: context.clientId }, actor.id, { callId: call.id });
+        clientId: context.clientId }, actor.id, { callId: call.id, ...(fields.length && { authorizedFields: fields }) });
     }
     if (name === 'save_file') {
       const action = this.runtime.materials.prepareSave(args, context);

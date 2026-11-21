@@ -39,6 +39,7 @@ function rowMessage(row) {
   const author = message.author ?? message.source ?? identity(senderId);
   return { id, ref: { kind: 'event', id }, kind: 'message', roomId, senderId, content, createdAt, sequence: row.sequence,
     author, space: { kind: 'room', id: roomId }, clientId, replyTo, replyAuthorId, callId,
+    ...(message.authorized_publication && { authorized_publication: message.authorized_publication }),
     attachments: (message.attachments ?? []).map(({ id: fileId, name, mimeType, size, url, previewUrl, openUrl, unavailable }) =>
       ({ id: fileId, ref: { kind: 'file', id: fileId }, name, mimeType, size, url, previewUrl, openUrl, unavailable })),
     references: message.references ?? [], mentions: message.mentions ?? [] };
@@ -421,6 +422,7 @@ export class ChatroomService {
       if (!content.trim() && !attachments.length && !refs.length) fail('请填写正文，或添加附件或引用');
       const message = this.store.save('messages', {
         id: eventId, kind: 'message', roomId: id, senderId: actor, author: identity(actor), content, attachments, references: refs, mentions,
+        ...(options.authorizedFields?.length && { authorized_publication: { fields: options.authorizedFields } }),
         replyTo: parent?.id ?? null, ...(parent ? { replyAuthorId: parent.senderId } : {}),
         ...(clientId === undefined ? {} : { clientId }), ...(callId ? { callId } : {}),
       });
@@ -437,6 +439,12 @@ export class ChatroomService {
     return { message, deliveries: this.platform.messageDeliveries(message.id) };
   }
 
+  receiptForPublication(id, actor) {
+    const message = this.projectMessage(this.messageRow.get(id));
+    this.room(message.roomId, actor);
+    return this.messageReceipt(message);
+  }
+
   receipt(id, clientId, actor) {
     id = idOf(id, 'room');
     actor = identity(actor).id;
@@ -450,6 +458,7 @@ export class ChatroomService {
 export function messageEvent(message) {
   const author = message.senderId === 'system' ? { kind: 'platform', id: 'platform' } : identity(message.senderId);
   return { id: message.id, type: 'message', kind: 'event', roomId: message.roomId, space: message.space,
+    ...(message.authorized_publication && { authorized_publication: message.authorized_publication }),
     author, time: message.createdAt, sequence: message.sequence, text: message.content, content: message.content,
     mentions: message.mentions, reply_to: message.replyTo, replyAuthorId: message.replyAuthorId,
     attachments: message.attachments, references: message.references, call_id: message.callId };

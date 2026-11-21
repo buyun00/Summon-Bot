@@ -24,6 +24,7 @@ export function normalizeRoomMessage(event) {
     sequence: event.sequence,
     time: event.time ?? event.createdAt,
     author: event.author,
+    ...(event.authorized_publication && { authorized_publication: event.authorized_publication }),
     text: event.text ?? event.content ?? '',
     attachments: event.attachments ?? [],
     references: event.references ?? [],

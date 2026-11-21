@@ -7,7 +7,7 @@ import { repairRequestType, repairResultType, tools } from '../../../capabilitie
 import { deliveryRecords } from '../../../capabilities/platform/delivery.mjs';
 import { waitRecords } from '../../../capabilities/platform/calls.mjs';
 import { forwardMaterials, workGroup } from '../../../capabilities/platform/session-work.mjs';
-import { inspectedPublicationSources, privateRoomRead, publicationContext, publicationSources, withinPublicationRoom } from '../../../capabilities/platform/room-publication.mjs';
+import { fieldLayout, inspectedPublicationSources, privateRoomRead, publicationContext, publicationSources, roomQuestionLinks, withinPublicationRoom } from '../../../capabilities/platform/room-publication.mjs';
 import { BotStore } from '../storage/store.mjs';
 import { Inbox } from '../storage/inbox.mjs';
 import { eventOrder, executionRef, now, recordKey, refKey, runtimeFailure, runtimeRecords as R, sameRef, terminalCallStates } from '../storage/runtime-records.mjs';
@@ -59,6 +59,7 @@ const protectedEvent = event => protectedEvents.has(event.type) || event.result?
 const isTerminalReceipt = (event, wait) => event?.type === 'call.receipt' && event.call_id === wait.call_id && terminalCallStates.has(event.status);
 const callSettled = status => status !== 'unknown' && terminalCallStates.has(status);
 const roomEvent = message => ({ id: message.id, kind: 'event', type: 'message', space: { kind: 'room', id: message.roomId },
+  ...(message.authorized_publication && { authorized_publication: message.authorized_publication }),
   sequence: message.sequence, time: message.createdAt, author: message.author || (message.senderId === 'user' ? { kind: 'user', id: 'user' } :
     message.senderId === 'system' ? { kind: 'platform', id: 'platform' } : botRef(message.senderId)),
   text: message.content, attachments: message.attachments, references: message.references, mentions: message.mentions, reply_to: message.replyTo });
@@ -325,6 +326,22 @@ export class BotRuntime {
       receipts.push({ source_event: source, author: message.senderId, call_status: receipt.call_status,
         native_input_status: receipt.native_input_status, ...(receipt.recovery && { recovery: {
           call_status: receipt.recovery.call_status, native_input_status: receipt.recovery.native_input_status } }) });
+    }
+    if (ids.size) {
+      const local = this.platform.store.db.prepare(`SELECT data FROM records WHERE kind='platform-calls'
+        AND json_extract(data,'$.target.id')=? AND json_extract(data,'$.origin.bot_id')=? AND json_extract(data,'$.status')='completed'
+        AND EXISTS (SELECT 1 FROM json_each(data,'$.intake_source_ids') WHERE value IN (SELECT value FROM json_each(?))) ORDER BY rowid DESC`)
+        .all(room.id, botId, JSON.stringify([...ids]));
+      for (const row of local) {
+        const call = JSON.parse(row.data);
+        for (const id of call.intake_source_ids) {
+          if (!ids.has(id) || receipts.some(item => item.source_event === id && item.call_status)) continue;
+          const message = this.platform.store.get('messages', id);
+          const specific = call.result?.material_receipts?.find(item => item.event_id === id);
+          if (message?.roomId === room.id) receipts.push({ source_event: id, author: message.senderId,
+            call_status: specific?.call_status ?? call.result?.status, native_input_status: specific?.input_status ?? call.result?.input_status });
+        }
+      }
     }
     if (!open && !receipts.length) return null;
     return { room: { id: room.id, name: room.name }, receives_materials_here: open, receipts,
@@ -626,12 +643,70 @@ export class BotRuntime {
   }
 
   reconcileDeliveries(inbox, received) {
+    const inspected = new Set();
     for (const delivery of received.filter(item => item.bot_id === inbox.botId)) {
       if (delivery.event.type === 'message') this.reconcileRoomReply(inbox, delivery.event);
       if (delivery.event.type === 'call.receipt') this.reconcileHostReview(inbox, delivery.event);
+      for (const route of inbox.list(R.route, 'event_id', delivery.event.id)) {
+        if (route.state !== 'pending' || !route.run_id || inspected.has(route.run_id)) continue;
+        inspected.add(route.run_id);
+        this.reconcileAcceptedWork(inbox, route.run_id);
+      }
       const receipt = inbox.receipt(delivery.id);
       if (receipt?.revision === (delivery.revision ?? 1)) this.syncDelivery(inbox, receipt);
     }
+  }
+
+  reconcileAcceptedWork(inbox, runId) {
+    const run = inbox.run(runId);
+    if (run?.state !== 'suspended' || run.error?.code !== 'room_delivery_pending') return;
+    const conversation = inbox.conversation(run.conversation_id), actor = botRef(inbox.botId);
+    if (conversation?.kind !== 'room' || !this.conversationActive(conversation) || !this.platform.getBot(inbox.botId).enabled ||
+        !this.platform.canReadSpace(actor, conversation.space) || this.active.has(conversation.id) || this.starting.has(conversation.id)) return;
+    const pending = run.route_ids.map(id => inbox.store.getRecord(R.route, id)).filter(route => route?.state === 'pending');
+    const accepted = this.platform.executions.directWork(conversation.id).filter(work => work.acceptance_state === 'closed' &&
+      work.acceptance?.outcome === 'delivered' && work.owner.id === actor.id && sameRef(work.origin_room, conversation.space));
+    const covered = new Map(), changed = new Set();
+    for (const route of pending) {
+      const event = inbox.event(route.event_id);
+      if (!run.injected_event_ids.includes(route.event_id) || !event) continue;
+      const roots = event.type === 'message' ? roomQuestionLinks(this.platform, conversation.space, [event]) : new Set();
+      for (const work of accepted) {
+        const terminal = event.type === 'call.receipt' && event.status === 'completed' && event.target?.id === work.id &&
+          work.latest_call_id === event.call_id && this.platform.store.get('platform-calls', event.call_id)?.result_ref?.id === event.id;
+        if (!terminal && !roots.has(work.origin_message_id)) continue;
+        const message = this.platform.store.get('messages', work.acceptance.message_id);
+        const send = message && confirmedRoomSend(this.platform, { ...message, space: conversation.space });
+        if (!send || send.origin.conversation_id !== conversation.id || message.replyTo !== work.origin_message_id ||
+            message.createdAt < event.time) continue;
+        const context = { actor, conversation, origin: { bot_id: actor.id, conversation_id: conversation.id, run_id: runId } };
+        if (terminal && (!route.wait_id || inbox.wait(route.wait_id)?.call_id !== event.call_id || !this.platform.canReadEvent(event, context))) continue;
+        const native = !terminal && this.platform.roomWork.materialStatus(work, [event.id])[0];
+        const used = native?.call_status === 'completed' && native.input_status === 'completed';
+        if (terminal || used && route.intake_disposition === 'material' && !route.intake_task && !route.public_reply_quote) {
+          covered.set(route.id, { event_id: event.id, message_id: message.id, call_id: send.id });
+          break;
+        }
+        // A newer accepted answer to the same question changes what the
+        // suspended owner can use. Only that owner assesses uncovered requests.
+        if (message.createdAt > (run.last_delivery_review_at ?? run.first_started_at)) changed.add(message.id);
+      }
+    }
+    const position = JSON.stringify([...changed].sort());
+    const reconsider = changed.size && position !== run.delivery_recovery_position;
+    if (!covered.size && !reconsider) return;
+    inbox.store.transaction(() => {
+      for (const [id, proof] of covered) {
+        const route = inbox.store.getRecord(R.route, id);
+        inbox.store.putRecord(R.route, { ...route, state: 'processed', processed_at: now(), accepted_work_delivery: proof });
+        inbox.settleWait(route, 'processed');
+      }
+      const left = pending.filter(route => !covered.has(route.id));
+      inbox.putRun({ id: runId, processed_event_ids: [...new Set([...run.processed_event_ids, ...[...covered.values()].map(item => item.event_id)])],
+        ...(!left.length ? { state: inbox.hasOpenWaits(runId) ? 'waiting' : 'completed', error: null } : reconsider ?
+          { state: 'interrupted', recovering_room_inputs: true, delivery_recovery_position: position, last_delivery_review_at: now() } : {}) });
+    });
+    this.consumeDeliveries(inbox, [...covered.values()].map(proof => proof.event_id));
   }
 
   reconcileHostReview(inbox, event) {
@@ -719,7 +794,10 @@ export class BotRuntime {
         if (member !== inbox.botId && (!addressed.includes(member) || addressed.includes(inbox.botId))) return false;
         return confirmedRoomSend(this.platform, this.platform.room.replyBy(room.id, member, id));
       });
-      if (!answered) pending.push({ message_id: id, request: route.public_reply_quote });
+      const previous = !answered && this.platform.store.db.prepare(`SELECT data FROM records WHERE kind='platform-calls'
+        AND json_extract(data,'$.answered_request')=? AND json_extract(data,'$.origin.bot_id')=?
+        AND json_extract(data,'$.target.id')=? AND json_extract(data,'$.status')='completed' ORDER BY rowid DESC LIMIT 1`).get(id, inbox.botId, room.id);
+      if (!answered && !previous) pending.push({ message_id: id, request: route.public_reply_quote });
     }
     return pending;
   }
@@ -797,7 +875,8 @@ export class BotRuntime {
     if (job?.runId !== context.origin.run_id) return null;
     const review = async sources => {
       const position = JSON.stringify([destination.id, sources.local_work, sources.candidates.map(item => item.id),
-        sources.hostMessages.map(item => item.id), [...sources.facts.keys()], sources.versions, sources.requests?.map(item => item.id)]);
+        sources.hostMessages.map(item => item.id), [...sources.facts.keys()], sources.versions, sources.requests?.map(item => item.id),
+        sources.current?.map(item => item.id), sources.requested]);
       if (job.publicationReview?.position === position) return job.publicationReview.grant;
       const grant = await this.engine.resolvePublicationGrant(job, destination, sources);
       job.publicationReview = { position, grant };
@@ -808,12 +887,24 @@ export class BotRuntime {
       const requested = ref?.id ?? ref;
       const label = args.work_reply;
       const work = label && this.platform.executions.record(sessionRef(label.session.id ?? label.session));
-      const root = work?.owner_conversation_id === context.conversation.id && work.origin_room?.id === destination.id ?
+      let root = work?.owner_conversation_id === context.conversation.id && work.origin_room?.id === destination.id ?
         work.origin_message_id : (args.reply_to?.id ?? args.reply_to);
-      if (root && (!requested || requested === root) && (!label || ['complete', 'correction'].includes(label.stage))) {
+      if (!root) {
+        const incoming = context.origin.event_ids.map(id => this.platform.store.get('messages', id)).filter(item => item?.roomId === destination.id);
+        const linked = roomQuestionLinks(this.platform, context.conversation.space, incoming);
+        if (!incoming.length) for (const id of context.origin.event_ids) {
+          const event = this.platform.store.get('platform-events', id);
+          if (event?.type === 'call.receipt' && event.owner_conversation_id === context.conversation.id && event.origin_room?.id === destination.id)
+            linked.add(event.origin_message_id);
+        }
+        const questions = new Set(this.platform.executions.directWork(context.conversation.id)
+          .filter(item => item.origin_room?.id === destination.id && linked.has(item.origin_message_id)).map(item => item.origin_message_id));
+        if (questions.size === 1) [root] = questions;
+      }
+      if (root && (!label || ['complete', 'correction'].includes(label.stage))) {
         const local = () => publicationSources(this.platform, args, context, destination, root);
         const sources = local();
-        if (sources?.candidates.length && sources.versions.results.length) {
+        if (sources?.candidates.length && (sources.versions.results.length || sources.confirmed_delivery)) {
           const grant = await review(sources);
           if (grant?.review_error) return grant;
           const current = grant && local();
@@ -840,7 +931,7 @@ export class BotRuntime {
     const sources = publicationSources(this.platform, args, context, destination);
     if (!sources.candidates.length) return null;
     const previous = job.publication?.audience;
-    if (previous?.destination.id === destination.id && previous.release &&
+    if (previous?.destination.id === destination.id && previous.release && sources.candidates.some(item => item.id === previous.release.authorization_id) &&
         JSON.stringify(previous.release.versions) === JSON.stringify(sources.versions)) return previous.release;
     let inspect = false;
     for (const message of sources.candidates) {
@@ -855,8 +946,11 @@ export class BotRuntime {
               !(original.id === message.id && (part.quote === message.content || part.quote.includes(grant.quote))) ?
             [{ event_id: original.id, text: part.quote }] : [];
         });
-        if (materials.length && materials.length === grant.materials.length)
-          return { authorization_id: message.id, materials, presentation: grant.presentation, versions: sources.versions };
+        const presentation = grant.presentation ?? [];
+        const formatted = fieldLayout(materials, presentation, grant.layout);
+        if (materials.length && materials.length === grant.materials.length && (!grant.fields_only || !presentation.length || formatted !== undefined))
+          return { authorization_id: message.id, dispatch_id: message.id, materials, presentation, formatted,
+            fields_only: grant.fields_only || materials.length === 1 && !presentation.length, versions: sources.versions };
       }
       inspect = true;
     }
@@ -878,6 +972,10 @@ export class BotRuntime {
   }
 
   publicationEvidence(job, audience, includeHistory = true) {
+    if (audience.cross_room) {
+      const selection = JSON.stringify(audience.release);
+      return { selection, history: [], requests: [], locations: [], originWork: [], actions: [], files: [], pages: [] };
+    }
     const room = { kind: 'room', id: audience.destination.id };
     const calls = job.inbox.calls(job.runId);
     const refIds = new Set();
@@ -921,19 +1019,34 @@ export class BotRuntime {
     const inputs = new Set([...audience.current_message_ids, audience.reply_to].filter(Boolean));
     const requests = [...inputs].map(id => this.platform.store.get('messages', id))
       .filter(item => item?.roomId === room.id).map(roomEvent);
-    const roots = new Set(requests.flatMap(item => [item.id, item.reply_to]).filter(Boolean));
+    const roots = roomQuestionLinks(this.platform, room, requests);
     for (const id of job.context().origin.event_ids) {
       const event = this.platform.store.get('platform-events', id);
       if (event?.owner_conversation_id === job.conversation.id && sameRef(event.origin_room, room)) roots.add(event.origin_message_id);
     }
     const originWork = audience.cross_room ? [] : this.platform.executions.directWork(job.conversation.id)
       .filter(work => sameRef(work.origin_room, room) && (roots.has(work.origin_message_id) || work.owner_run_id === job.runId))
-      .map(work => ({ original_question: work.origin_message_id, engine: work.engine === 'pi' ? 'Pi' : this.platform.connections.get(work.engine)?.kind,
-        status: work.status, acceptance: work.acceptance_state,
-        intake_rooms: this.platform.roomWork.intakes(work).map(item => item.name) }));
+      .map(work => {
+        const terminal = this.platform.store.get('platform-calls', work.latest_call_id);
+        const result = terminal?.result_ref?.kind === 'event' && this.platform.store.get('platform-events', terminal.result_ref.id);
+        const steps = requests.filter(item => item.author?.kind === 'user' && roomQuestionLinks(this.platform, room, [item]).has(work.origin_message_id))
+          .map(item => item.id);
+        return { original_question: work.origin_message_id, engine: work.engine === 'pi' ? 'Pi' : this.platform.connections.get(work.engine)?.kind,
+          status: work.status, acceptance: work.acceptance_state, final_result_received: result?.status === 'completed' && result.target?.id === work.id,
+          selected_inputs: this.platform.roomWork.materialStatus(work, steps), intake_rooms: this.platform.roomWork.intakes(work).map(item => item.name) };
+      });
     const intake = audience.cross_room ? null : this.roomIntake(job.inbox.botId, audience.destination, requests);
-    const actions = audience.cross_room ? [] : calls.filter(call => ['save_file', 'configure_bot', 'open_session', 'configure_session'].includes(call.tool))
+    const actions = calls.filter(call => ['save_file', 'configure_bot', 'open_session', 'configure_session'].includes(call.tool))
       .map(call => ({ action: call.tool, status: call.state, code: call.result?.code }));
+    for (const call of calls.filter(item => item.tool === 'send_input')) {
+      const native = this.platform.store.get('platform-calls', call.id);
+      const target = native?.target?.kind === 'session' && this.platform.executions.record(native.target);
+      if (target?.origin_room?.id !== room.id || target.owner_conversation_id !== job.conversation.id) continue;
+      const input = native.input_id && this.platform.store.get('platform-inputs', native.input_id);
+      const sources = (native.material_action_ids ?? native.material_source_ids ?? []).filter(id => inputs.has(id));
+      if (sources.length) actions.push({ action: 'send_input', engine: target.engine === 'pi' ? 'Pi' : this.platform.connections.get(target.engine)?.kind,
+        sources, status: native.status, input_status: input?.call_id === native.id ? input.status : 'unconfirmed' });
+    }
     const selection = JSON.stringify([locations, originWork, intake?.receives_materials_here, intake?.receipts, actions, material?.content,
       selectedPages.map(page => [page.file.id, page.revision, page.cursor])]);
     if (!includeHistory) return { selection };
@@ -1315,6 +1428,8 @@ export class BotRuntime {
     }
     if (relevantGroups.size || requestIds.size || inbox.calls(runId).some(call => call.tool === 'open_session')) {
       const owned = this.platform.executions.directWork(conversation.id);
+      if (conversation.kind === 'room') for (const id of roomQuestionLinks(this.platform, conversation.space, current.filter(event => event.type === 'message')))
+        requestIds.add(id);
       if (requestIds.size && conversation.kind === 'room' && !run.receipt_group) {
         const recent = new Map();
         for (const work of owned.slice().reverse()) {
@@ -1339,11 +1454,15 @@ export class BotRuntime {
           const replies = question && conversation.kind === 'room' && sameRef(work.origin_room, conversation.space)
             ? this.platform.executions.originalReplies(work).slice(-4).map(({ message, stage }) =>
               ({ id: message.id, stage, text: message.content.slice(0, 2000) })) : [];
-          groups.set(key, { type: 'origin_work_status', origin_room: work.origin_room,
+          const amendments = question && conversation.kind === 'room' && sameRef(work.origin_room, conversation.space) ?
+            this.platform.roomWork.hostAmendments(work).map(item => ({ event_id: item.id, time: item.createdAt, text: item.content.slice(0, 360) })) : [];
+          groups.set(key, { type: 'origin_work_status', origin_room: work.origin_room, amendments,
             origin_message_id: work.origin_message_id, ...(question && { original_question: question.content.slice(0, 4000) }),
             ...(replies.length && { original_replies: replies }), sessions: [] });
         }
-        groups.get(key).sessions.push({ session_id: work.id, engine: work.engine, work_summary: work.work_summary,
+        const group = groups.get(key);
+        group.sessions.push({ session_id: work.id, engine: work.engine, work_summary: work.work_summary,
+          amendment_inputs: this.platform.roomWork.materialStatus(work, group.amendments.map(item => item.event_id)),
           status: work.status, waiting_summary: work.waiting_summary, acceptance_state: work.acceptance_state,
           control: work.control, latest_call_id: work.latest_call_id,
           ...(work.retained_delivery && { confirmed_delivery: work.retained_delivery }),
@@ -1617,7 +1736,7 @@ export class BotRuntime {
       const current = (record?.messages || []).map((message, index) => ({ id: recordKey(run.id, index), run_id: run.id, message }));
       return [...previous, ...current];
     });
-    if (modelPage || cursor?.startsWith('fragment:')) return { ...state, transcript_page: true,
+    if (modelPage || typeof cursor === 'string' && cursor.startsWith('fragment:')) return { ...state, transcript_page: true,
       output: !cursor && typeof last?.result?.text === 'string' ? last.result.text.slice(0, 3000) : undefined,
       ...transcriptPage(output, cursor, limit) };
     const after = cursor == null ? 0 : output.findIndex(entry => entry.id === cursor) + 1;

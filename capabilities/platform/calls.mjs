@@ -29,12 +29,13 @@ export class Calls {
       WHERE kind='platform-calls' AND json_extract(data,'$.origin.fast_read_forward')=1`);
   }
 
-  forwardsFor(botId, roomId, eventIds) {
+  forwardsFor(botId, roomId, eventIds, targetId = null) {
     const rows = this.store.db.prepare(`SELECT data FROM records WHERE kind='platform-calls'
       AND json_extract(data,'$.origin.fast_read_forward')=1
       AND json_extract(data,'$.source_event_ids[0]') IN (SELECT value FROM json_each(?))
-      AND json_extract(data,'$.origin.bot_id')=? AND json_extract(data,'$.origin.source_room.id')=?`)
-      .all(JSON.stringify(eventIds), botId, roomId);
+      AND json_extract(data,'$.origin.bot_id')=? AND json_extract(data,'$.origin.source_room.id')=?
+      AND (? IS NULL OR coalesce(json_extract(data,'$.target.id'),json_extract(data,'$.origin.forward_target.id'))=?) ORDER BY rowid`)
+      .all(JSON.stringify(eventIds), botId, roomId, targetId, targetId);
     return new Map(rows.map(({ data }) => {
       const call = JSON.parse(data);
       return [call.source_event_ids[0], call];
