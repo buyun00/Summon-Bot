@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { dirname, join, posix } from 'node:path';
 import { createAuthorizedDirectory, createPathAccess, samePath } from '../../bot/src/capabilities/file-policy.mjs';
 import { documentText } from '../chatroom/document-text.mjs';
+import { rasterType } from '../chatroom/attachments.mjs';
 import { assertRevision, keyOf, reject, sameRef } from '../platform/contract.mjs';
 
 export const files = 'platform-files';
@@ -144,6 +145,20 @@ export class Files {
   async readObject(id, context, cursor, limit) {
     const { file, projection } = this.getProjection(id, context);
     if (file && !file.attachment_id && file.blob == null) return this.pageText(projection, file.content, cursor, limit);
+    if (context.imageInput) {
+      const attachment = file?.attachment_id ? this.attachments.get(file.attachment_id) : projection;
+      const mimeType = file?.blob != null ? rasterType(Buffer.from(file.blob.slice(0, 64), 'base64'))
+        : attachment.previewUrl && attachment.mimeType;
+      if (mimeType) {
+        if (cursor != null) reject('file_text_unavailable', 'Images do not have a text cursor', 409);
+        const { supported, maxBytes } = context.imageInput;
+        const encodedSize = 4 * Math.ceil(projection.size / 3);
+        const status = !supported ? 'image_input_unsupported' : maxBytes && encodedSize > maxBytes ? 'image_too_large' : 'image';
+        return { ...projection, mimeType, content_status: status, next_cursor: null,
+          ...(status === 'image_input_unsupported' && { message: '当前用途绑定的模型连接未声明可用的图像输入，只能读取附件信息。' }),
+          ...(status === 'image_too_large' && { message: `此图编码后超过当前模型的图像输入上限（${maxBytes} 字节）。可提供较小的图片。` }) };
+      }
+    }
     let content;
     try {
       content = file?.blob != null ? documentText(projection.name, Buffer.from(file.blob, 'base64'))
@@ -156,6 +171,16 @@ export class Files {
     }
     if (!this.canRead(id, context)) reject('file_not_found', 'File is unavailable', 404);
     return this.pageText(projection, content, cursor, limit);
+  }
+
+  async modelImage(result, context) {
+    const { file, projection } = this.getProjection(result.id, context);
+    if (projection.revision !== result.revision) reject('file_changed', 'Read the new File revision before viewing its image', 409);
+    const bytes = file?.blob != null ? Buffer.from(file.blob, 'base64')
+      : (await this.attachments.read(file?.attachment_id || result.id, true)).bytes;
+    if (!this.canRead(result.id, context)) reject('file_not_found', 'File is unavailable', 404);
+    if (rasterType(bytes) !== result.mimeType) reject('file_changed', 'The original image is unavailable', 409);
+    return { type: 'image', mimeType: result.mimeType, data: bytes.toString('base64') };
   }
 
   pageText(projection, content, cursor, limit) {

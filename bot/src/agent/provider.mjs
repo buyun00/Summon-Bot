@@ -56,6 +56,16 @@ function readWirePayload(body, headers) {
   }
 }
 
+function countWireImages(parts) {
+  if (!Array.isArray(parts)) return 0;
+  let count = 0;
+  for (const part of parts) {
+    if (['input_image', 'image_url', 'image'].includes(part?.type)) count++;
+    else count += countWireImages(part?.content) + countWireImages(part?.output);
+  }
+  return count;
+}
+
 function roomCacheRequest(payload, roomCache) {
   if (!Array.isArray(payload?.input) || payload.prompt_cache_options?.mode === 'explicit') return null;
   const remaining = new Set([roomCache.current, roomCache.previous].filter(Boolean));
@@ -258,6 +268,8 @@ export class ModelProvider {
               throw new Error(`The provider serialized a different model for ${model.id}`);
             const efforts = wire ? validateReasoning(wire) : serializedReasoning();
             await beforeFetch?.();
+            if (wire && context.messages?.some(msg => msg.role === 'toolResult' && msg.content?.some(part => part.type === 'image')))
+              record.sentImageCount = countWireImages(wire.input ?? wire.messages);
             if (cacheSessionId && wire) {
               record.sentPromptCacheKey = wire.prompt_cache_key ?? null;
               record.sentExplicitCacheBreakpoint = Array.isArray(wire.input) && wire.input.some(item =>

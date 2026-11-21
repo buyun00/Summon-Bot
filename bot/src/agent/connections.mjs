@@ -203,7 +203,7 @@ export function connectionModel(connection) {
   return { ...known, id: connection.model, name: known?.name || connection.model, type: 'chat', api,
     provider: connection.id || connection.provider, baseUrl,
     ...(connection.kind === 'grok' ? { headers: { ...known?.headers, ...grokProxyHeaders(connection) } } : {}),
-    reasoning: connection.reasoning !== false, input: known?.input || ['text'], contextWindow, maxTokens, outputTokenLimit, budgetSource,
+    reasoning: connection.reasoning !== false, input: known && known.id === connection.model ? known.input ?? ['text'] : ['text'], contextWindow, maxTokens, outputTokenLimit, budgetSource,
     thinkingLevels: probe?.reasoning !== undefined ? getSupportedThinkingLevels(probe) : undefined,
     ...(resolvedThinkingMap ? { thinkingLevelMap: resolvedThinkingMap } : {}),
     cost: connection.kind === 'api' ? known?.cost || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },

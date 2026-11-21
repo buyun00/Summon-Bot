@@ -11,7 +11,7 @@ const fail = (message, status = 400) => { throw Object.assign(new Error(message)
 const MESSAGE_ATTACHMENTS = 8;
 const openable = name => ['.html', '.htm', '.txt', '.md', '.csv', '.json'].includes(extname(name).toLowerCase());
 
-function rasterType(bytes) {
+export function rasterType(bytes) {
   if (bytes.length >= 24 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) && bytes.toString('ascii', 12, 16) === 'IHDR') return 'image/png';
   if (bytes.length >= 4 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) return 'image/jpeg';
   if (bytes.length >= 13 && /^(GIF87a|GIF89a)$/.test(bytes.toString('ascii', 0, 6))) return 'image/gif';

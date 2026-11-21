@@ -98,7 +98,7 @@ export class BotEngine {
     const specs = (setup || this.platform.canInitializeExecution(job.context()) ? [...available, connectionSetupTool] : available)
       .map(spec => toolSpecForExecution(spec, { isPiSession }));
     const tools = specs.map(({ name, description, inputSchema, toPlatformArgs }) => ({ name, label: name, description, parameters: inputSchema,
-      execute: (modelId, args, toolSignal) => this.invoke(job, name, modelId, toPlatformArgs ? toPlatformArgs(args) : args, toolSignal),
+      execute: (modelId, args, toolSignal) => this.invoke(job, name, modelId, toPlatformArgs ? toPlatformArgs(args) : args, toolSignal, model),
       executionMode: 'sequential' }));
     const isRoomConversation = conversation.kind === 'room' && !conversation.session_id;
     const systemBase = { role: 'system', timestamp: Date.parse(conversation.created_at),
@@ -337,6 +337,27 @@ export class BotEngine {
     if (neededView && neededView !== view.view_revision)
       throw runtimeFailure('access_changed', 'Execution authorization changed before model transport', 409);
     const estimate = contextTokens(context.messages || []);
+    // Persist only the authorized read receipt. Resolve its bytes again for each request, including after recovery.
+    const images = [];
+    if (context.messages?.some(msg => msg.role === 'toolResult' && msg.details?.content_status === 'image')) {
+      const calls = new Map(job.inbox.calls(job.runId).filter(call => call.tool === 'read' && call.state === 'completed' &&
+        call.args?.ref?.kind === 'file' && call.args.ref.id === call.result?.id && call.result.content_status === 'image')
+        .map(call => [call.model_call_id, call.result]));
+      const messages = [];
+      for (const msg of context.messages) {
+        const result = msg.role === 'toolResult' && msg.toolName === 'read' && msg.details?.content_status === 'image' && calls.get(msg.toolCallId);
+        if (!result) { messages.push(msg); continue; }
+        try {
+          const image = await this.platform.files.modelImage(result, this.platform.context(job.context()));
+          images.push(result);
+          messages.push({ ...msg, content: [...msg.content, image] });
+        } catch (error) {
+          if (![403, 404, 409].includes(error.status)) throw error;
+          messages.push({ ...msg, ...toolObservation(null, { content_status: 'unavailable', message: '原图当前不可读或版本已更改。' }, true) });
+        }
+      }
+      context = { ...context, messages };
+    }
     const lease = this.platform.acquireModel(job.context(), { reserve_tokens: estimate + maxTokens });
     try {
       const result = this.provider.stream(model, context, { ...options, signal: job.signal, maxTokens,
@@ -351,7 +372,13 @@ export class BotEngine {
             if ((await job.view()).view_revision !== view.view_revision)
               throw runtimeFailure('access_changed', 'Execution authorization changed before model transport', 409);
             job.check();
-            boundModel(this.model, job.binding.model);
+            const currentModel = boundModel(this.model, job.binding.model);
+            if (images.length) {
+              const current = this.platform.context(job.context());
+              if (!currentModel.input.includes('image') || images.some(result =>
+                this.platform.files.getProjection(result.id, current).projection.revision !== result.revision))
+                throw runtimeFailure('access_changed', 'The image input or File revision changed before model transport', 409);
+            }
             inject?.();
           } catch (error) {
             // The provider stream can reduce this exception to a formatted error message.
@@ -367,7 +394,7 @@ export class BotEngine {
     } catch (error) { lease.finish({ outcome: 'failed' }); throw error; }
   }
 
-  async invoke(job, name, modelCallId, args, signal) {
+  async invoke(job, name, modelCallId, args, signal, model) {
     const { inbox, runId } = job;
     job.check();
     signal?.throwIfAborted();
@@ -381,7 +408,9 @@ export class BotEngine {
       job.check();
       const persisted = { ...original, state: 'submitting' };
       inbox.store.putRecord(R.call, persisted);
-      const result = this.clean(await this.platform.invoke(name, args, { ...context, call_id: id, signal: job.signal }));
+      const imageInput = name === 'read' && args.ref?.kind === 'file' && { supported: model.input.includes('image'),
+        maxBytes: model.inputLimits?.images?.resize?.maxBytes };
+      const result = this.clean(await this.platform.invoke(name, args, { ...context, call_id: id, signal: job.signal, imageInput }));
       const asyncResult = !readTools.has(name) && waiting.has(result?.status);
       inbox.store.transaction(() => {
         const access = job.observing && observationReadRefs(name, args, result).filter(job.canReadReference);

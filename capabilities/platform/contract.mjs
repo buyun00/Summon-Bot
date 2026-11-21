@@ -90,6 +90,7 @@ const definitions = [
     'Set period to yesterday (default), today, 7d, or {from,to} with timestamps and offsets.',
     object({ kind: oneOf(...kinds, 'connection_usage'), scope: ref, query: text, cursor: text, period: usagePeriod }, ['kind'])],
   ['read', 'Read an accessible object, its history or output, and the available input or control references. For a workspace, add a relative path to read a project text file. ' +
+    'Read a File ref to inspect its image on a vision-capable model. The result reports any image input limitation. ' +
     'Use it for a specific observation. A registered wait_ref delivers the terminal receipt or an input request to your run automatically.',
     object({ ref, path: text, cursor: text, limit: { type: 'integer', minimum: 1, maximum: 100 } }, ['ref'])],
   ['send', 'Publish to a Room using message:{to:{kind:"room",id},text}, with optional attachments, references, mentions or reply_to. ' +
