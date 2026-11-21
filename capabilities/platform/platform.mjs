@@ -1329,7 +1329,10 @@ export class SummonPlatform {
         items = [...messages, ...this.store.list('platform-events').filter(event => this.canReadEvent(event, context) &&
           (!scope || sameRef(event.space || event.target, scope))).map(event => this.repairs.eventView(event, context))]; break;
       }
-      case 'file': items = this.files.list(context, scope); break;
+      case 'file':
+        if (scope?.kind === 'workspace') return this.workspaceEntries({ ref: scope, query, cursor }, context);
+        items = this.files.list(context, scope);
+        break;
       case 'session': case 'conversation': items = this.executions.list(context, scope).filter(item => item.kind === kind); break;
       case 'connection': {
         const needle = query?.trim().toLowerCase();
@@ -1366,6 +1369,13 @@ export class SummonPlatform {
 
   connectionContext(context) {
     return { ...context, allow: id => this.canUseConnection(context.actor, id, context) };
+  }
+
+  workspaceEntries(args, context) {
+    const workspace = this.projectFileAccess(args.ref, context);
+    return this.files.listWorkspace(args, workspace, this.projectFileDirectories(), () => {
+      if (this.projectFileAccess(args.ref, context).root !== workspace.root) reject('workspace_changed', 'The project directory has moved', 409);
+    });
   }
 
   async read(args, context) {
@@ -1413,11 +1423,24 @@ export class SummonPlatform {
       case 'call': return this.calls.view(this.calls.get(ref.id), context);
       case 'wakeup': return this.deliveries.list(context).find(item => item.id === ref.id);
       case 'workspace': {
+        if (args.directory !== undefined) return this.workspaceEntries(args, context);
         if (args.path === undefined) return this.workspaceRecords().find(item => item.id === ref.id);
         const workspace = this.projectFileAccess(ref, context);
-        return this.files.readWorkspace(args, workspace, this.projectFileDirectories(), () => {
-          if (this.projectFileAccess(ref, context).root !== workspace.root) reject('workspace_changed', 'The project directory has moved', 409);
-        });
+        try {
+          return await this.files.readWorkspace(args, workspace, this.projectFileDirectories(), () => {
+            if (this.projectFileAccess(ref, context).root !== workspace.root) reject('workspace_changed', 'The project directory has moved', 409);
+          });
+        } catch (error) {
+          if (error.status !== 404) throw error;
+          let listing;
+          try { listing = await this.workspaceEntries({ ref, limit: 12 }, context); }
+          catch (failure) {
+            if (![403, 404].includes(failure.status) && !['ENOENT', 'EACCES', 'EPERM'].includes(failure.code)) throw failure;
+          }
+          this.projectFileAccess(ref, context);
+          error.details = { ...error.details, missing_path: args.path, workspace_entries: listing, room_originals: this.roomWork.readSources(context) };
+          throw error;
+        }
       }
       default: reject('object_not_found', 'Object is unavailable', 404);
     }

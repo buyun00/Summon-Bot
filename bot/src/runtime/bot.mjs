@@ -1426,7 +1426,32 @@ export class BotRuntime {
     }
     if (view.session && view.resources?.length) facts.push(textMessage({ type: 'session_resources', references: view.resources,
       ...(view.session.workspace_ref && { workspace: view.session.workspace_ref, cwd: view.session.workspace.path, project_room: view.session.project_room }) }));
-    if (conversation.session_id) history = this.sessionHistory(inbox, conversation, runId, view);
+    if (conversation.session_id) {
+      history = this.sessionHistory(inbox, conversation, runId, view);
+      const sources = this.platform.roomWork.readSources(this.platform.context(context));
+      if (sources.length) {
+        facts.push(textMessage({ type: 'room_material_sources', sources,
+          instruction: 'Read an attachment with its File ref. Workspace paths refer to project files explicitly identified by a source.' }));
+        const position = JSON.stringify(context.origin.event_ids);
+        if (current.every(event => event.type !== 'pi.input' || context.origin.event_ids.includes(event.id))) {
+          const calls = inbox.calls(runId).filter(call => ['find', 'read'].includes(call.tool) && JSON.stringify(call.source_event_ids) === position);
+          const available = sources.filter(({ ref }) => !calls.some(call => call.tool === 'read' && sameRef(call.args.ref, ref) &&
+            call.state === 'completed' && !call.result?.next_cursor));
+          const found = calls.findLastIndex(call => call.state === 'completed' && (call.args.ref?.kind === 'file' ||
+            call.args.ref?.kind === 'workspace' && (call.result?.path || call.result?.directory) ||
+            call.args.scope?.kind === 'workspace' && call.result?.items?.length || sources.some(item => sameRef(item.ref, call.args.ref))));
+          const supplied = context.origin.event_ids.map(id => JSON.stringify(inbox.event(id)?.input ?? ''));
+          const misses = calls.slice(found + 1).filter(call => call.args.ref?.kind === 'workspace' && call.args.path &&
+            call.result?.status === 404 && !supplied.some(text => text.includes(call.args.path)) &&
+            !calls.some(earlier => earlier.state === 'completed' && earlier.finished_at < call.prepared_at &&
+              JSON.stringify(earlier.result ?? null).includes(call.args.path)));
+          if (misses.length >= 2) {
+            facts.push(textMessage({ type: 'room_material_lookup', sources: available, missing_paths: [...new Set(misses.map(call => call.args.path))].slice(-8),
+              instruction: 'Use the listed original references or list the authorized project directory using read with directory. Read a real entry by its returned path. When the required original is absent, report the verified partial result and missing material to your parent.' }));
+          }
+        }
+      }
+    }
     const otherCalls = conversation.kind === 'room' ? inbox.list(R.conversation, 'space.id', conversation.space.id)
       .filter(other => other.id !== conversation.id && other.kind === 'room' && sameRef(other.space, conversation.space))
       .flatMap(other => this.platform.calls.unfinishedFor(other.id, context.actor)) : [];

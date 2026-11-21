@@ -190,11 +190,30 @@ export class RoomWork {
       return { event: { kind: 'event', id }, room: { kind: 'room', id: message.roomId },
         room_name: this.platform.store.get('rooms', message.roomId).name, author: message.author ?? identity(message.senderId),
         time: message.createdAt, reply_to: message.replyTo, text: message.content,
-        ...(message.attachments?.length && { attachments: message.attachments.map(({ id, name }) => ({ id, name })) }),
+        ...(message.attachments?.length && { attachments: message.attachments.map(({ id, name }) => ({ id, name, ref: { kind: 'file', id } })) }),
         ...(message.references?.length && { references: message.references }),
         ...(call && { material_use: call.material_reference_only ? 'reference' :
           call.prior_material_receipts?.some(prior => prior.event_id === id) ? 'previous_input' : 'new_material' }) };
     });
+  }
+
+  readSources(context) {
+    if (!context.session?.origin_room) return [];
+    const sources = new Map();
+    for (const ref of context.resource_refs ?? []) {
+      if (!['event', 'file'].includes(ref.kind) || !this.platform.canReadReference(ref, context)) continue;
+      if (ref.kind === 'event') {
+        const message = this.platform.store.get('messages', ref.id);
+        if (!message) continue;
+        sources.set(keyOf(ref.kind, ref.id), { ref });
+        for (const file of message.attachments ?? []) {
+          const target = { kind: 'file', id: file.id };
+          if (this.platform.canReadReference(target, context))
+            sources.set(keyOf(target.kind, target.id), { ref: target, name: file.name, source_event: ref.id });
+        }
+      } else if (!sources.has(keyOf(ref.kind, ref.id))) sources.set(keyOf(ref.kind, ref.id), { ref });
+    }
+    return [...sources.values()];
   }
 
   scope(args, context, sharing, space) {

@@ -1,4 +1,4 @@
-import { lstat, open } from 'node:fs/promises';
+import { lstat, open, readdir } from 'node:fs/promises';
 import { closeSync, lstatSync, openSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, join, posix } from 'node:path';
@@ -72,6 +72,34 @@ export class Files {
       try { content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(file.bytes); } catch { content = undefined; }
     }
     return this.pageText(projection, content, args.cursor, args.limit);
+  }
+
+  async listWorkspace({ ref, directory = '.', query, cursor, limit = 50 }, workspace, protectedDirectories, authorize) {
+    const relative = directory === '.' ? '.' : filePath(directory);
+    const check = createPathAccess({ workspace: workspace.root, projectOnly: true, protectedDirectories, accessPolicy: workspace.path_policy });
+    const target = await check(relative, { directory: true, operations: ['read'] });
+    const names = (await readdir(target, { withFileTypes: true })).filter(entry => entry.isDirectory() || entry.isFile())
+      .map(entry => entry.name).filter(name => !query || name.toLowerCase().includes(query.trim().toLowerCase())).sort();
+    const items = [];
+    let more = false;
+    for (const name of names) {
+      const path = relative === '.' ? name : posix.join(relative, name);
+      if (cursor && path <= cursor) continue;
+      try {
+        filePath(path);
+        const checked = await check(path, { operations: ['read'] });
+        const info = await lstat(checked);
+        if (!samePath(checked, join(target, name)) || !info.isDirectory() && !(info.isFile() && info.nlink === 1)) continue;
+        if (items.length === limit) { more = true; break; }
+        items.push({ name, path, kind: info.isDirectory() ? 'directory' : 'file', read: info.isDirectory() ? { ref, directory: path } : { ref, path } });
+      } catch (error) {
+        if (error.status === 400 || error.status === 403 || ['ENOENT', 'EACCES', 'EPERM', 'ENOTDIR'].includes(error.code)) continue;
+        throw error;
+      }
+    }
+    authorize();
+    if (!samePath(target, await check(relative, { directory: true, operations: ['read'] }))) reject('workspace_changed', 'Project directory changed while listing', 409);
+    return { ref, directory: relative, items, next_cursor: more ? items.at(-1).path : null };
   }
 
   async prepareWorkspaceWrite(args, content, workspace, protectedDirectories, authorize) {

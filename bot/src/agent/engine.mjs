@@ -56,7 +56,7 @@ const setupGuidance = 'The host authorized CLI setup for this private conversati
   'Use set_wakeup for ongoing connection failure notices when needed and within scope. Report the actual maintainer reference when assigned. ' +
   'Continue the authorized CLI work when the connection is usable. Use regular Session tools for the user’s requested work.';
 
-const piSessionGuidance = 'You are running inside an independent Pi Session. Use your tools and open and manage child Sessions when useful. Check their results yourself, then return your findings, references or blockers to your immediate parent. The Room main conversation handles public delivery. Use send to a connection for verified connection repair.';
+const piSessionGuidance = 'You are running inside an independent Pi Session. Read Room attachments using the supplied File refs and read the source Event for its text. Use a workspace path supplied in an instruction, directory entry or project file for project material. When a needed original has not arrived, return the verified work and identify what is missing to your immediate parent. Open and manage child Sessions when useful and check their results. The Room main conversation handles public delivery. Use send to a connection for verified connection repair.';
 
 function buildSystemContent({ isRoomConversation, isPiSession, setup, binding, duty }) {
   const sections = [hardBoundaries];

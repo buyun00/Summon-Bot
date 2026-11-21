@@ -95,9 +95,9 @@ const definitions = [
     'Set period to yesterday (default), today, 7d, or {from,to} with timestamps and offsets.',
     object({ kind: oneOf(...kinds, 'connection_usage'), scope: ref, query: text, cursor: text, period: usagePeriod }, ['kind'])],
   ['read', 'Read an accessible object, its history or output, and the available input or control references. For a workspace, add a relative path to read a project text file. ' +
-    'Read a File ref to inspect its image on a vision-capable model. The result reports any image input limitation. ' +
+    'Read a Room attachment directly by its File ref. For a workspace use directory "." or a listed subdirectory to obtain its actual entries, then use their relative paths. Read a File ref to inspect its image on a vision-capable model. The result reports any image input limitation. ' +
     'Use it for a specific observation. A registered wait_ref delivers the terminal receipt or an input request to your run automatically.',
-    object({ ref, path: text, cursor: text, limit: { type: 'integer', minimum: 1, maximum: 100 } }, ['ref'])],
+    object({ ref, path: text, directory: text, cursor: text, limit: { type: 'integer', minimum: 1, maximum: 100 } }, ['ref'])],
   ['send', 'Publish to a Room using message:{to:{kind:"room",id},text}, with optional attachments, references, mentions or reply_to. ' +
     'Use the current Room unless the host expressly directs publication to another Room. For a transfer you may select that current instruction in publication.authorization. The host supplies its approved materials. Reading a Room or opening an intake does not authorize publication of its contents elsewhere. ' +
     'For a progress report or the complete delegated result, include work_reply:{session,stage:"progress"|"complete"}. A complete work reply is anchored to its original question. Use stage:"correction" for a material change to a previously confirmed delivery. ' +

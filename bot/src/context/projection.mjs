@@ -40,6 +40,12 @@ export function roomMessageInput(event) {
 
 export function eventInput(event, current = true) {
   if (isRoomMessageEvent(event)) return roomMessageInput(event);
+  if (event.type === 'pi.input' && event.room_originals?.length) {
+    const original_files = event.room_originals.flatMap(original => (original.attachments ?? []).map(file => ({
+      original: original.event, name: file.name, read: { ref: { kind: 'file', id: file.id } } })));
+    return { type: current ? 'current_event' : 'historical_entry', event, original_files,
+      ref: event.history_ref || { kind: 'event', id: event.id } };
+  }
   return { type: current ? 'current_event' : 'historical_entry', event,
     ref: event.history_ref || { kind: 'event', id: event.id } };
 }
