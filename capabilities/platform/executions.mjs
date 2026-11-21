@@ -317,6 +317,8 @@ export class Executions {
       return { reply };
     }
     const selected = label && this.record({ kind: 'session', id: idOf(label.session, 'session') });
+    if (review?.stage === 'complete' && review.original_question && label?.stage !== 'progress')
+      reply = { kind: 'event', id: review.original_question };
     const question = label && label.stage !== 'progress' ? selected?.origin_message_id : reply?.id;
     if (question && (!label || label.stage === 'complete' || review?.retained_id)) {
       const crossRoom = !sameRef(context.conversation?.space, room);

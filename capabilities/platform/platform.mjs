@@ -1104,6 +1104,7 @@ export class SummonPlatform {
           if (!this.runtime.checkRoomPublication(context, audience, args))
             reject('publication_view_required', 'No message has been sent. Complete this send using the audience, verified source fields and original request in your next input.', 409);
           const release = audience.release;
+          if (audience.cross_room && !audience.reply_to && args.reply_to) args = { ...args, reply_to: undefined };
           if (audience.cross_room && release.fields_only) args = { ...args, text: publicationFieldText(release, args.text) };
           this.calls.bind(record.id, { publication_room: to, ...(release && { publication_authority: release.authorization_id,
             publication_fields: release.materials, ...(audience.cross_room && { directed_publication: true,
@@ -1113,7 +1114,11 @@ export class SummonPlatform {
         if (sameRef(to, context.conversation.space)) {
           const review = await this.runtime.workCardReview(context, args, this.room.room(to.id, context.actor.id));
           this.assertRunAllowed(context);
-          if (review) this.calls.bind(record.id, { work_review: review });
+          if (review) {
+            const address = args.reply_to?.id ?? args.reply_to;
+            this.calls.bind(record.id, { work_review: review, ...(review.stage === 'complete' && review.answers_reply &&
+              address && address !== review.original_question && context.origin.event_ids.includes(address) && { answered_request: address }) });
+          }
         }
       }
       if (name === 'create_bot') {

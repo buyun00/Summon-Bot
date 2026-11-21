@@ -5,13 +5,20 @@ export const barePublicationNumber = value => /^[+−-]?\p{Nd}+(?:[.,]\p{Nd}+)*$
 export function fieldLayout(materials, presentation, layout) {
   if (!Array.isArray(layout) || !layout.length || layout.length > 100) return;
   const used = new Set(), pieces = [];
-  for (const part of layout) {
+  for (const [index, part] of layout.entries()) {
     if (Number.isInteger(part?.field) && materials[part.field] && !used.has(part.field)) {
       pieces.push(materials[part.field].text);
       used.add(part.field);
-    } else if (typeof part?.literal === 'string' && part.literal.length <= 240 &&
-        (/^[\s,，、;；|/]*$/u.test(part.literal) || presentation.some(text => text.includes(part.literal)))) {
-      pieces.push(part.literal);
+    } else if (typeof part?.literal === 'string' && part.literal.length <= 240) {
+      let literal = part.literal;
+      const before = materials[layout[index - 1]?.field], after = materials[layout[index + 1]?.field];
+      const suffix = before?.unit || literal.trim(), prefix = after?.unit || literal.trim();
+      if (suffix && before?.text.endsWith(suffix) && barePublicationNumber(before.text.slice(0, -suffix.length)) &&
+          literal.replace(/^[\p{Zs}\t]*/u, '').startsWith(suffix)) literal = literal.replace(/^[\p{Zs}\t]*/u, '').slice(suffix.length);
+      if (prefix && after?.text.startsWith(prefix) && barePublicationNumber(after.text.slice(prefix.length)) &&
+          literal.replace(/[\p{Zs}\t]*$/u, '').endsWith(prefix)) literal = literal.replace(/[\p{Zs}\t]*$/u, '').slice(0, -prefix.length);
+      if (!/^[\s,，、;；|/]*$/u.test(literal) && !presentation.some(text => text.includes(literal))) return;
+      pieces.push(literal);
     } else return;
   }
   if (used.size === materials.length) return pieces.join('');
@@ -235,21 +242,29 @@ export function publicationSources(platform, args, context, destination, localRo
   const facts = new Map([...messages.values()].map(item => [item.id, item.content]));
   // Only a terminal result of the directly owned work belongs to the source
   // review. Its raw private output never enters the destination Room context.
+  const group = owned.filter(work => questions.has(work.origin_message_id));
+  const retired = work => work.authority_revoked || work.acceptance_state === 'closed' && ['superseded', 'cancelled'].includes(work.acceptance?.outcome);
+  const replaced = new Set(group.filter(work => !retired(work) && work.replaces_session).map(work => work.replaces_session));
+  const currentSeats = group.filter(work => !retired(work) && !replaced.has(work.id));
   const results = [];
-  for (const work of owned) {
-    if (!questions.has(work.origin_message_id) || work.status !== 'completed' || work.authority_revoked) continue;
+  const seatResults = new Map();
+  for (const work of currentSeats) {
+    if (work.status !== 'completed') continue;
     const call = platform.store.get('platform-calls', work.latest_call_id);
     const event = call?.result_ref?.kind === 'event' && platform.store.get('platform-events', call.result_ref.id);
     if (event?.status !== 'completed' || event.target?.id !== work.id || !platform.canReadEvent(event, context)) continue;
     const output = event.result?.output;
     const text = typeof output === 'string' ? output : output?.text;
-    if (text) { facts.set(event.id, text); results.push(event.id); }
+    if (text) {
+      facts.set(event.id, text);
+      results.push(event.id);
+      seatResults.set(work.id, event.id);
+    }
   }
   const deliveries = new Set();
   const accepted = new Set();
-  const group = owned.filter(work => questions.has(work.origin_message_id));
-  const outstanding = group.some(work => work.acceptance_state === 'open' && (work.waiting_summary || work.pending_input?.length));
-  for (const work of group) {
+  const outstanding = currentSeats.some(work => work.acceptance_state === 'open' && (work.waiting_summary || work.pending_input?.length));
+  for (const work of currentSeats) {
     for (const { message, stage } of platform.executions.originalReplies(work)) {
       if (work.acceptance_state === 'closed' && work.acceptance?.outcome === 'delivered' && work.acceptance.message_id === message.id) {
         accepted.add(message.id);
@@ -259,14 +274,21 @@ export function publicationSources(platform, args, context, destination, localRo
     }
   }
   const seats = group.map(work => ({ id: work.id, original: work.origin_message_id, status: work.status,
+    current: currentSeats.includes(work), replaces: work.replaces_session, assignment: work.work_summary,
+    outstanding: work.acceptance_state === 'open' && Boolean(work.waiting_summary || work.pending_input?.length),
+    result: seatResults.get(work.id), delivery: accepted.has(work.acceptance?.message_id) ? work.acceptance.message_id : undefined,
     acceptance_state: work.acceptance_state, outcome: work.acceptance?.outcome }));
   const previous = localRoot ? [] : roomPublicationReceipts(platform, context.actor, context.conversation,
     new Set([...questions, ...candidates.map(item => item.id)]), destination);
+  const replyId = args.reply_to?.id ?? args.reply_to;
+  const recipient = !localRoot && replyId && platform.store.get('messages', replyId);
+  const recipientRequest = recipient?.roomId === destination.id && platform.canReadReference({ kind: 'event', id: replyId }, context)
+    ? { id: recipient.id, text: recipient.content } : undefined;
   const versions = { user_messages: hostMessages.map(item => item.id), results, deliveries: [...deliveries], accepted: [...accepted],
-    seats, ...(previous?.length && { sent: previous.map(item => item.message_id) }) };
+    seats, ...(recipientRequest && { recipient: recipientRequest.id }), ...(previous.length && { sent: previous.map(item => item.message_id) }) };
   const confirmed_delivery = deliveries.size > 0;
   return { candidates, hostMessages, facts, versions, current, requested, questions, confirmed_delivery, previous,
-    local_work: Boolean(localRoot), local_request: localMessage?.id };
+    local_work: Boolean(localRoot), local_request: localMessage?.id, recipient_request: recipientRequest };
 }
 
 export function currentPublicationGrant(platform, sources, grant) {
@@ -284,7 +306,7 @@ export function currentPublicationGrant(platform, sources, grant) {
 
 export function publicationSelection(grant) {
   return grant && JSON.stringify([grant.source_room, grant.authorization_id, grant.assignment_id, grant.dispatch_id, grant.redispatch, grant.fields_only,
-    grant.materials.map(part => part.text), grant.presentation, grant.formatted, grant.format_literals]);
+    grant.materials.map(part => part.text), grant.presentation, grant.formatted, grant.format_literals, grant.work_evidence]);
 }
 
 export function publicationContext(platform, args, context, grant) {
@@ -323,5 +345,6 @@ export function publicationContext(platform, args, context, grant) {
     platform.assertShareable(ref, { actor: context.actor, room: destination, context });
   }
   return { destination: { id: to.id, name: destination.name }, cross_room: crossRoom, release, ...(grant?.review_error && { source_review: grant.review_error }),
-    current_message_ids: inputs.filter(item => item.roomId === to.id).map(item => item.id), reply_to: replyId };
+    current_message_ids: inputs.filter(item => item.roomId === to.id).map(item => item.id),
+    reply_to: crossRoom && release.recipient_reply !== replyId ? undefined : replyId };
 }

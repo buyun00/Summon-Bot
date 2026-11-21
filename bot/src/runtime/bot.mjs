@@ -972,7 +972,7 @@ export class BotRuntime {
       const grant = route?.publications?.find(item => [destination.id, destination.name].includes(item.room));
       const later = sources.hostMessages.some(item => item.createdAt > message.createdAt);
       if (grant?.after_work && !sources.versions.results.length && !sources.confirmed_delivery) continue;
-      if (grant && !grant.after_work && !later && sources.current.some(item => item.id === message.id) && !sources.questions.size) {
+      if (grant && !grant.after_work && !later && !sources.recipient_request && sources.current.some(item => item.id === message.id) && !sources.questions.size) {
         const materials = grant.materials.flatMap(part => {
           const original = this.platform.store.get('messages', part.event);
           return original?.roomId === message.roomId && original.content.includes(part.quote) &&
@@ -993,16 +993,19 @@ export class BotRuntime {
   }
 
   async workCardReview(context, args, destination) {
-    if (context.conversation.space.id !== destination.id || args.work_reply?.stage === 'progress') return;
+    if (context.conversation.space.id !== destination.id) return;
     const label = args.work_reply;
     const selected = label && this.platform.executions.record(sessionRef(label.session.id ?? label.session));
     if (label && (selected?.owner_conversation_id !== context.conversation.id || selected.origin_room?.id !== destination.id)) return;
-    const root = selected?.origin_message_id ?? (args.reply_to?.id ?? args.reply_to);
+    const address = args.reply_to?.id ?? args.reply_to ?? selected?.origin_message_id;
+    if (!address) return;
+    const linked = roomQuestionLinks(this.platform, destination, [{ id: address }]);
+    if (selected && !linked.has(selected.origin_message_id)) return;
+    const peers = this.platform.executions.directWork(context.conversation.id).filter(work => work.origin_execution?.kind === 'conversation' &&
+      work.origin_room?.id === destination.id && linked.has(work.origin_message_id));
+    const questions = new Set(peers.map(work => work.origin_message_id));
+    const root = selected?.origin_message_id ?? (questions.has(address) ? address : questions.size === 1 ? [...questions][0] : null);
     if (!root) return;
-    const peers = this.platform.executions.directWork(context.conversation.id).filter(work =>
-      work.origin_execution?.kind === 'conversation' && work.origin_room?.id === destination.id && work.origin_message_id === root);
-    if (!peers.length || label?.stage !== 'correction' && peers.every(work => work.acceptance_state === 'closed') &&
-        peers.some(work => work.acceptance?.outcome === 'delivered')) return;
     const job = this.active.get(context.conversation.id);
     if (job?.runId !== context.origin.run_id) return;
     const evidence = () => {
@@ -1011,13 +1014,16 @@ export class BotRuntime {
       if (!sessions.length) return;
       const published = this.platform.executions.originalReplies(sessions[0]).slice(-8).map(({ message, stage }) => ({
         id: message.id, text: message.content, stage, attachments: message.attachments?.map(file => file.id), references: message.references }));
-      if (!published.length && (!label || !sessions.some(work => work.acceptance_state === 'open' &&
-          (work.waiting_summary || work.pending_input?.length)))) return;
       const sources = publicationSources(this.platform, { ...args, publication: undefined }, context, destination, root);
-      if (!sources) return;
-      return { original: root, host_instructions: sources.hostMessages.map(item => ({ id: item.id, text: item.content })),
+      if (!sources || !published.length && !sources.versions.results.length &&
+          !sessions.some(work => work.acceptance_state === 'open' && (work.waiting_summary || work.pending_input?.length))) return;
+      const request = this.platform.store.get('messages', address);
+      return { original: root, reply_request: request?.roomId === destination.id ? { id: address, text: request.content } : undefined,
+        host_instructions: sources.hostMessages.map(item => ({ id: item.id, text: item.content })),
+        own_deliveries: roomPublicationReceipts(this.platform, context.actor, context.conversation, linked),
         seats: sessions.map(work => ({ id: work.id, state: work.status, waiting: work.waiting_summary,
           acceptance_state: work.acceptance_state, acceptance: this.platform.executions.acceptanceView(work, context),
+          current: sources.versions.seats.find(seat => seat.id === work.id)?.current,
           received_originals: this.platform.roomWork.receivedOriginals(work, context), result: work.latest_call_id, input_revision: work.input_revision })),
         results: sources.versions.results.map(id => ({ id, text: sources.facts.get(id) })), published,
         proposal: { text: args.text, attachments: args.attachments?.map(item => item.id ?? item), references: args.references } };
@@ -1026,7 +1032,7 @@ export class BotRuntime {
     if (!view) return;
     const position = JSON.stringify(view);
     if (position === job.workCardReview?.position) return job.workCardReview.result;
-    const result = await this.engine.reviewWorkCard(job, view);
+    const result = { ...await this.engine.reviewWorkCard(job, view), original_question: root };
     if (position !== JSON.stringify(evidence()))
       throw runtimeFailure('work_review_changed', 'The original work received new evidence while its card was being reviewed. Read the current position.', 409);
     job.workCardReview = { position, result };
