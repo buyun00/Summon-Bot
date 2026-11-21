@@ -20,6 +20,7 @@ const textInput = text => [{ type: 'text', text }];
 const requests = new Map(), prompts = new Map();
 let nextId = 0, threadId, turnId, finalText, lastMessage, terminal, modelRerouted, ending = false;
 let threadSubmitted = false, turnSubmitted = false;
+let asyncCalls = 0, asyncQuestions = 0;
 let serverClosed = false, shutdownTimer;
 const filesByItem = new Map();
 let starting = true, stopping = false, requireReadOnly = false, guardDb;
@@ -49,8 +50,13 @@ function rpc(method, params, timeoutMs = 20_000) {
 function finish(status, error, code) {
   if (ending) return;
   ending = true;
-  for (const prompt of prompts.values()) {
-    if (prompt.inputId) emit('input-result', { inputId: prompt.inputId, status: 'unknown', turnId,
+  if (asyncCalls > asyncQuestions)
+    emit('progress', { turnId, text: 'Codex 记录了异步提问调用，本轮未收到对应的可定位题文。可在原会话续投，要求 Codex 使用同步提问。' });
+  for (const [id, prompt] of prompts) {
+    if (prompt.asyncItem) {
+      emit('withdrawn', { id });
+      if (!prompt.inputId) emit('progress', { turnId, text: '该异步问题的 Codex 回合已结束。可将尚未提交的答复作为该会话的下一条输入。' });
+    } else if (prompt.inputId) emit('input-result', { inputId: prompt.inputId, status: 'unknown', turnId,
       error: 'Codex ended without acknowledging this response' });
   }
   prompts.clear();
@@ -181,6 +187,27 @@ function observe(method, p) {
   if (method === 'item/started' || method === 'item/completed') {
     if (!turnId || p.turnId !== turnId) return;
     const { item } = p, completed = method === 'item/completed';
+    if (completed && item.type === 'functionCallOutput' && item.name === 'request_user_input_async') asyncCalls++;
+    if (completed && item.type === 'agentMessage' && item.delivery === 'async' && item.questions?.length) {
+      // An async question is a ThreadItem, not a server JSON-RPC request.
+      // Its reply is a normal steer to the same live turn.
+      const id = 'async/' + item.id;
+      if (prompts.has(id)) return;
+      const questions = item.questions;
+      if (typeof item.id !== 'string' || !item.id || !questions.every(q => typeof q?.title === 'string' && q.title.trim() &&
+          (q.options == null || Array.isArray(q.options) && q.options.every(s => typeof s === 'string')))) {
+        emit('progress', { turnId, text: 'Codex 异步问题没有可用的原题标识或题文。请在原会话使用同步提问。' });
+        return;
+      }
+      const simple = questions.length === 1;
+      asyncQuestions++;
+      const text = questions.map((q, i) => (simple ? '' : (i + 1) + '. ') + q.title +
+        (q.options?.length ? '\n' + q.options.join(' / ') + '（也可自填）' : '')).join('\n');
+      prompts.set(id, { asyncItem: item.id, questions });
+      emit('request', { id, turnId, kind: 'question', text: text + (simple ? '' : '\n请按题目顺序每行回复一项。'),
+        choices: [], plain_text: simple, answer_format: simple ? 'text' : 'one_answer_per_line' });
+      return;
+    }
     const evidence = { itemId: item.id, turnId, itemType: item.type, tool: item.tool, status: item.status, exitCode: item.exitCode,
       command: item.command, files: item.changes?.map(change => change.path), output: item.aggregatedOutput?.slice(-5_000) };
     if (item.type === 'fileChange') filesByItem.set(item.id, evidence.files || []);
@@ -257,6 +284,24 @@ async function processInput({ type, id, requestId, expectedTurnId, guard, text }
   if (type === 'answer') {
     const prompt = prompts.get(requestId);
     if (!prompt || prompt.inputId) return emit('input-result', { inputId: id, status: 'rejected', turnId, error: 'The Codex request has already been answered or ended' });
+    if (prompt.asyncItem) {
+      const values = prompt.questions.length === 1 ? [text] : text.split(/\r?\n/);
+      if (values.length !== prompt.questions.length || values.some(value => !value.trim()))
+        return emit('input-result', { inputId: id, status: 'rejected', turnId, error: '请按原问题顺序填写每项回答。' });
+      prompt.inputId = id;
+      try {
+        const answer = prompt.questions.map((q, i) => q.title + '\n' + values[i]).join('\n\n');
+        const receipt = await rpc('turn/steer', { threadId, expectedTurnId, input: textInput(answer), clientUserMessageId: id });
+        if (receipt?.turnId !== expectedTurnId) throw Object.assign(new Error('Codex did not confirm the question’s turn'), { unconfirmed: true });
+        prompts.delete(requestId);
+        emit('resolved', { id: requestId });
+        emit('input-result', { inputId: id, status: 'accepted', turnId });
+      } catch (error) {
+        if (!error.unconfirmed) delete prompt.inputId;
+        emit('input-result', { inputId: id, status: error.unconfirmed ? 'unknown' : 'rejected', turnId, error: error.message });
+      }
+      return;
+    }
     try {
       const result = prompt.answer(text);
       prompt.inputId = id;
