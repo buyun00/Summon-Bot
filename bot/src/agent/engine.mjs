@@ -234,9 +234,23 @@ export class BotEngine {
             incoming: sources.actions.filter(action => action.action === 'received_publication'),
             outgoing: sources.actions.filter(action => action.action === 'send'), intake: sources.intake?.receipts ?? [] };
           publication.unchanged = publication.transported && publication.selection === sources.selection ? (publication.unchanged || 0) + 1 : 0;
-          if (publication.unchanged >= 2) throw runtimeFailure('room_delivery_pending',
-            '本群公开答复未发出。上一轮已给出可公开材料、最近操作结果和发送入口，仍未取得发送回执。', 409,
-            { destination: room, latest: publication.feedback });
+          if (publication.unchanged >= 2) {
+            const work = audience.release?.work_evidence;
+            const position = work && recordKey(room.id, work.original_question, audience.release.versions, address.reply_to?.id);
+            if (!audience.cross_room && position && inbox.run(runId).publication_retry_position !== position) {
+              inbox.store.transaction(() => {
+                inbox.putRun({ id: runId, publication_retry_position: position });
+                inbox.append(runId, { ...textMessage({ type: 'room_work_draft_returned', original_question: work.original_question,
+                  last_feedback: publication.feedback, instruction: 'The public card was not sent. Review the actual current seats, their received amendments and terminal calls. Correct the draft and retry from the original question using only authorized public fields.' }),
+                  view_revision: authorizedView });
+              });
+              job.publication = job.publicationReview = null;
+              return agent.prepareRequest(request);
+            }
+            throw runtimeFailure('room_delivery_pending',
+              '本群公开答复仍待原主持处理。当前材料和纠正意见已返回，尚未取得发送回执。', 409,
+              { destination: room, latest: publication.feedback });
+          }
           publication.selection = sources.selection;
           const duty = builtInInstructions(binding.built_in_role, boundary.maintained_connection_ids);
           const system = { ...systemBase, content: buildSystemContent({ isRoomConversation, isPiSession, setup, binding, duty }) };
@@ -624,7 +638,7 @@ export class BotEngine {
       'The return status of a seat alone does not establish delivery. A complete card can precede formal acceptance. Keep a ticket’s named recipient or blank signature field distinct from a separately signed verification and verify each required role. ' +
       'Compare every material claim in the actual proposal with the evidence, including proposals for progress on an amendment. An amendment delta belongs to its own submission. Verify any asserted current product, units and breakdown against the actual terminal results of the current seats. Formal owner acceptance must be recorded for the seats claimed accepted. A correct statement that results have returned can be made before acceptance. If a claim contradicts those records return {"conflict":"work_result"} or {"conflict":"acceptance"}. ' +
       'For both correct and incorrect proposals first extract accepted_seats (IDs the author claims have been formally accepted, including collective wording), contributors (IDs the actual text credits for supplying this product), and handoffs (list of {session,event} for any asserted receipt or fulfillment of a later instruction by a particular original seat). Resolve “original” against the first executor, never its replacement. Use empty arrays for absent claims. An announcement of acceptance as an accomplished fact requires an actual delivered disposition. An offer to review later asserts no acceptance. ' +
-      'For a supported proposal return these three arrays plus {"stage":"complete" or "progress","reuse":null or the ID of a prior card,"retained_stage":"complete" or "progress","answers_reply":true or false}. A complete card fulfills the original host question. Set answers_reply only when that actual card also answers the addressed amendment or request. A separately requested amendment, receipt or local update remains addressed to its requester. ' +
+      'For a supported proposal return JSON {"accepted_seats":[],"contributors":[],"handoffs":[],"stage":"complete" or "progress","reuse":null or the ID of a prior card,"retained_stage":"complete" or "progress","answers_reply":true or false}. Fill every applicable array. A complete card fulfills the original host question. Set answers_reply only when that actual card also answers the addressed amendment or request. A separately requested amendment, receipt or local update remains addressed to its requester. ' +
       'Reuse a complete card when it already satisfies the current request and the proposal contains no substantive correction. ' +
       'Reuse a partial card only for the same reported facts and outstanding work. A new signed original, a corrected value, a new supported fact or a separately requested answer can advance the work. ' +
       'Use null when the proposed card advances it. Return only the assessment.' };

@@ -297,7 +297,7 @@ export class BotRuntime {
 
   openIntakeReceipt(call) {
     const room = call.origin?.source_room, work = call.target?.kind === 'session' && this.platform.executions.record(call.target);
-    if (!room || !work?.origin_room || work.owner?.id !== call.origin.bot_id ||
+    if (!room || !work?.origin_room || work.owner?.id !== call.origin.bot_id || work.authority_revoked ||
         !this.platform.canReadSpace(work.owner, room) || !this.platform.canReadSpace(work.owner, work.origin_room)) return null;
     const status = record => {
       const input = record.input_id && this.platform.store.get('platform-inputs', record.input_id);
@@ -525,7 +525,7 @@ export class BotRuntime {
       let conversation = retained ? (available(retained) ? retained : null) : conversations.reverse().find(available);
       if (!conversation && (retained || conversations.length)) continue;
       if (!conversation) conversation = this.register(inbox, inbox.putConversation({ id: randomUUID(), kind: 'room', space, owner: botRef(bot.id) }));
-      const newRoutes = routes.slice(0, 32);
+      let newRoutes = routes.slice(0, 32);
       if (receiptGroup) {
         const acceptance = inbox.runs(conversation.id).find(run => run.receipt_group === receiptGroup && activeRunStates.has(run.state));
         if (acceptance) inbox.associate(acceptance.id, newRoutes);
@@ -533,6 +533,29 @@ export class BotRuntime {
         continue;
       }
       const running = this.active.get(conversation.id);
+      if (conversation.kind === 'room' && !retained && !running && !this.starting.has(conversation.id)) {
+        const runs = inbox.runs(conversation.id);
+        const owners = this.platform.executions.directWork(conversation.id);
+        newRoutes = newRoutes.filter(route => {
+          if (route.fast_read_decision !== 'main' || route.event.type !== 'message') return true;
+          const links = roomQuestionLinks(this.platform, space, [route.event]);
+          const matched = new Set(owners.filter(work => links.has(work.origin_message_id)).map(work => work.owner_run_id));
+          const receiving = runs.filter(run => matched.has(run.id) && ['pending', 'interrupted', 'retry', 'waiting'].includes(run.state));
+          if (receiving.length !== 1) return true;
+          inbox.associate(receiving[0].id, [route]);
+          if (receiving[0].state === 'waiting') inbox.putRun({ id: receiving[0].id, state: 'pending' });
+          return false;
+        });
+        if (!newRoutes.length) continue;
+        if (newRoutes.every(route => route.fast_read_decision === 'main') && runs.some(run => run.state === 'retry')) {
+          // Keep unlinked instructions in their own ordered turn without
+          // changing an existing reservation or attributing them to old work.
+          const reservation = runs.filter(run => run.state === 'retry' && run.error?.code === 'resource_limit' && run.retry_at)
+            .sort((left, right) => left.retry_at.localeCompare(right.retry_at))[0];
+          inbox.createRun(conversation, newRoutes, reservation ? { retry_at: reservation.retry_at } : {});
+          continue;
+        }
+      }
       const retainedRun = conversation.kind !== 'room' && inbox.runs(conversation.id).find(run => run.state === 'suspended');
       const handlingWork = running && conversation.kind === 'room' && (inbox.run(running.runId).receipt_group ||
         inbox.calls(running.runId).some(call => call.tool === 'open_session') ||
@@ -684,7 +707,7 @@ export class BotRuntime {
 
   reconcileAcceptedWork(inbox, runId) {
     const run = inbox.run(runId);
-    if (run?.state !== 'suspended' || run.error?.code !== 'room_delivery_pending') return;
+    if (run?.state !== 'suspended' || !['room_delivery_pending', 'model_response_incomplete'].includes(run.error?.code)) return;
     const conversation = inbox.conversation(run.conversation_id), actor = botRef(inbox.botId);
     if (conversation?.kind !== 'room' || !this.conversationActive(conversation) || !this.platform.getBot(inbox.botId).enabled ||
         !this.platform.canReadSpace(actor, conversation.space) || this.active.has(conversation.id) || this.starting.has(conversation.id)) return;
@@ -694,22 +717,27 @@ export class BotRuntime {
     const covered = new Map(), changed = new Set();
     for (const route of pending) {
       const event = inbox.event(route.event_id);
-      if (!run.injected_event_ids.includes(route.event_id) || !event) continue;
+      if (!event || event.type !== 'call.receipt' && !run.injected_event_ids.includes(route.event_id)) continue;
       const roots = event.type === 'message' ? roomQuestionLinks(this.platform, conversation.space, [event]) : new Set();
       for (const work of accepted) {
-        const terminal = event.type === 'call.receipt' && event.status === 'completed' && event.target?.id === work.id &&
-          work.latest_call_id === event.call_id && this.platform.store.get('platform-calls', event.call_id)?.result_ref?.id === event.id;
+        const call = event.type === 'call.receipt' && event.target?.kind === 'session' && event.target.id === work.id &&
+          this.platform.store.get('platform-calls', event.call_id);
+        const final = call?.status === 'completed' && call.result_ref?.kind === 'event' && this.platform.store.get('platform-events', call.result_ref.id);
+        const wait = route.wait_id && inbox.wait(route.wait_id);
+        const terminal = final?.status === 'completed' && final.call_id === event.call_id && final.target?.id === work.id &&
+          final.time >= event.time && wait?.call_id === event.call_id && wait.run_id === runId && wait.conversation_id === conversation.id &&
+          this.platform.canReadEvent(event, { actor, conversation, origin: { bot_id: actor.id, conversation_id: conversation.id, run_id: runId } });
         if (!terminal && !roots.has(work.origin_message_id)) continue;
         const message = this.platform.store.get('messages', work.acceptance.message_id);
         const send = message && confirmedRoomSend(this.platform, { ...message, space: conversation.space });
         if (!send || send.origin.conversation_id !== conversation.id || message.replyTo !== work.origin_message_id ||
-            message.createdAt < event.time) continue;
-        const context = { actor, conversation, origin: { bot_id: actor.id, conversation_id: conversation.id, run_id: runId } };
-        if (terminal && (!route.wait_id || inbox.wait(route.wait_id)?.call_id !== event.call_id || !this.platform.canReadEvent(event, context))) continue;
+            message.createdAt < (terminal ? final.time : event.time)) continue;
         const native = !terminal && this.platform.roomWork.materialStatus(work, [event.id])[0];
         const used = native?.call_status === 'completed' && native.input_status === 'completed';
         if (terminal || used && route.intake_disposition === 'material' && !route.intake_task && !route.public_reply_quote) {
-          covered.set(route.id, { event_id: event.id, message_id: message.id, call_id: send.id });
+          covered.set(route.id, { event_id: event.id, message_id: message.id, call_id: send.id,
+            ...(terminal && { session_id: work.id, original_call: call.id, terminal_receipt: final.id }) });
+          if (terminal && message.createdAt > (run.last_delivery_review_at ?? run.first_started_at)) changed.add(message.id);
           break;
         }
         // A newer accepted answer to the same question changes what the
