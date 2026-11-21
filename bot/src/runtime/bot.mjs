@@ -477,9 +477,44 @@ export class BotRuntime {
 
   reconcileDeliveries(inbox, received) {
     for (const delivery of received.filter(item => item.bot_id === inbox.botId)) {
+      if (delivery.event.type === 'message') this.reconcileRoomReply(inbox, delivery.event);
       const receipt = inbox.receipt(delivery.id);
       if (receipt?.revision === (delivery.revision ?? 1)) this.syncDelivery(inbox, receipt);
     }
+  }
+
+  reconcileRoomReply(inbox, event) {
+    const route = inbox.store.getRecord(R.route, recordKey(event.id, 'observation'));
+    if (!route?.run_id || route.state !== 'pending') return;
+    const run = inbox.run(route.run_id);
+    if (!run || !['suspended', 'retry', 'interrupted', 'pending'].includes(run.state) || !run.start_count ||
+        this.active.get(run.conversation_id)?.runId === run.id) return;
+    const conversation = inbox.conversation(run.conversation_id);
+    if (conversation?.kind !== 'room' || conversation.space.kind !== 'room' || !sameRef(conversation.space, event.space)) return;
+    const reply = this.platform.room.replyBy(conversation.space.id, inbox.botId, event.id);
+    const call = reply?.callId && this.platform.store.get('platform-calls', reply.callId);
+    if (call?.tool !== 'send' || call.status !== 'completed' || call.origin?.bot_id !== inbox.botId ||
+        !sameRef(call.target, conversation.space) || call.result?.message?.id !== reply.id) return;
+    inbox.store.transaction(() => {
+      // The original fork may never have injected this message. Keep its execution history intact.
+      inbox.store.putRecord(R.route, { ...route, state: 'processed', processed_at: now(), public_reply: {
+        message_id: reply.id, bot_id: inbox.botId, call_id: call.id,
+        conversation_id: call.origin.conversation_id, run_id: call.origin.run_id,
+      } });
+      if (run.state !== 'suspended' && !run.route_ids.some(id => inbox.store.getRecord(R.route, id)?.state === 'pending'))
+        inbox.putRun({ id: run.id, state: inbox.hasOpenWaits(run.id) ? 'waiting' : 'completed' });
+    });
+  }
+
+  recoveredRoomReply(origin, roomId, replyTo) {
+    const inbox = this.inboxes.get(origin?.bot_id);
+    const run = inbox?.run(origin.run_id);
+    if (!run?.recovering_room_inputs || inbox.conversation(run.conversation_id)?.space?.id !== roomId) return null;
+    const settled = run.route_ids.map(id => inbox.store.getRecord(R.route, id)).filter(route => route?.public_reply);
+    if (settled.length && !replyTo)
+      throw runtimeFailure('reply_target_required', 'Reply to the outstanding original message; this recovery already has confirmed public replies.');
+    const route = settled.find(item => item.event_id === replyTo);
+    return route ? this.platform.room.replyBy(roomId, inbox.botId, route.event_id) : null;
   }
 
   syncDelivery(inbox, receipt) {
@@ -511,6 +546,7 @@ export class BotRuntime {
       try {
         job.check();
         inbox.putRun({ id: run.id, state: 'running', binding, retry_at: null, error: null, view_revision: run.view_revision,
+          ...(conversation.kind === 'room' && run.start_count && ['retry', 'interrupted'].includes(run.state) ? { recovering_room_inputs: true } : {}),
           first_started_at: run.first_started_at ?? now(), start_count: (run.start_count ?? 0) + 1 });
         this.emit('engine.started', refs);
         await this.recoverCalls(job);
@@ -764,6 +800,13 @@ export class BotRuntime {
         tailMessages,
         save: (previous, through, summary) => this.platform.room.savePublicSummary(roomId, context.actor, previous, through, summary),
       };
+      if (run.recovering_room_inputs) {
+        const confirmed = run.route_ids.map(id => inbox.store.getRecord(R.route, id)).filter(route => route?.public_reply)
+          .map(route => ({ original_message_id: route.event_id, ...route.public_reply }));
+        facts.push(textMessage({ type: 'room_input_recovery', room: roomId,
+          pending_message_ids: current.filter(event => event.type === 'message' && sameRef(event.space, conversation.space)).map(event => event.id),
+          confirmed_public_replies: confirmed }));
+      }
       inbox.putRun({ id: runId, history_read_through: tailMessages.at(-1)?.event.id ?? history.at(-1)?.id ?? prefixSummary?.through ?? null });
     }
     if (view.session && view.resources?.length) facts.push(textMessage({ type: 'session_resources', references: view.resources,
@@ -906,13 +949,16 @@ export class BotRuntime {
       return active;
     };
     verify();
+    const selected = kind === 'next' ? this.inputRun(inbox, conversation) : null;
     signal?.throwIfAborted();
     await beforeSubmit();
     let active;
     try { signal?.throwIfAborted(); active = verify(); }
     catch (error) { error.beforeSubmit = true; throw error; }
-    const last = forSession && kind === 'next' ? this.latestRun(inbox.runs(conversation.id), conversation.id) : null;
-    const continuation = ['waiting', 'suspended'].includes(last?.state) ? last : null;
+    const last = kind === 'next' ? this.inputRun(inbox, conversation) : null;
+    if (last?.id !== selected?.id) throw Object.assign(runtimeFailure('input_target_expired', 'The conversation run changed before input submission'), { beforeSubmit: true });
+    const resumeSuspended = last?.state === 'suspended' && (forSession || conversation.kind === 'room');
+    const continuation = resumeSuspended || forSession && last?.state === 'waiting' ? last : null;
     const steerTarget = forSession && kind === 'steer' ? input_target : null;
     const { run, confirmed_input } = this.acceptInput(details, call, input, kind, active?.runId ?? continuation?.id, steerTarget);
     this.wake();
@@ -936,6 +982,7 @@ export class BotRuntime {
       inbox.store.putRecord(R.input, { id: call.id, run_id: run.id, event_id: id, conversation_id: current.id,
         kind, status: 'submitted', input_revision: next.input_revision, submitted_by: actorFor(call), confirmed_input });
       return { run: inbox.putRun({ id: run.id, input_revision: next.input_revision,
+        ...(conversation.kind === 'room' && run.state === 'suspended' ? { recovering_room_inputs: true } : {}),
         ...(run.state === 'suspended' ? { state: 'pending', retry_at: null } : {}) }), confirmed_input };
     });
   }
@@ -1004,7 +1051,17 @@ export class BotRuntime {
 
   conversationSummary(id) {
     const item = this.locate(id);
-    return item ? this.runSummary(id, this.latestRun(item.inbox.runs(id), id)) : null;
+    return item ? this.runSummary(id, this.inputRun(item.inbox, item.conversation)) : null;
+  }
+
+  inputRun(inbox, conversation, runs = inbox.runs(conversation.id)) {
+    const latest = this.latestRun(runs, conversation.id);
+    if (conversation.kind !== 'room' || !latest || activeRunStates.has(latest.state) || this.active.has(conversation.id)) return latest;
+    // A newer, completed fork does not remove a suspended fork's original inbox position.
+    const suspended = runs.filter(run => run.state === 'suspended' &&
+      (inbox.hasOpenWaits(run.id) || run.route_ids.some(id => inbox.store.getRecord(R.route, id)?.state === 'pending')));
+    return this.latestRun(suspended, conversation.id) ||
+      (latest.state === 'suspended' ? this.latestRun(runs.filter(run => run.state !== 'suspended'), conversation.id) : latest);
   }
 
   latestRun(runs, id) {
@@ -1033,7 +1090,7 @@ export class BotRuntime {
     return conversation ? this.inspectLocal(inbox, conversation, { ...options, sessionInput: true }) : { status: session.status || 'unknown', input_targets: [] };
   }
 
-  localInputState(inbox, conversation, sessionInput, last = this.latestRun(inbox.runs(conversation.id), conversation.id)) {
+  localInputState(inbox, conversation, sessionInput, last = this.inputRun(inbox, conversation)) {
     const revision = inbox.conversation(conversation.id).input_revision;
     const active = this.active.get(conversation.id);
     const summary = this.runSummary(conversation.id, last);
@@ -1046,7 +1103,7 @@ export class BotRuntime {
 
   inspectLocal(inbox, conversation, { cursor, limit = 25, sessionInput = false } = {}) {
     const runs = inbox.runs(conversation.id);
-    const last = this.latestRun(runs, conversation.id);
+    const last = this.inputRun(inbox, conversation, runs);
     const state = this.localInputState(inbox, conversation, sessionInput, last);
     const output = runs.flatMap(run => {
       const record = inbox.store.getRecord(R.transcript, run.id);

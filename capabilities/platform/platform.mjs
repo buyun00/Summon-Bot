@@ -1185,13 +1185,19 @@ export class SummonPlatform {
         reject('room_send_forbidden', 'Only the Bot’s main Room conversation can publish messages to a Room', 403);
       }
       if (!this.canWriteSpace(actor, space, context)) reject('room_forbidden', 'Room is not available for sending', 403);
+      const replyTo = normalize(args.reply_to, 'event');
+      const delivered = actor.kind === 'bot' && this.runtime.recoveredRoomReply(context.origin, id, replyTo?.id);
+      if (delivered) {
+        this.calls.bind(call.id, { target: space });
+        return { ...this.room.messageReceipt(delivered), already_delivered: true };
+      }
       const attachments = args.attachments?.map(ref => normalize(ref, 'file'));
       if (context.session) for (const ref of [...(attachments || []), ...(args.references || [])]) {
         if (!this.canReadReference(ref, context)) reject('share_forbidden', 'A reference is outside this Session’s resource scope', 403);
       }
       if (actor.kind === 'bot') this.resources.acquire('message', this.resourceSource(context), { id: call.id }).finish();
       this.calls.bind(call.id, { target: space });
-      return this.room.send(id, { ...args, attachments, reply_to: normalize(args.reply_to, 'event'), mentions: members(args.mentions),
+      return this.room.send(id, { ...args, attachments, reply_to: replyTo, mentions: members(args.mentions),
         clientId: context.clientId }, actor.id, { callId: call.id });
     }
     if (name === 'save_file') {

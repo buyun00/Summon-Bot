@@ -54,6 +54,9 @@ export class ChatroomService {
       CREATE INDEX IF NOT EXISTS records_room_summary ON records(
         json_extract(data,'$.roomId'),json_extract(data,'$.messageId')
       ) WHERE kind='room-message-summaries';
+      CREATE INDEX IF NOT EXISTS records_room_reply ON records(
+        json_extract(data,'$.roomId'),json_extract(data,'$.senderId'),json_extract(data,'$.replyTo')
+      ) WHERE kind='messages' AND json_extract(data,'$.replyTo') IS NOT NULL;
     `);
     this.messageSummaryRows = store.db.prepare(`
       SELECT data FROM records
@@ -78,6 +81,9 @@ export class ChatroomService {
       WHERE kind='messages' AND json_extract(data,'$.roomId')=? ORDER BY created_at DESC,rowid DESC LIMIT 1
     `);
     this.messageRow = store.db.prepare("SELECT rowid AS sequence,created_at,data FROM records WHERE kind='messages' AND id=?");
+    this.sentReply = store.db.prepare(`SELECT rowid AS sequence,data FROM records WHERE kind='messages'
+      AND json_extract(data,'$.roomId')=? AND json_extract(data,'$.senderId')=? AND json_extract(data,'$.replyTo')=?
+      ORDER BY rowid LIMIT 1`);
     store.db.exec(`CREATE INDEX IF NOT EXISTS room_observation_activity ON records(json_extract(data,'$.roomId')) WHERE ${roomActivity}`);
     const roomRange = `FROM records WHERE ${roomActivity} AND json_extract(data,'$.roomId')=?`;
     this.lastActivity = store.db.prepare(`SELECT id,rowid AS sequence ${roomRange} ORDER BY rowid DESC LIMIT 1`);
@@ -137,6 +143,10 @@ export class ChatroomService {
   messages(id, actor) {
     const room = this.room(id, actor);
     return this.roomMessages.all(room.id).map(rowMessage);
+  }
+
+  replyBy(roomId, senderId, eventId) {
+    return rowMessage(this.sentReply.get(roomId, senderId, eventId));
   }
 
   publicHistory(id, actor, end = this.observationEnd(id, actor)) {
