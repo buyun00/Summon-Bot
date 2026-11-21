@@ -1,5 +1,7 @@
 import { idOf, reject, sameRef } from './contract.mjs';
 
+export const barePublicationNumber = value => /^[+−-]?\p{Nd}+(?:[.,]\p{Nd}+)*$/u.test(value.trim());
+
 export function fieldLayout(materials, presentation, layout) {
   if (!Array.isArray(layout) || !layout.length || layout.length > 100) return;
   const used = new Set(), pieces = [];
@@ -158,7 +160,8 @@ export function roomPublicationReceipts(platform, actor, conversation, links, de
     const call = JSON.parse(data);
     const grant = platform.store.get('messages', call.publication_authority);
     if (grant?.roomId !== conversation.space.id || grant.senderId !== 'user' ||
-        !links.has(call.publication_dispatch) && ![...roomQuestionLinks(platform, conversation.space, [grant])].some(id => links.has(id))) continue;
+        !links.has(call.publication_assignment) && !links.has(call.publication_dispatch) &&
+        ![...roomQuestionLinks(platform, conversation.space, [grant])].some(id => links.has(id))) continue;
     const messageId = call.result?.message?.id;
     const message = messageId && platform.store.get('messages', messageId);
     if (call.tool !== 'send' || call.target?.kind !== 'room' || message?.callId !== call.id ||
@@ -170,7 +173,7 @@ export function roomPublicationReceipts(platform, actor, conversation, links, de
       status: 'delivered', time: message.createdAt, fields,
       ...((call.publication_fields_only || fields.includes(message.content)) && { text: message.content }) });
   }
-  return receipts;
+  return receipts.sort((a, b) => a.time.localeCompare(b.time));
 }
 
 export function publicationSources(platform, args, context, destination, localRoot) {
@@ -255,9 +258,15 @@ export function publicationSources(platform, args, context, destination, localRo
           (!outstanding || platform.store.get('platform-calls', message.callId)?.work_review?.stage === 'complete')) deliveries.add(message.id);
     }
   }
-  const versions = { user_messages: hostMessages.map(item => item.id), results, deliveries: [...deliveries], accepted: [...accepted] };
+  const seats = group.map(work => ({ id: work.id, original: work.origin_message_id, status: work.status,
+    acceptance_state: work.acceptance_state, outcome: work.acceptance?.outcome }));
+  const previous = localRoot ? [] : roomPublicationReceipts(platform, context.actor, context.conversation,
+    new Set([...questions, ...candidates.map(item => item.id)]), destination);
+  const versions = { user_messages: hostMessages.map(item => item.id), results, deliveries: [...deliveries], accepted: [...accepted],
+    seats, ...(previous?.length && { sent: previous.map(item => item.message_id) }) };
   const confirmed_delivery = deliveries.size > 0;
-  return { candidates, hostMessages, facts, versions, current, requested, questions, confirmed_delivery, local_work: Boolean(localRoot) };
+  return { candidates, hostMessages, facts, versions, current, requested, questions, confirmed_delivery, previous,
+    local_work: Boolean(localRoot), local_request: localMessage?.id };
 }
 
 export function currentPublicationGrant(platform, sources, grant) {
@@ -274,7 +283,7 @@ export function currentPublicationGrant(platform, sources, grant) {
 }
 
 export function publicationSelection(grant) {
-  return grant && JSON.stringify([grant.source_room, grant.authorization_id, grant.dispatch_id, grant.fields_only,
+  return grant && JSON.stringify([grant.source_room, grant.authorization_id, grant.assignment_id, grant.dispatch_id, grant.redispatch, grant.fields_only,
     grant.materials.map(part => part.text), grant.presentation, grant.formatted, grant.format_literals]);
 }
 

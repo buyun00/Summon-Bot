@@ -7,7 +7,7 @@ import { repairRequestType, repairResultType, tools } from '../../../capabilitie
 import { deliveryRecords } from '../../../capabilities/platform/delivery.mjs';
 import { waitRecords } from '../../../capabilities/platform/calls.mjs';
 import { forwardMaterials, workGroup } from '../../../capabilities/platform/session-work.mjs';
-import { currentPublicationGrant, fieldLayout, inspectedPublicationSources, privateRoomRead, publicationContext, publicationSelection, publicationSources, roomPublicationReceipts, roomQuestionLinks, withinPublicationRoom } from '../../../capabilities/platform/room-publication.mjs';
+import { barePublicationNumber, currentPublicationGrant, fieldLayout, inspectedPublicationSources, privateRoomRead, publicationContext, publicationSelection, publicationSources, roomPublicationReceipts, roomQuestionLinks, withinPublicationRoom } from '../../../capabilities/platform/room-publication.mjs';
 import { BotStore } from '../storage/store.mjs';
 import { Inbox } from '../storage/inbox.mjs';
 import { eventOrder, executionRef, now, recordKey, refKey, runtimeFailure, runtimeRecords as R, sameRef, terminalCallStates } from '../storage/runtime-records.mjs';
@@ -981,7 +981,8 @@ export class BotRuntime {
         });
         const presentation = grant.presentation ?? [];
         const formatted = fieldLayout(materials, presentation, grant.layout);
-        if (materials.length && materials.length === grant.materials.length && (!grant.fields_only || !presentation.length || formatted !== undefined))
+        if (materials.length && materials.length === grant.materials.length && !materials.some(part => barePublicationNumber(part.text)) &&
+            (!grant.fields_only || !presentation.length || formatted !== undefined))
           return { authorization_id: message.id, dispatch_id: message.id, materials, presentation, formatted,
             fields_only: grant.fields_only || materials.length === 1 && !presentation.length, versions: sources.versions };
       }
