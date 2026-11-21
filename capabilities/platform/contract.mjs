@@ -148,9 +148,10 @@ const definitions = [
     configureSessionInput],
   ['send_input', 'Submit input to the actual input target and control version, or resume one explicitly paused execution. ' +
     'For native reply, copy the current input_target with its request_id. Pass the Codex answer as a text string in the displayed answer_format. The steer target without request_id sends separate material and leaves the request unanswered. ' +
+    'In another Room with an open intake, use kind=intake with the listed Session and actual local material_sources. The work owner receives the originals and the local Room receives the intake status. Answer any accompanying local question here. ' +
     'For a material handoff select the actual new Room instruction, signed original or amendment in material_sources. A genuinely new instruction using a previously submitted document as background can set material_role=reference. A retained input points to the actual earlier call and its receipt. A registered wait_ref returns the asynchronous receipt to your run.',
-    object({ target: executionRef, kind: oneOf('reply', 'steer', 'next', 'resume'), control_version: integer, input: value, recovery_of: refOrId,
-      material_sources: array(eventOrId), material_role: oneOf('handoff', 'reference'), input_target: inputTarget, resume_ref: resumeRef }, ['target', 'kind', 'control_version'])],
+    object({ target: executionRef, kind: oneOf('reply', 'steer', 'next', 'resume', 'intake'), control_version: integer, input: value, recovery_of: refOrId,
+      material_sources: array(eventOrId), material_role: oneOf('handoff', 'reference'), input_target: inputTarget, resume_ref: resumeRef }, ['target', 'kind'])],
   ['stop_session', 'Pause an execution and request actual interruption for the selected scope.',
     object({ target: executionRef, control_version: integer, scope: oneOf('target', 'target_and_owned_calls') }, ['target', 'control_version'])],
   ['set_wakeup', 'Create an event subscription or time reminder with subscription:"new" and event_or_time. The platform returns its ID and revision. ' +

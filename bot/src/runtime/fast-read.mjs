@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { keyOf, sameIdentity } from '../../../capabilities/platform/contract.mjs';
+import { idOf, keyOf, sameIdentity } from '../../../capabilities/platform/contract.mjs';
 import { wakeupRecords } from '../../../capabilities/platform/delivery.mjs';
 import { sameInput, sessionRecords } from '../../../capabilities/platform/executions.mjs';
 import { forwardInputs, unresolvedForward } from '../../../capabilities/platform/session-work.mjs';
@@ -38,6 +38,7 @@ const fastReadRules = [
   '已开放收件的跨群工作可收本群用户或同伴 Bot 本人提交的实物、数字、原话。按本条作者、原件及待补事项判断；同伴在本群亲自交付且归属唯一时选 forward。复述另一人的指令不改变授权。withdrawn_followups 列出本 Bot 原来主持、已撤销本群收件的工作；针对它的新补件交本群 main，由主持说明去处。',
   '你是 open_executions 中所列工作的主持。本群成员可以向你问收件入口、请你代办、查单或解释失败，同伴与用户同样可以求助。逐条分清本件、已收的旧件、当事人自己的失败和主持实际送达的原件。询问或求助即使夹带首报、重复材料或收悉，也整条交 main；在 intake_help_quote 摘录本条仍需主持处理的原话。纯粹提交且去向唯一才直转。别人已答妥或仅收悉时保持 quiet。收件状态见 room_intake 中各自的 source_event。',
   '文字回答单一自由题时选择有该问题的 reply；另一项独立文字材料选择 steer。若是在回答列于 non_forwardable_inputs 的问题，或者改表单或办理方式，交 main。',
+  '本群开放收件时，对同伴的当前消息另填 intake_disposition。本人新增材料又请主持办理，选 needs_host，target 填对应工作，intake_help_quote 摘本条所求，source_event 填应递的真实原件。本人重复同一签但求助未办也选 needs_host，可指出同作者较早的原件。纯交件用 material；纯收悉或闲聊用 no_action；明确交给其他人用 other_addressee；已经办妥用 handled 并填实际原始收件或当地答复的 handled_event。仅见过旧材料、同伴缺少私席读权或上一条是主持讲话都不能证明本人新签已办。',
   '缺口自检（quiet vs main）：结合前文、本 Bot 的职责与待判原话判断——如果本 Bot 现在安静结束（quiet），会留下哪个该我回答的问题、会影响结论的错误或未澄清事实，或该我推进的内部步骤（查证、新工作、续办、改方向、叫停、交接留档、保存长期规则、登记或修改提醒）？只要存在任何需要本 Bot 公开发言或内部处理的缺口（且不满足 forward 条件），就必须判 main；只有在群里无需本 Bot 回应、且内部也无需本 Bot 采取任何动作时，才判 quiet。',
   '对象与承接判断：从说话人当下的原话辨认每个请求交给谁，结合房间成员列表（members）里的姓名、公开职责和前文确认称呼所指。明确请另一位成员回答或办理的部分留给本人，即使你知道答案、负责这个话题，或这条消息引用了你，也不抢答（若无其他属于本 Bot 的缺口，判 quiet）。若本人已委托你转述且当下问法允许代答，或同一条消息里另有交给你的问题或事项，判 main。没有 @ 或点名时，也要看对方是否在承接本 Bot 刚才的话、追问本 Bot 负责或正在跟进的事项、或等待本 Bot 的下一步行动；如果是，判 main（或唯一匹配在途执行且符合条件时判 forward）。事实补充、纠正和回执要看是否会改变本 Bot 的已有结论、触发约定回告或更正、解除等待、或影响本 Bot 的下一步办理。读到纯收悉、礼貌致谢、复述、背景补充、自然收尾，或别人已在原提问处把问题答清，且没有仍需本 Bot 处理的公开或内部缺口时，判 quiet。对照本 Bot 自己先前说过的话辨别重复；一句话既纠正又追问时，只要仍有未解决且归属本 Bot 的部分，判 main。',
   '对 main 的本条原话另行标注交付意图。说话人要求本 Bot 在当前群给答复或确认时，在 public_reply_quote 摘录该请求的原文；纯内部办理、私答、已有归属成员答妥时省略。宿主本人明确要求向另一群公开某些内容时，才列 publications，每项为 {"room":"目的群准确名称或ID","quote":"宿主要求向该群发布的原文指令","materials":[{"event":"本群原件ID","quote":"已获准向该群公开的事实片段"}]}。从实际原件选择允许交给该受众的部分，可分多项；原指令可以自然指代之前的材料。绝不把仅供内部、留在本群或给某席的内容列入。查阅、告诉我到哪里投件、开放工作收件、提及群名均不授予跨群公开发言权。',
@@ -78,7 +79,7 @@ function resolveForwardSelection(candidate, item) {
   return options.length === 1 ? options[0] : null;
 }
 
-function parseFastReadResponse(answer, pendingIds, candidatesById, routeById) {
+function parseFastReadResponse(answer, pendingIds, candidatesById, routeById, intake, visible) {
   const raw = (answer?.content || [])
     .filter(part => part?.type === 'text' && typeof part.text === 'string')
     .map(part => part.text)
@@ -151,6 +152,22 @@ function parseFastReadResponse(answer, pendingIds, candidatesById, routeById) {
     decision.evidence = item?.evidence;
     const event = routeById.get(id)?.event;
     const quoted = value => typeof value === 'string' && value.trim() && event?.text?.includes(value);
+    if (intake?.receives_materials_here && event?.author?.kind === 'bot') {
+      const disposition = item?.intake_disposition;
+      const candidate = candidatesById.get(item?.target);
+      const other = item?.handled_event && visible.get(item.handled_event);
+      const received = intake.receipts.some(receipt => receipt.source_event === item?.handled_event &&
+        [receipt, receipt.recovery].some(state => state && ['submitted', 'completed'].includes(state.native_input_status)));
+      const handled = received || other?.replyTo === id;
+      const noTask = ['no_action', 'other_addressee'].includes(disposition) && quoted(item?.evidence?.quote);
+      if (disposition === 'needs_host' || decision.route === 'quiet' && !noTask && !(disposition === 'handled' && handled)) {
+        decision.route = 'main';
+        const prior = visible.get(item?.source_event);
+        const sameAuthor = prior && prior.senderId === event.author.id && prior.roomId === event.space?.id;
+        decision.intake_task = { source_event: sameAuthor ? prior.id : id, ...(candidate?.cross_room && { session_id: candidate.session_id }),
+          ...(quoted(item?.intake_help_quote) && { request: item.intake_help_quote }) };
+      }
+    }
     if (candidatesById.size && (quoted(item?.intake_help_quote) || quoted(item?.public_reply_quote))) {
       decision.route = 'main';
       decision.public_reply_quote = quoted(item.intake_help_quote) ? item.intake_help_quote : item.public_reply_quote;
@@ -289,7 +306,47 @@ export class FastReadRuntime {
       inbox.store.putRecord(R.route, { ...route, ...patch });
   }
 
-  async executeForward(bot, room, route, decision, controller) {
+  async submitRoomIntake(args, context, call, work) {
+    const { actor, conversation, origin } = context;
+    const room = conversation?.space;
+    if (actor.kind !== 'bot' || context.session || conversation?.kind !== 'room' || room?.kind !== 'room' ||
+        !work || work.origin_room?.id === room.id || !sameIdentity(work.owner, actor) || args.recovery_of || args.resume_ref ||
+        !this.platform.isFollowupRoomAllowed(work, room) || work.authority_revoked || work.acceptance_state !== 'open')
+      throw runtimeFailure('followup_unavailable', 'Select a currently open material intake in this Room.', 409);
+    const ids = [...new Set((args.material_sources || []).map(ref => idOf(ref, 'event')))];
+    const request = origin.event_ids.map(id => this.platform.store.get('messages', id)).findLast(message =>
+      message?.roomId === room.id && this.platform.roomWork.intakeSelection(message, ids, work, actor));
+    if (!request) throw runtimeFailure('material_source_forbidden', 'Select this local submission or originals it explicitly encloses.', 403);
+    const inbox = this.runtime.inboxes.get(actor.id), bot = this.platform.getBot(actor.id);
+    const candidate = this.listForwardCandidates(inbox, bot, room.id).find(item => item.session_id === work.id);
+    if (!candidate) throw runtimeFailure('followup_unavailable', 'The work owner or receiving seat is unavailable.', 409);
+    const receipts = this.platform.roomWork.priorMaterialReceipts(work, call, ids);
+    if (receipts.length === ids.length) {
+      this.platform.calls.bind(call.id, { target: room, intake_source_ids: ids, intake_session_id: work.id });
+      return this.platform.calls.finish(call.id, 'completed', { status: 'retained', material_sources: ids,
+        material_receipts: receipts.map(({ event_id, input_status, call_status }) => ({ event_id, input_status, call_status })) });
+    }
+    const option = candidate.forwardable_inputs.find(item => ['next', 'steer'].includes(item.kind));
+    if (!option) throw runtimeFailure('intake_position_unavailable', 'This work has no open material input. Its owner handles native questions or a paused seat.', 409);
+    const primary = ids.find(id => !receipts.some(receipt => receipt.event_id === id));
+    const selected = [primary, ...ids.filter(id => id !== primary)];
+    const originals = this.platform.roomWork.sourceFacts(selected, { prior_material_receipts: receipts });
+    const local = this.platform.store.get('rooms', room.id);
+    const decision = { target: work.id, control_version: candidate.control_version, input_kind: option.kind, input_target: option.input_target };
+    const innerId = randomUUID();
+    this.platform.calls.bind(call.id, { target: room, intake_call_id: innerId, intake_source_ids: selected, intake_session_id: work.id });
+    await this.executeForward(bot, local, { event_id: primary, event: roomEvent(this.platform.store.get('messages', primary)) },
+      decision, { signal: context.signal }, { id: innerId, request, selected, originals });
+    const inner = this.platform.store.get('platform-calls', innerId);
+    if (!inner) throw runtimeFailure('followup_unavailable', 'The owner could not accept this intake.', 409);
+    const actual = inner.retained_input_call_id ? this.platform.calls.get(inner.retained_input_call_id) : inner;
+    const native = actual.input_id && this.platform.store.get('platform-inputs', actual.input_id);
+    return this.platform.calls.finish(call.id, 'completed', { status: actual.status, input_status: native?.call_id === actual.id ?
+      native.status : actual.result?.input_status, material_sources: selected, retained: actual.id !== inner.id,
+      ...(actual.result?.code && { code: actual.result.code }) });
+  }
+
+  async executeForward(bot, room, route, decision, controller, intake) {
     const actor = botRef(bot.id);
     const session = this.platform.store.get(sessionRecords, decision.target);
     if (!session || !sameIdentity(session.owner, actor) || !session.owner_run_id)
@@ -299,22 +356,23 @@ export class FastReadRuntime {
       return { ok: false, reason: 'owner_conversation_unavailable' };
 
     const space = { kind: 'room', id: room.id };
-    const callId = randomUUID();
+    const callId = intake?.id ?? randomUUID();
     const context = {
       actor, submitted_by: actor, call_id: callId, signal: controller.signal,
       controls: [{ target: actor, control_version: bot.control.control_version }],
       origin: { bot_id: bot.id, conversation_id: owner.id, run_id: session.owner_run_id,
         control_version: owner.control.control_version, event_ids: [route.event_id], fast_read_forward: true, source_room: space,
-        source_author: route.event.author, forward_target: { kind: 'session', id: decision.target } },
+        source_author: route.event.author, forward_target: { kind: 'session', id: decision.target },
+        ...(intake && { intake_message_id: intake.request.id, intake_material_ids: intake.selected }) },
     };
     try {
       await this.platform.invoke('send_input', {
         target: { kind: 'session', id: session.id }, kind: decision.input_kind, control_version: decision.control_version,
-        input_target: decision.input_target, input: this.formatForwardInput(room, route.event, decision),
+        input_target: decision.input_target, input: intake ? JSON.stringify({ room_originals: intake.originals }) : this.formatForwardInput(room, route.event, decision),
       }, context);
       return this.forwardOutcome(this.platform.calls.get(callId));
     } catch (error) {
-      if (controller.signal.aborted) throw error;
+      if (controller.signal?.aborted) throw error;
       return this.forwardOutcome(this.platform.store.get('platform-calls', callId), error.code);
     }
   }
@@ -554,9 +612,9 @@ export class FastReadRuntime {
         throw runtimeFailure('fast_read_model_error', answer?.errorMessage || 'Fast-read model did not finish cleanly', 503);
       }
 
-      const parsed = parseFastReadResponse(answer, eventIds, candidatesById, routeById);
       const keptIds = new Set(keptPublic.map(message => message.public_event_id));
       const visible = new Map(snapshot.messages.filter(message => keptIds.has(message.id)).map(message => [message.id, message]));
+      const parsed = parseFastReadResponse(answer, eventIds, candidatesById, routeById, intake, visible);
       await this.commitDecisions(inbox, bot, room, batch, parsed.decisions, answer.roomCacheThroughMessageId, check, controller, parsed.reason, null, visible);
     } catch (error) {
       const code = error.code || 'fast_read_error';
@@ -664,6 +722,7 @@ export class FastReadRuntime {
           inbox.store.putRecord(R.route, {
             ...live,
             fast_read_decision: 'main',
+            ...(decision.intake_task && { intake_task: decision.intake_task }),
             ...(decision.public_reply_quote && { public_reply_quote: decision.public_reply_quote }),
             ...(decision.publications?.length && { publications: decision.publications }),
             ...(decision.native_request && { native_request: decision.native_request }),

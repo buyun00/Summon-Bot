@@ -142,7 +142,7 @@ export class Executions {
   confirmedNonSubmission(call) {
     const input = call.input_id && this.store.get(inputRecords, call.input_id);
     return call.status === 'not_submitted' || call.submission_outcome === 'not_submitted' ||
-      input?.call_id === call.id && ['cancelled', 'not_submitted'].includes(input.status) ||
+      input?.call_id === call.id && (input.status === 'not_submitted' || input.cancelled_before_dispatch === true) ||
       call.status === 'failed' && (call.result?.input_status === 'rejected' ||
         !call.external && !call.pi_writer_pid && call.result_ref?.kind === 'call' && !call.result?.native);
   }
@@ -153,7 +153,8 @@ export class Executions {
     if (linked && !this.confirmedNonSubmission(linked)) return linked;
     if (!this.confirmedNonSubmission(original)) return original;
     const previous = this.platform.roomWork.materialAttempts(target.id, [original.source_event_ids[0]], original.id);
-    return previous.find(call => call.input_id && !call.material_reference_only && !this.confirmedNonSubmission(call)) ?? linked ?? original;
+    return previous.find(call => call.input_id && !call.material_reference_only &&
+      (call.material_action_ids ?? call.material_source_ids).includes(original.source_event_ids[0]) && !this.confirmedNonSubmission(call)) ?? linked ?? original;
   }
 
   reserveForwardRecovery(args, context, attempt, work, selected = [], inspectOnly = false) {
@@ -175,6 +176,11 @@ export class Executions {
       reject('recovery_source_mismatch', 'Select the original material call for this work and owner.', 409);
     if (!explicit && (!work.id || args.kind === 'reply' || args.material_role === 'reference')) return;
     const sources = new Set(selected);
+    if (context.origin.fast_read_forward && selected.length) {
+      const prior = this.platform.roomWork.priorMaterialReceipts(work, attempt, selected);
+      if (prior.length === sources.size)
+        return { original: attempt, latest: this.calls.get(prior[0].call_id), receipts: prior };
+    }
     if (explicit) sources.add(explicit.source_event_ids[0]);
     const candidates = new Map();
     if (explicit) candidates.set(explicit.id, explicit);
@@ -233,8 +239,9 @@ export class Executions {
     this.calls.bind(attempt.id, { target, retained_input_call_id: latest.id });
     this.calls.addWait(latest.id, { ...context.origin, input_call_id: attempt.id, initiating_principal: attempt.initiating_principal });
     const input = latest.input_id && this.store.get(inputRecords, latest.input_id);
-    return this.calls.finish(attempt.id, 'completed', { status: 'retained', target, call_id: latest.id,
+    return this.calls.finish(attempt.id, 'completed', { status: 'retained', target, retained_call_id: latest.id,
       call_status: latest.status, input_status: input?.call_id === latest.id ? input.status : latest.result?.input_status,
+      ...(existing.receipts && { material_receipts: existing.receipts }),
       result_ref: latest.result_ref, guidance: 'Use this original call and its actual receipt. No additional native input was submitted.' });
   }
 
@@ -631,6 +638,12 @@ export class Executions {
 
   async submit(args, context, call) {
     const { target } = args;
+    const work = target.kind === 'session' && this.record(target);
+    const localIntake = work && context.conversation?.kind === 'room' && work.origin_room &&
+      !sameRef(context.conversation.space, work.origin_room) && args.material_sources?.length &&
+      ['steer', 'next'].includes(args.kind) && !this.permission(target, work, context, 'input');
+    if (args.kind === 'intake' || localIntake) return this.platform.runtime.fastRead.submitRoomIntake(args, context, call, work);
+    if (!Number.isSafeInteger(args.control_version)) reject('invalid_arguments', 'A native input requires its current control_version.');
     const record = this.require(target, context, args.kind === 'resume' ? 'control' : 'input');
     if (record.connection_setup && context.actor.kind !== 'user')
       reject('initialization_forbidden', 'Only the host user can submit input to connection initialization', 403);
@@ -682,7 +695,7 @@ export class Executions {
         if (existing) return this.retainMaterial(call, existing, context);
       }
       const existing = this.store.get(inputRecords, inputKey);
-      if (existing && !['cancelled', 'not_submitted'].includes(existing.status)) {
+      if (existing && !this.confirmedNonSubmission(this.calls.get(existing.call_id))) {
         reject('input_already_submitted', 'The native request already has a submitted answer', 409, { call_id: existing.call_id });
       }
       const attempt = this.calls.get(call.id);
@@ -691,6 +704,7 @@ export class Executions {
       this.store.save(inputRecords, { id: inputKey, target, call_id: call.id, input_target: args.input_target, kind: args.kind,
         submitted_by: context.actor, origin: context.origin, control_version: args.control_version, status: 'prepared', input: args.input });
       this.calls.bind(call.id, { target, input_id: inputKey, material_source_ids: sourceIds,
+        material_action_ids: args.material_role === 'reference' ? [] : sourceIds.filter(id => !earlier?.some(prior => prior.event_id === id)),
         ...(args.material_role === 'reference' && { material_reference_only: true }),
         ...(earlier?.length && { prior_material_receipts: earlier }),
         execution_actor: record.execution_actor || { kind: 'bot', id: record.bot_id } });
@@ -720,7 +734,7 @@ export class Executions {
       let input = args.input;
       if (args.kind !== 'reply' && !context.origin?.fast_read_forward && linked.material_source_ids?.length &&
           this.platform.connections.get(current.engine)?.kind === 'codex') {
-        const sources = this.platform.roomWork.sourceFacts(linked.material_source_ids);
+        const sources = this.platform.roomWork.sourceFacts(linked.material_source_ids, linked);
         const text = typeof input === 'string' ? input : input?.text;
         if (typeof text === 'string') {
           const attributed = JSON.stringify({ instructions: text, room_originals: sources, prior_material_receipts: linked.prior_material_receipts });
@@ -924,7 +938,7 @@ export class Executions {
         this.saveControl(target, control);
         for (const input of this.store.list(inputRecords)) {
           if (input.status === 'prepared' && (sameRef(input.target, target) || target.kind === 'conversation' && input.origin?.conversation_id === target.id)) {
-            this.store.save(inputRecords, { id: input.id, status: 'cancelled' });
+            this.store.save(inputRecords, { id: input.id, status: 'cancelled', cancelled_before_dispatch: true });
           }
         }
       }

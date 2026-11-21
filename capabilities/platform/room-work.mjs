@@ -43,6 +43,19 @@ export class RoomWork {
     return true;
   }
 
+  intakeSelection(request, ids, session, actor) {
+    return request && ids.length > 0 && ids.length <= 12 && ids.every(id => {
+      const source = this.platform.store.get('messages', id);
+      if (source?.roomId !== request.roomId || !this.canHandOff(source, session, actor)) return false;
+      if (source.id === request.id) return true;
+      const referenced = request.replyTo === id || request.references?.some(ref => ref.kind === 'event' && ref.id === id);
+      if (referenced && (request.senderId === 'user' || request.senderId === source.senderId)) return true;
+      const route = this.platform.runtime.forwardRoute(actor.id, request.id);
+      return request.senderId === source.senderId && route?.intake_task?.source_event === id &&
+        (!route.intake_task.session_id || route.intake_task.session_id === session.id);
+    });
+  }
+
   inputSources(args, context, session, call) {
     const { platform } = this;
     const requested = args.material_sources?.map(id => idOf(id, 'event'));
@@ -56,7 +69,12 @@ export class RoomWork {
     const recoveryId = call.recovery_of ?? (args.recovery_of && idOf(args.recovery_of, 'call'));
     const recovery = recoveryId && platform.store.get(callRecords, recoveryId);
     let ids;
-    if (origin.fast_read_forward || args.recovery_of || recovery && !requested) {
+    if (origin.intake_message_id) {
+      const request = platform.store.get('messages', origin.intake_message_id);
+      ids = origin.intake_material_ids;
+      if (request?.roomId !== origin.source_room?.id || !this.intakeSelection(request, ids, session, context.actor))
+        reject('followup_unavailable', 'The selected local originals or receiving work changed.', 409);
+    } else if (origin.fast_read_forward || args.recovery_of || recovery && !requested) {
       const [first] = recovery?.source_event_ids ?? origin.event_ids;
       const submission = platform.store.get('messages', first);
       ids = [first];
@@ -89,18 +107,14 @@ export class RoomWork {
   }
 
   priorMaterialReceipts(session, call, originals) {
-    const cover = call.origin?.fast_read_forward || call.recovery_of;
-    const enclosed = (cover ? originals.slice(1) : originals).filter(id =>
-      this.platform.store.get('messages', id).roomId !== session.origin_room.id);
-    if (!enclosed.length) return [];
-    const prior = this.materialAttempts(session.id, enclosed, call.id);
+    const prior = this.materialAttempts(session.id, originals, call.id);
     const receipts = new Map();
     for (const attempt of prior) {
       const input = attempt.input_id && this.platform.store.get('platform-inputs', attempt.input_id);
-      if (input?.call_id !== attempt.id) continue;
-      for (const id of enclosed) {
-        if (!receipts.has(id) && attempt.material_source_ids.includes(id)) receipts.set(id, { event_id: id, input_status: input.status,
-          call_status: attempt.status });
+      if (input?.call_id !== attempt.id || attempt.material_reference_only || this.platform.executions.confirmedNonSubmission(attempt)) continue;
+      for (const id of originals) {
+        if (!receipts.has(id) && (attempt.material_action_ids ?? attempt.material_source_ids).includes(id)) receipts.set(id, {
+          event_id: id, call_id: attempt.id, input_status: input.status, call_status: attempt.status });
       }
     }
     return [...receipts.values()];
@@ -114,12 +128,16 @@ export class RoomWork {
       ORDER BY rowid DESC`).all(sessionId, except, JSON.stringify(ids)).map(row => JSON.parse(row.data));
   }
 
-  sourceFacts(ids) {
+  sourceFacts(ids, call) {
     return ids.map(id => {
       const message = this.platform.store.get('messages', id);
       return { event: { kind: 'event', id }, room: { kind: 'room', id: message.roomId },
         room_name: this.platform.store.get('rooms', message.roomId).name, author: message.author ?? identity(message.senderId),
-        time: message.createdAt, reply_to: message.replyTo, text: message.content };
+        time: message.createdAt, reply_to: message.replyTo, text: message.content,
+        ...(message.attachments?.length && { attachments: message.attachments.map(({ id, name }) => ({ id, name })) }),
+        ...(message.references?.length && { references: message.references }),
+        ...(call && { material_use: call.material_reference_only ? 'reference' :
+          call.prior_material_receipts?.some(prior => prior.event_id === id) ? 'previous_input' : 'new_material' }) };
     });
   }
 

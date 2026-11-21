@@ -310,23 +310,26 @@ export class BotRuntime {
   roomIntake(botId, room, requests) {
     const ids = new Set(requests.flatMap(event => [event.id, event.reply_to?.id ?? event.reply_to,
       ...(event.references || []).filter(ref => ref.kind === 'event').map(ref => ref.id)]).filter(Boolean));
-    const open = this.platform.executions.followupSessions(botId, room.id).some(work =>
+    const receiving = this.platform.executions.followupSessions(botId, room.id).filter(work =>
       work.origin_room?.id !== room.id && !work.authority_revoked && work.control?.state === 'active' &&
+      this.platform.executions.record(conversationRef(work.owner_conversation_id))?.control.state === 'active' &&
       this.platform.canReadSpace(botRef(botId), work.origin_room));
+    const open = receiving.length > 0;
     const receipts = [];
     const calls = open ? this.platform.calls.roomForwards(botId, room.id, [...ids]) : this.platform.calls.forwardsFor(botId, room.id, [...ids]);
     for (const [source, call] of calls) {
       const route = this.forwardRoute(botId, source);
       const message = this.platform.store.get('messages', source);
-      if (message?.roomId !== room.id || route?.fast_read_forward_call_id !== call.id) continue;
-      const receipt = this.openIntakeReceipt(call) ?? route.source_intake_receipt ?? { call_status: route.fast_read_forward_status };
+      if (message?.roomId !== room.id || !call.origin.intake_message_id && route?.fast_read_forward_call_id !== call.id) continue;
+      const receipt = this.openIntakeReceipt(call) ?? route?.source_intake_receipt ?? { call_status: route?.fast_read_forward_status };
       receipts.push({ source_event: source, author: message.senderId, call_status: receipt.call_status,
         native_input_status: receipt.native_input_status, ...(receipt.recovery && { recovery: {
           call_status: receipt.recovery.call_status, native_input_status: receipt.recovery.native_input_status } }) });
     }
     if (!open && !receipts.length) return null;
     return { room: { id: room.id, name: room.name }, receives_materials_here: open, receipts,
-      instruction: 'Members may post material in an open receiving Room and ask its host here. Use the receipt for the specific original event. A peer’s private access error concerns that peer only. A missing receipt leaves that item unconfirmed. Report the actual input and recovery status separately from the final work outcome.' };
+      receiving_sessions: receiving.map(work => ({ kind: 'session', id: work.id })),
+      instruction: 'For a member’s new submission and help request, hand the actual local originals to the matching open receiving_session using send_input kind=intake, then answer the request here using the real intake status. A repeated request can refer to the earlier signed original. A missing receipt leaves it unconfirmed. Closing intake affects future submissions.' };
   }
 
   wake() {
@@ -1275,6 +1278,7 @@ export class BotRuntime {
         requestIds.add(event.id);
         if (event.reply_to) requestIds.add(event.reply_to.id ?? event.reply_to);
         const route = inbox.store.getRecord(R.route, recordKey(event.id, 'observation'));
+        if (route?.intake_task) facts.push(textMessage({ type: 'room_intake_request', message_id: event.id, ...route.intake_task }));
         if (route?.native_request) facts.push(textMessage({ type: 'native_reply_due', message_id: event.id, ...route.native_request,
           instruction: 'Read the current input_targets and submit the user’s actual answers as reply to the matching request. If its position changed, inspect the new request.' }));
         if (route?.fast_read_forward_fallback) {
@@ -1462,7 +1466,7 @@ export class BotRuntime {
       const id = recordKey('pi.input', call.id);
       const event = { id, kind: 'event', type: 'pi.input', input, space: conversation.space, author: actorFor(call), time: now(),
         call_id: call.id, source_event_ids: call.source_event_ids || [], initiating_principal: call.initiating_principal,
-        ...(call.material_source_ids?.length && { room_originals: this.platform.roomWork.sourceFacts(call.material_source_ids) }),
+        ...(call.material_source_ids?.length && { room_originals: this.platform.roomWork.sourceFacts(call.material_source_ids, call) }),
         ...(call.prior_material_receipts?.length && { prior_material_receipts: call.prior_material_receipts }),
         ...(call.origin?.fast_read_forward && { material_author: call.origin.source_author, material_room: call.origin.source_room }) };
       const next = inbox.putConversation({ id: current.id, input_revision: current.input_revision + 1 });
