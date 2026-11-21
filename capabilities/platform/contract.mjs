@@ -19,7 +19,8 @@ const refOrId = { anyOf: [ref, text] };
 const roomOrId = { anyOf: [typedRef('room'), text] };
 const eventOrId = { anyOf: [typedRef('event'), text] };
 const references = array(ref);
-const roomMessageFields = { text, attachments: array(refOrId), references, mentions: array(principal), reply_to: eventOrId };
+const roomMessageFields = { text, attachments: array(refOrId), references, mentions: array(principal), reply_to: eventOrId,
+  work_reply: object({ session: refOrId, stage: oneOf('progress', 'complete', 'correction') }, ['session', 'stage']) };
 const repairMessageFields = { to: typedRef('connection'), text, references };
 const repairOutcome = oneOf('repaired', 'blocked');
 const sendMessage = { anyOf: [
@@ -83,6 +84,8 @@ const openSessionInput = object({ engine: sessionEngine, input: value, workspace
 const publicOpenSessionInput = { ...openSessionInput, properties: { ...openSessionInput.properties, engine: refOrId, workspace: { anyOf: [ref, text] } } };
 const configureSessionInput = object({ target: refOrId, acceptance_state: oneOf('open', 'closed'), work_summary: text,
   delivery_message_id: eventOrId, close_reason: oneOf('cancelled', 'superseded', 'private'), disposition_note: text,
+  restore_pi_authority: object({ control_version: integer, revocation_call_id: text }, ['control_version']),
+  host_review_receipt: eventOrId,
   waiting_summary: nullableText, add_followup_rooms: array(roomOrId), remove_followup_rooms: array(roomOrId) }, ['target']);
 
 const definitions = [
@@ -95,6 +98,7 @@ const definitions = [
     'Use it for a specific observation. A registered wait_ref delivers the terminal receipt or an input request to your run automatically.',
     object({ ref, path: text, cursor: text, limit: { type: 'integer', minimum: 1, maximum: 100 } }, ['ref'])],
   ['send', 'Publish to a Room using message:{to:{kind:"room",id},text}, with optional attachments, references, mentions or reply_to. ' +
+    'For a progress report or the complete delegated result, include work_reply:{session,stage:"progress"|"complete"}. A complete work reply is anchored to its original question. Use stage:"correction" for a material change to a previously confirmed delivery. ' +
     'For a verified connection fault, address the message to {kind:"connection",id} with the problem and shareable references. ' +
     'Reuse repair_key when requesting repair of the same fault. The maintainer replies to the repair event on that connection with reply_to and an optional repair_outcome.',
     object({ message: sendMessage }, ['message']), ({ message }) => message],

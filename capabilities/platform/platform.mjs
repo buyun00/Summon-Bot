@@ -1178,8 +1178,8 @@ export class SummonPlatform {
         reject('room_send_forbidden', 'Only the Bot’s main Room conversation can publish messages to a Room', 403);
       }
       if (!this.canWriteSpace(actor, space, context)) reject('room_forbidden', 'Room is not available for sending', 403);
-      const replyTo = normalize(args.reply_to, 'event');
-      const delivered = actor.kind === 'bot' && this.runtime.recoveredRoomReply(context.origin, id, replyTo?.id);
+      const { reply: replyTo, work_reply, retained } = this.executions.roomReply(args, context, space, normalize(args.reply_to, 'event'));
+      const delivered = retained || actor.kind === 'bot' && this.runtime.recoveredRoomReply(context.origin, id, replyTo?.id);
       if (delivered) {
         this.calls.bind(call.id, { target: space });
         return { ...this.room.messageReceipt(delivered), already_delivered: true };
@@ -1189,7 +1189,8 @@ export class SummonPlatform {
         if (!this.canReadReference(ref, context)) reject('share_forbidden', 'A reference is outside this Session’s resource scope', 403);
       }
       if (actor.kind === 'bot') this.resources.acquire('message', this.resourceSource(context), { id: call.id }).finish();
-      this.calls.bind(call.id, { target: space });
+      this.calls.bind(call.id, { target: space, ...(work_reply && { work_reply }) });
+      if (work_reply?.stage === 'correction') this.store.save(sessionRecords, { id: work_reply.session_id, retained_delivery: null });
       return this.room.send(id, { ...args, attachments, reply_to: replyTo, mentions: members(args.mentions),
         clientId: context.clientId }, actor.id, { callId: call.id });
     }

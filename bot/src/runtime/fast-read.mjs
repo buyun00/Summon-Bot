@@ -43,9 +43,9 @@ const fastReadRules = [
   '界面摘要（summary）规则：\n' +
     '对每个 message_id 写一句自然、简短的中文概括（通常 40 字以内，最多 80 字）。写本条输入事实，保留否定、时态、数值和地点。evidence.quote 逐字引用本条 event.text 中支持概括的原话。前文只用于消解指代，不能把先前或同批其他消息的动作、状态、要求写成本条事实。需要消解时，在 summary 用 {ref} 表示该对象，同时给 evidence.referent 填本条指代词 mention、对应前文 message_id 及前文中逐字出现的对象名 name。附件文件名由宿主从本条附件补入，概括中无需复写。仅有附件或引用时简述发送了材料，quote 可空。不得写路由或代答。',
   '输出格式（严格遵守）：只输出一个合法 JSON 对象，不要附加任何解释或额外文字：\n' +
-    '{"items":[{"message_id":"<待判消息 ID>","summary":"<简短客观事实摘要>","evidence":{"quote":"<本条原话>","referent":{"mention":"<指代词>","message_id":"<前文 ID>","name":"<对象名>"}},"route":"quiet"|"main"|"forward","target":"<仅 forward 时填 session_id>","input_option":"<所选 forwardable_inputs 的 option>"}]}\n' +
+    '{"items":[{"message_id":"<待判消息 ID>","summary":"<简短客观事实摘要>","evidence":{"quote":"<本条原话>","referent":{"mention":"<指代词>","message_id":"<前文 ID>","name":"<对象名>"}},"route":"quiet"|"main"|"forward","target":"<所选 session_id>","input_option":"<所选位置的 option>"}]}\n' +
     '无须消解指代时省略 referent。\n' +
-    'items 必须完整覆盖 pending_message_ids 中的每一个 message_id。直转时照抄所选位置的 option，例如 steer 或 reply/0；仅有一个可转位置时可省略。其他路由省略 target 和 input_option。',
+    'items 必须完整覆盖 pending_message_ids 中的每一个 message_id。直转时照抄所选位置的 option，例如 steer 或 reply/0；仅有一个可转位置时可省略。若选择 main 是因为本条在回答 non_forwardable_inputs 的真实提问，也填该工作的 target 和那道题的 input_option，供主对话办理。其余路由省略这两项。',
 ].join('\n\n');
 
 function buildFastReadSystem(bot, maintainedConnectionIds) {
@@ -167,7 +167,10 @@ function parseFastReadResponse(answer, pendingIds, candidatesById, routeById) {
       }
       continue;
     }
-    decisions.set(id, { route, summary, fallback: false });
+    const form = route === 'main' && candidatesById.get(item.target)?.non_forwardable_inputs?.find(opt =>
+      opt.kind === 'reply' && opt.option === item.input_option);
+    decisions.set(id, { route, summary, fallback: false,
+      ...(form && { native_request: { session_id: item.target, input_target: form.input_target } }) });
   }
   for (const [id, decision] of decisions) decision.evidence = byId.get(id)?.evidence;
   return { ok: !hadFallback, reason: hadFallback ? 'incomplete_fields' : null, decisions };
@@ -243,7 +246,8 @@ export class FastReadRuntime {
         forwardable_inputs: forwardable.map((input, index) => ({ ...input,
           option: forwardable.filter(other => input.kind === other.kind).length === 1 && input.kind !== 'reply'
             ? input.kind : input.kind + '/' + (input.input_target.request_id ?? index) })),
-        ...(nonForwardable.length ? { non_forwardable_inputs: nonForwardable } : {}),
+        ...(nonForwardable.length ? { non_forwardable_inputs: nonForwardable.map(input =>
+          ({ ...input, option: input.kind + '/' + (input.input_target.request_id ?? input.input_target.kind) })) } : {}),
       });
     }
     return candidates;
@@ -661,6 +665,7 @@ export class FastReadRuntime {
           inbox.store.putRecord(R.route, {
             ...live,
             fast_read_decision: 'main',
+            ...(decision.native_request && { native_request: decision.native_request }),
             ...(decision.fallback ? { fast_read_fallback: true } : {}),
             ...(decision.fallback && diagnostic ? { fast_read_diagnostic: diagnostic } : {}),
             ...(forwardReason ? { fast_read_forward_fallback: forwardReason, fast_read_forward_target: decision.target,

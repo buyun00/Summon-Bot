@@ -145,33 +145,77 @@ export class Executions {
     });
   }
 
-  acceptance(current, args, context) {
+  roomReply(args, context, room, reply) {
+    const label = args.work_reply;
+    if (context.actor.kind !== 'bot') {
+      if (label) reject('session_owner_required', 'The original Room owner publishes delegated work', 403);
+      return { reply };
+    }
+    // A result turn can refer to the material it just processed. Preserve
+    // ordinary replies to new messages and explicit progress acknowledgements.
+    const forward = reply && this.calls.forwardsFor(context.actor.id, room.id, [reply.id]).get(reply.id);
+    const fromResult = forward && context.origin.event_ids.some(id => {
+      const event = this.store.get('platform-events', id);
+      return event?.type === 'call.receipt' && event.call_id === forward.id && event.status === 'completed';
+    });
+    const recovery = !label && !fromResult && reply && context.origin.event_ids.map(id => this.store.get('platform-events', id))
+      .filter(event => event?.type === 'call.receipt' && event.target?.kind === 'session')
+      .map(event => this.record(event.target)).find(work => work?.retained_delivery && work.origin_message_id === reply.id);
+    if (!label && !fromResult && !recovery) return { reply };
+    const target = label ? { kind: 'session', id: idOf(label.session, 'session') } :
+      recovery ? { kind: 'session', id: recovery.id } : forward.target;
+    const work = target && this.record(target);
+    if (work?.origin_execution?.kind !== 'conversation' || work.owner_conversation_id !== context.conversation.id ||
+        !sameIdentity(work.owner, context.actor) || !sameRef(work.origin_room, room) || !work.origin_message_id) {
+      if (label) reject('work_origin_mismatch', 'Publish the result from the original owner in the work’s original Room', 409);
+      return { reply };
+    }
+    const stage = label?.stage || 'result';
+    if (label && reply && reply.id !== work.origin_message_id && stage !== 'progress' && !sameRef(forward?.target, target))
+      reject('work_origin_mismatch', 'The selected reply belongs to another question. Use the work’s original question.', 409,
+        { origin_message_id: work.origin_message_id });
+    const retained = work.retained_delivery && !['progress', 'correction'].includes(stage) &&
+      this.originalReplies(work).find(item => item.message.id === work.retained_delivery.message_id)?.message;
+    return { reply: stage === 'progress' && reply ? reply : { kind: 'event', id: work.origin_message_id },
+      retained, work_reply: { session_id: work.id, stage } };
+  }
+
+  originalReplies(work) {
+    return this.store.db.prepare(`SELECT data FROM records WHERE kind='messages' AND json_extract(data,'$.roomId')=?
+      AND json_extract(data,'$.senderId')=? AND json_extract(data,'$.replyTo')=? ORDER BY rowid`)
+      .all(work.origin_room.id, work.owner.id, work.origin_message_id).map(row => JSON.parse(row.data)).flatMap(message => {
+        const call = message.callId && this.store.get(callRecords, message.callId);
+        return call?.tool === 'send' && call.status === 'completed' && sameRef(call.target, work.origin_room) &&
+          call.origin?.conversation_id === work.owner_conversation_id && call.result?.message?.id === message.id
+          ? [{ message, stage: call.work_reply?.stage, session_id: call.work_reply?.session_id }] : [];
+      });
+  }
+
+  acceptance(current, args, context, hostReview) {
     const children = this.openChildren(current);
     if (children.length) reject('child_acceptance_pending', 'The direct parent Pi must review its open children before closing. Continue that Pi for review, or leave the parent open pending the recorded work.',
       409, { children: children.map(child => ({ id: child.id, status: child.status, waiting_summary: child.waiting_summary })) });
-    if (!terminal.has(current.status) || current.status === 'unknown' && current.safe_to_disconnect !== true)
+    if (!terminal.has(current.status) || current.status === 'unknown' && current.safe_to_disconnect !== true &&
+        !(hostReview && current.authority_revoked && current.engine === 'pi' && this.platform.runtime.piAtRest(current)))
       reject('work_in_progress', 'Review the final execution result, or stop the active execution before closing it', 409);
     const publicWork = current.origin_room && current.origin_message_id && current.origin_execution?.kind === 'conversation';
     if (args.close_reason) return { outcome: args.close_reason, ...(args.disposition_note && { note: args.disposition_note.trim() }) };
     if (['failed', 'cancelled', 'stopped', 'not_submitted', 'unsupported'].includes(current.status) && !args.delivery_message_id)
       return { outcome: current.status };
     if (!publicWork) return { outcome: 'reviewed' };
-    const id = args.delivery_message_id && idOf(args.delivery_message_id, 'event');
+    const id = args.delivery_message_id ? idOf(args.delivery_message_id, 'event') : current.retained_delivery?.message_id;
     const latest = this.store.get(callRecords, current.latest_call_id);
     const resultAt = (latest?.result_ref?.kind === 'event' && this.store.get('platform-events', latest.result_ref.id)?.time) || latest?.updatedAt;
-    const messages = this.store.db.prepare(`SELECT data FROM records WHERE kind='messages' AND json_extract(data,'$.roomId')=?
-      AND json_extract(data,'$.senderId')=? AND json_extract(data,'$.replyTo')=? AND (? IS NULL OR id=?) ORDER BY rowid`)
-      .all(current.origin_room.id, current.owner.id, current.origin_message_id, id ?? null, id ?? null).map(row => JSON.parse(row.data));
-    const replies = messages.filter(message => {
-      const send = message.callId && this.store.get(callRecords, message.callId);
-      return send?.tool === 'send' && send.status === 'completed' && sameRef(send.target, current.origin_room) &&
-        send.origin?.conversation_id === current.owner_conversation_id && send.result?.message?.id === message.id &&
-        (!resultAt || message.createdAt >= resultAt || id && args.disposition_note?.trim());
-    });
+    const published = this.originalReplies(current);
+    const final = published.findLast(item => item.session_id === current.id && ['complete', 'result', 'correction'].includes(item.stage));
+    const replies = published.filter(({ message, stage }) => stage !== 'progress' && (!id || message.id === id) &&
+      (!final || message.createdAt >= final.message.createdAt) &&
+      (!resultAt || message.createdAt >= resultAt || id && (args.disposition_note?.trim() ||
+        current.retained_delivery?.message_id === id))).map(item => item.message);
     if (replies.length !== 1)
       reject('room_delivery_required', replies.length ? 'Select the confirmed complete reply using delivery_message_id.' :
         'Review the original requirements and send the complete answer replying to the original question before closing. If a previous delivery already covers this result, identify it and explain in disposition_note.',
-        409, { replies: replies.map(message => message.id) });
+        409, { replies: published.slice(-5).map(({ message, stage }) => ({ id: message.id, stage, text: message.content.slice(0, 1200) })) });
     return { outcome: 'delivered', message_id: replies[0].id, call_id: replies[0].callId,
       ...(args.disposition_note && { note: args.disposition_note.trim() }) };
   }
@@ -301,6 +345,8 @@ export class Executions {
       ...(record.acceptance_state ? { acceptance_state: record.acceptance_state } : {}),
       ...(record.pending_delivery && (context.actor.kind === 'user' || sameIdentity(context.actor, record.owner)) ?
         { pending_delivery: record.pending_delivery } : {}),
+      ...(context.actor.kind === 'user' && { authority_revoked: Boolean(record.authority_revoked),
+        revocation_call_id: record.revocation_call_id ?? null, acceptance: record.acceptance }),
       ...(Array.isArray(record.allowed_followup_rooms) ? { allowed_followup_rooms: record.allowed_followup_rooms } : {}),
     } : {};
     return { kind: target.kind, id: record.id, execution_ref: target, bot_id: record.bot_id, space: record.space, engine: record.engine,
@@ -491,6 +537,10 @@ export class Executions {
       const observation = await this.inspect(target, current);
       const observed = observation.input_targets ?? current.input_targets ?? [];
       this.assertTarget(args, target, observed);
+      const requested = args.kind === 'steer' && this.platform.runtime.roomAnswerTarget(context, target);
+      if (requested && observed.some(option => option.kinds.includes('reply') && sameInput(option.input_target, requested)))
+        reject('native_reply_required', 'This message answers a native request. Read the request and use reply with its real answer format.', 409,
+          { target, input_target: requested });
       if (context.origin?.fast_read_forward) {
         const options = forwardInputs(observed, observation.pending_input ?? [], this.platform.connections.get(current.engine));
         if (!options.forwardable.some(option => option.kind === args.kind && sameInput(option.input_target, args.input_target)))
@@ -581,6 +631,52 @@ export class Executions {
     this.calls.deliverWaits(event, [wait], false);
   }
 
+  restorePiAuthority(work, args, context, call) {
+    const observed = args.restore_pi_authority;
+    if (context.actor.kind !== 'user') reject('host_required', 'Only the host can renew the original Pi authority', 403);
+    assertRevision(work.control.control_version, observed.control_version, 'control_version');
+    if (!work.authority_revoked || work.engine !== 'pi' || work.acceptance_state !== 'open' ||
+        (work.revocation_call_id ?? null) !== (observed.revocation_call_id ?? null) || !this.platform.runtime.piAtRest(work))
+      reject('restore_unavailable', 'Select the current revoked, inactive Pi work and its recorded revocation', 409);
+    if (!work.origin_room || !this.platform.canReadSpace(work.owner, work.origin_room) ||
+        !this.platform.getBot(work.owner.id).enabled || work.control.state !== 'active')
+      reject('restore_unavailable', 'The original Room membership, Bot and work controls must be active', 409);
+    const owner = this.record({ kind: 'conversation', id: work.owner_conversation_id });
+    if (!owner || owner.control.state !== 'active') reject('restore_unavailable', 'The original owner is unavailable or paused', 409);
+    if (owner.session_id) {
+      const parent = this.record({ kind: 'session', id: owner.session_id });
+      if (!parent || parent.control.state !== 'active' || parent.acceptance_state !== 'open')
+        reject('restore_unavailable', 'The direct parent must be active and open', 409);
+      this.platform.assertSessionAuthority(parent, { checkWorkspacePath: true });
+    }
+    this.platform.assertSessionAuthority({ ...work, authority_revoked: false }, { checkWorkspacePath: true });
+    let retained;
+    if (args.delivery_message_id) {
+      const id = idOf(args.delivery_message_id, 'event');
+      const sent = work.pending_delivery && this.originalReplies(work).find(item => item.message.id === id && item.stage !== 'progress');
+      if (!sent || !args.disposition_note?.trim())
+        reject('confirmed_delivery_required', 'Select the confirmed complete original-room reply and explain its coverage', 409);
+      retained = { message_id: id, call_id: sent.message.callId, note: args.disposition_note.trim(), claimed_by: context.actor };
+    }
+    const saved = this.store.save(sessionRecords, { id: work.id, authority_revoked: false,
+      ...(retained && { retained_delivery: retained }),
+      authority_restore_call_id: call.id, control: { ...work.control, control_version: work.control.control_version + 1 } });
+    this.calls.bind(call.id, { target: { kind: 'session', id: work.id } });
+    return this.baseView({ kind: 'session', id: work.id }, saved, context);
+  }
+
+  hostReview(work, args, context, call) {
+    const receipt = idOf(args.host_review_receipt, 'event');
+    const result = this.store.get(callRecords, work.latest_call_id)?.result_ref;
+    const parent = work.origin_execution?.kind === 'session' && this.record(work.origin_execution);
+    const unavailable = parent || work;
+    if (context.actor.kind !== 'user') reject('host_required', 'Only the host may claim an unavailable parent’s review', 403);
+    if (args.acceptance_state !== 'closed' || !args.disposition_note?.trim() || result?.kind !== 'event' || result.id !== receipt ||
+        unavailable.engine !== 'pi' || !unavailable.authority_revoked || !this.platform.runtime.piAtRest(unavailable))
+      reject('host_review_unavailable', 'Claim the latest receipt with a reason only when the original Pi is revoked and inactive', 409);
+    return { receipt_id: receipt, call_id: call.id, reviewer: context.actor, direct_parent: work.origin_execution, note: args.disposition_note.trim() };
+  }
+
   configure(args, context, call) {
     const target = { kind: 'session', id: idOf(args.target, 'session') };
     const current = this.require(target, context, 'control');
@@ -589,9 +685,20 @@ export class Executions {
       reject('session_owner_required', 'Manage this work from its direct parent conversation', 403);
     }
     const patch = { id: current.id };
+    if (args.restore_pi_authority) {
+      if (Object.keys(args).some(key => !['target', 'restore_pi_authority', 'delivery_message_id', 'disposition_note'].includes(key)))
+        reject('invalid_restore', 'Renew the original authority in a separate operation');
+      return this.restorePiAuthority(current, args, context, call);
+    }
+    const hostReview = args.host_review_receipt && this.hostReview(current, args, context, call);
     if (args.acceptance_state !== undefined) patch.acceptance_state = args.acceptance_state;
     if (args.acceptance_state === 'closed' && current.acceptance_state !== 'closed') {
-      patch.acceptance = this.acceptance(current, args, context);
+      patch.acceptance = { ...this.acceptance(current, args, context, hostReview), reviewer: context.actor,
+        direct_parent: current.origin_execution, ...(hostReview && { host_review: hostReview }) };
+      if (hostReview && current.authority_revoked && current.engine === 'pi' && this.platform.runtime.piAtRest(current)) {
+        patch.safe_to_disconnect = true;
+        patch.revocation_stop = 'stopped';
+      }
       patch.pending_delivery = null;
       patch.acceptance_hold = null;
     } else if (args.acceptance_state === 'open' && current.acceptance_state !== 'open') {

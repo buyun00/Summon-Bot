@@ -255,7 +255,13 @@ export class BotRuntime {
   deliveryRuns(botId, eventId) {
     const inbox = this.inboxes.get(botId);
     if (!inbox) return [];
-    const ids = new Set(inbox.list(R.route, 'event_id', eventId).map(route => route.run_id).filter(Boolean));
+    const routes = inbox.list(R.route, 'event_id', eventId);
+    const ids = new Set(routes.map(route => route.run_id).filter(Boolean));
+    for (const route of routes) {
+      const handler = route.fast_read_forward_handler;
+      const returned = handler?.wait_id && inbox.store.getRecord(R.route, recordKey(handler.event_id, handler.wait_id));
+      if (returned?.run_id) ids.add(returned.run_id);
+    }
     return [...ids].flatMap(id => {
       const run = inbox.run(id);
       return run ? [{ run_id: id, state: run.state, starts: run.start_count ?? null, first_started_at: run.first_started_at ?? null }] : [];
@@ -264,8 +270,17 @@ export class BotRuntime {
 
   roomDeliveryDetails(botId, eventId) {
     const route = this.inboxes.get(botId)?.store.getRecord(R.route, recordKey(eventId, 'observation'));
+    const callId = route?.fast_read_forward_call_id;
+    const call = callId && this.platform.store.get('platform-calls', callId);
+    const status = call?.status;
+    const fallback = route?.fast_read_forward_fallback;
+    const notice = fallback && (status === 'not_submitted' ? '原生输入未提交' : status === 'completed' ? '原调用已完成' :
+      fallback === 'call_result_unknown' ? '原生送达待查' : '直转已交主对话处理');
     return { ...(route?.fast_read_diagnostic && { fast_read_diagnostic: route.fast_read_diagnostic }),
-      ...(route?.resolution && { resolution_notice: resolutionLabel(route.resolution) }),
+      ...(call && { forward_call: { id: call.id, status, input_status: call.result?.input_status, result_ref: call.result_ref,
+        handler: route.fast_read_forward_handler } }),
+      ...(route?.resolution ? { resolution_notice: resolutionLabel(route.resolution) } :
+        notice ? { resolution_notice: callId ? notice + ' · 调用 ' + callId : notice } : {}),
       ...(route?.public_reply && { public_reply: route.public_reply }) };
   }
 
@@ -531,6 +546,15 @@ export class BotRuntime {
     return result?.target || result?.execution_ref;
   }
 
+  roomAnswerTarget(context, target) {
+    const inbox = context.actor.kind === 'bot' && this.inboxes.get(context.actor.id);
+    if (!inbox || context.conversation?.kind !== 'room' || target.kind !== 'session') return;
+    const sources = context.origin.event_ids.filter(id => inbox.event(id)?.type === 'message');
+    if (sources.length !== 1) return;
+    const hint = inbox.store.getRecord(R.route, recordKey(sources[0], 'observation'))?.native_request;
+    return hint?.session_id === target.id ? hint.input_target : undefined;
+  }
+
   discard(inbox, routes, status) {
     const eventIds = [...new Set(routes.map(route => route.event_id))];
     if (status === 'access_revoked') for (const route of routes) {
@@ -556,9 +580,27 @@ export class BotRuntime {
   reconcileDeliveries(inbox, received) {
     for (const delivery of received.filter(item => item.bot_id === inbox.botId)) {
       if (delivery.event.type === 'message') this.reconcileRoomReply(inbox, delivery.event);
+      if (delivery.event.type === 'call.receipt') this.reconcileHostReview(inbox, delivery.event);
       const receipt = inbox.receipt(delivery.id);
       if (receipt?.revision === (delivery.revision ?? 1)) this.syncDelivery(inbox, receipt);
     }
+  }
+
+  reconcileHostReview(inbox, event) {
+    if (event.target?.kind !== 'session') return;
+    const work = this.platform.executions.record(event.target);
+    const review = work?.acceptance?.host_review;
+    if (work?.acceptance_state !== 'closed' || review?.reviewer?.kind !== 'user' || review.receipt_id !== event.id ||
+        work.origin_execution?.kind !== 'session' || !sameRef(review.direct_parent, work.origin_execution)) return;
+    inbox.store.transaction(() => {
+      for (const route of inbox.list(R.route, 'event_id', event.id)) {
+        const wait = route.wait_id && inbox.wait(route.wait_id);
+        if (route.state !== 'pending' || wait?.session_id !== work.origin_execution.id || wait.run_id !== work.owner_run_id ||
+            wait.conversation_id !== work.owner_conversation_id || wait.call_id !== event.call_id) continue;
+        inbox.store.putRecord(R.route, { ...route, state: 'processed', processed_at: now(), host_review_call_id: review.call_id });
+        inbox.settleWait(route, 'processed');
+      }
+    });
   }
 
   reconcileRoomReply(inbox, event) {
@@ -909,6 +951,8 @@ export class BotRuntime {
         requestIds.add(event.id);
         if (event.reply_to) requestIds.add(event.reply_to.id ?? event.reply_to);
         const route = inbox.store.getRecord(R.route, recordKey(event.id, 'observation'));
+        if (route?.native_request) facts.push(textMessage({ type: 'native_reply_due', message_id: event.id, ...route.native_request,
+          instruction: 'Read the current input_targets and submit the user’s actual answers as reply to the matching request. If its position changed, inspect the new request.' }));
         if (route?.fast_read_forward_fallback) {
           const callId = route.fast_read_forward_call_id;
           const actual = callId && await this.readFor(job, { kind: 'call', id: callId });
@@ -961,12 +1005,18 @@ export class BotRuntime {
         if (!groups.has(key)) {
           const question = work.origin_room && this.platform.canReadReference({ kind: 'event', id: work.origin_message_id }, context) &&
             this.platform.store.get('messages', work.origin_message_id);
+          const replies = question && conversation.kind === 'room' && sameRef(work.origin_room, conversation.space)
+            ? this.platform.executions.originalReplies(work).slice(-4).map(({ message, stage }) =>
+              ({ id: message.id, stage, text: message.content.slice(0, 2000) })) : [];
           groups.set(key, { type: 'origin_work_status', origin_room: work.origin_room,
-            origin_message_id: work.origin_message_id, ...(question && { original_question: question.content.slice(0, 4000) }), sessions: [] });
+            origin_message_id: work.origin_message_id, ...(question && { original_question: question.content.slice(0, 4000) }),
+            ...(replies.length && { original_replies: replies }), sessions: [] });
         }
         groups.get(key).sessions.push({ session_id: work.id, engine: work.engine, work_summary: work.work_summary,
           status: work.status, waiting_summary: work.waiting_summary, acceptance_state: work.acceptance_state,
-          control: work.control, latest_call_id: work.latest_call_id });
+          control: work.control, latest_call_id: work.latest_call_id,
+          ...(work.retained_delivery && { confirmed_delivery: work.retained_delivery }),
+          ...(work.pending_input?.length && { pending_requests: work.pending_input, input_targets: work.input_targets }) });
       }
       for (const group of groups.values()) facts.push(textMessage(group));
     }
@@ -1112,7 +1162,8 @@ export class BotRuntime {
       if (input.status === status) continue;
       if (status === 'waiting' && !run.processed_event_ids.includes(input.event_id)) continue;
       if (terminalCallStates.has(input.status)) {
-        if (!resumed || input.status !== 'stopped' || !run.injected_event_ids.includes(input.event_id)) continue;
+        const resolvedUnknown = input.status === 'unknown' && run.state === 'completed' && status === 'completed';
+        if (!(resolvedUnknown || resumed && input.status === 'stopped') || !run.injected_event_ids.includes(input.event_id)) continue;
         const route = inbox.store.getRecord(R.route, recordKey(input.event_id, 'observation'));
         if (route?.run_id !== run.id || route.state !== 'processed') continue;
       }
@@ -1202,6 +1253,13 @@ export class BotRuntime {
     }
     const conversation = inbox?.conversation(id);
     return conversation ? this.inspectLocal(inbox, conversation, { ...options, sessionInput: true }) : { status: session.status || 'unknown', input_targets: [] };
+  }
+
+  piAtRest(session) {
+    const id = session.conversation_id || session.id;
+    const inbox = this.inboxes.get(session.execution_actor.id);
+    return inbox?.conversation(id)?.session_id === session.id && !this.active.has(id) && !this.starting.has(id) &&
+      inbox.runs(id).every(run => !activeRunStates.has(run.state));
   }
 
   localInputState(inbox, conversation, sessionInput, last = this.inputRun(inbox, conversation)) {
