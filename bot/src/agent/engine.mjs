@@ -119,11 +119,23 @@ export class BotEngine {
     const inputBudget = model.contextWindow - outputTokens - 512;
     let last, boundary, failure, modelEventIds = [], authorizedView, roomCache, appendAtFetch = [], materialAtFetch;
     let observationWindow, fittedObservation, transportedObservation, outcome;
-    let childReview;
+    let childReview, needsDeliveryReminder = false;
     const reviewedPositions = new Set();
     const remindedReplies = new Set();
     const completedEvents = new Set();
+    const deliveryDue = () => {
+      const ids = boundary.current.map(event => event.id);
+      const requests = job.outstandingReplies(ids);
+      const forwards = job.unsettledForwards(ids);
+      if (!requests.length && !forwards.length) return;
+      const run = inbox.run(runId);
+      const position = recordKey(run.delivery_recovery_position ?? null, run.input_revision ?? 0,
+        ids.sort(), requests.map(item => item.message_id).sort(),
+        forwards.map(item => recordKey(item.original_call, item.latest_attempt, item.latest_status)).sort());
+      return { position, requests, forwards };
+    };
     const inject = () => {
+      const reminder = appendAtFetch.find(message => message.room_delivery_reminder_position);
       inbox.store.transaction(() => {
         // Revalidate access after fitting the request and before saving its delivery position.
         if (materialAtFetch && job.materials()?.fact.content[0].text !== materialAtFetch.fact.content[0].text)
@@ -148,9 +160,14 @@ export class BotEngine {
           if (Object.keys(patch).length) inbox.putRun({ id: runId, ...patch });
         }
         for (const message of appendAtFetch) inbox.append(runId, message);
+        if (reminder) inbox.putRun({ id: runId, delivery_reminder_position: reminder.room_delivery_reminder_position });
         inbox.recordInjection(runId, modelEventIds);
         if (materialAtFetch?.record) inbox.store.putRecord(R.materialView, materialAtFetch.record);
       });
+      if (reminder) {
+        remindedReplies.add(reminder.room_delivery_reminder_position);
+        needsDeliveryReminder = false;
+      }
       appendAtFetch = [];
       materialAtFetch = undefined;
     };
@@ -274,10 +291,14 @@ export class BotEngine {
         const asHistory = boundary.publicRoom ? [] : boundary.history.filter(event => !originalIds.has(event.id));
         const history = asHistory.map(event => ({ ...textMessage(eventInput(event, false), Date.parse(event.time || event.createdAt) || 0),
           public_event_id: event.id }));
-        const alreadyProcessed = new Set(inbox.run(runId).processed_event_ids);
+        const run = inbox.run(runId);
+        const alreadyProcessed = new Set(run.processed_event_ids);
         // Project materials from current authorization, including after an index is detached.
         const isPublicEvent = event => boundary.publicRoom && event?.type === 'message' && event.space?.id === conversation.space.id;
-        const localMessages = original.filter(message => !isMaterialFact(message) &&
+        // A reminder records one transport at its own work position. Its old imperative
+        // stays on the original transcript without becoming a current instruction again.
+        for (const message of original) if (message.room_delivery_reminder_position) remindedReplies.add(message.room_delivery_reminder_position);
+        const localMessages = original.filter(message => !isMaterialFact(message) && !message.room_delivery_reminder_position &&
           !(boundary.publicRoom && !message.fork_public_event && !message.room_input_pointer &&
             message.origin_event_ids?.every(id => isPublicEvent(inbox.event(id)))));
         const sameRun = repairRun(localMessages, inbox.calls(runId)).map(message => {
@@ -320,6 +341,15 @@ export class BotEngine {
         const previousFacts = new Set(sameRun.filter(message => message.runtime_fact).map(message => message.content[0]?.text));
         const newFacts = facts.filter(message => !previousFacts.has(message.content[0]?.text)).map(message => ({ ...message, runtime_fact: true }));
         const material = boundary.material && { ...boundary.material.fact, view_revision: authorizedView, runtime_fact: true };
+        const resumedDelivery = run.recovering_room_inputs && (run.delivery_review_trigger || boundary.current.some(event => event.type === 'pi.input'));
+        const due = isRoomConversation && (needsDeliveryReminder || resumedDelivery) && deliveryDue();
+        const reminder = due && !remindedReplies.has(due.position) && run.delivery_reminder_position !== due.position && {
+          ...textMessage({ type: 'room_delivery_still_due', requests: due.requests, returned_materials: due.forwards,
+            current_room_message_ids: boundary.current.filter(event => event.type === 'message' && event.space?.id === conversation.space.id).map(event => event.id),
+            accepted_message_ids: (run.delivery_review_trigger?.accepted_message_ids ?? []).filter(id => job.canReadReference({ kind: 'event', id })),
+            instruction: 'Act on each outstanding original at this position. If a verified accepted answer covers a request, call send with its work_reply session, stage complete and reply_to that request to link the existing answer. Answer additional questions using send and reply_to. For confirmed undelivered material use recovery_of and the current authorized target, or reply to its original question with the actual disposition. Check uncertain attempts before acting.' }),
+          view_revision: authorizedView, room_delivery_reminder_position: due.position,
+        };
         const tail = [
           ...forkPublicTail,
           ...(roomInputPointer ? [roomInputPointer] : []),
@@ -327,6 +357,7 @@ export class BotEngine {
           ...(observation ? [observation.fact] : []),
           ...newFacts,
           ...(material ? [material] : []),
+          ...(reminder ? [reminder] : []),
         ];
         const optionalMaterial = requestPurpose === 'material_consolidation' ? null : material;
         const duty = builtInInstructions(binding.built_in_role, boundary.maintained_connection_ids);
@@ -349,6 +380,8 @@ export class BotEngine {
           observationWindow = { generation: observation.generation, base_checkpoint: observation.base_checkpoint, end: observation.end, triggers: [...currentIds],
             draft: observationWindow?.draft === observation.previous ? observation.previous : null };
         }
+        if (reminder && !prompt.includes(reminder))
+          throw runtimeFailure('context_limit', 'The current delivery reminder and its original inputs must fit together', 413);
         check();
         const sharedPrefix = isRoomConversation ? prompt.filter(message => message.public_event_id && !message.fork_public_event) : [];
         const cachePoint = sharedPrefix.at(-1);
@@ -392,17 +425,13 @@ export class BotEngine {
       }
       if (message.stopReason === 'stop' && job.hasNewInput(boundary.current.map(event => event.id))) return { action: 'continue' };
       if (message.stopReason === 'stop' && isRoomConversation) {
-        const due = job.outstandingReplies([...completedEvents]);
-        const forwards = job.unsettledForwards([...completedEvents]);
-        if (due.length || forwards.length) {
-          const position = JSON.stringify([due.map(item => item.message_id), forwards.map(item => item.original_call)]);
-          if (remindedReplies.has(position)) {
+        const due = deliveryDue();
+        if (due) {
+          if (remindedReplies.has(due.position) || inbox.run(runId).delivery_reminder_position === due.position) {
             failure = runtimeFailure('room_delivery_pending', '原请求仍待公开答复或原工作接手，尚未取得相应回执。', 409);
             return { action: 'end' };
           }
-          remindedReplies.add(position);
-          childReview = { type: 'room_delivery_still_due', requests: due, returned_materials: forwards,
-            instruction: 'Answer explicit reply requests using send and reply_to. For a confirmed undelivered original use its recovery_of and current authorized target, or explain its actual disposition replying to the original work question. When the latest attempt is unknown, read its actual status and report the uncertainty on the original question. Never replay an unconfirmed input.' };
+          needsDeliveryReminder = true;
           return { action: 'continue' };
         }
       }

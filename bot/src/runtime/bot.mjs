@@ -29,6 +29,24 @@ const activeRunStates = new Set(['pending', 'running', 'waiting', 'interrupted',
 const cleanError = error => ({ status: error.status, code: error.code, message: error.message, details: error.details });
 const actorFor = call => call.submitted_by || { kind: 'user', id: 'user' };
 const sortedIds = values => [...new Set(values || [])].sort();
+function missedAcceptedWorkReminder(inbox, run, pending) {
+  const reviewedAt = Date.parse(run.last_delivery_review_at);
+  if (!Number.isFinite(reviewedAt)) return false;
+  const events = new Set(pending.map(route => route.event_id));
+  const calls = new Set(pending.map(route => inbox.event(route.event_id)?.call_id).filter(Boolean));
+  let remindedBefore = false, stoppedAfter = false;
+  for (const message of inbox.transcript(run.id)) {
+    if (message.role === 'assistant' && message.stopReason === 'stop' && message.timestamp >= reviewedAt) stoppedAfter = true;
+    const text = message.runtime_fact && message.content?.[0]?.text;
+    if (!text || !text.startsWith('{"type":"room_delivery_still_due",')) continue;
+    const reminder = JSON.parse(text);
+    if (!reminder.requests?.some(item => events.has(item.message_id)) &&
+        !reminder.returned_materials?.some(item => calls.has(item.original_call))) continue;
+    if (message.timestamp >= reviewedAt) return false;
+    remindedBefore = true;
+  }
+  return remindedBefore && stoppedAfter;
+}
 const scopeGrants = access => [sortedIds(access?.model_ids), sortedIds(access?.workspace_ids)];
 function canRetainAuthorizationView(previous, current) {
   if (previous === current) return true;
@@ -666,7 +684,8 @@ export class BotRuntime {
     const pending = run.route_ids.map(id => inbox.store.getRecord(R.route, id)).filter(route => route?.state === 'pending');
     const accepted = this.platform.executions.directWork(conversation.id).filter(work => work.acceptance_state === 'closed' &&
       work.acceptance?.outcome === 'delivered' && work.owner.id === actor.id && sameRef(work.origin_room, conversation.space));
-    const covered = new Map(), changed = new Set();
+    const covered = new Map(), changed = new Set(), confirmedPrior = new Set();
+    const prior = new Set(JSON.parse(run.delivery_recovery_position ?? '[]'));
     for (const route of pending) {
       const event = inbox.event(route.event_id);
       if (!run.injected_event_ids.includes(route.event_id) || !event) continue;
@@ -690,10 +709,17 @@ export class BotRuntime {
         // A newer accepted answer to the same question changes what the
         // suspended owner can use. Only that owner assesses uncovered requests.
         if (message.createdAt > (run.last_delivery_review_at ?? run.first_started_at)) changed.add(message.id);
+        else if (prior.has(message.id)) confirmedPrior.add(message.id);
       }
     }
-    const position = JSON.stringify([...changed].sort());
-    const reconsider = changed.size && position !== run.delivery_recovery_position;
+    const left = pending.filter(route => !covered.has(route.id));
+    // The earlier owner actually resumed on this acceptance, but its long-term
+    // fact deduplication could drop the current reminder before transport.
+    const missed = !changed.size && confirmedPrior.size && !run.delivery_review_trigger && !run.delivery_reminder_position &&
+      missedAcceptedWorkReminder(inbox, run, left);
+    const acceptedIds = sortedIds(missed ? confirmedPrior : changed);
+    const position = JSON.stringify(acceptedIds);
+    const reconsider = missed || (changed.size && position !== run.delivery_recovery_position);
     if (!covered.size && !reconsider) return;
     inbox.store.transaction(() => {
       for (const [id, proof] of covered) {
@@ -701,10 +727,11 @@ export class BotRuntime {
         inbox.store.putRecord(R.route, { ...route, state: 'processed', processed_at: now(), accepted_work_delivery: proof });
         inbox.settleWait(route, 'processed');
       }
-      const left = pending.filter(route => !covered.has(route.id));
       inbox.putRun({ id: runId, processed_event_ids: [...new Set([...run.processed_event_ids, ...[...covered.values()].map(item => item.event_id)])],
         ...(!left.length ? { state: inbox.hasOpenWaits(runId) ? 'waiting' : 'completed', error: null } : reconsider ?
-          { state: 'interrupted', recovering_room_inputs: true, delivery_recovery_position: position, last_delivery_review_at: now() } : {}) });
+          { state: 'interrupted', recovering_room_inputs: true, delivery_recovery_position: position, last_delivery_review_at: now(),
+            delivery_review_trigger: { kind: missed ? 'accepted_work_without_current_reminder' : 'accepted_work',
+              accepted_message_ids: acceptedIds, pending_event_ids: left.map(route => route.event_id) } } : {}) });
     });
     this.consumeDeliveries(inbox, [...covered.values()].map(proof => proof.event_id));
   }
