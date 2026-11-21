@@ -9,6 +9,8 @@ const wireReasoningEffort = value => typeof value === 'string' && /^[a-z][a-z0-9
 const budgetThinkingLevels = new Set(['minimal', 'low', 'medium', 'high']);
 const codexTerminalEvents = new Set(['response.done', 'response.completed', 'response.incomplete', 'response.failed']);
 const timeoutError = phase => Object.assign(new Error(`Model request timed out during ${phase}`), { code: 'MODEL_DEADLINE' });
+const transientNetworkCodes = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'ENETUNREACH',
+  'EHOSTUNREACH', 'EPIPE', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_SOCKET']);
 
 function serializedReasoning(payload) {
   const fields = [['reasoning.effort', payload?.reasoning?.effort], ['reasoning_effort', payload?.reasoning_effort],
@@ -161,6 +163,7 @@ export class ModelProvider {
     this.controllers.add(controller);
     const started = Date.now(), secrets = new Set();
     let record, received, ended = false, wireUsage, usageSource, stageTimer, totalTimer;
+    let transportFault, outputStarted = false;
     let failureTag = `${model.provider}/${model.id}${requestedReasoning !== null ? ` · effort=${requestedReasoning}` : ''}`;
     const waitFor = (phase, ms) => {
       clearTimeout(stageTimer);
@@ -175,6 +178,17 @@ export class ModelProvider {
       return (this.config.redact.error || this.config.redact)({ message: modelError(message) }).message;
     };
     const decorateError = message => !message || signal.aborted || message.includes(model.id) ? message : `${message} [${failureTag}]`;
+    const recordFailure = message => {
+      if (!record || signal.aborted) return;
+      const http = record.httpStatus;
+      const phase = record.timeoutPhase ?? transportFault ?? (http === 429 || http >= 500 ? 'provider-unavailable' : undefined);
+      if (!phase) return;
+      const partial = outputStarted || record.firstProgressAt || record.outputTokens > 0 ||
+        message.content?.some(part => part.type === 'toolCall' || part.type === 'image' || part.text || part.thinking);
+      const failure = { phase, before_output: !partial, retryable: !partial && !(http >= 400 && http < 500 && http !== 429) &&
+        ['connection', 'first-progress', 'network-before-headers', 'provider-unavailable'].includes(phase) };
+      record.transportFailure = message.transportFailure = failure;
+    };
     const persist = () => {
       if (!record) return;
       try { this.config.recordUsage?.(record); }
@@ -249,6 +263,8 @@ export class ModelProvider {
           sessionId: cacheSessionId || usageContext?.sessionId || options.sessionId, maxRetries: 0,
           ...(connection.kind === 'codex' ? { transport: 'sse' } : {}),
           onProviderStreamEvent: async (event, model) => {
+            if (event?.type === 'response.output_item.added' && event.item?.type && !['message', 'reasoning'].includes(event.item.type))
+              outputStarted = true;
             if (codex && event?.response && (event.type === 'response.created' || codexTerminalEvents.has(event.type))) {
               try { observeUsage(event, 'sdk_provider_event'); } catch {}
             }
@@ -302,7 +318,13 @@ export class ModelProvider {
             record.sentReasoningEffortSource = record.sentReasoningEffort === null ? null : efforts.source;
             record.sentTopLevelReasoningEffort = wireReasoningEffort(efforts.topLevel);
             persist();
-            const response = await fetch(input, { ...init, redirect: 'error' });
+            let response;
+            try { response = await fetch(input, { ...init, redirect: 'error' }); }
+            catch (error) {
+              const causes = [error, error.cause, ...(error.cause instanceof AggregateError ? error.cause.errors : [])];
+              if (causes.some(cause => transientNetworkCodes.has(cause?.code))) transportFault = 'network-before-headers';
+              throw error;
+            }
             record.httpStatus = response.status;
             waitFor('first-progress', idleWaitMs);
             if (codex || !response.body || !response.headers.get('content-type')?.includes('text/event-stream')) return response;
@@ -321,6 +343,7 @@ export class ModelProvider {
             return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
           } });
         for await (const event of stream) {
+          if (event.type.startsWith('toolcall_') || event.type.endsWith('_delta') && event.delta?.length) outputStarted = true;
           if (deadline.signal.aborted) throw deadline.signal.reason;
           if (signal.aborted && event.type !== 'error') signal.throwIfAborted();
           if (event.type.endsWith('_delta') && event.delta?.length) {
@@ -352,6 +375,7 @@ export class ModelProvider {
               status: event.type === 'done' ? 'succeeded' : signal.aborted ? 'cancelled' : 'failed',
               finishedAt: new Date().toISOString(), latencyMs: Date.now() - started });
             if (event.type === 'error') {
+              recordFailure(received);
               received.errorMessage = decorateError(cleanError(received.errorMessage || '模型调用失败')); record.error = received.errorMessage;
             }
             persist(); ended = true;
@@ -366,11 +390,12 @@ export class ModelProvider {
             if (wireUsage) Object.assign(record, reportedUsage(providerUsage(wireUsage, model.api)), { usageSource });
             Object.assign(record, { status: cancelled ? 'cancelled' : 'failed', finishReason: cancelled ? 'aborted' : 'error',
               error: message, finishedAt: new Date().toISOString(), latencyMs: Date.now() - started });
-            persist();
           }
           const failure = received || { role: 'assistant', content: [], api: model.api, provider: model.provider, model: model.id,
             usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, timestamp: Date.now() };
           failure.stopReason = cancelled ? 'aborted' : 'error'; failure.errorMessage = message;
+          recordFailure(failure);
+          persist();
           output.push({ type: 'error', reason: failure.stopReason, error: failure });
         }
       } finally { clearTimeout(stageTimer); clearTimeout(totalTimer); this.controllers.delete(controller); output.end(); }

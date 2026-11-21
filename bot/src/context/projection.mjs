@@ -137,6 +137,7 @@ export function repairRun(messages, records) {
   const rejectedReads = new Set(messages.filter(message => message.role === 'toolResult' && message.toolName === 'read' &&
     message.details?.code === 'publication_target_required').map(message => message.toolCallId));
   const retained = messages.flatMap(message => {
+    if (message.role === 'assistant' && message.transportFailure?.retryable && message.transportFailure.before_output) return [];
     if (message.role === 'system' || message.role === 'toolResult' && rejectedReads.has(message.toolCallId)) return [];
     if (message.role !== 'assistant' || !message.content.some(part => part.type === 'toolCall' && rejectedReads.has(part.id))) return [message];
     const content = message.content.filter(part => part.type !== 'toolCall' || !rejectedReads.has(part.id));

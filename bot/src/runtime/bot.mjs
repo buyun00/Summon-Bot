@@ -1218,7 +1218,8 @@ export class BotRuntime {
           }
           const pending = pendingForRun();
           const next = pending.some(canProcess) ? 'pending' : outstanding || pending.length || result.waiting_for_children ? 'waiting' : 'completed';
-          inbox.putRun({ id: run.id, state: next, model_outcome: null, model_outcome_uses_view: null });
+          inbox.putRun({ id: run.id, state: next, model_outcome: null, model_outcome_uses_view: null,
+            ...(run.transport_retry && { transport_retry: null }) });
           if (next === 'completed' || next === 'waiting') this.stageInputs(inbox, conversation, run.id, next, result);
           return next;
         });
@@ -1227,9 +1228,19 @@ export class BotRuntime {
         this.emit('engine.finished', { ...refs, state, model: result.model });
       } catch (error) {
         const code = error.code || 'runtime_error';
+        let transportRetry;
+        if (code === 'model_transport_interrupted' && !controller.signal.aborted) {
+          const latest = inbox.run(run.id);
+          const completed = inbox.transcript(run.id).findLast(message => message.role === 'toolResult' ||
+            message.role === 'assistant' && ['stop', 'toolUse'].includes(message.stopReason));
+          const position = recordKey(latest.input_revision, latest.injected_event_ids.at(-1), completed?.timestamp);
+          const attempts = latest.transport_retry?.position === position ? latest.transport_retry.attempts + 1 : 1;
+          transportRetry = { position, attempts };
+        }
         const retry = code === 'resource_limit' || !controller.signal.aborted &&
-          ['access_changed', 'connection_unavailable', 'model_interrupted', 'updating', 'call_result_unknown'].includes(code);
-        const retryAt = retry ? (error.details?.resource === 'models' ? Date.now() + 1000 : Date.parse(error.details?.resets_at) || Date.now() + 10000) : null;
+          (transportRetry?.attempts <= 2 || ['access_changed', 'connection_unavailable', 'updating', 'call_result_unknown'].includes(code));
+        const retryAt = retry ? (error.details?.resource === 'models' ? Date.now() + 1000 : Date.parse(error.details?.resets_at) ||
+          Date.now() + (transportRetry?.attempts === 2 ? 30000 : 10000)) : null;
         const roomRevoked = code === 'execution_not_found' && conversation.kind === 'room' &&
           !this.platform.canReadSpace(botRef(bot.id), conversation.space);
         const controlStopped = controller.signal.aborted && ['execution_paused', 'bot_paused'].includes(controller.signal.reason?.code);
@@ -1237,7 +1248,7 @@ export class BotRuntime {
         const diagnostic = this.clean.error(cleanError(error));
         inbox.putRun({ id: run.id, state: retry ? 'retry' : roomRevoked ? 'access_revoked' : stopped ? 'interrupted' : 'suspended',
           retry_at: retryAt ? new Date(retryAt).toISOString() : null,
-          error: diagnostic });
+          error: diagnostic, ...(transportRetry && { transport_retry: transportRetry }) });
         if (roomRevoked) this.discard(inbox, inbox.pending().filter(route => route.run_id === run.id), 'access_revoked');
         if (!retry && !stopped && conversation.kind === 'room' && conversation.space.kind === 'room')
           this.platform.deliveries.releaseSuspendedObservation(bot.id, conversation.space.id, inbox.run(run.id).pending_event_ids);

@@ -461,9 +461,9 @@ export class BotEngine {
       if (signal.aborted) signal.throwIfAborted();
       if (failure) throw failure;
       if (last?.stopReason !== 'stop') {
-        const providerStatus = last?.generationBudget?.httpStatus;
-        if (providerStatus === 429 || providerStatus >= 500 || last?.stopReason === 'aborted')
-          throw runtimeFailure('model_interrupted', last?.errorMessage || 'Model connection was interrupted', 503);
+        if (last?.transportFailure?.retryable)
+          throw runtimeFailure('model_transport_interrupted', last.errorMessage || 'Model connection was interrupted before output', 503,
+            { phase: last.transportFailure.phase });
         throw runtimeFailure('model_response_incomplete', last?.errorMessage || 'The model did not complete the turn', 409);
       }
       return outcome;
