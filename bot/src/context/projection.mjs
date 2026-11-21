@@ -1,5 +1,6 @@
 import { estimateTokens } from '../pi/core/compaction/compaction.mjs';
 import { repairTranscript } from './recovery.mjs';
+import { runtimeFailure } from '../storage/runtime-records.mjs';
 
 export const textMessage = (value, timestamp = Date.now()) => ({ role: 'user', timestamp,
   content: [{ type: 'text', text: JSON.stringify(value) }] });
@@ -42,6 +43,43 @@ export function eventInput(event, current = true) {
     ref: event.history_ref || { kind: 'event', id: event.id } };
 }
 
+// A whole-entry cursor points past the named entry. A fragment cursor points
+// inside its serialized message, so even a single large tool result is pageable.
+export function transcriptPage(entries, cursor, limit, following = null) {
+  let id = cursor, offset = 0;
+  if (typeof cursor === 'string' && cursor.startsWith('fragment:')) {
+    try { [id, offset] = JSON.parse(cursor.slice(9)); } catch { offset = -1; }
+    if (!Number.isSafeInteger(offset) || offset <= 0) throw runtimeFailure('cursor_expired', 'Invalid transcript offset');
+  }
+  const position = cursor == null ? -1 : entries.findIndex(entry => entry.id === id);
+  if (cursor != null && position === -1) throw runtimeFailure('cursor_expired', 'The transcript cursor is not available');
+  let index = offset ? position : position + 1;
+  const messages = [];
+  let remaining = 12000;
+  while (index < entries.length && messages.length < limit) {
+    const entry = entries[index];
+    const size = JSON.stringify(entry).length + 1;
+    if (!offset && size <= remaining) {
+      messages.push(entry);
+      remaining -= size;
+      index++;
+      continue;
+    }
+    if (messages.length) break;
+    const source = JSON.stringify(entry.message);
+    if (offset >= source.length) throw runtimeFailure('cursor_expired', 'The transcript entry has changed');
+    // JSON escaping can expand each UTF-16 code unit to six characters.
+    let end = Math.min(source.length, offset + 1900);
+    if (end < source.length && /[\uD800-\uDBFF]/.test(source[end - 1])) end--;
+    messages.push({ id: entry.id, run_id: entry.run_id, message_fragment: source.slice(offset, end),
+      encoding: 'json', offset, total_characters: source.length });
+    if (end < source.length) return { messages, next_cursor: 'fragment:' + JSON.stringify([entry.id, end]) };
+    index++;
+    break;
+  }
+  return { messages, next_cursor: index < entries.length ? messages.at(-1)?.id : following };
+}
+
 export function toolObservation(callId, value, isError = false) {
   const raw = JSON.stringify(value ?? null);
   const limit = 24000;
@@ -69,6 +107,13 @@ export function toolObservation(callId, value, isError = false) {
       entry[field] = entry[field].slice(0, length) || undefined;
       executionLength -= before - JSON.stringify(entry).length;
     }
+  }
+  if (execution && Array.isArray(value.messages) && (value.transcript_page || value.engine === 'pi' || kind === 'conversation') &&
+      value.messages.every(item => typeof item?.run_id === 'string' && typeof item.id === 'string')) {
+    const page = value.transcript_page ? { messages: value.messages, next_cursor: value.next_cursor } :
+      transcriptPage(value.messages, null, value.messages.length, value.next_cursor);
+    const details = { ...execution, status: value.status, ...page, result_ref: { kind: 'call', id: callId }, transcript_page: true };
+    return { content: [{ type: 'text', text: JSON.stringify(details) }], details, isError };
   }
   const previewLimit = Math.max(0, limit - executionLength);
   const details = { ...execution, preview: raw.slice(0, previewLimit), characters: raw.length, truncated: true,

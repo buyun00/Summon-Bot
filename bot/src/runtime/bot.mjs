@@ -16,7 +16,7 @@ import { bindModel } from '../agent/model.mjs';
 import { connectionPath } from '../agent/connections.mjs';
 import { UsageLedger } from '../agent/usage.mjs';
 import { createRedactor } from './config.mjs';
-import { textMessage } from '../context/projection.mjs';
+import { textMessage, transcriptPage } from '../context/projection.mjs';
 import { canReadObservation, observationBoundary } from '../context/room-observation.mjs';
 import { MaterialRuntime } from '../context/materials.mjs';
 import { FastReadRuntime } from './fast-read.mjs';
@@ -1601,7 +1601,7 @@ export class BotRuntime {
     return { ...summary, input_targets: target, input_revision: revision };
   }
 
-  inspectLocal(inbox, conversation, { cursor, limit = 25, sessionInput = false } = {}) {
+  inspectLocal(inbox, conversation, { cursor, limit = 25, sessionInput = false, modelPage = false } = {}) {
     const runs = inbox.runs(conversation.id);
     const last = this.inputRun(inbox, conversation, runs);
     const state = this.localInputState(inbox, conversation, sessionInput, last);
@@ -1612,6 +1612,9 @@ export class BotRuntime {
       const current = (record?.messages || []).map((message, index) => ({ id: recordKey(run.id, index), run_id: run.id, message }));
       return [...previous, ...current];
     });
+    if (modelPage || cursor?.startsWith('fragment:')) return { ...state, transcript_page: true,
+      output: !cursor && typeof last?.result?.text === 'string' ? last.result.text.slice(0, 3000) : undefined,
+      ...transcriptPage(output, cursor, limit) };
     const after = cursor == null ? 0 : output.findIndex(entry => entry.id === cursor) + 1;
     if (cursor && !after) throw runtimeFailure('cursor_expired', 'The transcript cursor is not available');
     const slice = output.slice(after, after + limit);

@@ -445,7 +445,7 @@ export class Executions {
 
   async read(target, context, args = {}) {
     const record = this.require(target, context, 'read');
-    const observation = await this.inspect(target, record, { cursor: args.cursor, limit: args.limit });
+    const observation = await this.inspect(target, record, { cursor: args.cursor, limit: args.limit, modelPage: context.actor.kind === 'bot' });
     const current = this.require(target, context, 'read');
     const safe = observation.safe_to_disconnect;
     if (target.kind === 'session' && current.control.state === 'paused' && current.control.stop_status !== 'stopped' &&
