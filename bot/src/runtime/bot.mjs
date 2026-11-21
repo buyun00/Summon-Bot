@@ -900,7 +900,7 @@ export class BotRuntime {
     const job = this.active.get(context.conversation.id);
     if (job?.runId !== context.origin.run_id) return null;
     const review = async sources => {
-      const position = JSON.stringify([destination.id, sources.local_work, sources.candidates.map(item => item.id),
+      const position = JSON.stringify([destination.id, sources.local_work, sources.local_request, sources.requested_stage, sources.candidates.map(item => item.id),
         sources.hostMessages.map(item => item.id), [...sources.facts.keys()], sources.versions, sources.requests?.map(item => item.id),
         sources.current?.map(item => item.id), sources.requested]);
       if (job.publicationReview?.position === position) return job.publicationReview.grant;
@@ -938,7 +938,7 @@ export class BotRuntime {
           .filter(item => item.origin_room?.id === destination.id && linked.has(item.origin_message_id)).map(item => item.origin_message_id));
         if (questions.size === 1) [root] = questions;
       }
-      if (root && (!label || ['complete', 'correction'].includes(label.stage))) {
+      if (root) {
         const local = () => publicationSources(this.platform, args, context, destination, root);
         const sources = local();
         if (sources?.candidates.length && (sources.versions.results.length || sources.confirmed_delivery)) {
@@ -1500,14 +1500,19 @@ export class BotRuntime {
     if (unfinished.length) facts.push(textMessage({ type: 'prior_call_facts', calls: unfinished }));
     const relevantGroups = new Set();
     const requestIds = new Set();
-    if (conversation.kind === 'room' && current.some(event => event.type === 'message' && sameRef(event.space, conversation.space))) {
-      const withdrawn = this.platform.executions.withdrawnFollowups(inbox.botId, conversation.space.id);
-      if (withdrawn.length) facts.push(textMessage({ type: 'withdrawn_room_intakes', withdrawals: withdrawn }));
-      const room = this.platform.room.room(conversation.space.id, inbox.botId);
+    if (conversation.kind === 'room') {
       const localRequests = current.filter(event => event.type === 'message' && sameRef(event.space, conversation.space));
-      const intake = this.roomIntake(inbox.botId, room, localRequests);
-      if (intake) facts.push(textMessage({ type: 'room_intake', ...intake }));
-      const receipts = roomPublicationReceipts(this.platform, context.actor, conversation, roomQuestionLinks(this.platform, room, localRequests));
+      if (localRequests.length) {
+        const withdrawn = this.platform.executions.withdrawnFollowups(inbox.botId, conversation.space.id);
+        if (withdrawn.length) facts.push(textMessage({ type: 'withdrawn_room_intakes', withdrawals: withdrawn }));
+        const room = this.platform.room.room(conversation.space.id, inbox.botId);
+        const intake = this.roomIntake(inbox.botId, room, localRequests);
+        if (intake) facts.push(textMessage({ type: 'room_intake', ...intake }));
+      }
+      const links = roomQuestionLinks(this.platform, conversation.space, localRequests);
+      for (const event of current) if (event.owner_conversation_id === conversation.id && sameRef(event.origin_room, conversation.space))
+        links.add(event.origin_message_id);
+      const receipts = roomPublicationReceipts(this.platform, context.actor, conversation, links);
       if (receipts.length) facts.push(textMessage({ type: 'own_room_deliveries', receipts }));
     }
     for (const event of current) {

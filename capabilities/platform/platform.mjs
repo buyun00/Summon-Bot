@@ -16,7 +16,7 @@ import { Deliveries, wakeupRecords } from './delivery.mjs';
 import { Executions, conversationRecords, sessionRecords } from './executions.mjs';
 import { HostResources } from './resources.mjs';
 import { RoomWork } from './room-work.mjs';
-import { publicationContext, publicationFieldText, roomPublicationReceipts, roomQuestionLinks, withinPublicationRoom } from './room-publication.mjs';
+import { publicationContext, publicationFieldText, roomPublicationReceipts, roomQuestionLinks, samePublishedFields, withinPublicationRoom } from './room-publication.mjs';
 import { forwardMaterials } from './session-work.mjs';
 import { workspaceGranted } from './workspace-access.mjs';
 import { allowsConnection, enclosesExecutableScope, executableScope } from '../services/executable-scope.mjs';
@@ -1221,9 +1221,7 @@ export class SummonPlatform {
         const scope = new Set([publication.publication_assignment, publication.publication_authority]);
         const last = roomPublicationReceipts(this, actor, context.conversation, scope, space).at(-1);
         const order = publication.publication_redispatch && this.store.get('messages', publication.publication_dispatch);
-        const fields = values => keyOf(...values.map(value => value.normalize('NFC').trim()).sort());
-        if (last && (!order || order.createdAt <= last.time) &&
-            fields(last.fields) === fields(publication.publication_fields.map(part => part.text))) {
+        if (last && (!order || order.createdAt <= last.time) && samePublishedFields(last.fields, publication.publication_fields)) {
           this.calls.bind(call.id, { target: space });
           return { ...this.room.receiptForPublication(last.message_id, actor), already_delivered: true };
         }

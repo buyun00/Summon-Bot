@@ -2,6 +2,19 @@ import { idOf, reject, sameRef } from './contract.mjs';
 
 export const barePublicationNumber = value => /^[+−-]?\p{Nd}+(?:[.,]\p{Nd}+)*$/u.test(value.trim());
 
+export function samePublishedFields(previous, selected) {
+  const units = selected.map(part => part.unit).filter(Boolean);
+  const key = values => JSON.stringify(values.map(value => {
+    const text = value.normalize('NFC').trim();
+    for (const unit of units) {
+      const number = text.endsWith(unit) ? text.slice(0, -unit.length) : text.startsWith(unit) ? text.slice(unit.length) : '';
+      if (barePublicationNumber(number)) return JSON.stringify([number.trim(), unit]);
+    }
+    return JSON.stringify(text);
+  }).sort());
+  return key(previous) === key(selected.map(part => part.text));
+}
+
 export function fieldLayout(materials, presentation, layout) {
   if (!Array.isArray(layout) || !layout.length || layout.length > 100) return;
   const used = new Set(), pieces = [];
@@ -288,7 +301,8 @@ export function publicationSources(platform, args, context, destination, localRo
     seats, ...(recipientRequest && { recipient: recipientRequest.id }), ...(previous.length && { sent: previous.map(item => item.message_id) }) };
   const confirmed_delivery = deliveries.size > 0;
   return { candidates, hostMessages, facts, versions, current, requested, questions, confirmed_delivery, previous,
-    local_work: Boolean(localRoot), local_request: localMessage?.id, recipient_request: recipientRequest };
+    local_work: Boolean(localRoot), local_request: localRoot ? replyId ?? localMessage?.id : undefined,
+    requested_stage: args.work_reply?.stage, recipient_request: recipientRequest };
 }
 
 export function currentPublicationGrant(platform, sources, grant) {

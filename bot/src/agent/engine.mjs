@@ -628,7 +628,7 @@ export class BotEngine {
     const evidence = facts.map(([id, text], index) => ({ index, id, room: sources.factRooms?.get(id), completed_result: sources.versions.results.includes(id),
       confirmed_delivery: sources.versions.deliveries.includes(id), accepted_delivery: sources.versions.accepted?.includes(id), text }));
     const messages = [system, textMessage({ destination: { id: destination.id, name: destination.name }, original_work_reply: sources.local_work, host,
-      original_questions: sources.questions && [...sources.questions], reply_address: sources.local_request,
+      original_questions: sources.questions && [...sources.questions], reply_address: sources.local_request, requested_stage: sources.requested_stage,
       seats: sources.versions.seats, previous_deliveries: sources.previous, destination_requests: sources.requests,
       ...(sources.recipient_request && { proposed_recipient_request: sources.recipient_request,
         address_instruction: 'Set recipient_reply to this message ID only when the authorized material answers this specific request or the source instructed a reply here. An independent announcement goes to the Room.' }), evidence })];
@@ -676,8 +676,10 @@ export class BotEngine {
       if (part.representation === 'number_only') {
         const format = sources.hostMessages[indexFor(part.format_host, host)];
         const number = barePublicationNumber(value) ? value : part.number;
+        const amounts = value.match(/[+−-]?\p{Nd}+(?:[.,]\p{Nd}+)*/gu) ?? [];
         if (format?.roomId !== instruction.roomId || typeof part.format_quote !== 'string' || !part.format_quote.trim() ||
-            !format.content.includes(part.format_quote) || typeof number !== 'string' || !barePublicationNumber(number) || !value.includes(number))
+            !format.content.includes(part.format_quote) || typeof number !== 'string' || !barePublicationNumber(number) ||
+            amounts.length !== 1 || amounts[0] !== number.trim())
           return { review_error: 'unverified_number_format' };
         value = number;
       } else if (barePublicationNumber(value)) {
