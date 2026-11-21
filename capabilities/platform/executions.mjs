@@ -151,6 +151,19 @@ export class Executions {
       status: event.status, receipt: { kind: 'event', id: event.id } } });
   }
 
+  retainRoomResults(roomId) {
+    const work = this.store.db.prepare(`SELECT data FROM records WHERE kind='platform-sessions' AND
+      json_extract(data,'$.origin_room.id')=? AND json_extract(data,'$.acceptance_state')='open' AND
+      json_extract(data,'$.origin_execution.kind')='conversation'`).all(roomId);
+    for (const row of work) {
+      const session = JSON.parse(row.data);
+      const call = this.store.get(callRecords, session.latest_call_id);
+      if (call?.result_ref?.kind !== 'event') continue;
+      const event = this.store.get('platform-events', call.result_ref.id);
+      if (event) this.retainUndelivered(event, session.owner.id);
+    }
+  }
+
   sameOperationTarget(left, right, pi) {
     if (sameRef(left, right)) return true;
     if (!pi || !left || !right || left.kind === right.kind) return false;

@@ -1068,6 +1068,15 @@ function leaveRoom() {
   },'退出');
 }
 
+function deleteGroup() {
+  const room = roomById(ui.roomId);
+  if (!room?.deletable) return;
+  openModal('删除群聊', room.name, '<p>删除后，所有成员都无法再打开这个群聊。</p>', async () => {
+    await api(roomPath(room.id), 'DELETE', { revision:room.revision });
+    ui.detailOpen = false;
+  }, '删除群聊');
+}
+
 function formatBotModelSummary(bot) {
   const m = bot?.model;
   const eff = bot?.effective_models;
@@ -1548,6 +1557,7 @@ async function act(action, element) {
   if (action === 'new-room') return openRoomForm();
   if (action === 'edit-room') return openRoomEdit();
   if (action === 'leave-room') return leaveRoom();
+  if (action === 'delete-group') return deleteGroup();
   if (action === 'older-messages') return loadOlderMessages();
   if (action === 'dm-bot') {
     const bot = botById(id);
@@ -2404,7 +2414,7 @@ function renderDetailPanel(room, bot) {
     : `<span class="subtle" style="font-size:var(--text-caption)">${bot ? (ui.avatarEditing ? '编辑头像' : '伙伴详情') : '会话详情'}</span>`;
   const footer = bot
     ? `<div class="detail-panel-footer"><button type="button" class="secondary-button" data-action="edit-bot" data-id="${esc(bot.id)}">编辑 Bot</button><button type="button" class="secondary-button" data-action="bot-access" data-id="${esc(bot.id)}">资源权限</button>${renderBotControls(bot)}</div>`
-    : `<div class="detail-panel-footer"><button type="button" class="secondary-button" data-action="edit-room">编辑会话</button><button type="button" class="secondary-button" data-action="copy-conversation">复制文字</button><button type="button" class="text-button" data-action="leave-room">退出会话</button></div>`;
+    : `<div class="detail-panel-footer"><button type="button" class="secondary-button" data-action="edit-room">编辑会话</button><button type="button" class="secondary-button" data-action="copy-conversation">复制文字</button><button type="button" class="text-button" data-action="leave-room">退出会话</button>${room.deletable ? '<button type="button" class="text-button" data-action="delete-group">删除群聊</button>' : ''}</div>`;
   return `<aside class="detail-panel" data-section="${esc(tab + ':' + (bot?.id || room.id))}"><div class="detail-panel-inner">
     <div class="detail-panel-toolbar">${toolbarLeft}<button class="round-button" data-action="close-details" aria-label="关闭详情">${icon('close',20)}</button></div>
     <div class="profile-identity">${bot ? `<button class="profile-avatar" data-action="edit-avatar" aria-label="编辑头像" title="点击实时编辑头像">${face(ui.avatarEditing ? ui.avatarDraft : botAvatar(bot),104,{ key:'slot:profile',preview:true,followPointer:true })}</button>` : groupAvatar(room,92)}

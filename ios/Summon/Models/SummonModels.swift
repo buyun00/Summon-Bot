@@ -130,6 +130,7 @@ struct SummonMessage: Codable, Identifiable, Equatable, Sendable {
 }
 
 struct SummonRoom: Codable, Identifiable, Equatable, Sendable {
+    var deletable: Bool?
     var id: String
     var name: String
     var members: [String]

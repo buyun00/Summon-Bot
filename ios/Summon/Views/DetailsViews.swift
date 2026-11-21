@@ -226,6 +226,7 @@ struct RoomDetailsView: View {
     let roomID: String
     @State private var editing = false
     @State private var confirmsLeave = false
+    @State private var deletingGroup = false
     @State private var leaving = false
     @State private var error: String?
 
@@ -396,7 +397,7 @@ struct RoomDetailsView: View {
 
                     // Destructive leave button
                     if room.isGroup && room.members.contains("user") {
-                        Button { confirmsLeave = true } label: {
+                        Button { deletingGroup = false; confirmsLeave = true } label: {
                             Text("退出群聊")
                                 .summonFont(.subheadline, weight: .medium)
                                 .foregroundStyle(.red)
@@ -407,6 +408,10 @@ struct RoomDetailsView: View {
                         .buttonStyle(SummonPressStyle())
                         .disabled(!canEdit || leaving)
                         .padding(.top, 6)
+                    }
+                    if room.deletable == true {
+                        Button("删除群聊", role: .destructive) { deletingGroup = true; confirmsLeave = true }
+                            .disabled(!canEdit || leaving)
                     }
                 }
             }
@@ -428,13 +433,17 @@ struct RoomDetailsView: View {
             }
         }
         .summonSheet(isPresented: $editing) { if let room { RoomEditView(room: room) } }
-        .confirmationDialog("退出群聊？", isPresented: $confirmsLeave, titleVisibility: .visible) {
-            Button("退出群聊", role: .destructive) {
+        .confirmationDialog(deletingGroup ? "删除后，所有成员都无法再打开这个群聊。" : "退出群聊？", isPresented: $confirmsLeave, titleVisibility: .visible) {
+            Button(deletingGroup ? "删除群聊" : "退出群聊", role: .destructive) {
                 guard let room, !leaving else { return }
                 leaving = true
                 Task {
                     defer { leaving = false }
-                    do { try await store.leaveRoom(room); dismiss() }
+                    do {
+                        if deletingGroup { try await store.deleteGroup(room) }
+                        else { try await store.leaveRoom(room) }
+                        dismiss()
+                    }
                     catch { self.error = error.localizedDescription }
                 }
             }

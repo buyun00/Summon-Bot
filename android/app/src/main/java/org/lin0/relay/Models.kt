@@ -187,11 +187,13 @@ data class SummonRoom(
     val lastMessage: SummonMessage?,
     val createdAt: String?,
     val updatedAt: String?,
+    val deletable: Boolean = false,
 ) {
     val isGroup: Boolean get() = members.size != 2 || "user" !in members
 
     fun toJson(): SummonJson = SummonJson.obj(
         "id" to SummonJson.Str(id), "name" to SummonJson.Str(name), "members" to members.toJsonStrings(),
+        "deletable" to SummonJson.Bool(deletable),
         "pins" to SummonJson.Arr(pins.map(SummonReference::toJson)), "revision" to revision.numOrNull(),
         "lastMessage" to (lastMessage?.toJson() ?: SummonJson.Null),
         "createdAt" to createdAt.strOrNull(), "updatedAt" to updatedAt.strOrNull(),
@@ -199,6 +201,7 @@ data class SummonRoom(
 
     companion object {
         fun parse(json: SummonJson, stored: Boolean = false): SummonRoom = SummonRoom(
+            deletable = json["deletable"].bool == true,
             id = json["id"].string ?: throw SummonApiException.invalidResponse,
             name = json["name"].string ?: "会话",
             members = json["members"].array.orEmpty().mapNotNull { it.string },

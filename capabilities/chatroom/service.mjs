@@ -119,7 +119,8 @@ export class ChatroomService {
 
   projectRoom(room) {
     const { id, name, members, mode, pins, revision, createdAt, updatedAt } = room;
-    return { id, ref: { kind: 'room', id }, name, members, mode, pins, workspace: room.workspace ?? null, revision, createdAt, updatedAt,
+    return { id, ref: { kind: 'room', id }, name, members, mode, pins, deletable: mode === 'group' && id !== botMaintenanceRoomId,
+      workspace: room.workspace ?? null, revision, createdAt, updatedAt,
       lastMessage: rowMessage(this.latestMessage.get(id)) };
   }
 
@@ -334,6 +335,26 @@ export class ChatroomService {
     const projection = this.projectRoom(saved);
     this.emit('room', projection);
     return projection;
+  }
+
+  deleteGroup(id, revision, actor) {
+    if (identity(actor).kind !== 'user') fail('只有宿主能删除群聊', 403);
+    if (!Number.isSafeInteger(revision)) fail('删除群聊需要当前群版本', 400);
+    return this.store.transaction(() => {
+      const removed = this.store.get('deleted-rooms', id);
+      if (removed) {
+        assertRevision(removed.revision, revision);
+        return { id, deleted: true };
+      }
+      const room = this.room(id, actor);
+      assertRevision(room.revision, revision);
+      if (room.mode !== 'group' || id === botMaintenanceRoomId) fail('此会话不能删除', 403);
+      for (const member of room.members) if (member !== 'user') this.platform.removeRoomBase(member, id);
+      this.store.remove('rooms', id);
+      this.store.save('deleted-rooms', { id, revision });
+      this.platform.executions.retainRoomResults(id);
+      return { id, deleted: true };
+    });
   }
 
   assertShareable(ref, room, actor, members = room.members) {

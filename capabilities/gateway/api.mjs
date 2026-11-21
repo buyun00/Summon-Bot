@@ -130,6 +130,13 @@ export function createApi({ platform, room, attachments, models, connections, pu
       }
       if (method === 'POST' && match[2] && !match[3]) return mutation('send', { ...args, to: ref }, clientId);
       if (method === 'PATCH' && !match[2]) return mutation('configure_room', { ...args, room: ref }, clientId);
+      if (method === 'DELETE' && !match[2]) {
+        const result = room.deleteGroup(ref.id, args.revision, user);
+        emit('room');
+        await platform.revokeSessions(ref);
+        platform.runtime.wake();
+        return result;
+      }
     }
     if (path === '/api/wakeups') {
       if (method === 'GET') return list('wakeup', params);

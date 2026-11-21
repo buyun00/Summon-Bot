@@ -355,8 +355,18 @@ class SummonStore(private val app: Context) {
 
     suspend fun leaveRoom(room: SummonRoom) {
         changeRoom(room, mapOf("remove_members" to listOf("user").toJsonStrings()))
-        rooms = rooms.filterNot { it.id == room.id }
-        if (activeRoomID == room.id) activeRoomID = null
+        removeLocalRoom(room.id)
+    }
+
+    suspend fun deleteGroup(room: SummonRoom) {
+        val revision = room.revision ?: throw SummonApiException.invalidResponse
+        request(roomPath(room.id), "DELETE", SummonJson.obj("revision" to revision.numOrNull()))
+        removeLocalRoom(room.id)
+    }
+
+    private fun removeLocalRoom(id: String) {
+        rooms = rooms.filterNot { it.id == id }
+        if (activeRoomID == id) activeRoomID = null
         schedulePersistence()
     }
 

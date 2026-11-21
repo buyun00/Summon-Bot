@@ -401,9 +401,19 @@ final class SummonStore {
 
     func leaveRoom(_ room: SummonRoom) async throws {
         try await changeRoom(room, ["remove_members": .array([.string("user")])])
-        rooms.removeAll { $0.id == room.id }
-        if activeRoomID == room.id { activeRoomID = nil }
-        if selectedRoomID == room.id { selectedRoomID = nil }
+        removeLocalRoom(room.id)
+    }
+
+    func deleteGroup(_ room: SummonRoom) async throws {
+        guard let revision = room.revision else { throw SummonAPIError.invalidResponse }
+        _ = try await request(path: Self.roomPath(room.id), method: "DELETE", body: .object(["revision": .number(Double(revision))]))
+        removeLocalRoom(room.id)
+    }
+
+    private func removeLocalRoom(_ id: String) {
+        rooms.removeAll { $0.id == id }
+        if activeRoomID == id { activeRoomID = nil }
+        if selectedRoomID == id { selectedRoomID = nil }
         schedulePersistence()
     }
 

@@ -246,6 +246,7 @@ fun RoomDetailsScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
     val canEdit = room != null && store.protocolReady && room.revision != null
     var editing by remember(roomID) { mutableStateOf<SummonRoom?>(null) }
     var leave by remember(roomID) { mutableStateOf<SummonRoom?>(null) }
+    var deletingGroup by remember(roomID) { mutableStateOf(false) }
     var leaving by remember(roomID) { mutableStateOf(false) }
     var botID by remember(roomID) { mutableStateOf<String?>(null) }
     var section by remember(roomID) { mutableStateOf<ResourceSection?>(null) }
@@ -465,11 +466,16 @@ fun RoomDetailsScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
                         shape = RoundedCornerShape(16.dp),
                         color = Color(0x18E53935),
                         modifier = Modifier.fillMaxWidth().padding(top = 4.dp).clip(RoundedCornerShape(16.dp))
-                            .clickable(enabled = canEdit && !leaving) { leave = room },
+                            .clickable(enabled = canEdit && !leaving) { deletingGroup = false; leave = room },
                     ) {
                         Box(Modifier.fillMaxWidth().padding(vertical = 14.dp), contentAlignment = Alignment.Center) {
                             Text("退出群聊", color = Color(0xFFE53935), style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium))
                         }
+                    }
+                }
+                if (room.deletable) {
+                    TextButton(enabled = canEdit && !leaving, onClick = { deletingGroup = true; leave = room }) {
+                        Text("删除群聊", color = Color(0xFFE53935))
                     }
                 }
                 Spacer(Modifier.height(16.dp))
@@ -478,16 +484,21 @@ fun RoomDetailsScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
     }
     ref?.let { SummonReferenceDialog(store, it) { ref = null } }
     leave?.let { target ->
-        androidx.compose.material3.AlertDialog(onDismissRequest = { if (!leaving) leave = null }, title = { Text("退出群聊？") },
-            text = { Text(target.name) },
+        val action = if (deletingGroup) "删除群聊" else "退出群聊"
+        androidx.compose.material3.AlertDialog(onDismissRequest = { if (!leaving) leave = null }, title = { Text(action + "？") },
+            text = { Text(if (deletingGroup) "删除「${target.name}」后，所有成员都无法再打开这个群聊。" else target.name) },
             confirmButton = { TextButton(enabled = !leaving, onClick = {
                 leaving = true
                 scope.launch {
-                    try { store.leaveRoom(target); leave = null; onBack() }
+                    try {
+                        if (deletingGroup) store.deleteGroup(target) else store.leaveRoom(target)
+                        leave = null
+                        onBack()
+                    }
                     catch (failure: Exception) { leave = null; error = failure.localizedMessage }
                     finally { leaving = false }
                 }
-            }) { Text("退出群聊") } },
+            }) { Text(action) } },
             dismissButton = { TextButton(enabled = !leaving, onClick = { leave = null }) { Text("取消") } })
     }
 }
