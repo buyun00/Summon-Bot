@@ -251,8 +251,7 @@ button:focus-visible, a:focus-visible, select:focus-visible { outline-color: #65
 .reply-text { display: block; color: inherit; opacity: .8; font-size:var(--text-meta); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .outgoing .bubble-reply { color: #e0e6d9; background: #ffffff08; border-left-color: #b5c4a8; }
 .reply-copy { min-width: 0; flex: 1; }
-.bubble-actions { position: absolute; top: 100%; right: 0; height: 28px; padding: 0 5px; gap: 10px; font-size:var(--text-caption); color: #8e9483; background: var(--canvas); border-radius: 6px; z-index: 3; pointer-events: none; }
-.chat-message:hover .bubble-actions, .chat-message:focus-within .bubble-actions { pointer-events: auto; }
+.bubble-actions { position: static; width: fit-content; margin: 4px 0 0 auto; height: 28px; padding: 0 5px; gap: 10px; font-size:var(--text-caption); color: #8e9483; background: var(--canvas); border-radius: 6px; opacity: 1; pointer-events: auto; }
 .bubble-actions button { min-width: 25px; height: 27px; }
 .bubble-actions > span { display: none; }
 .bubble-actions time { font-size:var(--text-caption); white-space: nowrap; }
@@ -516,8 +515,6 @@ button:focus-visible, a:focus-visible, select:focus-visible { outline-color: #65
   .reply-author, .reply-text { font-size:var(--text-meta); }
   .bubble-actions { height: 31px; border: 1px solid #e1e4eb; box-shadow: var(--shadow); }
   .bubble-actions button { height: 30px; min-width: 34px; }
-  .chat-message:hover .bubble-actions { opacity: 0; pointer-events: none; }
-  .chat-message:focus-within .bubble-actions { opacity: 1; pointer-events: auto; }
   .message-work-status { font-size:var(--text-meta); margin: 5px 2px 0; }
   .message-work-status .agent-run-heading { font-size:var(--text-meta); }
   .message-work-status .status-dot { width: 9px; height: 9px; }
