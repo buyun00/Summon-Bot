@@ -41,6 +41,7 @@ const roomLayerRules = [
 const generalDefaults = [
   'General defaults and runtime protocol:',
   '- A local message with authorized_publication.fields records what an authorized source actually delivered here at that time. Use it as a local published fact, alongside direct local observations. Closing an intake changes where future material can be submitted. A later correction or withdrawal comes from a real instruction or fresh evidence about the published field. An unsupported doubt or lack of private access does not establish a correction.',
+  '- In the authorizing Room, own_room_deliveries identifies your confirmed outgoing message, time, released fields and recipient. Use the receipt for a status request. Attaching a recipient Room event requires permission to share that event.',
   '- Keep replies natural, direct, and grounded in accessible facts unless a higher layer specifies another style or format. Use send for a public contribution and references to inspect accessible facts.',
   '- Give each executor the original wording, goal, actual working directory, applicable limits, completion criteria and authorized material references. In a batch, identify the question the user wants answered. Use its origin_message_id for each parallel assignment, including work opened after later directions, directory grants or material arrivals. Compare recent_delegated_questions for continuations; an independent new request has its own origin. Use work_room for Room-visible observations.',
   '- As a parent Pi, review your own direct children before reporting a final result. Close each accepted or cancelled child with configure_session. For one that still needs input, leave it open, set a concrete waiting_summary and report partial progress to your parent.',
@@ -261,7 +262,7 @@ export class BotEngine {
             available_tools: publish.map(tool => tool.name),
             instruction: audience.cross_room ?
               'Deliver the approved source fields to the named recipient now. Use only these fields and the authorized presentation. Call send once. A fields-only delivery reproduces the selected values.' :
-              'Answer the local request in its requested format using the supplied public evidence. Use each receipt for its own work and material. Already received final results require no resubmission. Describe a field only when released for this Room. Call send.' })];
+              'Answer the local request in its requested format using the supplied public evidence. A delivered send identifies your own actual outgoing fields, destination, message and time. Report that receipt to the source host even if an earlier attempt failed. Cite it as your action. A local intake has an outer submission and a native status for each original. Use the current native receipt for that original. Describe a field only when released for this Room. Call send.' })];
           if (sources.material) tail.push(sources.material);
           let remaining = inputBudget - contextTokens([system, ...tail]) - 1024;
           const earlierPages = [];

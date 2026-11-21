@@ -7,7 +7,7 @@ import { repairRequestType, repairResultType, tools } from '../../../capabilitie
 import { deliveryRecords } from '../../../capabilities/platform/delivery.mjs';
 import { waitRecords } from '../../../capabilities/platform/calls.mjs';
 import { forwardMaterials, workGroup } from '../../../capabilities/platform/session-work.mjs';
-import { currentPublicationGrant, fieldLayout, inspectedPublicationSources, privateRoomRead, publicationContext, publicationSelection, publicationSources, roomQuestionLinks, withinPublicationRoom } from '../../../capabilities/platform/room-publication.mjs';
+import { currentPublicationGrant, fieldLayout, inspectedPublicationSources, privateRoomRead, publicationContext, publicationSelection, publicationSources, roomPublicationReceipts, roomQuestionLinks, withinPublicationRoom } from '../../../capabilities/platform/room-publication.mjs';
 import { BotStore } from '../storage/store.mjs';
 import { Inbox } from '../storage/inbox.mjs';
 import { eventOrder, executionRef, now, recordKey, refKey, runtimeFailure, runtimeRecords as R, sameRef, terminalCallStates } from '../storage/runtime-records.mjs';
@@ -316,14 +316,15 @@ export class BotRuntime {
       this.platform.executions.record(conversationRef(work.owner_conversation_id))?.control.state === 'active' &&
       this.platform.canReadSpace(botRef(botId), work.origin_room));
     const open = receiving.length > 0;
-    const receipts = [];
+    const receipts = new Map();
     const calls = open ? this.platform.calls.roomForwards(botId, room.id, [...ids]) : this.platform.calls.forwardsFor(botId, room.id, [...ids]);
     for (const [source, call] of calls) {
       const route = this.forwardRoute(botId, source);
       const message = this.platform.store.get('messages', source);
       if (message?.roomId !== room.id || !call.origin.intake_message_id && route?.fast_read_forward_call_id !== call.id) continue;
       const receipt = this.openIntakeReceipt(call) ?? route?.source_intake_receipt ?? { call_status: route?.fast_read_forward_status };
-      receipts.push({ source_event: source, author: message.senderId, call_status: receipt.call_status,
+      receipts.set(recordKey(source, call.target?.id), { source_event: source, author: message.senderId, call_status: receipt.call_status,
+        ...(receiving.some(work => work.id === call.target?.id) && { receiving_session: call.target.id }),
         native_input_status: receipt.native_input_status, ...(receipt.recovery && { recovery: {
           call_status: receipt.recovery.call_status, native_input_status: receipt.recovery.native_input_status } }) });
     }
@@ -334,17 +335,37 @@ export class BotRuntime {
         .all(room.id, botId, JSON.stringify([...ids]));
       for (const row of local) {
         const call = JSON.parse(row.data);
-        for (const id of call.intake_source_ids) {
-          if (!ids.has(id) || receipts.some(item => item.source_event === id && item.call_status)) continue;
+        const work = call.intake_session_id && this.platform.executions.record(sessionRef(call.intake_session_id));
+        const originals = call.intake_source_ids.filter(id => ids.has(id));
+        const visible = work?.owner?.id === botId && !work.authority_revoked && this.platform.canReadSpace(work.owner, work.origin_room);
+        const live = visible ? this.platform.roomWork.priorMaterialReceipts(work, call, originals) : [];
+        const inner = visible && call.intake_call_id && this.platform.store.get('platform-calls', call.intake_call_id);
+        const native = inner?.retained_input_call_id ? this.platform.store.get('platform-calls', inner.retained_input_call_id) : inner;
+        const input = native?.input_id && this.platform.store.get('platform-inputs', native.input_id);
+        for (const id of originals) {
           const message = this.platform.store.get('messages', id);
-          const specific = call.result?.material_receipts?.find(item => item.event_id === id);
-          if (message?.roomId === room.id) receipts.push({ source_event: id, author: message.senderId,
-            call_status: specific?.call_status ?? call.result?.status, native_input_status: specific?.input_status ?? call.result?.input_status });
+          if (message?.roomId !== room.id) continue;
+          const key = recordKey(id, call.intake_session_id);
+          const existing = receipts.get(key);
+          if (existing?.intake_status) continue;
+          const acted = native?.target?.id === call.intake_session_id && !native.material_reference_only &&
+            (native.material_action_ids ?? native.origin?.intake_material_ids ?? []).includes(id);
+          const current = live.find(item => item.event_id === id) ?? (acted ? { call_status: native.status,
+            input_status: input?.call_id === native.id ? input.status : native.result?.input_status ?? 'unconfirmed' } : null);
+          const specific = current ?? call.result?.material_receipts?.find(item => item.event_id === id);
+          const entry = existing ?? { source_event: id, author: message.senderId,
+            ...(receiving.some(item => item.id === call.intake_session_id) && { receiving_session: call.intake_session_id }) };
+          entry.intake_status = call.status;
+          if (current || !entry.call_status) {
+            entry.call_status = specific?.call_status ?? call.result?.status;
+            entry.native_input_status = specific?.input_status ?? call.result?.input_status;
+          }
+          receipts.set(key, entry);
         }
       }
     }
-    if (!open && !receipts.length) return null;
-    return { room: { id: room.id, name: room.name }, owner_id: botId, receives_materials_here: open, receipts,
+    if (!open && !receipts.size) return null;
+    return { room: { id: room.id, name: room.name }, owner_id: botId, receives_materials_here: open, receipts: [...receipts.values()],
       receiving_sessions: receiving.map(work => ({ kind: 'session', id: work.id,
         engine: work.engine === 'pi' ? 'pi' : this.platform.connections.get(work.engine)?.kind })),
       instruction: 'For a member’s new submission and help request, hand the actual local originals to the matching open receiving_session using send_input kind=intake, then answer the request here using the real intake status. A repeated request can refer to the earlier signed original. A missing receipt leaves it unconfirmed. Closing intake affects future submissions.' };
@@ -1093,6 +1114,8 @@ export class BotRuntime {
     const intake = audience.cross_room ? null : this.roomIntake(job.inbox.botId, audience.destination, requests);
     const actions = calls.filter(call => ['save_file', 'configure_bot', 'open_session', 'configure_session'].includes(call.tool))
       .map(call => ({ action: call.tool, status: call.state, code: call.result?.code }));
+    actions.push(...roomPublicationReceipts(this.platform, ownerContext.actor, job.conversation, roots)
+      .map(receipt => ({ action: 'send', ...receipt })));
     for (const call of calls.filter(item => item.tool === 'send_input')) {
       const native = this.platform.store.get('platform-calls', call.id);
       const target = native?.target?.kind === 'session' && this.platform.executions.record(native.target);
@@ -1463,8 +1486,11 @@ export class BotRuntime {
       const withdrawn = this.platform.executions.withdrawnFollowups(inbox.botId, conversation.space.id);
       if (withdrawn.length) facts.push(textMessage({ type: 'withdrawn_room_intakes', withdrawals: withdrawn }));
       const room = this.platform.room.room(conversation.space.id, inbox.botId);
-      const intake = this.roomIntake(inbox.botId, room, current.filter(event => event.type === 'message' && sameRef(event.space, conversation.space)));
+      const localRequests = current.filter(event => event.type === 'message' && sameRef(event.space, conversation.space));
+      const intake = this.roomIntake(inbox.botId, room, localRequests);
       if (intake) facts.push(textMessage({ type: 'room_intake', ...intake }));
+      const receipts = roomPublicationReceipts(this.platform, context.actor, conversation, roomQuestionLinks(this.platform, room, localRequests));
+      if (receipts.length) facts.push(textMessage({ type: 'own_room_deliveries', receipts }));
     }
     for (const event of current) {
       if (event.type === 'message') {

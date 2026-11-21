@@ -144,6 +144,35 @@ export function roomQuestionLinks(platform, room, messages) {
   return links;
 }
 
+// The original host can account for its own authorized delivery without importing
+// the recipient's conversation, listeners, replies or private work.
+export function roomPublicationReceipts(platform, actor, conversation, links, destination) {
+  if (!links.size || conversation.space?.kind !== 'room') return [];
+  const rows = platform.store.db.prepare(`SELECT data FROM records WHERE kind='platform-calls'
+    AND json_extract(data,'$.directed_publication')=1 AND json_extract(data,'$.status')='completed'
+    AND json_extract(data,'$.origin.conversation_id')=? AND json_extract(data,'$.origin.bot_id')=?
+    AND (? IS NULL OR json_extract(data,'$.target.id')=?) ORDER BY rowid`)
+    .all(conversation.id, actor.id, destination?.id ?? null, destination?.id ?? null);
+  const receipts = [];
+  for (const { data } of rows) {
+    const call = JSON.parse(data);
+    const grant = platform.store.get('messages', call.publication_authority);
+    if (grant?.roomId !== conversation.space.id || grant.senderId !== 'user' ||
+        !links.has(call.publication_dispatch) && ![...roomQuestionLinks(platform, conversation.space, [grant])].some(id => links.has(id))) continue;
+    const messageId = call.result?.message?.id;
+    const message = messageId && platform.store.get('messages', messageId);
+    if (call.tool !== 'send' || call.target?.kind !== 'room' || message?.callId !== call.id ||
+        message.senderId !== actor.id || message.roomId !== call.target.id) continue;
+    const fields = message.authorized_publication?.fields ?? [];
+    if (!fields.length || !fields.every(value => call.publication_fields?.some(part => part.text === value) && message.content.includes(value))) continue;
+    receipts.push({ authorization: grant.id, dispatch: call.publication_dispatch, message_id: message.id,
+      destination: { ...call.target, name: platform.store.get('rooms', message.roomId)?.name },
+      status: 'delivered', time: message.createdAt, fields,
+      ...((call.publication_fields_only || fields.includes(message.content)) && { text: message.content }) });
+  }
+  return receipts;
+}
+
 export function publicationSources(platform, args, context, destination, localRoot) {
   const origin = context.conversation.space;
   const current = context.origin.event_ids.map(id => platform.store.get('messages', id)).filter(item => item?.roomId === origin.id);
