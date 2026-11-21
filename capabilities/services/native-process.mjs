@@ -89,7 +89,8 @@ function protocolLine(line) {
   if (codex && message.type === 'session' && field(message.sessionId, 512)) {
     const nativeSessionId = field(message.sessionId, 512);
     if (state.nativeSessionId && state.nativeSessionId !== nativeSessionId) return;
-    const binding = { model: field(message.model, 128), effort: field(message.effort, 40) };
+    const binding = { model: field(message.model, 128), effort: field(message.effort, 40),
+      ...(message.sandbox && { sandbox: field(message.sandbox, 40), approval_policy: field(message.approvalPolicy, 40) }) };
     const bindingRejected = message.bindingRejected === true;
     record({ nativeSessionId, binding, bindingRejected });
     event('session', { nativeSessionId, binding, bindingRejected });

@@ -301,9 +301,11 @@ async function start({ text, sessionId, readOnly = false, callId, model, effort,
   if (!allowed(guard)) return finish('not_submitted', 'Session control or connection access changed before creating the thread');
   const cwd = process.cwd();
   const binding = { ...(model ? { model } : {}), ...(effort ? { config: { model_reasoning_effort: effort } } : {}) };
+  const workspacePolicy = readOnly ? { sandbox: 'read-only', approvalPolicy: 'never' } : {};
+  const method = sessionId ? 'thread/resume' : 'thread/start';
   threadSubmitted = true;
-  emit('thread-submitting');
-  const response = await rpc(sessionId ? 'thread/resume' : 'thread/start', { cwd, ...binding,
+  emit('thread-submitting', { method, ...workspacePolicy });
+  const response = await rpc(method, { cwd, ...binding, ...workspacePolicy,
     ...(sessionId ? { threadId: sessionId, excludeTurns: true } : { ephemeral: false, threadSource: 'automation', allowProviderModelFallback: false }) });
   if (!response.thread?.id || sessionId && response.thread.id !== sessionId)
     throw new Error('Codex did not confirm the intended thread');
@@ -313,6 +315,7 @@ async function start({ text, sessionId, readOnly = false, callId, model, effort,
     (response.approvalPolicy === 'never' || response.approvalsReviewer === 'user');
   const matched = (!model || response.model === model) && (!effort || response.reasoningEffort === effort);
   emit('session', { sessionId: threadId, model: response.model, effort: response.reasoningEffort,
+    ...(readOnly && { sandbox: response.sandbox?.type, approvalPolicy: response.approvalPolicy }),
     bindingRejected: !cwdMatched || !matched || !readOnlyMatched });
   if (sessionId && response.thread.status?.type === 'active') {
     emit('thread-active', { sessionId: threadId });
