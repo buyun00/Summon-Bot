@@ -130,7 +130,7 @@ export class ModelProvider {
     const output = new AssistantMessageEventStream(), controller = new AbortController();
     const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
     const deadline = new AbortController(), requestSignal = AbortSignal.any([signal, deadline.signal]);
-    const { timeoutMs: totalWaitMs, onPayload, onProviderStreamEvent, roomCache, reasoning: requestedReasoning = null,
+    const { timeoutMs: totalWaitMs, onPayload, onProviderStreamEvent, roomCache, cacheSessionId, reasoning: requestedReasoning = null,
       usageContext, beforeFetch, ...streamOptions } = options;
     this.controllers.add(controller);
     const started = Date.now(), secrets = new Set();
@@ -220,7 +220,7 @@ export class ModelProvider {
           // The SDK uses this for its HTTP header wait. Stream lifetime is
           // governed separately by meaningful deltas and the caller's stop.
           timeoutMs: connectionWaitMs + 1000,
-          sessionId: usageContext?.sessionId || options.sessionId, maxRetries: 0,
+          sessionId: cacheSessionId || usageContext?.sessionId || options.sessionId, maxRetries: 0,
           ...(connection.kind === 'codex' ? { transport: 'sse' } : {}),
           onProviderStreamEvent: async (event, model) => {
             if (codex && event?.response && (event.type === 'response.created' || codexTerminalEvents.has(event.type))) {
@@ -258,6 +258,11 @@ export class ModelProvider {
               throw new Error(`The provider serialized a different model for ${model.id}`);
             const efforts = wire ? validateReasoning(wire) : serializedReasoning();
             await beforeFetch?.();
+            if (cacheSessionId && wire) {
+              record.sentPromptCacheKey = wire.prompt_cache_key ?? null;
+              record.sentExplicitCacheBreakpoint = Array.isArray(wire.input) && wire.input.some(item =>
+                Array.isArray(item?.content) && item.content.some(part => part?.prompt_cache_breakpoint?.mode === 'explicit'));
+            }
             if (typeof wire?.model === 'string') record.sentModel = wire.model;
             if (Array.isArray(wire?.tools)) {
               record.toolNames = wire.tools.map(tool => tool.name ?? tool.function?.name).filter(Boolean);

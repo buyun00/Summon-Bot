@@ -447,6 +447,13 @@ export class FastReadRuntime {
       const messages = [systemMessage, ...keptPrefix, ...keptPublic, tail];
 
       const priorState = inbox.store.getRecord(R.fastRead, roomId);
+      let cacheSessionId;
+      if (['openai-codex-responses', 'openai-responses'].includes(model.api)) {
+        // Both transports truncate session keys at 64 characters. Store one short key per Bot and Room.
+        cacheSessionId = priorState?.cache_session_id || randomUUID();
+        if (!priorState?.cache_session_id) inbox.store.putRecord(R.fastRead, { ...priorState,
+          id: roomId, bot_id: bot.id, room_id: roomId, cache_session_id: cacheSessionId });
+      }
       const cachePoint = keptPublic.at(-1);
       const roomCache = cachePoint
         ? {
@@ -468,6 +475,7 @@ export class FastReadRuntime {
           timeoutMs: FAST_READ_TIMEOUT_MS,
           reasoning: modelSelection.thinking_level ?? 'off',
           roomCache,
+          cacheSessionId,
           usageContext: {
             purpose: 'fast_read',
             botId: bot.id,
@@ -634,6 +642,7 @@ export class FastReadRuntime {
         ? maxSeqRoute.event_id
         : (prior?.read_through_id ?? maxSeqRoute?.event_id ?? null);
       inbox.store.putRecord(R.fastRead, {
+        ...prior,
         id: roomId,
         bot_id: bot.id,
         room_id: roomId,
