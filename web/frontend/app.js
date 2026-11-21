@@ -184,7 +184,7 @@ const resourceLabels = {
 };
 const ui = {
   view:'chat', roomId:null, botId:null, executionRef:null, executionDetail:null, fileId:null, fileDetail:null,
-  messages:[], roomDeliveries:new Map(), roomSummaries:new Map(), mobileRoom:false, reply:null, drafts:{}, draftTargets:{}, draftAttachments:{},
+  messages:[], roomDeliveries:new Map(), roomSummaries:new Map(), mobileRoom:false, draftReplies:{}, drafts:{}, draftTargets:{}, draftAttachments:{},
   draftReferences:{}, localMessages:{}, loading:true, refreshing:false, streamConnected:false, connectionNotice:'',
   detailOpen:false, detailTab:'details', profileBotId:null, avatarEditing:false, avatarDraft:null, avatarTab:'bot',
   avatarSelectionRevision:0, searchOpen:false, roomQuery:'', menu:null, sendingRooms:new Set(), navigationSeq:0,
@@ -711,7 +711,6 @@ async function refresh(force = false) {
     void globalThis.SummonCache?.writeState(synced);
     if (!roomById(ui.roomId)) {
       ui.roomId = state.rooms.find(room => room.members.includes('user'))?.id ?? null;
-      ui.reply = null;
       await restoreRoomMessages(ui.roomId);
     }
     if (!botById(ui.botId)) ui.botId = state.bots[0]?.id ?? null;
@@ -882,7 +881,7 @@ function clientSessionSnapshot() {
   const localMessages = Object.fromEntries(Object.entries(ui.localMessages).map(([id, entries]) => [id, Object.values(entries)]));
   const executionInputs = [...ui.executionInputs].filter(([,entry]) => !entry.submitted).map(([key,{ busy, ...entry }]) => [key,entry]);
   return { historyEpoch:ui.historyEpoch, roomId:ui.roomId, mobileRoom:ui.mobileRoom, drafts:ui.drafts, targets:ui.draftTargets,
-    references:ui.draftReferences, attachments, localMessages, executionInputs, reply:ui.reply };
+    references:ui.draftReferences, attachments, localMessages, executionInputs, replies:ui.draftReplies };
 }
 
 function persistClientSession() {
@@ -907,7 +906,8 @@ function restoreClientSession(saved) {
   if (!saved) return;
   ui.roomId = saved.roomId ?? ui.roomId; ui.mobileRoom = !!saved.mobileRoom;
   ui.drafts = saved.drafts || {}; ui.draftTargets = saved.targets || {}; ui.draftReferences = saved.references || {};
-  ui.reply = saved.reply || null;
+  ui.draftReplies = saved.replies || {};
+  if (saved.reply?.roomId && !ui.draftReplies[saved.reply.roomId]) ui.draftReplies[saved.reply.roomId] = saved.reply;
   if (Array.isArray(saved.executionInputs)) for (const [key,entry] of saved.executionInputs)
     if (typeof key === 'string' && typeof entry?.text === 'string') ui.executionInputs.set(key,entry);
   for (const [id, entries] of Object.entries(saved.attachments || {})) {
@@ -1018,7 +1018,7 @@ async function readList(endpoint, firstPage) {
 async function selectRoom(id) {
   if (!id) return;
   ui.navigationSeq++; ui.roomId = id; ui.view = 'chat'; ui.mobileRoom = true;
-  ui.reply = null; ui.menu = null; ui.detailOpen = false; ui.profileBotId = null; ui.avatarEditing = false;
+  ui.menu = null; ui.detailOpen = false; ui.profileBotId = null; ui.avatarEditing = false;
   location.hash = 'chat';
   await restoreRoomMessages(id);
   render();
@@ -1448,7 +1448,7 @@ function restoreMessageDraft(entry) {
   if (entry?.status !== 'rejected') return;
   const { roomId,clientId,payload,message } = entry;
   if (ui.drafts[roomId] || attachmentDrafts(roomId).length || ui.draftReferences[roomId]?.length
-    || ui.draftTargets[roomId]?.length || ui.reply?.roomId === roomId)
+    || ui.draftTargets[roomId]?.length || ui.draftReplies[roomId])
     throw new Error('请先保存或清空输入框里的草稿，再恢复这条消息。');
   ui.drafts[roomId] = payload.text;
   ui.draftTargets[roomId] = payload.mentions || [];
@@ -1456,7 +1456,7 @@ function restoreMessageDraft(entry) {
   ui.draftAttachments[roomId] = (message.attachments || []).map(attachment => ({
     key:newClientId(),status:'ready',name:attachment.name,size:attachment.size,attachment,
   }));
-  if (payload.reply_to?.id) ui.reply = ui.messages.find(item => item.id === payload.reply_to.id) ??
+  if (payload.reply_to?.id) ui.draftReplies[roomId] = ui.messages.find(item => item.id === payload.reply_to.id) ??
     { id:payload.reply_to.id,roomId,content:'原消息' };
   delete ui.localMessages[roomId][clientId];
   render();
@@ -1584,10 +1584,14 @@ async function act(action, element) {
   if (action === 'remove-reference') { ui.draftReferences[ui.roomId] = ui.draftReferences[ui.roomId].filter(item => !sameRef(item,ref)); return render(); }
   if (action === 'open-reference') return openReference(ref);
   if (action === 'reply-message') {
-    ui.reply = mergedRoomMessages(ui.roomId,ui.messages).find(item => item.id === id && !item._delivery);
+    const roomId = element.closest('.chat-layout')?.dataset.roomId;
+    if (!roomId || roomId !== ui.roomId || !id || id.startsWith('local-')) return;
+    const message = mergedRoomMessages(roomId,ui.messages).find(item => item.id === id && !item._delivery);
+    ui.draftReplies[roomId] = message ?? { id,roomId,content:'原消息' };
+    persistClientSession();
     render(); $('#message-input')?.focus(); return;
   }
-  if (action === 'cancel-reply') { ui.reply = null; return render(); }
+  if (action === 'cancel-reply') { delete ui.draftReplies[ui.roomId]; persistClientSession(); return render(); }
   if (action === 'retry-message') return sendLocalMessage(ui.localMessages[ui.roomId]?.[id]);
   if (action === 'restore-message-draft') return restoreMessageDraft(ui.localMessages[ui.roomId]?.[id]);
   if (action === 'attach-file') return chooseAttachments();
@@ -1823,11 +1827,11 @@ async function submitRoomMessage(form) {
   const text = form.elements.content.value, attachments = attachmentDrafts(room.id), references = ui.draftReferences[room.id] || [];
   if (!text.trim() && !attachments.length && !references.length) return;
   const payload = { text, mentions:selectedMentions(room), references, attachments:attachments.map(item => ({ kind:'file',id:item.attachment.id })),
-    ...(ui.reply?.roomId === room.id ? { reply_to:messageRef(ui.reply.id) } : {}) };
+    ...(ui.draftReplies[room.id] ? { reply_to:messageRef(ui.draftReplies[room.id].id) } : {}) };
   const entry = queueLocalMessage(room.id,payload,attachments);
   for (const item of attachments) if (item.preview) URL.revokeObjectURL(item.preview);
   ui.drafts[room.id] = ''; ui.draftTargets[room.id] = []; ui.draftAttachments[room.id] = []; ui.draftReferences[room.id] = [];
-  if (ui.reply?.roomId === room.id) ui.reply = null;
+  delete ui.draftReplies[room.id];
   await sendLocalMessage(entry,true);
 }
 
@@ -2356,8 +2360,9 @@ function renderChatComposer(room, members) {
   const menu = ui.menu === 'mentions' ? `<div class="mention-menu context-menu" aria-label="@ 成员">${members.map(member => `<button type="button"
       class="mention-choice" data-action="toggle-mention" data-id="${esc(member.id)}" aria-pressed="${mentions.includes(member.id)}">
       ${avatar(member.id,32,'')}<span>${esc(member.name)}</span>${mentions.includes(member.id) ? icon('check',16) : ''}</button>`).join('')}</div>` : '';
-  const reply = ui.reply?.roomId === room.id ? `<div class="reply-preview">${avatar(ui.reply.senderId,25,'')}<span>回复 ${esc(nameOf(ui.reply.senderId))}
-    · ${esc(messagePreview(ui.reply))}</span><button type="button" class="icon-button" data-action="cancel-reply" aria-label="取消回复">${icon('close',16)}</button></div>` : '';
+  const selectedReply = ui.draftReplies[room.id];
+  const reply = selectedReply ? `<div class="reply-preview">${avatar(selectedReply.senderId,25,'')}<span>回复 ${esc(nameOf(selectedReply.senderId))}
+    · ${esc(messagePreview(selectedReply))}</span><button type="button" class="icon-button" data-action="cancel-reply" aria-label="取消回复">${icon('close',16)}</button></div>` : '';
   const floatingActivity = renderFloatingBotActivity(room, members);
   return `<div class="composer-wrap">${floatingActivity}${reply}${renderAttachmentDrafts()}
     ${references.length ? `<div class="reference-list draft-references">${references.map(ref => `<span>${renderReference(ref)}
