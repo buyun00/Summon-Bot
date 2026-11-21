@@ -79,7 +79,15 @@ export function toolObservation(callId, value, isError = false) {
 
 export function repairRun(messages, records) {
   const calls = new Map(records.map(record => [record.model_call_id, record]));
-  return repairTranscript(messages.filter(message => message.role !== 'system'), (call, assistant) => {
+  const rejectedReads = new Set(messages.filter(message => message.role === 'toolResult' && message.toolName === 'read' &&
+    message.details?.code === 'publication_target_required').map(message => message.toolCallId));
+  const retained = messages.flatMap(message => {
+    if (message.role === 'system' || message.role === 'toolResult' && rejectedReads.has(message.toolCallId)) return [];
+    if (message.role !== 'assistant' || !message.content.some(part => part.type === 'toolCall' && rejectedReads.has(part.id))) return [message];
+    const content = message.content.filter(part => part.type !== 'toolCall' || !rejectedReads.has(part.id));
+    return content.some(part => part.type !== 'thinking') ? [{ ...message, content }] : [];
+  });
+  return repairTranscript(retained, (call, assistant) => {
     const record = calls.get(call.id);
     if (!record) return { role: 'toolResult', toolCallId: call.id, toolName: call.name,
       content: [{ type: 'text', text: JSON.stringify({ state: 'not_submitted' }) }], isError: true, timestamp: assistant.timestamp };

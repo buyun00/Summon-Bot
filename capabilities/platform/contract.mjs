@@ -148,7 +148,7 @@ const definitions = [
     configureSessionInput],
   ['send_input', 'Submit input to the actual input target and control version, or resume one explicitly paused execution. ' +
     'For native reply, copy the current input_target with its request_id. Pass the Codex answer as a text string in the displayed answer_format. The steer target without request_id sends separate material and leaves the request unanswered. ' +
-    'For a material handoff list its actual Room event IDs in material_sources. The host binds the originals to this input and attributes them independently of your instructions. A registered wait_ref returns the asynchronous receipt to your run.',
+    'For a material handoff list its actual Room event IDs in material_sources. The host binds the originals to this input and attributes them independently of your instructions. A member or host submitting in an open intake Room can reference the original signed event there. A report about a document and receipt of the original document are distinct. A registered wait_ref returns the asynchronous receipt to your run.',
     object({ target: executionRef, kind: oneOf('reply', 'steer', 'next', 'resume'), control_version: integer, input: value, recovery_of: refOrId,
       material_sources: array(eventOrId), input_target: inputTarget, resume_ref: resumeRef }, ['target', 'kind', 'control_version'])],
   ['stop_session', 'Pause an execution and request actual interruption for the selected scope.',

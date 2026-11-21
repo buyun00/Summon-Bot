@@ -1093,11 +1093,11 @@ export class SummonPlatform {
         const guarded = !sameRef(to, context.conversation.space) || refs.some(ref => !withinPublicationRoom(this, ref, to)) ||
           this.runtime.requiresRoomDraft(context);
         if (guarded) {
-          const grant = (!sameRef(to, context.conversation.space) || args.publication?.authorization) &&
-            await this.runtime.publicationGrant(context, args, this.room.room(to.id, context.actor.id));
+          const grant = await this.runtime.publicationGrant(context, args, this.room.room(to.id, context.actor.id));
           this.assertRunAllowed(context);
           const audience = publicationContext(this, args, context, grant);
-          this.runtime.checkRoomPublication(context, audience, args);
+          if (!this.runtime.checkRoomPublication(context, audience, args))
+            reject('publication_view_required', 'No message has been sent. Complete this send using the audience, verified source fields and original request in your next input.', 409);
           this.calls.bind(record.id, { publication_room: to, ...(audience.release && { publication_authority: audience.release.authorization_id }) });
         }
       }

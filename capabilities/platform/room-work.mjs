@@ -56,7 +56,14 @@ export class RoomWork {
     const recovery = call.recovery_of && platform.store.get(callRecords, call.recovery_of);
     let ids;
     if (origin.fast_read_forward || recovery) {
-      ids = (recovery?.source_event_ids ?? origin.event_ids).slice(0, 1);
+      const [first] = recovery?.source_event_ids ?? origin.event_ids;
+      const submission = platform.store.get('messages', first);
+      ids = [first];
+      for (const ref of submission?.references ?? []) {
+        if (ref.kind !== 'event') continue;
+        const original = platform.store.get('messages', ref.id);
+        if (original?.roomId === submission.roomId && (submission.senderId === 'user' || original.senderId === submission.senderId)) ids.push(ref.id);
+      }
       if (requested?.some(id => !ids.includes(id))) reject('material_source_mismatch', 'Recover the original material only.', 409);
     } else if (requested) ids = requested;
     else {
@@ -65,7 +72,7 @@ export class RoomWork {
       ids = related.map(item => item.id);
     }
     if (ids.length > 12) reject('material_source_limit', 'Select up to twelve originals for this input.');
-    return [...new Set(ids)].map(id => {
+    const originals = [...new Set(ids)].map(id => {
       const message = platform.store.get('messages', id);
       if (!this.canHandOff(message, session, context.actor)) reject('material_source_forbidden', 'The source or its authorized intake is unavailable.', 403);
       if (message.roomId !== session.origin_room.id && !origin.fast_read_forward && !recovery) {
@@ -77,6 +84,29 @@ export class RoomWork {
       }
       return id;
     });
+    return originals;
+  }
+
+  priorMaterialReceipts(session, call, originals) {
+    const cover = call.origin?.fast_read_forward || call.recovery_of;
+    const enclosed = (cover ? originals.slice(1) : originals).filter(id =>
+      this.platform.store.get('messages', id).roomId !== session.origin_room.id);
+    if (!enclosed.length) return [];
+    const prior = this.platform.store.db.prepare(`SELECT data FROM records WHERE kind='platform-calls'
+      AND json_extract(data,'$.tool')='send_input' AND json_extract(data,'$.target.id')=? AND id<>?
+      AND EXISTS (SELECT 1 FROM json_each(data,'$.material_source_ids') WHERE value IN (SELECT value FROM json_each(?)))
+      ORDER BY rowid DESC`).all(session.id, call.id, JSON.stringify(enclosed));
+    const receipts = new Map();
+    for (const row of prior) {
+      const attempt = JSON.parse(row.data);
+      const input = attempt.input_id && this.platform.store.get('platform-inputs', attempt.input_id);
+      if (input?.call_id !== attempt.id) continue;
+      for (const id of enclosed) {
+        if (!receipts.has(id) && attempt.material_source_ids.includes(id)) receipts.set(id, { event_id: id, input_status: input.status,
+          call_status: attempt.status });
+      }
+    }
+    return [...receipts.values()];
   }
 
   sourceFacts(ids) {

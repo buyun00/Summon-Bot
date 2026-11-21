@@ -41,6 +41,14 @@ export class Calls {
     }));
   }
 
+  roomForwards(botId, roomId, eventIds) {
+    const recent = this.store.db.prepare(`SELECT json_extract(data,'$.source_event_ids[0]') AS source FROM records
+      WHERE kind='platform-calls' AND json_extract(data,'$.origin.fast_read_forward')=1
+      AND json_extract(data,'$.origin.bot_id')=? AND json_extract(data,'$.origin.source_room.id')=? ORDER BY rowid DESC LIMIT 12`)
+      .all(botId, roomId);
+    return this.forwardsFor(botId, roomId, [...new Set([...eventIds, ...recent.map(row => row.source)])]);
+  }
+
   clientCall(actor, clientId) {
     const id = this.store.get('platform-client-calls', keyOf(actor.kind, actor.id, clientId))?.call_id;
     return id && this.store.get(callRecords, id);

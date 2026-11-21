@@ -638,10 +638,13 @@ export class Executions {
         reject('input_already_submitted', 'The native request already has a submitted answer', 409, { call_id: existing.call_id });
       }
       if (target.kind === 'session') this.reserveForwardRecovery(args, context, call, current);
-      const sourceIds = target.kind === 'session' ? this.platform.roomWork.inputSources(args, context, current, this.calls.get(call.id)) : [];
+      const attempt = this.calls.get(call.id);
+      const sourceIds = target.kind === 'session' ? this.platform.roomWork.inputSources(args, context, current, attempt) : [];
+      const earlier = target.kind === 'session' && this.platform.roomWork.priorMaterialReceipts(current, attempt, sourceIds);
       this.store.save(inputRecords, { id: inputKey, target, call_id: call.id, input_target: args.input_target, kind: args.kind,
         submitted_by: context.actor, origin: context.origin, control_version: args.control_version, status: 'prepared', input: args.input });
       this.calls.bind(call.id, { target, input_id: inputKey, material_source_ids: sourceIds,
+        ...(earlier?.length && { prior_material_receipts: earlier }),
         execution_actor: record.execution_actor || { kind: 'bot', id: record.bot_id } });
     });
     const beforeSubmit = async () => {
@@ -671,7 +674,7 @@ export class Executions {
         const sources = this.platform.roomWork.sourceFacts(linked.material_source_ids);
         const text = typeof input === 'string' ? input : input?.text;
         if (typeof text === 'string') {
-          const attributed = JSON.stringify({ instructions: text, room_originals: sources });
+          const attributed = JSON.stringify({ instructions: text, room_originals: sources, prior_material_receipts: linked.prior_material_receipts });
           input = typeof input === 'string' ? attributed : { ...input, text: attributed };
         }
       }

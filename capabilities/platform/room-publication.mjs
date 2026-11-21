@@ -45,59 +45,68 @@ export function privateRoomRead(platform, name, args, result, room) {
 // A member answering in its own Room can cite a standing release that it
 // actually consulted elsewhere. That Room's question cannot grant the release.
 export function inspectedPublicationSources(platform, context, destination, calls, requested) {
-  const grant = platform.store.get('messages', requested);
-  if (!grant || grant.senderId !== 'user' || grant.roomId === destination.id ||
-      !platform.canReadReference({ kind: 'event', id: grant.id }, context)) return null;
-  const facts = new Map(), versions = { user_messages: [], results: [], deliveries: [], files: [] };
-  let inspected = false;
+  const requests = context.origin.event_ids.map(id => platform.store.get('messages', id))
+    .filter(item => item?.roomId === destination.id).map(item => ({ id: item.id, text: item.content }));
+  if (!requests.length) return null;
+  const originals = new Map(), facts = new Map(), factRooms = new Map();
   for (const call of calls.filter(call => call.state === 'completed')) {
     const ref = call.args.ref, result = call.result;
     const messages = call.tool === 'read' && ref?.kind === 'room' ? result?.messages :
       call.tool === 'read' && ref?.kind === 'event' ? [result] :
       call.tool === 'find' && call.args.kind === 'event' ? result?.items : [];
     for (const item of messages || []) {
-      if (item?.roomId !== grant.roomId) continue;
+      if (!item?.roomId || item.roomId === destination.id || originals.has(item.id)) continue;
       const source = platform.store.get('messages', item.id);
-      if (source?.roomId !== grant.roomId) continue;
+      if (source?.roomId !== item.roomId || !platform.canReadReference({ kind: 'event', id: source.id }, context)) continue;
+      originals.set(source.id, source);
       facts.set(source.id, source.content);
-      if (source.id === grant.id) inspected = true;
+      factRooms.set(source.id, source.roomId);
     }
-    if (call.tool === 'read' && ref?.kind === 'file' && result?.id === ref.id && typeof result.content === 'string' &&
-        withinPublicationRoom(platform, ref, { kind: 'room', id: grant.roomId }) && platform.canReadReference(ref, context)) {
+  }
+  const candidates = [...originals.values()].filter(item => item.senderId === 'user' && (!requested || item.id === requested));
+  if (!candidates.length) return null;
+  const rooms = new Set(candidates.map(item => item.roomId));
+  const hostMessages = new Map([...originals].filter(([,item]) => rooms.has(item.roomId) && item.senderId === 'user'));
+  for (const roomId of rooms) {
+    const room = { kind: 'room', id: roomId };
+    const first = [...hostMessages.values()].filter(item => item.roomId === roomId).map(item => item.createdAt).sort()[0];
+    const later = platform.store.db.prepare(`SELECT data FROM records WHERE kind='messages'
+      AND json_extract(data,'$.roomId')=? AND json_extract(data,'$.senderId')='user' AND created_at>? ORDER BY rowid`).all(roomId, first);
+    for (const { data } of later) {
+      const item = JSON.parse(data);
+      if (!item.replyTo || originals.has(item.replyTo) || item.content.includes(destination.name) ||
+          item.references?.some(ref => ref.kind === 'event' && originals.has(ref.id))) hostMessages.set(item.id, item);
+    }
+    for (const call of calls) {
+      const ref = call.args.ref, result = call.result;
+      if (call.tool !== 'read' || call.state !== 'completed' || ref?.kind !== 'file' || result?.id !== ref.id ||
+          typeof result.content !== 'string' || !withinPublicationRoom(platform, ref, room) || !platform.canReadReference(ref, context)) continue;
       const file = platform.files.getProjection(ref.id, context).projection;
       if (file.revision === result.revision) {
         const key = JSON.stringify([ref.id, result.revision, call.args.cursor ?? 0]);
         facts.set(key, result.content);
-        versions.files.push(key);
+        factRooms.set(key, roomId);
       }
     }
   }
-  if (!inspected) return null;
-  const later = platform.store.db.prepare(`SELECT data FROM records WHERE kind='messages'
-    AND json_extract(data,'$.roomId')=? AND json_extract(data,'$.senderId')='user' AND created_at>? ORDER BY rowid`).all(grant.roomId, grant.createdAt);
-  const hostMessages = [grant];
-  for (const { data } of later) {
-    const item = JSON.parse(data);
-    if (item.replyTo === grant.id || item.content.includes(destination.name) ||
-        item.references?.some(ref => ref.kind === 'event' && ref.id === grant.id)) hostMessages.push(item);
-  }
-  versions.user_messages = hostMessages.map(item => item.id);
-  const requests = context.origin.event_ids.map(id => platform.store.get('messages', id))
-    .filter(item => item?.roomId === destination.id).map(item => ({ id: item.id, text: item.content }));
-  if (!requests.length) return null;
-  return { candidates: [grant], hostMessages, facts, versions, requests };
+  const host = [...hostMessages.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const versionsFor = id => ({ user_messages: host.filter(item => item.roomId === originals.get(id)?.roomId).map(item => item.id),
+    results: [], deliveries: [] });
+  return { candidates, hostMessages: host, facts, factRooms, versions: { results: [], deliveries: [] }, versionsFor, requests };
 }
 
-export function publicationSources(platform, args, context, destination) {
+export function publicationSources(platform, args, context, destination, localRoot) {
   const origin = context.conversation.space;
   const current = context.origin.event_ids.map(id => platform.store.get('messages', id)).filter(item => item?.roomId === origin.id);
   const receipts = context.origin.event_ids.map(id => platform.store.get('platform-events', id))
     .filter(event => event?.type === 'call.receipt' && event.owner_conversation_id === context.conversation.id);
   const roots = new Set(current.flatMap(item => [item.id, item.replyTo]).filter(Boolean));
   for (const event of receipts) if (sameRef(event.origin_room, origin)) roots.add(event.origin_message_id);
+  if (localRoot) roots.add(localRoot);
   const owned = platform.executions.directWork(context.conversation.id).filter(work => sameRef(work.origin_room, origin) &&
-    (roots.has(work.origin_message_id) || work.owner_run_id === context.origin.run_id));
+    (!localRoot || work.origin_message_id === localRoot) && (roots.has(work.origin_message_id) || work.owner_run_id === context.origin.run_id));
   const questions = new Set(owned.map(work => work.origin_message_id));
+  if (localRoot && !questions.has(localRoot)) return null;
   const requested = args.publication?.authorization && idOf(args.publication.authorization, 'event');
   if (questions.size > 1) {
     const source = requested && platform.store.get('messages', requested);
@@ -118,7 +127,7 @@ export function publicationSources(platform, args, context, destination) {
   const names = platform.store.list('rooms').filter(room => room.members.includes(context.actor.id) && room.name === destination.name);
   const namesDestination = item => item.content.includes(destination.id) || names.length === 1 && item.content.includes(destination.name) ||
     item.references?.some(ref => ref.kind === 'room' && ref.id === destination.id);
-  const candidates = eligible.filter(item => (!requested || requested === item.id) && namesDestination(item));
+  const candidates = eligible.filter(item => (!requested || requested === item.id) && (localRoot ? item.id === localRoot : namesDestination(item)));
   // A later host message can change or withdraw a deferred grant without
   // replying to the original question. It can restrict this grant, never create it.
   const start = candidates.map(item => item.createdAt).sort()[0];
@@ -127,7 +136,7 @@ export function publicationSources(platform, args, context, destination) {
       AND json_extract(data,'$.roomId')=? AND json_extract(data,'$.senderId')='user' AND created_at>? ORDER BY rowid`).all(origin.id, start);
     for (const { data } of later) {
       const item = JSON.parse(data);
-      if (namesDestination(item) || item.mentions?.includes(context.actor.id) ||
+      if (!item.replyTo || namesDestination(item) || item.mentions?.includes(context.actor.id) ||
           item.references?.some(ref => ref.kind === 'event' && questions.has(ref.id))) messages.set(item.id, item);
     }
   }
@@ -154,7 +163,7 @@ export function publicationSources(platform, args, context, destination) {
   }
   const versions = { user_messages: hostMessages.map(item => item.id), results, deliveries: [...deliveries] };
   const confirmed_delivery = deliveries.size > 0;
-  return { candidates, hostMessages, facts, versions, current, questions, confirmed_delivery };
+  return { candidates, hostMessages, facts, versions, current, questions, confirmed_delivery, local_work: Boolean(localRoot) };
 }
 
 export function publicationContext(platform, args, context, grant) {
@@ -165,6 +174,7 @@ export function publicationContext(platform, args, context, grant) {
   const inputs = context.origin.event_ids.map(id => platform.store.get('messages', id)).filter(Boolean);
   let release;
   if (crossRoom) {
+    if (grant?.review_error) reject('publication_review_incomplete', 'The source authorization review could not finish. The destination has received no message.', 409, { reason: grant.review_error });
     if (grant) {
       const sources = publicationSources(platform, args, context, destination);
       if (sources.candidates.some(item => item.id === grant.authorization_id) &&
@@ -191,6 +201,6 @@ export function publicationContext(platform, args, context, grant) {
     }
     platform.assertShareable(ref, { actor: context.actor, room: destination, context });
   }
-  return { destination: { id: to.id, name: destination.name }, cross_room: crossRoom, release,
+  return { destination: { id: to.id, name: destination.name }, cross_room: crossRoom, release, ...(grant?.review_error && { source_review: grant.review_error }),
     current_message_ids: inputs.filter(item => item.roomId === to.id).map(item => item.id), reply_to: replyId };
 }
