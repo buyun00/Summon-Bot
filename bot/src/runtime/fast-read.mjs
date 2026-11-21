@@ -3,6 +3,7 @@ import { idOf, keyOf, sameIdentity } from '../../../capabilities/platform/contra
 import { wakeupRecords } from '../../../capabilities/platform/delivery.mjs';
 import { sameInput, sessionRecords } from '../../../capabilities/platform/executions.mjs';
 import { forwardInputs, unresolvedForward } from '../../../capabilities/platform/session-work.mjs';
+import { roomQuestionLinks } from '../../../capabilities/platform/room-publication.mjs';
 import { builtInInstructions } from '../../../roles/index.mjs';
 import { bindModel, boundModel, extractJsonObject } from '../agent/model.mjs';
 import { contextTokens, roomMessageInput, textMessage } from '../context/projection.mjs';
@@ -47,6 +48,7 @@ const fastReadRules = [
   '已明确交给唯一 Pi 工作的附件或引用可以直接续投，由 Pi 查阅。若你得先看材料才能辨认归属，或需要查证事实、核实未开放的跨群任务、发起新任务、修改方向、叫停工作、询问进度、变更交付约定、记住长期规则或办理提醒，交 main。短时间连发的消息结合前后文理解，为每条待判消息各自输出一项。',
   '界面摘要（summary）规则：\n' +
     '对每个 message_id 写一句自然、简短的中文概括（通常 40 字以内，最多 80 字）。写本条输入事实，保留否定、时态、数值和地点。evidence.quote 逐字引用本条 event.text 中支持概括的原话。前文只用于消解指代，不能把先前或同批其他消息的动作、状态、要求写成本条事实。需要消解时，在 summary 用 {ref} 表示该对象，同时给 evidence.referent 填本条指代词 mention、对应前文 message_id 及前文中逐字出现的对象名 name。附件文件名由宿主从本条附件补入，概括中无需复写。仅有附件或引用时简述发送了材料，quote 可空。不得写路由或代答。',
+  '开放收件时，同伴在回复宿主的办理帖里亲自交付本人的部分，也是一件新原件。区分签署者、代办人和收件席。若同伴只是确认或明确交给旁人，请在 disposition_quote 摘取能支持这个判断的完整原话。交给旁人时另填 addressee，取本群被明确点名的成员 ID。若已有收件回执，请指明本件的 handled_event。',
   '输出格式（严格遵守）：只输出一个合法 JSON 对象，不要附加任何解释或额外文字：\n' +
     '{"items":[{"message_id":"<待判消息 ID>","summary":"<简短客观事实摘要>","evidence":{"quote":"<本条原话>","referent":{"mention":"<指代词>","message_id":"<前文 ID>","name":"<对象名>"}},"route":"quiet"|"main"|"forward","target":"<所选 session_id>","input_option":"<所选位置的 option>"}]}\n' +
     '无须消解指代时省略 referent。\n' +
@@ -162,9 +164,11 @@ function parseFastReadResponse(answer, pendingIds, candidatesById, routeById, in
         [receipt, receipt.recovery].some(state => state && ['submitted', 'completed'].includes(state.native_input_status)));
       const linkedReceipt = other?.id === id || (other?.senderId === event.author.id &&
         (item?.source_event === other.id || event.reply_to === other.id || event.references?.some(ref => ref.kind === 'event' && ref.id === other.id)));
-      const handled = received && linkedReceipt || other?.replyTo === id;
-      const noTask = ['no_action', 'other_addressee'].includes(disposition) && quoted(item?.evidence?.quote);
-      if (disposition === 'needs_host' || decision.route === 'quiet' && !noTask && !(disposition === 'handled' && handled)) {
+      const handled = received && linkedReceipt;
+      const otherAddressee = item?.addressee && event.mentions?.includes(item.addressee) && item.addressee !== intake.owner_id;
+      const noTask = quoted(item?.disposition_quote) && (disposition === 'no_action' || disposition === 'other_addressee' && otherAddressee);
+      if (disposition === 'needs_host' || disposition === 'material' && decision.route !== 'forward' ||
+          decision.route === 'quiet' && !noTask && !(disposition === 'handled' && handled)) {
         decision.route = 'main';
         const prior = visible.get(item?.source_event);
         const sameAuthor = prior && prior.senderId === event.author.id && prior.roomId === event.space?.id;
@@ -316,14 +320,25 @@ export class FastReadRuntime {
     const { actor, conversation, origin } = context;
     const room = conversation?.space;
     if (actor.kind !== 'bot' || context.session || conversation?.kind !== 'room' || room?.kind !== 'room' ||
-        !work || work.origin_room?.id === room.id || !sameIdentity(work.owner, actor) || args.recovery_of || args.resume_ref ||
+        !work || work.origin_room?.id === room.id || !sameIdentity(work.owner, actor) || args.resume_ref ||
         !this.platform.isFollowupRoomAllowed(work, room) || work.authority_revoked || work.acceptance_state !== 'open')
       throw runtimeFailure('followup_unavailable', 'Select a currently open material intake in this Room.', 409);
     const ids = [...new Set((args.material_sources || []).map(ref => idOf(ref, 'event')))];
-    const request = origin.event_ids.map(id => this.platform.store.get('messages', id)).findLast(message =>
-      message?.roomId === room.id && this.platform.roomWork.intakeSelection(message, ids, work, actor));
-    if (!request) throw runtimeFailure('material_source_forbidden', 'Select this local submission or originals it explicitly encloses.', 403);
+    const requests = origin.event_ids.map(id => this.platform.store.get('messages', id)).filter(message => message?.roomId === room.id);
+    if (!this.platform.roomWork.intakeSelection(requests, ids, work, actor, room))
+      throw runtimeFailure('material_source_forbidden', 'Select the actual local submissions or originals enclosed by the current requests.', 403);
     const inbox = this.runtime.inboxes.get(actor.id), bot = this.platform.getBot(actor.id);
+    if (args.recovery_of) {
+      const priorId = idOf(args.recovery_of, 'call');
+      const prior = this.platform.store.get('platform-calls', priorId);
+      const previous = inbox.store.getRecord(R.call, priorId);
+      const links = roomQuestionLinks(this.platform, room, requests);
+      if (prior?.tool !== 'send_input' || prior.origin?.conversation_id !== conversation.id || prior.origin?.bot_id !== actor.id ||
+          previous?.args?.kind !== 'intake' || idOf(previous.args.target, 'session') !== work.id ||
+          !prior.source_event_ids.some(id => links.has(id)))
+        throw runtimeFailure('recovery_source_mismatch', 'Select the earlier intake for this local filing and receiving Session.', 409);
+      this.platform.calls.bind(call.id, { intake_retry_of: prior.id });
+    }
     const candidate = this.listForwardCandidates(inbox, bot, room.id).find(item => item.session_id === work.id);
     if (!candidate) throw runtimeFailure('followup_unavailable', 'The work owner or receiving seat is unavailable.', 409);
     const receipts = this.platform.roomWork.priorMaterialReceipts(work, call, ids);
@@ -342,13 +357,18 @@ export class FastReadRuntime {
     const innerId = randomUUID();
     this.platform.calls.bind(call.id, { target: room, intake_call_id: innerId, intake_source_ids: selected, intake_session_id: work.id });
     await this.executeForward(bot, local, { event_id: primary, event: roomEvent(this.platform.store.get('messages', primary)) },
-      decision, { signal: context.signal }, { id: innerId, request, selected, originals });
+      decision, { signal: context.signal }, { id: innerId, requests, selected, originals });
     const inner = this.platform.store.get('platform-calls', innerId);
     if (!inner) throw runtimeFailure('followup_unavailable', 'The owner could not accept this intake.', 409);
     const actual = inner.retained_input_call_id ? this.platform.calls.get(inner.retained_input_call_id) : inner;
     const native = actual.input_id && this.platform.store.get('platform-inputs', actual.input_id);
+    const received = this.platform.roomWork.priorMaterialReceipts(work, call, selected);
     return this.platform.calls.finish(call.id, 'completed', { status: actual.status, input_status: native?.call_id === actual.id ?
       native.status : actual.result?.input_status, material_sources: selected, retained: actual.id !== inner.id,
+      material_receipts: selected.map(id => {
+        const proof = received.find(item => item.event_id === id);
+        return { event_id: id, input_status: proof?.input_status ?? 'unconfirmed', call_status: proof?.call_status ?? inner.status };
+      }),
       ...(actual.result?.code && { code: actual.result.code }) });
   }
 
@@ -369,7 +389,8 @@ export class FastReadRuntime {
       origin: { bot_id: bot.id, conversation_id: owner.id, run_id: session.owner_run_id,
         control_version: owner.control.control_version, event_ids: [route.event_id], fast_read_forward: true, source_room: space,
         source_author: route.event.author, forward_target: { kind: 'session', id: decision.target },
-        ...(intake && { intake_message_id: intake.request.id, intake_material_ids: intake.selected }) },
+        ...(intake && { intake_message_id: intake.requests.at(-1).id, intake_request_ids: intake.requests.map(item => item.id),
+          intake_material_ids: intake.selected }) },
     };
     try {
       await this.platform.invoke('send_input', {
@@ -707,6 +728,7 @@ export class FastReadRuntime {
             ...live,
             state: 'processed',
             fast_read_decision: 'quiet',
+            ...(decision.intake_disposition && { intake_disposition: decision.intake_disposition }),
             processed_at: now(),
           });
           quietEventIds.push(route.event_id);

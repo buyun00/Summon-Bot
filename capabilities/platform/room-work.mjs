@@ -2,6 +2,7 @@ import { callRecords } from './calls.mjs';
 import { idOf, identity, keyOf, reject, sameRef } from './contract.mjs';
 import { executionRecords } from '../services/connection-records.mjs';
 import { forwardMaterials } from './session-work.mjs';
+import { roomQuestionLinks } from './room-publication.mjs';
 
 export class RoomWork {
   constructor(platform) { this.platform = platform; }
@@ -43,16 +44,28 @@ export class RoomWork {
     return true;
   }
 
-  intakeSelection(request, ids, session, actor) {
-    return request && ids.length > 0 && ids.length <= 12 && ids.every(id => {
+  intakeSelection(requests, ids, session, actor, room) {
+    if (!ids.length || ids.length > 12) return false;
+    const witnesses = requests.filter(item => item?.roomId === room.id).map(request => ({
+      request, links: request.senderId === 'user' ? roomQuestionLinks(this.platform, room, [request]) : null,
+      route: this.platform.runtime.forwardRoute(actor.id, request.id)?.intake_task,
+    }));
+    return ids.every(id => {
       const source = this.platform.store.get('messages', id);
-      if (source?.roomId !== request.roomId || !this.canHandOff(source, session, actor)) return false;
-      if (source.id === request.id) return true;
-      const referenced = request.replyTo === id || request.references?.some(ref => ref.kind === 'event' && ref.id === id);
-      if (referenced && (request.senderId === 'user' || request.senderId === source.senderId)) return true;
-      const route = this.platform.runtime.forwardRoute(actor.id, request.id);
-      return request.senderId === source.senderId && route?.intake_task?.source_event === id &&
-        (!route.intake_task.session_id || route.intake_task.session_id === session.id);
+      if (source?.roomId !== room.id || !this.canHandOff(source, session, actor)) return false;
+      const assignment = this.platform.runtime.forwardRoute(actor.id, id)?.intake_task?.session_id;
+      if (assignment && assignment !== session.id) return false;
+      return witnesses.some(({ request, links, route }) => {
+        if (route?.session_id && route.session_id !== session.id) return false;
+        if (request.id === id || links?.has(id)) return true;
+        if (request.senderId === source.senderId && (request.replyTo === id ||
+            request.references?.some(ref => ref.kind === 'event' && ref.id === id) || route?.source_event === id)) return true;
+        // A source host can resume a filing thread. A subsequent signed original
+        // must reply to that host's request and cite the same author's earlier original.
+        return links && links.has(source.replyTo) && this.platform.store.get('messages', source.replyTo)?.senderId === 'user' &&
+          source.references?.some(ref => ref.kind === 'event' && links.has(ref.id) &&
+            this.platform.store.get('messages', ref.id)?.senderId === source.senderId);
+      });
     });
   }
 
@@ -87,9 +100,9 @@ export class RoomWork {
     const recovery = recoveryId && platform.store.get(callRecords, recoveryId);
     let ids;
     if (origin.intake_message_id) {
-      const request = platform.store.get('messages', origin.intake_message_id);
+      const requests = (origin.intake_request_ids ?? [origin.intake_message_id]).map(id => platform.store.get('messages', id));
       ids = origin.intake_material_ids;
-      if (request?.roomId !== origin.source_room?.id || !this.intakeSelection(request, ids, session, context.actor))
+      if (!origin.source_room || !this.intakeSelection(requests, ids, session, context.actor, origin.source_room))
         reject('followup_unavailable', 'The selected local originals or receiving work changed.', 409);
     } else if (origin.fast_read_forward || args.recovery_of || recovery && !requested) {
       const [first] = recovery?.source_event_ids ?? origin.event_ids;

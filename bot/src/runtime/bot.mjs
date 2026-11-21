@@ -344,8 +344,9 @@ export class BotRuntime {
       }
     }
     if (!open && !receipts.length) return null;
-    return { room: { id: room.id, name: room.name }, receives_materials_here: open, receipts,
-      receiving_sessions: receiving.map(work => ({ kind: 'session', id: work.id })),
+    return { room: { id: room.id, name: room.name }, owner_id: botId, receives_materials_here: open, receipts,
+      receiving_sessions: receiving.map(work => ({ kind: 'session', id: work.id,
+        engine: work.engine === 'pi' ? 'pi' : this.platform.connections.get(work.engine)?.kind })),
       instruction: 'For a member’s new submission and help request, hand the actual local originals to the matching open receiving_session using send_input kind=intake, then answer the request here using the real intake status. A repeated request can refer to the earlier signed original. A missing receipt leaves it unconfirmed. Closing intake affects future submissions.' };
   }
 
