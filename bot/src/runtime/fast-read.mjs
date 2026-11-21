@@ -307,7 +307,7 @@ export class FastReadRuntime {
       controls: [{ target: actor, control_version: bot.control.control_version }],
       origin: { bot_id: bot.id, conversation_id: owner.id, run_id: session.owner_run_id,
         control_version: owner.control.control_version, event_ids: [route.event_id], fast_read_forward: true, source_room: space,
-        source_author: route.event.author },
+        source_author: route.event.author, forward_target: { kind: 'session', id: decision.target } },
     };
     try {
       await this.platform.invoke('send_input', {

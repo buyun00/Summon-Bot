@@ -214,7 +214,8 @@ export class Calls {
     const wait_refs = call.return_refs.map(key => this.store.get(waitRecords, key)).filter(wait => wait &&
       (context.actor.kind === 'user' || wait.bot_id === context.actor.id) && (!context.session || wait.session_id === context.session.id));
     return { kind: 'call', id, tool, submitted_by, initiating_principal, execution_actor,
-      ...(own ? { origin, source_event_ids, client_id, controls, repair_request_ids } : {}),
+      ...(own ? { origin, source_event_ids, client_id, controls, repair_request_ids, recovery_of: call.recovery_of,
+        forward_recovery_call_id: call.forward_recovery_call_id } : {}),
       status, target: targetReadable ? target : undefined, wait_refs, result_ref: targetReadable ? result_ref : null,
       result: targetReadable ? (own || !call.result ? call.result : {
         status: call.status, output: call.result.output, native: call.result.native, input_targets: call.result.input_targets,

@@ -724,6 +724,9 @@ export class SummonPlatform {
     return this.store.transaction(() => {
       this.executions.checkContinuation(args, context, origin_room, origin_message_id);
       this.resources.assertCapacity('sessions', this.activeSessions());
+      const origin_execution = context.session ? { kind: 'session', id: context.session.id } :
+        owner_conversation_id ? { kind: 'conversation', id: owner_conversation_id } : null;
+      this.executions.reserveForwardRecovery(args, context, call, { origin_execution, origin_room, origin_message_id, owner_conversation_id });
       const session = this.store.save(sessionRecords, { id: call.id, engine, space, owner: actor, bot_id: bot?.id ?? null,
         source_space: project_room || context.conversation?.space || null, project_room,
         origin_room, origin_message_id, owner_conversation_id, owner_run_id: context.origin?.run_id ?? null, work_summary, waiting_summary: null,
@@ -737,8 +740,8 @@ export class SummonPlatform {
         ...(context.executable_scope !== undefined ? { executable_scope: context.executable_scope } : {}),
         ...(connection ? { connection_binding_version: connection.binding_version ?? 1 } : {}), ...(engine === 'pi' ? { open_call_id: call.id } : {}),
         execution_environment: executionEnvironment(connection), ...(group_work ? { group_work } : {}),
-        control: activeControl(), origin_execution: context.session ? { kind: 'session', id: context.session.id } :
-          context.origin?.conversation_id ? { kind: 'conversation', id: context.origin.conversation_id } : null, latest_call_id: call.id });
+        ...(args.replaces_session && { replaces_session: idOf(args.replaces_session, 'session') }),
+        control: activeControl(), origin_execution, latest_call_id: call.id });
       this.calls.bind(call.id, { target: { kind: 'session', id: session.id }, session_id: session.id, execution_actor: actor });
       return session;
     });

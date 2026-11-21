@@ -269,7 +269,7 @@ export class BotRuntime {
   }
 
   roomDeliveryDetails(botId, eventId) {
-    const route = this.inboxes.get(botId)?.store.getRecord(R.route, recordKey(eventId, 'observation'));
+    const route = this.forwardRoute(botId, eventId);
     const callId = route?.fast_read_forward_call_id;
     const call = callId && this.platform.store.get('platform-calls', callId);
     const status = call?.status;
@@ -278,10 +278,14 @@ export class BotRuntime {
       fallback === 'call_result_unknown' ? '原生送达待查' : '直转已交主对话处理');
     return { ...(route?.fast_read_diagnostic && { fast_read_diagnostic: route.fast_read_diagnostic }),
       ...(call && { forward_call: { id: call.id, status, input_status: call.result?.input_status, result_ref: call.result_ref,
-        handler: route.fast_read_forward_handler } }),
+        handler: route.fast_read_forward_handler, recovery_call_id: call.forward_recovery_call_id } }),
       ...(route?.resolution ? { resolution_notice: resolutionLabel(route.resolution) } :
         notice ? { resolution_notice: callId ? notice + ' · 调用 ' + callId : notice } : {}),
       ...(route?.public_reply && { public_reply: route.public_reply }) };
+  }
+
+  forwardRoute(botId, eventId) {
+    return this.inboxes.get(botId)?.store.getRecord(R.route, recordKey(eventId, 'observation'));
   }
 
   wake() {

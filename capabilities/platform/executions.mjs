@@ -111,6 +111,13 @@ export class Executions {
         replacement.owner_conversation_id !== context.origin.conversation_id))
       reject('work_origin_mismatch', 'A replacement must keep the direct owner and original question of the work', 409);
     const implicated = new Set(replacement ? [replacement.id] : []);
+    if (!replacement && context.conversation?.space?.kind === 'room') {
+      const forwards = this.calls.forwardsFor(context.actor.id, context.conversation.space.id, context.origin.event_ids);
+      for (const call of forwards.values()) {
+        const target = call.target ?? call.origin.forward_target;
+        if (target?.kind === 'session') implicated.add(target.id);
+      }
+    }
     for (const id of context.origin.event_ids) {
       const event = this.store.get('platform-events', id);
       if (event?.type !== 'call.receipt' || event.target?.kind !== 'session') continue;
@@ -128,6 +135,59 @@ export class Executions {
         reject('work_paused', 'This continuation depends on a paused execution. Wait for its authorized resume and the original user’s handover conditions.', 409,
           { session_id: id, control: work.control });
     }
+  }
+
+  reserveForwardRecovery(args, context, attempt, work) {
+    if (context.origin?.fast_read_forward) return;
+    if (work?.origin_execution?.kind !== 'conversation') {
+      if (args.recovery_of) reject('recovery_source_mismatch', 'Material recovery needs the original Room work', 409);
+      return;
+    }
+    const room = context.conversation?.space;
+    const sources = context.origin?.event_ids || [];
+    const candidates = new Map();
+    const consider = call => {
+      if (!call?.origin?.fast_read_forward) return;
+      const target = call.target ?? call.origin.forward_target;
+      const original = target && this.record(target);
+      if (!original || original.owner_conversation_id !== work.owner_conversation_id ||
+          !sameRef(original.origin_room, work.origin_room) || original.origin_message_id !== work.origin_message_id) return;
+      if (work.id && work.id !== original.id && work.replaces_session !== original.id && !args.recovery_of) return;
+      if (context.actor.kind !== 'user' && !sameIdentity(context.actor, original.owner)) return;
+      candidates.set(call.id, call);
+    };
+    if (args.recovery_of) {
+      consider(this.store.get(callRecords, idOf(args.recovery_of, 'call')));
+      if (!candidates.size) reject('recovery_source_mismatch', 'Select the original material call for this work and owner', 409);
+    } else {
+      if (!sources.length || room?.kind !== 'room') return;
+      for (const call of this.calls.forwardsFor(context.actor.id, room.id, sources).values()) {
+        const route = this.platform.runtime.forwardRoute(context.actor.id, call.source_event_ids[0]);
+        if (route?.fast_read_forward_fallback || unresolvedForward(call) || call.status === 'not_submitted') consider(call);
+      }
+      for (const id of sources) {
+        const event = this.store.get('platform-events', id);
+        if (event?.type !== 'call.receipt' || !['not_submitted', 'unknown', 'failed'].includes(event.status)) continue;
+        consider(this.store.get(callRecords, event.call_id));
+      }
+      if (!candidates.size) return;
+      const relevant = new Set([work.origin_message_id, ...[...candidates.values()].map(call => call.source_event_ids[0])]);
+      if (sources.some(id => !relevant.has(id) && this.store.get('messages', id))) return;
+      if (candidates.size !== 1) reject('recovery_source_required', 'Identify the material being retried in recovery_of.', 409,
+        { call_ids: [...candidates.keys()] });
+    }
+    const [original] = candidates.values();
+    const latest = original.forward_recovery_call_id ? this.calls.get(original.forward_recovery_call_id) : original;
+    const input = latest.input_id && this.store.get(inputRecords, latest.input_id);
+    const notSubmitted = latest.status === 'not_submitted' || latest.submission_outcome === 'not_submitted' || latest.status === 'failed' &&
+      (latest.result?.input_status === 'rejected' || input?.call_id === latest.id && input.status === 'not_submitted' ||
+        !latest.external && !latest.pi_writer_pid && latest.result_ref?.kind === 'call' && !latest.result?.native);
+    if (!notSubmitted)
+      reject(unresolvedForward(original) || ['prepared', 'submitted', 'unknown'].includes(latest.status) ? 'call_result_unknown' : 'material_already_handled',
+        'Read the existing attempt for this material. Retry only after it is confirmed not submitted.', 409,
+        { source_call_id: original.id, call_id: latest.id, status: latest.status });
+    this.calls.bind(original.id, { forward_recovery_call_id: attempt.id });
+    this.calls.bind(attempt.id, { recovery_of: original.id });
   }
 
   openChildren(session) {
@@ -170,7 +230,10 @@ export class Executions {
       if (label) reject('work_origin_mismatch', 'Publish the result from the original owner in the work’s original Room', 409);
       return { reply };
     }
-    const stage = label?.stage || 'result';
+    if (!label && fromResult && !recovery)
+      reject('work_reply_stage_required', 'This reply refers to material whose result just returned. Use work_reply with progress to acknowledge the material, or complete to deliver the full result on its original question.', 409,
+        { session: work.id, origin_message_id: work.origin_message_id });
+    const stage = label?.stage || 'complete';
     if (label && reply && reply.id !== work.origin_message_id && stage !== 'progress' && !sameRef(forward?.target, target))
       reject('work_origin_mismatch', 'The selected reply belongs to another question. Use the work’s original question.', 409,
         { origin_message_id: work.origin_message_id });
@@ -207,7 +270,7 @@ export class Executions {
     const latest = this.store.get(callRecords, current.latest_call_id);
     const resultAt = (latest?.result_ref?.kind === 'event' && this.store.get('platform-events', latest.result_ref.id)?.time) || latest?.updatedAt;
     const published = this.originalReplies(current);
-    const final = published.findLast(item => item.session_id === current.id && ['complete', 'result', 'correction'].includes(item.stage));
+    const final = published.findLast(item => item.session_id === current.id && ['complete', 'correction'].includes(item.stage));
     const replies = published.filter(({ message, stage }) => stage !== 'progress' && (!id || message.id === id) &&
       (!final || message.createdAt >= final.message.createdAt) &&
       (!resultAt || message.createdAt >= resultAt || id && (args.disposition_note?.trim() ||
@@ -557,6 +620,7 @@ export class Executions {
       if (existing && !['cancelled', 'not_submitted'].includes(existing.status)) {
         reject('input_already_submitted', 'The native request already has a submitted answer', 409, { call_id: existing.call_id });
       }
+      if (target.kind === 'session') this.reserveForwardRecovery(args, context, call, current);
       this.store.save(inputRecords, { id: inputKey, target, call_id: call.id, input_target: args.input_target, kind: args.kind,
         submitted_by: context.actor, origin: context.origin, control_version: args.control_version, status: 'prepared', input: args.input });
       this.calls.bind(call.id, { target, input_id: inputKey, execution_actor: record.execution_actor || { kind: 'bot', id: record.bot_id } });
@@ -604,7 +668,7 @@ export class Executions {
   }
 
   resume(args, context, call, before) {
-    if (args.input !== undefined || args.input_target || !args.resume_ref) reject('invalid_resume', 'Resume requires only the current stop reference');
+    if (args.input !== undefined || args.input_target || args.recovery_of || !args.resume_ref) reject('invalid_resume', 'Resume requires only the current stop reference');
     const { target } = args;
     const record = this.store.transaction(() => {
       const current = this.require(target, context, 'control');
@@ -878,7 +942,7 @@ export class Executions {
       if (current?.latest_call_id === callId && call.result_ref?.kind !== 'event')
         this.saveFacts(session.id, callId, { status, safe_to_disconnect: known });
       if (known) {
-        this.calls.bind(callId, { status: 'prepared' });
+        this.calls.bind(callId, { status: 'prepared', ...(call.result_ref?.kind !== 'event' && { submission_outcome: 'not_submitted' }) });
         this.calls.fail(callId, error);
         if (call.result_ref?.kind !== 'event') this.platform.noteConnectionFailure(current, call, { status, code: error.code });
         if (current?.group_work && current.engine !== 'pi' && !this.store.get(operationRecords, callId))
@@ -937,6 +1001,7 @@ export class Executions {
       const eventId = keyOf('call', callId, facts.position ?? facts.id);
       const existing = this.store.get('platform-events', eventId);
       if (existing) return existing;
+      if (call.status === 'not_submitted') return this.calls.saveReceiptEvent(call, facts, target, facts.position ?? facts.id);
       if (call.status === 'stopped') {
         const owner = facts.native?.run_id && this.record(source);
         const conversation = owner?.engine === 'pi' && this.record({ kind: 'conversation', id: owner.conversation_id || owner.id });
