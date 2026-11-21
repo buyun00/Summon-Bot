@@ -140,6 +140,7 @@ export class Calls {
       input_targets: receipt.input_targets, native: receipt.native, safe_to_disconnect: receipt.safe_to_disconnect,
       ...(receipt.input_status ? { input_status: receipt.input_status } : {}),
       ...(receipt.session_status ? { session_status: receipt.session_status } : {}),
+      ...(receipt.code ? { code: receipt.code } : {}),
       ...(receipt.error ? { error: receipt.error } : {}) };
     const meta = this.sessionMeta?.(target) || null;
     return this.store.save('platform-events', { id: keyOf('call', call.id, position), kind: 'event', type: 'call.receipt',
@@ -161,6 +162,14 @@ export class Calls {
       const call = this.get(id);
       if (call.status !== 'prepared') return call;
       const result = errorResult(error);
+      if (call.origin?.fast_read_forward && call.target?.kind === 'session') {
+        // The direct caller is the intake router. The work owner is a separate
+        // consumer and cannot observe the synchronous rejection inline.
+        this.bind(id, { submission_outcome: 'not_submitted' });
+        this.recordReceipt(id, { position: keyOf('submission', id, 'not_submitted'), status: 'not_submitted',
+          input_status: 'not_submitted', code: result.code, error: result.error, output: result }, call.target, false);
+        return this.get(id);
+      }
       return this.finish(id, 'failed', result);
     });
   }

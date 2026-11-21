@@ -20,6 +20,7 @@ const roomOrId = { anyOf: [typedRef('room'), text] };
 const eventOrId = { anyOf: [typedRef('event'), text] };
 const references = array(ref);
 const roomMessageFields = { text, attachments: array(refOrId), references, mentions: array(principal), reply_to: eventOrId,
+  publication: object({ authorization: eventOrId }, ['authorization']),
   work_reply: object({ session: refOrId, stage: oneOf('progress', 'complete', 'correction') }, ['session', 'stage']) };
 const repairMessageFields = { to: typedRef('connection'), text, references };
 const repairOutcome = oneOf('repaired', 'blocked');
@@ -98,6 +99,7 @@ const definitions = [
     'Use it for a specific observation. A registered wait_ref delivers the terminal receipt or an input request to your run automatically.',
     object({ ref, path: text, cursor: text, limit: { type: 'integer', minimum: 1, maximum: 100 } }, ['ref'])],
   ['send', 'Publish to a Room using message:{to:{kind:"room",id},text}, with optional attachments, references, mentions or reply_to. ' +
+    'Use the current Room unless the host expressly directs publication to another Room. For a transfer you may select that current instruction in publication.authorization. The host supplies its approved materials. Reading a Room or opening an intake does not authorize publication of its contents elsewhere. ' +
     'For a progress report or the complete delegated result, include work_reply:{session,stage:"progress"|"complete"}. A complete work reply is anchored to its original question. Use stage:"correction" for a material change to a previously confirmed delivery. ' +
     'For a verified connection fault, address the message to {kind:"connection",id} with the problem and shareable references. ' +
     'Reuse repair_key when requesting repair of the same fault. The maintainer replies to the repair event on that connection with reply_to and an optional repair_outcome.',
@@ -146,9 +148,9 @@ const definitions = [
     configureSessionInput],
   ['send_input', 'Submit input to the actual input target and control version, or resume one explicitly paused execution. ' +
     'For native reply, copy the current input_target with its request_id. Pass the Codex answer as a text string in the displayed answer_format. The steer target without request_id sends separate material and leaves the request unanswered. ' +
-    'A registered wait_ref returns the asynchronous receipt to your run.',
+    'For a material handoff list its actual Room event IDs in material_sources. The host binds the originals to this input and attributes them independently of your instructions. A registered wait_ref returns the asynchronous receipt to your run.',
     object({ target: executionRef, kind: oneOf('reply', 'steer', 'next', 'resume'), control_version: integer, input: value, recovery_of: refOrId,
-      input_target: inputTarget, resume_ref: resumeRef }, ['target', 'kind', 'control_version'])],
+      material_sources: array(eventOrId), input_target: inputTarget, resume_ref: resumeRef }, ['target', 'kind', 'control_version'])],
   ['stop_session', 'Pause an execution and request actual interruption for the selected scope.',
     object({ target: executionRef, control_version: integer, scope: oneOf('target', 'target_and_owned_calls') }, ['target', 'control_version'])],
   ['set_wakeup', 'Create an event subscription or time reminder with subscription:"new" and event_or_time. The platform returns its ID and revision. ' +

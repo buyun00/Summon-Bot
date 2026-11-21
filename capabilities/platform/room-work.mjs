@@ -1,9 +1,92 @@
 import { callRecords } from './calls.mjs';
 import { idOf, identity, keyOf, reject, sameRef } from './contract.mjs';
 import { executionRecords } from '../services/connection-records.mjs';
+import { forwardMaterials } from './session-work.mjs';
 
 export class RoomWork {
   constructor(platform) { this.platform = platform; }
+
+  followupRooms(values, context, origin) {
+    if (!values?.length) return [];
+    const rooms = this.platform.store.list('rooms').filter(room =>
+      this.platform.canReadSpace(context.actor, { kind: 'room', id: room.id }, context));
+    const selected = new Set();
+    for (const value of values || []) {
+      const id = idOf(value, 'room');
+      const exact = rooms.find(room => room.id === id);
+      const matches = exact ? [exact] : typeof value === 'string' ? rooms.filter(room => room.name === value) : [];
+      if (matches.length !== 1)
+        reject('followup_room_unresolved', 'Resolve the requested Room using find(kind=room). Ask for clarification if its name is ambiguous. No intake change was applied.', 409);
+      if (matches[0].id !== origin?.id) selected.add(matches[0].id);
+    }
+    if (values?.length && !selected.size)
+      reject('followup_is_origin', 'This is the original Room, which already handles the work. No other Room was opened. Resolve the requested intake Room before reporting success.', 409);
+    return [...selected];
+  }
+
+  intakes(session, actor = session.owner) {
+    return (session.allowed_followup_rooms || []).filter(id => id !== session.origin_room?.id &&
+      this.platform.canReadSpace(actor, { kind: 'room', id })).map(id => ({ id, name: this.platform.store.get('rooms', id).name }));
+  }
+
+  canHandOff(message, session, actor, accepted = false) {
+    if (!message || !session.origin_room || session.authority_revoked) return false;
+    const source = { kind: 'room', id: message.roomId };
+    if (!accepted && (!this.platform.isFollowupRoomAllowed(session, source) ||
+        !sameRef(session.origin_room, source) && session.acceptance_state !== 'open') ||
+        !this.platform.canReadSpace(actor, source) || !this.platform.canReadSpace(actor, session.origin_room)) return false;
+    if (session.sharing) {
+      const room = this.platform.store.get('rooms', session.space.id);
+      if (!room || !room.members.every(id => forwardMaterials(message).every(ref =>
+        this.platform.canReadReference(ref, { actor: identity(id) })))) return false;
+    }
+    return true;
+  }
+
+  inputSources(args, context, session, call) {
+    const { platform } = this;
+    const requested = args.material_sources?.map(id => idOf(id, 'event'));
+    const origin = context.origin;
+    if (!origin || session.origin_execution?.kind !== 'conversation' || session.owner_conversation_id !== origin.conversation_id ||
+        !sameRef(session.owner, context.actor)) {
+      if (requested?.length) reject('material_source_forbidden', 'Attach original Room materials from the direct owner of this work.', 403);
+      return [];
+    }
+    const incoming = origin.event_ids.map(id => platform.store.get('messages', id)).filter(Boolean);
+    const recovery = call.recovery_of && platform.store.get(callRecords, call.recovery_of);
+    let ids;
+    if (origin.fast_read_forward || recovery) {
+      ids = (recovery?.source_event_ids ?? origin.event_ids).slice(0, 1);
+      if (requested?.some(id => !ids.includes(id))) reject('material_source_mismatch', 'Recover the original material only.', 409);
+    } else if (requested) ids = requested;
+    else {
+      const local = incoming.filter(item => item.roomId === session.origin_room?.id);
+      const related = local.filter(item => item.replyTo === session.origin_message_id || item.id === session.origin_message_id);
+      ids = related.map(item => item.id);
+    }
+    if (ids.length > 12) reject('material_source_limit', 'Select up to twelve originals for this input.');
+    return [...new Set(ids)].map(id => {
+      const message = platform.store.get('messages', id);
+      if (!this.canHandOff(message, session, context.actor)) reject('material_source_forbidden', 'The source or its authorized intake is unavailable.', 403);
+      if (message.roomId !== session.origin_room.id && !origin.fast_read_forward && !recovery) {
+        const forward = platform.calls.forwardsFor(context.actor.id, message.roomId, [id]).get(id);
+        const authorized = incoming.some(item => item.senderId === 'user' && (item.replyTo === id ||
+          item.references?.some(ref => sameRef(ref, { kind: 'event', id })) || item.content.includes(id)));
+        if (forward?.target?.id !== session.id && !authorized)
+          reject('material_source_forbidden', 'Select the cross-Room original authorized for this particular work.', 403);
+      }
+      return id;
+    });
+  }
+
+  sourceFacts(ids) {
+    return ids.map(id => {
+      const message = this.platform.store.get('messages', id);
+      return { event: { kind: 'event', id }, room: { kind: 'room', id: message.roomId },
+        room_name: this.platform.store.get('rooms', message.roomId).name, author: message.author ?? identity(message.senderId),
+        time: message.createdAt, reply_to: message.replyTo, text: message.content };
+    });
+  }
 
   scope(args, context, sharing, space) {
     if (args.private_work && (args.work_room || args.work_source))

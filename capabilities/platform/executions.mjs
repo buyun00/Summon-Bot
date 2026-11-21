@@ -211,6 +211,21 @@ export class Executions {
       if (label) reject('session_owner_required', 'The original Room owner publishes delegated work', 403);
       return { reply };
     }
+    const selected = label && this.record({ kind: 'session', id: idOf(label.session, 'session') });
+    const question = label?.stage === 'complete' ? selected?.origin_message_id : reply?.id;
+    if (question && (!label || label.stage === 'complete')) {
+      const crossRoom = !sameRef(context.conversation?.space, room);
+      const peers = this.store.db.prepare(`SELECT data FROM records WHERE kind='platform-sessions'
+        AND json_extract(data,'$.origin_room.id')=? AND json_extract(data,'$.origin_message_id')=?
+        AND (? OR json_extract(data,'$.owner.id')=?) AND json_extract(data,'$.origin_execution.kind')='conversation'`)
+        .all(room.id, question, Number(crossRoom && !label), context.actor.id).map(row => JSON.parse(row.data));
+      for (const peer of peers) {
+        const previous = this.originalReplies(peer).findLast(({ message, stage }) =>
+          ['complete', 'correction'].includes(stage) || peer.acceptance?.outcome === 'delivered' && peer.acceptance.message_id === message.id);
+        if (previous && (!label || selected?.owner_conversation_id === context.conversation.id && sameRef(selected.origin_room, room)))
+          return { reply: { kind: 'event', id: question }, retained: previous.message };
+      }
+    }
     // A result turn can refer to the material it just processed. Preserve
     // ordinary replies to new messages and explicit progress acknowledgements.
     const forward = reply && this.calls.forwardsFor(context.actor.id, room.id, [reply.id]).get(reply.id);
@@ -411,6 +426,7 @@ export class Executions {
       ...(context.actor.kind === 'user' && { authority_revoked: Boolean(record.authority_revoked),
         revocation_call_id: record.revocation_call_id ?? null, acceptance: record.acceptance }),
       ...(Array.isArray(record.allowed_followup_rooms) ? { allowed_followup_rooms: record.allowed_followup_rooms } : {}),
+      followup_room_details: this.platform.roomWork.intakes(record, context.actor),
     } : {};
     return { kind: target.kind, id: record.id, execution_ref: target, bot_id: record.bot_id, space: record.space, engine: record.engine,
       source_space: record.source_space && this.platform.canReadSpace(context.actor, record.source_space, context) ? record.source_space : undefined,
@@ -576,6 +592,7 @@ export class Executions {
     }
     this.active(record, args.control_version);
     this.checkSubmitResources(target, record, context);
+    if (context.origin?.fast_read_forward) this.calls.bind(call.id, { target });
     if (this.platform.draining && args.kind !== 'reply') reject('updating', 'New execution input is temporarily paused', 503);
     const fresh = async () => {
       const current = this.require(target, context, 'input');
@@ -621,9 +638,11 @@ export class Executions {
         reject('input_already_submitted', 'The native request already has a submitted answer', 409, { call_id: existing.call_id });
       }
       if (target.kind === 'session') this.reserveForwardRecovery(args, context, call, current);
+      const sourceIds = target.kind === 'session' ? this.platform.roomWork.inputSources(args, context, current, this.calls.get(call.id)) : [];
       this.store.save(inputRecords, { id: inputKey, target, call_id: call.id, input_target: args.input_target, kind: args.kind,
         submitted_by: context.actor, origin: context.origin, control_version: args.control_version, status: 'prepared', input: args.input });
-      this.calls.bind(call.id, { target, input_id: inputKey, execution_actor: record.execution_actor || { kind: 'bot', id: record.bot_id } });
+      this.calls.bind(call.id, { target, input_id: inputKey, material_source_ids: sourceIds,
+        execution_actor: record.execution_actor || { kind: 'bot', id: record.bot_id } });
     });
     const beforeSubmit = async () => {
       await fresh();
@@ -634,6 +653,7 @@ export class Executions {
         if (currentInput?.status !== 'prepared') reject('input_cancelled', 'The queued input was invalidated', 409);
         this.active(latest, args.control_version);
         this.checkSubmitResources(target, latest, context);
+        if (target.kind === 'session') this.platform.roomWork.inputSources(args, context, latest, this.calls.get(call.id));
         this.platform.assertRunAllowed(context, { allowUser: true });
         if (target.kind === 'session' && args.kind === 'next' && !this.platform.isActiveSession(latest)) {
           this.resources.assertCapacity('sessions', this.platform.activeSessions(target.id));
@@ -644,8 +664,19 @@ export class Executions {
       });
     };
     try {
-      const options = { session: current, conversation: current, call: this.calls.get(call.id), kind: args.kind,
-        input_target: args.input_target, input: args.input, beforeSubmit, signal: context.signal };
+      const linked = this.calls.get(call.id);
+      let input = args.input;
+      if (args.kind !== 'reply' && !context.origin?.fast_read_forward && linked.material_source_ids?.length &&
+          this.platform.connections.get(current.engine)?.kind === 'codex') {
+        const sources = this.platform.roomWork.sourceFacts(linked.material_source_ids);
+        const text = typeof input === 'string' ? input : input?.text;
+        if (typeof text === 'string') {
+          const attributed = JSON.stringify({ instructions: text, room_originals: sources });
+          input = typeof input === 'string' ? attributed : { ...input, text: attributed };
+        }
+      }
+      const options = { session: current, conversation: current, call: linked, kind: args.kind,
+        input_target: args.input_target, input, beforeSubmit, signal: context.signal };
       const result = target.kind === 'conversation' ? await this.platform.runtime.submitConversation(options)
         : current.engine === 'pi' ? await this.platform.runtime.pi.submit(options) : await this.platform.connections.input(options);
       const facts = this.applyResponse(target.kind === 'session' ? current : null, call.id, result);
@@ -781,12 +812,7 @@ export class Executions {
     }
     if (args.add_followup_rooms !== undefined || args.remove_followup_rooms !== undefined) {
       const next = new Set(Array.isArray(current.allowed_followup_rooms) ? current.allowed_followup_rooms : []);
-      for (const roomRef of args.add_followup_rooms || []) {
-        const roomId = idOf(roomRef, 'room');
-        const room = this.platform.store.get('rooms', roomId);
-        if (!room || !this.platform.canReadSpace(context.actor, { kind: 'room', id: roomId }, context)) {
-          reject('room_forbidden', 'Cannot open follow-up to an inaccessible Room', 403);
-        }
+      for (const roomId of this.platform.roomWork.followupRooms(args.add_followup_rooms, context, current.origin_room)) {
         next.add(roomId);
         this.store.remove('room-intake-withdrawals', keyOf(current.id, roomId));
       }
@@ -936,6 +962,7 @@ export class Executions {
   failedSubmission(session, callId, error, inputId) {
     this.store.transaction(() => {
       const call = this.calls.get(callId);
+      if (call.result_ref?.kind === 'event' && terminal.has(call.status)) return;
       const known = call.status === 'prepared' || error.beforeSubmit === true;
       const status = known ? 'failed' : 'unknown';
       const current = session && call.target && this.record(call.target);

@@ -39,6 +39,8 @@ const fastReadRules = [
   '文字回答单一自由题时选择有该问题的 reply；另一项独立文字材料选择 steer。若是在回答列于 non_forwardable_inputs 的问题，或者改表单或办理方式，交 main。',
   '缺口自检（quiet vs main）：结合前文、本 Bot 的职责与待判原话判断——如果本 Bot 现在安静结束（quiet），会留下哪个该我回答的问题、会影响结论的错误或未澄清事实，或该我推进的内部步骤（查证、新工作、续办、改方向、叫停、交接留档、保存长期规则、登记或修改提醒）？只要存在任何需要本 Bot 公开发言或内部处理的缺口（且不满足 forward 条件），就必须判 main；只有在群里无需本 Bot 回应、且内部也无需本 Bot 采取任何动作时，才判 quiet。',
   '对象与承接判断：从说话人当下的原话辨认每个请求交给谁，结合房间成员列表（members）里的姓名、公开职责和前文确认称呼所指。明确请另一位成员回答或办理的部分留给本人，即使你知道答案、负责这个话题，或这条消息引用了你，也不抢答（若无其他属于本 Bot 的缺口，判 quiet）。若本人已委托你转述且当下问法允许代答，或同一条消息里另有交给你的问题或事项，判 main。没有 @ 或点名时，也要看对方是否在承接本 Bot 刚才的话、追问本 Bot 负责或正在跟进的事项、或等待本 Bot 的下一步行动；如果是，判 main（或唯一匹配在途执行且符合条件时判 forward）。事实补充、纠正和回执要看是否会改变本 Bot 的已有结论、触发约定回告或更正、解除等待、或影响本 Bot 的下一步办理。读到纯收悉、礼貌致谢、复述、背景补充、自然收尾，或别人已在原提问处把问题答清，且没有仍需本 Bot 处理的公开或内部缺口时，判 quiet。对照本 Bot 自己先前说过的话辨别重复；一句话既纠正又追问时，只要仍有未解决且归属本 Bot 的部分，判 main。',
+  '对 main 的本条原话另行标注交付意图。说话人要求本 Bot 在当前群给答复或确认时，在 public_reply_quote 摘录该请求的原文；纯内部办理、私答、已有归属成员答妥时省略。宿主本人明确要求向另一群公开某些内容时，才列 publications，每项为 {"room":"目的群准确名称或ID","quote":"宿主要求向该群发布的原文指令","materials":[{"event":"本群原件ID","quote":"已获准向该群公开的事实片段"}]}。从实际原件选择允许交给该受众的部分，可分多项；原指令可以自然指代之前的材料。绝不把仅供内部、留在本群或给某席的内容列入。查阅、告诉我到哪里投件、开放工作收件、提及群名均不授予跨群公开发言权。',
+  '若宿主要求等核实或完成后才对外告知，在该项写 after_work:true。结果尚未产生时 materials 留空，保留这份有条件的授权。宿主对这次发布指定口吻、语言或格式时，可在 presentation 数组逐字摘取只包含表达要求的片段。',
   '已明确交给唯一 Pi 工作的附件或引用可以直接续投，由 Pi 查阅。若你得先看材料才能辨认归属，或需要查证事实、核实未开放的跨群任务、发起新任务、修改方向、叫停工作、询问进度、变更交付约定、记住长期规则或办理提醒，交 main。短时间连发的消息结合前后文理解，为每条待判消息各自输出一项。',
   '界面摘要（summary）规则：\n' +
     '对每个 message_id 写一句自然、简短的中文概括（通常 40 字以内，最多 80 字）。写本条输入事实，保留否定、时态、数值和地点。evidence.quote 逐字引用本条 event.text 中支持概括的原话。前文只用于消解指代，不能把先前或同批其他消息的动作、状态、要求写成本条事实。需要消解时，在 summary 用 {ref} 表示该对象，同时给 evidence.referent 填本条指代词 mention、对应前文 message_id 及前文中逐字出现的对象名 name。附件文件名由宿主从本条附件补入，概括中无需复写。仅有附件或引用时简述发送了材料，quote 可空。不得写路由或代答。',
@@ -172,7 +174,20 @@ function parseFastReadResponse(answer, pendingIds, candidatesById, routeById) {
     decisions.set(id, { route, summary, fallback: false,
       ...(form && { native_request: { session_id: item.target, input_target: form.input_target } }) });
   }
-  for (const [id, decision] of decisions) decision.evidence = byId.get(id)?.evidence;
+  for (const [id, decision] of decisions) {
+    const item = byId.get(id);
+    decision.evidence = item?.evidence;
+    if (decision.route !== 'main') continue;
+    const event = routeById.get(id)?.event;
+    const quoted = value => typeof value === 'string' && value.trim() && event?.text?.includes(value);
+    if (quoted(item?.public_reply_quote)) decision.public_reply_quote = item.public_reply_quote;
+    if (event?.author?.kind === 'user' && Array.isArray(item?.publications))
+      decision.publications = item.publications.filter(part => quoted(part?.room) && quoted(part?.quote) &&
+        part.quote.includes(part.room)).map(({ room, quote, materials, presentation, after_work }) => ({ room, quote, after_work: after_work === true,
+          presentation: Array.isArray(presentation) ? presentation.filter(quoted) : [],
+          materials: Array.isArray(materials) ? materials.filter(item => typeof item?.event === 'string' &&
+            typeof item.quote === 'string' && item.quote.trim()).slice(0, 24).map(({ event, quote }) => ({ event, quote })) : [] }));
+  }
   return { ok: !hadFallback, reason: hadFallback ? 'incomplete_fields' : null, decisions };
 }
 
@@ -664,6 +679,8 @@ export class FastReadRuntime {
           inbox.store.putRecord(R.route, {
             ...live,
             fast_read_decision: 'main',
+            ...(decision.public_reply_quote && { public_reply_quote: decision.public_reply_quote }),
+            ...(decision.publications?.length && { publications: decision.publications }),
             ...(decision.native_request && { native_request: decision.native_request }),
             ...(decision.fallback ? { fast_read_fallback: true } : {}),
             ...(decision.fallback && diagnostic ? { fast_read_diagnostic: diagnostic } : {}),

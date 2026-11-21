@@ -5,7 +5,8 @@ import { runtimeFailure } from '../storage/runtime-records.mjs';
 // The current run's instructions, receipts, materials and private transcript stay local.
 export async function fitRoomHistory(job, compress, system, transcript, tail, budget, boundary, optionalMaterial) {
   const { publicRoom, history } = boundary;
-  const active = new Set(boundary.current.filter(e => e.type === 'message' && e.space?.id === job.conversation.space.id).map(e => e.id));
+  const room = publicRoom.room_id ?? job.conversation.space.id;
+  const active = new Set(boundary.current.filter(e => e.type === 'message' && e.space?.id === room).map(e => e.id));
   const originals = history.map(event => ({
     ...textMessage(roomMessageInput(event), Date.parse(event.time)),
     public_event_id: event.id,
@@ -21,10 +22,10 @@ export async function fitRoomHistory(job, compress, system, transcript, tail, bu
       ...privateTurn.filter(message => message.fork_public_event).map(message => message.public_event_id),
     ]);
     const coveredInputs = [...active].filter(id => !visiblePublicIds.has(id));
-    const prefix = summary ? [textMessage({ type: 'derived_history', room: job.conversation.space.id,
+    const prefix = summary ? [textMessage({ type: 'derived_history', room,
       covered_through: summary.through, text: summary.summary }, summary.time)] : [];
     const coveredNotice = coveredInputs.length ? [{
-      ...textMessage({ type: 'summarized_room_inputs', room: job.conversation.space.id,
+      ...textMessage({ type: 'summarized_room_inputs', room,
         references: coveredInputs.map(id => ({ kind: 'event', id })) }),
       origin_event_ids: coveredInputs,
     }] : [];

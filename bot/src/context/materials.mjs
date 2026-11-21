@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { now, recordKey, refKey, sameRef, runtimeFailure, runtimeRecords as R } from '../storage/runtime-records.mjs';
 import { textMessage } from './projection.mjs';
+import { withinPublicationRoom } from '../../../capabilities/platform/room-publication.mjs';
 
 const scopeKinds = new Set(['bot', 'room', 'conversation', 'session']);
 const isRef = (ref, kind) => typeof ref?.id === 'string' && ref.id && (kind ? ref.kind === kind : typeof ref.kind === 'string');
@@ -84,6 +85,7 @@ export class MaterialRuntime {
         const key = recordKey(file.id, row.id, row.revision, materialRef?.id ?? null, materialRevision, itemScope(selection, inbox.botId).map(refKey), targetRef?.id ?? null);
         const content = materialRef ? material?.content : selection.note;
         entries.push({ ...selection, note, author: file.author, index_revision: file.revision, source_refs: sourceRefs,
+          sources_unavailable: sourceRefs.length !== selection.source_refs.length,
           material_revision: materialRevision, material_author: material?.author, content, material_truncated: Boolean(material?.next_cursor), skill, key });
       }
     }
@@ -157,6 +159,25 @@ export class MaterialRuntime {
       entries: visible, removed, additional_entries: snapshot.entries.length - visible.length,
       ...(snapshot.unavailable?.size ? { unavailable_indexes: [...snapshot.unavailable].map(id => ({ kind: 'file', id })) } : {}) });
     return { fact, record: JSON.stringify(old) === JSON.stringify(record) ? undefined : record };
+  }
+
+  publication(job, room) {
+    const actor = { kind: 'bot', id: job.inbox.botId };
+    const root = this.runtime.platform.getBot(actor.id).material_index_ref;
+    if (!root) return null;
+    const scope = [actor, room];
+    if (sameRef(job.conversation.space, room)) scope.push({ kind: 'conversation', id: job.conversation.id });
+    const { entries } = this.snapshot(job.inbox, root, this.runtime.platform.context(job.context()), scope);
+    const platform = this.runtime.platform;
+    const local = ref => withinPublicationRoom(platform, ref, room);
+    const instructions = [];
+    for (const item of entries) {
+      if (item.issue || item.sources_unavailable || !item.content || !item.source_refs.every(local)) continue;
+      const file = item.material_ref && platform.files.get(item.material_ref.id);
+      if (item.material_ref && !local(item.material_ref) && !(item.source_refs.length && file?.sources?.length && file.sources.every(local))) continue;
+      instructions.push({ note: item.content.slice(0, 6500), revision: item.material_revision, selection_revision: item.selection_revision });
+    }
+    return instructions.length ? textMessage({ type: 'applicable_room_instructions', entries: instructions }) : null;
   }
 
   sentPosition(inbox, runId) {
