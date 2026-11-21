@@ -39,10 +39,7 @@ const fastReadRules = [
   '对象与承接判断：从说话人当下的原话辨认每个请求交给谁，结合房间成员列表（members）里的姓名、公开职责和前文确认称呼所指。明确请另一位成员回答或办理的部分留给本人，即使你知道答案、负责这个话题，或这条消息引用了你，也不抢答（若无其他属于本 Bot 的缺口，判 quiet）。若本人已委托你转述且当下问法允许代答，或同一条消息里另有交给你的问题或事项，判 main。没有 @ 或点名时，也要看对方是否在承接本 Bot 刚才的话、追问本 Bot 负责或正在跟进的事项、或等待本 Bot 的下一步行动；如果是，判 main（或唯一匹配在途执行且符合条件时判 forward）。事实补充、纠正和回执要看是否会改变本 Bot 的已有结论、触发约定回告或更正、解除等待、或影响本 Bot 的下一步办理。读到纯收悉、礼貌致谢、复述、背景补充、自然收尾，或别人已在原提问处把问题答清，且没有仍需本 Bot 处理的公开或内部缺口时，判 quiet。对照本 Bot 自己先前说过的话辨别重复；一句话既纠正又追问时，只要仍有未解决且归属本 Bot 的部分，判 main。',
   '已明确交给唯一 Pi 工作的附件或引用可以直接续投，由 Pi 查阅。若你得先看材料才能辨认归属，或需要查证事实、核实未开放的跨群任务、发起新任务、修改方向、叫停工作、询问进度、变更交付约定、记住长期规则或办理提醒，交 main。短时间连发的消息结合前后文理解，为每条待判消息各自输出一项。',
   '界面摘要（summary）规则：\n' +
-    '1. 结合理解它所需的前文，把本条消息压成一句简短客观的中文事实摘要（通常不超过 40 字，最多 80 字），消解“这个/它/上面那个”等指代。\n' +
-    '2. 只写有依据的输入事实（谁说了什么、问了什么、给了什么材料/纠错/确认）。\n' +
-    '3. 绝对不要在 summary 中出现任何路由决定、内部判断或动作词汇（禁止出现 quiet、main、forward、静默、直转、交主对话、无需回复、与我无关、跳过、忽略等字样），也不要直接替主对话作答。\n' +
-    '4. 若消息仅含附件或引用，如实简述发送者发出了哪些附件或引用即可。',
+    '对每个 message_id，从对应 room_message 的 event.text 逐字摘选最能表达本条事实的一句原话，保留否定、数量和位置。不要改写、补全指代或借用批内其他消息。附件名及引用由宿主从同一条原消息补入。只有附件或引用时，summary 填“附件”或“引用”。前文可用于判路由。',
   '输出格式（严格遵守）：只输出一个合法 JSON 对象，不要附加任何解释或额外文字：\n' +
     '{"items":[{"message_id":"<待判消息 ID>","summary":"<简短客观事实摘要>","route":"quiet"|"main"|"forward","target":"<仅 forward 时填 session_id>","input_target":{...}}]}\n' +
     'items 必须完整覆盖 pending_message_ids 中的每一个 message_id；非 forward 时不要输出 target 与 input_target；当所选候选只有 1 个 forwardable_inputs 时 input_target 可省略。',
@@ -62,7 +59,7 @@ function buildFastReadSystem(bot, maintainedConnectionIds) {
 
 function cleanSummary(value) {
   if (typeof value !== 'string') return null;
-  const text = value.replace(/\s+/g, ' ').trim();
+  const text = value.trim();
   if (!text) return null;
   return text.slice(0, 240);
 }

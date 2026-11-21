@@ -43,6 +43,26 @@ function rowMessage(row) {
     references: message.references ?? [], mentions: message.mentions ?? [] };
 }
 
+// The recipient chooses an excerpt. Only the original message supplies display text and filenames.
+function sourceSummary(message, selection) {
+  const body = (message.content ?? '').trim();
+  const labels = message.attachments.map(file => `附件「${file.name}」`);
+  if (message.references.length) labels.push(`引用 ${message.references.length} 项`);
+  const materials = labels.join('、');
+  const prior = materials && selection.endsWith(materials) ? selection.slice(0, -materials.length).trimEnd() : selection;
+  const clip = value => {
+    const chars = Array.from(value);
+    return chars.length <= 80 ? value : chars.slice(0, 80).join('') + '…';
+  };
+  let excerpt = body;
+  if (Array.from(body).length > 80) {
+    const sentences = body.match(/[^。！？!?\n]+[。！？!?]*|[。！？!?]+/gu)?.map(value => value.trim()).filter(Boolean) || [body];
+    const selected = prior && sentences.find(value => clip(value) === prior || value.includes(prior));
+    excerpt = clip(selected || sentences[0]);
+  }
+  return [excerpt, materials].filter(Boolean).join('\n');
+}
+
 export class ChatroomService {
   constructor({ store, manager, attachments, platform, emit = () => {} }) {
     Object.assign(this, { store, manager, attachments, platform, emit });
@@ -179,11 +199,13 @@ export class ChatroomService {
     roomId = idOf(roomId, 'room');
     messageId = identifier(messageId, '消息 ID');
     botId = identity(botId).id;
-    const text = typeof summary === 'string' ? summary.replace(/\s+/g, ' ').trim().slice(0, 240) : '';
-    if (!text) return null;
+    if (typeof summary !== 'string' || !summary.trim()) return null;
     const saved = this.store.transaction(() => {
-      const row = this.messageRow.get(messageId);
-      if (!row || rowMessage(row).roomId !== roomId) return null;
+      const message = rowMessage(this.messageRow.get(messageId));
+      if (message?.roomId !== roomId) return null;
+      this.room(roomId, botId);
+      const text = sourceSummary(message, summary.trim());
+      if (!text) return null;
       const id = JSON.stringify([roomId, messageId, botId]);
       const updated_at = new Date().toISOString();
       return this.store.save('room-message-summaries', { id, roomId, messageId, bot_id: botId, summary: text, updated_at });
@@ -198,9 +220,11 @@ export class ChatroomService {
     for (const messageId of messageIds) {
       const rows = this.messageSummaryRows.all(roomId, messageId);
       if (!rows.length) continue;
+      const message = rowMessage(this.messageRow.get(messageId));
+      if (message?.roomId !== roomId) continue;
       result[messageId] = rows.map(row => {
         const { bot_id, summary, updated_at } = JSON.parse(row.data);
-        return { bot_id, summary, updated_at };
+        return { bot_id, summary: sourceSummary(message, summary), updated_at };
       });
     }
     return result;
