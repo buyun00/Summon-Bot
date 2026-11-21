@@ -29,24 +29,6 @@ const activeRunStates = new Set(['pending', 'running', 'waiting', 'interrupted',
 const cleanError = error => ({ status: error.status, code: error.code, message: error.message, details: error.details });
 const actorFor = call => call.submitted_by || { kind: 'user', id: 'user' };
 const sortedIds = values => [...new Set(values || [])].sort();
-function missedAcceptedWorkReminder(inbox, run, pending) {
-  const reviewedAt = Date.parse(run.last_delivery_review_at);
-  if (!Number.isFinite(reviewedAt)) return false;
-  const events = new Set(pending.map(route => route.event_id));
-  const calls = new Set(pending.map(route => inbox.event(route.event_id)?.call_id).filter(Boolean));
-  let remindedBefore = false, stoppedAfter = false;
-  for (const message of inbox.transcript(run.id)) {
-    if (message.role === 'assistant' && message.stopReason === 'stop' && message.timestamp >= reviewedAt) stoppedAfter = true;
-    const text = message.runtime_fact && message.content?.[0]?.text;
-    if (!text || !text.startsWith('{"type":"room_delivery_still_due",')) continue;
-    const reminder = JSON.parse(text);
-    if (!reminder.requests?.some(item => events.has(item.message_id)) &&
-        !reminder.returned_materials?.some(item => calls.has(item.original_call))) continue;
-    if (message.timestamp >= reviewedAt) return false;
-    remindedBefore = true;
-  }
-  return remindedBefore && stoppedAfter;
-}
 const scopeGrants = access => [sortedIds(access?.model_ids), sortedIds(access?.workspace_ids)];
 function canRetainAuthorizationView(previous, current) {
   if (previous === current) return true;
@@ -684,8 +666,7 @@ export class BotRuntime {
     const pending = run.route_ids.map(id => inbox.store.getRecord(R.route, id)).filter(route => route?.state === 'pending');
     const accepted = this.platform.executions.directWork(conversation.id).filter(work => work.acceptance_state === 'closed' &&
       work.acceptance?.outcome === 'delivered' && work.owner.id === actor.id && sameRef(work.origin_room, conversation.space));
-    const covered = new Map(), changed = new Set(), confirmedPrior = new Set();
-    const prior = new Set(JSON.parse(run.delivery_recovery_position ?? '[]'));
+    const covered = new Map(), changed = new Set();
     for (const route of pending) {
       const event = inbox.event(route.event_id);
       if (!run.injected_event_ids.includes(route.event_id) || !event) continue;
@@ -709,20 +690,13 @@ export class BotRuntime {
         // A newer accepted answer to the same question changes what the
         // suspended owner can use. Only that owner assesses uncovered requests.
         if (message.createdAt > (run.last_delivery_review_at ?? run.first_started_at)) changed.add(message.id);
-        else if (prior.has(message.id)) confirmedPrior.add(message.id);
       }
     }
     const left = pending.filter(route => !covered.has(route.id));
-    // The earlier owner actually resumed on this acceptance, but its long-term
-    // fact deduplication could drop the current reminder before transport.
-    const missed = !changed.size && confirmedPrior.size && !run.delivery_review_trigger && !run.delivery_reminder_position &&
-      missedAcceptedWorkReminder(inbox, run, left);
-    const retry = !changed.size && confirmedPrior.size && run.delivery_reminder_position && !run.publication_retry &&
-      this.unwrittenAcceptedReply(inbox, run, conversation, left, accepted.filter(work => confirmedPrior.has(work.acceptance.message_id)));
-    const acceptedIds = sortedIds(missed ? confirmedPrior : changed);
+    const acceptedIds = sortedIds(changed);
     const position = JSON.stringify(acceptedIds);
-    const reconsider = missed || (changed.size && position !== run.delivery_recovery_position);
-    if (!covered.size && !reconsider && !retry) return;
+    const reconsider = changed.size && position !== run.delivery_recovery_position;
+    if (!covered.size && !reconsider) return;
     inbox.store.transaction(() => {
       for (const [id, proof] of covered) {
         const route = inbox.store.getRecord(R.route, id);
@@ -730,36 +704,12 @@ export class BotRuntime {
         inbox.settleWait(route, 'processed');
       }
       inbox.putRun({ id: runId, processed_event_ids: [...new Set([...run.processed_event_ids, ...[...covered.values()].map(item => item.event_id)])],
-        ...(!left.length ? { state: inbox.hasOpenWaits(runId) ? 'waiting' : 'completed', error: null } :
-          retry ? { state: 'interrupted', recovering_room_inputs: true, publication_retry: { ...retry, reserved_at: now() } } : reconsider ?
+        ...(!left.length ? { state: inbox.hasOpenWaits(runId) ? 'waiting' : 'completed', error: null } : reconsider ?
           { state: 'interrupted', recovering_room_inputs: true, delivery_recovery_position: position, last_delivery_review_at: now(),
-            delivery_review_trigger: { kind: missed ? 'accepted_work_without_current_reminder' : 'accepted_work',
+            delivery_review_trigger: { kind: 'accepted_work',
               accepted_message_ids: acceptedIds, pending_event_ids: left.map(route => route.event_id) } } : {}) });
     });
     this.consumeDeliveries(inbox, [...covered.values()].map(proof => proof.event_id));
-  }
-
-  unwrittenAcceptedReply(inbox, run, conversation, pending, accepted) {
-    const sends = inbox.calls(run.id).filter(call => call.tool === 'send');
-    const gateIndex = sends.findLastIndex(call => call.state === 'failed' && call.result?.code === 'publication_view_required');
-    const gate = sends[gateIndex], last = sends.at(-1);
-    if (!gate || gate === last || gate.args.work_reply?.stage !== 'complete') return;
-    const eventId = gate.args.reply_to?.id ?? gate.args.reply_to;
-    const sessionId = gate.args.work_reply.session?.id ?? gate.args.work_reply.session;
-    const work = accepted.find(item => item.id === sessionId);
-    if (!work || (gate.args.to?.id ?? gate.args.to) !== conversation.space.id ||
-        !pending.some(route => route.event_id === eventId) || !this.outstandingRoomReplies(inbox, conversation.space, [eventId]).length ||
-        !roomQuestionLinks(this.platform, conversation.space, [inbox.event(eventId)]).has(work.origin_message_id)) return;
-    for (const call of sends.slice(gateIndex + 1)) {
-      const actual = this.platform.store.get('platform-calls', call.id);
-      if (!['failed', 'unknown'].includes(call.state) || call.result?.message !== 'callRecords is not defined' ||
-          call.args.work_reply?.stage !== 'complete' || (call.args.work_reply.session?.id ?? call.args.work_reply.session) !== sessionId ||
-          (call.args.reply_to?.id ?? call.args.reply_to) !== eventId || (call.args.to?.id ?? call.args.to) !== conversation.space.id ||
-          actual?.tool !== 'send' || actual.status !== 'failed' || actual.result?.code !== 'operation_failed' ||
-          actual.origin?.run_id !== run.id || actual.origin?.conversation_id !== conversation.id || actual.origin?.bot_id !== inbox.botId ||
-          !actual.source_event_ids?.includes(eventId) || actual.publication_room || actual.target || this.platform.store.get('messages', call.id)) return;
-    }
-    return { gate_call_id: gate.id, failed_call_id: last.id, event_id: eventId, accepted_message_id: work.acceptance.message_id };
   }
 
   reconcileHostReview(inbox, event) {
@@ -906,9 +856,7 @@ export class BotRuntime {
 
   async restoreRoomDraft(job) {
     if (job.conversation.kind !== 'room' || job.inbox.run(job.runId).start_count < 2) return;
-    const latest = job.inbox.calls(job.runId).findLast(item => item.tool === 'send');
-    const retry = job.inbox.run(job.runId).publication_retry;
-    const call = retry && latest?.id === retry.failed_call_id ? job.inbox.store.getRecord(R.call, retry.gate_call_id) : latest;
+    const call = job.inbox.calls(job.runId).findLast(item => item.tool === 'send');
     if (call?.state !== 'failed' || call.result?.code !== 'publication_view_required' || job.hasNewInput(call.source_event_ids ?? [])) return;
     const context = this.platform.context(job.context());
     const to = typeof call.args.to === 'string' ? { kind: 'room', id: call.args.to } : call.args.to;
