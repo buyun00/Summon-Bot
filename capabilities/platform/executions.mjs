@@ -94,10 +94,61 @@ export class Executions {
       AND json_extract(data,'$.owner_conversation_id')=?`).all(conversationId).map(row => JSON.parse(row.data));
   }
 
+  openChildren(session) {
+    return this.directWork(session.conversation_id || session.id).filter(child => child.acceptance_state === 'open' &&
+      child.origin_execution?.kind === 'session' && child.origin_execution.id === session.id);
+  }
+
+  childReviews(sessionId) {
+    const session = this.record({ kind: 'session', id: sessionId });
+    return this.openChildren(session).map(child => {
+      const result = this.store.get(callRecords, child.latest_call_id)?.result_ref?.id;
+      const held = child.acceptance_hold?.call_id === child.latest_call_id && child.acceptance_hold.result_id === result;
+      return { id: child.id, status: child.status, call_id: child.latest_call_id, result_id: result,
+        review_due: terminal.has(child.status) && !held };
+    });
+  }
+
+  acceptance(current, args, context) {
+    const children = this.openChildren(current);
+    if (children.length) reject('child_acceptance_pending', 'The direct parent Pi must review its open children before closing. Continue that Pi for review, or leave the parent open pending the recorded work.',
+      409, { children: children.map(child => ({ id: child.id, status: child.status, waiting_summary: child.waiting_summary })) });
+    if (!terminal.has(current.status) || current.status === 'unknown' && current.safe_to_disconnect !== true)
+      reject('work_in_progress', 'Review the final execution result, or stop the active execution before closing it', 409);
+    const publicWork = current.origin_room && current.origin_message_id && current.origin_execution?.kind === 'conversation';
+    if (args.close_reason) {
+      if (!args.disposition_note?.trim()) reject('disposition_required', 'Explain the cancellation, replacement or private handling');
+      if (publicWork && context.actor.kind !== 'user' && !['failed', 'cancelled', 'stopped', 'not_submitted', 'unsupported'].includes(current.status)) {
+        const id = args.instruction_message_id && idOf(args.instruction_message_id, 'event');
+        const instruction = id && this.store.get('messages', id);
+        const question = this.store.get('messages', current.origin_message_id);
+        if (!instruction || instruction.roomId !== current.origin_room.id || instruction.senderId !== question?.senderId ||
+            instruction.createdAt < question.createdAt || !this.platform.canReadReference({ kind: 'event', id }, context))
+          reject('disposition_instruction_required', 'Identify the original requester’s instruction for this disposition', 409);
+      }
+      return { outcome: args.close_reason, note: args.disposition_note.trim(),
+        ...(args.instruction_message_id && { instruction_message_id: idOf(args.instruction_message_id, 'event') }) };
+    }
+    if (!publicWork) return { outcome: 'reviewed' };
+    const id = args.delivery_message_id && idOf(args.delivery_message_id, 'event');
+    const message = id && this.store.get('messages', id);
+    const send = message?.callId && this.store.get(callRecords, message.callId);
+    if (!message || message.roomId !== current.origin_room.id || message.replyTo !== current.origin_message_id ||
+        message.senderId !== current.owner.id || send?.tool !== 'send' || send.status !== 'completed' ||
+        send.origin?.conversation_id !== current.owner_conversation_id || send.result?.message?.id !== id)
+      reject('room_delivery_required', 'After reviewing the result, send the complete answer replying to the original Room question. Use its successful delivery_message_id to close.', 409);
+    const evidence = [message.content, ...(message.attachments ?? []).map(file => file.name)].filter(Boolean);
+    if (!args.completion_checks?.length || args.completion_checks.some(check => !check.requirement.trim() || !check.evidence.trim() ||
+        !evidence.some(value => value.includes(check.evidence.trim()))))
+      reject('completion_checks_required', 'Check each original requirement against a short exact excerpt of this delivered answer or an attached filename', 409);
+    return { outcome: 'delivered', message_id: id, call_id: send.id, checks: args.completion_checks };
+  }
+
   retainUndelivered(event, botId) {
     const target = event.target ?? this.store.get(callRecords, event.call_id)?.target;
     const session = target?.kind === 'session' && this.record(target);
-    if (!session?.origin_room || session.origin_execution?.kind !== 'conversation' || session.owner?.id !== botId ||
+    if (!session?.origin_room || session.acceptance_state === 'closed' || session.origin_execution?.kind !== 'conversation' || session.owner?.id !== botId ||
+        this.store.get(callRecords, event.call_id)?.result_ref?.id !== event.id ||
         this.platform.canReadSpace(session.owner, session.origin_room) || session.pending_delivery?.receipt?.id === event.id) return;
     this.store.save(sessionRecords, { id: session.id, pending_delivery: { reason: 'origin_room_unavailable',
       origin_room: session.origin_room, origin_message_id: session.origin_message_id, call_id: event.call_id,
@@ -465,7 +516,13 @@ export class Executions {
     }
     const patch = { id: current.id };
     if (args.acceptance_state !== undefined) patch.acceptance_state = args.acceptance_state;
-    if (args.acceptance_state === 'closed') patch.pending_delivery = null;
+    if (args.acceptance_state === 'closed' && current.acceptance_state !== 'closed') {
+      patch.acceptance = this.acceptance(current, args, context);
+      patch.pending_delivery = null;
+      patch.acceptance_hold = null;
+    } else if (args.acceptance_state === 'open' && current.acceptance_state !== 'open') {
+      patch.acceptance = null;
+    }
     if (args.work_summary !== undefined) {
       const cleaned = args.work_summary.trim();
       if (!cleaned) reject('invalid_arguments', 'work_summary must be non-empty text');
@@ -473,6 +530,8 @@ export class Executions {
     }
     if (args.waiting_summary !== undefined) {
       patch.waiting_summary = args.waiting_summary?.trim() || null;
+      patch.acceptance_hold = patch.waiting_summary && {
+        call_id: current.latest_call_id, result_id: this.store.get(callRecords, current.latest_call_id)?.result_ref?.id };
     }
     if (args.add_followup_rooms !== undefined || args.remove_followup_rooms !== undefined) {
       const next = new Set(Array.isArray(current.allowed_followup_rooms) ? current.allowed_followup_rooms : []);
@@ -687,6 +746,14 @@ export class Executions {
       const eventId = keyOf('call', callId, facts.position ?? facts.id);
       const existing = this.store.get('platform-events', eventId);
       if (existing) return existing;
+      if (call.status === 'stopped') {
+        const owner = facts.native?.run_id && this.record(source);
+        const conversation = owner?.engine === 'pi' && this.record({ kind: 'conversation', id: owner.conversation_id || owner.id });
+        const resumedPi = owner && (source.kind === 'conversation' || owner.engine === 'pi') &&
+          [owner, conversation].filter(Boolean).some(item => item.control.state === 'active' && item.control.stop_id && item.control.stop_status === 'stopped') &&
+          owner.acceptance_state !== 'closed' && facts.status === 'completed' && facts.native.run_id === call.result?.native?.run_id;
+        if (!resumedPi) return this.calls.saveReceiptEvent(call, facts, target, facts.position ?? facts.id);
+      }
       const advances = mayAdvanceReceipt(call, facts.status);
       const session = advances && target?.kind === 'session' ? this.saveFacts(target.id, callId, facts) : null;
       const event = this.calls.recordReceipt(callId, facts, target);

@@ -640,7 +640,7 @@ export class BotRuntime {
             cancelledProgress.push(route.event_id);
           }
           const pending = pendingForRun();
-          const next = pending.some(canProcess) ? 'pending' : outstanding || pending.length ? 'waiting' : 'completed';
+          const next = pending.some(canProcess) ? 'pending' : outstanding || pending.length || result.waiting_for_children ? 'waiting' : 'completed';
           inbox.putRun({ id: run.id, state: next, model_outcome: null, model_outcome_uses_view: null });
           if (next === 'completed' || next === 'waiting') this.stageInputs(inbox, conversation, run.id, next, result);
           return next;

@@ -650,6 +650,8 @@ export class SummonPlatform {
     if (this.draining) reject('updating', 'New execution Sessions are temporarily paused', 503);
     const { actor } = context;
     const engine = idOf(args.engine, 'connection');
+    if (context.session && this.executions.record({ kind: 'session', id: context.session.id })?.acceptance_state === 'closed')
+      reject('parent_work_closed', 'Have the direct owner reopen this work before delegating another child', 409);
     const space = args.space ?? context.session?.space ?? actor;
     if (context.session && (!this.canReadSpace(actor, space, context) || !sameRef(space, context.session.space))) {
       reject('session_scope_forbidden', 'A child Session must stay within the parent’s execution authority', 403);

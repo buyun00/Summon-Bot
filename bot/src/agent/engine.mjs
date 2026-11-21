@@ -25,7 +25,7 @@ const roomLayerRules = [
   '- Scope and persistence: A one-off exception applies only to the current delivery and does not alter long-term rules. When an authorized user explicitly changes a long-term rule for this room or for this Bot across rooms, apply it now and persist it via material_index_ref (using save_file and configure_bot as documented in configure_bot) with applies_to set to the room or this Bot and source_refs pointing to the source message so it survives history compression.',
   '- Room timeline and turn targets: Public room messages appear once in publish order as room_message entries with stable formatting across turns; mid-turn interjections and async wakeup updates are appended to the current fork tail. The current_room_inputs entry lists the message IDs to handle in this turn—use the full wording, actual author, reply target, mentions, and references of those messages.',
   '- For a delegated request, own the direct child Sessions you open. On a receipt, use origin_work_status for the original question and its siblings. Submitted means accepted for execution. Distinguish progress, input needed, failure, unknown delivery, and evidence that the requested work is complete. Use the receipt or artifact to check the actual completion criteria; read additional details when needed.',
-  '- Deliver accepted work with send to the original Room, replying to the original question. Close the corresponding direct Sessions with configure_session after delivery. On a late receipt, check the original thread for prior delivery and report a material correction when needed. If forwarding was uncertain, read its recorded call before acting.',
+  '- Before delivery, read the original question and subsequent corrections. Check each requested value, unit, artifact and constraint against the actual results. Keep partial work open with waiting_summary. Send the complete answer to the original Room replying to the original question. Use the resulting message ID and quote its evidence for each requirement in configure_session. On a late receipt use an existing complete reply when applicable; send a correction only for a material change.',
   '- On room_input_recovery, use pending_message_ids as the current Room targets. Read later corrections and actual reply authors before acting. Respect the original audience, including a private-only request if the room has since become a group. Leave work already answered by its addressee alone. Reply to the current outstanding question using reply_to. Confirmed public replies are already delivered.',
   '- For a cross-room continuation, use find and read in your accessible Rooms. Ask the original owner_conversation_id via its current send_input target when its decision is needed. Use configure_session on your direct work to open or revoke follow-up Rooms. Follow-ups keep their original delivery destination.',
 ].join('\n');
@@ -34,6 +34,7 @@ const generalDefaults = [
   'General defaults and runtime protocol:',
   '- Keep replies natural, direct, and grounded in accessible facts unless a higher layer specifies another style or format. Use send for a public contribution and references to inspect accessible facts.',
   '- Give each executor the original wording, goal, actual working directory, applicable limits, completion criteria and authorized material references. In a batch, identify the question the user wants answered. Use its origin_message_id for each parallel assignment, including work opened after later directions, directory grants or material arrivals. Compare recent_delegated_questions for continuations; an independent new request has its own origin. Use work_room for Room-visible observations.',
+  '- As a parent Pi, review your own direct children before reporting a final result. Close each accepted or cancelled child with configure_session. For one that still needs input, leave it open, set a concrete waiting_summary and report partial progress to your parent.',
   '- Enabled tools and their registered methods are available to every Bot. A group’s project directory follows its current members into Pi and external Sessions. Use find(kind=workspace), read with a workspace ref and relative path, and save_file with the workspace as space to edit project text.',
   '- Use registered connections directly for the task and handle input errors using their real receipts. For an external Codex connection, inspect recommended_combinations from read(connection) and pick a (model, effort) pair suited to task difficulty unless the user specifies otherwise. If the evidence shows the connection, fixed method, or script needs repair, use send to the original connection with shareable references to the failed call or probe. Reuse the request for the same verified fault and use the repair receipt in the originating task.',
   '- When the delegated task is to write a Summon adapter, use include_execution_guide or put the relevant same-release guide text in the input. Conclude when the existing outputs and receipts satisfy the current request.',
@@ -108,6 +109,8 @@ export class BotEngine {
     const inputBudget = model.contextWindow - outputTokens - 512;
     let last, boundary, failure, modelEventIds = [], authorizedView, roomCache, appendAtFetch = [], materialAtFetch;
     let observationWindow, fittedObservation, transportedObservation, outcome;
+    let childReview;
+    const reviewedPositions = new Set();
     const completedEvents = new Set();
     const inject = () => {
       inbox.store.transaction(() => {
@@ -173,7 +176,8 @@ export class BotEngine {
           if (message.stopReason === 'stop') {
             outcome = responseResult(message, completedEvents);
             if (transportedObservation) outcome.observation = observedResult(job, boundary.observation, transportedObservation, outcome, authorizedView);
-            if (!transportedObservation?.more && !job.hasNewInput(boundary.current.map(event => event.id)))
+            if ((!isPiSession || !this.platform.executions.childReviews(conversation.session_id).length) &&
+                !transportedObservation?.more && !job.hasNewInput(boundary.current.map(event => event.id)))
               inbox.putRun({ id: runId, model_outcome: outcome, model_outcome_uses_view: authorizedView });
           }
         }
@@ -242,6 +246,7 @@ export class BotEngine {
         const fresh = boundary.current.filter(event => !seen.has(event.id) && !isPublicEvent(event)).map(event => ({ ...textMessage(eventInput(event), Date.parse(event.time || event.createdAt) || Date.now()),
           origin_event_ids: [event.id], view_revision: authorizedView }));
         const facts = boundary.facts.map(message => ({ ...message, view_revision: authorizedView }));
+        if (childReview) facts.push({ ...textMessage(childReview), view_revision: authorizedView });
         const previousFacts = new Set(sameRun.filter(message => message.runtime_fact).map(message => message.content[0]?.text));
         const newFacts = facts.filter(message => !previousFacts.has(message.content[0]?.text)).map(message => ({ ...message, runtime_fact: true }));
         const material = boundary.material && { ...boundary.material.fact, view_revision: authorizedView, runtime_fact: true };
@@ -310,6 +315,18 @@ export class BotEngine {
         return { action: 'continue' };
       }
       if (message.stopReason === 'stop' && job.hasNewInput(boundary.current.map(event => event.id))) return { action: 'continue' };
+      if (message.stopReason === 'stop' && isPiSession) {
+        const children = this.platform.executions.childReviews(conversation.session_id);
+        const due = children.filter(child => child.review_due);
+        const position = JSON.stringify(due.map(child => [child.id, child.call_id, child.result_id]));
+        if (due.length && !reviewedPositions.has(position)) {
+          reviewedPositions.add(position);
+          childReview = { type: 'direct_child_review_required', children: due,
+            instruction: 'Read the results and configure each direct child as accepted/closed or record its concrete remaining need in waiting_summary.' };
+          return { action: 'continue' };
+        }
+        if (children.length) outcome.waiting_for_children = true;
+      }
       if (message.stopReason === 'stop') job.finishInput();
     };
     const abort = () => agent.abort();
