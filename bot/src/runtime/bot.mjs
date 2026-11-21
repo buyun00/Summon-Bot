@@ -850,6 +850,72 @@ export class BotRuntime {
     return due;
   }
 
+  replacementInstructions(work, job, explicit) {
+    const room = work.origin_room;
+    const original = this.platform.store.get('messages', work.origin_message_id);
+    const rows = this.platform.store.db.prepare(`SELECT data FROM records WHERE kind='messages'
+      AND json_extract(data,'$.roomId')=? AND json_extract(data,'$.senderId')='user' AND created_at>=? ORDER BY rowid`)
+      .all(room.id, original?.createdAt ?? '');
+    const instructions = rows.map(row => JSON.parse(row.data)).filter(message => message.id === original?.id ||
+      roomQuestionLinks(this.platform, room, [message]).has(work.origin_message_id) ||
+      (message.id === explicit || job.context().origin.event_ids.includes(message.id)) && message.content.includes(work.id));
+    const hostInputs = job.context().origin.event_ids.map(id => job.inbox.event(id)).filter(event =>
+      event?.type === 'pi.input' && event.author?.kind === 'user' && sameRef(event.space, room) && typeof event.input === 'string');
+    return [...instructions.map(item => ({ id: item.id, text: item.content })),
+      ...hostInputs.map(item => ({ id: item.id, text: item.input }))];
+  }
+
+  checkReplacementAuthority(session, context) {
+    const proof = session.replacement_authorization;
+    if (proof.host_call && context.actor.kind === 'user') return;
+    const job = this.active.get(context.origin?.conversation_id);
+    const work = this.platform.executions.record(sessionRef(session.replaces_session));
+    if (!job || job.runId !== context.origin.run_id || !work || work.latest_call_id !== proof.prior_call ||
+        work.control?.control_version !== proof.control_version || work.acceptance_state !== proof.acceptance_state ||
+        JSON.stringify(this.replacementInstructions(work, job, proof.instruction).map(item => item.id)) !== JSON.stringify(proof.considered))
+      throw runtimeFailure('replacement_authority_changed', 'The host instructions or the prior Session changed. Read them before replacing this work.', 409);
+  }
+
+  async reviewRoomDelegation(args, context, room, question) {
+    if (!room || !question || context.session) return;
+    const requested = args.replaces_session?.id ?? args.replaces_session;
+    if (context.actor.kind === 'user') return requested ? { host_call: true } : undefined;
+    const job = this.active.get(context.origin?.conversation_id);
+    if (!job || job.runId !== context.origin.run_id) {
+      if (requested) throw runtimeFailure('replacement_owner_required', 'Continue from the original Room owner.', 409);
+      return;
+    }
+    const rejected = new Set(job.inbox.calls(job.runId).filter(call => call.tool === 'send_input' && call.state === 'failed' &&
+      ['material_source_required', 'misplaced_material_arguments', 'material_source_mismatch'].includes(call.result?.code))
+      .map(call => call.args.target?.id));
+    if (!requested && !rejected.size) return;
+    const works = this.platform.executions.directWork(job.conversation.id).filter(work => sameRef(work.origin_room, room) &&
+      work.origin_message_id === question && (requested ? work.id === requested : rejected.has(work.id)));
+    if (!works.length) {
+      if (requested) throw runtimeFailure('work_origin_mismatch', 'Select the original question and its directly owned Session.', 409);
+      return;
+    }
+    const explicit = args.replacement_authorization?.id ?? args.replacement_authorization;
+    const instructions = this.replacementInstructions(works[0], job, explicit);
+    const evidence = { original_question: question, host_instructions: instructions,
+      prior: works.map(work => ({ id: work.id, assignment: work.work_summary, status: work.status,
+        acceptance: work.acceptance_state, input_targets: work.input_targets })), replaces: requested,
+      proposal: args.work_summary, new_input: typeof args.input === 'string' ? args.input : args.input?.text };
+    const decision = await this.engine.assessReplacement(job, evidence);
+    if (!requested && decision?.action === 'independent') return;
+    const work = works.find(item => item.id === decision?.session) ?? works[0];
+    const source = instructions.find(item => item.id === decision?.instruction && (!explicit || explicit === item.id));
+    if (requested && decision?.action === 'replace' && decision.session === requested && source &&
+        typeof decision.quote === 'string' && decision.quote.trim() && source.text.includes(decision.quote)) {
+      const proof = { instruction: source.id, quote: decision.quote, considered: instructions.map(item => item.id),
+        prior_call: work.latest_call_id, control_version: work.control.control_version, acceptance_state: work.acceptance_state };
+      this.checkReplacementAuthority({ replaces_session: requested, replacement_authorization: proof }, context);
+      return proof;
+    }
+    throw runtimeFailure('original_session_required', 'Continue the existing work with send_input. An applicable host instruction must authorize replacing this executor. For a genuinely independent assignment identify its own question and scope.', 409,
+      { original_question: question, target: sessionRef(work.id), control_version: work.control.control_version, input_targets: work.input_targets });
+  }
+
   checkRoomPublication(context, audience, args) {
     const job = this.active.get(context.conversation.id);
     if (job?.runId !== context.origin.run_id) throw runtimeFailure('publication_context_unavailable', 'The Room authoring turn is unavailable', 409);

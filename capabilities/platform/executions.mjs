@@ -178,8 +178,7 @@ export class Executions {
       reject('recovery_source_mismatch', 'Select the original material call for this work and owner.', 409);
     if (!explicit && (!work.id || args.kind === 'reply' || args.material_role === 'reference')) return;
     const sources = new Set(selected);
-    const directMaterial = args.material_role === 'handoff' || args.material_sources?.length &&
-      context.origin.event_ids.every(id => sources.has(id) || id === work.origin_message_id || !this.store.get('messages', id));
+    const directMaterial = args.material_role === 'handoff' || args.material_sources?.length;
     if (!explicit && (context.origin.fast_read_forward || directMaterial) && selected.length) {
       const prior = this.platform.roomWork.priorMaterialReceipts(work, attempt, selected);
       if (prior.length === sources.size)
@@ -632,7 +631,7 @@ export class Executions {
       input = typeof input === 'string' ? combined : { ...input, text: combined };
       this.platform.assertRunAllowed(context);
     }
-    const session = this.platform.prepareSession(args, context, call, {
+    const session = await this.platform.prepareSession(args, context, call, {
       sharing: (actor, space) => this.sharing(args, actor, space, context),
     });
     const target = { kind: 'session', id: session.id };
@@ -643,6 +642,7 @@ export class Executions {
         this.platform.assertCanSubmit(context, this.record(target));
         if (started) return;
         this.checkContinuation(args, context, session.origin_room, session.origin_message_id);
+        if (session.replacement_authorization) this.platform.runtime.checkReplacementAuthority(session, context);
         this.bindSubmission(call.id, session, context);
         started = true;
       };

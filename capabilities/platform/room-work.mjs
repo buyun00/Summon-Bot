@@ -121,8 +121,9 @@ export class RoomWork {
       if (args.kind !== 'reply' && related.length) {
         const later = this.hostAmendments(session).filter(item => item.createdAt > related.at(-1).createdAt);
         if (later.length || related.filter(item => item.id !== session.origin_message_id).length > 1)
-          reject('material_source_required', 'Select the actual instruction or amendment in material_sources. For an independent instruction use an empty list.', 409,
-            { candidates: [...related, ...later].map(item => ({ id: item.id, time: item.createdAt, text: item.content.slice(0, 240) })) });
+          reject('material_source_required', 'Retry send_input on this Session. Add material_sources beside target and input, selecting the actual instruction or amendment. Use [] only for an independent instruction.', 409,
+            { target: args.target, kind: args.kind, input_target: args.input_target, control_version: args.control_version,
+              candidates: [...related, ...later].map(item => ({ id: item.id, time: item.createdAt, text: item.content.slice(0, 240) })) });
       }
       ids = related.map(item => item.id);
     }

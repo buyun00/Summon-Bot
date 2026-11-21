@@ -81,7 +81,8 @@ const sessionWorkspace = { ...text, description: 'The id from find with kind wor
 const openSessionInput = object({ engine: sessionEngine, input: value, workspace: sessionWorkspace, space: ref,
   sharing: object({ readers: array(principal), submitters: array(principal), controllers: array(principal) }, ['readers', 'submitters', 'controllers']),
   resource_refs: array(ref), work_room: refOrId, work_source: refOrId, origin_message_id: eventOrId, work_summary: text,
-  allowed_followup_rooms: array(roomOrId), replaces_session: refOrId, recovery_of: refOrId, private_work: flag, include_execution_guide: flag }, ['engine', 'input']);
+  allowed_followup_rooms: array(roomOrId), replaces_session: refOrId, replacement_authorization: eventOrId,
+  recovery_of: refOrId, private_work: flag, include_execution_guide: flag }, ['engine', 'input']);
 const publicOpenSessionInput = { ...openSessionInput, properties: { ...openSessionInput.properties, engine: refOrId, workspace: { anyOf: [ref, text] } } };
 const configureSessionInput = object({ target: refOrId, acceptance_state: oneOf('open', 'closed'), work_summary: text,
   delivery_message_id: eventOrId, close_reason: oneOf('cancelled', 'superseded', 'private'), disposition_note: text,
@@ -141,17 +142,20 @@ const definitions = [
     'For work submitted on behalf of a Room, pass work_room and optionally the original Room message as work_source. This authorizes bounded tool observations in that Room and keeps the Session’s own permissions. ' +
     'For work to remain private, omit work_room or explicitly set private_work on a shared Session. ' +
     'Pass a concise work_summary (goal and completion criteria) and origin_message_id for the question being answered. Later materials, work instructions and side topics have their own IDs. For a continuation use the prior question from the Room history or recent_delegated_questions; for a new assignment choose its new question. A child of a Session inherits its origin. allowed_followup_rooms opens other Rooms for follow-up inputs. ' +
-    'When replacing an executor, identify the prior work in replaces_session and retain its original question. When carrying a confirmed undelivered material into a replacement, supply its original call in recovery_of. Wait for an authorized resume of paused work. Set include_execution_guide to append the installed Summon adapter guide to a text input. ' +
+    'Replace a Room executor only under the host’s applicable instruction. Identify the prior work in replaces_session, keep its original question and optionally select the Room instruction in replacement_authorization. A rejected handoff is corrected with send_input on its original Session. When carrying a confirmed undelivered material into an authorized replacement, supply its original call in recovery_of. Wait for an authorized resume of paused work. Set include_execution_guide to append the installed Summon adapter guide to a text input. ' +
     'When the result registers a wait_ref, you can end the current turn and continue when its receipt arrives.',
     openSessionInput],
   ['configure_session', 'Manage direct child work. After checking the original request and delivering the complete answer, set acceptance_state to closed. A single confirmed reply to the original question is linked automatically. Supply delivery_message_id to select among replies, or with disposition_note when an earlier complete delivery already covers a late result. For cancelled, superseded or private work use close_reason. A Pi reviews and closes its own children privately. Keep partial work open with a concrete waiting_summary. You can also change work_summary and follow-up Rooms.',
     configureSessionInput],
   ['send_input', 'Submit input to the actual input target and control version, or resume one explicitly paused execution. ' +
+    'For a Room handoff use sibling arguments {target, kind, control_version, input_target, material_sources:[eventId], input:"work instructions"}. Keep material_sources, material_role and recovery_of outside input. A rejected argument has not replaced the executor. Correct it on the same Session. ' +
     'For native reply, copy the current input_target with its request_id. Pass the Codex answer as a text string in the displayed answer_format. The steer target without request_id sends separate material and leaves the request unanswered. ' +
     'In another Room with an open intake, use kind=intake with the named receiving Session and the actual local material_sources. Select each submitted original, including a member’s own new contribution. To resume a local filing you may identify its earlier intake call in recovery_of. Receipts identify each source separately. Answer accompanying questions in the Room that received them. ' +
     'For a material handoff select the actual new Room instruction, signed original or amendment in material_sources. A genuinely new instruction using a previously submitted document as background can set material_role=reference. A retained input points to the actual earlier call and its receipt. A registered wait_ref returns the asynchronous receipt to your run.',
-    object({ target: executionRef, kind: oneOf('reply', 'steer', 'next', 'resume', 'intake'), control_version: integer, input: value, recovery_of: refOrId,
-      material_sources: array(eventOrId), material_role: oneOf('handoff', 'reference'), input_target: inputTarget, resume_ref: resumeRef }, ['target', 'kind'])],
+    object({ target: executionRef, kind: oneOf('reply', 'steer', 'next', 'resume', 'intake'), control_version: integer,
+      input: { description: 'Native input. Use plain instruction text for a material handoff.' }, recovery_of: refOrId,
+      material_sources: { ...array(eventOrId), description: 'Top-level list of authorized original Room events for this input.' },
+      material_role: oneOf('handoff', 'reference'), input_target: inputTarget, resume_ref: resumeRef }, ['target', 'kind'])],
   ['stop_session', 'Pause an execution and request actual interruption for the selected scope.',
     object({ target: executionRef, control_version: integer, scope: oneOf('target', 'target_and_owned_calls') }, ['target', 'control_version'])],
   ['set_wakeup', 'Create an event subscription or time reminder with subscription:"new" and event_or_time. The platform returns its ID and revision. ' +
@@ -264,6 +268,19 @@ export function validateTool(name, args) {
   if (!tool) reject('tool_not_found', 'Unknown platform tool', 404);
   const schema = runtimeInputs.get(name) ?? tool.inputSchema;
   if (!matches(schema, args)) reject('invalid_arguments', `Invalid arguments for ${name}`);
+  if (name === 'send_input' && ['next', 'steer', 'intake'].includes(args.kind) && args.input && typeof args.input === 'object') {
+    const misplaced = ['material_sources', 'material_role', 'recovery_of'].filter(field => Object.hasOwn(args.input, field));
+    if (misplaced.length) {
+      const payload = { ...args.input }, corrected = { ...args };
+      for (const field of misplaced) {
+        if (!Object.hasOwn(corrected, field)) corrected[field] = payload[field];
+        delete payload[field];
+      }
+      corrected.input = Object.keys(payload).length === 1 && typeof payload.text === 'string' ? payload.text : payload;
+      reject('misplaced_material_arguments', 'Move the listed fields out of input. Retry send_input on the same target with these sibling arguments and its current control and input versions.', 409,
+        { fields: misplaced, tool: 'send_input', corrected_arguments: corrected });
+    }
+  }
 }
 
 export function validateCliProbe(probe) {

@@ -210,7 +210,11 @@ export function publicationSources(platform, args, context, destination, localRo
     (!localRoot || localLinks?.has(work.origin_message_id)) && (roots.has(work.origin_message_id) || work.owner_run_id === context.origin.run_id));
   const questions = new Set(owned.map(work => work.origin_message_id));
   if (localRoot && !questions.size) return null;
-  const requested = args.publication?.authorization && idOf(args.publication.authorization, 'event');
+  let requested = args.publication?.authorization && idOf(args.publication.authorization, 'event');
+  // A native continuation is a wake-up for the owner. Only a Room host message
+  // can be the authority for publishing the assignment in its original Room.
+  if (localRoot && questions.size === 1 && requested && !platform.store.get('messages', requested) &&
+      context.origin.event_ids.includes(requested)) requested = undefined;
   if (questions.size > 1) {
     const source = requested && platform.store.get('messages', requested);
     const matching = source?.roomId === origin.id ? [...roomQuestionLinks(platform, origin, [source])].filter(id => questions.has(id)) : [];
@@ -257,8 +261,13 @@ export function publicationSources(platform, args, context, destination, localRo
   // review. Its raw private output never enters the destination Room context.
   const group = owned.filter(work => questions.has(work.origin_message_id));
   const retired = work => work.authority_revoked || work.acceptance_state === 'closed' && ['superseded', 'cancelled'].includes(work.acceptance?.outcome);
-  const replaced = new Set(group.filter(work => !retired(work) && work.replaces_session).map(work => work.replaces_session));
-  const currentSeats = group.filter(work => !retired(work) && !replaced.has(work.id));
+  const byId = new Map(group.map(work => [work.id, work]));
+  const confirmedReplacement = work => work.replaces_session && (work.replacement_authorization ||
+    byId.get(work.replaces_session)?.acceptance?.outcome === 'superseded') &&
+    !['opening', 'failed', 'not_submitted', 'cancelled', 'unsupported'].includes(work.status);
+  const replaced = new Set(group.filter(work => !retired(work) && confirmedReplacement(work)).map(work => work.replaces_session));
+  const currentSeats = group.filter(work => !retired(work) && !replaced.has(work.id) &&
+    (!work.replaces_session || confirmedReplacement(work)));
   const results = [];
   const seatResults = new Map();
   for (const work of currentSeats) {
@@ -287,7 +296,8 @@ export function publicationSources(platform, args, context, destination, localRo
     }
   }
   const seats = group.map(work => ({ id: work.id, original: work.origin_message_id, status: work.status,
-    current: currentSeats.includes(work), replaces: work.replaces_session, assignment: work.work_summary,
+    current: currentSeats.includes(work), replaces: work.replaces_session, authorized_replacement: Boolean(confirmedReplacement(work)),
+    assignment: work.work_summary,
     outstanding: work.acceptance_state === 'open' && Boolean(work.waiting_summary || work.pending_input?.length),
     result: seatResults.get(work.id), delivery: accepted.has(work.acceptance?.message_id) ? work.acceptance.message_id : undefined,
     acceptance_state: work.acceptance_state, outcome: work.acceptance?.outcome }));

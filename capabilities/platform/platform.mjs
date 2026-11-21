@@ -647,7 +647,7 @@ export class SummonPlatform {
     }
   }
 
-  prepareSession(args, context, call, options) {
+  async prepareSession(args, context, call, options) {
     if (this.draining) reject('updating', 'New execution Sessions are temporarily paused', 503);
     const { actor } = context;
     const engine = idOf(args.engine, 'connection');
@@ -713,6 +713,8 @@ export class SummonPlatform {
     const owner_conversation_id = context.origin?.conversation_id ?? null;
     const work_summary = args.work_summary?.trim() || null;
     const allowed_followup_rooms = this.roomWork.followupRooms(args.allowed_followup_rooms, context, origin_room);
+    const replacement = await this.runtime.reviewRoomDelegation(args, context, origin_room, origin_message_id);
+    this.assertRunAllowed(context, { allowUser: true });
     return this.store.transaction(() => {
       this.executions.checkContinuation(args, context, origin_room, origin_message_id);
       this.resources.assertCapacity('sessions', this.activeSessions());
@@ -738,6 +740,7 @@ export class SummonPlatform {
         ...(connection ? { connection_binding_version: connection.binding_version ?? 1 } : {}), ...(engine === 'pi' ? { open_call_id: call.id } : {}),
         execution_environment: executionEnvironment(connection), ...(group_work ? { group_work } : {}),
         ...(args.replaces_session && { replaces_session: idOf(args.replaces_session, 'session') }),
+        ...(replacement && { replacement_authorization: replacement }),
         control: activeControl(), origin_execution, latest_call_id: call.id });
       this.calls.bind(call.id, { target: { kind: 'session', id: session.id }, session_id: session.id, execution_actor: actor });
       const opening = this.calls.get(call.id);
