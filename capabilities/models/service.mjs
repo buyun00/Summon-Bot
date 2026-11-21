@@ -47,6 +47,7 @@ export class ModelConnections {
         }
       } catch {}
     }
+    await this.credentials.pruneUnreferenced().catch(() => this.deferCredentialCleanup());
     try {
       const cached = JSON.parse(await readFile(this.usagePath, 'utf8'));
       if (cached && typeof cached === 'object' && !Array.isArray(cached)) {
@@ -160,10 +161,19 @@ export class ModelConnections {
       ...(purposes ? { purposes } : {}),
     };
   }
-  async mutate(fn) {
+  deferCredentialCleanup() {
+    if (this.cleanupTimer || this.closing) return;
+    this.cleanupTimer = setTimeout(() => {
+      this.cleanupTimer = null;
+      this.cleanupTask = this.credentials.pruneUnreferenced().catch(() => this.deferCredentialCleanup());
+    }, 5000);
+    this.cleanupTimer.unref();
+  }
+  async mutate(fn, newKey, afterCommit) {
     const result = this.writeChain.catch(() => {}).then(async () => {
-      const catalog = this.catalog(), value = await fn(catalog); await saveModelJson(this.path, normalizeModelCatalog(catalog));
-      this.emit('models.changed', {}); return value;
+      await this.credentials.updateCatalog(fn, newKey, () => this.deferCredentialCleanup());
+      afterCommit?.();
+      this.emit('models.changed', {});
     });
     this.writeChain = result; return result;
   }
@@ -304,8 +314,8 @@ export class ModelConnections {
     if (!['api', 'codex', 'grok'].includes(input.kind)) throw new Error('请选择 Codex 订阅、Grok 订阅或通用 API');
     const id = input.id || `${input.kind}-${randomUUID()}`;
     if (!/^[A-Za-z0-9_:-]{1,200}$/.test(id)) throw new Error('无效的连接编号');
-    await this.mutate(async catalog => {
-      const original = structuredClone(catalog);
+    if (input.apiKey !== undefined && input.apiKey !== '' && (input.kind !== 'api' || typeof input.apiKey !== 'string' || !input.apiKey.trim() || input.apiKey.length > 16000)) throw new Error('无效的 API Key');
+    await this.mutate(catalog => {
       const previous = catalog.connections.find(item => item.id === id);
       if (previous && previous.kind !== input.kind) throw new Error('请为不同类型建立新的连接');
       const name = String(input.name || previous?.name || (input.kind === 'api' ? 'API' : input.kind === 'codex' ? 'Codex 订阅' : 'Grok 订阅')).trim().slice(0, 80);
@@ -328,18 +338,8 @@ export class ModelConnections {
         else entry[key] = Number(input[key]);
       }
       validateModelPurpose(entry, entry.model, entry.thinkingLevel);
-      if (input.apiKey !== undefined && input.apiKey !== '' && (typeof input.apiKey !== 'string' || !input.apiKey.trim() || input.apiKey.length > 16000)) throw new Error('无效的 API Key');
       if (previous) catalog.connections[catalog.connections.indexOf(previous)] = entry; else catalog.connections.push(entry);
-      if (input.apiKey !== undefined && input.apiKey !== '') {
-        // The credential store needs the connection metadata to write a new key.
-        await saveModelJson(this.path, catalog);
-        try {
-          await this.credentials.modify(id, async () => ({ type: 'api_key', key: input.apiKey.trim() }));
-          delete entry.apiKeyEnv;
-        } catch (error) { await saveModelJson(this.path, original); throw error; }
-      }
-      this.clearUsage(id);
-    });
+    }, input.apiKey ? { id, key: input.apiKey.trim() } : null, () => this.clearUsage(id));
     return this.snapshot();
   }
   async select(id) {
@@ -350,10 +350,8 @@ export class ModelConnections {
     return this.snapshot();
   }
   async remove(id) {
-    await this.mutate(async catalog => {
+    await this.mutate(catalog => {
       this.requireConnection(catalog, id);
-      this.cancelLogin(id);
-      await this.credentials.delete(id);
       catalog.connections = catalog.connections.filter(entry => entry.id !== id);
       if (catalog.activeId === id) catalog.activeId = null;
       delete catalog.connectionPurposes[id];
@@ -363,6 +361,8 @@ export class ModelConnections {
         }
         if (!Object.keys(overrides).length) delete catalog.connectionPurposes[connId];
       }
+    }, null, () => {
+      this.cancelLogin(id);
       this.clearUsage(id);
     });
     return this.snapshot();
@@ -531,6 +531,9 @@ export class ModelConnections {
     return this.summary();
   }
   async close() {
+    this.closing = true;
+    clearTimeout(this.cleanupTimer);
+    await this.cleanupTask;
     for (const id of this.logins.keys()) this.cancelLogin(id);
     await Promise.allSettled([...this.logins.values()].map(login => login.promise));
     await this.pauseUsage();

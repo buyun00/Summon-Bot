@@ -1,5 +1,5 @@
 import { readFileSync, existsSync } from 'node:fs';
-import { readFile, writeFile, mkdir, rename, unlink, rmdir } from 'node:fs/promises';
+import { readFile, writeFile, open, mkdir, rename, unlink, rmdir } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -144,11 +144,27 @@ export function readConnectionCatalog(path) {
   if (!Array.isArray(catalog?.connections)) throw new Error('The model connections catalog is unavailable');
   return normalizeModelCatalog(catalog);
 }
+async function retryFileOperation(operation) {
+  for (let attempt = 0; ; attempt++) {
+    try { return await operation(); }
+    catch (error) {
+      if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(error.code) || attempt >= 7) throw error;
+      await delay(Math.min(25 * 2 ** attempt, 400));
+    }
+  }
+}
+
 export async function saveModelJson(path, value) {
   await mkdir(dirname(path), { recursive: true });
   const temporary = `${path}.${randomUUID()}.tmp`;
-  try { await writeFile(temporary, JSON.stringify(value, null, 2), { mode: 0o600 }); await rename(temporary, path); }
-  finally { await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
+  const handle = await open(temporary, 'wx', 0o600);
+  try {
+    try { await handle.writeFile(JSON.stringify(value, null, 2)); } finally { await handle.close(); }
+    await retryFileOperation(() => rename(temporary, path));
+  } catch (error) {
+    await retryFileOperation(() => unlink(temporary)).catch(cleanup => { if (cleanup.code !== 'ENOENT') error.cause = cleanup; });
+    throw error;
+  }
 }
 export function modelConnection(config, id) {
   if (!config.connectionStore) return { kind: 'api', id: config.provider || 'api', ...config };
@@ -392,7 +408,7 @@ export class ModelCredentialStore {
     const connection = this.connection(id);
     if (connection.authMode === 'codex-local') return codexCredential(await readLocalModelAuth(connection.authFile));
     if (connection.authMode === 'grok-local') return localGrokLogin(await readLocalModelAuth(connection.authFile), connection.authScope).credential;
-    const stored = (await this.saved())[id];
+    const stored = (await this.saved())[connection.credentialId ?? id];
     if (stored) return stored;
     const key = connection.apiKey || envValue(connection.apiKeyEnv, connection.environmentFile);
     return key ? { type: 'api_key', key } : undefined;
@@ -419,15 +435,52 @@ export class ModelCredentialStore {
         if (login.credential.refresh !== current?.refresh || login.credential.access !== current?.access) return login.credential;
         await saveModelJson(connection.authFile, { ...latest, [connection.authScope]: { ...entry,
           key: next.access, refresh_token: next.refresh, expires_at: new Date(next.expires + 60000).toISOString(), create_time: new Date().toISOString() } });
-      } else if (this.path) await saveModelJson(this.path, { ...await this.saved(), [id]: next });
+      } else if (this.path) await saveModelJson(this.path, { ...await this.saved(), [connection.credentialId ?? id]: next });
       else this.memory.set(id, next);
       return next;
     };
     return this.path ? fileLock(this.path, update, options.signal) : update();
   }
-  async delete(id) {
+  async delete(id, options = {}) {
     if (!this.path) { this.memory.delete(id); return; }
-    return fileLock(this.path, async () => { const values = await this.saved(); delete values[id]; await saveModelJson(this.path, values); });
+    await fileLock(this.path, async () => {
+      const key = this.connection(id).credentialId ?? id;
+      const values = await this.saved();
+      if (Object.hasOwn(values, key)) { delete values[key]; await saveModelJson(this.path, values); }
+    }, options.signal);
+  }
+  async prune(catalog, values) {
+    const retained = new Set(catalog.connections.map(entry => entry.credentialId ?? entry.id));
+    if (Object.keys(values).every(key => retained.has(key))) return values;
+    const next = Object.fromEntries(Object.entries(values).filter(([key]) => retained.has(key)));
+    await saveModelJson(this.path, next);
+    return next;
+  }
+  pruneUnreferenced() {
+    return fileLock(this.path, async () => { await this.prune(readConnectionCatalog(this.catalogPath), await this.saved()); });
+  }
+  updateCatalog(change, newKey, deferCleanup) {
+    return fileLock(this.path, async () => {
+      const catalog = readConnectionCatalog(this.catalogPath);
+      // Clean up interrupted changes before a removed connection ID can be reused.
+      let values = await this.prune(catalog, await this.saved());
+      await change(catalog);
+      if (newKey) {
+        const entry = catalog.connections.find(item => item.id === newKey.id);
+        entry.credentialId = `key/${randomUUID()}`;
+        delete entry.apiKeyEnv;
+        values = { ...values, [entry.credentialId]: { type: 'api_key', key: newKey.key } };
+        await saveModelJson(this.path, values);
+      }
+      try {
+        // This atomic rename publishes the complete connection and its already-staged credential.
+        await saveModelJson(this.catalogPath, normalizeModelCatalog(catalog));
+      } catch (error) {
+        if (newKey) await this.prune(readConnectionCatalog(this.catalogPath), values).catch(deferCleanup);
+        throw error;
+      }
+      await this.prune(catalog, values).catch(deferCleanup);
+    });
   }
 }
 export function connectionRuntime(connection, credentials = new ModelCredentialStore(connection.connectionStore, connection), model = connectionModel(connection)) {
