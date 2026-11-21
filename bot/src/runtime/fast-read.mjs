@@ -251,6 +251,11 @@ export class FastReadRuntime {
   }
 
   forwardOutcome(call, reason) {
+    if (call?.retained_input_call_id) {
+      const prior = this.platform.store.get('platform-calls', call.retained_input_call_id);
+      return { ok: Boolean(prior && ['submitted', 'completed'].includes(prior.status) && prior.result_ref),
+        reason: prior?.status ?? 'call_result_unknown', call_id: call.id };
+    }
     // A prepared or interrupted hand-off has no confirmed native receipt.
     if (unresolvedForward(call))
       return { ok: false, reason: 'call_result_unknown', call_id: call.id };

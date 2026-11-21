@@ -718,7 +718,12 @@ export class SummonPlatform {
       this.resources.assertCapacity('sessions', this.activeSessions());
       const origin_execution = context.session ? { kind: 'session', id: context.session.id } :
         owner_conversation_id ? { kind: 'conversation', id: owner_conversation_id } : null;
-      this.executions.reserveForwardRecovery(args, context, call, { origin_execution, origin_room, origin_message_id, owner_conversation_id });
+      if (args.recovery_of) {
+        const existing = this.executions.reserveForwardRecovery(args, context, call,
+          { origin_execution, origin_room, origin_message_id, owner_conversation_id });
+        if (existing) reject('material_already_handled', 'Consult the original input before replacing this work.', 409,
+          { call_id: existing.latest.id, status: existing.latest.status });
+      }
       const session = this.store.save(sessionRecords, { id: call.id, engine, space, owner: actor, bot_id: bot?.id ?? null,
         source_space: project_room || context.conversation?.space || null, project_room,
         origin_room, origin_message_id, owner_conversation_id, owner_run_id: context.origin?.run_id ?? null, work_summary, waiting_summary: null,

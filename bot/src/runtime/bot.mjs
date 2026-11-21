@@ -303,8 +303,8 @@ export class BotRuntime {
       const input = record.input_id && this.platform.store.get('platform-inputs', record.input_id);
       return { call_status: record.status, native_input_status: input?.call_id === record.id ? input.status : record.result?.input_status };
     };
-    const retry = call.forward_recovery_call_id && this.platform.store.get('platform-calls', call.forward_recovery_call_id);
-    return { ...status(call), ...(retry?.recovery_of === call.id && { recovery: { id: retry.id, ...status(retry) } }) };
+    const latest = this.platform.executions.latestMaterialAttempt(call);
+    return { ...status(call), ...(latest.id !== call.id && { recovery: { id: latest.id, ...status(latest) } }) };
   }
 
   roomIntake(botId, room, requests) {
@@ -730,8 +730,9 @@ export class BotRuntime {
       if (!original?.origin?.fast_read_forward) continue;
       const work = this.platform.executions.record(event.target);
       if (!work?.origin_room || !this.platform.canReadSpace(work.owner, work.origin_room)) continue;
-      const retry = original.forward_recovery_call_id && this.platform.store.get('platform-calls', original.forward_recovery_call_id);
-      if (retry && !['not_submitted', 'failed', 'cancelled', 'unknown'].includes(retry.status)) continue;
+      const latest = this.platform.executions.latestMaterialAttempt(original);
+      const retry = latest.id === original.id ? null : latest;
+      if (!this.platform.executions.confirmedNonSubmission(latest)) continue;
       if (this.platform.executions.originalReplies(work).some(({ message }) =>
         this.platform.store.get('platform-calls', message.callId)?.source_event_ids?.includes(id))) continue;
       const actions = job.inbox.calls(job.runId);

@@ -53,9 +53,10 @@ export class RoomWork {
       return [];
     }
     const incoming = origin.event_ids.map(id => platform.store.get('messages', id)).filter(Boolean);
-    const recovery = call.recovery_of && platform.store.get(callRecords, call.recovery_of);
+    const recoveryId = call.recovery_of ?? (args.recovery_of && idOf(args.recovery_of, 'call'));
+    const recovery = recoveryId && platform.store.get(callRecords, recoveryId);
     let ids;
-    if (origin.fast_read_forward || recovery) {
+    if (origin.fast_read_forward || args.recovery_of || recovery && !requested) {
       const [first] = recovery?.source_event_ids ?? origin.event_ids;
       const submission = platform.store.get('messages', first);
       ids = [first];
@@ -92,13 +93,9 @@ export class RoomWork {
     const enclosed = (cover ? originals.slice(1) : originals).filter(id =>
       this.platform.store.get('messages', id).roomId !== session.origin_room.id);
     if (!enclosed.length) return [];
-    const prior = this.platform.store.db.prepare(`SELECT data FROM records WHERE kind='platform-calls'
-      AND json_extract(data,'$.tool')='send_input' AND json_extract(data,'$.target.id')=? AND id<>?
-      AND EXISTS (SELECT 1 FROM json_each(data,'$.material_source_ids') WHERE value IN (SELECT value FROM json_each(?)))
-      ORDER BY rowid DESC`).all(session.id, call.id, JSON.stringify(enclosed));
+    const prior = this.materialAttempts(session.id, enclosed, call.id);
     const receipts = new Map();
-    for (const row of prior) {
-      const attempt = JSON.parse(row.data);
+    for (const attempt of prior) {
       const input = attempt.input_id && this.platform.store.get('platform-inputs', attempt.input_id);
       if (input?.call_id !== attempt.id) continue;
       for (const id of enclosed) {
@@ -107,6 +104,14 @@ export class RoomWork {
       }
     }
     return [...receipts.values()];
+  }
+
+  materialAttempts(sessionId, ids, except = '') {
+    if (!ids.length) return [];
+    return this.platform.store.db.prepare(`SELECT data FROM records WHERE kind='platform-calls'
+      AND json_extract(data,'$.tool')='send_input' AND json_extract(data,'$.target.id')=? AND id<>?
+      AND EXISTS (SELECT 1 FROM json_each(data,'$.material_source_ids') WHERE value IN (SELECT value FROM json_each(?)))
+      ORDER BY rowid DESC`).all(sessionId, except, JSON.stringify(ids)).map(row => JSON.parse(row.data));
   }
 
   sourceFacts(ids) {

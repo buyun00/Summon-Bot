@@ -123,7 +123,9 @@ export class Executions {
       if (event?.type !== 'call.receipt' || event.target?.kind !== 'session') continue;
       if (!replacement || replacement.id === event.target.id) implicated.add(event.target.id);
       const original = this.store.get(callRecords, event.call_id);
-      if (unresolvedForward(original) &&
+      const related = replacement || args.recovery_of && idOf(args.recovery_of, 'call') === original?.id ||
+        !context.origin.event_ids.some(id => this.store.get('messages', id));
+      if (related && unresolvedForward(original) && !this.confirmedNonSubmission(this.latestMaterialAttempt(original)) &&
           sameRef(event.origin_room, room) && event.origin_message_id === question && (!replacement || replacement.id === event.target.id))
         reject('call_result_unknown', 'The original material input has an unresolved result. Read the original call and its native input receipt before continuing.', 409,
           { call_id: original.id, target: original.target });
@@ -137,57 +139,103 @@ export class Executions {
     }
   }
 
-  reserveForwardRecovery(args, context, attempt, work) {
-    if (context.origin?.fast_read_forward) return;
-    if (work?.origin_execution?.kind !== 'conversation') {
-      if (args.recovery_of) reject('recovery_source_mismatch', 'Material recovery needs the original Room work', 409);
+  confirmedNonSubmission(call) {
+    const input = call.input_id && this.store.get(inputRecords, call.input_id);
+    return call.status === 'not_submitted' || call.submission_outcome === 'not_submitted' ||
+      input?.call_id === call.id && ['cancelled', 'not_submitted'].includes(input.status) ||
+      call.status === 'failed' && (call.result?.input_status === 'rejected' ||
+        !call.external && !call.pi_writer_pid && call.result_ref?.kind === 'call' && !call.result?.native);
+  }
+
+  latestMaterialAttempt(original) {
+    const target = original.target ?? original.origin.forward_target;
+    const linked = original.forward_recovery_call_id && this.store.get(callRecords, original.forward_recovery_call_id);
+    if (linked && !this.confirmedNonSubmission(linked)) return linked;
+    if (!this.confirmedNonSubmission(original)) return original;
+    const previous = this.platform.roomWork.materialAttempts(target.id, [original.source_event_ids[0]], original.id);
+    return previous.find(call => call.input_id && !call.material_reference_only && !this.confirmedNonSubmission(call)) ?? linked ?? original;
+  }
+
+  reserveForwardRecovery(args, context, attempt, work, selected = [], inspectOnly = false) {
+    if (work?.origin_execution?.kind !== 'conversation' ||
+        context.origin?.conversation_id !== work.owner_conversation_id) {
+      if (args.recovery_of) reject('recovery_source_mismatch', 'Recover material in its original Room work.', 409);
       return;
     }
-    const room = context.conversation?.space;
-    const sources = context.origin?.event_ids || [];
-    const candidates = new Map();
-    const consider = call => {
-      if (!call?.origin?.fast_read_forward) return;
+    const targetId = work.id ?? (args.replaces_session && idOf(args.replaces_session, 'session'));
+    const explicit = args.recovery_of && this.store.get(callRecords, idOf(args.recovery_of, 'call'));
+    const matches = call => {
+      if (!call?.origin?.fast_read_forward || !sameIdentity(call.submitted_by, context.actor)) return false;
       const target = call.target ?? call.origin.forward_target;
-      const original = target && this.record(target);
-      if (!original || original.owner_conversation_id !== work.owner_conversation_id ||
-          !sameRef(original.origin_room, work.origin_room) || original.origin_message_id !== work.origin_message_id) return;
-      if (work.id && work.id !== original.id && work.replaces_session !== original.id && !args.recovery_of) return;
-      if (context.actor.kind !== 'user' && !sameIdentity(context.actor, original.owner)) return;
-      candidates.set(call.id, call);
+      const sourceWork = target?.kind === 'session' && this.record(target);
+      return sourceWork?.owner_conversation_id === work.owner_conversation_id && sameRef(sourceWork.origin_room, work.origin_room) &&
+        sourceWork.origin_message_id === work.origin_message_id && (!targetId || targetId === target.id || work.replaces_session === target.id);
     };
-    if (args.recovery_of) {
-      consider(this.store.get(callRecords, idOf(args.recovery_of, 'call')));
-      if (!candidates.size) reject('recovery_source_mismatch', 'Select the original material call for this work and owner', 409);
-    } else {
-      if (!sources.length || room?.kind !== 'room') return;
-      for (const call of this.calls.forwardsFor(context.actor.id, room.id, sources).values()) {
-        const route = this.platform.runtime.forwardRoute(context.actor.id, call.source_event_ids[0]);
-        if (route?.fast_read_forward_fallback || unresolvedForward(call) || call.status === 'not_submitted') consider(call);
+    if (args.recovery_of && (!matches(explicit) || args.material_role === 'reference'))
+      reject('recovery_source_mismatch', 'Select the original material call for this work and owner.', 409);
+    if (!explicit && (!work.id || args.kind === 'reply' || args.material_role === 'reference')) return;
+    const sources = new Set(selected);
+    if (explicit) sources.add(explicit.source_event_ids[0]);
+    const candidates = new Map();
+    if (explicit) candidates.set(explicit.id, explicit);
+    else if (sources.size) {
+      const rows = this.store.db.prepare(`SELECT data FROM records WHERE kind='platform-calls' AND json_extract(data,'$.origin.fast_read_forward')=1
+        AND json_extract(data,'$.origin.bot_id')=? AND json_extract(data,'$.source_event_ids[0]') IN (SELECT value FROM json_each(?)) ORDER BY rowid`)
+        .all(context.actor.id, JSON.stringify([...sources]));
+      for (const row of rows) {
+        const call = JSON.parse(row.data);
+        if (matches(call) && !candidates.has(call.source_event_ids[0])) candidates.set(call.source_event_ids[0], call);
       }
-      for (const id of sources) {
+    }
+    // A recovery return with a new instruction in the same run must elect the
+    // original explicitly. An isolated return can still recover its sole item.
+    if (!candidates.size && !args.material_sources && !sources.size && !context.origin.fast_read_forward) {
+      const events = context.origin.event_ids;
+      if (events.some(id => this.store.get('messages', id))) return;
+      for (const id of events) {
         const event = this.store.get('platform-events', id);
-        if (event?.type !== 'call.receipt' || !['not_submitted', 'unknown', 'failed'].includes(event.status)) continue;
-        consider(this.store.get(callRecords, event.call_id));
+        const call = event?.type === 'call.receipt' && this.store.get(callRecords, event.call_id);
+        if (matches(call) && this.confirmedNonSubmission(this.latestMaterialAttempt(call))) candidates.set(call.id, call);
       }
-      if (!candidates.size) return;
-      const relevant = new Set([work.origin_message_id, ...[...candidates.values()].map(call => call.source_event_ids[0])]);
-      if (sources.some(id => !relevant.has(id) && this.store.get('messages', id))) return;
-      if (candidates.size !== 1) reject('recovery_source_required', 'Identify the material being retried in recovery_of.', 409,
+      if (candidates.size > 1) reject('recovery_source_required', 'Select the outstanding material you intend to retry.', 409,
         { call_ids: [...candidates.keys()] });
     }
-    const [original] = candidates.values();
-    const latest = original.forward_recovery_call_id ? this.calls.get(original.forward_recovery_call_id) : original;
+    for (const original of candidates.values()) {
+      let latest = this.latestMaterialAttempt(original);
+      // The router reserves its call before native submission. It may be racing
+      // an ordinary submission that already holds the same original.
+      if (original.id === attempt.id) {
+        latest = this.platform.roomWork.materialAttempts(work.id, [original.source_event_ids[0]], attempt.id)
+          .find(call => call.input_id && !call.material_reference_only && !this.confirmedNonSubmission(call));
+        if (!latest) continue;
+      }
+      const source = this.store.get('messages', original.source_event_ids[0]);
+      if (!source) reject('material_source_forbidden', 'The selected original is unavailable.', 403);
+      const enclosure = new Set([source.id, ...(source.references ?? []).filter(ref => ref.kind === 'event').map(ref => ref.id)]);
+      const onlyThis = explicit || [...sources].every(id => enclosure.has(id));
+      if (!this.confirmedNonSubmission(latest)) {
+        if (onlyThis) return { original, latest };
+        continue;
+      }
+      if (!inspectOnly && original.id !== attempt.id) {
+        this.calls.bind(original.id, { forward_recovery_call_id: attempt.id });
+        if (onlyThis) this.calls.bind(attempt.id, { recovery_of: original.id });
+      }
+    }
+  }
+
+  retainMaterial(attempt, existing, context) {
+    const { latest, original } = existing;
+    const target = latest.target ?? original.origin.forward_target;
+    if (!this.calls.canRead(context.actor, latest, context) || !this.platform.canReadCallResult(latest, target, context))
+      reject('material_already_handled', 'This material already has a native input.', 409);
+    if (original.id !== latest.id) this.calls.bind(original.id, { forward_recovery_call_id: latest.id });
+    this.calls.bind(attempt.id, { target, retained_input_call_id: latest.id });
+    this.calls.addWait(latest.id, { ...context.origin, input_call_id: attempt.id, initiating_principal: attempt.initiating_principal });
     const input = latest.input_id && this.store.get(inputRecords, latest.input_id);
-    const notSubmitted = latest.status === 'not_submitted' || latest.submission_outcome === 'not_submitted' || latest.status === 'failed' &&
-      (latest.result?.input_status === 'rejected' || input?.call_id === latest.id && input.status === 'not_submitted' ||
-        !latest.external && !latest.pi_writer_pid && latest.result_ref?.kind === 'call' && !latest.result?.native);
-    if (!notSubmitted)
-      reject(unresolvedForward(original) || ['prepared', 'submitted', 'unknown'].includes(latest.status) ? 'call_result_unknown' : 'material_already_handled',
-        'Read the existing attempt for this material. Retry only after it is confirmed not submitted.', 409,
-        { source_call_id: original.id, call_id: latest.id, status: latest.status });
-    this.calls.bind(original.id, { forward_recovery_call_id: attempt.id });
-    this.calls.bind(attempt.id, { recovery_of: original.id });
+    return this.calls.finish(attempt.id, 'completed', { status: 'retained', target, call_id: latest.id,
+      call_status: latest.status, input_status: input?.call_id === latest.id ? input.status : latest.result?.input_status,
+      result_ref: latest.result_ref, guidance: 'Use this original call and its actual receipt. No additional native input was submitted.' });
   }
 
   openChildren(session) {
@@ -598,23 +646,6 @@ export class Executions {
       const current = this.require(target, context, 'input');
       this.active(current, args.control_version);
       this.checkSubmitResources(target, current, context);
-      if (!context.origin?.fast_read_forward && current.origin_room && context.origin?.event_ids?.length) {
-        const sources = context.origin.event_ids;
-        const room = context.conversation?.space;
-        const forwards = room?.kind === 'room' ? this.calls.forwardsFor(context.actor.id, room.id, sources) : new Map();
-        for (const id of sources) {
-          const receipt = this.store.get('platform-events', id);
-          const prior = forwards.get(id) || (receipt?.call_id && this.store.get(callRecords, receipt.call_id));
-          if (!unresolvedForward(prior) || !sameRef(prior.target, target)) continue;
-          const submitted = prior.input_id && this.store.get(inputRecords, prior.input_id);
-          const source = this.store.get('messages', prior.source_event_ids[0]);
-          const otherMaterial = sources.some(id => id !== source?.id && id !== current.origin_message_id && this.store.get('messages', id));
-          if (!otherMaterial || submitted?.call_id === prior.id && (submitted.input === args.input || source?.content === args.input ||
-              args.kind === 'reply' && sameInput(args.input_target, submitted.input_target)))
-            reject('call_result_unknown', 'This material already has an unresolved native input. Read the original call and wait for its actual receipt.', 409,
-              { call_id: prior.id, target });
-        }
-      }
       const observation = await this.inspect(target, current);
       const observed = observation.input_targets ?? current.input_targets ?? [];
       this.assertTarget(args, target, observed);
@@ -629,24 +660,42 @@ export class Executions {
       }
       return current;
     };
-    const current = await fresh();
+    let current;
+    try { current = await fresh(); }
+    catch (error) {
+      if (error.code !== 'input_target_expired' || target.kind !== 'session') throw error;
+      const retained = this.store.transaction(() => {
+        const latest = this.require(target, context, 'input');
+        const ids = this.platform.roomWork.inputSources(args, context, latest, call);
+        const existing = this.reserveForwardRecovery(args, context, call, latest, ids, true);
+        if (existing) return this.retainMaterial(call, existing, context);
+      });
+      if (retained) return retained;
+      throw error;
+    }
     const inputKey = args.kind === 'reply' ? keyOf(target.kind, target.id, args.input_target.kind, args.input_target.request_id,
       ...inputFields[args.input_target.kind].map(field => args.input_target[field])) : call.id;
-    this.store.transaction(() => {
+    const retained = this.store.transaction(() => {
+      const selected = target.kind === 'session' ? this.platform.roomWork.inputSources(args, context, current, call) : [];
+      if (target.kind === 'session') {
+        const existing = this.reserveForwardRecovery(args, context, call, current, selected);
+        if (existing) return this.retainMaterial(call, existing, context);
+      }
       const existing = this.store.get(inputRecords, inputKey);
       if (existing && !['cancelled', 'not_submitted'].includes(existing.status)) {
         reject('input_already_submitted', 'The native request already has a submitted answer', 409, { call_id: existing.call_id });
       }
-      if (target.kind === 'session') this.reserveForwardRecovery(args, context, call, current);
       const attempt = this.calls.get(call.id);
-      const sourceIds = target.kind === 'session' ? this.platform.roomWork.inputSources(args, context, current, attempt) : [];
+      const sourceIds = attempt.recovery_of ? this.platform.roomWork.inputSources(args, context, current, attempt) : selected;
       const earlier = target.kind === 'session' && this.platform.roomWork.priorMaterialReceipts(current, attempt, sourceIds);
       this.store.save(inputRecords, { id: inputKey, target, call_id: call.id, input_target: args.input_target, kind: args.kind,
         submitted_by: context.actor, origin: context.origin, control_version: args.control_version, status: 'prepared', input: args.input });
       this.calls.bind(call.id, { target, input_id: inputKey, material_source_ids: sourceIds,
+        ...(args.material_role === 'reference' && { material_reference_only: true }),
         ...(earlier?.length && { prior_material_receipts: earlier }),
         execution_actor: record.execution_actor || { kind: 'bot', id: record.bot_id } });
     });
+    if (retained) return retained;
     const beforeSubmit = async () => {
       await fresh();
       this.store.transaction(() => {
