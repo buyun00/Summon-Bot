@@ -82,8 +82,7 @@ const openSessionInput = object({ engine: sessionEngine, input: value, workspace
   allowed_followup_rooms: array(roomOrId), private_work: flag, include_execution_guide: flag }, ['engine', 'input']);
 const publicOpenSessionInput = { ...openSessionInput, properties: { ...openSessionInput.properties, engine: refOrId, workspace: { anyOf: [ref, text] } } };
 const configureSessionInput = object({ target: refOrId, acceptance_state: oneOf('open', 'closed'), work_summary: text,
-  delivery_message_id: eventOrId, completion_checks: array(object({ requirement: text, evidence: text }, ['requirement', 'evidence'])),
-  close_reason: oneOf('cancelled', 'superseded', 'private'), disposition_note: text, instruction_message_id: eventOrId,
+  delivery_message_id: eventOrId, close_reason: oneOf('cancelled', 'superseded', 'private'), disposition_note: text,
   waiting_summary: nullableText, add_followup_rooms: array(roomOrId), remove_followup_rooms: array(roomOrId) }, ['target']);
 
 const definitions = [
@@ -139,7 +138,7 @@ const definitions = [
     'Set include_execution_guide to append the installed Summon adapter guide to a text input. ' +
     'When the result registers a wait_ref, you can end the current turn and continue when its receipt arrives.',
     openSessionInput],
-  ['configure_session', 'Manage direct child work. For a completed Room delivery use acceptance_state closed, delivery_message_id from the successful send, and completion_checks pairing each original requirement with literal evidence from the sent text or attachment names. For an explicitly cancelled, superseded or private disposition use close_reason and disposition_note; for a Room requester’s changed instructions include instruction_message_id. A Pi reviews and closes its own children privately. Keep partial work open with a concrete waiting_summary. You can also change work_summary and follow-up Rooms.',
+  ['configure_session', 'Manage direct child work. After checking the original request and delivering the complete answer, set acceptance_state to closed. A single confirmed reply to the original question is linked automatically. Supply delivery_message_id to select among replies, or with disposition_note when an earlier complete delivery already covers a late result. For cancelled, superseded or private work use close_reason. A Pi reviews and closes its own children privately. Keep partial work open with a concrete waiting_summary. You can also change work_summary and follow-up Rooms.',
     configureSessionInput],
   ['send_input', 'Submit input to the actual input target and control version, or resume one explicitly paused execution. ' +
     'A registered wait_ref returns the asynchronous receipt to your run.',

@@ -116,32 +116,28 @@ export class Executions {
     if (!terminal.has(current.status) || current.status === 'unknown' && current.safe_to_disconnect !== true)
       reject('work_in_progress', 'Review the final execution result, or stop the active execution before closing it', 409);
     const publicWork = current.origin_room && current.origin_message_id && current.origin_execution?.kind === 'conversation';
-    if (args.close_reason) {
-      if (!args.disposition_note?.trim()) reject('disposition_required', 'Explain the cancellation, replacement or private handling');
-      if (publicWork && context.actor.kind !== 'user' && !['failed', 'cancelled', 'stopped', 'not_submitted', 'unsupported'].includes(current.status)) {
-        const id = args.instruction_message_id && idOf(args.instruction_message_id, 'event');
-        const instruction = id && this.store.get('messages', id);
-        const question = this.store.get('messages', current.origin_message_id);
-        if (!instruction || instruction.roomId !== current.origin_room.id || instruction.senderId !== question?.senderId ||
-            instruction.createdAt < question.createdAt || !this.platform.canReadReference({ kind: 'event', id }, context))
-          reject('disposition_instruction_required', 'Identify the original requester’s instruction for this disposition', 409);
-      }
-      return { outcome: args.close_reason, note: args.disposition_note.trim(),
-        ...(args.instruction_message_id && { instruction_message_id: idOf(args.instruction_message_id, 'event') }) };
-    }
+    if (args.close_reason) return { outcome: args.close_reason, ...(args.disposition_note && { note: args.disposition_note.trim() }) };
+    if (['failed', 'cancelled', 'stopped', 'not_submitted', 'unsupported'].includes(current.status) && !args.delivery_message_id)
+      return { outcome: current.status };
     if (!publicWork) return { outcome: 'reviewed' };
     const id = args.delivery_message_id && idOf(args.delivery_message_id, 'event');
-    const message = id && this.store.get('messages', id);
-    const send = message?.callId && this.store.get(callRecords, message.callId);
-    if (!message || message.roomId !== current.origin_room.id || message.replyTo !== current.origin_message_id ||
-        message.senderId !== current.owner.id || send?.tool !== 'send' || send.status !== 'completed' ||
-        send.origin?.conversation_id !== current.owner_conversation_id || send.result?.message?.id !== id)
-      reject('room_delivery_required', 'After reviewing the result, send the complete answer replying to the original Room question. Use its successful delivery_message_id to close.', 409);
-    const evidence = [message.content, ...(message.attachments ?? []).map(file => file.name)].filter(Boolean);
-    if (!args.completion_checks?.length || args.completion_checks.some(check => !check.requirement.trim() || !check.evidence.trim() ||
-        !evidence.some(value => value.includes(check.evidence.trim()))))
-      reject('completion_checks_required', 'Check each original requirement against a short exact excerpt of this delivered answer or an attached filename', 409);
-    return { outcome: 'delivered', message_id: id, call_id: send.id, checks: args.completion_checks };
+    const latest = this.store.get(callRecords, current.latest_call_id);
+    const resultAt = (latest?.result_ref?.kind === 'event' && this.store.get('platform-events', latest.result_ref.id)?.time) || latest?.updatedAt;
+    const messages = this.store.db.prepare(`SELECT data FROM records WHERE kind='messages' AND json_extract(data,'$.roomId')=?
+      AND json_extract(data,'$.senderId')=? AND json_extract(data,'$.replyTo')=? AND (? IS NULL OR id=?) ORDER BY rowid`)
+      .all(current.origin_room.id, current.owner.id, current.origin_message_id, id ?? null, id ?? null).map(row => JSON.parse(row.data));
+    const replies = messages.filter(message => {
+      const send = message.callId && this.store.get(callRecords, message.callId);
+      return send?.tool === 'send' && send.status === 'completed' && sameRef(send.target, current.origin_room) &&
+        send.origin?.conversation_id === current.owner_conversation_id && send.result?.message?.id === message.id &&
+        (!resultAt || message.createdAt >= resultAt || id && args.disposition_note?.trim());
+    });
+    if (replies.length !== 1)
+      reject('room_delivery_required', replies.length ? 'Select the confirmed complete reply using delivery_message_id.' :
+        'Review the original requirements and send the complete answer replying to the original question before closing. If a previous delivery already covers this result, identify it and explain in disposition_note.',
+        409, { replies: replies.map(message => message.id) });
+    return { outcome: 'delivered', message_id: replies[0].id, call_id: replies[0].callId,
+      ...(args.disposition_note && { note: args.disposition_note.trim() }) };
   }
 
   retainUndelivered(event, botId) {
