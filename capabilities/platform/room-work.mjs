@@ -52,25 +52,19 @@ export class RoomWork {
       return selected;
     }
     if (!room) return null;
-    const candidates = new Set();
+    let latestMessage;
+    const receiptOrigins = new Set();
     for (const id of context.origin?.event_ids ?? []) {
       const message = this.platform.store.get('messages', id);
       if (message?.roomId === room.id) {
-        const reply = message.replyTo && this.platform.store.get('messages', message.replyTo);
-        // A reply to a progress report can refer back to the question it answered.
-        const question = reply?.roomId === room.id && reply.senderId === context.actor.id && reply.replyTo
-          ? this.platform.store.get('messages', reply.replyTo) : reply;
-        candidates.add(question?.roomId === room.id ? question.id : id);
+        latestMessage = id;
         continue;
       }
       const event = this.platform.store.get('platform-events', id);
       if (event?.type === 'call.receipt' && event.owner_conversation_id === context.origin.conversation_id &&
-          sameRef(event.origin_room, room) && event.origin_message_id) candidates.add(event.origin_message_id);
+          sameRef(event.origin_room, room) && event.origin_message_id) receiptOrigins.add(event.origin_message_id);
     }
-    if (candidates.size > 1)
-      reject('origin_message_required', 'Select the original question for this assignment with origin_message_id. Several inputs are in this turn.',
-        409, { candidates: [...candidates] });
-    return candidates.values().next().value ?? null;
+    return latestMessage ?? (receiptOrigins.size === 1 ? [...receiptOrigins][0] : null);
   }
 
   readable(event, context) {
