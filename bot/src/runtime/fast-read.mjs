@@ -39,9 +39,10 @@ const fastReadRules = [
   '对象与承接判断：从说话人当下的原话辨认每个请求交给谁，结合房间成员列表（members）里的姓名、公开职责和前文确认称呼所指。明确请另一位成员回答或办理的部分留给本人，即使你知道答案、负责这个话题，或这条消息引用了你，也不抢答（若无其他属于本 Bot 的缺口，判 quiet）。若本人已委托你转述且当下问法允许代答，或同一条消息里另有交给你的问题或事项，判 main。没有 @ 或点名时，也要看对方是否在承接本 Bot 刚才的话、追问本 Bot 负责或正在跟进的事项、或等待本 Bot 的下一步行动；如果是，判 main（或唯一匹配在途执行且符合条件时判 forward）。事实补充、纠正和回执要看是否会改变本 Bot 的已有结论、触发约定回告或更正、解除等待、或影响本 Bot 的下一步办理。读到纯收悉、礼貌致谢、复述、背景补充、自然收尾，或别人已在原提问处把问题答清，且没有仍需本 Bot 处理的公开或内部缺口时，判 quiet。对照本 Bot 自己先前说过的话辨别重复；一句话既纠正又追问时，只要仍有未解决且归属本 Bot 的部分，判 main。',
   '已明确交给唯一 Pi 工作的附件或引用可以直接续投，由 Pi 查阅。若你得先看材料才能辨认归属，或需要查证事实、核实未开放的跨群任务、发起新任务、修改方向、叫停工作、询问进度、变更交付约定、记住长期规则或办理提醒，交 main。短时间连发的消息结合前后文理解，为每条待判消息各自输出一项。',
   '界面摘要（summary）规则：\n' +
-    '对每个 message_id，从对应 room_message 的 event.text 逐字摘选最能表达本条事实的一句原话，保留否定、数量和位置。不要改写、补全指代或借用批内其他消息。附件名及引用由宿主从同一条原消息补入。只有附件或引用时，summary 填“附件”或“引用”。前文可用于判路由。',
+    '对每个 message_id 写一句自然、简短的中文概括（通常 40 字以内，最多 80 字）。写本条输入事实，保留否定、时态、数值和地点。evidence.quote 逐字引用本条 event.text 中支持概括的原话。前文只用于消解指代，不能把先前或同批其他消息的动作、状态、要求写成本条事实。需要消解时，在 summary 用 {ref} 表示该对象，同时给 evidence.referent 填本条指代词 mention、对应前文 message_id 及前文中逐字出现的对象名 name。附件文件名由宿主从本条附件补入，概括中无需复写。仅有附件或引用时简述发送了材料，quote 可空。不得写路由或代答。',
   '输出格式（严格遵守）：只输出一个合法 JSON 对象，不要附加任何解释或额外文字：\n' +
-    '{"items":[{"message_id":"<待判消息 ID>","summary":"<简短客观事实摘要>","route":"quiet"|"main"|"forward","target":"<仅 forward 时填 session_id>","input_target":{...}}]}\n' +
+    '{"items":[{"message_id":"<待判消息 ID>","summary":"<简短客观事实摘要>","evidence":{"quote":"<本条原话>","referent":{"mention":"<指代词>","message_id":"<前文 ID>","name":"<对象名>"}},"route":"quiet"|"main"|"forward","target":"<仅 forward 时填 session_id>","input_target":{...}}]}\n' +
+    '无须消解指代时省略 referent。\n' +
     'items 必须完整覆盖 pending_message_ids 中的每一个 message_id；非 forward 时不要输出 target 与 input_target；当所选候选只有 1 个 forwardable_inputs 时 input_target 可省略。',
 ].join('\n\n');
 
@@ -104,6 +105,7 @@ function parseFastReadResponse(answer, pendingIds, candidatesById, routeById) {
     rawItems = [{
       message_id: parsed.message_id || pendingIds[0],
       summary: parsed.summary,
+      evidence: parsed.evidence,
       route: parsed.route,
       target: parsed.target,
       input_target: parsed.input_target,
@@ -117,7 +119,7 @@ function parseFastReadResponse(answer, pendingIds, candidatesById, routeById) {
     const id = typeof item.message_id === 'string' && item.message_id.trim()
       ? item.message_id.trim()
       : (pendingIds.length === 1 && rawItems.length === 1 ? pendingIds[0] : null);
-    if (id && !byId.has(id)) byId.set(id, item);
+    if (id) byId.set(id, byId.has(id) ? null : item);
   }
 
   const decisions = new Map();
@@ -162,6 +164,7 @@ function parseFastReadResponse(answer, pendingIds, candidatesById, routeById) {
     }
     decisions.set(id, { route, summary, fallback: false });
   }
+  for (const [id, decision] of decisions) decision.evidence = byId.get(id)?.evidence;
   return { ok: !hadFallback, reason: hadFallback ? 'incomplete_fields' : null, decisions };
 }
 
@@ -418,7 +421,7 @@ export class FastReadRuntime {
         ...(openExecutions.length ? { open_executions: openExecutions } : {}),
       });
 
-      const maxTokens = Math.min(model.maxTokens, Math.max(512, eventIds.length * 180 + 256));
+      const maxTokens = Math.min(model.maxTokens, Math.max(512, eventIds.length * 300 + 256));
       const inputBudget = Math.max(1024, model.contextWindow - maxTokens - 512);
       let keptPrefix = prefix;
       let keptPublic = publicMessages;
@@ -515,7 +518,9 @@ export class FastReadRuntime {
       }
 
       const parsed = parseFastReadResponse(answer, eventIds, candidatesById, routeById);
-      await this.commitDecisions(inbox, bot, room, batch, parsed.decisions, answer.roomCacheThroughMessageId, check, controller, parsed.reason);
+      const keptIds = new Set(keptPublic.map(message => message.public_event_id));
+      const visible = new Map(snapshot.messages.filter(message => keptIds.has(message.id)).map(message => [message.id, message]));
+      await this.commitDecisions(inbox, bot, room, batch, parsed.decisions, answer.roomCacheThroughMessageId, check, controller, parsed.reason, null, visible);
     } catch (error) {
       const code = error.code || 'fast_read_error';
       if (code === 'access_revoked' || code === 'room_forbidden') {
@@ -553,18 +558,9 @@ export class FastReadRuntime {
     await this.commitDecisions(inbox, bot, room, batch, decisions, null, check, controller, `${code}: ${message}`, diagnostic);
   }
 
-  async commitDecisions(inbox, bot, room, batch, decisions, cacheThroughMessageId, check, controller, fallbackReason = null, diagnostic = null) {
+  async commitDecisions(inbox, bot, room, batch, decisions, cacheThroughMessageId, check, controller, fallbackReason = null, diagnostic = null, visible) {
     const roomId = room.id;
     check();
-    for (const route of batch) {
-      const decision = decisions.get(route.event_id);
-      if (decision?.summary) {
-        try {
-          this.platform.room.saveMessageSummary(roomId, route.event_id, bot.id, decision.summary);
-        } catch {}
-      }
-    }
-
     const forwardOutcomes = new Map();
     const existingCalls = this.platform.calls.forwardsFor(bot.id, roomId, batch.map(route => route.event_id));
     for (const route of batch) {
@@ -590,6 +586,14 @@ export class FastReadRuntime {
     const fallbackEventIds = [];
     let maxSeqRoute = null;
 
+    this.platform.store.transaction(() => {
+      for (const route of batch) {
+        const live = inbox.store.getRecord(R.route, route.id);
+        const decision = decisions.get(route.event_id);
+        if (live?.state === 'pending' && !live.run_id && !live.fast_read_decision && decision?.summary)
+          this.platform.room.saveMessageSummary(roomId, route.event_id, bot.id, decision.summary, decision.evidence, visible);
+      }
+    });
     inbox.store.transaction(() => {
       for (const route of batch) {
         const live = inbox.store.getRecord(R.route, route.id);

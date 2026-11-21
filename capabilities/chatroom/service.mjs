@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { fail } from '../shared/validation.mjs';
 import { assertRevision, idOf, identity } from '../platform/contract.mjs';
 import { botMaintenanceRoomId } from '../../roles/index.mjs';
+import { projectFactSummary } from './message-summary.mjs';
 
 function list(value, label, maximum = 100) {
   if (value === undefined) return [];
@@ -41,26 +42,6 @@ function rowMessage(row) {
     attachments: (message.attachments ?? []).map(({ id: fileId, name, mimeType, size, url, previewUrl, openUrl, unavailable }) =>
       ({ id: fileId, ref: { kind: 'file', id: fileId }, name, mimeType, size, url, previewUrl, openUrl, unavailable })),
     references: message.references ?? [], mentions: message.mentions ?? [] };
-}
-
-// The recipient chooses an excerpt. Only the original message supplies display text and filenames.
-function sourceSummary(message, selection) {
-  const body = (message.content ?? '').trim();
-  const labels = message.attachments.map(file => `附件「${file.name}」`);
-  if (message.references.length) labels.push(`引用 ${message.references.length} 项`);
-  const materials = labels.join('、');
-  const prior = materials && selection.endsWith(materials) ? selection.slice(0, -materials.length).trimEnd() : selection;
-  const clip = value => {
-    const chars = Array.from(value);
-    return chars.length <= 80 ? value : chars.slice(0, 80).join('') + '…';
-  };
-  let excerpt = body;
-  if (Array.from(body).length > 80) {
-    const sentences = body.match(/[^。！？!?\n]+[。！？!?]*|[。！？!?]+/gu)?.map(value => value.trim()).filter(Boolean) || [body];
-    const selected = prior && sentences.find(value => clip(value) === prior || value.includes(prior));
-    excerpt = clip(selected || sentences[0]);
-  }
-  return [excerpt, materials].filter(Boolean).join('\n');
 }
 
 export class ChatroomService {
@@ -195,7 +176,7 @@ export class ChatroomService {
     });
   }
 
-  saveMessageSummary(roomId, messageId, botId, summary) {
+  saveMessageSummary(roomId, messageId, botId, summary, evidence, visible) {
     roomId = idOf(roomId, 'room');
     messageId = identifier(messageId, '消息 ID');
     botId = identity(botId).id;
@@ -204,11 +185,11 @@ export class ChatroomService {
       const message = rowMessage(this.messageRow.get(messageId));
       if (message?.roomId !== roomId) return null;
       this.room(roomId, botId);
-      const text = sourceSummary(message, summary.trim());
-      if (!text) return null;
+      const fact = projectFactSummary(message, summary, evidence, visible);
+      if (!fact.summary) return null;
       const id = JSON.stringify([roomId, messageId, botId]);
       const updated_at = new Date().toISOString();
-      return this.store.save('room-message-summaries', { id, roomId, messageId, bot_id: botId, summary: text, updated_at });
+      return this.store.save('room-message-summaries', { id, roomId, messageId, bot_id: botId, ...fact, updated_at });
     });
     if (saved) this.emit('delivery');
     return saved;
@@ -220,11 +201,9 @@ export class ChatroomService {
     for (const messageId of messageIds) {
       const rows = this.messageSummaryRows.all(roomId, messageId);
       if (!rows.length) continue;
-      const message = rowMessage(this.messageRow.get(messageId));
-      if (message?.roomId !== roomId) continue;
       result[messageId] = rows.map(row => {
         const { bot_id, summary, updated_at } = JSON.parse(row.data);
-        return { bot_id, summary: sourceSummary(message, summary), updated_at };
+        return { bot_id, summary, updated_at };
       });
     }
     return result;
