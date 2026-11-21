@@ -79,7 +79,7 @@ const sessionWorkspace = { ...text, description: 'The id from find with kind wor
 const openSessionInput = object({ engine: sessionEngine, input: value, workspace: sessionWorkspace, space: ref,
   sharing: object({ readers: array(principal), submitters: array(principal), controllers: array(principal) }, ['readers', 'submitters', 'controllers']),
   resource_refs: array(ref), work_room: refOrId, work_source: refOrId, origin_message_id: eventOrId, work_summary: text,
-  allowed_followup_rooms: array(roomOrId), private_work: flag, include_execution_guide: flag }, ['engine', 'input']);
+  allowed_followup_rooms: array(roomOrId), replaces_session: refOrId, private_work: flag, include_execution_guide: flag }, ['engine', 'input']);
 const publicOpenSessionInput = { ...openSessionInput, properties: { ...openSessionInput.properties, engine: refOrId, workspace: { anyOf: [ref, text] } } };
 const configureSessionInput = object({ target: refOrId, acceptance_state: oneOf('open', 'closed'), work_summary: text,
   delivery_message_id: eventOrId, close_reason: oneOf('cancelled', 'superseded', 'private'), disposition_note: text,
@@ -135,12 +135,13 @@ const definitions = [
     'For work submitted on behalf of a Room, pass work_room and optionally the original Room message as work_source. This authorizes bounded tool observations in that Room and keeps the Session’s own permissions. ' +
     'For work to remain private, omit work_room or explicitly set private_work on a shared Session. ' +
     'Pass a concise work_summary (goal and completion criteria) and origin_message_id for the question being answered. Later materials, work instructions and side topics have their own IDs. For a continuation use the prior question from the Room history or recent_delegated_questions; for a new assignment choose its new question. A child of a Session inherits its origin. allowed_followup_rooms opens other Rooms for follow-up inputs. ' +
-    'Set include_execution_guide to append the installed Summon adapter guide to a text input. ' +
+    'When replacing an executor, identify the prior work in replaces_session and retain its original question. Wait for an authorized resume of paused work. Set include_execution_guide to append the installed Summon adapter guide to a text input. ' +
     'When the result registers a wait_ref, you can end the current turn and continue when its receipt arrives.',
     openSessionInput],
   ['configure_session', 'Manage direct child work. After checking the original request and delivering the complete answer, set acceptance_state to closed. A single confirmed reply to the original question is linked automatically. Supply delivery_message_id to select among replies, or with disposition_note when an earlier complete delivery already covers a late result. For cancelled, superseded or private work use close_reason. A Pi reviews and closes its own children privately. Keep partial work open with a concrete waiting_summary. You can also change work_summary and follow-up Rooms.',
     configureSessionInput],
   ['send_input', 'Submit input to the actual input target and control version, or resume one explicitly paused execution. ' +
+    'For native reply, copy the current input_target with its request_id. Pass the Codex answer as a text string in the displayed answer_format. The steer target without request_id sends separate material and leaves the request unanswered. ' +
     'A registered wait_ref returns the asynchronous receipt to your run.',
     object({ target: executionRef, kind: oneOf('reply', 'steer', 'next', 'resume'), control_version: integer, input: value,
       input_target: inputTarget, resume_ref: resumeRef }, ['target', 'kind', 'control_version'])],

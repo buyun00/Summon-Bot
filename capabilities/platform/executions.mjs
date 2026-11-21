@@ -50,6 +50,7 @@ function compactPendingInput(pending) {
     id: item.id,
     kind: item.kind || null,
     plain_text: item.plain_text,
+    answer_format: item.answer_format,
     question: item.question ?? item.text ?? item.prompt,
     ...(Array.isArray(item.choices) && item.choices.length
       ? { choices: item.choices.map(choice => ({ id: choice.id, label: choice.label ?? choice.id })) }
@@ -89,9 +90,44 @@ export class Executions {
       .all(botId, roomId, roomId).map(row => JSON.parse(row.data));
   }
 
+  withdrawnFollowups(botId, roomId) {
+    return this.store.db.prepare(`SELECT data FROM records WHERE kind='room-intake-withdrawals'
+      AND json_extract(data,'$.bot_id')=? AND json_extract(data,'$.room_id')=? ORDER BY rowid DESC LIMIT 12`)
+      .all(botId, roomId).map(({ data }) => {
+        const { withdrawn_at, local_message_ids } = JSON.parse(data);
+        return { withdrawn_at, local_message_ids };
+      });
+  }
+
   directWork(conversationId) {
     return this.store.db.prepare(`SELECT data FROM records WHERE kind='platform-sessions'
       AND json_extract(data,'$.owner_conversation_id')=?`).all(conversationId).map(row => JSON.parse(row.data));
+  }
+
+  checkContinuation(args, context, room, question) {
+    if (!room || !question || !context.origin?.conversation_id) return;
+    const replacement = args.replaces_session && this.require({ kind: 'session', id: idOf(args.replaces_session, 'session') }, context, 'control');
+    if (replacement && (!sameRef(replacement.origin_room, room) || replacement.origin_message_id !== question ||
+        replacement.owner_conversation_id !== context.origin.conversation_id))
+      reject('work_origin_mismatch', 'A replacement must keep the direct owner and original question of the work', 409);
+    const implicated = new Set(replacement ? [replacement.id] : []);
+    for (const id of context.origin.event_ids) {
+      const event = this.store.get('platform-events', id);
+      if (event?.type !== 'call.receipt' || event.target?.kind !== 'session') continue;
+      if (!replacement || replacement.id === event.target.id) implicated.add(event.target.id);
+      const original = this.store.get(callRecords, event.call_id);
+      if (original?.origin?.fast_read_forward && original.status === 'unknown' &&
+          sameRef(event.origin_room, room) && event.origin_message_id === question && (!replacement || replacement.id === event.target.id))
+        reject('call_result_unknown', 'The original material input has an unresolved result. Read the original call and its native input receipt before continuing.', 409,
+          { call_id: original.id, target: original.target });
+    }
+    for (const id of implicated) {
+      const work = this.record({ kind: 'session', id });
+      if (work?.owner_conversation_id === context.origin.conversation_id && sameRef(work.origin_room, room) &&
+          work.origin_message_id === question && work.control.state === 'paused')
+        reject('work_paused', 'This continuation depends on a paused execution. Wait for its authorized resume and the original user’s handover conditions.', 409,
+          { session_id: id, control: work.control });
+    }
   }
 
   openChildren(session) {
@@ -303,12 +339,13 @@ export class Executions {
       }
     }
     const inputTargets = observation.input_targets || current.input_targets || [];
-    const questions = observation.pending_input || [];
+    const questions = observation.pending_input ?? current.pending_input ?? [];
     const output = observation.output ?? (observation.output_page?.text ? observation.output_page.text : undefined);
     return { ...observation, ...base, output, input_revision: observation.input_revision ?? base.input_revision,
       input_targets: base.can_submit && current.control.state === 'active' ? inputTargets.map(option => {
         const question = option.input_target?.request_id && questions.find(item => item.id === option.input_target.request_id);
-        return question ? { ...option, question: question.question ?? question.text, choices: question.choices } : option;
+        return question ? { ...option, question: question.question ?? question.text, choices: question.choices,
+          request_kind: question.kind, answer_format: question.answer_format, plain_text: question.plain_text } : option;
       }) : [] };
   }
 
@@ -352,6 +389,7 @@ export class Executions {
       const beforeSubmit = () => {
         this.platform.assertCanSubmit(context, this.record(target));
         if (started) return;
+        this.checkContinuation(args, context, session.origin_room, session.origin_message_id);
         this.bindSubmission(call.id, session, context);
         started = true;
       };
@@ -434,6 +472,22 @@ export class Executions {
       const current = this.require(target, context, 'input');
       this.active(current, args.control_version);
       this.checkSubmitResources(target, current, context);
+      if (!context.origin?.fast_read_forward && current.origin_room && context.origin?.event_ids?.length) {
+        const sources = context.origin.event_ids;
+        const room = context.conversation?.space;
+        const forwards = room?.kind === 'room' ? this.calls.forwardsFor(context.actor.id, room.id, sources) : new Map();
+        for (const id of sources) {
+          const receipt = this.store.get('platform-events', id);
+          const prior = forwards.get(id) || (receipt?.call_id && this.store.get(callRecords, receipt.call_id));
+          if (!prior?.origin?.fast_read_forward || !sameRef(prior.target, target) || prior.status !== 'unknown') continue;
+          const submitted = prior.input_id && this.store.get(inputRecords, prior.input_id);
+          const source = this.store.get('messages', prior.source_event_ids[0]);
+          if (submitted?.call_id === prior.id && (submitted.input === args.input || source?.content === args.input ||
+              args.kind === 'reply' && sameInput(args.input_target, submitted.input_target)))
+            reject('call_result_unknown', 'This material already has an unresolved native input. Read the original call and wait for its actual receipt.', 409,
+              { call_id: prior.id, target });
+        }
+      }
       const observation = await this.inspect(target, current);
       const observed = observation.input_targets ?? current.input_targets ?? [];
       this.assertTarget(args, target, observed);
@@ -516,6 +570,17 @@ export class Executions {
     return this.baseView(target, record, context);
   }
 
+  notifyOwnerResume(target, call) {
+    const work = target.kind === 'session' && this.record(target);
+    if (!work?.owner_run_id || work.acceptance_state !== 'open' || call.origin?.conversation_id === work.owner_conversation_id) return;
+    const owner = this.record({ kind: 'conversation', id: work.owner_conversation_id });
+    if (!owner || owner.bot_id !== work.owner.id) return;
+    const wait = this.calls.addWait(call.id, { bot_id: owner.bot_id, conversation_id: owner.id, run_id: work.owner_run_id,
+      session_id: owner.session_id, control_version: owner.control.control_version });
+    const event = this.calls.saveReceiptEvent(call, { status: 'completed', output: { action: 'resumed', control: work.control } }, target, 'resumed');
+    this.calls.deliverWaits(event, [wait], false);
+  }
+
   configure(args, context, call) {
     const target = { kind: 'session', id: idOf(args.target, 'session') };
     const current = this.require(target, context, 'control');
@@ -551,9 +616,18 @@ export class Executions {
           reject('room_forbidden', 'Cannot open follow-up to an inaccessible Room', 403);
         }
         next.add(roomId);
+        this.store.remove('room-intake-withdrawals', keyOf(current.id, roomId));
       }
       for (const roomRef of args.remove_followup_rooms || []) {
-        next.delete(idOf(roomRef, 'room'));
+        const roomId = idOf(roomRef, 'room');
+        if (next.delete(roomId) && roomId !== current.origin_room?.id) {
+          const sources = this.store.db.prepare(`SELECT json_extract(data,'$.source_event_ids[0]') AS id FROM records
+            WHERE kind='platform-calls' AND json_extract(data,'$.origin.fast_read_forward')=1
+            AND json_extract(data,'$.target.id')=? AND json_extract(data,'$.origin.source_room.id')=? ORDER BY rowid DESC LIMIT 8`)
+            .all(current.id, roomId);
+          this.store.save('room-intake-withdrawals', { id: keyOf(current.id, roomId), bot_id: current.owner.id, room_id: roomId,
+            withdrawn_at: new Date().toISOString(), local_message_ids: sources.map(source => source.id) });
+        }
       }
       patch.allowed_followup_rooms = [...next];
     }

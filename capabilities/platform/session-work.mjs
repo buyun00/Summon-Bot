@@ -30,13 +30,14 @@ export function forwardInputs(targets = [], pending = [], connection) {
     for (const kind of kinds) {
       const request = kind === 'reply' ? requests.get(input_target.request_id) : undefined;
       const schema = input_target.kind === 'service_call' ? serviceInputSchema(connection, kind) : undefined;
-      const option = { kind, input_target, ...(request && { question: request.question ?? request.text }),
+      const option = { kind, input_target, ...(request && { question: request.question ?? request.text,
+        answer_format: request.answer_format, choices: request.choices, request_kind: request.kind }),
         ...(schema !== undefined && { input_schema: schema }) };
       const nativePrompt = request && (request.kind === 'approval' || request.plain_text === false ||
         request.choices?.length || request.schema || request.has_schema);
       const structured = schema === false || schema?.enum || schema?.const !== undefined ||
         (schema?.type && ![schema.type].flat().includes('string'));
-      if (nativePrompt || structured) {
+      if (nativePrompt || structured || kind === 'reply' && !request && input_target.kind !== 'service_call') {
         nonForwardable.push({ ...option, reason: request?.kind === 'approval' ? 'approval' : 'structured_input' });
       } else {
         forwardable.push(option);

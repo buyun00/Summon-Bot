@@ -131,7 +131,8 @@ function nativePrompt(message) {
       ? (questions[0].options || []).map(option => choice(option.label, option.label)) : [];
     const text = questions.map((question, index) => (simple ? '' : (index + 1) + '. ') + question.question +
       (question.options?.length && !choices.length ? '\n' + question.options.map(option => option.label).join(' / ') : '')).join('\n');
-    return { kind: 'question', choices, plain_text: simple && !secretInputUnavailable && (!questions[0].options?.length || questions[0].isOther === true),
+    return { kind: 'question', choices, answer_format: simple ? (choices.length ? 'choice_id' : 'text') : 'one_answer_per_line',
+      plain_text: simple && !secretInputUnavailable && (!questions[0].options?.length || questions[0].isOther === true),
       text: [text, !simple && '请按题目顺序每行回复一项。', secretInputUnavailable && '保密问题需要使用支持保密输入的通道。']
         .filter(Boolean).join('\n'),
       answer: answer => {
@@ -145,7 +146,7 @@ function nativePrompt(message) {
   }
   if (method === 'mcpServer/elicitation/request') {
     const form = p.mode !== 'url';
-    return { kind: 'question', choices: form ? [] : [choice('accept', '已完成'), deny, cancel],
+    return { kind: 'question', choices: form ? [] : [choice('accept', '已完成'), deny, cancel], answer_format: form ? 'json_text' : 'choice_id',
       text: [p.message, p.url, form ? '请回复所要求的 JSON 表单，或输入「拒绝」。' : '请处理链接中的请求，再回复结果。'].filter(Boolean).join('\n'),
       answer: text => {
         if (!form) return { action: text, content: null };
@@ -211,7 +212,8 @@ output.on('line', line => {
       if (prompt) {
         const id = String(message.id);
         prompts.set(id, { ...prompt, id: message.id });
-        emit('request', { id, turnId, kind: prompt.kind, text: prompt.text, choices: prompt.choices, plain_text: prompt.plain_text === true });
+        emit('request', { id, turnId, kind: prompt.kind, text: prompt.text, choices: prompt.choices,
+          plain_text: prompt.plain_text === true, answer_format: prompt.answer_format || 'choice_id' });
       }
     } catch (error) { send({ id: message.id, error: { code: -32602, message: error.message } }); }
   } else if (message.method) observe(message.method, message.params);

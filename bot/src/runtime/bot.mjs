@@ -149,6 +149,10 @@ export class BotRuntime {
         for (const run of inbox.list(R.run, 'state', 'running')) inbox.putRun({ id: run.id, state: 'interrupted' });
         for (const conversation of store.listRecords(R.conversation)) this.syncConversationControl(inbox, conversation);
         this.reconcileReturnWaits(inbox);
+        for (const route of inbox.list(R.route, 'fast_read_decision', 'forward')) {
+          if (route.fast_read_forward_call_id)
+            this.fastRead.forwardReceipt(inbox, this.platform.store.get('platform-calls', route.fast_read_forward_call_id));
+        }
       });
     } catch (error) {
       try { store?.close(); } catch {}
@@ -237,6 +241,8 @@ export class BotRuntime {
         !this.platform.canReadEvent(delivery.event, { actor: botRef(delivery.bot_id) }))
       return { accepted: false, retryable: false, code: 'access_revoked' };
     const receipt = inbox.receive(delivery);
+    if (delivery.event.type === 'call.receipt')
+      this.fastRead.forwardReceipt(inbox, this.platform.store.get('platform-calls', delivery.event.call_id));
     if (receipt.processed || receipt.waits.length) setImmediate(() => {
       if (!this.closed) this.consumeDeliveries(this.inboxes.get(delivery.bot_id), [receipt.event_id]);
     });
@@ -894,13 +900,22 @@ export class BotRuntime {
     if (unfinished.length) facts.push(textMessage({ type: 'prior_call_facts', calls: unfinished }));
     const relevantGroups = new Set();
     const requestIds = new Set();
+    if (conversation.kind === 'room' && current.some(event => event.type === 'message' && sameRef(event.space, conversation.space))) {
+      const withdrawn = this.platform.executions.withdrawnFollowups(inbox.botId, conversation.space.id);
+      if (withdrawn.length) facts.push(textMessage({ type: 'withdrawn_room_intakes', withdrawals: withdrawn }));
+    }
     for (const event of current) {
       if (event.type === 'message') {
         requestIds.add(event.id);
         if (event.reply_to) requestIds.add(event.reply_to.id ?? event.reply_to);
         const route = inbox.store.getRecord(R.route, recordKey(event.id, 'observation'));
-        if (route?.fast_read_forward_fallback) facts.push(textMessage({ type: 'forward_fallback', message_id: event.id,
-          reason: route.fast_read_forward_fallback, session_id: route.fast_read_forward_target, call_id: route.fast_read_forward_call_id }));
+        if (route?.fast_read_forward_fallback) {
+          const callId = route.fast_read_forward_call_id;
+          const actual = callId && await this.readFor(job, { kind: 'call', id: callId });
+          facts.push(textMessage({ type: 'forward_fallback', message_id: event.id, reason: route.fast_read_forward_fallback,
+            session_id: route.fast_read_forward_target, call_id: callId, current_call_status: actual?.status,
+            result_ref: actual?.result_ref, input_status: actual?.result?.input_status }));
+        }
       }
       if (event.type !== 'call.receipt' || !event.call_id || event.result_access === 'revoked') continue;
       const observation = await this.readFor(job, { kind: 'call', id: event.call_id });
@@ -911,6 +926,13 @@ export class BotRuntime {
       // The event names an immutable receipt position. A newer receipt may already exist on the call.
       const result = event.result ?? observation.result;
       const content = JSON.stringify(result ?? null);
+      if (observation.origin?.fast_read_forward && ['unknown', 'not_submitted', 'failed', 'stopped', 'cancelled'].includes(event.status)) {
+        const id = observation.source_event_ids[0];
+        const message = this.platform.canReadReference({ kind: 'event', id }, context) && this.platform.store.get('messages', id);
+        facts.push(textMessage({ type: 'forward_return', call_id: event.call_id, receipt_status: event.status,
+          current_call_status: observation.status, input_status: observation.result?.input_status, result_ref: observation.result_ref,
+          session_id: target?.id, source: message ? roomMessageInput(roomEvent(message)).event : undefined }));
+      }
       facts.push(textMessage({ type: 'call_result', call_id: event.call_id, tool: observation.tool, status: event.status, target,
         input_status: result?.input_status, session_status: result?.session_status,
         result_ref: { kind: 'event', id: event.id }, result_position: event.result_position,
@@ -944,7 +966,7 @@ export class BotRuntime {
         }
         groups.get(key).sessions.push({ session_id: work.id, engine: work.engine, work_summary: work.work_summary,
           status: work.status, waiting_summary: work.waiting_summary, acceptance_state: work.acceptance_state,
-          latest_call_id: work.latest_call_id });
+          control: work.control, latest_call_id: work.latest_call_id });
       }
       for (const group of groups.values()) facts.push(textMessage(group));
     }
@@ -1062,7 +1084,8 @@ export class BotRuntime {
       const current = inbox.conversation(conversation.id);
       const id = recordKey('pi.input', call.id);
       const event = { id, kind: 'event', type: 'pi.input', input, space: conversation.space, author: actorFor(call), time: now(),
-        call_id: call.id, source_event_ids: call.source_event_ids || [], initiating_principal: call.initiating_principal };
+        call_id: call.id, source_event_ids: call.source_event_ids || [], initiating_principal: call.initiating_principal,
+        ...(call.origin?.fast_read_forward && { material_author: call.origin.source_author, material_room: call.origin.source_room }) };
       const next = inbox.putConversation({ id: current.id, input_revision: current.input_revision + 1 });
       inbox.store.putRecord(R.event, { id, event, received_at: event.time });
       const route = inbox.route(id, { conversation_id: current.id });

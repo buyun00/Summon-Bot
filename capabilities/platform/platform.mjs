@@ -722,6 +722,7 @@ export class SummonPlatform {
       }
     }
     return this.store.transaction(() => {
+      this.executions.checkContinuation(args, context, origin_room, origin_message_id);
       this.resources.assertCapacity('sessions', this.activeSessions());
       const session = this.store.save(sessionRecords, { id: call.id, engine, space, owner: actor, bot_id: bot?.id ?? null,
         source_space: project_room || context.conversation?.space || null, project_room,
@@ -1131,7 +1132,9 @@ export class SummonPlatform {
       }
       const result = this.store.transaction(() => {
         const value = this.write(name, args, context, record, workspaceFile);
-        return this.calls.finish(record.id, 'completed', value);
+        this.calls.finish(record.id, 'completed', value);
+        if (name === 'send_input' && args.kind === 'resume') this.executions.notifyOwnerResume(args.target, this.calls.get(record.id));
+        return value;
       });
       if (name === 'configure_bot' && result.control && Object.keys(args).some(key => !['bot', 'revision', 'role_id', 'role_connection_id', 'connection_revision'].includes(key))) {
         if (result.control.state === 'paused' && result.control.stop_status === 'pending') {
