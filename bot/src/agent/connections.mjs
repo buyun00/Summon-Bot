@@ -209,11 +209,13 @@ export function connectionModel(connection) {
     cost: connection.kind === 'api' ? known?.cost || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     ...(api === 'openai-completions' && !known ? { compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: false, maxTokensField: 'max_tokens' } } : {}) };
 }
-export function validateModelPurpose(connection, modelId, thinkingLevel) {
+export function validateModelPurpose(connection, modelId, thinkingLevel, field = 'thinking_level') {
   const effective = connectionModel({ ...connection, model: modelId, thinkingLevel: thinkingLevel ?? null });
   if (thinkingLevel !== null && thinkingLevel !== undefined) {
     if (Array.isArray(effective.thinkingLevels) && !effective.thinkingLevels.includes(thinkingLevel)) {
-      throw new Error(`模型 ${modelId}（${connection.name || connection.id}）不支持思考档 ${thinkingLevel}，可用档位：${effective.thinkingLevels.join(' / ')}`);
+      const message = `${field} · 模型 ${modelId}（${connection.name || connection.id}）不支持思考档 ${thinkingLevel}，可用档位：${effective.thinkingLevels.join(' / ')}`;
+      throw Object.assign(new Error(message), { status: 400, code: 'invalid_thinking_level',
+        details: { field, model: modelId, thinking_level: thinkingLevel, allowed: effective.thinkingLevels } });
     }
   }
   return effective;

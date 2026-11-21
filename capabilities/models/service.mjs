@@ -223,35 +223,35 @@ export class ModelConnections {
           models: modelChoices('api', preset.id).map(mapChoice) })) };
   }
   async savePurposes(input) {
-    if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('用途模型配置格式无效');
+    if (!input || typeof input !== 'object' || Array.isArray(input)) reject('invalid_model_purposes', '用途模型配置格式无效');
     await this.mutate(catalog => {
       if (input.autoGrantPurposeConnections !== undefined) {
         catalog.autoGrantPurposeConnections = input.autoGrantPurposeConnections !== false;
       }
       if (input.purposeDefaults !== undefined) {
         if (!input.purposeDefaults || typeof input.purposeDefaults !== 'object' || Array.isArray(input.purposeDefaults)) {
-          throw new Error('默认用途表格式无效');
+          reject('invalid_model_purposes', '默认用途表格式无效');
         }
         for (const category of purposeTemplateCategories) {
           if (!Object.hasOwn(input.purposeDefaults, category)) continue;
           const row = input.purposeDefaults[category];
-          if (!row || typeof row !== 'object') throw new Error(`类别 ${category} 配置格式无效`);
+          if (!row || typeof row !== 'object' || Array.isArray(row)) reject('invalid_model_purposes', `类别 ${category} 配置格式无效`);
           const probe = templateProbeConnection(category);
           for (const purpose of modelPurposes) {
             if (!Object.hasOwn(row, purpose)) continue;
             const cell = row[purpose];
             const modelId = typeof cell?.model === 'string' ? cell.model.trim() : '';
             const thinking = cell?.thinking_level === '' || cell?.thinking_level === undefined ? null : cell.thinking_level;
-            if (!validModelId(modelId)) throw new Error(`${probe.name} · ${purpose} 需填写有效的模型 ID`);
-            if (!validThinkingLevel(thinking)) throw new Error(`${probe.name} · ${purpose} 的思考强度无效`);
-            validateModelPurpose(probe, modelId, thinking);
+            if (!validModelId(modelId)) reject('invalid_model_id', `${probe.name} · ${purpose} 需填写有效的模型 ID`);
+            if (!validThinkingLevel(thinking)) reject('invalid_thinking_level', `${probe.name} · ${purpose} 的思考强度无效`);
+            validateModelPurpose(probe, modelId, thinking, `purposeDefaults.${category}.${purpose}.thinking_level`);
             catalog.purposeDefaults[category][purpose] = { model: modelId, thinking_level: thinking };
           }
         }
       }
       if (input.connectionPurposes !== undefined) {
         if (!input.connectionPurposes || typeof input.connectionPurposes !== 'object' || Array.isArray(input.connectionPurposes)) {
-          throw new Error('单连接用途覆写格式无效');
+          reject('invalid_model_purposes', '单连接用途覆写格式无效');
         }
         for (const [connId, overrides] of Object.entries(input.connectionPurposes)) {
           const baseConn = this.requireConnection(catalog, connId);
@@ -269,10 +269,10 @@ export class ModelConnections {
             const hasThinking = Object.hasOwn(cell, 'thinking_level') && cell.thinking_level !== '';
             const thinking = hasThinking ? cell.thinking_level : undefined;
             if (!targetConnId && !modelId && thinking === undefined) continue;
-            if (modelId && !validModelId(modelId)) throw new Error(`${baseConn.name} · ${purpose} 需填写有效的模型 ID`);
-            if (thinking !== undefined && !validThinkingLevel(thinking)) throw new Error(`${baseConn.name} · ${purpose} 的思考强度无效`);
+            if (modelId && !validModelId(modelId)) reject('invalid_model_id', `${baseConn.name} · ${purpose} 需填写有效的模型 ID`);
+            if (thinking !== undefined && !validThinkingLevel(thinking)) reject('invalid_thinking_level', `${baseConn.name} · ${purpose} 的思考强度无效`);
             const effectiveModel = modelId || resolveConnectionPurpose(catalog, targetConn.id, purpose)?.id || targetConn.model;
-            if (thinking !== undefined) validateModelPurpose(targetConn, effectiveModel, thinking);
+            if (thinking !== undefined) validateModelPurpose(targetConn, effectiveModel, thinking, `connectionPurposes.${connId}.${purpose}.thinking_level`);
             else if (modelId) connectionModel({ ...targetConn, model: modelId });
             cleaned[purpose] = {
               ...(targetConnId && targetConnId !== connId ? { connection_id: targetConnId } : {}),
@@ -286,13 +286,13 @@ export class ModelConnections {
       }
       if (input.externalEngines?.codex?.recommended !== undefined) {
         const list = input.externalEngines.codex.recommended;
-        if (!Array.isArray(list) || !list.length) throw new Error('外部 Codex 推荐组合至少需要保留一项');
+        if (!Array.isArray(list) || !list.length) reject('invalid_model_purposes', '外部 Codex 推荐组合至少需要保留一项');
         const cleaned = list.map((item, idx) => {
           const modelId = typeof item?.model === 'string' ? item.model.trim() : '';
-          if (!validModelId(modelId)) throw new Error(`外部 Codex 第 ${idx + 1} 项的模型 ID 无效`);
+          if (!validModelId(modelId)) reject('invalid_model_id', `外部 Codex 第 ${idx + 1} 项的模型 ID 无效`);
           const rawEfforts = Array.isArray(item.efforts) ? item.efforts : String(item.efforts ?? '').split(/[,，\s]+/);
           const efforts = [...new Set(rawEfforts.map(v => String(v).trim()).filter(Boolean))];
-          if (!efforts.length || efforts.some(e => !validThinkingLevel(e))) throw new Error(`外部 Codex 模型 ${modelId} 需要至少一个有效的思考档`);
+          if (!efforts.length || efforts.some(e => !validThinkingLevel(e))) reject('invalid_thinking_level', `外部 Codex 模型 ${modelId} 需要至少一个有效的思考档`);
           return { model: modelId, efforts };
         });
         catalog.externalEngines.codex = { recommended: cleaned };
