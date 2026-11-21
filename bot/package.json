@@ -1,6 +1,6 @@
 {
   "name": "@summon/bot",
-  "version": "0.3.143",
+  "version": "0.3.144",
   "description": "Summon Bot Pi runtime with a durable inbox and platform object tools",
   "type": "module",
   "engines": {
