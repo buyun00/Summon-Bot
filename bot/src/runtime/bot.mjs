@@ -1027,7 +1027,8 @@ export class BotRuntime {
       const event = this.platform.store.get('platform-events', id);
       if (event?.owner_conversation_id === job.conversation.id && sameRef(event.origin_room, room)) roots.add(event.origin_message_id);
     }
-    const originWork = audience.cross_room ? [] : this.platform.executions.directWork(job.conversation.id)
+    const ownerContext = this.platform.context(job.context());
+    const originWork = this.platform.executions.directWork(job.conversation.id)
       .filter(work => sameRef(work.origin_room, room) && (roots.has(work.origin_message_id) || work.owner_run_id === job.runId))
       .map(work => {
         const terminal = this.platform.store.get('platform-calls', work.latest_call_id);
@@ -1035,7 +1036,8 @@ export class BotRuntime {
         const steps = requests.filter(item => item.author?.kind === 'user' && roomQuestionLinks(this.platform, room, [item]).has(work.origin_message_id))
           .map(item => item.id);
         return { original_question: work.origin_message_id, engine: work.engine === 'pi' ? 'Pi' : this.platform.connections.get(work.engine)?.kind,
-          status: work.status, acceptance: work.acceptance_state, final_result_received: result?.status === 'completed' && result.target?.id === work.id,
+          status: work.status, acceptance_state: work.acceptance_state, acceptance: this.platform.executions.acceptanceView(work, ownerContext),
+          final_result_received: result?.status === 'completed' && result.target?.id === work.id,
           selected_inputs: this.platform.roomWork.materialStatus(work, steps), intake_rooms: this.platform.roomWork.intakes(work).map(item => item.name) };
       });
     const intake = audience.cross_room ? null : this.roomIntake(job.inbox.botId, audience.destination, requests);
@@ -1431,6 +1433,7 @@ export class BotRuntime {
     }
     if (relevantGroups.size || requestIds.size || inbox.calls(runId).some(call => call.tool === 'open_session')) {
       const owned = this.platform.executions.directWork(conversation.id);
+      const ownerContext = this.platform.context(context);
       if (conversation.kind === 'room') for (const id of roomQuestionLinks(this.platform, conversation.space, current.filter(event => event.type === 'message')))
         requestIds.add(id);
       if (requestIds.size && conversation.kind === 'room' && !run.receipt_group) {
@@ -1467,6 +1470,7 @@ export class BotRuntime {
         group.sessions.push({ session_id: work.id, engine: work.engine, work_summary: work.work_summary,
           amendment_inputs: this.platform.roomWork.materialStatus(work, group.amendments.map(item => item.event_id)),
           status: work.status, waiting_summary: work.waiting_summary, acceptance_state: work.acceptance_state,
+          acceptance: this.platform.executions.acceptanceView(work, ownerContext),
           control: work.control, latest_call_id: work.latest_call_id,
           ...(work.retained_delivery && { confirmed_delivery: work.retained_delivery }),
           ...(work.pending_input?.length && { pending_requests: work.pending_input, input_targets: work.input_targets }) });

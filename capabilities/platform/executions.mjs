@@ -464,6 +464,18 @@ export class Executions {
         this.permission({ kind, id: record.id }, record, context)).map(record => this.baseView({ kind, id: record.id }, record, context)));
   }
 
+  acceptanceView(work, context) {
+    if (work.acceptance_state !== 'closed' || !work.acceptance?.outcome) return undefined;
+    const parent = context.session ? { kind: 'session', id: context.session.id } :
+      { kind: 'conversation', id: context.conversation?.id };
+    if (context.session?.id !== work.id &&
+        !(sameIdentity(work.owner, context.actor) && sameRef(parent, work.origin_execution))) return undefined;
+    const { outcome, message_id: id } = work.acceptance;
+    const ref = { kind: 'event', id };
+    return { outcome, ...(outcome === 'delivered' && id && this.platform.canReadReference(ref, context) &&
+      { message_id: id, message_ref: ref }) };
+  }
+
   baseView(target, record, context, observation) {
     const controlled = this.permission(target, record, context, 'control');
     const { control } = record;
@@ -481,8 +493,9 @@ export class Executions {
       ...(record.acceptance_state ? { acceptance_state: record.acceptance_state } : {}),
       ...(record.pending_delivery && (context.actor.kind === 'user' || sameIdentity(context.actor, record.owner)) ?
         { pending_delivery: record.pending_delivery } : {}),
-      ...(context.actor.kind === 'user' && { authority_revoked: Boolean(record.authority_revoked),
-        revocation_call_id: record.revocation_call_id ?? null, acceptance: record.acceptance }),
+      ...(context.actor.kind === 'user' ? { authority_revoked: Boolean(record.authority_revoked),
+        revocation_call_id: record.revocation_call_id ?? null, acceptance: record.acceptance } :
+        { acceptance: this.acceptanceView(record, context) }),
       ...(Array.isArray(record.allowed_followup_rooms) ? { allowed_followup_rooms: record.allowed_followup_rooms } : {}),
       followup_room_details: this.platform.roomWork.intakes(record, context.actor),
     } : {};

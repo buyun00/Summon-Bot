@@ -90,6 +90,9 @@ export function toolObservation(callId, value, isError = false) {
   const execution = (kind === 'session' || kind === 'conversation') && execution_ref?.kind === kind && execution_ref.id === id
     ? {
       kind, id, execution_ref, control: control && { state: control.state, stop_status: control.stop_status },
+      acceptance_state: value.acceptance_state, acceptance: value.acceptance && {
+        outcome: value.acceptance.outcome, message_id: value.acceptance.message_id, message_ref: value.acceptance.message_ref,
+      },
       control_version: value.control_version, input_revision: value.input_revision, can_submit: value.can_submit, can_stop: value.can_stop,
       input_targets: value.input_targets?.map(({ kinds, input_target, question, choices, request_kind, answer_format, plain_text }) => ({
         kinds, input_target, question, request_kind, answer_format, plain_text, choices: choices?.map(({ id, label }) => ({ id, label })),
