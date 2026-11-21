@@ -5,6 +5,11 @@ export function workGroup(session) {
   return keyOf(session.origin_room?.id, session.origin_message_id ?? session.id);
 }
 
+export function unresolvedForward(call) {
+  return Boolean(call?.origin?.fast_read_forward && (['prepared', 'unknown'].includes(call.status) ||
+    call.status === 'submitted' && !call.result_ref));
+}
+
 export function forwardMaterials(message) {
   return [{ kind: 'event', id: message.id }, ...(message.attachments || []).map(file => ({ kind: 'file', id: file.id })),
     ...(message.references || []).filter(ref => ['event', 'file'].includes(ref.kind))];

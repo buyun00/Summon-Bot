@@ -4,7 +4,7 @@ import { callRecords, errorResult, mayAdvanceReceipt } from './calls.mjs';
 import { allowsConnection, enclosesExecutableScope, executableScope } from '../services/executable-scope.mjs';
 import { executionGuide } from '../connectors/initialization.mjs';
 import { operationRecords } from '../services/session-processes.mjs';
-import { forwardInputs } from './session-work.mjs';
+import { forwardInputs, unresolvedForward } from './session-work.mjs';
 
 export const sessionRecords = 'platform-sessions';
 export const conversationRecords = 'platform-conversations';
@@ -116,7 +116,7 @@ export class Executions {
       if (event?.type !== 'call.receipt' || event.target?.kind !== 'session') continue;
       if (!replacement || replacement.id === event.target.id) implicated.add(event.target.id);
       const original = this.store.get(callRecords, event.call_id);
-      if (original?.origin?.fast_read_forward && original.status === 'unknown' &&
+      if (unresolvedForward(original) &&
           sameRef(event.origin_room, room) && event.origin_message_id === question && (!replacement || replacement.id === event.target.id))
         reject('call_result_unknown', 'The original material input has an unresolved result. Read the original call and its native input receipt before continuing.', 409,
           { call_id: original.id, target: original.target });
@@ -525,10 +525,11 @@ export class Executions {
         for (const id of sources) {
           const receipt = this.store.get('platform-events', id);
           const prior = forwards.get(id) || (receipt?.call_id && this.store.get(callRecords, receipt.call_id));
-          if (!prior?.origin?.fast_read_forward || !sameRef(prior.target, target) || prior.status !== 'unknown') continue;
+          if (!unresolvedForward(prior) || !sameRef(prior.target, target)) continue;
           const submitted = prior.input_id && this.store.get(inputRecords, prior.input_id);
           const source = this.store.get('messages', prior.source_event_ids[0]);
-          if (submitted?.call_id === prior.id && (submitted.input === args.input || source?.content === args.input ||
+          const otherMaterial = sources.some(id => id !== source?.id && id !== current.origin_message_id && this.store.get('messages', id));
+          if (!otherMaterial || submitted?.call_id === prior.id && (submitted.input === args.input || source?.content === args.input ||
               args.kind === 'reply' && sameInput(args.input_target, submitted.input_target)))
             reject('call_result_unknown', 'This material already has an unresolved native input. Read the original call and wait for its actual receipt.', 409,
               { call_id: prior.id, target });

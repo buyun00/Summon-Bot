@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { keyOf, sameIdentity } from '../../../capabilities/platform/contract.mjs';
 import { wakeupRecords } from '../../../capabilities/platform/delivery.mjs';
 import { sameInput, sessionRecords } from '../../../capabilities/platform/executions.mjs';
-import { forwardInputs } from '../../../capabilities/platform/session-work.mjs';
+import { forwardInputs, unresolvedForward } from '../../../capabilities/platform/session-work.mjs';
 import { builtInInstructions } from '../../../roles/index.mjs';
 import { bindModel, boundModel } from '../agent/model.mjs';
 import { contextTokens, roomMessageInput, textMessage } from '../context/projection.mjs';
@@ -261,8 +261,7 @@ export class FastReadRuntime {
 
   forwardOutcome(call, reason) {
     // A prepared or interrupted hand-off has no confirmed native receipt.
-    if (call && (call.status === 'unknown' || call.status === 'prepared' ||
-        call.status === 'submitted' && !call.result_ref))
+    if (unresolvedForward(call))
       return { ok: false, reason: 'call_result_unknown', call_id: call.id };
     if (call && ['submitted', 'completed'].includes(call.status)) return { ok: true, call_id: call.id };
     return { ok: false, reason: call?.status === 'not_submitted' ? call.status : reason || call?.result?.code || call?.status || 'forward_not_accepted', call_id: call?.id };
