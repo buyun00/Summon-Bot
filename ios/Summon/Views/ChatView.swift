@@ -640,6 +640,10 @@ private struct MessageRow: View {
                         Text("\(store.name(for: fact.bot_id)) · \(diagnostic.message)")
                             .summonFont(.caption2).foregroundStyle(.secondary)
                     }
+                    if let notice = fact.resolution_notice {
+                        Text("\(store.name(for: fact.bot_id)) · \(notice)")
+                            .summonFont(.caption2).foregroundStyle(.secondary)
+                    }
                 }
                 if let failure { InlineError(message: failure) }
             }

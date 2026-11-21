@@ -1030,6 +1030,10 @@ private fun MessageRow(store: SummonStore, roomID: String, message: SummonMessag
                         Text(store.name(fact.botId) + " · " + diagnostic,
                             style = MaterialTheme.typography.labelSmall, color = palette.textSecondary)
                     }
+                    fact.resolutionNotice?.let { notice ->
+                        Text(store.name(fact.botId) + " · " + notice,
+                            style = MaterialTheme.typography.labelSmall, color = palette.textSecondary)
+                    }
                 }
                 error?.let { Text(it, color = palette.warn, style = MaterialTheme.typography.bodySmall) }
             }

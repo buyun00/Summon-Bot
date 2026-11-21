@@ -18,6 +18,7 @@ import { textMessage } from '../context/projection.mjs';
 import { canReadObservation, observationBoundary } from '../context/room-observation.mjs';
 import { MaterialRuntime } from '../context/materials.mjs';
 import { FastReadRuntime } from './fast-read.mjs';
+import { confirmedRoomSend, resolutionLabel } from './room-delivery.mjs';
 
 const conversationRef = executionRef;
 const sessionRef = id => ({ kind: 'session', id });
@@ -227,6 +228,7 @@ export class BotRuntime {
   roomDeliveryDetails(botId, eventId) {
     const route = this.inboxes.get(botId)?.store.getRecord(R.route, recordKey(eventId, 'observation'));
     return { ...(route?.fast_read_diagnostic && { fast_read_diagnostic: route.fast_read_diagnostic }),
+      ...(route?.resolution && { resolution_notice: resolutionLabel(route.resolution) }),
       ...(route?.public_reply && { public_reply: route.public_reply }) };
   }
 
@@ -498,9 +500,8 @@ export class BotRuntime {
     const conversation = inbox.conversation(run.conversation_id);
     if (conversation?.kind !== 'room' || conversation.space.kind !== 'room' || !sameRef(conversation.space, event.space)) return;
     const reply = this.platform.room.replyBy(conversation.space.id, inbox.botId, event.id);
-    const call = reply?.callId && this.platform.store.get('platform-calls', reply.callId);
-    if (call?.tool !== 'send' || call.status !== 'completed' || call.origin?.bot_id !== inbox.botId ||
-        !sameRef(call.target, conversation.space) || call.result?.message?.id !== reply.id) return;
+    const call = confirmedRoomSend(this.platform, reply);
+    if (!call) return;
     inbox.store.transaction(() => {
       // The original fork may never have injected this message. Keep its execution history intact.
       inbox.store.putRecord(R.route, { ...route, state: 'processed', processed_at: now(), public_reply: {
@@ -515,8 +516,12 @@ export class BotRuntime {
   recoveredRoomReply(origin, roomId, replyTo) {
     const inbox = this.inboxes.get(origin?.bot_id);
     const run = inbox?.run(origin.run_id);
-    if (!run?.recovering_room_inputs || inbox.conversation(run.conversation_id)?.space?.id !== roomId) return null;
-    const settled = run.route_ids.map(id => inbox.store.getRecord(R.route, id)).filter(route => route?.public_reply);
+    if (!run || inbox.conversation(run.conversation_id)?.space?.id !== roomId) return null;
+    const routes = run.route_ids.map(id => inbox.store.getRecord(R.route, id));
+    if (routes.some(route => route?.resolution && (!replyTo || route.event_id === replyTo)))
+      throw runtimeFailure('delivery_resolved', '原发起人已结清此投递，续办请明确回复仍待处理的原消息');
+    if (!run.recovering_room_inputs) return null;
+    const settled = routes.filter(route => route?.public_reply);
     if (settled.length && !replyTo)
       throw runtimeFailure('reply_target_required', 'Reply to the outstanding original message; this recovery already has confirmed public replies.');
     const route = settled.find(item => item.event_id === replyTo);
