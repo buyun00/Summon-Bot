@@ -7,7 +7,7 @@ import { repairRequestType, repairResultType, tools } from '../../../capabilitie
 import { deliveryRecords } from '../../../capabilities/platform/delivery.mjs';
 import { waitRecords } from '../../../capabilities/platform/calls.mjs';
 import { forwardMaterials, workGroup } from '../../../capabilities/platform/session-work.mjs';
-import { fieldLayout, inspectedPublicationSources, privateRoomRead, publicationContext, publicationSources, roomQuestionLinks, withinPublicationRoom } from '../../../capabilities/platform/room-publication.mjs';
+import { currentPublicationGrant, fieldLayout, inspectedPublicationSources, privateRoomRead, publicationContext, publicationSelection, publicationSources, roomQuestionLinks, withinPublicationRoom } from '../../../capabilities/platform/room-publication.mjs';
 import { BotStore } from '../storage/store.mjs';
 import { Inbox } from '../storage/inbox.mjs';
 import { eventOrder, executionRef, now, recordKey, refKey, runtimeFailure, runtimeRecords as R, sameRef, terminalCallStates } from '../storage/runtime-records.mjs';
@@ -846,7 +846,8 @@ export class BotRuntime {
     const previous = job.publication;
     if (previous?.transported && previous.audience.destination.id === audience.destination.id &&
         previous.audience.reply_to === audience.reply_to &&
-        JSON.stringify(previous.audience.release) === JSON.stringify(audience.release) &&
+        publicationSelection(previous.audience.release) === publicationSelection(audience.release) &&
+        JSON.stringify(previous.address) === JSON.stringify(address) &&
         previous.selection === this.publicationEvidence(job, audience, false).selection) {
       return true;
     }
@@ -885,6 +886,17 @@ export class BotRuntime {
       job.publicationReview = { position, grant };
       return grant;
     };
+    const reviewCurrent = async (sources, refresh) => {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (!sources?.candidates.length) return null;
+        const decision = await review(sources);
+        const current = refresh();
+        if (JSON.stringify(sources.versions) === JSON.stringify(current?.versions))
+          return !decision || decision.review_error || currentPublicationGrant(this.platform, current, decision) ? decision : null;
+        sources = current;
+      }
+      return { review_error: 'source_changed' };
+    };
     if (context.conversation.space.id === destination.id) {
       const ref = args.publication?.authorization;
       const requested = ref?.id ?? ref;
@@ -908,12 +920,9 @@ export class BotRuntime {
         const local = () => publicationSources(this.platform, args, context, destination, root);
         const sources = local();
         if (sources?.candidates.length && (sources.versions.results.length || sources.confirmed_delivery)) {
-          const grant = await review(sources);
+          const grant = await reviewCurrent(sources, local);
           if (grant?.review_error) return grant;
-          const current = grant && local();
-          if (current && current.candidates.some(item => item.id === grant.authorization_id) &&
-              JSON.stringify(grant.versions) === JSON.stringify(current.versions) && grant.materials.every(part =>
-                current.facts.get(part.event_id)?.includes(part.text))) return { ...grant, source_room: destination.id };
+          if (grant) return { ...grant, source_room: destination.id };
         }
       }
       const inspect = id => inspectedPublicationSources(this.platform, context, destination, job.inbox.calls(job.runId), id);
@@ -934,8 +943,7 @@ export class BotRuntime {
     const sources = publicationSources(this.platform, args, context, destination);
     if (!sources.candidates.length) return null;
     const previous = job.publication?.audience;
-    if (previous?.destination.id === destination.id && previous.release && sources.candidates.some(item => item.id === previous.release.authorization_id) &&
-        JSON.stringify(previous.release.versions) === JSON.stringify(sources.versions)) return previous.release;
+    if (previous?.destination.id === destination.id && currentPublicationGrant(this.platform, sources, previous.release)) return previous.release;
     let inspect = false;
     for (const message of sources.candidates) {
       const route = this.forwardRoute(context.actor.id, message.id);
@@ -958,7 +966,7 @@ export class BotRuntime {
       inspect = true;
     }
     if (!inspect) return null;
-    return review(sources);
+    return reviewCurrent(sources, () => publicationSources(this.platform, args, context, destination));
   }
 
   publicFile(job, room, ref) {
@@ -976,7 +984,7 @@ export class BotRuntime {
 
   publicationEvidence(job, audience, includeHistory = true) {
     if (audience.cross_room) {
-      const selection = JSON.stringify(audience.release);
+      const selection = publicationSelection(audience.release);
       return { selection, history: [], requests: [], locations: [], originWork: [], actions: [], files: [], pages: [] };
     }
     const room = { kind: 'room', id: audience.destination.id };

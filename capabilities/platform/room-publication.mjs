@@ -131,8 +131,7 @@ export function inspectedPublicationSources(platform, context, destination, call
 
 export function roomQuestionLinks(platform, room, messages) {
   const links = new Set();
-  const pending = messages.flatMap(item => [item.id, ...(item.senderId === 'user' || item.author?.kind === 'user' ?
-    (item.references ?? []).filter(ref => ref.kind === 'event').map(ref => ref.id) : [])]);
+  const pending = messages.map(item => item.id);
   while (pending.length) {
     const id = pending.pop();
     if (links.has(id)) continue;
@@ -140,6 +139,7 @@ export function roomQuestionLinks(platform, room, messages) {
     if (message?.roomId !== room.id) continue;
     links.add(id);
     if (message.replyTo) pending.push(message.replyTo);
+    if (message.senderId === 'user') for (const ref of message.references ?? []) if (ref.kind === 'event') pending.push(ref.id);
   }
   return links;
 }
@@ -167,6 +167,11 @@ export function publicationSources(platform, args, context, destination, localRo
     questions.add(matching[0]);
   }
   const messages = new Map(current.map(message => [message.id, message]));
+  if (requested && questions.size) {
+    const source = platform.store.get('messages', requested);
+    if (source?.senderId === 'user' && source.roomId === origin.id &&
+        [...roomQuestionLinks(platform, origin, [source])].some(id => questions.has(id))) messages.set(source.id, source);
+  }
   for (const root of questions) {
     const question = platform.store.get('messages', root);
     if (question?.roomId === origin.id) messages.set(root, question);
@@ -209,15 +214,36 @@ export function publicationSources(platform, args, context, destination, localRo
     if (text) { facts.set(event.id, text); results.push(event.id); }
   }
   const deliveries = new Set();
+  const accepted = new Set();
   for (const work of owned.filter(work => questions.has(work.origin_message_id))) {
     for (const { message, stage } of platform.executions.originalReplies(work)) {
       if (['complete', 'correction'].includes(stage) || work.acceptance?.outcome === 'delivered' && work.acceptance.message_id === message.id)
         deliveries.add(message.id);
+      if (work.acceptance_state === 'closed' && work.acceptance?.outcome === 'delivered' && work.acceptance.message_id === message.id)
+        accepted.add(message.id);
     }
   }
-  const versions = { user_messages: hostMessages.map(item => item.id), results, deliveries: [...deliveries] };
+  const versions = { user_messages: hostMessages.map(item => item.id), results, deliveries: [...deliveries], accepted: [...accepted] };
   const confirmed_delivery = deliveries.size > 0;
   return { candidates, hostMessages, facts, versions, current, requested, questions, confirmed_delivery, local_work: Boolean(localRoot) };
+}
+
+export function currentPublicationGrant(platform, sources, grant) {
+  const issuer = grant && sources?.candidates.find(item => item.id === grant.authorization_id);
+  if (!issuer || !grant.materials?.length ||
+      JSON.stringify(sources.versionsFor?.(issuer.id) ?? sources.versions) !== JSON.stringify(grant.versions)) return false;
+  return grant.materials.every(part => {
+    if (sources.factRooms && sources.factRooms.get(part.event_id) !== issuer.roomId) return false;
+    const evidence = sources.facts.get(part.event_id);
+    if (evidence !== undefined) return evidence.includes(part.text);
+    const message = platform.store.get('messages', part.event_id);
+    return message?.roomId === issuer.roomId && message.content.includes(part.text);
+  });
+}
+
+export function publicationSelection(grant) {
+  return grant && JSON.stringify([grant.source_room, grant.authorization_id, grant.dispatch_id, grant.fields_only,
+    grant.materials.map(part => part.text), grant.presentation, grant.formatted, grant.format_literals]);
 }
 
 export function publicationContext(platform, args, context, grant) {
@@ -231,9 +257,7 @@ export function publicationContext(platform, args, context, grant) {
     if (grant?.review_error) reject('publication_review_incomplete', 'The source authorization review could not finish. The destination has received no message.', 409, { reason: grant.review_error });
     if (grant) {
       const sources = publicationSources(platform, args, context, destination);
-      if (sources.candidates.some(item => item.id === grant.authorization_id) &&
-          JSON.stringify(sources.versions) === JSON.stringify(grant.versions) && grant.materials.every(part =>
-            (sources.facts.get(part.event_id) ?? platform.store.get('messages', part.event_id)?.content)?.includes(part.text))) release = grant;
+      if (currentPublicationGrant(platform, sources, grant)) release = grant;
     }
     if (!release) reject('room_publication_unauthorized',
       'Sending to another Room requires a current instruction from the host naming that destination and what to publish. Reply in the requesting Room or use the authorized Session intake.', 403);
