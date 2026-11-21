@@ -395,7 +395,12 @@ export class Executions {
     const resultAt = (latest?.result_ref?.kind === 'event' && this.store.get('platform-events', latest.result_ref.id)?.time) || latest?.updatedAt;
     const published = this.originalReplies(current);
     const final = published.findLast(item => item.session_id === current.id && ['complete', 'correction'].includes(item.stage));
-    const replies = published.filter(({ message, stage }) => stage !== 'progress' && (!id || message.id === id) &&
+    const replaced = this.directWork(current.owner_conversation_id).some(work => work.origin_message_id === current.origin_message_id && work.replaces_session);
+    const creditsSeat = message => {
+      const covered = this.calls.get(message.callId)?.work_review?.covered_sessions;
+      return covered ? covered.includes(current.id) : !replaced;
+    };
+    const replies = published.filter(({ message, stage }) => creditsSeat(message) && stage !== 'progress' && (!id || message.id === id) &&
       (!final || message.createdAt >= final.message.createdAt) &&
       (!resultAt || message.createdAt >= resultAt || id && (args.disposition_note?.trim() ||
         current.retained_delivery?.message_id === id))).map(item => item.message);

@@ -312,7 +312,7 @@ export function publicationSources(platform, args, context, destination, localRo
   const confirmed_delivery = deliveries.size > 0;
   return { candidates, hostMessages, facts, versions, current, requested, questions, confirmed_delivery, previous,
     local_work: Boolean(localRoot), local_request: localRoot ? replyId ?? localMessage?.id : undefined,
-    requested_stage: args.work_reply?.stage, recipient_request: recipientRequest };
+    requested_stage: args.work_reply?.stage, ...(localRoot && { proposal: args.text }), recipient_request: recipientRequest };
 }
 
 export function currentPublicationGrant(platform, sources, grant) {

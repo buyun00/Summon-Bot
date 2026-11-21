@@ -297,8 +297,7 @@ export class BotRuntime {
 
   openIntakeReceipt(call) {
     const room = call.origin?.source_room, work = call.target?.kind === 'session' && this.platform.executions.record(call.target);
-    if (!room || !work?.origin_room || work.owner?.id !== call.origin.bot_id || work.authority_revoked ||
-        work.acceptance_state !== 'open' || !this.platform.isFollowupRoomAllowed(work, room) ||
+    if (!room || !work?.origin_room || work.owner?.id !== call.origin.bot_id ||
         !this.platform.canReadSpace(work.owner, room) || !this.platform.canReadSpace(work.owner, work.origin_room)) return null;
     const status = record => {
       const input = record.input_id && this.platform.store.get('platform-inputs', record.input_id);
@@ -311,13 +310,17 @@ export class BotRuntime {
   roomIntake(botId, room, requests) {
     const ids = new Set(requests.flatMap(event => [event.id, event.reply_to?.id ?? event.reply_to,
       ...(event.references || []).filter(ref => ref.kind === 'event').map(ref => ref.id)]).filter(Boolean));
+    const recent = this.platform.store.db.prepare(`SELECT json_extract(data,'$.intake_source_ids') AS sources FROM records
+      WHERE kind='platform-calls' AND json_extract(data,'$.target.id')=? AND json_extract(data,'$.origin.bot_id')=?
+      AND json_extract(data,'$.status')='completed' AND json_array_length(data,'$.intake_source_ids')>0 ORDER BY rowid DESC LIMIT 12`).all(room.id, botId);
+    for (const row of recent) for (const id of JSON.parse(row.sources)) ids.add(id);
     const receiving = this.platform.executions.followupSessions(botId, room.id).filter(work =>
       work.origin_room?.id !== room.id && !work.authority_revoked && work.control?.state === 'active' &&
       this.platform.executions.record(conversationRef(work.owner_conversation_id))?.control.state === 'active' &&
       this.platform.canReadSpace(botRef(botId), work.origin_room));
     const open = receiving.length > 0;
     const receipts = new Map();
-    const calls = open ? this.platform.calls.roomForwards(botId, room.id, [...ids]) : this.platform.calls.forwardsFor(botId, room.id, [...ids]);
+    const calls = this.platform.calls.roomForwards(botId, room.id, [...ids]);
     for (const [source, call] of calls) {
       const route = this.forwardRoute(botId, source);
       const message = this.platform.store.get('messages', source);
@@ -905,7 +908,9 @@ export class BotRuntime {
     if (!requested && decision?.action === 'independent') return;
     const work = works.find(item => item.id === decision?.session) ?? works[0];
     const source = instructions.find(item => item.id === decision?.instruction && (!explicit || explicit === item.id));
-    if (requested && decision?.action === 'replace' && decision.session === requested && source &&
+    const unserviceable = ['failed', 'not_submitted', 'unsupported', 'cancelled'].includes(work.status) &&
+      work.control.state === 'active' && !work.input_targets?.length;
+    if (requested && (decision?.action === 'replace' || decision?.action === 'manage' && unserviceable) && decision.session === requested && source &&
         typeof decision.quote === 'string' && decision.quote.trim() && source.text.includes(decision.quote)) {
       const proof = { instruction: source.id, quote: decision.quote, considered: instructions.map(item => item.id),
         prior_call: work.latest_call_id, control_version: work.control.control_version, acceptance_state: work.acceptance_state };
@@ -971,7 +976,7 @@ export class BotRuntime {
         sources.current?.map(item => item.id), sources.requested]);
       if (job.publicationReview?.position === position) return job.publicationReview.grant;
       const grant = await this.engine.resolvePublicationGrant(job, destination, sources);
-      job.publicationReview = { position, grant };
+      if (grant && !grant.review_error) job.publicationReview = { position, grant };
       return grant;
     };
     const reviewCurrent = async (sources, refresh) => {
@@ -1008,9 +1013,19 @@ export class BotRuntime {
         const local = () => publicationSources(this.platform, args, context, destination, root);
         const sources = local();
         if (sources?.candidates.length && (sources.versions.results.length || sources.confirmed_delivery)) {
+          const previous = job.publication?.audience;
+          if (previous?.destination.id === destination.id && previous.release?.work_evidence?.reply_address === sources.local_request &&
+              previous.release.work_evidence.original_question === root && currentPublicationGrant(this.platform, sources, previous.release))
+            return previous.release;
           const grant = await reviewCurrent(sources, local);
+          if (grant && !grant.review_error) return { ...grant, source_room: destination.id };
+          const product = ['complete', 'correction'].includes(args.work_reply?.stage) ||
+            !args.work_reply && sources.questions.has(sources.local_request);
+          if (product) throw runtimeFailure('original_work_fields_required',
+            'The original work results are available but their public fields have not been selected. Read the named Sessions and retry the card using the original Room question as publication.authorization.', 409,
+            { reason: grant?.review_error ?? 'original_work_fields_incomplete', original_question: [...sources.questions][0],
+              sessions: sources.versions.seats.filter(seat => seat.current && seat.result).map(seat => seat.id) });
           if (grant?.review_error) return grant;
-          if (grant) return { ...grant, source_room: destination.id };
         }
       }
       const inspect = id => inspectedPublicationSources(this.platform, context, destination, job.inbox.calls(job.runId), id);
@@ -1060,6 +1075,12 @@ export class BotRuntime {
 
   async workCardReview(context, args, destination) {
     if (context.conversation.space.id !== destination.id) return;
+    const active = this.active.get(context.conversation.id);
+    const receipts = active?.publication?.local_receipts;
+    if (active?.runId === context.origin.run_id && active.publication?.transported &&
+        active.publication.audience.destination.id === destination.id && receipts?.incoming.length) {
+      await this.engine.reviewReceiptClaims(active, receipts, args.text);
+    }
     const label = args.work_reply;
     const selected = label && this.platform.executions.record(sessionRef(label.session.id ?? label.session));
     if (label && (selected?.owner_conversation_id !== context.conversation.id || selected.origin_room?.id !== destination.id)) return;
@@ -1079,7 +1100,8 @@ export class BotRuntime {
         work.origin_room?.id === destination.id && work.origin_message_id === root);
       if (!sessions.length) return;
       const published = this.platform.executions.originalReplies(sessions[0]).slice(-8).map(({ message, stage }) => ({
-        id: message.id, text: message.content, stage, attachments: message.attachments?.map(file => file.id), references: message.references }));
+        id: message.id, text: message.content, stage, covered_sessions: this.platform.store.get('platform-calls', message.callId)?.work_review?.covered_sessions,
+        attachments: message.attachments?.map(file => file.id), references: message.references }));
       const sources = publicationSources(this.platform, { ...args, publication: undefined }, context, destination, root);
       if (!sources || !published.length && !sources.versions.results.length &&
           !sessions.some(work => work.acceptance_state === 'open' && (work.waiting_summary || work.pending_input?.length))) return;
@@ -1089,9 +1111,11 @@ export class BotRuntime {
         own_deliveries: roomPublicationReceipts(this.platform, context.actor, context.conversation, linked),
         seats: sessions.map(work => ({ id: work.id, state: work.status, waiting: work.waiting_summary,
           acceptance_state: work.acceptance_state, acceptance: this.platform.executions.acceptanceView(work, context),
-          current: sources.versions.seats.find(seat => seat.id === work.id)?.current,
+          current: sources.versions.seats.find(seat => seat.id === work.id)?.current, replaces: work.replaces_session,
+          replacement_authorized: Boolean(work.replacement_authorization), assignment: work.work_summary,
           received_originals: this.platform.roomWork.receivedOriginals(work, context), result: work.latest_call_id, input_revision: work.input_revision })),
-        results: sources.versions.results.map(id => ({ id, text: sources.facts.get(id) })), published,
+        results: sources.versions.results.map(id => ({ id, session: sources.versions.seats.find(seat => seat.result === id)?.id,
+          text: sources.facts.get(id) })), published,
         proposal: { text: args.text, attachments: args.attachments?.map(item => item.id ?? item), references: args.references } };
     };
     const view = evidence();
@@ -1179,7 +1203,8 @@ export class BotRuntime {
         const result = terminal?.result_ref?.kind === 'event' && this.platform.store.get('platform-events', terminal.result_ref.id);
         const steps = requests.filter(item => item.author?.kind === 'user' && roomQuestionLinks(this.platform, room, [item]).has(work.origin_message_id))
           .map(item => item.id);
-        return { original_question: work.origin_message_id, engine: work.engine === 'pi' ? 'Pi' : this.platform.connections.get(work.engine)?.kind,
+        return { original_question: work.origin_message_id, session: work.id, replaces: work.replaces_session,
+          replacement_authorized: Boolean(work.replacement_authorization), engine: work.engine === 'pi' ? 'Pi' : this.platform.connections.get(work.engine)?.kind,
           status: work.status, acceptance_state: work.acceptance_state, acceptance: this.platform.executions.acceptanceView(work, ownerContext),
           final_result_received: result?.status === 'completed' && result.target?.id === work.id,
           selected_inputs: this.platform.roomWork.materialStatus(work, steps), intake_rooms: this.platform.roomWork.intakes(work).map(item => item.name) };
@@ -1198,6 +1223,15 @@ export class BotRuntime {
       if (sources.length) actions.push({ action: 'send_input', engine: target.engine === 'pi' ? 'Pi' : this.platform.connections.get(target.engine)?.kind,
         sources, status: native.status, input_status: input?.call_id === native.id ? input.status : 'unconfirmed' });
     }
+    const incoming = this.platform.store.db.prepare(`SELECT data FROM records WHERE kind='messages'
+      AND json_extract(data,'$.roomId')=? AND json_array_length(data,'$.authorized_publication.fields')>0 ORDER BY rowid DESC LIMIT 12`)
+      .all(room.id).map(row => JSON.parse(row.data)).flatMap(message => {
+        const call = message.callId && this.platform.store.get('platform-calls', message.callId);
+        return call?.directed_publication && call.status === 'completed' && call.result?.message?.id === message.id &&
+          sameRef(call.target, room) ? [{ action: 'received_publication', room_role: 'recipient', sender: message.author,
+            destination: room, message_id: message.id, time: message.createdAt, fields: message.authorized_publication.fields }] : [];
+      });
+    actions.push(...incoming);
     const selection = JSON.stringify([locations, originWork, intake?.receives_materials_here, intake?.receipts, actions, material?.content,
       selectedPages.map(page => [page.file.id, page.revision, page.cursor])]);
     if (!includeHistory) return { selection };
