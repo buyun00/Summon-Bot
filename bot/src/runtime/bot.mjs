@@ -5,6 +5,7 @@ import { assertInstallationWritable, readInstallationState } from '../../../scri
 import { inspectServiceLock } from '../../../scripts/installation/service-lock.mjs';
 import { repairRequestType, repairResultType, tools } from '../../../capabilities/platform/contract.mjs';
 import { deliveryRecords } from '../../../capabilities/platform/delivery.mjs';
+import { waitRecords } from '../../../capabilities/platform/calls.mjs';
 import { forwardMaterials, workGroup } from '../../../capabilities/platform/session-work.mjs';
 import { BotStore } from '../storage/store.mjs';
 import { Inbox } from '../storage/inbox.mjs';
@@ -146,6 +147,16 @@ export class BotRuntime {
       inbox = new Inbox(store, botId);
       store.transaction(() => {
         for (const run of inbox.list(R.run, 'state', 'running')) inbox.putRun({ id: run.id, state: 'interrupted' });
+        for (const conversation of store.listRecords(R.conversation)) this.syncConversationControl(inbox, conversation);
+        for (const wait of inbox.list(R.wait, 'status', 'waiting')) {
+          const published = this.platform.store.get(waitRecords, wait.id);
+          if (published?.status !== 'access_revoked' || published.bot_id !== botId || published.run_id !== wait.run_id ||
+              published.call_id !== wait.call_id || published.conversation_id !== wait.conversation_id ||
+              inbox.run(wait.run_id)?.conversation_id !== wait.conversation_id ||
+              published.latest_event_id !== wait.latest_event_id) continue;
+          const route = store.getRecord(R.route, recordKey(published.latest_event_id, wait.id));
+          if (route?.state === 'access_revoked') inbox.settleWait(route, route.state);
+        }
       });
     } catch (error) {
       try { store?.close(); } catch {}
@@ -274,6 +285,25 @@ export class BotRuntime {
     return inbox.putConversation({ ...conversation, registered: true, control: current.control });
   }
 
+  syncConversationControl(inbox, conversation) {
+    if (!conversation) return;
+    const control = this.registered(conversation)?.control;
+    if (!control || JSON.stringify(control) === JSON.stringify(conversation.control)) return;
+    inbox.store.transaction(() => {
+      inbox.putConversation({ id: conversation.id, control });
+      if (control.state !== 'active') return;
+      for (const run of inbox.runs(conversation.id)) {
+        if (activeRunStates.has(run.state) && run.control_version !== control.control_version)
+          inbox.putRun({ id: run.id, control_version: control.control_version });
+      }
+    });
+  }
+
+  controlChanged(record) {
+    const inbox = this.inboxes.get(record.bot_id);
+    if (inbox) this.syncConversationControl(inbox, inbox.conversation(record.id));
+  }
+
   async connectionSetupConversation(bot, id, setup) {
     const inbox = await this.inbox(bot.id);
     return this.register(inbox, inbox.putConversation({ id, kind: 'connection_setup', space: botRef(bot.id),
@@ -317,6 +347,11 @@ export class BotRuntime {
       }
       if (route.wait_id) {
         if (!this.routeReady(inbox, route)) continue;
+        const wait = inbox.wait(route.wait_id);
+        if (wait && inbox.canReturnToOwner(wait)) {
+          inbox.associate(wait.run_id, [route]);
+          continue;
+        }
         const targetConversation = route.conversation_id ? inbox.conversation(route.conversation_id) : null;
         if (!targetConversation) continue;
         const space = targetConversation.space || route.event.space || botRef(bot.id);
@@ -357,7 +392,7 @@ export class BotRuntime {
       const conversations = inbox.list(R.conversation, 'space.id', space.id).filter(item => item.kind === 'room' && sameRef(item.space, space));
       const available = conversation => this.conversationActive(conversation);
       let conversation = retained ? (available(retained) ? retained : null) : conversations.reverse().find(available);
-      if (retained && !conversation) continue;
+      if (!conversation && (retained || conversations.length)) continue;
       if (!conversation) conversation = this.register(inbox, inbox.putConversation({ id: randomUUID(), kind: 'room', space, owner: botRef(bot.id) }));
       const newRoutes = routes.slice(0, 32);
       if (receiptGroup) {
@@ -392,6 +427,14 @@ export class BotRuntime {
       }
       if (!this.conversationActive(conversation)) continue;
       let runs = inbox.runs(conversation.id).filter(run => activeRunStates.has(run.state));
+      if (runs.length && conversation.kind === 'room' && conversation.space?.kind === 'room' &&
+          !this.platform.canReadSpace(botRef(bot.id), conversation.space)) {
+        for (const run of runs) {
+          inbox.putRun({ id: run.id, state: 'access_revoked' });
+          this.discard(inbox, inbox.pending().filter(route => route.run_id === run.id), 'access_revoked');
+        }
+        continue;
+      }
       runs = runs.filter(run => !run.retry_at || Date.parse(run.retry_at) <= Date.now());
       const eligible = runs.find(run => run.state === 'waiting' && this.waitReady(inbox, run));
       const run = eligible || runs.find(run => run.state !== 'waiting');
@@ -471,7 +514,8 @@ export class BotRuntime {
     inbox.store.transaction(() => {
       for (const route of routes) {
         const { event, ...stored } = route;
-        inbox.store.putRecord(R.route, { ...stored, state: status });
+        inbox.store.putRecord(R.route, { ...stored, state: status, processed_at: now() });
+        if (status === 'access_revoked') inbox.settleWait(stored, status);
       }
     });
     this.consumeDeliveries(inbox, eventIds);
@@ -1138,6 +1182,7 @@ export class BotRuntime {
     const item = this.locate(id);
     if (item) {
       const { inbox, conversation } = item;
+      this.syncConversationControl(inbox, conversation);
       inbox.store.transaction(() => {
         for (const run of inbox.runs(id).filter(run => activeRunStates.has(run.state))) {
           const pending = inbox.pending().filter(route => route.run_id === run.id && inbox.event(route.event_id)?.type === 'pi.input' &&

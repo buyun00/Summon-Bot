@@ -451,6 +451,7 @@ export class Executions {
       this.calls.bind(call.id, { target });
       return saved;
     });
+    if (target.kind === 'conversation') this.platform.runtime.controlChanged(record);
     this.platform.runtime.wake();
     return this.baseView(target, record, context);
   }
@@ -495,6 +496,7 @@ export class Executions {
 
   saveControl(target, control) {
     const record = this.store.save(target.kind === 'session' ? sessionRecords : conversationRecords, { id: target.id, control });
+    if (target.kind === 'conversation' && !this.store.inTransaction) this.platform.runtime.controlChanged(record);
     if (control.state === 'paused') this.projectStop(target, control);
     return record;
   }

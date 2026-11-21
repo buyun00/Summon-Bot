@@ -24,11 +24,8 @@ export class Inbox {
         waitIds.push(wait.id);
         this.store.putRecord(R.wait, { ...original, ...wait, ...original && { status: original.status, result_position: original.result_position },
           event_ids: [...new Set([...(original?.event_ids || []), event.id])] });
-        const targetRun = this.run(wait.run_id);
-        const reusableRun = targetRun && ['pending', 'running', 'waiting', 'retry', 'interrupted'].includes(targetRun.state) &&
-          targetRun.control_version === this.conversation(wait.conversation_id)?.control.control_version;
         const route = this.route(event.id, { wait_id: wait.id, conversation_id: wait.conversation_id });
-        if (route.state === 'pending' && !route.run_id && reusableRun) this.associate(wait.run_id, [route]);
+        if (route.state === 'pending' && !route.run_id && this.canReturnToOwner(wait)) this.associate(wait.run_id, [route]);
       }
       if (match_sources.length || wait_refs.length === 0) this.route(event.id, { match_sources });
       const saved = this.store.getRecord(R.event, event.id);
@@ -72,9 +69,26 @@ export class Inbox {
   waits(runId) { return this.list(R.wait, 'run_id', runId); }
   runs(conversationId) { return this.list(R.run, 'conversation_id', conversationId); }
 
+  canReturnToOwner(wait) {
+    const owner = this.run(wait.run_id);
+    const control = this.conversation(wait.conversation_id)?.control;
+    return owner?.conversation_id === wait.conversation_id && control?.state === 'active' &&
+      owner.control_version === control.control_version && ['pending', 'running', 'waiting', 'retry', 'interrupted'].includes(owner.state);
+  }
+
   hasOpenWaits(runId) {
-    return this.waits(runId).some(wait => wait.status !== 'inline' && !terminalCallStates.has(wait.status) &&
+    return this.waits(runId).some(wait => wait.status !== 'inline' && !settledRouteStates.has(wait.status) && !terminalCallStates.has(wait.status) &&
       this.store.getRecord(R.input, wait.call_id)?.run_id !== runId);
+  }
+
+  settleWait(route, state) {
+    const wait = route.wait_id && this.wait(route.wait_id);
+    const event = wait && this.event(route.event_id);
+    if (!event || event.type !== 'call.receipt' || event.call_id !== wait.call_id) return;
+    const latest = !wait.latest_event_id || wait.latest_event_id === event.id;
+    this.store.putRecord(R.wait, { ...wait,
+      ...(latest && { status: state === 'access_revoked' ? state : event.status, result_position: event.result_position ?? event.id }),
+      processed_event_ids: [...new Set([...(wait.processed_event_ids || []), event.id])] });
   }
 
   attachReturnWaits(conversationId, runId, waits) {
@@ -144,12 +158,9 @@ export class Inbox {
         const route = this.store.getRecord(R.route, id);
         if (!route || !processed.has(route.event_id) || route.state !== 'pending' || !canProcess(route)) continue;
         const event = route.wait_id && this.event(route.event_id);
-        this.store.putRecord(R.route, { ...route, state: event && !canReadEvent(event) ? 'access_revoked' : 'processed', processed_at: now() });
-        if (route.wait_id) {
-          const wait = this.wait(route.wait_id);
-          if (wait) this.store.putRecord(R.wait, { ...wait, status: event?.status || 'processed',
-            result_position: event?.result_position ?? event?.id, processed_event_ids: [...new Set([...(wait.processed_event_ids || []), route.event_id])] });
-        }
+        const state = event && !canReadEvent(event) ? 'access_revoked' : 'processed';
+        this.store.putRecord(R.route, { ...route, state, processed_at: now() });
+        this.settleWait(route, state);
       }
       return this.putRun({ id: run.id, state, processed_event_ids: [...processed], ...boundaries });
     });
