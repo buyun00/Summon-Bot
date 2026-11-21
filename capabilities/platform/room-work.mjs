@@ -164,6 +164,26 @@ export class RoomWork {
       ORDER BY rowid DESC`).all(sessionId, except, JSON.stringify(ids)).map(row => JSON.parse(row.data));
   }
 
+  receivedOriginals(session, context) {
+    const rows = this.platform.store.db.prepare(`SELECT data FROM records WHERE kind='platform-calls'
+      AND json_extract(data,'$.target.id')=? AND json_extract(data,'$.tool')='send_input'
+      AND json_extract(data,'$.input_id') IS NOT NULL AND json_array_length(data,'$.material_source_ids')>0
+      ORDER BY rowid DESC LIMIT 12`).all(session.id);
+    const sources = new Map();
+    for (const { data } of rows) {
+      const call = JSON.parse(data), input = this.platform.store.get('platform-inputs', call.input_id);
+      if (input?.call_id !== call.id || call.material_reference_only || this.platform.executions.confirmedNonSubmission(call)) continue;
+      for (const id of call.material_action_ids ?? call.material_source_ids) {
+        const message = this.platform.store.get('messages', id);
+        if (sources.has(id) || !this.canHandOff(message, session, context.actor, true) ||
+            !this.platform.canReadReference({ kind: 'event', id }, context)) continue;
+        sources.set(id, { id, text: message.content, attachments: message.attachments?.map(file => file.id),
+          received_at: call.createdAt, input_status: input.status });
+      }
+    }
+    return [...sources.values()];
+  }
+
   sourceFacts(ids, call) {
     return ids.map(id => {
       const message = this.platform.store.get('messages', id);

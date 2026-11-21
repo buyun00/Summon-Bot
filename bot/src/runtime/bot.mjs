@@ -979,8 +979,8 @@ export class BotRuntime {
     if (!root) return;
     const peers = this.platform.executions.directWork(context.conversation.id).filter(work =>
       work.origin_execution?.kind === 'conversation' && work.origin_room?.id === destination.id && work.origin_message_id === root);
-    if (!peers.length || label?.stage !== 'correction' && peers.some(work =>
-      work.acceptance_state === 'closed' && work.acceptance?.outcome === 'delivered')) return;
+    if (!peers.length || label?.stage !== 'correction' && peers.every(work => work.acceptance_state === 'closed') &&
+        peers.some(work => work.acceptance?.outcome === 'delivered')) return;
     const job = this.active.get(context.conversation.id);
     if (job?.runId !== context.origin.run_id) return;
     const evidence = () => {
@@ -995,7 +995,8 @@ export class BotRuntime {
       if (!sources) return;
       return { original: root, host_instructions: sources.hostMessages.map(item => ({ id: item.id, text: item.content })),
         seats: sessions.map(work => ({ id: work.id, state: work.status, waiting: work.waiting_summary,
-          acceptance: work.acceptance_state, result: work.latest_call_id, input_revision: work.input_revision })),
+          acceptance_state: work.acceptance_state, acceptance: this.platform.executions.acceptanceView(work, context),
+          received_originals: this.platform.roomWork.receivedOriginals(work, context), result: work.latest_call_id, input_revision: work.input_revision })),
         results: sources.versions.results.map(id => ({ id, text: sources.facts.get(id) })), published,
         proposal: { text: args.text, attachments: args.attachments?.map(item => item.id ?? item), references: args.references } };
     };

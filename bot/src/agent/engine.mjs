@@ -92,6 +92,8 @@ function toolSpecForExecution(spec, { isPiSession }) {
 }
 const readTools = new Set(['find', 'read']);
 const asError = error => ({ code: error.code || 'operation_failed', message: error.message, status: error.status, details: error.details });
+const reviewBudget = (model, messages) => Math.min(model.maxTokens, Math.floor(model.contextWindow / 4),
+  model.contextWindow - contextTokens(messages) - 512);
 
 export class BotEngine {
   constructor({ model, platform, usage, toolSpecs, emit, clean, reportUsageError }) {
@@ -585,8 +587,8 @@ export class BotEngine {
       'Reuse a partial card only for the same reported facts and outstanding work. A new signed original, a corrected value, a new supported fact or a separately requested answer can advance the work. ' +
       'Use null when the proposed card advances it. Return only the assessment.' };
     const messages = [system, textMessage(evidence)];
-    const maxTokens = Math.min(320, model.maxTokens, model.contextWindow - contextTokens(messages) - 512);
-    if (maxTokens < 96) throw runtimeFailure('work_review_unavailable', 'The work review exceeds the current model context. Select the relevant original first.', 409);
+    const maxTokens = reviewBudget(model, messages);
+    if (maxTokens < 128) throw runtimeFailure('work_review_unavailable', 'The work review exceeds the current model context. Select the relevant original first.', 409);
     const reply = await (await this.stream(job, model, { messages }, {}, maxTokens, 'conversation')).result();
     const choice = reply.stopReason === 'stop' && extractJsonObject(reply.content.filter(part => part.type === 'text').map(part => part.text).join(''));
     if (!['progress', 'complete'].includes(choice?.stage) || choice.reuse !== null &&
@@ -618,7 +620,7 @@ export class BotEngine {
       confirmed_delivery: sources.versions.deliveries.includes(id), accepted_delivery: sources.versions.accepted?.includes(id), text }));
     const messages = [system, textMessage({ destination: { id: destination.id, name: destination.name }, original_work_reply: sources.local_work, host,
       destination_requests: sources.requests, evidence })];
-    const maxTokens = Math.min(model.maxTokens, Math.floor(model.contextWindow / 4), model.contextWindow - contextTokens(messages) - 512);
+    const maxTokens = reviewBudget(model, messages);
     if (maxTokens < 128) return { review_error: 'source_context_limit' };
     const response = await (await this.stream(job, model, { messages }, {}, maxTokens, 'conversation')).result();
     if (response.stopReason !== 'stop') return { review_error: response.stopReason || 'incomplete' };

@@ -326,7 +326,7 @@ export class Executions {
         .all(room.id, question, Number(crossRoom && !label), context.actor.id).map(row => JSON.parse(row.data));
       for (const peer of peers) {
         const previous = this.originalReplies(peer).findLast(({ message, stage }) =>
-          label?.stage !== 'correction' && peer.acceptance_state === 'closed' && peer.acceptance?.outcome === 'delivered' && peer.acceptance.message_id === message.id ||
+          !review && label?.stage !== 'correction' && peer.acceptance_state === 'closed' && peer.acceptance?.outcome === 'delivered' && peer.acceptance.message_id === message.id ||
           review?.retained_id === message.id || ['complete', 'correction'].includes(stage) && !review &&
             message.content === args.text && !(message.attachments?.length || args.attachments?.length || message.references?.length || args.references?.length));
         if (previous && (!label || selected?.owner_conversation_id === context.conversation.id && sameRef(selected.origin_room, room)))
@@ -359,7 +359,7 @@ export class Executions {
     if (label && reply && reply.id !== work.origin_message_id && stage !== 'progress' && !sameRef(forward?.target, target))
       reject('work_origin_mismatch', 'The selected reply belongs to another question. Use the work’s original question.', 409,
         { origin_message_id: work.origin_message_id });
-    const retained = work.retained_delivery && !['progress', 'correction'].includes(stage) &&
+    const retained = !review && work.retained_delivery && !['progress', 'correction'].includes(stage) &&
       this.originalReplies(work).find(item => item.message.id === work.retained_delivery.message_id)?.message;
     if (stage === 'progress' && label?.stage === 'progress') return this.progressReply(work, context, reply, args);
     return { reply: { kind: 'event', id: work.origin_message_id },
@@ -522,8 +522,13 @@ export class Executions {
         !(sameIdentity(work.owner, context.actor) && sameRef(parent, work.origin_execution))) return undefined;
     const { outcome, message_id: id } = work.acceptance;
     const ref = { kind: 'event', id };
-    return { outcome, ...(outcome === 'delivered' && id && this.platform.canReadReference(ref, context) &&
-      { message_id: id, message_ref: ref }) };
+    if (outcome !== 'delivered' || !id) return { outcome };
+    if (this.platform.canReadReference(ref, context)) return { outcome, message_id: id, message_ref: ref };
+    // A private seat may identify its own accepted delivery without gaining a Room read grant.
+    const message = context.session?.id === work.id && !work.sharing && this.platform.canReadSpace(context.actor, work.origin_room) &&
+      this.store.get('messages', id);
+    return { outcome, ...(message && message.callId === work.acceptance.call_id && message.roomId === work.origin_room.id &&
+      message.replyTo === work.origin_message_id && { message_id: id }) };
   }
 
   baseView(target, record, context, observation) {
