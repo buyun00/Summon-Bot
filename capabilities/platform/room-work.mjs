@@ -28,12 +28,49 @@ export class RoomWork {
         !platform.canReadSpace(submitter.actor, room, submitter) ||
         sharing && !sameRef(room, space))
       reject('room_work_forbidden', 'Work observations require the actual Room and membership', 403);
-    const source = args.work_source ? idOf(args.work_source, 'event') :
-      context.origin?.event_ids?.findLast(id => platform.store.get('messages', id)?.roomId === room.id);
+    const source = args.work_source ? idOf(args.work_source, 'event') : null;
     const message = source && platform.store.get('messages', source);
     if (source && (message?.roomId !== room.id || !inherited && !platform.canReadReference({ kind: 'event', id: source }, context)))
       reject('room_work_source_forbidden', 'Choose an accessible original message in the work Room', 403);
     return { room, source: message ? { kind: 'event', id: message.id } : null };
+  }
+
+  origin(args, context, room, observations) {
+    const inherited = context.session?.origin_message_id;
+    const explicit = args.origin_message_id && idOf(args.origin_message_id, 'event');
+    const observed = sameRef(observations?.room, room) && observations?.source?.id;
+    if (inherited && [explicit, observed].some(id => id && id !== inherited))
+      reject('invalid_origin_message', 'A direct child inherits its parent Session’s original question', 403);
+    if (inherited) return inherited;
+    if (observed && explicit && explicit !== observed)
+      reject('invalid_origin_message', 'Use the same original question for delegated work and its Room observations');
+    const selected = explicit || observed;
+    if (selected) {
+      if (!room || this.platform.store.get('messages', selected)?.roomId !== room.id ||
+          !this.platform.canReadReference({ kind: 'event', id: selected }, context))
+        reject('invalid_origin_message', 'Choose an accessible original Room message for origin_message_id', 403);
+      return selected;
+    }
+    if (!room) return null;
+    const candidates = new Set();
+    for (const id of context.origin?.event_ids ?? []) {
+      const message = this.platform.store.get('messages', id);
+      if (message?.roomId === room.id) {
+        const reply = message.replyTo && this.platform.store.get('messages', message.replyTo);
+        // A reply to a progress report can refer back to the question it answered.
+        const question = reply?.roomId === room.id && reply.senderId === context.actor.id && reply.replyTo
+          ? this.platform.store.get('messages', reply.replyTo) : reply;
+        candidates.add(question?.roomId === room.id ? question.id : id);
+        continue;
+      }
+      const event = this.platform.store.get('platform-events', id);
+      if (event?.type === 'call.receipt' && event.owner_conversation_id === context.origin.conversation_id &&
+          sameRef(event.origin_room, room) && event.origin_message_id) candidates.add(event.origin_message_id);
+    }
+    if (candidates.size > 1)
+      reject('origin_message_required', 'Select the original question for this assignment with origin_message_id. Several inputs are in this turn.',
+        409, { candidates: [...candidates] });
+    return candidates.values().next().value ?? null;
   }
 
   readable(event, context) {

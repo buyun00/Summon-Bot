@@ -898,6 +898,17 @@ export class BotRuntime {
     }
     if (relevantGroups.size || requestIds.size || inbox.calls(runId).some(call => call.tool === 'open_session')) {
       const owned = this.platform.executions.directWork(conversation.id);
+      if (requestIds.size && conversation.kind === 'room' && !run.receipt_group) {
+        const recent = new Map();
+        for (const work of owned.slice().reverse()) {
+          if (!sameRef(work.origin_room, conversation.space) || !work.origin_message_id || recent.has(work.origin_message_id)) continue;
+          const question = this.platform.store.get('messages', work.origin_message_id);
+          if (question?.roomId === conversation.space.id)
+            recent.set(question.id, { origin_message_id: question.id, original_question: question.content.slice(0, 1200) });
+          if (recent.size === 5) break;
+        }
+        if (recent.size) facts.push(textMessage({ type: 'recent_delegated_questions', questions: [...recent.values()] }));
+      }
       for (const work of owned) {
         if (work.owner_run_id === runId || requestIds.has(work.origin_message_id)) relevantGroups.add(workGroup(work));
       }
@@ -905,8 +916,12 @@ export class BotRuntime {
       for (const work of owned) {
         const key = workGroup(work);
         if (!relevantGroups.has(key)) continue;
-        if (!groups.has(key)) groups.set(key, { type: 'origin_work_status', origin_room: work.origin_room,
-          origin_message_id: work.origin_message_id, sessions: [] });
+        if (!groups.has(key)) {
+          const question = work.origin_room && this.platform.canReadReference({ kind: 'event', id: work.origin_message_id }, context) &&
+            this.platform.store.get('messages', work.origin_message_id);
+          groups.set(key, { type: 'origin_work_status', origin_room: work.origin_room,
+            origin_message_id: work.origin_message_id, ...(question && { original_question: question.content.slice(0, 4000) }), sessions: [] });
+        }
         groups.get(key).sessions.push({ session_id: work.id, engine: work.engine, work_summary: work.work_summary,
           status: work.status, waiting_summary: work.waiting_summary, acceptance_state: work.acceptance_state,
           latest_call_id: work.latest_call_id });

@@ -704,24 +704,9 @@ export class SummonPlatform {
     const binding = model ? context.session?.model_binding ?? bindModel({ connectionStore: this.models.path }, model, 'pi_session') : null;
     const origin_room = context.session?.origin_room ??
       (context.conversation?.space?.kind === 'room' ? context.conversation.space : null) ?? project_room ?? group_work?.room ?? null;
-    const explicitOriginMsg = args.origin_message_id ? idOf(args.origin_message_id, 'event') : null;
-    if (explicitOriginMsg) {
-      const msg = this.store.get('messages', explicitOriginMsg);
-      if (!origin_room || msg?.roomId !== origin_room.id || !this.canReadReference({ kind: 'event', id: explicitOriginMsg }, context)) {
-        reject('invalid_origin_message', 'Choose an accessible original Room message for origin_message_id', 403);
-      }
-    }
-    const sourceIds = context.origin?.event_ids || [];
-    const inferredOriginMsg = origin_room && sourceIds.findLast(id => this.store.get('messages', id)?.roomId === origin_room.id);
-    const receiptOrigins = new Set();
-    if (origin_room && !explicitOriginMsg && !inferredOriginMsg) for (const id of sourceIds) {
-      const event = this.store.get('platform-events', id);
-      if (event?.type === 'call.receipt' && event.owner_conversation_id === context.origin.conversation_id &&
-          sameRef(event.origin_room, origin_room) && event.origin_message_id) receiptOrigins.add(event.origin_message_id);
-    }
-    const origin_message_id = explicitOriginMsg ?? context.session?.origin_message_id ??
-      (sameRef(group_work?.room, origin_room) ? group_work.source?.id : null) ?? inferredOriginMsg ??
-      (receiptOrigins.size === 1 ? [...receiptOrigins][0] : null);
+    const origin_message_id = this.roomWork.origin(args, context, origin_room, group_work);
+    if (group_work && sameRef(group_work.room, origin_room) && origin_message_id)
+      group_work.source = { kind: 'event', id: origin_message_id };
     const owner_conversation_id = context.origin?.conversation_id ?? null;
     const work_summary = args.work_summary?.trim() || null;
     const allowed_followup_rooms = [];

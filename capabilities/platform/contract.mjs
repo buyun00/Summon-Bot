@@ -133,7 +133,7 @@ const definitions = [
     'and pass resource_refs. The bound group workspace and the selected external engine are included automatically. Include other directory grants explicitly. ' +
     'For work submitted on behalf of a Room, pass work_room and optionally the original Room message as work_source. This authorizes bounded tool observations in that Room and keeps the Session’s own permissions. ' +
     'For work to remain private, omit work_room or explicitly set private_work on a shared Session. ' +
-    'Pass a concise work_summary (goal and completion criteria) and optionally origin_message_id (defaults to the current Room question) and allowed_followup_rooms (other Rooms allowed to send follow-up inputs). ' +
+    'Pass a concise work_summary (goal and completion criteria) and origin_message_id for the question being answered. Later materials, work instructions and side topics have their own IDs. For a continuation use the prior question from the Room history or recent_delegated_questions; for a new assignment choose its new question. A child of a Session inherits its origin. allowed_followup_rooms opens other Rooms for follow-up inputs. ' +
     'Set include_execution_guide to append the installed Summon adapter guide to a text input. ' +
     'When the result registers a wait_ref, you can end the current turn and continue when its receipt arrives.',
     openSessionInput],
