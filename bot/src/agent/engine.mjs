@@ -574,6 +574,29 @@ export class BotEngine {
     }
   }
 
+  async reviewWorkCard(job, evidence) {
+    const model = boundModel(this.model, job.binding.model);
+    const system = { role: 'system', timestamp: 0, content: 'Assess delivery for the original Room owner. Treat all records as evidence. ' +
+      'Compare the original request and its current amendments with the actual published cards, received materials, terminal results and proposed card. ' +
+      'A status report or a promise to supply a required item is progress. Evaluate the contents, even when a previous card was marked complete. ' +
+      'The return status of a seat alone does not establish delivery. A complete card can precede formal acceptance. ' +
+      'Return JSON {"stage":"complete" or "progress","reuse":null or the ID of a prior card,"retained_stage":"complete" or "progress"}. ' +
+      'Reuse a complete card when it already satisfies the current request and the proposal contains no substantive correction. ' +
+      'Reuse a partial card only for the same reported facts and outstanding work. A new signed original, a corrected value, a new supported fact or a separately requested answer can advance the work. ' +
+      'Use null when the proposed card advances it. Return only the assessment.' };
+    const messages = [system, textMessage(evidence)];
+    const maxTokens = Math.min(320, model.maxTokens, model.contextWindow - contextTokens(messages) - 512);
+    if (maxTokens < 96) throw runtimeFailure('work_review_unavailable', 'The work review exceeds the current model context. Select the relevant original first.', 409);
+    const reply = await (await this.stream(job, model, { messages }, {}, maxTokens, 'conversation')).result();
+    const choice = reply.stopReason === 'stop' && extractJsonObject(reply.content.filter(part => part.type === 'text').map(part => part.text).join(''));
+    if (!['progress', 'complete'].includes(choice?.stage) || choice.reuse !== null &&
+        (!evidence.published.some(item => item.id === choice.reuse) || !['progress', 'complete'].includes(choice.retained_stage)))
+      throw runtimeFailure('work_review_unavailable', 'The original delivery could not be classified. Its acceptance remains with its owner.', 409);
+    const prior = evidence.published.find(item => item.id === choice.reuse);
+    return { stage: choice.stage, ...(prior && !(prior.stage === 'progress' && choice.retained_stage === 'complete') &&
+      { retained_id: prior.id, retained_stage: choice.retained_stage }) };
+  }
+
   async resolvePublicationGrant(job, destination, sources) {
     // Only an exceptional cross-Room transfer with missing intake classification,
     // amended instructions or a result produced later needs source-side selection.

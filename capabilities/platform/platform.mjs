@@ -1115,6 +1115,11 @@ export class SummonPlatform {
                 release.authorization_id, release.dispatch_id ?? release.authorization_id, recipientRequest, release.materials,
                 release.formatted ?? release.presentation ?? []) }) }) });
         }
+        if (sameRef(to, context.conversation.space)) {
+          const review = await this.runtime.workCardReview(context, args, this.room.room(to.id, context.actor.id));
+          this.assertRunAllowed(context);
+          if (review) this.calls.bind(record.id, { work_review: review });
+        }
       }
       if (name === 'create_bot') {
         if (context.session) reject('configuration_forbidden', 'This Session cannot create Bot identities', 403);
@@ -1227,8 +1232,13 @@ export class SummonPlatform {
         const due = this.runtime.outstandingRoomReplies(this.runtime.inboxes.get(actor.id), space, context.origin.event_ids);
         if (due.length === 1) reply = { kind: 'event', id: due[0].message_id };
       }
-      const { reply: replyTo, work_reply, retained } = this.executions.roomReply(args, context, space, reply);
-      const delivered = retained || actor.kind === 'bot' && this.runtime.recoveredRoomReply(context.origin, id, replyTo?.id);
+      const { reply: replyTo, work_reply, retained, repeated_progress } = this.executions.roomReply(args, context, space, reply, publication.work_review);
+      if (repeated_progress && retained) {
+        this.calls.bind(call.id, { target: space });
+        return { ...this.room.messageReceipt(retained), already_reported: true,
+          guidance: 'This progress was reported at the current position. Continue the work or wait for new material.' };
+      }
+      const delivered = retained || actor.kind === 'bot' && this.runtime.recoveredRoomReply(context.origin, id, replyTo?.id, Boolean(work_reply));
       if (delivered) {
         const work = args.work_reply?.stage === 'complete' && this.executions.record({ kind: 'session', id: idOf(args.work_reply.session, 'session') });
         const selected = reply && this.store.get('messages', reply.id);

@@ -752,14 +752,14 @@ export class BotRuntime {
     });
   }
 
-  recoveredRoomReply(origin, roomId, replyTo) {
+  recoveredRoomReply(origin, roomId, replyTo, currentWork = false) {
     const inbox = this.inboxes.get(origin?.bot_id);
     const run = inbox?.run(origin.run_id);
     if (!run || inbox.conversation(run.conversation_id)?.space?.id !== roomId) return null;
     const routes = run.route_ids.map(id => inbox.store.getRecord(R.route, id));
     if (routes.some(route => route?.resolution && (!replyTo || route.event_id === replyTo)))
       throw runtimeFailure('delivery_resolved', '原发起人已结清此投递，续办请明确回复仍待处理的原消息');
-    if (!run.recovering_room_inputs) return null;
+    if (currentWork || !run.recovering_room_inputs) return null;
     const settled = routes.filter(route => route?.public_reply);
     if (settled.length && !replyTo)
       throw runtimeFailure('reply_target_required', 'Reply to the outstanding original message; this recovery already has confirmed public replies.');
@@ -968,6 +968,46 @@ export class BotRuntime {
     }
     if (!inspect) return null;
     return reviewCurrent(sources, () => publicationSources(this.platform, args, context, destination));
+  }
+
+  async workCardReview(context, args, destination) {
+    if (context.conversation.space.id !== destination.id || args.work_reply?.stage === 'progress') return;
+    const label = args.work_reply;
+    const selected = label && this.platform.executions.record(sessionRef(label.session.id ?? label.session));
+    if (label && (selected?.owner_conversation_id !== context.conversation.id || selected.origin_room?.id !== destination.id)) return;
+    const root = selected?.origin_message_id ?? (args.reply_to?.id ?? args.reply_to);
+    if (!root) return;
+    const peers = this.platform.executions.directWork(context.conversation.id).filter(work =>
+      work.origin_execution?.kind === 'conversation' && work.origin_room?.id === destination.id && work.origin_message_id === root);
+    if (!peers.length || label?.stage !== 'correction' && peers.some(work =>
+      work.acceptance_state === 'closed' && work.acceptance?.outcome === 'delivered')) return;
+    const job = this.active.get(context.conversation.id);
+    if (job?.runId !== context.origin.run_id) return;
+    const evidence = () => {
+      const sessions = this.platform.executions.directWork(context.conversation.id).filter(work => work.origin_execution?.kind === 'conversation' &&
+        work.origin_room?.id === destination.id && work.origin_message_id === root);
+      if (!sessions.length) return;
+      const published = this.platform.executions.originalReplies(sessions[0]).slice(-8).map(({ message, stage }) => ({
+        id: message.id, text: message.content, stage, attachments: message.attachments?.map(file => file.id), references: message.references }));
+      if (!published.length && (!label || !sessions.some(work => work.acceptance_state === 'open' &&
+          (work.waiting_summary || work.pending_input?.length)))) return;
+      const sources = publicationSources(this.platform, { ...args, publication: undefined }, context, destination, root);
+      if (!sources) return;
+      return { original: root, host_instructions: sources.hostMessages.map(item => ({ id: item.id, text: item.content })),
+        seats: sessions.map(work => ({ id: work.id, state: work.status, waiting: work.waiting_summary,
+          acceptance: work.acceptance_state, result: work.latest_call_id, input_revision: work.input_revision })),
+        results: sources.versions.results.map(id => ({ id, text: sources.facts.get(id) })), published,
+        proposal: { text: args.text, attachments: args.attachments?.map(item => item.id ?? item), references: args.references } };
+    };
+    const view = evidence();
+    if (!view) return;
+    const position = JSON.stringify(view);
+    if (position === job.workCardReview?.position) return job.workCardReview.result;
+    const result = await this.engine.reviewWorkCard(job, view);
+    if (position !== JSON.stringify(evidence()))
+      throw runtimeFailure('work_review_changed', 'The original work received new evidence while its card was being reviewed. Read the current position.', 409);
+    job.workCardReview = { position, result };
+    return result;
   }
 
   publicFile(job, room, ref) {

@@ -5,6 +5,7 @@ import { allowsConnection, enclosesExecutableScope, executableScope } from '../s
 import { executionGuide } from '../connectors/initialization.mjs';
 import { operationRecords } from '../services/session-processes.mjs';
 import { forwardInputs, unresolvedForward } from './session-work.mjs';
+import { roomQuestionLinks } from './room-publication.mjs';
 
 export const sessionRecords = 'platform-sessions';
 export const conversationRecords = 'platform-conversations';
@@ -263,15 +264,61 @@ export class Executions {
     });
   }
 
-  roomReply(args, context, room, reply) {
+  progressAnchor(work, id) {
+    const visited = new Set();
+    while (id && !visited.has(id)) {
+      visited.add(id);
+      const message = this.store.get('messages', id);
+      if (message?.roomId !== work.origin_room.id) break;
+      if (message.senderId !== work.owner.id) return id;
+      const call = message.callId && this.store.get(callRecords, message.callId);
+      if (call?.origin?.conversation_id !== work.owner_conversation_id || call.work_reply?.stage !== 'progress') break;
+      const earlier = this.record({ kind: 'session', id: call.work_reply.session_id });
+      if (earlier?.origin_message_id !== work.origin_message_id) break;
+      id = message.replyTo;
+    }
+    return work.origin_message_id;
+  }
+
+  progressReply(work, context, reply, args) {
+    const anchor = this.progressAnchor(work, reply?.id);
+    const group = new Set(this.directWork(work.owner_conversation_id).filter(peer => sameRef(peer.origin_room, work.origin_room) &&
+      peer.origin_message_id === work.origin_message_id).map(peer => peer.id));
+    const position = (ids, files, refs) => {
+      const sources = ids.filter(id => {
+        const event = this.store.get('platform-events', id);
+        if (event?.type === 'call.receipt' && event.target?.kind === 'session' && group.has(event.target.id)) return true;
+        const message = this.store.get('messages', id);
+        return message?.roomId === work.origin_room.id && message.senderId !== work.owner.id &&
+          (message.id === anchor || roomQuestionLinks(this.platform, work.origin_room, [message]).has(work.origin_message_id));
+      });
+      return keyOf(work.id, anchor, [...new Set(sources)].sort(), (files ?? []).map(file => file.id ?? file).sort(),
+        (refs ?? []).map(ref => keyOf(ref.kind, ref.id)).sort());
+    };
+    const current = position(context.origin.event_ids, args.attachments, args.references);
+    const prior = this.store.db.prepare(`SELECT data FROM records WHERE kind='platform-calls'
+      AND json_extract(data,'$.work_reply.session_id')=? AND json_extract(data,'$.work_reply.stage')='progress'
+      AND json_extract(data,'$.status')='completed' ORDER BY rowid DESC`).all(work.id);
+    for (const row of prior) {
+      const call = JSON.parse(row.data);
+      const message = call.result?.message?.id && this.store.get('messages', call.result.message.id);
+      if (!message || message.callId !== call.id || call.origin?.conversation_id !== work.owner_conversation_id ||
+          this.progressAnchor(work, message.replyTo) !== anchor) continue;
+      if ((call.work_reply.position ?? position(call.source_event_ids, message.attachments, message.references)) === current)
+        return { reply: { kind: 'event', id: anchor }, retained: message, repeated_progress: true };
+    }
+    return { reply: { kind: 'event', id: anchor }, work_reply: { session_id: work.id, stage: 'progress', position: current } };
+  }
+
+  roomReply(args, context, room, reply, review) {
     const label = args.work_reply;
     if (context.actor.kind !== 'bot') {
       if (label) reject('session_owner_required', 'The original Room owner publishes delegated work', 403);
       return { reply };
     }
     const selected = label && this.record({ kind: 'session', id: idOf(label.session, 'session') });
-    const question = label?.stage === 'complete' ? selected?.origin_message_id : reply?.id;
-    if (question && (!label || label.stage === 'complete')) {
+    const question = label && label.stage !== 'progress' ? selected?.origin_message_id : reply?.id;
+    if (question && (!label || label.stage === 'complete' || review?.retained_id)) {
       const crossRoom = !sameRef(context.conversation?.space, room);
       const peers = this.store.db.prepare(`SELECT data FROM records WHERE kind='platform-sessions'
         AND json_extract(data,'$.origin_room.id')=? AND json_extract(data,'$.origin_message_id')=?
@@ -279,9 +326,11 @@ export class Executions {
         .all(room.id, question, Number(crossRoom && !label), context.actor.id).map(row => JSON.parse(row.data));
       for (const peer of peers) {
         const previous = this.originalReplies(peer).findLast(({ message, stage }) =>
-          ['complete', 'correction'].includes(stage) || peer.acceptance?.outcome === 'delivered' && peer.acceptance.message_id === message.id);
+          label?.stage !== 'correction' && peer.acceptance_state === 'closed' && peer.acceptance?.outcome === 'delivered' && peer.acceptance.message_id === message.id ||
+          review?.retained_id === message.id || ['complete', 'correction'].includes(stage) && !review &&
+            message.content === args.text && !(message.attachments?.length || args.attachments?.length || message.references?.length || args.references?.length));
         if (previous && (!label || selected?.owner_conversation_id === context.conversation.id && sameRef(selected.origin_room, room)))
-          return { reply: { kind: 'event', id: question }, retained: previous.message };
+          return { reply: { kind: 'event', id: question }, retained: previous.message, repeated_progress: review?.retained_stage === 'progress' };
       }
     }
     // A result turn can refer to the material it just processed. Preserve
@@ -294,7 +343,7 @@ export class Executions {
     const recovery = !label && !fromResult && reply && context.origin.event_ids.map(id => this.store.get('platform-events', id))
       .filter(event => event?.type === 'call.receipt' && event.target?.kind === 'session')
       .map(event => this.record(event.target)).find(work => work?.retained_delivery && work.origin_message_id === reply.id);
-    if (!label && !fromResult && !recovery) return { reply };
+    if (!label && !fromResult && !recovery) return { reply, ...(review && { work_reply: { stage: review.stage, origin_message_id: question } }) };
     const target = label ? { kind: 'session', id: idOf(label.session, 'session') } :
       recovery ? { kind: 'session', id: recovery.id } : forward.target;
     const work = target && this.record(target);
@@ -303,16 +352,17 @@ export class Executions {
       if (label) reject('work_origin_mismatch', 'Publish the result from the original owner in the work’s original Room', 409);
       return { reply };
     }
-    if (!label && fromResult && !recovery)
+    if (!label && fromResult && !recovery && !review)
       reject('work_reply_stage_required', 'This reply refers to material whose result just returned. Use work_reply with progress to acknowledge the material, or complete to deliver the full result on its original question.', 409,
         { session: work.id, origin_message_id: work.origin_message_id });
-    const stage = label?.stage || 'complete';
+    const stage = review?.stage === 'progress' ? 'progress' : label?.stage || 'complete';
     if (label && reply && reply.id !== work.origin_message_id && stage !== 'progress' && !sameRef(forward?.target, target))
       reject('work_origin_mismatch', 'The selected reply belongs to another question. Use the work’s original question.', 409,
         { origin_message_id: work.origin_message_id });
     const retained = work.retained_delivery && !['progress', 'correction'].includes(stage) &&
       this.originalReplies(work).find(item => item.message.id === work.retained_delivery.message_id)?.message;
-    return { reply: stage === 'progress' && reply ? reply : { kind: 'event', id: work.origin_message_id },
+    if (stage === 'progress' && label?.stage === 'progress') return this.progressReply(work, context, reply, args);
+    return { reply: { kind: 'event', id: work.origin_message_id },
       retained, work_reply: { session_id: work.id, stage } };
   }
 

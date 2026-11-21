@@ -215,12 +215,15 @@ export function publicationSources(platform, args, context, destination, localRo
   }
   const deliveries = new Set();
   const accepted = new Set();
-  for (const work of owned.filter(work => questions.has(work.origin_message_id))) {
+  const group = owned.filter(work => questions.has(work.origin_message_id));
+  const outstanding = group.some(work => work.acceptance_state === 'open' && (work.waiting_summary || work.pending_input?.length));
+  for (const work of group) {
     for (const { message, stage } of platform.executions.originalReplies(work)) {
-      if (['complete', 'correction'].includes(stage) || work.acceptance?.outcome === 'delivered' && work.acceptance.message_id === message.id)
-        deliveries.add(message.id);
-      if (work.acceptance_state === 'closed' && work.acceptance?.outcome === 'delivered' && work.acceptance.message_id === message.id)
+      if (work.acceptance_state === 'closed' && work.acceptance?.outcome === 'delivered' && work.acceptance.message_id === message.id) {
         accepted.add(message.id);
+        deliveries.add(message.id);
+      } else if (['complete', 'correction'].includes(stage) &&
+          (!outstanding || platform.store.get('platform-calls', message.callId)?.work_review?.stage === 'complete')) deliveries.add(message.id);
     }
   }
   const versions = { user_messages: hostMessages.map(item => item.id), results, deliveries: [...deliveries], accepted: [...accepted] };
