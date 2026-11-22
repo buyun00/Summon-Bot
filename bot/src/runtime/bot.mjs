@@ -335,7 +335,8 @@ export class BotRuntime {
 
   async dispatch(inbox, bot) {
     const snapshot = inbox.pending();
-    const settled = new Set(snapshot.filter(route => this.settledProgress(inbox, route) || this.deadWaitRoute(inbox, route)));
+    const settled = new Set(snapshot.filter(route =>
+      this.settledProgress(inbox, route) || this.deadWaitRoute(inbox, route) || this.deadPiInputRoute(inbox, route)));
     if (settled.size) this.discard(inbox, [...settled], 'cancelled');
     const pending = snapshot.filter(route => !settled.has(route));
     const unassigned = new Map();
@@ -558,6 +559,15 @@ export class BotRuntime {
     const events = (wait.event_ids || []).map(id => inbox.event(id)).filter(Boolean);
     if (!this.conversationActive(conversation) && (call?.status === 'not_submitted' || events.some(event => event.status === 'not_submitted'))) return true;
     return Boolean(parentDead && (callSettled(call?.status) || events.some(event => callSettled(event.status))));
+  }
+
+  deadPiInputRoute(inbox, route) {
+    if (route.wait_id || route.event?.type !== 'pi.input') return false;
+    const conversation = route.conversation_id && inbox.conversation(route.conversation_id);
+    const session = conversation?.session_id && this.platform.executions.record(sessionRef(conversation.session_id));
+    if (!session || !this.platform.executions.sessionOrAncestorClosed(session)) return false;
+    const input = route.event.call_id && inbox.store.getRecord(R.input, route.event.call_id);
+    return Boolean(input && terminalCallStates.has(input.status) && input.receipt_pending === 'saved');
   }
 
   resumeAuthorizedRuns(inbox, conversation, bot) {
@@ -1006,6 +1016,11 @@ export class BotRuntime {
       }
       facts.push(textMessage({ type: 'call_result', call_id: event.call_id, tool: observation.tool, status: event.status, target,
         input_status: result?.input_status, session_status: result?.session_status,
+        ...(observation.origin?.fast_read_forward ? {
+          fast_read_forward: true,
+          ...(observation.source_event_ids?.[0] ? { source_event_id: observation.source_event_ids[0] } : {}),
+          ...(observation.origin?.source_room ? { source_room: observation.origin.source_room } : {}),
+        } : {}),
         result_ref: { kind: 'event', id: event.id }, result_position: event.result_position,
         result: content.length <= 12000 ? result : { preview: content.slice(0, 12000), truncated: true } }));
     }
@@ -1037,11 +1052,14 @@ export class BotRuntime {
             origin_message_id: work.origin_message_id, ...(question && { original_question: question.content.slice(0, 2000) }),
             sessions: [] });
         }
-        const openChildren = this.platform.executions.openChildren(work.id);
+        const descendants = this.platform.executions.descendantSessions(work.id);
         groups.get(key).sessions.push({ session_id: work.id, engine: work.engine, work_summary: work.work_summary,
           status: work.status, waiting_summary: work.waiting_summary, acceptance_state: work.acceptance_state,
           control: work.control, latest_call_id: work.latest_call_id,
-          ...(openChildren.length ? { open_children: openChildren.map(child => ({ session_id: child.id, status: child.status, acceptance_state: child.acceptance_state })) } : {}),
+          ...(descendants.length ? { descendants: descendants.map(child => ({
+            session_id: child.id, engine: child.engine, parent_session_id: child.origin_execution?.id ?? null,
+            status: child.status, acceptance_state: child.acceptance_state,
+          })) } : {}),
           ...(work.pending_input?.length ? { pending_requests: work.pending_input, input_targets: work.input_targets } : {}) });
       }
       for (const group of groups.values()) facts.push(textMessage(group));

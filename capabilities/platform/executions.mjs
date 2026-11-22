@@ -152,13 +152,17 @@ export class Executions {
   }
 
   cascadeCloseDescendants(sessionId) {
+    const closed = [];
     for (const child of this.descendantSessions(sessionId)) {
       if (child.acceptance_state !== 'open') continue;
       if (terminal.has(child.status) || child.control?.state === 'paused' || child.safe_to_disconnect === true) {
-        this.store.save(sessionRecords, { id: child.id, acceptance_state: 'closed', pending_delivery: null,
+        const updated = this.store.save(sessionRecords, { id: child.id, acceptance_state: 'closed', pending_delivery: null,
           ...(Array.isArray(child.allowed_followup_rooms) && child.allowed_followup_rooms.length ? { allowed_followup_rooms: [] } : {}) });
+        closed.push({ session_id: updated.id, engine: updated.engine, parent_session_id: updated.origin_execution?.id ?? null,
+          status: updated.status, acceptance_state: updated.acceptance_state });
       }
     }
+    return closed;
   }
 
   reconcileClosedDescendants() {
@@ -347,6 +351,12 @@ export class Executions {
       }) : [] };
     if (output !== undefined) view.output = output;
     else delete view.output;
+    if (context.actor.kind === 'bot' && typeof view.last_output_summary === 'string' &&
+        (view.last_output_summary === view.waiting_summary ||
+         view.last_output_summary === view.output ||
+         view.last_output_summary === view.output?.text)) {
+      delete view.last_output_summary;
+    }
     return view;
   }
 
@@ -619,12 +629,13 @@ export class Executions {
       patch.allowed_followup_rooms = [...next];
     }
     const saved = this.store.save(sessionRecords, patch);
+    let closedDescendants = [];
     if (args.acceptance_state === 'closed') {
-      this.cascadeCloseDescendants(saved.id);
+      closedDescendants = this.cascadeCloseDescendants(saved.id);
       this.platform.runtime?.wake();
     }
     this.calls.bind(call.id, { target });
-    return this.baseView(target, saved, context);
+    return { ...this.baseView(target, saved, context), ...(closedDescendants.length ? { closed_descendants: closedDescendants } : {}) };
   }
 
   saveControl(target, control) {
