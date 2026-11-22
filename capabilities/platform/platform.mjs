@@ -1129,6 +1129,11 @@ export class SummonPlatform {
           }
         }
       }
+      if (name === 'configure_session' && args.acceptance_state === 'closed' && args.delivery_message_id) {
+        const reviewed = await this.runtime.reviewDeliveryRebind(context, args);
+        this.assertRunAllowed(context);
+        if (reviewed) this.calls.bind(record.id, { delivery_rebind: reviewed });
+      }
       if (name === 'create_bot') {
         if (context.session) reject('configuration_forbidden', 'This Session cannot create Bot identities', 403);
         const result = this.store.transaction(() => {
@@ -1267,8 +1272,12 @@ export class SummonPlatform {
       if (work_reply?.stage === 'correction') this.store.save(sessionRecords, { id: work_reply.session_id, retained_delivery: null });
       const fields = publication.directed_publication ? publication.publication_fields.map(part => part.printed ?? part.text)
         .filter(text => args.text?.includes(text)) : [];
-      return this.room.send(id, { ...args, attachments, reply_to: replyTo, mentions: members(args.mentions),
-        clientId: context.clientId }, actor.id, { callId: call.id, ...(fields.length && { authorizedFields: fields }) });
+      const change = publication.work_review?.change;
+      const references = [...(args.references ?? [])];
+      if (change && !references.some(ref => ref.kind === 'event' && ref.id === change.previous)) references.push({ kind: 'event', id: change.previous });
+      return this.room.send(id, { ...args, references, attachments, reply_to: replyTo, mentions: members(args.mentions),
+        clientId: context.clientId }, actor.id, { callId: call.id, ...(fields.length && { authorizedFields: fields }),
+        ...(change && { workCardChange: { intent: change.mode === 'replacement' ? 'proposed_replacement' : 'addendum', previous: change.previous } }) });
     }
     if (name === 'save_file') {
       const action = this.runtime.materials.prepareSave(args, context);

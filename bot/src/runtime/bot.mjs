@@ -1186,10 +1186,103 @@ export class BotRuntime {
     const position = JSON.stringify(view);
     if (position === job.workCardReview?.position) return job.workCardReview.result;
     const result = { ...await this.engine.reviewWorkCard(job, view), original_question: root };
+    const accepted = view.seats.filter(seat => seat.current && seat.acceptance?.outcome === 'delivered').map(seat => seat.acceptance.message_id);
+    const previous = view.published.findLast(card => accepted.includes(card.id));
+    if (previous && (result.stage === 'complete' || args.work_reply?.stage === 'correction')) {
+      const deliveries = view.own_deliveries.map(item => ({ id: item.message_id, kind: 'outgoing_receipt',
+        time: item.time, destination: item.destination, status: item.status, text: item.text ?? item.fields.join(' ') }));
+      const change = await this.engine.assessCardChange(job, { previous, proposal: view.proposal, host: view.host_instructions,
+        results: [...view.results, ...deliveries] });
+      if (change?.mode === 'same') Object.assign(result, { retained_id: previous.id, retained_stage: 'complete' });
+      else if (change?.identifies_previous && !change.claims_new_link) {
+        delete result.retained_id;
+        delete result.retained_stage;
+        result.change = change;
+      }
+      else throw runtimeFailure('work_card_change_required', 'Identify the accepted card and the authorized substantive change. State whether this is a supplement or a proposed replacement. Link accepted sessions after the replacement is delivered.', 409,
+        { card_correction: { check: 'correction target', previous_card: previous.id, existing_links: accepted,
+          requested_change: change?.mode, draft_already_linked: false } });
+    }
     if (position !== JSON.stringify(evidence()))
       throw runtimeFailure('work_review_changed', 'The original work received new evidence while its card was being reviewed. Read the current position.', 409);
     job.workCardReview = { position, result };
     return result;
+  }
+
+  pendingCardActions(job) {
+    const { conversation, inbox, runId } = job;
+    if (conversation.kind !== 'room') return [];
+    const work = this.platform.executions.directWork(conversation.id).filter(seat => sameRef(seat.origin_room, conversation.space) &&
+      seat.owner.id === inbox.botId && !seat.authority_revoked);
+    if (!work.length) return [];
+    const actions = new Map();
+    for (const call of inbox.calls(runId)) {
+      if (call.state !== 'completed') continue;
+      if (call.tool === 'configure_session' && call.args.acceptance_state === 'closed' && call.args.delivery_message_id) {
+        const requested = call.args.delivery_message_id.id ?? call.args.delivery_message_id;
+        const seat = work.find(item => item.id === (call.args.target.id ?? call.args.target));
+        if (seat?.acceptance?.outcome !== 'delivered' || seat.acceptance.message_id === requested ||
+            call.result?.acceptance?.message_id !== seat.acceptance.message_id) continue;
+        const next = this.platform.store.get('messages', requested);
+        const review = next && this.platform.calls.get(next.callId)?.work_review;
+        if (next?.replyTo === seat.origin_message_id && next.roomId === conversation.space.id &&
+            review?.stage === 'complete' && review.covered_sessions?.includes(seat.id))
+          actions.set(seat.id, { action: 'review_unapplied_link', session: seat.id, question: seat.origin_message_id,
+            accepted_card: seat.acceptance.message_id, requested_card: requested });
+      }
+      if (call.tool !== 'send' || !call.result?.message?.id) continue;
+      const sent = this.platform.store.get('messages', call.result.message.id);
+      const delivery = sent && this.platform.calls.get(sent.callId), review = delivery?.work_review;
+      if (delivery?.id !== call.id || sent.roomId !== conversation.space.id || review?.stage !== 'complete' ||
+          review.change?.mode === 'addendum' || sent.replyTo !== review.original_question) continue;
+      const newer = work.some(seat => seat.origin_message_id === sent.replyTo && !seat.replaces_session && seat.acceptance_state === 'open' &&
+        !work.some(other => other.replaces_session === seat.id && other.replacement_authorization && !other.authority_revoked) &&
+        seat.latest_call_id && this.platform.calls.get(seat.latest_call_id)?.updatedAt > sent.createdAt);
+      if (newer) continue;
+      for (const seat of work.filter(item => item.origin_message_id === sent.replyTo && item.acceptance_state === 'open')) {
+        if (seat.status !== 'completed' || !seat.latest_call_id) continue;
+        const terminal = this.platform.calls.get(seat.latest_call_id);
+        if (!terminal || terminal.updatedAt > sent.createdAt) continue;
+        const used = review.covered_sessions?.includes(seat.id);
+        if (used || seat.replaces_session && !seat.replacement_authorization && review.covered_sessions?.includes(seat.replaces_session))
+          actions.set(seat.id, { action: used ? 'review_delivered_result' : 'record_unused_work_disposition',
+            session: seat.id, question: sent.replyTo, card: sent.id, terminal_state: seat.status });
+      }
+    }
+    return [...actions.values()];
+  }
+
+  async reviewDeliveryRebind(context, args) {
+    const work = this.platform.executions.require({ kind: 'session', id: args.target.id ?? args.target }, context, 'control');
+    const requested = args.delivery_message_id.id ?? args.delivery_message_id;
+    const prior = work.acceptance?.outcome === 'delivered' ? work.acceptance : work.previous_delivery;
+    if ((!prior && work.acceptance_state !== 'closed') || prior?.message_id === requested) return;
+    const parent = context.conversation, job = this.active.get(parent?.id);
+    if (context.session || !job || job.runId !== context.origin.run_id || work.owner.id !== context.actor.id ||
+        work.origin_execution?.kind !== 'conversation' || work.owner_conversation_id !== parent.id || !sameRef(work.origin_room, parent.space))
+      throw runtimeFailure('delivery_rebind_forbidden', 'Only the active direct owner in the original Room can replace this acceptance link.', 403);
+    const unchanged = () => runtimeFailure('delivery_link_unchanged', 'The existing delivery link is still effective. Select a later authorized replacement covering this seat.', 409,
+      { accepted_card: prior?.message_id, requested_card: requested });
+    const replies = this.platform.executions.originalReplies(work);
+    const previous = replies.find(item => item.message.id === prior?.message_id)?.message;
+    const next = replies.find(item => item.message.id === requested)?.message;
+    const review = next && this.platform.calls.get(next.callId)?.work_review;
+    if (args.close_reason || !prior || !previous || !next || next.createdAt <= previous.createdAt ||
+        review?.stage !== 'complete' || review.original_question !== work.origin_message_id || !review.covered_sessions?.includes(work.id) ||
+        review.change?.mode === 'addendum') throw unchanged();
+    const evidence = () => {
+      const sources = publicationSources(this.platform, { reply_to: work.origin_message_id }, context, work.origin_room, work.origin_message_id);
+      if (!sources?.versions.seats.some(seat => seat.id === work.id && seat.current && seat.result)) return;
+      return { original_question: work.origin_message_id, previous: { id: previous.id, text: previous.content },
+        proposal: { id: next.id, text: next.content }, disposition_request: { requested, note: args.disposition_note },
+        host: sources.localOrders.map(item => ({ id: item.id, time: item.createdAt, text: item.content })),
+        results: sources.versions.results.map(id => ({ id, text: sources.facts.get(id) })) };
+    };
+    const view = evidence();
+    if (!view) throw unchanged();
+    const change = await this.engine.assessCardChange(job, view);
+    if (change?.mode !== 'replacement' || JSON.stringify(view) !== JSON.stringify(evidence())) throw unchanged();
+    return { ...change, requested, session: work.id };
   }
 
   publicFile(job, room, ref) {
@@ -1349,7 +1442,7 @@ export class BotRuntime {
         const canProcess = route => this.routeReady(inbox, route);
         const pendingNow = pendingForRun().filter(canProcess);
         const startView = job.view();
-        const restored = storedOutcome && pendingNow.every(route => storedOutcome.eventIds.includes(route.event_id)) &&
+        const restored = storedOutcome && !this.pendingCardActions(job).length && pendingNow.every(route => storedOutcome.eventIds.includes(route.event_id)) &&
           !this.outstandingRoomReplies(inbox, conversation.space, storedOutcome.eventIds).length &&
           !this.unsettledForwardReturns(job, storedOutcome.eventIds).length &&
           canRetainAuthorizationView(inbox.run(run.id).model_outcome_uses_view, startView.view_revision) &&
@@ -1498,6 +1591,7 @@ export class BotRuntime {
       },
       refresh: window => this.contextBoundary(job, window),
       publicationEvidence: audience => this.publicationEvidence(job, audience),
+      pendingCardActions: () => this.pendingCardActions(job),
       publicFile: (room, ref) => this.publicFile(job, room, ref),
       outstandingReplies: ids => this.outstandingRoomReplies(inbox, conversation.space, ids),
       unsettledForwards: ids => this.unsettledForwardReturns(job, ids),
@@ -1576,6 +1670,12 @@ export class BotRuntime {
     let history = [];
     let publicRoom;
     const facts = [];
+    if (run.delivery_review_trigger?.kind === 'correct_original_card') facts.push(textMessage({
+      type: 'reconsider_original_card', original_question: run.delivery_review_trigger.original_question,
+      instruction: 'Read the original source returns and the latest actual inputs. A later public request to forward an earlier original is not a second required seat input. Correct the unsent draft in this Room, then check actual dispositions.' }));
+    const dispositions = this.pendingCardActions(job);
+    if (dispositions.length) facts.push(textMessage({ type: 'outstanding_card_dispositions', actions: dispositions,
+      instruction: 'Act from this original parent. Verify the card and each seat. For a credited delivered seat use configure_session and verify the returned message_id. For unused work record its own truthful non-delivery disposition. If a previous request returned a different card, inspect the authorized change and make the actual link or report the reason it stays unchanged.' }));
     const publicReplies = job.outstandingReplies(current.map(event => event.id));
     if (publicReplies.length) facts.push(textMessage({ type: 'public_reply_requested', requests: publicReplies,
       instruction: 'Give the explicitly requested reply using send and reply_to for the actual original message. Private final text does not deliver it.' }));
@@ -1764,6 +1864,13 @@ export class BotRuntime {
           ...(work.pending_input?.length && { pending_requests: work.pending_input, input_targets: work.input_targets }) });
       }
       for (const group of groups.values()) facts.push(textMessage(group));
+      const localHost = current.filter(event => event.type === 'message' && event.author?.kind === 'user' && sameRef(event.space, conversation.space));
+      if (localHost.length) {
+        const receipts = roomPublicationReceipts(this.platform, ownerContext.actor, conversation, roomQuestionLinks(this.platform, conversation.space, localHost))
+          .filter(receipt => localHost.some(event => event.id === receipt.dispatch));
+        if (receipts.length) facts.push(textMessage({ type: 'actual_dispatch_receipts', receipts,
+          instruction: 'These are the actual historical sends under the current host order. Compare their exact received text to the instruction. Finish a missing prescribed line through the authorized send, then report the actual recipient receipt.' }));
+      }
     }
     return { ...view, current, history, facts, material: job.materials(), observation, publicRoom };
   }

@@ -423,6 +423,7 @@ export class ChatroomService {
       const message = this.store.save('messages', {
         id: eventId, kind: 'message', roomId: id, senderId: actor, author: identity(actor), content, attachments, references: refs, mentions,
         ...(options.authorizedFields?.length && { authorized_publication: { fields: options.authorizedFields } }),
+        ...(options.workCardChange && { work_card_change: options.workCardChange }),
         replyTo: parent?.id ?? null, ...(parent ? { replyAuthorId: parent.senderId } : {}),
         ...(clientId === undefined ? {} : { clientId }), ...(callId ? { callId } : {}),
       });

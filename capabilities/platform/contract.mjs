@@ -101,7 +101,7 @@ const definitions = [
     object({ ref, path: text, directory: text, cursor: text, limit: { type: 'integer', minimum: 1, maximum: 100 } }, ['ref'])],
   ['send', 'Publish to a Room using message:{to:{kind:"room",id},text}, with optional attachments, references, mentions or reply_to. ' +
     'Use the current Room unless the host expressly directs publication to another Room. For a transfer you may select that current instruction in publication.authorization. The host supplies its approved materials. Reading a Room or opening an intake does not authorize publication of its contents elsewhere. ' +
-    'For a progress report or the complete delegated result, include work_reply:{session,stage:"progress"|"complete"}. A complete work reply is anchored to its original question. Use stage:"correction" for a material change to a previously confirmed delivery. ' +
+    'For a progress report or the complete delegated result, include work_reply:{session,stage:"progress"|"complete"}. A complete work reply is anchored to its original question. Use stage:"correction" for a material change. Identify the previous card, the authorized new fact, and whether the new text supplements that card or is its proposed replacement. Report actual seat linkage only after configure_session returns the selected message ID. ' +
     'For a verified connection fault, address the message to {kind:"connection",id} with the problem and shareable references. ' +
     'Reuse repair_key when requesting repair of the same fault. The maintainer replies to the repair event on that connection with reply_to and an optional repair_outcome.',
     object({ message: sendMessage }, ['message']), ({ message }) => message],

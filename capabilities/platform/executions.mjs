@@ -374,7 +374,7 @@ export class Executions {
         const call = message.callId && this.store.get(callRecords, message.callId);
         return call?.tool === 'send' && call.status === 'completed' && sameRef(call.target, work.origin_room) &&
           call.origin?.conversation_id === work.owner_conversation_id && call.result?.message?.id === message.id
-          ? [{ message, stage: call.work_reply?.stage, session_id: call.work_reply?.session_id }] : [];
+          ? [{ message, stage: call.work_reply?.stage ?? call.work_review?.stage, session_id: call.work_reply?.session_id }] : [];
       });
   }
 
@@ -931,10 +931,22 @@ export class Executions {
       return this.restorePiAuthority(current, args, context, call);
     }
     const hostReview = args.host_review_receipt && this.hostReview(current, args, context, call);
+    const requested = args.delivery_message_id && idOf(args.delivery_message_id, 'event');
+    if (requested && (args.acceptance_state !== 'closed' || args.close_reason))
+      reject('invalid_disposition', 'Link a delivered card with acceptance_state closed. A different terminal disposition has no delivered card.', 409);
+    const prior = current.acceptance?.outcome === 'delivered' ? current.acceptance : current.previous_delivery;
+    const changing = args.acceptance_state === 'closed' && requested && (prior || current.acceptance_state === 'closed') && requested !== prior?.message_id;
+    const rebind = changing && this.calls.get(call.id)?.delivery_rebind;
+    if (changing && (!rebind || rebind.mode !== 'replacement' || rebind.previous !== prior?.message_id ||
+        rebind.requested !== requested || rebind.session !== current.id))
+      reject('delivery_link_unchanged', 'The acceptance link was not changed. Read the current card and its replacement authority.', 409,
+        { accepted_card: prior?.message_id, requested_card: requested });
     if (args.acceptance_state !== undefined) patch.acceptance_state = args.acceptance_state;
-    if (args.acceptance_state === 'closed' && current.acceptance_state !== 'closed') {
-      patch.acceptance = { ...this.acceptance(current, args, context, hostReview), reviewer: context.actor,
-        direct_parent: current.origin_execution, ...(hostReview && { host_review: hostReview }) };
+    if (args.acceptance_state === 'closed' && (current.acceptance_state !== 'closed' || changing)) {
+      const selection = !requested && !args.close_reason && prior ? { ...args, delivery_message_id: prior.message_id } : args;
+      patch.acceptance = { ...this.acceptance(current, selection, context, hostReview), reviewer: context.actor,
+        direct_parent: current.origin_execution, ...(rebind && { previous_message_id: rebind.previous, authorization: rebind.authorization }),
+        ...(hostReview && { host_review: hostReview }) };
       if (hostReview && current.authority_revoked && current.engine === 'pi' && this.platform.runtime.piAtRest(current)) {
         patch.safe_to_disconnect = true;
         patch.revocation_stop = 'stopped';
@@ -942,6 +954,7 @@ export class Executions {
       patch.pending_delivery = null;
       patch.acceptance_hold = null;
     } else if (args.acceptance_state === 'open' && current.acceptance_state !== 'open') {
+      if (current.acceptance?.outcome === 'delivered') patch.previous_delivery = current.acceptance;
       patch.acceptance = null;
     }
     if (args.work_summary !== undefined) {

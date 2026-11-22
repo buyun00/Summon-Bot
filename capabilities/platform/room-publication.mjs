@@ -202,6 +202,8 @@ export function roomPublicationReceipts(platform, actor, conversation, links, de
     receipts.push({ authorization: grant.id, dispatch: call.publication_dispatch, message_id: message.id,
       destination: { ...call.target, name: platform.store.get('rooms', message.roomId)?.name },
       status: 'delivered', time: message.createdAt, fields,
+      ...(call.publication_required_text !== undefined && { required_text: call.publication_required_text,
+        prescribed_text_delivered: call.publication_required_text === message.content }),
       ...((call.publication_fields_only || fields.includes(message.content)) && { text: message.content }) });
   }
   return receipts.sort((a, b) => a.time.localeCompare(b.time));
