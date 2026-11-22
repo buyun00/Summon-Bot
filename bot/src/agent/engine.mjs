@@ -23,7 +23,8 @@ const roomLayerRules = [
   '- When the speaker has appropriate authority and the instruction applies, resolve conflicts in this order: 1) current-turn explicit request or correction (this delivery only) > 2) confirmed room or project convention (this room/project only) > 3) this Bot’s individual persona and long-term user instructions (all rooms and direct chats) > 4) built-in role default > 5) general defaults.',
   '- Preserve all non-conflicting rules from lower layers.',
   '- Scope and persistence: A one-off exception applies only to the current delivery and does not alter long-term rules. When an authorized user explicitly changes a long-term rule for this room or for this Bot across rooms, apply it now and persist it via material_index_ref (using save_file and configure_bot as documented in configure_bot) with applies_to set to the room or this Bot and source_refs pointing to the source message so it survives history compression.',
-  '- Room timeline and turn targets: Public room messages appear once in publish order as room_message entries with stable formatting across turns; mid-turn interjections and async wakeup updates are appended to the current fork tail. The current_room_inputs entry lists the message IDs to handle in this turn—use the full wording, actual author, reply target, mentions, and references of those messages.',
+  '- Room timeline and turn targets: Public room messages appear once in publish order as room_message entries with stable formatting across turns; mid-turn interjections and async wakeup updates are appended to the current fork tail. The current_room_inputs entry lists the message IDs to handle in this turn (along with room members and any resolved @mentions)—use the full wording, actual author, reply target, mentions, and references of those messages.',
+  '- Public visibility: In a Room conversation, your final assistant text at the end of a turn is strictly private internal output and is NEVER shown to the user or the Room. Whenever you want to answer, confirm, explain, or contribute publicly in the Room—including direct answers after calling read or other tools—you must call the send tool (with to: { kind: "room", id } and reply_to when replying to a specific message) before ending your turn. Only end without calling send when you intentionally choose to stay silent.',
   '- Room boundaries: Keep Room-private details in their source Room unless the host asks to share them in another Room.',
   '- For a delegated request, own the direct child Sessions you open. On a receipt, use origin_work_status for the original question and its siblings. Submitted means accepted for execution. Distinguish progress, input needed, failure, unknown delivery, and evidence that the requested work is complete. Use the receipt or artifact to check the actual completion criteria; read additional details when needed.',
   '- Deliver accepted work with send to the original Room, replying to the original question. Close the corresponding direct Sessions with configure_session after delivery. On a late receipt, check the original thread for prior delivery and report a material correction when needed. If forwarding was uncertain, read its recorded call before acting.',
@@ -46,14 +47,14 @@ const setupGuidance = 'The host authorized CLI setup for this private conversati
 
 const piSessionGuidance = 'You are running inside an independent Pi Session. Use your tools and open and manage child Sessions when useful. Check their results yourself, then return your findings, references or blockers to your immediate parent. The Room main conversation handles public delivery. Use send to a connection for verified connection repair.';
 
-function buildSystemContent({ isRoomConversation, isPiSession, setup, binding, duty }) {
+function buildSystemContent({ isRoomConversation, isPiSession, setup, binding, duty, botId }) {
   const sections = [hardBoundaries];
   if (isRoomConversation) sections.push(roomLayerRules);
   sections.push(generalDefaults);
   if (isPiSession) sections.push(piSessionGuidance);
   if (setup) sections.push(setupGuidance);
   if (duty) sections.push(`Built-in role default:\n${duty}`);
-  const personaLines = [`You are ${binding.name}.`];
+  const personaLines = [`You are ${binding.name}${botId ? ` (Bot ID: ${botId})` : ''}.`];
   if (binding.public_duty) personaLines.push(`Public duty: ${binding.public_duty}`);
   if (binding.instructions) personaLines.push(binding.instructions);
   sections.push(`Bot identity and individual instructions:\n${personaLines.join('\n')}`);
@@ -101,7 +102,7 @@ export class BotEngine {
       executionMode: 'sequential' }));
     const isRoomConversation = conversation.kind === 'room' && !conversation.session_id;
     const systemBase = { role: 'system', timestamp: Date.parse(conversation.created_at),
-      content: buildSystemContent({ isRoomConversation, isPiSession, setup, binding, duty: '' }), toolsAdded: tools.map(toToolDeclaration) };
+      content: buildSystemContent({ isRoomConversation, isPiSession, setup, binding, duty: '', botId: conversation.bot_id }), toolsAdded: tools.map(toToolDeclaration) };
     const inputReserve = Math.min(model.maxTokens, Math.floor(model.contextWindow / 4));
     const outputTokens = Math.max(128, Math.min(model.maxTokens, inputReserve));
     const inputBudget = model.contextWindow - outputTokens - 512;
@@ -227,17 +228,38 @@ export class BotEngine {
                 view_revision: authorizedView,
               }))
           : [];
-        const unseenActiveRoomIds = boundary.publicRoom
-          ? boundary.current.filter(event => isPublicEvent(event) && !seen.has(event.id)).map(event => event.id)
+        const unseenActiveRoomEvents = boundary.publicRoom
+          ? boundary.current.filter(event => isPublicEvent(event) && !seen.has(event.id))
           : [];
-        const roomInputPointer = unseenActiveRoomIds.length
-          ? {
-              ...textMessage({ type: 'current_room_inputs', room: conversation.space.id, message_ids: unseenActiveRoomIds }),
-              origin_event_ids: unseenActiveRoomIds,
-              room_input_pointer: true,
-              view_revision: authorizedView,
+        const unseenActiveRoomIds = unseenActiveRoomEvents.map(event => event.id);
+        let roomInputPointer = null;
+        if (unseenActiveRoomIds.length) {
+          const roomRecord = this.platform.store.get('rooms', conversation.space.id);
+          const roomMembers = (roomRecord?.members || []).map(memberId => {
+            if (memberId === 'user') return { id: 'user', kind: 'user', name: '用户' };
+            const memberBot = this.platform.store.get('platform-bots', memberId);
+            return { id: memberId, kind: 'bot', name: memberBot?.name || memberId };
+          });
+          const memberNameById = new Map(roomMembers.map(member => [member.id, member.name]));
+          const resolvedMentions = {};
+          for (const event of unseenActiveRoomEvents) {
+            if (event.mentions?.length) {
+              resolvedMentions[event.id] = event.mentions.map(id => ({ id, name: memberNameById.get(id) || id }));
             }
-          : null;
+          }
+          roomInputPointer = {
+            ...textMessage({
+              type: 'current_room_inputs',
+              room: conversation.space.id,
+              message_ids: unseenActiveRoomIds,
+              ...(roomMembers.length ? { members: roomMembers } : {}),
+              ...(Object.keys(resolvedMentions).length ? { mentions: resolvedMentions } : {}),
+            }),
+            origin_event_ids: unseenActiveRoomIds,
+            room_input_pointer: true,
+            view_revision: authorizedView,
+          };
+        }
         const fresh = boundary.current.filter(event => !seen.has(event.id) && !isPublicEvent(event)).map(event => ({ ...textMessage(eventInput(event), Date.parse(event.time || event.createdAt) || Date.now()),
           origin_event_ids: [event.id], view_revision: authorizedView }));
         const facts = boundary.facts.map(message => ({ ...message, view_revision: authorizedView }));
@@ -254,7 +276,7 @@ export class BotEngine {
         ];
         const optionalMaterial = requestPurpose === 'material_consolidation' ? null : material;
         const duty = builtInInstructions(binding.built_in_role, boundary.maintained_connection_ids);
-        const system = { ...systemBase, content: buildSystemContent({ isRoomConversation, isPiSession, setup, binding, duty }) };
+        const system = { ...systemBase, content: buildSystemContent({ isRoomConversation, isPiSession, setup, binding, duty, botId: conversation.bot_id }) };
         const fit = budget => boundary.publicRoom ? fitRoomHistory(job, compress, system, sameRun, tail, budget, boundary, optionalMaterial) :
           this.fit(job, compress, system, history, sameRun, tail, budget, boundary, optionalMaterial);
         let prompt = await fit(inputBudget);

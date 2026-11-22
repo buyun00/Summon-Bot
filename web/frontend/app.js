@@ -2242,11 +2242,15 @@ function renderMessageSummaries(message) {
   const items = ui.roomSummaries.get(message.id);
   if (!items?.length) return '';
   const open = ui.expandedSummaries?.has(message.id);
-  const badge = items.length === 1 ? `快读摘要 · ${nameOf(items[0].bot_id)}` : `快读摘要 · ${items.length} 位伙伴`;
-  const preview = items[0]?.summary || '';
+  const mentioned = new Set(message.mentions || []);
+  const ordered = mentioned.size
+    ? [...items.filter(item => mentioned.has(item.bot_id)), ...items.filter(item => !mentioned.has(item.bot_id))]
+    : items;
+  const badge = ordered.length === 1 ? `快读摘要 · ${nameOf(ordered[0].bot_id)}` : `快读摘要 · ${ordered.length} 位伙伴`;
+  const preview = ordered[0]?.summary || '';
   return `<details class="message-summaries" data-summary-id="${esc(message.id)}" ${open ? 'open' : ''}>
     <summary><span class="summary-badge">${esc(badge)}</span>${preview ? `<span class="summary-preview">${esc(preview)}</span>` : ''}</summary>
-    <div class="message-summaries-list">${items.map(item =>
+    <div class="message-summaries-list">${ordered.map(item =>
       `<div class="message-summary-item"><strong>${esc(nameOf(item.bot_id))}</strong><span>${esc(item.summary)}</span></div>`).join('')}</div>
   </details>`;
 }

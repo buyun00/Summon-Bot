@@ -335,7 +335,7 @@ export class BotRuntime {
 
   async dispatch(inbox, bot) {
     const snapshot = inbox.pending();
-    const settled = new Set(snapshot.filter(route => this.settledProgress(inbox, route)));
+    const settled = new Set(snapshot.filter(route => this.settledProgress(inbox, route) || this.deadWaitRoute(inbox, route)));
     if (settled.size) this.discard(inbox, [...settled], 'cancelled');
     const pending = snapshot.filter(route => !settled.has(route));
     const unassigned = new Map();
@@ -449,6 +449,7 @@ export class BotRuntime {
         continue;
       }
       if (!this.conversationActive(conversation)) continue;
+      this.resumeAuthorizedRuns(inbox, conversation, bot);
       let runs = inbox.runs(conversation.id).filter(run => activeRunStates.has(run.state));
       if (runs.length && conversation.kind === 'room' && conversation.space?.kind === 'room' &&
           !this.platform.canReadSpace(botRef(bot.id), conversation.space)) {
@@ -517,6 +518,38 @@ export class BotRuntime {
     return conversation && this.conversationActive(conversation) && this.supersededProgress(inbox, route);
   }
 
+  deadWaitRoute(inbox, route) {
+    const wait = route.wait_id && inbox.wait(route.wait_id);
+    if (!wait) return false;
+    const conversation = inbox.conversation(wait.conversation_id);
+    if (!conversation?.session_id || this.conversationActive(conversation)) return false;
+    const parentSession = this.platform.executions.record(sessionRef(conversation.session_id));
+    const call = this.platform.store.get('platform-calls', wait.call_id);
+    const events = (wait.event_ids || []).map(id => inbox.event(id)).filter(Boolean);
+    if (call?.status === 'not_submitted' || events.some(event => event.status === 'not_submitted')) return true;
+    const parentDead = parentSession?.acceptance_state === 'closed' || parentSession?.authority_revoked === true;
+    return Boolean(parentDead && (callSettled(call?.status) || events.some(event => callSettled(event.status))));
+  }
+
+  resumeAuthorizedRuns(inbox, conversation, bot) {
+    const suspended = inbox.runs(conversation.id).filter(run =>
+      run.state === 'suspended' && run.error?.code === 'connection_forbidden' &&
+      (inbox.hasOpenWaits(run.id) || run.route_ids.some(id => inbox.store.getRecord(R.route, id)?.state === 'pending')));
+    if (!suspended.length) return;
+    const actor = botRef(bot.id);
+    const fixedConnection = conversation.binding?.model?.connection_id || null;
+    const purpose = conversation.kind === 'fast_read' ? 'fast_read' : 'conversation';
+    const resolved = fixedConnection ? null : this.platform.models.resolveForBot(bot, purpose);
+    const resolvedAuthorized = Boolean(resolved && this.platform.canUseModel(actor, resolved.connection_id));
+    for (const run of suspended) {
+      const runConnection = fixedConnection || run.binding?.model?.connection_id || null;
+      const keepBinding = Boolean(runConnection && this.platform.canUseModel(actor, runConnection));
+      if (!keepBinding && (fixedConnection || !resolvedAuthorized)) continue;
+      inbox.putRun({ id: run.id, state: 'pending', retry_at: null, error: null,
+        ...(!keepBinding && run.binding ? { binding: null } : {}) });
+    }
+  }
+
   conversationActive(conversation) {
     const control = this.registered(conversation)?.control || conversation.control;
     return control.state === 'active' && !this.targetPaused(conversation.session_id && sessionRef(conversation.session_id));
@@ -539,6 +572,11 @@ export class BotRuntime {
         const { event, ...stored } = route;
         inbox.store.putRecord(R.route, { ...stored, state: status, processed_at: now() });
         if (status === 'access_revoked') inbox.settleWait(stored, status);
+        else if (status === 'cancelled' && stored.wait_id) {
+          const wait = inbox.wait(stored.wait_id);
+          const resolvedEvent = wait && (event ?? inbox.event(stored.event_id));
+          if (resolvedEvent && isTerminalReceipt(resolvedEvent, wait)) inbox.settleWait(stored, status);
+        }
       }
     });
     this.consumeDeliveries(inbox, eventIds);

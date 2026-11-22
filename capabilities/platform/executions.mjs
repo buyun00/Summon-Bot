@@ -532,6 +532,14 @@ export class Executions {
       patch.allowed_followup_rooms = [...next];
     }
     const saved = this.store.save(sessionRecords, patch);
+    if (args.acceptance_state === 'closed') {
+      for (const child of this.openChildren(saved.id)) {
+        if (child.status === 'not_submitted' && child.safe_to_disconnect === true) {
+          this.store.save(sessionRecords, { id: child.id, acceptance_state: 'closed', pending_delivery: null });
+        }
+      }
+      this.platform.runtime?.wake();
+    }
     this.calls.bind(call.id, { target });
     return this.baseView(target, saved, context);
   }
@@ -604,6 +612,7 @@ export class Executions {
       return control.stop_id === call.id ? { ...item, control } : item;
     });
     const status = targets.every(item => item.control.stop_status === 'stopped') ? 'stopped' : 'stop_requested';
+    this.platform.runtime?.wake();
     return this.calls.finish(call.id, 'completed', { status, targets });
   }
 
@@ -741,6 +750,13 @@ export class Executions {
       }
       const advances = mayAdvanceReceipt(call, facts.status);
       const session = advances && target?.kind === 'session' ? this.saveFacts(target.id, callId, facts) : null;
+      if (session && facts.status === 'not_submitted' && facts.safe_to_disconnect === true &&
+          session.acceptance_state === 'open' && session.origin_execution?.kind === 'session') {
+        const parent = this.record(session.origin_execution);
+        if (parent && (parent.control?.state === 'paused' || parent.acceptance_state === 'closed' || parent.authority_revoked)) {
+          this.store.save(sessionRecords, { id: session.id, acceptance_state: 'closed', pending_delivery: null });
+        }
+      }
       const event = this.calls.recordReceipt(callId, facts, target);
       if (!advances) return event;
       this.platform.noteConnectionFailure(session, call, facts);

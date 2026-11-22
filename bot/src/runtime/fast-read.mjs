@@ -40,7 +40,7 @@ const fastReadRules = [
   '已明确交给唯一 Pi 工作的附件或引用可以直接续投，由 Pi 查阅。若你得先看材料才能辨认归属，或需要查证事实、核实未开放的跨群任务、发起新任务、修改方向、叫停工作、询问进度、变更交付约定、记住长期规则或办理提醒，交 main。短时间连发的消息结合前后文理解，为每条待判消息各自输出一项。',
   '界面摘要（summary）规则：\n' +
     '1. 结合理解它所需的前文，把本条消息压成一句简短客观的中文事实摘要（通常不超过 40 字，最多 80 字），消解“这个/它/上面那个”等指代。\n' +
-    '2. 只写本条消息本身有依据的输入事实（谁说了什么、问了什么、给了什么材料/纠错/确认），不把相邻消息的内容混入本条摘要；附件文件名由宿主自动补全。\n' +
+    '2. 只写本条消息本身有依据的输入事实（谁说了什么、问了什么、给了什么材料/纠错/确认），不把相邻消息的内容混入本条摘要；附件文件名由宿主自动补全。若消息在 pending_mentions 中有明确 @ 点名对象，摘要提到被点名者时必须严格使用对应的成员姓名，绝不把被点名的其他成员错写成自己或他人。\n' +
     '3. 绝对不要在 summary 中出现任何路由决定、内部判断或动作词汇（禁止出现 quiet、main、forward、静默、直转、交主对话、无需回复、与我无关、跳过、忽略等字样），也不要直接替主对话作答。\n' +
     '4. 若消息仅含附件或引用，如实简述发送者发出了哪些附件或引用即可。',
   '输出格式（严格遵守）：只输出一个合法 JSON 对象，不要附加任何解释或额外文字：\n' +
@@ -432,12 +432,21 @@ export class FastReadRuntime {
       });
       const openExecutions = this.listForwardCandidates(inbox, bot, roomId);
       const candidatesById = new Map(openExecutions.map(item => [item.session_id, item]));
+      const memberNameById = new Map(members.map(member => [member.id, member.name]));
+      const pendingMentions = {};
+      for (const route of batch) {
+        const mentionIds = route.event?.mentions || [];
+        if (mentionIds.length) {
+          pendingMentions[route.event_id] = mentionIds.map(id => ({ id, name: memberNameById.get(id) || id }));
+        }
+      }
       const tail = textMessage({
         type: 'fast_read_batch',
         room: { id: room.id, name: room.name, mode: room.mode },
         members,
         self: { id: bot.id, name: bot.name },
         pending_message_ids: eventIds,
+        ...(Object.keys(pendingMentions).length ? { pending_mentions: pendingMentions } : {}),
         routes: openExecutions.some(item => item.forwardable_inputs.length)
           ? ['quiet', 'main', 'forward'] : ['quiet', 'main'],
         ...(openExecutions.length ? { open_executions: openExecutions } : {}),

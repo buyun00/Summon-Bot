@@ -556,7 +556,9 @@ export class SummonPlatform {
         previous.workspace_ids?.includes(value) || this.workspaceRecords().some(item => item.id === value));
       const execution_onboarding = input.execution_onboarding === undefined ? previous.execution_onboarding
         : normalizeOnboardingAccess(input.execution_onboarding);
-      return this.store.save('platform-access', { id, model_ids, workspace_ids, execution_onboarding, revision: (previous.revision ?? 0) + 1 });
+      const saved = this.store.save('platform-access', { id, model_ids, workspace_ids, execution_onboarding, revision: (previous.revision ?? 0) + 1 });
+      this.runtime?.wake();
+      return saved;
     });
   }
 
