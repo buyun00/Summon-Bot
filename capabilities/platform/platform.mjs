@@ -1265,7 +1265,7 @@ export class SummonPlatform {
       if (actor.kind === 'bot') this.resources.acquire('message', this.resourceSource(context), { id: call.id }).finish();
       this.calls.bind(call.id, { target: space, ...(work_reply && { work_reply }) });
       if (work_reply?.stage === 'correction') this.store.save(sessionRecords, { id: work_reply.session_id, retained_delivery: null });
-      const fields = publication.directed_publication ? publication.publication_fields.map(part => part.text)
+      const fields = publication.directed_publication ? publication.publication_fields.map(part => part.printed ?? part.text)
         .filter(text => args.text?.includes(text)) : [];
       return this.room.send(id, { ...args, attachments, reply_to: replyTo, mentions: members(args.mentions),
         clientId: context.clientId }, actor.id, { callId: call.id, ...(fields.length && { authorizedFields: fields }) });

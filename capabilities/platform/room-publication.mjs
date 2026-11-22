@@ -2,6 +2,15 @@ import { idOf, reject, sameRef } from './contract.mjs';
 
 export const barePublicationNumber = value => /^[+−-]?\p{Nd}+(?:[.,]\p{Nd}+)*$/u.test(value.trim());
 
+export function printedPublicationField(text, value) {
+  const quantity = value.match(/^([+−-]?\p{Nd}+(?:[.,]\p{Nd}+)*)[\p{Zs}\t]*([^\s\d.,]+)$/u);
+  const prefixed = !quantity && value.match(/^([^\s\d.,]+)[\p{Zs}\t]*([+−-]?\p{Nd}+(?:[.,]\p{Nd}+)*)$/u);
+  if (!quantity && !prefixed) return text.includes(value) ? value : undefined;
+  const escape = part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (prefixed) return text.match(new RegExp(escape(prefixed[1]) + '[\\p{Zs}\\t]*' + escape(prefixed[2]) + '(?![\\d.,])', 'u'))?.[0];
+  return text.match(new RegExp('(?<![\\d.,])' + escape(quantity[1]) + '[\\p{Zs}\\t]*' + escape(quantity[2]), 'u'))?.[0];
+}
+
 export function samePublishedFields(previous, selected) {
   const units = selected.map(part => part.unit).filter(Boolean);
   const key = values => JSON.stringify(values.map(value => {
@@ -10,9 +19,11 @@ export function samePublishedFields(previous, selected) {
       const number = text.endsWith(unit) ? text.slice(0, -unit.length) : text.startsWith(unit) ? text.slice(unit.length) : '';
       if (barePublicationNumber(number)) return JSON.stringify([number.trim(), unit]);
     }
+    const measured = selected.find(part => printedPublicationField(text, part.text) === text);
+    if (measured) return JSON.stringify(measured.text.normalize('NFC').trim());
     return JSON.stringify(text);
   }).sort());
-  return key(previous) === key(selected.map(part => part.text));
+  return key(previous) === key(selected.map(part => part.printed ?? part.text));
 }
 
 export function fieldLayout(materials, presentation, layout) {
@@ -187,7 +198,7 @@ export function roomPublicationReceipts(platform, actor, conversation, links, de
     if (call.tool !== 'send' || call.target?.kind !== 'room' || message?.callId !== call.id ||
         message.senderId !== actor.id || message.roomId !== call.target.id) continue;
     const fields = message.authorized_publication?.fields ?? [];
-    if (!fields.length || !fields.every(value => call.publication_fields?.some(part => part.text === value) && message.content.includes(value))) continue;
+    if (!fields.length || !fields.every(value => call.publication_fields?.some(part => (part.printed ?? part.text) === value) && message.content.includes(value))) continue;
     receipts.push({ authorization: grant.id, dispatch: call.publication_dispatch, message_id: message.id,
       destination: { ...call.target, name: platform.store.get('rooms', message.roomId)?.name },
       status: 'delivered', time: message.createdAt, fields,

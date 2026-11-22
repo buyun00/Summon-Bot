@@ -1292,6 +1292,7 @@ export class BotRuntime {
         const call = message.callId && this.platform.store.get('platform-calls', message.callId);
         return call?.directed_publication && call.status === 'completed' && call.result?.message?.id === message.id &&
           sameRef(call.target, room) ? [{ action: 'received_publication', room_role: 'recipient', sender: message.author,
+            from_another_room: true, same_bot_as_current: message.senderId === job.inbox.botId,
             destination: room, message_id: message.id, time: message.createdAt, fields: message.authorized_publication.fields }] : [];
       });
     actions.push(...incoming);
