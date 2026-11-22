@@ -90,7 +90,7 @@ const definitions = [
     'Set period to yesterday (default), today, 7d, or {from,to} with timestamps and offsets.',
     object({ kind: oneOf(...kinds, 'connection_usage'), scope: ref, query: text, cursor: text, period: usagePeriod }, ['kind'])],
   ['read', 'Read an accessible object, its history or output, and the available input or control references. For a workspace, use directory "." or a subdirectory to list entries, or add a relative path to read a project text file. Read a File ref to inspect its text or image (on vision-capable models). ' +
-    'Use it for a specific observation. A registered wait_ref delivers the terminal receipt or an input request to your run automatically.',
+    'Use it for a specific observation; do not re-read an unchanged file or Session page already observed in this run unless its revision or status may have changed or you need a different cursor. A registered wait_ref delivers the terminal receipt or an input request to your run automatically.',
     object({ ref, path: text, directory: text, cursor: text, limit: { type: 'integer', minimum: 1, maximum: 100 } }, ['ref'])],
   ['send', 'Publish to a Room using message:{to:{kind:"room",id},text}, with optional attachments, references, mentions or reply_to. ' +
     'For a verified connection fault, address the message to {kind:"connection",id} with the problem and shareable references. ' +
@@ -132,14 +132,14 @@ const definitions = [
     'and pass resource_refs. The bound group workspace and the selected external engine are included automatically. Include other directory grants explicitly. ' +
     'For work submitted on behalf of a Room, pass work_room and optionally the original Room message as work_source. This authorizes bounded tool observations in that Room and keeps the Session’s own permissions. ' +
     'For work to remain private, omit work_room or explicitly set private_work on a shared Session. ' +
-    'Pass a concise work_summary (goal and completion criteria) and optionally origin_message_id (defaults to the current Room question) and allowed_followup_rooms (other Rooms allowed to send follow-up inputs). ' +
+    'Pass a concise work_summary (goal and completion criteria) and optionally origin_message_id (defaults to the current Room question) and allowed_followup_rooms (other Rooms allowed to send follow-up inputs; only set allowed_followup_rooms on the specific Session(s) explicitly authorized for cross-room follow-up and omit it on other sibling Sessions). ' +
     'Set include_execution_guide to append the installed Summon adapter guide to a text input. ' +
     'When the result registers a wait_ref, you can end the current turn and continue when its receipt arrives.',
     openSessionInput],
-  ['configure_session', 'Manage a direct child Session. Set acceptance_state to open or closed, update work_summary or waiting_summary, or add/remove follow-up Rooms.',
+  ['configure_session', 'Manage a direct child Session. Set acceptance_state to open or closed, update work_summary or waiting_summary, or add/remove follow-up Rooms. Closing acceptance_state also clears allowed_followup_rooms and cascades closure to settled descendant Sessions.',
     configureSessionInput],
   ['send_input', 'Submit input to the actual input target and control version, or resume one explicitly paused execution. ' +
-    'For a native reply, copy the current input_target with its request_id and supply the answer in its displayed answer_format. ' +
+    'For steer or next, copy the exact input_target object from read(target).input_targets without adding request_id; for a native reply, copy the pending request’s input_target including its request_id and supply the answer in its displayed answer_format. ' +
     'A registered wait_ref returns the asynchronous receipt to your run.',
     object({ target: executionRef, kind: oneOf('reply', 'steer', 'next', 'resume'), control_version: integer, input: value,
       input_target: inputTarget, resume_ref: resumeRef }, ['target', 'kind', 'control_version'])],

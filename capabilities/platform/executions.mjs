@@ -336,13 +336,18 @@ export class Executions {
     }
     const inputTargets = observation.input_targets || current.input_targets || [];
     const questions = observation.pending_input ?? current.pending_input ?? [];
-    const output = observation.output ?? (observation.output_page?.text ? observation.output_page.text : undefined);
-    return { ...observation, ...base, output, input_revision: observation.input_revision ?? base.input_revision,
+    const output = observation.output !== undefined && observation.output !== observation.output_page?.text
+      ? observation.output
+      : undefined;
+    const view = { ...observation, ...base, input_revision: observation.input_revision ?? base.input_revision,
       input_targets: base.can_submit && current.control.state === 'active' ? inputTargets.map(option => {
         const question = option.input_target?.request_id && questions.find(item => item.id === option.input_target.request_id);
         return question ? { ...option, question: question.question ?? question.text, choices: question.choices,
           request_kind: question.kind, answer_format: question.answer_format, plain_text: question.plain_text } : option;
       }) : [] };
+    if (output !== undefined) view.output = output;
+    else delete view.output;
+    return view;
   }
 
   sharing(args, actor, space, context) {
@@ -458,7 +463,7 @@ export class Executions {
       reject('initialization_forbidden', 'Only the host user can submit input to connection initialization', 403);
     if (args.kind === 'resume') return this.resume(args, context, call, record);
     if (args.input === undefined || args.input === null || !args.input_target || args.resume_ref) {
-      reject('input_target_required', 'Input and a current typed input target are required');
+      reject('input_target_required', 'Input and a current typed input_target (copied from read(target).input_targets) are required');
     }
     this.active(record, args.control_version);
     this.checkSubmitResources(target, record, context);
@@ -474,7 +479,7 @@ export class Executions {
       if (context.origin?.fast_read_forward) {
         const options = forwardInputs(observed, observation.pending_input ?? [], this.platform.connections.get(current.engine));
         if (!options.forwardable.some(option => option.kind === args.kind && sameInput(option.input_target, args.input_target)))
-          reject('input_target_expired', 'The execution now requires a different input', 409);
+          reject('input_target_expired', 'The execution now requires a different input', 409, { target, current_input_targets: observed });
       }
       return current;
     };
@@ -531,7 +536,7 @@ export class Executions {
         args.kind === 'steer' && supplied.kind === 'idle_input') reject('invalid_input_target', 'The native input target does not match the requested operation');
     const matched = options.some(option => sameInput(option.input_target || option.target || option, supplied) &&
       (option.kinds || option.supports || [option.action || option.input_kind]).includes(args.kind));
-    if (!matched) reject('input_target_expired', 'The execution no longer accepts this input target', 409, { target });
+    if (!matched) reject('input_target_expired', 'The execution no longer accepts this input target', 409, { target, current_input_targets: options });
   }
 
   resume(args, context, call, before) {
@@ -580,7 +585,11 @@ export class Executions {
     const patch = { id: current.id };
     if (args.acceptance_state !== undefined) patch.acceptance_state = args.acceptance_state;
     if (args.acceptance_state === 'closed') {
+      if (args.add_followup_rooms?.length) {
+        reject('invalid_arguments', 'Cannot add follow-up Rooms while closing a Session');
+      }
       patch.pending_delivery = null;
+      patch.allowed_followup_rooms = [];
       if (context.actor.kind === 'user' && current.authority_revoked && current.engine === 'pi' && this.platform.runtime.piAtRest(current)) {
         patch.safe_to_disconnect = true;
         patch.revocation_stop = 'stopped';
@@ -594,7 +603,7 @@ export class Executions {
     if (args.waiting_summary !== undefined) {
       patch.waiting_summary = args.waiting_summary?.trim() || null;
     }
-    if (args.add_followup_rooms !== undefined || args.remove_followup_rooms !== undefined) {
+    if (args.acceptance_state !== 'closed' && (args.add_followup_rooms !== undefined || args.remove_followup_rooms !== undefined)) {
       const next = new Set(Array.isArray(current.allowed_followup_rooms) ? current.allowed_followup_rooms : []);
       for (const roomRef of args.add_followup_rooms || []) {
         const roomId = idOf(roomRef, 'room');
