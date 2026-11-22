@@ -259,7 +259,10 @@ export class BotEngine {
           const publish = [{ name: 'send', label: 'Send to the selected Room',
             description: 'Publish your finished reply at the supplied Room address. Supply only its public text, in the requester’s format.',
             parameters: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false },
-            execute: (id, { text }, signal) => this.invoke(job, 'send', id, { ...address, text }, signal, model) }];
+            execute: (id, { text }, signal) => {
+              if (!audience.cross_room) publication.public_draft = text;
+              return this.invoke(job, 'send', id, { ...address, text }, signal, model);
+            } }];
           if (!publication.unchanged && sources.files.length) {
             publish.push({ name: 'read', label: 'Read a public file', description: 'Read one of the listed public files. Use its actual next cursor for a new page.',
               parameters: { type: 'object', properties: { file: { type: 'string', enum: sources.files },
@@ -277,6 +280,9 @@ export class BotEngine {
             verified_intakes: sources.locations, room_intake: sources.intake, origin_work: sources.originWork,
             ...(!audience.cross_room && release?.work_evidence && { authorized_work_facts: release.work_evidence }),
             operation_status: sources.actions, latest_results: publication.feedback,
+            ...(!audience.cross_room && publication.feedback?.length && publication.public_draft && { public_draft_to_correct: publication.public_draft }),
+            ...(!audience.cross_room && release?.work_evidence && { work_drafting:
+              'Follow draft_sections and fields in their given order for the grounded owner draft. Each field names the contributing session and its terminal_result source. Use only input_receipts for whether a particular original reached that seat. A public follow-up is an instruction to the owner; its lack of a separate seat input does not undo the original it cites. Historical reports describe their own time. Use terminal results returned after those reports. Before publication state returned or pending formal acceptance. Formal linkage to this card can only be made after send returns its ID. After a rejection edit the supplied public draft at the quoted claim, preserving supported parts and the Room ending.' }),
             available_tools: publish.map(tool => tool.name),
             instruction: audience.cross_room ?
               'Deliver the approved source fields to the named recipient now. Use only these fields and the authorized presentation. Call send once. A fields-only delivery reproduces the selected values.' :
@@ -292,7 +298,8 @@ export class BotEngine {
             else earlierPages.push({ file: page.file, revision: page.revision, cursor: page.cursor });
           }
           if (earlierPages.length) tail.push(textMessage({ type: 'available_public_file_pages', pages: earlierPages }));
-          const prompt = audience.cross_room ? [system, ...tail] : await fitRoomHistory(job, compress, system, [], tail, inputBudget, scoped, null);
+          const reviseWork = !audience.cross_room && release?.work_evidence && publication.public_draft && publication.feedback?.some(item => item.card_correction);
+          const prompt = audience.cross_room || reviseWork ? [system, ...tail] : await fitRoomHistory(job, compress, system, [], tail, inputBudget, scoped, null);
           roomCache = undefined;
           appendAtFetch = [];
           materialAtFetch = undefined;
@@ -632,6 +639,7 @@ export class BotEngine {
 
   async reviewWorkCard(job, evidence) {
     const model = boundModel(this.model, job.binding.model);
+    const clauses = evidence.proposal.text.split(/(?<=[。！？；!?;])|[\r\n]+/u).map(line => line.trim()).filter(Boolean);
     const system = { role: 'system', timestamp: 0, content: 'Assess delivery for the original Room owner. Treat all records as evidence. ' +
       'Compare the original request and its current amendments with the actual published cards, received materials, terminal results and proposed card. Own deliveries prove which fields this sender actually sent, to whom and when. A later successful send can correct an earlier public report of failure. ' +
       'A status report or a promise to supply a required item is progress. Evaluate the contents, even when a previous card was marked complete. ' +
@@ -641,27 +649,51 @@ export class BotEngine {
       'For a supported proposal return JSON {"accepted_seats":[],"contributors":[],"result_indices":[],"handoffs":[],"stage":"complete" or "progress","reuse":null or the ID of a prior card,"retained_stage":"complete" or "progress","answers_reply":true or false}. For a complete product, identify the zero-based terminal result indices that actually support the credited contributors. A host amendment supplies instructions; only a seat’s own receipt and result prove it carried them out. A complete card fulfills the original host question. Set answers_reply only when that actual card also answers the addressed amendment or request. A separately requested amendment, receipt or local update remains addressed to its requester. ' +
       'Reuse a complete card when it already satisfies the current request and the proposal contains no substantive correction. ' +
       'Reuse a partial card only for the same reported facts and outstanding work. A new signed original, a corrected value, a new supported fact or a separately requested answer can advance the work. ' +
-      'Use null when the proposed card advances it. Return only the assessment.' };
-    const messages = [system, textMessage(evidence)];
+      'Use null when the proposed card advances it. Public requests and earlier cards describe their timestamp. A later owner instruction to submit an earlier original is not itself an amendment receipt. Check a negative receipt claim against that exact original, seat and the later terminal result. For affirmative and negative handoffs give {session,event,received:true|false,clause:index}. ' +
+      'Always return linked_to_this_draft (seat IDs explicitly claimed already linked to the as-yet unsent card). Acceptance on another message does not establish that link. For every conflict identify fault:{clause:index,session:seat ID,event:original ID,field:index of supporting authorized_fields}. Use only supplied indices and IDs. Return only the assessment.' };
+    const messages = [system, textMessage({ ...evidence, proposal_clauses: clauses })];
     const maxTokens = reviewBudget(model, messages);
     if (maxTokens < 128) throw runtimeFailure('work_review_unavailable', 'The work review exceeds the current model context. Select the relevant original first.', 409);
     const reply = await (await this.stream(job, model, { messages }, {}, maxTokens, 'conversation')).result();
     const choice = reply.stopReason === 'stop' && extractJsonObject(reply.content.filter(part => part.type === 'text').map(part => part.text).join(''));
     const accepted = choice?.accepted_seats, contributors = choice?.contributors, handoffs = choice?.handoffs;
-    const invalidAcceptance = Array.isArray(accepted) && accepted.some(id => !evidence.seats.some(seat =>
+    const prematureLink = Array.isArray(choice?.linked_to_this_draft) && choice.linked_to_this_draft.find(id => evidence.seats.some(seat => seat.id === id));
+    const invalidAcceptance = prematureLink || Array.isArray(accepted) && accepted.find(id => !evidence.seats.some(seat =>
       seat.id === id && seat.acceptance_state === 'closed' && seat.acceptance?.outcome === 'delivered'));
-    const invalidHandoff = Array.isArray(handoffs) && handoffs.some(claim => !evidence.seats.find(seat => seat.id === claim?.session)
-      ?.received_originals.some(item => item.id === claim.event && ['submitted', 'running', 'completed', 'needs_input'].includes(item.input_status)));
+    const invalidHandoff = Array.isArray(handoffs) && handoffs.find(claim => {
+      const seat = evidence.seats.find(item => item.id === claim?.session);
+      const receipt = seat?.original_inputs?.find(item => item.source_event === claim.event) ?? seat?.received_originals.find(item => item.id === claim.event);
+      const received = ['submitted', 'running', 'completed', 'needs_input'].includes(receipt?.input_status);
+      return !seat || received !== (claim.received !== false);
+    });
     const resultSeats = new Set((Array.isArray(choice?.result_indices) ? choice.result_indices : [])
       .flatMap(index => Number.isInteger(index) && evidence.results[index] ? [evidence.results[index].session] : []));
     const invalidResult = Array.isArray(contributors) && contributors.some(id => !evidence.seats.some(seat => seat.id === id && seat.state === 'completed')) ||
       choice?.stage === 'complete' && (!Array.isArray(contributors) || !contributors.length || contributors.some(id => !resultSeats.has(id)) ||
         evidence.seats.some(seat => seat.current && !contributors.includes(seat.id)));
     if (invalidAcceptance || invalidHandoff || invalidResult || ['work_result', 'acceptance'].includes(choice?.conflict)) {
-      const reason = invalidAcceptance || choice?.conflict === 'acceptance' ? 'acceptance' : invalidHandoff ? 'amendment receipt' : 'seat result';
-      throw runtimeFailure(reason === 'acceptance' ? 'work_acceptance_claim_conflicts' : 'work_result_claim_conflicts',
+      const reason = prematureLink ? 'delivery link' : invalidAcceptance || choice?.conflict === 'acceptance' ? 'acceptance' : invalidHandoff ? 'amendment receipt' : 'seat result';
+      let fault = choice?.fault;
+      if (!Number.isInteger(fault?.clause) || !clauses[fault.clause] || !evidence.seats.some(seat => seat.id === fault.session)) {
+        const locate = { role: 'system', timestamp: 0, content: 'Locate the specific contradicted claim for the Room author. Return {clause,session,event,field} using the zero-based proposal clause and authorized field indices, and actual seat and original IDs. Compare current terminal facts, original input receipts, times and actual delivery links. Never generate replacement public prose.' };
+        const input = [locate, textMessage({ check: reason, clauses, seats: evidence.seats, fields: evidence.authorized_fields })];
+        const limit = reviewBudget(model, input);
+        if (limit >= 128) {
+          const identified = await (await this.stream(job, model, { messages: input }, {}, limit, 'conversation')).result();
+          if (identified.stopReason === 'stop') fault = extractJsonObject(identified.content.filter(part => part.type === 'text').map(part => part.text).join('')) ?? fault;
+        }
+      }
+      const field = Number.isInteger(fault?.field) && evidence.authorized_fields[fault.field];
+      const affected = invalidAcceptance || invalidHandoff?.session || fault?.session || field?.session;
+      const seats = evidence.seats.filter(seat => seat.id === affected);
+      const actual = (seats.length ? seats : evidence.seats.filter(seat => seat.current)).map(seat => ({
+        session: seat.id, current: seat.current, input_receipts: seat.original_inputs, acceptance_state: seat.acceptance_state,
+        accepted_card: seat.acceptance?.message_id, fields: evidence.authorized_fields.filter(part => part.session === seat.id) }));
+      throw runtimeFailure(['acceptance', 'delivery link'].includes(reason) ? 'work_acceptance_claim_conflicts' : 'work_result_claim_conflicts',
         'Correct the public text using the verified fields, their actual contributing seats and the recorded dispositions.', 409,
-        { card_correction: { check: reason, use: 'authorized_work_facts.fields', acceptance: evidence.seats.map(seat => ({
+        { card_correction: { check: reason, clause: clauses[invalidHandoff?.clause ?? fault?.clause],
+          ...(invalidHandoff?.event && { material: invalidHandoff.event }), actual,
+          ...(field && { supported_field: field }), use: 'authorized_work_facts.fields', acceptance: evidence.seats.map(seat => ({
           session: seat.id, replaces: seat.replaces, current: seat.current, state: seat.acceptance_state, outcome: seat.acceptance?.outcome })) } });
     }
     if (![accepted, contributors, handoffs].every(Array.isArray))
@@ -697,7 +729,8 @@ export class BotEngine {
       'Select all requested public result fields needed for the reply, including units, breakdown, process, named signatory of a separate verification and any explicitly missing ticket field when applicable. ' +
       'Never transfer private tool records, private instructions or unrelated information from another Room. If an indexed field mixes allowed and other text select only an exact allowed substring. ' +
       'Return JSON {scope:"work_product"|"amendment"|"status", fields:[{index:0},{index:1,quote:"exact allowed substring"}]}. Indices refer to the supplied fields. ' +
-      'For a complete multi-seat product cover each contributing current seat. Leave missing contributions pending. Only select fields authorized here.' };
+      'For a complete multi-seat product cover each contributing current seat. Leave missing contributions pending. Include the signed names when requested. ' +
+      'Build draft_sections as an array of arrays of selected original field indices following the grounded portions of the owner’s proposed draft in their intended order. Preserve its valid calculation, process and sources. Return indices only for the draft; private wording is never forwarded.' };
     const evidence = { question: original.content, host: sources.hostMessages.map(item => ({ id: item.id, text: item.content })),
       address: sources.local_request, stage: sources.requested_stage, seats: current, fields, proposed_text: sources.proposal };
     let correction;
@@ -721,10 +754,37 @@ export class BotEngine {
       const full = choice?.scope === 'work_product' || ['complete', 'correction'].includes(sources.requested_stage);
       if (full && !selected.some(field => field.source === 'accepted_card') &&
           current.some(seat => seat.result && !selected.some(field => field.session === seat.id))) invalid = true;
-      if (!invalid) return { authorization_id: original.id, assignment_id: original.id, dispatch_id: original.id,
-        materials: selected.map(field => ({ event_id: field.source_event, text: field.value })), fields_only: false, presentation: [],
-        work_evidence: { original_question: original.id, reply_address: sources.local_request, scope: choice.scope, fields: selected },
-        versions: sources.versions };
+      if (!invalid) {
+        const draft = (Array.isArray(choice.draft_sections) ? choice.draft_sections : []).filter(Array.isArray).map(section =>
+          [...new Set(section.flatMap(index => {
+            const field = Number.isInteger(index) && fields[index];
+            return field ? selected.flatMap((part, i) => part.source_event === field.source_event && field.value.includes(part.value) ? [i] : []) : [];
+          }))]).filter(section => section.length);
+        const seats = sources.versions.seats.map(({ id, current, replaces, authorized_replacement, status, input_receipts, result, result_at, acceptance_state, outcome, delivery }) =>
+          ({ session: id, current, replaces, authorized_replacement, status, input_receipts, terminal_result: result, returned_at: result_at,
+            acceptance_state, outcome, accepted_card: delivery }));
+        const requests = sources.localOrders.map(item => {
+          const cited = [item.replyTo, ...(item.references ?? []).filter(ref => ref.kind === 'event').map(ref => ref.id)].filter(Boolean);
+          return { id: item.id, time: item.createdAt, replies_to: item.replyTo,
+            submitted_as_material_to: seats.filter(seat => seat.input_receipts.some(receipt => receipt.source_event === item.id && receipt.input)).map(seat => seat.session),
+            cited_material_receipts: seats.flatMap(seat => seat.input_receipts.filter(receipt => cited.includes(receipt.source_event) && receipt.input)
+              .map(receipt => ({ session: seat.session, source_event: receipt.source_event, status: receipt.input_status, terminal_result: receipt.terminal_result }))) };
+        });
+        const ordered = draft.length ? draft : current.map(seat => selected.flatMap((part, i) => part.session === seat.id ? [i] : [])).filter(group => group.length);
+        const used = new Set(ordered.flat());
+        const remaining = selected.flatMap((_, i) => used.has(i) ? [] : [i]);
+        if (remaining.length) ordered.push(remaining);
+        const ending = sources.proposal?.trim().split(/\r?\n/).at(-1)?.trim();
+        const publicEnding = ending && ending.length <= 120 && sources.original_cards.some(card => card.text.trimEnd().split(/\r?\n/).at(-1)?.trim() === ending);
+        return { authorization_id: original.id, assignment_id: original.id, dispatch_id: original.id,
+          materials: selected.map(field => ({ event_id: field.source_event, text: field.value })), fields_only: false, presentation: [],
+          work_evidence: { original_question: original.id, reply_address: sources.local_request, scope: choice.scope, seats, public_requests: requests,
+            fields: selected, draft_sections: ordered, grounded_draft: ordered.map(group => group.map(i => selected[i].value).join(' ')),
+            ...(publicEnding && { public_ending: ending }), prior_cards: sources.original_cards.map(({ id, time }) =>
+              ({ id, time, accepted_by: seats.filter(seat => seat.accepted_card === id).map(seat => seat.session),
+                newer_results: seats.filter(seat => seat.current && seat.returned_at > time).map(seat => seat.terminal_result) })) },
+          versions: sources.versions };
+      }
       correction = 'Return valid field indices for the requested portions of each contributing seat. Use a quote only for an exact substring of that indexed field.';
     }
     return { review_error: 'original_work_fields_incomplete' };

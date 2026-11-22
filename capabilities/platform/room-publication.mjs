@@ -295,12 +295,19 @@ export function publicationSources(platform, args, context, destination, localRo
           (!outstanding || platform.store.get('platform-calls', message.callId)?.work_review?.stage === 'complete')) deliveries.add(message.id);
     }
   }
+  const localOrders = localRoot ? hostMessages.filter(item =>
+    [...roomQuestionLinks(platform, origin, [item])].some(id => questions.has(id))) : [];
+  const original_cards = localRoot && group.length ? platform.executions.originalReplies(group[0])
+    .filter(({ message }, index, list) => index >= list.length - 8 || accepted.has(message.id)).map(({ message }) =>
+    ({ id: message.id, time: message.createdAt, text: message.content })) : [];
   const seats = group.map(work => ({ id: work.id, original: work.origin_message_id, status: work.status,
     current: currentSeats.includes(work), replaces: work.replaces_session, authorized_replacement: Boolean(confirmedReplacement(work)),
     assignment: work.work_summary,
     outstanding: work.acceptance_state === 'open' && Boolean(work.waiting_summary || work.pending_input?.length),
     result: seatResults.get(work.id), delivery: accepted.has(work.acceptance?.message_id) ? work.acceptance.message_id : undefined,
-    acceptance_state: work.acceptance_state, outcome: work.acceptance?.outcome }));
+    acceptance_state: work.acceptance_state, outcome: work.acceptance?.outcome,
+    ...(localRoot && { input_receipts: platform.roomWork.materialStatus(work, localOrders.map(item => item.id), true)
+      .filter(item => item.call_status), result_at: seatResults.has(work.id) ? platform.store.get('platform-events', seatResults.get(work.id))?.time : undefined }) }));
   const previous = localRoot ? [] : roomPublicationReceipts(platform, context.actor, context.conversation,
     new Set([...questions, ...candidates.map(item => item.id)]), destination);
   const replyId = args.reply_to?.id ?? args.reply_to;
@@ -310,7 +317,7 @@ export function publicationSources(platform, args, context, destination, localRo
   const versions = { user_messages: hostMessages.map(item => item.id), results, deliveries: [...deliveries], accepted: [...accepted],
     seats, ...(recipientRequest && { recipient: recipientRequest.id }), ...(previous.length && { sent: previous.map(item => item.message_id) }) };
   const confirmed_delivery = deliveries.size > 0;
-  return { candidates, hostMessages, facts, versions, current, requested, questions, confirmed_delivery, previous,
+  return { candidates, hostMessages, localOrders, original_cards, facts, versions, current, requested, questions, confirmed_delivery, previous,
     local_work: Boolean(localRoot), local_request: localRoot ? replyId ?? localMessage?.id : undefined,
     requested_stage: args.work_reply?.stage, proposal: args.text, recipient_request: recipientRequest };
 }

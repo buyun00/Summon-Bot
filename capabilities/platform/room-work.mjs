@@ -76,13 +76,17 @@ export class RoomWork {
       ORDER BY rowid DESC LIMIT 8`).all(session.origin_room.id, session.origin_message_id).map(row => JSON.parse(row.data)).reverse();
   }
 
-  materialStatus(session, ids) {
+  materialStatus(session, ids, includeReceipt = false) {
     const attempts = this.materialAttempts(session.id, ids);
     return ids.map(id => {
       const attempt = attempts.find(item => !item.material_reference_only && (item.material_action_ids ?? item.material_source_ids).includes(id));
       const input = attempt?.input_id && this.platform.store.get('platform-inputs', attempt.input_id);
-      return { source_event: id, input_status: input && input.call_id === attempt.id ? input.status : 'unconfirmed',
-        ...(attempt && { call_status: attempt.status }) };
+      const matched = input && input.call_id === attempt.id && input.target?.id === session.id;
+      const terminal = includeReceipt && matched && attempt.result_ref?.kind === 'event' && this.platform.store.get('platform-events', attempt.result_ref.id);
+      return { source_event: id, input_status: matched ? input.status : 'unconfirmed',
+        ...(attempt && { call_status: attempt.status }), ...(includeReceipt && matched && { input: input.id, submitted_at: input.createdAt,
+          ...(terminal?.call_id === attempt.id && terminal.target?.id === session.id && terminal.status === 'completed' &&
+            { terminal_result: terminal.id, returned_at: terminal.time }) }) };
     });
   }
 

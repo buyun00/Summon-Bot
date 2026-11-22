@@ -755,7 +755,24 @@ export class BotRuntime {
     const acceptedIds = sortedIds(changed);
     const position = JSON.stringify(acceptedIds);
     const reconsider = changed.size && position !== run.delivery_recovery_position;
-    if (!covered.size && !reconsider) return;
+    let draftPosition, draftQuestion;
+    if (left.length && run.error?.code === 'room_delivery_pending') {
+      const send = inbox.calls(runId).filter(call => call.tool === 'send' && call.state === 'failed' && call.result?.details?.card_correction)
+        .sort((a, b) => a.finished_at.localeCompare(b.finished_at)).at(-1);
+      const question = this.platform.store.get('messages', send?.args.reply_to?.id ?? send?.args.reply_to ?? '');
+      const correction = send?.result.details.card_correction;
+      const currentIds = new Set(correction?.acceptance?.filter(seat => seat.current).map(seat => seat.session));
+      const work = question?.roomId === conversation.space.id && this.platform.executions.directWork(conversation.id).filter(seat =>
+        currentIds.has(seat.id) && seat.owner.id === actor.id && seat.origin_message_id === question.id && !seat.authority_revoked);
+      if (work?.length && work.some(seat => seat.acceptance_state === 'open') && work.every(seat => seat.status === 'completed')) {
+        draftQuestion = question.id;
+        draftPosition = recordKey(question.id, work.map(seat => [seat.id, seat.latest_call_id, seat.input_revision, seat.acceptance_state]));
+      }
+    }
+    const retryDraft = draftPosition && draftPosition !== run.owner_card_recovery_position;
+    if (!covered.size && !reconsider && !retryDraft) return;
+    const resumeAt = retryDraft && inbox.runs(conversation.id).filter(item => item.error?.code === 'resource_limit' && item.retry_at > now())
+      .map(item => item.retry_at).sort()[0];
     inbox.store.transaction(() => {
       for (const [id, proof] of covered) {
         const route = inbox.store.getRecord(R.route, id);
@@ -763,7 +780,10 @@ export class BotRuntime {
         inbox.settleWait(route, 'processed');
       }
       inbox.putRun({ id: runId, processed_event_ids: [...new Set([...run.processed_event_ids, ...[...covered.values()].map(item => item.event_id)])],
-        ...(!left.length ? { state: inbox.hasOpenWaits(runId) ? 'waiting' : 'completed', error: null } : reconsider ?
+        ...(!left.length ? { state: inbox.hasOpenWaits(runId) ? 'waiting' : 'completed', error: null } : retryDraft ?
+          { state: resumeAt ? 'retry' : 'interrupted', retry_at: resumeAt || null, recovering_room_inputs: true, owner_card_recovery_position: draftPosition,
+            model_outcome: null, model_outcome_uses_view: null, publication_retry_position: null,
+            delivery_review_trigger: { kind: 'correct_original_card', original_question: draftQuestion, pending_event_ids: left.map(route => route.event_id) } } : reconsider ?
           { state: 'interrupted', recovering_room_inputs: true, delivery_recovery_position: position, last_delivery_review_at: now(),
             delivery_review_trigger: { kind: 'accepted_work',
               accepted_message_ids: acceptedIds, pending_event_ids: left.map(route => route.event_id) } } : {}) });
@@ -992,7 +1012,7 @@ export class BotRuntime {
     if (to?.kind !== 'room' || !this.platform.canWriteSpace(context.actor, to, context)) return;
     const { text, ...address } = call.args;
     const destination = this.platform.room.room(to.id, context.actor.id);
-    const grant = await this.publicationGrant(context, address, destination);
+    const grant = await this.publicationGrant(context, call.args, destination);
     try {
       const audience = publicationContext(this.platform, address, context, grant);
       this.checkRoomPublication(context, audience, address);
@@ -1138,21 +1158,25 @@ export class BotRuntime {
       const sessions = this.platform.executions.directWork(context.conversation.id).filter(work => work.origin_execution?.kind === 'conversation' &&
         work.origin_room?.id === destination.id && work.origin_message_id === root);
       if (!sessions.length) return;
-      const published = this.platform.executions.originalReplies(sessions[0]).slice(-8).map(({ message, stage }) => ({
-        id: message.id, text: message.content, stage, covered_sessions: this.platform.store.get('platform-calls', message.callId)?.work_review?.covered_sessions,
+      const linkedCards = new Set(sessions.map(work => work.acceptance?.message_id).filter(Boolean));
+      const replies = this.platform.executions.originalReplies(sessions[0]);
+      const published = replies.filter(({ message }, index) => index >= replies.length - 8 || linkedCards.has(message.id)).map(({ message, stage }) => ({
+        id: message.id, time: message.createdAt, text: message.content, stage, covered_sessions: this.platform.store.get('platform-calls', message.callId)?.work_review?.covered_sessions,
         attachments: message.attachments?.map(file => file.id), references: message.references }));
       const sources = publicationSources(this.platform, { ...args, publication: undefined }, context, destination, root);
       if (!sources || !published.length && !sources.versions.results.length &&
           !sessions.some(work => work.acceptance_state === 'open' && (work.waiting_summary || work.pending_input?.length))) return;
       const request = this.platform.store.get('messages', address);
       return { original: root, reply_request: request?.roomId === destination.id ? { id: address, text: request.content } : undefined,
-        host_instructions: sources.hostMessages.map(item => ({ id: item.id, text: item.content })),
+        host_instructions: sources.localOrders.map(item => ({ id: item.id, time: item.createdAt, replies_to: item.replyTo, text: item.content })),
+        authorized_fields: active?.publication?.audience.release?.work_evidence?.fields ?? [],
         own_deliveries: roomPublicationReceipts(this.platform, context.actor, context.conversation, linked),
         seats: sessions.map(work => ({ id: work.id, state: work.status, waiting: work.waiting_summary,
           acceptance_state: work.acceptance_state, acceptance: this.platform.executions.acceptanceView(work, context),
           current: sources.versions.seats.find(seat => seat.id === work.id)?.current, replaces: work.replaces_session,
           replacement_authorized: Boolean(work.replacement_authorization), assignment: work.work_summary,
-          received_originals: this.platform.roomWork.receivedOriginals(work, context), result: work.latest_call_id, input_revision: work.input_revision })),
+          received_originals: this.platform.roomWork.receivedOriginals(work, context), original_inputs: sources.versions.seats.find(seat => seat.id === work.id)?.input_receipts,
+          result: work.latest_call_id, input_revision: work.input_revision })),
         results: sources.versions.results.map(id => ({ id, session: sources.versions.seats.find(seat => seat.result === id)?.id,
           text: sources.facts.get(id) })), published,
         proposal: { text: args.text, attachments: args.attachments?.map(item => item.id ?? item), references: args.references } };
@@ -1246,7 +1270,7 @@ export class BotRuntime {
           replacement_authorized: Boolean(work.replacement_authorization), engine: work.engine === 'pi' ? 'Pi' : this.platform.connections.get(work.engine)?.kind,
           status: work.status, acceptance_state: work.acceptance_state, acceptance: this.platform.executions.acceptanceView(work, ownerContext),
           final_result_received: result?.status === 'completed' && result.target?.id === work.id,
-          selected_inputs: this.platform.roomWork.materialStatus(work, steps), intake_rooms: this.platform.roomWork.intakes(work).map(item => item.name) };
+          selected_inputs: this.platform.roomWork.materialStatus(work, steps, true).filter(item => item.call_status), intake_rooms: this.platform.roomWork.intakes(work).map(item => item.name) };
       });
     const intake = audience.cross_room ? null : this.roomIntake(job.inbox.botId, audience.destination, requests);
     const actions = calls.filter(call => ['save_file', 'configure_bot', 'open_session', 'configure_session'].includes(call.tool))

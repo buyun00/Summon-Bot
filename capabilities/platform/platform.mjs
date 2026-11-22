@@ -1098,8 +1098,12 @@ export class SummonPlatform {
         const to = { kind: 'room', id: idOf(args.to, 'room') };
         if (!this.canWriteSpace(context.actor, to, context)) reject('room_forbidden', 'Room is unavailable', 403);
         const refs = [...(args.references || []), ...(args.attachments || []).map(id => normalize(id, 'file'))];
-        const guarded = !sameRef(to, context.conversation.space) || refs.some(ref => !withinPublicationRoom(this, ref, to)) ||
-          this.runtime.requiresRoomDraft(context);
+        const reply = args.reply_to?.id ?? args.reply_to;
+        const addressed = reply && this.store.get('messages', reply);
+        const roots = addressed?.roomId === to.id ? roomQuestionLinks(this, to, [addressed]) : null;
+        const guarded = !sameRef(to, context.conversation.space) || Boolean(args.work_reply) ||
+          roots && this.executions.directWork(context.conversation.id).some(work => work.origin_room?.id === to.id && roots.has(work.origin_message_id)) ||
+          refs.some(ref => !withinPublicationRoom(this, ref, to)) || this.runtime.requiresRoomDraft(context);
         if (guarded) {
           const grant = await this.runtime.publicationGrant(context, args, this.room.room(to.id, context.actor.id));
           this.assertRunAllowed(context);
