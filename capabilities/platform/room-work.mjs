@@ -189,6 +189,63 @@ export class RoomWork {
     return [...sources.values()];
   }
 
+  // Expose the owner's native receipts without forwarding material from a
+  // different Room. Opening the work and sending it a later input are separate.
+  seatReceipts(session, context) {
+    if (session.origin_execution?.kind !== 'conversation' || session.owner_conversation_id !== context.conversation?.id ||
+        !sameRef(session.owner, context.actor) || !sameRef(session.origin_room, context.conversation.space)) return;
+    const { store } = this.platform;
+    const initial = store.get(callRecords, session.id);
+    const terminal = call => {
+      const event = call?.result_ref?.kind === 'event' && store.get('platform-events', call.result_ref.id);
+      if (event?.call_id !== call?.id || event?.target?.id !== session.id || event.status !== 'completed') return;
+      const output = event.result?.output;
+      const text = typeof output === 'string' ? output : output?.text;
+      return { id: event.id, time: event.time, has_output: typeof text === 'string' && Boolean(text.trim()) };
+    };
+    const inputs = store.db.prepare(`SELECT data FROM records WHERE kind='platform-inputs'
+      AND json_extract(data,'$.target.id')=? ORDER BY rowid`).all(session.id).flatMap(({ data }) => {
+      const input = JSON.parse(data), call = store.get(callRecords, input.call_id);
+      if (call?.target?.id !== session.id || call.input_id !== input.id || call.material_reference_only) return [];
+      const sources = (call.material_action_ids ?? call.material_source_ids ?? []).map(id => store.get('messages', id)).filter(Boolean);
+      const local = sources.filter(message => message.roomId === session.origin_room.id).map(message => message.id);
+      return [{ id: input.id, status: input.status, time: input.createdAt, local_sources: local,
+        other_room_sources: sources.length - local.length, terminal: terminal(call)?.id }];
+    });
+    const received = inputs.filter(input => ['submitted', 'running', 'completed', 'needs_input'].includes(input.status) || input.terminal);
+    return { initial_result: initial?.tool === 'open_session' ? terminal(initial) : undefined,
+      latest_result: terminal(store.get(callRecords, session.latest_call_id)), native_input_count: inputs.length,
+      received_input_count: received.length, original_room_input_count: received.filter(input => input.local_sources.length).length,
+      other_room_input_count: received.filter(input => input.other_room_sources).length, native_inputs: inputs };
+  }
+
+  dispositionHistory(session, context) {
+    if (session.origin_execution?.kind !== 'conversation' || session.owner_conversation_id !== context.conversation?.id ||
+        !sameRef(session.owner, context.actor) || !sameRef(session.origin_room, context.conversation.space)) return [];
+    const inbox = this.platform.runtime.inboxes.get(session.owner.id);
+    if (!inbox) return [];
+    const rows = inbox.store.db.prepare(`SELECT id,json_extract(data,'$.args.delivery_message_id') AS requested,
+      json_extract(data,'$.args.acceptance_state') AS state, json_extract(data,'$.args.amend_disposition_note') AS amended,
+      (json_type(data,'$.args.add_followup_rooms') IS NOT NULL OR json_type(data,'$.args.remove_followup_rooms') IS NOT NULL) AS intake
+      FROM records WHERE kind='call' AND json_extract(data,'$.tool')='configure_session'
+      AND json_extract(data,'$.conversation_id')=? AND COALESCE(json_extract(data,'$.args.target.id'),json_extract(data,'$.args.target'))=?
+      AND (json_extract(data,'$.args.acceptance_state') IS NOT NULL OR amended=1 OR intake=1) ORDER BY rowid`)
+      .all(session.owner_conversation_id, session.id);
+    return rows.flatMap(row => {
+      const call = this.platform.calls.get(row.id);
+      if (!call || call.origin?.conversation_id !== session.owner_conversation_id || call.origin?.bot_id !== session.owner.id) return [];
+      const completed = call.status === 'completed' && call.result?.id === session.id;
+      if (!completed && call.status !== 'failed') return [];
+      const accepted = completed && call.result.acceptance;
+      const requested = row.requested?.startsWith('{') ? JSON.parse(row.requested).id : row.requested;
+      return [{ call: call.id, time: call.updatedAt, status: call.status, operation: row.amended ? 'amend_note' : row.state ?? 'intake',
+        requested_card: requested ?? undefined, actual_card: accepted?.message_id ?? call.result?.details?.accepted_card,
+        previous_card: call.delivery_rebind?.previous, outcome: accepted?.outcome,
+        ...(row.intake && completed && { followup_room_count: call.result.allowed_followup_rooms?.length }),
+        ...(call.status === 'failed' && { error: call.result?.code }) }];
+    }).sort((a, b) => a.time.localeCompare(b.time));
+  }
+
   sourceFacts(ids, call) {
     return ids.map(id => {
       const message = this.platform.store.get('messages', id);

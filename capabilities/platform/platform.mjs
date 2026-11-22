@@ -1101,7 +1101,7 @@ export class SummonPlatform {
         const reply = args.reply_to?.id ?? args.reply_to;
         const addressed = reply && this.store.get('messages', reply);
         const roots = addressed?.roomId === to.id ? roomQuestionLinks(this, to, [addressed]) : null;
-        const guarded = !sameRef(to, context.conversation.space) || Boolean(args.work_reply) ||
+        const guarded = !sameRef(to, context.conversation.space) || Boolean(args.work_reply || args.publication) ||
           roots && this.executions.directWork(context.conversation.id).some(work => work.origin_room?.id === to.id && roots.has(work.origin_message_id)) ||
           refs.some(ref => !withinPublicationRoom(this, ref, to)) || this.runtime.requiresRoomDraft(context);
         if (guarded) {
@@ -1275,7 +1275,9 @@ export class SummonPlatform {
         .filter(text => args.text?.includes(text)) : [];
       const change = publication.work_review?.change;
       const references = [...(args.references ?? [])];
-      if (change && !references.some(ref => ref.kind === 'event' && ref.id === change.previous)) references.push({ kind: 'event', id: change.previous });
+      const effective = publication.work_review?.effective_card;
+      for (const card of [change?.previous, effective?.use === 'existing' && effective.id].filter(Boolean))
+        if (!references.some(ref => ref.kind === 'event' && ref.id === card)) references.push({ kind: 'event', id: card });
       return this.room.send(id, { ...args, references, attachments, reply_to: replyTo, mentions: members(args.mentions),
         clientId: context.clientId }, actor.id, { callId: call.id, ...(fields.length && { authorizedFields: fields }),
         ...(change && { workCardChange: { intent: change.mode === 'replacement' ? 'proposed_replacement' : 'addendum', previous: change.previous } }) });

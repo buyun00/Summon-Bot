@@ -397,7 +397,9 @@ export class Executions {
     const final = published.findLast(item => item.session_id === current.id && ['complete', 'correction'].includes(item.stage));
     const replaced = this.directWork(current.owner_conversation_id).some(work => work.origin_message_id === current.origin_message_id && work.replaces_session);
     const creditsSeat = message => {
-      const covered = this.calls.get(message.callId)?.work_review?.covered_sessions;
+      const review = this.calls.get(message.callId)?.work_review;
+      if (review?.change?.mode === 'addendum' || review?.effective_card && review.effective_card.use !== 'draft') return false;
+      const covered = review?.covered_sessions;
       return covered ? covered.includes(current.id) : !replaced;
     };
     const replies = published.filter(({ message, stage }) => creditsSeat(message) && stage !== 'progress' && (!id || message.id === id) &&

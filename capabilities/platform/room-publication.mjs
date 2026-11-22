@@ -336,17 +336,20 @@ export function publicationSources(platform, args, context, destination, localRo
   }
   const localOrders = localRoot ? hostMessages.filter(item =>
     [...roomQuestionLinks(platform, origin, [item])].some(id => questions.has(id))) : [];
-  const original_cards = localRoot && group.length ? platform.executions.originalReplies(group[0])
-    .filter(({ message }, index, list) => index >= list.length - 8 || accepted.has(message.id)).map(({ message }) =>
-    ({ id: message.id, time: message.createdAt, text: message.content })) : [];
   const seats = group.map(work => ({ id: work.id, original: work.origin_message_id, status: work.status,
     current: currentSeats.includes(work), replaces: work.replaces_session, authorized_replacement: Boolean(confirmedReplacement(work)),
     assignment: work.work_summary,
     outstanding: work.acceptance_state === 'open' && Boolean(work.waiting_summary || work.pending_input?.length),
     result: seatResults.get(work.id), delivery: accepted.has(work.acceptance?.message_id) ? work.acceptance.message_id : undefined,
     acceptance_state: work.acceptance_state, outcome: work.acceptance?.outcome,
-    ...(localRoot && { input_receipts: platform.roomWork.materialStatus(work, localOrders.map(item => item.id), true)
+    ...(localRoot && { receipts: platform.roomWork.seatReceipts(work, context), dispositions: platform.roomWork.dispositionHistory(work, context),
+      followup_rooms: platform.roomWork.intakes(work, context.actor), accepts_followup: work.acceptance_state === 'open' && !work.authority_revoked && work.control?.state === 'active',
+      input_receipts: platform.roomWork.materialStatus(work, localOrders.map(item => item.id), true)
       .filter(item => item.call_status), result_at: seatResults.has(work.id) ? platform.store.get('platform-events', seatResults.get(work.id))?.time : undefined }) }));
+  const recordedCards = new Set(seats.flatMap(seat => (seat.dispositions ?? []).flatMap(item => [item.actual_card, item.requested_card]).filter(Boolean)));
+  const original_cards = localRoot && group.length ? platform.executions.originalReplies(group[0])
+    .filter(({ message }, index, list) => index >= list.length - 8 || accepted.has(message.id) || recordedCards.has(message.id))
+    .map(({ message }) => ({ id: message.id, time: message.createdAt, text: message.content })) : [];
   const previous = localRoot ? [] : roomPublicationReceipts(platform, context.actor, context.conversation,
     new Set([...questions, ...candidates.map(item => item.id)]), destination);
   const replyId = args.reply_to?.id ?? args.reply_to;
