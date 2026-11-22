@@ -1112,7 +1112,8 @@ export class SummonPlatform {
           this.calls.bind(record.id, { publication_room: to, ...(release && { publication_authority: release.authorization_id,
             publication_fields: release.materials, ...(audience.cross_room && { directed_publication: true,
               publication_assignment: release.assignment_id ?? release.authorization_id, publication_fields_only: release.fields_only,
-              publication_dispatch: release.dispatch_id ?? release.authorization_id, publication_redispatch: Boolean(release.redispatch) }) }) });
+              publication_dispatch: release.dispatch_id ?? release.authorization_id, publication_redispatch: Boolean(release.redispatch),
+              ...(release.required_text !== undefined && { publication_required_text: release.required_text }) }) }) });
         }
         if (sameRef(to, context.conversation.space)) {
           const review = await this.runtime.workCardReview(context, args, this.room.room(to.id, context.actor.id));
@@ -1222,9 +1223,12 @@ export class SummonPlatform {
       const publication = this.calls.get(call.id);
       if (publication.directed_publication) {
         const scope = new Set([publication.publication_assignment, publication.publication_authority]);
-        const last = roomPublicationReceipts(this, actor, context.conversation, scope, space).at(-1);
         const order = publication.publication_redispatch && this.store.get('messages', publication.publication_dispatch);
-        if (last && (!order || order.createdAt <= last.time) && samePublishedFields(last.fields, publication.publication_fields)) {
+        const last = roomPublicationReceipts(this, actor, context.conversation, scope, space).findLast(receipt =>
+          (!order || order.id === receipt.dispatch && order.createdAt <= receipt.time) &&
+          samePublishedFields(receipt.fields, publication.publication_fields) &&
+          (publication.publication_required_text === undefined || receipt.text === publication.publication_required_text));
+        if (last) {
           this.calls.bind(call.id, { target: space });
           return { ...this.room.receiptForPublication(last.message_id, actor), already_delivered: true };
         }

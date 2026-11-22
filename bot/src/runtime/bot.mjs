@@ -326,7 +326,11 @@ export class BotRuntime {
       const message = this.platform.store.get('messages', source);
       if (message?.roomId !== room.id || !call.origin.intake_message_id && route?.fast_read_forward_call_id !== call.id) continue;
       const receipt = this.openIntakeReceipt(call) ?? route?.source_intake_receipt ?? { call_status: route?.fast_read_forward_status };
+      const work = call.target?.kind === 'session' && this.platform.executions.record(call.target);
+      const historical = work?.owner?.id === botId && !work.authority_revoked && call.origin?.source_room?.id === room.id &&
+        this.platform.canReadSpace(work.owner, work.origin_room);
       receipts.set(recordKey(source, call.target?.id), { source_event: source, author: message.senderId, call_status: receipt.call_status,
+        ...(historical && { submitted_to: { kind: 'session', id: work.id } }),
         ...(receiving.some(work => work.id === call.target?.id) && { receiving_session: call.target.id }),
         native_input_status: receipt.native_input_status, ...(receipt.recovery && { recovery: {
           call_status: receipt.recovery.call_status, native_input_status: receipt.recovery.native_input_status } }) });
@@ -358,6 +362,8 @@ export class BotRuntime {
           const specific = current ?? call.result?.material_receipts?.find(item => item.event_id === id);
           const entry = existing ?? { source_event: id, author: message.senderId,
             ...(receiving.some(item => item.id === call.intake_session_id) && { receiving_session: call.intake_session_id }) };
+          if (visible && call.target?.kind === 'room' && call.target.id === room.id && inner?.target?.id === work.id && specific)
+            entry.submitted_to = { kind: 'session', id: work.id };
           entry.intake_status = call.status;
           if (current || !entry.call_status) {
             entry.call_status = specific?.call_status ?? call.result?.status;
@@ -371,7 +377,7 @@ export class BotRuntime {
     return { room: { id: room.id, name: room.name }, owner_id: botId, receives_materials_here: open, receipts: [...receipts.values()],
       receiving_sessions: receiving.map(work => ({ kind: 'session', id: work.id,
         engine: work.engine === 'pi' ? 'pi' : this.platform.connections.get(work.engine)?.kind })),
-      instruction: 'For a member’s new submission and help request, hand the actual local originals to the matching open receiving_session using send_input kind=intake, then answer the request here using the real intake status. A repeated request can refer to the earlier signed original. A missing receipt leaves it unconfirmed. Closing intake affects future submissions.' };
+      instruction: 'Each source_event has its own receipt. submitted_to identifies the historical target. native_input_status is the delivery status at that target; intake_status is the outer filing. A completed target input establishes delivery there, not a separate human signature. An empty receiving_sessions list closes future intake only. For a new filing use the currently open receiving_session.' };
   }
 
   wake() {
@@ -954,7 +960,8 @@ export class BotRuntime {
     if (job?.runId !== context.origin.run_id) throw runtimeFailure('publication_context_unavailable', 'The Room authoring turn is unavailable', 409);
     const address = { to: { kind: 'room', id: audience.destination.id } };
     if (audience.reply_to) address.reply_to = { kind: 'event', id: audience.reply_to };
-    if (audience.release) address.publication = { authorization: audience.release.authorization_id };
+    if (audience.release) address.publication = { authorization: audience.cross_room ?
+      audience.release.dispatch_id ?? audience.release.authorization_id : audience.release.authorization_id };
     if (args.attachments?.length) address.attachments = args.attachments.map(ref => ({ kind: 'file', id: ref.id ?? ref }));
     if (args.references?.length) address.references = args.references.map(({ kind, id }) => ({ kind, id }));
     if (args.mentions?.length) address.mentions = args.mentions.map(ref => ref.id ?? ref)
@@ -1091,9 +1098,13 @@ export class BotRuntime {
         const presentation = grant.presentation ?? [];
         const formatted = fieldLayout(materials, presentation, grant.layout);
         if (materials.length && materials.length === grant.materials.length && !materials.some(part => barePublicationNumber(part.text)) &&
-            (!grant.fields_only || !presentation.length || formatted !== undefined))
-          return { authorization_id: message.id, dispatch_id: message.id, materials, presentation, formatted,
-            fields_only: grant.fields_only || materials.length === 1 && !presentation.length, versions: sources.versions };
+            (!grant.fields_only || !presentation.length || formatted !== undefined)) {
+          const wording = await this.engine.directedWording(job, destination, message, materials, args.text);
+          if (wording?.review_error) return wording;
+          return { authorization_id: message.id, dispatch_id: message.id, materials, presentation, formatted: wording?.text ?? formatted,
+            required_text: wording?.text ?? (presentation.length ? formatted : undefined),
+            fields_only: Boolean(wording || formatted !== undefined || grant.fields_only || materials.length === 1 && !presentation.length), versions: sources.versions };
+        }
       }
       inspect = true;
     }
@@ -1106,7 +1117,7 @@ export class BotRuntime {
     const active = this.active.get(context.conversation.id);
     const receipts = active?.publication?.local_receipts;
     if (active?.runId === context.origin.run_id && active.publication?.transported &&
-        active.publication.audience.destination.id === destination.id && receipts?.incoming.length) {
+        active.publication.audience.destination.id === destination.id && (receipts?.incoming.length || receipts?.intake.length)) {
       await this.engine.reviewReceiptClaims(active, receipts, args.text);
     }
     const label = args.work_reply;
