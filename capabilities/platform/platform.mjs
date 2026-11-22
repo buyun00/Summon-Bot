@@ -1097,6 +1097,16 @@ export class SummonPlatform {
       if (name === 'send' && context.actor.kind === 'bot' && context.conversation?.kind === 'room' && !context.session) {
         const to = { kind: 'room', id: idOf(args.to, 'room') };
         if (!this.canWriteSpace(context.actor, to, context)) reject('room_forbidden', 'Room is unavailable', 403);
+        if (!args.reply_to && !args.work_reply && sameRef(to, context.conversation.space)) {
+          const inbox = this.runtime.inboxes.get(context.actor.id);
+          const run = inbox?.run(context.origin.run_id);
+          if (run?.recovering_room_inputs) {
+            const due = this.runtime.outstandingRoomReplies(inbox, to, context.origin.event_ids);
+            if (due.length === 1) args = { ...args, reply_to: { kind: 'event', id: due[0].message_id } };
+            else if (due.length > 1) reject('reply_target_required', 'Select the outstanding request this reply answers using reply_to.', 409,
+              { outstanding_requests: due.map(item => item.message_id) });
+          }
+        }
         const refs = [...(args.references || []), ...(args.attachments || []).map(id => normalize(id, 'file'))];
         const reply = args.reply_to?.id ?? args.reply_to;
         const addressed = reply && this.store.get('messages', reply);
@@ -1134,6 +1144,11 @@ export class SummonPlatform {
         const reviewed = await this.runtime.reviewDeliveryRebind(context, args);
         this.assertRunAllowed(context);
         if (reviewed) this.calls.bind(record.id, { delivery_rebind: reviewed });
+      }
+      if (name === 'configure_session' && (args.amend_disposition_note || args.acceptance_state === 'closed' && args.close_reason && args.disposition_note)) {
+        const checked = await this.runtime.reviewDispositionNote(context, args);
+        this.assertRunAllowed(context);
+        if (checked) this.calls.bind(record.id, { disposition_note_review: checked });
       }
       if (name === 'create_bot') {
         if (context.session) reject('configuration_forbidden', 'This Session cannot create Bot identities', 403);

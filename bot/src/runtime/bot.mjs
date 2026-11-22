@@ -711,6 +711,49 @@ export class BotRuntime {
     }
   }
 
+  pendingOwnerReview(inbox, run, conversation, pending) {
+    const room = conversation.space, actor = botRef(inbox.botId);
+    const requests = this.outstandingRoomReplies(inbox, room, pending.filter(route => !route.resolution).map(route => route.event_id))
+      .map(item => this.platform.store.get('messages', item.message_id)).filter(item => item?.senderId === 'user');
+    if (!requests.length) return;
+    const direct = this.platform.executions.directWork(conversation.id).filter(seat => sameRef(seat.origin_room, room) &&
+      seat.owner.id === actor.id && seat.origin_execution?.kind === 'conversation' && !seat.authority_revoked);
+    const failures = inbox.calls(run.id).filter(call => call.tool === 'send' && call.state === 'failed').reverse()
+      .sort((a, b) => Number(b.result?.details?.reason === 'dispatch_format_unresolved') - Number(a.result?.details?.reason === 'dispatch_format_unresolved'));
+    for (const failed of failures) {
+      const record = this.platform.store.get('platform-calls', failed.id);
+      if (record?.status !== 'failed' || record.origin?.run_id !== run.id || record.origin.conversation_id !== conversation.id ||
+          record.origin.bot_id !== actor.id) continue;
+      const to = failed.args.to?.id ?? failed.args.to;
+      const authorization = failed.args.publication?.authorization;
+      const selected = authorization?.id ?? authorization;
+      const address = failed.args.reply_to?.id ?? failed.args.reply_to;
+      const external = to !== room.id;
+      if (external ? failed.result?.code !== 'publication_review_incomplete' || failed.result?.details?.reason !== 'dispatch_format_unresolved' :
+          !['work_result_claim_conflicts', 'work_acceptance_claim_conflicts', 'work_card_change_required', 'local_receipt_claim_conflicts',
+            'work_review_unavailable', 'reply_target_required'].includes(failed.result?.code)) continue;
+      const source = this.platform.store.get('messages', (external ? selected : address ?? selected) ?? '');
+      if (source?.roomId !== room.id || external && (source.senderId !== 'user' ||
+          !this.platform.canWriteSpace(actor, { kind: 'room', id: to }, { actor, conversation, origin: record.origin }))) continue;
+      const links = roomQuestionLinks(this.platform, room, [source]);
+      const relevant = requests.filter(message => {
+        const roots = roomQuestionLinks(this.platform, room, [message]);
+        return roots.has(source.id) || links.has(message.id) || direct.some(seat => links.has(seat.origin_message_id) && roots.has(seat.origin_message_id));
+      });
+      if (!relevant.length) continue;
+      const seats = direct.filter(seat => links.has(seat.origin_message_id));
+      if (!external && !seats.length && failed.result.code !== 'local_receipt_claim_conflicts') continue;
+      const sent = external ? roomPublicationReceipts(this.platform, actor, conversation, links, { kind: 'room', id: to }) : [];
+      const alreadySent = sent.some(receipt => receipt.text === failed.args.text && receipt.prescribed_text_delivered);
+      const trigger = { kind: external && !alreadySent ? 'review_prescribed_dispatch' : 'review_owner_handover', source: source.id,
+        requested_replies: relevant.map(item => item.id), ...(external && { destination: to, actual_deliveries: sent.map(item => item.message_id) }) };
+      // Vary only with a new request, source, confirmed delivery or work change.
+      // Repeated rejections at this position are still the same owner task.
+      return { trigger, position: recordKey(trigger, seats.map(seat => [seat.id, seat.latest_call_id, seat.input_revision,
+        seat.acceptance_state, seat.acceptance?.message_id, seat.acceptance?.note_corrections?.at(-1)?.call_id])) };
+    }
+  }
+
   reconcileAcceptedWork(inbox, runId) {
     const run = inbox.run(runId);
     if (run?.state !== 'suspended' || !['room_delivery_pending', 'model_response_incomplete'].includes(run.error?.code)) return;
@@ -755,8 +798,13 @@ export class BotRuntime {
     const acceptedIds = sortedIds(changed);
     const position = JSON.stringify(acceptedIds);
     const reconsider = changed.size && position !== run.delivery_recovery_position;
-    let draftPosition, draftQuestion;
-    if (left.length && run.error?.code === 'room_delivery_pending') {
+    let draftPosition, draftQuestion, reviewTrigger;
+    const ownerReview = left.length && this.pendingOwnerReview(inbox, run, conversation, left);
+    if (ownerReview) {
+      draftPosition = ownerReview.position;
+      reviewTrigger = ownerReview.trigger;
+    }
+    if (!ownerReview && left.length && run.error?.code === 'room_delivery_pending') {
       const send = inbox.calls(runId).filter(call => call.tool === 'send' && call.state === 'failed' && call.result?.details?.card_correction)
         .sort((a, b) => a.finished_at.localeCompare(b.finished_at)).at(-1);
       const question = this.platform.store.get('messages', send?.args.reply_to?.id ?? send?.args.reply_to ?? '');
@@ -783,7 +831,8 @@ export class BotRuntime {
         ...(!left.length ? { state: inbox.hasOpenWaits(runId) ? 'waiting' : 'completed', error: null } : retryDraft ?
           { state: resumeAt ? 'retry' : 'interrupted', retry_at: resumeAt || null, recovering_room_inputs: true, owner_card_recovery_position: draftPosition,
             model_outcome: null, model_outcome_uses_view: null, publication_retry_position: null,
-            delivery_review_trigger: { kind: 'correct_original_card', original_question: draftQuestion, pending_event_ids: left.map(route => route.event_id) } } : reconsider ?
+            delivery_review_trigger: { ...(reviewTrigger ?? { kind: 'correct_original_card', original_question: draftQuestion }),
+              pending_event_ids: left.map(route => route.event_id) } } : reconsider ?
           { state: 'interrupted', recovering_room_inputs: true, delivery_recovery_position: position, last_delivery_review_at: now(),
             delivery_review_trigger: { kind: 'accepted_work',
               accepted_message_ids: acceptedIds, pending_event_ids: left.map(route => route.event_id) } } : {}) });
@@ -1265,9 +1314,12 @@ export class BotRuntime {
         const terminal = this.platform.calls.get(seat.latest_call_id);
         if (!terminal || terminal.updatedAt > sent.createdAt) continue;
         const used = review.covered_sessions?.includes(seat.id);
-        if (used || seat.replaces_session && !seat.replacement_authorization && review.covered_sessions?.includes(seat.replaces_session))
+        if (used || seat.replaces_session && !seat.replacement_authorization && review.covered_sessions?.includes(seat.replaces_session)) {
+          const receipts = !used && this.platform.roomWork.seatReceipts(seat, this.platform.context(job.context()));
           actions.set(seat.id, { action: used ? 'review_delivered_result' : 'record_unused_work_disposition',
-            session: seat.id, question: sent.replyTo, card: sent.id, terminal_state: seat.status });
+            session: seat.id, question: sent.replyTo, card: sent.id, terminal_state: seat.status,
+            ...(receipts && { initial_result: receipts.initial_result, later_received_inputs: receipts.received_input_count }) });
+        }
       }
     }
     return [...actions.values()];
@@ -1282,28 +1334,74 @@ export class BotRuntime {
     if (context.session || !job || job.runId !== context.origin.run_id || work.owner.id !== context.actor.id ||
         work.origin_execution?.kind !== 'conversation' || work.owner_conversation_id !== parent.id || !sameRef(work.origin_room, parent.space))
       throw runtimeFailure('delivery_rebind_forbidden', 'Only the active direct owner in the original Room can replace this acceptance link.', 403);
-    const unchanged = () => runtimeFailure('delivery_link_unchanged', 'The existing delivery link is still effective. Select a later authorized replacement covering this seat.', 409,
-      { accepted_card: prior?.message_id, requested_card: requested });
+    const unchanged = reason => runtimeFailure('delivery_link_unchanged', 'The existing delivery link is still effective. Select a later authorized replacement covering this seat.', 409,
+      { session: work.id, accepted_card: prior?.message_id, requested_card: requested, reason });
     const replies = this.platform.executions.originalReplies(work);
     const previous = replies.find(item => item.message.id === prior?.message_id)?.message;
     const next = replies.find(item => item.message.id === requested)?.message;
     const review = next && this.platform.calls.get(next.callId)?.work_review;
-    if (args.close_reason || !prior || !previous || !next || next.createdAt <= previous.createdAt ||
-        review?.stage !== 'complete' || review.original_question !== work.origin_message_id || !review.covered_sessions?.includes(work.id) ||
-        review.change?.mode === 'addendum') throw unchanged();
+    if (args.close_reason || !prior || !previous || !next || next.createdAt <= previous.createdAt) throw unchanged('card_pair');
+    if (review?.stage !== 'complete' || review.original_question !== work.origin_message_id || !review.covered_sessions?.includes(work.id) ||
+        review.change?.mode === 'addendum' || review.effective_card && review.effective_card.use !== 'draft') throw unchanged('coverage');
     const evidence = () => {
       const sources = publicationSources(this.platform, { reply_to: work.origin_message_id }, context, work.origin_room, work.origin_message_id);
-      if (!sources?.versions.seats.some(seat => seat.id === work.id && seat.current && seat.result)) return;
-      return { original_question: work.origin_message_id, previous: { id: previous.id, text: previous.content },
+      const seat = this.platform.executions.record(sessionRef(work.id));
+      const currentPrior = seat?.acceptance?.outcome === 'delivered' ? seat.acceptance : seat?.previous_delivery;
+      if (currentPrior?.message_id !== prior.message_id || seat.authority_revoked || seat.control?.state !== 'active' ||
+          !sources?.versions.seats.some(item => item.id === work.id && item.current && item.result)) return;
+      const grants = new Set(sources.localOrders.map(item => item.id));
+      const host = sources.hostMessages.map(item => ({ id: item.id, time: item.createdAt, text: item.content, may_authorize: grants.has(item.id) }));
+      const basis = { owner: context.actor.id, parent: parent.id, room: work.origin_room.id, question: work.origin_message_id,
+        previous: previous.id, next: next.id, publish_call: next.callId, covered: [...review.covered_sessions].sort(),
+        host: host.map(item => [item.id, item.may_authorize]), results: sources.versions.results,
+        seats: sources.versions.seats.map(item => {
+          const owner = this.platform.executions.record(sessionRef(item.id));
+          return [item.id, item.current, item.result, owner.input_revision, owner.control?.control_version, owner.control?.state,
+            owner.revocation_call_id ?? null, Boolean(owner.authority_revoked), owner.allowed_followup_rooms ?? []];
+        }) };
+      return { basis, original_question: work.origin_message_id, previous: { id: previous.id, text: previous.content },
         proposal: { id: next.id, text: next.content }, disposition_request: { requested, note: args.disposition_note },
-        host: sources.localOrders.map(item => ({ id: item.id, time: item.createdAt, text: item.content })),
-        results: sources.versions.results.map(id => ({ id, text: sources.facts.get(id) })) };
+        host, results: sources.versions.results.map(id => ({ id, text: sources.facts.get(id) })) };
     };
     const view = evidence();
-    if (!view) throw unchanged();
-    const change = await this.engine.assessCardChange(job, view);
-    if (change?.mode !== 'replacement' || JSON.stringify(view) !== JSON.stringify(evidence())) throw unchanged();
-    return { ...change, requested, session: work.id };
+    if (!view) throw unchanged('owner_or_source_changed');
+    const basis = JSON.stringify(view.basis);
+    const completed = this.platform.store.db.prepare(`SELECT data FROM records WHERE kind='platform-calls'
+      AND json_extract(data,'$.tool')='configure_session' AND json_extract(data,'$.status')='completed'
+      AND json_extract(data,'$.origin.conversation_id')=? AND json_extract(data,'$.delivery_rebind.previous')=?
+      AND json_extract(data,'$.delivery_rebind.requested')=? AND json_extract(data,'$.result.acceptance.message_id')=? ORDER BY rowid DESC`)
+      .all(parent.id, previous.id, requested, requested).map(row => JSON.parse(row.data));
+    const sibling = completed.find(call => call.origin.bot_id === context.actor.id && call.result?.id === call.target?.id &&
+      call.target?.id === call.delivery_rebind.session && view.basis.covered.includes(call.result.id) &&
+      call.result.acceptance.outcome === 'delivered' && call.delivery_rebind.mode === 'replacement' &&
+      JSON.stringify(call.delivery_rebind.basis) === basis);
+    const certified = sibling?.delivery_rebind;
+    const change = certified ? { mode: 'replacement', authorization: certified.authorization, source: certified.source, verified_by_call: sibling.id } :
+      await this.engine.assessCardChange(job, view);
+    if (change?.mode !== 'replacement' || !view.host.some(item => item.may_authorize && item.id === change.authorization) ||
+        !view.results.some(item => item.id === change.source)) throw unchanged('replacement_authority');
+    if (JSON.stringify(evidence()?.basis) !== basis) throw unchanged('source_changed_during_review');
+    return { ...change, previous: previous.id, requested, session: work.id, basis: view.basis,
+      control_version: work.control.control_version, input_revision: work.input_revision };
+  }
+
+  async reviewDispositionNote(context, args) {
+    const work = this.platform.executions.require(sessionRef(args.target.id ?? args.target), context, 'control');
+    const parent = context.conversation, amended = args.amend_disposition_note === true;
+    const owned = context.actor.kind === 'bot' && !context.session && parent?.kind === 'room' && work.owner?.id === context.actor.id &&
+      work.owner_conversation_id === parent.id && sameRef(work.origin_execution, conversationRef(parent.id)) && sameRef(work.origin_room, parent.space);
+    if (!owned && !amended) return;
+    if (!owned || amended && (work.acceptance_state !== 'closed' || !['superseded', 'cancelled', 'private'].includes(work.acceptance?.outcome)))
+      throw runtimeFailure('disposition_note_forbidden', 'The original Room parent can amend the explanation on its own closed unused work.', 403);
+    const note = args.disposition_note?.trim();
+    if (!note || amended && Object.keys(args).some(key => !['target', 'amend_disposition_note', 'disposition_note'].includes(key)))
+      throw runtimeFailure('invalid_disposition', 'To amend an explanation supply the target, amend_disposition_note and the corrected disposition_note.', 409);
+    const job = this.active.get(parent.id);
+    if (job?.runId !== context.origin.run_id) throw runtimeFailure('disposition_note_forbidden', 'Use the active original owner conversation.', 403);
+    const position = this.platform.executions.dispositionNotePosition(work);
+    const seat = { id: work.id, receipts: this.platform.roomWork.seatReceipts(work, context) };
+    await this.engine.reviewDispositionRationale(job, seat, note);
+    return { position };
   }
 
   publicFile(job, room, ref) {
@@ -1694,6 +1792,9 @@ export class BotRuntime {
     if (run.delivery_review_trigger?.kind === 'correct_original_card') facts.push(textMessage({
       type: 'reconsider_original_card', original_question: run.delivery_review_trigger.original_question,
       instruction: 'Read the original source returns and the latest actual inputs. A later public request to forward an earlier original is not a second required seat input. Correct the unsent draft in this Room, then check actual dispositions.' }));
+    if (['review_prescribed_dispatch', 'review_owner_handover'].includes(run.delivery_review_trigger?.kind))
+      facts.push(textMessage({ type: 'pending_owner_request', ...run.delivery_review_trigger,
+        instruction: 'Review the live host requests and genuine receipts under current permissions. For a handover reply_to the specific outstanding host question and reference the effective card. Correct mistaken unused-work notes through their original closed seats. For a prescribed dispatch compare the source grant and the actual destination receipt before sending; an already fulfilled instruction only needs its requested local reply.' }));
     const dispositions = this.pendingCardActions(job);
     if (dispositions.length) facts.push(textMessage({ type: 'outstanding_card_dispositions', actions: dispositions,
       instruction: 'Act from this original parent. Verify the card and each seat. For a credited delivered seat use configure_session and verify the returned message_id. For unused work record its own truthful non-delivery disposition. If a previous request returned a different card, inspect the authorized change and make the actual link or report the reason it stays unchanged.' }));
@@ -1882,12 +1983,14 @@ export class BotRuntime {
           acceptance: this.platform.executions.acceptanceView(work, ownerContext),
           receipts: this.platform.roomWork.seatReceipts(work, ownerContext), dispositions: this.platform.roomWork.dispositionHistory(work, ownerContext),
           ...(work.acceptance?.note && work.owner.id === inbox.botId && sameRef(work.origin_execution, conversationRef(conversation.id)) &&
-            { disposition_note: work.acceptance.note }),
+            { disposition_note: work.acceptance.note, ...(work.acceptance.note_corrections?.length &&
+              { note_last_amended_at: work.acceptance.note_corrections.at(-1).time }) }),
           control: work.control, latest_call_id: work.latest_call_id,
           ...(work.retained_delivery && { confirmed_delivery: work.retained_delivery }),
           ...(work.pending_input?.length && { pending_requests: work.pending_input, input_targets: work.input_targets }) });
       }
-      for (const group of groups.values()) facts.push(textMessage(group));
+      for (const group of groups.values()) facts.push(textMessage({ ...group,
+        disposition_guidance: 'On a requested handover, compare each unused seat’s disposition_note to its own initial return and later inputs. Correct a factual error on that same closed seat with target, amend_disposition_note:true and disposition_note before reporting it corrected. Preserve the original work and its outcome.' }));
       const localHost = current.filter(event => event.type === 'message' && event.author?.kind === 'user' && sameRef(event.space, conversation.space));
       if (localHost.length) {
         const receipts = roomPublicationReceipts(this.platform, ownerContext.actor, conversation, roomQuestionLinks(this.platform, conversation.space, localHost))

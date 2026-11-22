@@ -85,7 +85,7 @@ const openSessionInput = object({ engine: sessionEngine, input: value, workspace
   recovery_of: refOrId, private_work: flag, include_execution_guide: flag }, ['engine', 'input']);
 const publicOpenSessionInput = { ...openSessionInput, properties: { ...openSessionInput.properties, engine: refOrId, workspace: { anyOf: [ref, text] } } };
 const configureSessionInput = object({ target: refOrId, acceptance_state: oneOf('open', 'closed'), work_summary: text,
-  delivery_message_id: eventOrId, close_reason: oneOf('cancelled', 'superseded', 'private'), disposition_note: text,
+  delivery_message_id: eventOrId, close_reason: oneOf('cancelled', 'superseded', 'private'), disposition_note: text, amend_disposition_note: flag,
   restore_pi_authority: object({ control_version: integer, revocation_call_id: text }, ['control_version']),
   host_review_receipt: eventOrId,
   waiting_summary: nullableText, add_followup_rooms: array(roomOrId), remove_followup_rooms: array(roomOrId) }, ['target']);
@@ -145,7 +145,7 @@ const definitions = [
     'Replace a Room executor only under the host’s applicable instruction. Identify the prior work in replaces_session, keep its original question and optionally select the Room instruction in replacement_authorization. A rejected handoff is corrected with send_input on its original Session. When carrying a confirmed undelivered material into an authorized replacement, supply its original call in recovery_of. Wait for an authorized resume of paused work. Set include_execution_guide to append the installed Summon adapter guide to a text input. ' +
     'When the result registers a wait_ref, you can end the current turn and continue when its receipt arrives.',
     openSessionInput],
-  ['configure_session', 'Manage direct child work. After checking the original request and delivering the complete answer, set acceptance_state to closed. A single confirmed reply to the original question is linked automatically. Supply delivery_message_id to select among replies, or with disposition_note when an earlier complete delivery already covers a late result. For cancelled, superseded or private work use close_reason. A Pi reviews and closes its own children privately. Keep partial work open with a concrete waiting_summary. You can also change work_summary and follow-up Rooms.',
+  ['configure_session', 'Manage direct child work. After checking the original request and delivering the complete answer, set acceptance_state to closed. Supply delivery_message_id to select the actual complete reply. For cancelled, superseded or private work use close_reason. Count the initial assignment result separately from later inputs. To correct the recorded explanation on already closed unused work, its original Room parent can send target, amend_disposition_note:true and the corrected disposition_note. This records a dated note amendment under the same outcome. A Pi reviews and closes its own children privately. Keep partial work open with a concrete waiting_summary. You can also change work_summary and follow-up Rooms.',
     configureSessionInput],
   ['send_input', 'Submit input to the actual input target and control version, or resume one explicitly paused execution. ' +
     'For a Room handoff use sibling arguments {target, kind, control_version, input_target, material_sources:[eventId], input:"work instructions"}. Keep material_sources, material_role and recovery_of outside input. A rejected argument has not replaced the executor. Correct it on the same Session. ' +

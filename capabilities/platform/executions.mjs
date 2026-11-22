@@ -559,6 +559,8 @@ export class Executions {
       ...(context.actor.kind === 'user' ? { authority_revoked: Boolean(record.authority_revoked),
         revocation_call_id: record.revocation_call_id ?? null, acceptance: record.acceptance } :
         { acceptance: this.acceptanceView(record, context) }),
+      ...(record.acceptance?.note && !context.session && sameIdentity(record.owner, context.actor) &&
+        sameRef(record.origin_execution, { kind: 'conversation', id: context.conversation?.id }) && { disposition_note: record.acceptance.note }),
       ...(Array.isArray(record.allowed_followup_rooms) ? { allowed_followup_rooms: record.allowed_followup_rooms } : {}),
       followup_room_details: this.platform.roomWork.intakes(record, context.actor),
     } : {};
@@ -919,6 +921,12 @@ export class Executions {
     return { receipt_id: receipt, call_id: call.id, reviewer: context.actor, direct_parent: work.origin_execution, note: args.disposition_note.trim() };
   }
 
+  dispositionNotePosition(work) {
+    return { state: work.acceptance_state, outcome: work.acceptance?.outcome ?? null, note: work.acceptance?.note ?? null,
+      latest: work.latest_call_id, result: (work.latest_call_id && this.store.get(callRecords, work.latest_call_id)?.result_ref?.id) ?? null,
+      input_revision: work.input_revision, control_version: work.control?.control_version, revoked: Boolean(work.authority_revoked) };
+  }
+
   configure(args, context, call) {
     const target = { kind: 'session', id: idOf(args.target, 'session') };
     const current = this.require(target, context, 'control');
@@ -927,6 +935,29 @@ export class Executions {
       reject('session_owner_required', 'Manage this work from its direct parent conversation', 403);
     }
     const patch = { id: current.id };
+    const amended = args.amend_disposition_note === true;
+    const noteReview = this.calls.get(call.id)?.disposition_note_review;
+    if (noteReview && JSON.stringify(noteReview.position) !== JSON.stringify(this.dispositionNotePosition(current)))
+      reject('disposition_note_changed', 'Read the current disposition and receipts before applying this note.', 409);
+    if (amended) {
+      if (Object.keys(args).some(key => !['target', 'amend_disposition_note', 'disposition_note'].includes(key)) ||
+          !args.disposition_note?.trim()) reject('invalid_disposition', 'Use target and a nonempty disposition_note with amend_disposition_note.', 409);
+      if (!noteReview || context.session || !sameIdentity(current.owner, context.actor) || current.origin_execution?.kind !== 'conversation' ||
+          current.owner_conversation_id !== context.conversation?.id || !sameRef(current.origin_room, context.conversation?.space) ||
+          current.acceptance_state !== 'closed' || !['superseded', 'cancelled', 'private'].includes(current.acceptance?.outcome))
+        reject('disposition_note_forbidden', 'The original Room parent can correct the explanation on its own closed unused work.', 403);
+      const note = args.disposition_note.trim();
+      const previous = current.acceptance;
+      const updated = note === previous.note ? current : this.store.save(sessionRecords, { id: current.id,
+        acceptance: { ...previous, note, note_corrections: [...(previous.note_corrections ?? []),
+          { call_id: call.id, time: new Date().toISOString(), previous_note: previous.note ?? null, note, reviewer: context.actor }] } });
+      this.calls.bind(call.id, { target });
+      return this.baseView(target, updated, context);
+    }
+    if (args.acceptance_state === 'closed' && args.close_reason && current.acceptance_state === 'closed' && args.disposition_note?.trim() &&
+        (args.close_reason !== current.acceptance?.outcome || args.disposition_note.trim() !== current.acceptance?.note))
+      reject('disposition_already_recorded', 'Read the existing outcome. Its original Room parent can correct the explanation using amend_disposition_note.', 409,
+        { outcome: current.acceptance?.outcome });
     if (args.restore_pi_authority) {
       if (Object.keys(args).some(key => !['target', 'restore_pi_authority', 'delivery_message_id', 'disposition_note'].includes(key)))
         reject('invalid_restore', 'Renew the original authority in a separate operation');
@@ -940,7 +971,8 @@ export class Executions {
     const changing = args.acceptance_state === 'closed' && requested && (prior || current.acceptance_state === 'closed') && requested !== prior?.message_id;
     const rebind = changing && this.calls.get(call.id)?.delivery_rebind;
     if (changing && (!rebind || rebind.mode !== 'replacement' || rebind.previous !== prior?.message_id ||
-        rebind.requested !== requested || rebind.session !== current.id))
+        rebind.requested !== requested || rebind.session !== current.id || current.authority_revoked || current.control?.state !== 'active' ||
+        rebind.control_version !== current.control.control_version || rebind.input_revision !== current.input_revision))
       reject('delivery_link_unchanged', 'The acceptance link was not changed. Read the current card and its replacement authority.', 409,
         { accepted_card: prior?.message_id, requested_card: requested });
     if (args.acceptance_state !== undefined) patch.acceptance_state = args.acceptance_state;
