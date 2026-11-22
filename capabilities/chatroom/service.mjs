@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import { fail } from '../shared/validation.mjs';
 import { assertRevision, idOf, identity } from '../platform/contract.mjs';
 import { botMaintenanceRoomId } from '../../roles/index.mjs';
-import { projectFactSummary } from './message-summary.mjs';
 
 function list(value, label, maximum = 100) {
   if (value === undefined) return [];
@@ -39,7 +38,6 @@ function rowMessage(row) {
   const author = message.author ?? message.source ?? identity(senderId);
   return { id, ref: { kind: 'event', id }, kind: 'message', roomId, senderId, content, createdAt, sequence: row.sequence,
     author, space: { kind: 'room', id: roomId }, clientId, replyTo, replyAuthorId, callId,
-    ...(message.authorized_publication && { authorized_publication: message.authorized_publication }),
     attachments: (message.attachments ?? []).map(({ id: fileId, name, mimeType, size, url, previewUrl, openUrl, unavailable }) =>
       ({ id: fileId, ref: { kind: 'file', id: fileId }, name, mimeType, size, url, previewUrl, openUrl, unavailable })),
     references: message.references ?? [], mentions: message.mentions ?? [] };
@@ -178,20 +176,26 @@ export class ChatroomService {
     });
   }
 
-  saveMessageSummary(roomId, messageId, botId, summary, evidence, visible) {
+  saveMessageSummary(roomId, messageId, botId, summary) {
     roomId = idOf(roomId, 'room');
     messageId = identifier(messageId, '消息 ID');
     botId = identity(botId).id;
-    if (typeof summary !== 'string' || !summary.trim()) return null;
+    let text = typeof summary === 'string' ? summary.replace(/\s+/g, ' ').trim() : '';
     const saved = this.store.transaction(() => {
       const message = rowMessage(this.messageRow.get(messageId));
       if (message?.roomId !== roomId) return null;
       this.room(roomId, botId);
-      const fact = projectFactSummary(message, summary, evidence, visible);
-      if (!fact.summary) return null;
+      const missingNames = (message.attachments ?? []).map(file => file.name).filter(name => name && !text.includes(name));
+      if (missingNames.length) {
+        const suffix = `附件${missingNames.map(name => `「${name}」`).join('、')}`;
+        text = text ? `${text} ${suffix}` : suffix;
+      }
+      if (!text && message.references?.length) text = `附有 ${message.references.length} 项引用`;
+      text = text.slice(0, 240);
+      if (!text) return null;
       const id = JSON.stringify([roomId, messageId, botId]);
       const updated_at = new Date().toISOString();
-      return this.store.save('room-message-summaries', { id, roomId, messageId, bot_id: botId, ...fact, updated_at });
+      return this.store.save('room-message-summaries', { id, roomId, messageId, bot_id: botId, summary: text, updated_at });
     });
     if (saved) this.emit('delivery');
     return saved;
@@ -422,8 +426,6 @@ export class ChatroomService {
       if (!content.trim() && !attachments.length && !refs.length) fail('请填写正文，或添加附件或引用');
       const message = this.store.save('messages', {
         id: eventId, kind: 'message', roomId: id, senderId: actor, author: identity(actor), content, attachments, references: refs, mentions,
-        ...(options.authorizedFields?.length && { authorized_publication: { fields: options.authorizedFields } }),
-        ...(options.workCardChange && { work_card_change: options.workCardChange }),
         replyTo: parent?.id ?? null, ...(parent ? { replyAuthorId: parent.senderId } : {}),
         ...(clientId === undefined ? {} : { clientId }), ...(callId ? { callId } : {}),
       });
@@ -440,12 +442,6 @@ export class ChatroomService {
     return { message, deliveries: this.platform.messageDeliveries(message.id) };
   }
 
-  receiptForPublication(id, actor) {
-    const message = this.projectMessage(this.messageRow.get(id));
-    this.room(message.roomId, actor);
-    return this.messageReceipt(message);
-  }
-
   receipt(id, clientId, actor) {
     id = idOf(id, 'room');
     actor = identity(actor).id;
@@ -459,7 +455,6 @@ export class ChatroomService {
 export function messageEvent(message) {
   const author = message.senderId === 'system' ? { kind: 'platform', id: 'platform' } : identity(message.senderId);
   return { id: message.id, type: 'message', kind: 'event', roomId: message.roomId, space: message.space,
-    ...(message.authorized_publication && { authorized_publication: message.authorized_publication }),
     author, time: message.createdAt, sequence: message.sequence, text: message.content, content: message.content,
     mentions: message.mentions, reply_to: message.replyTo, replyAuthorId: message.replyAuthorId,
     attachments: message.attachments, references: message.references, call_id: message.callId };

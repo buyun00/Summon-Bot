@@ -7,7 +7,6 @@ import { repairRequestType, repairResultType, tools } from '../../../capabilitie
 import { deliveryRecords } from '../../../capabilities/platform/delivery.mjs';
 import { waitRecords } from '../../../capabilities/platform/calls.mjs';
 import { forwardMaterials, workGroup } from '../../../capabilities/platform/session-work.mjs';
-import { barePublicationNumber, currentPublicationGrant, fieldLayout, inspectedPublicationSources, privateRoomRead, publicationContext, publicationSelection, publicationSources, roomPublicationReceipts, roomQuestionLinks, withinPublicationRoom } from '../../../capabilities/platform/room-publication.mjs';
 import { BotStore } from '../storage/store.mjs';
 import { Inbox } from '../storage/inbox.mjs';
 import { eventOrder, executionRef, now, recordKey, refKey, runtimeFailure, runtimeRecords as R, sameRef, terminalCallStates } from '../storage/runtime-records.mjs';
@@ -20,7 +19,6 @@ import { textMessage, transcriptPage } from '../context/projection.mjs';
 import { canReadObservation, observationBoundary } from '../context/room-observation.mjs';
 import { MaterialRuntime } from '../context/materials.mjs';
 import { FastReadRuntime } from './fast-read.mjs';
-import { confirmedRoomSend, resolutionLabel } from './room-delivery.mjs';
 
 const conversationRef = executionRef;
 const sessionRef = id => ({ kind: 'session', id });
@@ -59,7 +57,6 @@ const protectedEvent = event => protectedEvents.has(event.type) || event.result?
 const isTerminalReceipt = (event, wait) => event?.type === 'call.receipt' && event.call_id === wait.call_id && terminalCallStates.has(event.status);
 const callSettled = status => status !== 'unknown' && terminalCallStates.has(status);
 const roomEvent = message => ({ id: message.id, kind: 'event', type: 'message', space: { kind: 'room', id: message.roomId },
-  ...(message.authorized_publication && { authorized_publication: message.authorized_publication }),
   sequence: message.sequence, time: message.createdAt, author: message.author || (message.senderId === 'user' ? { kind: 'user', id: 'user' } :
     message.senderId === 'system' ? { kind: 'platform', id: 'platform' } : botRef(message.senderId)),
   text: message.content, attachments: message.attachments, references: message.references, mentions: message.mentions, reply_to: message.replyTo });
@@ -257,13 +254,7 @@ export class BotRuntime {
   deliveryRuns(botId, eventId) {
     const inbox = this.inboxes.get(botId);
     if (!inbox) return [];
-    const routes = inbox.list(R.route, 'event_id', eventId);
-    const ids = new Set(routes.map(route => route.run_id).filter(Boolean));
-    for (const route of routes) {
-      const handler = route.fast_read_forward_handler;
-      const returned = handler?.wait_id && inbox.store.getRecord(R.route, recordKey(handler.event_id, handler.wait_id));
-      if (returned?.run_id) ids.add(returned.run_id);
-    }
+    const ids = new Set(inbox.list(R.route, 'event_id', eventId).map(route => route.run_id).filter(Boolean));
     return [...ids].flatMap(id => {
       const run = inbox.run(id);
       return run ? [{ run_id: id, state: run.state, starts: run.start_count ?? null, first_started_at: run.first_started_at ?? null }] : [];
@@ -271,113 +262,8 @@ export class BotRuntime {
   }
 
   roomDeliveryDetails(botId, eventId) {
-    const route = this.forwardRoute(botId, eventId);
-    const callId = route?.fast_read_forward_call_id;
-    const call = callId && this.platform.store.get('platform-calls', callId);
-    const updated = call && this.openIntakeReceipt(call);
-    const local = updated ?? route?.source_intake_receipt;
-    const status = local?.call_status ?? route?.fast_read_forward_status;
-    const fallback = route?.fast_read_forward_fallback;
-    const recovery = local?.recovery;
-    const notice = fallback && (status === 'not_submitted' ? (recovery ? '原生输入未提交，原件补投状态 ' + recovery.call_status :
-      route.fast_read_forward_handler?.wait_id ? '原生输入未提交，失败回执已入原工作主持队列' : '原生输入未提交，已转群主对话') : status === 'completed' ? '原调用已完成' :
-      fallback === 'call_result_unknown' ? '原生送达待查' : '直转已交主对话处理');
-    return { ...(route?.fast_read_diagnostic && { fast_read_diagnostic: route.fast_read_diagnostic }),
-      ...(call && { forward_call: { id: call.id, status, input_status: local?.native_input_status,
-        result_ref: updated ? call.result_ref : route.fast_read_forward_receipt && { kind: 'event', id: route.fast_read_forward_receipt },
-        handler: route.fast_read_forward_handler, recovery_call_id: recovery?.id, recovery_status: recovery?.call_status } }),
-      ...(route?.resolution ? { resolution_notice: resolutionLabel(route.resolution) } :
-        notice ? { resolution_notice: callId ? notice + ' · 调用 ' + callId : notice } : {}),
-      ...(route?.public_reply && { public_reply: route.public_reply }) };
-  }
-
-  forwardRoute(botId, eventId) {
-    return this.inboxes.get(botId)?.store.getRecord(R.route, recordKey(eventId, 'observation'));
-  }
-
-  openIntakeReceipt(call) {
-    const room = call.origin?.source_room, work = call.target?.kind === 'session' && this.platform.executions.record(call.target);
-    if (!room || !work?.origin_room || work.owner?.id !== call.origin.bot_id || work.authority_revoked ||
-        !this.platform.canReadSpace(work.owner, room) || !this.platform.canReadSpace(work.owner, work.origin_room)) return null;
-    const status = record => {
-      const input = record.input_id && this.platform.store.get('platform-inputs', record.input_id);
-      return { call_status: record.status, native_input_status: input?.call_id === record.id ? input.status : record.result?.input_status };
-    };
-    const latest = this.platform.executions.latestMaterialAttempt(call);
-    return { ...status(call), ...(latest.id !== call.id && { recovery: { id: latest.id, ...status(latest) } }) };
-  }
-
-  roomIntake(botId, room, requests) {
-    const ids = new Set(requests.flatMap(event => [event.id, event.reply_to?.id ?? event.reply_to,
-      ...(event.references || []).filter(ref => ref.kind === 'event').map(ref => ref.id)]).filter(Boolean));
-    const recent = this.platform.store.db.prepare(`SELECT json_extract(data,'$.intake_source_ids') AS sources FROM records
-      WHERE kind='platform-calls' AND json_extract(data,'$.target.id')=? AND json_extract(data,'$.origin.bot_id')=?
-      AND json_extract(data,'$.status')='completed' AND json_array_length(data,'$.intake_source_ids')>0 ORDER BY rowid DESC LIMIT 12`).all(room.id, botId);
-    for (const row of recent) for (const id of JSON.parse(row.sources)) ids.add(id);
-    const receiving = this.platform.executions.followupSessions(botId, room.id).filter(work =>
-      work.origin_room?.id !== room.id && !work.authority_revoked && work.control?.state === 'active' &&
-      this.platform.executions.record(conversationRef(work.owner_conversation_id))?.control.state === 'active' &&
-      this.platform.canReadSpace(botRef(botId), work.origin_room));
-    const open = receiving.length > 0;
-    const receipts = new Map();
-    const calls = this.platform.calls.roomForwards(botId, room.id, [...ids]);
-    for (const [source, call] of calls) {
-      const route = this.forwardRoute(botId, source);
-      const message = this.platform.store.get('messages', source);
-      if (message?.roomId !== room.id || !call.origin.intake_message_id && route?.fast_read_forward_call_id !== call.id) continue;
-      const receipt = this.openIntakeReceipt(call) ?? route?.source_intake_receipt ?? { call_status: route?.fast_read_forward_status };
-      const work = call.target?.kind === 'session' && this.platform.executions.record(call.target);
-      const historical = work?.owner?.id === botId && !work.authority_revoked && call.origin?.source_room?.id === room.id &&
-        this.platform.canReadSpace(work.owner, work.origin_room);
-      receipts.set(recordKey(source, call.target?.id), { source_event: source, author: message.senderId, call_status: receipt.call_status,
-        ...(historical && { submitted_to: { kind: 'session', id: work.id } }),
-        ...(receiving.some(work => work.id === call.target?.id) && { receiving_session: call.target.id }),
-        native_input_status: receipt.native_input_status, ...(receipt.recovery && { recovery: {
-          call_status: receipt.recovery.call_status, native_input_status: receipt.recovery.native_input_status } }) });
-    }
-    if (ids.size) {
-      const local = this.platform.store.db.prepare(`SELECT data FROM records WHERE kind='platform-calls'
-        AND json_extract(data,'$.target.id')=? AND json_extract(data,'$.origin.bot_id')=? AND json_extract(data,'$.status')='completed'
-        AND EXISTS (SELECT 1 FROM json_each(data,'$.intake_source_ids') WHERE value IN (SELECT value FROM json_each(?))) ORDER BY rowid DESC`)
-        .all(room.id, botId, JSON.stringify([...ids]));
-      for (const row of local) {
-        const call = JSON.parse(row.data);
-        const work = call.intake_session_id && this.platform.executions.record(sessionRef(call.intake_session_id));
-        const originals = call.intake_source_ids.filter(id => ids.has(id));
-        const visible = work?.owner?.id === botId && !work.authority_revoked && this.platform.canReadSpace(work.owner, work.origin_room);
-        const live = visible ? this.platform.roomWork.priorMaterialReceipts(work, call, originals) : [];
-        const inner = visible && call.intake_call_id && this.platform.store.get('platform-calls', call.intake_call_id);
-        const native = inner?.retained_input_call_id ? this.platform.store.get('platform-calls', inner.retained_input_call_id) : inner;
-        const input = native?.input_id && this.platform.store.get('platform-inputs', native.input_id);
-        for (const id of originals) {
-          const message = this.platform.store.get('messages', id);
-          if (message?.roomId !== room.id) continue;
-          const key = recordKey(id, call.intake_session_id);
-          const existing = receipts.get(key);
-          if (existing?.intake_status) continue;
-          const acted = native?.target?.id === call.intake_session_id && !native.material_reference_only &&
-            (native.material_action_ids ?? native.origin?.intake_material_ids ?? []).includes(id);
-          const current = live.find(item => item.event_id === id) ?? (acted ? { call_status: native.status,
-            input_status: input?.call_id === native.id ? input.status : native.result?.input_status ?? 'unconfirmed' } : null);
-          const specific = current ?? call.result?.material_receipts?.find(item => item.event_id === id);
-          const entry = existing ?? { source_event: id, author: message.senderId,
-            ...(receiving.some(item => item.id === call.intake_session_id) && { receiving_session: call.intake_session_id }) };
-          if (visible && call.target?.kind === 'room' && call.target.id === room.id && inner?.target?.id === work.id && specific)
-            entry.submitted_to = { kind: 'session', id: work.id };
-          entry.intake_status = call.status;
-          if (current || !entry.call_status) {
-            entry.call_status = specific?.call_status ?? call.result?.status;
-            entry.native_input_status = specific?.input_status ?? call.result?.input_status;
-          }
-          receipts.set(key, entry);
-        }
-      }
-    }
-    if (!open && !receipts.size) return null;
-    return { room: { id: room.id, name: room.name }, owner_id: botId, receives_materials_here: open, receipts: [...receipts.values()],
-      receiving_sessions: receiving.map(work => ({ kind: 'session', id: work.id,
-        engine: work.engine === 'pi' ? 'pi' : this.platform.connections.get(work.engine)?.kind })),
-      instruction: 'Each source_event has its own receipt. submitted_to identifies the historical target. native_input_status is the delivery status at that target; intake_status is the outer filing. A completed target input establishes delivery there, not a separate human signature. An empty receiving_sessions list closes future intake only. For a new filing use the currently open receiving_session.' };
+    const route = this.inboxes.get(botId)?.store.getRecord(R.route, recordKey(eventId, 'observation'));
+    return route?.fast_read_diagnostic ? { fast_read_diagnostic: route.fast_read_diagnostic } : {};
   }
 
   wake() {
@@ -531,7 +417,7 @@ export class BotRuntime {
       let conversation = retained ? (available(retained) ? retained : null) : conversations.reverse().find(available);
       if (!conversation && (retained || conversations.length)) continue;
       if (!conversation) conversation = this.register(inbox, inbox.putConversation({ id: randomUUID(), kind: 'room', space, owner: botRef(bot.id) }));
-      let newRoutes = routes.slice(0, 32);
+      const newRoutes = routes.slice(0, 32);
       if (receiptGroup) {
         const acceptance = inbox.runs(conversation.id).find(run => run.receipt_group === receiptGroup && activeRunStates.has(run.state));
         if (acceptance) inbox.associate(acceptance.id, newRoutes);
@@ -539,29 +425,6 @@ export class BotRuntime {
         continue;
       }
       const running = this.active.get(conversation.id);
-      if (conversation.kind === 'room' && !retained && !running && !this.starting.has(conversation.id)) {
-        const runs = inbox.runs(conversation.id);
-        const owners = this.platform.executions.directWork(conversation.id);
-        newRoutes = newRoutes.filter(route => {
-          if (route.fast_read_decision !== 'main' || route.event.type !== 'message') return true;
-          const links = roomQuestionLinks(this.platform, space, [route.event]);
-          const matched = new Set(owners.filter(work => links.has(work.origin_message_id)).map(work => work.owner_run_id));
-          const receiving = runs.filter(run => matched.has(run.id) && ['pending', 'interrupted', 'retry', 'waiting'].includes(run.state));
-          if (receiving.length !== 1) return true;
-          inbox.associate(receiving[0].id, [route]);
-          if (receiving[0].state === 'waiting') inbox.putRun({ id: receiving[0].id, state: 'pending' });
-          return false;
-        });
-        if (!newRoutes.length) continue;
-        if (newRoutes.every(route => route.fast_read_decision === 'main') && runs.some(run => run.state === 'retry')) {
-          // Keep unlinked instructions in their own ordered turn without
-          // changing an existing reservation or attributing them to old work.
-          const reservation = runs.filter(run => run.state === 'retry' && run.error?.code === 'resource_limit' && run.retry_at)
-            .sort((left, right) => left.retry_at.localeCompare(right.retry_at))[0];
-          inbox.createRun(conversation, newRoutes, reservation ? { retry_at: reservation.retry_at } : {});
-          continue;
-        }
-      }
       const retainedRun = conversation.kind !== 'room' && inbox.runs(conversation.id).find(run => run.state === 'suspended');
       const handlingWork = running && conversation.kind === 'room' && (inbox.run(running.runId).receipt_group ||
         inbox.calls(running.runId).some(call => call.tool === 'open_session') ||
@@ -665,15 +528,6 @@ export class BotRuntime {
     return result?.target || result?.execution_ref;
   }
 
-  roomAnswerTarget(context, target) {
-    const inbox = context.actor.kind === 'bot' && this.inboxes.get(context.actor.id);
-    if (!inbox || context.conversation?.kind !== 'room' || target.kind !== 'session') return;
-    const sources = context.origin.event_ids.filter(id => inbox.event(id)?.type === 'message');
-    if (sources.length !== 1) return;
-    const hint = inbox.store.getRecord(R.route, recordKey(sources[0], 'observation'))?.native_request;
-    return hint?.session_id === target.id ? hint.input_target : undefined;
-  }
-
   discard(inbox, routes, status) {
     const eventIds = [...new Set(routes.map(route => route.event_id))];
     if (status === 'access_revoked') for (const route of routes) {
@@ -696,830 +550,26 @@ export class BotRuntime {
     }
   }
 
+  reconcileRoomReply(inbox, event) {
+    if (event?.type !== 'message' || event.space?.kind !== 'room') return;
+    const route = inbox.store.getRecord(R.route, recordKey(event.id, 'observation'));
+    if (!route || route.state !== 'pending' || !route.run_id) return;
+    const run = inbox.run(route.run_id);
+    if (!run || run.state !== 'suspended' || this.active.get(run.conversation_id)?.runId === run.id) return;
+    const reply = this.platform.room.replyBy(event.space.id, inbox.botId, event.id);
+    const call = reply?.callId && this.platform.store.get('platform-calls', reply.callId);
+    if (!reply || call?.tool !== 'send' || call.status !== 'completed' || call.origin?.bot_id !== inbox.botId ||
+        call.result?.message?.id !== reply.id) return;
+    inbox.store.putRecord(R.route, { ...route, state: 'processed', processed_at: now(),
+      public_reply: { message_id: reply.id, call_id: call.id } });
+  }
+
   reconcileDeliveries(inbox, received) {
-    const inspected = new Set();
     for (const delivery of received.filter(item => item.bot_id === inbox.botId)) {
-      if (delivery.event.type === 'message') this.reconcileRoomReply(inbox, delivery.event);
-      if (delivery.event.type === 'call.receipt') this.reconcileHostReview(inbox, delivery.event);
-      for (const route of inbox.list(R.route, 'event_id', delivery.event.id)) {
-        if (route.state !== 'pending' || !route.run_id || inspected.has(route.run_id)) continue;
-        inspected.add(route.run_id);
-        this.reconcileAcceptedWork(inbox, route.run_id);
-      }
+      this.reconcileRoomReply(inbox, delivery.event);
       const receipt = inbox.receipt(delivery.id);
       if (receipt?.revision === (delivery.revision ?? 1)) this.syncDelivery(inbox, receipt);
     }
-  }
-
-  pendingOwnerReview(inbox, run, conversation, pending) {
-    const room = conversation.space, actor = botRef(inbox.botId);
-    const requests = this.outstandingRoomReplies(inbox, room, pending.filter(route => !route.resolution).map(route => route.event_id))
-      .map(item => this.platform.store.get('messages', item.message_id)).filter(item => item?.senderId === 'user');
-    if (!requests.length) return;
-    const direct = this.platform.executions.directWork(conversation.id).filter(seat => sameRef(seat.origin_room, room) &&
-      seat.owner.id === actor.id && seat.origin_execution?.kind === 'conversation' && !seat.authority_revoked);
-    const failures = inbox.calls(run.id).filter(call => call.tool === 'send' && call.state === 'failed').reverse()
-      .sort((a, b) => Number(b.result?.details?.reason === 'dispatch_format_unresolved') - Number(a.result?.details?.reason === 'dispatch_format_unresolved'));
-    for (const failed of failures) {
-      const record = this.platform.store.get('platform-calls', failed.id);
-      if (record?.status !== 'failed' || record.origin?.run_id !== run.id || record.origin.conversation_id !== conversation.id ||
-          record.origin.bot_id !== actor.id) continue;
-      const to = failed.args.to?.id ?? failed.args.to;
-      const authorization = failed.args.publication?.authorization;
-      const selected = authorization?.id ?? authorization;
-      const address = failed.args.reply_to?.id ?? failed.args.reply_to;
-      const external = to !== room.id;
-      if (external ? failed.result?.code !== 'publication_review_incomplete' || failed.result?.details?.reason !== 'dispatch_format_unresolved' :
-          !['work_result_claim_conflicts', 'work_acceptance_claim_conflicts', 'work_card_change_required', 'local_receipt_claim_conflicts',
-            'work_review_unavailable', 'reply_target_required'].includes(failed.result?.code)) continue;
-      const source = this.platform.store.get('messages', (external ? selected : address ?? selected) ?? '');
-      if (source?.roomId !== room.id || external && (source.senderId !== 'user' ||
-          !this.platform.canWriteSpace(actor, { kind: 'room', id: to }, { actor, conversation, origin: record.origin }))) continue;
-      const links = roomQuestionLinks(this.platform, room, [source]);
-      const relevant = requests.filter(message => {
-        const roots = roomQuestionLinks(this.platform, room, [message]);
-        return roots.has(source.id) || links.has(message.id) || direct.some(seat => links.has(seat.origin_message_id) && roots.has(seat.origin_message_id));
-      });
-      if (!relevant.length) continue;
-      const seats = direct.filter(seat => links.has(seat.origin_message_id));
-      if (!external && !seats.length && failed.result.code !== 'local_receipt_claim_conflicts') continue;
-      const sent = external ? roomPublicationReceipts(this.platform, actor, conversation, links, { kind: 'room', id: to }) : [];
-      const alreadySent = sent.some(receipt => receipt.text === failed.args.text && receipt.prescribed_text_delivered);
-      const trigger = { kind: external && !alreadySent ? 'review_prescribed_dispatch' : 'review_owner_handover', source: source.id,
-        requested_replies: relevant.map(item => item.id), ...(external && { destination: to, actual_deliveries: sent.map(item => item.message_id) }) };
-      // Vary only with a new request, source, confirmed delivery or work change.
-      // Repeated rejections at this position are still the same owner task.
-      return { trigger, position: recordKey(trigger, seats.map(seat => [seat.id, seat.latest_call_id, seat.input_revision,
-        seat.acceptance_state, seat.acceptance?.message_id, seat.acceptance?.note_corrections?.at(-1)?.call_id])) };
-    }
-  }
-
-  reconcileAcceptedWork(inbox, runId) {
-    const run = inbox.run(runId);
-    if (run?.state !== 'suspended' || !['room_delivery_pending', 'model_response_incomplete'].includes(run.error?.code)) return;
-    const conversation = inbox.conversation(run.conversation_id), actor = botRef(inbox.botId);
-    if (conversation?.kind !== 'room' || !this.conversationActive(conversation) || !this.platform.getBot(inbox.botId).enabled ||
-        !this.platform.canReadSpace(actor, conversation.space) || this.active.has(conversation.id) || this.starting.has(conversation.id)) return;
-    const pending = run.route_ids.map(id => inbox.store.getRecord(R.route, id)).filter(route => route?.state === 'pending');
-    const accepted = this.platform.executions.directWork(conversation.id).filter(work => work.acceptance_state === 'closed' &&
-      work.acceptance?.outcome === 'delivered' && work.owner.id === actor.id && sameRef(work.origin_room, conversation.space));
-    const covered = new Map(), changed = new Set();
-    for (const route of pending) {
-      const event = inbox.event(route.event_id);
-      if (!event || event.type !== 'call.receipt' && !run.injected_event_ids.includes(route.event_id)) continue;
-      const roots = event.type === 'message' ? roomQuestionLinks(this.platform, conversation.space, [event]) : new Set();
-      for (const work of accepted) {
-        const call = event.type === 'call.receipt' && event.target?.kind === 'session' && event.target.id === work.id &&
-          this.platform.store.get('platform-calls', event.call_id);
-        const final = call?.status === 'completed' && call.result_ref?.kind === 'event' && this.platform.store.get('platform-events', call.result_ref.id);
-        const wait = route.wait_id && inbox.wait(route.wait_id);
-        const terminal = final?.status === 'completed' && final.call_id === event.call_id && final.target?.id === work.id &&
-          final.time >= event.time && wait?.call_id === event.call_id && wait.run_id === runId && wait.conversation_id === conversation.id &&
-          this.platform.canReadEvent(event, { actor, conversation, origin: { bot_id: actor.id, conversation_id: conversation.id, run_id: runId } });
-        if (!terminal && !roots.has(work.origin_message_id)) continue;
-        const message = this.platform.store.get('messages', work.acceptance.message_id);
-        const send = message && confirmedRoomSend(this.platform, { ...message, space: conversation.space });
-        if (!send || send.origin.conversation_id !== conversation.id || message.replyTo !== work.origin_message_id ||
-            message.createdAt < (terminal ? final.time : event.time)) continue;
-        const native = !terminal && this.platform.roomWork.materialStatus(work, [event.id])[0];
-        const used = native?.call_status === 'completed' && native.input_status === 'completed';
-        if (terminal || used && route.intake_disposition === 'material' && !route.intake_task && !route.public_reply_quote) {
-          covered.set(route.id, { event_id: event.id, message_id: message.id, call_id: send.id,
-            ...(terminal && { session_id: work.id, original_call: call.id, terminal_receipt: final.id }) });
-          if (terminal && message.createdAt > (run.last_delivery_review_at ?? run.first_started_at)) changed.add(message.id);
-          break;
-        }
-        // A newer accepted answer to the same question changes what the
-        // suspended owner can use. Only that owner assesses uncovered requests.
-        if (message.createdAt > (run.last_delivery_review_at ?? run.first_started_at)) changed.add(message.id);
-      }
-    }
-    const left = pending.filter(route => !covered.has(route.id));
-    const acceptedIds = sortedIds(changed);
-    const position = JSON.stringify(acceptedIds);
-    const reconsider = changed.size && position !== run.delivery_recovery_position;
-    let draftPosition, draftQuestion, reviewTrigger;
-    const ownerReview = left.length && this.pendingOwnerReview(inbox, run, conversation, left);
-    if (ownerReview) {
-      draftPosition = ownerReview.position;
-      reviewTrigger = ownerReview.trigger;
-    }
-    if (!ownerReview && left.length && run.error?.code === 'room_delivery_pending') {
-      const send = inbox.calls(runId).filter(call => call.tool === 'send' && call.state === 'failed' && call.result?.details?.card_correction)
-        .sort((a, b) => a.finished_at.localeCompare(b.finished_at)).at(-1);
-      const question = this.platform.store.get('messages', send?.args.reply_to?.id ?? send?.args.reply_to ?? '');
-      const correction = send?.result.details.card_correction;
-      const currentIds = new Set(correction?.acceptance?.filter(seat => seat.current).map(seat => seat.session));
-      const work = question?.roomId === conversation.space.id && this.platform.executions.directWork(conversation.id).filter(seat =>
-        currentIds.has(seat.id) && seat.owner.id === actor.id && seat.origin_message_id === question.id && !seat.authority_revoked);
-      if (work?.length && work.some(seat => seat.acceptance_state === 'open') && work.every(seat => seat.status === 'completed')) {
-        draftQuestion = question.id;
-        draftPosition = recordKey(question.id, work.map(seat => [seat.id, seat.latest_call_id, seat.input_revision, seat.acceptance_state]));
-      }
-    }
-    const retryDraft = draftPosition && draftPosition !== run.owner_card_recovery_position;
-    if (!covered.size && !reconsider && !retryDraft) return;
-    const resumeAt = retryDraft && inbox.runs(conversation.id).filter(item => item.error?.code === 'resource_limit' && item.retry_at > now())
-      .map(item => item.retry_at).sort()[0];
-    inbox.store.transaction(() => {
-      for (const [id, proof] of covered) {
-        const route = inbox.store.getRecord(R.route, id);
-        inbox.store.putRecord(R.route, { ...route, state: 'processed', processed_at: now(), accepted_work_delivery: proof });
-        inbox.settleWait(route, 'processed');
-      }
-      inbox.putRun({ id: runId, processed_event_ids: [...new Set([...run.processed_event_ids, ...[...covered.values()].map(item => item.event_id)])],
-        ...(!left.length ? { state: inbox.hasOpenWaits(runId) ? 'waiting' : 'completed', error: null } : retryDraft ?
-          { state: resumeAt ? 'retry' : 'interrupted', retry_at: resumeAt || null, recovering_room_inputs: true, owner_card_recovery_position: draftPosition,
-            model_outcome: null, model_outcome_uses_view: null, publication_retry_position: null,
-            delivery_review_trigger: { ...(reviewTrigger ?? { kind: 'correct_original_card', original_question: draftQuestion }),
-              pending_event_ids: left.map(route => route.event_id) } } : reconsider ?
-          { state: 'interrupted', recovering_room_inputs: true, delivery_recovery_position: position, last_delivery_review_at: now(),
-            delivery_review_trigger: { kind: 'accepted_work',
-              accepted_message_ids: acceptedIds, pending_event_ids: left.map(route => route.event_id) } } : {}) });
-    });
-    this.consumeDeliveries(inbox, [...covered.values()].map(proof => proof.event_id));
-  }
-
-  reconcileHostReview(inbox, event) {
-    if (event.target?.kind !== 'session') return;
-    const work = this.platform.executions.record(event.target);
-    const review = work?.acceptance?.host_review;
-    if (work?.acceptance_state !== 'closed' || review?.reviewer?.kind !== 'user' || review.receipt_id !== event.id ||
-        work.origin_execution?.kind !== 'session' || !sameRef(review.direct_parent, work.origin_execution)) return;
-    inbox.store.transaction(() => {
-      for (const route of inbox.list(R.route, 'event_id', event.id)) {
-        const wait = route.wait_id && inbox.wait(route.wait_id);
-        if (route.state !== 'pending' || wait?.session_id !== work.origin_execution.id || wait.run_id !== work.owner_run_id ||
-            wait.conversation_id !== work.owner_conversation_id || wait.call_id !== event.call_id) continue;
-        inbox.store.putRecord(R.route, { ...route, state: 'processed', processed_at: now(), host_review_call_id: review.call_id });
-        inbox.settleWait(route, 'processed');
-      }
-    });
-  }
-
-  reconcileRoomReply(inbox, event) {
-    const route = inbox.store.getRecord(R.route, recordKey(event.id, 'observation'));
-    if (!route?.run_id || route.state !== 'pending') return;
-    const run = inbox.run(route.run_id);
-    if (!run || !['suspended', 'retry', 'interrupted', 'pending'].includes(run.state) || !run.start_count ||
-        this.active.get(run.conversation_id)?.runId === run.id) return;
-    const conversation = inbox.conversation(run.conversation_id);
-    if (conversation?.kind !== 'room' || conversation.space.kind !== 'room' || !sameRef(conversation.space, event.space)) return;
-    const reply = this.platform.room.replyBy(conversation.space.id, inbox.botId, event.id);
-    const call = confirmedRoomSend(this.platform, reply);
-    if (!call) return;
-    inbox.store.transaction(() => {
-      // The original fork may never have injected this message. Keep its execution history intact.
-      inbox.store.putRecord(R.route, { ...route, state: 'processed', processed_at: now(), public_reply: {
-        message_id: reply.id, bot_id: inbox.botId, call_id: call.id,
-        conversation_id: call.origin.conversation_id, run_id: call.origin.run_id,
-      } });
-      if (run.state !== 'suspended' && !run.route_ids.some(id => inbox.store.getRecord(R.route, id)?.state === 'pending'))
-        inbox.putRun({ id: run.id, state: inbox.hasOpenWaits(run.id) ? 'waiting' : 'completed' });
-    });
-  }
-
-  recoveredRoomReply(origin, roomId, replyTo, currentWork = false) {
-    const inbox = this.inboxes.get(origin?.bot_id);
-    const run = inbox?.run(origin.run_id);
-    if (!run || inbox.conversation(run.conversation_id)?.space?.id !== roomId) return null;
-    const routes = run.route_ids.map(id => inbox.store.getRecord(R.route, id));
-    if (routes.some(route => route?.resolution && (!replyTo || route.event_id === replyTo)))
-      throw runtimeFailure('delivery_resolved', '原发起人已结清此投递，续办请明确回复仍待处理的原消息');
-    if (currentWork || !run.recovering_room_inputs) return null;
-    const settled = routes.filter(route => route?.public_reply);
-    if (settled.length && !replyTo)
-      throw runtimeFailure('reply_target_required', 'Reply to the outstanding original message; this recovery already has confirmed public replies.');
-    const route = settled.find(item => item.event_id === replyTo);
-    return route ? this.platform.room.replyBy(roomId, inbox.botId, route.event_id) : null;
-  }
-
-  requiresRoomDraft(context) {
-    const { origin, conversation } = context;
-    const room = conversation.space;
-    const inbox = this.inboxes.get(context.actor.id);
-    if (!inbox?.run(origin.run_id)) return true;
-    const observation = this.platform.deliveries.roomObservation(context.actor.id, room.id);
-    const previous = observation?.checkpoint && inbox.store.getRecord(R.checkpoint, observation.checkpoint.id);
-    if (previous?.access_refs?.some(ref => !withinPublicationRoom(this.platform, ref, room))) return true;
-    if (origin.event_ids.some(id => {
-      const event = inbox.event(id);
-      return event && (event.type === 'pi.input' || event.type === 'message' && !sameRef(event.space, room) ||
-        event.type === 'call.receipt' && !withinPublicationRoom(this.platform, { kind: 'call', id: event.call_id }, room));
-    })) return true;
-    return inbox.calls(origin.run_id).some(call => call.state === 'completed' &&
-      (call.tool === 'send' && call.result?.message?.roomId && call.result.message.roomId !== room.id ||
-        privateRoomRead(this.platform, call.tool, call.args, call.result || {}, room)));
-  }
-
-  outstandingRoomReplies(inbox, room, ids) {
-    if (room?.kind !== 'room') return [];
-    const pending = [];
-    for (const id of ids) {
-      const route = this.forwardRoute(inbox.botId, id);
-      if (route?.state !== 'pending' || !route.public_reply_quote || route.resolution) continue;
-      const message = this.platform.store.get('messages', id);
-      if (message?.roomId !== room.id) continue;
-      const addressed = message.mentions?.length ? message.mentions : message.replyAuthorId ? [message.replyAuthorId] : [];
-      const answered = this.platform.roomMembers(room.id).some(member => {
-        if (member !== inbox.botId && (!addressed.includes(member) || addressed.includes(inbox.botId))) return false;
-        return confirmedRoomSend(this.platform, this.platform.room.replyBy(room.id, member, id));
-      });
-      const previous = !answered && this.platform.store.db.prepare(`SELECT data FROM records WHERE kind='platform-calls'
-        AND json_extract(data,'$.answered_request')=? AND json_extract(data,'$.origin.bot_id')=?
-        AND json_extract(data,'$.target.id')=? AND json_extract(data,'$.status')='completed' ORDER BY rowid DESC LIMIT 1`).get(id, inbox.botId, room.id);
-      if (!answered && !previous) pending.push({ message_id: id, request: route.public_reply_quote });
-    }
-    return pending;
-  }
-
-  unsettledForwardReturns(job, ids) {
-    const due = [];
-    for (const id of ids) {
-      const event = job.inbox.event(id);
-      if (event?.type !== 'call.receipt' || event.status !== 'not_submitted' || event.owner_conversation_id !== job.conversation.id) continue;
-      const original = this.platform.store.get('platform-calls', event.call_id);
-      if (!original?.origin?.fast_read_forward) continue;
-      const work = this.platform.executions.record(event.target);
-      if (!work?.origin_room || !this.platform.canReadSpace(work.owner, work.origin_room)) continue;
-      const latest = this.platform.executions.latestMaterialAttempt(original);
-      const retry = latest.id === original.id ? null : latest;
-      if (!this.platform.executions.confirmedNonSubmission(latest)) continue;
-      if (this.platform.executions.originalReplies(work).some(({ message }) =>
-        this.platform.store.get('platform-calls', message.callId)?.source_event_ids?.includes(id))) continue;
-      const actions = job.inbox.calls(job.runId);
-      if (actions.some(action => action.state === 'completed' && action.tool === 'send' &&
-          action.result?.message?.roomId === work.origin_room.id && action.result.message.replyTo === work.origin_message_id)) continue;
-      due.push({ original_call: original.id, source_event: original.source_event_ids[0], session: work.id,
-        origin_room: work.origin_room, original_question: work.origin_message_id, latest_attempt: retry?.id, latest_status: retry?.status });
-    }
-    return due;
-  }
-
-  replacementInstructions(work, job, explicit) {
-    const room = work.origin_room;
-    const original = this.platform.store.get('messages', work.origin_message_id);
-    const rows = this.platform.store.db.prepare(`SELECT data FROM records WHERE kind='messages'
-      AND json_extract(data,'$.roomId')=? AND json_extract(data,'$.senderId')='user' AND created_at>=? ORDER BY rowid`)
-      .all(room.id, original?.createdAt ?? '');
-    const instructions = rows.map(row => JSON.parse(row.data)).filter(message => message.id === original?.id ||
-      roomQuestionLinks(this.platform, room, [message]).has(work.origin_message_id) ||
-      (message.id === explicit || job.context().origin.event_ids.includes(message.id)) && message.content.includes(work.id));
-    const hostInputs = job.context().origin.event_ids.map(id => job.inbox.event(id)).filter(event =>
-      event?.type === 'pi.input' && event.author?.kind === 'user' && sameRef(event.space, room) && typeof event.input === 'string');
-    return [...instructions.map(item => ({ id: item.id, text: item.content })),
-      ...hostInputs.map(item => ({ id: item.id, text: item.input }))];
-  }
-
-  checkReplacementAuthority(session, context) {
-    const proof = session.replacement_authorization;
-    if (proof.host_call && context.actor.kind === 'user') return;
-    const job = this.active.get(context.origin?.conversation_id);
-    const work = this.platform.executions.record(sessionRef(session.replaces_session));
-    if (!job || job.runId !== context.origin.run_id || !work || work.latest_call_id !== proof.prior_call ||
-        work.control?.control_version !== proof.control_version || work.acceptance_state !== proof.acceptance_state ||
-        JSON.stringify(this.replacementInstructions(work, job, proof.instruction).map(item => item.id)) !== JSON.stringify(proof.considered))
-      throw runtimeFailure('replacement_authority_changed', 'The host instructions or the prior Session changed. Read them before replacing this work.', 409);
-  }
-
-  async reviewRoomDelegation(args, context, room, question) {
-    if (!room || !question || context.session) return;
-    const requested = args.replaces_session?.id ?? args.replaces_session;
-    if (context.actor.kind === 'user') return requested ? { host_call: true } : undefined;
-    const job = this.active.get(context.origin?.conversation_id);
-    if (!job || job.runId !== context.origin.run_id) {
-      if (requested) throw runtimeFailure('replacement_owner_required', 'Continue from the original Room owner.', 409);
-      return;
-    }
-    const rejected = new Set(job.inbox.calls(job.runId).filter(call => call.tool === 'send_input' && call.state === 'failed' &&
-      ['material_source_required', 'misplaced_material_arguments', 'material_source_mismatch'].includes(call.result?.code))
-      .map(call => call.args.target?.id));
-    if (!requested && !rejected.size) return;
-    const works = this.platform.executions.directWork(job.conversation.id).filter(work => sameRef(work.origin_room, room) &&
-      work.origin_message_id === question && (requested ? work.id === requested : rejected.has(work.id)));
-    if (!works.length) {
-      if (requested) throw runtimeFailure('work_origin_mismatch', 'Select the original question and its directly owned Session.', 409);
-      return;
-    }
-    const explicit = args.replacement_authorization?.id ?? args.replacement_authorization;
-    const instructions = this.replacementInstructions(works[0], job, explicit);
-    const evidence = { original_question: question, host_instructions: instructions,
-      prior: works.map(work => ({ id: work.id, assignment: work.work_summary, status: work.status,
-        acceptance: work.acceptance_state, input_targets: work.input_targets })), replaces: requested,
-      proposal: args.work_summary, new_input: typeof args.input === 'string' ? args.input : args.input?.text };
-    const decision = await this.engine.assessReplacement(job, evidence);
-    if (!requested && decision?.action === 'independent') return;
-    const work = works.find(item => item.id === decision?.session) ?? works[0];
-    const source = instructions.find(item => item.id === decision?.instruction && (!explicit || explicit === item.id));
-    const unserviceable = ['failed', 'not_submitted', 'unsupported', 'cancelled'].includes(work.status) &&
-      work.control.state === 'active' && !work.input_targets?.length;
-    if (requested && (decision?.action === 'replace' || decision?.action === 'manage' && unserviceable) && decision.session === requested && source &&
-        typeof decision.quote === 'string' && decision.quote.trim() && source.text.includes(decision.quote)) {
-      const proof = { instruction: source.id, quote: decision.quote, considered: instructions.map(item => item.id),
-        prior_call: work.latest_call_id, control_version: work.control.control_version, acceptance_state: work.acceptance_state };
-      this.checkReplacementAuthority({ replaces_session: requested, replacement_authorization: proof }, context);
-      return proof;
-    }
-    throw runtimeFailure('original_session_required', 'Continue the existing work with send_input. An applicable host instruction must authorize replacing this executor. For a genuinely independent assignment identify its own question and scope.', 409,
-      { original_question: question, target: sessionRef(work.id), control_version: work.control.control_version, input_targets: work.input_targets });
-  }
-
-  checkRoomPublication(context, audience, args) {
-    const job = this.active.get(context.conversation.id);
-    if (job?.runId !== context.origin.run_id) throw runtimeFailure('publication_context_unavailable', 'The Room authoring turn is unavailable', 409);
-    const address = { to: { kind: 'room', id: audience.destination.id } };
-    if (audience.reply_to) address.reply_to = { kind: 'event', id: audience.reply_to };
-    if (audience.release) address.publication = { authorization: audience.cross_room ?
-      audience.release.dispatch_id ?? audience.release.authorization_id : audience.release.authorization_id };
-    if (args.attachments?.length) address.attachments = args.attachments.map(ref => ({ kind: 'file', id: ref.id ?? ref }));
-    if (args.references?.length) address.references = args.references.map(({ kind, id }) => ({ kind, id }));
-    if (args.mentions?.length) address.mentions = args.mentions.map(ref => ref.id ?? ref)
-      .filter(id => this.platform.roomMembers(audience.destination.id).includes(id));
-    if (args.work_reply) {
-      const work = this.platform.executions.record(sessionRef(args.work_reply.session.id ?? args.work_reply.session));
-      if (work?.origin_room?.id === audience.destination.id && work.owner_conversation_id === context.conversation.id)
-        address.work_reply = { session: work.id, stage: args.work_reply.stage };
-    }
-    const previous = job.publication;
-    if (previous?.transported && previous.audience.destination.id === audience.destination.id &&
-        previous.audience.reply_to === audience.reply_to &&
-        publicationSelection(previous.audience.release) === publicationSelection(audience.release) &&
-        JSON.stringify(previous.address) === JSON.stringify(address) &&
-        previous.selection === this.publicationEvidence(job, audience, false).selection) {
-      return true;
-    }
-    job.publication = { audience, address };
-    return false;
-  }
-
-  async restoreRoomDraft(job) {
-    if (job.conversation.kind !== 'room' || job.inbox.run(job.runId).start_count < 2) return;
-    const call = job.inbox.calls(job.runId).findLast(item => item.tool === 'send');
-    if (call?.state !== 'failed' || call.result?.code !== 'publication_view_required' || job.hasNewInput(call.source_event_ids ?? [])) return;
-    const context = this.platform.context(job.context());
-    const to = typeof call.args.to === 'string' ? { kind: 'room', id: call.args.to } : call.args.to;
-    if (to?.kind !== 'room' || !this.platform.canWriteSpace(context.actor, to, context)) return;
-    const { text, ...address } = call.args;
-    const destination = this.platform.room.room(to.id, context.actor.id);
-    const grant = await this.publicationGrant(context, call.args, destination);
-    try {
-      const audience = publicationContext(this.platform, address, context, grant);
-      this.checkRoomPublication(context, audience, address);
-    } catch (error) {
-      if (![403, 404, 409].includes(error.status)) throw error;
-      // A withdrawn grant leaves the owner its normal turn and a real unsent call.
-    }
-  }
-
-  async publicationGrant(context, args, destination) {
-    const job = this.active.get(context.conversation.id);
-    if (job?.runId !== context.origin.run_id) return null;
-    const review = async sources => {
-      const position = JSON.stringify([destination.id, sources.local_work, sources.local_request, sources.requested_stage, sources.candidates.map(item => item.id),
-        sources.hostMessages.map(item => item.id), [...sources.facts.keys()], sources.versions, sources.requests?.map(item => item.id),
-        sources.current?.map(item => item.id), sources.requested, sources.local_work ? undefined : sources.proposal]);
-      if (job.publicationReview?.position === position) return job.publicationReview.grant;
-      const grant = await this.engine.resolvePublicationGrant(job, destination, sources);
-      if (grant && !grant.review_error) job.publicationReview = { position, grant };
-      return grant;
-    };
-    const reviewCurrent = async (sources, refresh) => {
-      for (let attempt = 0; attempt < 2; attempt++) {
-        if (!sources?.candidates.length) return null;
-        const decision = await review(sources);
-        const current = refresh();
-        if (JSON.stringify(sources.versions) === JSON.stringify(current?.versions))
-          return !decision || decision.review_error || currentPublicationGrant(this.platform, current, decision) ? decision : null;
-        sources = current;
-      }
-      return { review_error: 'source_changed' };
-    };
-    if (context.conversation.space.id === destination.id) {
-      const ref = args.publication?.authorization;
-      const requested = ref?.id ?? ref;
-      const label = args.work_reply;
-      const work = label && this.platform.executions.record(sessionRef(label.session.id ?? label.session));
-      let root = work?.owner_conversation_id === context.conversation.id && work.origin_room?.id === destination.id ?
-        work.origin_message_id : (args.reply_to?.id ?? args.reply_to);
-      if (!root && requested) {
-        const authority = this.platform.store.get('messages', requested);
-        if (authority?.senderId === 'user' && authority.roomId === destination.id) {
-          const linked = roomQuestionLinks(this.platform, context.conversation.space, [authority]);
-          const owned = this.platform.executions.directWork(context.conversation.id).filter(seat => seat.origin_room?.id === destination.id &&
-            seat.origin_execution?.kind === 'conversation' && seat.owner.id === context.actor.id && linked.has(seat.origin_message_id));
-          if (new Set(owned.map(seat => seat.origin_message_id)).size === 1) root = owned[0].origin_message_id;
-        }
-      }
-      if (!root) {
-        const incoming = context.origin.event_ids.map(id => this.platform.store.get('messages', id)).filter(item => item?.roomId === destination.id);
-        const linked = roomQuestionLinks(this.platform, context.conversation.space, incoming);
-        if (!incoming.length) for (const id of context.origin.event_ids) {
-          const event = this.platform.store.get('platform-events', id);
-          if (event?.type === 'call.receipt' && event.owner_conversation_id === context.conversation.id && event.origin_room?.id === destination.id)
-            linked.add(event.origin_message_id);
-        }
-        const questions = new Set(this.platform.executions.directWork(context.conversation.id)
-          .filter(item => item.origin_room?.id === destination.id && linked.has(item.origin_message_id)).map(item => item.origin_message_id));
-        if (questions.size === 1) [root] = questions;
-      }
-      if (root) {
-        const local = () => publicationSources(this.platform, args, context, destination, root);
-        const sources = local();
-        if (sources?.candidates.length && (sources.versions.results.length || sources.confirmed_delivery)) {
-          const previous = job.publication?.audience;
-          if (previous?.destination.id === destination.id && previous.release?.work_evidence?.reply_address === sources.local_request &&
-              previous.release.work_evidence.original_question === root && currentPublicationGrant(this.platform, sources, previous.release))
-            return previous.release;
-          const grant = await reviewCurrent(sources, local);
-          if (grant && !grant.review_error) return { ...grant, source_room: destination.id };
-          const product = ['complete', 'correction'].includes(args.work_reply?.stage) ||
-            !args.work_reply && sources.questions.has(sources.local_request);
-          if (product) throw runtimeFailure('original_work_fields_required',
-            'The original work results are available but their public fields have not been selected. Read the named Sessions and retry the card using the original Room question as publication.authorization.', 409,
-            { reason: grant?.review_error ?? 'original_work_fields_incomplete', original_question: [...sources.questions][0],
-              sessions: sources.versions.seats.filter(seat => seat.current && seat.result).map(seat => seat.id) });
-          if (grant?.review_error) return grant;
-        }
-      }
-      const inspect = id => inspectedPublicationSources(this.platform, context, destination, job.inbox.calls(job.runId), id);
-      const source = inspect(requested);
-      if (!source) return null;
-      const last = job.publication?.audience;
-      const previousId = last?.release?.authorization_id;
-      const reusable = last?.destination.id === destination.id && source.candidates.some(item => item.id === previousId) &&
-        JSON.stringify(last.release.versions) === JSON.stringify(source.versionsFor(previousId));
-      const grant = reusable ? last.release : await review(source);
-      if (grant?.review_error) return grant;
-      const current = grant && inspect(grant.authorization_id);
-      if (current && current.candidates.length && JSON.stringify(grant.versions) === JSON.stringify(current.versionsFor(grant.authorization_id)) &&
-          grant.materials.every(part => current.factRooms.get(part.event_id) === current.candidates[0].roomId && current.facts.get(part.event_id)?.includes(part.text)))
-        return { ...grant, source_room: current.candidates[0].roomId };
-      return null;
-    }
-    const sources = publicationSources(this.platform, args, context, destination);
-    if (!sources.candidates.length) return null;
-    const previous = job.publication?.audience;
-    if (previous?.destination.id === destination.id && currentPublicationGrant(this.platform, sources, previous.release)) return previous.release;
-    let inspect = false;
-    for (const message of sources.candidates) {
-      const route = this.forwardRoute(context.actor.id, message.id);
-      const grant = route?.publications?.find(item => [destination.id, destination.name].includes(item.room));
-      const later = sources.hostMessages.some(item => item.createdAt > message.createdAt);
-      if (grant?.after_work && !sources.versions.results.length && !sources.confirmed_delivery) continue;
-      if (grant && !grant.after_work && !later && !sources.recipient_request && sources.current.some(item => item.id === message.id) && !sources.questions.size) {
-        const materials = grant.materials.flatMap(part => {
-          const original = this.platform.store.get('messages', part.event);
-          return original?.roomId === message.roomId && original.content.includes(part.quote) &&
-              !(original.id === message.id && (part.quote === message.content || part.quote.includes(grant.quote))) ?
-            [{ event_id: original.id, text: part.quote }] : [];
-        });
-        const presentation = grant.presentation ?? [];
-        const formatted = fieldLayout(materials, presentation, grant.layout);
-        if (materials.length && materials.length === grant.materials.length && !materials.some(part => barePublicationNumber(part.text)) &&
-            (!grant.fields_only || !presentation.length || formatted !== undefined)) {
-          const wording = await this.engine.directedWording(job, destination, message, materials, args.text);
-          if (wording?.review_error) return wording;
-          return { authorization_id: message.id, dispatch_id: message.id, materials, presentation, formatted: wording?.text ?? formatted,
-            wording_source: wording?.source, required_text: wording?.text ?? (presentation.length ? formatted : undefined),
-            fields_only: Boolean(wording || formatted !== undefined || grant.fields_only || materials.length === 1 && !presentation.length), versions: sources.versions };
-        }
-      }
-      inspect = true;
-    }
-    if (!inspect) return null;
-    return reviewCurrent(sources, () => publicationSources(this.platform, args, context, destination));
-  }
-
-  async workCardReview(context, args, destination) {
-    if (context.conversation.space.id !== destination.id) return;
-    const active = this.active.get(context.conversation.id);
-    const receipts = active?.publication?.local_receipts;
-    if (active?.runId === context.origin.run_id && active.publication?.transported &&
-        active.publication.audience.destination.id === destination.id && (receipts?.incoming.length || receipts?.intake.length)) {
-      await this.engine.reviewReceiptClaims(active, receipts, args.text);
-    }
-    const label = args.work_reply;
-    const selected = label && this.platform.executions.record(sessionRef(label.session.id ?? label.session));
-    if (label && (selected?.owner_conversation_id !== context.conversation.id || selected.origin_room?.id !== destination.id)) return;
-    const publication = active?.runId === context.origin.run_id && active.publication?.transported &&
-      active.publication.audience.destination.id === destination.id && active.publication.audience.release?.work_evidence;
-    const address = args.reply_to?.id ?? args.reply_to ?? selected?.origin_message_id ?? publication?.original_question;
-    if (!address) return;
-    const linked = roomQuestionLinks(this.platform, destination, [{ id: address }]);
-    if (selected && !linked.has(selected.origin_message_id)) return;
-    const peers = this.platform.executions.directWork(context.conversation.id).filter(work => work.origin_execution?.kind === 'conversation' &&
-      work.origin_room?.id === destination.id && linked.has(work.origin_message_id));
-    const questions = new Set(peers.map(work => work.origin_message_id));
-    const root = selected?.origin_message_id ?? (questions.has(address) ? address : questions.size === 1 ? [...questions][0] : null);
-    if (!root) return;
-    const job = this.active.get(context.conversation.id);
-    if (job?.runId !== context.origin.run_id) return;
-    const evidence = () => {
-      const sessions = this.platform.executions.directWork(context.conversation.id).filter(work => work.origin_execution?.kind === 'conversation' &&
-        work.origin_room?.id === destination.id && work.origin_message_id === root);
-      if (!sessions.length) return;
-      const sources = publicationSources(this.platform, { ...args, publication: undefined }, context, destination, root);
-      if (!sources) return;
-      const linkedCards = new Set(sources.original_cards.map(card => card.id));
-      const replies = this.platform.executions.originalReplies(sessions[0]);
-      const published = replies.filter(({ message }, index) => index >= replies.length - 8 || linkedCards.has(message.id)).map(({ message, stage }) => ({
-        id: message.id, time: message.createdAt, text: message.content, stage, covered_sessions: this.platform.store.get('platform-calls', message.callId)?.work_review?.covered_sessions,
-        attachments: message.attachments?.map(file => file.id), references: message.references }));
-      if (!published.length && !sources.versions.results.length &&
-          !sessions.some(work => work.acceptance_state === 'open' && (work.waiting_summary || work.pending_input?.length))) return;
-      const request = this.platform.store.get('messages', address);
-      return { original: root, reply_request: request?.roomId === destination.id ? { id: address, text: request.content } : undefined,
-        host_instructions: sources.localOrders.map(item => ({ id: item.id, time: item.createdAt, replies_to: item.replyTo, text: item.content })),
-        authorized_fields: publication?.original_question === root ? publication.fields : [],
-        own_deliveries: roomPublicationReceipts(this.platform, context.actor, context.conversation, linked),
-        seats: sessions.map(work => {
-          const seat = sources.versions.seats.find(seat => seat.id === work.id);
-          return { id: work.id, state: work.status, waiting: work.waiting_summary,
-          acceptance_state: work.acceptance_state, acceptance: this.platform.executions.acceptanceView(work, context),
-          current: seat?.current, replaces: work.replaces_session,
-          replacement_authorized: Boolean(work.replacement_authorization), assignment: work.work_summary,
-          original_inputs: seat?.input_receipts, receipts: seat?.receipts, dispositions: seat?.dispositions,
-          accepts_followup: seat?.accepts_followup, followup_rooms: seat?.followup_rooms,
-          received_originals: this.platform.roomWork.receivedOriginals(work, context).map(({ id, input_status }) => ({ id, input_status })),
-          result: work.latest_call_id, input_revision: work.input_revision };
-        }),
-        results: sources.versions.results.map(id => ({ id, session: sources.versions.seats.find(seat => seat.result === id)?.id,
-          text: sources.facts.get(id) })), published,
-        proposal: { text: args.text, attachments: args.attachments?.map(item => item.id ?? item), references: args.references } };
-    };
-    const view = evidence();
-    if (!view) return;
-    const position = JSON.stringify(view);
-    if (position === job.workCardReview?.position) return job.workCardReview.result;
-    const result = { ...await this.engine.reviewWorkCard(job, view), original_question: root };
-    const accepted = view.seats.filter(seat => seat.current && seat.acceptance?.outcome === 'delivered').map(seat => seat.acceptance.message_id);
-    const previous = view.published.find(card => card.id === result.effective_card?.id && accepted.includes(card.id)) ??
-      view.published.findLast(card => accepted.includes(card.id));
-    if (previous && (result.stage === 'complete' || args.work_reply?.stage === 'correction')) {
-      const deliveries = view.own_deliveries.map(item => ({ id: item.message_id, kind: 'outgoing_receipt',
-        time: item.time, destination: item.destination, status: item.status, text: item.text ?? item.fields.join(' ') }));
-      const operations = view.seats.flatMap(seat => seat.dispositions.map(row => ({ id: row.call, kind: 'owner_operation', time: row.time,
-        text: JSON.stringify({ session: seat.id, operation: row.operation, status: row.status, effective_card: row.actual_card, requested_card: row.requested_card }) })));
-      const change = await this.engine.assessCardChange(job, { previous, proposal: view.proposal, host: view.host_instructions,
-        results: [...view.results, ...deliveries, ...operations] });
-      if (change?.mode === 'same') Object.assign(result, { retained_id: previous.id, retained_stage: 'complete' });
-      else if (change?.identifies_previous && !change.claims_new_link && (change.mode !== 'replacement' || result.effective_card?.use === 'draft')) {
-        delete result.retained_id;
-        delete result.retained_stage;
-        result.change = change;
-        if (change.mode === 'addendum') result.effective_card = { use: 'existing', id: previous.id };
-      }
-      else throw runtimeFailure('work_card_change_required', 'Identify the accepted card and the authorized substantive change. State whether this is a supplement or a proposed replacement. Link accepted sessions after the replacement is delivered.', 409,
-        { card_correction: { check: 'correction target', previous_card: previous.id, existing_links: accepted,
-          requested_change: change?.mode, draft_already_linked: false } });
-    }
-    if (position !== JSON.stringify(evidence()))
-      throw runtimeFailure('work_review_changed', 'The original work received new evidence while its card was being reviewed. Read the current position.', 409);
-    job.workCardReview = { position, result };
-    return result;
-  }
-
-  pendingCardActions(job) {
-    const { conversation, inbox, runId } = job;
-    if (conversation.kind !== 'room') return [];
-    const work = this.platform.executions.directWork(conversation.id).filter(seat => sameRef(seat.origin_room, conversation.space) &&
-      seat.owner.id === inbox.botId && !seat.authority_revoked);
-    if (!work.length) return [];
-    const actions = new Map();
-    for (const call of inbox.calls(runId)) {
-      if (call.state !== 'completed') continue;
-      if (call.tool === 'configure_session' && call.args.acceptance_state === 'closed' && call.args.delivery_message_id) {
-        const requested = call.args.delivery_message_id.id ?? call.args.delivery_message_id;
-        const seat = work.find(item => item.id === (call.args.target.id ?? call.args.target));
-        if (seat?.acceptance?.outcome !== 'delivered' || seat.acceptance.message_id === requested ||
-            call.result?.acceptance?.message_id !== seat.acceptance.message_id) continue;
-        const next = this.platform.store.get('messages', requested);
-        const review = next && this.platform.calls.get(next.callId)?.work_review;
-        if (next?.replyTo === seat.origin_message_id && next.roomId === conversation.space.id &&
-            review?.stage === 'complete' && review.covered_sessions?.includes(seat.id))
-          actions.set(seat.id, { action: 'review_unapplied_link', session: seat.id, question: seat.origin_message_id,
-            accepted_card: seat.acceptance.message_id, requested_card: requested });
-      }
-      if (call.tool !== 'send' || !call.result?.message?.id) continue;
-      const sent = this.platform.store.get('messages', call.result.message.id);
-      const delivery = sent && this.platform.calls.get(sent.callId), review = delivery?.work_review;
-      if (delivery?.id !== call.id || sent.roomId !== conversation.space.id || review?.stage !== 'complete' ||
-          review.change?.mode === 'addendum' || review.effective_card && review.effective_card.use !== 'draft' || sent.replyTo !== review.original_question) continue;
-      const newer = work.some(seat => seat.origin_message_id === sent.replyTo && !seat.replaces_session && seat.acceptance_state === 'open' &&
-        !work.some(other => other.replaces_session === seat.id && other.replacement_authorization && !other.authority_revoked) &&
-        seat.latest_call_id && this.platform.calls.get(seat.latest_call_id)?.updatedAt > sent.createdAt);
-      if (newer) continue;
-      for (const seat of work.filter(item => item.origin_message_id === sent.replyTo && item.acceptance_state === 'open')) {
-        if (seat.status !== 'completed' || !seat.latest_call_id) continue;
-        const terminal = this.platform.calls.get(seat.latest_call_id);
-        if (!terminal || terminal.updatedAt > sent.createdAt) continue;
-        const used = review.covered_sessions?.includes(seat.id);
-        if (used || seat.replaces_session && !seat.replacement_authorization && review.covered_sessions?.includes(seat.replaces_session)) {
-          const receipts = !used && this.platform.roomWork.seatReceipts(seat, this.platform.context(job.context()));
-          actions.set(seat.id, { action: used ? 'review_delivered_result' : 'record_unused_work_disposition',
-            session: seat.id, question: sent.replyTo, card: sent.id, terminal_state: seat.status,
-            ...(receipts && { initial_result: receipts.initial_result, later_received_inputs: receipts.received_input_count }) });
-        }
-      }
-    }
-    return [...actions.values()];
-  }
-
-  async reviewDeliveryRebind(context, args) {
-    const work = this.platform.executions.require({ kind: 'session', id: args.target.id ?? args.target }, context, 'control');
-    const requested = args.delivery_message_id.id ?? args.delivery_message_id;
-    const prior = work.acceptance?.outcome === 'delivered' ? work.acceptance : work.previous_delivery;
-    if ((!prior && work.acceptance_state !== 'closed') || prior?.message_id === requested) return;
-    const parent = context.conversation, job = this.active.get(parent?.id);
-    if (context.session || !job || job.runId !== context.origin.run_id || work.owner.id !== context.actor.id ||
-        work.origin_execution?.kind !== 'conversation' || work.owner_conversation_id !== parent.id || !sameRef(work.origin_room, parent.space))
-      throw runtimeFailure('delivery_rebind_forbidden', 'Only the active direct owner in the original Room can replace this acceptance link.', 403);
-    const unchanged = reason => runtimeFailure('delivery_link_unchanged', 'The existing delivery link is still effective. Select a later authorized replacement covering this seat.', 409,
-      { session: work.id, accepted_card: prior?.message_id, requested_card: requested, reason });
-    const replies = this.platform.executions.originalReplies(work);
-    const previous = replies.find(item => item.message.id === prior?.message_id)?.message;
-    const next = replies.find(item => item.message.id === requested)?.message;
-    const review = next && this.platform.calls.get(next.callId)?.work_review;
-    if (args.close_reason || !prior || !previous || !next || next.createdAt <= previous.createdAt) throw unchanged('card_pair');
-    if (review?.stage !== 'complete' || review.original_question !== work.origin_message_id || !review.covered_sessions?.includes(work.id) ||
-        review.change?.mode === 'addendum' || review.effective_card && review.effective_card.use !== 'draft') throw unchanged('coverage');
-    const evidence = () => {
-      const sources = publicationSources(this.platform, { reply_to: work.origin_message_id }, context, work.origin_room, work.origin_message_id);
-      const seat = this.platform.executions.record(sessionRef(work.id));
-      const currentPrior = seat?.acceptance?.outcome === 'delivered' ? seat.acceptance : seat?.previous_delivery;
-      if (currentPrior?.message_id !== prior.message_id || seat.authority_revoked || seat.control?.state !== 'active' ||
-          !sources?.versions.seats.some(item => item.id === work.id && item.current && item.result)) return;
-      const grants = new Set(sources.localOrders.map(item => item.id));
-      const host = sources.hostMessages.map(item => ({ id: item.id, time: item.createdAt, text: item.content, may_authorize: grants.has(item.id) }));
-      const basis = { owner: context.actor.id, parent: parent.id, room: work.origin_room.id, question: work.origin_message_id,
-        previous: previous.id, next: next.id, publish_call: next.callId, covered: [...review.covered_sessions].sort(),
-        host: host.map(item => [item.id, item.may_authorize]), results: sources.versions.results,
-        seats: sources.versions.seats.map(item => {
-          const owner = this.platform.executions.record(sessionRef(item.id));
-          return [item.id, item.current, item.result, owner.input_revision, owner.control?.control_version, owner.control?.state,
-            owner.revocation_call_id ?? null, Boolean(owner.authority_revoked), owner.allowed_followup_rooms ?? []];
-        }) };
-      return { basis, original_question: work.origin_message_id, previous: { id: previous.id, text: previous.content },
-        proposal: { id: next.id, text: next.content }, disposition_request: { requested, note: args.disposition_note },
-        host, results: sources.versions.results.map(id => ({ id, text: sources.facts.get(id) })) };
-    };
-    const view = evidence();
-    if (!view) throw unchanged('owner_or_source_changed');
-    const basis = JSON.stringify(view.basis);
-    const completed = this.platform.store.db.prepare(`SELECT data FROM records WHERE kind='platform-calls'
-      AND json_extract(data,'$.tool')='configure_session' AND json_extract(data,'$.status')='completed'
-      AND json_extract(data,'$.origin.conversation_id')=? AND json_extract(data,'$.delivery_rebind.previous')=?
-      AND json_extract(data,'$.delivery_rebind.requested')=? AND json_extract(data,'$.result.acceptance.message_id')=? ORDER BY rowid DESC`)
-      .all(parent.id, previous.id, requested, requested).map(row => JSON.parse(row.data));
-    const sibling = completed.find(call => call.origin.bot_id === context.actor.id && call.result?.id === call.target?.id &&
-      call.target?.id === call.delivery_rebind.session && view.basis.covered.includes(call.result.id) &&
-      call.result.acceptance.outcome === 'delivered' && call.delivery_rebind.mode === 'replacement' &&
-      JSON.stringify(call.delivery_rebind.basis) === basis);
-    const certified = sibling?.delivery_rebind;
-    const change = certified ? { mode: 'replacement', authorization: certified.authorization, source: certified.source, verified_by_call: sibling.id } :
-      await this.engine.assessCardChange(job, view);
-    if (change?.mode !== 'replacement' || !view.host.some(item => item.may_authorize && item.id === change.authorization) ||
-        !view.results.some(item => item.id === change.source)) throw unchanged('replacement_authority');
-    if (JSON.stringify(evidence()?.basis) !== basis) throw unchanged('source_changed_during_review');
-    return { ...change, previous: previous.id, requested, session: work.id, basis: view.basis,
-      control_version: work.control.control_version, input_revision: work.input_revision };
-  }
-
-  async reviewDispositionNote(context, args) {
-    const work = this.platform.executions.require(sessionRef(args.target.id ?? args.target), context, 'control');
-    const parent = context.conversation, amended = args.amend_disposition_note === true;
-    const owned = context.actor.kind === 'bot' && !context.session && parent?.kind === 'room' && work.owner?.id === context.actor.id &&
-      work.owner_conversation_id === parent.id && sameRef(work.origin_execution, conversationRef(parent.id)) && sameRef(work.origin_room, parent.space);
-    if (!owned && !amended) return;
-    if (!owned || amended && (work.acceptance_state !== 'closed' || !['superseded', 'cancelled', 'private'].includes(work.acceptance?.outcome)))
-      throw runtimeFailure('disposition_note_forbidden', 'The original Room parent can amend the explanation on its own closed unused work.', 403);
-    const note = args.disposition_note?.trim();
-    if (!note || amended && Object.keys(args).some(key => !['target', 'amend_disposition_note', 'disposition_note'].includes(key)))
-      throw runtimeFailure('invalid_disposition', 'To amend an explanation supply the target, amend_disposition_note and the corrected disposition_note.', 409);
-    const job = this.active.get(parent.id);
-    if (job?.runId !== context.origin.run_id) throw runtimeFailure('disposition_note_forbidden', 'Use the active original owner conversation.', 403);
-    const position = this.platform.executions.dispositionNotePosition(work);
-    const seat = { id: work.id, receipts: this.platform.roomWork.seatReceipts(work, context) };
-    await this.engine.reviewDispositionRationale(job, seat, note);
-    return { position };
-  }
-
-  publicFile(job, room, ref) {
-    if (ref?.kind !== 'file' || !withinPublicationRoom(this.platform, ref, room)) return false;
-    const context = this.platform.context(job.context());
-    try {
-      const destination = this.platform.room.room(room.id, context.actor.id);
-      this.platform.assertShareable(ref, { actor: context.actor, room: destination, context });
-      return this.platform.files.getProjection(ref.id, context).projection;
-    } catch (error) {
-      if ([403, 404, 409].includes(error.status)) return false;
-      throw error;
-    }
-  }
-
-  publicationEvidence(job, audience, includeHistory = true) {
-    if (audience.cross_room) {
-      const selection = publicationSelection(audience.release);
-      return { selection, history: [], requests: [], locations: [], originWork: [], actions: [], files: [], pages: [] };
-    }
-    const room = { kind: 'room', id: audience.destination.id };
-    const calls = job.inbox.calls(job.runId);
-    const refIds = new Set();
-    for (const call of calls) {
-      if (audience.cross_room || call.state !== 'completed') continue;
-      if (call.tool === 'read' && call.args.ref.kind === 'session') refIds.add(call.args.ref.id);
-      if (['open_session', 'configure_session'].includes(call.tool) && call.result?.id) refIds.add(call.result.id);
-      if (call.tool === 'find' && call.args.kind === 'session' && call.args.query?.trim() && call.result?.items?.length === 1)
-        refIds.add(call.result.items[0].id);
-      if (call.tool === 'read' && call.args.ref.kind === 'room' && call.args.ref.id !== room.id) {
-        const candidates = this.platform.executions.followupSessions(job.inbox.botId, call.args.ref.id);
-        if (candidates.length === 1) refIds.add(candidates[0].id);
-      }
-    }
-    const locations = [];
-    for (const id of refIds) {
-      const work = this.platform.executions.record(sessionRef(id));
-      if (!work?.origin_room || !this.platform.canReadSpace(work.owner, work.origin_room) ||
-          !this.platform.canReadSpace(botRef(job.inbox.botId), work.origin_room)) continue;
-      const originRoom = this.platform.store.get('rooms', work.origin_room.id);
-      const local = originRoom.id === room.id;
-      if (!local && !work.allowed_followup_rooms?.includes(room.id)) continue;
-      const open = work.acceptance_state === 'open' && !work.authority_revoked && work.control.state === 'active';
-      locations.push({ ...(local && { origin_room: originRoom.name }), intake_rooms: open ?
-        this.platform.roomWork.intakes(work, botRef(job.inbox.botId)).filter(item => local || item.id === room.id).map(item => item.name) : [], accepts_followup: open });
-    }
-    const material = this.materials.publication(job, room);
-    const pages = new Map();
-    for (const call of calls) {
-      if (call.state !== 'completed' || call.tool !== 'read' || call.args.ref?.kind !== 'file') continue;
-      const result = call.result;
-      const file = this.publicFile(job, room, call.args.ref);
-      if (!file || file.id !== result?.id || file.revision !== result.revision) continue;
-      const cursor = Number(call.args.cursor ?? 0);
-      const content = typeof result.content === 'string' ? result.content.slice(0, 20000) : undefined;
-      pages.set(recordKey(file.id, cursor), { file: { kind: 'file', id: file.id }, name: file.name, revision: file.revision,
-        cursor, content, next_cursor: content && result.content.length > content.length ? String(cursor + content.length) : result.next_cursor,
-        content_status: result.content_status, ...(result.content_status === 'image' && { image_call: call.model_call_id }) });
-    }
-    const selectedPages = [...pages.values()];
-    const inputs = new Set([...audience.current_message_ids, audience.reply_to].filter(Boolean));
-    const requests = [...inputs].map(id => this.platform.store.get('messages', id))
-      .filter(item => item?.roomId === room.id).map(roomEvent);
-    const roots = roomQuestionLinks(this.platform, room, requests);
-    for (const id of job.context().origin.event_ids) {
-      const event = this.platform.store.get('platform-events', id);
-      if (event?.owner_conversation_id === job.conversation.id && sameRef(event.origin_room, room)) roots.add(event.origin_message_id);
-    }
-    const ownerContext = this.platform.context(job.context());
-    const originWork = this.platform.executions.directWork(job.conversation.id)
-      .filter(work => sameRef(work.origin_room, room) && (roots.has(work.origin_message_id) || work.owner_run_id === job.runId))
-      .map(work => {
-        const terminal = this.platform.store.get('platform-calls', work.latest_call_id);
-        const result = terminal?.result_ref?.kind === 'event' && this.platform.store.get('platform-events', terminal.result_ref.id);
-        const steps = requests.filter(item => item.author?.kind === 'user' && roomQuestionLinks(this.platform, room, [item]).has(work.origin_message_id))
-          .map(item => item.id);
-        return { original_question: work.origin_message_id, session: work.id, replaces: work.replaces_session,
-          replacement_authorized: Boolean(work.replacement_authorization), engine: work.engine === 'pi' ? 'Pi' : this.platform.connections.get(work.engine)?.kind,
-          status: work.status, acceptance_state: work.acceptance_state, acceptance: this.platform.executions.acceptanceView(work, ownerContext),
-          final_result_received: result?.status === 'completed' && result.target?.id === work.id,
-          selected_inputs: this.platform.roomWork.materialStatus(work, steps, true).filter(item => item.call_status), intake_rooms: this.platform.roomWork.intakes(work).map(item => item.name) };
-      });
-    const intake = audience.cross_room ? null : this.roomIntake(job.inbox.botId, audience.destination, requests);
-    const actions = calls.filter(call => ['save_file', 'configure_bot', 'open_session', 'configure_session'].includes(call.tool))
-      .map(call => ({ action: call.tool, status: call.state, code: call.result?.code }));
-    actions.push(...roomPublicationReceipts(this.platform, ownerContext.actor, job.conversation, roots)
-      .map(receipt => ({ action: 'send', ...receipt })));
-    for (const call of calls.filter(item => item.tool === 'send_input')) {
-      const native = this.platform.store.get('platform-calls', call.id);
-      const target = native?.target?.kind === 'session' && this.platform.executions.record(native.target);
-      if (target?.origin_room?.id !== room.id || target.owner_conversation_id !== job.conversation.id) continue;
-      const input = native.input_id && this.platform.store.get('platform-inputs', native.input_id);
-      const sources = (native.material_action_ids ?? native.material_source_ids ?? []).filter(id => inputs.has(id));
-      if (sources.length) actions.push({ action: 'send_input', engine: target.engine === 'pi' ? 'Pi' : this.platform.connections.get(target.engine)?.kind,
-        sources, status: native.status, input_status: input?.call_id === native.id ? input.status : 'unconfirmed' });
-    }
-    const incoming = this.platform.store.db.prepare(`SELECT data FROM records WHERE kind='messages'
-      AND json_extract(data,'$.roomId')=? AND json_array_length(data,'$.authorized_publication.fields')>0 ORDER BY rowid DESC LIMIT 12`)
-      .all(room.id).map(row => JSON.parse(row.data)).flatMap(message => {
-        const call = message.callId && this.platform.store.get('platform-calls', message.callId);
-        return call?.directed_publication && call.status === 'completed' && call.result?.message?.id === message.id &&
-          sameRef(call.target, room) ? [{ action: 'received_publication', room_role: 'recipient', sender: message.author,
-            from_another_room: true, same_bot_as_current: message.senderId === job.inbox.botId,
-            destination: room, message_id: message.id, time: message.createdAt, fields: message.authorized_publication.fields }] : [];
-      });
-    actions.push(...incoming);
-    const selection = JSON.stringify([locations, originWork, intake?.receives_materials_here, intake?.receipts, actions, material?.content,
-      selectedPages.map(page => [page.file.id, page.revision, page.cursor])]);
-    if (!includeHistory) return { selection };
-    const snapshot = this.platform.room.publicHistory(room.id, job.inbox.botId);
-    const fileIds = new Set(selectedPages.map(page => page.file.id));
-    for (const message of [...requests, ...snapshot.messages]) {
-      for (const ref of [...(message.attachments || []), ...(message.references || []).filter(ref => ref.kind === 'file')])
-        if (ref.id) fileIds.add(ref.id);
-    }
-    const files = [...fileIds].filter(id => this.publicFile(job, room, { kind: 'file', id }));
-    return { history: snapshot.messages.map(roomEvent), material, summary: snapshot.summary, end: snapshot.end,
-      locations, intake, actions, selection, pages: selectedPages, requests, files, originWork };
   }
 
   syncDelivery(inbox, receipt) {
@@ -1551,19 +601,15 @@ export class BotRuntime {
       try {
         job.check();
         inbox.putRun({ id: run.id, state: 'running', binding, retry_at: null, error: null, view_revision: run.view_revision,
-          ...(conversation.kind === 'room' && run.start_count && ['retry', 'interrupted'].includes(run.state) ? { recovering_room_inputs: true } : {}),
           first_started_at: run.first_started_at ?? now(), start_count: (run.start_count ?? 0) + 1 });
         this.emit('engine.started', refs);
         await this.recoverCalls(job);
-        await this.restoreRoomDraft(job);
         const storedOutcome = inbox.run(run.id).model_outcome;
         const pendingForRun = () => inbox.pending().filter(route => route.run_id === run.id);
         const canProcess = route => this.routeReady(inbox, route);
         const pendingNow = pendingForRun().filter(canProcess);
         const startView = job.view();
-        const restored = storedOutcome && !this.pendingCardActions(job).length && pendingNow.every(route => storedOutcome.eventIds.includes(route.event_id)) &&
-          !this.outstandingRoomReplies(inbox, conversation.space, storedOutcome.eventIds).length &&
-          !this.unsettledForwardReturns(job, storedOutcome.eventIds).length &&
+        const restored = storedOutcome && pendingNow.every(route => storedOutcome.eventIds.includes(route.event_id)) &&
           canRetainAuthorizationView(inbox.run(run.id).model_outcome_uses_view, startView.view_revision) &&
           (!storedOutcome.observation || canReadObservation(storedOutcome.observation.checkpoint, job, startView)) ? storedOutcome : null;
         const result = this.materials.recovered(job) || restored || await this.engine.execute(job);
@@ -1593,7 +639,7 @@ export class BotRuntime {
             cancelledProgress.push(route.event_id);
           }
           const pending = pendingForRun();
-          const next = pending.some(canProcess) ? 'pending' : outstanding || pending.length || result.waiting_for_children ? 'waiting' : 'completed';
+          const next = pending.some(canProcess) ? 'pending' : outstanding || pending.length ? 'waiting' : 'completed';
           inbox.putRun({ id: run.id, state: next, model_outcome: null, model_outcome_uses_view: null,
             ...(run.transport_retry && { transport_retry: null }) });
           if (next === 'completed' || next === 'waiting') this.stageInputs(inbox, conversation, run.id, next, result);
@@ -1673,13 +719,9 @@ export class BotRuntime {
         const event = inbox.event(id);
         if (event?.type !== 'pi.input') return [];
         const call = this.platform.store.get('platform-calls', event.call_id);
-        const recipient = this.platform.executions.record(session);
-        if (!sameRef(call?.target, session) || !recipient || !this.canReadPiInput(event, recipient)) return [];
-        const ids = call.material_source_ids ?? (call.origin?.fast_read_forward ? call.source_event_ids.slice(0, 1) : []);
-        return ids.flatMap(id => {
-          const message = this.platform.store.get('messages', id);
-          return this.platform.roomWork.canHandOff(message, recipient, actor, true) ? forwardMaterials(message) : [];
-        });
+        if (!call?.origin?.fast_read_forward || !sameRef(call.target, session) || !this.canReadPiInput(event, authority)) return [];
+        const message = this.platform.store.get('messages', call.source_event_ids[0]);
+        return message && this.platform.canReadSpace(actor, { kind: 'room', id: message.roomId }) ? forwardMaterials(message) : [];
       }) : [];
       return { actor, execution_actor: actor, controls, submitted_by: latest.submitted_by || source?.author || actor,
         input_refs, signal: controller.signal, origin: { bot_id: bot.id, conversation_id: conversation.id, run_id: run.id,
@@ -1709,11 +751,6 @@ export class BotRuntime {
         return view;
       },
       refresh: window => this.contextBoundary(job, window),
-      publicationEvidence: audience => this.publicationEvidence(job, audience),
-      pendingCardActions: () => this.pendingCardActions(job),
-      publicFile: (room, ref) => this.publicFile(job, room, ref),
-      outstandingReplies: ids => this.outstandingRoomReplies(inbox, conversation.space, ids),
-      unsettledForwards: ids => this.unsettledForwardReturns(job, ids),
       canReadReference: ref => this.platform.canReadReference(ref, this.platform.context(context())),
       materials: () => this.materials.boundary(job),
       checkInstallation: () => this.checkInstallation(),
@@ -1750,8 +787,6 @@ export class BotRuntime {
   }
 
   canReadPiInput(event, session) {
-    const ids = event.room_originals?.map(source => source.event.id) || [];
-    if (ids.some(id => !this.platform.roomWork.canHandOff(this.platform.store.get('messages', id), session, session.execution_actor, true))) return false;
     const author = { actor: event.author, project_room: session.project_room };
     const target = sessionRef(session.id);
     if (!this.platform.executions.permission(target, session, author, 'input') ||
@@ -1789,18 +824,6 @@ export class BotRuntime {
     let history = [];
     let publicRoom;
     const facts = [];
-    if (run.delivery_review_trigger?.kind === 'correct_original_card') facts.push(textMessage({
-      type: 'reconsider_original_card', original_question: run.delivery_review_trigger.original_question,
-      instruction: 'Read the original source returns and the latest actual inputs. A later public request to forward an earlier original is not a second required seat input. Correct the unsent draft in this Room, then check actual dispositions.' }));
-    if (['review_prescribed_dispatch', 'review_owner_handover'].includes(run.delivery_review_trigger?.kind))
-      facts.push(textMessage({ type: 'pending_owner_request', ...run.delivery_review_trigger,
-        instruction: 'Review the live host requests and genuine receipts under current permissions. For a handover reply_to the specific outstanding host question and reference the effective card. Correct mistaken unused-work notes through their original closed seats. For a prescribed dispatch compare the source grant and the actual destination receipt before sending; an already fulfilled instruction only needs its requested local reply.' }));
-    const dispositions = this.pendingCardActions(job);
-    if (dispositions.length) facts.push(textMessage({ type: 'outstanding_card_dispositions', actions: dispositions,
-      instruction: 'Act from this original parent. Verify the card and each seat. For a credited delivered seat use configure_session and verify the returned message_id. For unused work record its own truthful non-delivery disposition. If a previous request returned a different card, inspect the authorized change and make the actual link or report the reason it stays unchanged.' }));
-    const publicReplies = job.outstandingReplies(current.map(event => event.id));
-    if (publicReplies.length) facts.push(textMessage({ type: 'public_reply_requested', requests: publicReplies,
-      instruction: 'Give the explicitly requested reply using send and reply_to for the actual original message. Private final text does not deliver it.' }));
     const bound = conversation.kind === 'room' && conversation.space.kind === 'room' &&
       this.platform.store.get('rooms', conversation.space.id)?.workspace;
     if (bound) facts.push(textMessage({ type: 'project_workspace', room: conversation.space, workspace: bound }));
@@ -1842,13 +865,6 @@ export class BotRuntime {
         tailMessages,
         save: (previous, through, summary) => this.platform.room.savePublicSummary(roomId, context.actor, previous, through, summary),
       };
-      if (run.recovering_room_inputs) {
-        const confirmed = run.route_ids.map(id => inbox.store.getRecord(R.route, id)).filter(route => route?.public_reply)
-          .map(route => ({ original_message_id: route.event_id, ...route.public_reply }));
-        facts.push(textMessage({ type: 'room_input_recovery', room: roomId,
-          pending_message_ids: current.filter(event => event.type === 'message' && sameRef(event.space, conversation.space)).map(event => event.id),
-          confirmed_public_replies: confirmed }));
-      }
       inbox.putRun({ id: runId, history_read_through: tailMessages.at(-1)?.event.id ?? history.at(-1)?.id ?? prefixSummary?.through ?? null });
     }
     if (view.session && view.resources?.length) facts.push(textMessage({ type: 'session_resources', references: view.resources,
@@ -1856,27 +872,12 @@ export class BotRuntime {
     if (conversation.session_id) {
       history = this.sessionHistory(inbox, conversation, runId, view);
       const sources = this.platform.roomWork.readSources(this.platform.context(context));
-      if (sources.length) {
-        facts.push(textMessage({ type: 'room_material_sources', sources,
-          instruction: 'Read an attachment with its File ref. Workspace paths refer to project files explicitly identified by a source.' }));
-        const position = JSON.stringify(context.origin.event_ids);
-        if (current.every(event => event.type !== 'pi.input' || context.origin.event_ids.includes(event.id))) {
-          const calls = inbox.calls(runId).filter(call => ['find', 'read'].includes(call.tool) && JSON.stringify(call.source_event_ids) === position);
-          const available = sources.filter(({ ref }) => !calls.some(call => call.tool === 'read' && sameRef(call.args.ref, ref) &&
-            call.state === 'completed' && !call.result?.next_cursor));
-          const found = calls.findLastIndex(call => call.state === 'completed' && (call.args.ref?.kind === 'file' ||
-            call.args.ref?.kind === 'workspace' && (call.result?.path || call.result?.directory) ||
-            call.args.scope?.kind === 'workspace' && call.result?.items?.length || sources.some(item => sameRef(item.ref, call.args.ref))));
-          const supplied = context.origin.event_ids.map(id => JSON.stringify(inbox.event(id)?.input ?? ''));
-          const misses = calls.slice(found + 1).filter(call => call.args.ref?.kind === 'workspace' && call.args.path &&
-            call.result?.status === 404 && !supplied.some(text => text.includes(call.args.path)) &&
-            !calls.some(earlier => earlier.state === 'completed' && earlier.finished_at < call.prepared_at &&
-              JSON.stringify(earlier.result ?? null).includes(call.args.path)));
-          if (misses.length >= 2) {
-            facts.push(textMessage({ type: 'room_material_lookup', sources: available, missing_paths: [...new Set(misses.map(call => call.args.path))].slice(-8),
-              instruction: 'Use the listed original references or list the authorized project directory using read with directory. Read a real entry by its returned path. When the required original is absent, report the verified partial result and missing material to your parent.' }));
-          }
-        }
+      if (sources.length) facts.push(textMessage({ type: 'room_material_sources', sources }));
+      const openChildren = this.platform.executions.openChildren(conversation.session_id);
+      if (openChildren.length) {
+        facts.push(textMessage({ type: 'open_children', sessions: openChildren.map(child => ({
+          session_id: child.id, engine: child.engine, status: child.status, work_summary: child.work_summary,
+          waiting_summary: child.waiting_summary, latest_call_id: child.latest_call_id })) }));
       }
     }
     const otherCalls = conversation.kind === 'room' ? inbox.list(R.conversation, 'space.id', conversation.space.id)
@@ -1886,35 +887,17 @@ export class BotRuntime {
     if (unfinished.length) facts.push(textMessage({ type: 'prior_call_facts', calls: unfinished }));
     const relevantGroups = new Set();
     const requestIds = new Set();
-    if (conversation.kind === 'room') {
-      const localRequests = current.filter(event => event.type === 'message' && sameRef(event.space, conversation.space));
-      if (localRequests.length) {
-        const withdrawn = this.platform.executions.withdrawnFollowups(inbox.botId, conversation.space.id);
-        if (withdrawn.length) facts.push(textMessage({ type: 'withdrawn_room_intakes', withdrawals: withdrawn }));
-        const room = this.platform.room.room(conversation.space.id, inbox.botId);
-        const intake = this.roomIntake(inbox.botId, room, localRequests);
-        if (intake) facts.push(textMessage({ type: 'room_intake', ...intake }));
-      }
-      const links = roomQuestionLinks(this.platform, conversation.space, localRequests);
-      for (const event of current) if (event.owner_conversation_id === conversation.id && sameRef(event.origin_room, conversation.space))
-        links.add(event.origin_message_id);
-      const receipts = roomPublicationReceipts(this.platform, context.actor, conversation, links);
-      if (receipts.length) facts.push(textMessage({ type: 'own_room_deliveries', receipts }));
-    }
     for (const event of current) {
       if (event.type === 'message') {
         requestIds.add(event.id);
         if (event.reply_to) requestIds.add(event.reply_to.id ?? event.reply_to);
         const route = inbox.store.getRecord(R.route, recordKey(event.id, 'observation'));
-        if (route?.intake_task) facts.push(textMessage({ type: 'room_intake_request', message_id: event.id, ...route.intake_task }));
-        if (route?.native_request) facts.push(textMessage({ type: 'native_reply_due', message_id: event.id, ...route.native_request,
-          instruction: 'Read the current input_targets and submit the user’s actual answers as reply to the matching request. If its position changed, inspect the new request.' }));
         if (route?.fast_read_forward_fallback) {
           const callId = route.fast_read_forward_call_id;
           const actual = callId && await this.readFor(job, { kind: 'call', id: callId });
-          facts.push(textMessage({ type: 'forward_fallback', message_id: event.id, reason: route.fast_read_forward_fallback,
-            session_id: route.fast_read_forward_target, call_id: callId, current_call_status: actual?.status,
-            result_ref: actual?.result_ref, input_status: actual?.result?.input_status }));
+          facts.push(textMessage({ type: 'forward_fallback', message_id: event.id,
+            reason: route.fast_read_forward_fallback, session_id: route.fast_read_forward_target, call_id: callId,
+            current_call_status: actual?.status, result_ref: actual?.result_ref, input_status: actual?.result?.input_status }));
         }
       }
       if (event.type !== 'call.receipt' || !event.call_id || event.result_access === 'revoked') continue;
@@ -1927,14 +910,13 @@ export class BotRuntime {
       const result = event.result ?? observation.result;
       const content = JSON.stringify(result ?? null);
       if (observation.origin?.fast_read_forward && ['unknown', 'not_submitted', 'failed', 'stopped', 'cancelled'].includes(event.status)) {
-        const id = observation.source_event_ids[0];
-        const original = this.platform.store.get('messages', id);
-        const message = session && this.platform.roomWork.canHandOff(original, session, context.actor) && original;
+        const sourceId = observation.source_event_ids?.[0];
+        const original = sourceId && this.platform.canReadReference({ kind: 'event', id: sourceId }, context) &&
+          this.platform.store.get('messages', sourceId);
         facts.push(textMessage({ type: 'forward_return', call_id: event.call_id, receipt_status: event.status,
           current_call_status: observation.status, input_status: observation.result?.input_status, result_ref: observation.result_ref,
-          session_id: target?.id, source: message ? this.platform.roomWork.sourceFacts([id])[0] : undefined,
-          recovery_call_id: observation.forward_recovery_call_id,
-          instruction: 'For confirmed non-submission, inspect the current owner Session input. Recover this original once with recovery_of if still authorized. Otherwise report the actual unresolved disposition on its original question.' }));
+          session_id: target?.id, ...(original && { source_event_id: original.id, source_room: { kind: 'room', id: original.roomId },
+            source_author: original.author, source_text: original.content.slice(0, 2000) }) }));
       }
       facts.push(textMessage({ type: 'call_result', call_id: event.call_id, tool: observation.tool, status: event.status, target,
         input_status: result?.input_status, session_status: result?.session_status,
@@ -1943,9 +925,6 @@ export class BotRuntime {
     }
     if (relevantGroups.size || requestIds.size || inbox.calls(runId).some(call => call.tool === 'open_session')) {
       const owned = this.platform.executions.directWork(conversation.id);
-      const ownerContext = this.platform.context(context);
-      if (conversation.kind === 'room') for (const id of roomQuestionLinks(this.platform, conversation.space, current.filter(event => event.type === 'message')))
-        requestIds.add(id);
       if (requestIds.size && conversation.kind === 'room' && !run.receipt_group) {
         const recent = new Map();
         for (const work of owned.slice().reverse()) {
@@ -1965,39 +944,21 @@ export class BotRuntime {
         const key = workGroup(work);
         if (!relevantGroups.has(key)) continue;
         if (!groups.has(key)) {
-          const question = work.origin_room && this.platform.canReadReference({ kind: 'event', id: work.origin_message_id }, context) &&
+          const question = work.origin_room && work.origin_message_id &&
+            this.platform.canReadReference({ kind: 'event', id: work.origin_message_id }, context) &&
             this.platform.store.get('messages', work.origin_message_id);
-          const replies = question && conversation.kind === 'room' && sameRef(work.origin_room, conversation.space)
-            ? this.platform.executions.originalReplies(work).slice(-4).map(({ message, stage }) =>
-              ({ id: message.id, stage, text: message.content.slice(0, 2000) })) : [];
-          const amendments = question && conversation.kind === 'room' && sameRef(work.origin_room, conversation.space) ?
-            this.platform.roomWork.hostAmendments(work).map(item => ({ event_id: item.id, time: item.createdAt, text: item.content.slice(0, 360) })) : [];
-          groups.set(key, { type: 'origin_work_status', origin_room: work.origin_room, amendments,
-            origin_message_id: work.origin_message_id, ...(question && { original_question: question.content.slice(0, 4000) }),
-            ...(replies.length && { original_replies: replies }), sessions: [] });
+          groups.set(key, { type: 'origin_work_status', origin_room: work.origin_room,
+            origin_message_id: work.origin_message_id, ...(question && { original_question: question.content.slice(0, 2000) }),
+            sessions: [] });
         }
-        const group = groups.get(key);
-        group.sessions.push({ session_id: work.id, engine: work.engine, work_summary: work.work_summary,
-          amendment_inputs: this.platform.roomWork.materialStatus(work, group.amendments.map(item => item.event_id)),
+        const openChildren = this.platform.executions.openChildren(work.id);
+        groups.get(key).sessions.push({ session_id: work.id, engine: work.engine, work_summary: work.work_summary,
           status: work.status, waiting_summary: work.waiting_summary, acceptance_state: work.acceptance_state,
-          acceptance: this.platform.executions.acceptanceView(work, ownerContext),
-          receipts: this.platform.roomWork.seatReceipts(work, ownerContext), dispositions: this.platform.roomWork.dispositionHistory(work, ownerContext),
-          ...(work.acceptance?.note && work.owner.id === inbox.botId && sameRef(work.origin_execution, conversationRef(conversation.id)) &&
-            { disposition_note: work.acceptance.note, ...(work.acceptance.note_corrections?.length &&
-              { note_last_amended_at: work.acceptance.note_corrections.at(-1).time }) }),
           control: work.control, latest_call_id: work.latest_call_id,
-          ...(work.retained_delivery && { confirmed_delivery: work.retained_delivery }),
-          ...(work.pending_input?.length && { pending_requests: work.pending_input, input_targets: work.input_targets }) });
+          ...(openChildren.length ? { open_children: openChildren.map(child => ({ session_id: child.id, status: child.status, acceptance_state: child.acceptance_state })) } : {}),
+          ...(work.pending_input?.length ? { pending_requests: work.pending_input, input_targets: work.input_targets } : {}) });
       }
-      for (const group of groups.values()) facts.push(textMessage({ ...group,
-        disposition_guidance: 'On a requested handover, compare each unused seat’s disposition_note to its own initial return and later inputs. Correct a factual error on that same closed seat with target, amend_disposition_note:true and disposition_note before reporting it corrected. Preserve the original work and its outcome.' }));
-      const localHost = current.filter(event => event.type === 'message' && event.author?.kind === 'user' && sameRef(event.space, conversation.space));
-      if (localHost.length) {
-        const receipts = roomPublicationReceipts(this.platform, ownerContext.actor, conversation, roomQuestionLinks(this.platform, conversation.space, localHost))
-          .filter(receipt => localHost.some(event => event.id === receipt.dispatch));
-        if (receipts.length) facts.push(textMessage({ type: 'actual_dispatch_receipts', receipts,
-          instruction: 'These are the actual historical sends under the current host order. Compare their exact received text to the instruction. Finish a missing prescribed line through the authorized send, then report the actual recipient receipt.' }));
-      }
+      for (const group of groups.values()) facts.push(textMessage(group));
     }
     return { ...view, current, history, facts, material: job.materials(), observation, publicRoom };
   }
@@ -2113,10 +1074,7 @@ export class BotRuntime {
       const current = inbox.conversation(conversation.id);
       const id = recordKey('pi.input', call.id);
       const event = { id, kind: 'event', type: 'pi.input', input, space: conversation.space, author: actorFor(call), time: now(),
-        call_id: call.id, source_event_ids: call.source_event_ids || [], initiating_principal: call.initiating_principal,
-        ...(call.material_source_ids?.length && { room_originals: this.platform.roomWork.sourceFacts(call.material_source_ids, call) }),
-        ...(call.prior_material_receipts?.length && { prior_material_receipts: call.prior_material_receipts }),
-        ...(call.origin?.fast_read_forward && { material_author: call.origin.source_author, material_room: call.origin.source_room }) };
+        call_id: call.id, source_event_ids: call.source_event_ids || [], initiating_principal: call.initiating_principal };
       const next = inbox.putConversation({ id: current.id, input_revision: current.input_revision + 1 });
       inbox.store.putRecord(R.event, { id, event, received_at: event.time });
       const route = inbox.route(id, { conversation_id: current.id });
@@ -2127,7 +1085,6 @@ export class BotRuntime {
       inbox.store.putRecord(R.input, { id: call.id, run_id: run.id, event_id: id, conversation_id: current.id,
         kind, status: 'submitted', input_revision: next.input_revision, submitted_by: actorFor(call), confirmed_input });
       return { run: inbox.putRun({ id: run.id, input_revision: next.input_revision,
-        ...(conversation.kind === 'room' && run.state === 'suspended' ? { recovering_room_inputs: true } : {}),
         ...(run.state === 'suspended' ? { state: 'pending', retry_at: null } : {}) }), confirmed_input };
     });
   }

@@ -8,7 +8,7 @@ import { ConnectionInitializer } from '../connectors/initialization.mjs';
 import { executionEnvironment } from '../connectors/onboarding.mjs';
 import { normalizeOnboardingAccess, targetAllows } from '../connectors/onboarding-access.mjs';
 import { Files } from '../filesystem/files.mjs';
-import { Calls, callRecords, isWaitOrigin, waitRecords } from './calls.mjs';
+import { Calls, isWaitOrigin, waitRecords } from './calls.mjs';
 import { ConnectionRepairs } from './connection-repairs.mjs';
 import { ConnectionUsage } from './connection-usage.mjs';
 import { assertRevision, connectionSetupTool, idOf, identity, keyOf, page, readTools, reject, repairRequestType, sameIdentity, sameRef, user, validateTool } from './contract.mjs';
@@ -16,7 +16,6 @@ import { Deliveries, wakeupRecords } from './delivery.mjs';
 import { Executions, conversationRecords, sessionRecords } from './executions.mjs';
 import { HostResources } from './resources.mjs';
 import { RoomWork } from './room-work.mjs';
-import { publicationContext, publicationFieldText, roomPublicationReceipts, roomQuestionLinks, samePublishedFields, withinPublicationRoom } from './room-publication.mjs';
 import { forwardMaterials } from './session-work.mjs';
 import { workspaceGranted } from './workspace-access.mjs';
 import { allowsConnection, enclosesExecutableScope, executableScope } from '../services/executable-scope.mjs';
@@ -647,12 +646,10 @@ export class SummonPlatform {
     }
   }
 
-  async prepareSession(args, context, call, options) {
+  prepareSession(args, context, call, options) {
     if (this.draining) reject('updating', 'New execution Sessions are temporarily paused', 503);
     const { actor } = context;
     const engine = idOf(args.engine, 'connection');
-    if (context.session && this.executions.record({ kind: 'session', id: context.session.id })?.acceptance_state === 'closed')
-      reject('parent_work_closed', 'Have the direct owner reopen this work before delegating another child', 409);
     const space = args.space ?? context.session?.space ?? actor;
     if (context.session && (!this.canReadSpace(actor, space, context) || !sameRef(space, context.session.space))) {
       reject('session_scope_forbidden', 'A child Session must stay within the parent’s execution authority', 403);
@@ -712,20 +709,18 @@ export class SummonPlatform {
       group_work.source = { kind: 'event', id: origin_message_id };
     const owner_conversation_id = context.origin?.conversation_id ?? null;
     const work_summary = args.work_summary?.trim() || null;
-    const allowed_followup_rooms = this.roomWork.followupRooms(args.allowed_followup_rooms, context, origin_room);
-    const replacement = await this.runtime.reviewRoomDelegation(args, context, origin_room, origin_message_id);
-    this.assertRunAllowed(context, { allowUser: true });
-    return this.store.transaction(() => {
-      this.executions.checkContinuation(args, context, origin_room, origin_message_id);
-      this.resources.assertCapacity('sessions', this.activeSessions());
-      const origin_execution = context.session ? { kind: 'session', id: context.session.id } :
-        owner_conversation_id ? { kind: 'conversation', id: owner_conversation_id } : null;
-      if (args.recovery_of) {
-        const existing = this.executions.reserveForwardRecovery(args, context, call,
-          { origin_execution, origin_room, origin_message_id, owner_conversation_id });
-        if (existing) reject('material_already_handled', 'Consult the original input before replacing this work.', 409,
-          { call_id: existing.latest.id, status: existing.latest.status });
+    const allowed_followup_rooms = [];
+    if (Array.isArray(args.allowed_followup_rooms)) {
+      for (const roomRef of args.allowed_followup_rooms) {
+        const roomId = idOf(roomRef, 'room');
+        if (!this.store.get('rooms', roomId) || !this.canReadSpace(actor, { kind: 'room', id: roomId }, context)) {
+          reject('room_forbidden', 'Cannot open follow-up to an inaccessible Room', 403);
+        }
+        if (!allowed_followup_rooms.includes(roomId)) allowed_followup_rooms.push(roomId);
       }
+    }
+    return this.store.transaction(() => {
+      this.resources.assertCapacity('sessions', this.activeSessions());
       const session = this.store.save(sessionRecords, { id: call.id, engine, space, owner: actor, bot_id: bot?.id ?? null,
         source_space: project_room || context.conversation?.space || null, project_room,
         origin_room, origin_message_id, owner_conversation_id, owner_run_id: context.origin?.run_id ?? null, work_summary, waiting_summary: null,
@@ -739,17 +734,9 @@ export class SummonPlatform {
         ...(context.executable_scope !== undefined ? { executable_scope: context.executable_scope } : {}),
         ...(connection ? { connection_binding_version: connection.binding_version ?? 1 } : {}), ...(engine === 'pi' ? { open_call_id: call.id } : {}),
         execution_environment: executionEnvironment(connection), ...(group_work ? { group_work } : {}),
-        ...(args.replaces_session && { replaces_session: idOf(args.replaces_session, 'session') }),
-        ...(replacement && { replacement_authorization: replacement }),
-        control: activeControl(), origin_execution, latest_call_id: call.id });
+        control: activeControl(), origin_execution: context.session ? { kind: 'session', id: context.session.id } :
+          context.origin?.conversation_id ? { kind: 'conversation', id: context.origin.conversation_id } : null, latest_call_id: call.id });
       this.calls.bind(call.id, { target: { kind: 'session', id: session.id }, session_id: session.id, execution_actor: actor });
-      const opening = this.calls.get(call.id);
-      if (opening.recovery_of) {
-        this.calls.bind(call.id, { material_source_ids: this.roomWork.inputSources(args, context, session, opening) });
-      } else if (origin_execution?.kind === 'conversation' && origin_message_id &&
-          this.roomWork.canHandOff(this.store.get('messages', origin_message_id), session, actor)) {
-        this.calls.bind(call.id, { material_source_ids: [origin_message_id] });
-      }
       return session;
     });
   }
@@ -1094,62 +1081,6 @@ export class SummonPlatform {
         const result = this.store.transaction(() => this.repairs.send(args, context, record));
         return { result, call_id: record.id };
       }
-      if (name === 'send' && context.actor.kind === 'bot' && context.conversation?.kind === 'room' && !context.session) {
-        const to = { kind: 'room', id: idOf(args.to, 'room') };
-        if (!this.canWriteSpace(context.actor, to, context)) reject('room_forbidden', 'Room is unavailable', 403);
-        if (!args.reply_to && !args.work_reply && sameRef(to, context.conversation.space)) {
-          const inbox = this.runtime.inboxes.get(context.actor.id);
-          const run = inbox?.run(context.origin.run_id);
-          if (run?.recovering_room_inputs) {
-            const due = this.runtime.outstandingRoomReplies(inbox, to, context.origin.event_ids);
-            if (due.length === 1) args = { ...args, reply_to: { kind: 'event', id: due[0].message_id } };
-            else if (due.length > 1) reject('reply_target_required', 'Select the outstanding request this reply answers using reply_to.', 409,
-              { outstanding_requests: due.map(item => item.message_id) });
-          }
-        }
-        const refs = [...(args.references || []), ...(args.attachments || []).map(id => normalize(id, 'file'))];
-        const reply = args.reply_to?.id ?? args.reply_to;
-        const addressed = reply && this.store.get('messages', reply);
-        const roots = addressed?.roomId === to.id ? roomQuestionLinks(this, to, [addressed]) : null;
-        const guarded = !sameRef(to, context.conversation.space) || Boolean(args.work_reply || args.publication) ||
-          roots && this.executions.directWork(context.conversation.id).some(work => work.origin_room?.id === to.id && roots.has(work.origin_message_id)) ||
-          refs.some(ref => !withinPublicationRoom(this, ref, to)) || this.runtime.requiresRoomDraft(context);
-        if (guarded) {
-          const grant = await this.runtime.publicationGrant(context, args, this.room.room(to.id, context.actor.id));
-          this.assertRunAllowed(context);
-          const audience = publicationContext(this, args, context, grant);
-          if (!this.runtime.checkRoomPublication(context, audience, args))
-            reject('publication_view_required', 'No message has been sent. Complete this send using the audience, verified source fields and original request in your next input.', 409);
-          const release = audience.release;
-          if (audience.cross_room && !audience.reply_to && args.reply_to) args = { ...args, reply_to: undefined };
-          if (audience.cross_room && release.fields_only) args = { ...args, text: publicationFieldText(release, args.text) };
-          this.calls.bind(record.id, { publication_room: to, ...(release && { publication_authority: release.authorization_id,
-            publication_fields: release.materials, ...(audience.cross_room && { directed_publication: true,
-              publication_assignment: release.assignment_id ?? release.authorization_id, publication_fields_only: release.fields_only,
-              publication_dispatch: release.dispatch_id ?? release.authorization_id, publication_redispatch: Boolean(release.redispatch),
-              ...(release.wording_source && { publication_wording_source: release.wording_source }),
-              ...(release.required_text !== undefined && { publication_required_text: release.required_text }) }) }) });
-        }
-        if (sameRef(to, context.conversation.space)) {
-          const review = await this.runtime.workCardReview(context, args, this.room.room(to.id, context.actor.id));
-          this.assertRunAllowed(context);
-          if (review) {
-            const address = args.reply_to?.id ?? args.reply_to;
-            this.calls.bind(record.id, { work_review: review, ...(review.stage === 'complete' && review.answers_reply &&
-              address && address !== review.original_question && context.origin.event_ids.includes(address) && { answered_request: address }) });
-          }
-        }
-      }
-      if (name === 'configure_session' && args.acceptance_state === 'closed' && args.delivery_message_id) {
-        const reviewed = await this.runtime.reviewDeliveryRebind(context, args);
-        this.assertRunAllowed(context);
-        if (reviewed) this.calls.bind(record.id, { delivery_rebind: reviewed });
-      }
-      if (name === 'configure_session' && (args.amend_disposition_note || args.acceptance_state === 'closed' && args.close_reason && args.disposition_note)) {
-        const checked = await this.runtime.reviewDispositionNote(context, args);
-        this.assertRunAllowed(context);
-        if (checked) this.calls.bind(record.id, { disposition_note_review: checked });
-      }
       if (name === 'create_bot') {
         if (context.session) reject('configuration_forbidden', 'This Session cannot create Bot identities', 403);
         const result = this.store.transaction(() => {
@@ -1244,58 +1175,14 @@ export class SummonPlatform {
         reject('room_send_forbidden', 'Only the Bot’s main Room conversation can publish messages to a Room', 403);
       }
       if (!this.canWriteSpace(actor, space, context)) reject('room_forbidden', 'Room is not available for sending', 403);
-      let reply = normalize(args.reply_to, 'event');
-      const publication = this.calls.get(call.id);
-      if (publication.directed_publication) {
-        const scope = new Set([publication.publication_assignment, publication.publication_authority]);
-        const order = publication.publication_redispatch && this.store.get('messages', publication.publication_dispatch);
-        const last = roomPublicationReceipts(this, actor, context.conversation, scope, space).findLast(receipt =>
-          (!order || order.id === receipt.dispatch && order.createdAt <= receipt.time) &&
-          samePublishedFields(receipt.fields, publication.publication_fields) &&
-          (publication.publication_required_text === undefined || receipt.text === publication.publication_required_text));
-        if (last) {
-          this.calls.bind(call.id, { target: space });
-          return { ...this.room.receiptForPublication(last.message_id, actor), already_delivered: true };
-        }
-      }
-      if (!reply && !args.work_reply && actor.kind === 'bot' && sameRef(context.conversation.space, space)) {
-        const due = this.runtime.outstandingRoomReplies(this.runtime.inboxes.get(actor.id), space, context.origin.event_ids);
-        if (due.length === 1) reply = { kind: 'event', id: due[0].message_id };
-      }
-      const { reply: replyTo, work_reply, retained, repeated_progress } = this.executions.roomReply(args, context, space, reply, publication.work_review);
-      if (repeated_progress && retained) {
-        this.calls.bind(call.id, { target: space });
-        return { ...this.room.messageReceipt(retained), already_reported: true,
-          guidance: 'This progress was reported at the current position. Continue the work or wait for new material.' };
-      }
-      const delivered = retained || actor.kind === 'bot' && this.runtime.recoveredRoomReply(context.origin, id, replyTo?.id, Boolean(work_reply));
-      if (delivered) {
-        const work = args.work_reply?.stage === 'complete' && this.executions.record({ kind: 'session', id: idOf(args.work_reply.session, 'session') });
-        const selected = reply && this.store.get('messages', reply.id);
-        const covers = work?.acceptance_state === 'closed' && work.acceptance?.message_id === delivered.id &&
-          selected?.roomId === id && selected.createdAt <= delivered.createdAt && context.origin?.event_ids.includes(selected.id) &&
-          roomQuestionLinks(this, space, [selected]).has(work.origin_message_id);
-        this.calls.bind(call.id, { target: space, ...(covers && { answered_request: selected.id }) });
-        return { ...this.room.messageReceipt(delivered), already_delivered: true,
-          guidance: 'Use this confirmed delivery. For a substantive correction to delegated work use work_reply.stage=correction in its owning Room, or reply to the new source message.' };
-      }
       const attachments = args.attachments?.map(ref => normalize(ref, 'file'));
       if (context.session) for (const ref of [...(attachments || []), ...(args.references || [])]) {
         if (!this.canReadReference(ref, context)) reject('share_forbidden', 'A reference is outside this Session’s resource scope', 403);
       }
       if (actor.kind === 'bot') this.resources.acquire('message', this.resourceSource(context), { id: call.id }).finish();
-      this.calls.bind(call.id, { target: space, ...(work_reply && { work_reply }) });
-      if (work_reply?.stage === 'correction') this.store.save(sessionRecords, { id: work_reply.session_id, retained_delivery: null });
-      const fields = publication.directed_publication ? publication.publication_fields.map(part => part.printed ?? part.text)
-        .filter(text => args.text?.includes(text)) : [];
-      const change = publication.work_review?.change;
-      const references = [...(args.references ?? [])];
-      const effective = publication.work_review?.effective_card;
-      for (const card of [change?.previous, effective?.use === 'existing' && effective.id].filter(Boolean))
-        if (!references.some(ref => ref.kind === 'event' && ref.id === card)) references.push({ kind: 'event', id: card });
-      return this.room.send(id, { ...args, references, attachments, reply_to: replyTo, mentions: members(args.mentions),
-        clientId: context.clientId }, actor.id, { callId: call.id, ...(fields.length && { authorizedFields: fields }),
-        ...(change && { workCardChange: { intent: change.mode === 'replacement' ? 'proposed_replacement' : 'addendum', previous: change.previous } }) });
+      this.calls.bind(call.id, { target: space });
+      return this.room.send(id, { ...args, attachments, reply_to: normalize(args.reply_to, 'event'), mentions: members(args.mentions),
+        clientId: context.clientId }, actor.id, { callId: call.id });
     }
     if (name === 'save_file') {
       const action = this.runtime.materials.prepareSave(args, context);
@@ -1357,8 +1244,7 @@ export class SummonPlatform {
         break;
       }
       case 'room': items = this.room.rooms(actor.id).filter(room => this.canReadSpace(actor, { kind: 'room', id: room.id }, context))
-        .map(({ lastMessage, pins, ...room }) => actor.kind === 'bot' ? { ...room, kind: 'room' } :
-          { ...room, lastMessage, pins, kind: 'room' }); break;
+        .map(room => ({ ...room, kind: 'room' })); break;
       case 'event': {
         const messages = this.room.rooms(actor.id).filter(room => (!scope || sameRef(scope, room.ref)) && this.canReadSpace(actor, room.ref, context))
           .flatMap(room => this.room.messages(room.id, actor.id));

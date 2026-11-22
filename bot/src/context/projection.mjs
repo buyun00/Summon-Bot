@@ -7,7 +7,7 @@ export const textMessage = (value, timestamp = Date.now()) => ({ role: 'user', t
 
 export const contextTokens = messages => messages.reduce((total, message) =>
   total + Math.max(estimateTokens(message), Math.ceil(JSON.stringify(message).length / 3)) +
-    (message.room_file_image_call || message.role === 'toolResult' && message.toolName === 'read' && message.details?.content_status === 'image' ? 1200 : 0), 0);
+    (message.role === 'toolResult' && message.toolName === 'read' && message.details?.content_status === 'image' ? 1200 : 0), 0);
 
 export function isRoomMessageEvent(event, roomId) {
   return event?.type === 'message' && (event.space?.kind === 'room' || Boolean(event.roomId)) &&
@@ -24,7 +24,6 @@ export function normalizeRoomMessage(event) {
     sequence: event.sequence,
     time: event.time ?? event.createdAt,
     author: event.author,
-    ...(event.authorized_publication && { authorized_publication: event.authorized_publication }),
     text: event.text ?? event.content ?? '',
     attachments: event.attachments ?? [],
     references: event.references ?? [],
@@ -40,12 +39,6 @@ export function roomMessageInput(event) {
 
 export function eventInput(event, current = true) {
   if (isRoomMessageEvent(event)) return roomMessageInput(event);
-  if (event.type === 'pi.input' && event.room_originals?.length) {
-    const original_files = event.room_originals.flatMap(original => (original.attachments ?? []).map(file => ({
-      original: original.event, name: file.name, read: { ref: { kind: 'file', id: file.id } } })));
-    return { type: current ? 'current_event' : 'historical_entry', event, original_files,
-      ref: event.history_ref || { kind: 'event', id: event.id } };
-  }
   return { type: current ? 'current_event' : 'historical_entry', event,
     ref: event.history_ref || { kind: 'event', id: event.id } };
 }
@@ -96,9 +89,7 @@ export function toolObservation(callId, value, isError = false) {
   const execution = (kind === 'session' || kind === 'conversation') && execution_ref?.kind === kind && execution_ref.id === id
     ? {
       kind, id, execution_ref, control: control && { state: control.state, stop_status: control.stop_status },
-      acceptance_state: value.acceptance_state, acceptance: value.acceptance && {
-        outcome: value.acceptance.outcome, message_id: value.acceptance.message_id, message_ref: value.acceptance.message_ref,
-      },
+      acceptance_state: value.acceptance_state,
       control_version: value.control_version, input_revision: value.input_revision, can_submit: value.can_submit, can_stop: value.can_stop,
       input_targets: value.input_targets?.map(({ kinds, input_target, question, choices, request_kind, answer_format, plain_text }) => ({
         kinds, input_target, question, request_kind, answer_format, plain_text, choices: choices?.map(({ id, label }) => ({ id, label })),

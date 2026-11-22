@@ -68,22 +68,6 @@ function countWireImages(parts) {
   return count;
 }
 
-function fastReadWirePrefix(wire, messages, headers, sessionId) {
-  if (!Array.isArray(wire.input) || messages[0]?.role !== 'system') return undefined;
-  const history = messages.slice(1, -1);
-  const textAt = i => {
-    const item = wire.input[i];
-    return item?.role === 'user' && item.content?.length === 1 && item.content[0].type === 'input_text' ? item.content[0].text : null;
-  };
-  const matches = history.every((message, i) => message.content[0]?.text === textAt(i));
-  const originals = history.filter(message => message.public_event_id);
-  return { instructions_match: wire.instructions === messages[0].content, history_matches: matches,
-    cache_key_matches: wire.prompt_cache_key === sessionId, session_header_matches: headers.get('session-id') === sessionId,
-    batch_last: wire.input.length === history.length + 1 && textAt(history.length) === messages.at(-1)?.content[0]?.text,
-    history_items: history.length, first_public_id: originals[0]?.public_event_id ?? null,
-    last_public_id: originals.at(-1)?.public_event_id ?? null };
-}
-
 function roomCacheRequest(payload, roomCache) {
   if (!Array.isArray(payload?.input) || payload.prompt_cache_options?.mode === 'explicit') return null;
   const remaining = new Set([roomCache.current, roomCache.previous].filter(Boolean));
@@ -304,8 +288,6 @@ export class ModelProvider {
               record.sentImageCount = countWireImages(wire.input ?? wire.messages);
             if (cacheSessionId && wire) {
               record.sentPromptCacheKey = wire.prompt_cache_key ?? null;
-              if (codex && usageContext?.purpose === 'fast_read')
-                record.sentFastReadPrefix = fastReadWirePrefix(wire, context.messages, headers, cacheSessionId);
               record.sentExplicitCacheBreakpoint = Array.isArray(wire.input) && wire.input.some(item =>
                 Array.isArray(item?.content) && item.content.some(part => part?.prompt_cache_breakpoint?.mode === 'explicit'));
             }

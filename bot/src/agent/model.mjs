@@ -37,24 +37,3 @@ export function boundModel(config, binding) {
   }
   return { ...actual, maxTokens: binding.max_tokens, outputTokenLimit: binding.output_token_limit };
 }
-
-export function extractJsonObject(raw) {
-  if (typeof raw !== 'string') return null;
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-  const candidate = fenced ? fenced[1].trim() : trimmed;
-  try {
-    const parsed = JSON.parse(candidate);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
-  } catch {}
-  const start = candidate.indexOf('{');
-  const end = candidate.lastIndexOf('}');
-  if (start >= 0 && end > start) {
-    try {
-      const parsed = JSON.parse(candidate.slice(start, end + 1));
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
-    } catch {}
-  }
-  return null;
-}

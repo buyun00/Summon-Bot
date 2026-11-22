@@ -42,14 +42,6 @@ export class Calls {
     }));
   }
 
-  roomForwards(botId, roomId, eventIds) {
-    const recent = this.store.db.prepare(`SELECT json_extract(data,'$.source_event_ids[0]') AS source FROM records
-      WHERE kind='platform-calls' AND json_extract(data,'$.origin.fast_read_forward')=1
-      AND json_extract(data,'$.origin.bot_id')=? AND json_extract(data,'$.origin.source_room.id')=? ORDER BY rowid DESC LIMIT 12`)
-      .all(botId, roomId);
-    return this.forwardsFor(botId, roomId, [...new Set([...eventIds, ...recent.map(row => row.source)])]);
-  }
-
   clientCall(actor, clientId) {
     const id = this.store.get('platform-client-calls', keyOf(actor.kind, actor.id, clientId))?.call_id;
     return id && this.store.get(callRecords, id);
@@ -232,8 +224,7 @@ export class Calls {
     const wait_refs = call.return_refs.map(key => this.store.get(waitRecords, key)).filter(wait => wait &&
       (context.actor.kind === 'user' || wait.bot_id === context.actor.id) && (!context.session || wait.session_id === context.session.id));
     return { kind: 'call', id, tool, submitted_by, initiating_principal, execution_actor,
-      ...(own ? { origin, source_event_ids, client_id, controls, repair_request_ids, recovery_of: call.recovery_of,
-        forward_recovery_call_id: call.forward_recovery_call_id } : {}),
+      ...(own ? { origin, source_event_ids, client_id, controls, repair_request_ids } : {}),
       status, target: targetReadable ? target : undefined, wait_refs, result_ref: targetReadable ? result_ref : null,
       result: targetReadable ? (own || !call.result ? call.result : {
         status: call.status, output: call.result.output, native: call.result.native, input_targets: call.result.input_targets,

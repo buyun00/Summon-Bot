@@ -1,7 +1,6 @@
 import { avatarOf } from '../shared/validation.mjs';
 import { botRecords } from '../bot-management/service.mjs';
 import { assertRevision, page, protocolVersion, reject, user } from '../platform/contract.mjs';
-import { roomDeliveryResolution } from '../../bot/src/runtime/room-delivery.mjs';
 
 const routeRef = (kind, id) => ({ kind, id: decodeURIComponent(id) });
 const preservedModelSettings = '/api/model-settings';
@@ -148,10 +147,6 @@ export function createApi({ platform, room, attachments, models, connections, pu
       return page(platform.executions.list(userContext, scope), params.get('cursor') || undefined);
     }
     if (path === '/api/events' && method === 'GET') return list('event', params);
-    if (['GET', 'POST'].includes(method) && (match = path.match(/^\/api\/events\/([^/]+)\/deliveries\/([^/]+)\/resolution$/))) {
-      if (Object.keys(args).some(key => !['reason', 'reply_id'].includes(key))) reject('invalid_arguments', '结清只接受原因和答复消息 ID');
-      return roomDeliveryResolution(platform.runtime, user, decodeURIComponent(match[1]), decodeURIComponent(match[2]), method === 'POST' ? args : null);
-    }
     if (method === 'GET' && (match = path.match(/^\/api\/events\/([^/]+)\/deliveries$/))) {
       const ref = routeRef('event', match[1]);
       if (!platform.canReadReference(ref, userContext)) reject('object_not_found', 'Event is unavailable', 404);

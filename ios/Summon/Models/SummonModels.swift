@@ -147,7 +147,6 @@ struct SummonDelivery: Codable, Sendable {
     var bot_id: String
     var status: String
     var fast_read_diagnostic: FastReadDiagnostic?
-    var resolution_notice: String?
 
     struct FastReadDiagnostic: Codable, Sendable {
         var message: String
