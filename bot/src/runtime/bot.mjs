@@ -393,6 +393,15 @@ export class BotRuntime {
         fastReadBatches.get(roomId).push(route);
         continue;
       }
+      if (!route.wait_id && route.event.type === 'message' && route.event.space?.kind === 'room') {
+        const existingReply = this.findCompletedRoomReply(bot.id, route.event.space.id, route.event_id);
+        if (existingReply) {
+          const { event: _event, ...stored } = route;
+          inbox.store.putRecord(R.route, { ...stored, state: 'processed', processed_at: now(), public_reply: existingReply });
+          this.consumeDeliveries(inbox, [route.event_id]);
+          continue;
+        }
+      }
       const space = route.event.space || botRef(bot.id);
       const related = route.event.ref?.kind === 'conversation' ? route.event.ref : null;
       const key = recordKey(refKey(space), refKey(related));
@@ -436,7 +445,26 @@ export class BotRuntime {
         if (retainedRun) {
           inbox.associate(retainedRun.id, newRoutes);
           inbox.putRun({ id: retainedRun.id, state: 'pending' });
-        } else inbox.createRun(conversation, newRoutes);
+        } else {
+          const carried = [];
+          const supersededRuns = [];
+          if (conversation.kind === 'room') {
+            for (const prior of inbox.runs(conversation.id)) {
+              if (prior.state !== 'suspended' || prior.error?.code !== 'model_response_incomplete' || inbox.hasOpenWaits(prior.id)) continue;
+              const priorPending = prior.route_ids
+                .map(id => inbox.store.getRecord(R.route, id))
+                .filter(route => route?.state === 'pending' && !route.wait_id && inbox.event(route.event_id)?.type === 'message');
+              if (priorPending.length) {
+                carried.push(...priorPending);
+                supersededRuns.push(prior);
+              }
+            }
+          }
+          const combined = [...carried, ...newRoutes].filter((route, index, all) =>
+            all.findIndex(other => other.id === route.id) === index);
+          inbox.createRun(conversation, combined);
+          for (const prior of supersededRuns) inbox.putRun({ id: prior.id, state: 'cancelled' });
+        }
       }
     }
 
@@ -458,17 +486,6 @@ export class BotRuntime {
           this.discard(inbox, inbox.pending().filter(route => route.run_id === run.id), 'access_revoked');
         }
         continue;
-      }
-      for (const run of runs) {
-        if (run.state === 'retry' && run.retry_at && run.error?.code === 'resource_limit') {
-          const resource = run.error.details?.resource;
-          const previousLimit = run.error.details?.limit;
-          if (resource && Number.isSafeInteger(previousLimit) &&
-              (this.platform.resources?.limits?.[resource] ?? 0) > previousLimit) {
-            inbox.putRun({ id: run.id, retry_at: null });
-            run.retry_at = null;
-          }
-        }
       }
       runs = runs.filter(run => !run.retry_at || Date.parse(run.retry_at) <= Date.now());
       const eligible = runs.find(run => run.state === 'waiting' && this.waitReady(inbox, run));
@@ -561,18 +578,6 @@ export class BotRuntime {
     }
   }
 
-  releaseResourceLimitRetries() {
-    this.fastRead?.retryAfter?.clear();
-    for (const inbox of this.inboxes.values()) {
-      for (const run of inbox.list(R.run, 'state', 'retry')) {
-        if (run.retry_at && run.error?.code === 'resource_limit') {
-          inbox.putRun({ id: run.id, retry_at: null });
-        }
-      }
-    }
-    this.wake();
-  }
-
   conversationActive(conversation) {
     const control = this.registered(conversation)?.control || conversation.control;
     return control.state === 'active' && !this.targetPaused(conversation.session_id && sessionRef(conversation.session_id));
@@ -611,18 +616,37 @@ export class BotRuntime {
     }
   }
 
+  findCompletedRoomReply(botId, roomId, eventId) {
+    const reply = this.platform.room.replyBy(roomId, botId, eventId);
+    const call = reply?.callId && this.platform.store.get('platform-calls', reply.callId);
+    if (!reply || call?.tool !== 'send' || call.status !== 'completed' || call.origin?.bot_id !== botId ||
+        call.result?.message?.id !== reply.id) return null;
+    return { message_id: reply.id, call_id: call.id };
+  }
+
   reconcileRoomReply(inbox, event) {
     if (event?.type !== 'message' || event.space?.kind !== 'room') return;
     const route = inbox.store.getRecord(R.route, recordKey(event.id, 'observation'));
     if (!route || route.state !== 'pending' || !route.run_id) return;
     const run = inbox.run(route.run_id);
     if (!run || run.state !== 'suspended' || this.active.get(run.conversation_id)?.runId === run.id) return;
-    const reply = this.platform.room.replyBy(event.space.id, inbox.botId, event.id);
-    const call = reply?.callId && this.platform.store.get('platform-calls', reply.callId);
-    if (!reply || call?.tool !== 'send' || call.status !== 'completed' || call.origin?.bot_id !== inbox.botId ||
-        call.result?.message?.id !== reply.id) return;
-    inbox.store.putRecord(R.route, { ...route, state: 'processed', processed_at: now(),
-      public_reply: { message_id: reply.id, call_id: call.id } });
+    const replied = this.findCompletedRoomReply(inbox.botId, event.space.id, event.id);
+    if (replied) {
+      inbox.store.putRecord(R.route, { ...route, state: 'processed', processed_at: now(), public_reply: replied });
+      return;
+    }
+    if (run.error?.code === 'model_response_incomplete' && !inbox.hasOpenWaits(run.id)) {
+      const seq = event.sequence ?? this.platform.room.messageRow?.get(event.id)?.sequence;
+      if (!Number.isSafeInteger(seq)) return;
+      const suspendedAt = Date.parse(run.updated_at || 0);
+      const covering = inbox.runs(run.conversation_id).find(other =>
+        other.id !== run.id && other.state === 'completed' &&
+        Number.isSafeInteger(other.public_prefix_end) && other.public_prefix_end >= seq &&
+        Date.parse(other.updated_at || 0) >= suspendedAt);
+      if (covering) {
+        inbox.store.putRecord(R.route, { ...route, state: 'processed', processed_at: now(), superseded_by_run_id: covering.id });
+      }
+    }
   }
 
   reconcileDeliveries(inbox, received) {
@@ -720,10 +744,9 @@ export class BotRuntime {
           const attempts = latest.transport_retry?.position === position ? latest.transport_retry.attempts + 1 : 1;
           transportRetry = { position, attempts };
         }
-        const retry = code === 'resource_limit' || !controller.signal.aborted &&
+        const retry = !controller.signal.aborted &&
           (transportRetry?.attempts <= 2 || ['access_changed', 'connection_unavailable', 'updating', 'call_result_unknown'].includes(code));
-        const retryAt = retry ? (error.details?.resource === 'models' ? Date.now() + 1000 : Date.parse(error.details?.resets_at) ||
-          Date.now() + (transportRetry?.attempts === 2 ? 30000 : 10000)) : null;
+        const retryAt = retry ? Date.now() + (transportRetry?.attempts === 2 ? 30000 : 10000) : null;
         const roomRevoked = code === 'execution_not_found' && conversation.kind === 'room' &&
           !this.platform.canReadSpace(botRef(bot.id), conversation.space);
         const controlStopped = controller.signal.aborted && ['execution_paused', 'bot_paused'].includes(controller.signal.reason?.code);
@@ -753,7 +776,7 @@ export class BotRuntime {
         } finally { settle(); }
       }
     }).catch(error => {
-      const transient = error.status === 503 || error.code === 'resource_limit';
+      const transient = error.status === 503;
       if (!transient && conversation.kind === 'room' && conversation.space.kind === 'room')
         this.platform.deliveries.releaseSuspendedObservation(bot.id, conversation.space.id, inbox.run(run.id).pending_event_ids);
       inbox.putRun({ id: run.id, state: transient ? 'retry' : 'suspended', retry_at: transient ? new Date(Date.now() + 30000).toISOString() : null,

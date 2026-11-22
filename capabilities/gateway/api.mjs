@@ -64,7 +64,7 @@ export function createApi({ platform, room, attachments, models, connections, pu
     if (method === 'GET' && path === '/api/state') {
       const state = { bots: platform.listBots().filter(bot => platform.visibleBot(bot, userContext)).map(bot => platform.manager.view(bot, user)),
         rooms: room.rooms(user.id),
-        modelSettings: models.summary(), historyEpoch, limits: platform.resources.limits, protocolVersion };
+        modelSettings: models.summary(), historyEpoch, protocolVersion };
       return snapshot('state', state, params);
     }
     if (method === 'GET' && path === '/api/usage') return getUsage(params, userContext);
@@ -187,7 +187,7 @@ export function createApi({ platform, room, attachments, models, connections, pu
       if (method === 'GET') {
         const usage = platform.resources.snapshot();
         const items = connections.settings(userContext);
-        const result = { ...await list('connection', params), limits: usage.limits, limits_revision: platform.resources.readLimits().revision, usage };
+        const result = { ...await list('connection', params), usage };
         return { ...result, items: result.items.map(item => ({ ...item, ...items.find(connection => connection.id === item.id) })) };
       }
       if (method === 'POST') return platform.configureExecutionConnection(args, userContext);
@@ -198,16 +198,6 @@ export function createApi({ platform, room, attachments, models, connections, pu
         params.get('period') ?? undefined;
       return platform.find({ kind: 'connection_usage', scope: scopeOf(params), period, query: params.get('query') || undefined,
         cursor: params.get('cursor') || undefined }, userContext);
-    }
-    if (path === '/api/connections/limits') {
-      if (method === 'GET') return platform.resources.readLimits();
-      if (method === 'PATCH') {
-        if (Object.keys(args).some(key => key !== 'revision' && key !== 'limits')) reject('invalid_resource_limit', 'Unsupported host resource setting');
-        const result = platform.resources.configure(args);
-        platform.runtime?.releaseResourceLimitRetries?.();
-        emit('connection');
-        return result;
-      }
     }
     if ((match = path.match(/^\/api\/connections\/([^/]+)$/))) {
       const ref = routeRef('connection', match[1]);

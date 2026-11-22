@@ -103,10 +103,7 @@ export class Calls {
       .filter(wait => wait.bot_id === actor.id && isWaitOrigin(wait, origin));
   }
 
-  reserveExternal(id, limits) {
-    const count = this.store.list(callRecords).filter(call => call.external && call.lease_id &&
-      (call.status === 'submitted' || call.status === 'unknown' && call.safe_to_disconnect !== true)).length;
-    limits.assertCapacity('reserved_calls', count);
+  reserveExternal(id) {
     return this.store.save(callRecords, { id, external: true, status: 'submitted' });
   }
 

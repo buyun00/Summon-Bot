@@ -337,7 +337,7 @@ export class Deliveries {
     this.flushing = true;
     try {
       const now = Date.now();
-      const deliveries = [...this.returningRecords.all(now), ...this.pendingRecords.all(now, this.resources.limits.queue)];
+      const deliveries = [...this.returningRecords.all(now), ...this.pendingRecords.all(now, 512)];
       for (const row of deliveries) {
         const delivery = JSON.parse(row.data);
         const { id, bot_id, event, wait_refs = [], revision = 1, match_sources = [] } = delivery;

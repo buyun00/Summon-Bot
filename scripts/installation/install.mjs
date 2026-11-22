@@ -195,11 +195,10 @@ export async function installRelease({ releaseRoot, appRoot, dataRoot, sourceRoo
     }
     if (state.phase === 'converting') {
       await owner?.assertStopped({ drain: state.drain });
-      const { normalizeLimits } = await import(new URL('../../capabilities/platform/resources.mjs', import.meta.url));
       const current = deployment || createDeployment({ dataRoot, releaseRoot: destination, defaultCwd, port });
       const localDirectory = join(dataRoot, 'workspace');
       if (!deployment && current.defaultCwd === localDirectory) await mkdir(localDirectory, { recursive: true });
-      await stageConfiguration({ dataRoot, state, deployment: current, limits: normalizeLimits(current.limits ?? {}), publicOrigin });
+      await stageConfiguration({ dataRoot, state, deployment: current, publicOrigin });
       state = await advanceInstallation(dataRoot, state, 'data_ready');
     }
     const selection = { schemaVersion: 1, releaseRoot: destination, buildId: manifest.buildId, dataRoot,

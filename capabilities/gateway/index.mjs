@@ -174,7 +174,7 @@ export async function startGateway(options = {}) {
     const model = { connectionStore: models.path };
     const clean = createRedactor({ model });
     platform = new SummonPlatform({ store: records, dataRoot, releaseRoot, models, attachments, emit,
-      limits: options.limits, workspaces: options.workspaces });
+      workspaces: options.workspaces });
     const room = new ChatroomService({ store: records, manager: platform.manager, attachments, platform, emit });
     connections = new SummonConnections({ store: records, dataRoot, workspace: options.defaultCwd || releaseRoot,
       assertSessionAuthority: (session, options) => platform.assertSessionAuthority(session, options),

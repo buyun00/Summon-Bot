@@ -432,7 +432,6 @@ export class Executions {
         this.checkSubmitResources(target, latest, context);
         this.platform.assertRunAllowed(context, { allowUser: true });
         if (target.kind === 'session' && args.kind === 'next' && !this.platform.isActiveSession(latest)) {
-          this.resources.assertCapacity('sessions', this.platform.activeSessions(target.id));
           this.store.save(sessionRecords, { id: target.id, status: 'submitted', latest_call_id: call.id });
         }
         this.bindSubmission(call.id, target.kind === 'session' ? latest : null, context);

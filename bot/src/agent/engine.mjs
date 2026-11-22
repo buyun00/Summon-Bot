@@ -23,10 +23,10 @@ const roomLayerRules = [
   '- When the speaker has appropriate authority and the instruction applies, resolve conflicts in this order: 1) current-turn explicit request or correction (this delivery only) > 2) confirmed room or project convention (this room/project only) > 3) this Bot’s individual persona and long-term user instructions (all rooms and direct chats) > 4) built-in role default > 5) general defaults.',
   '- Preserve all non-conflicting rules from lower layers.',
   '- Scope and persistence: A one-off exception applies only to the current delivery and does not alter long-term rules. When an authorized user explicitly changes a long-term rule for this room or for this Bot across rooms, apply it now and persist it via material_index_ref (using save_file and configure_bot as documented in configure_bot) with applies_to set to the room or this Bot and source_refs pointing to the source message so it survives history compression.',
-  '- Room timeline and turn targets: Public room messages appear once in publish order as room_message entries with stable formatting across turns; mid-turn interjections and async wakeup updates are appended to the current fork tail. The current_room_inputs entry lists the message IDs to handle in this turn (along with room members and any resolved @mentions)—use the full wording, actual author, reply target, mentions, and references of those messages.',
+  '- Room timeline and turn targets: Public room messages appear once in publish order as room_message entries with stable formatting across turns; mid-turn interjections and async wakeup updates are appended to the current fork tail. The current_room_inputs entry lists the message IDs to handle in this turn (along with room members and any resolved @mentions)—use the full wording, actual author, reply target, mentions, and references of those messages. Newer room messages in the tail that are not listed in current_room_inputs are background context unless you intentionally answer them directly with send(..., reply_to).',
   '- Public visibility: In a Room conversation, your final assistant text at the end of a turn is strictly private internal output and is NEVER shown to the user or the Room. Whenever you want to answer, confirm, explain, or contribute publicly in the Room—including direct answers after calling read or other tools—you must call the send tool (with to: { kind: "room", id } and reply_to when replying to a specific message) before ending your turn. Only end without calling send when you intentionally choose to stay silent.',
   '- Room boundaries: Keep Room-private details in their source Room unless the host asks to share them in another Room.',
-  '- For a delegated request, own the direct child Sessions you open. On a receipt, use origin_work_status for the original question and its siblings. Submitted means accepted for execution. Distinguish progress, input needed, failure, unknown delivery, and evidence that the requested work is complete. Use the receipt or artifact to check the actual completion criteria; read additional details when needed.',
+  '- For a delegated request, own the direct child Sessions you open. When a Room request explicitly @mentions or assigns execution to another member (and not this Bot), do not open duplicate execution Sessions for that member’s assigned scope; only act on parts explicitly assigned to this Bot. On a receipt, use origin_work_status for the original question and its siblings. Submitted means accepted for execution. Distinguish progress, input needed, failure, unknown delivery, and evidence that the requested work is complete. Use the receipt or artifact to check the actual completion criteria; read additional details when needed.',
   '- Deliver accepted work with send to the original Room, replying to the original question. Close the corresponding direct Sessions with configure_session after delivery. On a late receipt, check the original thread for prior delivery and report a material correction when needed. If forwarding was uncertain, read its recorded call before acting.',
   '- For a cross-room continuation, use find and read in your accessible Rooms. Ask the original owner_conversation_id via its current send_input target when its decision is needed. Use configure_session on your direct work to open or revoke follow-up Rooms. Follow-ups keep their original delivery destination.',
 ].join('\n');
@@ -202,8 +202,14 @@ export class BotEngine {
           public_event_id: event.id }));
         const alreadyProcessed = new Set(inbox.run(runId).processed_event_ids);
         // Project materials from current authorization, including after an index is detached.
+        // Keep unchanged authorized material in its original transcript position so tool loops
+        // remain strictly append-only for prompt caching; strip earlier material facts whenever
+        // the authorized material content changed or was revoked.
+        const material = boundary.material && { ...boundary.material.fact, view_revision: authorizedView, runtime_fact: true };
+        const lastMaterial = original.findLast(isMaterialFact);
+        const materialInPlace = Boolean(material && lastMaterial && lastMaterial.content[0]?.text === material.content[0]?.text);
         const isPublicEvent = event => boundary.publicRoom && event?.type === 'message' && event.space?.id === conversation.space.id;
-        const localMessages = original.filter(message => !isMaterialFact(message) &&
+        const localMessages = original.filter(message => (!isMaterialFact(message) || (materialInPlace && message === lastMaterial)) &&
           !(boundary.publicRoom && !message.fork_public_event && !message.room_input_pointer &&
             message.origin_event_ids?.every(id => isPublicEvent(inbox.event(id)))));
         const sameRun = repairRun(localMessages, inbox.calls(runId)).map(message => {
@@ -265,16 +271,16 @@ export class BotEngine {
         const facts = boundary.facts.map(message => ({ ...message, view_revision: authorizedView }));
         const previousFacts = new Set(sameRun.filter(message => message.runtime_fact).map(message => message.content[0]?.text));
         const newFacts = facts.filter(message => !previousFacts.has(message.content[0]?.text)).map(message => ({ ...message, runtime_fact: true }));
-        const material = boundary.material && { ...boundary.material.fact, view_revision: authorizedView, runtime_fact: true };
+        const activeMaterial = materialInPlace ? lastMaterial : material;
         const tail = [
           ...forkPublicTail,
           ...(roomInputPointer ? [roomInputPointer] : []),
           ...fresh,
           ...(observation ? [observation.fact] : []),
           ...newFacts,
-          ...(material ? [material] : []),
+          ...(material && !materialInPlace ? [material] : []),
         ];
-        const optionalMaterial = requestPurpose === 'material_consolidation' ? null : material;
+        const optionalMaterial = requestPurpose === 'material_consolidation' ? null : activeMaterial;
         const duty = builtInInstructions(binding.built_in_role, boundary.maintained_connection_ids);
         const system = { ...systemBase, content: buildSystemContent({ isRoomConversation, isPiSession, setup, binding, duty, botId: conversation.bot_id }) };
         const fit = budget => boundary.publicRoom ? fitRoomHistory(job, compress, system, sameRun, tail, budget, boundary, optionalMaterial) :
@@ -305,9 +311,7 @@ export class BotEngine {
         modelEventIds = [...new Set(prompt.flatMap(message => message.origin_event_ids || []).filter(id => currentIds.has(id)))];
         // An over-limit or cancelled request can stop between assembly and transport.
         appendAtFetch = tail.filter(message => message !== observation?.fact && prompt.includes(message));
-        materialAtFetch = material && prompt.includes(material) ? boundary.material : undefined;
-        if (materialAtFetch && original.findLast(isMaterialFact)?.content[0].text === material.content[0].text)
-          appendAtFetch = appendAtFetch.filter(message => message !== material);
+        materialAtFetch = activeMaterial && prompt.includes(activeMaterial) ? boundary.material : undefined;
         this.emit('engine.request', { bot_id: conversation.bot_id, conversation_id: conversation.id, run_id: runId, model: model.id,
           thinking_level: binding.model.thinking_level, tool_count: tools.length, event_ids: modelEventIds });
         return { context: { ...request.context, messages: prompt, tools } };
@@ -499,14 +503,9 @@ export class BotEngine {
         }
         if (chunk.length) {
           const checkpointPrompt = textMessage({ previous: summary?.summary, history: chunk.map(message => JSON.parse(message.content[0].text)) });
-          let answer;
-          try {
-            answer = await compress([
-              { role: 'system', content: 'Summarize these authorized historical records for a later model request. Preserve names, corrections, source references and actual call status.', timestamp: currentTime }, checkpointPrompt,
-            ]);
-          } catch (error) {
-            if (error.code !== 'resource_limit') throw error;
-          }
+          const answer = await compress([
+            { role: 'system', content: 'Summarize these authorized historical records for a later model request. Preserve names, corrections, source references and actual call status.', timestamp: currentTime }, checkpointPrompt,
+          ]);
           job.check();
           const text = answer?.stopReason === 'stop' && answer.content.filter(part => part.type === 'text').map(part => part.text).join('\n');
           if (text) {

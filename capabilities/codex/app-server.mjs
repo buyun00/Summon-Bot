@@ -5,13 +5,14 @@ import { DatabaseSync } from 'node:sqlite';
 import { appServerArgs } from '../connectors/codex.mjs';
 import { nativeCommand, nativeSpawnFailureCode } from '../services/native-host.mjs';
 import { guardStillMatches } from '../services/session-processes.mjs';
+import { terminateTree } from '../../bot/src/runtime/process-tools.mjs';
 
 const [executable, action, ...launchArgs] = process.argv.slice(2);
 const mode = action === 'history' ? action : undefined;
 const [originalThread, originalTurn, originalCall, historyStdio, ...historyArgs] = mode ? launchArgs : [];
 const command = nativeCommand(executable, [...appServerArgs(mode ? historyStdio : action), ...(mode ? historyArgs : launchArgs)]);
 const server = spawn(command.file, command.args, { ...command.options, cwd: process.cwd(),
-  windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  windowsHide: true, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] });
 server.stderr.pipe(process.stderr, { end: false });
 const input = createInterface({ input: process.stdin });
 const output = createInterface({ input: server.stdout });
@@ -67,15 +68,18 @@ function finish(status, error, code) {
   process.stdin.destroy();
   if (serverClosed) return;
   server.stdin.end();
-  // Allow outstanding RPC replies to drain. A descendant can keep the
-  // server's pipe open after the server itself has exited.
+  // Allow outstanding RPC replies to drain, then terminate the entire app-server
+  // process tree (e.g. cmd.exe -> node codex.js -> codex.exe on Windows) so no
+  // descendant survives after the bridge exits.
   shutdownTimer = setTimeout(() => {
-    if (server.exitCode === null && server.signalCode === null) server.kill();
-    output.close();
-    server.stdin.destroy();
-    server.stdout.destroy();
-    server.stderr.destroy();
-    disconnected('Codex app-server transport closed before acknowledging the request');
+    const cleanup = !serverClosed ? terminateTree(server).catch(() => {}) : Promise.resolve();
+    void cleanup.finally(() => {
+      output.close();
+      server.stdin.destroy();
+      server.stdout.destroy();
+      server.stderr.destroy();
+      disconnected('Codex app-server transport closed before acknowledging the request');
+    });
   }, 1_000);
 }
 
@@ -335,8 +339,15 @@ input.on('line', line => {
     .catch(error => process.stderr.write(error.message + '\n'));
 });
 input.on('close', () => {
-  if (!opened && !mode && !ending) finish('not_submitted', 'Codex did not receive an initial input');
+  if (mode || ending) return;
+  if (!opened) finish('not_submitted', 'Codex did not receive an initial input');
+  else finish(threadSubmitted || turnSubmitted ? 'unknown' : 'stopped', 'Codex supervisor input closed unexpectedly');
 });
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.once(sig, () => {
+    if (!ending) finish('stopped', `Codex bridge received ${sig}`);
+  });
+}
 
 async function initialize() {
   await rpc('initialize', { clientInfo: { name: 'summon-bot', title: 'Summon Bot', version: '1' },

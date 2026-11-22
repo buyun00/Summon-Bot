@@ -35,10 +35,10 @@ const inside = (root, path) => {
 };
 
 export class SummonPlatform {
-  constructor({ store, dataRoot, releaseRoot, models, attachments, limits, workspaces = [], emit = () => {} }) {
+  constructor({ store, dataRoot, releaseRoot, models, attachments, workspaces = [], emit = () => {} }) {
     Object.assign(this, { store, dataRoot, releaseRoot, models, attachments, emit });
     this.draining = false;
-    this.resources = new HostResources(store, limits);
+    this.resources = new HostResources(store);
     this.manager = new BotManager({ store, dataRoot, models,
       canUseModel: (actor, id) => this.canUseModel(actor, id),
       maintenanceConnection: (id, context, revision, reuse) => this.maintenanceConnection(id, context, revision, reuse),
@@ -722,7 +722,6 @@ export class SummonPlatform {
       }
     }
     return this.store.transaction(() => {
-      this.resources.assertCapacity('sessions', this.activeSessions());
       const session = this.store.save(sessionRecords, { id: call.id, engine, space, owner: actor, bot_id: bot?.id ?? null,
         source_space: project_room || context.conversation?.space || null, project_room,
         origin_room, origin_message_id, owner_conversation_id, owner_run_id: context.origin?.run_id ?? null, work_summary, waiting_summary: null,

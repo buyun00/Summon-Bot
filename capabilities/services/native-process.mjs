@@ -251,14 +251,16 @@ function finish(patch) {
 }
 
 function drainExitedBridge() {
-  if (!reportsOutcome || finished || drainTimer || !state.nativeOutcome ||
-      child.exitCode === null && child.signalCode === null) return;
-  // The bridge reported an outcome and has exited. Close our ends of
-  // inherited pipes if their remaining copies do not deliver EOF.
+  if (!reportsOutcome || finished || drainTimer || !state.nativeOutcome) return;
+  // Once the bridge reports a terminal outcome, give it a brief window to exit
+  // cleanly, then terminate its owned process tree and close inherited pipes.
   drainTimer = setTimeout(() => {
-    child.stdout.destroy();
-    child.stderr.destroy();
-  }, 1_000);
+    const cleanup = child && !finished ? terminateTree(child).catch(() => {}) : Promise.resolve();
+    void cleanup.finally(() => {
+      child?.stdout?.destroy();
+      child?.stderr?.destroy();
+    });
+  }, 2_000);
 }
 
 function writeInput(text) {
@@ -280,9 +282,9 @@ async function applyCommand(command, path) {
       if (child.exitCode === null && child.signalCode === null) stopTree = terminateTree(child);
     } else if (eventProtocol) {
       void writeInput(JSON.stringify({ summonInput: { type: 'stop', id: command.id } }) + '\n').catch(() => {});
-      if (!codex) stopTimer = setTimeout(() => {
+      stopTimer = setTimeout(() => {
         if (!finished && child.exitCode === null && child.signalCode === null) void terminateTree(child);
-      }, 3000);
+      }, codex ? 10_000 : 3_000);
     } else if (child.exitCode === null && child.signalCode === null) void terminateTree(child);
     return;
   }

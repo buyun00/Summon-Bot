@@ -179,8 +179,8 @@ const tabs = [
 const protocolVersion = 3;
 const state = { bots: [], rooms: [], executions: [], files: [], wakeups: [], connections: [], workspaces: [] };
 const resourceLabels = {
-  sessions:'会话数量', models:'并发模型请求', external:'并发外部执行', queue:'待处理事件',
-  reserved_calls:'回执记录', period_ms:'统计周期（毫秒）', calls:'调用数', tokens:'Token', active_ms:'累计活跃时间（毫秒）',
+  running_models:'运行中模型请求', running_external:'运行中外部执行',
+  calls:'当前周期调用数', tokens:'当前周期 Token', active_ms:'累计活跃时间（毫秒）',
 };
 const ui = {
   view:'chat', roomId:null, botId:null, executionRef:null, executionDetail:null, fileId:null, fileDetail:null,
@@ -772,7 +772,7 @@ async function loadCurrent() {
   if (ui.view === 'connections') {
     const first = await api('/api/connections');
     if (!current()) return;
-    Object.assign(state, { connections:first.items, limits:first.limits, limitsRevision:first.limits_revision, resourceUsage:first.usage });
+    Object.assign(state, { connections:first.items, resourceUsage:first.usage });
     const [connections, workspaces] = await Promise.allSettled([readList('/api/connections',first),readList('/api/workspaces')]);
     if (current()) {
       if (connections.status === 'fulfilled') state.connections = connections.value;
@@ -1259,20 +1259,6 @@ function editConnection(item) {
   }
 }
 
-async function openHostLimits() {
-  const current = await api('/api/connections/limits');
-  const fields = Object.entries(current.limits).map(([key,value]) => field(resourceLabels[key] || key,key,value,
-    { type:'number', min:key === 'period_ms' ? 1000 : 0, required:true })).join('');
-  openModal('宿主额度','',`<div class="limits-fields">${fields}</div>`,async data => {
-    const limits = Object.fromEntries(Object.keys(current.limits).map(key => {
-      const value = Number(data.get(key));
-      if (!Number.isSafeInteger(value) || value < (key === 'period_ms' ? 1000 : 0)) throw new Error('请填写有效的额度整数。');
-      return [key,value];
-    }));
-    await api('/api/connections/limits','PATCH',{ revision:current.revision,limits });
-  });
-}
-
 async function openExecutionForm() {
   const [connections, workspaces] = await Promise.all([readList('/api/connections'),readList('/api/workspaces')]);
   const engines = connections.filter(item => item.id !== 'pi' && item.available !== false);
@@ -1669,7 +1655,6 @@ async function act(action, element) {
   if (action === 'open-connection') return openReference({ kind:'connection',id });
   if (action === 'edit-connection') return editConnection(state.connections.find(item => item.id === id));
   if (action === 'edit-workspace') return editWorkspace(state.workspaces.find(item => item.id === id));
-  if (action === 'edit-limits') return openHostLimits();
 }
 function field(label, name, value = '', options = {}) {
   const { type = 'text', placeholder = '', help = '', required = false, rows, min, list, step } = options;
@@ -2610,16 +2595,14 @@ function renderWakeups() {
 }
 
 function renderConnections() {
-  const limits = state.limits, usage = state.resourceUsage;
-  const amount = { ...usage, models:usage?.running_models, external:usage?.running_external };
+  const usage = state.resourceUsage;
   return `<div class="page">${pageHeader('<button class="secondary-button" data-action="edit-workspace">登记执行目录</button><button class="primary-button" data-action="edit-connection">新增连接</button>')}<div class="object-layout">
     <section class="object-list">${state.connections.map(item => `<div class="profile-record"><strong>${esc(item.name || item.id)}</strong><small>${esc(item.protocol || item.kind || item.id)}${item.maintainer ? ' · ' + esc(item.maintainer.name || nameOf(item.maintainer.id)) : ''}</small>
       <div class="connection-actions"><button class="text-button" data-action="open-connection" data-id="${esc(item.id)}">接入信息</button>
       ${item.id !== 'pi' ? `<button class="text-button" data-action="edit-connection" data-id="${esc(item.id)}">设置</button>` : ''}</div></div>`).join('') || '<p class="panel-empty">暂无执行连接</p>'}</section>
-    <section class="object-detail"><div class="profile-section-heading"><h2>宿主资源</h2>
-    ${state.limitsRevision != null ? '<button class="text-button" data-action="edit-limits">调整额度</button>' : ''}</div>
-    ${limits ? `<dl class="resource-facts">${Object.entries(limits).map(([key, value]) => `<dt>${esc(resourceLabels[key] || key)}</dt>
-      <dd>${amount[key] != null ? esc(amount[key]) + ' / ' : ''}${esc(value)}</dd>`).join('')}</dl>` : '<p class="panel-empty">等待资源状态</p>'}
+    <section class="object-detail"><div class="profile-section-heading"><h2>宿主资源</h2></div>
+    ${usage ? `<dl class="resource-facts">${Object.entries(resourceLabels).map(([key, label]) => `<dt>${esc(label)}</dt>
+      <dd>${esc(usage[key] ?? 0)}</dd>`).join('')}</dl>` : '<p class="panel-empty">等待资源状态</p>'}
     ${usage?.resets_at ? `<p>当前统计期至 ${esc(formatTime(usage.resets_at,true))}</p>` : ''}<h3>执行目录</h3>
     ${state.workspaces.map(item => `<div class="wakeup-row"><div class="wakeup-copy"><strong>${esc(item.name)}</strong><small>${esc(item.path)}</small>
       <span>${item.write ? '可写' : '只读'}</span></div>${item.revision != null ? `<button class="text-button" data-action="edit-workspace" data-id="${esc(item.id)}">编辑</button>` : ''}</div>`).join('') || '<p class="panel-empty">未登记执行目录</p>'}</section></div></div>`;

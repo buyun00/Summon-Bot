@@ -167,10 +167,14 @@ export class ModelProvider {
       const http = record.httpStatus;
       const phase = record.timeoutPhase ?? transportFault ?? (http === 429 || http >= 500 ? 'provider-unavailable' : undefined);
       if (!phase) return;
+      const visibleOutput = message.content?.some(part => part.type === 'toolCall' || part.type === 'image' || part.text);
       const partial = outputStarted || record.firstProgressAt || record.outputTokens > 0 ||
-        message.content?.some(part => part.type === 'toolCall' || part.type === 'image' || part.text || part.thinking);
-      const failure = { phase, before_output: !partial, retryable: !partial && !(http >= 400 && http < 500 && http !== 429) &&
-        ['connection', 'first-progress', 'network-before-headers', 'provider-unavailable'].includes(phase) };
+        visibleOutput || message.content?.some(part => part.thinking);
+      const httpRetryable = !(http >= 400 && http < 500 && http !== 429);
+      const retryableStreamIdle = phase === 'stream-idle' && !visibleOutput && httpRetryable;
+      const failure = { phase, before_output: retryableStreamIdle ? true : !partial,
+        retryable: retryableStreamIdle || !partial && httpRetryable &&
+          ['connection', 'first-progress', 'network-before-headers', 'provider-unavailable'].includes(phase) };
       record.transportFailure = message.transportFailure = failure;
     };
     const persist = () => {
@@ -286,7 +290,7 @@ export class ModelProvider {
             await beforeFetch?.();
             if (wire && context.messages?.some(msg => msg.role === 'toolResult' && msg.content?.some(part => part.type === 'image')))
               record.sentImageCount = countWireImages(wire.input ?? wire.messages);
-            if (cacheSessionId && wire) {
+            if ((cacheSessionId || responsesProtocol) && wire) {
               record.sentPromptCacheKey = wire.prompt_cache_key ?? null;
               record.sentExplicitCacheBreakpoint = Array.isArray(wire.input) && wire.input.some(item =>
                 Array.isArray(item?.content) && item.content.some(part => part?.prompt_cache_breakpoint?.mode === 'explicit'));
