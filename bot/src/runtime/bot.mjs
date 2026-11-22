@@ -1028,7 +1028,7 @@ export class BotRuntime {
     const review = async sources => {
       const position = JSON.stringify([destination.id, sources.local_work, sources.local_request, sources.requested_stage, sources.candidates.map(item => item.id),
         sources.hostMessages.map(item => item.id), [...sources.facts.keys()], sources.versions, sources.requests?.map(item => item.id),
-        sources.current?.map(item => item.id), sources.requested]);
+        sources.current?.map(item => item.id), sources.requested, sources.local_work ? undefined : sources.proposal]);
       if (job.publicationReview?.position === position) return job.publicationReview.grant;
       const grant = await this.engine.resolvePublicationGrant(job, destination, sources);
       if (grant && !grant.review_error) job.publicationReview = { position, grant };
@@ -1122,7 +1122,7 @@ export class BotRuntime {
           const wording = await this.engine.directedWording(job, destination, message, materials, args.text);
           if (wording?.review_error) return wording;
           return { authorization_id: message.id, dispatch_id: message.id, materials, presentation, formatted: wording?.text ?? formatted,
-            required_text: wording?.text ?? (presentation.length ? formatted : undefined),
+            wording_source: wording?.source, required_text: wording?.text ?? (presentation.length ? formatted : undefined),
             fields_only: Boolean(wording || formatted !== undefined || grant.fields_only || materials.length === 1 && !presentation.length), versions: sources.versions };
         }
       }

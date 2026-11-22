@@ -1117,6 +1117,7 @@ export class SummonPlatform {
             publication_fields: release.materials, ...(audience.cross_room && { directed_publication: true,
               publication_assignment: release.assignment_id ?? release.authorization_id, publication_fields_only: release.fields_only,
               publication_dispatch: release.dispatch_id ?? release.authorization_id, publication_redispatch: Boolean(release.redispatch),
+              ...(release.wording_source && { publication_wording_source: release.wording_source }),
               ...(release.required_text !== undefined && { publication_required_text: release.required_text }) }) }) });
         }
         if (sameRef(to, context.conversation.space)) {

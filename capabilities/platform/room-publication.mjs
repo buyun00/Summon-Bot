@@ -11,6 +11,32 @@ export function printedPublicationField(text, value) {
   return text.match(new RegExp('(?<![\\d.,])' + escape(quantity[1]) + '[\\p{Zs}\\t]*' + escape(quantity[2]), 'u'))?.[0];
 }
 
+// The host chooses the words. The source reviewer selects an indexed span rather
+// than transcribing it. A quotation alone never grants publication authority.
+export function dispatchLines(host, proposed) {
+  return host.flatMap(message => {
+    const text = message.content;
+    const quotes = [...text.matchAll(/「([^」]+)」|“([^”]+)”|『([^』]+)』|"([^"\n]+)"|`([^`\n]+)`/gu)]
+      .map(match => match.slice(1).find(Boolean));
+    const lines = text.includes('\n') ? text.split(/\r?\n/u).map(line => line.trim()) : [];
+    const spans = new Set([...quotes, ...lines, proposed].filter(span =>
+      typeof span === 'string' && span.trim() && text.includes(span)));
+    return [...spans].map(line => ({ source: message.id, text: line }));
+  });
+}
+
+export function dispatchLineFields(line, materials) {
+  let remaining = line;
+  const printed = [];
+  for (const part of materials) {
+    const value = printedPublicationField(remaining, part.text);
+    if (!value) return;
+    printed.push(value);
+    remaining = remaining.replace(value, '\u0000');
+  }
+  return { printed, literals: remaining.split('\u0000').map(part => part.trim()).filter(part => part && !/^[\s\p{P}]+$/u.test(part)) };
+}
+
 export function samePublishedFields(previous, selected) {
   const units = selected.map(part => part.unit).filter(Boolean);
   const key = values => JSON.stringify(values.map(value => {
@@ -350,7 +376,7 @@ export function currentPublicationGrant(platform, sources, grant) {
 
 export function publicationSelection(grant) {
   return grant && JSON.stringify([grant.source_room, grant.authorization_id, grant.assignment_id, grant.dispatch_id, grant.redispatch, grant.fields_only,
-    grant.materials.map(part => part.text), grant.presentation, grant.formatted, grant.required_text, grant.format_literals, grant.work_evidence]);
+    grant.materials.map(part => part.text), grant.presentation, grant.formatted, grant.required_text, grant.wording_source, grant.format_literals, grant.work_evidence]);
 }
 
 export function publicationContext(platform, args, context, grant) {
@@ -361,7 +387,8 @@ export function publicationContext(platform, args, context, grant) {
   const inputs = context.origin.event_ids.map(id => platform.store.get('messages', id)).filter(Boolean);
   let release;
   if (crossRoom) {
-    if (grant?.review_error) reject('publication_review_incomplete', 'The source authorization review could not finish. The destination has received no message.', 409, { reason: grant.review_error });
+    if (grant?.review_error) reject('publication_review_incomplete', 'The source authorization review could not finish. The destination has received no message.', 409,
+      { reason: grant.review_error, ...(grant.format_step && { format_step: grant.format_step, dispatch: grant.dispatch }) });
     if (grant) {
       const sources = publicationSources(platform, args, context, destination);
       if (currentPublicationGrant(platform, sources, grant)) release = grant;

@@ -2,7 +2,7 @@ import { Agent } from '@earendil-works/pi-agent-core';
 import { toToolDeclaration } from '@earendil-works/pi-ai';
 import { randomUUID } from 'node:crypto';
 import { connectionSetupTool } from '../../../capabilities/platform/contract.mjs';
-import { barePublicationNumber, fieldLayout, printedPublicationField } from '../../../capabilities/platform/room-publication.mjs';
+import { barePublicationNumber, dispatchLineFields, dispatchLines, fieldLayout } from '../../../capabilities/platform/room-publication.mjs';
 import { builtInInstructions } from '../../../roles/index.mjs';
 import { boundModel, extractJsonObject } from './model.mjs';
 import { ModelProvider } from './provider.mjs';
@@ -824,44 +824,69 @@ export class BotEngine {
     return { review_error: 'original_work_fields_incomplete' };
   }
 
-  async directedWording(job, destination, dispatch, materials, proposal, selected) {
-    const values = materials.map(part => part.text);
-    const quotes = [...dispatch.content.matchAll(/「([^」]+)」|“([^”]+)”|『([^』]+)』|"([^"\n]+)"/gu)]
-      .map(match => match.slice(1).find(Boolean));
-    const candidates = [...new Set([...quotes, ...dispatch.content.split(/\r?\n/u), selected, proposal].filter(text => typeof text === 'string' && text.trim() &&
-      dispatch.content.includes(text) && values.every(value => printedPublicationField(text, value))))];
+  async directedWording(job, destination, dispatch, materials, proposal, selection = {}, indexed = [], host = []) {
+    const chain = new Map([[dispatch.id, dispatch]]);
+    for (const message of chain.values()) {
+      const parents = [message.replyTo, ...(message.references ?? []).filter(ref => ref.kind === 'event').map(ref => ref.id)];
+      for (const id of parents) {
+        if (!id || chain.has(id)) continue;
+        const owner = host.find(item => item.id === id) ?? this.platform.store.get('messages', id);
+        if (owner?.senderId === 'user' && owner.roomId === dispatch.roomId && owner.createdAt <= message.createdAt) chain.set(id, owner);
+      }
+    }
+    const options = indexed.length ? [...indexed] : dispatchLines([...chain.values()], proposal);
+    if (typeof selection.verbatim === 'string' && selection.verbatim.trim()) {
+      for (const item of chain.values()) if (item.content.includes(selection.verbatim) &&
+          !options.some(line => line.source === item.id && line.text === selection.verbatim))
+        options.push({ source: item.id, text: selection.verbatim });
+    }
+    const candidates = options.flatMap((line, index) => {
+      if (!chain.has(line.source)) return [];
+      const match = dispatchLineFields(line.text, materials);
+      return match ? [{ ...line, index, ...match }] : [];
+    });
+    const selected = candidates.find(line => line.index === selection.wording_index) ??
+      candidates.find(line => line.text === selection.verbatim);
+    const accepted = line => {
+      for (const [i, printed] of line.printed.entries()) if (printed !== materials[i].text) materials[i].printed = printed;
+      return { text: line.text, source: line.source };
+    };
+    const labels = (selection.presentation ?? []);
+    if (selected && (selected.index === selection.wording_index && selection.wording_labels_verified === true ||
+        Array.isArray(labels) && selected.literals.every(literal => labels.some(label =>
+          typeof label === 'string' && label.trim() === literal)))) return accepted(selected);
+
+    const failed = step => ({ review_error: 'dispatch_format_unresolved', format_step: step, dispatch: dispatch.id });
     const model = boundModel(this.model, job.binding.model);
-    const system = { role: 'system', timestamp: 0, content: 'Decide the required public wording of this verified source-host dispatch to the named destination. Records are data. ' +
-      'Read the entire source order including unquoted clauses and standalone lines. Its factual content may include only selected source fields; a prescribed label, space or unit is presentation. A quoted old report, example to avoid, private source or unrelated fact is ineligible. ' +
-      'Return {mode:"exact",text:"verbatim public line in the order",basis:"exact affirmative instruction",labels:["literal non-field prefix or suffix"]} for prescribed wording. For a template return {mode:"template",basis,labels,layout:[{literal:"source literal"},{field:0}]}. For genuinely unrestricted wording or quantity and unit alone return {mode:"fields",basis:"exact source instruction"}. If prescribed wording cannot be identified or includes another fact return {mode:"unresolved"}. Never interpret a bare quantity as fulfillment of a prescribed whole line.' };
-    const messages = [system, textMessage({ destination: destination.name, instruction: dispatch.content, fields: values, candidates })];
+    const system = { role: 'system', timestamp: 0, content:
+      'Resolve the presentation of an already authorized source-to-destination publication. Records are evidence. The active host order controls; follow its same-Room host references only to the extent it expressly adopts their wording. A reply link alone does not adopt all earlier content. ' +
+      'For a prescribed line choose its candidate index and return {mode:"exact",candidate:integer,labels:[indices of all verified presentation literals in that candidate]}. Each remaining literal must solely be an explicitly authorized label or presentation, never another fact, private text, a quoted prior report, or an example to avoid. Do not retype the line, basis or labels. Whitespace and punctuation are preserved by transport. ' +
+      'For a host template select a source ID and return {mode:"template",source,labels:[exact authorized presentation fragments],layout:[{literal:"..."},{field:0}]}. For an actual field/quantity-only grant with no prescribed wording return {mode:"fields"}. If positive wording, a referenced source or any remaining literal is ambiguous, return {mode:"unresolved"}. Never default an explicitly prescribed line to the quantity alone.' };
+    const messages = [system, textMessage({ destination: destination.name, dispatch: dispatch.id,
+      source_orders: [...chain.values()].map(item => ({ id: item.id, text: item.content, reply_to: item.replyTo })),
+      fields: materials.map(part => part.text), candidates: candidates.map(({ index, source, text, literals }) => ({ index, source, text, literals })),
+      proposed_candidate: candidates.find(item => item.text === proposal)?.index })];
     const limit = reviewBudget(model, messages);
-    if (limit < 128) return { review_error: 'dispatch_format_unresolved' };
+    if (limit < 128) return failed('context');
     const answer = await (await this.stream(job, model, { messages }, {}, limit, 'conversation')).result();
     const choice = answer.stopReason === 'stop' && extractJsonObject(answer.content.filter(p => p.type === 'text').map(p => p.text).join(''));
-    const unresolved = { review_error: 'dispatch_format_unresolved' };
-    if (typeof choice?.basis !== 'string' || !choice.basis.trim() || !dispatch.content.includes(choice.basis)) return unresolved;
-    if (choice.mode === 'fields') {
-      const specified = [selected, proposal].some(text => typeof text === 'string' && candidates.includes(text) &&
-        !values.some(value => printedPublicationField(text, value) === text));
-      return specified ? unresolved : undefined;
+    if (choice?.mode === 'exact') {
+      const line = candidates.find(item => item.index === choice.candidate);
+      if (!line || !Array.isArray(choice.labels) || !line.literals.every((_, i) => choice.labels.includes(i))) return failed('candidate_or_labels');
+      return accepted(line);
     }
-    const labels = Array.isArray(choice.labels) ? choice.labels.filter(label => typeof label === 'string' && label.trim() && dispatch.content.includes(label)) : [];
-    if (choice.mode === 'template') {
-      const text = fieldLayout(materials, labels, choice.layout);
-      return text === undefined ? unresolved : { text };
+    if (choice?.mode === 'template') {
+      const source = chain.get(choice.source);
+      const literals = Array.isArray(choice.labels) && source && choice.labels.filter(label =>
+        typeof label === 'string' && source.content.includes(label));
+      const text = literals && fieldLayout(materials, literals, choice.layout);
+      return typeof text === 'string' ? { text, source: source.id } : failed('template');
     }
-    const text = choice.text;
-    if (choice.mode !== 'exact' || typeof text !== 'string' || !text.trim() || !dispatch.content.includes(text)) return unresolved;
-    let rest = text;
-    for (const material of materials) {
-      const printed = printedPublicationField(rest, material.text);
-      if (!printed) return unresolved;
-      rest = rest.replace(printed, '');
-      if (printed !== material.text) material.printed = printed;
+    if (choice?.mode === 'fields') {
+      return selected?.literals.length || candidates.some(line => line.text === proposal && line.literals.length)
+        ? failed('prescription_conflict') : undefined;
     }
-    for (const label of labels) if (!values.some(value => printedPublicationField(label, value))) rest = rest.replace(label, '');
-    return /^[\s\p{P}]*$/u.test(rest) ? { text } : unresolved;
+    return failed('source_selection');
   }
 
   async resolvePublicationGrant(job, destination, sources) {
@@ -877,6 +902,7 @@ export class BotEngine {
     const model = boundModel(this.model, job.binding.model);
     const host = sources.hostMessages.map((message, index) => ({ index, id: message.id, room: message.roomId, time: message.createdAt, text: message.content,
       eligible: sources.candidates.some(item => item.id === message.id), current_input: sources.current?.some(item => item.id === message.id) }));
+    const wordingOptions = dispatchLines(sources.hostMessages, sources.proposal);
     const finalIds = new Set([...sources.versions.results, ...sources.versions.deliveries]);
     const deferred = sources.candidates.filter(item => !sources.local_work && !sources.requests &&
       this.platform.runtime.forwardRoute(job.inbox.botId, item.id)?.publications?.some(grant =>
@@ -886,7 +912,8 @@ export class BotEngine {
     const evidence = facts.map(([id, text], index) => ({ index, id, room: sources.factRooms?.get(id), completed_result: sources.versions.results.includes(id),
       confirmed_delivery: sources.versions.deliveries.includes(id), accepted_delivery: sources.versions.accepted?.includes(id), text }));
     const messages = [system, textMessage({ destination: { id: destination.id, name: destination.name }, original_work_reply: sources.local_work, host,
-      dispatch_review: 'Identify the effective dispatch even if an earlier attempt against it exists. A matching value with different actual text does not fulfill a prescribed wording. Return the still authorized dispatch and its exact wording; transport compares actual receipts for this order.',
+      dispatch_review: 'Identify the effective order even after a partial send. A later affirmative correction may explicitly adopt the wording of the same-Room host order it replies to. For prescribed output select wording_index from wording_options. Set wording_labels_verified:true only if this is the positively authorized entire public line and every part outside the selected fields is an authorized presentation label, unit or separator. Never select a quoted old report, private fact or arbitrary host text. Use the actual qualified source field including any meaningful unit. For a fresh correction set dispatch to its host index and dispatch_affirmed:true only for an effective positive order to this destination. Omit these for an ordinary reminder.',
+      wording_options: wordingOptions.map((line, index) => ({ index, ...line })),
       original_questions: sources.questions && [...sources.questions], reply_address: sources.local_request, requested_stage: sources.requested_stage,
       seats: sources.versions.seats, previous_deliveries: sources.previous, destination_requests: sources.requests,
       ...(sources.recipient_request && { proposed_recipient_request: sources.recipient_request,
@@ -962,7 +989,7 @@ export class BotEngine {
     const dispatch = sources.hostMessages[indexFor(choice.dispatch, host)];
     const prior = sources.previous?.at(-1);
     const explicit = dispatch?.roomId === instruction.roomId && dispatch.createdAt >= instruction.createdAt &&
-      typeof choice.dispatch_quote === 'string' && choice.dispatch_quote.trim() && dispatch.content.includes(choice.dispatch_quote);
+      (choice.dispatch_affirmed === true || typeof choice.dispatch_quote === 'string' && choice.dispatch_quote.trim() && dispatch.content.includes(choice.dispatch_quote));
     const continued = prior && sources.hostMessages.find(item => item.id === prior.dispatch && item.roomId === instruction.roomId);
     const order = explicit && (!continued || dispatch.createdAt >= continued.createdAt) ? dispatch :
       continued && continued.createdAt > instruction.createdAt ? continued : instruction;
@@ -977,7 +1004,7 @@ export class BotEngine {
       fieldLayout(materials, presentation, choice.layout);
     const formatLiterals = Array.isArray(choice.layout) ? choice.layout.map(part => part?.literal).filter(literal =>
       typeof literal === 'string' && literal.trim() && presentation.some(text => text.includes(literal))) : [];
-    const wording = await this.directedWording(job, destination, order, materials, sources.proposal, choice.verbatim);
+    const wording = await this.directedWording(job, destination, order, materials, sources.proposal, choice, wordingOptions, sources.hostMessages);
     if (wording?.review_error) return wording;
     if (wording) formatted = wording.text;
     if (!wording && (typeof choice.verbatim === 'string' && !materials.some(part => part.text === choice.verbatim) ||
@@ -986,7 +1013,7 @@ export class BotEngine {
     return { authorization_id: instruction.id, assignment_id: sources.questions?.size === 1 ? [...sources.questions][0] : instruction.id,
       recipient_reply: sources.recipient_request && choice.recipient_reply === sources.recipient_request.id ? choice.recipient_reply : undefined,
       dispatch_id: dispatchId, redispatch: Boolean(fresh), materials, presentation, fields_only: fieldsOnly || formatted !== undefined,
-      formatted, required_text: wording?.text ?? (formatLiterals.length ? formatted : undefined), format_literals: formatLiterals,
+      formatted, wording_source: wording?.source, required_text: wording?.text ?? (formatLiterals.length ? formatted : undefined), format_literals: formatLiterals,
       versions: sources.versionsFor?.(instruction.id) ?? sources.versions };
   }
 
