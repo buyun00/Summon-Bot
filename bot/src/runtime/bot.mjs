@@ -459,6 +459,17 @@ export class BotRuntime {
         }
         continue;
       }
+      for (const run of runs) {
+        if (run.state === 'retry' && run.retry_at && run.error?.code === 'resource_limit') {
+          const resource = run.error.details?.resource;
+          const previousLimit = run.error.details?.limit;
+          if (resource && Number.isSafeInteger(previousLimit) &&
+              (this.platform.resources?.limits?.[resource] ?? 0) > previousLimit) {
+            inbox.putRun({ id: run.id, retry_at: null });
+            run.retry_at = null;
+          }
+        }
+      }
       runs = runs.filter(run => !run.retry_at || Date.parse(run.retry_at) <= Date.now());
       const eligible = runs.find(run => run.state === 'waiting' && this.waitReady(inbox, run));
       const run = eligible || runs.find(run => run.state !== 'waiting');
@@ -548,6 +559,18 @@ export class BotRuntime {
       inbox.putRun({ id: run.id, state: 'pending', retry_at: null, error: null,
         ...(!keepBinding && run.binding ? { binding: null } : {}) });
     }
+  }
+
+  releaseResourceLimitRetries() {
+    this.fastRead?.retryAfter?.clear();
+    for (const inbox of this.inboxes.values()) {
+      for (const run of inbox.list(R.run, 'state', 'retry')) {
+        if (run.retry_at && run.error?.code === 'resource_limit') {
+          inbox.putRun({ id: run.id, retry_at: null });
+        }
+      }
+    }
+    this.wake();
   }
 
   conversationActive(conversation) {

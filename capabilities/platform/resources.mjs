@@ -3,7 +3,7 @@ import { keyOf, reject } from './contract.mjs';
 
 export const defaultLimits = Object.freeze({
   sessions: 48, models: 8, external: 8, queue: 512, reserved_calls: 128,
-  period_ms: 3600000, calls: 2000, tokens: 10000000, active_ms: 28800000,
+  period_ms: 3600000, calls: 10000, tokens: 100000000, active_ms: 28800000,
 });
 export const hostLimitsRecord = 'platform-host-limits';
 

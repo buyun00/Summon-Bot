@@ -204,6 +204,7 @@ export function createApi({ platform, room, attachments, models, connections, pu
       if (method === 'PATCH') {
         if (Object.keys(args).some(key => key !== 'revision' && key !== 'limits')) reject('invalid_resource_limit', 'Unsupported host resource setting');
         const result = platform.resources.configure(args);
+        platform.runtime?.releaseResourceLimitRetries?.();
         emit('connection');
         return result;
       }
