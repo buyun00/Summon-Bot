@@ -550,12 +550,13 @@ export class BotRuntime {
     const wait = route.wait_id && inbox.wait(route.wait_id);
     if (!wait) return false;
     const conversation = inbox.conversation(wait.conversation_id);
-    if (!conversation?.session_id || this.conversationActive(conversation)) return false;
+    if (!conversation?.session_id) return false;
     const parentSession = this.platform.executions.record(sessionRef(conversation.session_id));
+    const parentDead = Boolean(parentSession && this.platform.executions.sessionOrAncestorClosed(parentSession));
+    if (!parentDead && this.conversationActive(conversation)) return false;
     const call = this.platform.store.get('platform-calls', wait.call_id);
     const events = (wait.event_ids || []).map(id => inbox.event(id)).filter(Boolean);
-    if (call?.status === 'not_submitted' || events.some(event => event.status === 'not_submitted')) return true;
-    const parentDead = parentSession?.acceptance_state === 'closed' || parentSession?.authority_revoked === true;
+    if (!this.conversationActive(conversation) && (call?.status === 'not_submitted' || events.some(event => event.status === 'not_submitted'))) return true;
     return Boolean(parentDead && (callSettled(call?.status) || events.some(event => callSettled(event.status))));
   }
 
@@ -603,7 +604,8 @@ export class BotRuntime {
         else if (status === 'cancelled' && stored.wait_id) {
           const wait = inbox.wait(stored.wait_id);
           const resolvedEvent = wait && (event ?? inbox.event(stored.event_id));
-          if (resolvedEvent && isTerminalReceipt(resolvedEvent, wait)) inbox.settleWait(stored, status);
+          const call = wait && this.platform.store.get('platform-calls', wait.call_id);
+          if (resolvedEvent && (isTerminalReceipt(resolvedEvent, wait) || callSettled(call?.status))) inbox.settleWait(stored, status);
         }
       }
     });
@@ -1043,6 +1045,25 @@ export class BotRuntime {
           ...(work.pending_input?.length ? { pending_requests: work.pending_input, input_targets: work.input_targets } : {}) });
       }
       for (const group of groups.values()) facts.push(textMessage(group));
+    }
+    if (conversation.kind === 'room' && conversation.space?.kind === 'room' && !conversation.session_id) {
+      const crossRoomFollowups = this.platform.executions.followupSessions(context.actor.id, conversation.space.id)
+        .filter(work => work.owner_conversation_id !== conversation.id &&
+          this.platform.canReadSpace(context.actor, work.origin_room, context));
+      if (crossRoomFollowups.length) {
+        facts.push(textMessage({
+          type: 'authorized_followup_sessions',
+          room: conversation.space,
+          sessions: crossRoomFollowups.map(work => ({
+            session_id: work.id,
+            engine: work.engine,
+            origin_room: work.origin_room,
+            owner_conversation_id: work.owner_conversation_id,
+            work_summary: work.work_summary,
+            acceptance_state: work.acceptance_state,
+          })),
+        }));
+      }
     }
     return { ...view, current, history, facts, material: job.materials(), observation, publicRoom };
   }

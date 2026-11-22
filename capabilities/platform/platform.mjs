@@ -635,7 +635,12 @@ export class SummonPlatform {
         for (const ref of forwardMaterials(message)) this.assertShareable(ref, { actor: context.actor, room: audience, context });
       }
     }
-    if (session.project_room && projectRoom && !sameRef(session.project_room, projectRoom))
+    const followupSubmit = projectRoom && !context.session &&
+      session.acceptance_state === 'open' &&
+      sameIdentity(session.owner, context.actor) &&
+      this.isFollowupRoomAllowed(session, projectRoom) &&
+      this.canReadSpace(context.actor, session.project_room);
+    if (session.project_room && projectRoom && !sameRef(session.project_room, projectRoom) && !followupSubmit)
       reject('workspace_forbidden', 'Continue this execution from the Room that started it', 403);
     const submitContext = { ...context, project_room: session.project_room ?? projectRoom };
     const initiating = context.submitted_by && !sameIdentity(context.submitted_by, context.actor) ?
@@ -1480,6 +1485,7 @@ export class SummonPlatform {
         if (session.status === 'opening' && call?.status === 'not_submitted') this.store.save(sessionRecords, { id: session.id, status: 'not_submitted' });
       }
     });
+    this.executions.reconcileClosedDescendants();
     for (const bot of this.manager.list()) {
       if (bot.control.state === 'paused' && bot.control.stop_status === 'pending') this.manager.settleStop(bot.id, bot.control.stop_id, 'stopped');
     }

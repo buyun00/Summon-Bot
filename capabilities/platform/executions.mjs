@@ -102,6 +102,73 @@ export class Executions {
       child.acceptance_state === 'open' && sameRef(child.origin_execution, { kind: 'session', id: session.id }));
   }
 
+  descendantSessions(sessionId) {
+    const all = this.store.list(sessionRecords);
+    const byParent = new Map();
+    for (const item of all) {
+      if (item.origin_execution?.kind !== 'session') continue;
+      const list = byParent.get(item.origin_execution.id) || [];
+      list.push(item);
+      byParent.set(item.origin_execution.id, list);
+    }
+    const result = [];
+    const visited = new Set([sessionId]);
+    const queue = [sessionId];
+    while (queue.length) {
+      const currentId = queue.shift();
+      for (const child of byParent.get(currentId) || []) {
+        if (visited.has(child.id)) continue;
+        visited.add(child.id);
+        result.push(child);
+        queue.push(child.id);
+      }
+    }
+    return result;
+  }
+
+  sessionOrAncestorClosed(session) {
+    let cursor = session;
+    const visited = new Set();
+    while (cursor && !visited.has(cursor.id)) {
+      visited.add(cursor.id);
+      if (cursor.acceptance_state === 'closed' || cursor.authority_revoked === true) return true;
+      if (cursor.origin_execution?.kind !== 'session') break;
+      cursor = this.record(cursor.origin_execution);
+    }
+    return false;
+  }
+
+  isAncestorExecution(session, callerRef) {
+    if (!callerRef) return false;
+    let cursor = session;
+    const visited = new Set();
+    while (cursor?.origin_execution && !visited.has(cursor.id)) {
+      visited.add(cursor.id);
+      if (sameRef(cursor.origin_execution, callerRef)) return true;
+      if (cursor.origin_execution.kind !== 'session') break;
+      cursor = this.record(cursor.origin_execution);
+    }
+    return false;
+  }
+
+  cascadeCloseDescendants(sessionId) {
+    for (const child of this.descendantSessions(sessionId)) {
+      if (child.acceptance_state !== 'open') continue;
+      if (terminal.has(child.status) || child.control?.state === 'paused' || child.safe_to_disconnect === true) {
+        this.store.save(sessionRecords, { id: child.id, acceptance_state: 'closed', pending_delivery: null,
+          ...(Array.isArray(child.allowed_followup_rooms) && child.allowed_followup_rooms.length ? { allowed_followup_rooms: [] } : {}) });
+      }
+    }
+  }
+
+  reconcileClosedDescendants() {
+    this.store.transaction(() => {
+      for (const session of this.store.list(sessionRecords)) {
+        if (session.acceptance_state === 'closed') this.cascadeCloseDescendants(session.id);
+      }
+    });
+  }
+
   retainRoomResults(roomId) {
     for (const session of this.store.list(sessionRecords)) {
       if (session.origin_room?.id !== roomId || session.origin_execution?.kind !== 'conversation' ||
@@ -156,7 +223,11 @@ export class Executions {
     const execution = target.kind === 'session' ? record : record.session_id && this.record({ kind: 'session', id: record.session_id });
     if (execution?.project_room && actor.kind !== 'user') {
       const origin = this.platform.projectRoom(context);
-      if (origin && !sameRef(origin, execution.project_room)) return false;
+      const followupAllowed = origin && !context.session &&
+        sameIdentity(execution.owner, actor) &&
+        this.platform.isFollowupRoomAllowed(execution, origin) &&
+        (operation === 'read' || execution.acceptance_state === 'open');
+      if (origin && !sameRef(origin, execution.project_room) && !followupAllowed) return false;
       if (execution.room_workspace_id && !this.platform.roomMembers(execution.project_room.id).includes(actor.id)) return false;
     }
     if (context.executable_scope !== undefined) {
@@ -204,6 +275,7 @@ export class Executions {
   list(context, scope) {
     return [{ kind: 'session', records: sessionRecords }, { kind: 'conversation', records: conversationRecords }].flatMap(({ kind, records }) =>
       this.store.list(records).filter(record => (!scope || sameRef(record.space, scope) || sameRef(record.source_space, scope) ||
+        scope.kind === 'room' && Array.isArray(record.allowed_followup_rooms) && record.allowed_followup_rooms.includes(scope.id) ||
         scope.kind === 'bot' && record.bot_id === scope.id) &&
         this.permission({ kind, id: record.id }, record, context)).map(record => this.baseView({ kind, id: record.id }, record, context)));
   }
@@ -494,9 +566,16 @@ export class Executions {
   configure(args, context, call) {
     const target = { kind: 'session', id: idOf(args.target, 'session') };
     const current = this.require(target, context, 'control');
-    if (context.actor.kind !== 'user' && current.origin_execution && !sameRef(current.origin_execution, context.session
-      ? { kind: 'session', id: context.session.id } : { kind: 'conversation', id: context.conversation?.id })) {
-      reject('session_owner_required', 'Manage this work from its direct parent conversation', 403);
+    if (context.actor.kind !== 'user' && current.origin_execution) {
+      const callerRef = context.session ? { kind: 'session', id: context.session.id } : { kind: 'conversation', id: context.conversation?.id };
+      const directOwner = sameRef(current.origin_execution, callerRef);
+      const parentSession = current.origin_execution.kind === 'session' ? this.record(current.origin_execution) : null;
+      const parentSettled = Boolean(parentSession && (this.sessionOrAncestorClosed(parentSession) || parentSession.control?.state === 'paused'));
+      const ancestorClosing = !directOwner && parentSettled && args.acceptance_state === 'closed' &&
+        sameIdentity(current.owner, context.actor) && this.isAncestorExecution(current, callerRef);
+      if (!directOwner && !ancestorClosing) {
+        reject('session_owner_required', 'Manage this work from its direct parent conversation', 403);
+      }
     }
     const patch = { id: current.id };
     if (args.acceptance_state !== undefined) patch.acceptance_state = args.acceptance_state;
@@ -532,11 +611,7 @@ export class Executions {
     }
     const saved = this.store.save(sessionRecords, patch);
     if (args.acceptance_state === 'closed') {
-      for (const child of this.openChildren(saved.id)) {
-        if (child.status === 'not_submitted' && child.safe_to_disconnect === true) {
-          this.store.save(sessionRecords, { id: child.id, acceptance_state: 'closed', pending_delivery: null });
-        }
-      }
+      this.cascadeCloseDescendants(saved.id);
       this.platform.runtime?.wake();
     }
     this.calls.bind(call.id, { target });
@@ -749,11 +824,14 @@ export class Executions {
       }
       const advances = mayAdvanceReceipt(call, facts.status);
       const session = advances && target?.kind === 'session' ? this.saveFacts(target.id, callId, facts) : null;
-      if (session && facts.status === 'not_submitted' && facts.safe_to_disconnect === true &&
-          session.acceptance_state === 'open' && session.origin_execution?.kind === 'session') {
+      if (session && session.acceptance_state === 'open' && session.origin_execution?.kind === 'session') {
         const parent = this.record(session.origin_execution);
-        if (parent && (parent.control?.state === 'paused' || parent.acceptance_state === 'closed' || parent.authority_revoked)) {
-          this.store.save(sessionRecords, { id: session.id, acceptance_state: 'closed', pending_delivery: null });
+        const notSubmittedDead = facts.status === 'not_submitted' && facts.safe_to_disconnect === true &&
+          parent && (parent.control?.state === 'paused' || this.sessionOrAncestorClosed(parent));
+        const ancestorClosed = terminal.has(facts.status) && facts.status !== 'unknown' && parent && this.sessionOrAncestorClosed(parent);
+        if (notSubmittedDead || ancestorClosed) {
+          this.store.save(sessionRecords, { id: session.id, acceptance_state: 'closed', pending_delivery: null,
+            ...(Array.isArray(session.allowed_followup_rooms) && session.allowed_followup_rooms.length ? { allowed_followup_rooms: [] } : {}) });
         }
       }
       const event = this.calls.recordReceipt(callId, facts, target);

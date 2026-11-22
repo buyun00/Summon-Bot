@@ -86,8 +86,10 @@ export class Inbox {
     const event = wait && this.event(route.event_id);
     if (!event || event.type !== 'call.receipt' || event.call_id !== wait.call_id) return;
     const latest = !wait.latest_event_id || wait.latest_event_id === event.id;
+    const settledStatus = state === 'access_revoked' || state === 'cancelled' && !terminalCallStates.has(event.status)
+      ? state : event.status;
     this.store.putRecord(R.wait, { ...wait,
-      ...(latest && { status: state === 'access_revoked' ? state : event.status, result_position: event.result_position ?? event.id }),
+      ...(latest && { status: settledStatus, result_position: event.result_position ?? event.id }),
       processed_event_ids: [...new Set([...(wait.processed_event_ids || []), event.id])] });
   }
 
