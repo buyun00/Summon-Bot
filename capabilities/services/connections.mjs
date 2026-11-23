@@ -86,8 +86,8 @@ export class SummonConnections {
   authorized(entry, actor) { return connectionAuthorized(entry, actor, id => this.get(id)); }
 
   requireUsable(entry, actor, { runtime = true } = {}) {
-    if (!this.authorized(entry, actor)) reject('connection_forbidden', 'The connection or a dependency is outside the caller’s grants', 403);
-    if (runtime && !this.available(entry)) reject('connection_unavailable', 'The connection executable or a required resource is unavailable', 409);
+    if (!this.authorized(entry, actor)) reject('connection_forbidden', 'The connection or a dependency is outside the caller’s grants', 403, { connection_id: entry.id });
+    if (runtime && !this.available(entry)) reject('connection_unavailable', 'The connection executable or a required resource is unavailable', 409, { connection_id: entry.id });
     return entry;
   }
 

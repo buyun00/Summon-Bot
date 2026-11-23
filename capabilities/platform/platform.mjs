@@ -698,7 +698,7 @@ export class SummonPlatform {
     if (!this.canUseConnection(actor, engine, context)) {
       reject('execution_resources_forbidden', 'The requested execution connection is unavailable', 403);
     }
-    if (engine !== 'pi' && !connection?.enabled) reject('connection_unavailable', 'Execution connection is unavailable', 409);
+    if (engine !== 'pi' && !connection?.enabled) reject('connection_unavailable', 'Execution connection is unavailable', 409, { connection_id: engine });
     const bot = actor.kind === 'bot' ? this.getBot(actor.id) : null;
     if (engine === 'pi' && !bot) reject('pi_actor_required', 'Open a Pi Session from an authorized Bot conversation', 409);
     const model = engine === 'pi' ? (context.session?.model ?? this.models.resolveForBot(bot, 'pi_session')) : null;
@@ -1666,31 +1666,6 @@ export class SummonPlatform {
           ...(outcome.partial_snapshot ? { output: { text: outcome.partial_snapshot } } : {}),
         });
       } catch {}
-    }
-    const latestSession = this.store.get(sessionRecords, session.id);
-    const finalStatus = latestSession?.status || outcome.status;
-    if (latestSession && !latestSession.host_fallback_delivered_at && terminalStatuses.has(finalStatus) &&
-        latestSession.origin_room && latestSession.owner?.kind === 'bot') {
-      const ownerBot = this.store.get(botRecords, latestSession.owner.id);
-      const roomExists = Boolean(this.store.get('rooms', latestSession.origin_room.id));
-      const canReachOrigin = roomExists && ownerBot?.enabled && !ownerBot.archivedAt &&
-        this.canReadSpace(latestSession.owner, latestSession.origin_room);
-      if (!canReachOrigin) {
-        const latestCall = latestSession.latest_call_id && this.store.get('platform-calls', latestSession.latest_call_id);
-        const receiptEvent = latestCall?.result_ref?.kind === 'event'
-          ? this.store.get('platform-events', latestCall.result_ref.id)
-          : null;
-        const receipt = receiptEvent && terminalStatuses.has(receiptEvent.status)
-          ? { kind: 'event', id: receiptEvent.id }
-          : { kind: 'call', id: call.id };
-        this.deliverResultToHost({
-          reason: !roomExists ? 'origin_room_deleted' : (!ownerBot?.enabled || ownerBot.archivedAt ? 'owner_bot_paused' : 'origin_room_unavailable'),
-          session: latestSession,
-          callId: latestSession.latest_call_id || call.id,
-          status: finalStatus,
-          receipt,
-        });
-      }
     }
   }
 

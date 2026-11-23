@@ -149,11 +149,6 @@ export class BotRuntime {
         for (const run of inbox.list(R.run, 'state', 'running')) inbox.putRun({ id: run.id, state: 'interrupted' });
         for (const conversation of store.listRecords(R.conversation)) this.syncConversationControl(inbox, conversation);
         this.reconcileReturnWaits(inbox);
-        for (const route of inbox.list(R.route, 'fast_read_decision', 'forward')) {
-          if (route.state === 'pending' && !route.run_id) {
-            inbox.store.putRecord(R.route, { ...route, fast_read_decision: null, fast_read_forward_call_id: null });
-          }
-        }
       });
     } catch (error) {
       try { store?.close(); } catch {}
@@ -571,92 +566,35 @@ export class BotRuntime {
   }
 
   runMatchesRecoveryScope(inbox, conversation, run, bot, scope) {
-    if (!scope || !scope.kind) return false;
+    if (!scope?.kind) return false;
     const actor = botRef(bot.id);
-    const fixedConnection = conversation.binding?.model?.connection_id || null;
-    const purpose = conversation.kind === 'fast_read' ? 'fast_read' : 'conversation';
-    const resolved = fixedConnection ? null : this.platform.models.resolveForBot(bot, purpose);
-    const runModelId = fixedConnection || run.binding?.model?.connection_id || resolved?.connection_id || null;
+    const details = run.error?.details;
     const convSession = conversation.session_id ? this.platform.executions.record(sessionRef(conversation.session_id)) : null;
-    const room = conversation.space?.kind === 'room' ? this.platform.store.get('rooms', conversation.space.id) : null;
-    const runCalls = inbox.calls(run.id);
-    const runEventIds = new Set([
-      ...(run.injected_event_ids || []),
-      ...(run.pending_event_ids || []),
-      ...(run.route_ids || []).map(id => inbox.store.getRecord(R.route, id)?.event_id).filter(Boolean),
-    ]);
-    const runEvents = [...runEventIds].map(id => inbox.event(id)).filter(Boolean);
-    const callSession = target => target?.kind === 'session' ? this.platform.executions.record(target) : null;
-
-    if (scope.kind === 'bot_access') {
-      if (bot.id !== scope.bot_id) return false;
-      const addedModels = scope.model_ids || [];
-      const addedWorkspaces = scope.workspace_ids || [];
-      const modelHit = addedModels.length > 0 && (
-        addedModels.includes(runModelId) ||
-        addedModels.includes(run.error?.details?.connection_id) ||
-        addedModels.some(id => this.platform.canUseModel(actor, id) && run.error?.code === 'connection_forbidden')
-      );
-      const workspaceHit = addedWorkspaces.length > 0 && (
-        addedWorkspaces.includes(run.error?.details?.workspace_id) ||
-        addedWorkspaces.includes(convSession?.workspace_ref?.id) ||
-        addedWorkspaces.includes(room?.workspace?.id) ||
-        runCalls.some(call => {
-          const ws = call.args?.workspace;
-          const wsId = typeof ws === 'string' ? ws : ws?.id;
-          return (wsId && addedWorkspaces.includes(wsId)) ||
-            (call.args?.resource_refs || []).some(ref => ref?.kind === 'workspace' && addedWorkspaces.includes(ref.id));
-        })
-      );
-      return modelHit || workspaceHit;
-    }
-
     if (scope.kind === 'model') {
       if (scope.id && !this.platform.canUseModel(actor, scope.id)) return false;
-      if (run.error?.details?.connection_id) return !scope.id || run.error.details.connection_id === scope.id;
-      if (!scope.id) return Boolean(runModelId && this.platform.canUseModel(actor, runModelId));
-      return runModelId === scope.id || run.binding?.model?.connection_id === scope.id;
+      const purpose = conversation.kind === 'fast_read' ? 'fast_read' : 'conversation';
+      const runModelId = conversation.binding?.model?.connection_id || run.binding?.model?.connection_id ||
+        this.platform.models.resolveForBot(bot, purpose)?.connection_id || null;
+      return !scope.id || details?.connection_id === scope.id || runModelId === scope.id;
     }
-
+    if (scope.kind === 'bot_access') {
+      if (bot.id !== scope.bot_id) return false;
+      const room = conversation.space?.kind === 'room' ? this.platform.store.get('rooms', conversation.space.id) : null;
+      return Boolean(scope.model_ids?.length && (run.error?.code === 'connection_forbidden' || scope.model_ids.includes(details?.connection_id))) ||
+        Boolean(scope.workspace_ids?.length && (scope.workspace_ids.includes(details?.workspace_id) ||
+          scope.workspace_ids.includes(convSession?.workspace_ref?.id) || scope.workspace_ids.includes(room?.workspace?.id)));
+    }
     if (scope.kind === 'workspace') {
       if (!scope.id || !this.platform.workspaceAvailable(scope.id, actor)) return false;
-      if (run.error?.details?.workspace_id) return run.error.details.workspace_id === scope.id;
-      if (convSession?.workspace_ref?.id === scope.id) return true;
-      if (convSession?.resource_refs?.some(ref => ref?.kind === 'workspace' && ref.id === scope.id)) return true;
-      if (room?.workspace?.id === scope.id) return true;
-      return runCalls.some(call => {
-        const ws = call.args?.workspace;
-        const wsId = typeof ws === 'string' ? ws : ws?.id;
-        return wsId === scope.id ||
-          (call.args?.resource_refs || []).some(ref => ref?.kind === 'workspace' && ref.id === scope.id);
-      });
+      const room = conversation.space?.kind === 'room' ? this.platform.store.get('rooms', conversation.space.id) : null;
+      return details?.workspace_id === scope.id || convSession?.workspace_ref?.id === scope.id || room?.workspace?.id === scope.id;
     }
-
     if (scope.kind === 'connection') {
       if (!scope.id || !this.platform.canUseConnection(actor, scope.id)) return false;
-      if (run.error?.details?.connection_id) return run.error.details.connection_id === scope.id;
-      if (convSession?.engine === scope.id) return true;
-      if (convSession?.resource_refs?.some(ref => ref?.kind === 'connection' && ref.id === scope.id)) return true;
-      const ownedByRun = this.platform.store.list(sessionRecords).some(sess =>
-        sess.owner_run_id === run.id && (sess.engine === scope.id || sess.resource_refs?.some(ref => ref?.kind === 'connection' && ref.id === scope.id)));
-      if (ownedByRun) return true;
-      const callHit = runCalls.some(call => {
-        const eng = call.args?.engine;
-        const engId = typeof eng === 'string' ? eng : eng?.id;
-        if (engId === scope.id) return true;
-        if (call.args?.to?.kind === 'connection' && call.args.to.id === scope.id) return true;
-        if ((call.args?.resource_refs || []).some(ref => ref?.kind === 'connection' && ref.id === scope.id)) return true;
-        const targetSess = callSession(call.args?.target) || callSession(call.result?.target) || callSession(call.result?.execution_ref);
-        return targetSess?.engine === scope.id;
-      });
-      if (callHit) return true;
-      return runEvents.some(event =>
-        (event.ref?.kind === 'connection' && event.ref.id === scope.id) ||
-        event.connection?.id === scope.id ||
-        callSession(event.target)?.engine === scope.id
-      );
+      if (details?.connection_id) return details.connection_id === scope.id;
+      return convSession?.engine === scope.id ||
+        inbox.calls(run.id).some(call => (call.args?.engine?.id || call.args?.engine) === scope.id);
     }
-
     return false;
   }
 
@@ -1609,10 +1547,7 @@ export class BotRuntime {
       if (session.authority_revoked || session.control?.state !== 'active' || !this.platform.isActiveSession(session)) continue;
       const matchRoom = session.origin_room?.id === roomId || (session.space?.kind === 'room' && session.space.id === roomId);
       if (!matchRoom) continue;
-      const openCall = this.platform.store.get('platform-calls', session.id);
-      const latestCall = session.latest_call_id ? this.platform.store.get('platform-calls', session.latest_call_id) : null;
-      const op = session.latest_call_id ? this.platform.store.get('session-operations', session.latest_call_id) : null;
-      const startedMs = Date.parse(session.created_at || openCall?.created_at || op?.submitted_at || latestCall?.created_at || session.updated_at || 0);
+      const startedMs = Date.parse(session.created_at || session.updated_at || 0);
       if (!startedMs || startedMs > cutoff) continue;
       results.push({
         wait_id: `session:${session.id}`,
