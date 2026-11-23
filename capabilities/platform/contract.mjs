@@ -11,7 +11,7 @@ const value = {};
 const oneOf = (...values) => ({ enum: values });
 const array = items => ({ type: 'array', items });
 const object = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
-const kinds = ['bot', 'room', 'event', 'file', 'session', 'wakeup', 'connection', 'conversation', 'call', 'wait', 'workspace', 'material_consumption'];
+const kinds = ['bot', 'room', 'event', 'file', 'session', 'wakeup', 'connection', 'conversation', 'call', 'wait', 'workspace'];
 const typedRef = (...types) => object({ kind: oneOf(...types), id: text }, ['kind', 'id']);
 const ref = typedRef(...kinds, 'user');
 const principal = { anyOf: [text, typedRef('bot', 'user', 'room_members')] };
@@ -87,9 +87,9 @@ const definitions = [
     'Use connection_usage for call counts by date, connection, method and outcome. Filter by room, connection or session with scope. ' +
     'Set period to yesterday (default), today, 7d, or {from,to} with timestamps and offsets.',
     object({ kind: oneOf(...kinds, 'connection_usage'), scope: ref, query: text, cursor: text, period: usagePeriod }, ['kind'])],
-  ['read', 'Read an accessible object, its history or output, and the available input or control references. For a workspace, use directory "." or a subdirectory to list entries, or add a relative path to read a project text file. Read a File ref to inspect its text or image (on vision-capable models). ' +
+  ['read', 'Read an accessible object, its history or output, and the available input or control references. For a workspace, use directory "." or a subdirectory to list entries, or add a relative path to read a project text file. Read a File ref to inspect its text or image (on vision-capable models); pass an optional revision to inspect a historical snapshot from platform-file-revisions. ' +
     'Use it for a specific observation; do not re-read an unchanged file or Session page already observed in this run unless its revision or status may have changed or you need a different cursor. A registered wait_ref delivers the terminal receipt or an input request to your run automatically.',
-    object({ ref, path: text, directory: text, cursor: text, limit: { type: 'integer', minimum: 1, maximum: 100 } }, ['ref'])],
+    object({ ref, path: text, directory: text, revision: { type: 'integer', minimum: 1 }, cursor: text, limit: { type: 'integer', minimum: 1, maximum: 100 } }, ['ref'])],
   ['send', 'Publish to a Room using message:{to:{kind:"room",id},text}, with optional attachments, references, mentions, reply_to, for_session_id, origin_message_id, or awaiting_reply. ' +
     'For a verified connection fault, address the message to {kind:"connection",id} with the problem and shareable references. ' +
     'Reuse repair_key when requesting repair of the same fault. The maintainer replies to the repair event on that connection with reply_to and an optional repair_outcome (repaired, blocked, or non-terminal need_info to request missing parameters without closing).',
@@ -97,9 +97,8 @@ const definitions = [
   ['save_file', 'Save text, a permitted File source, or a relative file from an authorized project directory. Supply the current revision to replace an existing File. To write project text or copy a shared attachment for a tool, set space to the workspace ref and path to a relative file name. Use the revision from read to detect concurrent edits.',
     object({ space: ref, path: text, content_or_source: { anyOf: [text, object({ text }, ['text']),
       object({ source: object({ kind: oneOf('file'), id: text }, ['kind', 'id']) }, ['source']),
-      object({ source: object({ kind: oneOf('workspace'), id: text }, ['kind', 'id']), path: text }, ['source', 'path']),
-      object({ no_change: oneOf(true) }, ['no_change'])] },
-      revision: integer, sources: array(ref), material_items: array(text) }, ['space', 'path', 'content_or_source'])],
+      object({ source: object({ kind: oneOf('workspace'), id: text }, ['kind', 'id']), path: text }, ['source', 'path'])] },
+      revision: integer, sources: array(ref) }, ['space', 'path', 'content_or_source'])],
   ['create_bot', 'Create a Bot with private instructions, public_duty for team directory searches, an optional authorized model connection, and an optional built-in duty (role_id). ' +
     'For dedicated maintenance, pass catalog-maintainer and the exact role_connection_id and connection_revision from read to bind it atomically with full maintenance and bound-workspace authority.',
     object({ name: text, public_duty: text, instructions: text, model, role_id: oneOf(...roleIds), role_connection_id: text, connection_revision: integer }, ['name', 'instructions'])],
@@ -108,10 +107,8 @@ const definitions = [
     'If the index reference is empty, use save_file in private_space (for example memory/index.json) to save ordinary JSON such as ' +
     '{"items":[{"id":"stable-note-id","revision":1,"note":"The user’s actual instruction","applies_to":[{"kind":"room","id":"actual-room-id"}],"source_refs":[{"kind":"event","id":"actual-source-event-id"}]}]}. ' +
     'Use the real applicable scope and source references. Register the returned File reference as material_index_ref using the current Bot revision. ' +
-    'For an existing index, read it before editing and save with the current File revision. Increment the revision of a changed item. ' +
-    'To request a separate background consolidation, set "selected":true on the specific item in the registered index and set its ' +
-    '"target_ref" to the actual reference of an existing, accessible knowledge File. The runtime processes selected items when their ' +
-    'scope is idle. Use find with kind "material_consumption" to check the recorded outcome. ' +
+    'For an existing index, read it before editing and save with the current File revision. Increment the revision of a changed item and retain source references. ' +
+    'When asked to consolidate or update a target knowledge File (such as a Room handbook), read the target File and call save_file directly on it with the updated content, current revision, and source message references in sources. ' +
     'Set role_id to select a built-in duty, or null to clear it. The host selects the tool-onboarding duty. User instructions are a separate setting.',
     object({ bot: refOrId, revision: integer, name: text, public_duty: text, instructions: text, model, enabled: flag,
       role_id: oneOf(...roleIds, null), role_connection_id: text, connection_revision: integer,

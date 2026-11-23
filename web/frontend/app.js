@@ -1696,8 +1696,9 @@ async function act(action, element) {
     return;
   }
   if (action === 'open-file') return openReference({ kind:'file',id });
+  if (action === 'open-file-revision') { await loadFile(id, null, Number(element.dataset.revision)); return render(); }
   if (action === 'edit-file') return openFileEdit(element);
-  if (action === 'more-file') { await loadFile(ui.fileId,ui.fileDetail.next_cursor); return render(); }
+  if (action === 'more-file') { await loadFile(ui.fileId,ui.fileDetail.next_cursor,ui.fileDetail.revision); return render(); }
   if (action === 'add-wakeup' || action === 'edit-wakeup') return openWakeupEdit(wakeupById(id),element.dataset.room);
   if (action === 'toggle-wakeup') { const item = wakeupById(id); await wakeupRequest(item,{ enabled:!item.enabled }); return refresh(); }
   if (action === 'delete-wakeup') {
@@ -2304,7 +2305,36 @@ function refLabel(ref) {
 }
 
 function renderReference(ref, action = 'open-reference') {
+  if (ref?.access === 'redacted') {
+    return `<span class="reference-chip" style="opacity:.65;cursor:default" title="该来源位于私有或异群空间，当前受限">${icon('link', 14)}<span>受限来源 (${esc(String(ref.id || '').slice(0, 8))})</span></span>`;
+  }
   return `<button type="button" class="reference-chip" data-action="${action}" data-kind="${esc(ref.kind)}" data-id="${esc(ref.id)}">${icon(ref.kind === 'file' ? 'file' : 'link', 14)}<span>${esc(refLabel(ref))}</span></button>`;
+}
+
+function formatMemoryScope(appliesTo = []) {
+  if (!Array.isArray(appliesTo) || !appliesTo.length) return '默认范围';
+  return appliesTo.map(scope => {
+    if (scope.kind === 'bot') return '全群通用（个人偏好）';
+    if (scope.kind === 'room') return `仅限本群（${roomById(scope.id)?.name || scope.id.slice(0, 8)}）`;
+    return `${refType[scope.kind] || scope.kind} ${scope.id.slice(0, 8)}`;
+  }).join(' · ');
+}
+
+function renderBotMemorySection(bot) {
+  const items = bot?.memory_items || [];
+  if (!items.length && !bot?.material_index_ref) return '';
+  const rows = items.map(item => `<div class="wakeup-row" style="flex-direction:column;align-items:flex-start;gap:4px">
+    <div style="display:flex;justify-content:space-between;width:100%;gap:8px;align-items:center">
+      <strong>${esc(item.item_id)} · v${esc(item.revision ?? 1)}</strong>
+      <small class="summary-badge">${esc(formatMemoryScope(item.applies_to))}</small>
+    </div>
+    ${item.note ? `<div style="font-size:var(--text-caption);white-space:pre-wrap">${esc(item.note)}</div>` : ''}
+    ${item.supersedes || item.deprecated_note ? `<small class="subtle">失效/退役说明：${esc([item.supersedes, item.deprecated_note].filter(Boolean).join(' · '))}</small>` : ''}
+    ${item.source_refs?.length ? `<div class="reference-list">${item.source_refs.map(ref => renderReference(ref)).join('')}</div>` : ''}
+  </div>`).join('');
+  return `<div class="profile-section-heading" style="margin-top:12px"><span>长期记忆与约定（${items.length}）</span>
+    ${bot?.material_index_ref?.id ? `<button type="button" class="text-button" data-action="open-file" data-id="${esc(bot.material_index_ref.id)}">查看索引文件</button>` : ''}</div>
+    ${rows || '<p class="panel-empty">已挂接索引文件，暂无条目</p>'}`;
 }
 
 function renderMessageSummaries(message) {
@@ -2485,16 +2515,17 @@ function renderDetailPanel(room, bot) {
       <button data-action="edit-room" class="add-member">${icon('edit',22)}<span>编辑成员</span></button></div>`;
   } else if (tab === 'library') {
     const space = bot ? { kind:'bot', id:bot.id } : roomRef(room.id);
-    body = `<div class="profile-section-heading"><span>资料</span><button class="icon-button" data-action="edit-file" data-kind="${space.kind}" data-space="${esc(space.id)}" aria-label="新增资料">${icon('plus',20)}</button></div>
-      ${(ui.roomFiles || []).map(file => {
+    const filesList = (ui.roomFiles && ui.roomFiles.length) ? ui.roomFiles : (bot ? (bot.bot_files || []) : (room.room_files || []));
+    body = `<div class="profile-section-heading"><span>${bot ? 'Bot 私有资料（仅本人与宿主可读）' : '本群共享资料與约定'}</span><button class="icon-button" data-action="edit-file" data-kind="${space.kind}" data-space="${esc(space.id)}" aria-label="新增资料">${icon('plus',20)}</button></div>
+      ${filesList.map(file => {
         const pinned = !bot && room.pins.some(ref => sameRef(ref,file.ref));
-        return `<div class="pin-row"><button class="profile-record record-button" data-action="open-file" data-id="${esc(file.id)}"><strong>${esc(file.name || file.path)}</strong></button>
+        return `<div class="pin-row"><button class="profile-record record-button" data-action="open-file" data-id="${esc(file.id)}"><strong>${esc(file.name || file.path)}</strong><small>v${esc(file.revision ?? 1)}</small></button>
           ${!bot ? `<button class="text-button" data-action="${pinned ? 'unpin' : 'pin'}" data-kind="file" data-id="${esc(file.id)}">${pinned ? '取消置顶' : '置顶'}</button>` : ''}</div>`;
-      }).join('') || '<p class="panel-empty">没有资料</p>'}`;
+      }).join('') || '<p class="panel-empty">没有资料</p>'}${bot ? renderBotMemorySection(bot) : ''}`;
   } else if (tab === 'pins') {
     body = room.pins.map(ref => `<div class="pin-row">${renderReference(ref)}<button class="text-button" data-action="unpin" data-kind="${esc(ref.kind)}" data-id="${esc(ref.id)}">取消置顶</button></div>`).join('') || '<p class="panel-empty">没有置顶</p>';
   } else if (bot) {
-    body = `<p class="subtle" style="margin:0 0 10px;font-size:var(--text-caption)">${esc(formatBotModelSummary(bot))}</p><div class="profile-prompt">${esc(bot.instructions || '')}</div><div class="profile-more-actions">
+    body = `<p class="subtle" style="margin:0 0 10px;font-size:var(--text-caption)">${esc(formatBotModelSummary(bot))}</p><div class="profile-prompt">${esc(bot.instructions || '')}</div>${renderBotMemorySection(bot)}<div class="profile-more-actions">
       <button data-action="edit-bot" data-id="${esc(bot.id)}">编辑 Bot</button>${renderBotControls(bot)}</div>`;
   } else {
     const wakeups = ui.roomWakeups || [];
@@ -2675,28 +2706,44 @@ function renderMembers() {
   const controls = bot ? `<h2>${esc(bot.name)}${bot.archived_at ? '（已归档）' : ''}</h2>
     <p class="subtle" style="margin:6px 0 4px;font-size:var(--text-caption)">修订 r${esc(bot.revision ?? 1)} · 角色：${esc(roleEntry ? `${roleEntry.name} (${roleEntry.id})` : (bot.role_id || '未指定'))}</p>
     <p class="subtle" style="margin:0 0 12px;font-size:var(--text-caption)">${esc(formatBotModelSummary(bot))}</p>
-    <p class="profile-prompt">${esc(bot.instructions || '')}</p><div class="execution-actions">
+    <p class="profile-prompt">${esc(bot.instructions || '')}</p>${renderBotMemorySection(bot)}<div class="execution-actions">
     ${!bot.archived_at ? `<button class="primary-button" data-action="dm-bot" data-id="${esc(bot.id)}">发消息</button><button class="secondary-button" data-action="edit-bot" data-id="${esc(bot.id)}">编辑</button>` : ''}${renderBotControls(bot)}</div>` : '';
   return `<div class="page">${pageHeader('<button class="primary-button" data-action="new-bot">创建 Bot</button>')}
     <div class="object-layout"><section class="object-list">${rows || '<p class="panel-empty">暂无 Bot</p>'}${archived}</section><section class="object-detail">${controls}</section></div></div>`;
 }
 
-async function loadFile(id, cursor) {
-  const detail = await api(filePath(id) + (cursor ? '?cursor=' + encodeURIComponent(cursor) : ''));
+async function loadFile(id, cursor, revision) {
+  const qs = new URLSearchParams();
+  if (cursor) qs.set('cursor', cursor);
+  if (Number.isSafeInteger(revision) && revision > 0) qs.set('revision', String(revision));
+  const query = qs.toString();
+  const detail = await api(filePath(id) + (query ? '?' + query : ''));
   if (ui.fileId === id) ui.fileDetail = cursor ? { ...detail, content:(ui.fileDetail.content || '') + (detail.content || '') } : detail;
 }
 
 function renderFiles() {
   const item = ui.fileDetail;
   const rows = trackedList('files','/api/files', file => `<button class="profile-record record-button ${file.id === ui.fileId ? 'selected' : ''}" data-action="open-file" data-id="${esc(file.id)}">
-    <strong>${esc(file.name || file.path)}</strong><small>${file.deleted_room ? '已删群归档 · ' : ''}${esc(file.space ? refLabel(file.space) : '')} · 修订 ${esc(file.revision)}</small></button>`);
+    <strong>${esc(file.name || file.path)}</strong><small>${file.deleted_room ? '已删群归档 · ' : ''}${esc(file.space ? refLabel(file.space) : '')} · 修订 v${esc(file.revision)}</small></button>`);
   const link = typeof item?.url === 'string' && item.url === filePath(item.id) + '/download' ? item.url : attachmentUrl(item);
-  const detail = item ? `<h2>${esc(item.path || item.name)}</h2><p>修订 ${esc(item.revision)}</p><div class="execution-actions">
-    ${link ? `<a href="${esc(link)}" download>下载</a>` : ''}${item.path && typeof item.content === 'string' && !item.next_cursor ? `<button class="secondary-button" data-action="edit-file" data-id="${esc(item.id)}">编辑</button>` : ''}</div>
+  const latestRev = item?.latest_revision ?? item?.revision;
+  const isHistorical = item && latestRev && item.revision !== latestRev;
+  const revHistory = Array.isArray(item?.revisions) && item.revisions.length > 1
+    ? `<div class="reference-list" style="margin:8px 0;align-items:center"><small class="subtle">版本历史：</small>${item.revisions.map(rev =>
+        `<button type="button" class="${rev.revision === item.revision ? 'primary-button' : 'secondary-button'}" style="padding:3px 10px;font-size:12px" data-action="open-file-revision" data-id="${esc(item.id)}" data-revision="${esc(rev.revision)}">v${esc(rev.revision)}${rev.revision === latestRev ? ' (当前正式版)' : ''}</button>`).join('')}</div>`
+    : '';
+  const scopeDesc = item?.space
+    ? (item.space.kind === 'bot' ? `私有记忆/资料（仅 ${nameOf(item.space.id)} 与宿主可读）` : item.space.kind === 'room' ? `群共享资料（${refLabel(item.space)}）` : refLabel(item.space))
+    : '';
+  const detail = item ? `<h2>${esc(item.path || item.name)}</h2>
+    <p class="subtle">当前查看修订 v${esc(item.revision)}${isHistorical ? `（历史快照 · 最新正式版为 v${esc(latestRev)}）` : '（当前正式版）'}${scopeDesc ? ` · 适用范围：${esc(scopeDesc)}` : ''}</p>
+    ${revHistory}
+    <div class="execution-actions">
+    ${link ? `<a href="${esc(link)}" download>下载</a>` : ''}${!isHistorical && item.path && typeof item.content === 'string' && !item.next_cursor ? `<button class="secondary-button" data-action="edit-file" data-id="${esc(item.id)}">编辑</button>` : ''}</div>
     ${typeof item.content === 'string' ? `<pre class="execution-output">${esc(item.content)}</pre>` :
       item.content_status === 'unavailable' ? '<p>文件内容不可用</p>' : ''}
     ${item.next_cursor ? '<button class="text-button" data-action="more-file">读取后续内容</button>' : ''}
-    ${item.sources?.length ? `<div class="reference-list">${item.sources.map(ref => renderReference(ref)).join('')}</div>` : ''}` : '<p class="panel-empty">选择文件查看内容</p>';
+    ${item.sources?.length ? `<div style="margin-top:10px"><small class="subtle">修订来源凭据：</small><div class="reference-list">${item.sources.map(ref => renderReference(ref)).join('')}</div></div>` : ''}` : '<p class="panel-empty">选择文件查看内容</p>';
   return `<div class="page">${pageHeader('<button class="primary-button" data-action="edit-file">新增资料</button>')}
     <div class="object-layout"><section class="object-list">${rows}</section><section class="object-detail">${detail}</section></div></div>`;
 }

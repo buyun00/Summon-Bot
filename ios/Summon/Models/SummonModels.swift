@@ -51,6 +51,7 @@ struct SummonBot: Codable, Identifiable, Equatable, Sendable {
     var control: SummonJSONValue?
     var resume_ref: SummonJSONValue?
     var material_index_ref: SummonReference?
+    var memory_items: [SummonJSONValue]?
     var avatar: SummonAvatar?
 
     var isPaused: Bool { enabled == false || control?["state"].string == "paused" }

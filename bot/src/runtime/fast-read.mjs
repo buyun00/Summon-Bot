@@ -7,7 +7,6 @@ import { contextTokens, roomMessageInput, textMessage } from '../context/project
 import { now, recordKey, runtimeFailure, runtimeRecords as R } from '../storage/runtime-records.mjs';
 
 const MAX_BATCH_SIZE = 16;
-const MAX_FAST_READ_CHAIN_TURNS = 24;
 const FAST_READ_TIMEOUT_MS = 45000;
 const botRef = id => ({ kind: 'bot', id });
 
@@ -143,7 +142,6 @@ export class FastReadRuntime {
     this.runtime = runtime;
     this.platform = runtime.platform;
     this.active = new Map();
-    this.chains = new Map();
   }
 
   needsFastRead(inbox, bot, route) {
@@ -309,52 +307,33 @@ export class FastReadRuntime {
       });
 
       const maxTokens = Math.min(model.maxTokens, Math.max(512, eventIds.length * 160 + 256));
-      const inputBudget = Math.max(1024, model.contextWindow - maxTokens - 512);
-      const chainKey = recordKey(bot.id, roomId);
-      const priorChain = this.chains.get(chainKey);
-      let messages;
+      const physicalBudget = Math.floor(model.contextWindow * 0.85);
+      const inputBudget = Math.max(1024, Math.min(physicalBudget, model.contextWindow - maxTokens - 512));
+      let keptPrefix = prefix;
       let keptPublic = publicMessages;
-      let reusedChain = false;
-      let appendedPublic = [];
-      if (priorChain &&
-          priorChain.systemContent === systemContent &&
-          priorChain.modelApi === model.api &&
-          priorChain.modelId === model.id &&
-          priorChain.summaryThrough === summaryThrough &&
-          priorChain.turns < MAX_FAST_READ_CHAIN_TURNS &&
-          latestEnd >= priorChain.throughSequence) {
-        const newPublic = publicMessages.filter(message => !priorChain.seenPublicIds.has(message.public_event_id));
-        const chained = [...priorChain.messages, ...newPublic, tail];
-        if (contextTokens(chained) <= Math.floor(inputBudget * 0.65)) {
-          messages = chained;
-          appendedPublic = newPublic;
-          reusedChain = true;
+      const pendingSet = new Set(eventIds);
+      const isPending = message => pendingSet.has(message.public_event_id);
+      while (contextTokens([systemMessage, ...keptPrefix, ...keptPublic, tail]) > inputBudget) {
+        const nonPendingCount = keptPublic.findIndex(isPending);
+        const removable = nonPendingCount === -1 ? keptPublic.length : nonPendingCount;
+        if (removable > 0) {
+          const dropCount = Math.max(1, Math.floor(removable / 2));
+          keptPublic = keptPublic.slice(dropCount);
+          continue;
         }
-      }
-      if (!reusedChain) {
-        let keptPrefix = prefix;
-        const pendingSet = new Set(eventIds);
-        const isPending = message => pendingSet.has(message.public_event_id);
-        while (contextTokens([systemMessage, ...keptPrefix, ...keptPublic, tail]) > inputBudget) {
-          if (keptPublic.length && !isPending(keptPublic[0])) {
-            keptPublic = keptPublic.slice(1);
-            continue;
-          }
-          if (keptPrefix.length) {
-            keptPrefix = [];
-            continue;
-          }
-          const originals = keptPublic.filter(isPending);
-          if (originals.length < keptPublic.length) {
-            keptPublic = originals;
-            continue;
-          }
-          if (batch.length === 1) throw runtimeFailure('context_limit', 'The room message and execution context exceed the model window', 413);
-          return this.runBatch(inbox, bot, roomId, batch.slice(0, Math.ceil(batch.length / 2)), controller);
+        if (keptPrefix.length) {
+          keptPrefix = [];
+          continue;
         }
-        messages = [systemMessage, ...keptPrefix, ...keptPublic, tail];
-        appendedPublic = keptPublic;
+        const originals = keptPublic.filter(isPending);
+        if (originals.length < keptPublic.length) {
+          keptPublic = originals;
+          continue;
+        }
+        if (batch.length === 1) throw runtimeFailure('context_limit', 'The room message and execution context exceed the model window', 413);
+        return this.runBatch(inbox, bot, roomId, batch.slice(0, Math.ceil(batch.length / 2)), controller);
       }
+      const messages = [systemMessage, ...keptPrefix, ...keptPublic, tail];
 
       const priorState = inbox.store.getRecord(R.fastRead, roomId);
       let cacheSessionId;
@@ -427,24 +406,8 @@ export class FastReadRuntime {
       }
 
       const parsed = parseFastReadResponse(answer, eventIds);
-      if (parsed.ok) {
-        const cleanAnswer = this.runtime.clean(answer);
-        this.chains.set(chainKey, {
-          systemContent,
-          modelApi: model.api,
-          modelId: model.id,
-          summaryThrough,
-          throughSequence: latestEnd,
-          seenPublicIds: new Set([...(reusedChain ? priorChain.seenPublicIds : []), ...appendedPublic.map(message => message.public_event_id)]),
-          messages: [...messages, cleanAnswer],
-          turns: reusedChain ? priorChain.turns + 1 : 1,
-        });
-      } else {
-        this.chains.delete(chainKey);
-      }
       await this.commitDecisions(inbox, bot, room, batch, parsed.decisions, answer.roomCacheThroughMessageId, check, parsed.reason);
     } catch (error) {
-      this.chains.delete(recordKey(bot.id, roomId));
       const code = error.code || 'fast_read_error';
       if (code === 'access_revoked' || code === 'room_forbidden') {
         if (!this.platform.canReadSpace(actor, space, { actor })) {
@@ -574,9 +537,6 @@ export class FastReadRuntime {
   }
 
   stopBot(botId) {
-    for (const key of this.chains.keys()) {
-      if (key.startsWith(`["${botId}",`)) this.chains.delete(key);
-    }
     const entries = [...this.active.values()].filter(entry => entry.botId === botId);
     for (const entry of entries) entry.controller.abort(runtimeFailure('bot_paused', 'Bot was explicitly stopped', 409));
     return Promise.allSettled(entries.map(entry => entry.done));

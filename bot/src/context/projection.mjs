@@ -5,9 +5,13 @@ import { runtimeFailure } from '../storage/runtime-records.mjs';
 export const textMessage = (value, timestamp = Date.now()) => ({ role: 'user', timestamp,
   content: [{ type: 'text', text: JSON.stringify(value) }] });
 
-export const contextTokens = messages => messages.reduce((total, message) =>
-  total + Math.max(estimateTokens(message), Math.ceil(JSON.stringify(message).length / 3)) +
-    (message.role === 'toolResult' && message.toolName === 'read' && message.details?.content_status === 'image' ? 1200 : 0), 0);
+export const contextTokens = (messages, calibrationRatio = 1) => {
+  const ratio = Number.isFinite(calibrationRatio) && calibrationRatio >= 0.6 && calibrationRatio <= 2.5 ? calibrationRatio : 1;
+  const raw = messages.reduce((total, message) =>
+    total + Math.max(estimateTokens(message), Math.ceil(JSON.stringify(message).length / 3)) +
+      (message.role === 'toolResult' && message.toolName === 'read' && message.details?.content_status === 'image' ? 1200 : 0), 0);
+  return Math.ceil(raw * ratio);
+};
 
 export function isRoomMessageEvent(event, roomId) {
   return event?.type === 'message' && (event.space?.kind === 'room' || Boolean(event.roomId)) &&

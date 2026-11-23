@@ -134,7 +134,7 @@ export class Files {
   }
 
   list(context, scope) {
-    return this.store.list(files).filter(file => (!scope || sameRef(file.space, scope)) && this.canRead(file.id, context)).map(file => this.view(file));
+    return this.store.list(files).filter(file => (!scope || sameRef(file.space, scope)) && this.canRead(file.id, context)).map(file => this.view(file, context));
   }
 
   canRead(id, context) {
@@ -155,29 +155,67 @@ export class Files {
     }
   }
 
-  view(file) {
+  projectSources(sources, context) {
+    if (!Array.isArray(sources)) return [];
+    if (!context) return sources;
+    return sources.map(ref => {
+      try {
+        return this.canReadReference(ref, context) ? ref : { kind: ref.kind, id: ref.id, access: 'redacted' };
+      } catch {
+        return { kind: ref?.kind || 'event', id: ref?.id || '', access: 'redacted' };
+      }
+    });
+  }
+
+  listRevisions(id, context) {
+    return this.store.list(fileRevisions)
+      .filter(rev => (rev.file_id === id || rev.id?.startsWith(JSON.stringify([id]).slice(0, -1))) && Number.isSafeInteger(rev.revision))
+      .sort((a, b) => b.revision - a.revision)
+      .map(rev => ({
+        revision: rev.revision,
+        size: rev.size,
+        author: rev.author,
+        sources: this.projectSources(rev.sources, context),
+        call_id: rev.call_id || null,
+        updated_at: rev.updatedAt || rev.createdAt || null,
+      }));
+  }
+
+  view(file, context = null, latestRevision = undefined) {
     const { id, space, path, revision, size, author, sources, createdAt, updatedAt } = file;
     const deletedRoom = space?.kind === 'room' && !this.store.get('rooms', space.id) && Boolean(this.store.get('deleted-rooms', space.id));
-    return { kind: 'file', id, ref: { kind: 'file', id }, name: posix.basename(path), path, space, revision, size, author, sources,
+    return { kind: 'file', id, ref: { kind: 'file', id }, name: posix.basename(path), path, space, revision,
+      ...(latestRevision !== undefined && latestRevision !== revision ? { latest_revision: latestRevision } : {}),
+      size, author, sources: this.projectSources(sources, context),
       ...(deletedRoom ? { deleted_room: true } : {}),
       created_at: createdAt, updated_at: updatedAt, url: `/api/files/${encodeURIComponent(id)}/download` };
   }
 
-  getProjection(id, context) {
+  getProjection(id, context, revision = undefined) {
     if (!this.canRead(id, context)) reject('file_not_found', 'File is unavailable', 404);
-    const file = this.get(id);
-    if (file) return { file, projection: this.view(file) };
+    const current = this.get(id);
+    if (current) {
+      let target = current;
+      if (revision !== undefined && revision !== current.revision) {
+        const snapshot = this.store.get(fileRevisions, keyOf(id, revision));
+        if (!snapshot) reject('file_revision_not_found', `Revision ${revision} of this File is unavailable`, 404);
+        target = { ...current, ...snapshot, id: current.id, revision: snapshot.revision };
+      }
+      const revisions = this.listRevisions(id, context);
+      return { file: target, projection: { ...this.view(target, context, current.revision), ...(revisions.length ? { revisions } : {}) } };
+    }
+    if (revision !== undefined && revision !== 1) reject('file_revision_not_found', `Revision ${revision} of this File is unavailable`, 404);
     const attachment = this.attachments.project(this.room.attachment(id, context.actor.id));
-    return { file, projection: { ...attachment, kind: 'file', id, ref: { kind: 'file', id }, revision: 1 } };
+    return { file: current, projection: { ...attachment, kind: 'file', id, ref: { kind: 'file', id }, revision: 1 } };
   }
 
-  read(id, context, cursor, limit) {
-    const { file, projection } = this.getProjection(id, context);
+  read(id, context, cursor, limit, revision = undefined) {
+    const { file, projection } = this.getProjection(id, context, revision);
     return this.pageText(projection, file?.content, cursor, limit);
   }
 
-  async readObject(id, context, cursor, limit) {
-    const { file, projection } = this.getProjection(id, context);
+  async readObject(id, context, cursor, limit, revision = undefined) {
+    const { file, projection } = this.getProjection(id, context, revision);
     if (file && !file.attachment_id && file.blob == null) return this.pageText(projection, file.content, cursor, limit);
     if (context.imageInput) {
       const attachment = file?.attachment_id ? this.attachments.get(file.attachment_id) : projection;

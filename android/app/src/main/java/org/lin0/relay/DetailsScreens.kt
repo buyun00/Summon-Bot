@@ -194,6 +194,24 @@ fun BotDetailsScreen(store: SummonStore, botID: String, onBack: () -> Unit) {
         }) { Text("保存 Bot 设置") }
 
         current?.let { bot ->
+            if (bot.memoryItems.isNotEmpty()) {
+                Text("长期记忆与约定（${bot.memoryItems.size}）", style = MaterialTheme.typography.titleMedium)
+                bot.memoryItems.forEach { item ->
+                    val scopes = item["applies_to"].array.orEmpty().joinToString(" · ") { s ->
+                        if (s["kind"].string == "bot") "全群通用" else "仅限群 " + s["id"].stringValue.take(8)
+                    }
+                    Text("${item["item_id"].stringValue} · v${item["revision"].int ?: 1}（${scopes.ifEmpty { "默认范围" }}）",
+                        fontWeight = FontWeight.SemiBold)
+                    item["note"].string?.takeIf { it.isNotEmpty() }?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall)
+                    }
+                    val deprecated = listOfNotNull(item["supersedes"].string, item["deprecated_note"].string)
+                        .filter { it.isNotEmpty() }.joinToString(" · ")
+                    if (deprecated.isNotEmpty()) {
+                        Text("失效/退役：$deprecated", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                    }
+                }
+            }
             Text("控制 · " + if (bot.isPaused) "已暂停" else "启用")
             if (bot.isPaused) bot.control["stop_status"].string?.let { Text("停止结果 · " + summonStatus(it)) }
             if (!bot.isPaused || (bot.resumeRef.obj != null && bot.control["stop_status"].string == "stopped")) {

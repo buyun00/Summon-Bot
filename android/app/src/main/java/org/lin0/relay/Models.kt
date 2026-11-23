@@ -76,6 +76,7 @@ data class SummonBot(
     val resumeRef: SummonJson,
     val materialIndex: SummonReference?,
     val avatar: SummonAvatar?,
+    val memoryItems: List<SummonJson> = emptyList(),
 ) {
     val isPaused: Boolean get() = enabled == false || control["state"].string == "paused"
     val resolvedAvatar: SummonAvatar get() = avatar ?: SummonAvatar.defaultFor(id)
@@ -87,6 +88,7 @@ data class SummonBot(
         "control" to control, "resume_ref" to resumeRef,
         "material_index_ref" to (materialIndex?.toJson() ?: SummonJson.Null),
         "avatar" to (avatar?.toJson() ?: SummonJson.Null),
+        "memory_items" to SummonJson.Arr(memoryItems),
     )
 
     companion object {
@@ -94,7 +96,8 @@ data class SummonBot(
             val id = json["id"].string ?: throw SummonApiException.invalidResponse
             return SummonBot(id, json["name"].string ?: id, json["instructions"].string, json["model"], json["revision"].int,
                 json["enabled"].bool, json["control"], json["resume_ref"], SummonReference.parse(json["material_index_ref"]),
-                json["avatar"].takeIf { it.obj != null }?.let(SummonAvatar::parse))
+                json["avatar"].takeIf { it.obj != null }?.let(SummonAvatar::parse),
+                json["memory_items"].array.orEmpty())
         }
     }
 }

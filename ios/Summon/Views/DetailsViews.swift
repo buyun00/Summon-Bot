@@ -115,6 +115,26 @@ struct BotDetailsView: View {
                 NavigationLink("内部对话和执行会话") { SummonObjectList(section: .executions, space: SummonReference(kind: "bot", id: botID)) }
                 NavigationLink("订阅与提醒") { SummonObjectList(section: .wakeups, space: SummonReference(kind: "bot", id: botID)) }
             }
+            if let items = current?.memory_items, !items.isEmpty {
+                Section("长期记忆与约定（\(items.count)）") {
+                    ForEach(items, id: \.prettyPrinted) { item in
+                        VStack(alignment: .leading, spacing: 4) {
+                            let scopes = (item["applies_to"].array ?? []).map { s -> String in
+                                s["kind"].string == "bot" ? "全群通用" : "仅限群 \(String(s["id"].stringValue.prefix(8)))"
+                            }.joined(separator: " · ")
+                            Text("\(item["item_id"].stringValue) · v\(item["revision"].int ?? 1)（\(scopes.isEmpty ? "默认范围" : scopes)）")
+                                .summonFont(.subheadline).bold()
+                            if let note = item["note"].string, !note.isEmpty {
+                                Text(note).summonFont(.caption)
+                            }
+                            let deprecated = [item["supersedes"].string, item["deprecated_note"].string].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+                            if !deprecated.isEmpty {
+                                Text("失效/退役：\(deprecated)").summonFont(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
             if let error { InlineError(message: error) }
         }
         .navigationTitle(bot?.name ?? "Bot")

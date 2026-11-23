@@ -333,6 +333,7 @@ struct SummonFileView: View {
     @State private var value = SummonJSONValue.null
     @State private var text = ""
     @State private var cursor: String?
+    @State private var selectedRevision: Int?
     @State private var preview: URL?
     @State private var editor = false
     @State private var busy = false
@@ -342,11 +343,37 @@ struct SummonFileView: View {
         List {
             if let error { InlineError(message: error) }
             if let path = value["path"].string { LabeledContent("文件", value: path) }
-            if let revision = value["revision"].int { LabeledContent("修订", value: "\(revision)") }
-            let sources = (value["sources"].array ?? []).compactMap(SummonReference.init)
-            if !sources.isEmpty {
-                Section("来源") {
-                    ForEach(sources, id: \.self) { ref in NavigationLink(store.label(ref)) { SummonReferenceView(ref: ref) } }
+            if let revision = value["revision"].int {
+                let latest = value["latest_revision"].int ?? revision
+                LabeledContent("修订", value: revision == latest ? "v\(revision)（当前正式版）" : "v\(revision)（历史快照 · 最新 v\(latest)）")
+            }
+            if let spaceKind = value["space"]["kind"].string {
+                LabeledContent("适用范围", value: spaceKind == "bot" ? "私有记忆/资料" : (spaceKind == "room" ? "本群共享资料" : spaceKind))
+            }
+            let revisions = value["revisions"].array ?? []
+            if revisions.count > 1 {
+                Section("版本历史") {
+                    ForEach(revisions, id: \.prettyPrinted) { rev in
+                        if let r = rev["revision"].int {
+                            let latest = value["latest_revision"].int ?? value["revision"].int ?? r
+                            Button(r == latest ? "v\(r)（当前正式版）" : "v\(r)（历史版本）") {
+                                selectedRevision = (r == latest) ? nil : r
+                                Task { await load() }
+                            }.disabled(busy || r == value["revision"].int)
+                        }
+                    }
+                }
+            }
+            let rawSources = value["sources"].array ?? []
+            if !rawSources.isEmpty {
+                Section("修订来源") {
+                    ForEach(rawSources, id: \.prettyPrinted) { src in
+                        if src["access"].string == "redacted" {
+                            Text("受限来源（\(String(src["id"].stringValue.prefix(8)))）").foregroundStyle(.secondary)
+                        } else if let sref = SummonReference(src) {
+                            NavigationLink(store.label(sref)) { SummonReferenceView(ref: sref) }
+                        }
+                    }
                 }
             }
             if !text.isEmpty { Text(text).textSelection(.enabled) }
@@ -394,7 +421,11 @@ struct SummonFileView: View {
         defer { busy = false }
         do {
             let previousRevision = value["revision"].int
-            let page = try await store.read(ref, cursor: append ? cursor : nil)
+            var queryItems: [String] = []
+            if append, let cursor { queryItems.append("cursor=" + SummonAPIClient.component(cursor)) }
+            if let rev = selectedRevision { queryItems.append("revision=\(rev)") }
+            let base = ref.path ?? "/api/files/\(SummonAPIClient.component(ref.id))"
+            let page = try await store.request(path: queryItems.isEmpty ? base : base + "?" + queryItems.joined(separator: "&"))
             if append && page["revision"].int != previousRevision {
                 throw SummonAPIError.http(409, "资料已修订，请刷新后读取。")
             }

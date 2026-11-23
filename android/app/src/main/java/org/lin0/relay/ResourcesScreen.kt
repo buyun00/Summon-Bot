@@ -259,6 +259,7 @@ private fun FileDetail(store: SummonStore, ref: SummonReference, room: SummonRef
     var value by remember(ref) { mutableStateOf<SummonJson>(SummonJson.Null) }
     var text by remember(ref) { mutableStateOf("") }
     var cursor by remember(ref) { mutableStateOf<String?>(null) }
+    var selectedRevision by remember(ref) { mutableStateOf<Int?>(null) }
     var editing by remember(ref) { mutableStateOf(false) }
     var nested by remember(ref) { mutableStateOf<SummonReference?>(null) }
     var busy by remember(ref) { mutableStateOf(false) }
@@ -275,8 +276,12 @@ private fun FileDetail(store: SummonStore, ref: SummonReference, room: SummonRef
         }
     }
 
-    suspend fun load(append: Boolean = false) {
-        val next = store.read(ref, if (append) cursor else null)
+    suspend fun load(append: Boolean = false, rev: Int? = selectedRevision) {
+        val params = mutableListOf<String>()
+        if (append && cursor != null) params.add("cursor=" + SummonApiClient.component(cursor!!))
+        if (rev != null) params.add("revision=$rev")
+        val base = ref.path ?: ("/api/files/" + SummonApiClient.component(ref.id))
+        val next = store.request(if (params.isEmpty()) base else base + "?" + params.joinToString("&"))
         if (append && value["revision"] != next["revision"]) throw SummonApiException("资料已修订，请刷新后读取。")
         value = next
         text = (if (append) text else "") + next["content"].string.orEmpty()
@@ -286,7 +291,28 @@ private fun FileDetail(store: SummonStore, ref: SummonReference, room: SummonRef
     LaunchedEffect(ref, store.protocolReady) { run { load() } }
     SummonDetailsPage(value["name"].string ?: "资料", close) {
         value["path"].string?.let { Text(it, style = MaterialTheme.typography.titleMedium) }
-        value["revision"].int?.let { Text("修订 $it", color = Color.Gray) }
+        value["revision"].int?.let { rev ->
+            val latest = value["latest_revision"].int ?: rev
+            val scopeLabel = when (value["space"]["kind"].string) {
+                "bot" -> " · 私有记忆/资料"
+                "room" -> " · 本群共享资料"
+                else -> ""
+            }
+            Text((if (rev == latest) "修订 v$rev（当前正式版）" else "修订 v$rev（历史快照 · 最新 v$latest）") + scopeLabel, color = Color.Gray)
+        }
+        val revisions = value["revisions"].array.orEmpty()
+        if (revisions.size > 1) {
+            Row {
+                revisions.forEach { revItem ->
+                    val r = revItem["revision"].int ?: return@forEach
+                    val latest = value["latest_revision"].int ?: value["revision"].int ?: r
+                    TextButton(enabled = !busy && r != value["revision"].int, onClick = {
+                        selectedRevision = if (r == latest) null else r
+                        run { load(append = false, rev = selectedRevision) }
+                    }) { Text(if (r == latest) "v$r (正式版)" else "v$r") }
+                }
+            }
+        }
         if (busy) CircularProgressIndicator()
         error?.let { SummonError(it) }
         Row {
@@ -313,9 +339,15 @@ private fun FileDetail(store: SummonStore, ref: SummonReference, room: SummonRef
                 }
             }
         }
-        val sources = value["sources"].array.orEmpty().mapNotNull(SummonReference::parse)
-        if (sources.isNotEmpty()) Text("来源", style = MaterialTheme.typography.titleSmall)
-        sources.forEach { source -> TextButton(onClick = { nested = source }) { Text(store.label(source)) } }
+        val rawSources = value["sources"].array.orEmpty()
+        if (rawSources.isNotEmpty()) Text("修订来源", style = MaterialTheme.typography.titleSmall)
+        rawSources.forEach { src ->
+            if (src["access"].string == "redacted") {
+                Text("受限来源（" + src["id"].stringValue.take(8) + "）", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+            } else {
+                SummonReference.parse(src)?.let { source -> TextButton(onClick = { nested = source }) { Text(store.label(source)) } }
+            }
+        }
         if (text.isNotEmpty()) SelectionContainer { Text(text) }
         if (value["content_status"].string == "unavailable") Text("正文不可用", color = Color.Gray)
         if (cursor != null) TextButton(enabled = !busy && store.protocolReady, onClick = { run { load(true) } }) { Text("读取后续正文") }

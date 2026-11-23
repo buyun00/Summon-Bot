@@ -1212,17 +1212,8 @@ export class SummonPlatform {
       return sendResult;
     }
     if (name === 'save_file') {
-      const action = this.runtime.materials.prepareSave(args, context);
-      if (action?.no_change) {
-        const { projection: file } = this.files.getProjection(action.target.id, context);
-        assertRevision(file.revision, args.revision);
-        this.calls.bind(call.id, { target: file.ref,
-          material: { batch_id: action.batch_id, item_keys: action.item_keys, outcome: 'no_change' } });
-        return { id: file.id, ref: file.ref, revision: file.revision, status: 'no_change' };
-      }
       const file = this.files.save(args, context, call.id, workspaceFile);
-      this.calls.bind(call.id, { target: file.ref, ...(action && file.id === action.target.id ?
-        { material: { batch_id: action.batch_id, item_keys: action.item_keys, outcome: 'written' } } : {}) });
+      this.calls.bind(call.id, { target: file.ref });
       this.emit('file', file.ref);
       return file;
     }
@@ -1303,7 +1294,6 @@ export class SummonPlatform {
       case 'wait': items = this.store.list(waitRecords).filter(item => (actor.kind === 'user' || actor.id === item.bot_id) &&
         (!context.session || item.session_id === context.session.id) && (!scope || scope.kind === 'call' && item.call_id === scope.id ||
           scope.kind === 'conversation' && item.conversation_id === scope.id)).map(wait => ({ ...wait, kind: 'wait' })); break;
-      case 'material_consumption': items = await this.runtime.materials.view(scope, context); break;
       default: items = [];
     }
     if (items?.items) items = items.items;
@@ -1326,11 +1316,6 @@ export class SummonPlatform {
 
   async read(args, context) {
     const { ref } = args;
-    if (ref.kind === 'material_consumption') {
-      const [item] = await this.runtime.materials.view(null, context, ref.id);
-      if (!item) reject('object_not_found', 'Object is unavailable', 404);
-      return item;
-    }
     if (ref.kind === 'wait') {
       const wait = this.store.get(waitRecords, ref.id);
       if (!wait || context.actor.kind !== 'user' && wait.bot_id !== context.actor.id ||
@@ -1343,14 +1328,17 @@ export class SummonPlatform {
     switch (ref.kind) {
       case 'bot': {
         const bot = this.getBot(ref.id);
-        return this.visibleBot(bot, context) ? this.manager.view(bot, context.actor, { details: !context.session }) : directoryEntry(bot);
+        if (!this.visibleBot(bot, context)) return directoryEntry(bot);
+        const view = this.manager.view(bot, context.actor, { details: !context.session });
+        const memory_items = !context.session ? (this.runtime?.materials?.inspectBot(bot, context) || []) : undefined;
+        return memory_items !== undefined ? { ...view, memory_items } : view;
       }
       case 'room': return this.room.read(args, context.actor.id);
       case 'event': {
         const event = this.store.get('platform-events', ref.id);
         return event ? this.repairs.eventView(event, context) : this.room.read(args, context.actor.id);
       }
-      case 'file': return this.files.readObject(ref.id, context, args.cursor, args.limit);
+      case 'file': return this.files.readObject(ref.id, context, args.cursor, args.limit, args.revision);
       case 'session': case 'conversation': return this.executions.read(ref, context, args);
       case 'connection': {
         if (ref.id === 'pi') return { kind: 'connection', id: 'pi', name: 'Pi', protocol: 'pi',

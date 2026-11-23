@@ -17,7 +17,6 @@ import { connectionPath } from '../agent/connections.mjs';
 import { UsageLedger } from '../agent/usage.mjs';
 import { createRedactor } from './config.mjs';
 import { textMessage, transcriptPage } from '../context/projection.mjs';
-import { canReadObservation, observationBoundary } from '../context/room-observation.mjs';
 import { MaterialRuntime } from '../context/materials.mjs';
 import { FastReadRuntime } from './fast-read.mjs';
 
@@ -343,10 +342,7 @@ export class BotRuntime {
         if (observation && route.event.sequence <= (observation.through?.sequence ?? 0) &&
             route.match_sources?.some(source => source.kind === 'room_base')) {
           if (route.event.sequence > observation.start_sequence) {
-            const checkpoint = observation.checkpoint && inbox.store.getRecord(R.checkpoint, observation.checkpoint.id);
-            const covered = checkpoint && route.event.sequence > (checkpoint.from?.sequence ?? 0) && inbox.run(checkpoint.run_id);
-            const link = covered ? { ...route, run_id: covered.id, conversation_id: covered.conversation_id } : route;
-            this.discard(inbox, [link], 'processed');
+            this.discard(inbox, [route], 'processed');
             continue;
           }
           if (route.match_sources.every(source => source.kind === 'room_base')) {
@@ -464,14 +460,10 @@ export class BotRuntime {
       }
     }
 
-    const foreground = [];
-    const maintenance = [];
     for (const conversation of inbox.store.listRecords(R.conversation)) {
+      if (conversation.kind === 'material') continue;
       if (!this.registered(conversation)) this.register(inbox, conversation);
-      if (this.active.has(conversation.id) || this.starting.has(conversation.id)) {
-        if (conversation.kind !== 'material') foreground.push(conversation);
-        continue;
-      }
+      if (this.active.has(conversation.id) || this.starting.has(conversation.id)) continue;
       if (!this.conversationActive(conversation)) continue;
       this.resumeAuthorizedRuns(inbox, conversation, bot);
       let runs = inbox.runs(conversation.id).filter(run => activeRunStates.has(run.state));
@@ -487,18 +479,8 @@ export class BotRuntime {
       const eligible = runs.find(run => run.state === 'waiting' && this.waitReady(inbox, run));
       const run = eligible || runs.find(run => run.state !== 'waiting');
       if (!run) continue;
-      if (conversation.kind === 'material') {
-        maintenance.push({ conversation, run });
-        continue;
-      }
-      foreground.push(conversation);
       this.launch(inbox, conversation, inbox.run(run.id), bot);
     }
-    // Start foreground runs before starting a prepared maintenance batch.
-    if (!foreground.length) {
-      for (const { conversation, run } of maintenance) this.launch(inbox, conversation, run, bot);
-    }
-    await this.materials.consider(inbox, bot, foreground);
   }
 
   waitReady(inbox, run) {
@@ -758,27 +740,29 @@ export class BotRuntime {
         const pendingNow = pendingForRun().filter(canProcess);
         const startView = job.view();
         const restored = storedOutcome && pendingNow.every(route => storedOutcome.eventIds.includes(route.event_id)) &&
-          canRetainAuthorizationView(inbox.run(run.id).model_outcome_uses_view, startView.view_revision) &&
-          (!storedOutcome.observation || canReadObservation(storedOutcome.observation.checkpoint, job, startView)) ? storedOutcome : null;
-        const result = this.materials.recovered(job) || restored || await this.engine.execute(job);
+          canRetainAuthorizationView(inbox.run(run.id).model_outcome_uses_view, startView.view_revision) ? storedOutcome : null;
+        const result = restored || await this.engine.execute(job);
         job.check();
-        this.materials.finish(job);
         const view = job.view();
         const cancelledProgress = [];
-        if (result.observation) {
-          if (!canReadObservation(result.observation.checkpoint, job, view))
-            throw runtimeFailure('access_changed', 'Room observation access changed before completion', 409);
-          // Persist the private decision first so a recovered delivery can publish the same position.
-          inbox.store.putRecord(R.checkpoint, result.observation.checkpoint);
-          if (!this.platform.deliveries.finishObservation(bot.id, conversation.space.id, result.observation)) {
-            inbox.putRun({ id: run.id, model_outcome: null, model_outcome_uses_view: null });
-            throw runtimeFailure('access_changed', 'The room observation changed before completion', 409);
+        if (conversation.kind === 'room' && conversation.space?.kind === 'room' && !conversation.session_id) {
+          const roomId = conversation.space.id;
+          if (this.platform.deliveries.roomObservation(bot.id, roomId)) {
+            const latestMsg = this.platform.room.lastSavedMessage?.get(roomId);
+            const maxSeq = job.seenRoomSequence ?? latestMsg?.sequence ?? 0;
+            const throughId = inbox.run(run.id).history_read_through ?? latestMsg?.id ?? null;
+            const throughPos = maxSeq > 0 && throughId
+              ? { id: throughId, sequence: maxSeq }
+              : (latestMsg ? { id: latestMsg.id, sequence: latestMsg.sequence } : null);
+            this.platform.deliveries.advanceObservationQuiet(bot.id, roomId, throughPos, result.eventIds);
+            const base = this.platform.store.get('platform-wakeups', JSON.stringify(['room_base', bot.id, roomId]));
+            if (base?.observation && base.enabled && base.member_active !== false && !base.observation.pending) {
+              this.platform.deliveries.queueDueObservation(base);
+            }
           }
         }
         const state = inbox.store.transaction(() => {
-          inbox.complete(run.id, 'running', result.eventIds, { result: { text: result.text, model: result.model, response_id: result.response_id },
-            ...(result.observation && { room_observation: { from: result.observation.from, through: result.observation.through,
-              generation: result.observation.generation, checkpoint_id: result.observation.checkpoint.id } }) },
+          inbox.complete(run.id, 'running', result.eventIds, { result: { text: result.text, model: result.model, response_id: result.response_id } },
             canProcess, view.canReadEvent);
           const outstanding = inbox.hasOpenWaits(run.id);
           const settledProgress = pendingForRun().filter(route => this.settledProgress(inbox, route));
@@ -857,7 +841,6 @@ export class BotRuntime {
         if (roomRevoked) this.discard(inbox, inbox.pending().filter(route => route.run_id === run.id), 'access_revoked');
         if (!retry && !stopped && conversation.kind === 'room' && conversation.space.kind === 'room')
           this.platform.deliveries.releaseSuspendedObservation(bot.id, conversation.space.id, inbox.run(run.id).pending_event_ids);
-        if (!retry) this.materials.defer(job);
         if ((!retry && !stopped) || explicitInterrupt || (controlStopped && (this.targetPaused(conversationRef(conversation.id)) ||
             conversation.session_id && this.targetPaused(sessionRef(conversation.session_id))))) {
           this.stageInputs(inbox, conversation, run.id, controlStopped ? 'stopped' : roomRevoked ? 'failed' : 'unknown');
@@ -975,7 +958,7 @@ export class BotRuntime {
     return this.platform.canUseResources(initiating.actor, session.resource_refs, initiating);
   }
 
-  async contextBoundary(job, window) {
+  async contextBoundary(job) {
     const { inbox, conversation, runId } = job;
     const view = await job.view();
     const context = job.context();
@@ -1003,23 +986,33 @@ export class BotRuntime {
     let history = [];
     let publicRoom;
     const facts = [];
-    const bound = conversation.kind === 'room' && conversation.space.kind === 'room' &&
-      this.platform.store.get('rooms', conversation.space.id)?.workspace;
-    if (bound) facts.push(textMessage({ type: 'project_workspace', room: conversation.space, workspace: bound }));
+    const roomRecord = conversation.kind === 'room' && conversation.space.kind === 'room'
+      ? this.platform.store.get('rooms', conversation.space.id)
+      : null;
+    if (roomRecord?.workspace) {
+      facts.push(textMessage({ type: 'project_workspace', room: conversation.space, workspace: roomRecord.workspace }));
+    }
+    if (Array.isArray(roomRecord?.pins) && roomRecord.pins.length) {
+      const readablePins = roomRecord.pins
+        .filter(ref => job.canReadReference(ref))
+        .sort((a, b) => refKey(a).localeCompare(refKey(b)));
+      if (readablePins.length) {
+        facts.push(textMessage({ type: 'room_pins', room: conversation.space, pins: readablePins }));
+      }
+    }
     let observation;
     const observing = conversation.kind === 'room' && conversation.space.kind === 'room' &&
       this.platform.deliveries.roomObservation(context.actor.id, conversation.space.id);
     if (observing) {
-      observation = observationBoundary(this.platform, job, context, view, observing, window, current);
+      observation = { from: observing.through, generation: observing.generation };
     }
-    if (conversation.kind === 'room' && conversation.space.kind === 'room' && !conversation.session_id &&
-        (!observing || observation.bootstrap)) {
+    if (conversation.kind === 'room' && conversation.space.kind === 'room' && !conversation.session_id) {
       const roomId = conversation.space.id;
       const locked = run.public_prefix_end !== undefined && run.public_prefix_end !== null;
       const currentRoomSeqs = current
         .filter(event => event.type === 'message' && event.space?.id === roomId && Number.isSafeInteger(event.sequence))
         .map(event => event.sequence);
-      const latestEnd = observation?.end ?? Math.max(this.platform.room.observationEnd(roomId, context.actor.id), ...currentRoomSeqs);
+      const latestEnd = Math.max(this.platform.room.observationEnd(roomId, context.actor.id), ...currentRoomSeqs);
       let prefixEnd, prefixSummary, tailMessages = [];
       if (!locked) {
         const snapshot = this.platform.room.publicHistory(roomId, context.actor.id, latestEnd);
@@ -1127,6 +1120,17 @@ export class BotRuntime {
       }
       for (const group of groups.values()) facts.push(textMessage(group));
     }
+    const storedConv = inbox.conversation(conversation.id);
+    const lastInputTokens = storedConv?.last_input_tokens ?? 0;
+    const contextWindow = job.binding?.model?.context_window ?? 0;
+    if (lastInputTokens > 0 && contextWindow > 0) {
+      facts.push(textMessage({
+        type: 'context_status',
+        used_tokens: lastInputTokens,
+        context_window: contextWindow,
+        usage_ratio: Number((lastInputTokens / contextWindow).toFixed(3)),
+      }));
+    }
     return { ...view, current, history, facts, material: job.materials(), observation, publicRoom };
   }
 
@@ -1181,7 +1185,7 @@ export class BotRuntime {
       kind: 'pi', owner: session.owner, session_id: session.id, open_call_id: session.open_call_id || session.latest_call_id,
       space: session.space, binding: { model, instructions, name: bot.name, revision: session.bot_revision,
         built_in_role: session.built_in_role ?? null,
-        material_index_ref: session.sharing ? null : bot.material_index_ref }, input_revision: session.input_revision || 0 }));
+        material_index_ref: bot.material_index_ref }, input_revision: session.input_revision || 0 }));
     return { inbox, bot, conversation };
   }
 

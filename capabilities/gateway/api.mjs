@@ -34,7 +34,10 @@ export function createApi({ platform, room, attachments, models, connections, pu
     const read = (ref, params) => {
       const limit = params.has('limit') ? Number(params.get('limit')) : undefined;
       if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)) reject('invalid_page', 'Invalid page size');
+      const revision = params.has('revision') ? Number(params.get('revision')) : undefined;
+      if (revision !== undefined && (!Number.isSafeInteger(revision) || revision < 1)) reject('invalid_revision', 'Invalid revision number');
       return platform.read({ ref, cursor: params.get('cursor') || undefined, limit,
+        ...(revision !== undefined && { revision }),
         ...(ref.kind === 'workspace' && params.has('path') && { path: params.get('path') }) }, userContext);
     };
     const mutation = async (name, body, clientId) => {
@@ -64,11 +67,21 @@ export function createApi({ platform, room, attachments, models, connections, pu
     }
     if (method === 'GET' && path === '/api/state') {
       const visible = platform.listBots().filter(bot => platform.visibleBot(bot, userContext));
+      const enrichBot = bot => {
+        const view = platform.manager.view(bot, user);
+        const memory_items = platform.runtime?.materials?.inspectBot(bot, userContext) || [];
+        const bot_files = platform.files.list(userContext, { kind: 'bot', id: bot.id });
+        return { ...view, memory_items, bot_files };
+      };
+      const enrichRoom = roomItem => {
+        const room_files = platform.files.list(userContext, { kind: 'room', id: roomItem.id });
+        return { ...roomItem, room_files };
+      };
       const state = {
-        bots: visible.filter(bot => !bot.archivedAt).map(bot => platform.manager.view(bot, user)),
-        archivedBots: visible.filter(bot => Boolean(bot.archivedAt)).map(bot => platform.manager.view(bot, user)),
+        bots: visible.filter(bot => !bot.archivedAt).map(enrichBot),
+        archivedBots: visible.filter(bot => Boolean(bot.archivedAt)).map(enrichBot),
         roles: roleCatalog,
-        rooms: room.rooms(user.id),
+        rooms: room.rooms(user.id).map(enrichRoom),
         modelSettings: models.summary(), historyEpoch, protocolVersion,
       };
       return snapshot('state', state, params);
