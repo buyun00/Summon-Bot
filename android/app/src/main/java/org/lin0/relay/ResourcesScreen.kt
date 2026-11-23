@@ -231,8 +231,30 @@ fun SummonReferenceDialog(store: SummonStore, ref: SummonReference, close: () ->
 
 @Composable
 private fun ReferenceDetail(store: SummonStore, ref: SummonReference, close: () -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var detail by remember(ref) { mutableStateOf<SummonJson>(SummonJson.Null) }
+    var busy by remember(ref) { mutableStateOf(false) }
     var error by remember(ref) { mutableStateOf<String?>(null) }
+    if (ref.kind == "workspace_file" && !ref.workspaceId.isNullOrBlank() && !ref.filePath.isNullOrBlank()) {
+        SummonDetailsPage(store.label(ref), close) {
+            Text(ref.filePath, style = MaterialTheme.typography.titleMedium)
+            error?.let { SummonError(it) }
+            if (busy) CircularProgressIndicator()
+            TextButton(enabled = !busy && store.protocolReady, onClick = {
+                busy = true; error = null
+                scope.launch {
+                    try {
+                        val file = store.downloadWorkspaceFile(ref.workspaceId, ref.filePath)
+                        shareFile(context, file, "application/octet-stream")
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                    catch (failure: Exception) { error = failure.localizedMessage }
+                    finally { busy = false }
+                }
+            }) { Text("下载最新工作区文件") }
+        }
+        return
+    }
     LaunchedEffect(ref, store.protocolReady) {
         if (!store.protocolReady) return@LaunchedEffect
         try { detail = store.read(ref); error = null }

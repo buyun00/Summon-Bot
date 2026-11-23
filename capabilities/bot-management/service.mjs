@@ -57,11 +57,11 @@ export class BotManager {
   }
 
   canConfigure(actor, bot) {
-    return !bot.connection_initializer && (actor.kind === 'user' || actor.id === bot.id || sameIdentity(actor, bot.owner));
+    return actor.kind === 'user' || actor.id === bot.id || sameIdentity(actor, bot.owner);
   }
 
   defaultBot(role, bots = this.list()) {
-    const matches = bots.filter(bot => !bot.archivedAt && !bot.connection_initializer && bot.built_in_role?.id === role);
+    const matches = bots.filter(bot => !bot.archivedAt && bot.built_in_role?.id === role);
     return matches.find(bot => bot.id === `bot-default-${role}-local`) ?? matches[0];
   }
 
@@ -96,7 +96,7 @@ export class BotManager {
 
   maintainer(connection) {
     const bot = connection?.maintainer_bot_id && this.store.get(botRecords, connection.maintainer_bot_id);
-    return bot && !bot.archivedAt && !bot.connection_initializer ? bot : null;
+    return bot && !bot.archivedAt ? bot : null;
   }
 
   roleOf(id, context, bot) {
@@ -131,7 +131,7 @@ export class BotManager {
     const isDefault = Object.hasOwn(defaultBotRoles, bot.built_in_role?.id) && bot.id === `bot-default-${bot.built_in_role.id}-local`;
     return { ...base, instructions: bot.instructions, model: bot.model, binding_source, effective_models: this.models.resolveAllForBot(bot),
       owner: bot.owner || user, revision: bot.revision, control: bot.control, material_index_ref: bot.material_index_ref || null,
-      private_space: target, deletable: !isDefault && !bot.connection_initializer, archivable: !isDefault && !bot.connection_initializer };
+      private_space: target, deletable: !isDefault, archivable: !isDefault };
   }
 
   modelConnectionIds(model) {

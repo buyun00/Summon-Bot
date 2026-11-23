@@ -7,11 +7,8 @@ import { appServerArgs, codexBridge } from '../connectors/codex.mjs';
 import { launchArguments } from '../connectors/registry.mjs';
 import { usesPromptFile } from '../connectors/recipe.mjs';
 import { reject } from '../platform/contract.mjs';
-import { checkedNativeArguments, hasExplicitFileScope } from './native-file-arguments.mjs';
 import { codexCredentials, localExecutable, nativeArgs, nativeCommand, nativeEnvironment, redactNativeCredentials } from './native-host.mjs';
-import { checkedNativeReference } from './native-references.mjs';
 import { canSupplyProcessArguments, plain, validateNativePaths } from './connection-records.mjs';
-import { allowsConnection, allowsExecutable } from './executable-scope.mjs';
 import { sshArguments, sshBinding } from './ssh-binding.mjs';
 
 const programRoot = fileURLToPath(new URL('../../', import.meta.url));
@@ -56,7 +53,6 @@ export function codexInput(input, configured = {}, binding) {
   }
   const model = binding?.model || data.model || configured.model;
   const effort = binding?.effort || data.effort || configured.effort;
-  if (effort && !model && !binding?.effort) reject('invalid_codex_input', 'Select an explicit model with the reasoning effort');
   return { text: requireText(data.text, 100_000), model, effort };
 }
 
@@ -92,7 +88,7 @@ export async function executionWorkspace(session, entry, { workspace, dataRoot }
   if (samePath(cwd, parse(cwd).root) || pathWithin(cwd, dataRoot) || pathWithin(cwd, releaseRoot) || pathWithin(releaseRoot, cwd))
     reject('workspace_forbidden', 'The execution workspace overlaps a protected host directory', 403);
   if (!isReadOnly) await checked(cwd, { directory: true, operations: ['write'], alternative: true });
-  return { cwd, checked, accessPolicy, isReadOnly, credentialPaths, hasFileScope: hasExplicitFileScope(requestedPolicy) };
+  return { cwd, checked, accessPolicy, isReadOnly, credentialPaths, hasFileScope: false };
 }
 
 export async function connectionExecutable(entry, cwd, dataRoot, policy = {}, credentialPaths) {
@@ -124,22 +120,16 @@ export async function registeredScript(dataRoot, id, path) {
 }
 
 export async function prepareProcess({ host, entry, session, call, input, prior, guard }) {
-  const { cwd, checked, accessPolicy, isReadOnly, credentialPaths, hasFileScope } = await executionWorkspace(session, entry, host);
-  const scopes = [session.executable_scope, call.executable_scope];
-  if (scopes.some(scope => !allowsConnection(scope, entry, id => host.get(id))))
-    reject('executable_scope_forbidden', 'The connection is outside the selected executable scope', 403);
+  const { cwd, accessPolicy, isReadOnly, credentialPaths } = await executionWorkspace(session, entry, host);
   const executable = await connectionExecutable(entry, cwd, host.dataRoot, accessPolicy, credentialPaths);
-  if (scopes.some(scope => scope !== undefined)) guard.executable_bindings = [{ file: entry.config.file, canonical_file: executable }];
   const storePath = host.store.path;
   if (entry.config.ssh) {
-    if (isReadOnly || hasFileScope)
-      reject('scoped_process_unsupported', 'The SSH process cannot enforce the Session’s specific file restrictions', 403);
+    if (isReadOnly)
+      reject('scoped_process_unsupported', 'The SSH process cannot enforce the Session’s read-only restriction', 403);
     return { ...nativeCommand(executable, sshArguments(sshBinding(entry.config.ssh), input)),
       cwd, guard, storePath, keepInput: false, protocol: 'stdin', method: input.method };
   }
   if (entry.kind === 'codex') {
-    if (hasFileScope)
-      reject('scoped_process_unsupported', 'Codex cannot confirm these explicit file path restrictions in its native configuration', 403);
     const payload = codexInput(input, prior ? {} : entry.config, prior?.binding);
     const { env, authorizedEnv } = codexCredentials(entry.config);
     const { secrets } = nativeEnvironment(env, authorizedEnv, { codex: true });
@@ -156,17 +146,18 @@ export async function prepareProcess({ host, entry, session, call, input, prior,
         callId: call.id, guard, storePath } }) + '\n' };
   }
   if (entry.config.adapter) {
-    if (isReadOnly || hasFileScope)
-      reject('scoped_process_unsupported', 'This CLI connector cannot enforce the Session’s specific file restrictions', 403);
+    if (isReadOnly)
+      reject('scoped_process_unsupported', 'This CLI connector cannot enforce the Session’s read-only restriction', 403);
     const data = typeof input === 'string' ? { text: input } : input;
-    if (!plain(data) || Object.keys(data).some(key => key !== 'text'))
-      reject('invalid_cli_input', 'This connector accepts a text prompt');
+    if (!plain(data) || Object.keys(data).some(key => !['text', 'args'].includes(key)))
+      reject('invalid_cli_input', 'This connector accepts a text prompt and optional args array');
     const adapter = entry.config.adapter;
     const text = requireText(data.text, 100_000);
+    const extraArgs = data.args !== undefined ? nativeArgs(data.args) : [];
     const { env, authorizedEnv } = codexCredentials(entry.config);
     const { secrets } = nativeEnvironment(env, authorizedEnv);
     const sessionId = prior?.original_native_id ?? prior?.requested_native_id ?? null;
-    requireCredentialReferences([text, ...launchArguments(entry.config.launch_arguments, Boolean(sessionId))], secrets);
+    requireCredentialReferences([text, ...launchArguments(entry.config.launch_arguments, Boolean(sessionId)), ...extraArgs], secrets);
     const scripted = adapter.source !== undefined;
     let interpreter = process.execPath;
     if (scripted) {
@@ -176,20 +167,18 @@ export async function prepareProcess({ host, entry, session, call, input, prior,
       const runnerWorkspace = await executionWorkspace(session, runner, host);
       if (runnerWorkspace.isReadOnly) reject('workspace_forbidden', 'The native script runner requires a writable execution directory grant', 403);
       interpreter = await connectionExecutable(runner, cwd, host.dataRoot, accessPolicy, credentialPaths);
-      guard.executable_bindings ??= [{ file: entry.config.file, canonical_file: executable }];
-      guard.executable_bindings.push({ file: runner.config.file, canonical_file: interpreter });
     }
     return { file: interpreter, args: scripted ? [] : [headlessBridge], cwd, guard, storePath, keepInput: false, protocol: 'summon-jsonl',
       adapterSource: adapter.source, managedAdapter: true,
       usesPromptFile: !scripted && (adapter.recipe ? usesPromptFile(adapter.recipe) : adapter.settings.promptFile === true),
       sessionId, env, authorizedEnv, input: JSON.stringify({ summonStart: {
         executable, text, sessionId, connector: adapter.connector, settings: adapter.settings, recipe: adapter.recipe,
-        launchOptions: entry.config.launch_arguments,
+        launchOptions: entry.config.launch_arguments, extraArgs,
       } }) + '\n' };
   }
-  if (!plain(input) || Object.keys(input).some(key => !['method', 'parameters', 'args', 'stdin', 'keep_input', 'file_args'].includes(key)))
+  if (!plain(input) || Object.keys(input).some(key => !['method', 'parameters', 'args', 'stdin', 'keep_input'].includes(key)))
     reject('invalid_cli_input', 'CLI input accepts a method or explicit arguments and optional stdin');
-  if (input.method !== undefined && (typeof input.method !== 'string' || !input.method || input.args !== undefined || input.file_args !== undefined))
+  if (input.method !== undefined && (typeof input.method !== 'string' || !input.method || input.args !== undefined))
     reject('invalid_cli_input', 'Supply either a configured method or explicit arguments');
   if (input.parameters !== undefined && !plain(input.parameters)) reject('invalid_cli_input', 'CLI method parameters must be an object');
   const method = input.method && entry.config.methods?.find(item => item.id === input.method);
@@ -204,26 +193,13 @@ export async function prepareProcess({ host, entry, session, call, input, prior,
   const argv = nativeArgs(templateArgs ? templateArgs.map(value => template(value, parameters)) : input.args);
   const stdin = input.stdin ?? template(method?.input, parameters);
   const keepInput = method?.keep_input ?? input.keep_input === true;
-  const fileArgs = method?.file_args ?? input.file_args;
   const protocol = method?.protocol === 'summon-jsonl' ? 'summon-jsonl' : 'stdin';
   if (stdin !== undefined) requireText(stdin, 32_768);
   if (isReadOnly)
     reject('scoped_process_unsupported', 'This CLI process cannot enforce the workspace’s read-only grant', 403);
-  if (hasFileScope &&
-      (method?.script || keepInput || stdin !== undefined || /\.(?:cmd|bat|ps1)$/i.test(executable)))
-    reject('scoped_process_unsupported', 'This process input mode cannot enforce the Session’s file restrictions', 403);
-  const args = await checkedNativeArguments({ argv, fileArgs, effect: method?.effect === 'read' ? 'read' : 'write', cwd,
-    hasFileScope, projectWorkspace: Boolean(session.room_workspace_id),
-    checkedPath: checked, resolveReference: id => checkedNativeReference(id,
-      { policy: accessPolicy, protectedDirectories: [host.dataRoot] }) });
+  const args = [...argv];
   let file = executable;
   if (method?.script) {
-    if (scopes.some(scope => scope !== undefined)) {
-      const runner = await localExecutable(process.execPath);
-      if (scopes.some(scope => !allowsExecutable(scope, runner.canonicalFile)))
-        reject('executable_scope_forbidden', 'This registered method uses a script runner outside the selected executable scope', 403);
-      guard.executable_bindings.push({ file: runner.file, canonical_file: runner.canonicalFile });
-    }
     file = process.execPath;
     args.unshift(await registeredScript(host.dataRoot, entry.id, method.script));
   }
@@ -231,6 +207,5 @@ export async function prepareProcess({ host, entry, session, call, input, prior,
   const { secrets } = nativeEnvironment(method?.env, authorizedEnv);
   requireCredentialReferences([...args, stdin], secrets);
   nativeCommand(file, args);
-  return { file, args, cwd, guard, storePath, input: stdin, keepInput, protocol, method: method?.id, env: method?.env, authorizedEnv,
-    encoding: entry.config.probe?.encoding };
+  return { file, args, cwd, guard, storePath, input: stdin, keepInput, protocol, method: method?.id, env: method?.env, authorizedEnv };
 }

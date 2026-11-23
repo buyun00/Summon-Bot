@@ -7,7 +7,6 @@ import { reject } from '../platform/contract.mjs';
 import { workspaceGranted } from '../platform/workspace-access.mjs';
 import { isProcessAlive, terminatePidTree } from '../../bot/src/runtime/process-tools.mjs';
 import { connectionAuthorized, connectionRecords } from './connection-records.mjs';
-import { allowsConnection } from './executable-scope.mjs';
 import { nativeSpawnFailureCode } from './native-host.mjs';
 
 export const operationRecords = 'session-operations';
@@ -279,8 +278,6 @@ export function guardStillMatches(db, guard) {
   if (!connection?.enabled || (connection.binding_version ?? 1) !== guard.binding_version || !session ||
       session.authority_revoked ||
       session.control?.state !== 'active' || session.control.control_version !== guard.control_version) return false;
-  if ([session.executable_scope, guard.executable_scope].some(scope => !allowsConnection(scope, connection, id => get(connectionRecords, id))))
-    return false;
   if (guard.origin_conversation_id) {
     const origin = get('platform-conversations', guard.origin_conversation_id);
     if (origin?.control?.state !== 'active' || origin.control.control_version !== guard.origin_control_version) return false;
@@ -315,7 +312,6 @@ export function makeProcessGuard(session, connection, call) {
     ...(session.room_workspace_id || connection.config.adapter?.runner ? [call.initiating_principal] : [])].filter(Boolean);
   return { session_id: session.id, connection_id: connection.id, binding_version: connection.binding_version ?? 1,
     control_version: session.control.control_version, actors, controls: call.controls, workspace_id: session.workspace_ref?.id,
-    executable_scope: call.executable_scope,
     ...(call.origin?.conversation_id && Number.isInteger(call.origin.control_version) ?
       { origin_conversation_id: call.origin.conversation_id, origin_control_version: call.origin.control_version } : {}),
     ...(shared ? { room_id: session.space.id, room_owner: session.owner.id,

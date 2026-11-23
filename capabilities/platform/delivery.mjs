@@ -51,19 +51,11 @@ export class Deliveries {
       AND json_extract(data,'$.status')='pending' AND COALESCE(json_extract(data,'$.retry_at'),0)<=?
       AND COALESCE(json_array_length(data,'$.wait_refs'),0)=0 ORDER BY rowid LIMIT ?`);
     this.eventRecords = store.db.prepare(`SELECT data FROM records WHERE kind='platform-deliveries' AND json_extract(data,'$.event.id')=? ORDER BY rowid`);
-    this.openProbeRecord = store.db.prepare(`SELECT data FROM records WHERE kind='platform-events'
-      AND json_extract(data,'$.type')='connection.failure' AND json_extract(data,'$.code')='probe_rule_mismatch'
-      AND json_extract(data,'$.ref.id')=? AND json_extract(data,'$.resolved_at') IS NULL ORDER BY rowid DESC LIMIT 1`);
     this.wakeupRunsByRule = store.db.prepare(`SELECT data FROM records WHERE kind='platform-wakeup-runs'
       AND json_extract(data,'$.wakeup_id')=? ORDER BY rowid DESC LIMIT 5`);
   }
 
   deliveriesFor(eventId) { return this.eventRecords.all(eventId).map(row => JSON.parse(row.data)); }
-
-  openProbeFailure(connectionId) {
-    const row = this.openProbeRecord.get(connectionId);
-    return row && JSON.parse(row.data);
-  }
 
   roomMembers(roomId) { return this.store.get('rooms', roomId)?.members ?? []; }
 

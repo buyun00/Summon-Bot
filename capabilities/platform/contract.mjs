@@ -13,7 +13,8 @@ const array = items => ({ type: 'array', items });
 const object = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const kinds = ['bot', 'room', 'event', 'file', 'session', 'wakeup', 'connection', 'conversation', 'call', 'wait', 'workspace'];
 const typedRef = (...types) => object({ kind: oneOf(...types), id: text }, ['kind', 'id']);
-const ref = typedRef(...kinds, 'user');
+const workspaceFileRef = object({ kind: oneOf('workspace_file'), workspace_id: text, path: text }, ['kind', 'workspace_id', 'path']);
+const ref = { anyOf: [typedRef(...kinds, 'user'), workspaceFileRef] };
 const principal = { anyOf: [text, typedRef('bot', 'user', 'room_members')] };
 const refOrId = { anyOf: [ref, text] };
 const roomOrId = { anyOf: [typedRef('room'), text] };
@@ -155,41 +156,25 @@ const eventMatch = object({ path: text, equals: { anyOf: [text, flag, integer] }
 const adapterRecipe = object({ args: array(text), resume_args: array(text), stdin: flag, output: oneOf('plain', 'json', 'jsonl'),
   session_id: text, progress: text, result: text, error: text, complete_when: eventMatch, success_when: eventMatch }, ['args', 'output']);
 const launchArguments = object({ common: array(text), start: array(text), resume: array(text) });
-const probeStream = oneOf('stdout', 'stderr', 'combined');
-const probeCommand = { args: array(text), exit_codes: array(integer) };
-const probeRunner = object({ id: text, binding_version: integer }, ['id', 'binding_version']);
-const cliProbe = object({
-  version: object({ ...probeCommand, read: object({ stream: probeStream, line: integer, word: integer }) }, ['args']),
-  help: object({ ...probeCommand, stream: probeStream }, ['args']),
-  encoding: object({ stdout: text, stderr: text }),
-  script: { anyOf: [object({ path: text, runner: probeRunner }, ['path', 'runner']),
-    object({ source: text, runner: probeRunner }, ['source', 'runner'])] },
-}, ['version', 'help']);
 export const connectionSetupTool = Object.freeze({ name: 'initialize_execution',
   executionTools: Object.freeze(['find', 'read', 'open_session', 'send_input', 'stop_session', 'save_file', 'create_bot', 'configure_bot', 'set_wakeup']),
-  description: 'Read the installed Summon guide, discover or inspect tools in the authorized execution environment, and register or update a connection under existing grants. ' +
+  description: 'Read the installed Summon guide, discover or inspect tools in the local execution environment, and register or update execution connections. ' +
     'Use target to ground discovery in a readable Session, connection or work event. Set query for name or capability, command for an executable name, or executable for a known absolute path. ' +
-    'To inspect a registered local CLI, pass its connection target or the connection ID. The probe uses that binding and needs its current repair grant or a host grant for its executable. Leave command and executable out. ' +
-    'Inspect uses the saved probe when present. To try a replacement, pass probe and the current revision; the receipt includes actual arguments, exit statuses, output and effective encodings. ' +
-    'With repair authority, diagnostic_args runs an additional one-off CLI command using the effective probe encoding. ' +
-    'Use register with protocol and config for a CLI, SSH, HTTP or MCP binding. For updates, explicitly pass the original connection ID and current revision. ' +
-    'To save a successful candidate, register with config.probe, config.detected_version and probe_call set to the candidate inspect call ID. The binding, maintainer and grants stay on the original connection. ' +
-    'To save the observed version of an existing CLI, use register with connection, revision, protocol:"cli" and config:{detected_version: inspect.version}. The version in read and the register receipt is the saved version. ' +
-    'Use upsert_method with connection, revision and method to update one method. Use the latest revision for each write. ' +
-    'Use assign_maintainer only with applicable authorization. Use source or documentation for adapter details. Hosted CLI setup also supports grant_access.',
-  inputSchema: object({ action: oneOf('guide', 'discover', 'inspect', 'source', 'documentation', 'register', 'upsert_method', 'assign_maintainer', 'grant_access'),
-    connector: text, target: { ...ref, description: 'For inspect, a readable connection target selects that binding. If connection is also present, both IDs must match. Session and work event targets supply the environment only.' },
+    'Use inspect to run read-only probe arguments (defaults to --version and --help; pass args or diagnostic_args for custom read-only checks) and read the raw exitCode, stdout and stderr directly. ' +
+    'Use register with protocol and config for a CLI, Codex, SSH, HTTP or MCP binding. For updates, pass the original connection ID and current revision. ' +
+    'Use upsert_method with connection, revision and method to update one method. Use assign_maintainer to bind a dedicated catalog-maintainer Bot with automatic repair and workspace authority.',
+  inputSchema: object({ action: oneOf('guide', 'discover', 'inspect', 'source', 'documentation', 'register', 'upsert_method', 'assign_maintainer'),
+    connector: text, target: { ...ref, description: 'Optional connection, session, or work event reference to select the binding or environment.' },
     workspace: refOrId, query: text, required_version: text,
     command: text, executable: text, help_topic: text, offset: integer, protocol: oneOf('cli', 'codex', 'ssh', 'http', 'mcp'),
-    probe: { ...cliProbe, description: 'Candidate version and help rules for a registered CLI. read.line and read.word are zero-based. encoding maps stdout and stderr to an encoding name or auto.' },
-    diagnostic_args: { ...array(text), description: 'One-off arguments to check output in the same bound environment and encoding.' },
-    probe_call: { ...text, description: 'Call ID of a successful candidate inspect on this connection at this revision.' },
+    args: { ...array(text), description: 'Optional custom read-only probe arguments for inspect.' },
+    diagnostic_args: { ...array(text), description: 'Optional additional one-off read-only probe arguments for inspect.' },
     example: oneOf('probe', 'session'),
     config: { type: 'object', additionalProperties: true,
-      description: 'Settings for the specified protocol. For a CLI version update, set detected_version to the non-empty version string returned by inspect.' },
+      description: 'Settings for the specified protocol, including optional detected_version, methods, launch_arguments or adapter.' },
     method: { type: 'object', additionalProperties: true },
     connection: { ...text, description: 'The id string of the existing connection from discover or find.' }, revision: integer,
-    bot: { ...text, description: 'The Bot id string to grant access to.' }, access: oneOf('use', 'repair'),
+    bot: { ...text, description: 'The Bot id string to assign as maintainer.' },
     name: text, adapter: { anyOf: [object({ arguments: launchArguments }, ['arguments']), object({ recipe: adapterRecipe }, ['recipe']),
       object({ source: text, runner: refOrId, resume: flag }, ['source', 'runner'])] } }, ['action']) });
 const byName = new Map([...tools, connectionSetupTool].map(tool => [tool.name, tool]));
@@ -252,18 +237,6 @@ export function validateTool(name, args) {
   if (!matches(schema, args)) reject('invalid_arguments', `Invalid arguments for ${name}`);
 }
 
-export function validateCliProbe(probe) {
-  if (!matches(cliProbe, probe)) reject('invalid_probe', 'Specify version and help argument arrays, output rules and encodings');
-  const validCommand = ({ args, exit_codes }) => nativeProbeArgs(args) && (!exit_codes || exit_codes.length > 0 && exit_codes.length <= 16);
-  const { script } = probe;
-  if (!validCommand(probe.version) || !validCommand(probe.help) || script && (
-    !script.runner.id || script.runner.id.length > 128 || script.runner.binding_version < 1 ||
-    (script.path !== undefined ? !/^scripts[\\/][^\0]+\.mjs$/i.test(script.path) || script.path.length > 512 :
-      !script.source.trim() || script.source.length > 48_000 || script.source.includes('\0')))) {
-    reject('invalid_probe', 'Use bounded argument arrays, exit statuses and an authorized script runner');
-  }
-}
-
 export function nativeProbeArgs(args) {
   return Array.isArray(args) && args.length <= 128 && args.every(arg => typeof arg === 'string' && arg.length <= 4096 && !arg.includes('\0'));
 }
@@ -281,16 +254,16 @@ export function validateAdapterRecipe(recipe) {
 }
 
 export function validateLaunchArguments(options, connector) {
-  if (!connector || !matches(launchArguments, options))
-    reject('invalid_adapter', 'Argument overrides require a built-in connector and argument arrays');
+  if (!matches(launchArguments, options))
+    reject('invalid_adapter', 'Launch arguments must use common, start, or resume string arrays');
   const args = Object.values(options).flat();
-  if (args.length > 64) reject('invalid_adapter', 'Supply up to 64 native option flags');
-  const reserved = ['--help', '--version', ...connector.protocolOptions];
+  if (args.length > 64) reject('invalid_adapter', 'Supply up to 64 native option arguments');
+  const reserved = connector ? ['--help', '--version', ...(connector.protocolOptions || [])] : [];
   for (const arg of args) {
+    if (typeof arg !== 'string' || !arg.length || arg.length > 32768 || arg.includes('\0'))
+      reject('invalid_adapter', 'Use bounded non-empty argument strings');
     const option = /^--[a-z][a-z0-9-]*/i.exec(arg)?.[0];
-    if (!option || arg.length > 32768 || arg.includes('\0') || arg.length > option.length && arg[option.length] !== '=')
-      reject('invalid_adapter', 'Use one --option or --option=value per argument');
-    if (reserved.includes(option))
+    if (option && reserved.includes(option))
       reject('connector_argument_reserved', `The built-in connector manages ${option}`, 409);
   }
 }

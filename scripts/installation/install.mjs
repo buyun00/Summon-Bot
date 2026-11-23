@@ -103,7 +103,7 @@ async function startSelected(config, appRoot, previousIntent, resumeRuntime) {
 }
 
 export async function installRelease({ releaseRoot, appRoot, dataRoot, sourceRoot, defaultCwd, publicOrigin = '', port = 8787,
-  onCopyProgress, onProgress, replacePending = false, drainTimeoutMs, signal } = {}) {
+  onCopyProgress, onProgress, replacePending = false, requireClients = false, drainTimeoutMs, signal } = {}) {
   signal?.throwIfAborted();
   releaseRoot = resolve(releaseRoot);
   appRoot = resolve(appRoot);
@@ -163,7 +163,12 @@ export async function installRelease({ releaseRoot, appRoot, dataRoot, sourceRoo
         }
       }
       if (previousManifest && previousManifest.protocolVersion !== manifest.protocolVersion) {
-        await assertClientAvailability({ dataRoot, release: await readJson(join(releaseRoot, 'release.json')), expected: manifest });
+        try {
+          await assertClientAvailability({ dataRoot, release: await readJson(join(releaseRoot, 'release.json')), expected: manifest });
+        } catch (error) {
+          if (requireClients) throw error;
+          console.warn(`[Summon Install Warning] Protocol version changed (${previousManifest.protocolVersion} -> ${manifest.protocolVersion}) without all client packages published: ${error.message}`);
+        }
       }
       await stageRelease(releaseRoot, destination, manifest, onCopyProgress);
       signal?.throwIfAborted();
@@ -175,7 +180,12 @@ export async function installRelease({ releaseRoot, appRoot, dataRoot, sourceRoo
       if (!replacePending) throw new Error(`Continue installation ${state.target_build} with its staged release, or use --replace-pending with a repaired build`);
       const previousManifest = state.previous_release && await candidate(state.previous_release);
       if (previousManifest && previousManifest.protocolVersion !== manifest.protocolVersion) {
-        await assertClientAvailability({ dataRoot, release: await readJson(join(releaseRoot, 'release.json')), expected: manifest });
+        try {
+          await assertClientAvailability({ dataRoot, release: await readJson(join(releaseRoot, 'release.json')), expected: manifest });
+        } catch (error) {
+          if (requireClients) throw error;
+          console.warn(`[Summon Install Warning] Protocol version changed (${previousManifest.protocolVersion} -> ${manifest.protocolVersion}) without all client packages published: ${error.message}`);
+        }
       }
       await stageRelease(releaseRoot, destination, manifest, onCopyProgress);
       signal?.throwIfAborted();
@@ -242,6 +252,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   runInstallation({ releaseRoot: options['release-root'], appRoot: options['app-root'], dataRoot: options['data-root'],
     sourceRoot: options['source-root'], defaultCwd: options.cwd, publicOrigin: options['public-origin'], port: options.port,
     replacePending: options['replace-pending'] === true,
+    requireClients: options['require-clients'] === true,
     drainTimeoutMs: Number(options['drain-timeout-ms']),
     onProgress: result => console.log(JSON.stringify(result)),
   }).then(result => console.log(JSON.stringify(result, null, 2))).catch(error => { console.error(error.message); process.exitCode = 1; });

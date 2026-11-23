@@ -5,9 +5,7 @@ import { samePath } from '../../bot/src/capabilities/file-policy.mjs';
 import { idOf, reject, user } from '../platform/contract.mjs';
 import { connectionExecutable } from '../services/connection-launch.mjs';
 import { canSupplyProcessArguments, connectionRecords } from '../services/connection-records.mjs';
-import { allowsExecutable } from '../services/executable-scope.mjs';
-import { localExecutable } from '../services/native-host.mjs';
-import { observeNativeProbe, visibleProbe } from '../services/native-probe.mjs';
+import { inspectNative, localExecutable } from '../services/native-host.mjs';
 import { connectorFor, connectors } from './registry.mjs';
 import { ConnectionOnboarding, executionEnvironment } from './onboarding.mjs';
 
@@ -46,9 +44,8 @@ export class ConnectionInitializer {
     this.onboarding = new ConnectionOnboarding(platform);
   }
 
-  async locate({ command, executable }, definition, setup) {
+  async locate({ command, executable }, definition) {
     const { dataRoot } = this.platform;
-    const scopedPaths = setup.executables;
     const name = command || definition?.command;
     if (executable !== undefined && !isAbsolute(executable) || name && !names.test(name))
       reject('invalid_executable', 'Use a command name or an absolute path to an installed executable');
@@ -56,13 +53,11 @@ export class ConnectionInitializer {
     const direct = name && windows ? [`${name}.exe`, `${name}.com`] : [name];
     const shims = name && windows ? [`${name}.cmd`, `${name}.bat`, `${name}.ps1`] : [];
     const inPath = files => files[0] ? roots.flatMap(root => files.map(file => join(root, file))) : [];
-    const matchesCommand = path => windows ? basename(path, extname(path)).toLowerCase() === name?.toLowerCase() : basename(path) === name;
-    const candidates = executable ? [executable] : scopedPaths ? scopedPaths.map(item => item.file).filter(matchesCommand) :
+    const candidates = executable ? [executable] :
       [...inPath(direct), ...(await definition?.candidates(roots) || []), ...inPath(shims)];
     for (const file of new Set(candidates)) {
       try {
         const found = await localExecutable(file);
-        if (!allowsExecutable(scopedPaths, found.canonicalFile)) continue;
         await connectionExecutable({ config: { file, canonical_file: found.canonicalFile } }, dataRoot, dataRoot);
         return found;
       } catch (error) {
@@ -72,45 +67,29 @@ export class ConnectionInitializer {
     return null;
   }
 
-  probe(found, definition, args, context, options) {
-    return observeNativeProbe({ file: found.canonicalFile, name: found.name, cwd: this.platform.connections.workspace,
-      topic: args.help_topic || definition?.helpTopic, diagnosticArgs: args.diagnostic_args, signal: context.signal, ...options });
+  async probe(found, definition, args, context) {
+    const cwd = this.platform.connections.workspace;
+    const topic = args.help_topic || definition?.helpTopic;
+    const [versionRes, helpRes, topicRes] = await Promise.all([
+      inspectNative(found.canonicalFile, ['--version'], cwd, { signal: context.signal, timeoutMs: 15_000 }),
+      inspectNative(found.canonicalFile, ['--help'], cwd, { signal: context.signal, timeoutMs: 15_000 }),
+      topic ? inspectNative(found.canonicalFile, [topic, '--help'], cwd, { signal: context.signal, timeoutMs: 15_000 }) : null,
+    ]);
+    const version = (versionRes.stdout || versionRes.stderr || '').trim().split(/\r?\n/)[0]?.slice(0, 240) || '';
+    const help = [helpRes.stdout, helpRes.stderr].filter(Boolean).join('\n');
+    const topic_help = topicRes ? [topicRes.stdout, topicRes.stderr].filter(Boolean).join('\n') : '';
+    return { status: 'observed', cwd, version, help, topic_help,
+      observations: [
+        { purpose: 'version', exitCode: versionRes.exitCode ?? null, stdout: versionRes.stdout.slice(0, 12_000), stderr: versionRes.stderr.slice(0, 12_000) },
+        { purpose: 'help', exitCode: helpRes.exitCode ?? null, stdout: helpRes.stdout.slice(0, 12_000), stderr: helpRes.stderr.slice(0, 12_000) },
+        ...(topicRes ? [{ purpose: 'topic_help', exitCode: topicRes.exitCode ?? null, stdout: topicRes.stdout.slice(0, 12_000), stderr: topicRes.stderr.slice(0, 12_000) }] : []),
+      ] };
   }
 
   managed(context) {
     const host = this.platform.connections;
     return this.platform.store.list(connectionRecords).filter(entry => this.platform.repairableConnection(entry, context) &&
       host.authorized(entry, context.actor));
-  }
-
-  setupOwns(entry, context, setup) {
-    if (!entry || !['codex', 'cli'].includes(entry.kind) || entry.config.initialized_for !== context.actor.id ||
-        !this.platform.canUseConnection(context.actor, entry.id, context) || !this.platform.connections.authorized(entry, context.actor)) return false;
-    const workspace = setup.workspace && this.platform.workspace(setup.workspace, context);
-    return workspace ? Boolean(entry.config.workspace_root && samePath(workspace.path, entry.config.workspace_root)) : !entry.config.workspace_root;
-  }
-
-  async grantAccess(args, context, setup, call, entry) {
-    const host = this.platform.connections;
-    if (!entry || (!setup.hostSetup && !this.platform.isOnboardingBot(context.actor) && !this.platform.repairableConnection(entry, context)))
-      reject('connection_forbidden', 'Grant access requires an authorized onboarding or maintenance connection', 403);
-    const bot = this.platform.getBot(idOf(args.bot, 'bot'));
-    const actor = { kind: 'bot', id: bot.id };
-    if (!['use', 'repair'].includes(args.access)) reject('invalid_arguments', 'Specify use or repair access');
-    if (args.revision !== undefined && args.revision !== entry.revision)
-      reject('revision_conflict', 'Connection settings changed', 409, { revision: entry.revision });
-    if (!host.authorized(entry, actor))
-      reject('dependency_unavailable', 'The connection or a required CLI dependency is unavailable', 409);
-    const saved = args.access === 'repair' && entry.maintainer_bot_id !== bot.id
-      ? this.platform.bindMaintainer(entry, bot.id)
-      : (this.platform.grantMaintainerWorkspace(entry, bot.id), entry);
-    this.platform.calls.bind(call.id, { target: { kind: 'connection', id: saved.id } });
-    this.platform.emit('connection');
-    return this.platform.calls.finish(call.id, 'completed', {
-      ...host.clean(host.summary(saved), []),
-      ...this.platform.connectionMaintenance(saved, context),
-      bot: actor, access: args.access,
-    });
   }
 
   async run(args, context, setup, call) {
@@ -126,12 +105,11 @@ export class ConnectionInitializer {
     if (action === 'upsert_method') return this.onboarding.upsert(args, context, call, selected);
     if (action === 'register') {
       if (args.protocol) return this.onboarding.register(args, context, setup, call, selected);
-      if (args.config !== undefined) reject('invalid_connection', 'Specify protocol when supplying config. For an existing CLI version update, use protocol:"cli", connection, revision and config.detected_version');
+      if (args.config !== undefined) reject('invalid_connection', 'Specify protocol when supplying config');
     }
     if (setup.repair && selected && (args.connector && args.connector !== selectedConnector ||
         args.executable && !samePath(args.executable, selected.config.file)))
       reject('connection_binding_conflict', 'Repair stays on the registered connector and executable', 409);
-    if (action === 'grant_access') return this.grantAccess(args, context, setup, call, selected);
     if (connector && !definition) reject('connector_not_found', 'The built-in connector is unavailable', 404);
     if (action === 'guide') {
       const { text, ...reference } = await executionGuide({ example: args.example });
@@ -140,16 +118,13 @@ export class ConnectionInitializer {
     }
     if (action === 'source') {
       if (args.connection) {
-        if (!selected) reject('connection_forbidden', 'This connection is outside the Pi initializer’s authority', 403);
+        if (!selected) reject('connection_forbidden', 'This connection is outside the caller’s maintenance authority', 403);
         const adapter = selected.config.adapter;
         return host.clean({ ...(adapter?.source !== undefined ? { ...pageText(adapter.source, offset), runner: adapter.runner.id,
           runner_binding: adapter.runner, resume: adapter.resume } :
           adapter?.recipe ? { recipe: adapter.recipe } : definition ? pageText(await readFile(definition.source, 'utf8'), offset) :
             await host.read(selected.id, this.platform.connectionContext(context))),
           ...(selected.config.launch_arguments ? { arguments: selected.config.launch_arguments } : {}),
-          ...(selected.config.probe ? { probe: visibleProbe(selected.config.probe),
-            ...(selected.config.probe.script?.source !== undefined ?
-              { probe_script: pageText(selected.config.probe.script.source, offset) } : {}) } : {}),
           ref: { kind: 'connection', id: selected.id } });
       }
       if (!definition) reject('connector_required', 'Choose a connector or a managed connection');
@@ -164,47 +139,33 @@ export class ConnectionInitializer {
       if (setup.onboarding || args.query || args.command || args.executable || args.target || args.workspace)
         return this.onboarding.discovery(args, context, setup);
       const items = setup.repair ? [] : await Promise.all(connectors.map(async item => ({ id: item.id, name: item.name, command: item.command,
-        executable: (await this.locate({}, item, setup))?.file ?? null })));
-      return { environment: executionEnvironment(), items, ...(setup.executables ? { authorized_executables: setup.executables.map(item => item.file) } : {}),
+        executable: (await this.locate({}, item))?.file ?? null })));
+      return { environment: executionEnvironment(), items,
         ...(setup.workspace ? { workspace: this.platform.workspace(setup.workspace, context) } : {}),
         managed: (setup.connections ?? this.managed(context)).map(entry => ({ ...host.summary(entry), ...this.platform.connectionMaintenance(entry),
           file: entry.config.file, connector: entry.config.adapter?.connector ?? entry.config.setup_key, resume: entry.config.adapter?.resume,
           custom: Boolean(entry.config.adapter?.recipe || entry.config.adapter?.source), workspace_root: entry.config.workspace_root })) };
     }
-    if (action === 'inspect' && (!setup.hostSetup || args.target || args.connection || args.probe || args.diagnostic_args)) {
+    if (action === 'inspect') {
       const result = await this.onboarding.inspect(args, context, setup, this, definition, selected, call);
       if (!result.found) return result;
-      const { found, observed, environment, connection, maintenance } = result;
+      const { found, observed, environment, connection } = result;
       return host.clean({ ...observed, available: true, environment, connector, file: found.file, canonical_file: found.canonicalFile,
         ...(connection ? { connection: { kind: 'connection', id: connection.id }, revision: connection.revision } : {}),
-        ...(maintenance ? { maintenance } : {}),
         help: pageText(observed.help, offset), topic_help: pageText(observed.topic_help, offset),
         ...(definition ? { settings: definition.settings(observed.help, observed.topic_help),
           argument_overrides: { reserved: definition.protocolOptions, current: selected?.config.launch_arguments ?? {} } } : {}) });
     }
     if (!definition && !args.command && !args.executable && !selected) reject('executable_required', 'Choose a connector, command or executable path');
     const target = selected && (setup.repair || !args.executable) ? { executable: selected.config.file } : args;
-    const found = await this.locate(target, definition, setup);
-    if (!found) return { available: false, connector, reason: 'The executable was not found in this initialization scope' };
+    const found = await this.locate(target, definition);
+    if (!found) return { available: false, connector, reason: 'The executable was not found in PATH or at the specified path' };
     this.platform.requireConnectionSetup(context, args);
     const observation = await this.probe(found, definition, args, context);
     const settings = definition?.settings(observation.help, observation.topic_help);
-    if (action === 'inspect') return host.clean({ ...observation, available: true, connector, file: found.file, canonical_file: found.canonicalFile,
-      help: pageText(observation.help, offset), topic_help: pageText(observation.topic_help, offset), settings,
-      ...(definition ? { argument_overrides: { reserved: definition.protocolOptions, current: selected?.config.launch_arguments ?? {} } } : {}) });
     const raw = selected?.kind === 'cli' && !selected.config.adapter;
     if (raw && args.adapter) reject('connection_binding_conflict', 'Use host connection settings to replace the raw CLI input contract', 409);
     if (!definition && !args.adapter && !selected) reject('adapter_required', 'Supply an adapter for the inspected CLI');
-    if (args.adapter?.arguments && !definition) reject('invalid_adapter', 'Argument overrides require an installed built-in connector');
-    if (setup.executables === undefined && args.adapter) {
-      const installed = definition && await this.locate({}, definition, setup);
-      const existing = this.platform.store.list(connectionRecords).some(entry => entry.kind === 'cli' &&
-        entry.config.canonical_file && samePath(entry.config.canonical_file, found.canonicalFile) &&
-        this.platform.canUseConnection(context.actor, entry.id, context) && host.authorized(entry, context.actor) &&
-        canSupplyProcessArguments(entry, context.actor));
-      if (!(installed && samePath(installed.canonicalFile, found.canonicalFile)) && !existing)
-        reject('executable_scope_forbidden', 'Use an executable selected by the host or an existing native argument grant', 403);
-    }
     return this.register({ args, found, definition, selected, raw, version: observation.version, settings, setup, call, context });
   }
 
@@ -220,19 +181,20 @@ export class ConnectionInitializer {
       (!scopedWorkspace && !entry.config.workspace_root));
     const matchesConnector = entry => entry.config.setup_key === setupKey && entry.kind === kind &&
       samePath(entry.config.canonical_file, found.canonicalFile) && matchesScope(entry);
-    const owned = this.managed(context).filter(entry => setup.repair || entry.config.initialized_for === context.actor.id);
-    const previous = current ? owned.find(entry => entry.id === current && matchesScope(entry)) : owned.find(matchesConnector);
-    if (current && !previous) reject('connection_forbidden', 'The existing connection is outside this Bot’s initialization authority', 403);
+    const owned = this.managed(context);
+    const previous = current ? owned.find(entry => entry.id === current) : owned.find(matchesConnector);
+    if (current && !previous) reject('connection_forbidden', 'The existing connection is outside this Bot’s authority', 403);
     if (previous && previous.kind !== kind) reject('connection_binding_conflict', 'Use a new connection when replacing the protocol', 409);
     if (previous && !samePath(previous.config.canonical_file, found.canonicalFile))
       reject('connection_binding_conflict', 'The selected connection is bound to another executable', 409);
-    if (current && args.revision !== previous.revision) reject('revision_conflict', 'Connection settings changed', 409, { revision: previous.revision });
+    if (current && args.revision !== undefined && args.revision !== previous.revision)
+      reject('revision_conflict', 'Connection settings changed', 409, { revision: previous.revision });
     const name = args.name?.trim() || previous?.name || definition?.name || found.name;
     if (name.length > 120) reject('invalid_connection', 'Use a connection name of at most 120 characters');
     const id = previous?.id ?? call.id;
     const config = { ...previous?.config,
       ...(!setup.repair ? { file: found.file, canonical_file: found.canonicalFile } : {}),
-      ...(!previous ? { allow_arguments: false, initialized_for: context.actor.id } : {}),
+      ...(!previous ? { allow_arguments: false } : {}),
       ...(setupKey ? { setup_key: setupKey } : {}), detected_version: version || previous?.config.detected_version,
       ...(scopedWorkspace ? { workspace_root: scopedWorkspace.path, workspace_write: scopedWorkspace.write } : {}) };
     if (definition && !raw && !custom && (argumentOverrides || previous?.config.adapter?.source === undefined && !previous?.config.adapter?.recipe))
@@ -248,19 +210,13 @@ export class ConnectionInitializer {
       const runnerId = idOf(args.adapter.runner, 'connection');
       const runner = host.get(runnerId);
       if (runner?.kind !== 'cli' || runner.config.adapter || runnerId === id ||
-          !host.authorized(runner, context.actor) || !canSupplyProcessArguments(runner, context.actor) ||
-          !allowsExecutable(setup.executables, runner.config.canonical_file) || setup.repair && runnerId !== previous?.config.adapter?.runner?.id)
-        reject('script_runner_forbidden', 'Use the existing native runner and direct argument grant for this Pi', 403);
+          !host.authorized(runner, context.actor) || !canSupplyProcessArguments(runner, context.actor))
+        reject('script_runner_forbidden', 'Use an existing native runner with direct argument access', 403);
       await connectionExecutable(runner, host.dataRoot, host.dataRoot);
-      const live = host.get(runnerId);
-      if ((live?.binding_version ?? 1) !== (runner.binding_version ?? 1) || !host.authorized(live, context.actor))
-        reject('connection_binding_changed', 'The native runner grant changed during initialization', 409);
       config.adapter = { connector: definition?.id, resume: resume === true, source,
         runner: { id: runnerId, binding_version: runner.binding_version ?? 1 } };
     }
     this.platform.requireConnectionSetup(context, args);
-    if (!previous && this.managed(context).some(entry => entry.config.initialized_for === context.actor.id && matchesConnector(entry)))
-      reject('revision_conflict', 'Another initialization registered this connector', 409);
     const previousRunner = previous?.config.adapter?.runner?.id;
     const dependencies = [...new Set([...(previous?.dependencies || []).filter(id => id !== previousRunner),
       ...(config.adapter?.runner ? [config.adapter.runner.id] : [])])];

@@ -38,7 +38,8 @@ export function createApi({ platform, room, attachments, models, connections, pu
       if (revision !== undefined && (!Number.isSafeInteger(revision) || revision < 1)) reject('invalid_revision', 'Invalid revision number');
       return platform.read({ ref, cursor: params.get('cursor') || undefined, limit,
         ...(revision !== undefined && { revision }),
-        ...(ref.kind === 'workspace' && params.has('path') && { path: params.get('path') }) }, userContext);
+        ...(ref.kind === 'workspace' && params.has('path') && { path: params.get('path') }),
+        ...(ref.kind === 'workspace' && params.has('directory') && { directory: params.get('directory') }) }, userContext);
     };
     const mutation = async (name, body, clientId) => {
       const { result, call_id } = await platform.executeTool(name, body, { ...userContext, clientId });
@@ -134,8 +135,7 @@ export function createApi({ platform, room, attachments, models, connections, pu
       if (!platform.visibleBot(platform.getBot(id), userContext)) reject('bot_not_found', 'Bot not found', 404);
       if (method === 'GET') {
         const current = platform.accessFor({ kind: 'bot', id });
-        return { id, revision: current.revision ?? 0, model_ids: current.model_ids || [], workspace_ids: current.workspace_ids || [],
-          execution_onboarding: current.execution_onboarding ?? null };
+        return { id, revision: current.revision ?? 0, model_ids: current.model_ids || [], workspace_ids: current.workspace_ids || [] };
       }
       if (method === 'PATCH') {
         const prior = platform.accessFor({ kind: 'bot', id });
@@ -277,6 +277,13 @@ export function createApi({ platform, room, attachments, models, connections, pu
       if (method === 'GET') return list('workspace', params);
       if (method === 'POST') return platform.configureWorkspace(args);
     }
+    if ((match = path.match(/^\/api\/workspaces\/([^/]+)\/file$/))) {
+      const ref = routeRef('workspace', match[1]);
+      if (['GET', 'HEAD'].includes(method)) {
+        const filePath = params.get('path') || '';
+        return platform.streamWorkspaceFile(ref.id, filePath, userContext, { preview: params.get('preview') === '1' });
+      }
+    }
     if ((match = path.match(/^\/api\/workspaces\/([^/]+)$/))) {
       const ref = routeRef('workspace', match[1]);
       if (method === 'GET') return read(ref, params);
@@ -292,7 +299,11 @@ export function createApi({ platform, room, attachments, models, connections, pu
     }
     if (path === preservedModelSettings && method === 'GET') return models.snapshot();
     if (path === preservedModelSettings + '/local' && method === 'GET') return models.localLogins();
-    if (path === preservedModelSettings + '/local/import' && method === 'POST') return models.importLocal(args.kind);
+    if (path === preservedModelSettings + '/local/import' && method === 'POST') {
+      const result = await models.importLocal(args.kind);
+      platform.runtime.resumeRecoveredRuns({ kind: 'model', id: result?.importedId || null });
+      return result;
+    }
     if (path === preservedModelSettings + '/connections' && method === 'POST') {
       const result = await models.save(args);
       platform.runtime.resumeRecoveredRuns({ kind: 'model', id: result?.connection?.id || args?.id || null });

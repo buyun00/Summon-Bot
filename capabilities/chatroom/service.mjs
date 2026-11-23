@@ -18,7 +18,16 @@ function references(value, label, kind) {
   return list(value, label).map(ref => {
     if (kind) return { kind, id: idOf(ref, kind) };
     if (!ref || typeof ref !== 'object' || Array.isArray(ref)) fail(label + '格式无效');
-    return { kind: identifier(ref.kind, '引用类型'), id: identifier(ref.id, '引用 ID') };
+    const refKind = identifier(ref.kind, '引用类型');
+    if (refKind === 'workspace_file') {
+      const workspace_id = identifier(ref.workspace_id, '工作区 ID');
+      const path = typeof ref.path === 'string' && ref.path.trim() && ref.path.length <= 500 && !/[\\:\p{Cc}]/u.test(ref.path) &&
+        !ref.path.split('/').some(part => !part || part === '.' || part === '..')
+        ? ref.path.trim()
+        : fail('工作区文件路径无效');
+      return { kind: 'workspace_file', workspace_id, path };
+    }
+    return { kind: refKind, id: identifier(ref.id, '引用 ID') };
   });
 }
 
@@ -28,7 +37,9 @@ function titleOf(value, fallback) {
   return value.trim();
 }
 
-const refKey = ({ kind, id }) => JSON.stringify([kind, id]);
+const refKey = ref => ref?.kind === 'workspace_file'
+  ? JSON.stringify([ref.kind, ref.workspace_id, ref.path])
+  : JSON.stringify([ref?.kind, ref?.id]);
 const directMembers = members => members.length === 2 && members.includes('user');
 const roomActivity = "(kind='messages' OR (kind='platform-events' AND json_extract(data,'$.type')='work.tool'))";
 function rowMessage(row) {
@@ -42,8 +53,8 @@ function rowMessage(row) {
     ...(forSessionId ? { forSessionId } : {}),
     ...(originMessageId ? { originMessageId } : {}),
     ...(awaitingReply ? { awaitingReply: true } : {}),
-    attachments: (message.attachments ?? []).map(({ id: fileId, name, mimeType, size, url, previewUrl, openUrl, unavailable }) =>
-      ({ id: fileId, ref: { kind: 'file', id: fileId }, name, mimeType, size, url, previewUrl, openUrl, unavailable })),
+    attachments: (message.attachments ?? []).map(({ id: fileId, name, mimeType, size, revision, url, previewUrl, openUrl, unavailable }) =>
+      ({ id: fileId, ref: { kind: 'file', id: fileId }, name, mimeType, size, ...(revision !== undefined ? { revision } : {}), url, previewUrl, openUrl, unavailable })),
     references: message.references ?? [], mentions: message.mentions ?? [] };
 }
 
@@ -136,6 +147,10 @@ export class ChatroomService {
     }
     message.attachments = message.attachments.map(file => {
       if (!file.url) return file;
+      if (file.url.startsWith('/api/files/')) {
+        const stored = this.platform.files.get(file.id);
+        return stored ? file : { ...file, unavailable: true };
+      }
       const stored = this.attachments.find(file.id);
       return stored ? file : { ...file, unavailable: true };
     });
@@ -286,7 +301,7 @@ export class ChatroomService {
     for (const member of members) {
       if (member === actor || member === 'user') continue;
       const bot = this.manager.get(member);
-      if (bot.connection_initializer || bot.archivedAt) fail('此 Bot 无法加入会话', 403);
+      if (bot.archivedAt) fail('此 Bot 无法加入会话', 403);
     }
   }
 
@@ -451,7 +466,14 @@ export class ChatroomService {
         const sharedFile = this.assertShareable(ref, room, actor);
         if (file) return { ...this.attachments.project(file), grants_room_access: false };
         if (!sharedFile?.name && !sharedFile?.path) fail('附件不存在', 404);
-        return { id: ref.id, ref, name: sharedFile.name ?? sharedFile.path, size: sharedFile.size };
+        return {
+          id: ref.id,
+          ref,
+          name: sharedFile.name ?? sharedFile.path,
+          size: sharedFile.size,
+          ...(sharedFile.revision !== undefined ? { revision: sharedFile.revision } : {}),
+          url: sharedFile.url || `/api/files/${encodeURIComponent(ref.id)}/download`,
+        };
       });
       if (!content.trim() && !attachments.length && !refs.length) fail('请填写正文，或添加附件或引用');
       const forSessionId = input.for_session_id ? identifier(input.for_session_id, '关联会话 ID') : null;

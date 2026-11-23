@@ -108,7 +108,10 @@ export async function startGateway(options = {}) {
     stores.push(result);
     return result;
   }
-  function emit(type) {
+  function emit(type, payload = null) {
+    if (type === 'models.changed' && payload?.id) {
+      runtime?.resumeRecoveredRuns?.({ kind: 'model', id: payload.id });
+    }
     const line = `data: ${JSON.stringify({ type })}\n\n`;
     for (const client of clients) {
       if (client.writableLength > 65536) client.destroy();
@@ -253,6 +256,14 @@ export async function startGateway(options = {}) {
           if (Buffer.isBuffer(result.bytes)) {
             res.writeHead(200, result.headers);
             res.end(req.method === 'HEAD' ? undefined : result.bytes);
+          } else if (result.stream) {
+            res.writeHead(200, result.headers);
+            if (req.method === 'HEAD') {
+              result.stream.destroy();
+              res.end();
+            } else {
+              await pipeline(result.stream, res);
+            }
           } else if (result.sync && params.get('pages') === '1') {
             res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'private, no-store, no-transform' });
             await pipeline(Readable.from(syncPages(result)), res);

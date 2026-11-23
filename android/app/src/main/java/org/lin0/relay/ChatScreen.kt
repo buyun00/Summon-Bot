@@ -48,6 +48,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withLink
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.HelpOutline
@@ -715,6 +722,55 @@ private fun parseMessageSegments(source: String): List<AndroidMessageSegment> {
     return segments.ifEmpty { listOf(AndroidMessageSegment.Plain(source)) }
 }
 
+private val messageLinkRegex = Regex("""\[([^\]\n]{1,200})]\(([^)\s]{1,2048})\)|(https?://[^\s<>"'()]+|/api/(?:files|attachments|workspaces|games)/[^\s<>"'()]+)""")
+
+@Composable
+private fun LinkedPlainText(
+    text: String,
+    color: Color,
+    linkColor: Color,
+    onOpenLink: (String, String) -> Unit,
+) {
+    val annotated = remember(text, linkColor) {
+        buildAnnotatedString {
+            var last = 0
+            for (match in messageLinkRegex.findAll(text)) {
+                if (match.range.first > last) append(text.substring(last, match.range.first))
+                val mdLabel = match.groupValues[1]
+                val mdUrl = match.groupValues[2]
+                val bareUrl = match.groupValues[3]
+                var rawUrl = if (mdLabel.isNotEmpty()) mdUrl else bareUrl
+                var trailing = ""
+                if (mdLabel.isEmpty()) {
+                    val trimmed = rawUrl.trimEnd('.', ',', ';', ':', '!', '?', '。', '，', '；', '：', '！', '？', ')', '）', '】', '》')
+                    trailing = rawUrl.substring(trimmed.length)
+                    rawUrl = trimmed
+                }
+                val safe = rawUrl.startsWith("https://") || rawUrl.startsWith("http://") ||
+                    rawUrl.startsWith("/api/files/") || rawUrl.startsWith("/api/attachments/") ||
+                    rawUrl.startsWith("/api/workspaces/") || rawUrl.startsWith("/api/games/")
+                if (safe && rawUrl.isNotEmpty()) {
+                    val label = mdLabel.ifEmpty { rawUrl }
+                    val targetUrl = rawUrl
+                    withLink(
+                        LinkAnnotation.Clickable(
+                            tag = "link",
+                            styles = TextLinkStyles(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)),
+                            linkInteractionListener = { onOpenLink(targetUrl, label) },
+                        ),
+                    ) { append(label) }
+                    if (trailing.isNotEmpty()) append(trailing)
+                } else {
+                    append(match.value)
+                }
+                last = match.range.last + 1
+            }
+            if (last < text.length) append(text.substring(last))
+        }
+    }
+    Text(annotated, color = color)
+}
+
 @Composable
 private fun CodeBlockCard(language: String, code: String) {
     val palette = LocalSummonPalette.current
@@ -879,6 +935,7 @@ private fun MessageRow(store: SummonStore, roomID: String, message: SummonMessag
                         bottomEnd = if (message.isOwn) 6.dp else 20.dp,
                     )
                     val segments = remember(message.content) { parseMessageSegments(message.content) }
+                    val uriHandler = LocalUriHandler.current
                     Surface(
                         shape = bubbleShape,
                         color = if (message.isOwn) palette.userBubble else palette.botBubble,
@@ -888,9 +945,26 @@ private fun MessageRow(store: SummonStore, roomID: String, message: SummonMessag
                             Column(Modifier.padding(horizontal = 14.dp, vertical = 11.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                 segments.forEach { segment ->
                                     when (segment) {
-                                        is AndroidMessageSegment.Plain -> Text(
-                                            segment.text,
+                                        is AndroidMessageSegment.Plain -> LinkedPlainText(
+                                            text = segment.text,
                                             color = if (message.isOwn) palette.userBubbleText else MaterialTheme.colorScheme.onSurface,
+                                            linkColor = if (message.isOwn) palette.userBubbleText else MaterialTheme.colorScheme.primary,
+                                            onOpenLink = { targetUrl, label ->
+                                                if (targetUrl.startsWith("http://") || targetUrl.startsWith("https://")) {
+                                                    runCatching { uriHandler.openUri(targetUrl) }
+                                                        .onFailure { error = it.localizedMessage }
+                                                } else if (targetUrl.startsWith("/api/")) {
+                                                    scope.launch {
+                                                        try {
+                                                            val fileName = label.substringAfterLast('/').ifBlank { "file" }
+                                                            val downloaded = store.downloadRelativePath(targetUrl, fileName)
+                                                            shareFile(context, downloaded, "application/octet-stream")
+                                                        } catch (failure: Exception) {
+                                                            error = failure.localizedMessage
+                                                        }
+                                                    }
+                                                }
+                                            },
                                         )
                                         is AndroidMessageSegment.Code -> CodeBlockCard(segment.language, segment.code)
                                     }

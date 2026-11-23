@@ -184,7 +184,28 @@ function createWindow() {
   });
   target.on('closed', () => { if (target === window) window = null; });
   target.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:\/\//.test(url)) shell.openExternal(url).catch(() => {});
+    if (/^https?:\/\//.test(url)) {
+      if (connection?.origin && webOrigin(url) === connection.origin) {
+        return {
+          action: 'allow',
+          overrideBrowserWindowOptions: {
+            width: 1120,
+            height: 800,
+            minWidth: 420,
+            minHeight: 420,
+            autoHideMenuBar: process.platform !== 'darwin',
+            backgroundColor: nativeTheme.shouldUseDarkColors ? '#0b0c10' : '#f8f6f1',
+            webPreferences: {
+              nodeIntegration: false,
+              contextIsolation: true,
+              sandbox: true,
+              session: target.webContents.session,
+            },
+          },
+        };
+      }
+      shell.openExternal(url).catch(() => {});
+    }
     return { action: 'deny' };
   });
   target.webContents.on('will-frame-navigate', event => {

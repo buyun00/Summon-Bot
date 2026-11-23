@@ -38,9 +38,17 @@ data class SummonAvatar(
     }
 }
 
-data class SummonReference(val kind: String, val id: String) {
+data class SummonReference(
+    val kind: String,
+    val id: String,
+    val workspaceId: String? = null,
+    val filePath: String? = null,
+) {
     val path: String?
         get() {
+            if (kind == "workspace_file" && !workspaceId.isNullOrBlank() && !filePath.isNullOrBlank()) {
+                return "/api/workspaces/${SummonApiClient.component(workspaceId)}/file?path=${SummonApiClient.component(filePath)}"
+            }
             val part = SummonApiClient.component(id)
             return when (kind) {
                 "session", "conversation" -> "/api/executions/$kind/$part"
@@ -54,11 +62,20 @@ data class SummonReference(val kind: String, val id: String) {
             }
         }
 
-    fun toJson(): SummonJson = SummonJson.obj("kind" to SummonJson.Str(kind), "id" to SummonJson.Str(id))
+    fun toJson(): SummonJson = if (kind == "workspace_file" && !workspaceId.isNullOrBlank() && !filePath.isNullOrBlank()) {
+        SummonJson.obj("kind" to SummonJson.Str(kind), "workspace_id" to SummonJson.Str(workspaceId), "path" to SummonJson.Str(filePath))
+    } else {
+        SummonJson.obj("kind" to SummonJson.Str(kind), "id" to SummonJson.Str(id))
+    }
 
     companion object {
         fun parse(json: SummonJson): SummonReference? {
             val kind = json["kind"].string ?: return null
+            if (kind == "workspace_file") {
+                val wsId = json["workspace_id"].string?.takeIf { it.isNotEmpty() } ?: return null
+                val relPath = json["path"].string?.takeIf { it.isNotEmpty() } ?: return null
+                return SummonReference(kind = kind, id = "$wsId:$relPath", workspaceId = wsId, filePath = relPath)
+            }
             val id = json["id"].string?.takeIf { it.isNotEmpty() } ?: return null
             return SummonReference(kind, id)
         }
@@ -107,6 +124,7 @@ data class SummonAttachment(
     val name: String,
     val mimeType: String,
     val size: Int,
+    val revision: Int? = null,
     val url: String? = null,
     val previewUrl: String? = null,
     val unavailable: Boolean = false,
@@ -116,12 +134,13 @@ data class SummonAttachment(
     val downloadPath: String
         get() {
             val part = SummonApiClient.component(id)
-            return if (url?.startsWith("/api/files/") == true) "/api/files/$part/download" else "/api/attachments/$part"
+            return if (url?.startsWith("/api/files/") == true) url else "/api/attachments/$part"
         }
 
     fun toJson(): SummonJson = SummonJson.obj(
         "id" to SummonJson.Str(id), "name" to SummonJson.Str(name),
         "mimeType" to SummonJson.Str(mimeType), "size" to size.numOrNull(),
+        "revision" to revision.numOrNull(),
         "url" to url.strOrNull(), "previewUrl" to previewUrl.strOrNull(),
         "unavailable" to SummonJson.Bool(unavailable), "staged" to SummonJson.Bool(staged),
     )
@@ -132,6 +151,7 @@ data class SummonAttachment(
             name = json["name"].string ?: "附件",
             mimeType = json["mimeType"].string ?: "application/octet-stream",
             size = json["size"].int ?: 0,
+            revision = json["revision"].int,
             url = json["url"].string,
             previewUrl = json["previewUrl"].string,
             unavailable = json["unavailable"].bool == true,

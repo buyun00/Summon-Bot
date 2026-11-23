@@ -321,6 +321,11 @@ export class BotEngine {
       if (signal.aborted) signal.throwIfAborted();
       if (failure) throw failure;
       if (last?.stopReason !== 'stop') {
+        if (last?.providerFault?.code) {
+          throw runtimeFailure(last.providerFault.code, last.errorMessage || 'Model authentication or quota error',
+            last.providerFault.http_status || (last.providerFault.code === 'quota_exhausted' ? 402 : 401),
+            { connection_id: last.providerFault.connection_id, http_status: last.providerFault.http_status });
+        }
         if (last?.transportFailure?.retryable)
           throw runtimeFailure('model_transport_interrupted', last.errorMessage || 'Model connection was interrupted before output', 503,
             { phase: last.transportFailure.phase });

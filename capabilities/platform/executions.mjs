@@ -1,7 +1,6 @@
 import { activeControl } from '../bot-management/service.mjs';
 import { assertRevision, idOf, identity, keyOf, reject, sameIdentity, sameRef } from './contract.mjs';
 import { callRecords, errorResult, mayAdvanceReceipt } from './calls.mjs';
-import { allowsConnection, enclosesExecutableScope, executableScope } from '../services/executable-scope.mjs';
 import { executionGuide } from '../connectors/initialization.mjs';
 import { operationRecords } from '../services/session-processes.mjs';
 

@@ -69,7 +69,7 @@ const codexSupplementalModels = Object.freeze([
 ]);
 
 export const modelPurposes = Object.freeze(['fast_read', 'conversation', 'pi_session']);
-export const purposeTemplateCategories = Object.freeze(['deepseek', 'openai', 'codex']);
+export const purposeTemplateCategories = Object.freeze(['deepseek', 'openai', 'codex', 'anthropic', 'grok']);
 export function defaultPurposeDefaults() {
   return {
     deepseek: {
@@ -87,6 +87,16 @@ export function defaultPurposeDefaults() {
       conversation: { model: 'gpt-6.1-terra', thinking_level: 'high' },
       pi_session: { model: 'gpt-6.2-sol', thinking_level: 'high' },
     },
+    anthropic: {
+      fast_read: { model: 'claude-sonnet-4-5', thinking_level: 'off' },
+      conversation: { model: 'claude-sonnet-4-5', thinking_level: 'high' },
+      pi_session: { model: 'claude-opus-4-1', thinking_level: 'high' },
+    },
+    grok: {
+      fast_read: { model: 'grok-4', thinking_level: 'off' },
+      conversation: { model: 'grok-4', thinking_level: 'high' },
+      pi_session: { model: 'grok-4', thinking_level: 'high' },
+    },
   };
 }
 export function defaultCodexRecommendations() {
@@ -98,7 +108,10 @@ export function defaultCodexRecommendations() {
 export function purposeCategory(connection) {
   if (!connection) return null;
   if (connection.kind === 'codex') return 'codex';
+  if (connection.kind === 'grok') return 'grok';
   if (connection.kind === 'api' && connection.provider === 'deepseek') return 'deepseek';
+  if (connection.kind === 'api' && connection.provider === 'anthropic') return 'anthropic';
+  if (connection.kind === 'api' && connection.provider === 'xai') return 'grok';
   if (connection.kind === 'api' && connection.provider === 'openai' && (connection.api || 'openai-responses') === 'openai-responses') return 'openai';
   return null;
 }
@@ -106,6 +119,8 @@ export function templateProbeConnection(category) {
   if (category === 'deepseek') return { id: 'template-deepseek', name: 'DeepSeek API', kind: 'api', provider: 'deepseek', api: 'openai-completions', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-flash' };
   if (category === 'openai') return { id: 'template-openai', name: 'OpenAI API', kind: 'api', provider: 'openai', api: 'openai-responses', baseUrl: 'https://api.openai.com/v1', model: 'gpt-6.1-terra' };
   if (category === 'codex') return { id: 'template-codex', name: 'Codex 订阅', kind: 'codex', provider: 'openai-codex', api: 'openai-codex-responses', baseUrl: 'https://chatgpt.com/backend-api', model: 'gpt-6.1-terra' };
+  if (category === 'anthropic') return { id: 'template-anthropic', name: 'Anthropic API', kind: 'api', provider: 'anthropic', api: 'anthropic-messages', baseUrl: 'https://api.anthropic.com', model: 'claude-sonnet-4-5' };
+  if (category === 'grok') return { id: 'template-grok', name: 'Grok', kind: 'grok', provider: 'xai', api: 'openai-responses', baseUrl: 'https://cli-chat-proxy.grok.com/v1', model: 'grok-4' };
   return null;
 }
 export function normalizeModelCatalog(catalog) {
@@ -174,18 +189,21 @@ export function modelConnection(config, id) {
   return { ...selected, connectionStore: config.connectionStore, environmentFile: selected.environmentFile ?? catalog.environmentFile };
 }
 export function officialDeepSeekCompletions(connection, api, baseUrl) {
-  return connection.kind === 'api' && connection.provider === 'deepseek' && api === 'openai-completions' &&
-    Boolean(baseUrl) && new URL(baseUrl).hostname === 'api.deepseek.com' &&
-    ['deepseek-flash', 'deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'].includes(connection.model);
+  try {
+    return connection.kind === 'api' && connection.provider === 'deepseek' && api === 'openai-completions' &&
+      Boolean(baseUrl) && new URL(baseUrl).hostname === 'api.deepseek.com' &&
+      Boolean(connection.model) && !['deepseek-chat', 'deepseek-reasoner'].includes(connection.model);
+  } catch { return false; }
 }
 export function terraResponses(connection, api, model = connection.model) {
   return (connection.kind === 'codex' && api === 'openai-codex-responses' ||
-    connection.kind === 'api' && connection.provider === 'openai' && api === 'openai-responses') && model === 'gpt-6.1-terra';
+    connection.kind === 'api' && connection.provider === 'openai' && api === 'openai-responses') &&
+    typeof model === 'string' && model.includes('terra');
 }
 export function supportsOpenAIRoomCache(connection, model) {
   return connection.kind === 'api' && connection.provider === 'openai' && model.api === 'openai-responses' &&
     model.baseUrl?.replace(/\/+$/, '') === 'https://api.openai.com/v1' &&
-    (model.compat?.supportsExplicitPromptCacheMode === true || openAIExplicitCacheModels.has(model.id));
+    (model.compat?.supportsExplicitPromptCacheMode === true || openAIExplicitCacheModels.has(model.id) || /^gpt-[6-9]/.test(model.id || ''));
 }
 export function connectionModel(connection) {
   const native = factories[connection.kind === 'api' ? connection.provider : connection.kind]?.();
@@ -226,15 +244,13 @@ export function connectionModel(connection) {
     ...(api === 'openai-completions' && !known ? { compat: { supportsStore: false, supportsDeveloperRole: false, supportsStrictMode: false, maxTokensField: 'max_tokens' } } : {}) };
 }
 export function validateModelPurpose(connection, modelId, thinkingLevel, field = 'thinking_level') {
-  const effective = connectionModel({ ...connection, model: modelId, thinkingLevel: thinkingLevel ?? null });
   if (thinkingLevel !== null && thinkingLevel !== undefined) {
-    if (Array.isArray(effective.thinkingLevels) && !effective.thinkingLevels.includes(thinkingLevel)) {
-      const message = `${field} · 模型 ${modelId}（${connection.name || connection.id}）不支持思考档 ${thinkingLevel}，可用档位：${effective.thinkingLevels.join(' / ')}`;
-      throw Object.assign(new Error(message), { status: 400, code: 'invalid_thinking_level',
-        details: { field, model: modelId, thinking_level: thinkingLevel, allowed: effective.thinkingLevels } });
+    if (typeof thinkingLevel !== 'string' || !/^[a-z][a-z0-9_-]{0,31}$/i.test(thinkingLevel)) {
+      throw Object.assign(new Error(`${field} 思考档格式无效`), { status: 400, code: 'invalid_thinking_level',
+        details: { field, model: modelId, thinking_level: thinkingLevel } });
     }
   }
-  return effective;
+  return connectionModel({ ...connection, model: modelId, thinkingLevel: thinkingLevel ?? null });
 }
 export function resolveConnectionPurpose(catalog, connectionId, purpose = 'conversation', visited = new Set()) {
   const normalized = normalizeModelCatalog(catalog);
@@ -427,8 +443,8 @@ export class ModelCredentialStore {
         const latest = await readLocalModelAuth(connection.authFile);
         // A concurrently refreshed desktop login owns its newer credential.
         if (latest.tokens?.refresh_token !== current?.refresh) return codexCredential(latest);
-        await writeFile(connection.authFile, JSON.stringify({ ...latest, tokens: { ...latest.tokens,
-          access_token: next.access, refresh_token: next.refresh, account_id: next.accountId || latest.tokens.account_id }, last_refresh: new Date().toISOString() }), { mode: 0o600 });
+        await saveModelJson(connection.authFile, { ...latest, tokens: { ...latest.tokens,
+          access_token: next.access, refresh_token: next.refresh, account_id: next.accountId || latest.tokens.account_id }, last_refresh: new Date().toISOString() });
       } else if (connection.authMode === 'grok-local') {
         const latest = await readLocalModelAuth(connection.authFile);
         const entry = latest[connection.authScope], login = localGrokLogin(latest, connection.authScope);

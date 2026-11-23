@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 if (location.protocol === 'summon-setup:' && location.host === 'connection') {
   contextBridge.exposeInMainWorld('SummonSetup', Object.freeze({
@@ -11,6 +11,10 @@ if (location.protocol === 'summon-setup:' && location.host === 'connection') {
   }));
 } else if (location.pathname === '/') contextBridge.exposeInMainWorld('SummonDesktop', Object.freeze({
   getInfo: () => ipcRenderer.invoke('summon:desktop-info'),
+  getPathForFile: file => {
+    try { return webUtils?.getPathForFile ? (webUtils.getPathForFile(file) || '') : ''; }
+    catch { return ''; }
+  },
   setTheme: dark => ipcRenderer.invoke('summon:set-theme', Boolean(dark)),
   checkForUpdates: () => ipcRenderer.invoke('summon:check-update'),
   installUpdate: () => ipcRenderer.invoke('summon:install-update'),

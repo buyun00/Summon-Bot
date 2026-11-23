@@ -198,7 +198,7 @@ const sendBusy = (roomId = ui.roomId) => !ui.protocolReady || ui.sendingRooms.ha
 function attachmentSize(bytes) { return bytes < 1024 * 1024 ? `${Math.max(1, Math.ceil(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`; }
 function attachmentUrl(item, preview = false) {
   const path = preview ? item?.previewUrl : item?.url;
-  if (typeof path === 'string' && /^\/api\/attachments\/[a-z0-9-]+(?:\/preview)?$/i.test(path)) return path;
+  if (typeof path === 'string' && /^\/api\/(?:attachments\/[a-z0-9-]+(?:\/preview)?|files\/[^/?#]+\/download(?:\?revision=\d+)?)$/i.test(path)) return path;
   return '';
 }
 function renderMessageAttachments(items = []) {
@@ -247,13 +247,39 @@ function chooseAttachments() {
   input.click(); // Keep the native picker inside the user's click gesture (including iOS).
   ui.menu = null; render();
 }
+function matchAuthorizedWorkspaceFile(localPath) {
+  if (!localPath || !Array.isArray(state.workspaces) || !state.workspaces.length) return null;
+  const norm = value => String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  const target = norm(localPath);
+  const lowerTarget = target.toLowerCase();
+  let best = null;
+  for (const ws of state.workspaces) {
+    const root = norm(ws.path);
+    if (!root) continue;
+    const prefix = root.toLowerCase() + '/';
+    if (lowerTarget.startsWith(prefix)) {
+      const rel = target.slice(root.length + 1);
+      if (rel && !rel.split('/').some(p => !p || p === '.' || p === '..')) {
+        if (!best || root.length > best.rootLen) best = { workspace_id: ws.id, path: rel, rootLen: root.length };
+      }
+    }
+  }
+  return best ? { kind: 'workspace_file', workspace_id: best.workspace_id, path: best.path } : null;
+}
 async function addAttachments(roomId, files) {
   if (!roomById(roomId)) return;
   const items = ui.draftAttachments[roomId] ||= [], added = [];
   for (const file of files) {
+    const localPath = window.SummonDesktop?.getPathForFile?.(file) || '';
+    const wsRef = localPath ? matchAuthorizedWorkspaceFile(localPath) : null;
+    if (wsRef) {
+      addDraftReference(roomId, wsRef);
+      toast(`已关联工作区活文件：${wsRef.path}`);
+      continue;
+    }
     if (items.length >= attachmentLimit) { toast('每条消息最多添加 8 个附件。', true); break; }
     if (file.size > attachmentMaxBytes) { toast(`${file.name} 超过 20 MB，请选择小一些的文件。`, true); continue; }
-    const item = { key: newClientId(), file, name: file.name, size: file.size, status: 'staged',
+    const item = { key: newClientId(), file, name: file.name || 'clipboard-file', size: file.size, status: 'staged',
       preview: /^image\/(png|jpeg|gif|webp)$/.test(file.type) ? URL.createObjectURL(file) : '' };
     items.push(item); added.push(item);
   }
@@ -641,7 +667,8 @@ function resizeComposer(input) { if (!input) return; updateComposerButton(input)
 const newClientId = () => globalThis.crypto?.randomUUID?.() || `web-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 const roomPath = id => '/api/rooms/' + encodeURIComponent(id);
 const refKey = ref => ref && JSON.stringify([ref.kind, ref.id]);
-const sameRef = (left, right) => !!left && !!right && left.kind === right.kind && left.id === right.id;
+const sameRef = (left, right) => !!left && !!right && left.kind === right.kind &&
+  (left.kind === 'workspace_file' ? left.workspace_id === right.workspace_id && left.path === right.path : left.id === right.id);
 const executionPath = ref => '/api/executions/' + encodeURIComponent(ref.kind) + '/' + encodeURIComponent(ref.id);
 const filePath = id => '/api/files/' + encodeURIComponent(id);
 let stream = null;
@@ -1234,14 +1261,9 @@ async function editBotAccess(bot) {
   const [access, models, workspaces] = await Promise.all([
     api(path), api('/api/model-settings').catch(() => ({ connections:[] })), readList('/api/workspaces').catch(() => []),
   ]);
-  const policy = access.execution_onboarding ? JSON.stringify(access.execution_onboarding,null,2) : '';
-  const permissions = resourceChoices('模型连接',models.connections,access.model_ids) + resourceChoices('执行目录',workspaces,access.workspace_ids) +
-    field('工具接入授权（JSON）','execution_onboarding',policy,{ type:'textarea',rows:6,placeholder:'{"discover":{"path":true}}',
-      help:'可设置发现范围、指定程序和服务目标，并授权提交配置或分配负责人。留空撤销工具接入授权。' });
+  const permissions = resourceChoices('模型连接',models.connections,access.model_ids) + resourceChoices('执行目录',workspaces,access.workspace_ids);
   openModal(bot.name + ' 的资源权限','',permissions,async data => {
-    const raw = data.get('execution_onboarding').trim();
-    await api(path,'PATCH',{ revision:access.revision, model_ids:data.getAll('模型连接'), workspace_ids:data.getAll('执行目录'),
-      ...(raw !== policy ? { execution_onboarding:raw ? JSON.parse(raw) : null } : {}) });
+    await api(path,'PATCH',{ revision:access.revision, model_ids:data.getAll('模型连接'), workspace_ids:data.getAll('执行目录') });
   });
 }
 
@@ -1423,14 +1445,31 @@ function openWakeupEdit(item, roomId) {
 async function addReference() {
   const room = roomById(ui.roomId);
   if (!room) return;
-  const items = await readList('/api/files?room=' + encodeURIComponent(room.id)).catch(() => []);
+  const [items, workspaces] = await Promise.all([
+    readList('/api/files?room=' + encodeURIComponent(room.id)).catch(() => []),
+    state.workspaces?.length ? Promise.resolve(state.workspaces) : readList('/api/workspaces').catch(() => []),
+  ]);
   if (ui.roomId !== room.id) return;
-  const options = [{ value:'',label:'选择资料' }, ...items.map(item => ({ value:item.id, label:item.name || item.path }))];
-  openModal('添加资料引用','',selectField('资料','file',options,'') + field('文件 ID','file_id','',{ placeholder:'也可直接填写可引用的文件 ID' }),data => {
-    const id = data.get('file_id').trim() || data.get('file');
-    if (id) addDraftReference(room.id,{ kind:'file',id });
-    else throw new Error('请选择资料或填写文件 ID。');
-  },'加入消息');
+  const options = [{ value:'',label:'选择平台资料' }, ...items.map(item => ({ value:item.id, label:item.name || item.path }))];
+  const wsOptions = [{ value:'', label:'选择授权工作区（活文件引用）' }, ...workspaces.map(ws => ({ value: ws.id, label: `${ws.name} (${ws.path})` }))];
+  const defaultWs = room.workspace?.id || workspaces[0]?.id || '';
+  openModal('添加资料或工作区文件引用','',
+    selectField('平台资料','file',options,'') +
+    field('或填写平台文件 ID','file_id','',{ placeholder:'可引用的平台文件 ID' }) +
+    '<hr style="border:none;border-top:1px solid var(--line);margin:12px 0">' +
+    selectField('工作区活文件 · 目录','workspace_id',wsOptions,defaultWs) +
+    field('工作区相对路径','workspace_path','',{ placeholder:'例如 docs/readme.md 或 dist/output.html' }),
+    data => {
+      const wsId = data.get('workspace_id')?.trim();
+      const wsPath = data.get('workspace_path')?.trim().replace(/\\/g, '/').replace(/^\/+/, '');
+      if (wsId && wsPath) {
+        addDraftReference(room.id, { kind: 'workspace_file', workspace_id: wsId, path: wsPath });
+        return;
+      }
+      const id = data.get('file_id').trim() || data.get('file');
+      if (id) addDraftReference(room.id,{ kind:'file',id });
+      else throw new Error('请选择平台资料、填写文件 ID，或选择工作区与相对路径。');
+    },'加入消息');
 }
 
 function addDraftReference(roomId, ref) {
@@ -1440,6 +1479,25 @@ function addDraftReference(roomId, ref) {
 }
 
 async function openReference(ref) {
+  if (ref.kind === 'workspace_file') {
+    const downloadUrl = `/api/workspaces/${encodeURIComponent(ref.workspace_id)}/file?path=${encodeURIComponent(ref.path)}`;
+    const previewUrl = `${downloadUrl}&preview=1`;
+    const ws = (state.workspaces || []).find(item => item.id === ref.workspace_id);
+    try {
+      const check = await fetch(downloadUrl, { method: 'HEAD' });
+      if (!check.ok) {
+        const msg = check.status === 404 ? '工作区文件已移动、重命名或被删除（404）。' : check.status === 403 ? '该工作区目录权限已撤销或无权读取（403）。' : `无法读取工作区文件（HTTP ${check.status}）。`;
+        return openModal('工作区文件不可用', ws?.name || ref.workspace_id, `<p>${esc(msg)}</p><p><small>${esc(ref.path)}</small></p>`);
+      }
+    } catch { /* fall through to modal with links */ }
+    const fileName = ref.path.split('/').pop() || ref.path;
+    return openModal('工作区活文件', ws?.name || ref.workspace_id,
+      `<p><strong>${esc(fileName)}</strong></p><p><small>${esc(ref.path)}</small></p>
+       <div style="display:flex;gap:10px;margin-top:14px">
+         <a class="primary-button" href="${esc(previewUrl)}" target="_blank" rel="noopener noreferrer">预览最新内容</a>
+         <a class="secondary-button" href="${esc(downloadUrl)}" download="${esc(fileName)}">流式下载</a>
+       </div>`);
+  }
   if (ref.kind === 'file') { ui.fileId = ref.id; ui.fileDetail = null; ui.fileRevision = null; return navigate('files'); }
   if (ref.kind === 'session' || ref.kind === 'conversation') { ui.executionRef = ref; ui.executionDetail = null; ui.stopResults = null; return navigate('executions'); }
   if (ref.kind === 'bot') return act('open-bot-details',{ dataset:{ id:ref.id } });
@@ -1497,8 +1555,8 @@ async function controlExecution() {
 }
 
 async function act(action, element) {
-  const { id, kind } = element.dataset;
-  const ref = { kind,id };
+  const { id, kind, workspaceId, path: refPath } = element.dataset;
+  const ref = kind === 'workspace_file' ? { kind, workspace_id: workspaceId, path: refPath } : { kind, id };
   if (action.startsWith('usage-')) return globalThis.SummonUsage.act(action,element,api,render);
   if (action.startsWith('models-')) return globalThis.SummonModels.act(action,element,{ api,render,toast,refresh });
   if (action === 'set-theme') return setThemePreference(element.dataset.theme);
@@ -1890,6 +1948,29 @@ document.addEventListener('input', event => {
 document.addEventListener('keydown', event => { if (event.target.id === 'message-input' && event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); const button = $('#message-form button[type=submit]'); if (!button?.disabled) $('#message-form')?.requestSubmit(); } });
 document.addEventListener('compositionstart', event => { if (event.target.id === 'message-input') ui.composing = true; });
 document.addEventListener('compositionend', event => { if (event.target.id !== 'message-input') return; ui.composing = false; ui.drafts[event.target.form.dataset.roomId] = event.target.value; persistClientSession(); if (ui.renderDeferred) render(); });
+document.addEventListener('paste', event => {
+  if (!ui.roomId || ui.view !== 'chat') return;
+  const target = event.target;
+  if (target && !target.closest?.('.conversation') && target.id !== 'message-input') return;
+  const files = [...(event.clipboardData?.files || [])];
+  if (!files.length) return;
+  event.preventDefault();
+  void addAttachments(ui.roomId, files);
+});
+document.addEventListener('dragover', event => {
+  if (!ui.roomId || ui.view !== 'chat') return;
+  if (event.dataTransfer?.types?.includes('Files') && event.target?.closest?.('.conversation')) {
+    event.preventDefault();
+  }
+});
+document.addEventListener('drop', event => {
+  if (!ui.roomId || ui.view !== 'chat') return;
+  if (!event.target?.closest?.('.conversation')) return;
+  const files = [...(event.dataTransfer?.files || [])];
+  if (!files.length) return;
+  event.preventDefault();
+  void addAttachments(ui.roomId, files);
+});
 document.addEventListener('submit', event => {
   const form = event.target;
   if (form.id !== 'message-form' && !form.matches('.execution-input-form')) return;
@@ -2277,13 +2358,42 @@ function renderTopbar() {
   $('.app-shell').classList.toggle('management-open', ui.view !== 'chat');
 }
 
+function safeHref(raw) {
+  const value = String(raw || '').trim();
+  if (/^https?:\/\/[^\s<>"']+$/i.test(value)) return value;
+  if (/^\/api\/(?:files|attachments|workspaces|games|releases)\/[^\s<>"']*$/i.test(value)) return value;
+  return '';
+}
+function linkifyPlain(text) {
+  const pattern = /\[([^\]\n]{1,200})\]\(([^)\s]{1,2048})\)|(https?:\/\/[^\s<>"'()]+|\/api\/(?:files|attachments|workspaces|games)\/[^\s<>"'()]+)/g;
+  let out = '', last = 0, m;
+  while ((m = pattern.exec(text)) !== null) {
+    if (m.index > last) out += esc(text.slice(last, m.index));
+    const label = m[1] || m[3];
+    let rawUrl = m[2] || m[3];
+    let trailing = '';
+    if (!m[1]) {
+      const punct = rawUrl.match(/[.,;:!?。，；：！？）】》]+$/);
+      if (punct) { trailing = punct[0]; rawUrl = rawUrl.slice(0, -trailing.length); }
+    }
+    const href = safeHref(rawUrl);
+    if (href) {
+      out += `<a class="message-link" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(m[1] ? label : rawUrl)}</a>${esc(trailing)}`;
+    } else {
+      out += esc(m[0]);
+    }
+    last = pattern.lastIndex;
+  }
+  if (last < text.length) out += esc(text.slice(last));
+  return out;
+}
 function richText(value) {
   const regex = /```([\w+-]*)\n?([\s\S]*?)```/g;
   let result = '', last = 0, match;
   const formatInline = text => text.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*)/g).map((segment, index) => {
     if (index % 2 && segment.startsWith('`')) return `<code>${esc(segment.slice(1, -1))}</code>`;
-    if (index % 2) return `<strong>${esc(segment.slice(2, -2))}</strong>`;
-    return esc(segment);
+    if (index % 2) return `<strong>${linkifyPlain(segment.slice(2, -2))}</strong>`;
+    return linkifyPlain(segment);
   }).join('').replace(/^[-*] (.+)$/gm, '<span class="markdown-li">$1</span>');
   while ((match = regex.exec(String(value || ''))) !== null) {
     if (match.index > last) result += formatInline(String(value).slice(last, match.index));
@@ -2298,11 +2408,16 @@ function botMention(id, label) {
   const bot = botById(id); if (!bot) return esc(label || nameOf(id));
   return `<button type="button" class="bot-mention" data-action="open-bot-details" data-id="${esc(id)}" style="--member-color:${esc(botAvatar(bot).color)}">${avatar(id, 25, '')}<span>@${esc(label || bot.name)}</span></button>`;
 }
-const refType = { room:'会话', event:'消息', file:'文件', bot:'Bot', session:'执行会话', conversation:'内部对话', call:'调用', wakeup:'订阅', connection:'连接' };
+const refType = { room:'会话', event:'消息', file:'文件', workspace_file:'工作区活文件', bot:'Bot', session:'执行会话', conversation:'内部对话', call:'调用', wakeup:'订阅', connection:'连接' };
 const roomRef = id => ({ kind:'room', id });
 const messageRef = id => ({ kind:'event', id });
 
 function refLabel(ref) {
+  if (ref.kind === 'workspace_file') {
+    const ws = (state.workspaces || []).find(item => item.id === ref.workspace_id);
+    const name = String(ref.path || '').split('/').pop() || ref.path;
+    return ws ? `${ws.name}/${ref.path}` : name;
+  }
   if (ref.kind === 'event') return ui.messages.find(item => item.id === ref.id) ? messagePreview(ui.messages.find(item => item.id === ref.id)) : '消息 ' + ref.id;
   if (ref.kind === 'file') return [...state.files, ...(ui.roomFiles || [])].find(item => item.id === ref.id)?.name || '文件 ' + ref.id;
   if (ref.kind === 'room') return roomById(ref.id)?.name || ref.id;
@@ -2313,6 +2428,9 @@ function refLabel(ref) {
 function renderReference(ref, action = 'open-reference') {
   if (ref?.access === 'redacted') {
     return `<span class="reference-chip" style="opacity:.65;cursor:default" title="该来源位于私有或异群空间，当前受限">${icon('link', 14)}<span>受限来源 (${esc(String(ref.id || '').slice(0, 8))})</span></span>`;
+  }
+  if (ref?.kind === 'workspace_file') {
+    return `<button type="button" class="reference-chip" data-action="${action}" data-kind="workspace_file" data-workspace-id="${esc(ref.workspace_id)}" data-path="${esc(ref.path)}">${icon('file', 14)}<span>${esc(refLabel(ref))}</span></button>`;
   }
   return `<button type="button" class="reference-chip" data-action="${action}" data-kind="${esc(ref.kind)}" data-id="${esc(ref.id)}">${icon(ref.kind === 'file' ? 'file' : 'link', 14)}<span>${esc(refLabel(ref))}</span></button>`;
 }
@@ -2365,9 +2483,17 @@ function renderDelivery(message) {
   if (message._delivery) return renderSendStatus(message);
   const fastDiag = (ui.roomDeliveries.get(message.id) || []).filter(item => item.fast_read_diagnostic?.message).map(item =>
     `<div class="message-delivery">${esc(nameOf(item.bot_id))} · ${esc(item.fast_read_diagnostic.message)}</div>`).join('');
-  const suspended = (ui.roomSuspendedRuns || []).filter(run => run.event_ids?.includes(message.id)).map(run =>
-    `<div class="message-delivery execution-error" role="status"><span>${esc(nameOf(run.bot_id))} 运行已挂起：${esc(run.error?.message || run.error?.code || '未知错误')}</span>
-      <button type="button" class="text-button" data-action="retry-suspended" data-conversation="${esc(run.conversation_id)}" data-run="${esc(run.run_id)}">重试</button></div>`).join('');
+  const suspended = (ui.roomSuspendedRuns || []).filter(run => run.event_ids?.includes(message.id)).map(run => {
+    const errCode = run.error?.code;
+    const isAuth = errCode === 'auth_expired';
+    const isQuota = errCode === 'quota_exhausted';
+    const prefix = isAuth ? '模型登录已失效' : isQuota ? '模型额度已用尽' : '运行已挂起';
+    const settingsBtn = (isAuth || isQuota)
+      ? `<button type="button" class="text-button" data-action="navigate" data-view="models">${isAuth ? '重新登录 / 换绑' : '更换模型连接'}</button>`
+      : '';
+    return `<div class="message-delivery execution-error" role="status"><span>${esc(nameOf(run.bot_id))} ${prefix}：${esc(run.error?.message || errCode || '未知错误')}</span>
+      ${settingsBtn}<button type="button" class="text-button" data-action="retry-suspended" data-conversation="${esc(run.conversation_id)}" data-run="${esc(run.run_id)}">重试</button></div>`;
+  }).join('');
   const msgState = ui.roomMessageStates?.[message.id];
   let stateNotice = '';
   if (msgState?.state === 'unanswered') {
@@ -2454,10 +2580,14 @@ function renderChat() {
   const executions = ui.roomExecutions || [];
   const active = executions.length ? `<details class="conversation-activity" data-execution-disclosure ${ui.openRoomExecution === room.id ? 'open' : ''}><summary>执行过程（${executions.length}）</summary>
     ${executions.map(renderExecutionRow).join('')}</details>` : '';
-  const body = room ? `<div class="messages ${isGroup ? 'group-messages' : ''}" role="log" aria-label="聊天记录">${pins}
+  const modelBanner = ui.protocolReady && state.modelSettings && !state.modelSettings.activeId
+    ? `<div class="message-delivery" role="status" style="margin:8px 16px"><span>尚未配置默认聊天模型，配置后 Bot 即可开始响应。</span>
+        <button type="button" class="text-button" data-action="navigate" data-view="models">配置模型</button></div>`
+    : '';
+  const body = room ? `<div class="messages ${isGroup ? 'group-messages' : ''}" role="log" aria-label="聊天记录">${modelBanner}${pins}
       ${ui.historyCursor ? '<button class="text-button room-history" data-action="older-messages">更早的消息</button>' : ''}
       ${messages || `<div class="conversation-empty">${groupAvatar(room,86)}<p>${ui.messagesRoomId === room.id ? '还没有消息' : '正在读取消息…'}</p></div>`}${active}</div>
-      ${renderChatComposer(room, members)}` : `<div class="conversation-empty"><p>${ui.protocolNotice || '选择一位伙伴或创建会话'}</p>
+      ${renderChatComposer(room, members)}` : `<div class="conversation-empty">${modelBanner}<p>${ui.protocolNotice || '选择一位伙伴或创建会话'}</p>
         ${ui.protocolReady ? '<button class="secondary-button" data-action="new-room">创建会话</button>' : ''}</div>`;
   return `<div data-room-id="${esc(ui.roomId)}" data-ready="${ui.messagesRoomId === ui.roomId}" class="chat-layout ${ui.detailOpen ? 'detail-open' : ''}"
     style="--accent:${esc(currentAccent())}"><section class="conversation">${header}${body}</section>${ui.detailOpen && room ? renderDetailPanel(room, ui.profileBotId ? profileBot() : null) : ''}</div>`;
@@ -2511,7 +2641,7 @@ function renderChatComposer(room, members) {
     : '';
   return `<div class="composer-wrap">${floatingActivity}${chainNotice}${reply}${renderAttachmentDrafts()}
     ${references.length ? `<div class="reference-list draft-references">${references.map(ref => `<span>${renderReference(ref)}
-      <button type="button" class="icon-button" aria-label="移除引用" data-action="remove-reference" data-kind="${esc(ref.kind)}" data-id="${esc(ref.id)}">${icon('close',14)}</button></span>`).join('')}</div>` : ''}
+      <button type="button" class="icon-button" aria-label="移除引用" data-action="remove-reference" data-kind="${esc(ref.kind)}" ${ref.kind === 'workspace_file' ? `data-workspace-id="${esc(ref.workspace_id)}" data-path="${esc(ref.path)}"` : `data-id="${esc(ref.id)}"`}>${icon('close',14)}</button></span>`).join('')}</div>` : ''}
     <form id="message-form" class="composer" data-room-id="${esc(room.id)}">
       <button class="composer-plus" type="button" data-action="attach-file" aria-label="添加附件" ${ui.sendingRooms.has(room.id) ? 'disabled' : ''}>${icon('plus',22)}</button>
       <textarea id="message-input" name="content" rows="1" maxlength="16000" aria-label="消息内容" placeholder="给 ${esc(room.name)} 发消息">${esc(ui.drafts[room.id] || '')}</textarea>

@@ -1,7 +1,7 @@
-import { lstat, open, readdir } from 'node:fs/promises';
-import { closeSync, lstatSync, openSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { lstat, open, readdir, stat } from 'node:fs/promises';
+import { closeSync, createReadStream, lstatSync, openSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { dirname, join, posix } from 'node:path';
+import { dirname, extname, join, posix } from 'node:path';
 import { createAuthorizedDirectory, createPathAccess, samePath } from '../../bot/src/capabilities/file-policy.mjs';
 import { documentText } from '../chatroom/document-text.mjs';
 import { rasterType } from '../chatroom/attachments.mjs';
@@ -72,6 +72,53 @@ export class Files {
       try { content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(file.bytes); } catch { content = undefined; }
     }
     return this.pageText(projection, content, args.cursor, args.limit);
+  }
+
+  async streamWorkspaceFile(path, workspace, protectedDirectories, { preview = false } = {}) {
+    const name = filePath(path);
+    const checkPath = createPathAccess({ workspace: workspace.root, projectOnly: true, protectedDirectories, accessPolicy: workspace.path_policy });
+    let checked;
+    try { checked = await checkPath(name, { file: true, operations: ['read'] }); }
+    catch (error) {
+      if (['ENOENT', 'ENOTDIR'].includes(error.code)) reject('file_not_found', 'Workspace file is unavailable or moved', 404);
+      throw error;
+    }
+    let info;
+    try { info = await stat(checked); }
+    catch (error) {
+      if (['ENOENT', 'ENOTDIR'].includes(error.code)) reject('file_not_found', 'Workspace file is unavailable or moved', 404);
+      throw error;
+    }
+    if (!info.isFile()) reject('file_not_found', 'Workspace target is not a file', 404);
+    const baseName = posix.basename(name);
+    const ext = extname(baseName).toLowerCase();
+    const previewMimes = {
+      '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+      '.html': 'text/html; charset=utf-8', '.htm': 'text/html; charset=utf-8',
+      '.txt': 'text/plain; charset=utf-8', '.md': 'text/plain; charset=utf-8', '.json': 'application/json; charset=utf-8',
+      '.csv': 'text/csv; charset=utf-8', '.js': 'text/plain; charset=utf-8', '.mjs': 'text/plain; charset=utf-8',
+      '.ts': 'text/plain; charset=utf-8', '.css': 'text/plain; charset=utf-8', '.py': 'text/plain; charset=utf-8',
+      '.pdf': 'application/pdf', '.mp4': 'video/mp4', '.webm': 'video/webm', '.mp3': 'audio/mpeg', '.wav': 'audio/wav',
+    };
+    const isHtml = ext === '.html' || ext === '.htm';
+    const contentType = preview ? (previewMimes[ext] || 'application/octet-stream') : 'application/octet-stream';
+    const disposition = preview && previewMimes[ext] ? 'inline' : 'attachment';
+    const encodedName = encodeURIComponent(baseName).replace(/['()*]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+    const csp = isHtml && preview
+      ? "sandbox allow-scripts allow-forms allow-downloads; default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob:; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; worker-src blob:; form-action 'none'; frame-ancestors 'self'; base-uri 'none'"
+      : "sandbox; default-src 'none'";
+    return {
+      stream: createReadStream(checked),
+      headers: {
+        'Content-Type': contentType,
+        'Content-Length': String(info.size),
+        'Content-Disposition': `${disposition}; filename="file"; filename*=UTF-8''${encodedName}`,
+        'Cache-Control': 'private, no-store',
+        'X-Content-Type-Options': 'nosniff',
+        'Content-Security-Policy': csp,
+        'Referrer-Policy': 'no-referrer',
+      },
+    };
   }
 
   async listWorkspace({ ref, directory = '.', query, cursor, limit = 50 }, workspace, protectedDirectories, authorize) {

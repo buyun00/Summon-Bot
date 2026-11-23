@@ -3,17 +3,13 @@ import { readdir, realpath } from 'node:fs/promises';
 import { basename, delimiter, dirname, extname, isAbsolute, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { pathWithin } from '../../bot/src/capabilities/file-policy.mjs';
-import { assertRevision, reject, sameIdentity, user } from '../platform/contract.mjs';
-import { allowsConnection, allowsExecutable } from '../services/executable-scope.mjs';
+import { nativeProbeArgs, reject, user } from '../platform/contract.mjs';
 import { bindingOf, httpMethods, httpTarget, pathKey, protocolOf, sameBinding, serviceUrl } from '../services/connection-binding.mjs';
 import { canSupplyProcessArguments, connectionRecords, executionRecords, plain } from '../services/connection-records.mjs';
-import { connectionExecutable, registeredScript } from '../services/connection-launch.mjs';
-import { hasExplicitFileScope, nativeFileArgs } from '../services/native-file-arguments.mjs';
-import { localExecutable, nativeArgs } from '../services/native-host.mjs';
-import { validateNativeProbe, visibleProbe } from '../services/native-probe.mjs';
+import { connectionExecutable } from '../services/connection-launch.mjs';
+import { inspectNative, localExecutable, nativeArgs } from '../services/native-host.mjs';
 import { credentialNames } from '../services/service-connection.mjs';
 import { sshBinding } from '../services/ssh-binding.mjs';
-import { targetAllows } from './onboarding-access.mjs';
 
 const localHost = () => ({ hostname: hostname(), platform: process.platform });
 const canInspectHere = environment => environment.kind === 'local' && isDeepStrictEqual(environment.host, localHost());
@@ -25,8 +21,16 @@ const namePattern = /^[a-zA-Z0-9][a-zA-Z0-9_.+-]{0,119}$/;
 const routedHeaders = /^(?:host|forwarded|x-forwarded-.*|connection|proxy-.*|upgrade|transfer-encoding|content-length)$/i;
 const protectedEnvironment = /^(?:PATH|PATHEXT|COMSPEC|SYSTEMROOT|HOME|USERPROFILE|CODEX_HOME|NODE_OPTIONS|LD_.*|DYLD_.*)$/i;
 const nativeKeys = ['file', 'canonical_file', 'workspace_root', 'workspace_write', 'credential_refs', 'detected_version', 'adapter',
-  'methods', 'ssh', 'model', 'effort', 'app_server_stdio', 'launch_arguments', 'probe'];
-const methodKeys = ['id', 'name', 'description', 'args', 'file_args', 'effect', 'input', 'keep_input', 'env'];
+  'methods', 'ssh', 'model', 'effort', 'app_server_stdio', 'launch_arguments', 'allow_arguments'];
+const methodKeys = ['id', 'name', 'description', 'args', 'effect', 'input', 'keep_input', 'env', 'protocol', 'script'];
+
+const INSPECT_TIMEOUT_MS = 15_000;
+const INSPECT_OUTPUT_LIMIT = 12_000;
+
+function trimOutput(value) {
+  const text = String(value ?? '');
+  return text.length > INSPECT_OUTPUT_LIMIT ? `${text.slice(0, INSPECT_OUTPUT_LIMIT)}\n...[truncated]` : text;
+}
 
 export function executionEnvironment(entry) {
   if (!entry) return { kind: 'local', host: localHost() };
@@ -78,7 +82,6 @@ export class ConnectionOnboarding {
     const environment = this.environment(args, context);
     if (!canInspectHere(environment)) return { environment, status: 'environment_unobserved', items: [],
       reason: 'This execution target has no local PATH observation. Use records from its actual environment.' };
-    const { policy } = setup;
     const { connections: host } = this.platform;
     const { command, executable, required_version } = args;
     const term = args.query?.trim().toLowerCase() || '';
@@ -86,22 +89,18 @@ export class ConnectionOnboarding {
       reject('invalid_executable', 'Use a command name or absolute executable path');
     const visible = this.entries().filter(entry => this.visible(entry, context));
     const registeredNative = this.entries().filter(native);
-    const eligible = file => allowsExecutable(context.executable_scope, file) &&
-      (!setup.executables || allowsExecutable(setup.executables, file));
-    const described = visible.filter(entry => native(entry) && eligible(entry.config.canonical_file) &&
+    const described = visible.filter(entry => native(entry) &&
       (!executable || inPaths([entry.config.file, entry.config.canonical_file], executable)) &&
       (!command || programName(entry.config.file) === programName(command)) &&
       (!term || [entry.name, entry.description, basename(entry.config.file), ...(entry.config.methods ?? []).flatMap(method =>
         [method.id, method.name, method.description])].some(value => String(value ?? '').toLowerCase().includes(term))));
-    const directories = policy?.discover.directories ?? [];
-    const path = policy?.discover.path === true;
-    const searchRoots = [...new Set([...directories, ...(path ? (process.env.PATH || '').split(delimiter).filter(isAbsolute) : [])])];
-    const chosen = [...(policy?.executables ?? []), ...(setup.executables ?? []).map(item => item.file), ...described.map(entry => entry.config.file)];
+    const searchRoots = [...new Set((process.env.PATH || '').split(delimiter).filter(isAbsolute))];
+    const chosen = [...(setup.executables ?? []).map(item => item.file), ...described.map(entry => entry.config.file)];
     const matchesName = file => command ? programName(file) === programName(command) : !term || basename(file).toLowerCase().includes(term);
     const candidates = new Set([...chosen.filter(matchesName), ...described.map(entry => entry.config.file)]);
     if (executable) {
       candidates.clear();
-      if (inPaths(chosen, executable) || inPaths(searchRoots, dirname(executable))) candidates.add(executable);
+      candidates.add(executable);
     } else {
       for (const root of searchRoots) {
         const files = await readdir(root, { withFileTypes: true }).catch(() => []);
@@ -114,10 +113,10 @@ export class ConnectionOnboarding {
       if (found.size === 60) break;
       try {
         const actual = await localExecutable(file);
-        if (!eligible(actual.canonicalFile) || found.has(pathKey(actual.canonicalFile))) continue;
+        if (found.has(pathKey(actual.canonicalFile))) continue;
         await connectionExecutable({ config: { file, canonical_file: actual.canonicalFile } }, host.dataRoot, host.dataRoot);
         found.set(pathKey(actual.canonicalFile), actual);
-      } catch { /* The scope can include missing PATH entries and non-executables. */ }
+      } catch { /* Ignore missing PATH entries, non-executables, and protected host paths. */ }
     }
     const workspaces = this.platform.workspaceRecords().filter(workspace => this.platform.workspaceAvailable(workspace.id, context.actor, context));
     const items = [...found.values()].map(actual => {
@@ -140,21 +139,8 @@ export class ConnectionOnboarding {
       file: entry.config.file, canonical_file: entry.config.canonical_file, name: entry.name, status: 'connection_unavailable',
       connections: [{ ...host.summary(entry, false), ...this.platform.connectionMaintenance(entry, context) }],
     });
-    return host.clean({ environment, scope: { path, directories, registered_paths: true, selected_executables: chosen.length > 0 },
-      status: items.length ? 'observed' : 'not_found_in_scope', items, ...(found.size === 60 ? { limited: true } : {}) });
-  }
-
-  probeRunner(script, entry, context) {
-    const { platform } = this;
-    const host = platform.connections;
-    const runner = host.get(script.runner.id);
-    const actor = context.actor;
-    if (!runner || runner.id === entry.id || protocolOf(runner) !== 'cli' || runner.config.adapter ||
-        (runner.binding_version ?? 1) !== script.runner.binding_version ||
-        !platform.canUseConnection(actor, runner.id, context) || !host.authorized(runner, actor) ||
-        !canSupplyProcessArguments(runner, actor))
-      reject('script_runner_forbidden', 'The probe script needs its registered runner and the current use and direct argument grants', 403);
-    return runner;
+    return host.clean({ environment, status: items.length ? 'observed' : 'not_found_in_scope', items,
+      ...(found.size === 60 ? { limited: true } : {}) });
   }
 
   async inspect(args, context, setup, initializer, definition, selected, call) {
@@ -165,103 +151,93 @@ export class ConnectionOnboarding {
     const host = platform.connections;
     const bound = native(selected) && !selected.config.ssh ? selected : null;
     if (selected && !bound)
-      return unavailable('probe_unsupported', 'Version and help probes need a local CLI connection. Use read for service connection details');
-    const trial = args.probe !== undefined;
-    const custom = trial || args.diagnostic_args !== undefined;
-    if (custom && !bound) reject('connection_required', 'Select a registered CLI connection to try probe arguments');
+      return unavailable('probe_unsupported', 'CLI inspect requires a local CLI or Codex connection. Use read for service connection details');
     if (bound && args.executable && !inPaths([bound.config.file, bound.config.canonical_file], args.executable))
       reject('connection_binding_conflict', 'Inspect uses the registered executable for this connection', 409);
-    const allowed = (access, entry, file) => allowsExecutable(context.executable_scope, file) &&
-      (!entry || host.authorized(entry, context.actor)) &&
-      (inPaths(access.policy?.executables ?? [], file) || allowsExecutable(access.executables ?? [], file) ||
-        entry && platform.probeRepairAllowed(entry, context));
-    const missingGrant = () => unavailable('probe_authorization_required', bound ?
-      'Probing this connection needs its repair grant or a host executable grant for its registered path. Check can_use and can_repair with read' :
-      'Select a readable local connection with a repair grant using target or connection, or specify a host-granted executable');
-    if ((args.connection || args.target?.kind === 'connection') && !bound) return missingGrant();
-    if (bound && !allowed(setup, bound, bound.config.canonical_file)) return missingGrant();
-    if (custom && !platform.probeRepairAllowed(bound, context))
-      reject('probe_repair_forbidden', 'Trying custom probe arguments requires repair authority for this connection', 403);
-    if (bound && (trial || args.revision !== undefined)) assertRevision(bound.revision, args.revision);
-    const rules = trial ? validateNativeProbe(args.probe) : bound?.config.probe;
 
     const target = bound ? { executable: bound.config.file } : args;
-    const paths = bound ? [{ file: bound.config.file, canonical_file: bound.config.canonical_file }] :
-      [...(setup.executables ?? []), ...(setup.policy?.executables ?? []).map(file => ({ file, canonical_file: file }))];
-    const found = await initializer.locate(target, definition, { executables: paths });
-    if (!found) return bound ?
-      unavailable('executable_unavailable', 'The registered path is missing or no longer resolves to the registered executable. Ask the host to check the binding') :
-      missingGrant();
-    if (!allowed(setup, bound, found.canonicalFile)) return missingGrant();
+    const found = await initializer.locate(target, definition, setup);
+    if (!found) return unavailable('executable_unavailable',
+      bound ? 'The registered executable path is missing or inaccessible' : 'The executable was not found in PATH or at the specified path');
 
-    const directory = bound?.config.workspace_root ?? host.workspace;
-    const scoped = bound?.config.workspace_root || context.session?.workspace || rules?.script;
-    const workspace = () => scoped ? platform.workspace(directory, context) : null;
-    const grant = workspace();
-    const cwd = grant?.path ?? await realpath(directory);
-    const pathPolicy = context.session?.path_policy ?? {};
-    if ((custom || rules) && (grant?.write === false || bound?.config.workspace_write === false || hasExplicitFileScope(pathPolicy)))
-      reject('scoped_process_unsupported', 'Custom CLI probes require the bound execution directory with writable process access', 403);
-    const authorize = () => {
-      const current = platform.requireConnectionSetup(context, args);
-      const live = current.connection;
-      if (bound && (live?.id !== bound.id || live.revision !== bound.revision ||
-          !inPaths([live.config.canonical_file], found.canonicalFile)))
-        reject('connection_binding_changed', 'The registered binding or revision changed while probing. Read the current connection before retrying', 409);
-      if (!allowed(current, live, found.canonicalFile) || custom && !platform.probeRepairAllowed(live, context))
-        reject('probe_authorization_required', 'The current connection or executable probe grant changed', 403);
-      if (grant && !isDeepStrictEqual(workspace(), grant))
-        reject('workspace_changed', 'The bound probe directory grant changed', 409);
-      if (rules?.script) this.probeRunner(rules.script, live, context);
-    };
-    authorize();
-    if (bound) await connectionExecutable(bound, cwd, host.dataRoot, pathPolicy);
-    let script;
-    if (rules?.script) {
-      const { path, source } = rules.script;
-      if (path !== undefined && !inPaths([bound.config.probe?.script?.path, ...(bound.config.methods ?? []).map(item => item.script)]
-        .filter(Boolean), path))
-        reject('script_not_authorized', 'Use a script path already approved for this connection', 403);
-      const runner = this.probeRunner(rules.script, bound, context);
-      if (runner.config.workspace_write === false ||
-          runner.config.workspace_root && !pathWithin(await realpath(runner.config.workspace_root), cwd))
-        reject('workspace_forbidden', 'The registered probe runner is outside the bound working directory', 403);
-      script = { file: await connectionExecutable(runner, cwd, host.dataRoot, pathPolicy),
-        ...(path === undefined ? { source } : { path: await registeredScript(host.dataRoot, bound.id, path) }) };
-    }
-    const observed = await initializer.probe(found, definition, args, context, {
-      cwd, rules, script, source: trial ? 'candidate' : rules ? 'saved' : 'default', authorize,
-    });
-    authorize();
-    let maintenance;
-    if (bound) {
-      platform.store.transaction(() => {
-        platform.calls.bind(call.id, { target: { kind: 'connection', id: bound.id },
-          ...(trial && observed.status === 'observed' ? { probe_verification: { revision: bound.revision, rules,
-            version: host.clean(observed.version) } } : {}) });
-        if (trial) return;
-        if (observed.status === 'observed') platform.resolveProbeFailure(bound.id);
-        else if (observed.status === 'probe_rule_mismatch') maintenance = platform.noteProbeFailure(bound, context, observed);
+    const directory = bound?.config.workspace_root ?? environment.cwd ?? host.workspace;
+    const cwd = await realpath(directory).catch(() => host.workspace);
+    await connectionExecutable({ config: { file: found.file, canonical_file: found.canonicalFile } }, cwd, host.dataRoot);
+
+    const runOne = async probeArgs => {
+      if (!nativeProbeArgs(probeArgs)) reject('invalid_arguments', 'Inspect arguments must be bounded strings');
+      const result = await inspectNative(found.canonicalFile, probeArgs, cwd, {
+        signal: context.signal, timeoutMs: INSPECT_TIMEOUT_MS,
       });
+      return {
+        args: result.args,
+        exitCode: result.exitCode ?? null,
+        exitSignal: result.exitSignal ?? null,
+        ...(result.error ? { error: result.error } : {}),
+        ...(result.timeout ? { timeout: true } : {}),
+        ...(result.interrupted ? { interrupted: true } : {}),
+        stdout: trimOutput(result.stdout),
+        stderr: trimOutput(result.stderr),
+      };
+    };
+
+    const observations = [];
+    if (args.args !== undefined) {
+      observations.push({ purpose: 'custom', ...(await runOne(args.args)) });
+    } else {
+      const versionArgs = found.name === 'ssh' ? ['-V'] : ['ffmpeg', 'ffprobe', 'ffplay'].includes(found.name) ? ['-version'] : ['--version'];
+      const helpArgs = found.name === 'ssh' ? ['-?'] : ['ffmpeg', 'ffprobe', 'ffplay'].includes(found.name) ? ['-h'] : ['--help'];
+      const topic = args.help_topic || definition?.helpTopic;
+      const [versionRes, helpRes, topicRes] = await Promise.all([
+        runOne(versionArgs),
+        runOne(helpArgs),
+        topic ? runOne([topic, '--help']) : null,
+      ]);
+      observations.push({ purpose: 'version', ...versionRes }, { purpose: 'help', ...helpRes });
+      if (topicRes) observations.push({ purpose: 'topic_help', ...topicRes });
     }
-    return { environment: { ...environment, cwd }, found, observed, connection: bound, maintenance };
+    if (args.diagnostic_args !== undefined) {
+      observations.push({ purpose: 'diagnostic', ...(await runOne(args.diagnostic_args)) });
+    }
+
+    const versionObs = observations.find(item => item.purpose === 'version');
+    const helpObs = observations.find(item => item.purpose === 'help');
+    const topicObs = observations.find(item => item.purpose === 'topic_help');
+    const versionText = (versionObs?.stdout || versionObs?.stderr || '').trim().split(/\r?\n/)[0]?.slice(0, 240) || '';
+    const helpText = [helpObs?.stdout, helpObs?.stderr].filter(Boolean).join('\n');
+    const topicHelpText = [topicObs?.stdout, topicObs?.stderr].filter(Boolean).join('\n');
+
+    if (bound) platform.calls.bind(call.id, { target: { kind: 'connection', id: bound.id } });
+    return {
+      environment: { ...environment, cwd },
+      found,
+      connection: bound,
+      observed: {
+        status: 'observed',
+        cwd,
+        version: versionText,
+        help: helpText,
+        topic: args.help_topic || definition?.helpTopic || null,
+        topic_help: topicHelpText,
+        observations,
+      },
+    };
   }
 
   async nativeConfig(proposed, protocol, context, previous) {
     if (Object.hasOwn(proposed, 'version'))
-      reject('invalid_connection', 'Use config.detected_version to save the version returned by inspect. The version field is used in tool results');
+      reject('invalid_connection', 'Use config.detected_version to save the observed CLI version');
     if (Object.hasOwn(proposed, 'detected_version') && (typeof proposed.detected_version !== 'string' || !proposed.detected_version.trim()))
-      reject('invalid_connection', 'Set config.detected_version to a non-empty version string observed by inspect');
-    let config = { ...previous?.config, ...proposed };
-    if (typeof config.file !== 'string' || !isAbsolute(config.file) || Object.keys(proposed).some(key => !nativeKeys.includes(key)))
+      reject('invalid_connection', 'Set config.detected_version to a non-empty version string');
+    const filtered = Object.fromEntries(Object.entries(proposed).filter(([key]) => key !== 'probe'));
+    let config = { ...previous?.config, ...filtered };
+    if (typeof config.file !== 'string' || !isAbsolute(config.file) || Object.keys(filtered).some(key => !nativeKeys.includes(key)))
       reject('invalid_connection', 'Specify an absolute executable and supported native settings');
     const found = await localExecutable(config.file);
     config = { ...config, file: found.file, canonical_file: found.canonicalFile,
-      ...(!previous ? { allow_arguments: protocol === 'cli' && !config.adapter && !config.methods?.length } : {}) };
+      ...(!previous && filtered.allow_arguments === undefined ? { allow_arguments: protocol === 'cli' && !config.adapter && !config.methods?.length } : {}) };
     await connectionExecutable({ config }, this.platform.dataRoot, this.platform.dataRoot);
-    if (!allowsExecutable(context.executable_scope, found.canonicalFile))
-      reject('executable_scope_forbidden', 'The executable is outside the current execution scope', 403);
-    if (proposed.workspace_root !== undefined) {
+    if (filtered.workspace_root !== undefined) {
       const workspace = this.platform.workspace(config.workspace_root, context);
       config.workspace_root = workspace.path;
       config.workspace_write = config.workspace_write !== false && workspace.write;
@@ -271,7 +247,7 @@ export class ConnectionOnboarding {
         reject('invalid_ssh_binding', 'Choose the approved OpenSSH client executable');
       config.ssh = sshBinding(config.ssh);
     } else if (config.ssh !== undefined) reject('invalid_ssh_binding', 'Choose the SSH protocol to bind a remote target');
-    if (proposed.methods !== undefined) {
+    if (filtered.methods !== undefined) {
       if (!Array.isArray(config.methods)) reject('invalid_connection', 'Specify an array of CLI methods');
       config.methods.forEach(method => this.nativeMethod(method, config));
     }
@@ -297,7 +273,6 @@ export class ConnectionOnboarding {
           protectedEnvironment.test(key) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || !config.credential_refs?.includes(ref?.env))))
       reject('invalid_connection', 'Specify a CLI method ID, argument template and permitted credential references');
     nativeArgs(method.args);
-    nativeFileArgs(method.file_args, method.args.length, method.effect);
   }
 
   async serviceConfig(config, protocol, context) {
@@ -311,7 +286,6 @@ export class ConnectionOnboarding {
         reject('invalid_connection', 'Bind MCP stdio to an absolute executable');
       const command = await localExecutable(config.command);
       await connectionExecutable({ config: { file: command.file, canonical_file: command.canonicalFile } }, this.platform.dataRoot, this.platform.dataRoot);
-      if (!allowsExecutable(context.executable_scope, command.canonicalFile)) reject('executable_scope_forbidden', 'The MCP program is outside this scope', 403);
       const workspace = this.platform.workspace(config.workspace_root, context);
       if (!workspace?.write) reject('workspace_forbidden', 'MCP stdio needs its authorized writable launch directory', 403);
       config = { ...config, canonical_command: command.canonicalFile, workspace_root: workspace.path, workspace_write: true };
@@ -326,61 +300,31 @@ export class ConnectionOnboarding {
   }
 
   assertWrite(entry, previous, context) {
-    const policy = this.platform.accessFor(context.actor).execution_onboarding;
-    if (!allowsConnection(context.executable_scope, entry, id => this.platform.connections.get(id)))
-      reject('executable_scope_forbidden', 'The connection is outside the current execution scope', 403);
-    if (previous && !sameBinding(previous, entry)) reject('connection_binding_conflict', 'Update methods on the same connection binding', 409);
-    if (previous && this.platform.repairableConnection(previous, context)) {
-      const protocol = protocolOf(previous);
-      if ((protocol === 'cli' || protocol === 'codex') &&
-          previous.config.adapter?.runner?.id === entry.config.adapter?.runner?.id) return;
-      if (protocol === 'http' && httpMethods(entry.config).every(method => httpMethods(previous.config).some(current =>
-        isDeepStrictEqual(httpTarget(method), httpTarget(current)) && isDeepStrictEqual(method.headersEnv ?? {}, current.headersEnv ?? {})))) return;
-      if (protocol === 'mcp' && isDeepStrictEqual(previous.config, entry.config)) return;
-    }
-    if (this.platform.isOnboardingBot(context.actor)) {
-      if (policy && !targetAllows(policy, entry))
-        reject('connection_registration_forbidden', 'This executable or service target is outside the configured onboarding policy', 403);
-      return;
-    }
-    if (!policy?.submit || !targetAllows(policy, entry))
-      reject('connection_registration_forbidden', 'The host must allow configuration submissions for this executable or service target and its credentials', 403);
-    if (previous && !this.visible(previous, context)) reject('connection_forbidden', 'This connection is outside the current execution grants', 403);
+    if (previous && !sameBinding(previous, entry))
+      reject('connection_binding_conflict', 'Update methods on the same connection binding', 409);
+    if (context.actor.kind === 'user' || this.platform.isOnboardingBot(context.actor)) return;
+    if (previous && this.platform.repairableConnection(previous, context)) return;
+    reject('connection_registration_forbidden', 'Registering or modifying this connection requires tool-onboarding or maintainer authority', 403);
   }
 
   async register(args, context, setup, call, previous) {
     const { protocol } = args;
     if (!protocol || !plain(args.config) || args.adapter || args.connection && (!previous || protocolOf(previous) !== protocol))
       reject('invalid_connection', 'Submit protocol and config for the actual binding');
-    if (!previous && !setup.policy?.submit && !this.platform.isOnboardingBot(context.actor))
-      reject('connection_registration_forbidden', 'Enable configuration submissions in the Bot’s host grant', 403);
-    const probeUpdate = Object.hasOwn(args.config, 'probe');
-    if (probeUpdate) {
-      if (!previous || !['cli', 'codex'].includes(protocol) || Object.keys(args.config).some(key => !['probe', 'detected_version'].includes(key)))
-        reject('invalid_probe', 'Save the probe and detected_version on an existing local CLI connection');
-      args = { ...args, config: { ...args.config, probe: validateNativeProbe(args.config.probe) } };
-      this.verifyProbeUpdate(args, previous, context);
-    }
+    if (!previous && context.actor.kind !== 'user' && !this.platform.isOnboardingBot(context.actor))
+      reject('connection_registration_forbidden', 'Registering a new connection requires tool-onboarding authority', 403);
     const kind = protocol === 'ssh' ? 'cli' : protocol;
     if (['cli', 'codex'].includes(protocol) && args.target && !canInspectHere(this.environment(args, context)))
       reject('environment_unobserved', 'Use authorization from the actual execution host');
     const config = ['cli', 'codex'].includes(kind) ? await this.nativeConfig(args.config, protocol, context, previous)
       : await this.serviceConfig({ ...previous?.config, ...args.config }, protocol, context);
     if (!bindingOf({ kind, config })) reject('invalid_connection', 'Specify the actual execution binding');
-    const name = (probeUpdate ? previous.name : args.name?.trim()) || previous?.name || basename(config.file ?? config.command ?? '') || config.service_url || config.url;
+    const name = args.name?.trim() || previous?.name || basename(config.file ?? config.command ?? '') || config.service_url || config.url;
     if (!name || name.length > 120) reject('invalid_connection', 'Use a connection name of at most 120 characters');
     const priorRunner = previous?.config.adapter?.runner?.id;
     const dependencies = [...new Set([...(previous?.dependencies ?? []).filter(id => id !== priorRunner),
       ...(config.adapter?.runner ? [config.adapter.runner.id] : [])])];
-    return this.save({ id: previous?.id ?? call.id, revision: args.revision, kind, name, config,
-      dependencies: probeUpdate ? previous.dependencies : dependencies }, context, call, probeUpdate ? args : undefined);
-  }
-
-  verifyProbeUpdate(args, previous, context) {
-    if (args.revision !== undefined) assertRevision(previous.revision, args.revision);
-    if (!this.platform.probeRepairAllowed(previous, context))
-      reject('probe_repair_forbidden', 'Saving probe rules requires repair authority for this connection', 403);
-    if (args.config.probe.script) this.probeRunner(args.config.probe.script, previous, context);
+    return this.save({ id: previous?.id ?? call.id, revision: args.revision, kind, name, config, dependencies }, context, call);
   }
 
   upsert(args, context, call, selected) {
@@ -405,14 +349,13 @@ export class ConnectionOnboarding {
     return this.save({ id: selected.id, revision: args.revision, config }, context, call);
   }
 
-  save(input, context, call, probeUpdate) {
+  save(input, context, call) {
     return this.platform.configureExecutionConnection(input, {
       actor: user,
       canSeeBinding: entry => this.visible(entry, context),
       beforeConnectionSave: (entry, previous) => {
         this.platform.assertRunAllowed(context);
         this.assertWrite(entry, previous, context);
-        if (probeUpdate) this.verifyProbeUpdate(probeUpdate, previous, context);
         const runner = entry.config.adapter?.runner;
         if (runner) {
           const live = this.platform.connections.get(runner.id);
@@ -424,9 +367,7 @@ export class ConnectionOnboarding {
       },
     }, result => {
       this.platform.calls.bind(call.id, { target: { kind: 'connection', id: result.id } });
-      if (probeUpdate) this.platform.resolveProbeFailure(result.id);
-      this.platform.calls.finish(call.id, 'completed', probeUpdate ?
-        { ...result, probe: this.platform.connections.clean(visibleProbe(input.config.probe)) } : result);
+      this.platform.calls.finish(call.id, 'completed', result);
     });
   }
 }

@@ -8,13 +8,13 @@ import { recipeAdapter } from './recipe.mjs';
 const emit = (type, data = {}) => process.stdout.write(JSON.stringify({ summonEvent: { type, ...data } }) + '\n');
 const append = (before, addition) => (before + addition).slice(-16000);
 
-async function run({ executable, connector, settings, recipe, launchOptions, text, sessionId: expectedId }) {
+async function run({ executable, connector, settings, recipe, launchOptions, extraArgs = [], text, sessionId: expectedId }) {
   const adapter = recipe ? recipeAdapter(recipe) : connectorFor(connector);
   if (!adapter?.invocation) throw new Error('The registered CLI connector is unavailable');
   const promptFile = process.argv[2];
   if (promptFile) await writeFile(promptFile, text, { flag: 'wx', mode: 0o600 });
   const { args, stdin, environment } = adapter.invocation({ text, sessionId: expectedId, settings, promptFile });
-  const command = nativeCommand(executable, nativeArgs([...args, ...launchArguments(launchOptions, Boolean(expectedId))]));
+  const command = nativeCommand(executable, nativeArgs([...args, ...launchArguments(launchOptions, Boolean(expectedId)), ...extraArgs]));
   const child = spawn(command.file, command.args, { ...command.options, env: { ...process.env, ...environment }, windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe'] });
   const exit = new Promise(resolve => {

@@ -246,6 +246,7 @@ class SummonStore(private val app: Context) {
         "room" -> room(ref.id)?.name ?: ref.id
         "event" -> "消息 · " + ref.id
         "file" -> "资料 · " + ref.id
+        "workspace_file" -> "工作区 · " + (ref.filePath?.substringAfterLast('/') ?: ref.filePath ?: ref.id)
         "session" -> "执行会话 · " + ref.id
         "conversation" -> "内部对话 · " + ref.id
         else -> ref.id
@@ -540,6 +541,18 @@ class SummonStore(private val app: Context) {
         val api = apiClient()
         val query = if (revision != null && revision > 0) "?revision=$revision" else ""
         return withContext(Dispatchers.IO) { api.download(app, "/api/files/" + SummonApiClient.component(id) + "/download$query", name) }
+    }
+
+    suspend fun downloadWorkspaceFile(workspaceId: String, filePath: String): File {
+        val api = apiClient()
+        val name = filePath.substringAfterLast('/').ifBlank { "file" }
+        val endpoint = "/api/workspaces/${SummonApiClient.component(workspaceId)}/file?path=${SummonApiClient.component(filePath)}"
+        return withContext(Dispatchers.IO) { api.download(app, endpoint, name) }
+    }
+
+    suspend fun downloadRelativePath(relativePath: String, fallbackName: String = "download"): File {
+        val api = apiClient()
+        return withContext(Dispatchers.IO) { api.download(app, relativePath, fallbackName) }
     }
 
     suspend fun refreshModelUsage(force: Boolean = false): SummonJson =

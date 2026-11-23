@@ -269,6 +269,7 @@ final class SummonStore {
         case "room": room(id: ref.id)?.name ?? ref.id
         case "event": "消息 · \(ref.id)"
         case "file": "资料 · \(ref.id)"
+        case "workspace_file": "工作区 · \((ref.filePath as NSString?)?.lastPathComponent ?? ref.filePath ?? ref.id)"
         case "session": "执行会话 · \(ref.id)"
         case "conversation": "内部对话 · \(ref.id)"
         default: ref.id
@@ -583,6 +584,12 @@ final class SummonStore {
     func downloadFile(id: String, name: String, revision: Int? = nil) async throws -> URL {
         let query = revision.map { "?revision=\($0)" } ?? ""
         return try await apiClient().download(path: "/api/files/\(SummonAPIClient.component(id))/download\(query)", name: name)
+    }
+
+    func downloadWorkspaceFile(workspaceID: String, path filePath: String) async throws -> URL {
+        let name = (filePath as NSString).lastPathComponent
+        let endpoint = "/api/workspaces/\(SummonAPIClient.component(workspaceID))/file?path=\(SummonAPIClient.component(filePath))"
+        return try await apiClient().download(path: endpoint, name: name.isEmpty ? "file" : name)
     }
 
     @discardableResult

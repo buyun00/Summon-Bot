@@ -296,6 +296,8 @@ struct SummonReferenceView: View {
     @Environment(SummonStore.self) private var store
     let ref: SummonReference
     @State private var value = SummonJSONValue.null
+    @State private var preview: URL?
+    @State private var busy = false
     @State private var error: String?
 
     var body: some View {
@@ -304,6 +306,22 @@ struct SummonReferenceView: View {
         case "file": SummonFileView(ref: ref)
         case "bot": BotDetailsView(botID: ref.id)
         case "room": RoomDetailsView(roomID: ref.id)
+        case "workspace_file":
+            List {
+                if let error { InlineError(message: error) }
+                if let fp = ref.filePath { LabeledContent("工作区路径", value: fp) }
+                if let ws = ref.workspaceId, let fp = ref.filePath {
+                    Button("下载 / 预览最新内容", systemImage: "arrow.down.circle") {
+                        Task {
+                            busy = true; defer { busy = false }
+                            do { preview = try await store.downloadWorkspaceFile(workspaceID: ws, path: fp); error = nil }
+                            catch { self.error = error.localizedDescription }
+                        }
+                    }.disabled(busy || !store.protocolReady)
+                }
+            }
+            .navigationTitle(store.label(ref))
+            .quickLookPreview($preview)
         default:
             List {
                 if let error { InlineError(message: error) }

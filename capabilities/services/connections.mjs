@@ -11,7 +11,6 @@ import { codexInput, connectionExecutable, executionWorkspace, prepareProcess } 
 import { canSupplyProcessArguments, connectionAllowed, connectionAuthorized, connectionRecords, executionRecords, plain, validateConnection } from './connection-records.mjs';
 import { codexCredentials, inspectNative, redactNative } from './native-host.mjs';
 import { nativeFileOperands } from './native-references.mjs';
-import { visibleProbe } from './native-probe.mjs';
 import { assertServiceConfig, credentialNames, mcpMethodUnsupported, mcpTasksUnsupported, serviceMethod, ServiceConnections } from './service-connection.mjs';
 import { inputRecords, makeProcessGuard, operationRecords, SessionProcesses, settled } from './session-processes.mjs';
 
@@ -118,10 +117,9 @@ export class SummonConnections {
     const authorized = this.authorized(entry, actor);
     const available = !authorized ? false : nativeKind(entry.kind) ? this.available(entry) : undefined;
     const summary = this.clean(this.summary(entry, available), []);
-    const nativeLocation = { file: entry.config.file, canonical_file: entry.config.canonical_file, workspace_root: entry.config.workspace_root,
-      ...(authorized && entry.config.probe ? { probe: visibleProbe(entry.config.probe) } : {}) };
+    const nativeLocation = { file: entry.config.file, canonical_file: entry.config.canonical_file, workspace_root: entry.config.workspace_root };
     if (entry.kind === 'codex') return this.clean({ ...summary, ...nativeLocation, input: { text: 'string', model: 'optional exact model id', effort: 'optional reasoning effort' },
-      operations: ['reply', 'steer', 'next', 'stop'], ...(entry.config.model ? { model: entry.config.model, effort: entry.config.effort } : {}) }, [entry]);
+      operations: ['reply', 'steer', 'next', 'stop'], ...(entry.config.model || entry.config.effort ? { ...(entry.config.model ? { model: entry.config.model } : {}), ...(entry.config.effort ? { effort: entry.config.effort } : {}) } : {}) }, [entry]);
     if (entry.kind === 'cli') {
       if (entry.config.ssh) {
         const { host, port = 22, user, operations } = entry.config.ssh;
@@ -129,7 +127,8 @@ export class SummonConnections {
           input: { method: 'configured SSH method', parameters: 'optional host-approved method values' },
           methods: operations.map(({ id, name, description, parameters }) => ({ id, name, description, parameters })), direct_arguments: false }, [entry]);
       }
-      if (entry.config.adapter) return this.clean({ ...summary, ...nativeLocation, input: { text: 'string' },
+      if (entry.config.adapter) return this.clean({ ...summary, ...nativeLocation, input: { text: 'string', args: 'optional extra CLI flags array' },
+        ...(entry.config.launch_arguments ? { launch_arguments: entry.config.launch_arguments } : {}),
         operations: entry.config.adapter.resume ? ['next', 'stop'] : ['stop'] }, [entry]);
       const methods = (entry.config.methods || []).map(({ id, name, description, args, effect, file_args, keep_input }) =>
         ({ id, name, description, args, effect, file_args, keep_input }));

@@ -324,7 +324,7 @@ export class BotRuntime {
   async connectionSetupConversation(bot, id, setup) {
     const inbox = await this.inbox(bot.id);
     return this.register(inbox, inbox.putConversation({ id, kind: 'connection_setup', space: botRef(bot.id),
-      owner: { kind: 'user', id: 'user' }, connection_setup: setup, embedded_initializer: bot.connection_initializer === true }));
+      owner: { kind: 'user', id: 'user' }, connection_setup: setup }));
   }
 
   async dispatch(inbox, bot) {
@@ -581,7 +581,7 @@ export class BotRuntime {
   }
 
   resumeAuthorizedRuns(inbox, conversation, bot, recoveryScope = null) {
-    const recoverableCodes = new Set(['connection_forbidden', 'connection_unavailable', 'access_changed', 'updating']);
+    const recoverableCodes = new Set(['connection_forbidden', 'connection_unavailable', 'access_changed', 'updating', 'auth_expired', 'quota_exhausted']);
     const candidates = inbox.runs(conversation.id).filter(run =>
       (run.state === 'suspended' || run.state === 'retry') && recoverableCodes.has(run.error?.code) &&
       (inbox.hasOpenWaits(run.id) || run.route_ids.some(id => inbox.store.getRecord(R.route, id)?.state === 'pending')));

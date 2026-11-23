@@ -1,7 +1,6 @@
 import { basename, extname, isAbsolute } from 'node:path';
 import { reject, validateAdapterRecipe, validateLaunchArguments } from '../platform/contract.mjs';
 import { connectorFor } from '../connectors/registry.mjs';
-import { validateNativeProbe } from './native-probe.mjs';
 import { sshBinding } from './ssh-binding.mjs';
 
 export const connectionRecords = 'platform-connections';
@@ -45,10 +44,6 @@ export function validateConnection(entry) {
   if (entry.dependencies && (!Array.isArray(entry.dependencies) || entry.dependencies.some(id => typeof id !== 'string' || !id))) {
     reject('invalid_connection', 'Invalid connection dependencies');
   }
-  if (entry.config.probe != null) {
-    if (entry.config.ssh || !['cli', 'codex'].includes(entry.kind)) reject('invalid_probe', 'Probe rules require a local CLI');
-    validateNativeProbe(entry.config.probe);
-  }
   if (entry.kind === 'cli' || entry.kind === 'codex') {
     validateNativePaths(entry.config);
     const { credential_refs, methods, adapter, app_server_stdio, launch_arguments, allow_arguments, workspace_write, model, effort } = entry.config;
@@ -90,7 +85,7 @@ export function validateConnection(entry) {
     if (launch_arguments !== undefined) validateLaunchArguments(launch_arguments,
       entry.kind === 'codex' ? connectorFor(entry.kind) : adapter?.recipe || adapter?.source !== undefined ? null : connectorFor(adapter?.connector));
     if (entry.kind === 'codex' && (model !== undefined && (typeof model !== 'string' || !model.trim()) ||
-        effort !== undefined && (typeof effort !== 'string' || !effort.trim() || !model)))
-      reject('invalid_connection', 'Codex defaults require an explicit model and reasoning effort');
+        effort !== undefined && (typeof effort !== 'string' || !effort.trim())))
+      reject('invalid_connection', 'Codex defaults must be non-empty strings');
   }
 }

@@ -162,10 +162,29 @@ export class ModelProvider {
       return (this.config.redact.error || this.config.redact)({ message: modelError(message) }).message;
     };
     const decorateError = message => !message || signal.aborted || message.includes(model.id) ? message : `${message} [${failureTag}]`;
-    const recordFailure = message => {
+    const classifyProviderFault = (http, text) => {
+      const lower = String(text || '').toLowerCase();
+      const quotaPattern = /insufficient_quota|quota[_\s-]?exceeded|billing|credit[s]?\s*(exhausted|insufficient|limit)|balance\s*(is\s*)?(insufficient|low|zero)|usage[_\s-]?limit|limit[_\s-]?reached|spending[_\s-]?limit|plan[_\s-]?limit|额度|余额不足/;
+      const authPattern = /invalid[_\s-]?api[_\s-]?key|unauthorized|authentication|token.*(expired|invalid|revoked)|re-?authenticate|重新登录|登录已过期|登录刷新失败|请先配置 api key|尚未.*登录/;
+      if (http === 402 || (http === 429 && quotaPattern.test(lower)) || (!http && quotaPattern.test(lower))) {
+        return { code: 'quota_exhausted', http_status: http || null, connection_id: record?.connectionId || null };
+      }
+      if (http === 401 || http === 403 || (!http && authPattern.test(lower))) {
+        return { code: 'auth_expired', http_status: http || null, connection_id: record?.connectionId || null };
+      }
+      return null;
+    };
+    const recordFailure = (message, rawErrorText = '') => {
       if (!record || signal.aborted) return;
       const http = record.httpStatus;
-      const phase = record.timeoutPhase ?? transportFault ?? (http === 429 || http >= 500 ? 'provider-unavailable' : undefined);
+      const errText = rawErrorText || message?.errorMessage || record.error || '';
+      const providerFault = classifyProviderFault(http, errText);
+      if (providerFault) {
+        record.providerFault = message.providerFault = providerFault;
+        record.transportFailure = message.transportFailure = { phase: providerFault.code, before_output: !outputStarted, retryable: false };
+        return;
+      }
+      const phase = record.timeoutPhase ?? transportFault ?? (http === 429 ? 'rate-limited' : http >= 500 ? 'provider-unavailable' : undefined);
       if (!phase) return;
       const visibleOutput = message.content?.some(part => part.type === 'toolCall' || part.type === 'image' || part.text);
       const partial = outputStarted || record.firstProgressAt || record.outputTokens > 0 ||
@@ -174,7 +193,7 @@ export class ModelProvider {
       const retryableStreamIdle = phase === 'stream-idle' && !visibleOutput && httpRetryable;
       const failure = { phase, before_output: retryableStreamIdle ? true : !partial,
         retryable: retryableStreamIdle || !partial && httpRetryable &&
-          ['connection', 'first-progress', 'network-before-headers', 'provider-unavailable'].includes(phase) };
+          ['connection', 'first-progress', 'network-before-headers', 'rate-limited', 'provider-unavailable'].includes(phase) };
       record.transportFailure = message.transportFailure = failure;
     };
     const persist = () => {
@@ -361,8 +380,9 @@ export class ModelProvider {
               status: event.type === 'done' ? 'succeeded' : signal.aborted ? 'cancelled' : 'failed',
               finishedAt: new Date().toISOString(), latencyMs: Date.now() - started });
             if (event.type === 'error') {
-              recordFailure(received);
-              received.errorMessage = decorateError(cleanError(received.errorMessage || '模型调用失败')); record.error = received.errorMessage;
+              const rawMsg = received.errorMessage || '模型调用失败';
+              received.errorMessage = decorateError(cleanError(rawMsg)); record.error = received.errorMessage;
+              recordFailure(received, rawMsg);
             }
             persist(); ended = true;
           }

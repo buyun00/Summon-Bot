@@ -165,3 +165,6 @@
 .message-summaries[open] > summary .summary-preview { display: none; }
 .message-summaries-list { margin-top: 5px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); display: grid; gap: 5px; }
 .message-summary-item { display: flex; flex-wrap: wrap; gap: 4px 8px; overflow-wrap: anywhere; }
+
+.message-link { color: var(--accent, #2f6feb); text-decoration: underline; word-break: break-all; }
+.chat-message.outgoing .message-link { color: inherit; }

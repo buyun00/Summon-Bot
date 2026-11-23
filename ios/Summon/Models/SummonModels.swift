@@ -16,8 +16,13 @@ struct SummonAvatar: Codable, Equatable, Sendable {
 struct SummonReference: Codable, Hashable, Identifiable, Sendable {
     let kind: String
     let id: String
+    let workspaceId: String?
+    let filePath: String?
 
     var path: String? {
+        if kind == "workspace_file", let ws = workspaceId, let fp = filePath, !ws.isEmpty, !fp.isEmpty {
+            return "/api/workspaces/\(SummonAPIClient.component(ws))/file?path=\(SummonAPIClient.component(fp))"
+        }
         let part = SummonAPIClient.component(id)
         switch kind {
         case "session", "conversation": return "/api/executions/\(kind)/\(part)"
@@ -31,12 +36,60 @@ struct SummonReference: Codable, Hashable, Identifiable, Sendable {
         }
     }
 
-    var json: SummonJSONValue { .object(["kind": .string(kind), "id": .string(id)]) }
+    var json: SummonJSONValue {
+        if kind == "workspace_file", let ws = workspaceId, let fp = filePath {
+            return .object(["kind": .string(kind), "workspace_id": .string(ws), "path": .string(fp)])
+        }
+        return .object(["kind": .string(kind), "id": .string(id)])
+    }
 
-    init(kind: String, id: String) { self.kind = kind; self.id = id }
+    private enum CodingKeys: String, CodingKey {
+        case kind, id
+        case workspaceId = "workspace_id"
+        case filePath = "path"
+    }
+
+    init(kind: String, id: String, workspaceId: String? = nil, filePath: String? = nil) {
+        self.kind = kind
+        self.id = id
+        self.workspaceId = workspaceId
+        self.filePath = filePath
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try c.decode(String.self, forKey: .kind)
+        workspaceId = try c.decodeIfPresent(String.self, forKey: .workspaceId)
+        filePath = try c.decodeIfPresent(String.self, forKey: .filePath)
+        if let decodedId = try c.decodeIfPresent(String.self, forKey: .id), !decodedId.isEmpty {
+            id = decodedId
+        } else if kind == "workspace_file", let ws = workspaceId, let fp = filePath {
+            id = "\(ws):\(fp)"
+        } else {
+            id = ""
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(kind, forKey: .kind)
+        if kind == "workspace_file", let ws = workspaceId, let fp = filePath {
+            try c.encode(ws, forKey: .workspaceId)
+            try c.encode(fp, forKey: .filePath)
+        } else {
+            try c.encode(id, forKey: .id)
+        }
+    }
 
     init?(_ json: SummonJSONValue) {
-        guard let kind = json["kind"].string, let id = json["id"].string, !id.isEmpty else { return nil }
+        guard let kind = json["kind"].string else { return nil }
+        if kind == "workspace_file" {
+            guard let ws = json["workspace_id"].string, !ws.isEmpty,
+                  let fp = json["path"].string, !fp.isEmpty else { return nil }
+            self.init(kind: kind, id: "\(ws):\(fp)", workspaceId: ws, filePath: fp)
+            return
+        }
+        guard let id = json["id"].string, !id.isEmpty else { return nil }
         self.init(kind: kind, id: id)
     }
 }
@@ -63,6 +116,7 @@ struct SummonAttachment: Codable, Identifiable, Equatable, Sendable {
     var name: String
     var mimeType: String?
     var size: Int?
+    var revision: Int?
     var url: String?
     var previewUrl: String?
     var unavailable: Bool?
@@ -71,9 +125,8 @@ struct SummonAttachment: Codable, Identifiable, Equatable, Sendable {
     var isImage: Bool { previewUrl != nil }
     var formattedSize: String { size.map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) } ?? "" }
     var downloadPath: String {
-        url?.hasPrefix("/api/files/") == true
-            ? "/api/files/\(SummonAPIClient.component(id))/download"
-            : "/api/attachments/\(SummonAPIClient.component(id))"
+        if let url, url.hasPrefix("/api/files/") { return url }
+        return "/api/attachments/\(SummonAPIClient.component(id))"
     }
 }
 

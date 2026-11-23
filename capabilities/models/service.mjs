@@ -420,7 +420,7 @@ export class ModelConnections {
         if (this.logins.get(id) !== login || controller.signal.aborted) return;
         login.status = 'completed'; delete login.userCode; delete login.verificationUri;
         this.clearUsage(id);
-        this.emit('models.changed', {});
+        this.emit('models.changed', { id });
       }).catch(error => { if (this.logins.get(id) === login) { login.status = controller.signal.aborted ? 'cancelled' : 'failed'; login.error = controller.signal.aborted ? null : modelError(error); delete login.userCode; delete login.verificationUri; } });
     return this.loginStatus(id);
   }
