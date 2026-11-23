@@ -19,9 +19,10 @@ const refOrId = { anyOf: [ref, text] };
 const roomOrId = { anyOf: [typedRef('room'), text] };
 const eventOrId = { anyOf: [typedRef('event'), text] };
 const references = array(ref);
-const roomMessageFields = { text, attachments: array(refOrId), references, mentions: array(principal), reply_to: eventOrId };
+const roomMessageFields = { text, attachments: array(refOrId), references, mentions: array(principal), reply_to: eventOrId,
+  for_session_id: text, origin_message_id: eventOrId, awaiting_reply: flag };
 const repairMessageFields = { to: typedRef('connection'), text, references };
-const repairOutcome = oneOf('repaired', 'blocked');
+const repairOutcome = oneOf('repaired', 'blocked', 'need_info');
 const sendMessage = { anyOf: [
   object({ to: roomOrId, ...roomMessageFields }, ['to']),
   object({ ...repairMessageFields, repair_key: text }, ['to', 'text']),
@@ -77,10 +78,9 @@ const sessionWorkspace = { ...text, description: 'The id from find with kind wor
 const openSessionInput = object({ engine: sessionEngine, input: value, workspace: sessionWorkspace, space: ref,
   sharing: { anyOf: [flag, object({ readers: array(principal), submitters: array(principal), controllers: array(principal) }, ['readers', 'submitters', 'controllers'])] },
   resource_refs: array(ref), work_room: refOrId, work_source: refOrId, origin_message_id: eventOrId, work_summary: text,
-  allowed_followup_rooms: array(roomOrId), private_work: flag, include_execution_guide: flag }, ['engine', 'input']);
+  private_work: flag, include_execution_guide: flag }, ['engine', 'input']);
 const publicOpenSessionInput = { ...openSessionInput, properties: { ...openSessionInput.properties, engine: refOrId, workspace: { anyOf: [ref, text] } } };
-const configureSessionInput = object({ target: refOrId, acceptance_state: oneOf('open', 'closed'), work_summary: text,
-  waiting_summary: nullableText, add_followup_rooms: array(roomOrId), remove_followup_rooms: array(roomOrId) }, ['target']);
+const configureSessionInput = object({ target: refOrId, work_summary: text, waiting_summary: nullableText }, ['target']);
 
 const definitions = [
   ['find', 'Find accessible objects, execution connections, and internal run and call references. EggBot can search the team directory by name or public duty. Use a Room scope for its members. ' +
@@ -90,9 +90,9 @@ const definitions = [
   ['read', 'Read an accessible object, its history or output, and the available input or control references. For a workspace, use directory "." or a subdirectory to list entries, or add a relative path to read a project text file. Read a File ref to inspect its text or image (on vision-capable models). ' +
     'Use it for a specific observation; do not re-read an unchanged file or Session page already observed in this run unless its revision or status may have changed or you need a different cursor. A registered wait_ref delivers the terminal receipt or an input request to your run automatically.',
     object({ ref, path: text, directory: text, cursor: text, limit: { type: 'integer', minimum: 1, maximum: 100 } }, ['ref'])],
-  ['send', 'Publish to a Room using message:{to:{kind:"room",id},text}, with optional attachments, references, mentions or reply_to. ' +
+  ['send', 'Publish to a Room using message:{to:{kind:"room",id},text}, with optional attachments, references, mentions, reply_to, for_session_id, origin_message_id, or awaiting_reply. ' +
     'For a verified connection fault, address the message to {kind:"connection",id} with the problem and shareable references. ' +
-    'Reuse repair_key when requesting repair of the same fault. The maintainer replies to the repair event on that connection with reply_to and an optional repair_outcome.',
+    'Reuse repair_key when requesting repair of the same fault. The maintainer replies to the repair event on that connection with reply_to and an optional repair_outcome (repaired, blocked, or non-terminal need_info to request missing parameters without closing).',
     object({ message: sendMessage }, ['message']), ({ message }) => message],
   ['save_file', 'Save text, a permitted File source, or a relative file from an authorized project directory. Supply the current revision to replace an existing File. To write project text or copy a shared attachment for a tool, set space to the workspace ref and path to a relative file name. Use the revision from read to detect concurrent edits.',
     object({ space: ref, path: text, content_or_source: { anyOf: [text, object({ text }, ['text']),
@@ -130,11 +130,11 @@ const definitions = [
     'and pass resource_refs. The bound group workspace and the selected external engine are included automatically. Include other directory grants explicitly. ' +
     'For work submitted on behalf of a Room, pass work_room and optionally the original Room message as work_source. This authorizes bounded tool observations in that Room and keeps the Session’s own permissions. ' +
     'For work to remain private, omit work_room or explicitly set private_work on a shared Session. ' +
-    'Pass a concise work_summary (goal and completion criteria) and optionally origin_message_id (defaults to the current Room question) and allowed_followup_rooms (other Rooms allowed to send follow-up inputs; only set allowed_followup_rooms on the specific Session(s) explicitly authorized for cross-room follow-up and omit it on other sibling Sessions). ' +
+    'Pass a concise work_summary (goal and completion criteria) and optionally origin_message_id (defaults to the current Room question). ' +
     'Set include_execution_guide to append the installed Summon adapter guide to a text input. ' +
     'When the result registers a wait_ref, you can end the current turn and continue when its receipt arrives.',
     openSessionInput],
-  ['configure_session', 'Manage a direct child Session. Set acceptance_state to open or closed, update work_summary or waiting_summary, or add/remove follow-up Rooms. Closing acceptance_state also clears allowed_followup_rooms and cascades closure to settled descendant Sessions.',
+  ['configure_session', 'Update work_summary or waiting_summary on a Session. Sessions settle naturally upon terminal receipts without manual closure ceremonies.',
     configureSessionInput],
   ['send_input', 'Submit input to an execution. For next or steer, control_version and input_target are optional and resolve automatically to the current target when omitted. ' +
     'For a native reply to a specific question/approval, supply input_target with request_id and the answer. ' +

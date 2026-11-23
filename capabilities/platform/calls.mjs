@@ -21,25 +21,62 @@ export function errorResult(error) {
 }
 
 export class Calls {
-  constructor({ store, deliver, canReadTarget, spaceFor, sessionMeta, inSharedRoom }) {
-    Object.assign(this, { store, deliver, canReadTarget, spaceFor, sessionMeta, inSharedRoom });
+  constructor({ store, deliver, canReadTarget, spaceFor, sessionMeta, inSharedRoom, resolveTargetOwner }) {
+    Object.assign(this, { store, deliver, canReadTarget, spaceFor, sessionMeta, inSharedRoom, resolveTargetOwner });
     this.linkedWaits = store.db.prepare(`SELECT data FROM records WHERE kind='platform-waits'
       AND json_extract(data,'$.run_id')=? AND json_extract(data,'$.input_call_id') IS NOT NULL`);
-    store.db.exec(`CREATE INDEX IF NOT EXISTS platform_forward_source ON records(json_extract(data,'$.source_event_ids[0]'))
-      WHERE kind='platform-calls' AND json_extract(data,'$.origin.fast_read_forward')=1`);
   }
 
-  forwardsFor(botId, roomId, eventIds, targetId = null) {
-    const rows = this.store.db.prepare(`SELECT data FROM records WHERE kind='platform-calls'
-      AND json_extract(data,'$.origin.fast_read_forward')=1
-      AND json_extract(data,'$.source_event_ids[0]') IN (SELECT value FROM json_each(?))
-      AND json_extract(data,'$.origin.bot_id')=? AND json_extract(data,'$.origin.source_room.id')=?
-      AND (? IS NULL OR coalesce(json_extract(data,'$.target.id'),json_extract(data,'$.origin.forward_target.id'))=?) ORDER BY rowid`)
-      .all(JSON.stringify(eventIds), botId, roomId, targetId, targetId);
-    return new Map(rows.map(({ data }) => {
-      const call = JSON.parse(data);
-      return [call.source_event_ids[0], call];
-    }));
+  activeWaitGraph() {
+    const edges = new Map();
+    const link = (from, to) => {
+      if (!from || !to || from === to) return;
+      if (!edges.has(from)) edges.set(from, new Set());
+      edges.get(from).add(to);
+    };
+    for (const wait of this.store.list(waitRecords)) {
+      if (!['waiting', 'pending_delivery', 'received'].includes(wait.status) || !wait.target) continue;
+      const fromExec = wait.session_id ? keyOf('session', wait.session_id) : keyOf('conversation', wait.conversation_id);
+      const fromBot = wait.bot_id ? keyOf('bot', wait.bot_id) : null;
+      const toExec = keyOf(wait.target.kind, wait.target.id);
+      const targetOwner = this.resolveTargetOwner?.(wait.target);
+      const toBot = targetOwner ? keyOf('bot', targetOwner) : null;
+      link(fromExec, toExec);
+      if (toBot && toBot !== fromBot) link(fromExec, toBot);
+      if (fromBot && toBot && fromBot !== toBot) link(fromBot, toBot);
+    }
+    return edges;
+  }
+
+  assertNoWaitCycle(origin, target, callId) {
+    if (!origin || !target) return;
+    const fromExec = origin.session_id ? keyOf('session', origin.session_id) : keyOf('conversation', origin.conversation_id);
+    const fromBot = origin.bot_id ? keyOf('bot', origin.bot_id) : null;
+    const toExec = keyOf(target.kind, target.id);
+    const targetOwner = this.resolveTargetOwner?.(target);
+    const toBot = targetOwner ? keyOf('bot', targetOwner) : null;
+    if (fromExec === toExec) {
+      reject('wait_cycle_detected', 'An execution cannot wait on itself', 409, { from: fromExec, to: toExec, call_id: callId });
+    }
+    const graph = this.activeWaitGraph();
+    const starts = [toExec, ...(toBot && toBot !== fromBot ? [toBot] : [])];
+    const goals = new Set([fromExec, ...(fromBot && toBot && fromBot !== toBot ? [fromBot] : [])]);
+    const visited = new Set();
+    const stack = [...starts];
+    while (stack.length) {
+      const node = stack.pop();
+      if (goals.has(node)) {
+        reject('wait_cycle_detected', 'Mutual wait cycle detected; return missing information to the caller instead of waiting back', 409, {
+          from: fromExec,
+          to: toExec,
+          cycle_node: node,
+          call_id: callId,
+        });
+      }
+      if (visited.has(node)) continue;
+      visited.add(node);
+      for (const next of graph.get(node) || []) stack.push(next);
+    }
   }
 
   clientCall(actor, clientId) {
@@ -83,11 +120,13 @@ export class Calls {
       const waitId = origin.wait_ref || keyOf(id, origin.bot_id, origin.conversation_id, origin.run_id);
       const saved = this.store.get(waitRecords, waitId);
       if (saved) return saved;
+      if (call.target) this.assertNoWaitCycle(origin, call.target, id);
+      const nowIso = new Date().toISOString();
       const wait = this.store.save(waitRecords, { id: waitId, call_id: id, bot_id: origin.bot_id,
         conversation_id: origin.conversation_id, run_id: origin.run_id, control_version: origin.control_version,
         session_id: origin.session_id || null,
         ...(origin.input_call_id ? { input_call_id: origin.input_call_id, initiating_principal: origin.initiating_principal } : {}),
-        target: call.target, status: 'waiting', result_position: null });
+        target: call.target, status: 'waiting', result_position: null, created_at: nowIso, updated_at: nowIso });
       this.store.save(callRecords, { id, return_refs: [...call.return_refs, wait.id] });
       if (origin.input_call_id && receiptOutcomes.has(call.status)) {
         const event = call.result_ref?.kind === 'event' ? this.store.get('platform-events', call.result_ref.id)
@@ -108,8 +147,20 @@ export class Calls {
   }
 
   bind(id, binding) {
+    const prior = this.store.get(callRecords, id);
+    if (binding.target && prior?.return_refs?.length) {
+      for (const waitId of prior.return_refs) {
+        const wait = this.store.get(waitRecords, waitId);
+        if (wait && ['waiting', 'pending_delivery', 'received'].includes(wait.status)) {
+          this.assertNoWaitCycle(wait, binding.target, id);
+        }
+      }
+    }
     const call = this.store.save(callRecords, { id, ...binding });
-    if (binding.target) for (const waitId of call.return_refs) this.store.save(waitRecords, { id: waitId, target: binding.target });
+    if (binding.target) {
+      const nowIso = new Date().toISOString();
+      for (const waitId of call.return_refs) this.store.save(waitRecords, { id: waitId, target: binding.target, updated_at: nowIso });
+    }
     return call;
   }
 
@@ -161,16 +212,7 @@ export class Calls {
     return this.store.transaction(() => {
       const call = this.get(id);
       if (call.status !== 'prepared') return call;
-      const result = errorResult(error);
-      if (call.origin?.fast_read_forward && call.target?.kind === 'session') {
-        // The direct caller is the intake router. The work owner is a separate
-        // consumer and cannot observe the synchronous rejection inline.
-        this.bind(id, { submission_outcome: 'not_submitted' });
-        this.recordReceipt(id, { position: keyOf('submission', id, 'not_submitted'), status: 'not_submitted',
-          input_status: 'not_submitted', code: result.code, error: result.error, output: result }, call.target, false);
-        return this.get(id);
-      }
-      return this.finish(id, 'failed', result);
+      return this.finish(id, 'failed', errorResult(error));
     });
   }
 

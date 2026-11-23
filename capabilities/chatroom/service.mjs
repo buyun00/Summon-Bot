@@ -34,10 +34,14 @@ const roomActivity = "(kind='messages' OR (kind='platform-events' AND json_extra
 function rowMessage(row) {
   if (!row) return null;
   const message = JSON.parse(row.data);
-  const { id, roomId, senderId, content, createdAt, clientId, replyTo, replyAuthorId, callId } = message;
+  const { id, roomId, senderId, content, createdAt, clientId, replyTo, replyAuthorId, callId,
+    forSessionId, originMessageId, awaitingReply } = message;
   const author = message.author ?? message.source ?? identity(senderId);
   return { id, ref: { kind: 'event', id }, kind: 'message', roomId, senderId, content, createdAt, sequence: row.sequence,
     author, space: { kind: 'room', id: roomId }, clientId, replyTo, replyAuthorId, callId,
+    ...(forSessionId ? { forSessionId } : {}),
+    ...(originMessageId ? { originMessageId } : {}),
+    ...(awaitingReply ? { awaitingReply: true } : {}),
     attachments: (message.attachments ?? []).map(({ id: fileId, name, mimeType, size, url, previewUrl, openUrl, unavailable }) =>
       ({ id: fileId, ref: { kind: 'file', id: fileId }, name, mimeType, size, url, previewUrl, openUrl, unavailable })),
     references: message.references ?? [], mentions: message.mentions ?? [] };
@@ -152,6 +156,20 @@ export class ChatroomService {
 
   replyBy(roomId, senderId, eventId) {
     return rowMessage(this.sentReply.get(roomId, senderId, eventId));
+  }
+
+  repliesTo(roomId, eventId) {
+    return this.store.db.prepare(`SELECT rowid AS sequence,data FROM records WHERE kind='messages'
+      AND json_extract(data,'$.roomId')=? AND (json_extract(data,'$.replyTo')=? OR json_extract(data,'$.originMessageId')=?)
+      ORDER BY rowid`).all(roomId, eventId, eventId).map(rowMessage);
+  }
+
+  latestSequence(roomId) {
+    return this.lastSavedMessage.get(roomId)?.sequence ?? 0;
+  }
+
+  messageEventFor(message) {
+    return messageEvent(message);
   }
 
   publicHistory(id, actor, end = this.observationEnd(id, actor)) {
@@ -436,10 +454,45 @@ export class ChatroomService {
         return { id: ref.id, ref, name: sharedFile.name ?? sharedFile.path, size: sharedFile.size };
       });
       if (!content.trim() && !attachments.length && !refs.length) fail('请填写正文，或添加附件或引用');
+      const forSessionId = input.for_session_id ? identifier(input.for_session_id, '关联会话 ID') : null;
+      const [originRef] = input.origin_message_id === undefined ? [] : references([input.origin_message_id], '关联原消息', 'event');
+      const originMessageId = originRef?.id ?? parent?.originMessageId ?? (parent?.senderId === 'user' ? parent.id : null);
+      const awaitingReply = input.awaiting_reply === true;
+      if (actor !== 'user' && Number.isSafeInteger(options.expectedSequence)) {
+        const latestSeq = this.latestSequence(id);
+        if (latestSeq > options.expectedSequence) {
+          const ownCalls = options.ownRunCallIds instanceof Set ? options.ownRunCallIds : new Set();
+          const newer = this.publicMessages.all(id, options.expectedSequence, latestSeq)
+            .map(rowMessage)
+            .filter(msg => !(msg.senderId === actor && msg.callId && ownCalls.has(msg.callId)));
+          if (newer.length) {
+            return {
+              sent: false,
+              status: 'room_sequence_changed',
+              expected_sequence: options.expectedSequence,
+              latest_sequence: latestSeq,
+              new_messages: newer.slice(-8).map(msg => ({
+                id: msg.id,
+                sequence: msg.sequence,
+                sender_id: msg.senderId,
+                author: msg.author,
+                text: msg.content.slice(0, 1200),
+                reply_to: msg.replyTo,
+                mentions: msg.mentions,
+                created_at: msg.createdAt,
+              })),
+              guidance: 'New room messages arrived while you were composing. Read them carefully: if the question is already fully answered and no correction or delta is needed, stay silent; otherwise send only the concise delta or correction.',
+            };
+          }
+        }
+      }
       const senderName = actor === 'user' ? '宿主' : this.store.get('platform-bots', actor)?.name || null;
       const message = this.store.save('messages', {
         id: eventId, kind: 'message', roomId: id, senderId: actor, ...(senderName ? { senderName } : {}), author: identity(actor), content, attachments, references: refs, mentions,
         replyTo: parent?.id ?? null, ...(parent ? { replyAuthorId: parent.senderId } : {}),
+        ...(forSessionId ? { forSessionId } : {}),
+        ...(originMessageId ? { originMessageId } : {}),
+        ...(awaitingReply ? { awaitingReply: true } : {}),
         ...(clientId === undefined ? {} : { clientId }), ...(callId ? { callId } : {}),
       });
       const saved = rowMessage(this.messageRow.get(message.id));
@@ -470,5 +523,8 @@ export function messageEvent(message) {
   return { id: message.id, type: 'message', kind: 'event', roomId: message.roomId, space: message.space,
     author, time: message.createdAt, sequence: message.sequence, text: message.content, content: message.content,
     mentions: message.mentions, reply_to: message.replyTo, replyAuthorId: message.replyAuthorId,
+    ...(message.forSessionId ? { for_session_id: message.forSessionId } : {}),
+    ...(message.originMessageId ? { origin_message_id: message.originMessageId } : {}),
+    ...(message.awaitingReply ? { awaiting_reply: true } : {}),
     attachments: message.attachments, references: message.references, call_id: message.callId };
 }

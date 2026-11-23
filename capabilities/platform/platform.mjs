@@ -16,7 +16,6 @@ import { Deliveries, wakeupRecords } from './delivery.mjs';
 import { Executions, conversationRecords, sessionRecords } from './executions.mjs';
 import { HostResources } from './resources.mjs';
 import { RoomWork } from './room-work.mjs';
-import { forwardMaterials } from './session-work.mjs';
 import { workspaceGranted } from './workspace-access.mjs';
 import { allowsConnection, enclosesExecutableScope, executableScope } from '../services/executable-scope.mjs';
 import { localExecutable } from '../services/native-host.mjs';
@@ -44,6 +43,7 @@ export class SummonPlatform {
       maintenanceConnection: (id, context, revision, reuse) => this.maintenanceConnection(id, context, revision, reuse),
       bindMaintenance: (connection, bot) => this.bindMaintainer(connection, bot.id) });
     this.deliveries = new Deliveries({ store, resources: this.resources, manager: this.manager, emit, chatroom: () => this.room,
+      onEnqueue: () => this.scheduleFlush(),
       canReadEvent: (botId, event) => this.canReadEvent(event, { actor: { kind: 'bot', id: botId } }),
       canReadWait: (wait, event) => this.canReadReturnWait(wait, event.target),
       canReadReference: (ref, context) => this.canReadReference(ref, context) });
@@ -53,6 +53,13 @@ export class SummonPlatform {
     },
       canReadTarget: (actor, ref, context, call) => this.canReadCallResult(call, ref, { ...context, actor }),
       inSharedRoom: (actor, rooms) => rooms.some(id => this.roomMembers(id).includes(actor.id)),
+      resolveTargetOwner: target => {
+        if (!target) return null;
+        if (target.kind === 'session') return this.executions.record(target)?.execution_actor?.id ?? null;
+        if (target.kind === 'conversation') return this.executions.record(target)?.bot_id ?? null;
+        if (target.kind === 'connection') return this.connections?.get(target.id)?.maintainer_bot_id ?? null;
+        return null;
+      },
       spaceFor: ref => ['session', 'conversation'].includes(ref?.kind) ? this.executions.record(ref)?.space : ref,
       sessionMeta: ref => {
         if (ref?.kind !== 'session') return null;
@@ -102,7 +109,21 @@ export class SummonPlatform {
       ...delivery, runs: this.runtime.deliveryRuns(delivery.bot_id, eventId),
     }));
   }
-  consumeDelivery(botId, id, receipt) { return this.deliveries.consume(botId, id, receipt); }
+  scheduleFlush() {
+    if (this.flushScheduled || !this.runtime) return;
+    this.flushScheduled = true;
+    setImmediate(() => {
+      this.flushScheduled = false;
+      if (this.runtime && !this.runtime.closed) {
+        this.deliveries.flush(this.runtime).catch(() => {});
+      }
+    });
+  }
+
+  consumeDelivery(botId, id, receipt) {
+    this.deliveries.consume(botId, id, receipt);
+    this.checkUnansweredFallbacks();
+  }
   recordReceipt(callId, facts, sessionId) { return this.executions.receipt(sessionId, callId, facts); }
   roomMembers(id) { return this.deliveries.roomMembers(id); }
 
@@ -244,16 +265,22 @@ export class SummonPlatform {
     const session = this.store.get(sessionRecords, source.id);
     if (!session || session.authority_revoked || session.control?.state !== 'active') return;
     const connection = this.connections.get(session.connection_id ?? session.engine);
-    if (!['cli', 'codex'].includes(connection?.kind) ||
-        !this.connections.authorized(connection, session.execution_actor)) return;
+    if (!connection || !this.connections.authorized(connection, session.execution_actor)) return;
     const binding_version = connection.binding_version ?? 1;
     if (session.connection_binding_version !== binding_version) return;
     const ref = { kind: 'connection', id: connection.id };
     const id = randomUUID();
     this.calls.bind(call.id, { connection_failure_event_id: id });
-    this.deliveries.queueEvent({ id, kind: 'event', type: 'connection.failure', target: ref, ref, status, code, binding_version,
-      author: { kind: 'platform', id: 'platform' }, time: new Date().toISOString() },
-    [], true, session.execution_actor?.id);
+    const event = { id, kind: 'event', type: 'connection.failure', target: ref, ref, status, code, binding_version,
+      protocol: connection.kind, author: { kind: 'platform', id: 'platform' }, time: new Date().toISOString() };
+    const matched = this.deliveries.queueEvent(event, [], true, session.execution_actor?.id);
+    if (!matched) {
+      const recipient = this.probeMaintainer(connection);
+      if (recipient?.enabled && !recipient.archivedAt && recipient.id !== session.execution_actor?.id) {
+        this.deliveries.enqueue(recipient.id, { ...event, bot_id: recipient.id, space: { kind: 'bot', id: recipient.id } },
+          [{ id: keyOf('connection_failure_fallback', connection.id), revision: 1, kind: 'connection_failure_fallback' }], []);
+      }
+    }
   }
 
   probeMaintainer(entry) {
@@ -627,12 +654,6 @@ export class SummonPlatform {
     }
   }
 
-  isFollowupRoomAllowed(session, roomRef) {
-    if (!session || roomRef?.kind !== 'room' || !roomRef.id) return false;
-    return sameRef(session.origin_room, roomRef) ||
-      Array.isArray(session.allowed_followup_rooms) && session.allowed_followup_rooms.includes(roomRef.id);
-  }
-
   assertCanSubmit(context, session) {
     if (!session || session.control.state !== 'active') reject('execution_paused', 'Execution is paused', 409);
     this.assertSessionAuthority(session, { checkWorkspacePath: true });
@@ -689,14 +710,12 @@ export class SummonPlatform {
       group_work.source = { kind: 'event', id: origin_message_id };
     const owner_conversation_id = context.origin?.conversation_id ?? null;
     const work_summary = args.work_summary?.trim() || null;
-    const allowed_followup_rooms = Array.isArray(args.allowed_followup_rooms)
-      ? [...new Set(args.allowed_followup_rooms.map(roomRef => idOf(roomRef, 'room')))]
-      : [];
+    if (origin_room?.id) this.deliveries.noteRoomActivity(origin_room.id, 'tool_progress');
     return this.store.transaction(() => {
       const session = this.store.save(sessionRecords, { id: call.id, engine, space, owner: actor, bot_id: bot?.id ?? null,
         source_space: project_room || context.conversation?.space || null, project_room,
         origin_room, origin_message_id, owner_conversation_id, owner_run_id: context.origin?.run_id ?? null, work_summary, waiting_summary: null,
-        acceptance_state: 'open', allowed_followup_rooms, pending_input: [],
+        pending_input: [],
         ...(roomWorkspace && resource_refs.some(ref => sameRef(ref, roomWorkspace)) ? { room_workspace_id: roomWorkspace.id } : {}),
         execution_actor: actor, submitted_by: actor, model, model_binding: binding,
         instructions: sharing ? '' : context.session?.instructions ?? bot?.instructions ?? '',
@@ -866,6 +885,7 @@ export class SummonPlatform {
       if (!updated || current.enabled && !updated.enabled || (current.binding_version ?? 1) !== (updated.binding_version ?? 1))
         await this.revokeSessions({ kind: 'connection', id: result.id });
     }
+    this.runtime?.resumeRecoveredRuns?.();
     this.emit('connection');
     return { ...result, ...this.connectionMaintenance(this.connections.get(result.id)) };
   }
@@ -1023,6 +1043,14 @@ export class SummonPlatform {
       if (name === 'open_session' || name === 'send_input' || name === 'stop_session') {
         const result = name === 'open_session' ? await this.executions.open(args, context, record)
           : name === 'send_input' ? await this.executions.submit(args, context, record) : await this.executions.stop(args, context, record);
+        if (name === 'open_session' && result?.target && context.actor.kind === 'bot' && Array.isArray(context.origin?.event_ids)) {
+          for (const sourceEventId of context.origin.event_ids) {
+            this.deliveries.recordWakeupOutcome(sourceEventId, context.actor.id, {
+              outcome: 'opened_session',
+              outcome_ref: result.target,
+            });
+          }
+        }
         this.emit('execution', { call_id: record.id });
         return { result, call_id: record.id };
       }
@@ -1148,8 +1176,30 @@ export class SummonPlatform {
       }
       if (actor.kind === 'bot') this.resources.acquire('message', this.resourceSource(context), { id: call.id }).finish();
       this.calls.bind(call.id, { target: space });
-      return this.room.send(id, { ...args, attachments, reply_to: normalize(args.reply_to, 'event'), mentions: members(args.mentions),
-        clientId: context.clientId }, actor.id, { callId: call.id });
+      const sameRoomRun = actor.kind === 'bot' && context.conversation?.kind === 'room' && context.conversation.space?.id === id;
+      const sendResult = this.room.send(id, {
+        ...args,
+        attachments,
+        reply_to: normalize(args.reply_to, 'event'),
+        origin_message_id: args.origin_message_id ? normalize(args.origin_message_id, 'event') : undefined,
+        mentions: members(args.mentions),
+        clientId: context.clientId,
+      }, actor.id, {
+        callId: call.id,
+        ...(sameRoomRun && Number.isSafeInteger(context.origin?.seen_room_sequence) ? {
+          expectedSequence: context.origin.seen_room_sequence,
+          ownRunCallIds: context.origin.own_run_send_call_ids,
+        } : {}),
+      });
+      if (sendResult?.message && actor.kind === 'bot' && Array.isArray(context.origin?.event_ids)) {
+        for (const sourceEventId of context.origin.event_ids) {
+          this.deliveries.recordWakeupOutcome(sourceEventId, actor.id, {
+            outcome: 'sent_message',
+            outcome_ref: { kind: 'event', id: sendResult.message.id },
+          });
+        }
+      }
+      return sendResult;
     }
     if (name === 'save_file') {
       const action = this.runtime.materials.prepareSave(args, context);
@@ -1539,7 +1589,32 @@ export class SummonPlatform {
           if (record) this.calls.bind(record.id, { target: { kind: 'session', id: session.id }, status: 'submitted', execution_actor: session.execution_actor });
           return record;
         });
-        if (call) releases.push(this.stopRevoked(session, call));
+        if (call) {
+          releases.push(this.stopRevoked(session, call));
+          if (session.owner_conversation_id && session.owner?.kind === 'bot') {
+            const ownerBot = this.store.get(botRecords, session.owner.id);
+            if (ownerBot?.enabled && !ownerBot.archivedAt) {
+              const event = {
+                id: keyOf('execution.revoked', session.id, call.id),
+                kind: 'event',
+                type: 'execution.revoked',
+                author: { kind: 'platform', id: 'platform' },
+                bot_id: ownerBot.id,
+                space: session.origin_room || { kind: 'bot', id: ownerBot.id },
+                ref: { kind: 'conversation', id: session.owner_conversation_id },
+                target: { kind: 'session', id: session.id },
+                session_id: session.id,
+                origin_room: session.origin_room || null,
+                origin_message_id: session.origin_message_id || null,
+                reason: error.code || 'session_authority_revoked',
+                affected,
+                time: new Date().toISOString(),
+              };
+              this.deliveries.queueEvent(event, [], false);
+              this.deliveries.enqueue(ownerBot.id, event, [{ id: keyOf('revoke_notice', session.id), revision: 1, kind: 'execution_revoked' }], []);
+            }
+          }
+        }
       }
     }
     await Promise.all(releases);
@@ -1565,10 +1640,193 @@ export class SummonPlatform {
     });
   }
 
+  deliverResultToHost({ reason, session, callId, status, receipt }) {
+    if (!session || session.host_fallback_delivered_at) return null;
+    try {
+      const originRoomId = session.origin_room?.id || null;
+      const originRoom = originRoomId ? this.store.get('rooms', originRoomId) : null;
+      const ownerBot = session.owner?.id ? this.store.get(botRecords, session.owner.id) : null;
+      const eggbot = this.listBots().find(bot => bot.built_in_role?.id === 'eggbot' && !bot.archivedAt);
+      const senderBot = (ownerBot && !ownerBot.archivedAt) ? ownerBot : (eggbot || this.listBots().find(bot => !bot.archivedAt));
+      if (!senderBot) return null;
+
+      let direct = this.store.list('rooms').find(r =>
+        r.mode === 'direct' && r.members.length === 2 && r.members.includes('user') && r.members.includes(senderBot.id));
+      if (!direct) {
+        direct = this.room.createRoom({ mode: 'direct', members: ['user', senderBot.id], title: senderBot.name }, 'user');
+      }
+      const reasonText = reason === 'origin_room_deleted' ? '原群已删除'
+        : reason === 'owner_bot_paused' ? '原执行成员已暂停'
+        : reason === 'owner_run_suspended' ? '原群主对话挂起未恢复'
+        : '原群当前不可达';
+      const summary = session.last_output_summary || session.waiting_summary || session.work_summary || '后台任务已产生终态回执';
+      const lines = [
+        `【原群成果转交】${reasonText}，已将后台任务终态结果同步至本私聊：`,
+        `- 任务摘要：${session.work_summary || session.id}`,
+        `- 执行状态：${status}`,
+        `- 结果摘要：${summary}`,
+        ...(originRoomId ? [`- 来源群：${originRoom?.name || originRoomId}（原消息：${session.origin_message_id || '无'}）`] : []),
+        `- 调用 / 会话：session ${session.id} / call ${callId}`,
+      ];
+      const refs = [
+        { kind: 'session', id: session.id },
+        ...(callId ? [{ kind: 'call', id: callId }] : []),
+        ...(receipt?.kind && receipt?.id ? [receipt] : []),
+      ].filter(ref => this.canReadReference(ref, { actor: user }));
+      const sent = this.room.send(direct.id, { text: lines.join('\n'), references: refs }, senderBot.id, { callId: keyOf('host_fallback', session.id, callId) });
+      this.store.save(sessionRecords, {
+        id: session.id,
+        host_fallback_delivered_at: new Date().toISOString(),
+        host_fallback_reason: reason,
+        host_fallback_room_id: direct.id,
+        host_fallback_message_id: sent?.message?.id || null,
+      });
+      this.emit('execution');
+      return sent;
+    } catch {
+      return null;
+    }
+  }
+
+  naturalFallbackBot(room) {
+    const members = (room?.members || []).filter(id => id !== 'user');
+    const available = members
+      .map(id => this.store.get(botRecords, id))
+      .filter(bot => bot && bot.enabled && !bot.archivedAt && !bot.connection_initializer &&
+        this.canUseModel({ kind: 'bot', id: bot.id }, this.botModelConnectionId(bot)));
+    if (!available.length) return null;
+    return available.find(bot => bot.built_in_role?.id === 'eggbot') || available[0];
+  }
+
+  roomMessageStatus(roomId, message) {
+    if (!message || message.senderId !== 'user') return null;
+    const room = this.store.get('rooms', roomId);
+    if (!room) return null;
+    const deliveries = this.deliveries.deliveriesFor(message.id);
+    const replies = this.room.repliesTo(roomId, message.id).filter(item => item.senderId !== 'user');
+    const relatedSessions = this.store.list(sessionRecords).filter(session =>
+      session.origin_room?.id === roomId && session.origin_message_id === message.id);
+    const hasActiveSession = relatedSessions.some(session => !session.authority_revoked && this.isActiveSession(session));
+    const hostFallback = relatedSessions.find(session => session.host_fallback_delivered_at) || null;
+    const runtimeActivity = this.runtime?.messageActivity?.(roomId, message.id) || { inFlight: false, suspended: false };
+    const deliveryInFlight = deliveries.some(item => ['pending', 'unknown', 'received'].includes(item.status));
+    const inFlight = deliveryInFlight || runtimeActivity.inFlight || hasActiveSession;
+    const fallbackRecord = this.store.get('unanswered-fallbacks', message.id);
+
+    let state = 'in_flight';
+    let unavailableReason = null;
+    if (replies.length && !hasActiveSession) {
+      state = 'answered';
+    } else if (inFlight) {
+      state = 'in_flight';
+    } else if (replies.length) {
+      state = 'answered';
+    } else {
+      state = 'unanswered';
+      if (message.mentions?.length) {
+        const mentionedBots = message.mentions.filter(id => id !== 'user').map(id => this.store.get(botRecords, id));
+        const paused = mentionedBots.find(bot => !bot || !bot.enabled || bot.archivedAt);
+        if (paused) unavailableReason = `被点名成员 ${paused.name || 'Bot'} 当前已暂停或不可用`;
+        else if (runtimeActivity.suspended) unavailableReason = '被点名成员处理中断（suspended），可点击重试';
+      } else if (!this.naturalFallbackBot(room)) {
+        unavailableReason = '当前群内无可用成员（均已暂停或缺少可用模型绑定）';
+      } else if (fallbackRecord) {
+        unavailableReason = runtimeActivity.suspended ? '兜底成员处理中断，可点击重试或另行点名' : '已由统筹成员检视但未公开发言，可点击点名指定成员';
+      }
+    }
+
+    return {
+      message_id: message.id,
+      state,
+      in_flight: inFlight,
+      reply_count: replies.length,
+      active_sessions: relatedSessions.filter(s => !s.authority_revoked && this.isActiveSession(s)).length,
+      fallback_attempted: Boolean(fallbackRecord),
+      fallback_bot_id: fallbackRecord?.bot_id || null,
+      ...(unavailableReason ? { unavailable_reason: unavailableReason } : {}),
+      ...(hostFallback ? {
+        host_fallback_delivered: true,
+        host_fallback_room_id: hostFallback.host_fallback_room_id,
+        host_fallback_message_id: hostFallback.host_fallback_message_id,
+      } : {}),
+    };
+  }
+
+  roomMessageStates(roomId, messages = []) {
+    const result = {};
+    for (const msg of messages) {
+      if (msg.senderId === 'user') {
+        const status = this.roomMessageStatus(roomId, msg);
+        if (status) result[msg.id] = status;
+      }
+    }
+    return result;
+  }
+
+  checkUnansweredFallbacks() {
+    if (this.draining || !this.runtime) return;
+    const cutoff = Date.now() - 15 * 60 * 1000;
+    for (const room of this.store.list('rooms')) {
+      if (room.mode !== 'group') continue;
+      const recent = this.room.latestMessage.get(room.id);
+      if (!recent) continue;
+      const latest = JSON.parse(recent.data);
+      const createdMs = Date.parse(latest.createdAt || 0);
+      if (latest.senderId !== 'user' || createdMs < cutoff || latest.mentions?.length) continue;
+      if (this.store.get('unanswered-fallbacks', latest.id)) continue;
+      const msg = this.room.projectMessage(recent);
+      const status = this.roomMessageStatus(room.id, msg);
+      if (!status || status.state !== 'unanswered') continue;
+      const fallbackBot = this.naturalFallbackBot(room);
+      if (!fallbackBot) continue;
+      this.store.save('unanswered-fallbacks', {
+        id: latest.id,
+        room_id: room.id,
+        bot_id: fallbackBot.id,
+        created_at: new Date().toISOString(),
+      });
+      const event = {
+        ...this.room.messageEventFor(msg),
+        fallback_reason: 'unanswered_by_team',
+        fallback_guidance: 'All specialist members stayed quiet for this user message (possible duty gap). Respond directly to the user so the group is not left unanswered, and if the team lacks an appropriate duty/specialist, propose or create/invite one.',
+      };
+      this.deliveries.enqueue(fallbackBot.id, event, [{ id: keyOf('unanswered_fallback', latest.id), revision: 1, kind: 'unanswered_fallback' }], []);
+      this.emit('room');
+    }
+  }
+
+  triggerManualFallback(roomId, messageId, botId) {
+    const room = this.room.room(roomId, user.id);
+    const bot = botId ? this.getBot(botId) : this.naturalFallbackBot(room);
+    if (!bot || !bot.enabled || bot.archivedAt || !room.members.includes(bot.id)) {
+      reject('bot_unavailable', 'Selected Bot is unavailable in this Room', 409);
+    }
+    const row = this.room.messageRow.get(messageId);
+    if (!row) reject('message_not_found', 'Message not found', 404);
+    const msg = this.room.projectMessage(row);
+    if (msg.roomId !== room.id) reject('message_not_found', 'Message does not belong to this Room', 404);
+    const event = {
+      ...this.room.messageEventFor(msg),
+      fallback_reason: 'host_manual_fallback',
+      fallback_guidance: 'The host explicitly asked you to respond to this message.',
+    };
+    const delivery = this.deliveries.enqueue(bot.id, event, [{ id: keyOf('manual_fallback', messageId, Date.now()), revision: 1, kind: 'unanswered_fallback' }], []);
+    this.store.save('unanswered-fallbacks', {
+      id: messageId,
+      room_id: room.id,
+      bot_id: bot.id,
+      manual: true,
+      created_at: new Date().toISOString(),
+    });
+    this.emit('room');
+    return { ok: true, bot_id: bot.id, delivery_id: delivery.id };
+  }
+
   async tick({ observations = true, deliveries = true } = {}) {
     if (!this.draining && observations) {
       this.repairs.reconcile();
       this.deliveries.tickTime();
+      this.checkUnansweredFallbacks();
     }
     if (deliveries) await this.deliveries.flush(this.runtime);
   }
@@ -1617,7 +1875,6 @@ export class SummonPlatform {
         }
       }
     });
-    this.executions.reconcileClosedDescendants();
     for (const bot of this.manager.list()) {
       if (bot.control.state === 'paused' && bot.control.stop_status === 'pending') this.manager.settleStop(bot.id, bot.control.stop_id, 'stopped');
     }

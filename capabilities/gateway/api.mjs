@@ -130,12 +130,21 @@ export function createApi({ platform, room, attachments, models, connections, pu
         const model_ids = (prior.model_ids || []).filter(model => !access.model_ids?.includes(model));
         const workspace_ids = (prior.workspace_ids || []).filter(workspace => !access.workspace_ids?.includes(workspace));
         if (model_ids.length || workspace_ids.length) await platform.revokeSessions({ kind: 'bot', id, model_ids, workspace_ids });
+        platform.runtime.resumeRecoveredRuns();
         emit('bot');
         return access;
       }
     }
     if ((match = path.match(/^\/api\/rooms\/([^/]+)\/stop$/)) && method === 'POST') {
       return platform.stopRoom(decodeURIComponent(match[1]), user);
+    }
+    if ((match = path.match(/^\/api\/rooms\/([^/]+)\/resume-chain$/)) && method === 'POST') {
+      const id = decodeURIComponent(match[1]);
+      room.room(id, user.id);
+      return platform.deliveries.resumeRoomChain(id);
+    }
+    if ((match = path.match(/^\/api\/rooms\/([^/]+)\/messages\/([^/]+)\/fallback$/)) && method === 'POST') {
+      return platform.triggerManualFallback(decodeURIComponent(match[1]), decodeURIComponent(match[2]), args.bot_id || null);
     }
     if ((match = path.match(/^\/api\/rooms\/([^/]+)(?:\/(messages)(\/receipt)?)?$/))) {
       const ref = routeRef('room', match[1]);
@@ -145,7 +154,10 @@ export function createApi({ platform, room, attachments, models, connections, pu
         const deliveries = Object.fromEntries(result.messages.map(item => [item.id, platform.hostMessageDeliveries(item.id)]));
         const summaries = room.messageSummaries(ref.id, result.messages.map(item => item.id));
         const suspendedRuns = platform.runtime.suspendedRunsForRoom(ref.id);
-        const value = { ...result, deliveries, summaries, suspendedRuns, historyEpoch };
+        const messageStates = platform.roomMessageStates(ref.id, result.messages);
+        const chainState = platform.deliveries.roomChainState(ref.id);
+        const staleWaits = platform.runtime.staleWaitsForRoom(ref.id);
+        const value = { ...result, deliveries, summaries, suspendedRuns, messageStates, chainState, staleWaits, historyEpoch };
         return match[2] ? snapshot('room:' + ref.id, value, params) : value;
       }
       if (method === 'POST' && match[2] && !match[3]) return mutation('send', { ...args, to: ref }, clientId);
@@ -161,6 +173,9 @@ export function createApi({ platform, room, attachments, models, connections, pu
     if (path === '/api/wakeups') {
       if (method === 'GET') return list('wakeup', params);
       if (method === 'POST') return mutation('set_wakeup', args, clientId);
+    }
+    if ((match = path.match(/^\/api\/wakeups\/([^/]+)$/)) && method === 'DELETE') {
+      return platform.deliveries.remove(decodeURIComponent(match[1]), args.revision, userContext);
     }
     if (path === '/api/executions' && method === 'GET') {
       const scope = scopeOf(params);
@@ -245,6 +260,7 @@ export function createApi({ platform, room, attachments, models, connections, pu
         const prior = platform.workspaceRecords().find(workspace => workspace.id === ref.id);
         const result = platform.configureWorkspace({ ...args, id: ref.id }, userContext);
         if (prior && (prior.path !== result.path || prior.write !== false && !result.write)) await platform.revokeSessions(ref);
+        platform.runtime.resumeRecoveredRuns();
         return result;
       }
     }

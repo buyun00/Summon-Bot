@@ -184,7 +184,7 @@ const resourceLabels = {
 };
 const ui = {
   view:'chat', roomId:null, botId:null, executionRef:null, executionDetail:null, fileId:null, fileDetail:null,
-  messages:[], roomDeliveries:new Map(), roomSummaries:new Map(), roomSuspendedRuns:[], mobileRoom:false, draftReplies:{}, drafts:{}, draftTargets:{}, draftAttachments:{},
+  messages:[], roomDeliveries:new Map(), roomSummaries:new Map(), roomSuspendedRuns:[], roomMessageStates:{}, roomChainState:null, roomStaleWaits:[], mobileRoom:false, draftReplies:{}, drafts:{}, draftTargets:{}, draftAttachments:{},
   draftReferences:{}, localMessages:{}, loading:true, refreshing:false, streamConnected:false, connectionNotice:'',
   detailOpen:false, detailTab:'details', profileBotId:null, avatarEditing:false, avatarDraft:null, avatarTab:'bot',
   avatarSelectionRevision:0, searchOpen:false, roomQuery:'', menu:null, sendingRooms:new Set(), navigationSeq:0,
@@ -789,7 +789,7 @@ async function loadCurrent() {
   const baseline = ui.messageCache.get(id);
   const synced = await requestSyncedSnapshot(roomPath(id) + '/messages', baseline);
   if (!synced || request !== ui.roomReadSeq[id] || !roomById(id)) return;
-  const { messages, deliveries, summaries = {}, suspendedRuns = [], room, cursor } = synced.snapshot;
+  const { messages, deliveries, summaries = {}, suspendedRuns = [], messageStates = {}, chainState = null, staleWaits = [], room, cursor } = synced.snapshot;
   const earlier = (baseline?.earlier || []).filter(item => !messages.some(message => message.id === item.id));
   const cached = { ...synced, earlier, historyCursor: baseline?.earlier ? baseline.historyCursor : cursor, messages: [...earlier, ...messages] };
   ui.messageCache.set(id, cached);
@@ -800,6 +800,9 @@ async function loadCurrent() {
   ui.roomDeliveries = new Map([...ui.roomDeliveries, ...Object.entries(deliveries || {})]);
   ui.roomSummaries = new Map([...ui.roomSummaries, ...Object.entries(summaries || {})]);
   ui.roomSuspendedRuns = Array.isArray(suspendedRuns) ? suspendedRuns : [];
+  ui.roomMessageStates = messageStates || {};
+  ui.roomChainState = chainState || null;
+  ui.roomStaleWaits = Array.isArray(staleWaits) ? staleWaits : [];
   const index = state.rooms.findIndex(item => item.id === id);
   if (room && room.revision >= state.rooms[index].revision) state.rooms[index] = room;
   const roomRef = encodeURIComponent(id);
@@ -1024,6 +1027,7 @@ async function selectRoom(id) {
   if (!id) return;
   ui.navigationSeq++; ui.roomId = id; ui.view = 'chat'; ui.mobileRoom = true;
   ui.menu = null; ui.detailOpen = false; ui.profileBotId = null; ui.avatarEditing = false;
+  ui.roomMessageStates = {}; ui.roomChainState = null; ui.roomStaleWaits = []; ui.roomSuspendedRuns = [];
   location.hash = 'chat';
   await restoreRoomMessages(id);
   render();
@@ -1696,6 +1700,36 @@ async function act(action, element) {
   if (action === 'more-file') { await loadFile(ui.fileId,ui.fileDetail.next_cursor); return render(); }
   if (action === 'add-wakeup' || action === 'edit-wakeup') return openWakeupEdit(wakeupById(id),element.dataset.room);
   if (action === 'toggle-wakeup') { const item = wakeupById(id); await wakeupRequest(item,{ enabled:!item.enabled }); return refresh(); }
+  if (action === 'delete-wakeup') {
+    const item = wakeupById(id);
+    if (!item || !confirm('确认删除这条订阅/提醒规则？')) return;
+    await api('/api/wakeups/' + encodeURIComponent(item.id), 'DELETE', { revision: item.revision });
+    toast('订阅规则已删除');
+    return refresh();
+  }
+  if (action === 'resume-room-chain') {
+    if (!ui.roomId) return;
+    await api(roomPath(ui.roomId) + '/resume-chain', 'POST', {});
+    toast('已恢复群内自动讨论');
+    return refresh();
+  }
+  if (action === 'manual-fallback') {
+    if (!ui.roomId || !id) return;
+    const room = roomById(ui.roomId);
+    const activeBots = (room?.members || []).filter(m => m !== 'user').map(botById).filter(b => b && b.enabled);
+    if (!activeBots.length) return toast('当前群内没有启用的 Bot 可点名', true);
+    if (activeBots.length === 1) {
+      await api(roomPath(ui.roomId) + '/messages/' + encodeURIComponent(id) + '/fallback', 'POST', { bot_id: activeBots[0].id });
+      toast(`已请 ${activeBots[0].name} 回应`);
+      return refresh();
+    }
+    openModal('指定成员补答', '', selectField('选择要唤醒的成员', 'bot_id', activeBots.map(b => ({ value: b.id, label: b.name })), activeBots[0].id), async data => {
+      const botId = data.get('bot_id');
+      await api(roomPath(ui.roomId) + '/messages/' + encodeURIComponent(id) + '/fallback', 'POST', { bot_id: botId });
+      toast(`已请 ${nameOf(botId)} 回应`);
+    }, '发送唤醒');
+    return;
+  }
   if (action === 'more-list') {
     const page = ui.listPages[kind], endpoint = element.dataset.endpoint, navigation = ui.navigationSeq;
     if (!page?.next_cursor) return;
@@ -2298,7 +2332,22 @@ function renderDelivery(message) {
   const suspended = (ui.roomSuspendedRuns || []).filter(run => run.event_ids?.includes(message.id)).map(run =>
     `<div class="message-delivery execution-error" role="status"><span>${esc(nameOf(run.bot_id))} 运行已挂起：${esc(run.error?.message || run.error?.code || '未知错误')}</span>
       <button type="button" class="text-button" data-action="retry-suspended" data-conversation="${esc(run.conversation_id)}" data-run="${esc(run.run_id)}">重试</button></div>`).join('');
-  return fastDiag + suspended;
+  const msgState = ui.roomMessageStates?.[message.id];
+  const stateNotice = msgState?.unavailable_reason
+    ? `<div class="message-delivery" role="status"><span>${esc(msgState.unavailable_reason)}</span>
+        <button type="button" class="text-button" data-action="manual-fallback" data-id="${esc(message.id)}">点名补答</button></div>`
+    : '';
+  const hostFallbackNotice = msgState?.host_fallback_delivered
+    ? `<div class="message-delivery" role="status"><span>后台成果已就绪并同步宿主私聊</span>
+        ${msgState.host_fallback_room_id ? `<button type="button" class="text-button" data-action="select-room" data-id="${esc(msgState.host_fallback_room_id)}">前往查看</button>` : ''}</div>`
+    : '';
+  const awaitingNotice = message.awaitingReply && message.senderId !== 'user'
+    ? `<div class="message-delivery">等待你的回复</div>`
+    : '';
+  const staleWaitNotice = (ui.roomStaleWaits || []).filter(w => w.origin_message_id === message.id).map(w =>
+    `<div class="message-delivery" role="status"><span>${esc(nameOf(w.bot_id))} 长期等待中（${Math.floor(w.elapsed_seconds / 60)}分${w.elapsed_seconds % 60}秒）${w.waiting_summary ? ' · ' + esc(w.waiting_summary) : w.work_summary ? ' · ' + esc(w.work_summary) : ''}</span>
+      <button type="button" class="text-button" data-action="stop-room">打断</button></div>`).join('');
+  return fastDiag + suspended + stateNotice + hostFallbackNotice + awaitingNotice + staleWaitNotice;
 }
 
 function renderChatMessage(message, timeline, grouped, isGroup) {
@@ -2408,7 +2457,11 @@ function renderChatComposer(room, members) {
   const reply = selectedReply ? `<div class="reply-preview">${avatar(selectedReply.senderId,25,'')}<span>回复 ${esc(nameOf(selectedReply.senderId))}
     · ${esc(messagePreview(selectedReply))}</span><button type="button" class="icon-button" data-action="cancel-reply" aria-label="取消回复">${icon('close',16)}</button></div>` : '';
   const floatingActivity = renderFloatingBotActivity(room, members);
-  return `<div class="composer-wrap">${floatingActivity}${reply}${renderAttachmentDrafts()}
+  const chainNotice = ui.roomChainState?.paused
+    ? `<div class="message-delivery" role="status" style="margin:0 0 8px"><span>连续纯文本自动讨论已暂停（发新消息即可自动重置）</span>
+        <button type="button" class="text-button" data-action="resume-room-chain">继续讨论</button></div>`
+    : '';
+  return `<div class="composer-wrap">${floatingActivity}${chainNotice}${reply}${renderAttachmentDrafts()}
     ${references.length ? `<div class="reference-list draft-references">${references.map(ref => `<span>${renderReference(ref)}
       <button type="button" class="icon-button" aria-label="移除引用" data-action="remove-reference" data-kind="${esc(ref.kind)}" data-id="${esc(ref.id)}">${icon('close',14)}</button></span>`).join('')}</div>` : ''}
     <form id="message-form" class="composer" data-room-id="${esc(room.id)}">
@@ -2656,12 +2709,30 @@ function describeWakeup(rule) {
   return formatTime(rule.at,true) + (rule.interval_ms ? ' · 每 ' + rule.interval_ms / 60000 + ' 分钟' : ' · 单次');
 }
 
+function describeWakeupRun(run) {
+  const outcomeLabels = {
+    pending: '待处理',
+    sent_message: '已发群报',
+    opened_session: '已开任务',
+    quiet_no_action: '静默无动作',
+    failed: '处理失败',
+  };
+  const label = outcomeLabels[run.outcome] || run.outcome;
+  const at = formatTime(run.scheduled_at || run.enqueued_at, true);
+  return `${at} · ${label}${run.misfired ? '（迟到补发）' : ''}${run.error ? ' · ' + run.error : ''}`;
+}
+
 function renderWakeupRow(item) {
+  const latestRun = Array.isArray(item.recent_runs) && item.recent_runs[0];
   return `<div class="wakeup-row"><div class="wakeup-copy"><strong>${esc(nameOf(item.bot_id))}</strong><span>${esc(describeWakeup(item.rule))}</span>
     ${item.rule.room && ui.view !== 'chat' ? `<small>${esc(roomById(item.rule.room)?.name || item.rule.room)}</small>` : ''}
+    ${item.disabled_reason === 'scope_unavailable' ? '<small>范围失权已自动停用</small>' : ''}
+    ${item.skipped_count ? `<small>停机跳过 ${esc(item.skipped_count)} 次</small>` : ''}
+    ${latestRun ? `<small>最近触发：${esc(describeWakeupRun(latestRun))}</small>` : ''}
     ${botById(item.bot_id)?.enabled === false ? '<small>Bot 已暂停</small>' : ''}</div>
     <button class="text-button" data-action="edit-wakeup" data-id="${esc(item.id)}">编辑</button>
-    <button class="text-button" data-action="toggle-wakeup" data-id="${esc(item.id)}">${item.enabled ? '停用' : '启用'}</button></div>`;
+    <button class="text-button" data-action="toggle-wakeup" data-id="${esc(item.id)}">${item.enabled ? '停用' : '启用'}</button>
+    ${item.rule.kind !== 'room_base' ? `<button class="text-button" data-action="delete-wakeup" data-id="${esc(item.id)}">删除</button>` : ''}</div>`;
 }
 
 function renderWakeups() {

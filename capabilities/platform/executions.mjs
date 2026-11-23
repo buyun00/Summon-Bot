@@ -4,7 +4,6 @@ import { callRecords, errorResult, mayAdvanceReceipt } from './calls.mjs';
 import { allowsConnection, enclosesExecutableScope, executableScope } from '../services/executable-scope.mjs';
 import { executionGuide } from '../connectors/initialization.mjs';
 import { operationRecords } from '../services/session-processes.mjs';
-import { forwardInputs } from './session-work.mjs';
 
 export const sessionRecords = 'platform-sessions';
 export const conversationRecords = 'platform-conversations';
@@ -82,12 +81,13 @@ export class Executions {
     return this.store.get(target.kind === 'session' ? sessionRecords : conversationRecords, target.id);
   }
 
-  followupSessions(botId, roomId) {
+  activeRoomSessions(botId, roomId) {
     return this.store.db.prepare(`SELECT data FROM records WHERE kind='platform-sessions'
-      AND json_extract(data,'$.owner.id')=? AND json_extract(data,'$.acceptance_state')='open'
-      AND json_extract(data,'$.origin_execution.kind')='conversation' AND
-      (json_extract(data,'$.origin_room.id')=? OR ? IN (SELECT value FROM json_each(data,'$.allowed_followup_rooms')))`)
-      .all(botId, roomId, roomId).map(row => JSON.parse(row.data));
+      AND json_extract(data,'$.owner.id')=? AND json_extract(data,'$.origin_room.id')=?
+      AND json_extract(data,'$.origin_execution.kind')='conversation'`)
+      .all(botId, roomId)
+      .map(row => JSON.parse(row.data))
+      .filter(session => !session.authority_revoked && session.control?.state === 'active' && !terminal.has(session.status));
   }
 
   directWork(conversationId) {
@@ -99,7 +99,7 @@ export class Executions {
     const session = this.record({ kind: 'session', id: sessionId });
     if (!session) return [];
     return this.directWork(session.conversation_id || session.id).filter(child =>
-      child.acceptance_state === 'open' && sameRef(child.origin_execution, { kind: 'session', id: session.id }));
+      !child.authority_revoked && !terminal.has(child.status) && sameRef(child.origin_execution, { kind: 'session', id: session.id }));
   }
 
   descendantSessions(sessionId) {
@@ -151,48 +151,33 @@ export class Executions {
     return false;
   }
 
-  cascadeCloseDescendants(sessionId) {
-    const closed = [];
-    for (const child of this.descendantSessions(sessionId)) {
-      if (child.acceptance_state !== 'open') continue;
-      if (terminal.has(child.status) || child.control?.state === 'paused' || child.safe_to_disconnect === true) {
-        const updated = this.store.save(sessionRecords, { id: child.id, acceptance_state: 'closed', pending_delivery: null,
-          ...(Array.isArray(child.allowed_followup_rooms) && child.allowed_followup_rooms.length ? { allowed_followup_rooms: [] } : {}) });
-        closed.push({ session_id: updated.id, engine: updated.engine, parent_session_id: updated.origin_execution?.id ?? null,
-          status: updated.status, acceptance_state: updated.acceptance_state });
-      }
-    }
-    return closed;
-  }
-
-  reconcileClosedDescendants() {
-    this.store.transaction(() => {
-      for (const session of this.store.list(sessionRecords)) {
-        if (session.acceptance_state === 'closed') this.cascadeCloseDescendants(session.id);
-      }
-    });
-  }
-
   retainRoomResults(roomId) {
     for (const session of this.store.list(sessionRecords)) {
-      if (session.origin_room?.id !== roomId || session.origin_execution?.kind !== 'conversation' ||
-          session.acceptance_state !== 'open' || session.pending_delivery) continue;
+      if (session.origin_room?.id !== roomId || session.origin_execution?.kind !== 'conversation') continue;
       const call = session.latest_call_id && this.store.get(callRecords, session.latest_call_id);
       if (!call || call.result_ref?.kind !== 'event') continue;
-      this.store.save(sessionRecords, { id: session.id, pending_delivery: { reason: 'origin_room_deleted',
-        origin_room: session.origin_room, origin_message_id: session.origin_message_id, call_id: call.id,
-        status: call.status, receipt: call.result_ref } });
+      this.platform.deliverResultToHost?.({
+        reason: 'origin_room_deleted',
+        session,
+        callId: call.id,
+        status: call.status,
+        receipt: call.result_ref,
+      });
     }
   }
 
   retainUndelivered(event, botId) {
     const target = event.target ?? this.store.get(callRecords, event.call_id)?.target;
     const session = target?.kind === 'session' && this.record(target);
-    if (!session?.origin_room || session.origin_execution?.kind !== 'conversation' || session.owner?.id !== botId ||
-        this.platform.canReadSpace(session.owner, session.origin_room) || session.pending_delivery?.receipt?.id === event.id) return;
-    this.store.save(sessionRecords, { id: session.id, pending_delivery: { reason: 'origin_room_unavailable',
-      origin_room: session.origin_room, origin_message_id: session.origin_message_id, call_id: event.call_id,
-      status: event.status, receipt: { kind: 'event', id: event.id } } });
+    if (!session?.origin_room || session.origin_execution?.kind !== 'conversation' || session.owner?.id !== botId) return;
+    if (this.platform.canReadSpace(session.owner, session.origin_room)) return;
+    this.platform.deliverResultToHost?.({
+      reason: 'origin_room_unavailable',
+      session,
+      callId: event.call_id,
+      status: event.status,
+      receipt: { kind: 'event', id: event.id },
+    });
   }
 
   sameOperationTarget(left, right, pi) {
@@ -253,7 +238,6 @@ export class Executions {
   list(context, scope) {
     return [{ kind: 'session', records: sessionRecords }, { kind: 'conversation', records: conversationRecords }].flatMap(({ kind, records }) =>
       this.store.list(records).filter(record => (!scope || sameRef(record.space, scope) || sameRef(record.source_space, scope) ||
-        scope.kind === 'room' && Array.isArray(record.allowed_followup_rooms) && record.allowed_followup_rooms.includes(scope.id) ||
         scope.kind === 'bot' && record.bot_id === scope.id) &&
         this.permission({ kind, id: record.id }, record, context)).map(record => this.baseView({ kind, id: record.id }, record, context)));
   }
@@ -272,10 +256,7 @@ export class Executions {
       ...(record.work_summary ? { work_summary: record.work_summary } : {}),
       ...(record.waiting_summary !== undefined ? { waiting_summary: record.waiting_summary } : {}),
       ...(record.last_output_summary ? { last_output_summary: record.last_output_summary } : {}),
-      ...(record.acceptance_state ? { acceptance_state: record.acceptance_state } : {}),
-      ...(record.pending_delivery && (context.actor.kind === 'user' || sameIdentity(context.actor, record.owner)) ?
-        { pending_delivery: record.pending_delivery } : {}),
-      ...(Array.isArray(record.allowed_followup_rooms) ? { allowed_followup_rooms: record.allowed_followup_rooms } : {}),
+      ...(record.host_fallback_delivered_at ? { host_fallback_delivered_at: record.host_fallback_delivered_at } : {}),
     } : {};
     return { kind: target.kind, id: record.id, execution_ref: target, bot_id: record.bot_id, space: record.space, engine: record.engine,
       source_space: record.source_space && this.platform.canReadSpace(context.actor, record.source_space, context) ? record.source_space : undefined,
@@ -440,7 +421,6 @@ export class Executions {
     }
     this.active(record);
     this.checkSubmitResources(target, record, context);
-    if (context.origin?.fast_read_forward) this.calls.bind(call.id, { target });
     if (this.platform.draining && args.kind !== 'reply') reject('updating', 'New execution input is temporarily paused', 503);
     let resolvedInputTarget = args.input_target || null;
     const fresh = async () => {
@@ -517,18 +497,6 @@ export class Executions {
     const target = { kind: 'session', id: idOf(args.target, 'session') };
     const current = this.require(target, context, 'control');
     const patch = { id: current.id };
-    if (args.acceptance_state !== undefined) patch.acceptance_state = args.acceptance_state;
-    if (args.acceptance_state === 'closed') {
-      if (args.add_followup_rooms?.length) {
-        reject('invalid_arguments', 'Cannot add follow-up Rooms while closing a Session');
-      }
-      patch.pending_delivery = null;
-      patch.allowed_followup_rooms = [];
-      if (context.actor.kind === 'user' && current.authority_revoked && current.engine === 'pi' && this.platform.runtime.piAtRest(current)) {
-        patch.safe_to_disconnect = true;
-        patch.revocation_stop = 'stopped';
-      }
-    }
     if (args.work_summary !== undefined) {
       const cleaned = args.work_summary.trim();
       if (!cleaned) reject('invalid_arguments', 'work_summary must be non-empty text');
@@ -537,29 +505,9 @@ export class Executions {
     if (args.waiting_summary !== undefined) {
       patch.waiting_summary = args.waiting_summary?.trim() || null;
     }
-    if (args.acceptance_state !== 'closed' && (args.add_followup_rooms !== undefined || args.remove_followup_rooms !== undefined)) {
-      const next = new Set(Array.isArray(current.allowed_followup_rooms) ? current.allowed_followup_rooms : []);
-      for (const roomRef of args.add_followup_rooms || []) {
-        const roomId = idOf(roomRef, 'room');
-        const room = this.platform.store.get('rooms', roomId);
-        if (!room || !this.platform.canReadSpace(context.actor, { kind: 'room', id: roomId }, context)) {
-          reject('room_forbidden', 'Cannot open follow-up to an inaccessible Room', 403);
-        }
-        next.add(roomId);
-      }
-      for (const roomRef of args.remove_followup_rooms || []) {
-        next.delete(idOf(roomRef, 'room'));
-      }
-      patch.allowed_followup_rooms = [...next];
-    }
     const saved = this.store.save(sessionRecords, patch);
-    let closedDescendants = [];
-    if (args.acceptance_state === 'closed') {
-      closedDescendants = this.cascadeCloseDescendants(saved.id);
-      this.platform.runtime?.wake();
-    }
     this.calls.bind(call.id, { target });
-    return { ...this.baseView(target, saved, context), ...(closedDescendants.length ? { closed_descendants: closedDescendants } : {}) };
+    return this.baseView(target, saved, context);
   }
 
   saveControl(target, control) {
@@ -734,8 +682,7 @@ export class Executions {
       }
       if (terminal.has(facts.status)) {
         this.calls.bind(callId, { safe_to_disconnect: facts.safe_to_disconnect });
-        if (call.origin?.fast_read_forward) this.calls.recordReceipt(callId, { ...facts, position: 'inline' }, call.target);
-        else this.calls.finish(callId, facts.status, facts);
+        this.calls.finish(callId, facts.status, facts);
         this.platform.noteConnectionFailure(session, call, facts);
         if (call.lease_id) this.resources.finish(call.lease_id, { outcome: facts.status });
       } else {
@@ -826,18 +773,24 @@ export class Executions {
       }
       const advances = mayAdvanceReceipt(call, facts.status);
       const session = advances && target?.kind === 'session' ? this.saveFacts(target.id, callId, facts) : null;
-      if (session && session.acceptance_state === 'open' && session.origin_execution?.kind === 'session') {
-        const parent = this.record(session.origin_execution);
-        const notSubmittedDead = facts.status === 'not_submitted' && facts.safe_to_disconnect === true &&
-          parent && (parent.control?.state === 'paused' || this.sessionOrAncestorClosed(parent));
-        const ancestorClosed = terminal.has(facts.status) && facts.status !== 'unknown' && parent && this.sessionOrAncestorClosed(parent);
-        if (notSubmittedDead || ancestorClosed) {
-          this.store.save(sessionRecords, { id: session.id, acceptance_state: 'closed', pending_delivery: null,
-            ...(Array.isArray(session.allowed_followup_rooms) && session.allowed_followup_rooms.length ? { allowed_followup_rooms: [] } : {}) });
-        }
-      }
       const event = this.calls.recordReceipt(callId, facts, target);
       if (!advances) return event;
+      if (session?.origin_room) this.platform.deliveries.noteRoomActivity(session.origin_room.id, 'tool_progress');
+      if (session && terminal.has(facts.status) && facts.status !== 'unknown' && session.origin_room && session.owner?.kind === 'bot') {
+        const ownerBot = this.platform.store.get('platform-bots', session.owner.id);
+        const roomExists = Boolean(this.platform.store.get('rooms', session.origin_room.id));
+        const canReachOrigin = roomExists && ownerBot?.enabled && !ownerBot.archivedAt &&
+          this.platform.canReadSpace(session.owner, session.origin_room);
+        if (!canReachOrigin) {
+          this.platform.deliverResultToHost?.({
+            reason: !roomExists ? 'origin_room_deleted' : (!ownerBot?.enabled || ownerBot.archivedAt ? 'owner_bot_paused' : 'origin_room_unavailable'),
+            session,
+            callId,
+            status: facts.status,
+            receipt: { kind: 'event', id: event.id },
+          });
+        }
+      }
       this.platform.noteConnectionFailure(session, call, facts);
       if (call.input_id) this.settleInput(call.input_id, callId, resultStatus(facts.status));
       if (call.lease_id && (terminal.has(facts.status) && (facts.status !== 'unknown' || facts.safe_to_disconnect === true) ||

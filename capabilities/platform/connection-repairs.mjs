@@ -135,6 +135,23 @@ export class ConnectionRepairs {
       .find(item => item.maintainer_id === recipient.id && isDeepStrictEqual(item.binding, binding) &&
         (faultKey !== null && item.fault_keys.includes(faultKey) || sourceKeys.some(key => item.source_keys.includes(key)) ||
           relatedProbe && item.id === probe.id));
+    if (!pending && source.some(item => item.binding_version !== undefined && item.binding_version !== (entry.binding_version ?? 1))) {
+      const latestRepair = this.store.list(repairRecords)
+        .filter(item => item.connection_id === entry.id && item.reply_call_id)
+        .slice(-1)[0] || null;
+      reject('connection_binding_changed', 'The cited observation belongs to a previous binding. Check or retry the current connection before requesting repair', 409, {
+        connection_id: entry.id,
+        current_binding_version: entry.binding_version ?? 1,
+        connection_revision: entry.revision,
+        ...(latestRepair ? {
+          recent_repair: {
+            request_id: latestRepair.id,
+            status: latestRepair.status,
+            reply_call_id: latestRepair.reply_call_id,
+          },
+        } : {}),
+      });
+    }
     const id = pending?.id ?? (relatedProbe ? probe.id : keyOf('connection.repair', call.id));
     const reportKey = keyOf(context.actor.kind, context.actor.id, context.origin?.conversation_id, context.origin?.run_id);
     const reports = pending?.reports ?? [];
@@ -162,6 +179,14 @@ export class ConnectionRepairs {
         author: context.actor, time: new Date().toISOString(), text, connection_revision: entry.revision, source: report.source };
       platform.deliveries.queueEvent(event, [], false);
       platform.deliveries.enqueue(recipient.id, event, [{ id, revision: 1, kind: 'connection_repair' }], []);
+    } else if (pending?.status === 'need_info') {
+      // Requester provided follow-up parameters on an open need_info repair request; wake maintainer again.
+      const followEvent = { id: keyOf('connection.repair.followup', id, call.id), kind: 'event', type: repairRequestType,
+        ref: target, request_id: id, bot_id: recipient.id, space: recipient, author: context.actor,
+        time: new Date().toISOString(), text, connection_revision: entry.revision, source: report.source };
+      platform.deliveries.queueEvent(followEvent, [], false);
+      platform.deliveries.enqueue(recipient.id, followEvent, [{ id, revision: (pending.followup_count || 0) + 2, kind: 'connection_repair_followup' }], []);
+      this.store.save(repairRecords, { id, status: 'pending', followup_count: (pending.followup_count || 0) + 1 });
     }
     if (previous) return platform.calls.finish(call.id, 'completed', { status: 'already_requested', request, target,
       repair_call: refFor('call', previous.call_id) });
@@ -192,8 +217,31 @@ export class ConnectionRepairs {
         }
       }
     }
+    if (args.repair_outcome === 'need_info') {
+      const notified = this.requestMoreInfo(request, call.id, { text, author: context.actor, outcome: 'need_info' }, references);
+      return platform.calls.finish(call.id, 'completed', { status: 'need_info_sent', request: reference, replies: notified });
+    }
     const replies = this.finish(request, call.id, { text, author: context.actor, outcome: args.repair_outcome ?? 'reported' }, references);
     return platform.calls.finish(call.id, 'completed', { status: 'replied', request: reference, replies });
+  }
+
+  requestMoreInfo(request, replyId, result, references = []) {
+    const { platform } = this;
+    const target = refFor('connection', request.connection_id);
+    const output = { type: repairResultType, request: refFor('event', request.id), connection: target, ...result, non_terminal: true };
+    const questions = [...(request.questions ?? []), { call_id: replyId, text: result.text, time: new Date().toISOString() }].slice(-8);
+    this.store.save(repairRecords, { id: request.id, status: 'need_info', questions });
+    let count = 0;
+    for (const report of request.reports) {
+      const orig = this.store.get(callRecords, report.call_id);
+      if (!orig || orig.status !== 'submitted') continue;
+      const recipient = { actor: orig.submitted_by };
+      platform.calls.recordReceipt(orig.id, { position: keyOf('repair_need_info', request.id, replyId), status: 'needs_input',
+        output: { ...output, references: references.filter(ref => platform.canReadReference(ref, recipient)) },
+      }, target, false);
+      count++;
+    }
+    return count;
   }
 
   finish(request, replyId, result, references = []) {
