@@ -177,6 +177,7 @@
 .ws-browser-item:hover { background: var(--hover, rgba(0,0,0,0.05)); }
 .ws-browser-item.selected { background: var(--accent-soft, rgba(37,99,235,0.14)); font-weight: 600; }
 .ws-browser-empty { padding: 12px; text-align: center; font-size: 12px; color: var(--muted); }
+.ws-browser-more { margin: 4px auto; padding: 4px 12px; font-size: 12px; }
 .ws-preview-text { max-height: 320px; overflow: auto; margin-top: 10px; }
 .ws-preview-box { margin-top: 10px; text-align: center; }
 .ws-preview-image { max-width: 100%; max-height: 320px; border-radius: 8px; }

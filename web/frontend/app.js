@@ -1496,10 +1496,34 @@ async function addReference() {
   const listEl = $('[data-ws-list]', form);
   let currentDir = '.';
   let browseSeq = 0;
+  let loadedEntries = [];
+  let nextCursor = null;
 
-  async function loadDir(wsId, dir = '.') {
+  function renderEntries() {
+    if (!loadedEntries.length) {
+      listEl.innerHTML = '<div class="ws-browser-empty">此目录暂无可读文件</div>';
+      return;
+    }
+    const sorted = [...loadedEntries].sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'directory' ? -1 : 1));
+    const itemsHtml = sorted.map(entry => {
+      const isDir = entry.kind === 'directory';
+      const selected = !isDir && pathInput.value.trim() === entry.path;
+      return `<button type="button" class="ws-browser-item${selected ? ' selected' : ''}" role="option" aria-selected="${selected ? 'true' : 'false'}" data-ws-entry-kind="${isDir ? 'directory' : 'file'}" data-ws-entry-path="${esc(entry.path)}">${isDir ? '📁' : '📄'} <span>${esc(entry.name)}${isDir ? '/' : ''}</span></button>`;
+    }).join('');
+    const moreHtml = nextCursor
+      ? '<button type="button" class="secondary-button ws-browser-more" data-ws-more>加载更多</button>'
+      : '';
+    listEl.innerHTML = itemsHtml + moreHtml;
+  }
+
+  async function loadDir(wsId, dir = '.', cursor = null) {
     const seq = ++browseSeq;
-    currentDir = dir || '.';
+    const append = Boolean(cursor);
+    if (!append) {
+      currentDir = dir || '.';
+      loadedEntries = [];
+      nextCursor = null;
+    }
     if (!wsId) {
       crumbEl.textContent = '目录：/';
       upBtn.disabled = true;
@@ -1508,24 +1532,30 @@ async function addReference() {
     }
     crumbEl.textContent = currentDir === '.' ? '目录：/' : `目录：/${currentDir}`;
     upBtn.disabled = currentDir === '.';
-    listEl.innerHTML = '<div class="ws-browser-empty">加载中…</div>';
+    if (!append) {
+      listEl.innerHTML = '<div class="ws-browser-empty">加载中…</div>';
+    } else {
+      const moreBtn = $('[data-ws-more]', listEl);
+      if (moreBtn) { moreBtn.disabled = true; moreBtn.textContent = '加载中…'; }
+    }
     try {
-      const res = await api('/api/workspaces/' + encodeURIComponent(wsId) + '?directory=' + encodeURIComponent(currentDir));
+      const query = '?directory=' + encodeURIComponent(currentDir) + (cursor ? '&cursor=' + encodeURIComponent(cursor) : '');
+      const res = await api('/api/workspaces/' + encodeURIComponent(wsId) + query);
       if (seq !== browseSeq || !form.isConnected) return;
-      const entries = Array.isArray(res?.items) ? res.items : [];
-      if (!entries.length) {
-        listEl.innerHTML = '<div class="ws-browser-empty">此目录暂无可读文件</div>';
-        return;
+      const incoming = Array.isArray(res?.items) ? res.items : [];
+      const seen = new Set(loadedEntries.map(item => item.path));
+      for (const item of incoming) {
+        if (!seen.has(item.path)) {
+          seen.add(item.path);
+          loadedEntries.push(item);
+        }
       }
-      const sorted = [...entries].sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'directory' ? -1 : 1));
-      listEl.innerHTML = sorted.map(entry => {
-        const isDir = entry.kind === 'directory';
-        const selected = !isDir && pathInput.value.trim() === entry.path;
-        return `<button type="button" class="ws-browser-item${selected ? ' selected' : ''}" role="option" aria-selected="${selected ? 'true' : 'false'}" data-ws-entry-kind="${isDir ? 'directory' : 'file'}" data-ws-entry-path="${esc(entry.path)}">${isDir ? '📁' : '📄'} <span>${esc(entry.name)}${isDir ? '/' : ''}</span></button>`;
-      }).join('');
+      nextCursor = res?.next_cursor && res.next_cursor !== cursor ? res.next_cursor : null;
+      renderEntries();
     } catch (error) {
       if (seq !== browseSeq || !form.isConnected) return;
-      listEl.innerHTML = `<div class="ws-browser-empty">${esc(error.message || '无法读取工作区目录')}</div>`;
+      if (append) renderEntries();
+      else listEl.innerHTML = `<div class="ws-browser-empty">${esc(error.message || '无法读取工作区目录')}</div>`;
     }
   }
 
@@ -1540,6 +1570,11 @@ async function addReference() {
     void loadDir(wsSelect.value, parts.length ? parts.join('/') : '.');
   });
   listEl?.addEventListener('click', event => {
+    const moreBtn = event.target.closest('[data-ws-more]');
+    if (moreBtn && nextCursor) {
+      void loadDir(wsSelect.value, currentDir, nextCursor);
+      return;
+    }
     const btn = event.target.closest('[data-ws-entry-path]');
     if (!btn) return;
     const kind = btn.dataset.wsEntryKind;
