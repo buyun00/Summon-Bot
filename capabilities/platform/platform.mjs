@@ -1090,7 +1090,10 @@ export class SummonPlatform {
       });
       if (name === 'configure_bot' && result.control && Object.keys(args).some(key => !['bot', 'revision', 'role_id', 'role_connection_id', 'connection_revision'].includes(key))) {
         if (result.control.state === 'paused' && result.control.stop_status === 'pending') {
-          this.settleBotInBackground(result.id, result.control);
+          await this.settleBot(result.id, result.control);
+          const settled = this.manager.view(this.getBot(result.id), context.actor);
+          this.calls.bind(record.id, { result: settled });
+          return { result: settled, call_id: record.id };
         } else {
           if (args.enabled === true) {
             this.deliveries.purgePausedDeliveries(result.id);
@@ -1351,7 +1354,11 @@ export class SummonPlatform {
     const removedSet = new Set(removedIds);
     for (const session of this.store.list(sessionRecords)) {
       if (!session.sharing || session.space?.kind !== 'room' || session.space.id !== roomId) continue;
-      const filterPrincipals = list => (list || []).filter(p => !removedSet.has(identity(p).id));
+      const filterPrincipals = list => (list || []).filter(p => {
+        if (!p || typeof p !== 'object') return false;
+        if (p.kind === 'room_members') return true;
+        return !removedSet.has(p.id);
+      });
       const nextSharing = {
         readers: filterPrincipals(session.sharing.readers),
         submitters: filterPrincipals(session.sharing.submitters),
@@ -1390,8 +1397,7 @@ export class SummonPlatform {
   }
 
   async deleteBot(id, revision, actor = user) {
-    const before = this.getBot(id);
-    if (revision !== undefined) assertRevision(before.revision, revision);
+    const before = this.manager.assertRemovable(id, revision, actor);
     await this.runtime.stopBot(id);
     await this.stopBotExternalSessions(id, actor);
     for (const room of this.store.list('rooms')) {
@@ -1462,7 +1468,7 @@ export class SummonPlatform {
     return retried;
   }
 
-  settleBotInBackground(id, control) {
+  async settleBot(id, control) {
     const task = (async () => {
       let status;
       try {
@@ -1475,8 +1481,9 @@ export class SummonPlatform {
     })();
     this.botStops ??= new Set();
     this.botStops.add(task);
-    void task.catch(error => console.error(`Summon Bot stop state could not be saved (${error.code || error.name})`))
-      .finally(() => this.botStops.delete(task));
+    try { await task; }
+    catch (error) { console.error(`Summon Bot stop state could not be saved (${error.code || error.name})`); }
+    finally { this.botStops.delete(task); }
   }
 
   sessionDependsOn(session, ref) {
@@ -1545,7 +1552,15 @@ export class SummonPlatform {
     } catch { outcome = { status: 'unknown' }; }
     this.store.transaction(() => {
       const current = this.store.get(sessionRecords, session.id);
-      if (current?.revocation_stop !== 'stopped') this.store.save(sessionRecords, { id: session.id, revocation_stop: outcome.status });
+      if (current) {
+        const patch = {};
+        if (current.revocation_stop !== 'stopped') patch.revocation_stop = outcome.status;
+        if (outcome.status === 'stopped' && current.status !== 'stopped') {
+          patch.status = 'stopped';
+          patch.safe_to_disconnect = true;
+        }
+        if (Object.keys(patch).length) this.store.save(sessionRecords, { id: session.id, ...patch });
+      }
       this.calls.finish(call.id, 'completed', outcome);
     });
   }

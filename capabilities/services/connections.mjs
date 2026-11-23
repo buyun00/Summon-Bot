@@ -399,7 +399,8 @@ export class SummonConnections {
       return this.services.refresh(operation, entry, session);
     }
     const current = await this.processes.refresh(operation);
-    if (reconcile && current.protocol === 'codex' && current.status === 'unknown' && current.thread_id) {
+    if (reconcile && current.protocol === 'codex' && current.thread_id && !current.recovered_at &&
+        (current.status === 'unknown' || current.code === 'crashed_or_exited_unknown')) {
       return this.reconcileCodex(current, session);
     }
     return current;
@@ -425,7 +426,9 @@ export class SummonConnections {
       const history = JSON.parse(outcome.stdout);
       if (history.threadId !== operation.thread_id || (operation.turn_id && operation.turn_id !== history.turnId)) return attempt;
       const latest = this.store.get(operationRecords, operation.id);
-      if (!latest || this.locks.has(session.id) || latest.status !== 'unknown' || latest.updatedAt !== attempt.updatedAt)
+      if (!latest || this.locks.has(session.id) ||
+          (latest.status !== 'unknown' && !(latest.code === 'crashed_or_exited_unknown' && !latest.recovered_at)) ||
+          latest.updatedAt !== attempt.updatedAt)
         return latest || attempt;
       const status = codexStatus[history.turnStatus];
       const binding = { model: operation.binding?.model || history.model, effort: operation.binding?.effort || history.effort };
@@ -675,7 +678,7 @@ export class SummonConnections {
     const partial_snapshot = await this.processes.partialSnapshot(operation);
     if (operation.status === 'unknown') {
       if (!this.processes.isAlive(operation)) {
-        markStopRequested({ runtime_ended: true, finished_at: operation.finished_at || now, remote_outcome: 'confirmed_stopped',
+        markStopRequested({ status: 'stopped', runtime_ended: true, finished_at: operation.finished_at || now, remote_outcome: 'confirmed_stopped',
           ...(partial_snapshot ? { partial_snapshot } : {}) });
         return { status: 'stopped', remote_outcome: 'confirmed_stopped', ...(partial_snapshot ? { partial_snapshot } : {}) };
       }
@@ -693,8 +696,27 @@ export class SummonConnections {
     }
     const key = keyOf('stop', session.id, call.id, operation.id);
     await this.processes.command(operation, { ...call, id: key }, 'stop', null, undefined, () => {});
+    const deadline = Date.now() + 1_500;
+    let latest = await this.processes.refresh(operation);
+    while (Date.now() < deadline && (!latest.runtime_ended || this.processes.isAlive(latest))) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      latest = await this.processes.refresh(latest);
+    }
+    const ended = Boolean(latest.runtime_ended) && !this.processes.isAlive(latest);
+    if (ended) {
+      const finalStatus = settled(latest.status) && latest.status !== 'unknown' ? latest.status : 'stopped';
+      markStopRequested({
+        status: finalStatus,
+        runtime_ended: true,
+        stop_verified: true,
+        finished_at: latest.finished_at || new Date().toISOString(),
+        remote_outcome: 'confirmed_stopped',
+        ...(partial_snapshot ? { partial_snapshot } : {}),
+      });
+      return { status: 'stopped', remote_outcome: 'confirmed_stopped', ...(partial_snapshot ? { partial_snapshot } : {}) };
+    }
     markStopRequested({
-      detached_at: operation.detached_at || now,
+      detached_at: latest.detached_at || now,
       detached_reason: 'interrupted_by_user',
       remote_outcome: 'unknown_may_still_be_running',
       ...(partial_snapshot ? { partial_snapshot } : {}),

@@ -280,12 +280,17 @@ export class BotManager {
     });
   }
 
-  remove(id, revision, actor) {
+  assertRemovable(id, revision, actor) {
     if (actor.kind !== 'user') reject('configuration_forbidden', 'Only the host can delete a Bot', 403);
     const before = this.get(id);
     if (before.connection_initializer || (Object.hasOwn(defaultBotRoles, before.built_in_role?.id) && before.id === `bot-default-${before.built_in_role.id}-local`))
       reject('bot_protected', 'Default system Bots cannot be deleted', 403);
     if (revision !== undefined) assertRevision(before.revision, revision);
+    return before;
+  }
+
+  remove(id, revision, actor) {
+    const before = this.assertRemovable(id, revision, actor);
     this.store.transaction(() => {
       this.store.save(deletedBotRecords, { id: before.id, name: before.name, deletedAt: new Date().toISOString() });
       this.store.remove(botRecords, before.id);

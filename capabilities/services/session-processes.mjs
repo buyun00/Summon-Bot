@@ -146,20 +146,25 @@ export class SessionProcesses {
     const final = process.platform === 'win32' && !heartbeat?.finishedAt ? await optionalJson(join(directory, 'finished.json')) : null;
     const state = final?.finishedAt && settled(final.status) && matches(final) && (!operation.child_pid || final.pid === operation.child_pid)
       ? final : heartbeat;
+    const deadTerminalStatus = (op, st) => (op.detached_at || op.stop_requested_at || st?.status === 'stopping' ? 'stopped' : 'failed');
     if (matches(state)) {
       const stale = !settled(state.status) && Date.now() - Date.parse(state.observedAt) > heartbeatExpiryMs;
       const status = stale ? 'unknown' : state.status;
-      if (status === 'unknown' && operation.recovered_at || stale && operation.runtime_exit_observed_at) return operation;
+      if (status === 'unknown' && operation.recovered_at) return operation;
       if (stale) {
         const alive = isProcessAlive(state.runnerPid ?? operation.runner_pid) || isProcessAlive(state.pid ?? operation.child_pid);
         if (!alive) {
+          const now = new Date().toISOString();
           return this.save(operation, {
-            status: 'unknown', runtime_ended: true, runtime_exit_observed_at: new Date().toISOString(),
-            finished_at: operation.finished_at ?? new Date().toISOString(), pending: [], stdin_open: false,
+            status: deadTerminalStatus(operation, state), runtime_ended: true,
+            runtime_exit_observed_at: operation.runtime_exit_observed_at ?? now,
+            finished_at: operation.finished_at ?? now, pending: [], stdin_open: false,
+            exit_code: null,
             code: 'crashed_or_exited_unknown',
             error: 'The external process exited without returning a terminal receipt',
           });
         }
+        if (operation.runtime_exit_observed_at) return operation;
       }
       if (operation.status === status && operation.observed_at === state.observedAt && operation.finished_at === (state.finishedAt ?? null) &&
           operation.stdin_open === (state.stdinOpen === true) && operation.turn_id === (state.nativeTurnId ?? operation.turn_id) &&
@@ -181,13 +186,18 @@ export class SessionProcesses {
     }
     if (Date.now() - Date.parse(operation.submitted_at) > 15_000 && operation.status !== 'unknown') {
       const alive = this.isAlive(operation);
-      return this.save(operation, { status: 'unknown', runtime_ended: !alive,
-        ...(alive ? {} : { runtime_exit_observed_at: new Date().toISOString(), code: 'crashed_or_exited_unknown' }),
+      const now = new Date().toISOString();
+      return this.save(operation, { status: alive ? 'unknown' : deadTerminalStatus(operation, null), runtime_ended: !alive,
+        ...(alive ? {} : { runtime_exit_observed_at: now, finished_at: operation.finished_at ?? now, exit_code: null, code: 'crashed_or_exited_unknown' }),
         error: alive ? 'The original process did not provide a launch receipt' : 'The original process exited without providing a launch receipt' });
     }
-    if (operation.status === 'unknown' && !operation.runtime_ended && !this.isAlive(operation)) {
-      return this.save(operation, { runtime_ended: true, runtime_exit_observed_at: new Date().toISOString(),
-        code: operation.code || 'crashed_or_exited_unknown' });
+    if (operation.status === 'unknown' && !this.isAlive(operation)) {
+      const now = new Date().toISOString();
+      return this.save(operation, { status: deadTerminalStatus(operation, null), runtime_ended: true,
+        runtime_exit_observed_at: operation.runtime_exit_observed_at ?? now,
+        finished_at: operation.finished_at ?? now, pending: [], stdin_open: false, exit_code: null,
+        code: operation.code || 'crashed_or_exited_unknown',
+        error: operation.error || 'The external process exited without returning a terminal receipt' });
     }
     return operation;
   }
