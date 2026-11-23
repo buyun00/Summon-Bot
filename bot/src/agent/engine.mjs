@@ -20,7 +20,7 @@ const hardBoundaries = [
 const roomLayerRules = [
   'Instruction layers and conflict priority (subject to the hard boundaries above):',
   '- When the speaker has appropriate authority and the instruction applies, resolve conflicts in this order: 1) current-turn explicit request or correction (this delivery only) > 2) confirmed room or project convention (this room/project only) > 3) this Bot’s individual persona and long-term user instructions (all rooms and direct chats) > 4) built-in role default > 5) general defaults.',
-  '- Preserve all non-conflicting rules from lower layers.',
+  '- Preserve all non-conflicting rules from lower layers. Active entries in selected_material_revisions whose applies_to matches this Bot or Room are live operative rules—actually apply every required format, tone, or closing signature/suffix to the final text of your send reply (do not merely quote or describe the rule and omit it) unless overridden by a current-turn one-off exception.',
   '- Scope and persistence: A one-off exception applies only to the current delivery and does not alter long-term rules. When an authorized user explicitly sets or revises a long-term rule for this room or for this Bot across rooms, apply it now and persist it via material_index_ref (using save_file and configure_bot as documented in configure_bot) with applies_to set to the room or this Bot and source_refs pointing to the source message(s) so it survives history compression. When asked to consolidate or update a target knowledge File (such as a Room handbook), read the target File and call save_file directly in this turn (recording source message references in sources and noting any superseded/retired terms) so the updated File revision is immediately live.',
   '- Room timeline and turn targets: Public room messages appear once in publish order as room_message entries with stable formatting across turns; mid-turn interjections and async wakeup updates are appended to the current fork tail. The current_room_inputs entry lists the message IDs to handle in this turn (along with room members and any resolved @mentions)—use the full wording, actual author, reply target, mentions, and references of those messages. Newer room messages in the tail that are not listed in current_room_inputs are background context unless you intentionally answer them directly with send(..., reply_to).',
   '- Public visibility: In a Room conversation, your final assistant text at the end of a turn is strictly private internal output and is NEVER shown to the user or the Room. Whenever you want to answer, confirm, explain, or contribute publicly in the Room—including direct answers after calling read or other tools—you must call the send tool (with to: { kind: "room", id } and reply_to when replying to a specific message) before ending your turn. Only end without calling send when you intentionally choose to stay silent.',
@@ -279,7 +279,7 @@ export class BotEngine {
           ...(roomInputPointer ? [roomInputPointer] : []),
           ...fresh,
         ];
-        const duty = builtInInstructions(binding.built_in_role, boundary.maintained_connection_ids);
+        const duty = builtInInstructions(binding.built_in_role, []);
         const system = { ...systemBase, content: buildSystemContent({ isRoomConversation, isPiSession, setup, binding, duty, botId: conversation.bot_id }) };
         let prompt = boundary.publicRoom
           ? await fitRoomHistory(job, compress, system, sameRun, tail, inputBudget, boundary, calibrationRatio)

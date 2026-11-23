@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { stat } from 'node:fs/promises';
+import { rm, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { assertInstallationWritable, readInstallationState } from '../../../scripts/installation/installation-state.mjs';
 import { inspectServiceLock } from '../../../scripts/installation/service-lock.mjs';
@@ -1120,6 +1120,12 @@ export class BotRuntime {
       }
       for (const group of groups.values()) facts.push(textMessage(group));
     }
+    if (Array.isArray(view.maintained_connection_ids) && view.maintained_connection_ids.length) {
+      facts.push(textMessage({
+        type: 'maintained_connections',
+        connection_ids: [...view.maintained_connection_ids].sort(),
+      }));
+    }
     const storedConv = inbox.conversation(conversation.id);
     const lastInputTokens = storedConv?.last_input_tokens ?? 0;
     const contextWindow = job.binding?.model?.context_window ?? 0;
@@ -1440,6 +1446,21 @@ export class BotRuntime {
     const jobs = [...this.active.values()].filter(job => job.inbox.botId === id);
     for (const job of jobs) job.controller.abort(runtimeFailure('bot_paused', 'Bot was explicitly stopped'));
     return Promise.all([...jobs.map(job => job.done), this.fastRead?.stopBot(id)]).then(() => ({ status: 'stopped' }));
+  }
+
+  async disposeBot(id) {
+    await this.stopBot(id);
+    if (this.pumpTask) await this.pumpTask.catch(() => {});
+    const pendingOpen = this.opening.get(id);
+    if (pendingOpen) await pendingOpen.catch(() => {});
+    const inbox = this.inboxes.get(id);
+    if (inbox) {
+      this.inboxes.delete(id);
+      try { inbox.store.close(); } catch {}
+    }
+    try {
+      await rm(join(this.dataRoot, 'bots', boxId(id)), { recursive: true, force: true });
+    } catch {}
   }
 
   async alignBotOnEnable(botId) {

@@ -322,6 +322,7 @@ export class SummonConnections {
       launch_call_id: call.id, connection_id: entry.id, connection_version: this.summary(entry).version, execution_actor: session.execution_actor,
       connection_binding_version: entry.binding_version ?? 1, status: 'prepared', input_revision: (session.input_revision || 0) + 1 });
     let started = false;
+    const abortController = new AbortController();
     try {
       const cwd = stdioMcp(entry) ? await this.serviceWorkingDirectory(entry, session) : this.workspace;
       const authorize = () => {
@@ -334,7 +335,6 @@ export class SummonConnections {
         this.checkServiceMethod(entry, current, input?.method);
       };
       authorize();
-      const abortController = new AbortController();
       const combinedSignal = signal ? AbortSignal.any([signal, abortController.signal]) : abortController.signal;
       this.active.set(operation.id, abortController);
       const result = await this.services.invoke(entry, session.execution_actor, cwd, input, call.id, async () => {
@@ -377,7 +377,14 @@ export class SummonConnections {
       const unsupported = !started && [mcpTasksUnsupported, mcpMethodUnsupported, 'scoped_process_unsupported'].includes(error.code);
       const unknown = started && (error.outcomeUnknown || signal?.aborted || error.name === 'AbortError');
       const http_status = started && entry.kind === 'http' && Number.isInteger(error.status) ? error.status : undefined;
-      const code = (!started || http_status) && typeof error.code === 'string' ? this.clean(error.code) : undefined;
+      let code = (!started || http_status || entry.kind === 'mcp') && typeof error.code === 'string' ? this.clean(error.code) : undefined;
+      if (!started && (code === 'ENOENT' || code === 'EACCES')) code = 'connection_unavailable';
+      if (!code && http_status) {
+        code = http_status === 401 || http_status === 403 ? 'connection_auth_failed'
+          : http_status >= 500 ? 'connection_unavailable'
+          : 'http_request_failed';
+      }
+      if (!code && !started && entry.kind === 'mcp') code = 'connection_unavailable';
       const saved = this.saveOperation(operation, { status: unsupported ? 'unsupported' : unknown ? 'unknown' : started ? 'failed' : 'not_submitted',
         runtime_ended: !unknown, error: this.clean(error.message), code, http_status });
       return this.operationFacts(saved, session);

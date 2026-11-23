@@ -2369,10 +2369,22 @@ function renderDelivery(message) {
     `<div class="message-delivery execution-error" role="status"><span>${esc(nameOf(run.bot_id))} 运行已挂起：${esc(run.error?.message || run.error?.code || '未知错误')}</span>
       <button type="button" class="text-button" data-action="retry-suspended" data-conversation="${esc(run.conversation_id)}" data-run="${esc(run.run_id)}">重试</button></div>`).join('');
   const msgState = ui.roomMessageStates?.[message.id];
-  const stateNotice = msgState?.unavailable_reason
-    ? `<div class="message-delivery" role="status"><span>${esc(msgState.unavailable_reason)}</span>
-        <button type="button" class="text-button" data-action="manual-fallback" data-id="${esc(message.id)}">点名补答</button></div>`
-    : '';
+  let stateNotice = '';
+  if (msgState?.state === 'unanswered') {
+    const reason = msgState.unavailable_reason || '暂无人接手';
+    stateNotice = `<div class="message-delivery" role="status" data-message-state="unanswered"><span>${esc(reason)}</span>
+        <button type="button" class="text-button" data-action="manual-fallback" data-id="${esc(message.id)}">点名补答</button></div>`;
+  } else if (msgState?.state === 'in_flight') {
+    const label = msgState.fallback_attempted && msgState.fallback_bot_id
+      ? `正在由 ${nameOf(msgState.fallback_bot_id)} 兜底处理…`
+      : '处理中…';
+    stateNotice = `<div class="message-delivery" role="status" data-message-state="in_flight"><span>${esc(label)}</span></div>`;
+  } else if (msgState?.state === 'answered') {
+    const label = msgState.fallback_attempted && msgState.fallback_bot_id
+      ? `已由 ${nameOf(msgState.fallback_bot_id)} 兜底答复`
+      : '已答复';
+    stateNotice = `<div class="message-delivery" role="status" data-message-state="answered"><span>${esc(label)}</span></div>`;
+  }
   const hostFallbackNotice = msgState?.host_fallback_delivered
     ? `<div class="message-delivery" role="status"><span>后台成果已就绪并同步宿主私聊</span>
         ${msgState.host_fallback_room_id ? `<button type="button" class="text-button" data-action="select-room" data-id="${esc(msgState.host_fallback_room_id)}">前往查看</button>` : ''}</div>`

@@ -260,8 +260,10 @@ export class SummonPlatform {
       run_status: blocker ? { status: 'blocked', ...blocker } : { status: 'configured' } } };
   }
 
-  noteConnectionFailure(source, call, { status, code, input_status }) {
-    if (!source || !['failed', 'not_submitted'].includes(status) || !connectionStartupFailures.includes(code) ||
+  noteConnectionFailure(source, call, { status, code, http_status, input_status }) {
+    const serviceFailure = code === 'connection_auth_failed' || code === 'CAPABILITY_UNAVAILABLE' ||
+      (status === 'failed' && Number.isInteger(http_status) && (http_status === 401 || http_status === 403 || http_status >= 500));
+    if (!source || !['failed', 'not_submitted'].includes(status) || (!connectionStartupFailures.includes(code) && !serviceFailure) ||
         input_status !== undefined || !['open_session', 'send_input'].includes(call.tool) || call.connection_failure_event_id) return;
     const session = this.store.get(sessionRecords, source.id);
     if (!session || session.authority_revoked || session.control?.state !== 'active') return;
@@ -1462,6 +1464,7 @@ export class SummonPlatform {
     }
     this.deliveries.removeAllForBot(id);
     const result = this.manager.remove(id, before.revision, actor);
+    await this.runtime.disposeBot(id);
     this.emit('bot');
     this.emit('room');
     this.emit('connection');

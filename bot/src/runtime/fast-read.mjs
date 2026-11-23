@@ -46,8 +46,8 @@ const fastReadRules = [
     'items 必须完整覆盖 pending_message_ids 中的每一个 message_id。',
 ].join('\n\n');
 
-function buildFastReadSystem(bot, maintainedConnectionIds) {
-  const duty = builtInInstructions(bot.built_in_role, maintainedConnectionIds);
+function buildFastReadSystem(bot, room, members) {
+  const duty = builtInInstructions(bot.built_in_role, []);
   const identityLines = [
     `Bot ID: ${bot.id}`,
     `名称: ${bot.name}`,
@@ -55,7 +55,17 @@ function buildFastReadSystem(bot, maintainedConnectionIds) {
   ];
   if (duty) identityLines.push(`内置角色说明:\n${duty}`);
   if (bot.instructions) identityLines.push(`个人长期指令（供判断职责归属与边界，本阶段不执行）:\n${bot.instructions}`);
-  return `${fastReadRules}\n\n当前 Bot 身份与职责：\n${identityLines.join('\n')}`;
+  const roomLines = room ? [
+    `群 ID: ${room.id}`,
+    `群名: ${room.name || room.id}`,
+    `模式: ${room.mode || 'group'}`,
+    ...(members?.length ? [`群成员与公开职责:\n${members.map(m => `- ${m.name} (${m.id}, ${m.kind})${m.public_duty ? `：${m.public_duty}` : ''}`).join('\n')}`] : []),
+  ] : [];
+  return [
+    fastReadRules,
+    `当前 Bot 身份与职责：\n${identityLines.join('\n')}`,
+    ...(roomLines.length ? [`当前群信息与成员分工：\n${roomLines.join('\n')}`] : []),
+  ].join('\n\n');
 }
 
 function cleanSummary(value) {
@@ -246,8 +256,19 @@ export class FastReadRuntime {
 
       const maintainedIds = this.platform.store.list('platform-connections')
         .filter(entry => entry.maintainer_bot_id === bot.id)
-        .map(entry => entry.id);
-      const systemContent = buildFastReadSystem(bot, maintainedIds);
+        .map(entry => entry.id)
+        .sort();
+      const members = [...(room.members || [])].sort((a, b) => (a === 'user' ? -1 : b === 'user' ? 1 : a.localeCompare(b))).map(memberId => {
+        if (memberId === 'user') return { id: 'user', kind: 'user', name: '用户' };
+        const memberBot = this.platform.store.get('platform-bots', memberId);
+        return {
+          id: memberId,
+          kind: 'bot',
+          name: memberBot?.name || memberId,
+          public_duty: memberBot?.public_duty || '',
+        };
+      });
+      const systemContent = buildFastReadSystem(bot, room, members);
       const systemMessage = {
         role: 'system',
         timestamp: Date.parse(room.createdAt) || 0,
@@ -276,16 +297,6 @@ export class FastReadRuntime {
           seenPublicIds.add(route.event_id);
         }
       }
-      const members = (room.members || []).map(memberId => {
-        if (memberId === 'user') return { id: 'user', kind: 'user', name: '用户' };
-        const memberBot = this.platform.store.get('platform-bots', memberId);
-        return {
-          id: memberId,
-          kind: 'bot',
-          name: memberBot?.name || memberId,
-          public_duty: memberBot?.public_duty || '',
-        };
-      });
       const activeSessions = this.listActiveSessions(bot, roomId);
       const memberNameById = new Map(members.map(member => [member.id, member.name]));
       const pendingMentions = {};
@@ -297,13 +308,10 @@ export class FastReadRuntime {
       }
       const tail = textMessage({
         type: 'fast_read_batch',
-        room: { id: room.id, name: room.name, mode: room.mode },
-        members,
-        self: { id: bot.id, name: bot.name, built_in_role: bot.built_in_role?.id || null },
         pending_message_ids: eventIds,
         ...(Object.keys(pendingMentions).length ? { pending_mentions: pendingMentions } : {}),
-        routes: ['quiet', 'main'],
         ...(activeSessions.length ? { active_sessions: activeSessions } : {}),
+        ...(maintainedIds.length ? { maintained_connection_ids: maintainedIds } : {}),
       });
 
       const maxTokens = Math.max(128, Math.min(model.maxTokens, Math.floor(model.contextWindow * 0.25), Math.max(512, eventIds.length * 160 + 256)));
