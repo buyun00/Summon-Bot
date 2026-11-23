@@ -192,7 +192,7 @@ export class SummonPlatform {
     if (entry.maintainer_bot_id === botId && entry.repair_bot_ids === undefined) return entry;
     const next = { ...entry, maintainer_bot_id: botId, revision: entry.revision + 1 };
     delete next.repair_bot_ids;
-    return this.store.save('platform-connections', next);
+    return this.store.replace('platform-connections', next);
   }
 
   assignMaintainer(args, context, call) {
@@ -261,7 +261,7 @@ export class SummonPlatform {
       const recipient = this.probeMaintainer(connection);
       if (recipient?.enabled && !recipient.archivedAt && recipient.id !== session.execution_actor?.id) {
         const pendingFallback = this.store.list('platform-deliveries').some(delivery =>
-          delivery.bot_id === recipient.id && delivery.status === 'pending' &&
+          delivery.bot_id === recipient.id && ['pending', 'received', 'unknown'].includes(delivery.status) &&
           delivery.event?.type === 'connection.failure' && delivery.event?.ref?.id === connection.id);
         if (!pendingFallback) {
           this.deliveries.enqueue(recipient.id, { ...event, bot_id: recipient.id, space: { kind: 'bot', id: recipient.id } },
@@ -375,7 +375,9 @@ export class SummonPlatform {
     if (!ref) return false;
     const { actor } = context;
     if (ref.kind === 'workspace_file') {
-      return Boolean(ref.workspace_id && ref.path && this.workspaceAvailable(ref.workspace_id, actor, context));
+      const p = typeof ref.path === 'string' ? ref.path.trim() : '';
+      const safePath = Boolean(p) && !/^(?:[a-zA-Z]:|[/\\])/.test(p) && !p.split(/[/\\]/).some(part => !part || part === '.' || part === '..');
+      return safePath && Boolean(ref.workspace_id && this.workspaceAvailable(ref.workspace_id, actor, context));
     }
     if (!ref.id) return false;
     switch (ref.kind) {
@@ -1789,14 +1791,14 @@ export class SummonPlatform {
         if (Object.hasOwn(conn, 'repair_bot_ids')) {
           const cleaned = { ...conn };
           delete cleaned.repair_bot_ids;
-          this.store.save('platform-connections', cleaned);
+          this.store.replace('platform-connections', cleaned);
         }
       }
       for (const access of this.store.list('platform-access')) {
         if (Object.hasOwn(access, 'execution_onboarding')) {
           const cleaned = { ...access };
           delete cleaned.execution_onboarding;
-          this.store.save('platform-access', cleaned);
+          this.store.replace('platform-access', cleaned);
         }
       }
       for (const bot of this.store.list(botRecords)) {

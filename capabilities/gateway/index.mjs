@@ -51,7 +51,11 @@ function json(res, status, result) {
 
 function canOmitVersion(method, path) {
   return method === 'GET' && ['/api/bootstrap', '/api/health'].includes(path) ||
-    ['GET', 'HEAD'].includes(method) && (/^\/api\/attachments\/[^/]+(?:\/(?:preview|view))?$/.test(path) || /^\/api\/files\/[^/]+\/download$/.test(path));
+    ['GET', 'HEAD'].includes(method) && (
+      /^\/api\/attachments\/[^/]+(?:\/(?:preview|view))?$/.test(path) ||
+      /^\/api\/files\/[^/]+\/download$/.test(path) ||
+      /^\/api\/workspaces\/[^/]+\/file$/.test(path)
+    );
 }
 
 function acceptsDuringDrain(path) {

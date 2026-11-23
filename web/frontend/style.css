@@ -168,3 +168,15 @@
 
 .message-link { color: var(--accent, #2f6feb); text-decoration: underline; word-break: break-all; }
 .chat-message.outgoing .message-link { color: inherit; }
+.ws-browser { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin: 8px 0 10px; background: var(--surface-2, rgba(0,0,0,0.02)); }
+.ws-browser-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.ws-browser-crumb { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-browser-up { padding: 3px 8px; font-size: 12px; }
+.ws-browser-list { max-height: 180px; overflow-y: auto; display: flex; flex-direction: column; padding: 4px; gap: 2px; }
+.ws-browser-item { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; border: none; background: transparent; padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 13px; color: inherit; }
+.ws-browser-item:hover { background: var(--hover, rgba(0,0,0,0.05)); }
+.ws-browser-item.selected { background: var(--accent-soft, rgba(37,99,235,0.14)); font-weight: 600; }
+.ws-browser-empty { padding: 12px; text-align: center; font-size: 12px; color: var(--muted); }
+.ws-preview-text { max-height: 320px; overflow: auto; margin-top: 10px; }
+.ws-preview-box { margin-top: 10px; text-align: center; }
+.ws-preview-image { max-width: 100%; max-height: 320px; border-radius: 8px; }

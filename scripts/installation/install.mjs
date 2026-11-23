@@ -162,7 +162,7 @@ export async function installRelease({ releaseRoot, appRoot, dataRoot, sourceRoo
           if (result.supportsDrain !== true) throw new Error('The current gateway lacks a protocol drain handler');
         }
       }
-      if (previousManifest && previousManifest.protocolVersion !== manifest.protocolVersion) {
+      if (requireClients || (previousManifest && previousManifest.protocolVersion !== manifest.protocolVersion)) {
         try {
           await assertClientAvailability({ dataRoot, release: await readJson(join(releaseRoot, 'release.json')), expected: manifest });
         } catch (error) {
@@ -179,7 +179,7 @@ export async function installRelease({ releaseRoot, appRoot, dataRoot, sourceRoo
     } else if (state.target_build !== manifest.buildId || resolve(state.release_root) !== destination) {
       if (!replacePending) throw new Error(`Continue installation ${state.target_build} with its staged release, or use --replace-pending with a repaired build`);
       const previousManifest = state.previous_release && await candidate(state.previous_release);
-      if (previousManifest && previousManifest.protocolVersion !== manifest.protocolVersion) {
+      if (requireClients || (previousManifest && previousManifest.protocolVersion !== manifest.protocolVersion)) {
         try {
           await assertClientAvailability({ dataRoot, release: await readJson(join(releaseRoot, 'release.json')), expected: manifest });
         } catch (error) {

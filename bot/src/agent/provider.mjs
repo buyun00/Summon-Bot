@@ -165,7 +165,7 @@ export class ModelProvider {
     const classifyProviderFault = (http, text) => {
       const lower = String(text || '').toLowerCase();
       const quotaPattern = /insufficient_quota|quota[_\s-]?exceeded|billing|credit[s]?\s*(exhausted|insufficient|limit)|balance\s*(is\s*)?(insufficient|low|zero)|usage[_\s-]?limit|limit[_\s-]?reached|spending[_\s-]?limit|plan[_\s-]?limit|额度|余额不足/;
-      const authPattern = /invalid[_\s-]?api[_\s-]?key|unauthorized|authentication|token.*(expired|invalid|revoked)|re-?authenticate|重新登录|登录已过期|登录刷新失败|请先配置 api key|尚未.*登录/;
+      const authPattern = /invalid[_\s-]?api[_\s-]?key|unauthorized|authentication|token.*(expired|invalid|revoked)|(expired|invalid|revoked)[\s_-]+(?:access[\s_-]+|refresh[\s_-]+|auth[\s_-]+|session[\s_-]+)?token|session[\s_-]+expired|re-?authenticate|重新登录|登录已过期|登录刷新失败|请先配置 api key|尚未.*登录/;
       if (http === 402 || (http === 429 && quotaPattern.test(lower)) || (!http && quotaPattern.test(lower))) {
         return { code: 'quota_exhausted', http_status: http || null, connection_id: record?.connectionId || null };
       }

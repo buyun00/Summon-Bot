@@ -269,8 +269,13 @@ function matchAuthorizedWorkspaceFile(localPath) {
 async function addAttachments(roomId, files) {
   if (!roomById(roomId)) return;
   const items = ui.draftAttachments[roomId] ||= [], added = [];
-  for (const file of files) {
-    const localPath = window.SummonDesktop?.getPathForFile?.(file) || '';
+  const localPaths = files.map(file => window.SummonDesktop?.getPathForFile?.(file) || '');
+  if (localPaths.some(Boolean) && (!Array.isArray(state.workspaces) || !state.workspaces.length)) {
+    try { state.workspaces = await readList('/api/workspaces'); } catch {}
+  }
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    const localPath = localPaths[i];
     const wsRef = localPath ? matchAuthorizedWorkspaceFile(localPath) : null;
     if (wsRef) {
       addDraftReference(roomId, wsRef);
@@ -733,6 +738,9 @@ async function refresh(force = false) {
     if (!synced) return;
     ui.stateSnapshot = synced.snapshot; ui.stateCursor = synced.cursor;
     Object.assign(state, synced.snapshot);
+    if (!Array.isArray(state.workspaces) || !state.workspaces.length) {
+      void readList('/api/workspaces').then(list => { if (Array.isArray(list)) state.workspaces = list; }).catch(() => {});
+    }
     globalThis.SummonModels.sync(state.modelSettings);
     globalThis.SummonModels.bind({ api,render,toast,refresh });
     void globalThis.SummonCache?.writeState(synced);
@@ -1449,6 +1457,7 @@ async function addReference() {
     readList('/api/files?room=' + encodeURIComponent(room.id)).catch(() => []),
     state.workspaces?.length ? Promise.resolve(state.workspaces) : readList('/api/workspaces').catch(() => []),
   ]);
+  if (workspaces.length) state.workspaces = workspaces;
   if (ui.roomId !== room.id) return;
   const options = [{ value:'',label:'选择平台资料' }, ...items.map(item => ({ value:item.id, label:item.name || item.path }))];
   const wsOptions = [{ value:'', label:'选择授权工作区（活文件引用）' }, ...workspaces.map(ws => ({ value: ws.id, label: `${ws.name} (${ws.path})` }))];
@@ -1458,6 +1467,13 @@ async function addReference() {
     field('或填写平台文件 ID','file_id','',{ placeholder:'可引用的平台文件 ID' }) +
     '<hr style="border:none;border-top:1px solid var(--line);margin:12px 0">' +
     selectField('工作区活文件 · 目录','workspace_id',wsOptions,defaultWs) +
+    '<div class="ws-browser" data-ws-browser>' +
+      '<div class="ws-browser-bar">' +
+        '<span class="ws-browser-crumb" data-ws-crumb>目录：/</span>' +
+        '<button type="button" class="secondary-button ws-browser-up" data-ws-up disabled>上级目录</button>' +
+      '</div>' +
+      '<div class="ws-browser-list" data-ws-list role="listbox" aria-label="工作区文件列表"><div class="ws-browser-empty">选择工作区后浏览文件</div></div>' +
+    '</div>' +
     field('工作区相对路径','workspace_path','',{ placeholder:'例如 docs/readme.md 或 dist/output.html' }),
     data => {
       const wsId = data.get('workspace_id')?.trim();
@@ -1470,6 +1486,76 @@ async function addReference() {
       if (id) addDraftReference(room.id,{ kind:'file',id });
       else throw new Error('请选择平台资料、填写文件 ID，或选择工作区与相对路径。');
     },'加入消息');
+
+  const form = $('#modal-form');
+  if (!form) return;
+  const wsSelect = form.elements.workspace_id;
+  const pathInput = form.elements.workspace_path;
+  const crumbEl = $('[data-ws-crumb]', form);
+  const upBtn = $('[data-ws-up]', form);
+  const listEl = $('[data-ws-list]', form);
+  let currentDir = '.';
+  let browseSeq = 0;
+
+  async function loadDir(wsId, dir = '.') {
+    const seq = ++browseSeq;
+    currentDir = dir || '.';
+    if (!wsId) {
+      crumbEl.textContent = '目录：/';
+      upBtn.disabled = true;
+      listEl.innerHTML = '<div class="ws-browser-empty">选择工作区后浏览文件</div>';
+      return;
+    }
+    crumbEl.textContent = currentDir === '.' ? '目录：/' : `目录：/${currentDir}`;
+    upBtn.disabled = currentDir === '.';
+    listEl.innerHTML = '<div class="ws-browser-empty">加载中…</div>';
+    try {
+      const res = await api('/api/workspaces/' + encodeURIComponent(wsId) + '?directory=' + encodeURIComponent(currentDir));
+      if (seq !== browseSeq || !form.isConnected) return;
+      const entries = Array.isArray(res?.items) ? res.items : [];
+      if (!entries.length) {
+        listEl.innerHTML = '<div class="ws-browser-empty">此目录暂无可读文件</div>';
+        return;
+      }
+      const sorted = [...entries].sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'directory' ? -1 : 1));
+      listEl.innerHTML = sorted.map(entry => {
+        const isDir = entry.kind === 'directory';
+        const selected = !isDir && pathInput.value.trim() === entry.path;
+        return `<button type="button" class="ws-browser-item${selected ? ' selected' : ''}" role="option" aria-selected="${selected ? 'true' : 'false'}" data-ws-entry-kind="${isDir ? 'directory' : 'file'}" data-ws-entry-path="${esc(entry.path)}">${isDir ? '📁' : '📄'} <span>${esc(entry.name)}${isDir ? '/' : ''}</span></button>`;
+      }).join('');
+    } catch (error) {
+      if (seq !== browseSeq || !form.isConnected) return;
+      listEl.innerHTML = `<div class="ws-browser-empty">${esc(error.message || '无法读取工作区目录')}</div>`;
+    }
+  }
+
+  wsSelect?.addEventListener('change', () => {
+    pathInput.value = '';
+    void loadDir(wsSelect.value, '.');
+  });
+  upBtn?.addEventListener('click', () => {
+    if (currentDir === '.') return;
+    const parts = currentDir.split('/').filter(Boolean);
+    parts.pop();
+    void loadDir(wsSelect.value, parts.length ? parts.join('/') : '.');
+  });
+  listEl?.addEventListener('click', event => {
+    const btn = event.target.closest('[data-ws-entry-path]');
+    if (!btn) return;
+    const kind = btn.dataset.wsEntryKind;
+    const entryPath = btn.dataset.wsEntryPath;
+    if (kind === 'directory') {
+      void loadDir(wsSelect.value, entryPath);
+    } else {
+      pathInput.value = entryPath;
+      for (const el of listEl.querySelectorAll('.ws-browser-item')) {
+        const isSelf = el === btn;
+        el.classList.toggle('selected', isSelf);
+        el.setAttribute('aria-selected', isSelf ? 'true' : 'false');
+      }
+    }
+  });
+  if (defaultWs) void loadDir(defaultWs, '.');
 }
 
 function addDraftReference(roomId, ref) {
@@ -1483,18 +1569,33 @@ async function openReference(ref) {
     const downloadUrl = `/api/workspaces/${encodeURIComponent(ref.workspace_id)}/file?path=${encodeURIComponent(ref.path)}`;
     const previewUrl = `${downloadUrl}&preview=1`;
     const ws = (state.workspaces || []).find(item => item.id === ref.workspace_id);
+    const fileName = ref.path.split('/').pop() || ref.path;
+    let contentLength = 0;
     try {
       const check = await fetch(downloadUrl, { method: 'HEAD' });
       if (!check.ok) {
         const msg = check.status === 404 ? '工作区文件已移动、重命名或被删除（404）。' : check.status === 403 ? '该工作区目录权限已撤销或无权读取（403）。' : `无法读取工作区文件（HTTP ${check.status}）。`;
         return openModal('工作区文件不可用', ws?.name || ref.workspace_id, `<p>${esc(msg)}</p><p><small>${esc(ref.path)}</small></p>`);
       }
+      contentLength = Number(check.headers.get('content-length') || 0);
     } catch { /* fall through to modal with links */ }
-    const fileName = ref.path.split('/').pop() || ref.path;
+    const ext = (fileName.match(/\.[^.]+$/)?.[0] || '').toLowerCase();
+    const imageExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg']);
+    const textExts = new Set(['.txt', '.md', '.markdown', '.json', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.css', '.html', '.htm', '.xml', '.yml', '.yaml', '.csv', '.py', '.sh', '.ps1', '.swift', '.kt', '.java', '.go', '.rs', '.c', '.h', '.cpp', '.sql', '.log', '.toml', '.ini', '.env']);
+    let previewHtml = '';
+    if (imageExts.has(ext)) {
+      previewHtml = `<div class="ws-preview-box"><img class="ws-preview-image" src="${esc(previewUrl)}" alt="${esc(fileName)}"></div>`;
+    } else if (textExts.has(ext) && contentLength <= 131072) {
+      try {
+        const res = await fetch(previewUrl);
+        if (res.ok) previewHtml = `<pre class="execution-output ws-preview-text">${esc(await res.text())}</pre>`;
+      } catch {}
+    }
     return openModal('工作区活文件', ws?.name || ref.workspace_id,
-      `<p><strong>${esc(fileName)}</strong></p><p><small>${esc(ref.path)}</small></p>
-       <div style="display:flex;gap:10px;margin-top:14px">
-         <a class="primary-button" href="${esc(previewUrl)}" target="_blank" rel="noopener noreferrer">预览最新内容</a>
+      `<p><strong>${esc(fileName)}</strong></p><p><small>${esc(ref.path)}</small></p>` +
+      previewHtml +
+      `<div style="display:flex;gap:10px;margin-top:14px">
+         <a class="primary-button" href="${esc(previewUrl)}" target="_blank" rel="noopener noreferrer">新标签页预览</a>
          <a class="secondary-button" href="${esc(downloadUrl)}" download="${esc(fileName)}">流式下载</a>
        </div>`);
   }
@@ -2361,11 +2462,11 @@ function renderTopbar() {
 function safeHref(raw) {
   const value = String(raw || '').trim();
   if (/^https?:\/\/[^\s<>"']+$/i.test(value)) return value;
-  if (/^\/api\/(?:files|attachments|workspaces|games|releases)\/[^\s<>"']*$/i.test(value)) return value;
+  if (/^\/(?!\/)[^\s<>"']*$/.test(value)) return value;
   return '';
 }
 function linkifyPlain(text) {
-  const pattern = /\[([^\]\n]{1,200})\]\(([^)\s]{1,2048})\)|(https?:\/\/[^\s<>"'()]+|\/api\/(?:files|attachments|workspaces|games)\/[^\s<>"'()]+)/g;
+  const pattern = /\[([^\]\n]{1,200})\]\(([^)\s]{1,2048})\)|(https?:\/\/[^\s<>"'()]+|\/(?:api\/(?:files|attachments|workspaces|games|releases)\/[^\s<>"'()]+|view(?:[/?#][^\s<>"'()]*)?))/g;
   let out = '', last = 0, m;
   while ((m = pattern.exec(text)) !== null) {
     if (m.index > last) out += esc(text.slice(last, m.index));

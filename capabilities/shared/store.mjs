@@ -21,6 +21,12 @@ export class RecordStore {
     this.db.prepare('INSERT INTO records VALUES(?,?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET updated_at=excluded.updated_at,data=excluded.data').run(kind,id,record.createdAt,now,JSON.stringify(record));
     return record;
   }
+  replace(kind,value) {
+    const id = String(value.id || randomUUID()), before = this.get(kind,id), now = new Date().toISOString();
+    const record = { ...value, id, createdAt: before?.createdAt || value.createdAt || now, updatedAt: now };
+    this.db.prepare('INSERT INTO records VALUES(?,?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET updated_at=excluded.updated_at,data=excluded.data').run(kind,id,record.createdAt,now,JSON.stringify(record));
+    return record;
+  }
   import(kind,record) {
     if(typeof record?.id!=='string'||!record.id)throw new TypeError('Imported record requires id');
     const createdAt=record.createdAt||new Date().toISOString(),updatedAt=record.updatedAt||createdAt;
