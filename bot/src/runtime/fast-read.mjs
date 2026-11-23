@@ -306,7 +306,7 @@ export class FastReadRuntime {
         ...(activeSessions.length ? { active_sessions: activeSessions } : {}),
       });
 
-      const maxTokens = Math.min(model.maxTokens, Math.max(512, eventIds.length * 160 + 256));
+      const maxTokens = Math.max(128, Math.min(model.maxTokens, Math.floor(model.contextWindow * 0.25), Math.max(512, eventIds.length * 160 + 256)));
       const physicalBudget = Math.floor(model.contextWindow * 0.85);
       const inputBudget = Math.max(1024, Math.min(physicalBudget, model.contextWindow - maxTokens - 512));
       let keptPrefix = prefix;

@@ -113,7 +113,7 @@ export class BotEngine {
       content: buildSystemContent({ isRoomConversation, isPiSession, setup, binding, duty: '', botId: conversation.bot_id }), toolsAdded: tools.map(toToolDeclaration) };
     const outputReserve = Math.max(128, Math.min(model.maxTokens, 65536, Math.floor(model.contextWindow * 0.15)));
     const outputTokens = outputReserve;
-    const inputBudget = Math.max(4096, Math.min(
+    const inputBudget = Math.max(1024, Math.min(
       Math.floor(model.contextWindow * 0.85),
       model.contextWindow - outputReserve - 512,
     ));
