@@ -4,15 +4,25 @@
 
 # Summon Bot
 
-**跑在你本机（Node.js 24 + SQLite）的自托管多智能体群聊协作工作台：将每位 Bot 拆为「① 零思考快读分流 → ② 群主对话 → ③ 独立后台 Codex/Pi 会话」，支持 EggBot 自动招人组队、在途任务秒级 `steer` 直转、CLI 群外静默自愈与 Web / Desktop / iOS 26 / Android 原生四端同步。**  
-**Self-hosted multi-agent group workspace on Node.js 24 & SQLite: decoupling every Bot into ① Zero-Thinking Fast-Read Triage → ② Main Room Chat → ③ Background Codex/Pi Sessions, with EggBot auto-spawning, live mid-flight `steer`, out-of-band CLI self-healing, and 4 native clients.**
+**自托管多智能体群聊协作工作台 · 把本机 Codex / Grok / Claude / DeepSeek 编排成会自己招人、分流与修工具的本地团队**  
+**Self-Hosted Multi-Agent Group Chat Workspace · Orchestrating Local Codex, Grok, Claude & DeepSeek into an Autonomous Team**
+
+![Node.js 24](https://img.shields.io/badge/Node.js-24_LTS-3C873A?style=flat-square&logo=nodedotjs&logoColor=white)
+![SQLite](https://img.shields.io/badge/SQLite-Local_Data_Root-003B57?style=flat-square&logo=sqlite&logoColor=white)
+![Models](https://img.shields.io/badge/Models-Codex_%7C_Grok_%7C_Claude_%7C_DeepSeek-597C91?style=flat-square)
+![Clients](https://img.shields.io/badge/Clients-Web_%7C_Desktop_%7C_iOS_26_%7C_Android-477A54?style=flat-square)
+![Avatars](https://img.shields.io/badge/Avatars-Bloub_Vector_Paper-A87932?style=flat-square)
 
 </div>
 
+---
+
+<p align="center">
+  <img src="docs/assets/readme-guide-bot.svg" alt="Summon 主控 Bot 导览弹窗 / Summon Lead Bot Guide" width="100%" />
+</p>
+
 <details>
-<summary>
-  <img src="docs/assets/readme-guide-bot.svg" alt="Summon 主控 Bot 导览弹窗（点击直接展开一镜到底群聊实录 / Click to expand live room walkthrough）" width="100%" />
-</summary>
+<summary><b>🎬 [简体中文 / CN] 点击展开：一镜到底真实群聊实录（从一句模糊想法到游戏做完交付 · Full Group Chat Walkthrough）</b></summary>
 <p align="center">
   <img src="docs/assets/readme-story-1-zh.svg" alt="Summon Bot 连续群聊实录（上）：从模糊想法发散、EggBot 自动招人组队到快读静默分流" width="100%" /><br/>
   <img src="docs/assets/readme-story-2-zh.svg" alt="Summon Bot 连续群聊实录（下）：聊干双层分离、随口补件直转 Codex、分批交付与长期约定落盘" width="100%" />
@@ -20,7 +30,7 @@
 </details>
 
 <details>
-<summary><b>🎬 🇺🇸 Click to Expand: Continuous Room Walkthrough (English SVG Canvas · From Vague Idea to Shipped Game)</b></summary>
+<summary><b>🎬 [English / EN] Click to Expand: Continuous Room Walkthrough (From Vague Idea to Shipped Game · 英文完整群聊实录）</b></summary>
 <p align="center">
   <img src="docs/assets/readme-story-1-en.svg" alt="Summon Bot Continuous Walkthrough (Part 1): From Vague Idea to EggBot Spawning & Fast-Read Triage" width="100%" /><br/>
   <img src="docs/assets/readme-story-2-en.svg" alt="Summon Bot Continuous Walkthrough (Part 2): Parallel Codex Split, Live Steer, Staged Delivery & Memory" width="100%" />
