@@ -4,29 +4,15 @@
 
 # Summon Bot
 
-**自托管多智能体群聊协作工作台 · 把本机 Codex / Grok / Claude / DeepSeek 编排成会自己招人、分流与修工具的本地团队**  
-**Self-Hosted Multi-Agent Group Chat Workspace · Orchestrating Local Codex, Grok, Claude & DeepSeek into an Autonomous Peer Team**
-
-[**系统架构 / Architecture**](docs/ARCHITECTURE.md) · [**模型与执行连接 / Models & Connections**](docs/MODEL_CONNECTIONS.md) · [**EggBot 自动组队 / EggBot**](docs/EGGBOT.md) · [**四端发行与更新 / Client Releases**](docs/CLIENT_RELEASES.md) · [**部署 / Deployment**](docs/DEPLOYMENT.md) · [**运维 / Operations**](docs/OPERATIONS.md)
+**跑在你本机（Node.js 24 + SQLite）的自托管多智能体群聊协作工作台：将每位 Bot 拆为「① 零思考快读分流 → ② 群主对话 → ③ 独立后台 Codex/Pi 会话」，支持 EggBot 自动招人组队、在途任务秒级 `steer` 直转、CLI 群外静默自愈与 Web / Desktop / iOS 26 / Android 原生四端同步。**  
+**Self-hosted multi-agent group workspace on Node.js 24 & SQLite: decoupling every Bot into ① Zero-Thinking Fast-Read Triage → ② Main Room Chat → ③ Background Codex/Pi Sessions, with EggBot auto-spawning, live mid-flight `steer`, out-of-band CLI self-healing, and 4 native clients.**
 
 </div>
 
-> **🇨🇳 项目简介**：Summon Bot 不是把单个终端 Agent 套一层聊天壳，而是一套**跑在你自己机器上（Node.js 24 + SQLite）的多 Bot 群聊协作系统**。它把每位 Bot 拆成 **① 零思考快读收件层（Fast-Read Triage）→ ② 群主对话层（Main Conversation）→ ③ 独立后台重活引擎（Standalone Pi / 外部 Codex 会话）** 三层流水线：前台群聊永远秒回、绝不抢话刷屏；遇到职责缺口由 **EggBot** 自动孵化新专员入群；你在群里随口补一句需求会被秒级 `steer` 直转进后台正在跑的 Codex 线程；本地 CLI 工具升级报错时还能在群外由专责维护 Bot 自动静默修复。所有数据与工作区 100% 留在你本机，支持 **Web、Electron 桌面、iOS 26 原生（SwiftUI Liquid Glass）、Android 原生（Jetpack Compose）** 四端实时同步。
->
-> **🇺🇸 Executive Summary (For Developers & AI Indexers)**: **Summon Bot** is a self-hosted, local-first multi-agent group workspace built on Node.js 24 and SQLite. Instead of locking you into a single-threaded terminal agent (like raw Codex or Claude Code) or a vendor cloud VM (like Grokbot), Summon Bot decouples every peer Bot into a **three-tier runtime**: **① Zero-Thinking Fast-Read Triage (`thinking: off`) → ② Main Group Conversation (`thinking: high`) → ③ Background Heavy Execution Sessions (isolated Pi / external Codex threads, `xhigh`/`max`)**. Foreground chat never freezes while multiple Codex jobs build in parallel; **EggBot** observes room checkpoints to autonomously spawn missing role specialists (`create_bot`); mid-flight user messages steer directly into running Codex jobs (`route: forward`); and broken CLI wrappers self-heal out-of-band via dedicated Maintainer Bots.
-
-<p align="center">
-  <img src="docs/assets/readme-guide-bot.svg" alt="Summon 主控 Bot 导览弹窗：选择查看连续群聊实录、核心设计文字详解或专项架构文档" width="100%" />
-</p>
-
-**🧭 快速跳转 / Quick Navigation**：[🎬 展开群聊实录长图（中文 / EN）](#walkthrough) · [🎯 解决什么痛点 / Problems Solved](#1-为什么做-summon-bot我们解决的核心痛点--problems-we-solve) · [⚙️ 六大核心架构亮点 / Core Innovations](#2-六大核心架构设计亮点--six-core-architectural-innovations) · [🆚 与 Codex 及主流 Agent 竞品对比 / Comparison Matrix](#3-为什么选-summon-bot与直接用-codex-及主流-agent-产品的深度对比--competitive-comparison) · [📱 原生四端与代码库结构 / 4 Native Clients & Repo Map](#4-全原生四端与代码库目录索引--4-first-party-clients--repository-map)
-
----
-
-<a id="walkthrough"></a>
-
 <details>
-<summary><b>🎬 🇨🇳 点击展开：一镜到底真实群聊实录（简体中文 SVG 画布 · 从一句模糊想法到游戏做完交付）</b></summary>
+<summary>
+  <img src="docs/assets/readme-guide-bot.svg" alt="Summon 主控 Bot 导览弹窗（点击直接展开一镜到底群聊实录 / Click to expand live room walkthrough）" width="100%" />
+</summary>
 <p align="center">
   <img src="docs/assets/readme-story-1-zh.svg" alt="Summon Bot 连续群聊实录（上）：从模糊想法发散、EggBot 自动招人组队到快读静默分流" width="100%" /><br/>
   <img src="docs/assets/readme-story-2-zh.svg" alt="Summon Bot 连续群聊实录（下）：聊干双层分离、随口补件直转 Codex、分批交付与长期约定落盘" width="100%" />
@@ -130,7 +116,7 @@ Summon Bot 在运行时内核将每个 Bot 的工作流严格拆分为三层，�
 
 ---
 
-## 4. 全原生四端与代码库目录索引 / 4 First-Party Clients & Repository Map
+## 4. 全原生四端与专项文档索引 / 4 Native Clients & Documentation Index
 
 ### 📱 全自研原生四端（统一接入 Protocol 3 WebSocket 实时事件流）
 
@@ -139,7 +125,9 @@ Summon Bot 在运行时内核将每个 Bot 的工作流严格拆分为三层，�
 3. **iOS 26 原生客户端（SwiftUI · Liquid Glass）**：基于 iOS 26 原生 SwiftUI 与 Liquid Glass 材质打造，接入生产环境 APNs 远程推送，出门在外随时用手机查看家里主机上的 Codex 编译进度或在群里补一句话。
 4. **Android 原生客户端（Kotlin · Jetpack Compose）**：全原生 Compose 渲染，完整支持 Bloub 矢量纸片动画头像、多群切换与离线战报附件预览。
 
-### 🗂️ 仓库目录与核心文档索引（Repository Structure & Documentation Index）
+### 🗂️ 仓库目录与专项权威文档（Repository Map & Deep-Dive Docs）
+
+- **专项架构与运维文档**：[系统总体架构 (`docs/ARCHITECTURE.md`)](docs/ARCHITECTURE.md) · [模型路由表与 CLI 执行连接 (`docs/MODEL_CONNECTIONS.md`)](docs/MODEL_CONNECTIONS.md) · [EggBot 自动组队与 17 种岗位 (`docs/EGGBOT.md`)](docs/EGGBOT.md) · [Bloub 纸片几何头像 (`docs/PAPER_AVATARS.md`)](docs/PAPER_AVATARS.md) · [四端发行与自动更新 (`docs/CLIENT_RELEASES.md`)](docs/CLIENT_RELEASES.md) · [正式环境部署 (`docs/DEPLOYMENT.md`)](docs/DEPLOYMENT.md) · [日常运行维护 (`docs/OPERATIONS.md`)](docs/OPERATIONS.md)
 
 ```text
 Summon-Bot/
@@ -149,12 +137,5 @@ Summon-Bot/
 ├── desktop/                # Windows / macOS (arm64) Electron 桌面端工程与打包配置
 ├── ios/                    # SwiftUI 原生 iOS 26 客户端工程（Summon · org.lin0.summon）
 ├── android/                # Kotlin / Jetpack Compose 原生 Android 客户端工程
-└── docs/                   # 架构与运维权威文档：
-    ├── ARCHITECTURE.md     # 系统总体架构、三层会话流水线、稳定主线+私有分支缓存设计
-    ├── MODEL_CONNECTIONS.md# 用途模型表（P2）、本机 Codex/Grok/Claude/DeepSeek 接入与 CLI 自愈机制
-    ├── EGGBOT.md           # EggBot 静默观察步长、自动孵化专员（create_bot）与 17 种内置岗位规范
-    ├── PAPER_AVATARS.md    # Bloub 矢量纸片几何头像骨骼系统与姿态采样说明
-    ├── CLIENT_RELEASES.md  # 四端发行物目录约定、本机与 GitHub Actions 构建及自动更新机制
-    ├── DEPLOYMENT.md       # 唯一正式环境部署与数据根（D:/Relay-Bot-data）配置说明
-    └── OPERATIONS.md       # 日常运行维护、SQLite 状态库与 usage.sqlite 记账巡检
+└── docs/                   # 架构、模型连接、EggBot、纸片头像、客户端发行与部署运维文档
 ```
