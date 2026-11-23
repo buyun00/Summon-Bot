@@ -83,10 +83,10 @@
     <text x="325" y="96" text-anchor="middle" class="font" font-size="12" fill="#B3ADA0">今天 09:55</text>
 
     
-    <g transform="translate(172, 112)">
-      <path d="M 20 0 H 430 Q 450 0 450 20 V 66 Q 450 72 444 72 H 20 Q 0 72 0 52 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#D2DFD6"/>
+    <g transform="translate(139, 112)">
+      <path d="M 20 0 H 463 Q 483 0 483 20 V 66 Q 483 72 477 72 H 20 Q 0 72 0 52 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#D2DFD6"/>
       <text x="18" y="28" class="font" font-size="13.5" fill="#1E221E">我想做个轻量的单机小游戏，周末能随时打开玩两把，关掉下次还能</text><text x="18" y="51" class="font" font-size="13.5" fill="#1E221E">接着上次的进度。你们觉得做什么题材和核心玩法比较好落地？</text>
-      <text x="436" y="65" text-anchor="end" class="font" font-size="10.5" fill="#7D8C81">09:55</text>
+      <text x="469" y="65" text-anchor="end" class="font" font-size="10.5" fill="#7D8C81">09:55</text>
       
     </g>
 
@@ -94,15 +94,15 @@
     <g transform="translate(26, 202)">
       <use href="#zh-av-lead" transform="translate(19.00 39.00) scale(0.18038)"/>
       <text x="48" y="15" class="font" font-size="12.5" font-weight="600" fill="#4B4840">主控 Bot <tspan font-weight="400" fill="#B3ADA0">09:55</tspan></text>
-      <path d="M 52 22 H 489 Q 509 22 509 42 V 97 Q 509 117 489 117 H 66 Q 46 117 46 97 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
+      <path d="M 52 22 H 524 Q 544 22 544 42 V 97 Q 544 117 524 117 H 66 Q 46 117 46 97 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
       <text x="62" y="52" class="font" font-size="13.5" fill="#1F1E1B">如果要轻量、好存档又有重玩价值，推荐做“节点选路类的航海远征”：</text><text x="62" y="75" class="font" font-size="13.5" fill="#1F1E1B">每一章是一张海域图，玩家带着初始补给选分岔路线、过随机事件、</text><text x="62" y="98" class="font" font-size="13.5" fill="#1F1E1B">收勋章。每个节点天然就是存档点，你更想偏重战斗还是资源取舍？</text>
     </g>
 
     
-    <g transform="translate(168, 344)">
-      <path d="M 20 0 H 434 Q 454 0 454 20 V 66 Q 454 72 448 72 H 20 Q 0 72 0 52 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#D2DFD6"/>
+    <g transform="translate(139, 344)">
+      <path d="M 20 0 H 463 Q 483 0 483 20 V 66 Q 483 72 477 72 H 20 Q 0 72 0 52 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#D2DFD6"/>
       <text x="18" y="28" class="font" font-size="13.5" fill="#1E221E">航海选路这个点子好！别搞复杂战斗了，就主打“补给 vs 风险回报”</text><text x="18" y="51" class="font" font-size="13.5" fill="#1E221E">的路线抉择：走稳妥线省补给但奖励少，走风暴线耗补给但勋章多。</text>
-      <text x="440" y="65" text-anchor="end" class="font" font-size="10.5" fill="#7D8C81">09:56</text>
+      <text x="469" y="65" text-anchor="end" class="font" font-size="10.5" fill="#7D8C81">09:56</text>
       
     </g>
 
@@ -110,15 +110,15 @@
     <g transform="translate(26, 434)">
       <use href="#zh-av-lead" transform="translate(19.00 39.00) scale(0.18038)"/>
       <text x="48" y="15" class="font" font-size="12.5" font-weight="600" fill="#4B4840">主控 Bot <tspan font-weight="400" fill="#B3ADA0">09:56</tspan></text>
-      <path d="M 52 22 H 501 Q 521 22 521 42 V 74 Q 521 94 501 94 H 66 Q 46 94 46 74 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
+      <path d="M 52 22 H 536 Q 556 22 556 42 V 74 Q 556 94 536 94 H 66 Q 46 94 46 74 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
       <text x="62" y="52" class="font" font-size="13.5" fill="#1F1E1B">那我们可以按章节递进：第一章做「海岸章」跑通营地、风暴和遗迹三类</text><text x="62" y="75" class="font" font-size="13.5" fill="#1F1E1B">节点，后面再接雪原章和夜航章。游戏名字叫《雾港远征》怎么样？</text>
     </g>
 
     
-    <g transform="translate(150, 554)">
-      <path d="M 20 0 H 452 Q 472 0 472 20 V 66 Q 472 72 466 72 H 20 Q 0 72 0 52 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#D2DFD6"/>
+    <g transform="translate(121, 554)">
+      <path d="M 20 0 H 481 Q 501 0 501 20 V 66 Q 501 72 495 72 H 20 Q 0 72 0 52 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#D2DFD6"/>
       <text x="18" y="28" class="font" font-size="13.5" fill="#1E221E">《雾港远征》好听，就叫这个！海岸章我们先按初始补给 10、每走一步</text><text x="18" y="51" class="font" font-size="13.5" fill="#1E221E">扣 1 来算：营地额外补 2，风暴额外扣 2，遗迹给 2 枚勋章。</text>
-      <text x="458" y="65" text-anchor="end" class="font" font-size="10.5" fill="#7D8C81">09:58</text>
+      <text x="487" y="65" text-anchor="end" class="font" font-size="10.5" fill="#7D8C81">09:58</text>
       
     </g>
 
@@ -126,7 +126,7 @@
     <g transform="translate(26, 644)">
       <use href="#zh-av-lead" transform="translate(19.00 39.00) scale(0.18038)"/>
       <text x="48" y="15" class="font" font-size="12.5" font-weight="600" fill="#4B4840">主控 Bot <tspan font-weight="400" fill="#B3ADA0">09:58</tspan></text>
-      <path d="M 52 22 H 487 Q 507 22 507 42 V 74 Q 507 94 487 94 H 66 Q 46 94 46 74 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
+      <path d="M 52 22 H 521 Q 541 22 541 42 V 74 Q 541 94 521 94 H 66 Q 46 94 46 74 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
       <text x="62" y="52" class="font" font-size="13.5" fill="#1F1E1B">好，我负责底层路线结算和存档读档，程序按带版本号的章表读参数。</text><text x="62" y="75" class="font" font-size="13.5" fill="#1F1E1B">不过后面每章的路线平衡和试玩调表最好有位固定负责人长期维护。</text>
     </g>
 
@@ -134,51 +134,51 @@
     <g transform="translate(26, 764)">
       <use href="#zh-av-egg" transform="translate(19.00 39.00) scale(0.18038)"/>
       <text x="48" y="15" class="font" font-size="12.5" font-weight="600" fill="#4B4840">EggBot <tspan font-weight="400" fill="#B3ADA0">09:59</tspan></text>
-      <path d="M 52 22 H 509 Q 529 22 529 42 V 55 Q 529 75 509 75 H 66 Q 46 75 46 55 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
+      <path d="M 52 22 H 546 Q 566 22 566 42 V 55 Q 566 75 546 75 H 66 Q 46 75 46 55 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
       
       <text x="62" y="53" class="font" font-size="13.5" fill="#1F1E1B">已邀请新成员</text>
-      <rect x="151" y="36" width="92" height="24" rx="12" fill="#DCE8DF"/>
-      <use href="#zh-av-plan" transform="translate(165.00 48.00) scale(0.09494)"/>
-      <text x="177" y="52.5" class="font" font-size="12.5" font-weight="600" fill="#2E573A">@关卡策划</text>
-      <text x="249" y="53" class="font" font-size="13.5" fill="#1F1E1B">入群，专门负责各章路线配置与奖励平衡。</text>
+      <rect x="157" y="36" width="100" height="24" rx="12" fill="#DCE8DF"/>
+      <use href="#zh-av-plan" transform="translate(171.00 48.00) scale(0.09494)"/>
+      <text x="183" y="52.5" class="font" font-size="12.5" font-weight="600" fill="#2E573A">@关卡策划</text>
+      <text x="263" y="53" class="font" font-size="13.5" fill="#1F1E1B">入群，专门负责各章路线配置与奖励平衡。</text>
     </g>
 
     
     <g transform="translate(26, 866)">
       <use href="#zh-av-plan" transform="translate(19.00 39.00) scale(0.18038)"/>
       <text x="48" y="15" class="font" font-size="12.5" font-weight="600" fill="#4B4840">关卡策划 <tspan font-weight="400" fill="#B3ADA0">09:59</tspan></text>
-      <path d="M 52 22 H 534 Q 554 22 554 42 V 97 Q 554 117 534 117 H 66 Q 46 117 46 97 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
+      <path d="M 52 22 H 561 Q 581 22 581 42 V 97 Q 581 117 561 117 H 66 Q 46 117 46 97 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
       <text x="62" y="52" class="font" font-size="13.5" fill="#1F1E1B">大家好，我接《雾港远征》的关卡经济！按刚才定的补给 10 试算了两条</text><text x="62" y="75" class="font" font-size="13.5" fill="#1F1E1B">首章路线：稳妥线（营地→风暴→遗迹）走完剩 7 补给、拿 2 枚勋章；</text><text x="62" y="98" class="font" font-size="13.5" fill="#1F1E1B">冒险线（风暴→风暴→遗迹）只剩 3 补给、也是 2 枚勋章，回报是不是偏低？</text>
     </g>
 
     
-    <g transform="translate(134, 1012)">
-      <path d="M 20 0 H 468 Q 488 0 488 20 V 102 Q 488 108 482 108 H 20 Q 0 108 0 88 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#D2DFD6"/>
+    <g transform="translate(102, 1012)">
+      <path d="M 20 0 H 500 Q 520 0 520 20 V 102 Q 520 108 514 108 H 20 Q 0 108 0 88 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#D2DFD6"/>
       
-      <rect x="14" y="14" width="460" height="28" rx="6" fill="#D4E0D8"/>
+      <rect x="14" y="14" width="492" height="28" rx="6" fill="#D4E0D8"/>
       <line x1="14" y1="14" x2="14" y2="42" stroke="#6B7D70" stroke-width="2.5"/>
       <text x="24" y="32" class="font" font-size="11.8" fill="#4A534C"><tspan font-weight="600" fill="#1E221E">关卡策划</tspan> 大家好，我接《雾港远征》的关卡经济！按刚才定的补给 10 试算…</text><text x="18" y="64" class="font" font-size="13.5" fill="#1E221E">确实，冒险线顶着两次风暴只剩 3 点补给，还是拿 2 枚勋章没人愿意走。</text><text x="18" y="87" class="font" font-size="13.5" fill="#1E221E">改成每过一处风暴额外多给 1 枚勋章吧，请更新一下海岸章表。</text>
-      <text x="474" y="101" text-anchor="end" class="font" font-size="10.5" fill="#7D8C81">10:00</text>
+      <text x="506" y="101" text-anchor="end" class="font" font-size="10.5" fill="#7D8C81">10:00</text>
       
-      <rect x="334" y="114" width="154" height="22" rx="11" fill="#EFECE4" stroke="#E2DDD2"/>
-      <text x="411" y="129" text-anchor="middle" class="font" font-size="11" fill="#4B4840"><tspan font-weight="600" fill="#8A8478">快读摘要 · 3 位伙伴 ▾</tspan></text>
-      <rect x="131" y="142" width="357" height="77" rx="12" fill="#EFECE4"/>
-      <text x="145" y="160" class="font" font-size="11.8" fill="#4B4840"><tspan font-weight="600" fill="#1F1E1B">关卡策划</tspan>  用户要求每处风暴 +1 勋章并更新海岸章表</text><text x="145" y="181" class="font" font-size="11.8" fill="#4B4840"><tspan font-weight="600" fill="#1F1E1B">主控 Bot</tspan>  用户向关卡策划反馈风暴勋章加成，存档规则不变</text><text x="145" y="202" class="font" font-size="11.8" fill="#4B4840"><tspan font-weight="600" fill="#1F1E1B">EggBot</tspan>  关卡策划正在跟进海岸章平衡反馈</text>
+      <rect x="368" y="114" width="152" height="22" rx="11" fill="#EFECE4" stroke="#E2DDD2"/>
+      <text x="444" y="129" text-anchor="middle" class="font" font-size="11" fill="#4B4840"><tspan font-weight="600" fill="#8A8478">快读摘要 · 3 位伙伴 ▾</tspan></text>
+      <rect x="141" y="142" width="379" height="77" rx="12" fill="#EFECE4"/>
+      <text x="155" y="160" class="font" font-size="11.8" fill="#4B4840"><tspan font-weight="600" fill="#1F1E1B">关卡策划</tspan>  用户要求每处风暴 +1 勋章并更新海岸章表</text><text x="155" y="181" class="font" font-size="11.8" fill="#4B4840"><tspan font-weight="600" fill="#1F1E1B">主控 Bot</tspan>  用户向关卡策划反馈风暴勋章加成，存档规则不变</text><text x="155" y="202" class="font" font-size="11.8" fill="#4B4840"><tspan font-weight="600" fill="#1F1E1B">EggBot</tspan>  关卡策划正在跟进海岸章平衡反馈</text>
     </g>
 
     
     <g transform="translate(26, 1242)">
       <use href="#zh-av-plan" transform="translate(19.00 39.00) scale(0.18038)"/>
       <text x="48" y="15" class="font" font-size="12.5" font-weight="600" fill="#4B4840">关卡策划 <tspan font-weight="400" fill="#B3ADA0">10:01</tspan></text>
-      <path d="M 52 22 H 531 Q 551 22 551 42 V 74 Q 551 94 531 94 H 66 Q 46 94 46 74 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
+      <path d="M 52 22 H 546 Q 566 22 566 42 V 74 Q 566 94 546 94 H 66 Q 46 94 46 74 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
       <text x="62" y="52" class="font" font-size="13.5" fill="#1F1E1B">海岸章 v2 更新好了：稳妥线剩 7 补给、拿 3 枚勋章；冒险线剩 3 补给、</text><text x="62" y="75" class="font" font-size="13.5" fill="#1F1E1B">拿 4 枚勋章。风险和收益拉开了，这张 v2 表已经置顶到群里。</text>
     </g>
 
     
-    <g transform="translate(135, 1362)">
-      <path d="M 20 0 H 467 Q 487 0 487 20 V 66 Q 487 72 481 72 H 20 Q 0 72 0 52 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#D2DFD6"/>
+    <g transform="translate(100, 1362)">
+      <path d="M 20 0 H 502 Q 522 0 522 20 V 66 Q 522 72 516 72 H 20 Q 0 72 0 52 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#D2DFD6"/>
       <text x="18" y="28" class="font" font-size="13.5" fill="#1E221E">这个梯度舒服了！另外我刚放了一批海浪和风暴的 wav 音效进目录，体积</text><text x="18" y="51" class="font" font-size="13.5" fill="#1E221E">有点大，得压成 ogg，顺便还得能对比每次构建哪些资源把包体撑大了。</text>
-      <text x="473" y="65" text-anchor="end" class="font" font-size="10.5" fill="#7D8C81">10:01</text>
+      <text x="508" y="65" text-anchor="end" class="font" font-size="10.5" fill="#7D8C81">10:01</text>
       
     </g>
 
@@ -186,7 +186,7 @@
     <g transform="translate(26, 1452)">
       <use href="#zh-av-plan" transform="translate(19.00 39.00) scale(0.18038)"/>
       <text x="48" y="15" class="font" font-size="12.5" font-weight="600" fill="#4B4840">关卡策划 <tspan font-weight="400" fill="#B3ADA0">10:02</tspan></text>
-      <path d="M 52 22 H 554 Q 574 22 574 42 V 51 Q 574 71 554 71 H 66 Q 46 71 46 51 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
+      <path d="M 52 22 H 574 Q 594 22 594 42 V 51 Q 594 71 574 71 H 66 Q 46 71 46 51 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
       <text x="62" y="52" class="font" font-size="13.5" fill="#1F1E1B">音频表归我管，我看了下当前目录没转码工具，我先写脚本去下载一份 FFmpeg？</text>
     </g>
 
@@ -194,25 +194,25 @@
     <g transform="translate(26, 1552)">
       <use href="#zh-av-tool" transform="translate(19.00 39.00) scale(0.18038)"/>
       <text x="48" y="15" class="font" font-size="12.5" font-weight="600" fill="#4B4840">总接口 Bot <tspan font-weight="400" fill="#B3ADA0">10:02</tspan></text>
-      <path d="M 52 22 H 481 Q 501 22 501 42 V 108 Q 501 128 481 128 H 66 Q 46 128 46 108 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
+      <path d="M 52 22 H 507 Q 527 22 527 42 V 108 Q 527 128 507 128 H 66 Q 46 128 46 108 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
       <text x="62" y="52" class="font" font-size="13.5" fill="#1F1E1B">不用重新下载，这台机器的 WinGet 目录已经装了 FFmpeg 8.1.2，</text><text x="62" y="75" class="font" font-size="13.5" fill="#1F1E1B">而且已经登记在执行连接里，直接调用就行：</text>
-        <rect x="62" y="88" width="140" height="25" rx="12.5" fill="#E4E0D6" stroke="#D5CFC2"/>
-        <text x="132" y="104.5" text-anchor="middle" class="font" font-size="11.8" font-weight="600" fill="#4B4840">🔗 连接 cli-ffmpeg</text>
+        <rect x="62" y="88" width="143" height="25" rx="12.5" fill="#E4E0D6" stroke="#D5CFC2"/>
+        <text x="133.5" y="104.5" text-anchor="middle" class="font" font-size="11.8" font-weight="600" fill="#4B4840">🔗 连接 cli-ffmpeg</text>
     </g>
 
     
     <g transform="translate(26, 1698)">
       <use href="#zh-av-plan" transform="translate(19.00 39.00) scale(0.18038)"/>
       <text x="48" y="15" class="font" font-size="12.5" font-weight="600" fill="#4B4840">关卡策划 <tspan font-weight="400" fill="#B3ADA0">10:02</tspan></text>
-      <path d="M 52 22 H 561 Q 581 22 581 42 V 51 Q 581 71 561 71 H 66 Q 46 71 46 51 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
+      <path d="M 52 22 H 574 Q 594 22 594 42 V 51 Q 594 71 574 71 H 66 Q 46 71 46 51 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
       <text x="62" y="52" class="font" font-size="13.5" fill="#1F1E1B">太好了，差点重复装一遍！我已经用 cli-ffmpeg 把海岸章音效全转成 ogg 了。</text>
     </g>
 
     
-    <g transform="translate(141, 1802)">
-      <path d="M 20 0 H 461 Q 481 0 481 20 V 89 Q 481 95 475 95 H 20 Q 0 95 0 75 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#D2DFD6"/>
+    <g transform="translate(103, 1802)">
+      <path d="M 20 0 H 499 Q 519 0 519 20 V 89 Q 519 95 513 95 H 20 Q 0 95 0 75 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#D2DFD6"/>
       <text x="18" y="28" class="font" font-size="13.5" fill="#1E221E">漂亮！那现在正式开工写代码：主控把海岸章的路线结算、存档续玩和</text><text x="18" y="51" class="font" font-size="13.5" fill="#1E221E">前后构建包体差异命令跑通；同时根据生成的 JSON 做一份能双击打开的</text><text x="18" y="74" class="font" font-size="13.5" fill="#1E221E">离线战报 HTML 页面，方便我们直观翻看每次改动。</text>
-      <text x="467" y="88" text-anchor="end" class="font" font-size="10.5" fill="#7D8C81">10:03</text>
+      <text x="505" y="88" text-anchor="end" class="font" font-size="10.5" fill="#7D8C81">10:03</text>
       
     </g>
   </g>

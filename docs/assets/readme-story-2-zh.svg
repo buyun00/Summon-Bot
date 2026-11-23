@@ -63,15 +63,15 @@
     <g transform="translate(26, 22)">
       <use href="#zh-av-lead" transform="translate(19.00 39.00) scale(0.18038)"/>
       <text x="48" y="15" class="font" font-size="12.5" font-weight="600" fill="#4B4840">主控 Bot <tspan font-weight="400" fill="#B3ADA0">10:03</tspan></text>
-      <path d="M 52 22 H 542 Q 562 22 562 42 V 74 Q 562 94 542 94 H 66 Q 46 94 46 74 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
+      <path d="M 52 22 H 574 Q 594 22 594 42 V 74 Q 594 94 574 94 H 66 Q 46 94 46 74 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
       <text x="62" y="52" class="font" font-size="13.5" fill="#1F1E1B">好，路线存档与包体差异 CLI、离线战报 HTML 我已拆成两项工作同时开工。</text><text x="62" y="75" class="font" font-size="13.5" fill="#1F1E1B">后台跑代码不影响我们聊天，趁现在要不要先把第二章「雪原章」的机制定了？</text>
     </g>
 
     
-    <g transform="translate(157, 142)">
-      <path d="M 20 0 H 445 Q 465 0 465 20 V 66 Q 465 72 459 72 H 20 Q 0 72 0 52 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#D2DFD6"/>
+    <g transform="translate(122, 142)">
+      <path d="M 20 0 H 480 Q 500 0 500 20 V 66 Q 500 72 494 72 H 20 Q 0 72 0 52 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#D2DFD6"/>
       <text x="18" y="28" class="font" font-size="13.5" fill="#1E221E">行啊，完全不用干等！雪原章我想加个“暴风雪”天气，连续走两步露天</text><text x="18" y="51" class="font" font-size="13.5" fill="#1E221E">节点会冻伤多扣 1 点补给，必须在篝火营地停一下才能清零。</text>
-      <text x="451" y="65" text-anchor="end" class="font" font-size="10.5" fill="#7D8C81">10:04</text>
+      <text x="486" y="65" text-anchor="end" class="font" font-size="10.5" fill="#7D8C81">10:04</text>
       
     </g>
 
@@ -79,57 +79,57 @@
     <g transform="translate(26, 232)">
       <use href="#zh-av-plan" transform="translate(19.00 39.00) scale(0.18038)"/>
       <text x="48" y="15" class="font" font-size="12.5" font-weight="600" fill="#4B4840">关卡策划 <tspan font-weight="400" fill="#B3ADA0">10:04</tspan></text>
-      <path d="M 52 22 H 538 Q 558 22 558 42 V 74 Q 558 94 538 94 H 66 Q 46 94 46 74 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
+      <path d="M 52 22 H 574 Q 594 22 594 42 V 74 Q 594 94 574 94 H 66 Q 46 94 46 74 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
       <text x="62" y="52" class="font" font-size="13.5" fill="#1F1E1B">这个连续冻伤机制很有意思！那我在雪原章表里加一个 frost_streak 计数，</text><text x="62" y="75" class="font" font-size="13.5" fill="#1F1E1B">进营地重置为 0，刚好可以逼玩家在抢勋章和保命之间做取舍。</text>
     </g>
 
     
-    <g transform="translate(134, 354)">
-      <path d="M 20 0 H 468 Q 488 0 488 20 V 66 Q 488 72 482 72 H 20 Q 0 72 0 52 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#D2DFD6"/>
+    <g transform="translate(94, 354)">
+      <path d="M 20 0 H 508 Q 528 0 528 20 V 66 Q 528 72 522 72 H 20 Q 0 72 0 52 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#D2DFD6"/>
       <text x="18" y="28" class="font" font-size="13.5" fill="#1E221E">对了，刚想起来！海岸章新清单里有个 0 字节的 blank.png 是有效占位</text><text x="18" y="51" class="font" font-size="13.5" fill="#1E221E">资源，正在做的战报 HTML 页要在新增列表里显示出来，前后大小放两列。</text>
-      <text x="474" y="65" text-anchor="end" class="font" font-size="10.5" fill="#7D8C81">10:05</text>
+      <text x="514" y="65" text-anchor="end" class="font" font-size="10.5" fill="#7D8C81">10:05</text>
       
-      <rect x="225" y="78" width="263" height="22" rx="11" fill="#EFECE4" stroke="#E2DDD2"/>
-      <text x="356.5" y="93" text-anchor="middle" class="font" font-size="11" fill="#4B4840"><tspan font-weight="600" fill="#8A8478">快读摘要 · 主控 Bot</tspan> 战报页补 0 字节与两列</text>
+      <rect x="260" y="78" width="268" height="22" rx="11" fill="#EFECE4" stroke="#E2DDD2"/>
+      <text x="394" y="93" text-anchor="middle" class="font" font-size="11" fill="#4B4840"><tspan font-weight="600" fill="#8A8478">快读摘要 · 主控 Bot</tspan> 战报页补 0 字节与两列</text>
     </g>
 
     
     <g transform="translate(26, 474)">
       <use href="#zh-av-lead" transform="translate(19.00 39.00) scale(0.18038)"/>
       <text x="48" y="15" class="font" font-size="12.5" font-weight="600" fill="#4B4840">主控 Bot <tspan font-weight="400" fill="#B3ADA0">10:06</tspan></text>
-      <path d="M 52 22 H 561 Q 581 22 581 42 V 108 Q 581 128 561 128 H 66 Q 46 128 46 108 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
+      <path d="M 52 22 H 574 Q 594 22 594 42 V 108 Q 594 128 574 128 H 66 Q 46 128 46 108 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
       <text x="62" y="52" class="font" font-size="13.5" fill="#1F1E1B">第一项路线存档与包体差异 CLI 已经跑完并通过复测了！刚生成的 report.json</text><text x="62" y="75" class="font" font-size="13.5" fill="#1F1E1B">净增 +30 字节；你补充的 0 字节和两列要求已直接送进战报页会话，马上好：</text>
-        <rect x="62" y="88" width="116" height="25" rx="12.5" fill="#E4E0D6" stroke="#D5CFC2"/>
-        <text x="120" y="104.5" text-anchor="middle" class="font" font-size="11.8" font-weight="600" fill="#4B4840">📄 report.json</text>
+        <rect x="62" y="88" width="120" height="25" rx="12.5" fill="#E4E0D6" stroke="#D5CFC2"/>
+        <text x="122" y="104.5" text-anchor="middle" class="font" font-size="11.8" font-weight="600" fill="#4B4840">📄 report.json</text>
     </g>
 
     
     <g transform="translate(26, 622)">
       <use href="#zh-av-lead" transform="translate(19.00 39.00) scale(0.18038)"/>
       <text x="48" y="15" class="font" font-size="12.5" font-weight="600" fill="#4B4840">主控 Bot <tspan font-weight="400" fill="#B3ADA0">10:07</tspan></text>
-      <path d="M 52 22 H 553 Q 573 22 573 42 V 246 Q 573 266 553 266 H 66 Q 46 266 46 246 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
+      <path d="M 52 22 H 574 Q 594 22 594 42 V 246 Q 594 266 574 266 H 66 Q 46 266 46 246 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
       
-      <rect x="62" y="34" width="495" height="28" rx="6" fill="#E5E1D8"/>
+      <rect x="62" y="34" width="516" height="28" rx="6" fill="#E5E1D8"/>
       <line x1="62" y1="34" x2="62" y2="62" stroke="#8A8478" stroke-width="2.5"/>
       <text x="72" y="52" class="font" font-size="11.8" fill="#8A8478"><tspan font-weight="600" fill="#4B4840">你</tspan> 漂亮！那现在正式开工写代码：主控把海岸章的路线结算、存档续玩和前后…</text><text x="62" y="88" class="font" font-size="13.5" fill="#1F1E1B">离线战报 HTML 也做好了！同种子路线续玩、海岸章 v2（3 枚 / 4 枚勋章）、</text><text x="62" y="111" class="font" font-size="13.5" fill="#1F1E1B">ui/blank.png (0 B) 新增项与改动前后大小两列对比均已核对无误：</text>
       <g transform="translate(62, 124)">
-        <rect width="495" height="70" rx="11" fill="#E5E2D9" stroke="#DAD5C8"/>
+        <rect width="516" height="70" rx="11" fill="#E5E2D9" stroke="#DAD5C8"/>
         <text x="14" y="18" class="mono" font-size="11" fill="#8A8478">sh</text>
-        <text x="481" y="18" text-anchor="end" class="font" font-size="11" fill="#8A8478">复制</text>
-        <line x1="0" y1="25" x2="495" y2="25" stroke="#DAD5C8"/>
+        <text x="502" y="18" text-anchor="end" class="font" font-size="11" fill="#8A8478">复制</text>
+        <line x1="0" y1="25" x2="516" y2="25" stroke="#DAD5C8"/>
         <text x="14" y="43" class="mono" font-size="11.6" fill="#4B4840">node diff.mjs before.json after-android.json > report.json</text><text x="14" y="62" class="mono" font-size="11.6" fill="#4B4840">node render.mjs report.json report.html</text>
       </g>
-        <rect x="62" y="206" width="116" height="25" rx="12.5" fill="#E4E0D6" stroke="#D5CFC2"/>
-        <text x="120" y="222.5" text-anchor="middle" class="font" font-size="11.8" font-weight="600" fill="#4B4840">📄 report.html</text>
-        <rect x="186" y="206" width="129" height="25" rx="12.5" fill="#E4E0D6" stroke="#D5CFC2"/>
-        <text x="250.5" y="222.5" text-anchor="middle" class="font" font-size="11.8" font-weight="600" fill="#4B4840">📄 coast-v2.json</text><text x="62" y="250" class="font" font-size="11.5" fill="#8A8478">↩ 回复　　⧉ 复制　　📌 置顶</text>
+        <rect x="62" y="206" width="121" height="25" rx="12.5" fill="#E4E0D6" stroke="#D5CFC2"/>
+        <text x="122.5" y="222.5" text-anchor="middle" class="font" font-size="11.8" font-weight="600" fill="#4B4840">📄 report.html</text>
+        <rect x="191" y="206" width="135" height="25" rx="12.5" fill="#E4E0D6" stroke="#D5CFC2"/>
+        <text x="258.5" y="222.5" text-anchor="middle" class="font" font-size="11.8" font-weight="600" fill="#4B4840">📄 coast-v2.json</text><text x="62" y="250" class="font" font-size="11.5" fill="#8A8478">↩ 回复　　⧉ 复制　　📌 置顶</text>
     </g>
 
     
-    <g transform="translate(142, 932)">
-      <path d="M 20 0 H 460 Q 480 0 480 20 V 66 Q 480 72 474 72 H 20 Q 0 72 0 52 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#D2DFD6"/>
+    <g transform="translate(111, 932)">
+      <path d="M 20 0 H 491 Q 511 0 511 20 V 66 Q 511 72 505 72 H 20 Q 0 72 0 52 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#D2DFD6"/>
       <text x="18" y="28" class="font" font-size="13.5" fill="#1E221E">我双击打开 report.html 看了，两列对比很清楚！再加个“只看删除项”</text><text x="18" y="51" class="font" font-size="13.5" fill="#1E221E">的勾选框和路径搜索框，点行展开详情不用做了，这样更清爽。</text>
-      <text x="466" y="65" text-anchor="end" class="font" font-size="10.5" fill="#7D8C81">10:08</text>
+      <text x="497" y="65" text-anchor="end" class="font" font-size="10.5" fill="#7D8C81">10:08</text>
       
     </g>
 
@@ -137,17 +137,17 @@
     <g transform="translate(26, 1022)">
       <use href="#zh-av-lead" transform="translate(19.00 39.00) scale(0.18038)"/>
       <text x="48" y="15" class="font" font-size="12.5" font-weight="600" fill="#4B4840">主控 Bot <tspan font-weight="400" fill="#B3ADA0">10:09</tspan></text>
-      <path d="M 52 22 H 509 Q 529 22 529 42 V 108 Q 529 128 509 128 H 66 Q 46 128 46 108 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
+      <path d="M 52 22 H 543 Q 563 22 563 42 V 108 Q 563 128 543 128 H 66 Q 46 128 46 108 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
       <text x="62" y="52" class="font" font-size="13.5" fill="#1F1E1B">已按你的反馈改好并重新生成了 report.html：去掉了行展开，保留路径</text><text x="62" y="75" class="font" font-size="13.5" fill="#1F1E1B">实时筛选和“只看删除项”开关，样式和脚本都在单文件里。</text>
-        <rect x="62" y="88" width="116" height="25" rx="12.5" fill="#E4E0D6" stroke="#D5CFC2"/>
-        <text x="120" y="104.5" text-anchor="middle" class="font" font-size="11.8" font-weight="600" fill="#4B4840">📄 report.html</text>
+        <rect x="62" y="88" width="121" height="25" rx="12.5" fill="#E4E0D6" stroke="#D5CFC2"/>
+        <text x="122.5" y="104.5" text-anchor="middle" class="font" font-size="11.8" font-weight="600" fill="#4B4840">📄 report.html</text>
     </g>
 
     
-    <g transform="translate(134, 1170)">
-      <path d="M 20 0 H 468 Q 488 0 488 20 V 66 Q 488 72 482 72 H 20 Q 0 72 0 52 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#D2DFD6"/>
+    <g transform="translate(95, 1170)">
+      <path d="M 20 0 H 507 Q 527 0 527 20 V 66 Q 527 72 521 72 H 20 Q 0 72 0 52 V 20 Q 0 0 20 0 Z" fill="#E1EAE4" stroke="#D2DFD6"/>
       <text x="18" y="28" class="font" font-size="13.5" fill="#1E221E">完美！以后这个群所有的战报页都默认按这个格式（前后两列、0 字节算</text><text x="18" y="51" class="font" font-size="13.5" fill="#1E221E">有效资源、带路径筛选和只看删除）。海岸章收工，我们正式开做雪原章！</text>
-      <text x="474" y="65" text-anchor="end" class="font" font-size="10.5" fill="#7D8C81">10:10</text>
+      <text x="513" y="65" text-anchor="end" class="font" font-size="10.5" fill="#7D8C81">10:10</text>
       
     </g>
 
@@ -155,7 +155,7 @@
     <g transform="translate(26, 1260)">
       <use href="#zh-av-lead" transform="translate(19.00 39.00) scale(0.18038)"/>
       <text x="48" y="15" class="font" font-size="12.5" font-weight="600" fill="#4B4840">主控 Bot <tspan font-weight="400" fill="#B3ADA0">10:10</tspan></text>
-      <path d="M 52 22 H 474 Q 494 22 494 42 V 51 Q 494 71 474 71 H 66 Q 46 71 46 51 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
+      <path d="M 52 22 H 507 Q 527 22 527 42 V 51 Q 527 71 507 71 H 66 Q 46 71 46 51 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
       <text x="62" y="52" class="font" font-size="13.5" fill="#1F1E1B">好，这几条已记入本群长期约定，后续章节生成报告都会自动遵守。</text>
     </g>
 
@@ -163,7 +163,7 @@
     <g transform="translate(26, 1360)">
       <use href="#zh-av-plan" transform="translate(19.00 39.00) scale(0.18038)"/>
       <text x="48" y="15" class="font" font-size="12.5" font-weight="600" fill="#4B4840">关卡策划 <tspan font-weight="400" fill="#B3ADA0">10:10</tspan></text>
-      <path d="M 52 22 H 527 Q 547 22 547 42 V 74 Q 547 94 527 94 H 66 Q 46 94 46 74 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
+      <path d="M 52 22 H 554 Q 574 22 574 42 V 74 Q 574 94 554 94 H 66 Q 46 94 46 74 V 28 Q 46 22 52 22 Z" fill="#EFECE4"/>
       <text x="62" y="52" class="font" font-size="13.5" fill="#1F1E1B">雪原章 v1 的路线初稿我已经按刚才聊的 frost_streak 冻伤规则排好了，</text><text x="62" y="75" class="font" font-size="13.5" fill="#1F1E1B">包含 3 条篝火分岔路线，发出来给大家过目！</text>
     </g>
 
