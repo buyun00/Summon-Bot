@@ -18,12 +18,13 @@
 ---
 
 <a id="top"></a>
-<p align="center">
-  <a href="#top"><img src="docs/assets/readme-guide-bot.svg" alt="Summon 主控 Bot 导览消息 / Summon Lead Bot Welcome" width="100%" /></a>
-</p>
 
 <details>
-<summary><b>🇨🇳 简体中文 · 展开查看：一镜到底真实群聊实录 + 核心设计亮点与竞品对比（点击展开 / 收起）</b></summary>
+<summary>
+  <picture>
+    <img src="docs/assets/readme-guide-zh.svg" alt="点击展开简体中文群聊实录与完整架构详解" width="100%" />
+  </picture>
+</summary>
 
 <br/>
 
@@ -138,7 +139,11 @@ Summon-Bot/
 </details>
 
 <details>
-<summary><b>🇺🇸 English · Click to Expand: Continuous Room Walkthrough + Architecture Innovations & Comparison Matrix</b></summary>
+<summary>
+  <picture>
+    <img src="docs/assets/readme-guide-en.svg" alt="Click to expand English Walkthrough & Full Architecture Specs" width="100%" />
+  </picture>
+</summary>
 
 <br/>
 
