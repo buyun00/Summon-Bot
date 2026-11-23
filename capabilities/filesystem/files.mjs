@@ -184,11 +184,13 @@ export class Files {
   view(file, context = null, latestRevision = undefined) {
     const { id, space, path, revision, size, author, sources, createdAt, updatedAt } = file;
     const deletedRoom = space?.kind === 'room' && !this.store.get('rooms', space.id) && Boolean(this.store.get('deleted-rooms', space.id));
+    const isHistorical = latestRevision !== undefined && latestRevision !== revision;
+    const url = `/api/files/${encodeURIComponent(id)}/download${isHistorical ? `?revision=${revision}` : ''}`;
     return { kind: 'file', id, ref: { kind: 'file', id }, name: posix.basename(path), path, space, revision,
-      ...(latestRevision !== undefined && latestRevision !== revision ? { latest_revision: latestRevision } : {}),
+      ...(isHistorical ? { latest_revision: latestRevision } : {}),
       size, author, sources: this.projectSources(sources, context),
       ...(deletedRoom ? { deleted_room: true } : {}),
-      created_at: createdAt, updated_at: updatedAt, url: `/api/files/${encodeURIComponent(id)}/download` };
+      created_at: createdAt, updated_at: updatedAt, url };
   }
 
   getProjection(id, context, revision = undefined) {
@@ -317,9 +319,8 @@ export class Files {
     return this.view(saved);
   }
 
-  async download(id, context) {
-    if (!this.canRead(id, context)) reject('file_not_found', 'File is unavailable', 404);
-    const file = this.get(id);
+  async download(id, context, revision = undefined) {
+    const { file } = this.getProjection(id, context, revision);
     if (!file || file.attachment_id) {
       const value = await this.attachments.read(file?.attachment_id || id);
       if (!this.canRead(id, context)) reject('file_not_found', 'File is unavailable', 404);

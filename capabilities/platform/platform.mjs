@@ -1331,7 +1331,8 @@ export class SummonPlatform {
         if (!this.visibleBot(bot, context)) return directoryEntry(bot);
         const view = this.manager.view(bot, context.actor, { details: !context.session });
         const memory_items = !context.session ? (this.runtime?.materials?.inspectBot(bot, context) || []) : undefined;
-        return memory_items !== undefined ? { ...view, memory_items } : view;
+        const bot_files = !context.session ? this.files.list(context, { kind: 'bot', id: bot.id }) : undefined;
+        return memory_items !== undefined ? { ...view, memory_items, bot_files } : view;
       }
       case 'room': return this.room.read(args, context.actor.id);
       case 'event': {

@@ -183,7 +183,7 @@ const resourceLabels = {
   calls:'当前周期调用数', tokens:'当前周期 Token', active_ms:'累计活跃时间（毫秒）',
 };
 const ui = {
-  view:'chat', roomId:null, botId:null, executionRef:null, executionDetail:null, fileId:null, fileDetail:null,
+  view:'chat', roomId:null, botId:null, executionRef:null, executionDetail:null, fileId:null, fileDetail:null, fileRevision:null,
   messages:[], roomDeliveries:new Map(), roomSummaries:new Map(), roomSuspendedRuns:[], roomMessageStates:{}, roomChainState:null, roomStaleWaits:[], mobileRoom:false, draftReplies:{}, drafts:{}, draftTargets:{}, draftAttachments:{},
   draftReferences:{}, localMessages:{}, loading:true, refreshing:false, streamConnected:false, connectionNotice:'',
   detailOpen:false, detailTab:'details', profileBotId:null, avatarEditing:false, avatarDraft:null, avatarTab:'bot',
@@ -759,10 +759,10 @@ async function loadCurrent() {
     if (!current()) return;
     setListPage('files', page);
     if (ui.fileId) {
-      try { await loadFile(ui.fileId); }
+      try { await loadFile(ui.fileId, null, ui.fileRevision); }
       catch (error) {
         if (error.status !== 404 && error.status !== 403) throw error;
-        ui.fileDetail = null; ui.fileId = null;
+        ui.fileDetail = null; ui.fileId = null; ui.fileRevision = null;
         toast('此文件已不可读取。',true);
       }
     }
@@ -1335,7 +1335,7 @@ function openFileEdit(element) {
     const path = before?.path ?? data.get('path').trim();
     const saved = await api('/api/files','POST',{ space:{ kind,id }, path, content_or_source:data.get('content'),
       ...(before ? { revision:before.revision, sources:before.sources } : {}) });
-    if (ui.view === 'files') { ui.fileId = saved.id; await loadFile(saved.id); }
+    if (ui.view === 'files') { ui.fileId = saved.id; ui.fileRevision = null; await loadFile(saved.id); }
   });
 }
 
@@ -1440,7 +1440,7 @@ function addDraftReference(roomId, ref) {
 }
 
 async function openReference(ref) {
-  if (ref.kind === 'file') { ui.fileId = ref.id; ui.fileDetail = null; return navigate('files'); }
+  if (ref.kind === 'file') { ui.fileId = ref.id; ui.fileDetail = null; ui.fileRevision = null; return navigate('files'); }
   if (ref.kind === 'session' || ref.kind === 'conversation') { ui.executionRef = ref; ui.executionDetail = null; ui.stopResults = null; return navigate('executions'); }
   if (ref.kind === 'bot') return act('open-bot-details',{ dataset:{ id:ref.id } });
   if (ref.kind === 'room') return selectRoom(ref.id);
@@ -1696,7 +1696,13 @@ async function act(action, element) {
     return;
   }
   if (action === 'open-file') return openReference({ kind:'file',id });
-  if (action === 'open-file-revision') { await loadFile(id, null, Number(element.dataset.revision)); return render(); }
+  if (action === 'open-file-revision') {
+    const targetRev = Number(element.dataset.revision);
+    const latestRev = ui.fileDetail?.latest_revision ?? ui.fileDetail?.revision;
+    ui.fileRevision = Number.isSafeInteger(targetRev) && targetRev > 0 && targetRev !== latestRev ? targetRev : null;
+    await loadFile(id, null, ui.fileRevision);
+    return render();
+  }
   if (action === 'edit-file') return openFileEdit(element);
   if (action === 'more-file') { await loadFile(ui.fileId,ui.fileDetail.next_cursor,ui.fileDetail.revision); return render(); }
   if (action === 'add-wakeup' || action === 'edit-wakeup') return openWakeupEdit(wakeupById(id),element.dataset.room);
@@ -2725,7 +2731,8 @@ function renderFiles() {
   const item = ui.fileDetail;
   const rows = trackedList('files','/api/files', file => `<button class="profile-record record-button ${file.id === ui.fileId ? 'selected' : ''}" data-action="open-file" data-id="${esc(file.id)}">
     <strong>${esc(file.name || file.path)}</strong><small>${file.deleted_room ? '已删群归档 · ' : ''}${esc(file.space ? refLabel(file.space) : '')} · 修订 v${esc(file.revision)}</small></button>`);
-  const link = typeof item?.url === 'string' && item.url === filePath(item.id) + '/download' ? item.url : attachmentUrl(item);
+  const baseDownload = item ? filePath(item.id) + '/download' : '';
+  const link = typeof item?.url === 'string' && (item.url === baseDownload || item.url.startsWith(baseDownload + '?revision=')) ? item.url : attachmentUrl(item);
   const latestRev = item?.latest_revision ?? item?.revision;
   const isHistorical = item && latestRev && item.revision !== latestRev;
   const revHistory = Array.isArray(item?.revisions) && item.revisions.length > 1

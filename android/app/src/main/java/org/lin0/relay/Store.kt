@@ -536,9 +536,10 @@ class SummonStore(private val app: Context) {
         return withContext(Dispatchers.IO) { api.bytes("/api/attachments/" + SummonApiClient.component(attachment.id) + "/preview") }
     }
 
-    suspend fun downloadFile(id: String, name: String): File {
+    suspend fun downloadFile(id: String, name: String, revision: Int? = null): File {
         val api = apiClient()
-        return withContext(Dispatchers.IO) { api.download(app, "/api/files/" + SummonApiClient.component(id) + "/download", name) }
+        val query = if (revision != null && revision > 0) "?revision=$revision" else ""
+        return withContext(Dispatchers.IO) { api.download(app, "/api/files/" + SummonApiClient.component(id) + "/download$query", name) }
     }
 
     suspend fun refreshModelUsage(force: Boolean = false): SummonJson =

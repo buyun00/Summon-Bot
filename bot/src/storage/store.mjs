@@ -4,7 +4,7 @@ import { dirname } from 'node:path';
 import { runtimeRecords as R } from './runtime-records.mjs';
 
 const decode = row => row ? JSON.parse(row.data) : null;
-const historyRecordKinds = [R.event, R.delivery, R.route, R.conversation, R.run, R.wait, R.call, R.transcript, R.checkpoint, R.batch, R.input, R.materialView];
+const historyRecordKinds = [R.event, R.delivery, R.route, R.conversation, R.run, R.wait, R.call, R.transcript, R.checkpoint, R.input, R.fastRead];
 
 /** SQLite stores original transcript entries and their independent processing positions. */
 export class BotStore {

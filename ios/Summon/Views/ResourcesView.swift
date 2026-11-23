@@ -388,7 +388,7 @@ struct SummonFileView: View {
                                 let attachment = SummonAttachment(id: ref.id, name: value["name"].string ?? "附件",
                                                                   mimeType: value["mimeType"].string)
                                 preview = try await store.attachmentFileURL(attachment)
-                            } else { preview = try await store.downloadFile(id: ref.id, name: value["name"].string ?? "资料") }
+                            } else { preview = try await store.downloadFile(id: ref.id, name: value["name"].string ?? "资料", revision: selectedRevision) }
                         } catch { self.error = error.localizedDescription }
                     }
                 }.disabled(busy || !store.protocolReady)

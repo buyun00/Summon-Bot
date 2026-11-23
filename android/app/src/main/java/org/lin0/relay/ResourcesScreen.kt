@@ -316,13 +316,13 @@ private fun FileDetail(store: SummonStore, ref: SummonReference, room: SummonRef
         if (busy) CircularProgressIndicator()
         error?.let { SummonError(it) }
         Row {
-            TextButton(enabled = !busy && store.protocolReady, onClick = { run { load() } }) { Text("刷新") }
+            TextButton(enabled = !busy && store.protocolReady, onClick = { run { load(rev = selectedRevision) } }) { Text("刷新") }
             if (value["url"].string != null) TextButton(enabled = !busy && store.protocolReady, onClick = {
                 run {
                     val name = value["name"].string ?: "资料"
                     val file = if (value["url"].string?.startsWith("/api/attachments/") == true) {
                         store.attachmentFile(SummonAttachment.parse(value))
-                    } else store.downloadFile(ref.id, name)
+                    } else store.downloadFile(ref.id, name, selectedRevision)
                     shareFile(context, file, value["mimeType"].string ?: "application/octet-stream")
                 }
             }) { Text("下载文件") }

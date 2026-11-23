@@ -580,8 +580,9 @@ final class SummonStore {
         try await apiClient().attachmentData(attachment)
     }
 
-    func downloadFile(id: String, name: String) async throws -> URL {
-        try await apiClient().download(path: "/api/files/\(SummonAPIClient.component(id))/download", name: name)
+    func downloadFile(id: String, name: String, revision: Int? = nil) async throws -> URL {
+        let query = revision.map { "?revision=\($0)" } ?? ""
+        return try await apiClient().download(path: "/api/files/\(SummonAPIClient.component(id))/download\(query)", name: name)
     }
 
     @discardableResult

@@ -13,7 +13,7 @@
 
 1. **收件与发言混在一条 `room`**：[bot.mjs](D:/Relay-Bot/bot/src/runtime/bot.mjs:317) 把所有普通群投递直接送入 Bot × 群的唯一 `room` 会话，一轮同时承担读消息、静默、查资料、派工和 `send` 发言。
 2. **公开发言口未按调用层硬拦截**：[engine.mjs](D:/Relay-Bot/bot/src/agent/engine.mjs:44) 给独立 Pi 也注入全部 12 工具，[platform.mjs](D:/Relay-Bot/capabilities/platform/platform.mjs:1072) 只检房间写权，未禁止共享独立 Pi Session 直接向群 `send`。
-3. **非聊天事件与 EggBot 观察共用 `room` 调度**：[bot.mjs](D:/Relay-Bot/bot/src/runtime/bot.mjs:278) 同时调度 `message`、`wakeup.time`、`call.receipt`、`work.tool`、`connection.failure` / `connection.repair.request`，且 EggBot 通过 [delivery.mjs](D:/Relay-Bot/capabilities/platform/delivery.mjs:49) 和 [room-observation.mjs](D:/Relay-Bot/bot/src/context/room-observation.mjs:20) 按 20 条消息批量回看并推进 `observation.through` 检查点。
+3. **非聊天事件与 EggBot 观察共用 `room` 调度**：[bot.mjs](D:/Relay-Bot/bot/src/runtime/bot.mjs:278) 同时调度 `message`、`wakeup.time`、`call.receipt`、`work.tool`、`connection.failure` / `connection.repair.request`，且 EggBot 通过 [delivery.mjs](D:/Relay-Bot/capabilities/platform/delivery.mjs:49) 和历史模块 `bot/src/context/room-observation.mjs`（已于 commit `80ae27e` 移除，历史见 `7a9fa3c`）按 20 条消息批量回看并推进 `observation.through` 检查点。
 4. **实时同步仅发无载荷事件**：[gateway/index.mjs](D:/Relay-Bot/capabilities/gateway/index.mjs:111) 的 SSE `/api/stream` 只推事件类型，四端通过 [sync.mjs](D:/Relay-Bot/capabilities/shared/sync.mjs:3) 增量同步房间状态。
 
 ## 改造方案

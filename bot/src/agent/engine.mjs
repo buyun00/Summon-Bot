@@ -7,7 +7,7 @@ import { boundModel } from './model.mjs';
 import { ModelProvider } from './provider.mjs';
 import { isMaterialFact } from '../context/materials.mjs';
 import { contextTokens, eventInput, repairRun, roomMessageInput, textMessage, toolObservation } from '../context/projection.mjs';
-import { fitRoomHistory, pruneOversizedTranscript } from '../context/room-history.mjs';
+import { fitRoomHistory, pruneOversizedTranscript, splitOversizedCompressionRecord } from '../context/room-history.mjs';
 import { now, recordKey, runtimeFailure, runtimeRecords as R } from '../storage/runtime-records.mjs';
 
 const hardBoundaries = [
@@ -111,8 +111,8 @@ export class BotEngine {
     const isRoomConversation = conversation.kind === 'room' && !conversation.session_id;
     const systemBase = { role: 'system', timestamp: Date.parse(conversation.created_at),
       content: buildSystemContent({ isRoomConversation, isPiSession, setup, binding, duty: '', botId: conversation.bot_id }), toolsAdded: tools.map(toToolDeclaration) };
-    const outputReserve = Math.min(model.maxTokens, 65536, Math.floor(model.contextWindow * 0.15));
-    const outputTokens = Math.max(128, Math.min(model.maxTokens, Math.floor(model.contextWindow / 4)));
+    const outputReserve = Math.max(128, Math.min(model.maxTokens, 65536, Math.floor(model.contextWindow * 0.15)));
+    const outputTokens = outputReserve;
     const inputBudget = Math.max(4096, Math.min(
       Math.floor(model.contextWindow * 0.85),
       model.contextWindow - outputReserve - 512,
@@ -147,9 +147,10 @@ export class BotEngine {
     const streamFn = (selected, context, options) => this.stream(job, selected, context,
       { ...options, roomCache, inject, neededView: authorizedView, onBeforeFetchError }, outputTokens, requestPurpose)
       .catch(error => { failure = error; throw error; });
+    const compressMaxTokens = Math.max(128, Math.min(model.maxTokens, 8192, outputReserve));
     const compress = async messages => {
       const response = await this.stream(job, model, { messages }, { neededView: authorizedView, onBeforeFetchError },
-        Math.min(model.maxTokens, 8192), 'compression');
+        compressMaxTokens, 'compression');
       const answer = await response.result();
       if (failure) throw failure;
       return answer;
@@ -284,14 +285,6 @@ export class BotEngine {
           ? await fitRoomHistory(job, compress, system, sameRun, tail, inputBudget, boundary, calibrationRatio)
           : await this.fit(job, compress, system, history, sameRun, tail, inputBudget, boundary, calibrationRatio);
         lastRawEstimate = contextTokens(prompt, 1);
-        const estimatedUsed = lastReportedInputTokens > 0 && sameRun.length > 0
-          ? Math.max(lastReportedInputTokens, contextTokens(prompt, calibrationRatio))
-          : contextTokens(prompt, calibrationRatio);
-        if (boundary.contextStatusFact) {
-          boundary.contextStatusFact.used_tokens = estimatedUsed;
-          boundary.contextStatusFact.context_window = model.contextWindow;
-          boundary.contextStatusFact.usage_ratio = Number((estimatedUsed / model.contextWindow).toFixed(3));
-        }
         check();
         const sharedPrefix = isRoomConversation ? prompt.filter(message => message.public_event_id && !message.fork_public_event) : [];
         const cachePoint = sharedPrefix.at(-1);
@@ -472,28 +465,53 @@ export class BotEngine {
         keep--;
       }
       if (keep === 0) break;
+      const summarySystem = { role: 'system', content: NON_ROOM_SUMMARY_PROMPT, timestamp: currentTime };
+      const compressBaseTokens = contextTokens([summarySystem, textMessage({ previous: summary?.summary, history: [] })], calibrationRatio) + 128;
+      const compressAvailable = Math.max(512, budget - compressBaseTokens);
+      const chunkBudget = Math.min(Math.floor(budget * 0.55), compressAvailable);
       const chunk = [];
-      const chunkBudget = Math.floor(budget * 0.55);
       let tokens = 0;
       for (const message of prior.slice(0, keep)) {
         const cost = contextTokens([message], calibrationRatio);
+        if (cost > compressAvailable && chunk.length === 0) break;
         if (chunk.length && tokens + cost > chunkBudget) break;
         tokens += cost;
         chunk.push(message);
       }
-      if (!chunk.length) break;
-      const checkpointPrompt = textMessage({ previous: summary?.summary, history: chunk.map(message => JSON.parse(message.content[0].text)) });
-      const answer = await compress([
-        { role: 'system', content: NON_ROOM_SUMMARY_PROMPT, timestamp: currentTime },
-        checkpointPrompt,
-      ]);
-      job.check();
-      const text = answer?.stopReason === 'stop' && answer.content.filter(part => part.type === 'text').map(part => part.text).join('\n').trim();
-      if (!text) throw runtimeFailure('session_summary_incomplete', 'Conversation history compression did not return a complete summary', 409);
-      covered += chunk.length;
-      summary = { id: baseKey, through: historyIds[covered - 1], summary: text, time: currentTime, view_revision: boundary.view_revision };
+      if (chunk.length) {
+        const checkpointPrompt = textMessage({ previous: summary?.summary, history: chunk.map(message => JSON.parse(message.content[0].text)) });
+        const answer = await compress([summarySystem, checkpointPrompt]);
+        job.check();
+        const text = answer?.stopReason === 'stop' && answer.content.filter(part => part.type === 'text').map(part => part.text).join('\n').trim();
+        if (!text) throw runtimeFailure('session_summary_incomplete', 'Conversation history compression did not return a complete summary', 409);
+        covered += chunk.length;
+        summary = { id: baseKey, through: historyIds[covered - 1], summary: text, time: currentTime, view_revision: boundary.view_revision };
+        job.inbox.store.putRecord(R.checkpoint, summary);
+        prior = prior.slice(chunk.length);
+        messages = [system, ...prefix(summary), ...prior, ...current];
+        continue;
+      }
+
+      // 1b) Single oversized history record exceeds compressAvailable: fold it in bounded sequential segments so compress() stays within the model window.
+      let parsedRecord;
+      try { parsedRecord = JSON.parse(prior[0].content[0].text); } catch { parsedRecord = { text: prior[0].content[0].text }; }
+      const partBudget = Math.max(256, Math.min(Math.floor(budget * 0.45), compressAvailable));
+      const parts = splitOversizedCompressionRecord(parsedRecord, partBudget, calibrationRatio);
+      let runningSummary = summary?.summary;
+      for (const part of parts) {
+        const answer = await compress([
+          summarySystem,
+          textMessage({ previous: runningSummary, history: [part] }),
+        ]);
+        job.check();
+        const text = answer?.stopReason === 'stop' && answer.content.filter(p => p.type === 'text').map(p => p.text).join('\n').trim();
+        if (!text) throw runtimeFailure('session_summary_incomplete', 'Conversation history compression did not return a complete summary', 409);
+        runningSummary = text;
+      }
+      covered += 1;
+      summary = { id: baseKey, through: historyIds[covered - 1], summary: runningSummary, time: currentTime, view_revision: boundary.view_revision };
       job.inbox.store.putRecord(R.checkpoint, summary);
-      prior = prior.slice(chunk.length);
+      prior = prior.slice(1);
       messages = [system, ...prefix(summary), ...prior, ...current];
     }
 

@@ -227,7 +227,14 @@ export function createApi({ platform, room, attachments, models, connections, pu
     }
     if ((match = path.match(/^\/api\/files\/([^/]+)(\/download)?$/))) {
       const ref = routeRef('file', match[1]);
-      if (['GET', 'HEAD'].includes(method) && match[2]) return platform.files.download(ref.id, userContext);
+      if (['GET', 'HEAD'].includes(method) && match[2]) {
+        const revParam = params.get('revision');
+        const rev = revParam != null && revParam !== '' ? Number(revParam) : undefined;
+        if (rev !== undefined && (!Number.isSafeInteger(rev) || rev < 1)) {
+          reject('invalid_arguments', 'File revision must be a positive integer');
+        }
+        return platform.files.download(ref.id, userContext, rev);
+      }
       if (method === 'GET' && !match[2]) return read(ref, params);
     }
     if (path === '/api/attachments' && method === 'POST') {
