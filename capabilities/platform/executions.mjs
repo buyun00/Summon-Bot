@@ -1,4 +1,4 @@
-import { activeControl, assertResume, canResume, resumeReference } from '../bot-management/service.mjs';
+import { activeControl } from '../bot-management/service.mjs';
 import { assertRevision, idOf, identity, keyOf, reject, sameIdentity, sameRef } from './contract.mjs';
 import { callRecords, errorResult, mayAdvanceReceipt } from './calls.mjs';
 import { allowsConnection, enclosesExecutableScope, executableScope } from '../services/executable-scope.mjs';
@@ -221,43 +221,18 @@ export class Executions {
       control: activeControl(), input_revision: record.input_revision ?? 0 });
   }
 
-  permission(target, record, context, operation = 'read') {
+  permission(target, record, context) {
     if (!record) return false;
-    const { actor, session } = context;
-    const execution = target.kind === 'session' ? record : record.session_id && this.record({ kind: 'session', id: record.session_id });
-    if (execution?.project_room && actor.kind !== 'user') {
-      const origin = this.platform.projectRoom(context);
-      const followupAllowed = origin && !context.session &&
-        sameIdentity(execution.owner, actor) &&
-        this.platform.isFollowupRoomAllowed(execution, origin) &&
-        (operation === 'read' || execution.acceptance_state === 'open');
-      if (origin && !sameRef(origin, execution.project_room) && !followupAllowed) return false;
-      if (execution.room_workspace_id && !this.platform.roomMembers(execution.project_room.id).includes(actor.id)) return false;
-    }
-    if (context.executable_scope !== undefined) {
-      const native = target.kind === 'session' && record.engine !== 'pi';
-      const get = id => this.platform.connections.get(id);
-      const internalScope = target.kind === 'session' ? record.executable_scope : executableScope({ conversation: record,
-        session: record.session_id && this.record({ kind: 'session', id: record.session_id }) });
-      if (native ? !allowsConnection(context.executable_scope, get(record.engine), get) :
-          !enclosesExecutableScope(context.executable_scope, internalScope)) return false;
-    }
-    if (session) {
-      const current = { kind: 'session', id: session.id };
-      const child = target.kind === 'session' && sameRef(record.origin_execution, current);
-      if (target.kind === 'session' ? session.id !== target.id && !child : record.session_id !== session.id) return false;
-    }
+    const { actor } = context;
     if (actor.kind === 'user') return true;
     if (target.kind === 'conversation') {
       if (record.bot_id !== actor.id) return false;
-      if (record.connection_setup && context.origin?.conversation_id !== record.id) return false;
       return record.space?.kind !== 'room' || this.platform.roomMembers(record.space.id).includes(actor.id);
     }
-    if (sameIdentity(record.owner, actor)) return !record.sharing || this.platform.roomMembers(record.space.id).includes(actor.id);
-    if (!record.sharing) return false;
-    const members = this.platform.roomMembers(record.space.id);
-    const key = operation === 'input' ? 'submitters' : operation === 'control' ? 'controllers' : 'readers';
-    return granted(record.sharing[key], actor, members, record.space.id);
+    if (record.sharing || record.space?.kind === 'room') {
+      return this.platform.roomMembers(record.space.id).includes(actor.id);
+    }
+    return sameIdentity(record.owner, actor) || sameIdentity(record.execution_actor, actor);
   }
 
   require(target, context, operation) {
@@ -266,8 +241,7 @@ export class Executions {
     return record;
   }
 
-  active(record, version) {
-    assertRevision(record.control.control_version, version, 'control_version');
+  active(record) {
     if (record.control.state !== 'active') reject('execution_paused', 'Execution is paused', 409, { control_version: record.control.control_version });
   }
 
@@ -308,8 +282,7 @@ export class Executions {
       model: record.model, execution_actor: record.execution_actor, submitted_by: record.submitted_by, latest_call_id: record.latest_call_id,
       status, ...(error ? { last_error: { code: error.code, message: error.message } } : {}), ...sessionMeta,
       control, control_version: control.control_version, input_revision: record.input_revision,
-      can_stop: controlled, can_submit: this.permission(target, record, context, 'input') && !record.authority_revoked,
-      resume_ref: controlled && canResume(context.actor, control, record.owner) ? resumeReference(target, control) : null };
+      can_stop: controlled, can_submit: this.permission(target, record, context, 'input') && !record.authority_revoked };
   }
 
   async inspect(target, record, options = {}) {
@@ -361,23 +334,16 @@ export class Executions {
   }
 
   sharing(args, actor, space, context) {
-    if (!args.sharing) {
+    const wantsShared = Boolean(args.sharing) || space?.kind === 'room';
+    if (!wantsShared) {
       if (space.kind !== actor.kind || space.id !== actor.id) reject('private_session_scope', 'A private Session uses the caller’s private space', 403);
       return null;
     }
-    if (!args.space || space.kind !== 'room' || !Array.isArray(args.resource_refs) || !this.platform.canReadSpace(actor, space, context)) {
-      reject('invalid_sharing', 'Explicit sharing requires an accessible Room and resource_refs');
+    if (space?.kind !== 'room' || !this.platform.canReadSpace(actor, space, context)) {
+      reject('invalid_sharing', 'Shared execution requires an accessible Room as space');
     }
-    const members = this.platform.roomMembers(space.id);
-    return Object.fromEntries(Object.entries(args.sharing).map(([key, values]) => [key, values.map(value => {
-      if (value?.kind === 'room_members') {
-        if (value.id !== space.id) reject('invalid_sharing', 'Membership grant belongs to a different Room');
-        return { kind: 'room_members', id: value.id };
-      }
-      const principal = identity(value);
-      if (!members.includes(principal.id)) reject('invalid_sharing', 'The sharing principal cannot join this Session', 403);
-      return principal;
-    })]));
+    const all = [{ kind: 'room_members', id: space.id }];
+    return { readers: all, submitters: all, controllers: all };
   }
 
   async open(args, context, call) {
@@ -468,34 +434,32 @@ export class Executions {
 
   async submit(args, context, call) {
     const { target } = args;
-    const record = this.require(target, context, args.kind === 'resume' ? 'control' : 'input');
-    if (record.connection_setup && context.actor.kind !== 'user')
-      reject('initialization_forbidden', 'Only the host user can submit input to connection initialization', 403);
-    if (args.kind === 'resume') return this.resume(args, context, call, record);
-    if (args.input === undefined || args.input === null || !args.input_target || args.resume_ref) {
-      reject('input_target_required', 'Input and a current typed input_target (copied from read(target).input_targets) are required');
+    const record = this.require(target, context, 'input');
+    if (args.input === undefined || args.input === null) {
+      reject('input_target_required', 'Input is required');
     }
-    this.active(record, args.control_version);
+    this.active(record);
     this.checkSubmitResources(target, record, context);
     if (context.origin?.fast_read_forward) this.calls.bind(call.id, { target });
     if (this.platform.draining && args.kind !== 'reply') reject('updating', 'New execution input is temporarily paused', 503);
+    let resolvedInputTarget = args.input_target || null;
     const fresh = async () => {
       const current = this.require(target, context, 'input');
-      this.active(current, args.control_version);
+      this.active(current);
       this.checkSubmitResources(target, current, context);
       const observation = await this.inspect(target, current);
       const observed = observation.input_targets ?? current.input_targets ?? [];
-      this.assertTarget(args, target, observed);
-      if (context.origin?.fast_read_forward) {
-        const options = forwardInputs(observed, observation.pending_input ?? [], this.platform.connections.get(current.engine));
-        if (!options.forwardable.some(option => option.kind === args.kind && sameInput(option.input_target, args.input_target)))
-          reject('input_target_expired', 'The execution now requires a different input', 409, { target, current_input_targets: observed });
+      if (!resolvedInputTarget) {
+        const auto = (Array.isArray(observed) ? observed : []).find(option => (option.kinds || option.supports || [option.action || option.input_kind]).includes(args.kind));
+        if (auto) resolvedInputTarget = auto.input_target || auto.target || auto;
       }
+      if (!resolvedInputTarget) reject('input_target_expired', 'The execution is not currently accepting this input kind', 409, { target, current_input_targets: observed });
+      this.assertTarget({ ...args, input_target: resolvedInputTarget }, target, observed);
       return current;
     };
     const current = await fresh();
-    const inputKey = args.kind === 'reply' ? keyOf(target.kind, target.id, args.input_target.kind, args.input_target.request_id,
-      ...inputFields[args.input_target.kind].map(field => args.input_target[field])) : call.id;
+    const inputKey = args.kind === 'reply' ? keyOf(target.kind, target.id, resolvedInputTarget.kind, resolvedInputTarget.request_id,
+      ...inputFields[resolvedInputTarget.kind].map(field => resolvedInputTarget[field])) : call.id;
     this.store.transaction(() => {
       const existing = this.store.get(inputRecords, inputKey);
       const existingCall = existing?.call_id && this.store.get(callRecords, existing.call_id);
@@ -504,8 +468,8 @@ export class Executions {
       if (existing && !notSubmitted) {
         reject('input_already_submitted', 'The native request already has a submitted answer', 409, { call_id: existing.call_id });
       }
-      this.store.save(inputRecords, { id: inputKey, target, call_id: call.id, input_target: args.input_target, kind: args.kind,
-        submitted_by: context.actor, origin: context.origin, control_version: args.control_version, status: 'prepared', input: args.input });
+      this.store.save(inputRecords, { id: inputKey, target, call_id: call.id, input_target: resolvedInputTarget, kind: args.kind,
+        submitted_by: context.actor, origin: context.origin, control_version: current.control.control_version, status: 'prepared', input: args.input });
       this.calls.bind(call.id, { target, input_id: inputKey, execution_actor: record.execution_actor || { kind: 'bot', id: record.bot_id } });
     });
     const beforeSubmit = async () => {
@@ -515,7 +479,7 @@ export class Executions {
         const currentInput = this.store.get(inputRecords, inputKey);
         if (currentInput?.status === 'submitted') return;
         if (currentInput?.status !== 'prepared') reject('input_cancelled', 'The queued input was invalidated', 409);
-        this.active(latest, args.control_version);
+        this.active(latest);
         this.checkSubmitResources(target, latest, context);
         this.platform.assertRunAllowed(context, { allowUser: true });
         if (target.kind === 'session' && args.kind === 'next' && !this.platform.isActiveSession(latest)) {
@@ -527,7 +491,7 @@ export class Executions {
     };
     try {
       const options = { session: current, conversation: current, call: this.calls.get(call.id), kind: args.kind,
-        input_target: args.input_target, input: args.input, beforeSubmit, signal: context.signal };
+        input_target: resolvedInputTarget, input: args.input, beforeSubmit, signal: context.signal };
       const result = target.kind === 'conversation' ? await this.platform.runtime.submitConversation(options)
         : current.engine === 'pi' ? await this.platform.runtime.pi.submit(options) : await this.platform.connections.input(options);
       const facts = this.applyResponse(target.kind === 'session' ? current : null, call.id, result);
@@ -549,49 +513,9 @@ export class Executions {
     if (!matched) reject('input_target_expired', 'The execution no longer accepts this input target', 409, { target, current_input_targets: options });
   }
 
-  resume(args, context, call, before) {
-    if (args.input !== undefined || args.input_target || !args.resume_ref) reject('invalid_resume', 'Resume requires only the current stop reference');
-    const { target } = args;
-    const record = this.store.transaction(() => {
-      const current = this.require(target, context, 'control');
-      assertRevision(current.control.control_version, args.control_version, 'control_version');
-      assertResume(context.actor, target, current.control, args.resume_ref, before.owner);
-      const session = target.kind === 'session' ? current : current.session_id && this.record({ kind: 'session', id: current.session_id });
-      if (session) this.platform.assertSessionAuthority(session);
-      const saved = this.saveControl(target, { ...current.control, state: 'active', control_version: current.control.control_version + 1 });
-      this.calls.bind(call.id, { target });
-      return saved;
-    });
-    if (target.kind === 'conversation') this.platform.runtime.controlChanged(record);
-    this.platform.runtime.wake();
-    return this.baseView(target, record, context);
-  }
-
-  notifyOwnerResume(target, call) {
-    const work = target.kind === 'session' && this.record(target);
-    if (!work?.owner_run_id || work.acceptance_state !== 'open' || call.origin?.conversation_id === work.owner_conversation_id) return;
-    const owner = this.record({ kind: 'conversation', id: work.owner_conversation_id });
-    if (!owner || owner.bot_id !== work.owner.id) return;
-    const wait = this.calls.addWait(call.id, { bot_id: owner.bot_id, conversation_id: owner.id, run_id: work.owner_run_id,
-      session_id: owner.session_id, control_version: owner.control.control_version });
-    const event = this.calls.saveReceiptEvent(call, { status: 'completed', output: { action: 'resumed', control: work.control } }, target, 'resumed');
-    this.calls.deliverWaits(event, [wait], false);
-  }
-
   configure(args, context, call) {
     const target = { kind: 'session', id: idOf(args.target, 'session') };
     const current = this.require(target, context, 'control');
-    if (context.actor.kind !== 'user' && current.origin_execution) {
-      const callerRef = context.session ? { kind: 'session', id: context.session.id } : { kind: 'conversation', id: context.conversation?.id };
-      const directOwner = sameRef(current.origin_execution, callerRef);
-      const parentSession = current.origin_execution.kind === 'session' ? this.record(current.origin_execution) : null;
-      const parentSettled = Boolean(parentSession && (this.sessionOrAncestorClosed(parentSession) || parentSession.control?.state === 'paused'));
-      const ancestorClosing = !directOwner && parentSettled && args.acceptance_state === 'closed' &&
-        sameIdentity(current.owner, context.actor) && this.isAncestorExecution(current, callerRef);
-      if (!directOwner && !ancestorClosing) {
-        reject('session_owner_required', 'Manage this work from its direct parent conversation', 403);
-      }
-    }
     const patch = { id: current.id };
     if (args.acceptance_state !== undefined) patch.acceptance_state = args.acceptance_state;
     if (args.acceptance_state === 'closed') {
@@ -653,26 +577,50 @@ export class Executions {
     this.calls.bind(call.id, { result: { ...call.result, status, targets } });
   }
 
+  collectOwnedDescendants(rootTarget, context) {
+    const allSessions = this.store.list(sessionRecords);
+    const seen = new Set([keyOf(rootTarget.kind, rootTarget.id)]);
+    const queue = [rootTarget];
+    const selected = [];
+    while (queue.length) {
+      const parent = queue.shift();
+      for (const child of allSessions) {
+        if (child.sharing) continue;
+        const childTarget = { kind: 'session', id: child.id };
+        const k = keyOf(childTarget.kind, childTarget.id);
+        if (seen.has(k)) continue;
+        const matchesParent = sameRef(child.origin_execution, parent) ||
+          (parent.kind === 'session' && child.origin_execution?.kind === 'conversation' && child.origin_execution.id === this.record(parent)?.conversation_id);
+        if (matchesParent && this.permission(childTarget, child, context, 'control')) {
+          seen.add(k);
+          selected.push({ target: childTarget, record: child });
+          queue.push(childTarget);
+        }
+      }
+    }
+    return selected;
+  }
+
   async stop(args, context, call) {
     const affected = this.store.transaction(() => {
       const record = this.require(args.target, context, 'control');
-      assertRevision(record.control.control_version, args.control_version, 'control_version');
-      if (record.control.state === 'paused' && !canResume(context.actor, record.control, record.owner)) {
-        reject('stop_owned', 'The current pause is controlled by another principal', 409, { control_version: record.control.control_version });
-      }
       const selected = [{ target: args.target, record }];
       if (args.scope === 'target_and_owned_calls') {
-        for (const child of this.store.list(sessionRecords)) {
-          const target = { kind: 'session', id: child.id };
-          if (!child.sharing && child.control.state !== 'paused' && sameRef(child.origin_execution, args.target) &&
-              this.permission(target, child, context, 'control')) selected.push({ target, record: child });
-        }
+        selected.push(...this.collectOwnedDescendants(args.target, context));
       }
       const targets = selected.map(item => item.target);
       for (const { target, record: selectedRecord } of selected) {
-        const control = { state: 'paused', control_version: selectedRecord.control.control_version + 1, stop_id: call.id,
-          requested_by: selectedRecord.control.state === 'paused' ? selectedRecord.control.requested_by : context.actor,
-          scope: args.scope || 'target', affected_targets: targets, stop_status: 'pending' };
+        // Interrupt/Cancel keeps the execution active for follow-up input after detaching in-flight work.
+        const control = {
+          state: 'active',
+          control_version: selectedRecord.control.control_version + 1,
+          stop_id: call.id,
+          requested_by: context.actor,
+          scope: args.scope || 'target',
+          affected_targets: targets,
+          stop_status: 'pending',
+          interrupted_at: new Date().toISOString(),
+        };
         this.saveControl(target, control);
         for (const input of this.store.list(inputRecords)) {
           if (input.status === 'prepared' && (sameRef(input.target, target) || target.kind === 'conversation' && input.origin?.conversation_id === target.id)) {
@@ -681,7 +629,7 @@ export class Executions {
         }
       }
       this.calls.bind(call.id, { target: args.target, status: 'submitted' });
-      this.calls.bind(call.id, { result: { status: 'stop_requested', targets: targets.map(target => ({ target, control: this.record(target).control })) } });
+      this.calls.bind(call.id, { result: { status: 'interrupting', targets: targets.map(target => ({ target, control: this.record(target).control })) } });
       return selected;
     });
 
@@ -693,21 +641,55 @@ export class Executions {
         if (target.kind === 'conversation') result = await this.platform.runtime.stopConversation(target.id);
         else if (record.engine === 'pi') result = await this.platform.runtime.pi.stop({ session: record, call });
         else result = await this.platform.connections.stop({ session: record, call });
-      } catch { result = { status: 'unknown' }; }
-      const stopStatus = result?.stopped === true || result?.status === 'stopped' || result?.status === 'completed' || result?.status === 'idle' ? 'stopped'
-        : result?.status === 'unsupported' ? 'unsupported' : result?.status === 'pending' || result?.status === 'stopping' ? 'pending' : 'unknown';
+      } catch { result = { status: 'detached', remote_outcome: 'unknown_may_still_be_running' }; }
+      const confirmedStopped = result?.stopped === true || ['stopped', 'completed', 'idle'].includes(result?.status);
+      const stopStatus = confirmedStopped ? 'stopped' : 'detached';
+      const remoteOutcome = result?.remote_outcome || (confirmedStopped ? 'confirmed_stopped' : 'unknown_may_still_be_running');
+      const partialSnapshot = result?.partial_snapshot || null;
       const latest = this.record(target);
-      const control = latest.control.stop_id === call.id && !(latest.control.stop_status === 'stopped' && stopStatus !== 'stopped')
-        ? this.saveControl(target, { ...latest.control, stop_status: stopStatus }).control : latest.control;
-      results.push({ target, control, resume_ref: canResume(context.actor, control, record.owner) ? resumeReference(target, control) : null });
+      const control = latest.control.stop_id === call.id
+        ? this.saveControl(target, { ...latest.control, state: 'active', stop_status: stopStatus, remote_outcome: remoteOutcome }).control
+        : latest.control;
+      if (target.kind === 'session' && latest.latest_call_id) {
+        const latestCall = this.store.get(callRecords, latest.latest_call_id);
+        if (latestCall && !terminal.has(latestCall.status)) {
+          const message = remoteOutcome === 'confirmed_stopped'
+            ? 'Interrupted by user and confirmed stopped.'
+            : 'Interrupted by user; detached locally while remote execution outcome is unknown. Check state before retrying side effects.';
+          this.saveFacts(latest.id, latest.latest_call_id, {
+            status: 'stopped',
+            code: 'interrupted_by_user',
+            safe_to_disconnect: true,
+            last_output_summary: partialSnapshot?.last_progress || message,
+          });
+          this.calls.recordReceipt(latest.latest_call_id, {
+            position: keyOf('interrupted', call.id, latest.latest_call_id),
+            status: 'stopped',
+            session_status: 'stopped',
+            code: 'interrupted_by_user',
+            remote_outcome: remoteOutcome,
+            partial_snapshot: partialSnapshot,
+            safe_to_disconnect: true,
+            output: {
+              status: 'interrupted_by_user',
+              remote_outcome: remoteOutcome,
+              ...(partialSnapshot ? { partial_snapshot: partialSnapshot } : {}),
+              message,
+            },
+          }, target);
+        }
+      }
+      results.push({
+        target,
+        status: stopStatus,
+        remote_outcome: remoteOutcome,
+        ...(partialSnapshot ? { partial_snapshot: partialSnapshot } : {}),
+        control,
+      });
     }
-    const targets = results.map(item => {
-      const control = this.record(item.target).control;
-      return control.stop_id === call.id ? { ...item, control } : item;
-    });
-    const status = targets.every(item => item.control.stop_status === 'stopped') ? 'stopped' : 'stop_requested';
+    const status = results.every(item => item.status === 'stopped') ? 'stopped' : 'detached';
     this.platform.runtime?.wake();
-    return this.calls.finish(call.id, 'completed', { status, targets });
+    return this.calls.finish(call.id, 'completed', { status, targets: results });
   }
 
   confirmInput(call, confirmed) {

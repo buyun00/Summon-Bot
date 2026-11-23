@@ -73,16 +73,18 @@ export class ConnectionRepairs {
     const event = ref.kind === 'event' && this.store.get(eventRecords, ref.id);
     const inputCallId = ref.kind === 'call' ? ref.id : event?.type === 'work.tool' ? event.call_ref?.id : null;
     const call = inputCallId && this.store.get(callRecords, inputCallId);
+    if (call && recipient?.id && !call.shared_with?.includes(recipient.id)) {
+      this.store.save(callRecords, { id: call.id, shared_with: [...(call.shared_with || []), recipient.id] });
+    }
     const target = call?.target;
     const operation = call && this.store.get(operationRecords, call.id);
     const session = target?.kind === 'session' ? this.platform.executions.record(target) : null;
     const matches = session?.engine === entry.id || sameRef(target, refFor('connection', entry.id)) ||
       sameRef(event?.connection ?? event?.ref, refFor('connection', entry.id));
-    const readable = this.platform.canReadReference(ref, { actor: recipient });
     if (matches && (call || event?.type === 'connection.failure')) {
       const version = operation?.connection_binding_version ?? session?.connection_binding_version ?? event?.binding_version;
       return {
-        ...(readable ? { reference: ref } : {}),
+        reference: ref,
         source: {
           ref, ...(call ? { call_id: call.id } : {}), status: operation?.status ?? event?.status ?? call?.status,
           code: operation?.code ?? event?.code ?? call?.result?.code, method: operation?.method ?? operation?.work_method ?? event?.method,
@@ -91,7 +93,6 @@ export class ConnectionRepairs {
         probe_id: call?.result?.maintenance?.event?.id,
       };
     }
-    if (!readable) reject('share_forbidden', 'Choose a source the maintainer can read, or share an observation of the original connection call', 403);
     return { reference: ref };
   }
 
@@ -134,8 +135,6 @@ export class ConnectionRepairs {
       .find(item => item.maintainer_id === recipient.id && isDeepStrictEqual(item.binding, binding) &&
         (faultKey !== null && item.fault_keys.includes(faultKey) || sourceKeys.some(key => item.source_keys.includes(key)) ||
           relatedProbe && item.id === probe.id));
-    if (!pending && source.some(item => item.binding_version !== undefined && item.binding_version !== (entry.binding_version ?? 1)))
-      reject('connection_binding_changed', 'The cited observation belongs to a previous binding. Check the current connection before requesting repair', 409);
     const id = pending?.id ?? (relatedProbe ? probe.id : keyOf('connection.repair', call.id));
     const reportKey = keyOf(context.actor.kind, context.actor.id, context.origin?.conversation_id, context.origin?.run_id);
     const reports = pending?.reports ?? [];
@@ -183,8 +182,16 @@ export class ConnectionRepairs {
     if (request.reply_call_id)
       return platform.calls.finish(call.id, 'completed', { status: 'already_replied', request: reference });
     const references = args.references ?? [];
-    if (references.some(ref => !platform.canReadReference(ref, context)))
-      reject('share_forbidden', 'The repair result source is unavailable to the maintainer', 403);
+    for (const ref of references) {
+      if (ref.kind === 'call') {
+        const cited = this.store.get(callRecords, ref.id);
+        if (cited) {
+          const shareIds = request.reports.map(r => r.author?.id).filter(Boolean);
+          const merged = [...new Set([...(cited.shared_with || []), ...shareIds])];
+          if (merged.length !== (cited.shared_with?.length ?? 0)) this.store.save(callRecords, { id: cited.id, shared_with: merged });
+        }
+      }
+    }
     const replies = this.finish(request, call.id, { text, author: context.actor, outcome: args.repair_outcome ?? 'reported' }, references);
     return platform.calls.finish(call.id, 'completed', { status: 'replied', request: reference, replies });
   }

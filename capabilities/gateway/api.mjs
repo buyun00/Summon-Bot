@@ -1,6 +1,7 @@
 import { avatarOf } from '../shared/validation.mjs';
 import { botRecords } from '../bot-management/service.mjs';
 import { assertRevision, page, protocolVersion, reject, user } from '../platform/contract.mjs';
+import { roleCatalog } from '../../roles/index.mjs';
 
 const routeRef = (kind, id) => ({ kind, id: decodeURIComponent(id) });
 const preservedModelSettings = '/api/model-settings';
@@ -62,9 +63,14 @@ export function createApi({ platform, room, attachments, models, connections, pu
       return platform.executeTool(match[1], args.arguments ?? {}, { ...userContext, clientId });
     }
     if (method === 'GET' && path === '/api/state') {
-      const state = { bots: platform.listBots().filter(bot => platform.visibleBot(bot, userContext)).map(bot => platform.manager.view(bot, user)),
+      const visible = platform.listBots().filter(bot => platform.visibleBot(bot, userContext));
+      const state = {
+        bots: visible.filter(bot => !bot.archivedAt).map(bot => platform.manager.view(bot, user)),
+        archivedBots: visible.filter(bot => Boolean(bot.archivedAt)).map(bot => platform.manager.view(bot, user)),
+        roles: roleCatalog,
         rooms: room.rooms(user.id),
-        modelSettings: models.summary(), historyEpoch, protocolVersion };
+        modelSettings: models.summary(), historyEpoch, protocolVersion,
+      };
       return snapshot('state', state, params);
     }
     if (method === 'GET' && path === '/api/usage') return getUsage(params, userContext);
@@ -89,6 +95,14 @@ export function createApi({ platform, room, attachments, models, connections, pu
       if (method === 'GET') return list('room', params);
       if (method === 'POST') return mutation('create_room', args, clientId);
     }
+    if ((match = path.match(/^\/api\/bots\/([^/]+)\/(archive|restore)$/))) {
+      const id = decodeURIComponent(match[1]);
+      if (method === 'POST') {
+        return match[2] === 'archive'
+          ? platform.archiveBot(id, args.revision, user)
+          : platform.restoreBot(id, args.revision, user);
+      }
+    }
     if ((match = path.match(/^\/api\/bots\/([^/]+)$/))) {
       const bot = routeRef('bot', match[1]);
       if (method === 'GET') return read(bot, params);
@@ -97,6 +111,9 @@ export function createApi({ platform, room, attachments, models, connections, pu
         if (!avatar) return mutation('configure_bot', { ...changes, bot }, clientId);
         if (Object.keys(changes).some(key => key !== 'revision')) reject('invalid_arguments', 'Avatar and Bot execution settings use separate edits');
         return saveAvatar(bot.id, avatar, changes.revision);
+      }
+      if (method === 'DELETE') {
+        return platform.deleteBot(bot.id, args.revision, user);
       }
     }
     if ((match = path.match(/^\/api\/bots\/([^/]+)\/access$/))) {
@@ -117,6 +134,9 @@ export function createApi({ platform, room, attachments, models, connections, pu
         return access;
       }
     }
+    if ((match = path.match(/^\/api\/rooms\/([^/]+)\/stop$/)) && method === 'POST') {
+      return platform.stopRoom(decodeURIComponent(match[1]), user);
+    }
     if ((match = path.match(/^\/api\/rooms\/([^/]+)(?:\/(messages)(\/receipt)?)?$/))) {
       const ref = routeRef('room', match[1]);
       if (method === 'GET' && match[3]) return room.receipt(ref.id, params.get('clientId'), user.id);
@@ -124,7 +144,8 @@ export function createApi({ platform, room, attachments, models, connections, pu
         const result = await read(ref, params);
         const deliveries = Object.fromEntries(result.messages.map(item => [item.id, platform.hostMessageDeliveries(item.id)]));
         const summaries = room.messageSummaries(ref.id, result.messages.map(item => item.id));
-        const value = { ...result, deliveries, summaries, historyEpoch };
+        const suspendedRuns = platform.runtime.suspendedRunsForRoom(ref.id);
+        const value = { ...result, deliveries, summaries, suspendedRuns, historyEpoch };
         return match[2] ? snapshot('room:' + ref.id, value, params) : value;
       }
       if (method === 'POST' && match[2] && !match[3]) return mutation('send', { ...args, to: ref }, clientId);
@@ -153,10 +174,19 @@ export function createApi({ platform, room, attachments, models, connections, pu
       return { event: ref, deliveries: platform.eventDeliveries(ref.id) };
     }
     if (method === 'GET' && (match = path.match(/^\/api\/events\/([^/]+)$/))) return read(routeRef('event', match[1]), params);
+    if (method === 'GET' && path === '/api/executions/detached') {
+      return { items: connections.listDetached() };
+    }
+    if (method === 'POST' && (match = path.match(/^\/api\/executions\/detached\/([^/]+)\/kill$/))) {
+      const result = await connections.killDetached(decodeURIComponent(match[1]), { dismiss: args.dismiss === true });
+      emit('execution');
+      return result;
+    }
     if (method === 'POST') {
       if (path === '/api/executions') return mutation('open_session', args, clientId);
       if (path === '/api/executions/input') return mutation('send_input', args, clientId);
       if (path === '/api/executions/stop') return mutation('stop_session', args, clientId);
+      if (path === '/api/executions/retry') return platform.retryExecution(args, user);
     }
     if (method === 'GET' && (match = path.match(/^\/api\/executions\/(session|conversation)\/([^/]+)$/))) return read(routeRef(match[1], match[2]), params);
     if (path === '/api/files') {

@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { nativeCommand, nativeEnvironment, nativeSpawnFailureCode, redactNative, redactNativeCredentials } from './native-host.mjs';
 import { guardStillMatches, heartbeatExpiryMs } from './session-processes.mjs';
 import { pipeNativeText } from './windows-native-text.mjs';
-import { terminateTree } from '../../bot/src/runtime/process-tools.mjs';
+import { attachWindowsJob, terminateTree } from '../../bot/src/runtime/process-tools.mjs';
 import { samePath } from '../../bot/src/capabilities/file-policy.mjs';
 
 const directory = process.argv[2];
@@ -23,7 +23,7 @@ const append = (name, text) => appendFileSync(join(directory, name), text, { mod
 // If the launching service lost its receipt it must never start this action a second time.
 writeFileSync(own, String(process.pid), { flag: 'wx', mode: 0o600 });
 
-let child, timer, stopTimer, stopTree, drainTimer, pollTask, heartbeatFailure, stopping = false, finished = false, secrets = [];
+let child, childJob, timer, stopTimer, stopTree, drainTimer, pollTask, heartbeatFailure, stopping = false, finished = false, secrets = [];
 const nativeInputs = new Map(), answers = new Set();
 const heartbeatDelays = new Set();
 const managedAdapter = manifest.managedAdapter === true;
@@ -233,6 +233,8 @@ function finish(patch) {
   clearInterval(timer);
   clearTimeout(stopTimer);
   clearTimeout(drainTimer);
+  if (stopping) childJob?.kill();
+  else childJob?.release();
   const settle = () => {
     guardDb?.close();
     for (const scratch of [promptFile, adapterFile].filter(Boolean)) {
@@ -255,6 +257,7 @@ function drainExitedBridge() {
   // Once the bridge reports a terminal outcome, give it a brief window to exit
   // cleanly, then terminate its owned process tree and close inherited pipes.
   drainTimer = setTimeout(() => {
+    childJob?.kill();
     const cleanup = child && !finished ? terminateTree(child).catch(() => {}) : Promise.resolve();
     void cleanup.finally(() => {
       child?.stdout?.destroy();
@@ -279,13 +282,18 @@ async function applyCommand(command, path) {
     record({ status: 'stopping' });
     receipt({ status: 'requested' });
     if (managedAdapter) {
+      childJob?.kill();
       if (child.exitCode === null && child.signalCode === null) stopTree = terminateTree(child);
     } else if (eventProtocol) {
       void writeInput(JSON.stringify({ summonInput: { type: 'stop', id: command.id } }) + '\n').catch(() => {});
       stopTimer = setTimeout(() => {
+        if (!finished) childJob?.kill();
         if (!finished && child.exitCode === null && child.signalCode === null) void terminateTree(child);
       }, codex ? 10_000 : 3_000);
-    } else if (child.exitCode === null && child.signalCode === null) void terminateTree(child);
+    } else {
+      childJob?.kill();
+      if (child.exitCode === null && child.signalCode === null) void terminateTree(child);
+    }
     return;
   }
   if (stopping || finished || !state.stdinOpen || !child.stdin.writable || !allowed(command.guard)) {
@@ -356,6 +364,7 @@ function start() {
   pipe(child.stdout, 'stdout.log');
   pipe(child.stderr, 'stderr.log');
   child.once('spawn', () => {
+    childJob = attachWindowsJob(child.pid);
     record({ pid: child.pid, status: 'running', startedAt: now(), stdinOpen: manifest.keepInput === true });
     event('started', { pid: child.pid, nativeSessionId: state.nativeSessionId });
     if (manifest.input && allowed(manifest.guard)) {

@@ -252,6 +252,8 @@ export class Deliveries {
     for (const wait of waits) entry(wait.bot_id).waits.push(wait);
     for (const wakeup of matchWakeups ? this.store.list(wakeupRecords) : []) {
       if (wakeup.bot_id === excludedBotId) continue;
+      const targetBot = this.store.get('platform-bots', wakeup.bot_id);
+      if (!targetBot || !targetBot.enabled || targetBot.archivedAt) continue;
       if (wakeup.observation && event.type === 'message') {
         const match = this.observationMatch(wakeup, event);
         if (match) entry(wakeup.bot_id).matches.push(match);
@@ -283,15 +285,47 @@ export class Deliveries {
       for (const wakeup of this.store.list(wakeupRecords)) {
         if (!wakeup.enabled || wakeup.rule.kind !== 'time' || wakeup.next_due == null || wakeup.next_due > now) continue;
         const { bot_id, rule } = wakeup;
+        const next_due = rule.interval_ms ? wakeup.next_due + (Math.floor((now - wakeup.next_due) / rule.interval_ms) + 1) * rule.interval_ms : null;
+        const targetBot = this.store.get('platform-bots', bot_id);
+        if (!targetBot || !targetBot.enabled || targetBot.archivedAt) {
+          this.store.save(wakeupRecords, { id: wakeup.id, next_due });
+          continue;
+        }
         if (rule.scope && !this.canReadReference(rule.scope, { actor: { kind: 'bot', id: bot_id } })) continue;
         const event = this.store.save('platform-events', { id: keyOf('time', wakeup.id, wakeup.next_due), kind: 'event', type: 'wakeup.time',
           author: platformAuthor, bot_id, space: rule.scope?.kind === 'room' || rule.scope?.kind === 'bot' ? rule.scope : { kind: 'bot', id: bot_id },
           ref: rule.scope || null, time: new Date(wakeup.next_due).toISOString() });
         this.enqueue(bot_id, event, [{ id: wakeup.id, revision: wakeup.revision, kind: 'time' }], []);
-        const next_due = rule.interval_ms ? wakeup.next_due + (Math.floor((now - wakeup.next_due) / rule.interval_ms) + 1) * rule.interval_ms : null;
         this.store.save(wakeupRecords, { id: wakeup.id, next_due, last_event_id: event.id });
       }
     });
+  }
+
+  purgePausedDeliveries(botId = null) {
+    const now = new Date().toISOString();
+    let purged = 0;
+    this.store.transaction(() => {
+      for (const item of this.store.list(deliveryRecords)) {
+        if (botId && item.bot_id !== botId) continue;
+        if (!['pending', 'received', 'unknown'].includes(item.status)) continue;
+        if (item.wait_refs?.length) continue;
+        const bot = this.store.get('platform-bots', item.bot_id);
+        if (bot && bot.enabled && !bot.archivedAt) continue;
+        this.store.save(deliveryRecords, { id: item.id, status: 'skipped_while_paused', processed_at: now, retry_at: null });
+        purged++;
+      }
+    });
+    if (purged) this.emit('delivery');
+    return purged;
+  }
+
+  removeAllForBot(botId) {
+    this.store.transaction(() => {
+      for (const wakeup of this.store.list(wakeupRecords)) {
+        if (wakeup.bot_id === botId) this.store.remove(wakeupRecords, wakeup.id);
+      }
+    });
+    this.purgePausedDeliveries(botId);
   }
 
   messageDeliveries(id) {

@@ -139,9 +139,13 @@ export class Files {
 
   canRead(id, context) {
     const file = this.get(id);
-    if (context.session && !context.resource_refs?.some(ref => sameRef(ref, { kind: 'file', id })) &&
-        !sameRef(file?.created_in, { kind: 'session', id: context.session.id })) return false;
-    if (file) return this.canReadSpace(context.actor, file.space);
+    if (file) {
+      if (context.actor?.kind === 'user' && file.space?.kind === 'room' && !this.store.get('rooms', file.space.id) &&
+          this.store.get('deleted-rooms', file.space.id)) return true;
+      if (this.canReadSpace(context.actor, file.space)) return true;
+      if (file.shared_rooms?.some(roomId => this.canReadSpace(context.actor, { kind: 'room', id: roomId }))) return true;
+      return false;
+    }
     try {
       this.room.attachment(id, context.actor.id);
       return true;
@@ -153,7 +157,9 @@ export class Files {
 
   view(file) {
     const { id, space, path, revision, size, author, sources, createdAt, updatedAt } = file;
+    const deletedRoom = space?.kind === 'room' && !this.store.get('rooms', space.id) && Boolean(this.store.get('deleted-rooms', space.id));
     return { kind: 'file', id, ref: { kind: 'file', id }, name: posix.basename(path), path, space, revision, size, author, sources,
+      ...(deletedRoom ? { deleted_room: true } : {}),
       created_at: createdAt, updated_at: updatedAt, url: `/api/files/${encodeURIComponent(id)}/download` };
   }
 

@@ -21,8 +21,8 @@ export function errorResult(error) {
 }
 
 export class Calls {
-  constructor({ store, deliver, canReadTarget, spaceFor, sessionMeta }) {
-    Object.assign(this, { store, deliver, canReadTarget, spaceFor, sessionMeta });
+  constructor({ store, deliver, canReadTarget, spaceFor, sessionMeta, inSharedRoom }) {
+    Object.assign(this, { store, deliver, canReadTarget, spaceFor, sessionMeta, inSharedRoom });
     this.linkedWaits = store.db.prepare(`SELECT data FROM records WHERE kind='platform-waits'
       AND json_extract(data,'$.run_id')=? AND json_extract(data,'$.input_call_id') IS NOT NULL`);
     store.db.exec(`CREATE INDEX IF NOT EXISTS platform_forward_source ON records(json_extract(data,'$.source_event_ids[0]'))
@@ -138,6 +138,8 @@ export class Calls {
       input_targets: receipt.input_targets, native: receipt.native, safe_to_disconnect: receipt.safe_to_disconnect,
       ...(receipt.input_status ? { input_status: receipt.input_status } : {}),
       ...(receipt.session_status ? { session_status: receipt.session_status } : {}),
+      ...(receipt.remote_outcome ? { remote_outcome: receipt.remote_outcome } : {}),
+      ...(receipt.partial_snapshot ? { partial_snapshot: receipt.partial_snapshot } : {}),
       ...(receipt.code ? { code: receipt.code } : {}),
       ...(receipt.error ? { error: receipt.error } : {}) };
     const meta = this.sessionMeta?.(target) || null;
@@ -204,12 +206,12 @@ export class Calls {
   }
 
   canRead(actor, call, context) {
+    if (actor.kind === 'user' || sameIdentity(actor, call.submitted_by)) return true;
+    if (call.shared_with?.includes(actor.id)) return true;
+    if (call.shared_rooms?.length && this.inSharedRoom?.(actor, call.shared_rooms)) return true;
     const waits = call.return_refs.map(id => this.store.get(waitRecords, id)).filter(wait =>
       wait?.bot_id === actor.id && (!wait.input_call_id || isWaitOrigin(wait, context.origin)));
-    const hasOrigin = actor.kind === 'user' || sameIdentity(actor, call.submitted_by) || waits.length > 0;
-    return hasOrigin &&
-      (!context.session || sameRef(context.session, call.target) || call.origin?.session_id === context.session.id ||
-        waits.some(wait => wait.input_call_id && wait.session_id === context.session.id));
+    return waits.length > 0;
   }
 
   view(call, context) {
@@ -218,15 +220,19 @@ export class Calls {
       repair_request_ids } = call;
     const targetReadable = !target || this.canReadTarget(context.actor, target, context, call);
     const own = context.actor.kind === 'user' || sameIdentity(context.actor, submitted_by);
+    const shared = call.shared_with?.includes(context.actor.id) ||
+      Boolean(call.shared_rooms?.length && this.inSharedRoom?.(context.actor, call.shared_rooms));
     const wait_refs = call.return_refs.map(key => this.store.get(waitRecords, key)).filter(wait => wait &&
       (context.actor.kind === 'user' || wait.bot_id === context.actor.id) && (!context.session || wait.session_id === context.session.id));
+    const summaryResult = !call.result ? call.result : {
+      status: call.status, output: call.result.output, native: call.result.native, input_targets: call.result.input_targets,
+      event: call.result.event, error: call.result.error,
+    };
     return { kind: 'call', id, tool, submitted_by, initiating_principal, execution_actor,
       ...(own ? { origin, source_event_ids, client_id, controls, repair_request_ids } : {}),
       status, target: targetReadable ? target : undefined, wait_refs, result_ref: targetReadable ? result_ref : null,
-      result: targetReadable ? (own || !call.result ? call.result : {
-        status: call.status, output: call.result.output, native: call.result.native, input_targets: call.result.input_targets,
-        event: call.result.event, error: call.result.error,
-      }) : undefined, result_access: targetReadable ? 'available' : 'revoked' };
+      result: targetReadable ? (own ? call.result : summaryResult) : (shared ? summaryResult : undefined),
+      result_access: targetReadable || shared ? 'available' : 'revoked' };
   }
 
   unfinishedFor(conversationId, actor) {

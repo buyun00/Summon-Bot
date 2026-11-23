@@ -92,25 +92,25 @@ export class ConnectionInitializer {
 
   async grantAccess(args, context, setup, call, entry) {
     const host = this.platform.connections;
-    if (setup.repair || !this.setupOwns(entry, context, setup))
-      reject('connection_forbidden', 'Grant access within the current host-authorized CLI setup', 403);
+    if (!entry || (!setup.hostSetup && !this.platform.isOnboardingBot(context.actor) && !this.platform.repairableConnection(entry, context)))
+      reject('connection_forbidden', 'Grant access requires an authorized onboarding or maintenance connection', 403);
     const bot = this.platform.getBot(idOf(args.bot, 'bot'));
     const actor = { kind: 'bot', id: bot.id };
-    if (!this.platform.manager.canConfigure(context.actor, bot))
-      reject('configuration_forbidden', 'Choose a Bot you can configure', 403);
     if (!['use', 'repair'].includes(args.access)) reject('invalid_arguments', 'Specify use or repair access');
-    if (args.revision !== entry.revision) reject('revision_conflict', 'Connection settings changed', 409, { revision: entry.revision });
-    const repair_bot_ids = [...new Set([...(entry.repair_bot_ids || []), ...(args.access === 'repair' ? [bot.id] : [])])];
+    if (args.revision !== undefined && args.revision !== entry.revision)
+      reject('revision_conflict', 'Connection settings changed', 409, { revision: entry.revision });
     if (!host.authorized(entry, actor))
       reject('dependency_unavailable', 'The connection or a required CLI dependency is unavailable', 409);
-    const complete = result => {
-      this.platform.calls.bind(call.id, { target: { kind: 'connection', id: entry.id } });
-      return this.platform.calls.finish(call.id, 'completed', { ...result, bot: actor, access: args.access });
-    };
-    if (repair_bot_ids.length === (entry.repair_bot_ids?.length ?? 0))
-      return complete({ ...host.clean(host.summary(entry), []), ...this.platform.connectionMaintenance(entry) });
-    return this.platform.configureExecutionConnection({ id: entry.id, revision: args.revision, repair_bot_ids },
-      { actor: user, initializer_id: context.actor.id }, complete);
+    const saved = args.access === 'repair' && entry.maintainer_bot_id !== bot.id
+      ? this.platform.bindMaintainer(entry, bot.id)
+      : (this.platform.grantMaintainerWorkspace(entry, bot.id), entry);
+    this.platform.calls.bind(call.id, { target: { kind: 'connection', id: saved.id } });
+    this.platform.emit('connection');
+    return this.platform.calls.finish(call.id, 'completed', {
+      ...host.clean(host.summary(saved), []),
+      ...this.platform.connectionMaintenance(saved, context),
+      bot: actor, access: args.access,
+    });
   }
 
   async run(args, context, setup, call) {

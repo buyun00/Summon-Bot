@@ -126,6 +126,10 @@ export class ChatroomService {
   projectMessage(row) {
     const message = rowMessage(row);
     if (!message) return null;
+    if (!message.senderName && message.senderId && message.senderId !== 'user' && message.senderId !== 'system') {
+      const live = this.store.get('platform-bots', message.senderId);
+      message.senderName = live?.name || this.manager.deletedName(message.senderId) || null;
+    }
     message.attachments = message.attachments.map(file => {
       if (!file.url) return file;
       const stored = this.attachments.find(file.id);
@@ -301,6 +305,7 @@ export class ChatroomService {
     actor = identity(actor).id;
     const add = new Set(list(input.add_members, '添加成员').map(member => identity(member).id));
     const remove = new Set(list(input.remove_members, '移除成员').map(member => identity(member).id));
+    if (remove.has('user')) fail('不能移除宿主用户', 403);
     if ([...add].some(member => remove.has(member))) fail('同一成员不能同时添加和移除');
     const pinAdd = references(input.pin_add, '添加置顶');
     const pinRemove = new Set(references(input.pin_remove, '移除置顶').map(refKey));
@@ -310,6 +315,13 @@ export class ChatroomService {
       assertRevision(room.revision, input.revision);
       const added = [...add].filter(member => !room.members.includes(member));
       const removed = room.members.filter(member => remove.has(member));
+      const kickedOthers = removed.filter(member => member !== actor);
+      if (kickedOthers.length && actor !== 'user') {
+        const callerBot = this.manager.get(actor);
+        if (!['eggbot', 'tool-onboarding'].includes(callerBot?.built_in_role?.id)) {
+          fail('只有宿主或管理角色可以移出其他群成员', 403);
+        }
+      }
       this.validateMembers(added, actor);
       const members = [...room.members.filter(member => !remove.has(member)), ...added];
       const mode = room.mode === 'direct' && members.length > 2 ? 'group' : room.mode;
@@ -424,8 +436,9 @@ export class ChatroomService {
         return { id: ref.id, ref, name: sharedFile.name ?? sharedFile.path, size: sharedFile.size };
       });
       if (!content.trim() && !attachments.length && !refs.length) fail('请填写正文，或添加附件或引用');
+      const senderName = actor === 'user' ? '宿主' : this.store.get('platform-bots', actor)?.name || null;
       const message = this.store.save('messages', {
-        id: eventId, kind: 'message', roomId: id, senderId: actor, author: identity(actor), content, attachments, references: refs, mentions,
+        id: eventId, kind: 'message', roomId: id, senderId: actor, ...(senderName ? { senderName } : {}), author: identity(actor), content, attachments, references: refs, mentions,
         replyTo: parent?.id ?? null, ...(parent ? { replyAuthorId: parent.senderId } : {}),
         ...(clientId === undefined ? {} : { clientId }), ...(callId ? { callId } : {}),
       });

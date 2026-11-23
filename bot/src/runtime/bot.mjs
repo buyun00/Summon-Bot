@@ -761,17 +761,18 @@ export class BotRuntime {
         const retryAt = retry ? Date.now() + (transportRetry?.attempts === 2 ? 30000 : 10000) : null;
         const roomRevoked = code === 'execution_not_found' && conversation.kind === 'room' &&
           !this.platform.canReadSpace(botRef(bot.id), conversation.space);
-        const controlStopped = controller.signal.aborted && ['execution_paused', 'bot_paused'].includes(controller.signal.reason?.code);
-        const stopped = controller.signal.aborted || code === 'execution_paused' || code === 'bot_paused';
+        const explicitInterrupt = controller.signal.aborted && controller.signal.reason?.code === 'execution_interrupted';
+        const controlStopped = controller.signal.aborted && ['execution_paused', 'bot_paused', 'execution_interrupted'].includes(controller.signal.reason?.code);
+        const stopped = controller.signal.aborted || code === 'execution_paused' || code === 'bot_paused' || code === 'execution_interrupted';
         const diagnostic = this.clean.error(cleanError(error));
-        inbox.putRun({ id: run.id, state: retry ? 'retry' : roomRevoked ? 'access_revoked' : stopped ? 'interrupted' : 'suspended',
+        inbox.putRun({ id: run.id, state: retry ? 'retry' : roomRevoked ? 'access_revoked' : explicitInterrupt ? 'stopped' : stopped ? 'interrupted' : 'suspended',
           retry_at: retryAt ? new Date(retryAt).toISOString() : null,
           error: diagnostic, ...(transportRetry && { transport_retry: transportRetry }) });
         if (roomRevoked) this.discard(inbox, inbox.pending().filter(route => route.run_id === run.id), 'access_revoked');
         if (!retry && !stopped && conversation.kind === 'room' && conversation.space.kind === 'room')
           this.platform.deliveries.releaseSuspendedObservation(bot.id, conversation.space.id, inbox.run(run.id).pending_event_ids);
         if (!retry) this.materials.defer(job);
-        if ((!retry && !stopped) || (controlStopped && (this.targetPaused(conversationRef(conversation.id)) ||
+        if ((!retry && !stopped) || explicitInterrupt || (controlStopped && (this.targetPaused(conversationRef(conversation.id)) ||
             conversation.session_id && this.targetPaused(sessionRef(conversation.session_id))))) {
           this.stageInputs(inbox, conversation, run.id, controlStopped ? 'stopped' : roomRevoked ? 'failed' : 'unknown');
           this.flushInputs(inbox);
@@ -1359,7 +1360,7 @@ export class BotRuntime {
 
   async stopConversation(id) {
     const job = this.active.get(id);
-    if (job) job.controller.abort(runtimeFailure('execution_paused', 'Execution was explicitly stopped'));
+    if (job) job.controller.abort(runtimeFailure('execution_interrupted', 'Execution was explicitly interrupted'));
     const item = this.locate(id);
     if (item) {
       const { inbox, conversation } = item;
@@ -1373,7 +1374,10 @@ export class BotRuntime {
             const input = inbox.store.getRecord(R.input, event.call_id);
             if (input && !terminalCallStates.has(input.status)) this.stageInput(inbox, conversation, input, 'stopped');
           }
-          if (pending.length && !inbox.pending().some(route => route.run_id === run.id) && !run.injected_event_ids.length) {
+          if (!job && (run.state === 'waiting' || run.state === 'pending' || run.state === 'retry')) {
+            inbox.putRun({ id: run.id, state: 'stopped', error: { code: 'execution_interrupted', message: 'Execution was explicitly interrupted' } });
+            this.stageInputs(inbox, conversation, run.id, 'stopped');
+          } else if (pending.length && !inbox.pending().some(route => route.run_id === run.id) && !run.injected_event_ids.length) {
             inbox.putRun({ id: run.id, state: 'cancelled' });
             this.stageInputs(inbox, conversation, run.id, 'stopped');
           }
@@ -1381,13 +1385,90 @@ export class BotRuntime {
       });
       if (!job) this.flushInputs(inbox);
     }
-    return { status: job ? 'stopping' : 'stopped' };
+    if (job) await Promise.race([job.done, new Promise(done => setTimeout(done, 1500))]).catch(() => {});
+    return { status: 'stopped', remote_outcome: 'confirmed_stopped' };
   }
 
   stopBot(id) {
     const jobs = [...this.active.values()].filter(job => job.inbox.botId === id);
     for (const job of jobs) job.controller.abort(runtimeFailure('bot_paused', 'Bot was explicitly stopped'));
     return Promise.all([...jobs.map(job => job.done), this.fastRead?.stopBot(id)]).then(() => ({ status: 'stopped' }));
+  }
+
+  async alignBotOnEnable(botId) {
+    const inbox = await this.inbox(botId, { create: false }).catch(() => null);
+    if (!inbox) return;
+    const now = new Date().toISOString();
+    const cancelledEventIds = [];
+    inbox.store.transaction(() => {
+      for (const item of inbox.pending()) {
+        if (item.wait_id || item.event?.type === 'call.receipt') continue;
+        const { event, ...route } = item;
+        inbox.store.putRecord(R.route, { ...route, state: 'cancelled' });
+        cancelledEventIds.push(route.event_id);
+      }
+      for (const room of this.platform.room.rooms(botId)) {
+        const latest = this.platform.room.lastSavedMessage.get(room.id);
+        if (!latest) continue;
+        const prior = inbox.store.getRecord(R.fastRead, room.id);
+        if ((prior?.read_through_sequence ?? 0) >= latest.sequence) continue;
+        inbox.store.putRecord(R.fastRead, {
+          ...prior,
+          id: room.id,
+          bot_id: botId,
+          room_id: room.id,
+          read_through_id: latest.id,
+          read_through_sequence: latest.sequence,
+          updated_at: now,
+        });
+      }
+    });
+    if (cancelledEventIds.length) this.consumeDeliveries(inbox, cancelledEventIds);
+  }
+
+  retrySuspended(conversationId, runId) {
+    const item = this.locate(conversationId);
+    if (!item) return null;
+    const { inbox, conversation } = item;
+    const runs = inbox.runs(conversation.id);
+    const target = runId ? runs.find(run => run.id === runId) : runs.findLast(run => run.state === 'suspended');
+    if (!target || target.state !== 'suspended') return null;
+    inbox.putRun({
+      id: target.id,
+      state: 'pending',
+      error: null,
+      retry_at: null,
+      transport_retry: null,
+    });
+    this.wake();
+    return { conversation_id: conversation.id, run_id: target.id, bot_id: inbox.botId, state: 'pending' };
+  }
+
+  suspendedRunsForRoom(roomId) {
+    const room = this.platform.store.get('rooms', roomId);
+    if (!room) return [];
+    const results = [];
+    for (const member of room.members) {
+      if (member === 'user') continue;
+      const inbox = this.inboxes.get(member);
+      if (!inbox) continue;
+      const conversations = inbox.store.listRecords(R.conversation).filter(c => c.kind === 'room' && c.space?.id === roomId && !c.session_id);
+      for (const conversation of conversations) {
+        for (const run of inbox.runs(conversation.id)) {
+          if (run.state !== 'suspended') continue;
+          const eventIds = [...new Set([...(run.injected_event_ids || []), ...(run.pending_event_ids || [])])];
+          results.push({
+            run_id: run.id,
+            conversation_id: conversation.id,
+            bot_id: member,
+            event_ids: eventIds,
+            error: run.error || { code: 'runtime_error', message: '运行已挂起' },
+            updated_at: run.updated_at || null,
+          });
+        }
+      }
+    }
+    return results;
   }
 
   setDraining(value) { this.draining = value; if (!value) this.wake(); }

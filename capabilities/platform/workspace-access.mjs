@@ -1,10 +1,6 @@
-// The host supplies the originating Room. A receipt destination never grants file access.
-export function workspaceGranted(get, actor, id, projectRoom, fixedWorkspace) {
-  if (projectRoom) {
-    const room = get('rooms', projectRoom.id);
-    if (!room?.members.includes(actor.id)) return false;
-    if (fixedWorkspace && room.workspace?.id !== fixedWorkspace) return false;
-    if (room.workspace) return room.workspace.id === id;
-  }
-  return actor.kind === 'user' || Boolean(get('platform-access', actor.id)?.workspace_ids?.includes(id));
+// Host-registered execution directories form a shared workspace pool for all Bots.
+// Physical OS directory protection and read-only/writable flags remain enforced at the file & launch boundary.
+export function workspaceGranted(get, actor, id) {
+  if (actor?.kind === 'user') return true;
+  return Boolean(id && get('platform-workspaces', id));
 }

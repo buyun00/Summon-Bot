@@ -93,7 +93,7 @@ export function toolObservation(callId, value, isError = false) {
       control_version: value.control_version, input_revision: value.input_revision, can_submit: value.can_submit, can_stop: value.can_stop,
       input_targets: value.input_targets?.map(({ kinds, input_target, question, choices, request_kind, answer_format, plain_text }) => ({
         kinds, input_target, question, request_kind, answer_format, plain_text, choices: choices?.map(({ id, label }) => ({ id, label })),
-      })), resume_ref: value.resume_ref,
+      })),
     } : undefined;
   let executionLength = execution ? JSON.stringify(execution).length : 0;
   if (executionLength > limit) {

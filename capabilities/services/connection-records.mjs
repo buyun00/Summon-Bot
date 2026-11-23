@@ -41,9 +41,6 @@ export function validateNativePaths({ file, canonical_file, workspace_root }) {
 
 export function validateConnection(entry) {
   if (!kinds.includes(entry.kind) || !plain(entry.config)) reject('invalid_connection', 'Invalid connection kind or configuration');
-  if (entry.repair_bot_ids !== undefined && (!Array.isArray(entry.repair_bot_ids) ||
-      entry.repair_bot_ids.some(id => typeof id !== 'string' || !id || id === '*')))
-    reject('invalid_connection', 'Repair grants require named Bots');
   if (typeof entry.enabled !== 'boolean') reject('invalid_connection', 'Connection enabled must be a boolean');
   if (entry.dependencies && (!Array.isArray(entry.dependencies) || entry.dependencies.some(id => typeof id !== 'string' || !id))) {
     reject('invalid_connection', 'Invalid connection dependencies');

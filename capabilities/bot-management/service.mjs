@@ -5,30 +5,15 @@ import { defaultPaperAvatar, normalizePaperAvatar } from '../shared/avatar-style
 import { assertRevision, idOf, reject, sameIdentity, sameRef, user } from '../platform/contract.mjs';
 
 export const botRecords = 'platform-bots';
+export const deletedBotRecords = 'deleted-bots';
 
 export function activeControl() {
   return { state: 'active', control_version: 1, stop_id: null, requested_by: null, stop_status: null };
 }
 
-export function resumeReference(target, control) {
-  if (control.state !== 'paused') return null;
-  return { target, stop_id: control.stop_id, control_version: control.control_version };
-}
-
 export function canResume(actor, control, owner) {
-  return sameIdentity(actor, control.requested_by) || (control.requested_by?.kind !== 'user' &&
-    (actor.kind === 'user' || sameIdentity(actor, owner)));
-}
-
-export function assertResume(actor, target, control, reference, owner) {
-  if (!canResume(actor, control, owner)) reject('restore_forbidden', 'This caller does not have permission to resume the stopped execution', 403);
-  if (control.state !== 'paused' || !sameRef(target, reference?.target) || reference.stop_id !== control.stop_id ||
-      reference.control_version !== control.control_version) {
-    reject('resume_conflict', 'The stop reference has changed', 409, { control_version: control.control_version });
-  }
-  if (control.stop_status !== 'stopped') {
-    reject('stop_unconfirmed', 'The affected execution has not confirmed that it stopped', 409, { stop_status: control.stop_status });
-  }
+  return actor.kind === 'user' || sameIdentity(actor, control?.requested_by) ||
+    (control?.requested_by?.kind !== 'user' && sameIdentity(actor, owner));
 }
 
 function cleanName(name) {
@@ -115,8 +100,13 @@ export class BotManager {
   }
 
   roleOf(id, context, bot) {
-    if ((id === toolOnboardingRole || id !== undefined && bot?.built_in_role?.id === toolOnboardingRole) && context.actor.kind !== 'user') {
-      reject('configuration_forbidden', 'The host selects the tool onboarding Bot', 403);
+    if (context.actor.kind !== 'user') {
+      if (id === toolOnboardingRole || (id !== undefined && bot?.built_in_role?.id === toolOnboardingRole)) {
+        reject('configuration_forbidden', 'The host selects the tool onboarding Bot', 403);
+      }
+      if (id === 'eggbot' && bot?.built_in_role?.id !== 'eggbot') {
+        reject('configuration_forbidden', 'Only the host can assign the EggBot role', 403);
+      }
     }
     if (id === toolOnboardingRole && bot?.built_in_role?.id !== toolOnboardingRole) {
       const current = this.onboardingBot();
@@ -134,12 +124,14 @@ export class BotManager {
 
   view(bot, actor, { details = true } = {}) {
     const base = { ...directoryEntry(bot), avatar: bot.avatar ? normalizePaperAvatar(bot.avatar) : defaultPaperAvatar(bot.id),
-      created_at: bot.createdAt, updated_at: bot.updatedAt };
+      archived_at: bot.archivedAt || null, created_at: bot.createdAt, updated_at: bot.updatedAt };
     if (!details || !this.canConfigure(actor, bot)) return base;
     const target = { kind: 'bot', id: bot.id };
-    return { ...base, instructions: bot.instructions, model: bot.model, effective_models: this.models.resolveAllForBot(bot),
-      revision: bot.revision, control: bot.control, material_index_ref: bot.material_index_ref || null, private_space: target,
-      resume_ref: canResume(actor, bot.control, bot.owner) ? resumeReference(target, bot.control) : null };
+    const binding_source = bot.model?.mode || (bot.model?.connection_id ? 'custom' : 'unconfigured');
+    const isDefault = Object.hasOwn(defaultBotRoles, bot.built_in_role?.id) && bot.id === `bot-default-${bot.built_in_role.id}-local`;
+    return { ...base, instructions: bot.instructions, model: bot.model, binding_source, effective_models: this.models.resolveAllForBot(bot),
+      owner: bot.owner || user, revision: bot.revision, control: bot.control, material_index_ref: bot.material_index_ref || null,
+      private_space: target, deletable: !isDefault && !bot.connection_initializer, archivable: !isDefault && !bot.connection_initializer };
   }
 
   modelConnectionIds(model) {
@@ -152,7 +144,7 @@ export class BotManager {
   saveNew(value) {
     const { id, model } = value;
     mkdirSync(this.directory(id), { recursive: true });
-    const record = this.store.save(botRecords, { ...value, revision: 1, enabled: true,
+    const record = this.store.save(botRecords, { ...value, revision: 1, enabled: true, archivedAt: null,
       control: activeControl(), material_index_ref: null });
     const modelIds = this.modelConnectionIds(model);
     if (modelIds.length) this.store.save('platform-access', { id, model_ids: modelIds, workspace_ids: [] });
@@ -174,7 +166,13 @@ export class BotManager {
       const neededIds = this.modelConnectionIds(model);
       if (neededIds.some(connId => !this.canUseModel(actor, connId))) {
         if (args.model !== undefined) reject('connection_forbidden', 'Model connection is not available to this caller', 403);
-        model = null;
+        const creator = actor.kind === 'bot' ? this.store.get(botRecords, actor.id) : null;
+        const inherited = creator?.model && this.modelConnectionIds(creator.model);
+        if (inherited?.length && inherited.every(connId => this.canUseModel(actor, connId))) {
+          model = creator.model;
+        } else {
+          reject('connection_forbidden', 'Default model connection is not available to this caller', 403);
+        }
       }
       const record = this.saveNew({ id, name, instructions, model, owner: actor, public_duty: publicDuty(args.public_duty ?? ''),
         ...(role ? { built_in_role: role } : {}) });
@@ -189,6 +187,15 @@ export class BotManager {
     const before = this.get(id);
     if (!this.canConfigure(actor, before)) {
       reject('configuration_forbidden', 'Bot configuration is not available to this caller', 403);
+    }
+    const selfEdit = actor.kind !== 'user' && actor.id === before.id;
+    if (selfEdit) {
+      if (args.role_id !== undefined && args.role_id !== (before.built_in_role?.id ?? null))
+        reject('configuration_forbidden', 'A Bot cannot change its own built-in role', 403);
+      if (args.instructions !== undefined && args.instructions !== before.instructions)
+        reject('configuration_forbidden', 'A Bot cannot overwrite its own instructions', 403);
+      if (args.enabled === false)
+        reject('configuration_forbidden', 'A Bot cannot pause itself', 403);
     }
     assertRevision(before.revision, args.revision);
     const changes = {};
@@ -224,7 +231,7 @@ export class BotManager {
       if (args.material_index_ref !== null) validateIndex(args.material_index_ref, id);
       changes.material_index_ref = args.material_index_ref;
     }
-    if (args.enabled !== undefined && (typeof args.enabled !== 'boolean' || args.enabled === before.enabled && args.resume_ref)) {
+    if (args.enabled !== undefined && typeof args.enabled !== 'boolean') {
       reject('invalid_control', 'Invalid Bot control operation');
     }
     if (args.enabled === false && before.enabled) {
@@ -233,20 +240,67 @@ export class BotManager {
         stop_id: callId, requested_by: actor, stop_status: 'pending' };
     }
     if (args.enabled === true && !before.enabled) {
-      assertResume(actor, { kind: 'bot', id }, before.control, args.resume_ref, before.owner || user);
+      if (before.archivedAt) reject('bot_archived', 'Restore the archived Bot before enabling it', 409);
+      if (!canResume(actor, before.control, before.owner || user))
+        reject('restore_forbidden', 'Only the host or pausing principal can re-enable this Bot', 403);
       changes.enabled = true;
-      changes.control = { ...before.control, state: 'active', control_version: before.control.control_version + 1 };
-    } else if (args.resume_ref) {
-      reject('invalid_control', 'Resume requires an explicit enable operation');
+      changes.control = { state: 'active', control_version: before.control.control_version + 1,
+        stop_id: null, requested_by: null, stop_status: null };
     }
     const bot = Object.keys(changes).length ? this.store.save(botRecords, { id, ...changes, revision: before.revision + 1 }) : before;
     if (connection) this.bindMaintenance(connection, bot);
     return bot;
   }
 
+  archive(id, revision, actor, callId) {
+    const before = this.get(id);
+    if (actor.kind !== 'user' && !sameIdentity(actor, before.owner))
+      reject('configuration_forbidden', 'Bot archive requires the host or owner', 403);
+    if (before.connection_initializer || (Object.hasOwn(defaultBotRoles, before.built_in_role?.id) && before.id === `bot-default-${before.built_in_role.id}-local`))
+      reject('bot_protected', 'Default system Bots cannot be archived', 403);
+    if (revision !== undefined) assertRevision(before.revision, revision);
+    if (before.archivedAt) return before;
+    return this.store.save(botRecords, {
+      id, archivedAt: new Date().toISOString(), enabled: false, revision: before.revision + 1,
+      control: { ...before.control, state: 'paused', control_version: before.control.control_version + 1,
+        stop_id: callId || null, requested_by: actor, stop_status: 'pending' },
+    });
+  }
+
+  restore(id, revision, actor) {
+    const before = this.get(id);
+    if (actor.kind !== 'user' && !sameIdentity(actor, before.owner))
+      reject('configuration_forbidden', 'Bot restore requires the host or owner', 403);
+    if (revision !== undefined) assertRevision(before.revision, revision);
+    if (!before.archivedAt) return before;
+    return this.store.save(botRecords, {
+      id, archivedAt: null, enabled: true, revision: before.revision + 1,
+      control: { state: 'active', control_version: before.control.control_version + 1,
+        stop_id: null, requested_by: null, stop_status: null },
+    });
+  }
+
+  remove(id, revision, actor) {
+    if (actor.kind !== 'user') reject('configuration_forbidden', 'Only the host can delete a Bot', 403);
+    const before = this.get(id);
+    if (before.connection_initializer || (Object.hasOwn(defaultBotRoles, before.built_in_role?.id) && before.id === `bot-default-${before.built_in_role.id}-local`))
+      reject('bot_protected', 'Default system Bots cannot be deleted', 403);
+    if (revision !== undefined) assertRevision(before.revision, revision);
+    this.store.transaction(() => {
+      this.store.save(deletedBotRecords, { id: before.id, name: before.name, deletedAt: new Date().toISOString() });
+      this.store.remove(botRecords, before.id);
+      this.store.remove('platform-access', before.id);
+    });
+    return { id: before.id, name: before.name, deleted: true };
+  }
+
+  deletedName(id) {
+    return this.store.get(deletedBotRecords, id)?.name || null;
+  }
+
   settleStop(id, stopId, status) {
-    const bot = this.get(id);
-    if (bot.control.stop_id !== stopId || bot.control.state !== 'paused') return bot;
+    const bot = this.store.get(botRecords, id);
+    if (!bot || bot.control.stop_id !== stopId || bot.control.state !== 'paused') return bot;
     return this.store.save(botRecords, { id, control: { ...bot.control, stop_status: status } });
   }
 }

@@ -29,8 +29,6 @@ const sendMessage = { anyOf: [
 ] };
 const usagePeriod = { anyOf: [oneOf('yesterday', 'today', '7d'), object({ from: text, to: text }, ['from', 'to'])] };
 const executionRef = object({ kind: oneOf('session', 'conversation'), id: text }, ['kind', 'id']);
-const resumeRef = object({ target: object({ kind: oneOf('bot', 'session', 'conversation'), id: text }, ['kind', 'id']), stop_id: text,
-  control_version: integer }, ['target', 'stop_id', 'control_version']);
 const inputTarget = { anyOf: [
   object({ kind: oneOf('codex_turn'), turn_id: text, request_id: text }, ['kind', 'turn_id']),
   object({ kind: oneOf('pi_run'), run_id: text, request_id: text }, ['kind', 'run_id']),
@@ -77,7 +75,7 @@ const model = { anyOf: [
 const sessionEngine = { ...text, description: 'The connection id returned by find with kind connection. Use pi to open a Pi Session.' };
 const sessionWorkspace = { ...text, description: 'The id from find with kind workspace, or an authorized absolute project directory path. Use the value itself as text.' };
 const openSessionInput = object({ engine: sessionEngine, input: value, workspace: sessionWorkspace, space: ref,
-  sharing: object({ readers: array(principal), submitters: array(principal), controllers: array(principal) }, ['readers', 'submitters', 'controllers']),
+  sharing: { anyOf: [flag, object({ readers: array(principal), submitters: array(principal), controllers: array(principal) }, ['readers', 'submitters', 'controllers'])] },
   resource_refs: array(ref), work_room: refOrId, work_source: refOrId, origin_message_id: eventOrId, work_summary: text,
   allowed_followup_rooms: array(roomOrId), private_work: flag, include_execution_guide: flag }, ['engine', 'input']);
 const publicOpenSessionInput = { ...openSessionInput, properties: { ...openSessionInput.properties, engine: refOrId, workspace: { anyOf: [ref, text] } } };
@@ -103,9 +101,9 @@ const definitions = [
       object({ no_change: oneOf(true) }, ['no_change'])] },
       revision: integer, sources: array(ref), material_items: array(text) }, ['space', 'path', 'content_or_source'])],
   ['create_bot', 'Create a Bot with private instructions, public_duty for team directory searches, an optional authorized model connection, and an optional built-in duty (role_id). ' +
-    'For dedicated maintenance, pass catalog-maintainer and the exact role_connection_id and connection_revision from read to bind it atomically. A duty does not grant use or repair access.',
+    'For dedicated maintenance, pass catalog-maintainer and the exact role_connection_id and connection_revision from read to bind it atomically with full maintenance and bound-workspace authority.',
     object({ name: text, public_duty: text, instructions: text, model, role_id: oneOf(...roleIds), role_connection_id: text, connection_revision: integer }, ['name', 'instructions'])],
-  ['configure_bot', 'Change a Bot configuration at its current revision. An explicit resume reference is required to re-enable a paused Bot. ' +
+  ['configure_bot', 'Change a Bot configuration at its current revision. Set enabled:false to pause a Bot or enabled:true to re-enable it. ' +
     'When asked to remember or correct something for future work, read your Bot for its revision, private_space and material_index_ref. ' +
     'If the index reference is empty, use save_file in private_space (for example memory/index.json) to save ordinary JSON such as ' +
     '{"items":[{"id":"stable-note-id","revision":1,"note":"The user’s actual instruction","applies_to":[{"kind":"room","id":"actual-room-id"}],"source_refs":[{"kind":"event","id":"actual-source-event-id"}]}]}. ' +
@@ -115,7 +113,7 @@ const definitions = [
     '"target_ref" to the actual reference of an existing, accessible knowledge File. The runtime processes selected items when their ' +
     'scope is idle. Use find with kind "material_consumption" to check the recorded outcome. ' +
     'Set role_id to select a built-in duty, or null to clear it. The host selects the tool-onboarding duty. User instructions are a separate setting.',
-    object({ bot: refOrId, revision: integer, name: text, public_duty: text, instructions: text, model, enabled: flag, resume_ref: resumeRef,
+    object({ bot: refOrId, revision: integer, name: text, public_duty: text, instructions: text, model, enabled: flag,
       role_id: oneOf(...roleIds, null), role_connection_id: text, connection_revision: integer,
       material_index_ref: { anyOf: [ref, { type: 'null' }] } }, ['bot', 'revision'])],
   ['create_room', 'Create a Room with the specified members, including you as creator. A group can bind one writable project workspace shared by current members.',
@@ -138,13 +136,13 @@ const definitions = [
     openSessionInput],
   ['configure_session', 'Manage a direct child Session. Set acceptance_state to open or closed, update work_summary or waiting_summary, or add/remove follow-up Rooms. Closing acceptance_state also clears allowed_followup_rooms and cascades closure to settled descendant Sessions.',
     configureSessionInput],
-  ['send_input', 'Submit input to the actual input target and control version, or resume one explicitly paused execution. ' +
-    'For steer or next, copy the exact input_target object from read(target).input_targets without adding request_id; for a native reply, copy the pending request’s input_target including its request_id and supply the answer in its displayed answer_format. ' +
+  ['send_input', 'Submit input to an execution. For next or steer, control_version and input_target are optional and resolve automatically to the current target when omitted. ' +
+    'For a native reply to a specific question/approval, supply input_target with request_id and the answer. ' +
     'A registered wait_ref returns the asynchronous receipt to your run.',
-    object({ target: executionRef, kind: oneOf('reply', 'steer', 'next', 'resume'), control_version: integer, input: value,
-      input_target: inputTarget, resume_ref: resumeRef }, ['target', 'kind', 'control_version'])],
-  ['stop_session', 'Pause an execution and request actual interruption for the selected scope.',
-    object({ target: executionRef, control_version: integer, scope: oneOf('target', 'target_and_owned_calls') }, ['target', 'control_version'])],
+    object({ target: executionRef, kind: oneOf('reply', 'steer', 'next'), control_version: integer, input: value,
+      input_target: inputTarget }, ['target', 'kind'])],
+  ['stop_session', 'Interrupt the current in-flight run, turn, or tool call for the selected scope. Detaches immediately so the Session stays ready for new input.',
+    object({ target: executionRef, control_version: integer, scope: oneOf('target', 'target_and_owned_calls') }, ['target'])],
   ['set_wakeup', 'Create an event subscription or time reminder with subscription:"new" and event_or_time. The platform returns its ID and revision. ' +
     'To change an existing subscription (including a Room base), find or read the wakeup and pass subscription:{id,revision} with its current values, then the new rule or enabled flag. ' +
     'Use kind:"time" for a single reminder. Choose kind:"recurring_time" and an interval only for an explicitly repeating reminder. ' +

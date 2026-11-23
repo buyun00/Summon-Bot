@@ -1,12 +1,11 @@
-import { execFile, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, unlink, writeFile } from 'node:fs/promises';
-import { extname, isAbsolute, join, relative } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 import { reject } from '../platform/contract.mjs';
 import { workspaceGranted } from '../platform/workspace-access.mjs';
-import { codexBridge } from '../connectors/codex.mjs';
+import { isProcessAlive, terminatePidTree } from '../../bot/src/runtime/process-tools.mjs';
 import { connectionAuthorized, connectionRecords } from './connection-records.mjs';
 import { allowsConnection } from './executable-scope.mjs';
 import { nativeSpawnFailureCode } from './native-host.mjs';
@@ -17,7 +16,6 @@ export const heartbeatExpiryMs = 15_000;
 export const settled = status => ['completed', 'failed', 'stopped', 'unknown', 'unsupported', 'not_submitted'].includes(status);
 export const connectionStartupFailures = Object.freeze(['connection_unavailable', 'executable_binding_changed', 'connection_binding_changed', 'native_spawn_failed']);
 const worker = fileURLToPath(new URL('./native-process.mjs', import.meta.url));
-const executeFile = promisify(execFile);
 
 export async function optionalJson(path) {
   try { return JSON.parse(await readFile(path, 'utf8')); }
@@ -60,82 +58,52 @@ export function operationDirectory(dataRoot, operation) {
   return join(dataRoot, 'capabilities', 'native-executions', operation.instance_id);
 }
 
-export async function observeExitedCodexLaunch(dataRoot, operation, { runtimePath = process.execPath, bridgePath = codexBridge } = {}) {
-  const { instance_id: nonce, runner_pid: runnerPid, child_pid: bridgePid } = operation;
-  const submitted = Date.parse(operation.submitted_at);
-  if (process.platform !== 'win32' || operation.protocol !== 'codex' || operation.status !== 'unknown' ||
-      operation.runtime_ended || operation.finished_at || operation.native_bound || operation.thread_id || operation.turn_id ||
-      operation.thread_active || operation.turn_attempted ||
-      !Number.isSafeInteger(submitted) || ![runnerPid, bridgePid].every(pid => Number.isSafeInteger(pid) && pid > 0) ||
-      runnerPid === bridgePid) return null;
-  try {
-    const directory = operationDirectory(dataRoot, operation);
-    const heartbeat = join(directory, 'state.json');
-    const staged = `${heartbeat}.${runnerPid}.tmp`;
-    const [launch, started, state, stagedState, final, stdout, events] = await Promise.all([
-      optionalJson(join(directory, 'launch.json')), readFile(join(directory, 'started'), 'utf8'), optionalJson(heartbeat),
-      optionalJson(staged), optionalJson(join(directory, 'finished.json')), processPage(join(directory, 'stdout.log'), 0, 512),
-      processPage(join(directory, 'events.jsonl'), 0, 512),
-    ]);
-    if (final || launch?.nonce !== nonce || launch.protocol !== 'codex' || launch.sessionId || launch.cwd !== operation.cwd ||
-        launch.guard?.session_id !== operation.session_id || launch.guard.connection_id !== operation.connection_id ||
-        launch.guard.binding_version !== (operation.connection_binding_version ?? 1) || relative(launch.file, runtimePath) !== '' ||
-        !Array.isArray(launch.args) || launch.args.length < 2 || launch.args.slice(3).some(arg => typeof arg !== 'string' || !arg.startsWith('--')) ||
-        launch.args.length >= 3 && !['flag', 'default', 'listen'].includes(launch.args[2]) ||
-        !launch.args.slice(0, 2).every(isAbsolute) || relative(launch.args[0], bridgePath) !== '' ||
-        extname(launch.args[1]).toLowerCase() !== '.exe' ||
-        started.trim() !== String(runnerPid)) return null;
-    const initial = JSON.parse(launch.input).summonStart;
-    if (!initial || initial.callId !== (operation.launch_call_id ?? operation.id) || initial.sessionId) return null;
-    const sameProcess = item => item?.nonce === nonce && item.runnerPid === runnerPid && item.pid === bridgePid;
-    const beforeFirstTurn = item => sameProcess(item) && item.status === 'running' && !item.finishedAt &&
-      !item.nativeSessionId && !item.nativeTurnId && !item.turnSubmitted && !item.threadActive && !item.nativeOutcome;
-    const lastHeartbeat = Date.parse(state?.observedAt);
-    const submissionMarker = Date.parse(stagedState?.observedAt);
-    if (!beforeFirstTurn(state) || !beforeFirstTurn(stagedState) || state.threadSubmitted || stagedState.threadSubmitted !== true ||
-        state.startedAt !== stagedState.startedAt || state.observedAt !== operation.observed_at ||
-        !(submitted <= Date.parse(state.startedAt) && Date.parse(state.startedAt) <= lastHeartbeat && lastHeartbeat <= submissionMarker) ||
-        Date.now() - submissionMarker <= 15_000 || stdout.more || events.more ||
-        JSON.parse(stdout.text).summonEvent?.type !== 'thread-submitting') return null;
-    const startedEvent = JSON.parse(events.text);
-    if (startedEvent.type !== 'started' || startedEvent.pid !== bridgePid || startedEvent.nativeSessionId ||
-        !(submitted <= Date.parse(startedEvent.at) && Date.parse(startedEvent.at) <= lastHeartbeat)) return null;
-
-    // The executable is direct, so the app-server is a child of this bridge.
-    // Query its recorded owners and direct descendants using creation times to
-    // distinguish processes that reused an ID after the recorded submission.
-    const shell = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-    const program = String.raw`
-$ErrorActionPreference = 'Stop'
-$filter = 'ProcessId=${runnerPid} OR ProcessId=${bridgePid} OR ParentProcessId=${runnerPid} OR ParentProcessId=${bridgePid}'
-$latestStart = [DateTimeOffset]::FromUnixTimeMilliseconds(${submissionMarker + 1000}).UtcDateTime
-$processes = Get-CimInstance -ClassName Win32_Process -Filter $filter -Property ProcessId,ParentProcessId,CreationDate
-$live = $processes | Where-Object {
-  -not $_.CreationDate -or $_.CreationDate.ToUniversalTime() -le $latestStart
-} | Select-Object -First 1
-if ($live) { exit 1 }
-[Console]::Write('exited')`;
-    const { stdout: observation } = await executeFile(shell, ['-NoProfile', '-NonInteractive', '-Command', program],
-      { timeout: 5_000, maxBuffer: 4096, windowsHide: true });
-    if (observation !== 'exited') return null;
-    const [current, currentStaged, finished, latestStdout, latestEvents] = await Promise.all([
-      optionalJson(heartbeat), optionalJson(staged), optionalJson(join(directory, 'finished.json')),
-      processPage(join(directory, 'stdout.log'), 0, 512), processPage(join(directory, 'events.jsonl'), 0, 512),
-    ]);
-    if (finished || !beforeFirstTurn(current) || current.observedAt !== state.observedAt ||
-        !beforeFirstTurn(currentStaged) || currentStaged.observedAt !== stagedState.observedAt ||
-        latestStdout.more || latestStdout.text !== stdout.text || latestEvents.more || latestEvents.text !== events.text) return null;
-    return { instance_id: nonce, runner_pid: runnerPid, child_pid: bridgePid, observed_at: new Date().toISOString() };
-  } catch { return null; }
-}
-
 export class SessionProcesses {
   constructor({ store, dataRoot, clean }) {
     Object.assign(this, { store, dataRoot, clean });
-    this.nextExitObservation = new Map();
   }
   directory(operation) { return operationDirectory(this.dataRoot, operation); }
   save(operation, patch) { return this.store.save(operationRecords, { id: operation.id, ...patch }); }
+
+  isAlive(operation) {
+    return isProcessAlive(operation?.runner_pid) || isProcessAlive(operation?.child_pid);
+  }
+
+  async forceKill(operation) {
+    const results = [];
+    if (operation?.child_pid) results.push(await terminatePidTree(operation.child_pid));
+    if (operation?.runner_pid) results.push(await terminatePidTree(operation.runner_pid));
+    return !this.isAlive(operation) || results.some(Boolean);
+  }
+
+  async partialSnapshot(operation) {
+    if (!operation?.instance_id) return null;
+    try {
+      const directory = this.directory(operation);
+      const touched = new Set();
+      let lastProgress = null;
+      const eventsPage = await processPage(join(directory, 'events.jsonl'), 0, 65_536, true);
+      for (const line of eventsPage.text.split('\n')) {
+        if (!line.trim()) continue;
+        try {
+          const ev = JSON.parse(line);
+          if (ev.type === 'progress' && ev.text) lastProgress = ev.text.slice(0, 600);
+          if (Array.isArray(ev.files)) for (const f of ev.files) if (typeof f === 'string') touched.add(f);
+        } catch {}
+      }
+      const stdoutPage = await processPage(join(directory, 'stdout.log'), 0, 65_536);
+      const stderrPage = await processPage(join(directory, 'stderr.log'), 0, 16_384);
+      const tailSource = (stdoutPage.text || stderrPage.text || '').trim();
+      const tailOutput = tailSource ? tailSource.slice(-1200) : null;
+      const files = [...touched].slice(0, 40);
+      if (!lastProgress && !files.length && !tailOutput) return null;
+      return {
+        ...(lastProgress ? { last_progress: this.clean(lastProgress) } : {}),
+        ...(files.length ? { touched_files: files } : {}),
+        ...(tailOutput ? { tail_output: this.clean(tailOutput) } : {}),
+      };
+    } catch { return null; }
+  }
 
   async launch(operation, launch, beforeSubmit) {
     const directory = this.directory(operation);
@@ -182,24 +150,17 @@ export class SessionProcesses {
       const stale = !settled(state.status) && Date.now() - Date.parse(state.observedAt) > heartbeatExpiryMs;
       const status = stale ? 'unknown' : state.status;
       if (status === 'unknown' && operation.recovered_at || stale && operation.runtime_exit_observed_at) return operation;
-      if (stale && operation.protocol === 'codex' && operation.status === 'unknown' && !operation.thread_id && !operation.turn_attempted &&
-          (this.nextExitObservation.get(operation.instance_id) || 0) <= Date.now()) {
-        this.nextExitObservation.set(operation.instance_id, Date.now() + 30_000);
-        const exited = await observeExitedCodexLaunch(this.dataRoot, operation);
-        if (exited) {
-          const current = this.store.get(operationRecords, operation.id);
-          if (current?.status === 'unknown' && current.observed_at === operation.observed_at && current.instance_id === exited.instance_id &&
-              current.runner_pid === exited.runner_pid && current.child_pid === exited.child_pid && !current.native_bound &&
-              !current.thread_id && !current.turn_id && !current.turn_attempted && !current.thread_active && !current.runtime_ended) {
-            this.nextExitObservation.delete(operation.instance_id);
-            return this.save(current, { status: 'unknown', runtime_ended: true, runtime_exit_observed_at: exited.observed_at,
-              thread_attempted: true, pending: [], stdin_open: false,
-              error: 'The local Codex launch exited without returning a thread or turn receipt' });
-          }
-          return current || operation;
+      if (stale) {
+        const alive = isProcessAlive(state.runnerPid ?? operation.runner_pid) || isProcessAlive(state.pid ?? operation.child_pid);
+        if (!alive) {
+          return this.save(operation, {
+            status: 'unknown', runtime_ended: true, runtime_exit_observed_at: new Date().toISOString(),
+            finished_at: operation.finished_at ?? new Date().toISOString(), pending: [], stdin_open: false,
+            code: 'crashed_or_exited_unknown',
+            error: 'The external process exited without returning a terminal receipt',
+          });
         }
       }
-      if (!stale) this.nextExitObservation.delete(operation.instance_id);
       if (operation.status === status && operation.observed_at === state.observedAt && operation.finished_at === (state.finishedAt ?? null) &&
           operation.stdin_open === (state.stdinOpen === true) && operation.turn_id === (state.nativeTurnId ?? operation.turn_id) &&
           (operation.protocol === 'codex' ? operation.thread_id === (state.nativeSessionId || operation.thread_id) :
@@ -218,8 +179,16 @@ export class SessionProcesses {
         error: stale ? 'The process heartbeat expired before a terminal result' : state.error,
         code: stale ? null : state.code });
     }
-    if (Date.now() - Date.parse(operation.submitted_at) > 15_000 && operation.status !== 'unknown')
-      return this.save(operation, { status: 'unknown', runtime_ended: false, error: 'The original process did not provide a launch receipt' });
+    if (Date.now() - Date.parse(operation.submitted_at) > 15_000 && operation.status !== 'unknown') {
+      const alive = this.isAlive(operation);
+      return this.save(operation, { status: 'unknown', runtime_ended: !alive,
+        ...(alive ? {} : { runtime_exit_observed_at: new Date().toISOString(), code: 'crashed_or_exited_unknown' }),
+        error: alive ? 'The original process did not provide a launch receipt' : 'The original process exited without providing a launch receipt' });
+    }
+    if (operation.status === 'unknown' && !operation.runtime_ended && !this.isAlive(operation)) {
+      return this.save(operation, { runtime_ended: true, runtime_exit_observed_at: new Date().toISOString(),
+        code: operation.code || 'crashed_or_exited_unknown' });
+    }
     return operation;
   }
 

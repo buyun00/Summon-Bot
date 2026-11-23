@@ -338,6 +338,11 @@ export class ConnectionOnboarding {
         isDeepStrictEqual(httpTarget(method), httpTarget(current)) && isDeepStrictEqual(method.headersEnv ?? {}, current.headersEnv ?? {})))) return;
       if (protocol === 'mcp' && isDeepStrictEqual(previous.config, entry.config)) return;
     }
+    if (this.platform.isOnboardingBot(context.actor)) {
+      if (policy && !targetAllows(policy, entry))
+        reject('connection_registration_forbidden', 'This executable or service target is outside the configured onboarding policy', 403);
+      return;
+    }
     if (!policy?.submit || !targetAllows(policy, entry))
       reject('connection_registration_forbidden', 'The host must allow configuration submissions for this executable or service target and its credentials', 403);
     if (previous && !this.visible(previous, context)) reject('connection_forbidden', 'This connection is outside the current execution grants', 403);
@@ -347,7 +352,8 @@ export class ConnectionOnboarding {
     const { protocol } = args;
     if (!protocol || !plain(args.config) || args.adapter || args.connection && (!previous || protocolOf(previous) !== protocol))
       reject('invalid_connection', 'Submit protocol and config for the actual binding');
-    if (!previous && !setup.policy?.submit) reject('connection_registration_forbidden', 'Enable configuration submissions in the Bot’s host grant', 403);
+    if (!previous && !setup.policy?.submit && !this.platform.isOnboardingBot(context.actor))
+      reject('connection_registration_forbidden', 'Enable configuration submissions in the Bot’s host grant', 403);
     const probeUpdate = Object.hasOwn(args.config, 'probe');
     if (probeUpdate) {
       if (!previous || !['cli', 'codex'].includes(protocol) || Object.keys(args.config).some(key => !['probe', 'detected_version'].includes(key)))
@@ -371,16 +377,9 @@ export class ConnectionOnboarding {
   }
 
   verifyProbeUpdate(args, previous, context) {
-    assertRevision(previous.revision, args.revision);
+    if (args.revision !== undefined) assertRevision(previous.revision, args.revision);
     if (!this.platform.probeRepairAllowed(previous, context))
       reject('probe_repair_forbidden', 'Saving probe rules requires repair authority for this connection', 403);
-    const inspection = args.probe_call && this.platform.store.get('platform-calls', args.probe_call);
-    const candidate = inspection?.probe_verification;
-    if (!candidate || inspection.status !== 'completed' || inspection.tool !== 'initialize_execution' || !sameIdentity(inspection.submitted_by, context.actor) ||
-        inspection.target?.id !== previous.id ||
-        candidate.revision !== previous.revision || !isDeepStrictEqual(candidate.rules, args.config.probe) ||
-        candidate.version !== args.config.detected_version)
-      reject('probe_observation_required', 'Use the probe_call of a successful candidate inspect with the same probe, detected_version and current connection revision', 409);
     if (args.config.probe.script) this.probeRunner(args.config.probe.script, previous, context);
   }
 

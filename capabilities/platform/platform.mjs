@@ -2,7 +2,7 @@ import { realpathSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, parse, relative, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { bindModel } from '../../bot/src/agent/model.mjs';
-import { catalogMaintainerRole, toolOnboardingRole } from '../../roles/index.mjs';
+import { catalogMaintainerRole, roleIds, toolOnboardingRole } from '../../roles/index.mjs';
 import { BotManager, activeControl, botRecords, directoryEntry } from '../bot-management/service.mjs';
 import { ConnectionInitializer } from '../connectors/initialization.mjs';
 import { executionEnvironment } from '../connectors/onboarding.mjs';
@@ -52,6 +52,7 @@ export class SummonPlatform {
       this.deliveries.queueEvent(event, waits, matchWakeups);
     },
       canReadTarget: (actor, ref, context, call) => this.canReadCallResult(call, ref, { ...context, actor }),
+      inSharedRoom: (actor, rooms) => rooms.some(id => this.roomMembers(id).includes(actor.id)),
       spaceFor: ref => ['session', 'conversation'].includes(ref?.kind) ? this.executions.record(ref)?.space : ref,
       sessionMeta: ref => {
         if (ref?.kind !== 'session') return null;
@@ -120,23 +121,6 @@ export class SummonPlatform {
     catch { return { code: 'model_catalog_unavailable', message: 'The model catalog is unavailable' }; }
     if (!catalog.connections.some(item => item.id === id)) return { code: 'model_connection_unavailable',
       message: 'The configured model connection is unavailable. Ask the host to restore the Bot’s model binding' };
-    if (actor.kind !== 'user') {
-      const explicit = this.accessFor(actor).model_ids || [];
-      if (!explicit.includes(id)) {
-        const autoGranted = catalog.autoGrantPurposeConnections !== false && (() => {
-          const bot = this.store.get(botRecords, actor.id);
-          if (!bot?.model) return false;
-          if (bot.model.mode === 'follow_default') {
-            return Object.values(this.models.resolveAllForBot(bot)).some(item => item?.connection_id === id);
-          }
-          if (bot.model.mode === 'follow_connection' && explicit.includes(bot.model.connection_id)) {
-            return Object.values(this.models.resolveAllForBot(bot)).some(item => item?.connection_id === id);
-          }
-          return false;
-        })();
-        if (!autoGranted) return { code: 'model_grant_required', message: 'The Bot needs a host grant for its configured model connection' };
-      }
-    }
     return null;
   }
 
@@ -148,12 +132,20 @@ export class SummonPlatform {
     return connectionAllowed(entry, actor) && allowsConnection(context.executable_scope, entry, id => this.connections.get(id));
   }
 
+  isOnboardingBot(actor) {
+    return actor?.kind === 'bot' && this.store.get(botRecords, actor.id)?.built_in_role?.id === toolOnboardingRole;
+  }
+
+  isMaintainerOf(entry, actor) {
+    return actor?.kind === 'bot' && Boolean(entry?.maintainer_bot_id && entry.maintainer_bot_id === actor.id);
+  }
+
   maintenanceConnection(value, context, revision, reuse = false) {
     const id = idOf(value, 'connection');
     const entry = this.connections.get(id);
     if (!entry || !this.canUseConnection(context.actor, id, context))
       reject('connection_forbidden', 'Choose an execution connection in your grants', 403);
-    if (context.actor.kind !== 'user') {
+    if (context.actor.kind !== 'user' && !this.isOnboardingBot(context.actor)) {
       const setup = this.requireConnectionSetup(context, { action: 'assign_maintainer', connection: id });
       const allowed = setup.hostSetup && this.connectionInitializer.setupOwns(entry, context, setup);
       if (!allowed) {
@@ -166,10 +158,30 @@ export class SummonPlatform {
     return entry;
   }
 
-  bindMaintainer(entry, botId) {
-    return entry.maintainer_bot_id === botId ? entry : this.store.save('platform-connections', {
-      id: entry.id, maintainer_bot_id: botId, revision: entry.revision + 1,
+  grantMaintainerWorkspace(entry, botId) {
+    if (!entry?.config?.workspace_root) return;
+    const match = this.workspaceRecords().find(item => {
+      try { return inside(this.authorizedDirectory(item.path), this.authorizedDirectory(entry.config.workspace_root)); }
+      catch { return false; }
     });
+    if (!match) return;
+    const access = this.store.get('platform-access', botId) || { id: botId, revision: 0, model_ids: [], workspace_ids: [] };
+    if (!access.workspace_ids?.includes(match.id)) {
+      this.store.save('platform-access', {
+        id: botId, revision: (access.revision ?? 0) + 1,
+        model_ids: access.model_ids || [],
+        workspace_ids: [...new Set([...(access.workspace_ids || []), match.id])],
+        ...(access.execution_onboarding ? { execution_onboarding: access.execution_onboarding } : {}),
+      });
+    }
+  }
+
+  bindMaintainer(entry, botId) {
+    this.grantMaintainerWorkspace(entry, botId);
+    if (entry.maintainer_bot_id === botId && entry.repair_bot_ids === undefined) return entry;
+    const next = { ...entry, maintainer_bot_id: botId, revision: entry.revision + 1 };
+    delete next.repair_bot_ids;
+    return this.store.save('platform-connections', next);
   }
 
   assignMaintainer(args, context, call) {
@@ -181,7 +193,7 @@ export class SummonPlatform {
       assertRevision(entry.revision, args.revision);
       const saved = this.bindMaintainer(entry, bot.id);
       this.calls.bind(call.id, { target: { kind: 'connection', id: saved.id } });
-      return this.calls.finish(call.id, 'completed', { ...this.connections.summary(saved), ...this.connectionMaintenance(saved) });
+      return this.calls.finish(call.id, 'completed', { ...this.connections.summary(saved), ...this.connectionMaintenance(saved, context) });
     });
     this.emit('connection');
     return result;
@@ -190,8 +202,8 @@ export class SummonPlatform {
   repairableConnection(entry, context) {
     if (!entry || !this.canUseConnection(context.actor, entry.id, context) ||
         !this.connections.authorized(entry, context.actor)) return false;
-    if (context.actor.kind === 'user') return true;
-    if (entry.config.initialized_for !== context.actor.id && !entry.repair_bot_ids?.includes(context.actor.id)) return false;
+    if (context.actor.kind === 'user' || this.isOnboardingBot(context.actor) || this.isMaintainerOf(entry, context.actor)) return true;
+    if (entry.config.initialized_for !== context.actor.id) return false;
     const submitter = identity(context.submitted_by ?? context.actor);
     return sameIdentity(submitter, context.actor) || this.canUseConnection(submitter, entry.id) &&
       this.connections.authorized(entry, submitter);
@@ -216,9 +228,13 @@ export class SummonPlatform {
     const permissions = context ? grants(context) : {};
     if (!bot) return { ...permissions, maintainer: null };
     const actor = { kind: 'bot', id: bot.id };
-    const blocker = bot.enabled ? this.modelAccessBlocker(actor, this.botModelConnectionId(bot)) :
-      { code: 'bot_paused', message: 'The maintainer Bot is paused' };
-    return { ...permissions, maintainer: { ...actor, name: bot.name, enabled: bot.enabled, ...grants({ actor }),
+    const blocker = this.repairBlocker(entry, bot, { actor });
+    let workspace_ready = true;
+    if (entry.config.workspace_root) {
+      try { workspace_ready = Boolean(this.workspace(entry.config.workspace_root, { actor })?.write && entry.config.workspace_write !== false); }
+      catch { workspace_ready = false; }
+    }
+    return { ...permissions, maintainer: { ...actor, name: bot.name, enabled: bot.enabled, ...grants({ actor }), workspace_ready,
       run_status: blocker ? { status: 'blocked', ...blocker } : { status: 'configured' } } };
   }
 
@@ -302,25 +318,20 @@ export class SummonPlatform {
   }
 
   visibleBot(bot, context) {
-    if (!bot) return false;
-    if (bot.connection_initializer) return sameIdentity(context.actor, { kind: 'bot', id: bot.id });
-    if (context.session) return sameIdentity(context.actor, { kind: 'bot', id: bot.id });
-    if (bot.built_in_role?.id === toolOnboardingRole && !bot.archivedAt) return true;
-    if (this.manager.canConfigure(context.actor, bot)) return true;
-    return this.store.list('rooms').some(room => room.members.includes(context.actor.id) && room.members.includes(bot.id));
+    if (!bot || bot.connection_initializer) return false;
+    if (context.actor.kind === 'user') return true;
+    return !bot.archivedAt;
   }
 
   canFindTeam(context) {
-    return context.actor.kind === 'bot' && this.getBot(context.actor.id).built_in_role?.id === 'eggbot' &&
-      (!context.session || context.session.built_in_role?.id === 'eggbot');
+    return context.actor.kind === 'user' || context.actor.kind === 'bot';
   }
 
   canReadSpace(actor, space, context = {}) {
     if (!space) return false;
-    if (context.session && !sameRef(context.session.space, space) && !context.resource_refs?.some(ref => sameRef(ref, space))) return false;
     if (space.kind === 'room') {
       const room = this.store.get('rooms', space.id);
-      return Boolean(room && room.members.includes(actor.id));
+      return Boolean(room && (actor.kind === 'user' || room.members.includes(actor.id)));
     }
     if (space.kind === 'user') return sameIdentity(actor, space);
     if (space.kind === 'bot') {
@@ -331,7 +342,6 @@ export class SummonPlatform {
   }
 
   canWriteSpace(actor, space, context = {}) {
-    if (context.session && !sameRef(context.session.space, space)) return false;
     return this.canReadSpace(actor, space, context);
   }
 
@@ -418,21 +428,30 @@ export class SummonPlatform {
     }
   }
 
-  assertShareable(ref, { actor, room, members = room.members, context = {} }) {
+  assertShareable(ref, { actor, room, context = {} }) {
     const principal = identity(actor);
     const caller = { ...context, actor: principal };
-    if (!this.canReadReference(ref, caller)) reject('share_forbidden', 'This reference is unavailable to the sender', 403);
-    const work = ref.kind === 'event' && this.store.get('platform-events', ref.id);
-    if (work?.type === 'work.tool' && !sameRef(work.space, { kind: 'room', id: room.id }))
-      reject('share_forbidden', 'Tool observations belong to their original Room', 403);
     const file = ref.kind === 'file' ? this.files.get(ref.id) : null;
-    if (file && sameRef(file.space, { kind: 'room', id: room.id })) return this.files.view(file);
-    const event = ref.kind === 'event' ? this.store.get('messages', ref.id) : null;
-    if (event?.roomId === room.id) return event;
-    if (!members.every(member => this.canReadReference(ref, { actor: identity(member) }))) {
-      reject('share_forbidden', 'The receiving audience cannot read this reference', 403);
+    if (file && file.space?.kind === 'bot' && principal.kind !== 'user' && file.space.id !== principal.id) {
+      reject('share_forbidden', 'Cannot share another Bot’s private memory file', 403);
     }
-    return file ? this.files.view(file) : this.attachments.find(ref.id) || ref;
+    if (file && file.space?.kind === 'bot' && room?.id && !file.shared_rooms?.includes(room.id)) {
+      this.store.save('platform-files', { id: file.id, shared_rooms: [...(file.shared_rooms || []), room.id] });
+    }
+    if (ref.kind === 'call' && room?.id) {
+      const call = this.store.get('platform-calls', ref.id);
+      if (call && !call.shared_rooms?.includes(room.id)) {
+        this.store.save('platform-calls', { id: call.id, shared_rooms: [...(call.shared_rooms || []), room.id] });
+      }
+      return call || ref;
+    }
+    const event = ref.kind === 'event' ? this.store.get('messages', ref.id) ?? this.store.get('platform-events', ref.id) : null;
+    if (event) return event;
+    if (file) return this.files.view(file);
+    if (!this.canReadReference(ref, caller)) {
+      return this.attachments.find(ref.id) || ref;
+    }
+    return this.attachments.find(ref.id) || ref;
   }
 
   workspaceRecords() { return [...this.workspaces, ...this.store.list('platform-workspaces')]; }
@@ -468,14 +487,8 @@ export class SummonPlatform {
     return actual;
   }
 
-  workspaceAvailable(id, actor, context = {}) {
-    if (context.session && !context.resource_refs?.some(ref => sameRef(ref, { kind: 'workspace', id }))) {
-      const session = context.session;
-      if (session.engine !== 'pi' || session.workspace_ref || !session.project_room || session.sharing && !sameRef(session.project_room, session.space) ||
-          this.store.get('rooms', session.project_room.id)?.workspace?.id !== id) return false;
-    }
-    return this.workspaceRecords().some(item => item.id === id) &&
-      workspaceGranted((kind, key) => this.store.get(kind, key), actor, id, this.projectRoom(context), context.session?.room_workspace_id);
+  workspaceAvailable(id) {
+    return this.workspaceRecords().some(item => item.id === id);
   }
 
   workspace(pathOrRef, context) {
@@ -567,7 +580,10 @@ export class SummonPlatform {
   }
 
   assertSessionAuthority(session, { checkWorkspacePath = false } = {}) {
-    if (session.authority_revoked || session.sharing && !this.roomMembers(session.space.id).includes(session.owner.id)) {
+    if (session.authority_revoked ||
+        (session.sharing && !this.store.get('rooms', session.space?.id)) ||
+        (!session.sharing && session.origin_room?.kind === 'room' && session.execution_actor?.kind === 'bot' &&
+          !this.roomMembers(session.origin_room.id).includes(session.execution_actor.id))) {
       reject('session_authority_revoked', 'The Session no longer has its assigned execution authority', 403);
     }
     const connection = session.engine !== 'pi' ? this.store.get('platform-connections', session.engine) : null;
@@ -621,35 +637,8 @@ export class SummonPlatform {
     if (!session || session.control.state !== 'active') reject('execution_paused', 'Execution is paused', 409);
     this.assertSessionAuthority(session, { checkWorkspacePath: true });
     this.assertRunAllowed(context, { allowUser: true, allowDraining: context.allowDraining });
-    const projectRoom = this.projectRoom(context);
-    if (context.origin?.fast_read_forward) {
-      const sourceRoom = context.origin.source_room;
-      const message = this.store.get('messages', context.origin.event_ids[0]);
-      if (session.acceptance_state !== 'open' || session.owner_conversation_id !== context.origin.conversation_id ||
-          session.origin_execution?.kind !== 'conversation' || message?.roomId !== sourceRoom?.id ||
-          !this.isFollowupRoomAllowed(session, sourceRoom) || !this.canReadSpace(context.actor, sourceRoom) ||
-          !this.canReadSpace(context.actor, session.origin_room))
-        reject('followup_unavailable', 'The work or its follow-up Room has changed', 409);
-      if (session.sharing) {
-        const audience = this.room.room(session.space.id, context.actor.id);
-        for (const ref of forwardMaterials(message)) this.assertShareable(ref, { actor: context.actor, room: audience, context });
-      }
-    }
-    const followupSubmit = projectRoom && !context.session &&
-      session.acceptance_state === 'open' &&
-      sameIdentity(session.owner, context.actor) &&
-      this.isFollowupRoomAllowed(session, projectRoom) &&
-      this.canReadSpace(context.actor, session.project_room);
-    if (session.project_room && projectRoom && !sameRef(session.project_room, projectRoom) && !followupSubmit)
-      reject('workspace_forbidden', 'Continue this execution from the Room that started it', 403);
-    const submitContext = { ...context, project_room: session.project_room ?? projectRoom };
-    const initiating = context.submitted_by && !sameIdentity(context.submitted_by, context.actor) ?
-      { actor: identity(context.submitted_by), project_room: submitContext.project_room } : null;
-    if (session.engine === 'pi' && !enclosesExecutableScope(context.executable_scope, session.executable_scope) ||
-        !this.canUseConnection(context.actor, session.engine, context) || !this.canUseResources(context.actor, session.resource_refs, submitContext) ||
-        initiating && (!this.canUseConnection(initiating.actor, session.engine, initiating) ||
-          !this.canUseResources(initiating.actor, session.resource_refs, initiating))) {
-      reject('execution_resources_forbidden', 'Input requires authorization for the Session’s execution resources', 403);
+    if (!this.canUseConnection(context.actor, session.engine, context)) {
+      reject('execution_resources_forbidden', 'Input requires an enabled execution connection', 403);
     }
   }
 
@@ -658,16 +647,11 @@ export class SummonPlatform {
     const { actor } = context;
     const engine = idOf(args.engine, 'connection');
     const space = args.space ?? context.session?.space ?? actor;
-    if (context.session && (!this.canReadSpace(actor, space, context) || !sameRef(space, context.session.space))) {
-      reject('session_scope_forbidden', 'A child Session must stay within the parent’s execution authority', 403);
-    }
     const sharing = options.sharing(actor, space);
     const group_work = this.roomWork.scope(args, context, sharing, space);
-    const project_room = this.projectRoom(context) ?? (!context.session && sharing && this.store.get('rooms', space.id)?.mode === 'group' ? space : null);
+    const project_room = this.projectRoom(context) ?? (sharing && space.kind === 'room' && this.store.get('rooms', space.id)?.mode === 'group' ? space : null);
     const roomWorkspace = project_room && this.store.get('rooms', project_room.id)?.workspace;
     const projectContext = { ...context, project_room };
-    if (sharing && roomWorkspace && !sameRef(project_room, space))
-      reject('workspace_forbidden', 'Share a project execution within its originating Room', 403);
     const selected = [...(args.resource_refs || [])];
     if (selected.some(ref => !['connection', 'workspace', 'file', 'event'].includes(ref.kind))) {
       reject('invalid_resource', 'Session resources must be connections, directories, Files or Events');
@@ -677,34 +661,23 @@ export class SummonPlatform {
     const setupWorkspace = context.conversation?.connection_setup?.workspace;
     const usesDirectory = requiresWorkspace || engine === 'pi' || connection?.kind === 'mcp' && connection.config.transport === 'stdio' &&
       !connection.config.canonical_command;
-    const inherited = roomWorkspace && context.session?.workspace?.path;
-    const workspaceSelection = args.workspace ?? (usesDirectory ? inherited || roomWorkspace || (!sharing && setupWorkspace) : undefined);
-    if (requiresWorkspace && !workspaceSelection) reject('workspace_required', 'Choose an authorized execution directory for this connection', 409);
-    const workspace = this.workspace(workspaceSelection, projectContext);
-    if (context.session?.workspace && workspace && !inside(context.session.workspace.path, workspace.path))
-      reject('workspace_forbidden', 'A child Session must use the parent’s selected directory', 403);
-    if (workspace && setupWorkspace && !inside(setupWorkspace, workspace.path))
-      reject('workspace_forbidden', 'This initialization is scoped to the selected workspace', 403);
+    const inherited = context.session?.workspace?.path;
+    const fallbackWorkspace = connection?.config.workspace_root || this.workspaceRecords()[0]?.id;
+    const workspaceSelection = args.workspace ?? (usesDirectory ? inherited || roomWorkspace || setupWorkspace || fallbackWorkspace : undefined);
+    if (requiresWorkspace && !workspaceSelection) reject('workspace_required', 'Register an execution directory for this connection', 409);
+    const workspace = workspaceSelection ? this.workspace(workspaceSelection, projectContext) : null;
     if (workspace && connection?.config.workspace_root) {
       const entryRoot = this.authorizedDirectory(connection.config.workspace_root);
       if (!inside(entryRoot, workspace.path)) reject('workspace_forbidden', 'The project directory is outside the connection scope', 403);
     }
-    if (workspace && sharing && !sameRef(roomWorkspace, workspace.ref) && !selected.some(ref => sameRef(ref, workspace.ref))) {
-      reject('workspace_forbidden', 'The shared workspace must be explicitly selected as a resource', 403);
-    }
     if (workspace && !selected.some(ref => sameRef(ref, workspace.ref))) selected.push(workspace.ref);
     if (sharing && engine !== 'pi') selected.push({ kind: 'connection', id: engine });
     const resource_refs = [...new Map(selected.map(ref => [keyOf(ref.kind, ref.id), ref])).values()];
-    if (!this.canUseConnection(actor, engine, context) || !this.canUseResources(actor, resource_refs, projectContext)) {
-      reject('execution_resources_forbidden', 'The requested execution resources are unavailable', 403);
+    if (!this.canUseConnection(actor, engine, context)) {
+      reject('execution_resources_forbidden', 'The requested execution connection is unavailable', 403);
     }
     if (engine !== 'pi' && !connection?.enabled) reject('connection_unavailable', 'Execution connection is unavailable', 409);
-    if (sharing && !this.roomMembers(space.id).every(member => resource_refs.filter(ref => ref.kind === 'file' || ref.kind === 'event')
-      .every(ref => this.canReadReference(ref, { actor: identity(member) })))) {
-      reject('share_forbidden', 'The shared execution materials must be available to the Room audience', 403);
-    }
     const bot = actor.kind === 'bot' ? this.getBot(actor.id) : null;
-    if (sharing && connection?.kind === 'cli') reject('unsupported_sharing', 'This CLI connection cannot enforce separate shared workspace permissions', 409);
     if (engine === 'pi' && !bot) reject('pi_actor_required', 'Open a Pi Session from an authorized Bot conversation', 409);
     const model = engine === 'pi' ? (context.session?.model ?? this.models.resolveForBot(bot, 'pi_session')) : null;
     if (engine === 'pi' && (!model || !this.canUseModel(actor, model.connection_id))) reject('connection_unconfigured', 'The Pi execution model is unavailable', 409);
@@ -716,16 +689,9 @@ export class SummonPlatform {
       group_work.source = { kind: 'event', id: origin_message_id };
     const owner_conversation_id = context.origin?.conversation_id ?? null;
     const work_summary = args.work_summary?.trim() || null;
-    const allowed_followup_rooms = [];
-    if (Array.isArray(args.allowed_followup_rooms)) {
-      for (const roomRef of args.allowed_followup_rooms) {
-        const roomId = idOf(roomRef, 'room');
-        if (!this.store.get('rooms', roomId) || !this.canReadSpace(actor, { kind: 'room', id: roomId }, context)) {
-          reject('room_forbidden', 'Cannot open follow-up to an inaccessible Room', 403);
-        }
-        if (!allowed_followup_rooms.includes(roomId)) allowed_followup_rooms.push(roomId);
-      }
-    }
+    const allowed_followup_rooms = Array.isArray(args.allowed_followup_rooms)
+      ? [...new Set(args.allowed_followup_rooms.map(roomRef => idOf(roomRef, 'room')))]
+      : [];
     return this.store.transaction(() => {
       const session = this.store.save(sessionRecords, { id: call.id, engine, space, owner: actor, bot_id: bot?.id ?? null,
         source_space: project_room || context.conversation?.space || null, project_room,
@@ -883,10 +849,6 @@ export class SummonPlatform {
     const current = value.id && this.connections.get(value.id);
     if (current && !this.canUseConnection(user, value.id, context))
       reject('connection_not_found', 'Connection is unavailable', 404);
-    const canGrant = id => this.manager.list().some(bot => bot.id === id && (this.visibleBot(bot, context) ||
-      bot.connection_initializer && id === context.initializer_id));
-    if (Array.isArray(value.repair_bot_ids) && value.repair_bot_ids.some(id => !current?.repair_bot_ids?.includes(id) && !canGrant(id)))
-      reject('invalid_connection', 'Connection grant includes an unavailable Bot');
     if (value.maintainer_bot_id !== undefined && value.maintainer_bot_id !== null) {
       const bot = this.store.get(botRecords, value.maintainer_bot_id);
       if (!bot || bot.archivedAt || bot.connection_initializer)
@@ -897,8 +859,10 @@ export class SummonPlatform {
     const submitted = value.kind === 'ssh' ? { ...value, kind: 'cli' } : value;
     const result = await this.connections.configure({ ...submitted, id: value.id ?? randomUUID() }, context,
       saved => onSave?.({ ...saved, ...this.connectionMaintenance(this.connections.get(saved.id)) }));
+    const savedEntry = this.connections.get(result.id);
+    if (savedEntry?.maintainer_bot_id) this.grantMaintainerWorkspace(savedEntry, savedEntry.maintainer_bot_id);
     if (current) {
-      const updated = this.connections.get(result.id);
+      const updated = savedEntry;
       if (!updated || current.enabled && !updated.enabled || (current.binding_version ?? 1) !== (updated.binding_version ?? 1))
         await this.revokeSessions({ kind: 'connection', id: result.id });
     }
@@ -924,8 +888,8 @@ export class SummonPlatform {
         typeof path !== 'string' || !isAbsolute(path) || path.length > 4096 || path.includes('\0'))))
       reject('invalid_executable', 'Supply absolute paths to the executables in scope');
     const requestedWorkspace = this.workspace(args.workspace, context);
-    const bot = args.bot === undefined ? this.connectionSetupIdentity(context, requestedWorkspace) : this.getBot(idOf(args.bot, 'bot'));
-    if (args.bot !== undefined && !this.visibleBot(bot, context)) reject('bot_not_found', 'Select an existing Pi Bot', 404);
+    const bot = args.bot === undefined ? this.manager.onboardingBot() : this.getBot(idOf(args.bot, 'bot'));
+    if (!bot || !this.visibleBot(bot, context)) reject('bot_not_found', 'Select an existing Pi Bot or ensure the tool-onboarding Bot is active', 404);
     const actor = { kind: 'bot', id: bot.id };
     if (!bot.enabled) reject('bot_paused', 'The selected Pi Bot is paused', 409);
     const blocker = this.modelAccessBlocker(actor, this.botModelConnectionId(bot));
@@ -951,31 +915,10 @@ export class SummonPlatform {
     }
   }
 
-  connectionSetupIdentity(context, workspace) {
-    const model = { mode: 'follow_default' };
-    const resolved = this.models.resolveForBot(model, 'conversation');
-    if (!resolved) reject('connection_unconfigured', 'Select an existing Pi model connection', 409);
-    return this.store.transaction(() => {
-      const previous = this.manager.list().find(bot => bot.connection_initializer);
-      const record = previous && keyOf(previous.model) === keyOf(model) ? previous : this.store.save(botRecords, {
-        id: previous?.id ?? `pi-setup-${randomUUID()}`, connection_initializer: true, name: 'Pi', owner: user,
-        model, revision: (previous?.revision ?? 0) + 1,
-        enabled: true, control: previous?.control ?? activeControl(), instructions: '',
-      });
-      const priorAccess = this.accessFor({ kind: 'bot', id: record.id });
-      const workspace_ids = [...new Set([...(priorAccess.workspace_ids || []), ...(workspace ? [workspace.ref.id] : [])])];
-      if (!priorAccess.model_ids?.includes(resolved.connection_id) || workspace_ids.length !== (priorAccess.workspace_ids || []).length)
-        this.store.save('platform-access', { id: record.id, revision: (priorAccess.revision ?? 0) + 1,
-          model_ids: [...new Set([...(priorAccess.model_ids || []), resolved.connection_id])], workspace_ids });
-      return record;
-    });
-  }
-
   canInitializeExecution(input) {
     const context = this.context(input);
     const role = this.getBot(context.actor.id).built_in_role?.id;
-    return [toolOnboardingRole, catalogMaintainerRole].includes(role) ||
-      Boolean(this.accessFor(context.actor).execution_onboarding) || this.connectionInitializer.managed(context).length > 0;
+    return [toolOnboardingRole, catalogMaintainerRole].includes(role) || this.connectionInitializer.managed(context).length > 0;
   }
 
   requireConnectionSetup(input, args) {
@@ -1009,16 +952,16 @@ export class SummonPlatform {
     const repair = this.repairableConnection(selected, context);
     const connection = selected && this.canUseConnection(context.actor, selected.id, context) ? selected : null;
     const onboarding = role === toolOnboardingRole || Boolean(policy);
-    if (['guide', 'discover'].includes(args.action) && (onboarding || role === catalogMaintainerRole || authorized.length))
+    if (['guide', 'discover', 'documentation', 'source'].includes(args.action) && (onboarding || role === catalogMaintainerRole || authorized.length))
       return { onboarding, policy, connections: authorized, connection };
     if (args.action === 'inspect') {
-      if (onboarding || repair) return { onboarding, policy, connection };
+      if (onboarding || repair || role === catalogMaintainerRole) return { onboarding, policy, connection };
       reject('initialization_forbidden', 'Inspect needs an existing connection repair grant or a host executable grant', 403);
     }
-    if ((policy || repair) && (['upsert_method', 'assign_maintainer'].includes(args.action) ||
+    if ((onboarding || repair) && (['upsert_method', 'assign_maintainer', 'grant_access'].includes(args.action) ||
         args.action === 'register' && args.protocol))
       return { onboarding, policy, connection };
-    if (!connection || !repair || args.action === 'grant_access' || args.action === 'assign_maintainer' ||
+    if (!connection || !repair ||
         args.action === 'register' && (args.protocol || !['cli', 'codex'].includes(protocolOf(connection))))
       reject('initialization_forbidden', 'The requested submission requires an onboarding or existing repair grant', 403);
     const runnerId = connection.config.adapter?.runner?.id;
@@ -1077,7 +1020,7 @@ export class SummonPlatform {
         const current = this.calls.get(record.id);
         return { result: current.status === 'completed' ? current.result : this.calls.finish(record.id, 'completed', result), call_id: record.id };
       }
-      if (name === 'open_session' || name === 'send_input' && args.kind !== 'resume' || name === 'stop_session') {
+      if (name === 'open_session' || name === 'send_input' || name === 'stop_session') {
         const result = name === 'open_session' ? await this.executions.open(args, context, record)
           : name === 'send_input' ? await this.executions.submit(args, context, record) : await this.executions.stop(args, context, record);
         this.emit('execution', { call_id: record.id });
@@ -1093,7 +1036,14 @@ export class SummonPlatform {
           const id = `bot-${record.id}`;
           const bot = this.manager.create(id, args, context, () => this.assertRunAllowed(context));
           this.calls.bind(record.id, { target: { kind: 'bot', id: bot.id } });
-          return this.calls.finish(record.id, 'completed', { ...this.manager.view(bot, context.actor), ...(bot.id !== id ? { reused: true } : {}) });
+          const maintenance = args.role_connection_id
+            ? this.connectionMaintenance(this.connections.get(args.role_connection_id), context)
+            : undefined;
+          return this.calls.finish(record.id, 'completed', {
+            ...this.manager.view(bot, context.actor),
+            ...(bot.id !== id ? { reused: true } : {}),
+            ...(maintenance ? { maintenance } : {}),
+          });
         });
         this.emit('bot', result);
         if (args.role_connection_id) this.emit('connection');
@@ -1136,18 +1086,26 @@ export class SummonPlatform {
       const result = this.store.transaction(() => {
         const value = this.write(name, args, context, record, workspaceFile);
         this.calls.finish(record.id, 'completed', value);
-        if (name === 'send_input' && args.kind === 'resume') this.executions.notifyOwnerResume(args.target, this.calls.get(record.id));
         return value;
       });
       if (name === 'configure_bot' && result.control && Object.keys(args).some(key => !['bot', 'revision', 'role_id', 'role_connection_id', 'connection_revision'].includes(key))) {
         if (result.control.state === 'paused' && result.control.stop_status === 'pending') {
           this.settleBotInBackground(result.id, result.control);
-        } else this.runtime.wake();
+        } else {
+          if (args.enabled === true) {
+            this.deliveries.purgePausedDeliveries(result.id);
+            await this.runtime.alignBotOnEnable(result.id);
+          }
+          this.runtime.wake();
+        }
       }
       if (name === 'configure_session') {
         this.emit('execution', { call_id: record.id });
       }
-      if (name === 'configure_room' && (args.remove_members?.length || args.workspace !== undefined)) await this.revokeSessions({ kind: 'room', id: result.id });
+      if (name === 'configure_room' && (args.remove_members?.length || args.workspace !== undefined)) {
+        if (args.remove_members?.length) this.stripRemovedFromSharedSessions(result.id, args.remove_members.map(m => identity(m).id));
+        await this.revokeSessions({ kind: 'room', id: result.id });
+      }
       return { result, call_id: record.id };
     } catch (error) {
       this.calls.fail(record.id, error);
@@ -1225,9 +1183,6 @@ export class SummonPlatform {
       const value = this.deliveries.set(args, context, call.id);
       this.emit('wakeup', { id: value.id });
       return value;
-    }
-    if (name === 'send_input' && args.kind === 'resume') {
-      return this.executions.resume(args, context, call, this.executions.require(args.target, context, 'control'));
     }
     if (name === 'configure_session') {
       return this.executions.configure(args, context, call);
@@ -1374,10 +1329,147 @@ export class SummonPlatform {
     }
   }
 
+  async stopBotExternalSessions(botId, actor = user) {
+    const owned = this.store.list(sessionRecords).filter(session =>
+      !session.sharing && !session.authority_revoked && this.isActiveSession(session) &&
+      (session.execution_actor?.id === botId || session.owner?.id === botId));
+    const stopped = [];
+    for (const session of owned) {
+      const target = { kind: 'session', id: session.id };
+      const { record } = this.calls.begin('stop_session', { actor });
+      try {
+        const res = await this.executions.stop({ target, scope: 'target_and_owned_calls' }, { actor }, record);
+        stopped.push({ target, ...res });
+      } catch (error) {
+        this.calls.fail(record.id, error);
+      }
+    }
+    return stopped;
+  }
+
+  stripRemovedFromSharedSessions(roomId, removedIds) {
+    const removedSet = new Set(removedIds);
+    for (const session of this.store.list(sessionRecords)) {
+      if (!session.sharing || session.space?.kind !== 'room' || session.space.id !== roomId) continue;
+      const filterPrincipals = list => (list || []).filter(p => !removedSet.has(identity(p).id));
+      const nextSharing = {
+        readers: filterPrincipals(session.sharing.readers),
+        submitters: filterPrincipals(session.sharing.submitters),
+        controllers: filterPrincipals(session.sharing.controllers),
+      };
+      this.store.save(sessionRecords, { id: session.id, sharing: nextSharing });
+    }
+  }
+
+  async archiveBot(id, revision, actor = user) {
+    const bot = this.manager.archive(id, revision, actor, randomUUID());
+    this.deliveries.purgePausedDeliveries(id);
+    for (const room of this.store.list('rooms')) {
+      if (!room.members.includes(id)) continue;
+      this.store.save('rooms', { id: room.id, members: room.members.filter(m => m !== id), revision: room.revision + 1 });
+      this.removeRoomBase(id, room.id);
+      this.stripRemovedFromSharedSessions(room.id, [id]);
+    }
+    await this.runtime.stopBot(id);
+    await this.stopBotExternalSessions(id, actor);
+    this.manager.settleStop(id, bot.control.stop_id, 'stopped');
+    const result = this.manager.view(this.getBot(id), actor);
+    this.emit('bot', result);
+    this.emit('room');
+    return result;
+  }
+
+  async restoreBot(id, revision, actor = user) {
+    const bot = this.manager.restore(id, revision, actor);
+    this.deliveries.purgePausedDeliveries(id);
+    await this.runtime.alignBotOnEnable(id);
+    const result = this.manager.view(bot, actor);
+    this.emit('bot', result);
+    this.runtime.wake();
+    return result;
+  }
+
+  async deleteBot(id, revision, actor = user) {
+    const before = this.getBot(id);
+    if (revision !== undefined) assertRevision(before.revision, revision);
+    await this.runtime.stopBot(id);
+    await this.stopBotExternalSessions(id, actor);
+    for (const room of this.store.list('rooms')) {
+      if (!room.members.includes(id)) continue;
+      this.store.save('rooms', { id: room.id, members: room.members.filter(m => m !== id), revision: room.revision + 1 });
+      this.removeRoomBase(id, room.id);
+      this.stripRemovedFromSharedSessions(room.id, [id]);
+    }
+    for (const conn of this.store.list('platform-connections')) {
+      if (conn.maintainer_bot_id === id) {
+        this.store.save('platform-connections', { id: conn.id, maintainer_bot_id: null, revision: conn.revision + 1 });
+      }
+    }
+    this.deliveries.removeAllForBot(id);
+    const result = this.manager.remove(id, before.revision, actor);
+    this.emit('bot');
+    this.emit('room');
+    this.emit('connection');
+    return result;
+  }
+
+  async stopRoom(roomId, actor = user) {
+    const room = this.room.room(roomId, actor.id);
+    const conversations = this.store.list('platform-conversations').filter(c => c.space?.kind === 'room' && c.space.id === room.id);
+    const sessions = this.store.list(sessionRecords).filter(s =>
+      !s.authority_revoked && this.isActiveSession(s) &&
+      (s.origin_room?.id === room.id || (s.space?.kind === 'room' && s.space.id === room.id)));
+    const convResults = [];
+    for (const conv of conversations) {
+      const target = { kind: 'conversation', id: conv.id };
+      const { record } = this.calls.begin('stop_session', { actor });
+      try {
+        const res = await this.executions.stop({ target, scope: 'target_and_owned_calls' }, { actor }, record);
+        convResults.push({ bot_id: conv.bot_id, conversation_id: conv.id, ...res });
+      } catch (error) {
+        this.calls.fail(record.id, error);
+      }
+    }
+    const covered = new Set(convResults.flatMap(r => (r.targets || []).map(t => keyOf(t.target.kind, t.target.id))));
+    const sessionResults = [];
+    for (const session of sessions) {
+      const target = { kind: 'session', id: session.id };
+      if (covered.has(keyOf(target.kind, target.id))) continue;
+      const { record } = this.calls.begin('stop_session', { actor });
+      try {
+        const res = await this.executions.stop({ target, scope: 'target_and_owned_calls' }, { actor }, record);
+        sessionResults.push({ session_id: session.id, engine: session.engine, ...res });
+      } catch (error) {
+        this.calls.fail(record.id, error);
+      }
+    }
+    this.emit('execution');
+    return {
+      room_id: room.id,
+      conversations: convResults,
+      sessions: sessionResults,
+      detached: this.connections.listDetached().filter(item => item.room_id === room.id),
+    };
+  }
+
+  retryExecution({ target, run_id }, actor = user) {
+    const ref = target?.kind ? target : { kind: 'conversation', id: idOf(target, 'conversation') };
+    const record = this.executions.require(ref, { actor }, 'control');
+    const conversationId = ref.kind === 'conversation' ? record.id : (record.conversation_id || record.id);
+    const retried = this.runtime.retrySuspended(conversationId, run_id);
+    if (!retried) reject('run_not_suspended', 'No suspended run found to retry', 409);
+    this.emit('execution');
+    return retried;
+  }
+
   settleBotInBackground(id, control) {
     const task = (async () => {
       let status;
-      try { status = (await this.runtime.stopBot(id)).status; } catch { status = 'unknown'; }
+      try {
+        status = (await this.runtime.stopBot(id)).status;
+        await this.stopBotExternalSessions(id, control.requested_by || user);
+        this.deliveries.purgePausedDeliveries(id);
+      } catch { status = 'unknown'; }
       this.manager.settleStop(id, control.stop_id, status === 'stopped' ? 'stopped' : 'unknown');
       this.emit('bot');
     })();
@@ -1406,7 +1498,7 @@ export class SummonPlatform {
     }
     if (ref.kind === 'workspace') return sameRef(session.workspace_ref, ref) || resources.some(item => sameRef(item, ref));
     if (ref.kind !== 'room') return false;
-    if (sameRef(session.space, ref) || sameRef(session.project_room, ref)) return true;
+    if (sameRef(session.space, ref) || sameRef(session.project_room, ref) || (!session.sharing && sameRef(session.origin_room, ref))) return true;
     return resources.some(item => {
       if (item.kind === 'file') {
         const file = this.files.get(item.id);
@@ -1483,11 +1575,37 @@ export class SummonPlatform {
       for (const session of this.store.list(sessionRecords)) {
         const call = this.store.get('platform-calls', session.latest_call_id);
         if (session.status === 'opening' && call?.status === 'not_submitted') this.store.save(sessionRecords, { id: session.id, status: 'not_submitted' });
+        if (session.control?.stop_status === 'pending') {
+          this.store.save(sessionRecords, { id: session.id, control: { ...session.control, state: 'active', stop_status: 'stopped' } });
+        }
+      }
+      for (const conv of this.store.list('platform-conversations')) {
+        if (conv.control?.stop_status === 'pending' || conv.control?.state === 'paused') {
+          this.store.save('platform-conversations', { id: conv.id, control: { ...conv.control, state: 'active', stop_status: 'stopped' } });
+        }
+      }
+      for (const conn of this.store.list('platform-connections')) {
+        if (Object.hasOwn(conn, 'repair_bot_ids')) {
+          const cleaned = { ...conn };
+          delete cleaned.repair_bot_ids;
+          this.store.save('platform-connections', cleaned);
+        }
+      }
+      for (const bot of this.store.list(botRecords)) {
+        if (bot.connection_initializer) {
+          this.store.remove(botRecords, bot.id);
+          this.store.remove('platform-access', bot.id);
+          continue;
+        }
+        if (bot.built_in_role?.id && !roleIds.includes(bot.built_in_role.id)) {
+          this.store.save(botRecords, { id: bot.id, built_in_role: null });
+        }
       }
     });
     this.executions.reconcileClosedDescendants();
     for (const bot of this.manager.list()) {
       if (bot.control.state === 'paused' && bot.control.stop_status === 'pending') this.manager.settleStop(bot.id, bot.control.stop_id, 'stopped');
     }
+    this.deliveries.purgePausedDeliveries();
   }
 }

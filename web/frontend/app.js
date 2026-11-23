@@ -177,14 +177,14 @@ const tabs = [
   { id:'models', title:'模型与用量', icon:'computer' }, { id:'usage', title:'Token 统计', icon:'layers' },
 ];
 const protocolVersion = 3;
-const state = { bots: [], rooms: [], executions: [], files: [], wakeups: [], connections: [], workspaces: [] };
+const state = { bots: [], archivedBots: [], roles: [], rooms: [], executions: [], detached: [], files: [], wakeups: [], connections: [], workspaces: [] };
 const resourceLabels = {
   running_models:'运行中模型请求', running_external:'运行中外部执行',
   calls:'当前周期调用数', tokens:'当前周期 Token', active_ms:'累计活跃时间（毫秒）',
 };
 const ui = {
   view:'chat', roomId:null, botId:null, executionRef:null, executionDetail:null, fileId:null, fileDetail:null,
-  messages:[], roomDeliveries:new Map(), roomSummaries:new Map(), mobileRoom:false, draftReplies:{}, drafts:{}, draftTargets:{}, draftAttachments:{},
+  messages:[], roomDeliveries:new Map(), roomSummaries:new Map(), roomSuspendedRuns:[], mobileRoom:false, draftReplies:{}, drafts:{}, draftTargets:{}, draftAttachments:{},
   draftReferences:{}, localMessages:{}, loading:true, refreshing:false, streamConnected:false, connectionNotice:'',
   detailOpen:false, detailTab:'details', profileBotId:null, avatarEditing:false, avatarDraft:null, avatarTab:'bot',
   avatarSelectionRevision:0, searchOpen:false, roomQuery:'', menu:null, sendingRooms:new Set(), navigationSeq:0,
@@ -744,9 +744,13 @@ async function loadCurrent() {
   if (ui.view === 'models') return globalThis.SummonModels.load(api, render, toast, refresh);
   if (ui.view === 'usage') return globalThis.SummonUsage.load(api);
   if (ui.view === 'executions') {
-    const page = await api('/api/executions');
+    const [page, detached] = await Promise.all([
+      api('/api/executions'),
+      api('/api/executions/detached').catch(() => ({ items: [] })),
+    ]);
     if (!current()) return;
     setListPage('executions', page);
+    state.detached = detached.items || [];
     if (ui.executionRef) await loadExecution(ui.executionRef);
     return;
   }
@@ -785,7 +789,7 @@ async function loadCurrent() {
   const baseline = ui.messageCache.get(id);
   const synced = await requestSyncedSnapshot(roomPath(id) + '/messages', baseline);
   if (!synced || request !== ui.roomReadSeq[id] || !roomById(id)) return;
-  const { messages, deliveries, summaries = {}, room, cursor } = synced.snapshot;
+  const { messages, deliveries, summaries = {}, suspendedRuns = [], room, cursor } = synced.snapshot;
   const earlier = (baseline?.earlier || []).filter(item => !messages.some(message => message.id === item.id));
   const cached = { ...synced, earlier, historyCursor: baseline?.earlier ? baseline.historyCursor : cursor, messages: [...earlier, ...messages] };
   ui.messageCache.set(id, cached);
@@ -795,6 +799,7 @@ async function loadCurrent() {
   ui.messagesRoomId = id; ui.messages = cached.messages; ui.historyCursor = cached.historyCursor;
   ui.roomDeliveries = new Map([...ui.roomDeliveries, ...Object.entries(deliveries || {})]);
   ui.roomSummaries = new Map([...ui.roomSummaries, ...Object.entries(summaries || {})]);
+  ui.roomSuspendedRuns = Array.isArray(suspendedRuns) ? suspendedRuns : [];
   const index = state.rooms.findIndex(item => item.id === id);
   if (room && room.revision >= state.rooms[index].revision) state.rooms[index] = room;
   const roomRef = encodeURIComponent(id);
@@ -1061,17 +1066,38 @@ async function openRoomEdit() {
   });
 }
 
-function leaveRoom() {
+async function stopCurrentRoom() {
   const room = roomById(ui.roomId);
-  openModal('退出会话',room.name,'',async () => {
-    await api(roomPath(room.id),'PATCH',{ revision:room.revision,remove_members:['user'] });
-  },'退出');
+  if (!room) return;
+  const result = await api(roomPath(room.id) + '/stop', 'POST', {});
+  const convCount = result.conversations?.length || 0;
+  const sessCount = result.sessions?.length || 0;
+  const detachedCount = result.detached?.length || 0;
+  toast(`已打断本群在途工作：对话 ${convCount}、子执行 ${sessCount}${detachedCount ? `（后台脱钩 ${detachedCount}）` : ''}`);
+  await refresh();
+}
+
+function archiveBotConfirm(bot) {
+  if (!bot) return;
+  openModal('归档 Bot', bot.name, '<p>归档后将自动移出所有群聊、打断其非共享在途执行，并从常用列表中隐藏。历史消息与私有文件仍对宿主只读保留，可随时恢复。</p>', async () => {
+    await api('/api/bots/' + encodeURIComponent(bot.id) + '/archive', 'POST', { revision: bot.revision });
+    if (ui.profileBotId === bot.id) ui.profileBotId = null;
+  }, '确认归档');
+}
+
+function deleteBotConfirm(bot) {
+  if (!bot) return;
+  openModal('彻底删除 Bot', bot.name, '<p>将永久删除该自定义 Bot 的配置与订阅，并清理其未完成任务。历史群消息仍保留发送者名称快照。</p>', async () => {
+    await api('/api/bots/' + encodeURIComponent(bot.id), 'DELETE', { revision: bot.revision });
+    if (ui.botId === bot.id) ui.botId = null;
+    if (ui.profileBotId === bot.id) ui.profileBotId = null;
+  }, '彻底删除');
 }
 
 function deleteGroup() {
   const room = roomById(ui.roomId);
   if (!room?.deletable) return;
-  openModal('删除群聊', room.name, '<p>删除后，所有成员都无法再打开这个群聊。</p>', async () => {
+  openModal('删除群聊', room.name, '<p>删除后，所有成员都无法再打开这个群聊；群内已保存的平台文件仍可在“资料”页中只读下载。</p>', async () => {
     await api(roomPath(room.id), 'DELETE', { revision:room.revision });
     ui.detailOpen = false;
   }, '删除群聊');
@@ -1103,8 +1129,13 @@ async function openBotEdit(bot) {
   const materialOptions = [{ value:'',label:'未选择' }, ...files.map(item => ({ value:item.id,label:item.path || item.name || item.id }))];
   if (materialId && !materialOptions.some(item => item.value === materialId)) materialOptions.push({ value:materialId,label:materialId + ' · 当前索引' });
   const role = bot.role_id || '';
-  const roles = [{ value:'', label:'普通 Bot' }, { value:'tool-onboarding', label:'工具接入' }, { value:'catalog-maintainer', label:'连接维护' }];
-  if (!roles.some(item => item.value === role)) roles.push({ value:role, label:role });
+  const catalogRoles = (state.roles || []).map(item => ({ value: item.id, label: `${item.name} (${item.id})` }));
+  const roles = [{ value:'', label:'未指定内置角色' }, ...(catalogRoles.length ? catalogRoles : [
+    { value:'default', label:'默认成员 (default)' },
+    { value:'tool-onboarding', label:'接口 Bot (tool-onboarding)' },
+    { value:'catalog-maintainer', label:'连接维护者 (catalog-maintainer)' },
+  ])];
+  if (role && !roles.some(item => item.value === role)) roles.push({ value:role, label:role });
   const modes = [
     { value:'follow_default', label:'跟随全局默认用途表（推荐）' },
     { value:'follow_connection', label:'固定连接，用途跟表' },
@@ -1123,7 +1154,8 @@ async function openBotEdit(bot) {
     ${field('Pi 模型','pi_model_id',piOv.id || '',{ placeholder:'留空沿用连接/主模型' })}
     ${field('Pi 思考档','pi_thinking_level',piOv.thinking_level ?? '',{ placeholder:'例如 high / max',list:'bot-all-thinking-levels' })}
   </details>`;
-  openModal('编辑 Bot', '', field('名称','name',bot.name,{ required:true }) + field('行为指令','instructions',bot.instructions || '',{ type:'textarea',rows:5 }) +
+  const metaLine = `配置修订 r${bot.revision ?? 1} · 绑定来源：${bot.binding_source || initialMode} · 生效时机：快读下批生效，主对话下一轮新 run 生效，已开独立 Pi 锁定开工绑定`;
+  openModal('编辑 Bot', metaLine, field('名称','name',bot.name,{ required:true }) + field('行为指令','instructions',bot.instructions || '',{ type:'textarea',rows:5 }) +
     field('团队公开职责','public_duty',bot.public_duty || '') +
     selectField('内置职责','role_id',roles,role) +
     selectField('模型策略','model_mode',modes,initialMode) +
@@ -1229,11 +1261,10 @@ function editConnection(item) {
     ${field('实际可执行文件','canonical_file','',{ placeholder:'如果已通过链接安装，填写其实际路径' })}</div>` +
     field('其他连接设置（JSON）','config','{}',{ type:'textarea',rows:6,required:true });
   const maintainer = [{ value:'',label:'未分配' }, ...botOptions()];
-  const controls = selectField('负责人','maintainer_bot_id',maintainer,item?.maintainer_bot_id ?? '') +
-    resourceChoices('允许修复的 Bot',available,item?.repair_bot_ids || []);
+  const controls = selectField('专责维护者（自动拥有该连接调用、维修与绑定工作区实调权）','maintainer_bot_id',maintainer,item?.maintainer_bot_id ?? '');
   openModal(item ? '执行连接设置' : '新增执行连接','',basic + configuration + controls,async data => {
     const input = { name:data.get('name').trim(), description:data.get('description'), enabled:data.has('enabled'),
-      maintainer_bot_id:data.get('maintainer_bot_id') || null, repair_bot_ids:data.getAll('允许修复的 Bot') };
+      maintainer_bot_id:data.get('maintainer_bot_id') || null };
     const raw = data.get('config').trim();
     if (raw || !item) {
       const config = JSON.parse(raw);
@@ -1449,19 +1480,16 @@ function restoreMessageDraft(entry) {
   $('#message-input')?.focus();
 }
 
-async function controlExecution(action) {
+async function controlExecution() {
   const detail = ui.executionDetail;
   const base = { target:detail.execution_ref, control_version:detail.control_version };
-  if (action === 'resume-execution') {
-    await api('/api/executions/input','POST',{ ...base,kind:'resume',resume_ref:detail.resume_ref },{ clientId:newClientId() });
-    await refresh(); return;
-  }
-  openModal('暂停执行','',selectField('范围','scope',[
-    { value:'target',label:'仅此执行' },{ value:'target_and_owned_calls',label:'包括独占子执行' },
-  ],'target'),async data => {
+  openModal('打断当前运行','中止当前在途工作并立即脱钩，会话保持活跃可直接接下一句话。',selectField('范围','scope',[
+    { value:'target_and_owned_calls',label:'此执行及全部非共享后代子执行（推荐）' },
+    { value:'target',label:'仅打断当前此执行' },
+  ],'target_and_owned_calls'),async data => {
     const result = await api('/api/executions/stop','POST',{ ...base,scope:data.get('scope') },{ clientId:newClientId() });
     ui.stopResults = result.targets;
-  },'暂停并请求停止');
+  },'立即打断');
 }
 
 async function act(action, element) {
@@ -1542,7 +1570,7 @@ async function act(action, element) {
   if (action === 'room-back') { ui.mobileRoom = false; ui.detailOpen = false; return render(); }
   if (action === 'new-room') return openRoomForm();
   if (action === 'edit-room') return openRoomEdit();
-  if (action === 'leave-room') return leaveRoom();
+  if (action === 'stop-room') return stopCurrentRoom();
   if (action === 'delete-group') return deleteGroup();
   if (action === 'older-messages') return loadOlderMessages();
   if (action === 'dm-bot') {
@@ -1599,11 +1627,34 @@ async function act(action, element) {
   }
   if (action === 'new-bot') return openCreateBot();
   if (action === 'edit-bot') return openBotEdit(botById(id));
-  if (action === 'bot-access') return editBotAccess(botById(id));
   if (action === 'select-bot') { ui.botId = id; return render(); }
   if (action === 'toggle-bot') {
     const bot = botById(id);
-    await api('/api/bots/' + encodeURIComponent(id),'PATCH',{ revision:bot.revision,enabled:!bot.enabled,...(bot.enabled ? {} : { resume_ref:bot.resume_ref }) });
+    await api('/api/bots/' + encodeURIComponent(id),'PATCH',{ revision:bot.revision,enabled:!bot.enabled });
+    return refresh();
+  }
+  if (action === 'archive-bot') return archiveBotConfirm(botById(id));
+  if (action === 'restore-bot') {
+    const bot = (state.archivedBots || []).find(item => item.id === id) || botById(id);
+    if (!bot) return;
+    await api('/api/bots/' + encodeURIComponent(id) + '/restore', 'POST', { revision: bot.revision });
+    toast(`已恢复 ${bot.name}`);
+    return refresh();
+  }
+  if (action === 'delete-bot') {
+    const bot = botById(id) || (state.archivedBots || []).find(item => item.id === id);
+    return deleteBotConfirm(bot);
+  }
+  if (action === 'retry-suspended') {
+    const conversationId = element.dataset.conversation, runId = element.dataset.run;
+    await api('/api/executions/retry', 'POST', { target: { kind: 'conversation', id: conversationId }, run_id: runId });
+    toast('已重新排队重试');
+    return refresh();
+  }
+  if (action === 'kill-detached' || action === 'dismiss-detached') {
+    const dismiss = action === 'dismiss-detached';
+    await api('/api/executions/detached/' + encodeURIComponent(id) + '/kill', 'POST', { dismiss });
+    toast(dismiss ? '已从后台脱钩列表归档清理' : '已发送进程树强杀指令');
     return refresh();
   }
   if (action === 'avatar-greet') return window.SummonAvatars?.greet(element);
@@ -1628,7 +1679,7 @@ async function act(action, element) {
   }
   if (action === 'open-execution') return openReference(ref);
   if (action === 'new-execution') return openExecutionForm();
-  if (action === 'stop-execution' || action === 'resume-execution') return controlExecution(action);
+  if (action === 'stop-execution') return controlExecution();
   if (action === 'more-execution-output') {
     const detail = ui.executionDetail, selected = detail.execution_ref;
     const next = await api(executionPath(selected) + '?cursor=' + encodeURIComponent(detail.next_cursor));
@@ -2242,16 +2293,21 @@ function renderMessageSummaries(message) {
 
 function renderDelivery(message) {
   if (message._delivery) return renderSendStatus(message);
-  return (ui.roomDeliveries.get(message.id) || []).filter(item => item.fast_read_diagnostic?.message).map(item =>
+  const fastDiag = (ui.roomDeliveries.get(message.id) || []).filter(item => item.fast_read_diagnostic?.message).map(item =>
     `<div class="message-delivery">${esc(nameOf(item.bot_id))} · ${esc(item.fast_read_diagnostic.message)}</div>`).join('');
+  const suspended = (ui.roomSuspendedRuns || []).filter(run => run.event_ids?.includes(message.id)).map(run =>
+    `<div class="message-delivery execution-error" role="status"><span>${esc(nameOf(run.bot_id))} 运行已挂起：${esc(run.error?.message || run.error?.code || '未知错误')}</span>
+      <button type="button" class="text-button" data-action="retry-suspended" data-conversation="${esc(run.conversation_id)}" data-run="${esc(run.run_id)}">重试</button></div>`).join('');
+  return fastDiag + suspended;
 }
 
 function renderChatMessage(message, timeline, grouped, isGroup) {
   const sender = message.senderId, own = sender === 'user', platform = ['system', 'platform'].includes(sender);
+  const senderLabel = message.senderName || nameOf(sender);
   const parent = timeline.find(item => item.id === message.replyTo);
   const pinned = roomById(ui.roomId)?.pins.some(ref => ref.kind === 'event' && ref.id === message.id);
   const mentions = message.mentions || [];
-  const identity = own || grouped || (!isGroup && !platform) ? '' : `<div class="message-identity"><strong>${esc(nameOf(sender))}</strong><time datetime="${esc(message.createdAt)}" title="${esc(formatTime(message.createdAt,true))}">${formatTime(message.createdAt)}</time></div>`;
+  const identity = own || grouped || (!isGroup && !platform) ? '' : `<div class="message-identity"><strong>${esc(senderLabel)}</strong><time datetime="${esc(message.createdAt)}" title="${esc(formatTime(message.createdAt,true))}">${formatTime(message.createdAt)}</time></div>`;
   const ownTime = own && message.createdAt ? `<time class="outgoing-time" datetime="${esc(message.createdAt)}" title="${esc(formatTime(message.createdAt,true))}">${formatTime(message.createdAt)}</time>` : '';
   const avatarSlot = own || (!isGroup && !platform) ? '' : grouped ? '<span class="message-avatar-spacer"></span>' : botById(sender)
     ? `<button class="message-avatar-button" data-action="open-bot-details" data-id="${esc(sender)}" aria-label="查看 ${esc(nameOf(sender))}">${avatar(sender,36,'message:' + message.id)}</button>`
@@ -2296,7 +2352,7 @@ function renderChat() {
     <button type="button" class="sidebar-toggle-btn" data-action="toggle-sidebar" title="收起 / 展开侧栏" aria-label="收起 / 展开侧栏">${icon('panel',18)}</button></div>
     ${room ? `<button type="button" class="chat-title-pill" data-action="toggle-details" aria-expanded="${!!ui.detailOpen}" title="展开右侧会话详情侧栏">${bot ? avatar(bot.id,30,'slot:title') : groupAvatar(room,30,'slot:title-group')}
       <span class="chat-title-copy"><strong>${esc(title)}</strong>${subtitle ? `<small>${esc(subtitle)}</small>` : ''}</span></button>` : ''}
-    <div class="chat-header-actions"></div></div>`;
+    <div class="chat-header-actions">${room ? '<button type="button" class="text-button" data-action="stop-room" title="一键打断本群全部在途工作">打断在途</button>' : ''}</div></div>`;
   const pins = room?.pins?.length ? `<div class="room-pins"><strong>置顶</strong>${room.pins.map(ref => renderReference(ref)).join('')}</div>` : '';
   const executions = ui.roomExecutions || [];
   const active = executions.length ? `<details class="conversation-activity" data-execution-disclosure ${ui.openRoomExecution === room.id ? 'open' : ''}><summary>执行过程（${executions.length}）</summary>
@@ -2386,7 +2442,7 @@ function renderDetailPanel(room, bot) {
     body = room.pins.map(ref => `<div class="pin-row">${renderReference(ref)}<button class="text-button" data-action="unpin" data-kind="${esc(ref.kind)}" data-id="${esc(ref.id)}">取消置顶</button></div>`).join('') || '<p class="panel-empty">没有置顶</p>';
   } else if (bot) {
     body = `<p class="subtle" style="margin:0 0 10px;font-size:var(--text-caption)">${esc(formatBotModelSummary(bot))}</p><div class="profile-prompt">${esc(bot.instructions || '')}</div><div class="profile-more-actions">
-      <button data-action="edit-bot" data-id="${esc(bot.id)}">编辑 Bot</button><button data-action="bot-access" data-id="${esc(bot.id)}">资源权限</button>${renderBotControls(bot)}</div>`;
+      <button data-action="edit-bot" data-id="${esc(bot.id)}">编辑 Bot</button>${renderBotControls(bot)}</div>`;
   } else {
     const wakeups = ui.roomWakeups || [];
     const base = wakeups.filter(item => item.rule.kind === 'room_base');
@@ -2406,8 +2462,8 @@ function renderDetailPanel(room, bot) {
     ? `<button type="button" class="text-button" data-action="back-to-room-details">${icon('back', 15)} 返回群聊</button>`
     : `<span class="subtle" style="font-size:var(--text-caption)">${bot ? (ui.avatarEditing ? '编辑头像' : '伙伴详情') : '会话详情'}</span>`;
   const footer = bot
-    ? `<div class="detail-panel-footer"><button type="button" class="secondary-button" data-action="edit-bot" data-id="${esc(bot.id)}">编辑 Bot</button><button type="button" class="secondary-button" data-action="bot-access" data-id="${esc(bot.id)}">资源权限</button>${renderBotControls(bot)}</div>`
-    : `<div class="detail-panel-footer"><button type="button" class="secondary-button" data-action="edit-room">编辑会话</button><button type="button" class="secondary-button" data-action="copy-conversation">复制文字</button><button type="button" class="text-button" data-action="leave-room">退出会话</button>${room.deletable ? '<button type="button" class="text-button" data-action="delete-group">删除群聊</button>' : ''}</div>`;
+    ? `<div class="detail-panel-footer"><button type="button" class="secondary-button" data-action="edit-bot" data-id="${esc(bot.id)}">编辑 Bot</button>${renderBotControls(bot)}</div>`
+    : `<div class="detail-panel-footer"><button type="button" class="secondary-button" data-action="edit-room">编辑会话</button><button type="button" class="secondary-button" data-action="stop-room">打断在途</button><button type="button" class="secondary-button" data-action="copy-conversation">复制文字</button>${room.deletable ? '<button type="button" class="text-button" data-action="delete-group">删除群聊</button>' : ''}</div>`;
   return `<aside class="detail-panel" data-section="${esc(tab + ':' + (bot?.id || room.id))}"><div class="detail-panel-inner">
     <div class="detail-panel-toolbar">${toolbarLeft}<button class="round-button" data-action="close-details" aria-label="关闭详情">${icon('close',20)}</button></div>
     <div class="profile-identity">${bot ? `<button class="profile-avatar" data-action="edit-avatar" aria-label="编辑头像" title="点击实时编辑头像">${face(ui.avatarEditing ? ui.avatarDraft : botAvatar(bot),104,{ key:'slot:profile',preview:true,followPointer:true })}</button>` : groupAvatar(room,92)}
@@ -2417,7 +2473,7 @@ function renderDetailPanel(room, bot) {
 
 const inputActions = { reply:'回答', steer:'追加输入', next:'继续输入' };
 const inputLabels = { codex_turn:'Codex 轮次', pi_run:'Pi 运行', cli_process:'CLI 进程', service_call:'服务调用', idle_input:'下次输入位置' };
-const stopLabels = { pending:'停止待确认', unknown:'停止结果未知', stopped:'已确认停止', unsupported:'连接不支持停止' };
+const stopLabels = { pending:'打断中', unknown:'结果未知', stopped:'已确认停止', detached:'已本地脱钩（远端未知）', unsupported:'连接不支持远程取消' };
 const executionLabel = item => item.kind === 'conversation' ? '内部对话' : item.engine === 'pi' ? 'Pi 会话' : (item.engine || '执行会话');
 const executionTitle = item => [executionLabel(item), item.space?.kind === 'room' ? roomById(item.space.id)?.name : null].filter(Boolean).join(' · ');
 const executionError = item => [item.last_error?.message, item.last_error?.code].filter(Boolean).join(' · ');
@@ -2489,9 +2545,7 @@ function renderInputOption(option, index) {
 function renderExecutionDetail(detail) {
   if (!detail) return '<p class="panel-empty">选择会话查看输入、输出和控制</p>';
   const error = executionError(detail);
-  const paused = detail.control?.state === 'paused';
-  const canResume = paused && detail.resume_ref && detail.control.stop_status === 'stopped';
-  const stop = !paused && detail.can_stop;
+  const stop = detail.can_stop;
   const logs = (detail.messages || []).map(entry => {
     const msg = entry.message || entry;
     const content = msg.content ?? msg.text ?? msg.output ?? msg;
@@ -2513,12 +2567,27 @@ function renderExecutionDetail(detail) {
     ${detail.model?.id ? `<dt>模型</dt><dd>${esc(detail.model.id)}${detail.model.thinking_level ? ' · ' + esc(detail.model.thinking_level) : ''}</dd>` : ''}
     ${detail.latest_call_id ? `<dt>调用</dt><dd>${renderReference({ kind:'call',id:detail.latest_call_id })}</dd>` : ''}
     </dl>${native}</div>
-    <div class="execution-actions">${stop ? '<button class="secondary-button" data-action="stop-execution">暂停并请求停止</button>' : ''}
-      ${canResume ? '<button class="secondary-button" data-action="resume-execution">恢复控制</button>' : ''}</div>
-    ${ui.stopResults ? `<ul class="execution-stop-results">${ui.stopResults.map(item => `<li>${esc(refLabel(item.target))} · ${esc(stopLabels[item.control.stop_status] || item.control.stop_status)}</li>`).join('')}</ul>` : ''}
+    <div class="execution-actions">${stop ? '<button class="secondary-button" data-action="stop-execution">打断当前运行</button>' : ''}
+      ${detail.status === 'suspended' ? `<button class="primary-button" data-action="retry-suspended" data-conversation="${esc(detail.execution_ref?.id || detail.id)}">重试运行</button>` : ''}</div>
+    ${ui.stopResults ? `<ul class="execution-stop-results">${ui.stopResults.map(item => `<li>${esc(refLabel(item.target))} · ${esc(stopLabels[item.status || item.control?.stop_status] || item.status || '')}${item.partial_snapshot?.touched_files?.length ? ` · 已触及 ${item.partial_snapshot.touched_files.length} 个文件` : ''}</li>`).join('')}</ul>` : ''}
     ${inputOptions(detail).map(renderInputOption).join('')}
     ${output || logs || streamOutput ? `<h3>输入与输出</h3>${output}${logs}${streamOutput}` : ''}
     ${detail.next_cursor ? '<button data-action="more-execution-output" class="text-button">读取后续日志</button>' : ''}`;
+}
+
+function renderDetachedSection() {
+  const items = state.detached || [];
+  if (!items.length) return '';
+  return `<div class="detached-tasks"><h3>后台脱钩任务（${items.length}）</h3>${items.map(item => `<div class="wakeup-row">
+    <div class="wakeup-copy"><strong>${esc(item.connection_name || item.connection_id)}${item.method ? ' · ' + esc(item.method) : ''}</strong>
+      <span>${esc(item.protocol)} · ${item.alive ? '进程/请求仍在运行' : '本地已退出'} · ${esc(item.remote_outcome || '')}</span>
+      ${item.child_pid || item.runner_pid ? `<small>PID ${esc(item.child_pid || item.runner_pid)}</small>` : ''}
+      ${item.partial_snapshot?.touched_files?.length ? `<small>中断前触及文件：${esc(item.partial_snapshot.touched_files.slice(0, 5).join(', '))}</small>` : ''}
+      ${item.late_receipt ? `<small>迟到回执（已隔离审计）：${esc(item.late_receipt.status)} · ${esc(formatTime(item.late_receipt.at, true))}</small>` : ''}
+    </div>
+    ${item.alive ? `<button class="secondary-button" data-action="kill-detached" data-id="${esc(item.id)}">强杀</button>` : ''}
+    <button class="text-button" data-action="dismiss-detached" data-id="${esc(item.id)}">归档清理</button>
+  </div>`).join('')}</div>`;
 }
 
 function trackedList(kind, endpoint, renderRow) {
@@ -2528,25 +2597,35 @@ function trackedList(kind, endpoint, renderRow) {
 }
 
 function renderExecutions() {
-  return `<div class="page">${pageHeader('<button class="primary-button" data-action="new-execution">打开会话</button>')}<div class="object-layout"><section class="object-list">${trackedList('executions','/api/executions',renderExecutionRow)}</section>
+  return `<div class="page">${pageHeader('<button class="primary-button" data-action="new-execution">打开会话</button>')}<div class="object-layout"><section class="object-list">${trackedList('executions','/api/executions',renderExecutionRow)}${renderDetachedSection()}</section>
     <section class="object-detail">${renderExecutionDetail(ui.executionDetail)}</section></div></div>`;
 }
 
 function renderBotControls(bot) {
-  const resumable = bot.resume_ref && bot.control?.stop_status === 'stopped';
-  if (!bot.enabled && !resumable) return `<span>${esc(stopLabels[bot.control?.stop_status] || 'Bot 已暂停')}</span>`;
-  return `<button data-action="toggle-bot" data-id="${esc(bot.id)}">${bot.enabled ? '暂停 Bot' : '恢复 Bot'}</button>`;
+  if (bot.archived_at) {
+    return `<button class="secondary-button" data-action="restore-bot" data-id="${esc(bot.id)}">恢复归档</button>
+      ${bot.deletable ? `<button class="text-button" data-action="delete-bot" data-id="${esc(bot.id)}">彻底删除</button>` : ''}`;
+  }
+  return `<button class="secondary-button" data-action="toggle-bot" data-id="${esc(bot.id)}">${bot.enabled ? '暂停 Bot' : '恢复 Bot'}</button>
+    ${bot.archivable ? `<button class="text-button" data-action="archive-bot" data-id="${esc(bot.id)}">归档</button>` : ''}
+    ${bot.deletable ? `<button class="text-button" data-action="delete-bot" data-id="${esc(bot.id)}">删除</button>` : ''}`;
 }
 
 function renderMembers() {
-  const bot = botById(ui.botId);
+  const bot = botById(ui.botId) || (state.archivedBots || []).find(item => item.id === ui.botId);
   const rows = state.bots.map(item => `<button class="profile-record record-button member-row ${item.id === ui.botId ? 'selected' : ''}" data-action="select-bot" data-id="${esc(item.id)}">
     ${avatar(item.id,40)}<span><strong>${esc(item.name)}</strong><small>${esc(botActivity(item).text)}</small></span></button>`).join('');
-  const controls = bot ? `<h2>${esc(bot.name)}</h2><p class="subtle" style="margin:6px 0 12px;font-size:var(--text-caption)">${esc(formatBotModelSummary(bot))}</p><p class="profile-prompt">${esc(bot.instructions || '')}</p><div class="execution-actions">
-    <button class="primary-button" data-action="dm-bot" data-id="${esc(bot.id)}">发消息</button><button class="secondary-button" data-action="edit-bot" data-id="${esc(bot.id)}">编辑</button>
-    <button class="secondary-button" data-action="bot-access" data-id="${esc(bot.id)}">资源权限</button>${renderBotControls(bot)}</div>` : '';
+  const archived = (state.archivedBots || []).length ? `<details class="models-advanced" style="margin-top:12px"><summary>已归档 Bot（${state.archivedBots.length}）</summary>${state.archivedBots.map(item =>
+    `<button class="profile-record record-button member-row ${item.id === ui.botId ? 'selected' : ''}" data-action="select-bot" data-id="${esc(item.id)}">
+      ${avatar(item.id,36)}<span><strong>${esc(item.name)}</strong><small>已归档</small></span></button>`).join('')}</details>` : '';
+  const roleEntry = bot?.role_id && (state.roles || []).find(r => r.id === bot.role_id);
+  const controls = bot ? `<h2>${esc(bot.name)}${bot.archived_at ? '（已归档）' : ''}</h2>
+    <p class="subtle" style="margin:6px 0 4px;font-size:var(--text-caption)">修订 r${esc(bot.revision ?? 1)} · 角色：${esc(roleEntry ? `${roleEntry.name} (${roleEntry.id})` : (bot.role_id || '未指定'))}</p>
+    <p class="subtle" style="margin:0 0 12px;font-size:var(--text-caption)">${esc(formatBotModelSummary(bot))}</p>
+    <p class="profile-prompt">${esc(bot.instructions || '')}</p><div class="execution-actions">
+    ${!bot.archived_at ? `<button class="primary-button" data-action="dm-bot" data-id="${esc(bot.id)}">发消息</button><button class="secondary-button" data-action="edit-bot" data-id="${esc(bot.id)}">编辑</button>` : ''}${renderBotControls(bot)}</div>` : '';
   return `<div class="page">${pageHeader('<button class="primary-button" data-action="new-bot">创建 Bot</button>')}
-    <div class="object-layout"><section class="object-list">${rows || '<p class="panel-empty">暂无 Bot</p>'}</section><section class="object-detail">${controls}</section></div></div>`;
+    <div class="object-layout"><section class="object-list">${rows || '<p class="panel-empty">暂无 Bot</p>'}${archived}</section><section class="object-detail">${controls}</section></div></div>`;
 }
 
 async function loadFile(id, cursor) {
@@ -2557,7 +2636,7 @@ async function loadFile(id, cursor) {
 function renderFiles() {
   const item = ui.fileDetail;
   const rows = trackedList('files','/api/files', file => `<button class="profile-record record-button ${file.id === ui.fileId ? 'selected' : ''}" data-action="open-file" data-id="${esc(file.id)}">
-    <strong>${esc(file.name || file.path)}</strong><small>${esc(file.space ? refLabel(file.space) : '')} · 修订 ${esc(file.revision)}</small></button>`);
+    <strong>${esc(file.name || file.path)}</strong><small>${file.deleted_room ? '已删群归档 · ' : ''}${esc(file.space ? refLabel(file.space) : '')} · 修订 ${esc(file.revision)}</small></button>`);
   const link = typeof item?.url === 'string' && item.url === filePath(item.id) + '/download' ? item.url : attachmentUrl(item);
   const detail = item ? `<h2>${esc(item.path || item.name)}</h2><p>修订 ${esc(item.revision)}</p><div class="execution-actions">
     ${link ? `<a href="${esc(link)}" download>下载</a>` : ''}${item.path && typeof item.content === 'string' && !item.next_cursor ? `<button class="secondary-button" data-action="edit-file" data-id="${esc(item.id)}">编辑</button>` : ''}</div>

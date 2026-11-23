@@ -176,13 +176,13 @@ export class SummonConnections {
     if (actorOf(context)?.kind !== 'user') reject('connection_forbidden', 'Connection settings require the host user', 403);
     const entries = this.store.list(connectionRecords);
     return this.clean(entries.map(entry => ({ ...this.summary(entry), allowed_bot_ids: ['*'],
-      repair_bot_ids: entry.repair_bot_ids, dependencies: entry.dependencies, maintainer_bot_id: entry.maintainer_bot_id ?? null })), []);
+      dependencies: entry.dependencies, maintainer_bot_id: entry.maintainer_bot_id ?? null })), []);
   }
 
   async configure(input, context, onSave) {
     if (actorOf(context)?.kind !== 'user') reject('connection_forbidden', 'Connection settings require the host user', 403);
     if (!plain(input) || Object.keys(input).some(key => !['id', 'name', 'description', 'kind', 'config', 'config_patch', 'revision',
-      'enabled', 'allowed_bot_ids', 'repair_bot_ids', 'dependencies', 'maintainer_bot_id'].includes(key)))
+      'enabled', 'allowed_bot_ids', 'dependencies', 'maintainer_bot_id'].includes(key)))
       reject('invalid_connection', 'Invalid connection settings');
     const id = idOf(input.id, 'connection');
     if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(id) || id === 'pi') reject('invalid_connection', 'Invalid managed connection identity');
@@ -334,14 +334,16 @@ export class SummonConnections {
         this.checkServiceMethod(entry, current, input?.method);
       };
       authorize();
-      this.active.set(operation.id, true);
+      const abortController = new AbortController();
+      const combinedSignal = signal ? AbortSignal.any([signal, abortController.signal]) : abortController.signal;
+      this.active.set(operation.id, abortController);
       const result = await this.services.invoke(entry, session.execution_actor, cwd, input, call.id, async () => {
         authorize();
         await beforeSubmit();
         authorize();
         this.saveOperation(operation, { cwd, method: input.method, status: 'submitted', submitted_at: new Date().toISOString() });
         started = true;
-      }, signal, { onProgress: progress => {
+      }, combinedSignal, { onProgress: progress => {
         const current = this.store.get(operationRecords, operation.id);
         const position = (current?.progress_position || 0) + 1;
         const id = keyOf(operation.id, position);
@@ -358,6 +360,20 @@ export class SummonConnections {
       const saved = this.saveOperation(operation, this.services.facts(entry, result));
       return this.operationFacts(saved, session);
     } catch (error) {
+      const interruptedByUser = abortController.signal.aborted || error.code === 'interrupted_by_user';
+      if (interruptedByUser) {
+        const now = new Date().toISOString();
+        const saved = this.saveOperation(operation, {
+          status: 'stopped',
+          runtime_ended: true,
+          finished_at: now,
+          code: 'interrupted_by_user',
+          error: started ? 'Interrupted by user; remote side effect outcome is unknown' : 'Interrupted by user before submission',
+          remote_outcome: started ? 'unknown_may_still_be_running' : 'confirmed_stopped',
+          ...(started ? { detached_at: now, detached_reason: 'interrupted_by_user' } : {}),
+        });
+        return this.operationFacts(saved, session);
+      }
       const unsupported = !started && [mcpTasksUnsupported, mcpMethodUnsupported, 'scoped_process_unsupported'].includes(error.code);
       const unknown = started && (error.outcomeUnknown || signal?.aborted || error.name === 'AbortError');
       const http_status = started && entry.kind === 'http' && Number.isInteger(error.status) ? error.status : undefined;
@@ -622,25 +638,123 @@ export class SummonConnections {
   }
 
   async stopOperation(operation, session, call) {
-    if (operation.runtime_ended && operation.status !== 'unknown') return { status: 'stopped' };
-    if (operation.status === 'prepared') return { status: 'pending' };
-    if (operation.status === 'not_submitted') return { status: 'stopped' };
-    if (operation.protocol === 'service') {
-      const entry = this.get(operation.connection_id);
-      if (!entry?.config.lifecycle?.stop_method || !operation.operation_id) return { status: 'unsupported' };
-      if (operation.session_id !== session.id ||
-          operation.connection_binding_version !== (entry.binding_version ?? 1))
-        return { status: 'unknown', error: 'The original service operation cannot be reached with its connection binding' };
-      const stopCall = { ...call, id: keyOf('stop', session.id, call.id, operation.id) };
-      const result = await this.stepService(entry, session, operation, stopCall, 'stop', undefined, undefined, () => {});
-      return { status: ['stopped', 'completed', 'failed'].includes(result.session_status) ? 'stopped' :
-        result.status === 'completed' ? 'pending' : result.status === 'not_submitted' ? 'unknown' : result.status,
-        ...(result.output?.error ? { error: result.output.error } : {}) };
+    const now = new Date().toISOString();
+    const markStopRequested = patch => this.saveOperation(operation, { stop_requested_at: operation.stop_requested_at || now, ...patch });
+    if (operation.runtime_ended && operation.status !== 'unknown') {
+      return { status: 'stopped', remote_outcome: 'confirmed_stopped' };
     }
-    if (operation.status === 'unknown') return { status: 'unknown' };
+    if (operation.status === 'prepared') {
+      markStopRequested({ status: 'not_submitted', runtime_ended: true, finished_at: now });
+      return { status: 'stopped', remote_outcome: 'confirmed_stopped' };
+    }
+    if (operation.status === 'not_submitted') return { status: 'stopped', remote_outcome: 'confirmed_stopped' };
+    if (operation.protocol === 'service') {
+      const controller = this.active.get(operation.id);
+      if (controller && typeof controller.abort === 'function') {
+        controller.abort(Object.assign(new Error('Interrupted by user'), { code: 'interrupted_by_user' }));
+      }
+      const entry = this.get(operation.connection_id);
+      if (entry?.config.lifecycle?.stop_method && operation.operation_id &&
+          operation.session_id === session.id &&
+          operation.connection_binding_version === (entry.binding_version ?? 1)) {
+        const stopCall = { ...call, id: keyOf('stop', session.id, call.id, operation.id) };
+        const result = await this.stepService(entry, session, operation, stopCall, 'stop', undefined, undefined, () => {});
+        const confirmed = ['stopped', 'completed', 'failed'].includes(result.session_status);
+        if (confirmed) {
+          markStopRequested({ remote_outcome: 'confirmed_stopped', runtime_ended: true });
+          return { status: 'stopped', remote_outcome: 'confirmed_stopped', ...(result.output?.error ? { error: result.output.error } : {}) };
+        }
+      }
+      markStopRequested({
+        detached_at: operation.detached_at || now,
+        detached_reason: 'interrupted_by_user',
+        remote_outcome: 'unknown_may_still_be_running',
+      });
+      return { status: 'detached', remote_outcome: 'unknown_may_still_be_running' };
+    }
+    const partial_snapshot = await this.processes.partialSnapshot(operation);
+    if (operation.status === 'unknown') {
+      if (!this.processes.isAlive(operation)) {
+        markStopRequested({ runtime_ended: true, finished_at: operation.finished_at || now, remote_outcome: 'confirmed_stopped',
+          ...(partial_snapshot ? { partial_snapshot } : {}) });
+        return { status: 'stopped', remote_outcome: 'confirmed_stopped', ...(partial_snapshot ? { partial_snapshot } : {}) };
+      }
+      const killed = await this.processes.forceKill(operation);
+      markStopRequested({
+        detached_at: killed ? null : (operation.detached_at || now),
+        detached_reason: killed ? null : 'interrupted_by_user',
+        runtime_ended: killed,
+        ...(killed ? { status: 'stopped', finished_at: now } : {}),
+        remote_outcome: killed ? 'confirmed_stopped' : 'unknown_may_still_be_running',
+        ...(partial_snapshot ? { partial_snapshot } : {}),
+      });
+      return { status: killed ? 'stopped' : 'detached', remote_outcome: killed ? 'confirmed_stopped' : 'unknown_may_still_be_running',
+        ...(partial_snapshot ? { partial_snapshot } : {}) };
+    }
     const key = keyOf('stop', session.id, call.id, operation.id);
     await this.processes.command(operation, { ...call, id: key }, 'stop', null, undefined, () => {});
-    return { status: 'pending' };
+    markStopRequested({
+      detached_at: operation.detached_at || now,
+      detached_reason: 'interrupted_by_user',
+      remote_outcome: 'unknown_may_still_be_running',
+      ...(partial_snapshot ? { partial_snapshot } : {}),
+    });
+    return { status: 'detached', remote_outcome: 'unknown_may_still_be_running', ...(partial_snapshot ? { partial_snapshot } : {}) };
+  }
+
+  listDetached() {
+    return this.store.list(operationRecords)
+      .filter(op => op.detached_at && !op.detached_dismissed_at)
+      .map(op => {
+        const entry = this.get(op.connection_id);
+        const session = this.store.get(executionRecords, op.session_id);
+        const alive = op.protocol !== 'service' ? this.processes.isAlive(op) : this.active.has(op.id);
+        return this.clean({
+          id: op.id,
+          session_id: op.session_id,
+          room_id: session?.origin_room?.id || (session?.space?.kind === 'room' ? session.space.id : null),
+          connection_id: op.connection_id,
+          connection_name: entry?.name || op.connection_id,
+          protocol: op.protocol,
+          method: op.method || op.work_method || null,
+          status: op.status,
+          alive,
+          runner_pid: op.runner_pid || null,
+          child_pid: op.child_pid || null,
+          detached_at: op.detached_at,
+          detached_reason: op.detached_reason || 'interrupted_by_user',
+          remote_outcome: op.remote_outcome || (op.runtime_ended ? 'confirmed_stopped' : 'unknown_may_still_be_running'),
+          partial_snapshot: op.partial_snapshot || null,
+          late_receipt: op.late_receipt || null,
+          runtime_ended: Boolean(op.runtime_ended),
+          error: op.error || null,
+        });
+      })
+      .sort((a, b) => (b.detached_at || '').localeCompare(a.detached_at || ''));
+  }
+
+  async killDetached(id, { dismiss = false } = {}) {
+    const op = this.store.get(operationRecords, id);
+    if (!op) reject('operation_not_found', 'Detached operation not found', 404);
+    const now = new Date().toISOString();
+    if (op.protocol === 'service') {
+      const controller = this.active.get(op.id);
+      if (controller && typeof controller.abort === 'function') {
+        controller.abort(Object.assign(new Error('Force killed by user'), { code: 'interrupted_by_user' }));
+      }
+      const saved = this.saveOperation(op, {
+        runtime_ended: true,
+        ...(dismiss ? { detached_dismissed_at: now } : {}),
+        remote_outcome: op.remote_outcome || 'unknown_may_still_be_running',
+      });
+      return { id: saved.id, killed: true, dismissed: dismiss, alive: false };
+    }
+    const killed = await this.processes.forceKill(op);
+    const saved = this.saveOperation(op, {
+      ...(killed ? { status: 'stopped', runtime_ended: true, finished_at: op.finished_at || now, remote_outcome: 'confirmed_stopped' } : {}),
+      ...(dismiss ? { detached_dismissed_at: now } : {}),
+    });
+    return { id: saved.id, killed, dismissed: dismiss, alive: this.processes.isAlive(saved) };
   }
 
   async publish(operation, session) {
@@ -656,8 +770,18 @@ export class SummonConnections {
       this.saveOperation(operation, { signature });
       return;
     }
-    await this.onEvent(session.id, operation.id, { ...facts, position: keyOf('execution', operation.id, signature) });
-    this.saveOperation(operation, { signature });
+      if (operation.detached_at) {
+        if (settled(facts.status) && !operation.late_receipt) {
+          this.saveOperation(operation, {
+            late_receipt: { at: new Date().toISOString(), status: facts.status, output: facts.output || null, error: facts.error || null },
+            remote_outcome: facts.status === 'stopped' ? 'confirmed_stopped' : 'completed_after_detach',
+            signature,
+          });
+        }
+        return;
+      }
+      await this.onEvent(session.id, operation.id, { ...facts, position: keyOf('execution', operation.id, signature) });
+      this.saveOperation(operation, { signature });
   }
 
   async publishWork(operation, session) {
@@ -751,10 +875,14 @@ export class SummonConnections {
         current = this.saveOperation(current, { revoked_at: new Date().toISOString() });
         this.store.save(executionRecords, { id: session.id, authority_revoked: true });
       }
-      if (current.revoked_at && !settled(current.status)) {
-        const stopId = keyOf('revoked', current.id);
+      if ((current.revoked_at || current.stop_requested_at) && !settled(current.status)) {
+        const stopId = keyOf(current.revoked_at ? 'revoked' : 'recover-stop', current.id);
         try { await this.stopOperation(current, session, { id: stopId, submitted_by: user }); }
         catch { /* The original outcome remains pending or unknown. */ }
+      }
+      if ((current.revoked_at || current.stop_requested_at) && current.status === 'unknown' && !current.runtime_ended &&
+          current.protocol !== 'service' && this.processes.isAlive(current)) {
+        try { await this.processes.forceKill(current); } catch {}
       }
       for (const operation of operations) {
         if (operation.id === current.id) continue;
@@ -772,10 +900,17 @@ export class SummonConnections {
   }
 
   safeToDisconnect(operation) {
-    if (!settled(operation.status)) return false;
-    if (operation.status !== 'unknown') return true;
-    return Boolean(operation.runtime_ended && (operation.protocol !== 'codex' ||
-      !operation.thread_active && !operation.turn_attempted));
+    if (operation.detached_at) return true;
+    if (settled(operation.status)) {
+      if (operation.status !== 'unknown') return true;
+      return Boolean(operation.runtime_ended || (operation.protocol !== 'service' && !this.processes.isAlive(operation)));
+    }
+    // Detached native processes (Codex/CLI) survive Gateway restart independently via state.json.
+    if (operation.protocol !== 'service' && operation.runner_pid &&
+        ['running', 'awaiting-input', 'stopping'].includes(operation.status)) {
+      return true;
+    }
+    return false;
   }
 
   async drainStatus() {
