@@ -33,7 +33,7 @@
   <g transform="translate(164, 18)">
     <text x="6" y="15" class="font" font-size="12.2" font-weight="700" fill="#3B4A59">Lead Bot &amp; EggBot <tspan font-weight="400" fill="#8A99A8">Just now</tspan></text>
     <path d="M 14 24 H 820 Q 834 24 834 38 V 88 Q 834 102 820 102 H 14 Q 0 102 0 88 V 68 L -12 58 L 0 48 V 38 Q 0 24 14 24 Z" fill="#FFFFFF" stroke="#D6DFE8" stroke-width="1.5"/>
-    <text x="22" y="57" class="font" font-size="14.5" font-weight="700" fill="#1A222B">👋 Prefer English? Click anywhere on this message card to open the [English Walkthrough &amp; Full Architecture Specs]</text>
-    <text x="22" y="83" class="font" font-size="12.2" font-weight="600" fill="#2C5270">▼ Click to expand / collapse full English edition (Continuous Room Walkthrough SVG + Core Design + Comparison Matrix)</text>
+    <text x="22" y="57" class="font" font-size="14.5" font-weight="700" fill="#1A222B">👋 Prefer English? Click this card to see how a group of Bots ships a real project through natural chat</text>
+    <text x="22" y="83" class="font" font-size="12.2" font-weight="600" fill="#2C5270">▼ Click to expand / collapse [English · Continuous Room Walkthrough &amp; How the Group Works]</text>
   </g>
 </svg>

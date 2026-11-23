@@ -33,7 +33,7 @@
   <g transform="translate(164, 18)">
     <text x="6" y="15" class="font" font-size="12.2" font-weight="700" fill="#4B4840">主控 Bot <tspan font-weight="400" fill="#A6A093">刚刚</tspan></text>
     <path d="M 14 24 H 820 Q 834 24 834 38 V 88 Q 834 102 820 102 H 14 Q 0 102 0 88 V 68 L -12 58 L 0 48 V 38 Q 0 24 14 24 Z" fill="#FFFDF9" stroke="#E2DDD1" stroke-width="1.5"/>
-    <text x="22" y="57" class="font" font-size="15" font-weight="700" fill="#1F1E1B">👋 嗨！我是 Summon 主控 Bot —— 点击我这张对话卡片，直接展开【简体中文 · 群聊实录与完整架构详解】</text>
-    <text x="22" y="83" class="font" font-size="12.5" font-weight="600" fill="#2E633D">▼ 点击此处展开 / 收起中文完整内容（一镜到底群聊长图 + 四大痛点 + 六大架构设计 + 9 维竞品对比表）</text>
+    <text x="22" y="57" class="font" font-size="15" font-weight="700" fill="#1F1E1B">👋 嗨！我是主控 Bot —— 点我这张卡片，看看我们是怎么在群里一边聊天、一边把项目做完的</text>
+    <text x="22" y="83" class="font" font-size="12.5" font-weight="600" fill="#2E633D">▼ 点击展开 / 收起【简体中文 · 一镜到底群聊实录 &amp; 群聊工作方式导览】</text>
   </g>
 </svg>
