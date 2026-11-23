@@ -147,7 +147,7 @@ export class ModelProvider {
     this.controllers.add(controller);
     const started = Date.now(), secrets = new Set();
     let record, received, ended = false, wireUsage, usageSource, stageTimer, totalTimer;
-    let transportFault, outputStarted = false;
+    let transportFault, fetchErrorText = '', outputStarted = false;
     let failureTag = `${model.provider}/${model.id}${requestedReasoning !== null ? ` · effort=${requestedReasoning}` : ''}`;
     const waitFor = (phase, ms) => {
       clearTimeout(stageTimer);
@@ -177,7 +177,7 @@ export class ModelProvider {
     const recordFailure = (message, rawErrorText = '') => {
       if (!record || signal.aborted) return;
       const http = record.httpStatus;
-      const errText = rawErrorText || message?.errorMessage || record.error || '';
+      const errText = [rawErrorText, fetchErrorText, message?.errorMessage, record.error].filter(Boolean).join('\n');
       const providerFault = classifyProviderFault(http, errText);
       if (providerFault) {
         record.providerFault = message.providerFault = providerFault;
@@ -327,6 +327,7 @@ export class ModelProvider {
             try { response = await fetch(input, { ...init, redirect: 'error' }); }
             catch (error) {
               const causes = [error, error.cause, ...(error.cause instanceof AggregateError ? error.cause.errors : [])];
+              fetchErrorText = causes.map(cause => cause?.message || '').filter(Boolean).join('\n');
               if (causes.some(cause => transientNetworkCodes.has(cause?.code))) transportFault = 'network-before-headers';
               throw error;
             }
@@ -400,7 +401,7 @@ export class ModelProvider {
           const failure = received || { role: 'assistant', content: [], api: model.api, provider: model.provider, model: model.id,
             usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, timestamp: Date.now() };
           failure.stopReason = cancelled ? 'aborted' : 'error'; failure.errorMessage = message;
-          recordFailure(failure);
+          recordFailure(failure, String(error?.message || ''));
           persist();
           output.push({ type: 'error', reason: failure.stopReason, error: failure });
         }
