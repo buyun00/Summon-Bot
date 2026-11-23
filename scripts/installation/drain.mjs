@@ -2,17 +2,20 @@ import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as pause } from 'node:timers/promises';
-import { inputRecords, observeExitedCodexLaunch, operationRecords, settled } from '../../capabilities/services/session-processes.mjs';
+import { inputRecords, operationRecords, settled } from '../../capabilities/services/session-processes.mjs';
+import { isProcessAlive } from '../../bot/src/runtime/process-tools.mjs';
 import { bundledNode, inspectService, stopService } from './system.mjs';
 import { inspectServiceLock } from './service-lock.mjs';
 import { advanceInstallation, writeInstallationState } from './installation-state.mjs';
 
 const failure = (message, code = 'INSTALLATION_DRAIN_UNAVAILABLE') => Object.assign(new Error(message), { code });
 const codexLaunchIsUnknown = item => item.kind === 'codex_turn' && item.status === 'unknown';
-const hasWriterBoundary = operation => operation.runtime_ended === true && settled(operation.status) &&
-  [operation.finished_at, operation.runtime_exit_observed_at, operation.recovered_at]
-    .some(value => Number.isFinite(Date.parse(value)) && Date.parse(value) >= Date.parse(operation.submitted_at)) &&
-  (operation.status !== 'unknown' || operation.protocol !== 'codex' || !operation.thread_active && !operation.turn_attempted);
+const detachedSafe = operation => Boolean(
+  operation.detached_at ||
+  (operation.protocol !== 'service' && operation.runner_pid && ['running', 'awaiting-input', 'stopping'].includes(operation.status))
+);
+const hasWriterBoundary = operation => detachedSafe(operation) || (operation.runtime_ended === true && settled(operation.status)) ||
+  (operation.protocol !== 'service' && settled(operation.status) && !isProcessAlive(operation.runner_pid) && !isProcessAlive(operation.child_pid));
 const sameWriter = (left, right) => left.call_id === right.call_id && left.instance_id === right.instance_id &&
   left.runner_pid === right.runner_pid && left.bridge_pid === right.bridge_pid && left.submitted_at === right.submitted_at;
 const stoppedDrain = (state, exited) => ({
@@ -153,9 +156,9 @@ async function observeExitedWriters(dataRoot, callIds, owner) {
       const record = read(id);
       if (!record) continue;
       const operation = JSON.parse(record);
-      if (operation.protocol !== 'codex' || !operation.instance_id) continue;
+      if (operation.protocol === 'service' || !operation.instance_id) continue;
       const boundary = hasWriterBoundary(operation) ||
-        operation.status === 'unknown' && await observeExitedCodexLaunch(dataRoot, operation, owner);
+        (!isProcessAlive(operation.runner_pid) && !isProcessAlive(operation.child_pid));
       if (boundary && read(id) === record) {
         exited.push({ call_id: id, instance_id: operation.instance_id, runner_pid: operation.runner_pid ?? null,
           bridge_pid: operation.child_pid ?? null, submitted_at: operation.submitted_at });
