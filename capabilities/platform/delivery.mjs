@@ -170,7 +170,7 @@ export class Deliveries {
   list(context, scope) {
     return this.store.list(wakeupRecords).filter(wakeup => {
       const bot = this.store.get('platform-bots', wakeup.bot_id);
-      if (!bot || wakeup.member_active === false || wakeup.archived === true ||
+      if (!bot || wakeup.member_active === false ||
           wakeup.observation && !this.roomMembers(wakeup.rule.room).includes(context.actor.id) ||
           !this.ruleUsable(wakeup.rule, wakeup.bot_id) || !this.manager.canConfigure(context.actor, bot)) return false;
       if (scope?.kind === 'bot') return wakeup.bot_id === scope.id;
@@ -510,7 +510,7 @@ export class Deliveries {
           const lagMs = now - scheduledMs;
           const graceMs = Math.min(60000, rule.interval_ms);
           if (lagMs > graceMs) {
-            const skipped = Math.max(1, Math.floor(lagMs / rule.interval_ms));
+            const skipped = Math.floor(lagMs / rule.interval_ms) + 1;
             this.store.save(wakeupRecords, {
               id: wakeup.id,
               next_due,

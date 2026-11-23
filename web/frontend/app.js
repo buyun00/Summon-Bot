@@ -2709,6 +2709,13 @@ function describeWakeup(rule) {
   return formatTime(rule.at,true) + (rule.interval_ms ? ' · 每 ' + rule.interval_ms / 60000 + ' 分钟' : ' · 单次');
 }
 
+function formatPreciseTime(value) {
+  if (!value) return '—';
+  const time = new Date(value);
+  if (Number.isNaN(time.getTime())) return String(value);
+  return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(time);
+}
+
 function describeWakeupRun(run) {
   const outcomeLabels = {
     pending: '待处理',
@@ -2718,20 +2725,25 @@ function describeWakeupRun(run) {
     failed: '处理失败',
   };
   const label = outcomeLabels[run.outcome] || run.outcome;
-  const at = formatTime(run.scheduled_at || run.enqueued_at, true);
-  return `${at} · ${label}${run.misfired ? '（迟到补发）' : ''}${run.error ? ' · ' + run.error : ''}`;
+  const parts = [];
+  if (run.scheduled_at) parts.push(`触发 ${formatPreciseTime(run.scheduled_at)}`);
+  if (run.enqueued_at) parts.push(`入队 ${formatPreciseTime(run.enqueued_at)}`);
+  parts.push(`消费 ${run.consumed_at ? formatPreciseTime(run.consumed_at) : '待消费'}`);
+  parts.push(`结果 ${label}${run.misfired ? '（迟到补发）' : ''}${run.error ? ' · ' + run.error : ''}`);
+  return parts.join(' · ');
 }
 
 function renderWakeupRow(item) {
   const latestRun = Array.isArray(item.recent_runs) && item.recent_runs[0];
   return `<div class="wakeup-row"><div class="wakeup-copy"><strong>${esc(nameOf(item.bot_id))}</strong><span>${esc(describeWakeup(item.rule))}</span>
     ${item.rule.room && ui.view !== 'chat' ? `<small>${esc(roomById(item.rule.room)?.name || item.rule.room)}</small>` : ''}
+    ${item.archived ? '<small>单次已归档</small>' : ''}
     ${item.disabled_reason === 'scope_unavailable' ? '<small>范围失权已自动停用</small>' : ''}
     ${item.skipped_count ? `<small>停机跳过 ${esc(item.skipped_count)} 次</small>` : ''}
-    ${latestRun ? `<small>最近触发：${esc(describeWakeupRun(latestRun))}</small>` : ''}
+    ${latestRun ? `<small class="wakeup-run">最近回执：${esc(describeWakeupRun(latestRun))}</small>` : ''}
     ${botById(item.bot_id)?.enabled === false ? '<small>Bot 已暂停</small>' : ''}</div>
-    <button class="text-button" data-action="edit-wakeup" data-id="${esc(item.id)}">编辑</button>
-    <button class="text-button" data-action="toggle-wakeup" data-id="${esc(item.id)}">${item.enabled ? '停用' : '启用'}</button>
+    ${item.archived ? '' : `<button class="text-button" data-action="edit-wakeup" data-id="${esc(item.id)}">编辑</button>
+    <button class="text-button" data-action="toggle-wakeup" data-id="${esc(item.id)}">${item.enabled ? '停用' : '启用'}</button>`}
     ${item.rule.kind !== 'room_base' ? `<button class="text-button" data-action="delete-wakeup" data-id="${esc(item.id)}">删除</button>` : ''}</div>`;
 }
 

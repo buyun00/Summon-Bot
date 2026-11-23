@@ -129,8 +129,12 @@ export function createApi({ platform, room, attachments, models, connections, pu
         const access = platform.configureAccess(id, args, userContext);
         const model_ids = (prior.model_ids || []).filter(model => !access.model_ids?.includes(model));
         const workspace_ids = (prior.workspace_ids || []).filter(workspace => !access.workspace_ids?.includes(workspace));
+        const addedModels = (access.model_ids || []).filter(model => !(prior.model_ids || []).includes(model));
+        const addedWorkspaces = (access.workspace_ids || []).filter(workspace => !(prior.workspace_ids || []).includes(workspace));
         if (model_ids.length || workspace_ids.length) await platform.revokeSessions({ kind: 'bot', id, model_ids, workspace_ids });
-        platform.runtime.resumeRecoveredRuns();
+        if (addedModels.length || addedWorkspaces.length) {
+          platform.runtime.resumeRecoveredRuns({ kind: 'bot_access', bot_id: id, model_ids: addedModels, workspace_ids: addedWorkspaces });
+        }
         emit('bot');
         return access;
       }
@@ -260,18 +264,29 @@ export function createApi({ platform, room, attachments, models, connections, pu
         const prior = platform.workspaceRecords().find(workspace => workspace.id === ref.id);
         const result = platform.configureWorkspace({ ...args, id: ref.id }, userContext);
         if (prior && (prior.path !== result.path || prior.write !== false && !result.write)) await platform.revokeSessions(ref);
-        platform.runtime.resumeRecoveredRuns();
+        if (!prior || prior.path !== result.path || (prior.write === false && result.write !== false)) {
+          platform.runtime.resumeRecoveredRuns({ kind: 'workspace', id: ref.id });
+        }
         return result;
       }
     }
     if (path === preservedModelSettings && method === 'GET') return models.snapshot();
     if (path === preservedModelSettings + '/local' && method === 'GET') return models.localLogins();
     if (path === preservedModelSettings + '/local/import' && method === 'POST') return models.importLocal(args.kind);
-    if (path === preservedModelSettings + '/connections' && method === 'POST') return models.save(args);
-    if (path === preservedModelSettings + '/purposes' && method === 'POST') return models.savePurposes(args);
+    if (path === preservedModelSettings + '/connections' && method === 'POST') {
+      const result = await models.save(args);
+      platform.runtime.resumeRecoveredRuns({ kind: 'model', id: result?.connection?.id || args?.id || null });
+      return result;
+    }
+    if (path === preservedModelSettings + '/purposes' && method === 'POST') {
+      const result = await models.savePurposes(args);
+      platform.runtime.resumeRecoveredRuns({ kind: 'model', id: null });
+      return result;
+    }
     if (path === preservedModelSettings + '/active' && method === 'POST') {
       const result = await models.select(args.id);
       platform.initializeDefaults();
+      platform.runtime.resumeRecoveredRuns({ kind: 'model', id: args.id || null });
       return result;
     }
     if (path === preservedModelSettings + '/usage' && method === 'POST') return models.refreshUsage(args.force === true);

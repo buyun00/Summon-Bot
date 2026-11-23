@@ -154,19 +154,25 @@ export class Executions {
   retainRoomResults(roomId) {
     for (const session of this.store.list(sessionRecords)) {
       if (session.origin_room?.id !== roomId || session.origin_execution?.kind !== 'conversation') continue;
+      if (this.platform.isActiveSession(session)) continue;
       const call = session.latest_call_id && this.store.get(callRecords, session.latest_call_id);
-      if (!call || call.result_ref?.kind !== 'event') continue;
+      if (!call || !terminal.has(call.status) || call.status === 'unknown') continue;
+      const receiptEvent = call.result_ref?.kind === 'event' ? this.store.get('platform-events', call.result_ref.id) : null;
+      const receipt = receiptEvent && terminal.has(receiptEvent.status) && receiptEvent.status !== 'unknown'
+        ? call.result_ref
+        : { kind: 'call', id: call.id };
       this.platform.deliverResultToHost?.({
         reason: 'origin_room_deleted',
         session,
         callId: call.id,
         status: call.status,
-        receipt: call.result_ref,
+        receipt,
       });
     }
   }
 
   retainUndelivered(event, botId) {
+    if (!terminal.has(event.status) || event.status === 'unknown') return;
     const target = event.target ?? this.store.get(callRecords, event.call_id)?.target;
     const session = target?.kind === 'session' && this.record(target);
     if (!session?.origin_room || session.origin_execution?.kind !== 'conversation' || session.owner?.id !== botId) return;
@@ -745,6 +751,7 @@ export class Executions {
       ...(preview && !facts.input_status ? { last_output_summary: preview } : {}),
       safe_to_disconnect: facts.safe_to_disconnect,
       ...(session.authority_revoked && ended ? { revocation_stop: 'stopped' } : {}),
+      updated_at: new Date().toISOString(),
       input_revision: facts.input_revision ?? session.input_revision, latest_call_id: callId });
     if (control.stop_status !== session.control.stop_status) this.projectStop({ kind: 'session', id: sessionId }, control);
     return updated;

@@ -1,6 +1,7 @@
 import { realpathSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, parse, relative, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { bindModel } from '../../bot/src/agent/model.mjs';
 import { catalogMaintainerRole, roleIds, toolOnboardingRole } from '../../roles/index.mjs';
 import { BotManager, activeControl, botRecords, directoryEntry } from '../bot-management/service.mjs';
@@ -711,11 +712,13 @@ export class SummonPlatform {
     const owner_conversation_id = context.origin?.conversation_id ?? null;
     const work_summary = args.work_summary?.trim() || null;
     if (origin_room?.id) this.deliveries.noteRoomActivity(origin_room.id, 'tool_progress');
+    const nowIso = new Date().toISOString();
     return this.store.transaction(() => {
       const session = this.store.save(sessionRecords, { id: call.id, engine, space, owner: actor, bot_id: bot?.id ?? null,
         source_space: project_room || context.conversation?.space || null, project_room,
         origin_room, origin_message_id, owner_conversation_id, owner_run_id: context.origin?.run_id ?? null, work_summary, waiting_summary: null,
         pending_input: [],
+        created_at: nowIso, updated_at: nowIso,
         ...(roomWorkspace && resource_refs.some(ref => sameRef(ref, roomWorkspace)) ? { room_workspace_id: roomWorkspace.id } : {}),
         execution_actor: actor, submitted_by: actor, model, model_binding: binding,
         instructions: sharing ? '' : context.session?.instructions ?? bot?.instructions ?? '',
@@ -885,7 +888,14 @@ export class SummonPlatform {
       if (!updated || current.enabled && !updated.enabled || (current.binding_version ?? 1) !== (updated.binding_version ?? 1))
         await this.revokeSessions({ kind: 'connection', id: result.id });
     }
-    this.runtime?.resumeRecoveredRuns?.();
+    const recoveredConnection = Boolean(savedEntry?.enabled && (
+      !current ||
+      !current.enabled ||
+      (current.binding_version ?? 1) !== (savedEntry.binding_version ?? 1) ||
+      !isDeepStrictEqual(current.config, savedEntry.config) ||
+      !isDeepStrictEqual(current.grants, savedEntry.grants)
+    ));
+    if (recoveredConnection) this.runtime?.resumeRecoveredRuns?.({ kind: 'connection', id: result.id });
     this.emit('connection');
     return { ...result, ...this.connectionMaintenance(this.connections.get(result.id)) };
   }
@@ -1625,6 +1635,9 @@ export class SummonPlatform {
     try {
       outcome = await (session.engine === 'pi' ? this.runtime.pi.stop({ session, call }) : this.connections.stop({ session, call }));
     } catch { outcome = { status: 'unknown' }; }
+    const terminalStatuses = new Set(['completed', 'failed', 'stopped', 'cancelled', 'not_submitted']);
+    let latestCallId = null;
+    let shouldEmitStoppedReceipt = false;
     this.store.transaction(() => {
       const current = this.store.get(sessionRecords, session.id);
       if (current) {
@@ -1633,19 +1646,63 @@ export class SummonPlatform {
         if (outcome.status === 'stopped' && current.status !== 'stopped') {
           patch.status = 'stopped';
           patch.safe_to_disconnect = true;
+          patch.updated_at = new Date().toISOString();
         }
         if (Object.keys(patch).length) this.store.save(sessionRecords, { id: session.id, ...patch });
+        latestCallId = current.latest_call_id || null;
+        if (outcome.status === 'stopped' && latestCallId) {
+          const latestCall = this.store.get('platform-calls', latestCallId);
+          if (latestCall && !terminalStatuses.has(latestCall.status)) shouldEmitStoppedReceipt = true;
+        }
       }
       this.calls.finish(call.id, 'completed', outcome);
     });
+    if (shouldEmitStoppedReceipt && latestCallId) {
+      try {
+        this.executions.receipt(session.id, latestCallId, {
+          status: 'stopped',
+          position: keyOf('revoke_stop', call.id),
+          safe_to_disconnect: true,
+          ...(outcome.partial_snapshot ? { output: { text: outcome.partial_snapshot } } : {}),
+        });
+      } catch {}
+    }
+    const latestSession = this.store.get(sessionRecords, session.id);
+    const finalStatus = latestSession?.status || outcome.status;
+    if (latestSession && !latestSession.host_fallback_delivered_at && terminalStatuses.has(finalStatus) &&
+        latestSession.origin_room && latestSession.owner?.kind === 'bot') {
+      const ownerBot = this.store.get(botRecords, latestSession.owner.id);
+      const roomExists = Boolean(this.store.get('rooms', latestSession.origin_room.id));
+      const canReachOrigin = roomExists && ownerBot?.enabled && !ownerBot.archivedAt &&
+        this.canReadSpace(latestSession.owner, latestSession.origin_room);
+      if (!canReachOrigin) {
+        const latestCall = latestSession.latest_call_id && this.store.get('platform-calls', latestSession.latest_call_id);
+        const receiptEvent = latestCall?.result_ref?.kind === 'event'
+          ? this.store.get('platform-events', latestCall.result_ref.id)
+          : null;
+        const receipt = receiptEvent && terminalStatuses.has(receiptEvent.status)
+          ? { kind: 'event', id: receiptEvent.id }
+          : { kind: 'call', id: call.id };
+        this.deliverResultToHost({
+          reason: !roomExists ? 'origin_room_deleted' : (!ownerBot?.enabled || ownerBot.archivedAt ? 'owner_bot_paused' : 'origin_room_unavailable'),
+          session: latestSession,
+          callId: latestSession.latest_call_id || call.id,
+          status: finalStatus,
+          receipt,
+        });
+      }
+    }
   }
 
   deliverResultToHost({ reason, session, callId, status, receipt }) {
-    if (!session || session.host_fallback_delivered_at) return null;
+    const terminalFallbackStates = new Set(['completed', 'failed', 'stopped', 'cancelled', 'not_submitted']);
+    if (!session || !terminalFallbackStates.has(status)) return null;
+    const latest = this.store.get(sessionRecords, session.id) || session;
+    if (latest.host_fallback_delivered_at) return null;
     try {
-      const originRoomId = session.origin_room?.id || null;
+      const originRoomId = latest.origin_room?.id || null;
       const originRoom = originRoomId ? this.store.get('rooms', originRoomId) : null;
-      const ownerBot = session.owner?.id ? this.store.get(botRecords, session.owner.id) : null;
+      const ownerBot = latest.owner?.id ? this.store.get(botRecords, latest.owner.id) : null;
       const eggbot = this.listBots().find(bot => bot.built_in_role?.id === 'eggbot' && !bot.archivedAt);
       const senderBot = (ownerBot && !ownerBot.archivedAt) ? ownerBot : (eggbot || this.listBots().find(bot => !bot.archivedAt));
       if (!senderBot) return null;
@@ -1659,23 +1716,30 @@ export class SummonPlatform {
         : reason === 'owner_bot_paused' ? '原执行成员已暂停'
         : reason === 'owner_run_suspended' ? '原群主对话挂起未恢复'
         : '原群当前不可达';
-      const summary = session.last_output_summary || session.waiting_summary || session.work_summary || '后台任务已产生终态回执';
+      const rawSummary = latest.last_output_summary || latest.waiting_summary || null;
+      const summary = (rawSummary && rawSummary !== latest.work_summary)
+        ? rawSummary
+        : status === 'stopped'
+          ? (latest.authority_revoked ? `因${reasonText}触发权限中止，任务已停止` : '任务已中止，未产生最终文本输出')
+          : status === 'failed'
+            ? '任务执行失败，详见关联调用与事件记录'
+            : '任务已结束（无额外文本摘要，详见关联调用与事件记录）';
       const lines = [
         `【原群成果转交】${reasonText}，已将后台任务终态结果同步至本私聊：`,
-        `- 任务摘要：${session.work_summary || session.id}`,
+        `- 任务摘要：${latest.work_summary || latest.id}`,
         `- 执行状态：${status}`,
         `- 结果摘要：${summary}`,
-        ...(originRoomId ? [`- 来源群：${originRoom?.name || originRoomId}（原消息：${session.origin_message_id || '无'}）`] : []),
-        `- 调用 / 会话：session ${session.id} / call ${callId}`,
+        ...(originRoomId ? [`- 来源群：${originRoom?.name || originRoomId}（原消息：${latest.origin_message_id || '无'}）`] : []),
+        `- 调用 / 会话：session ${latest.id} / call ${callId}`,
       ];
       const refs = [
-        { kind: 'session', id: session.id },
+        { kind: 'session', id: latest.id },
         ...(callId ? [{ kind: 'call', id: callId }] : []),
         ...(receipt?.kind && receipt?.id ? [receipt] : []),
       ].filter(ref => this.canReadReference(ref, { actor: user }));
-      const sent = this.room.send(direct.id, { text: lines.join('\n'), references: refs }, senderBot.id, { callId: keyOf('host_fallback', session.id, callId) });
+      const sent = this.room.send(direct.id, { text: lines.join('\n'), references: refs }, senderBot.id, { callId: keyOf('host_fallback', latest.id, callId) });
       this.store.save(sessionRecords, {
-        id: session.id,
+        id: latest.id,
         host_fallback_delivered_at: new Date().toISOString(),
         host_fallback_reason: reason,
         host_fallback_room_id: direct.id,

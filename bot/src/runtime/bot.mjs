@@ -5,6 +5,7 @@ import { assertInstallationWritable, readInstallationState } from '../../../scri
 import { inspectServiceLock } from '../../../scripts/installation/service-lock.mjs';
 import { repairRequestType, repairResultType, tools } from '../../../capabilities/platform/contract.mjs';
 import { deliveryRecords } from '../../../capabilities/platform/delivery.mjs';
+import { sessionRecords } from '../../../capabilities/platform/executions.mjs';
 import { waitRecords } from '../../../capabilities/platform/calls.mjs';
 import { workGroup } from '../../../capabilities/platform/session-work.mjs';
 import { BotStore } from '../storage/store.mjs';
@@ -149,8 +150,9 @@ export class BotRuntime {
         for (const conversation of store.listRecords(R.conversation)) this.syncConversationControl(inbox, conversation);
         this.reconcileReturnWaits(inbox);
         for (const route of inbox.list(R.route, 'fast_read_decision', 'forward')) {
-          if (route.fast_read_forward_call_id)
-            this.fastRead.forwardReceipt(inbox, this.platform.store.get('platform-calls', route.fast_read_forward_call_id));
+          if (route.state === 'pending' && !route.run_id) {
+            inbox.store.putRecord(R.route, { ...route, fast_read_decision: null, fast_read_forward_call_id: null });
+          }
         }
       });
     } catch (error) {
@@ -240,8 +242,6 @@ export class BotRuntime {
         !this.platform.canReadEvent(delivery.event, { actor: botRef(delivery.bot_id) }))
       return { accepted: false, retryable: false, code: 'access_revoked' };
     const receipt = inbox.receive(delivery);
-    if (delivery.event.type === 'call.receipt')
-      this.fastRead.forwardReceipt(inbox, this.platform.store.get('platform-calls', delivery.event.call_id));
     if (receipt.processed || receipt.waits.length) setImmediate(() => {
       if (!this.closed) this.consumeDeliveries(this.inboxes.get(delivery.bot_id), [receipt.event_id]);
     });
@@ -570,7 +570,97 @@ export class BotRuntime {
     return Boolean(input && terminalCallStates.has(input.status) && input.receipt_pending === 'saved');
   }
 
-  resumeAuthorizedRuns(inbox, conversation, bot) {
+  runMatchesRecoveryScope(inbox, conversation, run, bot, scope) {
+    if (!scope || !scope.kind) return false;
+    const actor = botRef(bot.id);
+    const fixedConnection = conversation.binding?.model?.connection_id || null;
+    const purpose = conversation.kind === 'fast_read' ? 'fast_read' : 'conversation';
+    const resolved = fixedConnection ? null : this.platform.models.resolveForBot(bot, purpose);
+    const runModelId = fixedConnection || run.binding?.model?.connection_id || resolved?.connection_id || null;
+    const convSession = conversation.session_id ? this.platform.executions.record(sessionRef(conversation.session_id)) : null;
+    const room = conversation.space?.kind === 'room' ? this.platform.store.get('rooms', conversation.space.id) : null;
+    const runCalls = inbox.calls(run.id);
+    const runEventIds = new Set([
+      ...(run.injected_event_ids || []),
+      ...(run.pending_event_ids || []),
+      ...(run.route_ids || []).map(id => inbox.store.getRecord(R.route, id)?.event_id).filter(Boolean),
+    ]);
+    const runEvents = [...runEventIds].map(id => inbox.event(id)).filter(Boolean);
+    const callSession = target => target?.kind === 'session' ? this.platform.executions.record(target) : null;
+
+    if (scope.kind === 'bot_access') {
+      if (bot.id !== scope.bot_id) return false;
+      const addedModels = scope.model_ids || [];
+      const addedWorkspaces = scope.workspace_ids || [];
+      const modelHit = addedModels.length > 0 && (
+        addedModels.includes(runModelId) ||
+        addedModels.includes(run.error?.details?.connection_id) ||
+        addedModels.some(id => this.platform.canUseModel(actor, id) && run.error?.code === 'connection_forbidden')
+      );
+      const workspaceHit = addedWorkspaces.length > 0 && (
+        addedWorkspaces.includes(run.error?.details?.workspace_id) ||
+        addedWorkspaces.includes(convSession?.workspace_ref?.id) ||
+        addedWorkspaces.includes(room?.workspace?.id) ||
+        runCalls.some(call => {
+          const ws = call.args?.workspace;
+          const wsId = typeof ws === 'string' ? ws : ws?.id;
+          return (wsId && addedWorkspaces.includes(wsId)) ||
+            (call.args?.resource_refs || []).some(ref => ref?.kind === 'workspace' && addedWorkspaces.includes(ref.id));
+        })
+      );
+      return modelHit || workspaceHit;
+    }
+
+    if (scope.kind === 'model') {
+      if (scope.id && !this.platform.canUseModel(actor, scope.id)) return false;
+      if (run.error?.details?.connection_id) return !scope.id || run.error.details.connection_id === scope.id;
+      if (!scope.id) return Boolean(runModelId && this.platform.canUseModel(actor, runModelId));
+      return runModelId === scope.id || run.binding?.model?.connection_id === scope.id;
+    }
+
+    if (scope.kind === 'workspace') {
+      if (!scope.id || !this.platform.workspaceAvailable(scope.id, actor)) return false;
+      if (run.error?.details?.workspace_id) return run.error.details.workspace_id === scope.id;
+      if (convSession?.workspace_ref?.id === scope.id) return true;
+      if (convSession?.resource_refs?.some(ref => ref?.kind === 'workspace' && ref.id === scope.id)) return true;
+      if (room?.workspace?.id === scope.id) return true;
+      return runCalls.some(call => {
+        const ws = call.args?.workspace;
+        const wsId = typeof ws === 'string' ? ws : ws?.id;
+        return wsId === scope.id ||
+          (call.args?.resource_refs || []).some(ref => ref?.kind === 'workspace' && ref.id === scope.id);
+      });
+    }
+
+    if (scope.kind === 'connection') {
+      if (!scope.id || !this.platform.canUseConnection(actor, scope.id)) return false;
+      if (run.error?.details?.connection_id) return run.error.details.connection_id === scope.id;
+      if (convSession?.engine === scope.id) return true;
+      if (convSession?.resource_refs?.some(ref => ref?.kind === 'connection' && ref.id === scope.id)) return true;
+      const ownedByRun = this.platform.store.list(sessionRecords).some(sess =>
+        sess.owner_run_id === run.id && (sess.engine === scope.id || sess.resource_refs?.some(ref => ref?.kind === 'connection' && ref.id === scope.id)));
+      if (ownedByRun) return true;
+      const callHit = runCalls.some(call => {
+        const eng = call.args?.engine;
+        const engId = typeof eng === 'string' ? eng : eng?.id;
+        if (engId === scope.id) return true;
+        if (call.args?.to?.kind === 'connection' && call.args.to.id === scope.id) return true;
+        if ((call.args?.resource_refs || []).some(ref => ref?.kind === 'connection' && ref.id === scope.id)) return true;
+        const targetSess = callSession(call.args?.target) || callSession(call.result?.target) || callSession(call.result?.execution_ref);
+        return targetSess?.engine === scope.id;
+      });
+      if (callHit) return true;
+      return runEvents.some(event =>
+        (event.ref?.kind === 'connection' && event.ref.id === scope.id) ||
+        event.connection?.id === scope.id ||
+        callSession(event.target)?.engine === scope.id
+      );
+    }
+
+    return false;
+  }
+
+  resumeAuthorizedRuns(inbox, conversation, bot, recoveryScope = null) {
     const recoverableCodes = new Set(['connection_forbidden', 'connection_unavailable', 'access_changed', 'updating']);
     const candidates = inbox.runs(conversation.id).filter(run =>
       (run.state === 'suspended' || run.state === 'retry') && recoverableCodes.has(run.error?.code) &&
@@ -584,26 +674,30 @@ export class BotRuntime {
     for (const run of candidates) {
       const runConnection = fixedConnection || run.binding?.model?.connection_id || null;
       const keepBinding = Boolean(runConnection && this.platform.canUseModel(actor, runConnection));
-      if (run.error?.code === 'connection_forbidden' && !keepBinding && (fixedConnection || !resolvedAuthorized)) continue;
-      if (run.state === 'suspended' && run.error?.code !== 'connection_forbidden' && !this.recoveryRequested) continue;
+      if (!recoveryScope) {
+        // Normal scheduling scan must never clear backoff timers/counts on retry runs
+        // or wake non-authorization suspended runs without an explicit recovery event.
+        if (run.state !== 'suspended' || run.error?.code !== 'connection_forbidden') continue;
+        if (!keepBinding && (fixedConnection || !resolvedAuthorized)) continue;
+      } else {
+        if (run.error?.code === 'connection_forbidden' && !keepBinding && (fixedConnection || !resolvedAuthorized)) continue;
+        if (!this.runMatchesRecoveryScope(inbox, conversation, run, bot, recoveryScope)) continue;
+      }
       inbox.putRun({ id: run.id, state: 'pending', retry_at: null, error: null, transient_retry: null,
         ...(!keepBinding && run.binding ? { binding: null } : {}) });
     }
   }
 
-  resumeRecoveredRuns() {
-    this.recoveryRequested = true;
-    try {
-      for (const [botId, inbox] of this.inboxes) {
-        const bot = this.platform.store.get('platform-bots', botId);
-        if (!bot?.enabled || bot.archivedAt) continue;
-        for (const conversation of inbox.store.listRecords(R.conversation)) {
-          if (!this.conversationActive(conversation)) continue;
-          this.resumeAuthorizedRuns(inbox, conversation, bot);
-        }
+  resumeRecoveredRuns(scope = null) {
+    if (!scope || !scope.kind) return;
+    for (const [botId, inbox] of this.inboxes) {
+      if (scope.kind === 'bot_access' && scope.bot_id && botId !== scope.bot_id) continue;
+      const bot = this.platform.store.get('platform-bots', botId);
+      if (!bot?.enabled || bot.archivedAt) continue;
+      for (const conversation of inbox.store.listRecords(R.conversation)) {
+        if (!this.conversationActive(conversation)) continue;
+        this.resumeAuthorizedRuns(inbox, conversation, bot, scope);
       }
-    } finally {
-      this.recoveryRequested = false;
     }
     this.wake();
   }
@@ -1482,8 +1576,10 @@ export class BotRuntime {
   }
 
   staleWaitsForRoom(roomId, thresholdMs = 120000) {
-    const cutoff = Date.now() - thresholdMs;
+    const nowMs = Date.now();
+    const cutoff = nowMs - thresholdMs;
     const results = [];
+    const seenSessions = new Set();
     for (const wait of this.platform.store.list(waitRecords)) {
       if (!['waiting', 'pending_delivery', 'received'].includes(wait.status)) continue;
       const updatedMs = Date.parse(wait.updated_at || wait.created_at || 0);
@@ -1493,8 +1589,10 @@ export class BotRuntime {
       const matchRoom = (conv?.space?.kind === 'room' && conv.space.id === roomId) ||
         targetSession?.origin_room?.id === roomId;
       if (!matchRoom) continue;
+      if (targetSession?.id) seenSessions.add(targetSession.id);
       results.push({
         wait_id: wait.id,
+        ...(targetSession?.id ? { session_id: targetSession.id } : {}),
         call_id: wait.call_id,
         bot_id: wait.bot_id,
         conversation_id: wait.conversation_id,
@@ -1503,7 +1601,31 @@ export class BotRuntime {
         origin_message_id: targetSession?.origin_message_id || null,
         work_summary: targetSession?.work_summary || null,
         waiting_summary: targetSession?.waiting_summary || null,
-        elapsed_seconds: Math.max(1, Math.floor((Date.now() - updatedMs) / 1000)),
+        elapsed_seconds: Math.max(1, Math.floor((nowMs - updatedMs) / 1000)),
+      });
+    }
+    for (const session of this.platform.store.list(sessionRecords)) {
+      if (seenSessions.has(session.id)) continue;
+      if (session.authority_revoked || session.control?.state !== 'active' || !this.platform.isActiveSession(session)) continue;
+      const matchRoom = session.origin_room?.id === roomId || (session.space?.kind === 'room' && session.space.id === roomId);
+      if (!matchRoom) continue;
+      const openCall = this.platform.store.get('platform-calls', session.id);
+      const latestCall = session.latest_call_id ? this.platform.store.get('platform-calls', session.latest_call_id) : null;
+      const op = session.latest_call_id ? this.platform.store.get('session-operations', session.latest_call_id) : null;
+      const startedMs = Date.parse(session.created_at || openCall?.created_at || op?.submitted_at || latestCall?.created_at || session.updated_at || 0);
+      if (!startedMs || startedMs > cutoff) continue;
+      results.push({
+        wait_id: `session:${session.id}`,
+        session_id: session.id,
+        call_id: session.latest_call_id || session.id,
+        bot_id: session.bot_id || session.owner?.id || null,
+        conversation_id: session.owner_conversation_id || null,
+        target: { kind: 'session', id: session.id },
+        status: session.status,
+        origin_message_id: session.origin_message_id || null,
+        work_summary: session.work_summary || null,
+        waiting_summary: session.waiting_summary || null,
+        elapsed_seconds: Math.max(1, Math.floor((nowMs - startedMs) / 1000)),
       });
     }
     return results;

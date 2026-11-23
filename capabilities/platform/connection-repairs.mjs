@@ -35,7 +35,7 @@ export class ConnectionRepairs {
   }
 
   canRead(event, context) {
-    const request = this.store.get(repairRecords, event.id);
+    const request = this.store.get(repairRecords, event.request_id || event.id);
     if (!request) return false;
     if (context.actor.kind === 'user') return true;
     const entry = this.platform.connections.get(request.connection_id);
@@ -59,7 +59,7 @@ export class ConnectionRepairs {
   }
 
   eventView(event, context) {
-    const request = this.store.get(repairRecords, event.id);
+    const request = this.store.get(repairRecords, event.request_id || event.id);
     if (!request || !this.canRead(event, context)) return event;
     return { ...event, repair_status: request.status, report_count: request.reports.length, reports: request.reports.slice(-8).map(report => ({
       author: report.author, text: report.text.slice(0, 2000), source: report.source,
@@ -198,7 +198,9 @@ export class ConnectionRepairs {
   reply(entry, args, text, context, call) {
     const { platform } = this;
     if (args.repair_key !== undefined) reject('invalid_repair_message', 'Reply to the existing event without a new repair key');
-    const id = idOf(args.reply_to, 'event');
+    const replyEventId = idOf(args.reply_to, 'event');
+    const replyEvent = this.store.get(eventRecords, replyEventId);
+    const id = replyEvent?.request_id || replyEventId;
     const request = this.store.get(repairRecords, id);
     if (!request || request.connection_id !== entry.id || context.actor.kind !== 'bot' ||
         request.maintainer_id !== context.actor.id || !this.acceptsReply(request, entry) || !platform.probeRepairAllowed(entry, context))
