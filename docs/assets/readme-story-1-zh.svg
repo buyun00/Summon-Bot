@@ -224,8 +224,8 @@
   <g transform="translate(728, 370)">
     <circle cx="24" cy="24" r="16" fill="#A87932"/>
     <text x="24" y="29" text-anchor="middle" class="mono" font-size="12" font-weight="700" fill="#FFF">01</text>
-    <text x="50" y="20" class="font" font-size="12" font-weight="700" fill="#946B2D">自动招人组队 (EggBot)</text>
-    <text x="50" y="44" class="font" font-size="20.5" font-weight="800" fill="#1F1E1B">从模糊想法聊出分工，EggBot 自己招人进群</text>
+    <text x="50" y="20" class="font" font-size="11.5" font-weight="700" fill="#946B2D">自动招人组队 (EggBot)</text>
+    <text x="50" y="43" class="font" font-size="18" font-weight="800" fill="#1F1E1B">从模糊想法聊出分工，EggBot 自己招人进群</text>
     <rect x="0" y="60" width="508" height="216" rx="18" fill="#FFFDF8" stroke="#E2DDD1" filter="url(#cardShadow)"/>
     <g transform="translate(0, 60)">
       <text x="22" y="26" class="font" font-size="13.5" fill="#4B4840">真正的开发从来不是一上来就甩一份完整需求文档。</text><text x="22" y="49" class="font" font-size="13.5" fill="#4B4840">你只是随口说“想做个能随时续玩的周末小游戏”，<tspan font-weight="700" fill="#1F1E1B">主控 Bot</tspan> 陪你经过</text><text x="22" y="72" class="font" font-size="13.5" fill="#4B4840">三轮发散，才慢慢定下“航海节点选路”、章节结构和《雾港远征》的名字。</text><text x="22" y="105" class="font" font-size="13.5" fill="#4B4840">聊到第 6 句时，潜伏观察的 <tspan font-weight="700" fill="#785620">EggBot</tspan> 发现“主控管底层代码，但每章的</text><text x="22" y="128" class="font" font-size="13.5" fill="#4B4840">路线数值平衡缺专人长期盯”，无需你下令，自动调用 <tspan class="mono" font-weight="700" fill="#785620">create_bot</tspan></text><text x="22" y="151" class="font" font-size="13.5" fill="#4B4840">孵化出 <tspan font-weight="700" fill="#3B6346">@关卡策划</tspan> 拉进群，新成员进群第一句就把两条路线算得明明白白。</text>
@@ -240,8 +240,8 @@
   <g transform="translate(728, 1110)">
     <circle cx="24" cy="24" r="16" fill="#477A54"/>
     <text x="24" y="29" text-anchor="middle" class="mono" font-size="12" font-weight="700" fill="#FFF">02</text>
-    <text x="50" y="20" class="font" font-size="12" font-weight="700" fill="#3B6346">① 快读静默分流与免 @ 主动救场</text>
-    <text x="50" y="44" class="font" font-size="20.5" font-weight="800" fill="#1F1E1B">4 个 Bot 绝不抢话，却能及时拦住弯路</text>
+    <text x="50" y="20" class="font" font-size="11.5" font-weight="700" fill="#3B6346">① 快读静默分流与免 @ 主动救场</text>
+    <text x="50" y="43" class="font" font-size="18" font-weight="800" fill="#1F1E1B">4 个 Bot 绝不抢话，却能及时拦住弯路</text>
     <rect x="0" y="60" width="508" height="272" rx="18" fill="#FFFDF8" stroke="#E2DDD1" filter="url(#cardShadow)"/>
     <g transform="translate(0, 60)">
       <text x="22" y="26" class="font" font-size="13.5" fill="#4B4840">群里每发一句话，所有成员先在后台跑一层关闭思考（<tspan class="mono">off</tspan>）且零写权限</text><text x="22" y="49" class="font" font-size="13.5" fill="#4B4840">的 <tspan font-weight="700" fill="#2E633D">① 快读层</tspan>，只把一句话事实摘要写进气泡下方的折叠条里：</text><text x="22" y="82" class="font" font-size="13.5" fill="#4B4840">• <tspan font-weight="700" fill="#1F1E1B">无关时当场 quiet</tspan>：10:00 你回复关卡策划调勋章时，主控和 EggBot</text><text x="22" y="105" class="font" font-size="13.5" fill="#4B4840">  的快读读完发现不改程序代码，直接选 <tspan class="mono">quiet</tspan> 静默结束——根本不唤醒</text><text x="22" y="128" class="font" font-size="13.5" fill="#4B4840">  它们昂贵的 ② 主对话模型，既不插嘴刷屏，又省下 90% 陪聊 Token。</text><text x="22" y="161" class="font" font-size="13.5" fill="#4B4840">• <tspan font-weight="700" fill="#B2634F">队友走弯路时免 @ 救场</tspan>：10:02 关卡策划说“没找着工具，准备写脚本</text><text x="22" y="184" class="font" font-size="13.5" fill="#4B4840">  下载 FFmpeg”，一直安静旁听的 <tspan font-weight="700">总接口 Bot</tspan> 快读发现本机已有现成连接，</text><text x="22" y="207" class="font" font-size="13.5" fill="#4B4840">  立刻唤醒自己把 <tspan class="mono" font-weight="700">cli-ffmpeg</tspan> 递了上去，拦住了重复安装！</text>

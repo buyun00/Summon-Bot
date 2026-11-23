@@ -191,8 +191,8 @@
   <g transform="translate(728, 20)">
     <circle cx="24" cy="24" r="16" fill="#597C91"/>
     <text x="24" y="29" text-anchor="middle" class="mono" font-size="12" font-weight="700" fill="#FFF">03</text>
-    <text x="50" y="20" class="font" font-size="12" font-weight="700" fill="#395B75">CHAT VS. HEAVY ENGINE SPLIT (WHY NOT RAW CODEX)</text>
-    <text x="50" y="44" class="font" font-size="20.5" font-weight="800" fill="#1F1E1B">2 Codex sessions code in background; you plan Ch.2 live</text>
+    <text x="50" y="20" class="font" font-size="11.5" font-weight="700" fill="#395B75">CHAT VS. HEAVY ENGINE SPLIT (WHY NOT RAW CODEX)</text>
+    <text x="50" y="43" class="font" font-size="18" font-weight="800" fill="#1F1E1B">Codex runs in background; you plan Ch.2 live</text>
     <rect x="0" y="60" width="508" height="212" rx="18" fill="#FFFDF8" stroke="#E2DDD1" filter="url(#cardShadow)"/>
     <g transform="translate(0, 60)">
       <text x="22" y="26" class="font" font-size="13.5" fill="#4B4840">In raw Codex chat, saying “start coding” freezes your window for minutes.</text><text x="22" y="49" class="font" font-size="13.5" fill="#4B4840">Summon separates <tspan font-weight="700" fill="#395B75">② Main Conversation</tspan> from <tspan font-weight="700">③ Execution Sessions</tspan>:</text><g transform="translate(22, 66)">
@@ -217,8 +217,8 @@
   <g transform="translate(728, 380)">
     <circle cx="24" cy="24" r="16" fill="#2E8548"/>
     <text x="24" y="29" text-anchor="middle" class="mono" font-size="12" font-weight="700" fill="#FFF">04</text>
-    <text x="50" y="20" class="font" font-size="12" font-weight="700" fill="#235E34">① DIRECT FORWARD (STEER) &amp; TOOL SELF-REPAIR</text>
-    <text x="50" y="44" class="font" font-size="20.5" font-weight="800" fill="#1F1E1B">Mid-flight chat steers live Codex; tools self-heal</text>
+    <text x="50" y="20" class="font" font-size="11.5" font-weight="700" fill="#235E34">① DIRECT FORWARD (STEER) &amp; TOOL SELF-REPAIR</text>
+    <text x="50" y="43" class="font" font-size="18" font-weight="800" fill="#1F1E1B">Mid-flight chat steers Codex; tools self-heal</text>
     <rect x="0" y="60" width="508" height="216" rx="18" fill="#FFFDF8" stroke="#E2DDD1" filter="url(#cardShadow)"/>
     <g transform="translate(0, 60)">
       <text x="22" y="26" class="font" font-size="13.5" fill="#4B4840">• <tspan font-weight="700" fill="#235E34">Zero-latency direct forward (route: forward)</tspan>: At 10:05 you remember the</text><text x="22" y="49" class="font" font-size="13.5" fill="#4B4840">  0-byte blank.png and 2-column layout. Lead Bot's ① Fast-Read matches</text><text x="22" y="72" class="font" font-size="13.5" fill="#4B4840">  in-flight Session #2, bypasses ② Main Chat, and injects your words</text><text x="22" y="95" class="font" font-size="13.5" fill="#4B4840">  straight into the running Codex thread via native <tspan class="mono" font-weight="700" fill="#235E34">steer</tspan>!</text><text x="22" y="128" class="font" font-size="13.5" fill="#4B4840">• <tspan font-weight="700" fill="#5E4B73">Out-of-band CLI self-healing</tspan>: When a CLI update breaks parsing, tasks</text><text x="22" y="151" class="font" font-size="13.5" fill="#4B4840">  send <tspan class="mono">send(to: connection)</tspan> to its <tspan font-weight="700">Maintainer Bot</tspan> to patch the script.</text>
@@ -233,8 +233,8 @@
   <g transform="translate(728, 780)">
     <circle cx="24" cy="24" r="16" fill="#23211E"/>
     <text x="24" y="29" text-anchor="middle" class="mono" font-size="12" font-weight="700" fill="#FFF">05</text>
-    <text x="50" y="20" class="font" font-size="12" font-weight="700" fill="#4B4840">STAGED DELIVERY, 90%+ CACHE &amp; 5-LAYER PERSONA</text>
-    <text x="50" y="44" class="font" font-size="20.5" font-weight="800" fill="#1F1E1B">Deliver as ready, iterate fast &amp; persist room rules</text>
+    <text x="50" y="20" class="font" font-size="11.5" font-weight="700" fill="#4B4840">STAGED DELIVERY, 90%+ CACHE &amp; 5-LAYER PERSONA</text>
+    <text x="50" y="43" class="font" font-size="18" font-weight="800" fill="#1F1E1B">Deliver as ready, iterate fast &amp; save room rules</text>
     <rect x="0" y="60" width="508" height="226" rx="18" fill="#FFFDF8" stroke="#E2DDD1" filter="url(#cardShadow)"/>
     <g transform="translate(0, 60)">
       <text x="22" y="26" class="font" font-size="13.5" fill="#4B4840">• <tspan font-weight="700" fill="#1F1E1B">Staged verified delivery</tspan>: At 10:06 the CLI finishes first (report.json);</text><text x="22" y="49" class="font" font-size="13.5" fill="#4B4840">  at 10:07 the HTML report finishes with your steered edits and quotes 10:03.</text><text x="22" y="82" class="font" font-size="13.5" fill="#4B4840">• <tspan font-weight="700" fill="#2E633D">Stable Trunk + Private Fork (90%+ cache hit)</tspan>: Mid-turn tools &amp; steers</text><text x="22" y="105" class="font" font-size="13.5" fill="#4B4840">  run as A→B→C, collapsing to public A→C→D on the next turn.</text><text x="22" y="138" class="font" font-size="13.5" fill="#4B4840">• <tspan font-weight="700" fill="#785620">5-Layer Persona &amp; Material Index</tspan>: At 10:10 your report format rule is</text><text x="22" y="161" class="font" font-size="13.5" fill="#4B4840">  saved to material_index_ref (applies_to: room), surviving compression.</text>
@@ -247,8 +247,8 @@
   <g transform="translate(728, 1210)">
     <circle cx="24" cy="24" r="16" fill="#395B75"/>
     <text x="24" y="29" text-anchor="middle" class="mono" font-size="12" font-weight="700" fill="#FFF">06</text>
-    <text x="50" y="20" class="font" font-size="12" font-weight="700" fill="#395B75">PURPOSE-BASED MODEL ROUTING TABLE</text>
-    <text x="50" y="44" class="font" font-size="20.5" font-weight="800" fill="#1F1E1B">Right model &amp; thinking effort for every stage</text>
+    <text x="50" y="20" class="font" font-size="11.5" font-weight="700" fill="#395B75">PURPOSE-BASED MODEL ROUTING TABLE</text>
+    <text x="50" y="43" class="font" font-size="18" font-weight="800" fill="#1F1E1B">Right model &amp; thinking effort per stage</text>
     <rect x="0" y="60" width="508" height="217" rx="18" fill="#FFFDF8" stroke="#E2DDD1" filter="url(#cardShadow)"/>
     <g transform="translate(0, 60)">
       <text x="22" y="26" class="font" font-size="13.5" fill="#4B4840">Reuse your existing local Codex, Grok, or Claude subscriptions and API keys:</text><g transform="translate(22, 43)">

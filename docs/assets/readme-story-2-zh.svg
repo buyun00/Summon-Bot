@@ -191,8 +191,8 @@
   <g transform="translate(728, 20)">
     <circle cx="24" cy="24" r="16" fill="#597C91"/>
     <text x="24" y="29" text-anchor="middle" class="mono" font-size="12" font-weight="700" fill="#FFF">03</text>
-    <text x="50" y="20" class="font" font-size="12" font-weight="700" fill="#395B75">聊干双层分离（为什么不直接用 Codex）</text>
-    <text x="50" y="44" class="font" font-size="20.5" font-weight="800" fill="#1F1E1B">后台两路 Codex 狂飙，前台照常聊第二章</text>
+    <text x="50" y="20" class="font" font-size="11.5" font-weight="700" fill="#395B75">聊干双层分离（为什么不直接用 Codex）</text>
+    <text x="50" y="43" class="font" font-size="18" font-weight="800" fill="#1F1E1B">后台两路 Codex 狂飙，前台照常聊第二章</text>
     <rect x="0" y="60" width="508" height="212" rx="18" fill="#FFFDF8" stroke="#E2DDD1" filter="url(#cardShadow)"/>
     <g transform="translate(0, 60)">
       <text x="22" y="26" class="font" font-size="13.5" fill="#4B4840">直接用 Codex 单聊时，10:03 你说“正式开工”，窗口就卡死在刷屏里了。</text><text x="22" y="49" class="font" font-size="13.5" fill="#4B4840">而在 Summon 里，负责聊天的 <tspan font-weight="700" fill="#395B75">② 群主对话</tspan> 与干重活的 <tspan font-weight="700">③ 执行会话</tspan> 完全分离：</text><g transform="translate(22, 66)">
@@ -217,8 +217,8 @@
   <g transform="translate(728, 380)">
     <circle cx="24" cy="24" r="16" fill="#2E8548"/>
     <text x="24" y="29" text-anchor="middle" class="mono" font-size="12" font-weight="700" fill="#FFF">04</text>
-    <text x="50" y="20" class="font" font-size="12" font-weight="700" fill="#235E34">① 快读直转 (forward) 与工具群外自修</text>
-    <text x="50" y="44" class="font" font-size="20.5" font-weight="800" fill="#1F1E1B">随口补句话秒进后台 Codex，工具坏了静默自愈</text>
+    <text x="50" y="20" class="font" font-size="11.5" font-weight="700" fill="#235E34">① 快读直转 (forward) 与工具群外自修</text>
+    <text x="50" y="43" class="font" font-size="18" font-weight="800" fill="#1F1E1B">随口补句话秒进后台 Codex，工具坏了静默自愈</text>
     <rect x="0" y="60" width="508" height="216" rx="18" fill="#FFFDF8" stroke="#E2DDD1" filter="url(#cardShadow)"/>
     <g transform="translate(0, 60)">
       <text x="22" y="26" class="font" font-size="13.5" fill="#4B4840">• <tspan font-weight="700" fill="#235E34">补件秒级直转 (route: forward)</tspan>：10:05 你突然想起“0 字节 blank.png</text><text x="22" y="49" class="font" font-size="13.5" fill="#4B4840">  也要显示、前后大小放两列”。主控的 ① 快读识别出这是对在途会话 #2</text><text x="22" y="72" class="font" font-size="13.5" fill="#4B4840">  的唯一补件，甚至不用唤醒主控 ② 主对话，直接按原生协议 <tspan class="mono" font-weight="700" fill="#235E34">steer</tspan></text><text x="22" y="95" class="font" font-size="13.5" fill="#4B4840">  秒级塞进后台正在跑的 Codex 线程（还支持跨群开放补件）！</text><text x="22" y="128" class="font" font-size="13.5" fill="#4B4840">• <tspan font-weight="700" fill="#5E4B73">工具换版群外自修</tspan>：后台工具如果因升级报错，直接通过 <tspan class="mono">send(to: connection)</tspan></text><text x="22" y="151" class="font" font-size="13.5" fill="#4B4840">  找群外的 <tspan font-weight="700">专责维护 Bot</tspan> 在线改好适配脚本热更新，绝不在业务群刷屏报错。</text>
@@ -233,8 +233,8 @@
   <g transform="translate(728, 780)">
     <circle cx="24" cy="24" r="16" fill="#23211E"/>
     <text x="24" y="29" text-anchor="middle" class="mono" font-size="12" font-weight="700" fill="#FFF">05</text>
-    <text x="50" y="20" class="font" font-size="12" font-weight="700" fill="#4B4840">分批验收回群、90%+ 缓存与五层人格落盘</text>
-    <text x="50" y="44" class="font" font-size="20.5" font-weight="800" fill="#1F1E1B">先好的先交，试玩反馈秒改，长期约定永不丢</text>
+    <text x="50" y="20" class="font" font-size="11.5" font-weight="700" fill="#4B4840">分批验收回群、90%+ 缓存与五层人格落盘</text>
+    <text x="50" y="43" class="font" font-size="18" font-weight="800" fill="#1F1E1B">先好的先交，试玩反馈秒改，长期约定永不丢</text>
     <rect x="0" y="60" width="508" height="226" rx="18" fill="#FFFDF8" stroke="#E2DDD1" filter="url(#cardShadow)"/>
     <g transform="translate(0, 60)">
       <text x="22" y="26" class="font" font-size="13.5" fill="#4B4840">• <tspan font-weight="700" fill="#1F1E1B">谁先跑完先交付，引用原提问结案</tspan>：10:06 CLI 先跑完先交 report.json；</text><text x="22" y="49" class="font" font-size="13.5" fill="#4B4840">  10:07 战报页合入补件后，主控核对达标，引用你 10:03 的原提问完整交付。</text><text x="22" y="82" class="font" font-size="13.5" fill="#4B4840">• <tspan font-weight="700" fill="#2E633D">稳定公开主线 + 本轮私有 Fork (90%+ 缓存命中)</tspan>：本轮耗时工具与中途</text><text x="22" y="105" class="font" font-size="13.5" fill="#4B4840">  插话按 A→B→C 运行，发布答复 D 后下轮自动收敛为公开主线 A→C→D。</text><text x="22" y="138" class="font" font-size="13.5" fill="#4B4840">• <tspan font-weight="700" fill="#785620">五层人格与资料索引落盘</tspan>：10:10 你拍板“以后这个群都按这个格式”，主控</text><text x="22" y="161" class="font" font-size="13.5" fill="#4B4840">  将其写入 material_index_ref (applies_to: room)，历史压缩后也永久保留。</text>
@@ -247,8 +247,8 @@
   <g transform="translate(728, 1210)">
     <circle cx="24" cy="24" r="16" fill="#395B75"/>
     <text x="24" y="29" text-anchor="middle" class="mono" font-size="12" font-weight="700" fill="#FFF">06</text>
-    <text x="50" y="20" class="font" font-size="12" font-weight="700" fill="#395B75">按用途分级配模型 (P2 用途模型表)</text>
-    <text x="50" y="44" class="font" font-size="20.5" font-weight="800" fill="#1F1E1B">快读、聊天、写代码，各用各的模型与思考档</text>
+    <text x="50" y="20" class="font" font-size="11.5" font-weight="700" fill="#395B75">按用途分级配模型 (P2 用途模型表)</text>
+    <text x="50" y="43" class="font" font-size="18" font-weight="800" fill="#1F1E1B">快读、聊天、写代码，各用各的模型与思考档</text>
     <rect x="0" y="60" width="508" height="217" rx="18" fill="#FFFDF8" stroke="#E2DDD1" filter="url(#cardShadow)"/>
     <g transform="translate(0, 60)">
       <text x="22" y="26" class="font" font-size="13.5" fill="#4B4840">直接复用你本机已有的 Codex、Grok、Claude 登录订阅或 DeepSeek API：</text><g transform="translate(22, 43)">

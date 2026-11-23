@@ -224,8 +224,8 @@
   <g transform="translate(728, 370)">
     <circle cx="24" cy="24" r="16" fill="#A87932"/>
     <text x="24" y="29" text-anchor="middle" class="mono" font-size="12" font-weight="700" fill="#FFF">01</text>
-    <text x="50" y="20" class="font" font-size="12" font-weight="700" fill="#946B2D">AUTONOMOUS TEAM SPAWNING (EGGBOT)</text>
-    <text x="50" y="44" class="font" font-size="20.5" font-weight="800" fill="#1F1E1B">From vague brainstorming to an auto-assembled team</text>
+    <text x="50" y="20" class="font" font-size="11.5" font-weight="700" fill="#946B2D">AUTONOMOUS TEAM SPAWNING (EGGBOT)</text>
+    <text x="50" y="43" class="font" font-size="18" font-weight="800" fill="#1F1E1B">From vague chat to an auto-assembled team</text>
     <rect x="0" y="60" width="508" height="216" rx="18" fill="#FFFDF8" stroke="#E2DDD1" filter="url(#cardShadow)"/>
     <g transform="translate(0, 60)">
       <text x="22" y="26" class="font" font-size="13.5" fill="#4B4840">Real projects don't start with a rigid spec. You began with “a lightweight</text><text x="22" y="49" class="font" font-size="13.5" fill="#4B4840">weekend game,” and <tspan font-weight="700" fill="#1F1E1B">Lead Bot</tspan> brainstormed with you across three turns</text><text x="22" y="72" class="font" font-size="13.5" fill="#4B4840">to shape the maritime loop, chapters, and the name *Mistport Expedition*.</text><text x="22" y="105" class="font" font-size="13.5" fill="#4B4840">By message #6, <tspan font-weight="700" fill="#785620">EggBot</tspan> noticed that while Lead Bot owned core code, no one</text><text x="22" y="128" class="font" font-size="13.5" fill="#4B4840">owned long-term chapter economy tables. Without being asked, it called</text><text x="22" y="151" class="font" font-size="13.5" fill="#4B4840"><tspan class="mono" font-weight="700" fill="#785620">create_bot</tspan> to spawn <tspan font-weight="700" fill="#3B6346">@LevelDesigner</tspan> and invited her into the room.</text>
@@ -240,8 +240,8 @@
   <g transform="translate(728, 1110)">
     <circle cx="24" cy="24" r="16" fill="#477A54"/>
     <text x="24" y="29" text-anchor="middle" class="mono" font-size="12" font-weight="700" fill="#FFF">02</text>
-    <text x="50" y="20" class="font" font-size="12" font-weight="700" fill="#3B6346">① FAST-READ SILENT TRIAGE &amp; PROACTIVE RESCUE</text>
-    <text x="50" y="44" class="font" font-size="20.5" font-weight="800" fill="#1F1E1B">4 Bots never talk over each other, yet catch mistakes</text>
+    <text x="50" y="20" class="font" font-size="11.5" font-weight="700" fill="#3B6346">① FAST-READ SILENT TRIAGE &amp; PROACTIVE RESCUE</text>
+    <text x="50" y="43" class="font" font-size="18" font-weight="800" fill="#1F1E1B">4 Bots never spam, yet catch mistakes live</text>
     <rect x="0" y="60" width="508" height="272" rx="18" fill="#FFFDF8" stroke="#E2DDD1" filter="url(#cardShadow)"/>
     <g transform="translate(0, 60)">
       <text x="22" y="26" class="font" font-size="13.5" fill="#4B4840">Every message first runs through each Bot's read-only, zero-thinking (<tspan class="mono">off</tspan>)</text><text x="22" y="49" class="font" font-size="13.5" fill="#4B4840"><tspan font-weight="700" fill="#2E633D">① Fast-Read</tspan> pass, logging a 1-line summary in the pill under the bubble:</text><text x="22" y="82" class="font" font-size="13.5" fill="#4B4840">• <tspan font-weight="700" fill="#1F1E1B">Silent when unrelated (quiet)</tspan>: At 10:00 when you reply to LevelDesigner,</text><text x="22" y="105" class="font" font-size="13.5" fill="#4B4840">  Lead Bot &amp; EggBot choose <tspan class="mono">quiet</tspan> and stop—never waking their expensive</text><text x="22" y="128" class="font" font-size="13.5" fill="#4B4840">  ② Main Conversation models, saving 90% of idle chatter tokens.</text><text x="22" y="161" class="font" font-size="13.5" fill="#4B4840">• <tspan font-weight="700" fill="#B2634F">Proactive rescue without @mention</tspan>: At 10:02 when LevelDesigner offers</text><text x="22" y="184" class="font" font-size="13.5" fill="#4B4840">  to download FFmpeg, <tspan font-weight="700">Tool Bot</tspan>'s Fast-Read spots a tool mistake and wakes</text><text x="22" y="207" class="font" font-size="13.5" fill="#4B4840">  its Main Chat to hand over the host's pre-registered <tspan class="mono" font-weight="700">cli-ffmpeg</tspan>!</text>
