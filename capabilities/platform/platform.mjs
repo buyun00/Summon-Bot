@@ -3,7 +3,7 @@ import { basename, dirname, isAbsolute, parse, relative, resolve, sep } from 'no
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { bindModel } from '../../bot/src/agent/model.mjs';
-import { catalogMaintainerRole, roleIds, toolOnboardingRole } from '../../roles/index.mjs';
+import { catalogMaintainerRole, groupLeadRole, roleIds, toolOnboardingRole } from '../../roles/index.mjs';
 import { BotManager, activeControl, botRecords, directoryEntry } from '../bot-management/service.mjs';
 import { ConnectionInitializer } from '../connectors/initialization.mjs';
 import { executionEnvironment } from '../connectors/onboarding.mjs';
@@ -1590,7 +1590,10 @@ export class SummonPlatform {
       .filter(bot => bot && bot.enabled && !bot.archivedAt && !bot.connection_initializer &&
         this.canUseModel({ kind: 'bot', id: bot.id }, this.botModelConnectionId(bot)));
     if (!available.length) return null;
-    return available.find(bot => bot.built_in_role?.id === 'eggbot') || available[0];
+    return (room?.lead_bot_id && available.find(bot => bot.id === room.lead_bot_id))
+      || available.find(bot => bot.built_in_role?.id === groupLeadRole)
+      || available.find(bot => bot.built_in_role?.id === 'eggbot')
+      || available[0];
   }
 
   roomMessageStatus(roomId, message) {

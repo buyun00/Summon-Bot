@@ -285,12 +285,32 @@ export class Executions {
       ...(record.last_output_summary ? { last_output_summary: record.last_output_summary } : {}),
       ...(record.host_fallback_delivered_at ? { host_fallback_delivered_at: record.host_fallback_delivered_at } : {}),
     } : {};
+    const canSubmit = this.permission(target, record, context, 'input') && !record.authority_revoked;
+    const rawTargets = !conversation ? (observation?.input_targets ?? record.input_targets ?? []) : [];
+    const rawPending = !conversation ? (observation?.pending_input ?? record.pending_input ?? []) : [];
+    const pendingRequests = !conversation && canSubmit && control.state === 'active'
+      ? rawTargets.filter(option => option.input_target?.request_id && Array.isArray(option.kinds) && option.kinds.includes('reply'))
+        .map(option => {
+          const reqId = option.input_target.request_id;
+          const req = rawPending.find(item => item.id === reqId);
+          return {
+            request_id: reqId,
+            input_target: option.input_target,
+            kind: req?.kind || option.request_kind || 'question',
+            question: req?.question ?? req?.text ?? option.question ?? '',
+            choices: req?.choices ?? option.choices ?? [],
+            answer_format: req?.answer_format ?? option.answer_format,
+            plain_text: req?.plain_text ?? option.plain_text,
+          };
+        })
+      : [];
     return { kind: target.kind, id: record.id, execution_ref: target, bot_id: record.bot_id, space: record.space, engine: record.engine,
       source_space: record.source_space && this.platform.canReadSpace(context.actor, record.source_space, context) ? record.source_space : undefined,
       model: record.model, execution_actor: record.execution_actor, submitted_by: record.submitted_by, latest_call_id: record.latest_call_id,
       status, ...(error?.message || error?.code ? { last_error: { code: error.code || 'execution_failed', message: error.message || '', ...(error.exit_code != null ? { exit_code: error.exit_code } : {}) } } : {}), ...sessionMeta,
+      ...(pendingRequests.length ? { pending_requests: pendingRequests } : {}),
       control, control_version: control.control_version, input_revision: record.input_revision,
-      can_stop: controlled, can_submit: this.permission(target, record, context, 'input') && !record.authority_revoked };
+      can_stop: controlled, can_submit: canSubmit };
   }
 
   async inspect(target, record, options = {}) {

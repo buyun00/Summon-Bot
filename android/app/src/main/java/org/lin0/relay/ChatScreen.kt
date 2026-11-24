@@ -78,6 +78,7 @@ import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -85,6 +86,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -509,7 +511,15 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit, onOpenMod
             }
             if (pendingInputExec != null) {
                 val pendingRef = SummonReference.parse(pendingInputExec["execution_ref"])
-                if (pendingRef != null) {
+                val pendingRequests = pendingInputExec["pending_requests"].array.orEmpty()
+                if (pendingRequests.isNotEmpty()) {
+                    ExecutionPendingPromptCard(
+                        store = store,
+                        exec = pendingInputExec,
+                        request = pendingRequests.first(),
+                        onError = { localError = it },
+                    )
+                } else if (pendingRef != null) {
                     Surface(
                         shape = RoundedCornerShape(16.dp),
                         color = palette.glassPill,
@@ -983,6 +993,9 @@ private fun MessageRow(store: SummonStore, roomID: String, message: SummonMessag
                         }
                     }
                 }
+                if (!message.isOwn && message.prompt != null && !message.prompt["questions"].array.isNullOrEmpty()) {
+                    MessagePromptCard(store, roomID, message, message.prompt)
+                }
                 message.attachments.forEach { AttachmentRow(store, it) }
                 message.references.forEach { item ->
                     Surface(
@@ -1246,5 +1259,323 @@ private fun AttachmentRow(store: SummonStore, attachment: SummonAttachment) {
             }
         }
         error?.let { Text(it, color = palette.warn, style = MaterialTheme.typography.bodySmall) }
+    }
+}
+
+@Composable
+private fun MessagePromptCard(store: SummonStore, roomID: String, message: SummonMessage, prompt: SummonJson) {
+    val palette = LocalSummonPalette.current
+    val scope = rememberCoroutineScope()
+    val kind = prompt["kind"].string ?: "question"
+    val questions = prompt["questions"].array.orEmpty()
+    val answeredItems = remember(message.id, message.promptAnswer, store.messagesForRoom(roomID)) {
+        message.promptAnswer?.get("answers")?.array?.takeIf { it.isNotEmpty() }
+            ?: store.messagesForRoom(roomID)
+                .firstOrNull { it.promptResponse?.get("prompt_message_id")?.string == message.id }
+                ?.promptResponse?.get("answers")?.array?.takeIf { it.isNotEmpty() }
+    }
+    var selectedByQ by remember(message.id) { mutableStateOf<Map<String, List<String>>>(emptyMap()) }
+    var customByQ by remember(message.id) { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var submitting by remember(message.id) { mutableStateOf(false) }
+
+    val isReady = questions.isNotEmpty() && questions.all { q ->
+        if (q["required"].bool == false) true
+        else {
+            val qid = q["id"].stringValue
+            val mode = q["mode"].string ?: "single"
+            val hasSelected = !selectedByQ[qid].isNullOrEmpty()
+            val hasCustom = !customByQ[qid].isNullOrBlank()
+            if (mode == "text") hasCustom else (hasSelected || hasCustom)
+        }
+    }
+
+    val borderColor = when {
+        answeredItems != null -> palette.ok.copy(alpha = 0.28f)
+        kind == "permission" -> palette.warn.copy(alpha = 0.45f)
+        else -> palette.bubbleStroke
+    }
+    val cardColor = if (answeredItems != null) palette.ok.copy(alpha = 0.07f) else palette.surface
+
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = cardColor,
+        border = BorderStroke(0.9.dp, borderColor),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                val badgeBg = when {
+                    answeredItems != null -> palette.ok.copy(alpha = 0.14f)
+                    kind == "permission" -> palette.warn.copy(alpha = 0.14f)
+                    else -> palette.quoteBg
+                }
+                val badgeFg = when {
+                    answeredItems != null -> palette.ok
+                    kind == "permission" -> palette.warn
+                    else -> palette.textSecondary
+                }
+                val badgeText = when {
+                    answeredItems != null -> if (kind == "permission") "已确认权限" else if (kind == "confirm") "已确认" else "已提交选择"
+                    kind == "permission" -> "权限确认"
+                    kind == "confirm" -> "操作确认"
+                    else -> "待你选择"
+                }
+                Surface(shape = CircleShape, color = badgeBg) {
+                    Row(Modifier.padding(horizontal = 8.dp, vertical = 3.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        if (answeredItems != null) Icon(Icons.Filled.Check, null, tint = badgeFg, modifier = Modifier.size(12.dp))
+                        Text(badgeText, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold), color = badgeFg)
+                    }
+                }
+                prompt["title"].string?.takeIf { it.isNotEmpty() }?.let { title ->
+                    Text(title, style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold))
+                }
+            }
+
+            if (answeredItems != null) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    answeredItems.forEach { ans ->
+                        val labels = ans["selected_labels"].array.orEmpty().mapNotNull { it.string }
+                        val custom = ans["custom_text"].string.orEmpty()
+                        val summary = (labels + listOfNotNull(custom.takeIf { it.isNotEmpty() })).joinToString(" · ")
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text(ans["label"].string ?: ans["question_id"].stringValue, style = MaterialTheme.typography.bodySmall, color = palette.textSecondary)
+                            Text(summary.ifEmpty { "—" }, style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium))
+                        }
+                    }
+                }
+            } else {
+                questions.forEachIndexed { idx, q ->
+                    val qid = q["id"].stringValue
+                    val mode = q["mode"].string ?: "single"
+                    val allowCustom = q["allow_custom"].bool ?: (mode != "text" && kind != "permission")
+                    val options = q["options"].array.orEmpty()
+                    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                (if (questions.size > 1) "${idx + 1}. " else "") + q["label"].stringValue,
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                (if (mode == "multi") "多选" else if (mode == "text") "填写" else "单选") +
+                                    (if (q["required"].bool == false) " · 选填" else ""),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = palette.textTertiary,
+                            )
+                        }
+                        if (mode != "text") {
+                            options.forEach { opt ->
+                                val oid = opt["id"].stringValue
+                                val selected = oid in selectedByQ[qid].orEmpty()
+                                val tone = opt["tone"].string ?: "default"
+                                val accent = when (tone) {
+                                    "primary" -> palette.ok
+                                    "danger" -> Color(0xFFC44954)
+                                    else -> MaterialTheme.colorScheme.onSurface
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = if (selected) accent.copy(alpha = 0.10f) else Color.Transparent,
+                                    border = BorderStroke(if (selected) 1.2.dp else 0.7.dp, if (selected) accent.copy(alpha = 0.65f) else palette.bubbleStroke),
+                                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable(enabled = !submitting) {
+                                        val current = selectedByQ[qid].orEmpty()
+                                        val next = if (mode == "multi") {
+                                            if (oid in current) current - oid else current + oid
+                                        } else {
+                                            if (current == listOf(oid)) emptyList() else listOf(oid)
+                                        }
+                                        selectedByQ = selectedByQ + (qid to next)
+                                        if (mode != "multi" && next.isNotEmpty()) customByQ = customByQ + (qid to "")
+                                    },
+                                ) {
+                                    Row(Modifier.padding(horizontal = 10.dp, vertical = 9.dp), verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                                        Surface(
+                                            shape = if (mode == "multi") RoundedCornerShape(4.dp) else CircleShape,
+                                            color = if (selected) accent else Color.Transparent,
+                                            border = BorderStroke(1.5.dp, if (selected) accent else palette.textTertiary),
+                                            modifier = Modifier.padding(top = 2.dp).size(16.dp),
+                                        ) {
+                                            if (selected) Box(contentAlignment = Alignment.Center) {
+                                                Icon(Icons.Filled.Check, null, tint = palette.surface, modifier = Modifier.size(11.dp))
+                                            }
+                                        }
+                                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                Text(
+                                                    opt["label"].stringValue,
+                                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal),
+                                                )
+                                                if (opt["recommended"].bool == true) {
+                                                    Surface(shape = CircleShape, color = palette.ok.copy(alpha = 0.14f)) {
+                                                        Text("推荐", style = MaterialTheme.typography.labelSmall, color = palette.ok, modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp))
+                                                    }
+                                                }
+                                            }
+                                            opt["description"].string?.takeIf { it.isNotEmpty() }?.let { desc ->
+                                                Text(desc, style = MaterialTheme.typography.bodySmall, color = palette.textSecondary)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (mode == "text" || allowCustom) {
+                            val placeholder = q["custom_placeholder"].string
+                                ?: if (mode == "text") "请输入回答…" else if (mode == "multi") "补充说明或自填其他选项（选填）" else "或自定义填写其他想法…"
+                            OutlinedTextField(
+                                value = customByQ[qid].orEmpty(),
+                                onValueChange = { value ->
+                                    customByQ = customByQ + (qid to value)
+                                    if (mode == "single" && value.isNotBlank()) selectedByQ = selectedByQ + (qid to emptyList())
+                                },
+                                placeholder = { Text(placeholder, style = MaterialTheme.typography.bodySmall) },
+                                enabled = !submitting,
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    Button(
+                        enabled = !submitting && store.protocolReady && isReady,
+                        onClick = {
+                            submitting = true
+                            scope.launch {
+                                try {
+                                    val answers = mutableListOf<SummonJson>()
+                                    val lines = mutableListOf<String>()
+                                    for (q in questions) {
+                                        val qid = q["id"].stringValue
+                                        val label = q["label"].stringValue
+                                        val optMap = q["options"].array.orEmpty().associate { it["id"].stringValue to it["label"].stringValue }
+                                        val selIds = selectedByQ[qid].orEmpty().filter { it in optMap }
+                                        val selLabels = selIds.mapNotNull { optMap[it] }
+                                        val customText = customByQ[qid].orEmpty().trim()
+                                        if (selIds.isEmpty() && customText.isEmpty()) continue
+                                        answers += SummonJson.Obj(buildMap {
+                                            put("question_id", SummonJson.Str(qid))
+                                            put("label", SummonJson.Str(label))
+                                            put("selected_ids", selIds.toJsonStrings())
+                                            put("selected_labels", selLabels.toJsonStrings())
+                                            if (customText.isNotEmpty()) put("custom_text", SummonJson.Str(customText))
+                                        })
+                                        val parts = selLabels + listOfNotNull(customText.takeIf { it.isNotEmpty() }?.let { if (selLabels.isEmpty()) it else "补充：$it" })
+                                        lines += if (questions.size == 1) "已选择：${parts.joinToString("、")}" else "$label：${parts.joinToString("、")}"
+                                    }
+                                    if (answers.isNotEmpty()) {
+                                        store.sendPromptResponse(roomID, message, answers, lines.joinToString("\n"))
+                                    }
+                                } finally { submitting = false }
+                            }
+                        },
+                    ) {
+                        Text(if (submitting) "提交中…" else prompt["submit_label"].string ?: if (kind == "permission") "确认授权" else if (kind == "confirm") "确认" else "提交选择")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ExecutionPendingPromptCard(store: SummonStore, exec: SummonJson, request: SummonJson, onError: (String) -> Unit) {
+    val palette = LocalSummonPalette.current
+    val scope = rememberCoroutineScope()
+    val isApproval = request["kind"].string == "approval"
+    val choices = request["choices"].array.orEmpty()
+    var selectedChoice by remember(request["request_id"].string) { mutableStateOf("") }
+    var freeText by remember(request["request_id"].string) { mutableStateOf("") }
+    var busy by remember(request["request_id"].string) { mutableStateOf(false) }
+    val currentVal = if (choices.isEmpty()) freeText.trim() else selectedChoice
+
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = palette.surface,
+        border = BorderStroke(0.9.dp, palette.warn.copy(alpha = 0.45f)),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Surface(shape = CircleShape, color = palette.warn.copy(alpha = 0.14f)) {
+                    Text(
+                        if (isApproval) "执行权限审批" else "执行会话提问",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = palette.warn,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                    )
+                }
+                val actorId = exec["execution_actor"]["id"].string ?: exec["bot_id"].string.orEmpty()
+                val engine = exec["engine"].string
+                Text(
+                    store.name(actorId) + (if (!engine.isNullOrEmpty()) " · $engine" else ""),
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            request["question"].string?.takeIf { it.isNotEmpty() }?.let { q ->
+                Text(q, style = MaterialTheme.typography.bodySmall)
+            }
+            if (choices.isNotEmpty()) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    choices.forEach { choice ->
+                        val cid = choice["id"].stringValue
+                        val label = choice["label"].string ?: cid
+                        val selected = selectedChoice == cid
+                        val accent = when {
+                            cid == "accept" -> palette.ok
+                            cid in listOf("deny", "decline", "cancel") -> Color(0xFFC44954)
+                            else -> MaterialTheme.colorScheme.onSurface
+                        }
+                        Surface(
+                            shape = CircleShape,
+                            color = if (selected) accent.copy(alpha = 0.14f) else Color.Transparent,
+                            border = BorderStroke(if (selected) 1.2.dp else 0.7.dp, if (selected) accent else palette.bubbleStroke),
+                            modifier = Modifier.clip(CircleShape).clickable(enabled = !busy) { selectedChoice = cid },
+                        ) {
+                            Text(
+                                label,
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal),
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                            )
+                        }
+                    }
+                }
+            } else {
+                OutlinedTextField(
+                    value = freeText,
+                    onValueChange = { freeText = it },
+                    placeholder = { Text("输入回答…", style = MaterialTheme.typography.bodySmall) },
+                    enabled = !busy,
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Button(
+                    enabled = !busy && store.protocolReady && currentVal.isNotEmpty(),
+                    onClick = {
+                        busy = true
+                        scope.launch {
+                            try {
+                                store.submitPendingExecutionInput(
+                                    target = exec["execution_ref"],
+                                    controlVersion = exec["control_version"].int ?: 1,
+                                    inputTarget = request["input_target"],
+                                    input = currentVal,
+                                )
+                                selectedChoice = ""; freeText = ""
+                            } catch (failure: Exception) {
+                                onError(failure.localizedMessage ?: "提交失败")
+                            } finally { busy = false }
+                        }
+                    },
+                ) {
+                    Text(if (busy) "提交中…" else if (isApproval) "确认审批" else "提交回答")
+                }
+            }
+        }
     }
 }

@@ -298,25 +298,34 @@ struct ChatView: View {
                 .transition(.opacity.combined(with: .offset(y: reduceMotion ? 0 : 6)))
             }
             if let pendingExec = pendingInputExecution, let ref = SummonReference(pendingExec["execution_ref"]) {
-                Button { activeExecutionRef = ref } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: "questionmark.circle.fill")
-                            .foregroundStyle(SummonTheme.warn)
-                        Text("有待处理的确认或输入请求")
-                            .summonFont(.caption, weight: .medium)
-                            .foregroundStyle(.primary)
-                        Spacer()
-                        Text("去回复")
-                            .summonFont(.caption, weight: .semibold)
-                            .foregroundStyle(SummonTheme.warn)
+                let pendingRequests = pendingExec["pending_requests"].array ?? []
+                if let firstReq = pendingRequests.first {
+                    ExecutionPendingPromptCard(exec: pendingExec, request: firstReq) { error in
+                        localError = error
                     }
                     .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
-                    .glassEffect(.regular, in: .rect(cornerRadius: 16))
+                    .transition(.opacity.combined(with: .offset(y: reduceMotion ? 0 : 6)))
+                } else {
+                    Button { activeExecutionRef = ref } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "questionmark.circle.fill")
+                                .foregroundStyle(SummonTheme.warn)
+                            Text("有待处理的确认或输入请求")
+                                .summonFont(.caption, weight: .medium)
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            Text("去回复")
+                                .summonFont(.caption, weight: .semibold)
+                                .foregroundStyle(SummonTheme.warn)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 9)
+                        .glassEffect(.regular, in: .rect(cornerRadius: 16))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 14)
+                    .transition(.opacity.combined(with: .offset(y: reduceMotion ? 0 : 6)))
                 }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 14)
-                .transition(.opacity.combined(with: .offset(y: reduceMotion ? 0 : 6)))
             }
             if let replyID {
                 HStack {
@@ -555,6 +564,9 @@ private struct MessageRow: View {
                                 bubbleShape.stroke(SummonTheme.bubbleStroke, lineWidth: 0.7)
                             }
                         }
+                }
+                if !message.isOwn, let prompt = message.prompt, !(prompt["questions"].array ?? []).isEmpty {
+                    MessagePromptCardView(message: message, roomID: roomID, prompt: prompt)
                 }
                 ForEach(message.attachments) { attachment in AttachmentRow(attachment: attachment) }
                 ForEach(message.references, id: \.self) { ref in
@@ -909,6 +921,311 @@ struct AttachmentRow: View {
             guard attachment.previewUrl != nil, store.protocolReady else { return }
             do { previewImage = UIImage(data: try await store.attachmentPreviewData(attachment)) }
             catch { /* The original file remains available using the download button. */ }
+        }
+    }
+}
+
+private struct MessagePromptCardView: View {
+    @Environment(SummonStore.self) private var store
+    let message: SummonMessage
+    let roomID: String
+    let prompt: SummonJSONValue
+
+    @State private var selectedByQuestion: [String: [String]] = [:]
+    @State private var customByQuestion: [String: String] = [:]
+    @State private var submitting = false
+
+    private var kind: String { prompt["kind"].string ?? "question" }
+    private var questions: [SummonJSONValue] { prompt["questions"].array ?? [] }
+
+    private var answeredItems: [SummonJSONValue]? {
+        if let items = message.promptAnswer?["answers"].array, !items.isEmpty { return items }
+        if let reply = store.messagesForRoom(roomID).first(where: { $0.promptResponse?["prompt_message_id"].string == message.id }),
+           let items = reply.promptResponse?["answers"].array, !items.isEmpty {
+            return items
+        }
+        return nil
+    }
+
+    private var isReady: Bool {
+        guard !questions.isEmpty else { return false }
+        return questions.allSatisfy { q in
+            if q["required"].bool == false { return true }
+            let qid = q["id"].stringValue
+            let mode = q["mode"].string ?? "single"
+            let hasSelected = !(selectedByQuestion[qid] ?? []).isEmpty
+            let hasCustom = !(customByQuestion[qid] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            return mode == "text" ? hasCustom : (hasSelected || hasCustom)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                if answeredItems != nil {
+                    Label(kind == "permission" ? "已确认权限" : kind == "confirm" ? "已确认" : "已提交选择", systemImage: "checkmark.circle.fill")
+                        .summonFont(.caption2, weight: .semibold)
+                        .foregroundStyle(SummonTheme.ok)
+                } else {
+                    Text(kind == "permission" ? "权限确认" : kind == "confirm" ? "操作确认" : "待你选择")
+                        .summonFont(.caption2, weight: .semibold)
+                        .foregroundStyle(kind == "permission" ? SummonTheme.warn : .secondary)
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background((kind == "permission" ? SummonTheme.warn : Color.secondary).opacity(0.14), in: Capsule())
+                }
+                if let title = prompt["title"].string, !title.isEmpty {
+                    Text(title).summonFont(.caption, weight: .semibold).foregroundStyle(.primary)
+                }
+            }
+
+            if let answeredItems {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(answeredItems.enumerated()), id: \.offset) { _, ans in
+                        let labels = (ans["selected_labels"].array ?? []).compactMap(\.string)
+                        let custom = ans["custom_text"].string ?? ""
+                        let summary = (labels + (custom.isEmpty ? [] : [custom])).joined(separator: " · ")
+                        HStack(alignment: .top, spacing: 6) {
+                            Text(ans["label"].string ?? ans["question_id"].stringValue)
+                                .summonFont(.caption).foregroundStyle(.secondary)
+                            Text(summary.isEmpty ? "—" : summary)
+                                .summonFont(.caption, weight: .medium).foregroundStyle(.primary)
+                        }
+                    }
+                }
+            } else {
+                ForEach(Array(questions.enumerated()), id: \.offset) { idx, q in
+                    let qid = q["id"].stringValue
+                    let mode = q["mode"].string ?? "single"
+                    let allowCustom = q["allow_custom"].bool ?? (mode != "text" && kind != "permission")
+                    let options = q["options"].array ?? []
+                    VStack(alignment: .leading, spacing: 7) {
+                        HStack {
+                            Text((questions.count > 1 ? "\(idx + 1). " : "") + q["label"].stringValue)
+                                .summonFont(.footnote, weight: .semibold).foregroundStyle(.primary)
+                            Spacer(minLength: 4)
+                            Text((mode == "multi" ? "多选" : mode == "text" ? "填写" : "单选") + (q["required"].bool == false ? " · 选填" : ""))
+                                .summonFont(.caption2).foregroundStyle(.tertiary)
+                        }
+                        if mode != "text" {
+                            ForEach(Array(options.enumerated()), id: \.offset) { _, opt in
+                                let oid = opt["id"].stringValue
+                                let selected = (selectedByQuestion[qid] ?? []).contains(oid)
+                                let tone = opt["tone"].string ?? "default"
+                                let accentColor: Color = tone == "primary" ? SummonTheme.ok : tone == "danger" ? .red : .primary
+                                Button {
+                                    toggleOption(qid: qid, oid: oid, mode: mode)
+                                } label: {
+                                    HStack(alignment: .top, spacing: 9) {
+                                        Image(systemName: mode == "multi"
+                                              ? (selected ? "checkmark.square.fill" : "square")
+                                              : (selected ? "largecircle.fill.circle" : "circle"))
+                                            .font(.system(size: 16))
+                                            .foregroundStyle(selected ? accentColor : .secondary)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            HStack(spacing: 6) {
+                                                Text(opt["label"].stringValue)
+                                                    .summonFont(.footnote, weight: selected ? .semibold : .regular)
+                                                    .foregroundStyle(.primary)
+                                                if opt["recommended"].bool == true {
+                                                    Text("推荐")
+                                                        .summonFont(.caption2, weight: .semibold)
+                                                        .foregroundStyle(SummonTheme.ok)
+                                                        .padding(.horizontal, 6).padding(.vertical, 1)
+                                                        .background(SummonTheme.ok.opacity(0.14), in: Capsule())
+                                                }
+                                            }
+                                            if let desc = opt["description"].string, !desc.isEmpty {
+                                                Text(desc).summonFont(.caption2).foregroundStyle(.secondary)
+                                            }
+                                        }
+                                        Spacer(minLength: 0)
+                                    }
+                                    .padding(.horizontal, 10).padding(.vertical, 8)
+                                    .background(selected ? accentColor.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 10))
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .stroke(selected ? accentColor.opacity(0.6) : SummonTheme.bubbleStroke, lineWidth: selected ? 1.2 : 0.7)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(submitting)
+                            }
+                        }
+                        if mode == "text" || allowCustom {
+                            let placeholder = q["custom_placeholder"].string
+                                ?? (mode == "text" ? "请输入回答…" : mode == "multi" ? "补充说明或自填其他选项（选填）" : "或自定义填写其他想法…")
+                            TextField(placeholder, text: Binding(
+                                get: { customByQuestion[qid] ?? "" },
+                                set: { newVal in
+                                    customByQuestion[qid] = newVal
+                                    if mode == "single" && !newVal.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                        selectedByQuestion[qid] = []
+                                    }
+                                }
+                            ))
+                            .summonFont(.footnote)
+                            .padding(.horizontal, 10).padding(.vertical, 8)
+                            .background(SummonTheme.background, in: RoundedRectangle(cornerRadius: 10))
+                            .overlay { RoundedRectangle(cornerRadius: 10).stroke(SummonTheme.bubbleStroke, lineWidth: 0.8) }
+                            .disabled(submitting)
+                        }
+                    }
+                }
+                HStack {
+                    Spacer()
+                    Button {
+                        Task { await submit() }
+                    } label: {
+                        Text(submitting ? "提交中…" : (prompt["submit_label"].string ?? (kind == "permission" ? "确认授权" : kind == "confirm" ? "确认" : "提交选择")))
+                            .summonFont(.footnote, weight: .semibold)
+                            .padding(.horizontal, 14).padding(.vertical, 7)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(submitting || !store.protocolReady || !isReady)
+                }
+            }
+        }
+        .padding(12)
+        .background(answeredItems != nil ? SummonTheme.ok.opacity(0.07) : SummonTheme.surface, in: RoundedRectangle(cornerRadius: 16))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(answeredItems != nil ? SummonTheme.ok.opacity(0.28) : (kind == "permission" ? SummonTheme.warn.opacity(0.42) : SummonTheme.bubbleStroke), lineWidth: 0.9)
+        }
+    }
+
+    private func toggleOption(qid: String, oid: String, mode: String) {
+        var current = selectedByQuestion[qid] ?? []
+        if mode == "multi" {
+            if let index = current.firstIndex(of: oid) { current.remove(at: index) }
+            else { current.append(oid) }
+        } else {
+            current = current == [oid] ? [] : [oid]
+            if !current.isEmpty { customByQuestion[qid] = "" }
+        }
+        selectedByQuestion[qid] = current
+    }
+
+    private func submit() async {
+        guard isReady, !submitting else { return }
+        submitting = true
+        defer { submitting = false }
+        var answers: [SummonJSONValue] = []
+        var lines: [String] = []
+        for q in questions {
+            let qid = q["id"].stringValue
+            let label = q["label"].stringValue
+            let options = q["options"].array ?? []
+            let optMap = Dictionary(uniqueKeysWithValues: options.map { ($0["id"].stringValue, $0["label"].stringValue) })
+            let selectedIds = (selectedByQuestion[qid] ?? []).filter { optMap[$0] != nil }
+            let selectedLabels = selectedIds.compactMap { optMap[$0] }
+            let customText = (customByQuestion[qid] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if selectedIds.isEmpty && customText.isEmpty { continue }
+            var item: [String: SummonJSONValue] = [
+                "question_id": .string(qid),
+                "label": .string(label),
+                "selected_ids": .array(selectedIds.map(SummonJSONValue.string)),
+                "selected_labels": .array(selectedLabels.map(SummonJSONValue.string))
+            ]
+            if !customText.isEmpty { item["custom_text"] = .string(customText) }
+            answers.append(.object(item))
+            var parts = selectedLabels
+            if !customText.isEmpty { parts.append(selectedLabels.isEmpty ? customText : "补充：\(customText)") }
+            lines.append(questions.count == 1 ? "已选择：\(parts.joined(separator: "、"))" : "\(label)：\(parts.joined(separator: "、"))")
+        }
+        guard !answers.isEmpty else { return }
+        await store.sendPromptResponse(roomID: roomID, message: message, answers: answers, summaryText: lines.joined(separator: "\n"))
+    }
+}
+
+private struct ExecutionPendingPromptCard: View {
+    @Environment(SummonStore.self) private var store
+    let exec: SummonJSONValue
+    let request: SummonJSONValue
+    let onError: (String) -> Void
+
+    @State private var selectedChoice = ""
+    @State private var freeText = ""
+    @State private var busy = false
+
+    private var isApproval: Bool { request["kind"].string == "approval" }
+    private var choices: [SummonJSONValue] { request["choices"].array ?? [] }
+    private var currentValue: String { choices.isEmpty ? freeText.trimmingCharacters(in: .whitespacesAndNewlines) : selectedChoice }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 8) {
+                Text(isApproval ? "执行权限审批" : "执行会话提问")
+                    .summonFont(.caption2, weight: .semibold)
+                    .foregroundStyle(isApproval ? SummonTheme.warn : .secondary)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background((isApproval ? SummonTheme.warn : Color.secondary).opacity(0.14), in: Capsule())
+                let actorID = exec["execution_actor"]["id"].string ?? exec["bot_id"].string ?? ""
+                Text(store.name(for: actorID) + (exec["engine"].string.map { " · \($0)" } ?? ""))
+                    .summonFont(.caption, weight: .semibold).lineLimit(1)
+            }
+            if let q = request["question"].string, !q.isEmpty {
+                Text(q).summonFont(.footnote).fixedSize(horizontal: false, vertical: true)
+            }
+            if !choices.isEmpty {
+                HStack(spacing: 8) {
+                    ForEach(Array(choices.enumerated()), id: \.offset) { _, choice in
+                        let cid = choice["id"].stringValue
+                        let label = choice["label"].string ?? cid
+                        let selected = selectedChoice == cid
+                        let accent: Color = cid == "accept" ? SummonTheme.ok : ["deny", "decline", "cancel"].contains(cid) ? .red : .primary
+                        Button {
+                            selectedChoice = cid
+                        } label: {
+                            Text(label)
+                                .summonFont(.footnote, weight: selected ? .semibold : .regular)
+                                .padding(.horizontal, 12).padding(.vertical, 7)
+                                .background(selected ? accent.opacity(0.14) : Color.clear, in: Capsule())
+                                .overlay { Capsule().stroke(selected ? accent : SummonTheme.bubbleStroke, lineWidth: selected ? 1.2 : 0.7) }
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(busy)
+                    }
+                }
+            } else {
+                TextField("输入回答…", text: $freeText)
+                    .summonFont(.footnote)
+                    .padding(.horizontal, 10).padding(.vertical, 8)
+                    .background(SummonTheme.background, in: RoundedRectangle(cornerRadius: 10))
+                    .overlay { RoundedRectangle(cornerRadius: 10).stroke(SummonTheme.bubbleStroke, lineWidth: 0.8) }
+                    .disabled(busy)
+            }
+            HStack {
+                Spacer()
+                Button {
+                    Task { await submit() }
+                } label: {
+                    Text(busy ? "提交中…" : isApproval ? "确认审批" : "提交回答")
+                        .summonFont(.footnote, weight: .semibold)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(busy || !store.protocolReady || currentValue.isEmpty)
+            }
+        }
+        .padding(12)
+        .background(SummonTheme.surface, in: RoundedRectangle(cornerRadius: 16))
+        .overlay { RoundedRectangle(cornerRadius: 16).stroke(SummonTheme.warn.opacity(0.4), lineWidth: 0.9) }
+    }
+
+    private func submit() async {
+        guard !busy, !currentValue.isEmpty else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            try await store.submitPendingExecutionInput(
+                target: exec["execution_ref"],
+                controlVersion: exec["control_version"].int ?? 1,
+                inputTarget: request["input_target"],
+                input: currentValue
+            )
+            selectedChoice = ""
+            freeText = ""
+        } catch {
+            onError(error.localizedDescription)
         }
     }
 }

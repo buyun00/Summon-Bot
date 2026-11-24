@@ -390,7 +390,7 @@ final class SummonStore {
 
     func openDirectMessage(bot: SummonBot) async throws -> SummonRoom {
         if let room = rooms.first(where: { !$0.isGroup && $0.members.contains(bot.id) }) { return room }
-        return try await createGroup(name: bot.name, members: [bot.id])
+        return try await createRoom(name: bot.name, members: [bot.id], mode: "direct")
     }
 
     func fetchBot(_ id: String) async throws -> SummonBot {
@@ -423,7 +423,16 @@ final class SummonStore {
     }
 
     func createGroup(name: String, members: [String]) async throws -> SummonRoom {
-        var body: [String: SummonJSONValue] = ["members": .array(members.map(SummonJSONValue.string))]
+        let room = try await createRoom(name: name, members: members, mode: "group")
+        await refresh()
+        return room
+    }
+
+    private func createRoom(name: String, members: [String], mode: String) async throws -> SummonRoom {
+        var body: [String: SummonJSONValue] = [
+            "members": .array(members.map(SummonJSONValue.string)),
+            "mode": .string(mode)
+        ]
         if !name.isEmpty { body["title"] = .string(name) }
         let result = try await business(SummonRoom.self, "/api/rooms", "POST", .object(body), clientID: Self.newID())
         upsertRoom(result)
@@ -496,6 +505,43 @@ final class SummonStore {
         await deliver(id, queryFirst: false)
     }
 
+    func sendPromptResponse(roomID: String, message: SummonMessage, answers: [SummonJSONValue], summaryText: String) async {
+        guard protocolReady, !sendingRoomIDs.contains(roomID), !answers.isEmpty else { return }
+        let room = rooms.first(where: { $0.id == roomID })
+        let mentions = (message.senderId != "user" && message.senderId != "system" && room?.members.contains(message.senderId) == true)
+            ? [message.senderId] : []
+        let promptResponse: SummonJSONValue = .object([
+            "prompt_message_id": .string(message.id),
+            "answers": .array(answers)
+        ])
+        let id = Self.newID()
+        let outgoing = SummonMessage(
+            id: "local-\(id)", roomId: roomID, senderId: "user", content: summaryText,
+            mentions: mentions, replyTo: message.id, clientId: id,
+            createdAt: ISO8601DateFormatter().string(from: Date()),
+            promptResponse: promptResponse
+        )
+        pendingMessages.append(SummonPendingMessage(clientID: id, message: outgoing, status: "queued"))
+        await deliver(id, queryFirst: false)
+    }
+
+    func submitPendingExecutionInput(target: SummonJSONValue, controlVersion: Int, inputTarget: SummonJSONValue, input: String) async throws {
+        guard protocolReady else { throw SummonAPIError.invalidResponse }
+        _ = try await request(
+            path: "/api/executions/input",
+            method: "POST",
+            body: .object([
+                "target": target,
+                "kind": .string("reply"),
+                "control_version": .number(Double(controlVersion)),
+                "input_target": inputTarget,
+                "input": .string(input)
+            ]),
+            clientID: Self.newID()
+        )
+        await refresh()
+    }
+
     func retryMessage(clientID: String) async {
         await deliver(clientID, queryFirst: true)
     }
@@ -553,6 +599,7 @@ final class SummonStore {
                     "attachments": .array(attachments), "references": .array(message.references.map(\.json)),
                     "mentions": .array(message.mentions.map(SummonJSONValue.string))]
                 if let reply = message.replyTo { body["reply_to"] = SummonReference(kind: "event", id: reply).json }
+                if let promptResponse = message.promptResponse { body["prompt_response"] = promptResponse }
                 submittingMessage = true
                 receipt = try await client.request(SummonReceipt.self, path: path, method: "POST", body: .object(body), clientID: id)
             }

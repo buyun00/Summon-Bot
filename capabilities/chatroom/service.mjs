@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { fail } from '../shared/validation.mjs';
 import { assertRevision, idOf, identity } from '../platform/contract.mjs';
-import { botMaintenanceRoomId } from '../../roles/index.mjs';
+import { botMaintenanceRoomId, groupLeadRole } from '../../roles/index.mjs';
 
 function list(value, label, maximum = 100) {
   if (value === undefined) return [];
@@ -37,6 +37,111 @@ function titleOf(value, fallback) {
   return value.trim();
 }
 
+function normalizePrompt(raw) {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== 'object' || Array.isArray(raw)) fail('选择框格式无效');
+  const kind = ['question', 'permission', 'confirm'].includes(raw.kind) ? raw.kind : 'question';
+  const title = typeof raw.title === 'string' && raw.title.trim() ? raw.title.trim().slice(0, 120) : undefined;
+  const submit_label = typeof raw.submit_label === 'string' && raw.submit_label.trim() ? raw.submit_label.trim().slice(0, 40) : undefined;
+  if (!Array.isArray(raw.questions) || !raw.questions.length || raw.questions.length > 12) {
+    fail('选择框须包含 1 至 12 个问题');
+  }
+  const seenQ = new Set();
+  const questions = raw.questions.map((item, idx) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) fail('选择框问题格式无效');
+    const qid = typeof item.id === 'string' && item.id.trim() ? item.id.trim().slice(0, 80) : `q${idx + 1}`;
+    if (seenQ.has(qid)) fail('选择框问题 ID 不能重复');
+    seenQ.add(qid);
+    const label = typeof item.label === 'string' && item.label.trim() ? item.label.trim().slice(0, 300) : '';
+    if (!label) fail('选择框问题标题不能为空');
+    const mode = ['single', 'multi', 'text'].includes(item.mode) ? item.mode : 'single';
+    const required = item.required !== false;
+    const allow_custom = mode === 'text' ? false
+      : item.allow_custom !== undefined ? Boolean(item.allow_custom)
+      : kind !== 'permission';
+    const custom_placeholder = typeof item.custom_placeholder === 'string' && item.custom_placeholder.trim()
+      ? item.custom_placeholder.trim().slice(0, 160) : undefined;
+    let options = [];
+    if (mode !== 'text') {
+      if (!Array.isArray(item.options) || !item.options.length || item.options.length > 20) {
+        fail('单选或多选问题须包含 1 至 20 个选项');
+      }
+      const seenOpt = new Set();
+      options = item.options.map((opt, optIdx) => {
+        if (!opt || typeof opt !== 'object' || Array.isArray(opt)) fail('选项格式无效');
+        const oid = typeof opt.id === 'string' && opt.id.trim() ? opt.id.trim().slice(0, 80) : `opt${optIdx + 1}`;
+        if (seenOpt.has(oid)) fail('同一问题的选项 ID 不能重复');
+        seenOpt.add(oid);
+        const optLabel = typeof opt.label === 'string' && opt.label.trim() ? opt.label.trim().slice(0, 160) : '';
+        if (!optLabel) fail('选项名称不能为空');
+        const description = typeof opt.description === 'string' && opt.description.trim()
+          ? opt.description.trim().slice(0, 240) : undefined;
+        const tone = ['default', 'primary', 'danger'].includes(opt.tone) ? opt.tone : 'default';
+        return {
+          id: oid,
+          label: optLabel,
+          ...(description ? { description } : {}),
+          ...(opt.recommended === true ? { recommended: true } : {}),
+          ...(tone !== 'default' ? { tone } : {}),
+        };
+      });
+    }
+    return {
+      id: qid,
+      label,
+      mode,
+      required,
+      allow_custom,
+      ...(custom_placeholder ? { custom_placeholder } : {}),
+      ...(options.length ? { options } : {}),
+    };
+  });
+  return {
+    kind,
+    ...(title ? { title } : {}),
+    ...(submit_label ? { submit_label } : {}),
+    questions,
+  };
+}
+
+function normalizePromptResponse(raw, room, lookupMessage) {
+  if (raw === undefined || raw === null) return null;
+  if (typeof raw !== 'object' || Array.isArray(raw)) fail('选择框答复格式无效');
+  const prompt_message_id = identifier(raw.prompt_message_id, '选择框消息 ID');
+  const promptMsg = lookupMessage(prompt_message_id);
+  if (!promptMsg || promptMsg.roomId !== room.id || !promptMsg.prompt) {
+    fail('目标选择框不存在或不属于当前会话', 404);
+  }
+  if (!Array.isArray(raw.answers) || !raw.answers.length || raw.answers.length > 12) {
+    fail('请至少填写一项选择结果');
+  }
+  const byId = new Map(promptMsg.prompt.questions.map(q => [q.id, q]));
+  const answers = raw.answers.map(item => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) fail('回答条目格式无效');
+    const question_id = identifier(item.question_id, '问题 ID');
+    const q = byId.get(question_id);
+    if (!q) fail('回答对应的问题 ID 不存在');
+    const optMap = new Map((q.options || []).map(o => [o.id, o.label]));
+    const selected_ids = Array.isArray(item.selected_ids)
+      ? [...new Set(item.selected_ids.filter(v => typeof v === 'string' && optMap.has(v)))]
+      : [];
+    const selected_labels = selected_ids.map(oid => optMap.get(oid));
+    const custom_text = typeof item.custom_text === 'string' ? item.custom_text.trim().slice(0, 4000) : '';
+    if (q.mode === 'single' && selected_ids.length > 1) fail('单选题只能选择一个选项');
+    return {
+      question_id,
+      label: q.label,
+      selected_ids,
+      selected_labels,
+      ...(custom_text ? { custom_text } : {}),
+    };
+  });
+  return {
+    promptMsg,
+    value: { prompt_message_id, answers },
+  };
+}
+
 const refKey = ref => ref?.kind === 'workspace_file'
   ? JSON.stringify([ref.kind, ref.workspace_id, ref.path])
   : JSON.stringify([ref?.kind, ref?.id]);
@@ -46,13 +151,16 @@ function rowMessage(row) {
   if (!row) return null;
   const message = JSON.parse(row.data);
   const { id, roomId, senderId, content, createdAt, clientId, replyTo, replyAuthorId, callId,
-    forSessionId, originMessageId, awaitingReply } = message;
+    forSessionId, originMessageId, awaitingReply, prompt, promptResponse, promptAnswer } = message;
   const author = message.author ?? message.source ?? identity(senderId);
   return { id, ref: { kind: 'event', id }, kind: 'message', roomId, senderId, content, createdAt, sequence: row.sequence,
     author, space: { kind: 'room', id: roomId }, clientId, replyTo, replyAuthorId, callId,
     ...(forSessionId ? { forSessionId } : {}),
     ...(originMessageId ? { originMessageId } : {}),
     ...(awaitingReply ? { awaitingReply: true } : {}),
+    ...(prompt ? { prompt } : {}),
+    ...(promptResponse ? { promptResponse } : {}),
+    ...(promptAnswer ? { promptAnswer } : {}),
     attachments: (message.attachments ?? []).map(({ id: fileId, name, mimeType, size, revision, url, previewUrl, openUrl, unavailable }) =>
       ({ id: fileId, ref: { kind: 'file', id: fileId }, name, mimeType, size, ...(revision !== undefined ? { revision } : {}), url, previewUrl, openUrl, unavailable })),
     references: message.references ?? [], mentions: message.mentions ?? [] };
@@ -132,8 +240,9 @@ export class ChatroomService {
   }
 
   projectRoom(room) {
-    const { id, name, members, mode, pins, revision, createdAt, updatedAt } = room;
+    const { id, name, members, mode, pins, revision, createdAt, updatedAt, lead_bot_id } = room;
     return { id, ref: { kind: 'room', id }, name, members, mode, pins, deletable: mode === 'group' && id !== botMaintenanceRoomId,
+      ...(lead_bot_id ? { lead_bot_id } : {}),
       workspace: room.workspace ?? null, revision, createdAt, updatedAt,
       lastMessage: rowMessage(this.latestMessage.get(id)) };
   }
@@ -260,7 +369,10 @@ export class ChatroomService {
   observationStart(roomId, botId) {
     const work_start = this.observationEnd(roomId, botId);
     const through = this.lastSavedMessage.get(roomId) ?? null;
-    return { through, start_sequence: through?.sequence ?? 0, work_start, first_user: !through, pending: null };
+    const room = this.store.get('rooms', roomId);
+    const hasLead = Boolean(room?.lead_bot_id) || (room?.members || []).some(member =>
+      member !== 'user' && this.store.get('platform-bots', member)?.built_in_role?.id === groupLeadRole);
+    return { through, start_sequence: through?.sequence ?? 0, work_start, first_user: !through && !hasLead, pending: null };
   }
 
   countedMessage(roomId, botId, after, count) {
@@ -310,26 +422,89 @@ export class ChatroomService {
     this.createRoom({ title: 'Bot 维护群', members: [bot.id], mode: 'group' }, 'user', { id: botMaintenanceRoomId });
   }
 
-  createRoom({ title, members, mode, workspace }, actor, { id = randomUUID() } = {}) {
+  createRoom({ title, members, mode, workspace, lead_name }, actor, { id = randomUUID() } = {}) {
     actor = identity(actor).id;
-    const included = [...new Set([actor, ...list(members, '成员').map(member => identity(member).id)])];
+    const requested = [...new Set([actor, ...list(members, '成员').map(member => identity(member).id)])];
+    let createdLead = null;
+    let openingMessage = null;
     const saved = this.store.transaction(() => {
       if (this.store.get('rooms', id)) fail('会话 ID 已存在', 409);
-      this.validateMembers(included, actor);
-      mode ??= directMembers(included) ? 'direct' : 'group';
-      if (mode === 'direct' && !directMembers(included)) fail('私聊必须包含用户和一位 Bot');
-      const fallback = included.filter(member => member !== 'user').map(member => this.manager.get(member).name).join('、');
-      const onboarding = mode === 'group' && this.manager.onboardingBot();
-      if (onboarding?.enabled && !included.includes(onboarding.id)) included.push(onboarding.id);
+      this.validateMembers(requested, actor);
+      mode ??= directMembers(requested) ? 'direct' : 'group';
+      if (mode === 'direct' && !directMembers(requested)) fail('私聊必须包含用户和一位 Bot');
+      const isStandardGroup = mode === 'group' && id !== botMaintenanceRoomId;
+      let roomName;
+      if (title !== undefined) {
+        roomName = titleOf(title, '新会话');
+      } else if (isStandardGroup) {
+        const existingNames = new Set(this.store.list('rooms').map(item => item.name));
+        let candidate = '新群聊';
+        let index = 2;
+        while (existingNames.has(candidate)) candidate = `新群聊 ${index++}`;
+        roomName = candidate;
+      } else {
+        const fallback = requested.filter(member => member !== 'user').map(member => this.manager.get(member).name).join('、');
+        roomName = fallback.slice(0, 160) || '新会话';
+      }
+      const included = [...requested];
+      let leadBotId = null;
+      if (isStandardGroup) {
+        const existingLead = included.find(member =>
+          member !== 'user' && this.store.get('platform-bots', member)?.built_in_role?.id === groupLeadRole);
+        if (existingLead) {
+          leadBotId = existingLead;
+        } else {
+          const leadBot = this.manager.createGroupLead({ roomId: id, roomName, leadName: lead_name });
+          createdLead = leadBot;
+          leadBotId = leadBot.id;
+          const insertAt = included.includes('user') ? included.indexOf('user') + 1 : 0;
+          if (!included.includes(leadBot.id)) included.splice(insertAt, 0, leadBot.id);
+        }
+        const egg = this.manager.eggBot();
+        if (egg?.enabled && !included.includes(egg.id)) included.push(egg.id);
+        const onboarding = this.manager.onboardingBot();
+        if (onboarding?.enabled && !included.includes(onboarding.id)) included.push(onboarding.id);
+      } else if (mode === 'group') {
+        const onboarding = this.manager.onboardingBot();
+        if (onboarding?.enabled && !included.includes(onboarding.id)) included.push(onboarding.id);
+      }
+      const boundWorkspace = workspace == null ? null : this.platform.bindRoomWorkspace(workspace, actor, mode);
       const room = this.store.save('rooms', {
-        id, name: titleOf(title, fallback.slice(0, 160) || '新会话'), members: included, mode, pins: [], revision: 1,
-        workspace: workspace == null ? null : this.platform.bindRoomWorkspace(workspace, actor, mode),
+        id, name: roomName, members: included, mode, pins: [], revision: 1,
+        ...(leadBotId ? { lead_bot_id: leadBotId } : {}),
+        workspace: boundWorkspace,
       });
+      if (isStandardGroup && leadBotId) {
+        const leadRecord = this.store.get('platform-bots', leadBotId);
+        const wsLabel = boundWorkspace?.name || boundWorkspace?.path || '';
+        const welcomeText = wsLabel
+          ? `我是「${roomName}」的群主控，已绑定目录「${wsLabel}」，EggBot 和接口 Bot 已就位。直接说需求就行。`
+          : `我是「${roomName}」的群主控，EggBot 和接口 Bot 已就位。直接说你想做什么就行。`;
+        const openId = randomUUID();
+        this.store.save('messages', {
+          id: openId,
+          kind: 'message',
+          roomId: id,
+          senderId: leadBotId,
+          ...(leadRecord?.name ? { senderName: leadRecord.name } : {}),
+          author: identity(leadBotId),
+          content: welcomeText,
+          attachments: [],
+          references: [],
+          mentions: [],
+          replyTo: null,
+        });
+        openingMessage = this.projectMessage(this.messageRow.get(openId));
+      }
       for (const member of included) if (member !== 'user') this.platform.ensureRoomBase(member, id);
       return room;
     });
+    if (createdLead) {
+      this.platform.emit('bot', this.manager.view(createdLead, { kind: 'user', id: 'user' }));
+    }
     const projection = this.projectRoom(saved);
     this.emit('room', projection);
+    if (openingMessage) this.emit('message', openingMessage);
     return projection;
   }
 
@@ -434,6 +609,7 @@ export class ChatroomService {
     const clientId = input.clientId === undefined ? undefined : identifier(input.clientId, '客户端发送 ID');
     const callId = options.callId;
     let inserted = false;
+    let updatedPromptMessage = null;
     const result = this.store.transaction(() => {
       const room = this.room(id, actor);
       const eventId = options.eventId || callId || randomUUID();
@@ -448,9 +624,17 @@ export class ChatroomService {
       }
       const content = input.text === undefined ? '' : input.text;
       if (typeof content !== 'string' || content.length > 16000) fail('消息正文须为不超过 16000 个字符的文本');
-      const mentions = [...new Set(list(input.mentions, '@成员').map(member => identity(member).id))];
+      const prompt = normalizePrompt(input.prompt);
+      const promptRes = normalizePromptResponse(input.prompt_response, room, msgId => rowMessage(this.messageRow.get(msgId)));
+      const rawMentions = list(input.mentions, '@成员').map(member => identity(member).id);
+      if (promptRes && promptRes.promptMsg.senderId !== 'user' && promptRes.promptMsg.senderId !== 'system' &&
+          room.members.includes(promptRes.promptMsg.senderId) && !rawMentions.includes(promptRes.promptMsg.senderId)) {
+        rawMentions.push(promptRes.promptMsg.senderId);
+      }
+      const mentions = [...new Set(rawMentions)];
       if (mentions.some(member => !room.members.includes(member))) fail('@对象必须是会话的当前成员');
-      const [reply] = input.reply_to === undefined ? [] : references([input.reply_to], '回复', 'event');
+      const replyTarget = input.reply_to !== undefined ? input.reply_to : promptRes?.value.prompt_message_id;
+      const [reply] = replyTarget === undefined ? [] : references([replyTarget], '回复', 'event');
       let parent;
       if (reply) {
         parent = rowMessage(this.messageRow.get(reply.id));
@@ -475,11 +659,11 @@ export class ChatroomService {
           url: sharedFile.url || `/api/files/${encodeURIComponent(ref.id)}/download`,
         };
       });
-      if (!content.trim() && !attachments.length && !refs.length) fail('请填写正文，或添加附件或引用');
+      if (!content.trim() && !attachments.length && !refs.length && !prompt && !promptRes) fail('请填写正文，或添加附件、引用或选择框');
       const forSessionId = input.for_session_id ? identifier(input.for_session_id, '关联会话 ID') : null;
       const [originRef] = input.origin_message_id === undefined ? [] : references([input.origin_message_id], '关联原消息', 'event');
       const originMessageId = originRef?.id ?? parent?.originMessageId ?? (parent?.senderId === 'user' ? parent.id : null);
-      const awaitingReply = input.awaiting_reply === true;
+      const awaitingReply = input.awaiting_reply === true || Boolean(prompt);
       if (actor !== 'user' && Number.isSafeInteger(options.expectedSequence)) {
         const latestSeq = this.latestSequence(id);
         if (latestSeq > options.expectedSequence) {
@@ -515,13 +699,28 @@ export class ChatroomService {
         ...(forSessionId ? { forSessionId } : {}),
         ...(originMessageId ? { originMessageId } : {}),
         ...(awaitingReply ? { awaitingReply: true } : {}),
+        ...(prompt ? { prompt } : {}),
+        ...(promptRes ? { promptResponse: promptRes.value } : {}),
         ...(clientId === undefined ? {} : { clientId }), ...(callId ? { callId } : {}),
       });
+      if (promptRes) {
+        this.store.save('messages', {
+          id: promptRes.promptMsg.id,
+          promptAnswer: {
+            by: actor,
+            messageId: eventId,
+            answeredAt: new Date().toISOString(),
+            answers: promptRes.value.answers,
+          },
+        });
+        updatedPromptMessage = this.projectMessage(this.messageRow.get(promptRes.promptMsg.id));
+      }
       const saved = rowMessage(this.messageRow.get(message.id));
-      this.platform.queueMessage(saved);
+      if (!options.skipDelivery) this.platform.queueMessage(saved);
       inserted = true;
       return this.messageReceipt(saved);
     });
+    if (updatedPromptMessage) this.emit('message', updatedPromptMessage);
     if (inserted) this.emit('message', result.message);
     return result;
   }
@@ -548,5 +747,8 @@ export function messageEvent(message) {
     ...(message.forSessionId ? { for_session_id: message.forSessionId } : {}),
     ...(message.originMessageId ? { origin_message_id: message.originMessageId } : {}),
     ...(message.awaitingReply ? { awaiting_reply: true } : {}),
+    ...(message.prompt ? { prompt: message.prompt } : {}),
+    ...(message.promptResponse ? { prompt_response: message.promptResponse } : {}),
+    ...(message.promptAnswer ? { prompt_answer: message.promptAnswer } : {}),
     attachments: message.attachments, references: message.references, call_id: message.callId };
 }

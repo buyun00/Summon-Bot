@@ -189,6 +189,7 @@ const ui = {
   detailOpen:false, detailTab:'details', profileBotId:null, avatarEditing:false, avatarDraft:null, avatarTab:'bot',
   avatarSelectionRevision:0, searchOpen:false, roomQuery:'', menu:null, sendingRooms:new Set(), navigationSeq:0,
   messageCache:new Map(), roomReadSeq:{}, executionInputs:new Map(), loadingExecutions:new Map(),
+  promptDrafts:new Map(), promptSubmitting:new Set(), execPromptDrafts:new Map(), execPromptBusy:new Set(),
   historyEpoch:null, historyGeneration:0, retiredHistoryEpochs:new Set(),
 };
 const attachmentLimit = 8, attachmentMaxBytes = 20 * 1024 * 1024;
@@ -336,6 +337,7 @@ function renderSendStatus(message) {
 function queueLocalMessage(roomId, payload, attachments) {
   const clientId = newClientId(), entries = ui.localMessages[roomId] ||= {};
   const message = { content: payload.text, references: payload.references, mentions: payload.mentions, replyTo: payload.reply_to?.id,
+    ...(payload.prompt_response ? { promptResponse: payload.prompt_response } : {}),
     attachments: attachments.map(item => item.attachment), id: 'local-' + clientId, clientId, roomId, senderId: 'user', createdAt: new Date().toISOString() };
   return entries[clientId] = { roomId, clientId, payload, message, status: 'queued' };
 }
@@ -636,7 +638,9 @@ function preserveView() {
 }
 function render() {
   persistClientSession();
-  if (ui.composing && document.activeElement?.id === 'message-input' && document.activeElement.form?.dataset.roomId === ui.roomId) { ui.renderDeferred = true; return; }
+  const activeEl = document.activeElement;
+  if (ui.composing && (activeEl?.id === 'message-input' && activeEl.form?.dataset.roomId === ui.roomId ||
+      activeEl?.matches?.('.prompt-custom-input, .exec-prompt-input'))) { ui.renderDeferred = true; return; }
   ui.renderDeferred = false;
   const saved = preserveView();
   const navigation = window.SummonMotion?.captureNavigation(ui.view === 'chat' ? (ui.mobileRoom ? 'chat:' + ui.roomId : 'list') : ui.view);
@@ -1070,9 +1074,29 @@ async function selectRoom(id) {
   render();
 }
 
-function memberChoices(selected = []) {
-  return `<fieldset class="form-field member-options"><legend>Bot 成员</legend>${state.bots.map(bot => `<label class="member-choice">${avatar(bot.id,32)}
-    <span>${esc(bot.name)}</span><input type="checkbox" name="members" value="${esc(bot.id)}" ${selected.includes(bot.id) ? 'checked' : ''}></label>`).join('')}</fieldset>`;
+function isBuiltinGroupBot(bot) {
+  return ['eggbot', 'tool-onboarding'].includes(bot?.role_id);
+}
+
+function memberChoices(selected = [], { excludeBuiltin = false, legend = 'Bot 成员' } = {}) {
+  const list = excludeBuiltin ? state.bots.filter(bot => !isBuiltinGroupBot(bot)) : state.bots;
+  if (!list.length) return '';
+  return `<fieldset class="form-field member-options"><legend>${esc(legend)}</legend>${list.map(bot => {
+    const roleTag = bot.role_id === 'group-lead' ? '主控' : bot.role_id === 'eggbot' ? '团队孵化' : bot.role_id === 'tool-onboarding' ? '接口' : '';
+    return `<label class="member-choice">${avatar(bot.id,32)}
+    <span>${esc(bot.name)}${roleTag ? ` <em class="member-role-badge">${esc(roleTag)}</em>` : ''}</span><input type="checkbox" name="members" value="${esc(bot.id)}" ${selected.includes(bot.id) ? 'checked' : ''}></label>`;
+  }).join('')}</fieldset>`;
+}
+
+function defaultGroupMembersField() {
+  const egg = state.bots.find(bot => bot.role_id === 'eggbot');
+  const onboarding = state.bots.find(bot => bot.role_id === 'tool-onboarding');
+  return `<fieldset class="form-field required-members-field"><legend>默认必含成员（自动加入）</legend>
+    <div class="required-members-list">
+      <div class="required-member-item"><span class="required-member-badge">主控</span><div><strong>群主控 Bot</strong><small>建群同步创建，开启并主持本群对话</small></div></div>
+      <div class="required-member-item">${egg ? avatar(egg.id, 28) : '<span class="required-member-badge">孵化</span>'}<div><strong>${esc(egg?.name || 'EggBot')}</strong><small>后台观察分工与按需增配成员</small></div></div>
+      <div class="required-member-item">${onboarding ? avatar(onboarding.id, 28) : '<span class="required-member-badge">接口</span>'}<div><strong>${esc(onboarding?.name || '接口 Bot')}</strong><small>外部工具接入、查询与连接维护</small></div></div>
+    </div></fieldset>`;
 }
 
 async function roomWorkspaceField(current) {
@@ -1083,13 +1107,16 @@ async function roomWorkspaceField(current) {
 
 async function openRoomForm() {
   const workspaceField = await roomWorkspaceField();
-  openModal('创建会话', '', field('会话名称', 'title', '', { placeholder:'选填' }) + workspaceField + memberChoices(), async data => {
+  const extraMembers = memberChoices([], { excludeBuiltin: true, legend: '附加其他成员（可选）' });
+  openModal('创建群聊', '默认包含群主控、EggBot 与接口 Bot', field('群名称', 'title', '', { placeholder:'选填，例如：项目开发' }) + workspaceField + defaultGroupMembersField() + extraMembers, async data => {
     const title = data.get('title').trim();
     const workspace = data.get('workspace');
     const room = await api('/api/rooms', 'POST', { members:data.getAll('members'), mode:'group', ...(workspace ? {workspace} : {}), ...(title ? { title } : {}) });
-    state.rooms.push(room);
+    const latestBots = await readList('/api/bots').catch(() => null);
+    if (latestBots) state.bots = latestBots;
+    if (!state.rooms.some(item => item.id === room.id)) state.rooms.push(room);
     await selectRoom(room.id);
-  }, '创建');
+  }, '创建群聊');
 }
 
 async function openRoomEdit() {
@@ -1171,6 +1198,8 @@ async function openBotEdit(bot) {
   const catalogRoles = (state.roles || []).map(item => ({ value: item.id, label: `${item.name} (${item.id})` }));
   const roles = [{ value:'', label:'未指定内置角色' }, ...(catalogRoles.length ? catalogRoles : [
     { value:'default', label:'默认成员 (default)' },
+    { value:'group-lead', label:'群主控 (group-lead)' },
+    { value:'eggbot', label:'EggBot (eggbot)' },
     { value:'tool-onboarding', label:'接口 Bot (tool-onboarding)' },
     { value:'catalog-maintainer', label:'连接维护者 (catalog-maintainer)' },
   ])];
@@ -1937,6 +1966,34 @@ async function act(action, element) {
     toast('已恢复群内自动讨论');
     return refresh();
   }
+  if (action === 'prompt-toggle') {
+    const msgId = element.dataset.msgId, qid = element.dataset.qid, optId = element.dataset.optId, mode = element.dataset.mode;
+    if (!msgId || !qid || !optId) return;
+    const draft = getPromptDraft(msgId);
+    const qDraft = draft[qid] || { selected: [], custom: '' };
+    if (mode === 'multi') {
+      const idx = qDraft.selected.indexOf(optId);
+      if (idx >= 0) qDraft.selected.splice(idx, 1);
+      else qDraft.selected.push(optId);
+    } else {
+      qDraft.selected = qDraft.selected[0] === optId ? [] : [optId];
+      if (qDraft.selected.length) qDraft.custom = '';
+    }
+    draft[qid] = qDraft;
+    return render();
+  }
+  if (action === 'prompt-submit') {
+    return submitPromptCard(element.dataset.msgId);
+  }
+  if (action === 'exec-prompt-select') {
+    const key = element.dataset.execKey, choiceId = element.dataset.choiceId;
+    if (!key || !choiceId) return;
+    ui.execPromptDrafts.set(key, choiceId);
+    return render();
+  }
+  if (action === 'exec-prompt-submit') {
+    return submitExecPromptCard(element.dataset.execKey);
+  }
   if (action === 'manual-fallback') {
     if (!ui.roomId || !id) return;
     const room = roomById(ui.roomId);
@@ -2095,6 +2152,29 @@ document.addEventListener('input', event => {
   if (event.target.id === 'create-bot-name') $('#create-bot-submit').disabled = !event.target.value.trim();
   if (event.target.id === 'message-input') { ui.drafts[event.target.form.dataset.roomId] = event.target.value; resizeComposer(event.target); persistClientSession(); }
   if (event.target.id === 'room-search') { ui.roomQuery = event.target.value; renderTopbar(); }
+  if (event.target.matches('.prompt-custom-input')) {
+    const msgId = event.target.dataset.msgId, qid = event.target.dataset.qid, mode = event.target.dataset.mode;
+    const draft = getPromptDraft(msgId);
+    const qDraft = draft[qid] || { selected: [], custom: '' };
+    qDraft.custom = event.target.value;
+    if (mode === 'single' && qDraft.custom.trim()) {
+      qDraft.selected = [];
+      const card = event.target.closest('.prompt-card');
+      for (const btn of $$('.prompt-option.selected', event.target.closest('.prompt-question') || card)) {
+        btn.classList.remove('selected');
+        btn.setAttribute('aria-pressed', 'false');
+      }
+    }
+    draft[qid] = qDraft;
+    syncPromptSubmitButton(msgId, event.target.closest('.prompt-card'));
+  }
+  if (event.target.matches('.exec-prompt-input')) {
+    const key = event.target.dataset.execKey;
+    ui.execPromptDrafts.set(key, event.target.value);
+    const card = event.target.closest('.exec-pending-card');
+    const submitBtn = card?.querySelector('[data-action="exec-prompt-submit"]');
+    if (submitBtn) submitBtn.disabled = !ui.protocolReady || ui.execPromptBusy.has(key) || !event.target.value.trim();
+  }
   const form = event.target.closest('.execution-input-form');
   if (form && ['input','structured'].includes(event.target.name)) {
     const entry = ui.executionInputs.get(form.dataset.input) || {};
@@ -2105,8 +2185,11 @@ document.addEventListener('input', event => {
   }
 });
 document.addEventListener('keydown', event => { if (event.target.id === 'message-input' && event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); const button = $('#message-form button[type=submit]'); if (!button?.disabled) $('#message-form')?.requestSubmit(); } });
-document.addEventListener('compositionstart', event => { if (event.target.id === 'message-input') ui.composing = true; });
-document.addEventListener('compositionend', event => { if (event.target.id !== 'message-input') return; ui.composing = false; ui.drafts[event.target.form.dataset.roomId] = event.target.value; persistClientSession(); if (ui.renderDeferred) render(); });
+document.addEventListener('compositionstart', event => { if (event.target.id === 'message-input' || event.target.matches?.('.prompt-custom-input, .exec-prompt-input')) ui.composing = true; });
+document.addEventListener('compositionend', event => {
+  if (event.target.id === 'message-input') { ui.composing = false; ui.drafts[event.target.form.dataset.roomId] = event.target.value; persistClientSession(); if (ui.renderDeferred) render(); return; }
+  if (event.target.matches?.('.prompt-custom-input, .exec-prompt-input')) { ui.composing = false; if (ui.renderDeferred) render(); }
+});
 document.addEventListener('paste', event => {
   if (!ui.roomId || ui.view !== 'chat') return;
   const target = event.target;
@@ -2234,7 +2317,13 @@ function botActivity(bot) {
   if (bot.activity === 'error') return { kind:'error', text:'运行异常', motion:'failed' };
   return { kind:'idle', text:'在线', motion:'idle' };
 }
-function messagePreview(message) { return message?.content?.replace(/\s+/g, ' ').trim() || message?.attachments?.map(file => file.name).join('、') || (message?.references?.length ? '共享了引用' : '消息'); }
+function messagePreview(message) {
+  return message?.content?.replace(/\s+/g, ' ').trim()
+    || message?.prompt?.title
+    || message?.prompt?.questions?.[0]?.label
+    || message?.attachments?.map(file => file.name).join('、')
+    || (message?.references?.length ? '共享了引用' : '消息');
+}
 function roomPreview(room) {
   const message = room.lastMessage;
   return message ? nameOf(message.senderId) + ' · ' + messagePreview(message) : '还没有消息';
@@ -2674,6 +2763,229 @@ function renderDelivery(message) {
   return suspended + stateNotice + hostFallbackNotice + staleWaitNotice;
 }
 
+function getPromptDraft(msgId) {
+  let draft = ui.promptDrafts.get(msgId);
+  if (!draft) { draft = {}; ui.promptDrafts.set(msgId, draft); }
+  return draft;
+}
+
+function isPromptReady(prompt, draft) {
+  if (!prompt?.questions?.length) return false;
+  return prompt.questions.every(q => {
+    if (q.required === false) return true;
+    const item = draft?.[q.id];
+    const hasSelected = Array.isArray(item?.selected) && item.selected.length > 0;
+    const hasCustom = typeof item?.custom === 'string' && item.custom.trim().length > 0;
+    return q.mode === 'text' ? hasCustom : (hasSelected || hasCustom);
+  });
+}
+
+function syncPromptSubmitButton(msgId, cardEl) {
+  if (!cardEl) return;
+  const msg = mergedRoomMessages(ui.roomId, ui.messages).find(item => item.id === msgId);
+  const btn = cardEl.querySelector('[data-action="prompt-submit"]');
+  if (!btn || !msg?.prompt) return;
+  const ready = isPromptReady(msg.prompt, ui.promptDrafts.get(msgId));
+  btn.disabled = !ui.protocolReady || ui.promptSubmitting.has(msgId) || !ready;
+}
+
+function findPromptAnswer(message, timeline) {
+  if (message.promptAnswer?.answers?.length) return message.promptAnswer;
+  const reply = (timeline || []).find(item => item.promptResponse?.prompt_message_id === message.id);
+  if (reply?.promptResponse?.answers?.length) {
+    return { by: reply.senderId, messageId: reply.id, answeredAt: reply.createdAt, answers: reply.promptResponse.answers };
+  }
+  return null;
+}
+
+function renderMessagePrompt(message, timeline) {
+  const prompt = message?.prompt;
+  if (!prompt?.questions?.length) return '';
+  const kind = prompt.kind || 'question';
+  const kindLabel = kind === 'permission' ? '权限确认' : kind === 'confirm' ? '操作确认' : '待你选择';
+  const answered = findPromptAnswer(message, timeline);
+  if (answered) {
+    const doneLabel = kind === 'permission' ? '已确认权限' : kind === 'confirm' ? '已确认' : '已提交选择';
+    const rows = answered.answers.map(ans => {
+      const parts = [...(ans.selected_labels || [])];
+      if (ans.custom_text) parts.push(ans.custom_text);
+      return `<div class="prompt-answer-row"><span class="prompt-answer-q">${esc(ans.label || ans.question_id)}</span><span class="prompt-answer-v">${esc(parts.join(' · ') || '—')}</span></div>`;
+    }).join('');
+    return `<div class="prompt-card is-${esc(kind)} is-answered" data-prompt-msg="${esc(message.id)}">
+      <div class="prompt-card-head"><span class="prompt-kind-badge is-done">${icon('check', 13)} ${esc(doneLabel)}</span>${prompt.title ? `<strong class="prompt-title">${esc(prompt.title)}</strong>` : ''}</div>
+      <div class="prompt-answer-list">${rows}</div>
+    </div>`;
+  }
+  const draft = ui.promptDrafts.get(message.id) || {};
+  const busy = ui.promptSubmitting.has(message.id);
+  const ready = isPromptReady(prompt, draft);
+  const submitLabel = prompt.submit_label || (kind === 'permission' ? '确认授权' : kind === 'confirm' ? '确认' : '提交选择');
+  const questionsHtml = prompt.questions.map((q, qIndex) => {
+    const qDraft = draft[q.id] || { selected: [], custom: '' };
+    const modeTag = q.mode === 'multi' ? '多选' : q.mode === 'text' ? '填写' : '单选';
+    const optionsHtml = q.mode !== 'text' ? `<div class="prompt-options">${(q.options || []).map(opt => {
+      const selected = qDraft.selected.includes(opt.id);
+      const toneClass = opt.tone === 'primary' ? 'tone-primary' : opt.tone === 'danger' ? 'tone-danger' : '';
+      return `<button type="button" class="prompt-option ${selected ? 'selected' : ''} ${toneClass}"
+        data-action="prompt-toggle" data-msg-id="${esc(message.id)}" data-qid="${esc(q.id)}" data-opt-id="${esc(opt.id)}" data-mode="${esc(q.mode)}"
+        aria-pressed="${selected}" ${busy ? 'disabled' : ''}>
+        <span class="prompt-option-indicator ${q.mode === 'multi' ? 'is-checkbox' : 'is-radio'}" aria-hidden="true">${selected ? icon('check', 12) : ''}</span>
+        <span class="prompt-option-copy">
+          <span class="prompt-option-label">${esc(opt.label)}${opt.recommended ? '<em class="prompt-rec-badge">推荐</em>' : ''}</span>
+          ${opt.description ? `<small class="prompt-option-desc">${esc(opt.description)}</small>` : ''}
+        </span>
+      </button>`;
+    }).join('')}</div>` : '';
+    const inputId = `prompt-input-${message.id}-${q.id}`;
+    const placeholder = q.custom_placeholder || (q.mode === 'text' ? '请输入回答…' : q.mode === 'multi' ? '补充说明或自填其他选项（选填）' : '或自定义填写其他想法…');
+    const customHtml = (q.mode === 'text' || q.allow_custom)
+      ? `<div class="prompt-custom-wrap"><input type="text" id="${esc(inputId)}" class="prompt-custom-input"
+          data-msg-id="${esc(message.id)}" data-qid="${esc(q.id)}" data-mode="${esc(q.mode)}"
+          value="${esc(qDraft.custom || '')}" placeholder="${esc(placeholder)}" ${busy ? 'disabled' : ''}></div>`
+      : '';
+    return `<div class="prompt-question" data-qid="${esc(q.id)}">
+      <div class="prompt-question-head">
+        <span class="prompt-question-label">${prompt.questions.length > 1 ? `${qIndex + 1}. ` : ''}${esc(q.label)}</span>
+        <span class="prompt-question-meta">${esc(modeTag)}${q.required === false ? ' · 选填' : ''}</span>
+      </div>
+      ${optionsHtml}${customHtml}
+    </div>`;
+  }).join('');
+  return `<div class="prompt-card is-${esc(kind)}" data-prompt-msg="${esc(message.id)}">
+    <div class="prompt-card-head"><span class="prompt-kind-badge">${esc(kindLabel)}</span>${prompt.title ? `<strong class="prompt-title">${esc(prompt.title)}</strong>` : ''}</div>
+    <div class="prompt-questions">${questionsHtml}</div>
+    <div class="prompt-card-foot">
+      <button type="button" class="primary-button prompt-submit-btn" data-action="prompt-submit" data-msg-id="${esc(message.id)}" ${!ui.protocolReady || busy || !ready ? 'disabled' : ''}>${busy ? '提交中…' : esc(submitLabel)}</button>
+    </div>
+  </div>`;
+}
+
+async function submitPromptCard(msgId) {
+  const room = roomById(ui.roomId);
+  if (!room || !msgId || ui.promptSubmitting.has(msgId) || !ui.protocolReady) return;
+  const timeline = mergedRoomMessages(room.id, ui.messages);
+  const message = timeline.find(item => item.id === msgId);
+  const prompt = message?.prompt;
+  if (!prompt?.questions?.length) return;
+  const draft = ui.promptDrafts.get(msgId) || {};
+  if (!isPromptReady(prompt, draft)) {
+    toast('请先完成必选项', true);
+    return;
+  }
+  const answers = [];
+  const summaryLines = [];
+  for (const q of prompt.questions) {
+    const item = draft[q.id] || { selected: [], custom: '' };
+    const optMap = new Map((q.options || []).map(o => [o.id, o.label]));
+    const selected_ids = (item.selected || []).filter(id => optMap.has(id));
+    const selected_labels = selected_ids.map(id => optMap.get(id));
+    const custom_text = (item.custom || '').trim();
+    if (!selected_ids.length && !custom_text) continue;
+    answers.push({
+      question_id: q.id,
+      label: q.label,
+      selected_ids,
+      selected_labels,
+      ...(custom_text ? { custom_text } : {}),
+    });
+    const parts = [...selected_labels];
+    if (custom_text) parts.push(selected_labels.length ? `补充：${custom_text}` : custom_text);
+    summaryLines.push(prompt.questions.length === 1 ? `已选择：${parts.join('、')}` : `${q.label}：${parts.join('、')}`);
+  }
+  if (!answers.length) return;
+  const mentions = message.senderId && message.senderId !== 'user' && message.senderId !== 'system' && room.members.includes(message.senderId)
+    ? [message.senderId] : [];
+  const payload = {
+    text: summaryLines.join('\n'),
+    mentions,
+    reply_to: messageRef(message.id),
+    prompt_response: { prompt_message_id: message.id, answers },
+  };
+  ui.promptSubmitting.add(msgId);
+  render();
+  try {
+    const entry = queueLocalMessage(room.id, payload, []);
+    await sendLocalMessage(entry, true);
+    ui.promptDrafts.delete(msgId);
+  } finally {
+    ui.promptSubmitting.delete(msgId);
+    render();
+  }
+}
+
+function activeRoomPendingRequests() {
+  const items = [];
+  for (const exec of ui.roomExecutions || []) {
+    if (!exec?.pending_requests?.length) continue;
+    for (const req of exec.pending_requests) {
+      const key = JSON.stringify([exec.execution_ref, exec.control_version, req.input_target]);
+      items.push({ exec, req, key });
+    }
+  }
+  return items;
+}
+
+function renderRoomPendingPrompts() {
+  const items = activeRoomPendingRequests();
+  if (!items.length) return '';
+  return `<div class="chat-pending-prompts">${items.map(({ exec, req, key }) => {
+    const isApproval = req.kind === 'approval';
+    const busy = ui.execPromptBusy.has(key);
+    const currentVal = ui.execPromptDrafts.get(key) ?? '';
+    const choices = req.choices || [];
+    const actorLabel = nameOf(exec.execution_actor?.id || exec.bot_id);
+    const inputId = 'exec-prompt-' + key.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 48);
+    const body = choices.length
+      ? `<div class="prompt-options">${choices.map(choice => {
+          const cid = choice.id;
+          const selected = currentVal === cid;
+          const toneClass = cid === 'accept' ? 'tone-primary' : ['deny', 'decline', 'cancel'].includes(cid) ? 'tone-danger' : '';
+          return `<button type="button" class="prompt-option ${selected ? 'selected' : ''} ${toneClass}"
+            data-action="exec-prompt-select" data-exec-key="${esc(key)}" data-choice-id="${esc(cid)}" aria-pressed="${selected}" ${busy ? 'disabled' : ''}>
+            <span class="prompt-option-indicator is-radio" aria-hidden="true">${selected ? icon('check', 12) : ''}</span>
+            <span class="prompt-option-copy"><span class="prompt-option-label">${esc(choice.label || cid)}</span></span>
+          </button>`;
+        }).join('')}</div>`
+      : `<div class="prompt-custom-wrap"><input type="text" id="${esc(inputId)}" class="exec-prompt-input prompt-custom-input"
+          data-exec-key="${esc(key)}" value="${esc(currentVal)}" placeholder="输入回答…" ${busy ? 'disabled' : ''}></div>`;
+    return `<div class="prompt-card exec-pending-card ${isApproval ? 'is-permission' : 'is-question'}" data-exec-key="${esc(key)}">
+      <div class="prompt-card-head">
+        <span class="prompt-kind-badge">${isApproval ? '执行权限审批' : '执行会话提问'}</span>
+        <strong class="prompt-title">${esc(actorLabel)}${exec.engine ? ` · ${esc(exec.engine)}` : ''}</strong>
+      </div>
+      ${req.question ? `<p class="exec-pending-question">${esc(req.question)}</p>` : ''}
+      ${body}
+      <div class="prompt-card-foot">
+        <button type="button" class="primary-button prompt-submit-btn" data-action="exec-prompt-submit" data-exec-key="${esc(key)}" ${!ui.protocolReady || busy || !String(currentVal).trim() ? 'disabled' : ''}>${busy ? '提交中…' : isApproval ? '确认审批' : '提交回答'}</button>
+      </div>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+async function submitExecPromptCard(key) {
+  const item = activeRoomPendingRequests().find(entry => entry.key === key);
+  if (!item || ui.execPromptBusy.has(key) || !ui.protocolReady) return;
+  const val = String(ui.execPromptDrafts.get(key) ?? '').trim();
+  if (!val) return;
+  ui.execPromptBusy.add(key);
+  render();
+  try {
+    await api('/api/executions/input', 'POST', {
+      target: item.exec.execution_ref,
+      kind: 'reply',
+      control_version: item.exec.control_version,
+      input_target: item.req.input_target,
+      input: val,
+    }, { clientId: newClientId() });
+    ui.execPromptDrafts.delete(key);
+    toast(item.req.kind === 'approval' ? '已提交审批决定' : '已提交执行回答');
+    await refresh();
+  } finally {
+    ui.execPromptBusy.delete(key);
+    render();
+  }
+}
+
 function renderChatMessage(message, timeline, grouped, isGroup) {
   const sender = message.senderId, own = sender === 'user', platform = ['system', 'platform'].includes(sender);
   const senderLabel = message.senderName || nameOf(sender);
@@ -2692,6 +3004,7 @@ function renderChatMessage(message, timeline, grouped, isGroup) {
     <button data-action="copy-message" data-id="${esc(message.id)}" title="复制" aria-label="复制">${icon('copy',15)}</button>
     <button data-action="${pinned ? 'unpin' : 'pin'}" data-kind="event" data-id="${esc(message.id)}" title="${pinned ? '取消置顶' : '置顶'}" aria-label="${pinned ? '取消置顶' : '置顶'}">${icon('pin',16)}</button>
   </div>`;
+  const promptHtml = !own ? renderMessagePrompt(message, timeline) : '';
   return `<article data-message-id="${esc(message.id)}" data-motion-key="message:${esc(message.clientId || message.id)}"
       class="chat-message ${own ? 'outgoing' : 'incoming'} ${isGroup ? 'in-group' : 'direct-message'} ${grouped ? 'continuation' : ''} ${platform ? 'system-message' : ''}"
       style="--member-color:${own || platform ? 'var(--accent)' : esc(botAvatar(sender).color)}">
@@ -2699,6 +3012,7 @@ function renderChatMessage(message, timeline, grouped, isGroup) {
     <div class="bubble-column">${identity}<div class="message-bubble" tabindex="0">${reply}
       ${mentions.length ? `<div class="bubble-target">${mentions.map(id => id === 'user' ? `<span>@${esc(ownerName())}</span>` : botMention(id)).join('')}</div>` : ''}
       ${message.content ? `<div class="message-content">${richText(message.content)}</div>` : ''}
+      ${promptHtml}
       ${renderMessageAttachments(message.attachments)}
       ${message.references?.length ? `<div class="reference-list">${message.references.map(ref => renderReference(ref)).join('')}</div>` : ''}
       ${ownTime}
@@ -2737,6 +3051,7 @@ function renderChat() {
   const body = room ? `<div class="messages ${isGroup ? 'group-messages' : ''}" role="log" aria-label="聊天记录">${modelBanner}${pins}
       ${ui.historyCursor ? '<button class="text-button room-history" data-action="older-messages">更早的消息</button>' : ''}
       ${messages || `<div class="conversation-empty">${groupAvatar(room,86)}<p>${ui.messagesRoomId === room.id ? '还没有消息' : '正在读取消息…'}</p></div>`}${active}</div>
+      ${renderRoomPendingPrompts()}
       ${renderChatComposer(room, members)}` : `<div class="conversation-empty">${modelBanner}<p>${ui.protocolNotice || '选择一位伙伴或创建会话'}</p>
         ${ui.protocolReady ? '<button class="secondary-button" data-action="new-room">创建会话</button>' : ''}</div>`;
   return `<div data-room-id="${esc(ui.roomId)}" data-ready="${ui.messagesRoomId === ui.roomId}" class="chat-layout ${ui.detailOpen ? 'detail-open' : ''}"
@@ -2809,7 +3124,13 @@ function renderDetailPanel(room, bot) {
   let body;
   if (bot && ui.avatarEditing) body = renderAvatarPicker('edit');
   else if (tab === 'members') {
-    body = `<div class="profile-members">${room.members.map(id => `<button ${id === 'user' ? 'disabled' : 'data-action="open-bot-details"'} data-id="${esc(id)}">${avatar(id,44)}<span>${esc(nameOf(id))}</span></button>`).join('')}
+    body = `<div class="profile-members">${room.members.map(id => {
+      const memberBot = botById(id);
+      const badge = room.lead_bot_id === id || memberBot?.role_id === 'group-lead' ? '主控'
+        : memberBot?.role_id === 'eggbot' ? '孵化'
+        : memberBot?.role_id === 'tool-onboarding' ? '接口' : '';
+      return `<button ${id === 'user' ? 'disabled' : 'data-action="open-bot-details"'} data-id="${esc(id)}">${avatar(id,44)}<span>${esc(nameOf(id))}${badge ? ` <em class="member-role-badge">${esc(badge)}</em>` : ''}</span></button>`;
+    }).join('')}
       <button data-action="edit-room" class="add-member">${icon('edit',22)}<span>编辑成员</span></button></div>`;
   } else if (tab === 'library') {
     const space = bot ? { kind:'bot', id:bot.id } : roomRef(room.id);

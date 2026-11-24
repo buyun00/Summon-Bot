@@ -1461,18 +1461,53 @@ fun CreateRoomSheet(store: SummonStore, onOpenRoom: (String) -> Unit, onDismiss:
     var members by remember { mutableStateOf<Set<String>>(emptySet()) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    val eggBot = store.bots.firstOrNull { it.roleId == "eggbot" }
+    val onboardingBot = store.bots.firstOrNull { it.roleId == "tool-onboarding" }
+    val optionalBots = store.bots.filter { it.roleId !in listOf("eggbot", "tool-onboarding") }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = palette.surfaceElevated) {
-        Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("创建群聊", style = MaterialTheme.typography.titleLarge)
             OutlinedTextField(title, { title = it }, label = { Text("群名称（可选）") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            Text("成员", style = MaterialTheme.typography.titleMedium)
-            store.bots.forEach { bot ->
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    MemberAvatar(bot, 30.dp)
-                    Text(bot.name, Modifier.padding(horizontal = 12.dp).weight(1f))
-                    Checkbox(checked = bot.id in members, onCheckedChange = { included ->
-                        members = if (included) members + bot.id else members - bot.id
-                    })
+            Text("默认必含成员（自动加入）", style = MaterialTheme.typography.titleSmall, color = palette.textSecondary)
+            Surface(shape = RoundedCornerShape(12.dp), color = palette.surface, border = BorderStroke(0.7.dp, palette.bubbleStroke)) {
+                Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Surface(shape = CircleShape, color = palette.ok.copy(alpha = 0.14f), modifier = Modifier.size(30.dp)) {
+                            Box(contentAlignment = Alignment.Center) { Text("主控", style = MaterialTheme.typography.labelSmall, color = palette.ok) }
+                        }
+                        Column(Modifier.weight(1f)) {
+                            Text("群主控 Bot", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold))
+                            Text("建群同步创建，开启并主持本群对话", style = MaterialTheme.typography.bodySmall, color = palette.textSecondary)
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        if (eggBot != null) MemberAvatar(eggBot, 30.dp)
+                        else Surface(shape = CircleShape, color = palette.quoteBg, modifier = Modifier.size(30.dp)) { Box(contentAlignment = Alignment.Center) { Text("孵", style = MaterialTheme.typography.labelSmall) } }
+                        Column(Modifier.weight(1f)) {
+                            Text(eggBot?.name ?: "EggBot", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold))
+                            Text("后台观察分工与按需增配成员", style = MaterialTheme.typography.bodySmall, color = palette.textSecondary)
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        if (onboardingBot != null) MemberAvatar(onboardingBot, 30.dp)
+                        else Surface(shape = CircleShape, color = palette.quoteBg, modifier = Modifier.size(30.dp)) { Box(contentAlignment = Alignment.Center) { Text("接", style = MaterialTheme.typography.labelSmall) } }
+                        Column(Modifier.weight(1f)) {
+                            Text(onboardingBot?.name ?: "接口 Bot", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold))
+                            Text("外部工具接入、查询与连接维护", style = MaterialTheme.typography.bodySmall, color = palette.textSecondary)
+                        }
+                    }
+                }
+            }
+            if (optionalBots.isNotEmpty()) {
+                Text("附加其他成员（可选）", style = MaterialTheme.typography.titleSmall, color = palette.textSecondary)
+                optionalBots.forEach { bot ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        MemberAvatar(bot, 30.dp)
+                        Text(bot.name, Modifier.padding(horizontal = 12.dp).weight(1f))
+                        Checkbox(checked = bot.id in members, onCheckedChange = { included ->
+                            members = if (included) members + bot.id else members - bot.id
+                        })
+                    }
                 }
             }
             error?.let { Text(it, color = Color(0xFFFF9F0A)) }
@@ -1480,12 +1515,12 @@ fun CreateRoomSheet(store: SummonStore, onOpenRoom: (String) -> Unit, onDismiss:
                 busy = true; error = null
                 scope.launch {
                     try {
-                        val record = store.createGroup(title.trim(), store.bots.map { it.id }.filter { it in members })
+                        val record = store.createGroup(title.trim(), optionalBots.map { it.id }.filter { it in members })
                         onDismiss(); onOpenRoom(record.id)
                     } catch (failure: Exception) { error = failure.localizedMessage }
                     finally { busy = false }
                 }
-            }) { Text("创建") }
+            }) { Text("创建群聊") }
             Spacer(Modifier.height(20.dp))
         }
     }

@@ -95,6 +95,8 @@ data class SummonBot(
     val avatar: SummonAvatar?,
     val memoryItems: List<SummonJson> = emptyList(),
     val activity: String? = null,
+    val roleId: String? = null,
+    val homeRoomId: String? = null,
 ) {
     val isPaused: Boolean get() = enabled == false || control["state"].string == "paused" || activity == "paused"
     val resolvedActivity: String get() = if (isPaused) "paused" else activity ?: "idle"
@@ -115,6 +117,8 @@ data class SummonBot(
         "avatar" to (avatar?.toJson() ?: SummonJson.Null),
         "memory_items" to SummonJson.Arr(memoryItems),
         "activity" to activity.strOrNull(),
+        "role_id" to roleId.strOrNull(),
+        "home_room_id" to homeRoomId.strOrNull(),
     )
 
     companion object {
@@ -124,7 +128,9 @@ data class SummonBot(
                 json["enabled"].bool, json["control"], json["resume_ref"], SummonReference.parse(json["material_index_ref"]),
                 json["avatar"].takeIf { it.obj != null }?.let(SummonAvatar::parse),
                 json["memory_items"].array.orEmpty(),
-                json["activity"].string)
+                json["activity"].string,
+                json["role_id"].string,
+                json["home_room_id"].string)
         }
     }
 }
@@ -182,6 +188,9 @@ data class SummonMessage(
     val clientId: String? = null,
     val createdAt: String? = null,
     val sequence: Int? = null,
+    val prompt: SummonJson? = null,
+    val promptResponse: SummonJson? = null,
+    val promptAnswer: SummonJson? = null,
 ) {
     val isOwn: Boolean get() = senderId == "user"
 
@@ -191,6 +200,9 @@ data class SummonMessage(
         "references" to SummonJson.Arr(references.map(SummonReference::toJson)), "mentions" to mentions.toJsonStrings(),
         "replyTo" to replyTo.strOrNull(), "clientId" to clientId.strOrNull(), "createdAt" to createdAt.strOrNull(),
         "sequence" to sequence.numOrNull(),
+        "prompt" to (prompt ?: SummonJson.Null),
+        "promptResponse" to (promptResponse ?: SummonJson.Null),
+        "promptAnswer" to (promptAnswer ?: SummonJson.Null),
     )
 
     companion object {
@@ -207,6 +219,9 @@ data class SummonMessage(
             clientId = json["clientId"].string,
             createdAt = json["createdAt"].string,
             sequence = json["sequence"].int,
+            prompt = json["prompt"].takeIf { it.obj != null },
+            promptResponse = json["promptResponse"].takeIf { it.obj != null },
+            promptAnswer = json["promptAnswer"].takeIf { it.obj != null },
         )
     }
 }
@@ -221,12 +236,14 @@ data class SummonRoom(
     val createdAt: String?,
     val updatedAt: String?,
     val deletable: Boolean = false,
+    val leadBotId: String? = null,
 ) {
     val isGroup: Boolean get() = members.size != 2 || "user" !in members
 
     fun toJson(): SummonJson = SummonJson.obj(
         "id" to SummonJson.Str(id), "name" to SummonJson.Str(name), "members" to members.toJsonStrings(),
         "deletable" to SummonJson.Bool(deletable),
+        "lead_bot_id" to leadBotId.strOrNull(),
         "pins" to SummonJson.Arr(pins.map(SummonReference::toJson)), "revision" to revision.numOrNull(),
         "lastMessage" to (lastMessage?.toJson() ?: SummonJson.Null),
         "createdAt" to createdAt.strOrNull(), "updatedAt" to updatedAt.strOrNull(),
@@ -243,6 +260,7 @@ data class SummonRoom(
             lastMessage = json["lastMessage"].takeIf { it.obj != null }?.let { SummonMessage.parse(it, stored) },
             createdAt = json["createdAt"].string,
             updatedAt = json["updatedAt"].string,
+            leadBotId = json["lead_bot_id"].string,
         )
     }
 }

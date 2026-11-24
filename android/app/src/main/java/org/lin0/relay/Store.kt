@@ -347,7 +347,7 @@ class SummonStore(private val app: Context) {
     }
 
     suspend fun openDirectMessage(bot: SummonBot): SummonRoom =
-        rooms.firstOrNull { !it.isGroup && bot.id in it.members } ?: createGroup(bot.name, listOf(bot.id))
+        rooms.firstOrNull { !it.isGroup && bot.id in it.members } ?: createRoom(bot.name, listOf(bot.id), mode = "direct")
 
     suspend fun createBot(name: String, avatar: SummonAvatar, instructions: String): SummonBot {
         val body = SummonJson.obj("name" to SummonJson.Str(name), "instructions" to SummonJson.Str(instructions), "avatar" to avatar.toJson())
@@ -367,8 +367,15 @@ class SummonStore(private val app: Context) {
     }
 
     suspend fun createGroup(name: String, members: List<String>): SummonRoom {
+        val room = createRoom(name, members, mode = "group")
+        refresh()
+        return room
+    }
+
+    private suspend fun createRoom(name: String, members: List<String>, mode: String): SummonRoom {
         val body = SummonJson.Obj(buildMap {
             put("members", members.toJsonStrings())
+            put("mode", SummonJson.Str(mode))
             if (name.isNotEmpty()) put("title", SummonJson.Str(name))
         })
         return SummonRoom.parse(request("/api/rooms", "POST", body, newID())).also(::upsertRoom)
@@ -440,6 +447,43 @@ class SummonStore(private val app: Context) {
         deliver(id, queryFirst = false)
     }
 
+    suspend fun sendPromptResponse(roomID: String, message: SummonMessage, answers: List<SummonJson>, summaryText: String) {
+        if (!protocolReady || roomID in sendingRoomIDs || answers.isEmpty()) return
+        val room = room(roomID)
+        val mentions = if (message.senderId != "user" && message.senderId != "system" && room?.members?.contains(message.senderId) == true) {
+            listOf(message.senderId)
+        } else emptyList()
+        val promptResponse = SummonJson.obj(
+            "prompt_message_id" to SummonJson.Str(message.id),
+            "answers" to SummonJson.Arr(answers),
+        )
+        val id = newID()
+        val outgoing = SummonMessage(
+            id = "local-$id", roomId = roomID, senderId = "user", content = summaryText,
+            mentions = mentions, replyTo = message.id, clientId = id,
+            createdAt = Instant.now().toString(), promptResponse = promptResponse,
+        )
+        pendingMessages = pendingMessages + SummonPendingMessage(id, outgoing, "queued", null)
+        deliver(id, queryFirst = false)
+    }
+
+    suspend fun submitPendingExecutionInput(target: SummonJson, controlVersion: Int, inputTarget: SummonJson, input: String) {
+        if (!protocolReady) throw SummonApiException.invalidResponse
+        request(
+            "/api/executions/input",
+            "POST",
+            SummonJson.obj(
+                "target" to target,
+                "kind" to SummonJson.Str("reply"),
+                "control_version" to controlVersion.numOrNull(),
+                "input_target" to inputTarget,
+                "input" to SummonJson.Str(input),
+            ),
+            newID(),
+        )
+        refresh()
+    }
+
     suspend fun retryMessage(clientID: String) = deliver(clientID, queryFirst = true)
 
     fun restoreRejectedMessage(item: SummonPendingMessage) {
@@ -489,6 +533,7 @@ class SummonStore(private val app: Context) {
                     put("attachments", SummonJson.Arr(uploaded)); put("references", SummonJson.Arr(message.references.map(SummonReference::toJson)))
                     put("mentions", message.mentions.toJsonStrings())
                     message.replyTo?.let { put("reply_to", SummonReference("event", it).toJson()) }
+                    message.promptResponse?.let { put("prompt_response", it) }
                 })
                 submittingMessage = true
                 receipt = SummonReceipt.parse(withContext(Dispatchers.IO) { api.requestJson(path, "POST", body, id) })

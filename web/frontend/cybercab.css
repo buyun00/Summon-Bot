@@ -1520,3 +1520,305 @@ html.summon-resizing *::after {
   .usage-metric:nth-child(even) { padding-left: 14px; border-left: 1px solid var(--line); }
   .usage-metric:nth-child(n+3) { border-top: 1px solid var(--line); }
 }
+
+/* Interactive Chat Prompt & Permission Choice Cards */
+.prompt-card {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  display: grid;
+  gap: 12px;
+  min-width: min(100%, 280px);
+}
+html.dark .prompt-card {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.10);
+}
+.prompt-card.is-permission {
+  border-color: rgba(182, 125, 46, 0.34);
+}
+.prompt-card.is-answered {
+  gap: 8px;
+  padding: 10px 13px;
+  background: rgba(71, 122, 84, 0.06);
+  border-color: rgba(71, 122, 84, 0.20);
+}
+html.dark .prompt-card.is-answered {
+  background: rgba(71, 122, 84, 0.12);
+  border-color: rgba(114, 196, 134, 0.22);
+}
+.prompt-card-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.prompt-kind-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: var(--text-caption);
+  font-weight: 600;
+  color: var(--ink-2);
+  background: var(--hover);
+}
+.prompt-card.is-permission .prompt-kind-badge:not(.is-done) {
+  color: var(--warn);
+  background: var(--orange-soft);
+}
+.prompt-kind-badge.is-done {
+  color: var(--ok);
+  background: rgba(71, 122, 84, 0.14);
+}
+.prompt-title {
+  font-size: var(--text-meta);
+  font-weight: 600;
+  color: var(--ink);
+}
+.prompt-questions {
+  display: grid;
+  gap: 12px;
+}
+.prompt-question {
+  display: grid;
+  gap: 8px;
+}
+.prompt-question-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.prompt-question-label {
+  font-size: var(--text-meta);
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1.45;
+}
+.prompt-question-meta {
+  flex: none;
+  font-size: var(--text-caption);
+  color: var(--muted);
+}
+.prompt-options {
+  display: grid;
+  gap: 6px;
+}
+.prompt-option {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  transition: background-color 150ms ease, border-color 150ms ease, transform 120ms ease;
+}
+.prompt-option:hover:not(:disabled) {
+  background: var(--hover);
+  border-color: var(--composer-focus-border);
+}
+.prompt-option:active:not(:disabled) {
+  transform: scale(0.99);
+}
+.prompt-option.selected {
+  background: var(--active);
+  border-color: var(--ink);
+}
+html.dark .prompt-option.selected {
+  background: rgba(255, 255, 255, 0.10);
+  border-color: rgba(255, 255, 255, 0.55);
+}
+.prompt-option.tone-primary.selected {
+  background: rgba(71, 122, 84, 0.12);
+  border-color: var(--ok);
+}
+.prompt-option.tone-danger.selected {
+  background: var(--red-soft);
+  border-color: var(--red);
+}
+.prompt-option-indicator {
+  flex: none;
+  margin-top: 2px;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--surface);
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+.prompt-option-indicator.is-radio { border-radius: 50%; }
+.prompt-option-indicator.is-checkbox { border-radius: 4px; }
+.prompt-option.selected .prompt-option-indicator {
+  background: var(--ink);
+  border-color: var(--ink);
+}
+.prompt-option.tone-primary.selected .prompt-option-indicator {
+  background: var(--ok);
+  border-color: var(--ok);
+}
+.prompt-option.tone-danger.selected .prompt-option-indicator {
+  background: var(--red);
+  border-color: var(--red);
+}
+.prompt-option-copy {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.prompt-option-label {
+  font-size: var(--text-meta);
+  line-height: 1.4;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.prompt-rec-badge {
+  font-style: normal;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ok);
+  background: rgba(71, 122, 84, 0.12);
+}
+.prompt-option-desc {
+  font-size: var(--text-caption);
+  color: var(--muted);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.prompt-custom-wrap {
+  margin-top: 2px;
+}
+.prompt-custom-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 11px;
+  border-radius: 10px;
+  border: 1px solid var(--composer-border);
+  background: var(--composer-bg);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--text-meta);
+  outline: none;
+  transition: border-color 150ms ease;
+}
+.prompt-custom-input:focus {
+  border-color: var(--composer-focus-border);
+}
+.prompt-card-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.prompt-submit-btn {
+  min-height: 34px;
+  padding: 6px 14px;
+  font-size: var(--text-meta);
+  border-radius: 10px;
+}
+.prompt-answer-list {
+  display: grid;
+  gap: 5px;
+}
+.prompt-answer-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  font-size: var(--text-meta);
+  line-height: 1.4;
+}
+.prompt-answer-q {
+  color: var(--muted);
+}
+.prompt-answer-v {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+/* Live Execution Pending Approval / Question Banner above Composer */
+.chat-pending-prompts {
+  max-width: var(--chat-lane);
+  width: calc(100% - var(--chat-edge, 24px) * 2);
+  margin: 0 auto 10px;
+  display: grid;
+  gap: 8px;
+}
+.exec-pending-card {
+  margin-top: 0;
+  box-shadow: var(--pill-shadow);
+}
+.exec-pending-question {
+  margin: 0;
+  font-size: var(--text-meta);
+  line-height: 1.5;
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Required Default Group Members in Create Group Modal */
+.required-members-field {
+  border: 0;
+  padding: 0;
+  margin: 12px 0;
+}
+.required-members-list {
+  display: grid;
+  gap: 6px;
+}
+.required-member-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 11px;
+  border-radius: 10px;
+  background: var(--hover);
+  border: 1px solid var(--line);
+}
+.required-member-item strong {
+  display: block;
+  font-size: var(--text-meta);
+  color: var(--ink);
+}
+.required-member-item small {
+  display: block;
+  font-size: var(--text-caption);
+  color: var(--muted);
+}
+.required-member-badge {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink);
+  background: var(--active);
+}
+.member-role-badge {
+  font-style: normal;
+  margin-left: 4px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--hover);
+}

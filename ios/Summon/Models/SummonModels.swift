@@ -97,6 +97,8 @@ struct SummonReference: Codable, Hashable, Identifiable, Sendable {
 struct SummonBot: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var name: String
+    var role_id: String?
+    var home_room_id: String?
     var instructions: String?
     var model: SummonJSONValue?
     var revision: Int?
@@ -155,12 +157,16 @@ struct SummonMessage: Codable, Identifiable, Equatable, Sendable {
     var clientId: String?
     var createdAt: String?
     var sequence: Int?
+    var prompt: SummonJSONValue?
+    var promptResponse: SummonJSONValue?
+    var promptAnswer: SummonJSONValue?
 
     var isOwn: Bool { senderId == "user" }
 
     init(id: String, roomId: String, senderId: String, content: String, attachments: [SummonAttachment] = [],
          references: [SummonReference] = [], mentions: [String] = [], replyTo: String? = nil,
-         clientId: String? = nil, createdAt: String? = nil) {
+         clientId: String? = nil, createdAt: String? = nil, prompt: SummonJSONValue? = nil,
+         promptResponse: SummonJSONValue? = nil, promptAnswer: SummonJSONValue? = nil) {
         self.id = id
         self.roomId = roomId
         self.senderId = senderId
@@ -171,6 +177,9 @@ struct SummonMessage: Codable, Identifiable, Equatable, Sendable {
         self.replyTo = replyTo
         self.clientId = clientId
         self.createdAt = createdAt
+        self.prompt = prompt
+        self.promptResponse = promptResponse
+        self.promptAnswer = promptAnswer
     }
 
     // The previous on-device snapshot stored a single target. Import it as a mention.
@@ -193,6 +202,9 @@ struct SummonMessage: Codable, Identifiable, Equatable, Sendable {
         clientId = try c.decodeIfPresent(String.self, forKey: .clientId)
         createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt)
         sequence = try c.decodeIfPresent(Int.self, forKey: .sequence)
+        prompt = try c.decodeIfPresent(SummonJSONValue.self, forKey: .prompt)
+        promptResponse = try c.decodeIfPresent(SummonJSONValue.self, forKey: .promptResponse)
+        promptAnswer = try c.decodeIfPresent(SummonJSONValue.self, forKey: .promptAnswer)
     }
 }
 
@@ -201,6 +213,7 @@ struct SummonRoom: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var name: String
     var members: [String]
+    var lead_bot_id: String?
     var pins: [SummonReference]?
     var revision: Int?
     var lastMessage: SummonMessage?

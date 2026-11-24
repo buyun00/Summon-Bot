@@ -170,16 +170,52 @@ struct CreateRoomView: View {
     @State private var busy = false
     @State private var errorMessage: String?
 
+    private var eggBot: SummonBot? { store.bots.first { $0.role_id == "eggbot" } }
+    private var onboardingBot: SummonBot? { store.bots.first { $0.role_id == "tool-onboarding" } }
+    private var optionalBots: [SummonBot] {
+        store.bots.filter { !["eggbot", "tool-onboarding"].contains($0.role_id ?? "") }
+    }
+
     var body: some View {
         NavigationStack {
             Form {
                 TextField("群名称（可选）", text: $name)
-                Section("成员") {
-                    ForEach(store.bots) { bot in
-                        Toggle(isOn: Binding(get: { members.contains(bot.id) }, set: { included in
-                            if included { members.insert(bot.id) } else { members.remove(bot.id) }
-                        })) {
-                            Label { Text(bot.name) } icon: { MemberAvatar(bot: bot, size: 32) }
+                Section("默认必含成员（自动加入）") {
+                    HStack(spacing: 12) {
+                        Image(systemName: "crown.fill")
+                            .foregroundStyle(SummonTheme.ok)
+                            .frame(width: 32, height: 32)
+                            .background(SummonTheme.ok.opacity(0.14), in: Circle())
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("群主控 Bot").summonFont(.subheadline, weight: .semibold)
+                            Text("建群同步创建，开启并主持本群对话").summonFont(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    HStack(spacing: 12) {
+                        if let eggBot { MemberAvatar(bot: eggBot, size: 32) }
+                        else { Image(systemName: "sparkles").frame(width: 32, height: 32) }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(eggBot?.name ?? "EggBot").summonFont(.subheadline, weight: .semibold)
+                            Text("后台观察分工与按需增配成员").summonFont(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    HStack(spacing: 12) {
+                        if let onboardingBot { MemberAvatar(bot: onboardingBot, size: 32) }
+                        else { Image(systemName: "wrench.and.screwdriver").frame(width: 32, height: 32) }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(onboardingBot?.name ?? "接口 Bot").summonFont(.subheadline, weight: .semibold)
+                            Text("外部工具接入、查询与连接维护").summonFont(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                if !optionalBots.isEmpty {
+                    Section("附加其他成员（可选）") {
+                        ForEach(optionalBots) { bot in
+                            Toggle(isOn: Binding(get: { members.contains(bot.id) }, set: { included in
+                                if included { members.insert(bot.id) } else { members.remove(bot.id) }
+                            })) {
+                                Label { Text(bot.name) } icon: { MemberAvatar(bot: bot, size: 32) }
+                            }
                         }
                     }
                 }
@@ -201,7 +237,7 @@ struct CreateRoomView: View {
         defer { busy = false }
         do {
             let room = try await store.createGroup(name: name.trimmingCharacters(in: .whitespacesAndNewlines),
-                                                   members: store.bots.map(\.id).filter(members.contains))
+                                                   members: optionalBots.map(\.id).filter(members.contains))
             dismiss()
             onCreated(room)
         } catch { errorMessage = error.localizedDescription }

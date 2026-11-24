@@ -20,8 +20,41 @@ const refOrId = { anyOf: [ref, text] };
 const roomOrId = { anyOf: [typedRef('room'), text] };
 const eventOrId = { anyOf: [typedRef('event'), text] };
 const references = array(ref);
+const promptOption = object({
+  id: text,
+  label: text,
+  description: text,
+  recommended: flag,
+  tone: oneOf('default', 'primary', 'danger'),
+}, ['id', 'label']);
+const promptQuestion = object({
+  id: text,
+  label: text,
+  mode: oneOf('single', 'multi', 'text'),
+  required: flag,
+  allow_custom: flag,
+  custom_placeholder: text,
+  options: array(promptOption),
+}, ['id', 'label', 'mode']);
+const messagePrompt = object({
+  kind: oneOf('question', 'permission', 'confirm'),
+  title: text,
+  submit_label: text,
+  questions: array(promptQuestion),
+}, ['questions']);
+const promptAnswerItem = object({
+  question_id: text,
+  label: text,
+  selected_ids: array(text),
+  selected_labels: array(text),
+  custom_text: text,
+}, ['question_id']);
+const messagePromptResponse = object({
+  prompt_message_id: text,
+  answers: array(promptAnswerItem),
+}, ['prompt_message_id', 'answers']);
 const roomMessageFields = { text, attachments: array(refOrId), references, mentions: array(principal), reply_to: eventOrId,
-  for_session_id: text, origin_message_id: eventOrId, awaiting_reply: flag };
+  for_session_id: text, origin_message_id: eventOrId, awaiting_reply: flag, prompt: messagePrompt, prompt_response: messagePromptResponse };
 const repairMessageFields = { to: typedRef('connection'), text, references };
 const repairOutcome = oneOf('repaired', 'blocked', 'need_info');
 const sendMessage = { anyOf: [
@@ -91,7 +124,7 @@ const definitions = [
   ['read', 'Read an accessible object, its history or output, and the available input or control references. For a workspace or any local host directory (pass {kind:"workspace",id:"D:\\\\..."} directly, including a drive root), use directory "." or a subdirectory to list entries, or add a relative path to read a text file. Read a File ref to inspect its text or image (on vision-capable models); pass an optional revision to inspect a historical snapshot from platform-file-revisions. ' +
     'Use it for a specific observation; do not re-read an unchanged file or Session page already observed in this run unless its revision or status may have changed or you need a different cursor. A registered wait_ref delivers the terminal receipt or an input request to your run automatically.',
     object({ ref, path: text, directory: text, revision: { type: 'integer', minimum: 1 }, cursor: text, limit: { type: 'integer', minimum: 1, maximum: 100 } }, ['ref'])],
-  ['send', 'Publish to a Room using message:{to:{kind:"room",id},text}, with optional attachments, references, mentions, reply_to, for_session_id, origin_message_id, or awaiting_reply. ' +
+  ['send', 'Publish to a Room using message:{to:{kind:"room",id},text}, with optional attachments, references, mentions, reply_to, for_session_id, origin_message_id, awaiting_reply, or an interactive prompt card (prompt:{kind:"question"|"permission"|"confirm",title?,submit_label?,questions:[{id,label,mode:"single"|"multi"|"text",required?,allow_custom?,custom_placeholder?,options?:[{id,label,description?,recommended?,tone?}]}]}). Use prompt whenever asking the user to pick options, confirm permissions, or answer structured questions instead of printing numbered text lists. ' +
     'For a verified connection fault, address the message to {kind:"connection",id} with the problem and shareable references. ' +
     'Reuse repair_key when requesting repair of the same fault. The maintainer replies to the repair event on that connection with reply_to and an optional repair_outcome (repaired, blocked, or non-terminal need_info to request missing parameters without closing).',
     object({ message: sendMessage }, ['message']), ({ message }) => message],
@@ -114,8 +147,8 @@ const definitions = [
     object({ bot: refOrId, revision: integer, name: text, public_duty: text, instructions: text, model, enabled: flag,
       role_id: oneOf(...roleIds, null), role_connection_id: text, connection_revision: integer,
       material_index_ref: { anyOf: [ref, { type: 'null' }] } }, ['bot', 'revision'])],
-  ['create_room', 'Create a Room with the specified members, including you as creator. A group can bind one writable project workspace shared by current members.',
-    object({ members: array(principal), title: text, mode: oneOf('group', 'direct'), workspace: refOrId }, ['members'])],
+  ['create_room', 'Create a Room with the specified members, including you as creator. Regular group Rooms automatically include the group lead Bot (created synchronously), EggBot, and the tool-onboarding Bot, and can bind one writable project workspace shared by current members.',
+    object({ members: array(principal), title: text, mode: oneOf('group', 'direct'), workspace: refOrId, lead_name: text }, ['members'])],
   ['configure_room', 'Update the title, membership, pins or project workspace in one Room revision. Any member can bind a workspace id or absolute host directory path (auto-registered as a workspace) or set workspace:null to unbind.',
     object({ room: refOrId, revision: integer, title: text, workspace: { anyOf: [ref, text, { type: 'null' }] }, add_members: array(principal), remove_members: array(principal),
       pin_add: array(ref), pin_remove: array(ref) }, ['room', 'revision'])],

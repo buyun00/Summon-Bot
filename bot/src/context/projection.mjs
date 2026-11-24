@@ -33,6 +33,9 @@ export function normalizeRoomMessage(event) {
     references: event.references ?? [],
     mentions: event.mentions ?? [],
     reply_to: event.reply_to ?? event.replyTo ?? null,
+    ...(event.prompt ? { prompt: event.prompt } : {}),
+    ...(event.prompt_response || event.promptResponse ? { prompt_response: event.prompt_response ?? event.promptResponse } : {}),
+    ...(event.prompt_answer || event.promptAnswer ? { prompt_answer: event.prompt_answer ?? event.promptAnswer } : {}),
   };
 }
 

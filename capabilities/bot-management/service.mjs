@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { catalogMaintainerRole, defaultBotRoles, roleInstructions, toolOnboardingRole } from '../../roles/index.mjs';
+import { catalogMaintainerRole, defaultBotRoles, groupLeadRole, roleInstructions, toolOnboardingRole } from '../../roles/index.mjs';
 import { defaultPaperAvatar, normalizePaperAvatar } from '../shared/avatar-style.mjs';
 import { assertRevision, idOf, reject, sameIdentity, sameRef, user } from '../platform/contract.mjs';
 
@@ -69,6 +69,32 @@ export class BotManager {
     return this.defaultBot(toolOnboardingRole);
   }
 
+  eggBot() {
+    return this.defaultBot('eggbot');
+  }
+
+  createGroupLead({ roomId, roomName, leadName } = {}) {
+    const id = `bot-lead-${roomId}`;
+    const existing = this.store.get(botRecords, id);
+    if (existing) return existing;
+    const baseRoomName = typeof roomName === 'string' && roomName.trim() ? roomName.trim() : '新群聊';
+    const rawName = typeof leadName === 'string' && leadName.trim()
+      ? leadName.trim()
+      : `${baseRoomName.slice(0, 88)} · 主控`;
+    const name = cleanName(rawName.slice(0, 100));
+    const duty = publicDuty(`负责「${baseRoomName.slice(0, 120)}」的群主控协调、承接需求与推进交付`);
+    return this.saveNew({
+      id,
+      name,
+      instructions: '',
+      public_duty: duty,
+      model: { mode: 'follow_default' },
+      owner: user,
+      built_in_role: { id: groupLeadRole },
+      home_room_id: roomId,
+    });
+  }
+
   ensureDefaults() {
     const existing = this.list();
     const model = { mode: 'follow_default' };
@@ -124,6 +150,7 @@ export class BotManager {
 
   view(bot, actor, { details = true } = {}) {
     const base = { ...directoryEntry(bot), avatar: bot.avatar ? normalizePaperAvatar(bot.avatar) : defaultPaperAvatar(bot.id),
+      ...(bot.home_room_id ? { home_room_id: bot.home_room_id } : {}),
       archived_at: bot.archivedAt || null, created_at: bot.createdAt, updated_at: bot.updatedAt };
     if (!details || !this.canConfigure(actor, bot)) return base;
     const target = { kind: 'bot', id: bot.id };
