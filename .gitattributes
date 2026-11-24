@@ -5,5 +5,9 @@
 desktop/summon text eol=lf
 desktop/summon.cmd text eol=crlf
 
+# Serve the downloadable calendar and CSV with their original CRLF line endings.
+website/examples/*.ics -text
+website/examples/*.csv -text
+
 # Provenance hashes and upstream fixtures refer to exact original bytes.
 bot/third_party/pi/** -text

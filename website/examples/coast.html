@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>雾港远征 · 海岸章</title>
+  <style>
+    body.sample-document { margin: 0; padding: 0; color-scheme: light dark; background: light-dark(#eaf0e8,#192b2e); }
+    .voyage { --sea-ink: light-dark(#243e3d,#ebf4e7); --sea-rule: light-dark(#466d646b,#bed8ca54); color: var(--sea-ink); background: light-dark(#eaf0e8,#192b2e); padding: clamp(12px,3vw,22px); font: 15px/1.5 "Segoe UI","Microsoft YaHei",sans-serif; box-sizing: border-box; }
+    .voyage * { box-sizing: border-box; }
+    .voyage .chart-head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+    .voyage .chart-head b { font: 700 clamp(20px,5vw,28px)/1.2 Georgia,"Songti SC",SimSun,serif; }
+    .voyage .chart-head small { font-size: 12px; white-space: nowrap; }
+    .voyage .sea-chart { margin: 12px 0; padding: 24px 3% 15px; isolation: isolate; position: relative; overflow: hidden; background: light-dark(#cdded9,#2b464c); border-block: 1px solid var(--sea-rule); }
+    .voyage .sea-chart::before, .voyage .sea-chart::after { position: absolute; z-index: -1; content: ""; background: light-dark(#e8dfc7,#48534a); filter: drop-shadow(0 2px 1px #26372d42); }
+    .voyage .sea-chart::before { inset: -9% 58% 30% -5%; clip-path: polygon(0 0,100% 0,70% 24%,78% 37%,47% 52%,54% 63%,22% 71%,0 100%); }
+    .voyage .sea-chart::after { inset: 34% -4% -5% 60%; clip-path: polygon(0 100%,22% 67%,37% 61%,42% 34%,70% 43%,84% 10%,100% 0,100% 100%); }
+    .voyage .ports { list-style: none; display: flex; justify-content: space-between; padding: 0; margin: 0; position: relative; }
+    .voyage .ports::before { content: ""; position: absolute; top: 6px; left: 12%; right: 12%; border-top: 2px dashed var(--sea-rule); }
+    .voyage .ports li { position: relative; text-align: center; min-width: 23%; font-size: 12px; }
+    .voyage .ports li::before { content: ""; display: block; width: 10px; height: 10px; margin: 2px auto 6px; border-radius: 50%; border: 1px solid var(--sea-ink); background: light-dark(#dce4d9,#355257); }
+    .voyage .ports .visited::before { background: var(--sea-ink); }
+    .voyage .ports [aria-current]::before { background: light-dark(#f4c76c,#f7d580); box-shadow: 0 0 0 3px var(--sea-ink); }
+    .voyage .cargo { display: flex; gap: 12px; flex-wrap: wrap; font-size: 14px; font-variant-numeric: tabular-nums; }
+    .voyage .cargo b { font-weight: 750; }
+    .voyage .course { display: block; margin-top: 9px; }
+    .voyage .voyage-log { display: block; margin-block: 3px 9px; font-size: 13px; }
+    .voyage .routes { display: flex; flex-wrap: wrap; gap: 6px; }
+    .voyage button { text-align: left; flex: 1 1 8em; padding: 7px 9px; background: light-dark(#f9f6e9,#263c3d); color: var(--sea-ink); border: 1px solid var(--sea-rule); border-bottom: 3px solid var(--sea-rule); border-radius: 3px 7px 4px 5px; font: inherit; cursor: pointer; }
+    .voyage button:hover { border-color: var(--sea-ink); }
+    .voyage button small { display: block; font-size: 12px; }
+    .voyage button:focus-visible { outline: 2px solid var(--sea-ink); outline-offset: 2px; }
+    .voyage [hidden] { display: none !important; }
+    .voyage .storage-notice { display: block; font-size: 12px; margin-top: 6px; }
+  </style>
+</head>
+<body class="sample-document">
+  <main class="voyage" aria-label="雾港远征海岸章">
+    <div class="chart-head"><b>雾港远征</b><small>海岸章</small></div>
+    <div class="sea-chart"><ol class="ports" aria-label="航海图"><li>白沙湾</li><li>沉船湾</li><li>灯塔</li></ol></div>
+    <div aria-live="polite" aria-atomic="true">
+      <div class="cargo"><span>口粮 <b data-supplies>6</b></span><span>勋章 <b data-medals>0</b></span></div>
+      <b class="course">第一处岔口 · 白沙湾</b><span class="voyage-log">从雾港起航，选一条去灯塔的路。</span>
+    </div>
+    <div class="routes">
+      <button type="button" data-route="coast">沿岸走<small>花 1 口粮</small></button>
+      <button type="button" data-route="storm">进风暴<small>花 2 口粮 · 得 1 勋章</small></button>
+      <button type="button" data-again hidden>再出航<small>从雾港开始新的一局</small></button>
+    </div>
+    <small class="storage-notice" hidden>当前阅读环境只保留本次航迹。保存文件后可在自己的浏览器里续玩。</small>
+  </main>
+  <script>
+    (() => {
+      const game = document.querySelector('.voyage');
+      const key = 'summon.home.coast-voyage.1';
+      const bays = ['白沙湾','沉船湾'];
+      const choices = [...game.querySelectorAll('[data-route]')];
+      const notice = game.querySelector('.storage-notice');
+      let path = [];
+      try {
+        const saved = JSON.parse(localStorage.getItem(key));
+        if (Array.isArray(saved) && saved.length <= 2 && saved.every(step => step === 'coast' || step === 'storm')) path = saved;
+      } catch { notice.hidden = false; }
+      function draw() {
+        const storms = path.filter(step => step === 'storm').length;
+        const finished = path.length === 2;
+        game.querySelector('[data-supplies]').textContent = 6 - path.length - storms;
+        game.querySelector('[data-medals]').textContent = storms + (finished ? 2 : 0);
+        game.querySelector('.course').textContent = ['第一处岔口 · 白沙湾','第二处岔口 · 沉船湾','已抵达灯塔 · 抵港奖励 2 枚'][path.length];
+        game.querySelector('.voyage-log').textContent = path.length
+          ? path.map((step, i) => bays[i] + ' · ' + (step === 'storm' ? '风暴' : '沿岸')).join(' → ')
+          : '从雾港起航，选一条去灯塔的路。';
+        game.querySelectorAll('.ports li').forEach((port, i) => {
+          port.classList.toggle('visited', i < path.length);
+          if (i === path.length) port.setAttribute('aria-current','step');
+          else port.removeAttribute('aria-current');
+        });
+        for (const button of choices) button.hidden = finished;
+        game.querySelector('[data-again]').hidden = !finished;
+      }
+      game.addEventListener('click', event => {
+        const button = event.target.closest('button');
+        if (!button || button.hidden) return;
+        if (button.hasAttribute('data-again')) path = [];
+        else if (path.length < 2) path.push(button.dataset.route);
+        try { localStorage.setItem(key, JSON.stringify(path)); } catch { notice.hidden = false; }
+        draw();
+        if (button.hidden) game.querySelector('button:not([hidden])').focus({ preventScroll: true });
+      });
+      draw();
+      if (document.body.classList.contains('sample-document') && parent !== window && 'ResizeObserver' in window) {
+        new ResizeObserver(() => parent.postMessage({ summonSampleHeight: game.offsetHeight }, '*')).observe(game);
+      }
+    })();
+  </script>
+</body>
+</html>

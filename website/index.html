@@ -1,0 +1,652 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f8f6f1">
+  <meta name="description" content="Summon Bot 是部署在你电脑上的多 Bot 群聊助理。走进游戏研发、网站制作、后端维护与日程管理四个项目群，看 Bot 怎样分工、纠错、交付和记事。">
+  <title>Summon Bot · 本地多 Bot 群聊助理</title>
+  <link rel="icon" href="assets/summon.png">
+  <link rel="stylesheet" href="home.css">
+  <script defer src="home.js"></script>
+</head>
+<body>
+<div id="summon-home">
+  <svg class="art-defs" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <!-- The face and its two tilted eyes follow the silhouette of the Summon app icon. -->
+      <path id="summon-outline" d="M25 83C32 74 36 71 37 61C39 40 48 28 63 21C76 14 92 15 103 20C110 22 115 26 119 31C127 25 136 25 144 29C153 33 157 41 164 50C175 63 180 76 183 92C186 108 190 123 184 137C179 150 168 161 153 163C145 164 143 174 134 178C124 184 113 185 101 184C90 183 82 185 73 181C59 176 58 164 48 160C32 156 20 149 16 136C10 120 14 98 25 83Z"/>
+      <g id="summon-eyes"><rect x="98" y="47" width="19" height="43" rx="9" transform="rotate(-22 107.5 68.5)"/><rect x="137" y="41" width="17" height="40" rx="8.5" transform="rotate(-22 145.5 61)"/></g>
+      <clipPath id="summon-face-cut"><use href="#summon-outline"/></clipPath>
+      <pattern id="summon-pulp" patternUnits="userSpaceOnUse" width="42" height="42"><image href="assets/cotton.png" width="42" height="42"/></pattern>
+      <filter id="summon-cut-shadow" x="-24%" y="-24%" width="155%" height="160%" color-interpolation-filters="sRGB"><feDropShadow dx=".6" dy="1.4" stdDeviation="1.15" flood-color="#443d30" flood-opacity=".36"/></filter>
+      <linearGradient id="summon-glass" x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox">
+        <stop stop-color="#dceaf3" stop-opacity=".48"/><stop offset=".26" stop-color="#6ca0c2" stop-opacity=".24"/><stop offset=".59" stop-color="#3f6985" stop-opacity=".12"/><stop offset=".84" stop-color="#66869d" stop-opacity=".26"/><stop offset="1" stop-color="#d2e5ef" stop-opacity=".53"/>
+      </linearGradient>
+      <linearGradient id="summon-rim" x1="12%" y1="0%" x2="85%" y2="100%">
+        <stop stop-color="#fbffff"/><stop offset=".21" stop-color="#c6deed" stop-opacity=".78"/><stop offset=".45" stop-color="#91b6cc" stop-opacity=".22"/><stop offset=".67" stop-color="#cbddeb" stop-opacity=".55"/><stop offset=".85" stop-color="#f2fbff"/><stop offset="1" stop-color="#99b7c9" stop-opacity=".52"/>
+      </linearGradient>
+      <linearGradient id="summon-reflection" x1="0%" y1="0%" x2="100%" y2="88%">
+        <stop offset=".18" stop-color="#eaf6ff" stop-opacity="0"/><stop offset=".43" stop-color="#eaf6ff" stop-opacity=".15"/><stop offset=".5" stop-color="#eaf6ff" stop-opacity=".05"/><stop offset=".62" stop-color="#eaf6ff" stop-opacity="0"/>
+      </linearGradient>
+      <symbol id="summon-mascot" viewBox="0 0 200 200" overflow="visible">
+        <g class="paper-art">
+          <g class="cut-layer cut-mist"><use href="#summon-outline" fill="#597c91" stroke="#4d6673"/><use href="#summon-outline" fill="url(#summon-pulp)"/></g>
+          <g class="cut-layer cut-sage"><use href="#summon-outline" fill="#8fa595" stroke="#758f80"/><use href="#summon-outline" fill="url(#summon-pulp)"/></g>
+          <g class="cut-layer cut-kraft"><use href="#summon-outline" fill="#d8c5a2" stroke="#bdad8e"/><use href="#summon-outline" fill="url(#summon-pulp)"/></g>
+          <g class="cut-layer cut-face"><use href="#summon-outline" fill="#f4ead5" stroke="#fff8e7"/><use href="#summon-outline" fill="url(#summon-pulp)"/><use class="mascot-gaze" href="#summon-eyes" fill="#414a3c"/></g>
+        </g>
+        <g class="glass-art">
+          <use href="#summon-outline" transform="translate(1.5 2.6)" fill="none" stroke="#7897ae" stroke-opacity=".5" stroke-width="1.6"/>
+          <use href="#summon-outline" fill="url(#summon-glass)" stroke="url(#summon-rim)" stroke-width="1.55"/>
+          <g clip-path="url(#summon-face-cut)">
+            <rect class="glass-glint" x="-45" y="-35" width="290" height="270" fill="url(#summon-reflection)"/>
+            <use href="#summon-outline" transform="translate(2.7 3.3) scale(.973)" fill="none" stroke="url(#summon-rim)" stroke-opacity=".48" stroke-width=".65"/>
+          </g>
+          <use class="mascot-gaze" href="#summon-eyes" fill="#f5faff"/>
+        </g>
+      </symbol>
+    </defs>
+  </svg>
+  <a class="skip" href="#reel">跳至正文</a>
+  <header class="mast">
+    <div class="mast-inner">
+      <a class="brand" href="#opening" aria-label="Summon Bot 首页"><svg viewBox="0 0 200 200" width="30" height="30" aria-hidden="true"><use href="#summon-mascot"/></svg>Summon Bot</a>
+      <nav aria-label="主导航">
+        <a href="https://github.com/buyun00/Summon-Bot">GitHub</a>
+      </nav>
+      <div class="materials" role="group" aria-label="外观材质" hidden>
+        <button type="button" data-choice="system" title="跟随系统外观">自动</button>
+        <button type="button" data-choice="light" title="浅色 · 暖棉纸片">纸片</button>
+        <button type="button" data-choice="dark" title="暗色 · 液态玻璃">玻璃</button>
+      </div>
+      <button class="motion-toggle" type="button" aria-label="暂停动效" title="暂停动效" hidden><i aria-hidden="true"></i></button>
+    </div>
+  </header>
+  <main>
+    <section class="opening" id="opening" aria-labelledby="wordmark">
+      <div class="backdrop" aria-hidden="true">
+        <div class="bloom"></div><div class="dust-grid"></div><div class="light-slit"></div>
+      </div>
+      <canvas class="sky sky-back" aria-hidden="true"></canvas>
+      <div class="cover">
+        <div class="cover-copy">
+          <p class="kicker"><span class="signal" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>本地多 Bot 群聊助理</p>
+          <h1 id="wordmark" aria-label="Summon Bot">
+            <span class="word" aria-hidden="true"><span class="letters"><i>S</i><i>u</i><i>m</i><i>m</i><i class="letter-o"></i><i>n</i></span></span>
+            <span class="word word-last" aria-hidden="true"><span class="letters"><i>B</i><i>o</i><i>t</i></span><i class="word-spark"></i></span>
+          </h1>
+          <p class="lead">把想法发进群，把时间留给咖啡。</p>
+          <p class="pitch">一群住在你电脑上的 AI 伙伴，会分工，会纠错，也记得你上次拍板的事。</p>
+          <div class="actions">
+            <a class="action action-main" href="https://github.com/buyun00/Summon-Bot">前往 GitHub</a>
+          </div>
+        </div>
+        <div class="observatory" role="group" aria-label="Summon Bot 标志与群聊伙伴">
+          <div class="sculpture-mount">
+            <div class="flight">
+              <div class="float"><div class="sculpture">
+                <canvas class="lens-sample" aria-hidden="true"></canvas>
+                <svg viewBox="0 0 200 200" role="img" aria-label="Summon Bot 双眼标志"><use href="#summon-mascot"/></svg>
+              </div></div>
+            </div>
+            <button class="summon-control" type="button" aria-label="召集群聊伙伴" aria-pressed="false" hidden></button>
+          </div>
+          <div class="satellites" aria-hidden="true">
+            <span class="satellite sat-lead"><i class="crew-face lead-bot"></i>主控 Bot</span>
+            <span class="satellite sat-egg"><i class="crew-face egg-bot"></i>EggBot</span>
+            <span class="satellite sat-plan"><i class="crew-face plan-bot"></i>关卡策划</span>
+          </div>
+          <span class="summon-hint" aria-hidden="true" hidden><i></i><span>点击 Logo 召集伙伴</span></span>
+          <span class="sr-only" id="crew-status" role="status"></span>
+        </div>
+      </div>
+      <canvas class="sky sky-front" aria-hidden="true"></canvas>
+      <div class="cover-foot">
+        <span class="scroll-cue" aria-hidden="true"><i></i>向下滚动</span>
+        <span class="platforms" lang="en">Web <em>/</em> Desktop <em>/</em> iOS <em>/</em> Android</span>
+      </div>
+    </section>
+
+    <section class="reel" id="reel" aria-labelledby="room-name">
+      <div class="room-bar">
+        <nav class="room-switch" aria-label="选择群聊场景">
+          <a class="room-tab tab-game" href="#room-game" aria-current="true"><i class="tab-art" aria-hidden="true"></i><span class="tab-type">做游戏</span><b>雾港远征</b></a>
+          <a class="room-tab tab-web" href="#room-web"><i class="tab-art" aria-hidden="true"></i><span class="tab-type">做网站</span><b>纸间工作坊</b></a>
+          <a class="room-tab tab-ops" href="#room-ops"><i class="tab-art" aria-hidden="true"></i><span class="tab-type">维护后端</span><b>后端值班室</b></a>
+          <a class="room-tab tab-schedule" href="#room-schedule"><i class="tab-art" aria-hidden="true"></i><span class="tab-type">日程管理</span><b>上海出差</b></a>
+        </nav>
+        <div class="room-bar-inner spread">
+          <div class="reel-label">对话时间 <span>周六 09:55 — 10:46</span></div>
+          <div class="room-title">
+            <span class="dock"><svg viewBox="0 0 200 200" aria-hidden="true"><use href="#summon-mascot"/></svg></span>
+            <div><h2 id="room-name">雾港远征</h2><p>游戏研发群 · 模拟对话</p></div>
+          </div>
+          <nav class="chapters" aria-label="群聊章节">
+            <span class="chapter-label" aria-hidden="true">定下这一局</span>
+            <select class="chapter-select" aria-label="跳至群聊章节、询问、计划或交付消息" hidden></select>
+            <div class="splices"></div>
+          </nav>
+        </div>
+        <div class="reel-progress" aria-hidden="true"><i></i></div>
+      </div>
+      <div class="folio-binding" aria-hidden="true" hidden><div class="folio-window">
+        <div class="turning-sheet"><div class="sheet-imprint"><span class="sheet-from"></span><b class="sheet-title"></b></div></div>
+      </div></div>
+      <span id="room-announcement" class="sr-only" role="status"></span>
+      <div class="transcript">
+      <article class="room-story" id="room-game" data-title="雾港远征" data-description="游戏研发群 · 模拟对话" data-range="周六 09:55 — 10:46" aria-label="雾港远征">
+        <h3 class="room-fallback">雾港远征</h3>
+        <section id="idea" class="sequence" aria-label="定下这一局">
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>想给朋友做个周末玩的航海小游戏。等咖啡的时候走两步，叫到号就关掉，回来还能接着走。</p><time class="outgoing-time">09:55</time></div></article>
+            <aside class="note left"><details class="margin-note" open><summary><span class="note-tag">游戏研发</span><b class="note-heading">一杯咖啡的时间</b></summary><p>群主只带来了一个游玩习惯。第一条航线和通关条件，是接下来一起聊出来的。</p></details></aside>
+          </div>
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>09:55</time></header><div class="message-bubble"><p>那就从一条去灯塔的航线开始。海图上有个岔口，走哪边会让你犹豫？</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>一边能躲风，一边能捡勋章。我要看看手里剩多少口粮再赌。</p><time class="outgoing-time">09:56</time></div></article>
+          </div>
+          <div class="turn spread" id="game-ask" data-jump="询问与选择">
+            <article class="msg lead-bot"><header>主控 Bot <time>09:57</time></header><div class="message-bubble"><p>假设船到了灯塔，只攒下两枚勋章。你希望这就算过关，还是要凑够勋章才让它进港？</p><div class="prompt-record"><div class="record-head"><span class="record-status">待你选择</span><b>海岸章的通关条件</b></div><ul class="record-choices"><li data-selected>驶到灯塔就通关，勋章记成绩</li><li>攒够四枚勋章才能进港</li></ul><a class="answer-jump" href="#game-question-1-reply">查看群主答复 ↓</a></div></div></article>
+          </div>
+          <div class="turn spread" id="game-question-1-reply" data-resolves="game-ask" data-status="已提交选择">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><div class="answer-record"><b>已提交选择</b><span>驶到灯塔就通关，勋章记成绩</span></div><p>我朋友第一次玩，绕开风暴也该能看见结局。勋章只用来比一比。</p><time class="outgoing-time">09:58</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>09:59</time></header><div class="message-bubble"><p>好，所有路线都能靠岸。我做海图和存档。每一章要花多少口粮、挣多少勋章，得有人持续算这笔账。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg egg-bot"><header>EggBot <time>09:59</time></header><div class="message-bubble"><p>已邀请 @关卡策划。你们刚定的通关条件和口粮玩法都带给她了。</p></div></article>
+            <aside class="note right"><details class="margin-note" open><summary><span class="note-tag">EggBot · 组队</span><b class="note-heading">这时才有了关卡策划</b></summary><p>等到「每章都要算奖励」成为一份长期工作，EggBot 才把这个岗位补进群。</p></details></aside>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>关卡策划 <time>10:00</time></header><div class="message-bubble"><p>我拿六份口粮摆了一盘。沿岸走一格花一份，闯风暴花两份。如果到灯塔都只领两枚勋章，我会一路贴着岸走。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>风暴每过一次多给一枚。先做两个岔口吧，正好能试出连续闯两次是什么滋味。</p><time class="outgoing-time">10:01</time></div></article>
+          </div>
+        </section>
+        <section id="crew" class="sequence" aria-label="把规则写进计划">
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>关卡策划 <time>10:02</time></header><div class="message-bubble"><p>两个岔口叫白沙湾和沉船湾。全走沿岸会剩四份、两枚勋章。两次风暴剩两份、四枚。灯塔给的两枚已经算在里面。</p></div></article>
+          </div>
+          <div class="turn spread" id="game-plan" data-jump="查看计划">
+            <article class="msg lead-bot"><header>主控 Bot <time>10:03</time></header><div class="message-bubble"><p>我按两个岔口排了一版。最后你会拿到一个文件，关掉再开，船还在上次停下的地方。</p><div class="work-plan"><div class="plan-heading"><b>海岸章试玩计划</b><small class="record-status">待你确认</small></div><ol><li><b>关卡策划 · 两个岔口</b><span>给白沙湾和沉船湾各排一条沿岸路、一条风暴路，算完四种走法。</span></li><li><b>主控 Bot · 可续玩的航海图</b><span>选路后一起记下位置、口粮和勋章，结算完才写入存档。</span></li><li><b>一起收船 · 离线试玩</b><span>交一份能直接打开的 HTML。你走过风暴再重新打开，看领奖有没有算两次。</span></li></ol></div></div></article>
+            <aside class="note left"><details class="margin-note" open><summary><span class="note-tag">制作计划</span><b class="note-heading">「能接着玩」怎么验</b></summary><p>关掉文件再打开，被写进最后一步。群主在下一条消息里决定开工。</p></details></aside>
+          </div>
+          <div class="turn spread" data-resolves="game-plan" data-status="已确认">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><a class="reply-ref" href="#game-plan"><span>主控 Bot</span>海岸章试玩计划</a><p>按这个做。朋友的电脑装不了游戏客户端，发一个文件给他就行。</p><time class="outgoing-time">10:04</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>10:05</time></header><div class="message-bubble"><p>开工。我接选路和保存，策划把那四种走法算给你。你不用等代码出来才看数值。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>关卡策划 <time>10:07</time></header><div class="message-bubble"><p>这是会用到的四个结局。中间两种收获一样，路径名会分别留下。</p><details class="attachment" data-action-label="看路线表"><summary><span class="file-glyph" aria-hidden="true"></span><strong>海岸路线表.csv</strong><span class="attachment-action">看路线表</span></summary><div class="report"><table><caption>从雾港带六份口粮出发</caption><tbody><tr><th scope="row">沿岸 → 沿岸</th><td>4 口粮 · 2 勋章</td></tr><tr><th scope="row">沿岸 → 风暴</th><td>3 口粮 · 3 勋章</td></tr><tr><th scope="row">风暴 → 沿岸</th><td>3 口粮 · 3 勋章</td></tr><tr><th scope="row">风暴 → 风暴</th><td>2 口粮 · 4 勋章</td></tr></tbody></table></div><a class="save-delivery" href="examples/coast-routes.csv" download="海岸路线表.csv">保存 海岸路线表.csv</a></details></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>看到中间两行才想到，玩家重新打开游戏时怎么知道自己上回走的是哪条？只给我看三枚勋章我可猜不出来。</p><time class="outgoing-time">10:08</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>10:09</time></header><div class="message-bubble"><p>有道理。我把每次经过的湾名和选路一起存。策划继续算路线，我把航迹要求发给正在写存档的那一路。</p></div></article>
+            <aside class="note right"><details class="margin-note" open><summary><span class="note-tag">在途补充</span><b class="note-heading">这句话进了存档那一路</b></summary><p>策划可以继续核算奖励，负责试玩的执行会话收到新增的航迹要求。</p></details></aside>
+          </div>
+        </section>
+        <section id="parallel" class="sequence" aria-label="造船时继续聊">
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>关卡策划 <time>10:12</time></header><div class="message-bubble"><p>湾名可以直接当航迹。比如「白沙湾 · 风暴 → 沉船湾 · 沿岸」，朋友拿两份存档一眼能分出来。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>好。路线按钮也把代价写上，别让我进风暴之后才发现扣两份。</p><time class="outgoing-time">10:13</time></div></article>
+          </div>
+          <div class="turn spread" id="game-question-2">
+            <article class="msg lead-bot"><header>主控 Bot <time>10:14</time></header><div class="message-bubble"><p>按钮上会写「花 2 口粮 · 得 1 勋章」。有一件事得你定，船到了灯塔，再打开文件是直接开新局吗？</p><div class="prompt-record"><div class="record-head"><span class="record-status">待你选择</span><b>通关后重新打开</b></div><ul class="record-choices"><li data-selected>保留抵港画面，由玩家点再出航</li><li>自动回到雾港开新局</li></ul><a class="answer-jump" href="#game-question-2-reply">查看群主答复 ↓</a></div></div></article>
+          </div>
+          <div class="turn spread" id="game-question-2-reply" data-resolves="game-question-2" data-status="已提交选择">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><div class="answer-record"><b>已提交选择</b><span>保留抵港画面，由玩家点再出航</span></div><p>我要拿结算画面给朋友看，等我自己点再出航。</p><time class="outgoing-time">10:15</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>10:18</time></header><div class="message-bubble"><p>那保存点就放在领完灯塔勋章之后。再打开时只画这张海图，直到你点「再出航」。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>关卡策划 <time>10:21</time></header><div class="message-bubble"><p>我把最容易算错的一局单独列给你。第一步闯风暴是四份口粮、一枚勋章。第二步沿岸抵港是三份口粮、三枚勋章。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>就用这条线试。我上次做小游戏就是结算页一刷新多发一份奖励。</p><time class="outgoing-time">10:22</time></div></article>
+          </div>
+        </section>
+        <section id="steer" class="sequence" aria-label="试走同一条航线">
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>10:26</time></header><div class="message-bubble"><p>第一版的两步已经接上。复开抵港画面时确实遇到了你说的问题，原来画灯塔和发两枚勋章用了同一个入口。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>先留住刚才那一局，别拿全新的存档说修好了。</p><time class="outgoing-time">10:27</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>10:28</time></header><div class="message-bubble"><p>保留白沙湾那条记录。我把发奖移到船抵港的那一步，复开只读取已结算的结果。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>关卡策划 <time>10:32</time></header><div class="message-bubble"><p>我拿同一条「风暴 → 沿岸」记录接着走。到港三枚，再打开还是三枚，航迹也还在。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>这就能交了。我朋友还要接着画下章的海图，顺手把这次增删的素材也附上吧。他会按路径找，空的占位图也有用。</p><time class="outgoing-time">10:33</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>10:34</time></header><div class="message-bubble"><p>好，游戏还是那个单文件。我给画海图的人另附一份小战报，修改前后各一列，零字节照列。</p></div></article>
+          </div>
+        </section>
+        <section id="deliver" class="sequence" aria-label="把船交给玩家">
+          <div class="turn spread" id="game-delivery" data-jump="打开交付消息">
+            <article class="msg lead-bot"><header>主控 Bot <time>10:38</time></header><div class="message-bubble"><p>《雾港远征》海岸章在这儿。可以在群里走一局，也可以把文件存下来给朋友。先走白沙湾的风暴线试试。</p><details class="attachment delivery-file" data-action-label="展开试玩"><summary><span class="file-glyph" aria-hidden="true"></span><span class="file-title"><small>交付附件 · 离线试玩</small><strong>雾港远征.html</strong></span><span class="attachment-action">展开试玩</span></summary><div class="delivery-body"><iframe class="sample-frame" src="examples/coast.html" loading="lazy" title="试玩雾港远征海岸章"></iframe><a class="save-delivery" href="examples/coast.html" download="雾港远征.html">保存 雾港远征.html</a></div></details></div></article>
+            <aside class="note left"><details class="margin-note" open><summary><span class="note-tag">交付附件</span><b class="note-heading">海岸章可以当场开一局</b></summary><p>展开附件，选两次航线就能抵达灯塔。把文件带走，也能玩同一章。</p></details></aside>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><a class="reply-ref" href="#game-delivery"><span>主控 Bot</span>雾港远征.html</a><p>我在白沙湾走了风暴，关掉再打开，船还在沉船湾等我选。手里四份口粮、一枚勋章。</p><time class="outgoing-time">10:40</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>关卡策划 <time>10:41</time></header><div class="message-bubble"><p>对上了。现在贴岸走到灯塔，应该是三份口粮、三枚勋章。留着结算画面再开一次。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>三枚，重开还是三枚。再出航也能回到六份口粮。海岸章我收了。</p><time class="outgoing-time">10:42</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>10:44</time></header><div class="message-bubble"><p>画图同伴要的战报也来了。blank.png 是新加的零字节占位，旧索引已经移除，可以按路径找。</p><details class="attachment" data-action-label="查看战报"><summary><span class="file-glyph" aria-hidden="true"></span><strong>report.html</strong><span class="attachment-action">查看战报</span></summary><div class="delivery-body"><iframe class="sample-frame" src="examples/report.html" loading="lazy" title="海岸章素材差异战报"></iframe><a class="save-delivery" href="examples/report.html" download="report.html">保存 report.html</a></div></details></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>搜到了。以后每一章也给他留一份这样的战报，游戏文件单发，我好转给朋友。</p><time class="outgoing-time">10:45</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>10:46</time></header><div class="message-bubble"><p>记在本群的章节交付约定里了。海岸章这一版，试玩给玩家，素材差异给画图的人。</p></div></article>
+          </div>
+        </section>
+        <div class="next-room"><a href="#room-web"><span>翻到下一份群聊</span><b>纸间工作坊官网</b><i aria-hidden="true">↗</i></a></div>
+      </article>
+      <article class="room-story" id="room-web" data-title="纸间工作坊官网" data-description="网站制作群 · 模拟对话" data-range="周三 14:10 — 15:04" aria-label="纸间工作坊官网">
+        <h3 class="room-fallback">纸间工作坊官网</h3>
+        <section id="web-brief" class="sequence" aria-label="收到店主的委托">
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>周六我在店里教大家手缝一本书。好多人发消息问「我们最后会做出什么？」我想发一个网址给他们，看完就能选场次。</p><time class="outgoing-time">14:10</time></div></article>
+            <aside class="note left"><details class="margin-note" open><summary><span class="note-tag">网站制作</span><b class="note-heading">店主想解决的一个问题</b></summary><p>从海报扫码进来的人，想知道亲手能做出什么。这个问题决定了首页先放样书。</p></details></aside>
+          </div>
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>14:11</time></header><div class="message-bubble"><p>你上次做的那本样书是什么样的？我想让打开页面的人先看到它。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>牛皮纸封面，三针红线，翻开是空白内页。上午场只剩一个位，下午已经满了。</p><time class="outgoing-time">14:12</time></div></article>
+          </div>
+          <div class="turn spread" id="workshop-ask" data-jump="询问与选择">
+            <article class="msg lead-bot"><header>主控 Bot <time>14:13</time></header><div class="message-bubble"><p>那首页可以放这本书，也可以先放场次。你希望客人点进来做的第一件事是什么？</p><div class="prompt-record"><div class="record-head"><span class="record-status">待你选择</span><b>首页先给客人看什么</b></div><ul class="record-choices"><li data-selected>翻开手缝的样书</li><li>先比较两个场次</li></ul><a class="answer-jump" href="#web-question-1-reply">查看群主答复 ↓</a></div></div></article>
+          </div>
+          <div class="turn spread" id="web-question-1-reply" data-resolves="workshop-ask" data-status="已提交选择">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><div class="answer-record"><b>已提交选择</b><span>翻开手缝的样书</span></div><p>先翻书。我贴在店门口的海报上已经有时间了，扫进来是想看成品。</p><time class="outgoing-time">14:14</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>14:15</time></header><div class="message-bubble"><p>明白，书边露出红线，翻开能看到装订。场次就放在书下面。我负责选场逻辑，以后换课也得有人盯住这张书桌在手机上的样子。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg egg-bot"><header>EggBot <time>14:15</time></header><div class="message-bubble"><p>已邀请 @前端视觉，把牛皮纸、红线，以及「客人多半从门口扫码进来」一并交给她了。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>前端视觉 <time>14:16</time></header><div class="message-bubble"><p>我把书脊放左边。拇指点右页就往里翻，书名和报名的位置都不用挪。上午只剩最后一席，有人想带朋友一起报，该怎么显示？</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>上午写明只收一人，朋友可以去下午场候补。这版先给我自己点，试的时候别把最后那个位子占了。</p><time class="outgoing-time">14:17</time></div></article>
+          </div>
+        </section>
+        <section id="web-direction" class="sequence" aria-label="把两个入口定清楚">
+          <div class="turn spread" id="workshop-plan" data-jump="查看计划">
+            <article class="msg lead-bot"><header>主控 Bot <time>14:18</time></header><div class="message-bubble"><p>那两场各走一遍就能看清楚。以下午满员为例，客人选它会拿到候补草稿。</p><div class="work-plan"><div class="plan-heading"><b>周六课程页制作计划</b><small class="record-status">待你确认</small></div><ol><li><b>前端视觉 · 做出一本能翻的样书</b><span>保留三针红线，翻到内页仍能看见课程名，手机单列摆放。</span></li><li><b>主控 Bot · 接两种报名状态</b><span>上午余一席、下午已满。选择后先生成草稿，每份只对应一个场次。</span></li><li><b>店主 · 从门口扫码的角度验收</b><span>从书打开网页，切场次，看草稿里的时间和类型，再带走离线首页。</span></li></ol></div></div></article>
+            <aside class="note right"><details class="margin-note" open><summary><span class="note-tag">先定验收方法</span><b class="note-heading">留座和候补分开验</b></summary><p>同一张课表有两种承诺。计划里把店主最后要点的两条路都列了出来。</p></details></aside>
+          </div>
+          <div class="turn spread" data-resolves="workshop-plan" data-status="已确认">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><a class="reply-ref" href="#workshop-plan"><span>主控 Bot</span>周六课程页制作计划</a><p>可以做。标题就叫「手缝一本书」，课长九十分钟，场次是上午十点和下午两点。</p><time class="outgoing-time">14:19</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>14:20</time></header><div class="message-bubble"><p>收到。前端视觉做样书，我把你给的两个开课时间接到选择和草稿。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>前端视觉 <time>14:23</time></header><div class="message-bubble"><p>封面排好了。红线是这本书的识别点，我给你看一下我留在第一页的内容。</p><details class="attachment" data-action-label="看排版稿"><summary><span class="file-glyph" aria-hidden="true"></span><strong>首页排版稿</strong><span class="attachment-action">看排版稿</span></summary><div class="report"><table><caption>纸间工作坊 · 第一屏</caption><tbody><tr><th scope="row">样书</th><td>牛皮纸封面，红线三针，点击翻开</td></tr><tr><th scope="row">课名</th><td>手缝一本书 · 90 分钟</td></tr><tr><th scope="row">场次入口</th><td>10:00 余 1 席 ／ 14:00 候补</td></tr></tbody></table></div></details></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>翻开以后能不能留一句「这本书是你亲手缝的」？我通常就这么跟新来的客人说。</p><time class="outgoing-time">14:24</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>前端视觉 <time>14:25</time></header><div class="message-bubble"><p>正好印在内页。封面只留课名和那三针线，翻开的人才会看到你的话。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>14:27</time></header><div class="message-bubble"><p>选场这边也有一句要定。下午按下去写「报名成功」会让人以为有位子，我打算写「生成候补草稿」。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>对，上午就叫「生成报名草稿」。我看草稿就知道他要约哪一场。</p><time class="outgoing-time">14:28</time></div></article>
+          </div>
+        </section>
+        <section id="web-parallel" class="sequence" aria-label="边试文案边接交互">
+          <div class="turn spread" id="web-question-2">
+            <article class="msg lead-bot"><header>主控 Bot <time>14:30</time></header><div class="message-bubble"><p>两个按钮的文案都换了。刚才你说朋友可能要一起来，我想把最后一席的处理定清楚。</p><div class="prompt-record"><div class="record-head"><span class="record-status">待你选择</span><b>上午只剩一席时</b></div><ul class="record-choices"><li data-selected>余量写在场次旁，报名草稿固定一人</li><li>继续让客人填人数，提交时再解释</li></ul><a class="answer-jump" href="#web-question-2-reply">查看群主答复 ↓</a></div></div></article>
+          </div>
+          <div class="turn spread" id="web-question-2-reply" data-resolves="web-question-2" data-status="已提交选择">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><div class="answer-record"><b>已提交选择</b><span>余量写在场次旁，报名草稿固定一人</span></div><p>选固定一人。看见余一席就知道了，别让人填完两个人才扑空。</p><time class="outgoing-time">14:31</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>14:32</time></header><div class="message-bubble"><p>上午的草稿会写「10:00 · 报名一人」。下午的写「14:00 · 候补一人」。你在两场间来回切也能分辨。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>前端视觉 <time>14:34</time></header><div class="message-bubble"><p>手机上把「余 1 席」贴到十点旁边了，下午「已满 · 可候补」也在同一行。翻书只动纸页，下面的时间不跟着跳。</p></div></article>
+            <aside class="note left"><details class="margin-note" open><summary><span class="note-tag">两路并行</span><b class="note-heading">一句补充只改一处</b></summary><p>视觉专员在调窄屏，主控同时改草稿内容。店主可以接着试文案。</p><div class="lanes" aria-hidden="true"><span>手机排版<i></i></span><span>草稿逻辑<i></i></span></div></details></aside>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>我会先按上午试一下，然后想看看下午。要是之前生成的上午草稿还留在下午场下面，就很容易看错。</p><time class="outgoing-time">14:36</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>14:37</time></header><div class="message-bubble"><p>刚把这两步连起来，确实看到了你说的情况。切到下午以后，上午生成的那行还在。我把清掉旧草稿接进切场这一步。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>前端视觉 <time>14:39</time></header><div class="message-bubble"><p>再给下午的结果留着「候补」两个字。就算客人只截最后一行给店员看，也不至于当成上午预约。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>这点好。截图里要有店名、课名和时间，我转给另一位老师也认得。</p><time class="outgoing-time">14:40</time></div></article>
+          </div>
+        </section>
+        <section id="web-mobile" class="sequence" aria-label="沿着同一张草稿改">
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>14:42</time></header><div class="message-bubble"><p>结果现在是一张短回条。上午写「纸间工作坊／手缝一本书／10:00／报名一人」，下午把时间和类型一起换掉。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>我平时用手机单手回消息，能不能点整行场次？只点那枚小圆圈太费劲。</p><time class="outgoing-time">14:43</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>前端视觉 <time>14:44</time></header><div class="message-bubble"><p>可以，整行都能选。按钮仍然独立在下面，碰一下场次不会直接生成回条。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>14:46</time></header><div class="message-bubble"><p>上午生成 → 切下午，旧回条会先收起来。只有你再按「生成候补草稿」，下午的回条才出现。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>那就发我现在这版，我照你这个顺序自己点一遍。</p><time class="outgoing-time">14:47</time></div></article>
+          </div>
+        </section>
+        <section id="web-delivery" class="sequence" aria-label="交给店主试课">
+          <div class="turn spread" id="workshop-delivery" data-jump="打开交付消息">
+            <article class="msg lead-bot"><header>主控 Bot <time>14:52</time></header><div class="message-bubble"><p>课程首页到了。可以在这条消息里翻书和选场，也能保存整页带去店里。报名和候补都停在浏览器里的草稿。</p><details class="attachment delivery-file" data-action-label="打开首页"><summary><span class="file-glyph" aria-hidden="true"></span><span class="file-title"><small>交付附件 · 课程首页</small><strong>手缝一本书.html</strong></span><span class="attachment-action">打开首页</span></summary><div class="delivery-body"><iframe class="sample-frame" src="examples/workshop.html" loading="lazy" title="纸间工作坊课程首页演示"></iframe><a class="save-delivery" href="examples/workshop.html" download="手缝一本书.html">保存 手缝一本书.html</a></div></details></div></article>
+            <aside class="note right"><details class="margin-note" open><summary><span class="note-tag">交付附件</span><b class="note-heading">从封面一路点到候补</b></summary><p>店主提过的翻页、余位和草稿都在这份首页里，可以按她的顺序自己走一遍。</p></details></aside>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><a class="reply-ref" href="#workshop-delivery"><span>主控 Bot</span>手缝一本书.html</a><p>翻到了，那句「这本书是你亲手缝的」在右页。我点上午，回条上有店名和十点，也写了一人。</p><time class="outgoing-time">14:54</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>前端视觉 <time>14:55</time></header><div class="message-bubble"><p>现在保持这张书打开，点下午那一整行，看看上午的回条有没有收起来。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>收了。我再按一次才出来「14:00 · 候补一人」。这个能发给另一位老师看，光截这一行也不会认错。</p><time class="outgoing-time">14:56</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>14:58</time></header><div class="message-bubble"><p>那周六的课页就收工了。两种入口和草稿的区别，我也写进这家店的课程页约定。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>下次换皮面本也沿用这个，换样书和时段就行。这一版我保存了，拿去店里给老师看。</p><time class="outgoing-time">15:01</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>前端视觉 <time>15:04</time></header><div class="message-bubble"><p>记下了。你刚定的那句内页文案也和这门课放在一起，下次换课时还能找到。</p></div></article>
+          </div>
+        </section>
+        <div class="next-room"><a href="#room-ops"><span>翻到下一份群聊</span><b>后端值班室</b><i aria-hidden="true">↗</i></a></div>
+      </article>
+      <article class="room-story" id="room-ops" data-title="后端值班室" data-description="服务维护群 · 模拟对话" data-range="周一 21:05 — 21:53" aria-label="后端值班室">
+        <h3 class="room-fallback">后端值班室</h3>
+        <section id="ops-alert" class="sequence" aria-label="值班铃响">
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>刚有同事在新加坡节点导出订单，等了一会儿，页面回了 502。我现在得告诉客服，是所有人都进不去，还是只有导出坏了？</p><time class="outgoing-time">21:05</time></div><details class="quiet-log"><summary>查看这条消息的快读记录</summary><ul><li><b>运维专员</b>查近十分钟的入口记录</li><li><b>主控 Bot、EggBot</b>旁听，保持静默</li></ul></details></article>
+            <aside class="note right"><details class="margin-note" open><summary><span class="note-tag">服务维护</span><b class="note-heading">客服现在就等一句话</b></summary><p>值班人的第一个问题是影响范围。两笔失败导出的批次号，会一直跟到这晚交班。</p></details></aside>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>运维专员 <time>21:06</time></header><div class="message-bubble"><p>我先按你说的查近十分钟的入口记录。首页和订单详情都有成功响应，失败集中在导出接口，有两笔。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>那我先回客服「订单可以看，导出在排查」。两笔能对上是哪两张单吗？</p><time class="outgoing-time">21:06</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>运维专员 <time>21:07</time></header><div class="message-bubble"><p>批次是 E41 和 E42。它们几乎同时开始生成文件，随后上游进程退出，代理才记了 502。要不要先把代理重启？</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg tool-bot"><header>总接口 Bot <time>21:07</time></header><div class="message-bubble"><p>先留住上游进程退出前的内存曲线和两笔队列记录。代理现在还能转发订单页，重启它也看不出谁把内存吃满了。</p></div></article>
+            <aside class="note left"><details class="margin-note" open><summary><span class="note-tag">免 @ 旁听</span><b class="note-heading">有人在重启之前接了一句</b></summary><p>总接口 Bot 一直在群里。听到会影响现场的操作，才提出先看哪两份证据。</p></details></aside>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>对，先留下现场。客服还在收消息，我最怕有人觉得失败又连点三回。现在能先做什么？</p><time class="outgoing-time">21:08</time></div></article>
+          </div>
+          <div class="turn spread" id="operations-ask" data-jump="询问与选择">
+            <article class="msg plan-bot"><header>运维专员 <time>21:09</time></header><div class="message-bubble"><p>可以暂缓领取新的导出，让请求先排队。我需要你定允许动到哪一步。</p><div class="prompt-record"><div class="record-head"><span class="record-status">权限确认</span><b>本次止损范围</b></div><ul class="record-choices"><li data-selected>暂缓领取新导出，保留请求与历史批次</li><li>本轮只读，先回报现场</li></ul><a class="answer-jump" href="#ops-question-1-reply">查看群主答复 ↓</a></div></div></article>
+          </div>
+          <div class="turn spread" id="ops-question-1-reply" data-resolves="operations-ask" data-status="已确认权限">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><div class="answer-record"><b>已确认权限</b><span>暂缓领取新导出，保留请求与历史批次</span></div><p>先暂缓领取。已收进来的请求保留，订单查询照常。旧批次等我看完清单再决定。</p><time class="outgoing-time">21:09</time></div></article>
+          </div>
+        </section>
+        <section id="ops-preserve" class="sequence" aria-label="先保现场再动队列">
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>运维专员 <time>21:10</time></header><div class="message-bubble"><p>新导出已进入等待，E41、E42 两行记录和那段内存曲线都留住了。客服可以让大家只提交一次。</p></div></article>
+          </div>
+          <div class="turn spread" id="operations-plan" data-jump="查看计划">
+            <article class="msg lead-bot"><header>主控 Bot <time>21:11</time></header><div class="message-bubble"><p>现在能腾出手查原因了。我把恢复的顺序列出来，两笔失败的单子单独放在最后。</p><div class="work-plan"><div class="plan-heading"><b>当班恢复计划</b><small class="record-status">待你确认</small></div><ol><li><b>运维专员 · 对齐时间线</b><span>把两份导出开始、内存升高和进程退出排在一张表上。</span></li><li><b>总接口 Bot · 试单路恢复</b><span>确认队列可以限制并行数，先拿一笔新请求观察查询和导出。</span></li><li><b>主控 Bot · 核对旧单再交班</b><span>查 E41、E42 有没有成品，按群主确认的范围处理，把结果交给接班人。</span></li></ol></div></div></article>
+          </div>
+          <div class="turn spread" data-resolves="operations-plan" data-status="已确认">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><a class="reply-ref" href="#operations-plan"><span>主控 Bot</span>当班恢复计划</a><p>按这个走。先查证据和单路怎么恢复，到要放出请求时喊我。</p><time class="outgoing-time">21:12</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>运维专员 <time>21:13</time></header><div class="message-bubble"><p>我去对两笔的起点和内存。接口这边可以同时查队列限制，不用等我整理完。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg tool-bot"><header>总接口 Bot <time>21:14</time></header><div class="message-bubble"><p>工作队列支持同一节点一次只领一笔，接单照旧。我等你的确认再调整。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>客服又问，排队的用户需不需要重新提交？我想先给一句确定的话。</p><time class="outgoing-time">21:16</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>21:16</time></header><div class="message-bubble"><p>新提交会保留原批次号，等队列恢复就会轮到它。请客服回复「原请求有效，请勿重复提交」。两笔旧单我会逐个看。</p></div></article>
+          </div>
+        </section>
+        <section id="ops-parallel" class="sequence" aria-label="还原那十分钟">
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>运维专员 <time>21:18</time></header><div class="message-bubble"><p>时间对上了。E41 导出还在吃内存，E42 又开始了。两个任务重叠后才到内存上限，代理错误在上游退出之后。</p><details class="attachment" data-action-label="展开现场记录"><summary><span class="file-glyph" aria-hidden="true"></span><strong>现场时间线</strong><span class="attachment-action">展开现场记录</span></summary><div class="report"><table><caption>新加坡节点 · 当班记录</caption><tbody><tr><th scope="row">21:03</th><td>E41 开始导出</td></tr><tr><th scope="row">21:04</th><td>E42 开始，两个任务重叠</td></tr><tr><th scope="row">21:05</th><td>达到内存上限，上游进程退出。两笔返回 502</td></tr><tr><th scope="row">21:10</th><td>暂停领取新导出，订单查询持续有响应</td></tr></tbody></table></div></details></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>先按并发太高来止损。能不能先放一个新单？我想知道关小并发以后，普通人能不能拿到文件。</p><time class="outgoing-time">21:19</time></div></article>
+          </div>
+          <div class="turn spread" id="ops-question-2">
+            <article class="msg tool-bot"><header>总接口 Bot <time>21:20</time></header><div class="message-bubble"><p>队首是 E43。新请求可以顺序处理，两个失败的旧单还能留着。需要你确认这次放行方式。</p><div class="prompt-record"><div class="record-head"><span class="record-status">操作确认</span><b>恢复导出</b></div><ul class="record-choices"><li data-selected>并发上限设为 1，先观察 E43</li><li>保持暂缓，继续看现场</li></ul><a class="answer-jump" href="#ops-question-2-reply">查看群主答复 ↓</a></div></div></article>
+          </div>
+          <div class="turn spread" id="ops-question-2-reply" data-resolves="ops-question-2" data-status="已确认">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><div class="answer-record"><b>已确认</b><span>并发上限设为 1，先观察 E43</span></div><p>设为一，先看 E43 的文件和订单查询。别顺手重试前两笔。</p><time class="outgoing-time">21:21</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg tool-bot"><header>总接口 Bot <time>21:22</time></header><div class="message-bubble"><p>E43 已单独领取。E41、E42 还在失败列表。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>运维专员 <time>21:24</time></header><div class="message-bubble"><p>E43 已经生成文件，期间订单查询继续成功，内存峰值低于那次退出的上限。我会再盯住下一笔。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>好，客服能说新请求恢复排队了。旧单先看哪笔已经有文件，我不想给同一个人两份。</p><time class="outgoing-time">21:25</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>21:26</time></header><div class="message-bubble"><p>我查批次结果，专员继续看新流量。等会儿我会把「缺文件」和「有文件但没收到回执」分开给你。</p></div></article>
+            <aside class="note right"><details class="margin-note" open><summary><span class="note-tag">聊天与执行并行</span><b class="note-heading">客服提问时，观察仍在继续</b></summary><p>一边看下一笔请求，一边清点两笔旧单。群里能及时拿到给客服的口径。</p></details></aside>
+          </div>
+        </section>
+        <section id="ops-fix" class="sequence" aria-label="逐笔找回失败单">
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>21:29</time></header><div class="message-bubble"><p>清单来了。E41 只有半写的临时输出，没成品。E42 的成品已经写完，恰好在回写结果时断了。</p><details class="attachment" data-action-label="看两笔旧单"><summary><span class="file-glyph" aria-hidden="true"></span><strong>失败批次清单</strong><span class="attachment-action">看两笔旧单</span></summary><div class="report"><table><caption>按原始批次号核对</caption><tbody><tr><th scope="row">E41</th><td>缺少成品 · 待确认重新生成</td></tr><tr><th scope="row">E42</th><td>成品存在 · 待确认补回执</td></tr></tbody></table></div></details></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>那只重跑 E41，E42 用原文件把回执补回去。批次号沿用原来的，客服好查。</p><time class="outgoing-time">21:30</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg tool-bot"><header>总接口 Bot <time>21:31</time></header><div class="message-bubble"><p>收到，按原批次号处理这两笔。E41 走单路队列，E42 指向已有成品。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>运维专员 <time>21:34</time></header><div class="message-bubble"><p>E41 已经出文件。E42 也能从原订单打开，成品数量还是一份。后续新单都在逐个领取。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>我在客服侧分别点了两个旧订单，都拿到了。交班时写清楚恢复了哪些服务。内存会不会持续上涨，还得再观察。</p><time class="outgoing-time">21:36</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>运维专员 <time>21:37</time></header><div class="message-bubble"><p>同意。今晚看到的是两份任务叠起来碰到上限。单个任务是否有泄漏，还要看更长的曲线，我会把它留给下一班。</p></div></article>
+          </div>
+        </section>
+        <section id="ops-handoff" class="sequence" aria-label="交班签收">
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>21:40</time></header><div class="message-bubble"><p>值班交接单起好了。接班人除了知道现在上限是一，还要知道什么时候该叫人。你们当班用什么口径？</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>队列里最老的请求等满十分钟，就叫值班人。别写成看到队列非空就报警，晚上肯定还有人在导出。</p><time class="outgoing-time">21:41</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>运维专员 <time>21:43</time></header><div class="message-bubble"><p>写成「最老等待达到 10 分钟」，另外保留上游再次因内存退出这一条。单路继续观察，交班时不用把并发调回去。</p></div></article>
+          </div>
+          <div class="turn spread" id="operations-delivery" data-jump="打开交付消息">
+            <article class="msg lead-bot"><header>主控 Bot <time>21:48</time></header><div class="message-bubble"><p>这份交接单可以直接带到下一班。批次、阈值和仍需观察的事都在一页里。</p><details class="attachment delivery-file" data-action-label="读交接单"><summary><span class="file-glyph" aria-hidden="true"></span><span class="file-title"><small>交付附件 · 值班交接</small><strong>新加坡导出交接.md</strong></span><span class="attachment-action">读交接单</span></summary><div class="delivery-body"><div class="report"><table><caption>新加坡导出 · 21:48 交班</caption><tbody><tr><th scope="row">当前状态</th><td>订单查询可用。新导出每次领取一笔</td></tr><tr><th scope="row">旧单对账</th><td>E41 已重做。E42 复用原文件并补回执</td></tr><tr><th scope="row">呼叫值班</th><td>最老等待达到 10 分钟，或再次因内存退出</td></tr><tr><th scope="row">留给下一班</th><td>观察单任务内存曲线，再决定是否调整并发</td></tr></tbody></table></div><a class="save-delivery" href="examples/handover.md" download="新加坡导出交接.md">保存 新加坡导出交接.md</a></div></details></div></article>
+            <aside class="note left"><details class="margin-note" open><summary><span class="note-tag">交付附件</span><b class="note-heading">下一班拿到什么</b></summary><p>除了恢复结果，文档里还留下了两笔旧单的去向、叫人的阈值和仍待调查的问题。</p></details></aside>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><a class="reply-ref" href="#operations-delivery"><span>主控 Bot</span>新加坡导出交接.md</a><p>这份我收了，我拿它交给夜班同事。客服那两笔可以结单，并发一先留着，明早再看曲线。</p><time class="outgoing-time">21:50</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>运维专员 <time>21:53</time></header><div class="message-bubble"><p>交接记好了。下一班打开这份记录，就能从单任务曲线接着查。</p></div></article>
+          </div>
+        </section>
+        <div class="next-room"><a href="#room-schedule"><span>翻到下一份群聊</span><b>上海出差与日程</b><i aria-hidden="true">↗</i></a></div>
+      </article>
+      <article class="room-story" id="room-schedule" data-title="上海出差与日程" data-description="个人事务群 · 模拟对话" data-range="周四 08:12 — 14:48" aria-label="上海出差与日程">
+        <h3 class="room-fallback">上海出差与日程</h3>
+        <section id="trip-inbox" class="sequence" aria-label="摊开今天的事">
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>我今天去上海，包里还有份报价没发。票上写十一点到虹桥，下午三点要在徐汇见王老师。帮我捋捋，最怕的是进了站才想起来还有事没干。</p><time class="outgoing-time">08:12</time></div></article>
+            <aside class="note right"><details class="margin-note" open><summary><span class="note-tag">个人事务</span><b class="note-heading">一趟车和一场会</b></summary><p>日程助理从这两件固定的事向前后推时间，主控把群里最后定下的安排做成日历。</p></details></aside>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>日程助理 <time>08:13</time></header><div class="message-bubble"><p>先把不能动的钉住。报价最晚几点给？下车到会场平时要多久？</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>报价答应午前给。虹桥出站留二十分钟，到会场再按四十五分钟算。我想在车上眯会儿。</p><time class="outgoing-time">08:14</time></div></article>
+          </div>
+          <div class="turn spread" id="travel-ask" data-jump="询问与选择">
+            <article class="msg plan-bot"><header>日程助理 <time>08:15</time></header><div class="message-bubble"><p>出站和路程我会拆开。报价有两个空档可放，你更想用哪一个？</p><div class="prompt-record"><div class="record-head"><span class="record-status">待你选择</span><b>报价放在什么时候</b></div><ul class="record-choices"><li data-selected>出发前留半小时</li><li>上车后留半小时</li></ul><a class="answer-jump" href="#schedule-question-1-reply">查看群主答复 ↓</a></div></div></article>
+          </div>
+          <div class="turn spread" id="schedule-question-1-reply" data-resolves="travel-ask" data-status="已提交选择">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><div class="answer-record"><b>已提交选择</b><span>出发前留半小时</span></div><p>出发前。八点四十我能坐下，九点十分合电脑出门。报价我自己发。</p><time class="outgoing-time">08:16</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>日程助理 <time>08:17</time></header><div class="message-bubble"><p>好，08:40—09:10 给报价。十一点到站的话，十二点零五到会场附近。会前你习惯留多少时间？</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>我们约了四十五分钟。我还要提前四十分钟找会议室、翻资料，这段别塞电话。</p><time class="outgoing-time">08:18</time></div></article>
+          </div>
+        </section>
+        <section id="trip-buffer" class="sequence" aria-label="把空白写进计划">
+          <div class="turn spread" id="travel-plan" data-jump="查看计划">
+            <article class="msg plan-bot"><header>日程助理 <time>08:19</time></header><div class="message-bubble"><p>我先按这张排。车次、报价和见面三件事钉住，其余的沿着到站时间挪。</p><div class="work-plan"><div class="plan-heading"><b>11 月 26 日 · 上海行程计划</b><small class="record-status">待你确认</small></div><ol><li><b>出发前 · 报价</b><span>08:40—09:10 留给你亲自核价、发送，车上休息。</span></li><li><b>抵沪后 · 出站、路程和午餐</b><span>11:00 到站，先出站 20 分钟，再走 45 分钟，到徐汇吃饭。</span></li><li><b>见面前 · 整段留白</b><span>14:20—15:00 保留四十分钟准备，15:00 和王老师见面四十五分钟。</span></li></ol></div></div></article>
+            <aside class="note left"><details class="margin-note" open><summary><span class="note-tag">偏好进计划</span><b class="note-heading">留白也算一项安排</b></summary><p>「四十分钟里别塞电话」有了起止时间。后面改会面、改到站，都得守住这段空白。</p></details></aside>
+          </div>
+          <div class="turn spread" data-resolves="travel-plan" data-status="已确认">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><a class="reply-ref" href="#travel-plan"><span>日程助理</span>上海行程计划</a><p>这样排。最后给我一个能导进日历的文件就好，不用给王老师发邀请。</p><time class="outgoing-time">08:20</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>08:21</time></header><div class="message-bubble"><p>我来做日历文件，日程助理跟着你的路况改表。最终文件只给你自己用。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>日程助理 <time>08:37</time></header><div class="message-bubble"><p>报价留在八点四十。你说要亲自发，我把「核完报价」和「已经发出」分开记，等你告诉我。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>刚把报价发掉了，早了四分钟。我现在去车站，上午这一件可以划掉了。</p><time class="outgoing-time">09:06</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>日程助理 <time>09:07</time></header><div class="message-bubble"><p>记成 09:06 已发。到上海以后就只剩去徐汇和见面这两件正事。</p></div></article>
+          </div>
+        </section>
+        <section id="trip-change" class="sequence" aria-label="会面提前一小时">
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>上车了。王老师刚问能不能改两点，他后面还有课。按原来的到站时间来得及吗？</p><time class="outgoing-time">09:34</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>日程助理 <time>09:35</time></header><div class="message-bubble"><p>来得及。原定 12:05 到附近，14:00 见面，13:20 开始准备。两者中间有七十五分钟，吃顿饭够。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>那改到两点，我自己回他。你把原来三点的拿掉，我不想在日历里看到两场。</p><time class="outgoing-time">09:36</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>09:37</time></header><div class="message-bubble"><p>改同一条会面，准备时段一起移到 13:20—14:00。最终文件里只会有一条和王老师的会面。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>日程助理 <time>09:38</time></header><div class="message-bubble"><p>按这版，出站 11:00—11:20，路上 11:20—12:05。要是列车有变动，直接告诉我新的到站时间就行。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>他确认了。今天午饭就近吃，不用找网红店。</p><time class="outgoing-time">09:39</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>日程助理 <time>09:40</time></header><div class="message-bubble"><p>那就留在会场附近吃。即使晚到一点，先挪午饭，也能保住那四十分钟。</p></div></article>
+          </div>
+        </section>
+        <section id="trip-delay" class="sequence" aria-label="列车又晚了三十五分">
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>车上广播说晚点三十五分钟。你刚才算的那个七十五分钟，现在还剩多少？</p><time class="outgoing-time">10:42</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>日程助理 <time>10:43</time></header><div class="message-bubble"><p>11:35 到，11:55 出站，12:40 到徐汇。到 13:20 开始准备还剩四十分钟。你可以用半小时吃饭，最后十分钟留空。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>10:44</time></header><div class="message-bubble"><p>导出日历还在我这边。我等你定午饭，只改受晚点影响的几项，报价和已确认的两点会面都保留。</p></div></article>
+          </div>
+          <div class="turn spread" id="schedule-question-2">
+            <article class="msg plan-bot"><header>日程助理 <time>10:45</time></header><div class="message-bubble"><p>附近吃还是把整段时间松一点？你选完，我就给主控定稿。</p><div class="prompt-record"><div class="record-head"><span class="record-status">待你选择</span><b>到徐汇后的四十分钟</b></div><ul class="record-choices"><li data-selected>12:40 开始吃饭，吃半小时</li><li>整段留空，到附近再决定</li></ul><a class="answer-jump" href="#schedule-question-2-reply">查看群主答复 ↓</a></div></div></article>
+          </div>
+          <div class="turn spread" id="schedule-question-2-reply" data-resolves="schedule-question-2" data-status="已提交选择">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><div class="answer-record"><b>已提交选择</b><span>12:40 开始吃饭，吃半小时</span></div><p>半小时午饭。余下十分钟真留白，我不想日历在每个空档都弹个提醒。</p><time class="outgoing-time">10:46</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>日程助理 <time>10:47</time></header><div class="message-bubble"><p>改好了。13:10 到 13:20 给你留空，14:45 见面结束。</p><div class="plan-amendment"><b>今天的行程修订</b><dl><dt>到达虹桥</dt><dd><del>11:00</del> → <ins>11:35</ins></dd><dt>会前准备</dt><dd><del>14:20</del> → <ins>13:20</ins></dd><dt>与王老师见面</dt><dd><del>15:00</del> → <ins>14:00</ins></dd></dl></div></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>出站和四十五分钟路程也真的拆成两条。我在站里打开日历，想一眼看见该几点上车去徐汇。</p><time class="outgoing-time">10:48</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg lead-bot"><header>主控 Bot <time>10:49</time></header><div class="message-bubble"><p>已补到正在导出的那份文件。出站这条结束的 11:55，就是去徐汇那条的起点。</p></div></article>
+            <aside class="note right"><details class="margin-note" open><summary><span class="note-tag">执行中补充</span><b class="note-heading">补一句就改到同一份日历</b></summary><p>助理已经排好的会面和缓冲继续保留。主控只把交通细分成前后两项。</p></details></aside>
+          </div>
+        </section>
+        <section id="trip-next" class="sequence" aria-label="收下日历直至赴约">
+          <div class="turn spread" id="travel-delivery" data-jump="打开交付消息">
+            <article class="msg lead-bot"><header>主控 Bot <time>10:53</time></header><div class="message-bubble"><p>今天的行程文件好了。这里能展开看，保存后可以自己导入日历。时间按上海当地时间写，给你的文件里没有受邀人。</p><details class="attachment delivery-file" data-action-label="看行程"><summary><span class="file-glyph" aria-hidden="true"></span><span class="file-title"><small>交付附件 · 六项日程</small><strong>上海出差.ics</strong></span><span class="attachment-action">看行程</span></summary><div class="delivery-body"><div class="report"><table><caption>11 月 26 日 · 上海当地时间</caption><tbody><tr><th scope="row">08:40—09:10</th><td>核价和发送报价 · 09:06 已发</td></tr><tr><th scope="row">11:35—11:55</th><td>到虹桥后出站</td></tr><tr><th scope="row">11:55—12:40</th><td>虹桥 → 徐汇会场</td></tr><tr><th scope="row">12:40—13:10</th><td>在会场附近午餐</td></tr><tr><th scope="row">13:20—14:00</th><td>找会议室、准备资料</td></tr><tr><th scope="row">14:00—14:45</th><td>和王老师见面</td></tr></tbody></table></div><a class="save-delivery" href="examples/shanghai.ics" download="上海出差.ics">保存 上海出差.ics</a></div></details></div></article>
+            <aside class="note left"><details class="margin-note" open><summary><span class="note-tag">交付附件</span><b class="note-heading">带走的就是刚改好的行程</b></summary><p>可以直接查看六个时段，也可以保存日历文件。午餐后的十分钟空白留在两项之间。</p></details></aside>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><a class="reply-ref" href="#travel-delivery"><span>主控 Bot</span>上海出差.ics</a><p>导进去了，我只看到一场两点的会。点 11:55 那条也看得到从虹桥去徐汇，正是我要的。</p><time class="outgoing-time">10:55</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>刚下车，基本踩着新时间到的。待会儿我照表走。</p><time class="outgoing-time">11:36</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>日程助理 <time>11:37</time></header><div class="message-bubble"><p>下一项是 11:55 去徐汇。票已经用完，今天只用看刚才那份行程。</p></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>饭吃完了，还真剩了几分钟。我先坐一会儿，不用再改表了。</p><time class="outgoing-time">13:12</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg owner" aria-label="你的消息"><div class="message-bubble"><p>见完了。今天最舒服的是提前了一个小时，准备那四十分钟还在。下次出差也这么留。</p><time class="outgoing-time">14:48</time></div></article>
+          </div>
+          <div class="turn spread">
+            <article class="msg plan-bot"><header>日程助理 <time>14:48</time></header><div class="message-bubble"><p>我记成你的差旅习惯了，下次排会先留四十分钟准备，出站和市内交通各占一项。</p></div></article>
+          </div>
+        </section>
+        <div class="next-room"><a href="#room-game"><span>翻到下一份群聊</span><b>雾港远征</b><i aria-hidden="true">↗</i></a></div>
+      </article>
+      </div>
+    </section>
+    <section class="ending" id="get" aria-labelledby="ending-title">
+      <div class="end-rings" aria-hidden="true"><i></i><i></i><i></i></div>
+      <div class="end-copy"><h2 id="ending-title">群已就位。<br><em>去冲杯咖啡吧。</em></h2>
+        <div class="actions"><a class="action action-main" href="https://github.com/buyun00/Summon-Bot">前往 GitHub</a></div>
+      </div>
+    </section>
+  </main>
+  <footer class="colophon"><a class="brand" href="#opening" aria-label="Summon Bot 首页">Summon Bot</a><a href="https://github.com/buyun00/Summon-Bot">GitHub</a></footer>
+</div>
+</body>
+</html>

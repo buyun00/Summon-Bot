@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>海岸章 · 素材差异战报</title>
+  <style>
+    body.sample-document { margin: 0; color-scheme: light dark; background: light-dark(#f6f4ec,#20262b); }
+    .diff-report { box-sizing: border-box; padding: 14px; overflow-wrap: anywhere; background: light-dark(#f6f4ec,#20262b); color: light-dark(#343b34,#e0e7dc); font: 14px/1.5 "Segoe UI","Microsoft YaHei",sans-serif; }
+    .diff-report .filters { display: flex; align-items: end; gap: 6px 16px; flex-wrap: wrap; }
+    .diff-report label { display: block; font-size: 13px; }
+    .diff-report input[type="search"] { box-sizing: border-box; width: 135px; max-width: 100%; display: block; margin-top: 3px; padding: 3px; font: inherit; color: inherit; background: transparent; border: 0; border-bottom: 1px solid currentColor; }
+    .diff-report input[type="checkbox"] { accent-color: light-dark(#476b52,#a4cadd); }
+    .diff-report table { width: 100%; font-variant-numeric: tabular-nums; border-collapse: collapse; text-align: right; }
+    .diff-report caption { text-align: left; padding: 13px 0 4px; }
+    .diff-report :is(th,td) { padding: 6px 2px; border-bottom: 1px solid light-dark(#4c54412f,#d3e5da33); font-weight: 500; }
+    .diff-report tr > :first-child { text-align: left; }
+    .diff-report [hidden] { display: none !important; }
+  </style>
+</head>
+<body class="sample-document">
+  <main class="diff-report" aria-label="海岸章素材差异战报">
+    <div class="filters" hidden>
+      <label>路径搜索<input type="search" placeholder="例如 blank.png"></label>
+      <label><input type="checkbox">只看删除项</label>
+    </div>
+    <table>
+      <caption>海岸章 · 素材净增 30 B</caption>
+      <thead><tr><th scope="col">路径</th><th scope="col">修改前</th><th scope="col">修改后</th></tr></thead>
+      <tbody>
+        <tr><th scope="row">blank.png</th><td>—</td><td>0 B</td></tr>
+        <tr><th scope="row">coast.json</th><td>240 B</td><td>338 B</td></tr>
+        <tr data-deleted><th scope="row">old-index.json</th><td>68 B</td><td>—</td></tr>
+      </tbody>
+    </table>
+    <span role="status" hidden>没有匹配的文件</span>
+  </main>
+  <script>
+    (() => {
+      const report = document.querySelector('.diff-report');
+      const filters = report.querySelector('.filters');
+      const search = filters.querySelector('[type="search"]');
+      const deleted = filters.querySelector('[type="checkbox"]');
+      const rows = [...report.querySelectorAll('tbody tr')];
+      filters.hidden = false;
+      filters.addEventListener('input', () => {
+        const term = search.value.trim().toLowerCase();
+        for (const row of rows) {
+          row.hidden = !row.cells[0].textContent.toLowerCase().includes(term) || (deleted.checked && !row.hasAttribute('data-deleted'));
+        }
+        report.querySelector('[role="status"]').hidden = rows.some(row => !row.hidden);
+      });
+      if (document.body.classList.contains('sample-document') && parent !== window && 'ResizeObserver' in window) {
+        new ResizeObserver(() => parent.postMessage({ summonSampleHeight: report.offsetHeight }, '*')).observe(report);
+      }
+    })();
+  </script>
+</body>
+</html>
