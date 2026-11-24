@@ -166,7 +166,7 @@ const input = { engine: original.id, workspace: grantedDirectory, input: { text:
 
 ## 群里的工具协作
 
-把实际属于群的任务通过 `open_session` 的 `work_room` 提交，已有原消息时一并传 `work_source`。共享给全体房间读者的任务默认记录工具观察。要保持工作记录私有可设 `private_work:true`，或用无需群工作归属的私有 Session。指定读者的共享执行保留其受限范围。群成员能按房间用 `find {kind:"event",scope:{kind:"room",id}}` 找到 `work.tool`，用 `read` 查真实程序、工具步骤、有限输出或失败诊断。执行和调用引用按各自授权读取和操作。总接口 Bot 默认在普通群按 @ 和回复参与。回答时用 `send` 回复原消息，并附同群可读的来源。
+把实际属于群的任务通过 `open_session` 的 `work_room` 提交，已有原消息时一并传 `work_source`。共享给全体房间读者的任务默认记录工具观察。要保持工作记录私有可设 `private_work:true`，或用无需群工作归属的私有 Session。指定读者的共享执行保留其受限范围。群成员能按房间用 `find {kind:"event",scope:{kind:"room",id}}` 找到 `work.tool`，用 `read` 查真实程序、工具步骤、有限输出或失败诊断。执行和调用引用按各自授权读取和操作。回答时用 `send` 回复原消息，并附同群可读的来源。
 
 ## 沿连接转交维修
 
@@ -190,4 +190,4 @@ const reply = {
 
 ## Bot 维护群
 
-每套 Summon 默认有一个 Bot 维护群。需要日报时，为总接口 Bot 在该群设置每日的 `set_wakeup` 时间规则。用 `find {kind:"connection_usage"}` 读上一个完整自然日的获准调用汇总，可按 `scope` 查询房间、连接或 Session。用 `period:"7d"` 看近期变化，或者给出带时区的 `{from,to}`。每个实际调用按调用 ID 计一次，按连接、方法、登记版本和实际状态汇总。缺历史方法或版本时相应字段为空。进度与重复投递沿原调用归并。群里有具体讨论议题时 @ 相关负责人，确认后的跨接口经验用已有共享资料保存。
+每套 Summon 默认有一个 Bot 维护群，并在启动时为总接口 Bot 自动挂好每日复盘巡检的 `set_wakeup` 时间规则（可按需调整或停用）。用 `find {kind:"connection_usage"}` 读上一个完整自然日的获准调用汇总，可按 `scope` 查询房间、连接或 Session。用 `period:"7d"` 看近期变化，或者给出带时区的 `{from,to}`。每个实际调用按调用 ID 计一次，按连接、方法、登记版本和实际状态汇总。缺历史方法或版本时相应字段为空。进度与重复投递沿原调用归并。群里有具体讨论议题时 @ 相关负责人，确认后的跨接口经验用已有共享资料保存。

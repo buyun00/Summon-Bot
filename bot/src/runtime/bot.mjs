@@ -52,14 +52,22 @@ function canRetainAuthorizationView(previous, current) {
   } catch { return false; }
 }
 const targetOption = (kind, value) => ({ kinds: [kind], input_target: value });
-const protectedEvents = new Set(['connection.failure', repairRequestType, 'work.tool']);
+const protectedEvents = new Set(['connection.failure', 'connection.changed', repairRequestType, 'work.tool']);
 const protectedEvent = event => protectedEvents.has(event.type) || event.result?.output?.type === repairResultType;
 const isTerminalReceipt = (event, wait) => event?.type === 'call.receipt' && event.call_id === wait.call_id && terminalCallStates.has(event.status);
 const callSettled = status => status !== 'unknown' && terminalCallStates.has(status);
-const roomEvent = message => ({ id: message.id, kind: 'event', type: 'message', space: { kind: 'room', id: message.roomId },
-  sequence: message.sequence, time: message.createdAt, author: message.author || (message.senderId === 'user' ? { kind: 'user', id: 'user' } :
+const roomEvent = message => ({
+  id: message.id, kind: 'event', type: 'message', space: { kind: 'room', id: message.roomId },
+  sequence: message.sequence, time: message.createdAt,
+  author: message.author || (message.senderId === 'user' ? { kind: 'user', id: 'user' } :
     message.senderId === 'system' ? { kind: 'platform', id: 'platform' } : botRef(message.senderId)),
-  text: message.content, attachments: message.attachments, references: message.references, mentions: message.mentions, reply_to: message.replyTo });
+  text: message.content, attachments: message.attachments, references: message.references, mentions: message.mentions, reply_to: message.replyTo,
+  ...(message.forSessionId ? { for_session_id: message.forSessionId } : {}),
+  ...(message.originMessageId ? { origin_message_id: message.originMessageId } : {}),
+  ...(message.prompt ? { prompt: message.prompt } : {}),
+  ...(message.promptResponse ? { prompt_response: message.promptResponse } : {}),
+  ...(message.promptAnswer ? { prompt_answer: message.promptAnswer } : {}),
+});
 
 const liveSessionStatuses = new Set(['opening', 'running', 'submitted', 'waiting', 'queued', 'needs_input', 'awaiting_input']);
 
@@ -827,6 +835,21 @@ export class BotRuntime {
       built_in_role: bot.built_in_role ?? null, model: bindModel(this.model, resolved, purpose), material_index_ref: bot.material_index_ref };
   }
 
+  notifyRoomActivity(roomId, activity) {
+    if (!roomId || !activity || this.closed || this.draining) return;
+    const MAX_PREEMPTS_PER_RUN = 3;
+    for (const job of this.active.values()) {
+      if (job.conversation?.kind !== 'room' || job.conversation?.space?.id !== roomId || job.conversation?.session_id) continue;
+      if (job.botId === activity.actor_id) continue;
+      if (!job.activeStream || job.inToolCall || job.signal?.aborted) continue;
+      if (activity.seq <= (job.lastPreemptedSeq ?? 0) || (job.preemptCount ?? 0) >= MAX_PREEMPTS_PER_RUN) continue;
+      job.lastPreemptedSeq = activity.seq;
+      job.preemptCount = (job.preemptCount ?? 0) + 1;
+      job.preemptedForActivity = true;
+      job.activeStream.controller.abort(runtimeFailure('room_activity_preempted', 'Peer action arrived in the room', 409));
+    }
+  }
+
   launch(inbox, conversation, run, bot) {
     this.starting.set(conversation.id, Promise.resolve().then(async () => {
       if (this.draining || this.closed || this.platform.draining) return;
@@ -996,7 +1019,9 @@ export class BotRuntime {
         input_refs: [], signal: controller.signal, origin: { bot_id: bot.id, conversation_id: conversation.id, run_id: run.id,
           event_ids, control_version: control.control_version, session_id: conversation.session_id || null,
           ...(Number.isSafeInteger(job.seenRoomSequence) ? { seen_room_sequence: job.seenRoomSequence } : {}),
-          own_run_send_call_ids: job.ownRunSendCallIds } };
+          ...(Number.isSafeInteger(job.seenRoomActivitySeq) ? { seen_room_activity_seq: job.seenRoomActivitySeq } : {}),
+          own_run_send_call_ids: job.ownRunSendCallIds,
+          own_run_activity_call_ids: job.ownRunActivityCallIds } };
     };
     const check = () => {
       controller.signal.throwIfAborted();
@@ -1016,9 +1041,20 @@ export class BotRuntime {
     };
     const roomId = this.roomIdForConversation(conversation);
     const executionRef = conversation.session_id ? sessionRef(conversation.session_id) : target;
-    const job = { inbox, conversation, runId: run.id, binding, controller, signal: controller.signal, context, check, accepting: true,
+    const isRoomConv = conversation.kind === 'room' && conversation.space?.kind === 'room' && !conversation.session_id;
+    const initialActivitySeq = isRoomConv && this.platform.currentRoomActivitySeq
+      ? this.platform.currentRoomActivitySeq(conversation.space.id) : null;
+    const job = { inbox, conversation, botId: bot.id, runId: run.id, binding, controller, signal: controller.signal, context, check, accepting: true,
       seenRoomSequence: null,
+      roomActivityStartSeq: initialActivitySeq,
+      seenRoomActivitySeq: initialActivitySeq,
       ownRunSendCallIds: new Set(),
+      ownRunActivityCallIds: new Set(),
+      activeStream: null,
+      inToolCall: false,
+      lastPreemptedSeq: initialActivitySeq ?? 0,
+      preemptCount: 0,
+      preemptedForActivity: false,
       toolCallCount: 0,
       lastToolName: null,
       canRetainAuthorizationView,

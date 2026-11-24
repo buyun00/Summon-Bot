@@ -859,9 +859,9 @@ export class SummonConnections {
   formatCommandProgress(rawCommand) {
     if (typeof rawCommand !== 'string') return '';
     let cmd = rawCommand.replace(/\s+/g, ' ').trim();
-    cmd = cmd.replace(/^(?:powershell(?:\.exe)?|pwsh(?:\.exe)?)\s+(?:-\w+\s+)*-Command\s+/i, '');
-    cmd = cmd.replace(/^(?:cmd(?:\.exe)?)\s+\/c\s+/i, '');
-    cmd = cmd.replace(/^(?:\/bin\/)?(?:bash|sh|zsh)\s+-[a-z]*c\s+/i, '');
+    cmd = cmd.replace(/^(?:"(?:[^"]*[\\/])?(?:powershell|pwsh)(?:\.exe)?"|'(?:[^']*[\\/])?(?:powershell|pwsh)(?:\.exe)?'|(?:[^\s]*[\\/])?(?:powershell|pwsh)(?:\.exe)?)\s+(?:-\w+(?:\s+(?!-)\S+)?\s+)*-(?:Command|c)\s+/i, '');
+    cmd = cmd.replace(/^(?:"(?:[^"]*[\\/])?cmd(?:\.exe)?"|'(?:[^']*[\\/])?cmd(?:\.exe)?'|(?:[^\s]*[\\/])?cmd(?:\.exe)?)\s+(?:\/\w+\s+)*\/c\s+/i, '');
+    cmd = cmd.replace(/^(?:"(?:[^"]*\/)?(?:bash|sh|zsh)"|'(?:[^']*\/)?(?:bash|sh|zsh)'|(?:[^\s]*\/)?(?:bash|sh|zsh))\s+-[a-z]*c\s+/i, '');
     cmd = cmd.replace(/^["']|["']$/g, '').trim();
     return this.clean(cmd).slice(0, 44);
   }

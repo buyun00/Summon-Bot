@@ -570,13 +570,6 @@ export class ChatroomService {
       assertRevision(room.revision, input.revision);
       const added = [...add].filter(member => !room.members.includes(member));
       const removed = room.members.filter(member => remove.has(member));
-      const kickedOthers = removed.filter(member => member !== actor);
-      if (kickedOthers.length && actor !== 'user') {
-        const callerBot = this.manager.get(actor);
-        if (!['eggbot', 'tool-onboarding'].includes(callerBot?.built_in_role?.id)) {
-          fail('只有宿主或管理角色可以移出其他群成员', 403);
-        }
-      }
       this.validateMembers(added, actor);
       const members = [...room.members.filter(member => !remove.has(member)), ...added];
       const mode = room.mode === 'direct' && members.length > 2 ? 'group' : room.mode;
@@ -803,6 +796,7 @@ export class ChatroomService {
         updatedPromptMessage = this.projectMessage(this.messageRow.get(promptRes.promptMsg.id));
       }
       const saved = rowMessage(this.messageRow.get(message.id));
+      this.platform.recordRoomMessageActivity?.(saved);
       if (!options.skipDelivery) this.platform.queueMessage(saved);
       inserted = true;
       return this.messageReceipt(saved);

@@ -26,9 +26,9 @@ Summon Bot does not require writing complex role matrices before starting a proj
 
 ## 3. How EggBot Observes, Reuses & Spawns Specialists
 
-1. **Quiet listening & periodic observation**:
-   - Regular room messages pass through Fast-Read first. When Group Lead and existing specialists are making smooth progress, EggBot stays `quiet`.
-   - Each room's `room_base` wakeup defaults to triggering an EggBot observation check every `message_count = 20` new messages (configurable via `set_wakeup`) to catch multi-turn ownership gaps or bottlenecks.
+1. **Quiet listening & real-time gap detection**:
+   - Like all other room members, EggBot listens to regular room messages (`mode: "all"`) through Fast-Read first. When Group Lead and existing specialists are making smooth progress, EggBot stays `quiet`.
+   - Whenever staffing discussions, ownership gaps, or clear collaboration bottlenecks appear, EggBot decides `main` on the spot without waiting for an `@` mention or fixed message count.
 2. **Search team directory before spawning**:
    - EggBot calls `find(kind: "bot")` to search existing team members by name or `public_duty` (adding `scope: { kind: "room", id }` lists only current room members).
    - If a suitable specialist already exists, EggBot invites them into the room via `configure_room` (with the current room `revision`) instead of creating duplicates.

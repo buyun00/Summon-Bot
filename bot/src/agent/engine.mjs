@@ -2,7 +2,7 @@ import { Agent } from '@earendil-works/pi-agent-core';
 import { toToolDeclaration } from '@earendil-works/pi-ai';
 import { randomUUID } from 'node:crypto';
 import { connectionSetupTool } from '../../../capabilities/platform/contract.mjs';
-import { builtInInstructions } from '../../../roles/index.mjs';
+import { builtInInstructions, defaultPublicDuty } from '../../../roles/index.mjs';
 import { boundModel } from './model.mjs';
 import { ModelProvider } from './provider.mjs';
 import { isMaterialFact } from '../context/materials.mjs';
@@ -26,7 +26,7 @@ const roomLayerRules = [
   '- Public visibility: In a Room conversation, your final assistant text at the end of a turn is strictly private internal output and is NEVER shown to the user or the Room. Whenever you want to answer, confirm, explain, or contribute publicly in the Room—including direct answers after calling read or other tools—you must call the send tool (with to: { kind: "room", id } and reply_to when replying to a specific message) before ending your turn. Only end without calling send when you intentionally choose to stay silent.',
   '- Room boundaries: Keep Room-private details in their source Room unless the host asks to share them in another Room.',
   '- For a delegated request, own the direct child Sessions you open. When a Room request explicitly @mentions or assigns execution to another member (and not this Bot), do not open duplicate execution Sessions for that member’s assigned scope; only act on parts explicitly assigned to this Bot. Respect explicit read-only and file-ownership boundaries in the current request: if you are assigned to review read-only or not edit files, do not call save_file in the project workspace (including review or note docs)—post your review directly via send. While a delegated Session is actively working on its assigned files, steer that Session (or wait until it finishes/stops) rather than editing the same files concurrently from the host conversation. When the user explicitly reserves a product or design choice to decide after being asked, do not invent or pre-commit a fallback decision in open_session—implement only the option-neutral parts and wait for the user’s actual choice. On a receipt, use origin_work_status (including any nested descendants) for the original question and its siblings. Submitted means accepted for execution. Distinguish progress, input needed, failure, unknown delivery, and evidence that the requested work is complete. Use the receipt or artifact to check the actual completion criteria; read additional details when needed.',
-  '- Deliver accepted work with send to the original Room, replying to the original question. Sessions settle naturally on terminal receipts—no manual closure ceremony is required. Do NOT send separate intermediate "working on it / 正在执行 / 马上给结论" chat bubbles before or right after calling open_session: the live Bot status bar above the composer automatically displays your real-time actions and work_summary to the user. After starting an async Session (when open_session returns a wait_ref), end the turn silently without calling send, and wait for the completion receipt to post one concise final answer—only call send mid-work if you genuinely need user input/confirmation (via send.prompt) or hit a real blocker. When send returns status:"room_sequence_changed" with new_messages that arrived while you were composing, read them carefully: if a peer already answered completely and no correction or delta is missing, end your turn silently; otherwise send ONLY the concise delta or correction. When asking a follow-up question in the Room that awaits an answer, you may attach optional for_session_id, origin_message_id, or awaiting_reply:true on send.',
+  '- Deliver accepted work with send to the original Room, replying to the original question. Sessions settle naturally on terminal receipts—no manual closure ceremony is required. Do NOT send separate intermediate "working on it / 正在执行 / 马上给结论" chat bubbles before or right after calling open_session: the live Bot status bar above the composer automatically displays your real-time actions and work_summary to the user. After starting an async Session (when open_session returns a wait_ref), end the turn silently without calling send, and wait for the completion receipt to post one concise final answer—only call send mid-work if you genuinely need user input/confirmation (via send.prompt) or hit a real blocker. When send returns status:"room_sequence_changed" with new_messages that arrived while you were composing, read them carefully: if a peer already answered completely and no correction or delta is missing, end your turn silently; otherwise send ONLY the concise delta or correction. Similarly, when a writable tool (such as open_session, create_bot, configure_room, or initialize_execution) returns status:"room_activity_changed" with new_activities from peers in this Room—or when room_peer_activities shows a peer already started the same action—read them carefully: if a peer already triggered or completed that action (e.g. creating the same Bot, registering the same connection, or starting the same build/session), do NOT repeat it; only re-submit if your action is genuinely distinct and still needed. When asking a follow-up question in the Room that awaits an answer, you may attach optional for_session_id, origin_message_id, or awaiting_reply:true on send.',
   '- Interactive choice & permission cards (send.prompt): Whenever you need the user to choose among options, confirm permissions/risky operations, or answer structured clarifying questions, ALWAYS attach the structured prompt object on send (kind: "question" | "permission" | "confirm", title, questions: [{ id, label, mode: "single" | "multi" | "text", allow_custom, options: [{ id, label, description, recommended, tone }] }]) with awaiting_reply:true instead of writing numbered text menus (like "1) ... 2) ... 3) ... 你回一句就行") for the user to type back manually. Keep the accompanying text to 1–2 concise lines introducing the context—never duplicate the option list inside text. Use mode:"single" for one choice, mode:"multi" when multiple items can be picked together, mode:"text" for pure free-text fields, and allow_custom:true whenever a custom user answer makes sense (set allow_custom:false for strict permission approve/deny cards).',
 ].join('\n');
 
@@ -161,6 +161,10 @@ export class BotEngine {
     const unsub = agent.subscribe(event => {
       if (event.type === 'message_end' && event.message.role !== 'system' && event.message.role !== 'user') {
         const message = this.clean(event.message);
+        if (message.role === 'assistant' && message.stopReason === 'aborted' && job.preemptedForActivity) {
+          last = message;
+          return;
+        }
         inbox.append(runId, { ...message, view_revision: authorizedView });
         if (message.role === 'assistant') {
           const reportedInput = message.generationBudget?.input;
@@ -245,7 +249,13 @@ export class BotEngine {
           const roomMembers = (roomRecord?.members || []).map(memberId => {
             if (memberId === 'user') return { id: 'user', kind: 'user', name: '用户' };
             const memberBot = this.platform.store.get('platform-bots', memberId);
-            return { id: memberId, kind: 'bot', name: memberBot?.name || memberId };
+            const publicDuty = defaultPublicDuty(memberBot);
+            return {
+              id: memberId,
+              kind: 'bot',
+              name: memberBot?.name || memberId,
+              ...(publicDuty ? { public_duty: publicDuty } : {}),
+            };
           });
           const memberNameById = new Map(roomMembers.map(member => [member.id, member.name]));
           const resolvedMentions = {};
@@ -279,6 +289,39 @@ export class BotEngine {
         const fresh = boundary.current.filter(event => !seen.has(event.id) && !isPublicEvent(event)).map(event => ({ ...textMessage(eventInput(event), Date.parse(event.time || event.createdAt) || Date.now()),
           origin_event_ids: [event.id], view_revision: authorizedView }));
         const facts = boundary.facts.map(message => ({ ...message, view_revision: authorizedView }));
+        if (isRoomConversation && this.platform.currentRoomActivitySeq) {
+          const roomId = conversation.space.id;
+          const latestActivitySeq = this.platform.currentRoomActivitySeq(roomId);
+          job.seenRoomActivitySeq = Math.max(job.seenRoomActivitySeq ?? 0, latestActivitySeq);
+          const peerActivities = this.platform.recentRoomActivities(
+            roomId,
+            job.roomActivityStartSeq ?? 0,
+            conversation.bot_id,
+            job.ownRunActivityCallIds,
+          );
+          if (peerActivities.length) {
+            facts.push({
+              ...textMessage({
+                type: 'room_peer_activities',
+                room: roomId,
+                latest_activity_seq: latestActivitySeq,
+                activities: peerActivities.slice(-8).map(item => ({
+                  seq: item.seq,
+                  actor_id: item.actor_id,
+                  actor_name: item.actor_name,
+                  tool: item.tool,
+                  summary: item.summary,
+                  status: item.status,
+                  ...(item.engine ? { engine: item.engine } : {}),
+                  ...(item.method ? { method: item.method } : {}),
+                  ...(item.target ? { target: item.target } : {}),
+                  time: item.time,
+                })),
+              }),
+              view_revision: authorizedView,
+            });
+          }
+        }
         const previousFacts = new Set(sameRun.filter(message => message.runtime_fact).map(message => message.content[0]?.text));
         const newFacts = facts.filter(message => !previousFacts.has(message.content[0]?.text)).map(message => ({ ...message, runtime_fact: true }));
         const tail = [
@@ -331,9 +374,23 @@ export class BotEngine {
     const abort = () => agent.abort();
     signal.addEventListener('abort', abort, { once: true });
     try {
-      check();
-      await agent.prompt(textMessage({ type: 'execution_boundary', run_id: runId }));
-      if (signal.aborted) signal.throwIfAborted();
+      while (true) {
+        check();
+        job.preemptedForActivity = false;
+        failure = null;
+        last = null;
+        try {
+          await agent.prompt(textMessage({ type: 'execution_boundary', run_id: runId }));
+        } catch (promptError) {
+          if (job.preemptedForActivity && !signal.aborted) continue;
+          throw promptError;
+        }
+        if (signal.aborted) signal.throwIfAborted();
+        if (job.preemptedForActivity && (last?.stopReason === 'aborted' || failure?.code === 'room_activity_preempted')) {
+          continue;
+        }
+        break;
+      }
       if (failure) throw failure;
       if (last?.stopReason !== 'stop') {
         if (last?.providerFault?.code) {
@@ -386,19 +443,27 @@ export class BotEngine {
           ? this.platform.executions.record({ kind: 'session', id: job.conversation.session_id })?.origin_room?.id
           : null)
         || null);
+    const streamController = purpose === 'conversation' ? new AbortController() : null;
+    const streamSignal = streamController ? AbortSignal.any([job.signal, streamController.signal]) : job.signal;
+    if (streamController) job.activeStream = { controller: streamController };
+    const clearActiveStream = () => {
+      if (streamController && job.activeStream?.controller === streamController) job.activeStream = null;
+    };
     try {
-      const result = this.provider.stream(model, context, { ...options, signal: job.signal, maxTokens,
+      const result = this.provider.stream(model, context, { ...options, signal: streamSignal, maxTokens,
         reasoning: job.binding.model.thinking_level,
         usageContext: { purpose, botId: origin.bot_id, roomId: usageRoomId,
           sessionId: origin.session_id || origin.conversation_id, runId: origin.run_id, parentCallId: job.conversation.open_call_id,
           chargeAccount: 'host', hostUsageId: lease.id, submittedBy: job.context().submitted_by },
         beforeFetch: async () => {
           try {
+            streamSignal.throwIfAborted();
             await job.checkInstallation();
             job.check();
             if ((await job.view()).view_revision !== view.view_revision)
               throw runtimeFailure('access_changed', 'Execution authorization changed before model transport', 409);
             job.check();
+            streamSignal.throwIfAborted();
             const currentModel = boundModel(this.model, job.binding.model);
             if (images.length) {
               const current = this.platform.context(job.context());
@@ -415,9 +480,9 @@ export class BotEngine {
       });
       void result.result().then(message => lease.finish({ tokens: message.generationBudget?.input == null || message.generationBudget?.output == null ? undefined :
         message.generationBudget.input + message.generationBudget.output, outcome: message.stopReason }),
-      () => lease.finish({ outcome: 'unknown' })).catch(error => this.emit('engine.storage_error', this.clean.error(asError(error))));
+      () => lease.finish({ outcome: 'unknown' })).finally(clearActiveStream).catch(error => this.emit('engine.storage_error', this.clean.error(asError(error))));
       return result;
-    } catch (error) { lease.finish({ outcome: 'failed' }); throw error; }
+    } catch (error) { clearActiveStream(); lease.finish({ outcome: 'failed' }); throw error; }
   }
 
   async invoke(job, name, modelCallId, args, signal, model) {
@@ -431,6 +496,7 @@ export class BotEngine {
       controls: context.controls, state: 'prepared', args: this.clean(args), prepared_at: now() };
     inbox.store.putRecord(R.call, original);
     try {
+      job.inToolCall = true;
       job.check();
       const persisted = { ...original, state: 'submitting' };
       inbox.store.putRecord(R.call, persisted);
@@ -440,6 +506,15 @@ export class BotEngine {
       const imageInput = name === 'read' && args.ref?.kind === 'file' && { supported: model.input.includes('image'),
         maxBytes: model.inputLimits?.images?.resize?.maxBytes };
       const result = this.clean(await this.platform.invoke(name, args, { ...context, call_id: id, signal: job.signal, imageInput }));
+      if (result?.executed === false && result?.status === 'room_activity_changed' && Number.isSafeInteger(result.latest_activity_seq)) {
+        job.seenRoomActivitySeq = Math.max(job.seenRoomActivitySeq ?? 0, result.latest_activity_seq);
+      } else if (job.conversation?.kind === 'room' && job.conversation?.space?.kind === 'room' && !job.conversation?.session_id &&
+          (name === 'open_session' || name === 'create_bot' || name === 'configure_room' || name === 'send' ||
+            (name === connectionSetupTool.name && ['register', 'upsert_method', 'assign_maintainer'].includes(args?.action)))) {
+        job.ownRunActivityCallIds?.add(id);
+        const latestAct = this.platform.currentRoomActivitySeq?.(job.conversation.space.id);
+        if (Number.isSafeInteger(latestAct)) job.seenRoomActivitySeq = Math.max(job.seenRoomActivitySeq ?? 0, latestAct);
+      }
       if (name === 'send' && result) {
         if (result.sent === false && result.status === 'room_sequence_changed' && Number.isSafeInteger(result.latest_sequence)) {
           job.seenRoomSequence = Math.max(job.seenRoomSequence ?? 0, result.latest_sequence);
@@ -462,6 +537,8 @@ export class BotEngine {
       const result = { ...this.clean.error(asError(error)), state: code, result_ref: { kind: 'call', id } };
       inbox.store.putRecord(R.call, { ...original, state: code, result, finished_at: now() });
       return toolObservation(readTools.has(name) ? null : id, result, true);
+    } finally {
+      job.inToolCall = false;
     }
   }
 

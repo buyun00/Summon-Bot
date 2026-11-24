@@ -346,6 +346,8 @@ export class ConnectionOnboarding {
   save(input, context, call) {
     return this.platform.configureExecutionConnection(input, {
       actor: user,
+      sourceActor: context.actor,
+      originSpace: context.conversation?.space ?? context.origin?.space ?? null,
       canSeeBinding: entry => this.visible(entry, context),
       beforeConnectionSave: (entry, previous) => {
         this.platform.assertRunAllowed(context);

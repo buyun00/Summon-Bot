@@ -3,7 +3,7 @@ import { basename, dirname, isAbsolute, parse, relative, resolve, sep } from 'no
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { bindModel } from '../../bot/src/agent/model.mjs';
-import { catalogMaintainerRole, groupLeadRole, roleIds, toolOnboardingRole } from '../../roles/index.mjs';
+import { botMaintenanceRoomId, catalogMaintainerRole, groupLeadRole, roleIds, toolOnboardingRole } from '../../roles/index.mjs';
 import { BotManager, activeControl, botRecords, directoryEntry } from '../bot-management/service.mjs';
 import { ConnectionInitializer } from '../connectors/initialization.mjs';
 import { executionEnvironment } from '../connectors/onboarding.mjs';
@@ -34,6 +34,8 @@ export class SummonPlatform {
   constructor({ store, dataRoot, releaseRoot, models, attachments, workspaces = [], emit = () => {} }) {
     Object.assign(this, { store, dataRoot, releaseRoot, models, attachments, emit });
     this.draining = false;
+    this.roomActivitySeq = new Map();
+    this.roomActivityLog = new Map();
     this.resources = new HostResources(store);
     this.manager = new BotManager({ store, dataRoot, models,
       canUseModel: (actor, id) => this.canUseModel(actor, id),
@@ -87,9 +89,155 @@ export class SummonPlatform {
 
   initializeDefaults() {
     const { changed } = this.store.transaction(() => this.manager.ensureDefaults());
-    this.room.ensureMaintenanceRoom(this.manager.onboardingBot());
-    this.store.transaction(() => this.deliveries.syncObserverMemberships());
+    const onboarding = this.manager.onboardingBot();
+    this.room.ensureMaintenanceRoom(onboarding);
+    this.store.transaction(() => {
+      this.deliveries.syncObserverMemberships();
+      if (onboarding) this.deliveries.ensureMaintenanceWakeup(onboarding.id);
+    });
     if (changed) this.emit('bot');
+  }
+
+  currentRoomActivitySeq(roomId) {
+    return this.roomActivitySeq.get(roomId) ?? 0;
+  }
+
+  recentRoomActivities(roomId, afterSeq = 0, excludeActorId = null, excludeCallIds = null) {
+    const entries = this.roomActivityLog.get(roomId) || [];
+    const ownCalls = excludeCallIds instanceof Set ? excludeCallIds : null;
+    return entries.filter(entry => {
+      if (entry.status === 'failed') return false;
+      if (entry.seq <= afterSeq) return false;
+      if (excludeActorId && entry.actor_id === excludeActorId) {
+        if (!ownCalls || !entry.call_id || ownCalls.has(entry.call_id)) return false;
+      }
+      return true;
+    });
+  }
+
+  actorLabel(actorId) {
+    if (!actorId || actorId === 'user') return '宿主';
+    return this.store.get(botRecords, actorId)?.name || actorId;
+  }
+
+  recordRoomActivity(roomId, entry) {
+    if (!roomId) return null;
+    const seq = (this.roomActivitySeq.get(roomId) ?? 0) + 1;
+    this.roomActivitySeq.set(roomId, seq);
+    const saved = {
+      seq,
+      room_id: roomId,
+      actor_id: entry.actor_id,
+      actor_name: entry.actor_name || this.actorLabel(entry.actor_id),
+      tool: entry.tool,
+      summary: entry.summary,
+      call_id: entry.call_id ?? null,
+      status: entry.status ?? 'started',
+      ...(entry.target ? { target: entry.target } : {}),
+      ...(entry.engine ? { engine: entry.engine } : {}),
+      ...(entry.method ? { method: entry.method } : {}),
+      time: entry.time || new Date().toISOString(),
+    };
+    const log = this.roomActivityLog.get(roomId) || [];
+    log.push(saved);
+    if (log.length > 32) log.splice(0, log.length - 32);
+    this.roomActivityLog.set(roomId, log);
+    this.runtime?.notifyRoomActivity?.(roomId, saved);
+    return saved;
+  }
+
+  recordRoomMessageActivity(message) {
+    if (!message?.roomId || !message?.id) return null;
+    const text = String(message.content || '').replace(/\s+/g, ' ').trim().slice(0, 140);
+    return this.recordRoomActivity(message.roomId, {
+      actor_id: message.senderId,
+      actor_name: message.senderName || this.actorLabel(message.senderId),
+      tool: 'send',
+      call_id: message.callId ?? null,
+      status: 'completed',
+      target: { kind: 'event', id: message.id },
+      summary: text ? `发送群消息：${text}` : '发送群消息',
+      time: message.createdAt,
+    });
+  }
+
+  describeRoomWriteActivity(name, args) {
+    if (name === 'open_session') {
+      const engineId = typeof args.engine === 'string' ? args.engine : args.engine?.id || 'pi';
+      const conn = engineId !== 'pi' ? this.connections?.get(engineId) : null;
+      const engineName = conn?.name || engineId;
+      const method = typeof args.input === 'object' && args.input ? args.input.method : null;
+      const summary = args.work_summary ? `（${String(args.work_summary).slice(0, 60)}）` : '';
+      return {
+        engine: engineId,
+        ...(method ? { method } : {}),
+        summary: method ? `调用 ${engineName} · ${method}${summary}` : `发起 ${engineName} 会话${summary}`,
+      };
+    }
+    if (name === 'create_bot') {
+      const role = args.role_id ? ` [${args.role_id}]` : '';
+      return { summary: `创建 Bot「${args.name || '未命名'}」${role}` };
+    }
+    if (name === 'configure_room') {
+      const parts = [];
+      if (args.title) parts.push(`改名「${args.title}」`);
+      if (args.add_members?.length) parts.push(`拉入 ${args.add_members.length} 位成员`);
+      if (args.remove_members?.length) parts.push(`移除 ${args.remove_members.length} 位成员`);
+      if (args.workspace !== undefined) parts.push('变更工作区');
+      return { summary: `更新群配置${parts.length ? `（${parts.join('、')}）` : ''}` };
+    }
+    if (name === connectionSetupTool.name) {
+      const targetName = args.name || (typeof args.connection === 'string' ? args.connection : args.connection?.id) || args.protocol || '';
+      return { summary: `执行连接操作 ${args.action}${targetName ? `「${targetName}」` : ''}` };
+    }
+    return { summary: `执行 ${name}` };
+  }
+
+  guardRoomWriteActivity(name, args, context, record) {
+    if (context.actor.kind !== 'bot') return null;
+    if (context.conversation?.kind !== 'room' || context.conversation?.space?.kind !== 'room') return null;
+    const guarded = name === 'open_session' || name === 'create_bot' || name === 'configure_room' ||
+      (name === connectionSetupTool.name && ['register', 'upsert_method', 'assign_maintainer'].includes(args.action));
+    if (!guarded) return null;
+    const roomId = context.conversation.space.id;
+    const expectedSeq = context.origin?.seen_room_activity_seq;
+    if (Number.isSafeInteger(expectedSeq)) {
+      const latestSeq = this.currentRoomActivitySeq(roomId);
+      if (latestSeq > expectedSeq) {
+        const newer = this.recentRoomActivities(roomId, expectedSeq, context.actor.id, context.origin?.own_run_activity_call_ids);
+        if (newer.length) {
+          const conflict = {
+            executed: false,
+            status: 'room_activity_changed',
+            expected_activity_seq: expectedSeq,
+            latest_activity_seq: latestSeq,
+            new_activities: newer.slice(-8).map(item => ({
+              seq: item.seq,
+              actor_id: item.actor_id,
+              actor_name: item.actor_name,
+              tool: item.tool,
+              summary: item.summary,
+              status: item.status,
+              ...(item.engine ? { engine: item.engine } : {}),
+              ...(item.method ? { method: item.method } : {}),
+              ...(item.target ? { target: item.target } : {}),
+              time: item.time,
+            })),
+            guidance: 'Other members in this Room started new actions or posted messages while you were preparing this call. Read new_activities carefully: if a peer already started or completed the same action (such as creating the same Bot, registering the same connection, or triggering the same build/session), do NOT repeat it. If your action is distinct and still needed, you may submit it again now.',
+          };
+          return { conflict: this.calls.finish(record.id, 'completed', conflict) };
+        }
+      }
+    }
+    const details = this.describeRoomWriteActivity(name, args);
+    const activity = this.recordRoomActivity(roomId, {
+      actor_id: context.actor.id,
+      tool: name,
+      call_id: record.id,
+      status: name === 'open_session' ? 'started' : 'submitting',
+      ...details,
+    });
+    return { activity };
   }
 
   getBot(id) { return this.manager.get(id); }
@@ -163,9 +311,6 @@ export class SummonPlatform {
     const entry = this.connections.get(id);
     if (!entry || !this.canUseConnection(context.actor, id, context))
       reject('connection_forbidden', 'Choose an accessible execution connection', 403);
-    if (context.actor.kind !== 'user' && !this.isOnboardingBot(context.actor)) {
-      reject('maintainer_assignment_forbidden', 'Only the host or tool-onboarding Bot can assign connection maintainers', 403);
-    }
     if (revision !== undefined && !(reuse && this.manager.maintainer(entry))) assertRevision(entry.revision, revision);
     return entry;
   }
@@ -213,7 +358,7 @@ export class SummonPlatform {
   repairableConnection(entry, context) {
     if (!entry || !this.canUseConnection(context.actor, entry.id, context) ||
         !this.connections.authorized(entry, context.actor)) return false;
-    return context.actor.kind === 'user' || this.isOnboardingBot(context.actor) || this.isMaintainerOf(entry, context.actor);
+    return true;
   }
 
   probeRepairAllowed(entry, context) {
@@ -269,6 +414,40 @@ export class SummonPlatform {
         }
       }
     }
+  }
+
+  noteConnectionChanged(entry, { change = 'updated', actor = null, originSpace = null } = {}) {
+    const recipient = this.manager.onboardingBot();
+    if (!entry?.enabled || !recipient?.enabled || recipient.archivedAt) return;
+    if (actor?.kind === 'bot' && actor.id === recipient.id) return;
+    const ref = { kind: 'connection', id: entry.id };
+    const pending = this.store.list('platform-deliveries').some(delivery =>
+      delivery.bot_id === recipient.id && ['pending', 'received', 'unknown'].includes(delivery.status) &&
+      delivery.event?.type === 'connection.changed' && delivery.event?.ref?.id === entry.id);
+    if (pending) return;
+    const space = originSpace?.kind === 'room' && this.canReadSpace({ kind: 'bot', id: recipient.id }, originSpace)
+      ? originSpace
+      : (this.store.get('rooms', botMaintenanceRoomId) ? { kind: 'room', id: botMaintenanceRoomId } : { kind: 'bot', id: recipient.id });
+    const event = this.store.save('platform-events', {
+      id: randomUUID(),
+      kind: 'event',
+      type: 'connection.changed',
+      change,
+      target: ref,
+      ref,
+      connection_id: entry.id,
+      connection_name: entry.name,
+      protocol: entry.kind,
+      revision: entry.revision,
+      maintainer_bot_id: entry.maintainer_bot_id ?? null,
+      changed_by: actor || user,
+      bot_id: recipient.id,
+      space,
+      author: { kind: 'platform', id: 'platform' },
+      time: new Date().toISOString(),
+    });
+    this.deliveries.enqueue(recipient.id, event,
+      [{ id: keyOf('connection_changed', entry.id), revision: entry.revision ?? 1, kind: 'connection_changed' }], []);
   }
 
   probeMaintainer(entry) {
@@ -348,8 +527,8 @@ export class SummonPlatform {
     if (event.result_access === 'revoked') return false;
     if (event.type === 'work.tool') return this.roomWork.readable(event, context);
     if (event.type === repairRequestType) return this.repairs.canRead(event, context);
-    if (event.type === 'connection.failure') {
-      if (this.repairs.hasReports(event.id)) return this.repairs.canRead(event, context);
+    if (event.type === 'connection.failure' || event.type === 'connection.changed') {
+      if (event.type === 'connection.failure' && this.repairs.hasReports(event.id)) return this.repairs.canRead(event, context);
       const connection = event.ref?.kind === 'connection' && this.connections.get(event.ref.id);
       return Boolean(connection && this.canReadReference(event.ref, context));
     }
@@ -814,6 +993,20 @@ export class SummonPlatform {
       !isDeepStrictEqual(current.grants, savedEntry.grants)
     ));
     if (recoveredConnection) this.runtime?.resumeRecoveredRuns?.({ kind: 'connection', id: result.id });
+    const notifyChange = Boolean(!result.reused && savedEntry?.enabled && (
+      !current ||
+      !current.enabled ||
+      (current.binding_version ?? 1) !== (savedEntry.binding_version ?? 1) ||
+      !isDeepStrictEqual(current.config, savedEntry.config) ||
+      (current.maintainer_bot_id ?? null) !== (savedEntry.maintainer_bot_id ?? null)
+    ));
+    if (notifyChange) {
+      this.noteConnectionChanged(savedEntry, {
+        change: !current ? 'registered' : 'updated',
+        actor: context.sourceActor ?? context.actor,
+        originSpace: context.originSpace ?? null,
+      });
+    }
     this.emit('connection');
     return { ...result, ...this.connectionMaintenance(this.connections.get(result.id)) };
   }
@@ -898,15 +1091,28 @@ export class SummonPlatform {
     }
     const { record, existing } = this.calls.begin(name, context);
     if (existing) return { result: this.calls.replay(record, context), call_id: record.id };
+    let trackedActivity = null;
     try {
+      const guard = this.guardRoomWriteActivity(name, args, context, record);
+      if (guard?.conflict) return { result: guard.conflict, call_id: record.id };
+      trackedActivity = guard?.activity ?? null;
       if (setup) {
         const result = await this.connectionInitializer.run(args, context, setup, record);
         const current = this.calls.get(record.id);
-        return { result: current.status === 'completed' ? current.result : this.calls.finish(record.id, 'completed', result), call_id: record.id };
+        const finalResult = current.status === 'completed' ? current.result : this.calls.finish(record.id, 'completed', result);
+        if (trackedActivity) {
+          trackedActivity.status = 'completed';
+          if (finalResult?.id) trackedActivity.target = { kind: 'connection', id: finalResult.id };
+        }
+        return { result: finalResult, call_id: record.id };
       }
       if (name === 'open_session' || name === 'send_input' || name === 'stop_session') {
         const result = name === 'open_session' ? await this.executions.open(args, context, record)
           : name === 'send_input' ? await this.executions.submit(args, context, record) : await this.executions.stop(args, context, record);
+        if (trackedActivity) {
+          trackedActivity.status = result?.status === 'completed' ? 'completed' : 'running';
+          if (result?.target) trackedActivity.target = result.target;
+        }
         if (name === 'open_session' && result?.target && context.actor.kind === 'bot' && Array.isArray(context.origin?.event_ids)) {
           for (const sourceEventId of context.origin.event_ids) {
             this.deliveries.recordWakeupOutcome(sourceEventId, context.actor.id, {
@@ -937,6 +1143,10 @@ export class SummonPlatform {
             ...(maintenance ? { maintenance } : {}),
           });
         });
+        if (trackedActivity) {
+          trackedActivity.status = 'completed';
+          if (result?.id) trackedActivity.target = { kind: 'bot', id: result.id };
+        }
         this.emit('bot', result);
         if (args.role_connection_id) this.emit('connection');
         return { result, call_id: record.id };
@@ -1001,8 +1211,13 @@ export class SummonPlatform {
         this.stripRemovedFromSharedSessions(result.id, args.remove_members.map(m => identity(m).id));
         await this.revokeSessions({ kind: 'room', id: result.id });
       }
+      if (trackedActivity) {
+        trackedActivity.status = 'completed';
+        if (result?.id && name === 'configure_room') trackedActivity.target = { kind: 'room', id: result.id };
+      }
       return { result, call_id: record.id };
     } catch (error) {
+      if (trackedActivity) trackedActivity.status = 'failed';
       this.calls.fail(record.id, error);
       error.call_id = record.id;
       throw error;
@@ -1323,7 +1538,8 @@ export class SummonPlatform {
     }
     for (const conn of this.store.list('platform-connections')) {
       if (conn.maintainer_bot_id === id) {
-        this.store.save('platform-connections', { id: conn.id, maintainer_bot_id: null, revision: conn.revision + 1 });
+        const updated = this.store.save('platform-connections', { id: conn.id, maintainer_bot_id: null, revision: conn.revision + 1 });
+        this.noteConnectionChanged(updated, { change: 'maintainer_removed', actor });
       }
     }
     this.deliveries.removeAllForBot(id);

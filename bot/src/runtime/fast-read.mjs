@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { keyOf } from '../../../capabilities/platform/contract.mjs';
 import { wakeupRecords } from '../../../capabilities/platform/delivery.mjs';
-import { builtInInstructions } from '../../../roles/index.mjs';
+import { builtInInstructions, defaultPublicDuty } from '../../../roles/index.mjs';
 import { bindModel, boundModel } from '../agent/model.mjs';
 import { contextTokens, roomMessageInput, textMessage } from '../context/projection.mjs';
 import { now, recordKey, runtimeFailure, runtimeRecords as R } from '../storage/runtime-records.mjs';
@@ -31,6 +31,7 @@ const roomEvent = message => ({
   ...(message.originMessageId ? { origin_message_id: message.originMessageId } : {}),
   ...(message.prompt ? { prompt: message.prompt } : {}),
   ...(message.promptResponse ? { prompt_response: message.promptResponse } : {}),
+  ...(message.promptAnswer ? { prompt_answer: message.promptAnswer } : {}),
 });
 
 const fastReadRules = [
@@ -39,7 +40,7 @@ const fastReadRules = [
   '分工与不抢答原则（quiet vs main）：本群拥有群主控（group-lead）及平台兜底机制，因此专责成员无需为了“怕冷场”抢答泛化通用问题！仅当存在以下任一明确缺口时判 main：1) 明确 @ 点名了本 Bot 或直接承接/追问本 Bot 的上一句话；2) 明确命中本 Bot 自身专责领域、需要动用本 Bot 的私有信息或专属工具；3) 涉及本 Bot 名下在途任务（active_sessions）的补件、改要求、答问、叫停或进度追问；4) 旁听到其他成员的回答存在影响结论的事实错误、关键遗漏或风险，需要本 Bot 主动纠错。凡不属于本 Bot 专责的泛化提问、明确点名他人且无本 Bot 独立事项、别人已答清、或纯收悉/礼貌致谢/复述/自然收尾，均安心判 quiet。',
   '群主控与 EggBot 角色路由说明：\n' +
     '- 若本 Bot 是本群的群主控（group-lead）：你是本群的默认对话主持者。凡是用户发出的常规需求、开场提问、未 @ 指定他人的消息、回复你的消息或选择框作答，均应判 main 及时承接推进；仅当用户明确 @ 点名了其他专责成员且与你无关、或纯收悉/礼貌致谢/已自然收尾时判 quiet。\n' +
-    '- 若本 Bot 是 EggBot（eggbot）：日常对话由群主控承接，收到常规群消息或周期观察触发时，只在被明确 @ 点名、直接追问、群内出现明确职责缺口/卡点需要增配或纠偏时判 main；若群主控或专责成员分工顺畅、当前无需插嘴，判 quiet 即可（平台会自动推进观察游标）。',
+    '- 若本 Bot 是 EggBot（eggbot）：你与其他成员一样正常听群，日常业务对话由群主控与专责成员承接，只在被点名、群内讨论人员分工/增配、或发现明显职责缺口与协作卡点时判 main；若当前分工顺畅无需插嘴，判 quiet 即可。',
   '当前进度（activity）规则：\n' +
     '1. 仅当 route 为 "main" 时填写 activity；route 为 "quiet" 时不要填或设为 null。\n' +
     '2. 用 6–24 个中文字，以「正在…」开头，直接说明本 Bot 接下来要执行的动作（例如「正在绑定工作区并检查远程版本」「正在排查报错日志」「正在核对需求并整理方案」）。\n' +
@@ -54,7 +55,7 @@ function buildFastReadSystem(bot, room, members) {
   const identityLines = [
     `Bot ID: ${bot.id}`,
     `名称: ${bot.name}`,
-    `公开职责: ${bot.public_duty || '（未单独填写）'}`,
+    `公开职责: ${defaultPublicDuty(bot) || '（未单独填写）'}`,
   ];
   if (duty) identityLines.push(`内置角色说明:\n${duty}`);
   if (bot.instructions) identityLines.push(`个人长期指令（供判断职责归属与边界，本阶段不执行）:\n${bot.instructions}`);
@@ -272,7 +273,7 @@ export class FastReadRuntime {
           id: memberId,
           kind: 'bot',
           name: memberBot?.name || memberId,
-          public_duty: memberBot?.public_duty || '',
+          public_duty: defaultPublicDuty(memberBot),
         };
       });
       const systemContent = buildFastReadSystem(bot, room, members);

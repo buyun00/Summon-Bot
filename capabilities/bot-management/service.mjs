@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { catalogMaintainerRole, defaultBotRoles, groupLeadRole, roleInstructions, toolOnboardingRole } from '../../roles/index.mjs';
+import { catalogMaintainerRole, defaultBotRoles, defaultPublicDuty, groupLeadRole, toolOnboardingRole } from '../../roles/index.mjs';
 import { defaultPaperAvatar, normalizePaperAvatar } from '../shared/avatar-style.mjs';
 import { assertRevision, idOf, reject, sameIdentity, sameRef, user } from '../platform/contract.mjs';
 
@@ -34,7 +34,7 @@ function publicDuty(value) {
 
 export function directoryEntry(bot) {
   const role = bot.built_in_role?.id;
-  const duty = bot.public_duty || (Object.hasOwn(roleInstructions, role) ? roleInstructions[role].split('。')[0] : '');
+  const duty = defaultPublicDuty(bot);
   return { kind: 'bot', id: bot.id, name: bot.name, public_duty: duty, enabled: bot.enabled, ...(role ? { role_id: role } : {}) };
 }
 
@@ -178,6 +178,27 @@ export class BotManager {
     return record;
   }
 
+  selectModelBinding(rawModel) {
+    try {
+      return this.models.selectBinding(rawModel);
+    } catch (error) {
+      if (error?.code === 'connection_not_found' && rawModel) {
+        const candidateIds = typeof rawModel === 'string'
+          ? [rawModel]
+          : [rawModel.id, rawModel.connection_id, ...Object.values(rawModel.purposes || {}).map(item => item?.connection_id)].filter(Boolean);
+        for (const connId of candidateIds) {
+          const exec = this.store.get('platform-connections', connId);
+          if (exec) {
+            reject('invalid_model_connection',
+              `「${exec.name}」(${connId}) 是 ${exec.kind} 执行连接，不能绑定为 Bot 的 model（模型连接）。请留空使用默认模型或选用模型连接，在运行时通过 open_session(engine: "${connId}", ...) 调用该执行连接。`,
+              400);
+          }
+        }
+      }
+      throw error;
+    }
+  }
+
   create(id, args, context, beforeSave) {
     const { actor } = context;
     const name = cleanName(args.name), instructions = instructionsOf(args.instructions);
@@ -189,7 +210,7 @@ export class BotManager {
       const connection = this.assignment(args, context, role, true);
       const assigned = this.maintainer(connection);
       if (assigned) return assigned;
-      let model = this.models.selectBinding(args.model);
+      let model = this.selectModelBinding(args.model);
       const neededIds = this.modelConnectionIds(model);
       if (neededIds.some(connId => !this.canUseModel(actor, connId))) {
         if (args.model !== undefined) reject('connection_forbidden', 'Model connection is not available to this caller', 403);
@@ -237,7 +258,7 @@ export class BotManager {
       reject('connection_maintainer_exists', 'This connection already has a maintenance Bot', 409,
         { maintainer: { kind: 'bot', id: maintainer.id } });
     if (args.model !== undefined) {
-      const model = this.models.selectBinding(args.model);
+      const model = this.selectModelBinding(args.model);
       const target = { kind: 'bot', id };
       const neededIds = this.modelConnectionIds(model);
       if (actor.kind !== 'user' && neededIds.some(connId => !this.canUseModel(actor, connId) || !this.canUseModel(target, connId))) {

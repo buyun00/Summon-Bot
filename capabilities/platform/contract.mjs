@@ -134,7 +134,7 @@ const definitions = [
       object({ source: object({ kind: oneOf('file'), id: text }, ['kind', 'id']) }, ['source']),
       object({ source: object({ kind: oneOf('workspace'), id: text }, ['kind', 'id']), path: text }, ['source', 'path'])] },
       revision: integer, sources: array(ref) }, ['space', 'path', 'content_or_source'])],
-  ['create_bot', 'Create a Bot with private instructions, public_duty for team directory searches, an optional authorized model connection, and an optional built-in duty (role_id). ' +
+  ['create_bot', 'Create a Bot with private instructions, public_duty for team directory searches, an optional authorized model connection (LLM provider only — execution connections like Codex/CLI/MCP/HTTP/SSH are invoked via open_session, not bound as model), and an optional built-in duty (role_id). ' +
     'For dedicated maintenance, pass catalog-maintainer and the exact role_connection_id and connection_revision from read to bind it atomically with full maintenance and bound-workspace authority.',
     object({ name: text, public_duty: text, instructions: text, model, role_id: oneOf(...roleIds), role_connection_id: text, connection_revision: integer }, ['name', 'instructions'])],
   ['configure_bot', 'Change a Bot configuration at its current revision. Set enabled:false to pause a Bot or enabled:true to re-enable it. ' +
