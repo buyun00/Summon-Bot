@@ -85,19 +85,19 @@ html.desktop-intro-window .ob-root {
   transition: opacity 180ms ease;
 }
 
-/* Act 1: Radial portal expansion canvas */
+/* Act 1: Full-screen Arc/Dia radial expansion wave (slow, unhurried ~2.4s) */
 .ob-portal-backdrop {
   position: fixed;
   inset: 0;
   z-index: -2;
   background:
-    radial-gradient(64vw 64vw at 22% 18%, var(--ob-aura-1), transparent 62%),
-    radial-gradient(58vw 58vw at 82% 24%, var(--ob-aura-2), transparent 60%),
-    radial-gradient(60vw 60vw at 52% 88%, var(--ob-aura-3), transparent 64%),
-    var(--bg, #f8f6f1);
+    radial-gradient(66vw 66vw at 20% 18%, var(--ob-aura-1), transparent 62%),
+    radial-gradient(60vw 60vw at 82% 24%, var(--ob-aura-2), transparent 60%),
+    radial-gradient(64vw 64vw at 52% 86%, var(--ob-aura-3), transparent 64%),
+    color-mix(in srgb, var(--bg, #f8f6f1) 88%, transparent);
   clip-path: circle(0% at 50% 50%);
-  opacity: 0.4;
-  transition: clip-path 1180ms var(--ob-ease), opacity 900ms ease;
+  opacity: 0;
+  transition: clip-path 1600ms cubic-bezier(0.22, 1, 0.36, 1), opacity 700ms ease;
 }
 
 .ob-root.is-expanded .ob-portal-backdrop {
@@ -105,30 +105,37 @@ html.desktop-intro-window .ob-root {
   opacity: 1;
 }
 
+/* Once the full-screen bloom finishes, recede the backdrop so only the floating setup window remains */
+html.desktop-intro-window .ob-root.is-settled .ob-portal-backdrop {
+  opacity: 0;
+  transition: opacity 720ms ease;
+}
+
 .ob-portal-ring {
   position: fixed;
   left: 50%;
   top: 50%;
-  width: 140px;
-  height: 140px;
-  margin: -70px 0 0 -70px;
+  width: 148px;
+  height: 148px;
+  margin: -74px 0 0 -74px;
   border-radius: 50%;
-  border: 1.5px solid var(--ob-aura-1);
-  box-shadow: 0 0 80px 18px var(--ob-aura-2), inset 0 0 40px var(--ob-aura-3);
+  border: 2px solid var(--ob-aura-1);
+  box-shadow: 0 0 100px 26px var(--ob-aura-2), inset 0 0 50px var(--ob-aura-3);
   z-index: -1;
   pointer-events: none;
   opacity: 0;
-  transform: scale(0.35);
+  transform: scale(0.3);
 }
 
 .ob-root.is-expanding .ob-portal-ring {
-  animation: ob-ring-expand 1250ms var(--ob-ease) forwards;
+  animation: ob-ring-expand 1850ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
 
 @keyframes ob-ring-expand {
   0% { opacity: 0; transform: scale(0.25); }
-  22% { opacity: 0.95; transform: scale(1.1); }
-  100% { opacity: 0; transform: scale(18); }
+  20% { opacity: 0.95; transform: scale(1.15); }
+  75% { opacity: 0.45; transform: scale(13); }
+  100% { opacity: 0; transform: scale(20); }
 }
 
 .ob-intro-center {
@@ -138,26 +145,26 @@ html.desktop-intro-window .ob-root {
   place-items: center;
   pointer-events: none;
   z-index: 2;
-  transition: opacity 420ms ease, transform 520ms var(--ob-ease);
+  transition: opacity 580ms ease, transform 680ms var(--ob-ease);
 }
 
 .ob-intro-center.is-settled {
   opacity: 0;
-  transform: translateY(-48px) scale(0.84);
+  transform: translateY(-42px) scale(0.86);
 }
 
 .ob-intro-orb {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 16px;
-  animation: ob-orb-rise 680ms var(--ob-ease) both;
+  gap: 18px;
+  animation: ob-orb-rise 820ms var(--ob-ease) both;
 }
 
 .ob-intro-orb-badge {
-  width: 96px;
-  height: 96px;
-  border-radius: 30px;
+  width: 104px;
+  height: 104px;
+  border-radius: 32px;
   display: grid;
   place-items: center;
   background: var(--ob-card-bg);
@@ -168,13 +175,13 @@ html.desktop-intro-window .ob-root {
 }
 
 .ob-intro-orb-title {
-  font-size: 26px;
+  font-size: 28px;
   font-weight: 800;
   letter-spacing: -0.04em;
   color: var(--ink);
   opacity: 0;
-  transform: translateY(8px);
-  animation: ob-fade-up 520ms var(--ob-ease) 180ms forwards;
+  transform: translateY(10px);
+  animation: ob-fade-up 620ms var(--ob-ease) 260ms forwards;
 }
 
 @keyframes ob-orb-rise {
@@ -228,14 +235,21 @@ html.desktop-intro-window .ob-root {
   color: var(--ink);
 }
 
-/* Act 2: Single-Screen First-Model Stage */
+/* Act 2: Compact Floating Setup Window (non-fullscreen!) */
 .ob-stage {
-  width: 100%;
-  max-width: 580px;
+  width: min(580px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  border-radius: 28px;
+  background: var(--ob-card-bg);
+  border: 1px solid var(--ob-card-border);
+  box-shadow: var(--ob-card-shadow);
+  backdrop-filter: blur(28px) saturate(1.25);
+  -webkit-backdrop-filter: blur(28px) saturate(1.25);
   opacity: 0;
-  transform: translateY(28px) scale(0.96);
+  transform: translateY(24px) scale(0.94);
   pointer-events: none;
-  transition: opacity 620ms var(--ob-ease), transform 700ms var(--ob-ease);
+  transition: opacity 720ms var(--ob-ease), transform 780ms var(--ob-ease);
 }
 
 .ob-root.is-ready .ob-stage {
@@ -244,18 +258,40 @@ html.desktop-intro-window .ob-root {
   pointer-events: auto;
 }
 
+.ob-window-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px 4px 20px;
+  -webkit-app-region: drag;
+}
+
+.ob-window-brand {
+  font-size: 13px;
+  font-weight: 640;
+  color: var(--muted);
+  letter-spacing: -0.01em;
+}
+
+.ob-window-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  -webkit-app-region: no-drag;
+}
+
 .ob-hero {
   display: flex;
   flex-direction: column;
   align-items: center;
   text-align: center;
-  gap: 10px;
-  margin-bottom: 22px;
+  gap: 8px;
+  padding: 6px 24px 16px;
 }
 
 .ob-hero-face {
-  width: 78px;
-  height: 78px;
+  width: 66px;
+  height: 66px;
   display: grid;
   place-items: center;
   transition: transform 360ms var(--ob-ease);
@@ -276,7 +312,7 @@ html.desktop-intro-window .ob-root {
 
 .ob-hero h1 {
   margin: 0;
-  font-size: clamp(24px, 4vw, 31px);
+  font-size: 24px;
   font-weight: 760;
   letter-spacing: -0.035em;
   line-height: 1.2;
@@ -284,22 +320,16 @@ html.desktop-intro-window .ob-root {
 
 .ob-hero p {
   margin: 0;
-  max-width: 460px;
-  font-size: 14.5px;
-  line-height: 1.6;
+  max-width: 440px;
+  font-size: 13.5px;
+  line-height: 1.58;
   color: var(--ink-2, var(--muted));
 }
 
 .ob-card {
-  background: var(--ob-card-bg);
-  border: 1px solid var(--ob-card-border);
-  border-radius: 26px;
-  padding: 22px;
-  box-shadow: var(--ob-card-shadow);
-  backdrop-filter: blur(26px) saturate(1.2);
-  -webkit-backdrop-filter: blur(26px) saturate(1.2);
+  padding: 0 22px 22px;
   display: grid;
-  gap: 16px;
+  gap: 14px;
 }
 
 /* Local auto-detected subscription banner */

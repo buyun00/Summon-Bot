@@ -1,4 +1,6 @@
 const { existsSync } = require('node:fs');
+const { mkdir, rename, rm } = require('node:fs/promises');
+const { spawn } = require('node:child_process');
 const { join, resolve } = require('node:path');
 const { pathToFileURL } = require('node:url');
 
@@ -67,7 +69,32 @@ async function fetchOnboardingState(origin, token, protocolVersion) {
   }
 }
 
+async function ensureRuntimeDependencies(onProgress) {
+  const archive = join(runtime, 'node_modules.tar');
+  const target = join(runtime, 'node_modules');
+  if (existsSync(target) || !existsSync(archive)) return;
+  onProgress?.({ stage: 'extract' });
+  const stageDir = join(runtime, '.node_modules_extracting');
+  await rm(stageDir, { recursive: true, force: true }).catch(() => {});
+  await mkdir(stageDir, { recursive: true });
+  await new Promise((resolveDone, rejectDone) => {
+    const child = spawn('tar', ['-xf', archive, '-C', stageDir], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.once('error', err => rejectDone(new Error(`解压运行组件失败：${err.message}`)));
+    child.once('close', code => {
+      if (code === 0) resolveDone();
+      else rejectDone(new Error(`解压运行组件失败（exit ${code}）：${stderr.trim().slice(0, 200)}`));
+    });
+  });
+  await rename(join(stageDir, 'node_modules'), target);
+  await rm(stageDir, { recursive: true, force: true }).catch(() => {});
+  await rm(archive, { force: true }).catch(() => {});
+}
+
 async function prepareLocalConnection(session, profileRoot, onProgress) {
+  await ensureRuntimeDependencies(onProgress);
   const { ensureLocalRunning, resolveLocalDataRoot } = await desktopSettings();
   const dataRoot = resolveLocalDataRoot(undefined, profileRoot);
   const { config, origin } = await ensureLocalRunning({ dataRoot, releaseRoot: runtime, onProgress });

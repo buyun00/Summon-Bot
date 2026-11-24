@@ -15,11 +15,24 @@ const docsFiles = docsBases.flatMap(name => [`${name}.md`, `${name}.zh-CN.md`]);
 const include = name => !name.split('/').some(part => ['node_modules', '.git', '.relay', 'test', 'tests', 'coverage', 'dist'].includes(part)
   || /^\.env(?:\.|$)/.test(part) || /(?:\.sqlite(?:-\w+)?|\.log|\.tmp)$/.test(part));
 
+const ignoredDepDirs = new Set(['node_modules', 'test', 'tests', '__tests__', 'docs', 'doc', 'examples', 'example', 'benchmark', 'benchmarks', '.github', 'dist-types']);
+const ignoredDepFile = /\.(?:d\.[cm]?ts|map|md|markdown|tsx?|mts|cts|flow)$/i;
+const ignoredDepMeta = /^(?:README|CHANGELOG|HISTORY|AUTHORS|CONTRIBUTORS)(?:\.|$)/i;
+
+function includeProdDepFile(name) {
+  const parts = name.split('/');
+  if (parts.some(part => ignoredDepDirs.has(part))) return false;
+  const base = parts[parts.length - 1];
+  if (ignoredDepFile.test(base) || ignoredDepMeta.test(base)) return false;
+  return true;
+}
+
 export async function copyProductionDependencies(sourceRoot, stage) {
   const lock = await readJson(join(stage, 'package-lock.json'));
   const dependencies = [];
   for (const [path, info] of Object.entries(lock.packages)) {
     if (!path.includes('node_modules/') || info.dev || info.link) continue;
+    if (path.includes('node_modules/@types/')) continue;
     const installed = join(sourceRoot, path);
     if (!existsSync(installed)) {
       if (info.optional) continue;
@@ -27,7 +40,7 @@ export async function copyProductionDependencies(sourceRoot, stage) {
     }
     const actual = await readJson(join(installed, 'package.json'));
     if (info.version && actual.version !== info.version) throw new Error(`Lockfile version mismatch: ${path}`);
-    await copyTree(installed, join(stage, path), name => !name.split('/').includes('node_modules'));
+    await copyTree(installed, join(stage, path), includeProdDepFile);
     dependencies.push({ path, version: actual.version });
   }
   return dependencies;

@@ -1,6 +1,7 @@
-import { chmod, copyFile, mkdtemp, mkdir } from 'node:fs/promises';
+import { chmod, copyFile, mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import builder from 'electron-builder';
 import { buildRelease, copyProductionDependencies, exportCommittedPaths } from '../scripts/build/build.mjs';
 import { readJson, writeJson } from '../scripts/build/files.mjs';
@@ -49,6 +50,14 @@ export async function buildDesktop({ platform, arch, output, candidate, commit }
     if (platform === 'macos') {
       await chmod(join(runtime, 'runtime/node'), 0o755);
       await chmod(join(app, 'summon'), 0o755);
+    }
+    if (platform === 'windows') {
+      // Pack node_modules into a single tar archive so Windows NSIS installs ~150 files
+      // in a few seconds instead of extracting thousands of loose JS files one by one.
+      const archive = join(runtime, 'node_modules.tar');
+      const packed = spawnSync('tar', ['-cf', archive, '-C', runtime, 'node_modules'], { encoding: 'utf8', windowsHide: true });
+      if (packed.status !== 0) throw new Error(`Failed to pack runtime node_modules.tar: ${packed.stderr || packed.error?.message || 'tar failed'}`);
+      await rm(join(runtime, 'node_modules'), { recursive: true, force: true });
     }
     const artifacts = await builder.build({ projectDir: app, targets: target.createTarget(undefined, builder.Arch[arch]), publish: 'never',
       config: {

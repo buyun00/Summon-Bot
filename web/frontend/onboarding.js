@@ -108,6 +108,9 @@
     ]);
     ob.catalog = catalog;
     ob.localSources = (local?.sources || []).filter(item => item.available);
+    if (ob.localSources.some(s => s.kind === 'codex')) {
+      ob.selectedProvider = 'codex';
+    }
     const models = providerModels(ob.selectedProvider);
     if (!ob.draft.model && models[0]?.id) ob.draft.model = models[0].id;
   }
@@ -121,12 +124,9 @@
     root.innerHTML = `
       <div class="ob-portal-backdrop" aria-hidden="true"></div>
       <div class="ob-portal-ring" aria-hidden="true"></div>
-      <div class="ob-topbar">
-        <div class="ob-topbar-actions" id="ob-topbar-actions"></div>
-      </div>
       <div class="ob-intro-center" id="ob-intro-center" aria-hidden="true">
         <div class="ob-intro-orb">
-          <div class="ob-intro-orb-badge">${avatarSvg(64)}</div>
+          <div class="ob-intro-orb-badge">${avatarSvg(68)}</div>
           <div class="ob-intro-orb-title">Summon Bot</div>
         </div>
       </div>
@@ -139,56 +139,70 @@
   function playArcDiaIntro(root) {
     const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
     const intro = root.querySelector('#ob-intro-center');
+    const desktop = window.SummonDesktop;
     if (reduced) {
-      root.classList.add('is-expanded', 'is-ready');
+      root.classList.add('is-expanded', 'is-ready', 'is-settled');
       intro?.classList.add('is-settled');
+      if (desktop?.isIntroWindow) void desktop.settleIntroWindow?.({ width: 620, height: 700 });
       return;
     }
     void root.offsetWidth;
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        root.classList.add('is-expanding', 'is-expanded');
+    // Phase 1 (0 -> 600ms): Orb rises & breathes over the real desktop wallpaper.
+    // Phase 2 (600ms -> 2050ms): Slow full-screen radial expansion wave across the whole monitor.
+    setTimeout(() => {
+      if (!document.body.contains(root)) return;
+      root.classList.add('is-expanding', 'is-expanded');
+    }, 520);
+    // Phase 3 (2000ms): Intro emblem settles and floating Setup Window glides into center.
+    setTimeout(() => {
+      if (!document.body.contains(root)) return;
+      intro?.classList.add('is-settled');
+      root.classList.add('is-ready');
+    }, 1850);
+    // Phase 4 (2550ms): Full-screen backdrop recedes back to transparent desktop & window shrinks to non-fullscreen floating card!
+    setTimeout(() => {
+      if (!document.body.contains(root)) return;
+      root.classList.add('is-settled');
+      if (desktop?.isIntroWindow && desktop.settleIntroWindow) {
         setTimeout(() => {
-          intro?.classList.add('is-settled');
-          root.classList.add('is-ready');
-        }, 760);
-      });
-    });
+          if (document.body.contains(root)) {
+            void desktop.settleIntroWindow({ width: 620, height: 700 });
+          }
+        }, 560);
+      }
+    }, 2400);
   }
 
   function renderOverlayContent() {
     const root = document.getElementById('summon-onboarding-root');
     if (!root) return;
-    const topActions = root.querySelector('#ob-topbar-actions');
-    if (topActions) {
-      const inDesktopIntro = Boolean(window.SummonDesktop?.isIntroWindow);
-      if (ob.preview) {
-        topActions.innerHTML = '<button type="button" class="ob-ghost-pill" data-ob-action="close-preview">退出预览</button>';
-      } else if (inDesktopIntro) {
-        topActions.innerHTML = '<button type="button" class="ob-ghost-pill" data-ob-action="close-intro" aria-label="关闭窗口">✕</button>';
-      } else {
-        topActions.innerHTML = '';
-      }
-    }
     const stage = root.querySelector('#ob-stage');
     if (!stage) return;
 
     const def = providerDef(ob.selectedProvider);
     const choices = providerModels(ob.selectedProvider);
     const activeExisting = ob.catalog?.connections?.find(c => c.id === ob.catalog.activeId && c.configured);
+    const hasLocalCodex = ob.localSources.some(s => s.kind === 'codex');
     const faceClass = ob.phase === 'testing' || ob.phase === 'saving'
       ? 'is-testing'
       : ob.phase === 'success' ? 'is-success' : '';
+
+    const inDesktopIntro = Boolean(window.SummonDesktop?.isIntroWindow);
+    const closeBtnHtml = ob.preview
+      ? '<button type="button" class="ob-ghost-pill" data-ob-action="close-preview">退出预览</button>'
+      : inDesktopIntro
+        ? '<button type="button" class="ob-ghost-pill" data-ob-action="close-intro" aria-label="关闭窗口">✕</button>'
+        : '';
 
     const localBanner = ob.localSources.length
       ? `<div class="ob-local-list">${ob.localSources.map(src => `
           <div class="ob-local-card">
             <div class="ob-local-copy">
-              <strong>检测到本机已有 ${esc(src.name)} 登录</strong>
-              <small>${esc(src.note || '直接导入即可使用，无需手动填写密钥')}</small>
+              <strong>检测到本机已有 ${esc(src.name)} 订阅</strong>
+              <small>直接复用本机登录态，无需重新授权或设备码</small>
             </div>
             <button type="button" class="ob-primary-btn" data-ob-action="import-local" data-kind="${esc(src.kind)}" ${ob.busy ? 'disabled' : ''}>
-              一键导入并检测
+              直接复用并检测
             </button>
           </div>`).join('')}</div><div class="ob-divider">或者选择其他接入方式</div>`
       : '';
@@ -205,27 +219,38 @@
     const providerGrid = `<div class="ob-provider-grid" role="tablist" aria-label="选择 AI 服务商">${PROVIDERS.map(item => `
       <button type="button" role="tab" aria-selected="${item.id === ob.selectedProvider}" class="ob-provider-tile ${item.id === ob.selectedProvider ? 'is-selected' : ''}" data-ob-action="pick-provider" data-provider="${esc(item.id)}" ${ob.busy ? 'disabled' : ''}>
         <span class="ob-provider-head">${renderProviderIcon(item)}<strong>${esc(item.name)}</strong></span>
-        <small>${esc(item.subtitle)}</small>
+        <small>${esc(item.id === 'codex' && hasLocalCodex ? '已登录 · 直接复用' : item.subtitle)}</small>
       </button>`).join('')}</div>`;
 
     let formBody = '';
     if (def.kind === 'codex') {
-      const waiting = ob.oauthState && ['starting', 'waiting'].includes(ob.oauthState.status);
-      formBody = `<div class="ob-oauth-box">
-        ${waiting ? `
-          <small>${ob.oauthState.status === 'starting' ? '正在获取设备授权码…' : '打开授权页并输入下方代码完成登录'}</small>
-          ${ob.oauthState.userCode ? `<div class="ob-device-code">${esc(ob.oauthState.userCode)}</div>` : ''}
+      if (hasLocalCodex) {
+        formBody = `<div class="ob-oauth-box">
+          <small>已检测到这台电脑的本地 Codex 订阅登录，直接复用即可，无需任何设备码。</small>
           <div class="ob-oauth-actions">
-            ${ob.oauthState.verificationUri ? `<a class="ob-primary-btn" href="${esc(ob.oauthState.verificationUri)}" target="_blank" rel="noopener noreferrer">打开授权页面</a>` : ''}
-            <button type="button" class="ob-secondary-btn" data-ob-action="cancel-oauth">取消授权</button>
+            <button type="button" class="ob-primary-btn" data-ob-action="import-local" data-kind="codex" ${ob.busy ? 'disabled' : ''}>
+              ${ob.phase === 'testing' ? '<span class="ob-spinner"></span>正在检测可用性…' : ob.phase === 'saving' ? '<span class="ob-spinner"></span>正在导入…' : '直接复用本机 Codex 并检测'}
+            </button>
           </div>
-        ` : `
-          <small>使用你的 ChatGPT / Codex 订阅通过官方设备码登录，授权后自动检测可用性。</small>
-          <div class="ob-oauth-actions">
-            <button type="button" class="ob-primary-btn" data-ob-action="start-codex-oauth" ${ob.busy ? 'disabled' : ''}>开始 Codex 订阅授权</button>
-          </div>
-        `}
-      </div>`;
+        </div>`;
+      } else {
+        const waiting = ob.oauthState && ['starting', 'waiting'].includes(ob.oauthState.status);
+        formBody = `<div class="ob-oauth-box">
+          ${waiting ? `
+            <small>${ob.oauthState.status === 'starting' ? '正在获取授权信息…' : '请在打开的浏览器页面中完成登录'}</small>
+            ${ob.oauthState.userCode ? `<div class="ob-device-code">${esc(ob.oauthState.userCode)}</div>` : ''}
+            <div class="ob-oauth-actions">
+              ${ob.oauthState.verificationUri ? `<a class="ob-primary-btn" href="${esc(ob.oauthState.verificationUri)}" target="_blank" rel="noopener noreferrer">打开登录页面</a>` : ''}
+              <button type="button" class="ob-secondary-btn" data-ob-action="cancel-oauth">取消</button>
+            </div>
+          ` : `
+            <small>未检测到本机 Codex 登录，你可以登录 Codex 订阅账号，或在上方改用 DeepSeek / OpenAI / Anthropic 等 API Key。</small>
+            <div class="ob-oauth-actions">
+              <button type="button" class="ob-primary-btn" data-ob-action="start-codex-oauth" ${ob.busy ? 'disabled' : ''}>登录 Codex 订阅</button>
+            </div>
+          `}
+        </div>`;
+      }
     } else {
       const isCustom = def.id === 'openai-compatible';
       const datalistId = 'ob-model-choices';
@@ -277,10 +302,14 @@
       : '';
 
     stage.innerHTML = `
+      <div class="ob-window-bar">
+        <span class="ob-window-brand">Summon Bot · 初始化</span>
+        <div class="ob-window-controls">${closeBtnHtml}</div>
+      </div>
       <header class="ob-hero">
-        <div class="ob-hero-face ${faceClass}">${avatarSvg(74)}</div>
+        <div class="ob-hero-face ${faceClass}">${avatarSvg(64)}</div>
         <h1>接入你的第一个 AI</h1>
-        <p>只需完成这一步——大脑接通并验证可用后，剩下的本机工具、工作目录与多端互联全由 Summon 自动带你搞定。</p>
+        <p>只需完成这一步——验证可用后进入 Summon 群，其余环境配置全由 AI 自动带你搞定。</p>
       </header>
       <section class="ob-card">
         ${previewActiveBanner}
@@ -326,17 +355,10 @@
     const root = document.getElementById('summon-onboarding-root');
     const desktop = window.SummonDesktop;
     if (desktop?.isIntroWindow && desktop.prepareIntroHandoff && desktop.finishIntroHandoff) {
-      const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
-      const inset = await desktop.prepareIntroHandoff({ preview }).catch(() => null);
-      if (root && inset && !reduced) {
-        root.style.setProperty('--ob-morph-top', `${inset.top}px`);
-        root.style.setProperty('--ob-morph-right', `${inset.right}px`);
-        root.style.setProperty('--ob-morph-bottom', `${inset.bottom}px`);
-        root.style.setProperty('--ob-morph-left', `${inset.left}px`);
-        requestAnimationFrame(() => root.classList.add('is-morphing'));
-        await new Promise(resolve => setTimeout(resolve, 560));
+      await desktop.prepareIntroHandoff({ preview }).catch(() => null);
+      if (root) {
         root.classList.add('is-exiting');
-        await new Promise(resolve => setTimeout(resolve, 180));
+        await new Promise(resolve => setTimeout(resolve, 260));
       }
       await desktop.finishIntroHandoff().catch(() => {});
       return;

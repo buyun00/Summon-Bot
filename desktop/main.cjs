@@ -16,6 +16,7 @@ const [releasePlatform, releaseArch] = release.updatePath.split('/').filter(Bool
 const remoteUpdateFeed = `https://github.com/${release.githubRepository}/releases/download/client-${releasePlatform}-${releaseArch}/`;
 
 const stageLabels = {
+  extract: '正在准备核心运行组件…',
   prepare: '正在准备本机环境…',
   upgrade: '正在平滑升级本机运行时…',
   gateway: '正在启动核心服务…',
@@ -395,6 +396,24 @@ ipcMain.handle('summon:preview-desktop-intro', async event => {
   return true;
 });
 
+ipcMain.handle('summon:intro-settle-window', (event, { width = 640, height = 720 } = {}) => {
+  trusted(event, { allowIntroWeb: true, allowMainWeb: false });
+  if (!introWindow || introWindow.isDestroyed()) return false;
+  const display = introDisplayBounds
+    ? screen.getDisplayMatching(introDisplayBounds)
+    : targetDisplayForMain();
+  const area = display.workArea;
+  const w = Math.min(Math.max(480, Math.round(Number(width) || 640)), area.width - 32);
+  const h = Math.min(Math.max(520, Math.round(Number(height) || 720)), area.height - 32);
+  const x = Math.round(area.x + (area.width - w) / 2);
+  const y = Math.round(area.y + (area.height - h) / 2);
+  try { introWindow.setAlwaysOnTop(false); } catch {}
+  try { introWindow.setMovable(true); } catch {}
+  introWindow.setBounds({ x, y, width: w, height: h });
+  introWindow.focus();
+  return { x, y, width: w, height: h };
+});
+
 ipcMain.handle('summon:intro-prepare-handoff', async (event, { preview = false } = {}) => {
   trusted(event, { allowIntroWeb: true, allowMainWeb: false });
   if (!connection?.origin) return null;
@@ -409,15 +428,9 @@ ipcMain.handle('summon:intro-prepare-handoff', async (event, { preview = false }
   }
   main.webContents.send('summon:start-onboarding-focus', { preview: Boolean(preview) });
   if (main.isMinimized()) main.restore();
-  main.showInactive();
-  const displayBounds = introDisplayBounds || display.bounds;
-  const targetBounds = main.getBounds();
-  return {
-    top: Math.max(0, targetBounds.y - displayBounds.y),
-    left: Math.max(0, targetBounds.x - displayBounds.x),
-    right: Math.max(0, (displayBounds.x + displayBounds.width) - (targetBounds.x + targetBounds.width)),
-    bottom: Math.max(0, (displayBounds.y + displayBounds.height) - (targetBounds.y + targetBounds.height)),
-  };
+  main.show();
+  main.focus();
+  return { ready: true };
 });
 
 ipcMain.handle('summon:intro-finish-handoff', event => {

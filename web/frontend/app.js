@@ -4637,6 +4637,7 @@ renderTopbar();
   });
   if (window.SummonDesktop?.isIntroWindow) {
     ui.loading = false;
+    await handshake().catch(() => {});
     window.SummonOnboarding?.startDesktopIntro?.({ preview: window.SummonDesktop.introMode === 'preview' });
     return;
   }
