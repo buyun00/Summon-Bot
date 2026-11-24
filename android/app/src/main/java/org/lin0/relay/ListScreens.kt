@@ -53,6 +53,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
@@ -274,6 +275,7 @@ fun ConversationListScreen(
     var showSettings by remember { mutableStateOf(false) }
     var showDisplay by remember { mutableStateOf(false) }
     var showHidden by remember { mutableStateOf(false) }
+    var showArchived by remember { mutableStateOf(false) }
     var detailsTarget by remember { mutableStateOf<HomeDetailsTarget?>(null) }
     var actionEntry by remember { mutableStateOf<HomeEntry?>(null) }
     var swipedRowKey by remember { mutableStateOf<String?>(null) }
@@ -553,6 +555,38 @@ fun ConversationListScreen(
                             }
                         }
                     }
+                    if (store.archivedRooms.isNotEmpty()) {
+                        item(key = "archive-assistant-row") {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable { showArchived = true }
+                                    .padding(horizontal = 20.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                Box(
+                                    Modifier.size(44.dp).clip(CircleShape).background(palette.surface),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Icon(Icons.Filled.Archive, null, tint = palette.textSecondary, modifier = Modifier.size(20.dp))
+                                }
+                                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                        Text("归档群助手", style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium))
+                                        Text("${store.archivedRooms.size}", style = MaterialTheme.typography.labelSmall, color = palette.textSecondary)
+                                    }
+                                    Text(
+                                        store.archivedRooms.take(3).joinToString("、") { it.name },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = palette.textSecondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                        }
+                    }
                     if (systemEntries.isNotEmpty()) {
                         val systemCollapsed = "__system__" in org.collapsedIds
                         item(key = "folder-header-system") {
@@ -732,6 +766,41 @@ fun ConversationListScreen(
                 }
             }
         }
+    }
+
+    if (showArchived) {
+        AlertDialog(
+            onDismissRequest = { showArchived = false },
+            title = { Text("归档群助手") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    store.archivedRooms.forEach { archivedRoom ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable {
+                                    showArchived = false
+                                    onOpenRoom(archivedRoom.id)
+                                }
+                                .padding(horizontal = 6.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            RoomAvatar(archivedRoom, store.bots, 36.dp, showOutline = false)
+                            Column(Modifier.weight(1f)) {
+                                Text(archivedRoom.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text("${archivedRoom.members.size} 位成员", style = MaterialTheme.typography.labelSmall, color = palette.textSecondary)
+                            }
+                            TextButton(onClick = {
+                                scope.launch { runCatching { store.restoreRoom(archivedRoom) } }
+                            }) { Text("恢复") }
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showArchived = false }) { Text("关闭") } },
+        )
     }
 
     actionEntry?.let { entry ->

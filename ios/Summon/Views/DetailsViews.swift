@@ -415,6 +415,33 @@ struct RoomDetailsView: View {
 
                     if let error { InlineError(message: error) }
 
+                    if room.archivable == true {
+                        Button {
+                            guard !leaving else { return }
+                            leaving = true
+                            Task {
+                                defer { leaving = false }
+                                do {
+                                    if room.isArchived { try await store.restoreRoom(room) }
+                                    else { try await store.archiveRoom(room) }
+                                    dismiss()
+                                }
+                                catch { self.error = error.localizedDescription }
+                            }
+                        } label: {
+                            Text(room.isArchived ? "移出归档" : "归档群聊")
+                                .summonFont(.subheadline, weight: .medium)
+                                .foregroundStyle(.primary)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 14)
+                                .background(SummonTheme.surfaceElevated, in: RoundedRectangle(cornerRadius: 16))
+                                .overlay { RoundedRectangle(cornerRadius: 16).stroke(SummonTheme.bubbleStroke, lineWidth: 0.7) }
+                        }
+                        .buttonStyle(SummonPressStyle())
+                        .disabled(!canEdit || leaving)
+                        .padding(.top, 6)
+                    }
+
                     // Destructive leave button
                     if room.isGroup && room.members.contains("user") {
                         Button { deletingGroup = false; confirmsLeave = true } label: {

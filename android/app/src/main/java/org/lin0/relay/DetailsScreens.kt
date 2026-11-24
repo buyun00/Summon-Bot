@@ -479,6 +479,32 @@ fun RoomDetailsScreen(store: SummonStore, roomID: String, onBack: () -> Unit) {
 
                 error?.let { SummonError(it) }
 
+                if (room.archivable) {
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = palette.surfaceElevated,
+                        border = BorderStroke(0.7.dp, palette.bubbleStroke),
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp).clip(RoundedCornerShape(16.dp))
+                            .clickable(enabled = canEdit && !leaving) {
+                                leaving = true
+                                scope.launch {
+                                    try {
+                                        if (room.isArchived) store.restoreRoom(room) else store.archiveRoom(room)
+                                        onBack()
+                                    } catch (failure: Exception) {
+                                        error = failure.localizedMessage
+                                    } finally {
+                                        leaving = false
+                                    }
+                                }
+                            },
+                    ) {
+                        Box(Modifier.fillMaxWidth().padding(vertical = 14.dp), contentAlignment = Alignment.Center) {
+                            Text(if (room.isArchived) "移出归档" else "归档群聊", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium))
+                        }
+                    }
+                }
+
                 if (room.isGroup && "user" in room.members) {
                     Surface(
                         shape = RoundedCornerShape(16.dp),

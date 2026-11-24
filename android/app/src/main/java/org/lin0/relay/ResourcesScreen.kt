@@ -106,12 +106,12 @@ fun ResourcesScreen(store: SummonStore, section: ResourceSection, onBack: () -> 
             }
             ResourceSection.Files -> items.forEach { item ->
                 val ref = SummonReference.parse(item["ref"]) ?: return@forEach
-                SummonRecordRow(item["path"].string ?: store.label(ref), "修订 " + item["revision"].stringValue) { detail = ref }
+                SummonRecordRow(item["path"].string ?: store.label(ref), "v" + item["revision"].stringValue) { detail = ref }
             }
             ResourceSection.Wakeups -> {
                 val (basic, extra) = items.partition { it["rule"]["kind"].string == "room_base" }
-                WakeupRows(store, "基础关注", basic) { editor = EditorRoute("wakeup", it) }
-                WakeupRows(store, "自定义订阅与提醒", extra) { editor = EditorRoute("wakeup", it) }
+                WakeupRows(store, "默认接收", basic) { editor = EditorRoute("wakeup", it) }
+                WakeupRows(store, "定时与提醒", extra) { editor = EditorRoute("wakeup", it) }
             }
             ResourceSection.Connections -> {
                 Text("执行连接", style = MaterialTheme.typography.titleMedium)
@@ -343,7 +343,7 @@ private fun FileDetail(store: SummonStore, ref: SummonReference, room: SummonRef
                 "room" -> " · 本群共享资料"
                 else -> ""
             }
-            Text((if (rev == latest) "修订 v$rev（当前正式版）" else "修订 v$rev（历史快照 · 最新 v$latest）") + scopeLabel, color = Color.Gray)
+            Text((if (rev == latest) "v$rev" else "v$rev（历史版本 · 最新 v$latest）") + scopeLabel, color = Color.Gray)
         }
         val revisions = value["revisions"].array.orEmpty()
         if (revisions.size > 1) {
@@ -385,7 +385,7 @@ private fun FileDetail(store: SummonStore, ref: SummonReference, room: SummonRef
             }
         }
         val rawSources = value["sources"].array.orEmpty()
-        if (rawSources.isNotEmpty()) Text("修订来源", style = MaterialTheme.typography.titleSmall)
+        if (rawSources.isNotEmpty()) Text("来源", style = MaterialTheme.typography.titleSmall)
         rawSources.forEach { src ->
             if (src["access"].string == "redacted") {
                 Text("受限来源（" + src["id"].stringValue.take(8) + "）", color = Color.Gray, style = MaterialTheme.typography.bodySmall)

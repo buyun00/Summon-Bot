@@ -191,6 +191,18 @@ enum SummonFormat {
         return monthDayFormatter.string(from: date)
     }
 
+    static func dividerTime(_ value: String?) -> String {
+        guard let date = SummonDate.parse(value) else { return "" }
+        let hm = todayFormatter.string(from: date)
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) { return hm }
+        if calendar.isDateInYesterday(date) { return "昨天 \(hm)" }
+        if let weekAgo = calendar.date(byAdding: .day, value: -6, to: calendar.startOfDay(for: Date())), date >= weekAgo {
+            return "\(weekdayFormatter.string(from: date)) \(hm)"
+        }
+        return "\(monthDayFormatter.string(from: date)) \(hm)"
+    }
+
     static func status(_ value: String) -> String {
         ["queued": "等待投递", "pending": "等待确认", "submitted": "已提交", "accepted": "已受理",
          "received": "Bot 已接收", "processed": "本轮已处理", "access_revoked": "访问已撤销",

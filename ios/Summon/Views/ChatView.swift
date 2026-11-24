@@ -120,7 +120,7 @@ struct ChatView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 20) {
+                LazyVStack(alignment: .leading, spacing: 0) {
                     if messages.isEmpty && !store.isLoading {
                         ContentUnavailableView("开始聊天", systemImage: "bubble.left.and.text.bubble.right", description: Text("发一条消息给 \(title)。"))
                             .padding(.top, 70)
@@ -128,14 +128,35 @@ struct ChatView: View {
                     if store.canLoadOlder(roomID) {
                         Button("加载更早消息") { Task { await store.loadRoom(roomID, older: true) } }
                             .buttonStyle(.bordered).disabled(!store.protocolReady)
+                            .padding(.bottom, 12)
                     }
                     ForEach(Array(messages.enumerated()), id: \.element.id) { index, message in
-                        let previousID = index > 0 ? messages[index - 1].id : nil
-                        MessageRow(message: message, roomID: roomID, previousID: previousID) {
-                            store.setDraftReply(message.id, for: roomID)
-                            composing = true
-                        }.id(message.id)
-                            .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 10)), removal: .identity))
+                        let previous = index > 0 ? messages[index - 1] : nil
+                        let currentDate = SummonDate.parse(message.createdAt)
+                        let prevDate = SummonDate.parse(previous?.createdAt)
+                        let gapSeconds = (currentDate != nil && prevDate != nil) ? currentDate!.timeIntervalSince(prevDate!) : nil
+                        let showTimeDivider = index == 0 || (gapSeconds != nil && gapSeconds! >= 300)
+                        let grouped = !showTimeDivider && previous?.senderId == message.senderId && (gapSeconds == nil || (gapSeconds! >= 0 && gapSeconds! <= 120))
+                        VStack(spacing: 0) {
+                            if showTimeDivider {
+                                let label = SummonFormat.dividerTime(message.createdAt)
+                                if !label.isEmpty {
+                                    Text(label)
+                                        .summonFont(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.top, index == 0 ? 4 : 18)
+                                        .padding(.bottom, 12)
+                                }
+                            }
+                            MessageRow(message: message, roomID: roomID, previousID: previous?.id, grouped: grouped) {
+                                store.setDraftReply(message.id, for: roomID)
+                                composing = true
+                            }
+                            .padding(.top, showTimeDivider ? 0 : (grouped ? 6 : 16))
+                        }
+                        .id(message.id)
+                        .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 10)), removal: .identity))
                     }
                     Color.clear.frame(height: 18).id("conversation-bottom")
                 }
@@ -385,7 +406,30 @@ struct ChatView: View {
         .transition(.opacity.combined(with: .offset(y: reduceMotion ? 0 : 8)))
     }
 
+    @ViewBuilder
     private var composer: some View {
+        if let room, room.isArchived {
+            HStack(spacing: 12) {
+                Label("该群聊已归档", systemImage: "archivebox")
+                    .summonFont(.footnote)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("移出归档") {
+                    Task {
+                        do { try await store.restoreRoom(room); localError = nil }
+                        catch { localError = error.localizedDescription }
+                    }
+                }
+                .summonFont(.footnote, weight: .medium)
+                .buttonStyle(.glass)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(SummonTheme.surface, in: RoundedRectangle(cornerRadius: 18))
+            .overlay { RoundedRectangle(cornerRadius: 18).stroke(SummonTheme.bubbleStroke, lineWidth: 0.7) }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 10)
+        } else {
         VStack(alignment: .leading, spacing: 8) {
             if let error = localError { InlineError(message: error).padding(.horizontal, 20) }
             if let notice = store.protocolNotice {
@@ -629,6 +673,7 @@ struct ChatView: View {
             .allowsHitTesting(false)
         }
         .animation(reduceMotion ? nil : .spring(response: 0.34, dampingFraction: 0.82), value: activeBotItems)
+        }
     }
 
     private func draftToken(_ title: String, icon: String, remove: @escaping () -> Void) -> some View {
@@ -698,6 +743,7 @@ private struct MessageRow: View {
     let message: SummonMessage
     let roomID: String
     let previousID: String?
+    let grouped: Bool
     let onReply: () -> Void
 
     private var bot: SummonBot? { store.bots.first { $0.id == message.senderId } }
@@ -709,14 +755,20 @@ private struct MessageRow: View {
         HStack(alignment: .top, spacing: 10) {
             if message.isOwn { Spacer(minLength: 40) }
             if !message.isOwn {
-                if let bot { MemberAvatar(bot: bot, size: 28) }
-                else { Image(systemName: "bolt.circle").foregroundStyle(.secondary).frame(width: 28, height: 28) }
+                if grouped {
+                    Color.clear.frame(width: 28, height: 1)
+                } else if let bot {
+                    MemberAvatar(bot: bot, size: 28)
+                } else {
+                    Image(systemName: "bolt.circle").foregroundStyle(.secondary).frame(width: 28, height: 28)
+                }
             }
-            VStack(alignment: message.isOwn ? .trailing : .leading, spacing: 7) {
-                HStack(spacing: 8) {
-                    Text(store.name(for: message.senderId)).summonFont(.caption, weight: .medium)
-                    Text(SummonFormat.time(message.createdAt)).summonFont(.caption2).foregroundStyle(.tertiary)
-                }.foregroundStyle(.secondary)
+            VStack(alignment: message.isOwn ? .trailing : .leading, spacing: 6) {
+                if !message.isOwn && !grouped {
+                    Text(store.name(for: message.senderId))
+                        .summonFont(.caption, weight: .medium)
+                        .foregroundStyle(.secondary)
+                }
                 if let replyID = message.replyTo, replyID != previousID {
                     if let quoted = store.messagesForRoom(roomID).first(where: { $0.id == replyID }) {
                         HStack(spacing: 8) {

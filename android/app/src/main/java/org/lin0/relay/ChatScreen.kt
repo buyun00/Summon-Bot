@@ -15,9 +15,11 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
@@ -71,6 +73,7 @@ import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AlternateEmail
+import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
@@ -82,7 +85,6 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Link
-import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Visibility
@@ -336,9 +338,26 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit, onOpenMod
                 }
             }
             itemsIndexed(messages, key = { _, it -> it.id }) { index, message ->
-                val previousId = if (index > 0) messages[index - 1].id else null
-                MessageRow(store, roomID, message, previousId) { store.setDraftReply(message.id, roomID) }
-                Spacer(Modifier.height(18.dp))
+                val previous = if (index > 0) messages[index - 1] else null
+                val currentInstant = parseSummonDate(message.createdAt)
+                val prevInstant = parseSummonDate(previous?.createdAt)
+                val gapSeconds = if (currentInstant != null && prevInstant != null) currentInstant.epochSecond - prevInstant.epochSecond else null
+                val showTimeDivider = index == 0 || (gapSeconds != null && gapSeconds >= 300L)
+                val grouped = !showTimeDivider && previous?.senderId == message.senderId && (gapSeconds == null || gapSeconds in 0L..120L)
+                if (showTimeDivider) {
+                    val label = formatSummonDividerTime(message.createdAt)
+                    if (label.isNotEmpty()) {
+                        Box(
+                            Modifier.fillMaxWidth().padding(top = if (index == 0) 4.dp else 18.dp, bottom = 12.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(label, style = MaterialTheme.typography.labelSmall, color = palette.textTertiary)
+                        }
+                    }
+                } else {
+                    Spacer(Modifier.height(if (grouped) 6.dp else 16.dp))
+                }
+                MessageRow(store, roomID, message, previous?.id, grouped) { store.setDraftReply(message.id, roomID) }
             }
         }
 
@@ -764,6 +783,29 @@ fun ChatScreen(store: SummonStore, roomID: String, onBack: () -> Unit, onOpenMod
                 }
             }
             when {
+                room != null && room.isArchived -> Surface(
+                    shape = RoundedCornerShape(18.dp),
+                    color = palette.glassPill,
+                    border = BorderStroke(0.7.dp, palette.bubbleStroke),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp),
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(Icons.Filled.Archive, null, tint = palette.textSecondary, modifier = Modifier.size(18.dp))
+                            Text("该群聊已归档", style = MaterialTheme.typography.bodySmall, color = palette.textSecondary)
+                        }
+                        TextButton(onClick = {
+                            scope.launch {
+                                runCatching { store.restoreRoom(room) }
+                                    .onFailure { localError = it.localizedMessage }
+                            }
+                        }) { Text("移出归档") }
+                    }
+                }
                 room != null && !room.members.contains("user") -> Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.Visibility, null, tint = palette.textSecondary)
                     Spacer(Modifier.width(8.dp))
@@ -1038,9 +1080,16 @@ private fun CodeBlockCard(language: String, code: String) {
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
 @Composable
-private fun MessageRow(store: SummonStore, roomID: String, message: SummonMessage, previousId: String? = null, onReply: () -> Unit) {
+private fun MessageRow(
+    store: SummonStore,
+    roomID: String,
+    message: SummonMessage,
+    previousId: String? = null,
+    grouped: Boolean = false,
+    onReply: () -> Unit,
+) {
     val palette = LocalSummonPalette.current
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -1057,44 +1106,20 @@ private fun MessageRow(store: SummonStore, roomID: String, message: SummonMessag
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (message.isOwn) Alignment.End else Alignment.Start) {
         Row(verticalAlignment = Alignment.Top) {
             if (!message.isOwn) {
-                if (bot != null) MemberAvatar(bot, 28.dp) else Icon(Icons.Filled.Info, null, Modifier.size(28.dp), tint = palette.textSecondary)
-                Spacer(Modifier.width(10.dp))
+                if (grouped) {
+                    Spacer(Modifier.width(38.dp))
+                } else {
+                    if (bot != null) MemberAvatar(bot, 28.dp) else Icon(Icons.Filled.Info, null, Modifier.size(28.dp), tint = palette.textSecondary)
+                    Spacer(Modifier.width(10.dp))
+                }
             }
+            Box(Modifier.weight(1f, fill = false)) {
             Column(
                 horizontalAlignment = if (message.isOwn) Alignment.End else Alignment.Start,
                 verticalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.weight(1f, fill = false),
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (!message.isOwn && !grouped) {
                     Text(store.name(message.senderId), style = MaterialTheme.typography.labelMedium, color = palette.textSecondary)
-                    Text(formatSummonTime(message.createdAt), style = MaterialTheme.typography.labelSmall, color = palette.textTertiary)
-                    if (saved) {
-                        Box {
-                            Icon(
-                                Icons.Filled.MoreHoriz,
-                                "消息操作",
-                                tint = palette.textTertiary,
-                                modifier = Modifier.size(18.dp).clip(CircleShape).clickable { menu = true },
-                            )
-                            DropdownMenu(menu, { menu = false }) {
-                                DropdownMenuItem(text = { Text("回复") }, onClick = { menu = false; onReply() })
-                                if (room != null && store.protocolReady) {
-                                    val pinned = ref in room.pins
-                                    DropdownMenuItem(text = { Text(if (pinned) "取消置顶" else "置顶") }, onClick = {
-                                        menu = false
-                                        scope.launch {
-                                            try { store.setPin(ref, room, pinned); error = null }
-                                            catch (failure: Exception) { error = failure.localizedMessage }
-                                        }
-                                    })
-                                }
-                                if (message.content.isNotEmpty()) {
-                                    DropdownMenuItem(text = { Text("复制") }, onClick = { menu = false; clipboard.setText(AnnotatedString(message.content)) })
-                                    DropdownMenuItem(text = { Text("分享") }, onClick = { menu = false; shareText(context, message.content) })
-                                }
-                            }
-                        }
-                    }
                 }
                 message.replyTo?.takeIf { it != previousId }?.let { id ->
                     val quoted = store.messagesForRoom(roomID).firstOrNull { it.id == id }
@@ -1143,9 +1168,12 @@ private fun MessageRow(store: SummonStore, roomID: String, message: SummonMessag
                         shape = bubbleShape,
                         color = if (message.isOwn) palette.userBubble else palette.botBubble,
                         border = if (message.isOwn) null else BorderStroke(0.7.dp, palette.bubbleStroke),
+                        modifier = Modifier.clip(bubbleShape).combinedClickable(
+                            onClick = {},
+                            onLongClick = { if (saved) menu = true },
+                        ),
                     ) {
-                        SelectionContainer {
-                            Column(Modifier.padding(horizontal = 14.dp, vertical = 11.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Column(Modifier.padding(horizontal = 14.dp, vertical = 11.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                 segments.forEach { segment ->
                                     when (segment) {
                                         is AndroidMessageSegment.Plain -> LinkedPlainText(
@@ -1173,7 +1201,6 @@ private fun MessageRow(store: SummonStore, roomID: String, message: SummonMessag
                                     }
                                 }
                             }
-                        }
                     }
                 }
                 if (!message.isOwn && message.prompt != null && !message.prompt["questions"].array.isNullOrEmpty()) {
@@ -1212,6 +1239,26 @@ private fun MessageRow(store: SummonStore, roomID: String, message: SummonMessag
                     }
                 }
                 error?.let { Text(it, color = palette.warn, style = MaterialTheme.typography.bodySmall) }
+            }
+            if (saved) {
+                DropdownMenu(menu, { menu = false }) {
+                    DropdownMenuItem(text = { Text("回复") }, onClick = { menu = false; onReply() })
+                    if (room != null && store.protocolReady) {
+                        val pinned = ref in room.pins
+                        DropdownMenuItem(text = { Text(if (pinned) "取消置顶" else "置顶") }, onClick = {
+                            menu = false
+                            scope.launch {
+                                try { store.setPin(ref, room, pinned); error = null }
+                                catch (failure: Exception) { error = failure.localizedMessage }
+                            }
+                        })
+                    }
+                    if (message.content.isNotEmpty()) {
+                        DropdownMenuItem(text = { Text("复制") }, onClick = { menu = false; clipboard.setText(AnnotatedString(message.content)) })
+                        DropdownMenuItem(text = { Text("分享") }, onClick = { menu = false; shareText(context, message.content) })
+                    }
+                }
+            }
             }
         }
     }

@@ -110,8 +110,8 @@ struct SummonObjectList: View {
                     }
                 }
             case .wakeups:
-                wakeupSection("基础关注", items: items.filter { $0["rule"]["kind"].string == "room_base" })
-                wakeupSection("自定义订阅与提醒", items: items.filter { $0["rule"]["kind"].string != "room_base" })
+                wakeupSection("默认接收", items: items.filter { $0["rule"]["kind"].string == "room_base" })
+                wakeupSection("定时与提醒", items: items.filter { $0["rule"]["kind"].string != "room_base" })
             case .connections:
                 connectionSections
             }
@@ -388,7 +388,7 @@ struct SummonFileView: View {
             if let path = value["path"].string { LabeledContent("文件", value: path) }
             if let revision = value["revision"].int {
                 let latest = value["latest_revision"].int ?? revision
-                LabeledContent("修订", value: revision == latest ? "v\(revision)（当前正式版）" : "v\(revision)（历史快照 · 最新 v\(latest)）")
+                LabeledContent("版本", value: revision == latest ? "v\(revision)" : "v\(revision)（历史版本 · 最新 v\(latest)）")
             }
             if let spaceKind = value["space"]["kind"].string {
                 LabeledContent("适用范围", value: spaceKind == "bot" ? "私有记忆/资料" : (spaceKind == "room" ? "本群共享资料" : spaceKind))
@@ -409,7 +409,7 @@ struct SummonFileView: View {
             }
             let rawSources = value["sources"].array ?? []
             if !rawSources.isEmpty {
-                Section("修订来源") {
+                Section("来源") {
                     ForEach(rawSources, id: \.prettyPrinted) { src in
                         if src["access"].string == "redacted" {
                             Text("受限来源（\(String(src["id"].stringValue.prefix(8)))）").foregroundStyle(.secondary)

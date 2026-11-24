@@ -148,6 +148,7 @@ struct ConversationListView: View {
     @State private var showDisplay = false
     @State private var showUsage = false
     @State private var showHidden = false
+    @State private var showArchived = false
     @State private var showProfileMenu = false
     @State private var profileDestination: ProfileDestination?
     @State private var quotaItem: SummonJSONValue?
@@ -312,6 +313,38 @@ struct ConversationListView: View {
                         }
                     }
 
+                    if !store.archivedRooms.isEmpty {
+                        Button { showArchived = true } label: {
+                            HStack(spacing: 12) {
+                                ZStack {
+                                    Circle().fill(SummonTheme.surface).frame(width: 44, height: 44)
+                                    Image(systemName: "archivebox").font(.system(size: 18, weight: .medium)).foregroundStyle(.secondary)
+                                }
+                                VStack(alignment: .leading, spacing: 3) {
+                                    HStack {
+                                        Text("归档群助手")
+                                            .summonFont(.body, weight: .medium)
+                                            .foregroundStyle(.primary)
+                                        Spacer()
+                                        Text("\(store.archivedRooms.count)")
+                                            .summonFont(.caption2, weight: .medium)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Text(store.archivedRooms.prefix(3).map(\.name).joined(separator: "、"))
+                                        .summonFont(.footnote)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                            }
+                            .padding(.vertical, 6)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .listRowInsets(EdgeInsets(top: 4, leading: 20, bottom: 4, trailing: 20))
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                    }
+
                     if !systemFolderEntries.isEmpty {
                         folderHeaderRow(id: "__system__", title: "系统", customFolder: nil)
                         if !org.isCollapsed("__system__") {
@@ -455,6 +488,43 @@ struct ConversationListView: View {
             .summonSheet(isPresented: $showHidden) {
                 HiddenConversationsSheet(entries: hiddenEntries) { key in
                     org.setHidden(key, hidden: false)
+                }
+            }
+            .summonSheet(isPresented: $showArchived) {
+                NavigationStack {
+                    List {
+                        ForEach(store.archivedRooms) { room in
+                            HStack(spacing: 12) {
+                                Button {
+                                    showArchived = false
+                                    path.append(.room(room.id))
+                                } label: {
+                                    HStack(spacing: 12) {
+                                        RoomAvatar(room: room, size: 40, showOutline: false)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(room.name).summonFont(.body, weight: .medium).foregroundStyle(.primary).lineLimit(1)
+                                            Text("\(room.members.count) 位成员").summonFont(.caption).foregroundStyle(.secondary)
+                                        }
+                                        Spacer()
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                Button("恢复") {
+                                    Task { try? await store.restoreRoom(room) }
+                                }
+                                .summonFont(.caption, weight: .medium)
+                                .buttonStyle(.bordered)
+                            }
+                        }
+                    }
+                    .navigationTitle("归档群助手")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("关闭") { showArchived = false }
+                        }
+                    }
                 }
             }
             .summonSheet(item: $detailsTarget) { target in

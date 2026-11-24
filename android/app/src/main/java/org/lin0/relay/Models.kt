@@ -236,15 +236,20 @@ data class SummonRoom(
     val createdAt: String?,
     val updatedAt: String?,
     val deletable: Boolean = false,
+    val archivable: Boolean = false,
+    val archivedAt: String? = null,
     val leadBotId: String? = null,
     val mode: String? = null,
 ) {
+    val isArchived: Boolean get() = !archivedAt.isNullOrBlank()
     val isGroup: Boolean get() = if (mode != null) mode != "direct" else members.size != 2 || "user" !in members
 
     fun toJson(): SummonJson = SummonJson.obj(
         "id" to SummonJson.Str(id), "name" to SummonJson.Str(name), "members" to members.toJsonStrings(),
         "mode" to mode.strOrNull(),
         "deletable" to SummonJson.Bool(deletable),
+        "archivable" to SummonJson.Bool(archivable),
+        "archived_at" to archivedAt.strOrNull(),
         "lead_bot_id" to leadBotId.strOrNull(),
         "pins" to SummonJson.Arr(pins.map(SummonReference::toJson)), "revision" to revision.numOrNull(),
         "lastMessage" to (lastMessage?.toJson() ?: SummonJson.Null),
@@ -254,6 +259,8 @@ data class SummonRoom(
     companion object {
         fun parse(json: SummonJson, stored: Boolean = false): SummonRoom = SummonRoom(
             deletable = json["deletable"].bool == true,
+            archivable = json["archivable"].bool == true,
+            archivedAt = json["archived_at"].string,
             id = json["id"].string ?: throw SummonApiException.invalidResponse,
             name = json["name"].string ?: "会话",
             members = json["members"].array.orEmpty().mapNotNull { it.string },

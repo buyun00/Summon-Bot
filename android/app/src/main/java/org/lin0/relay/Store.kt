@@ -27,6 +27,8 @@ class SummonStore(private val app: Context) {
         private set
     var rooms by mutableStateOf<List<SummonRoom>>(emptyList())
         private set
+    var archivedRooms by mutableStateOf<List<SummonRoom>>(emptyList())
+        private set
     var pendingMessages by mutableStateOf<List<SummonPendingMessage>>(emptyList())
         private set
     var draftAttachments by mutableStateOf<Map<String, List<SummonAttachment>>>(emptyMap())
@@ -183,6 +185,7 @@ class SummonStore(private val app: Context) {
             historyEpoch = epoch
             bots = (state["bots"].array ?: throw SummonApiException.invalidResponse).map(SummonBot::parse)
             rooms = (state["rooms"].array ?: throw SummonApiException.invalidResponse).map { SummonRoom.parse(it) }
+            archivedRooms = state["archivedRooms"].array.orEmpty().map { SummonRoom.parse(it) }
             if (state["modelSettings"].obj != null) modelSummary = state["modelSettings"]
             errorMessage = null
             lastSyncAt = System.currentTimeMillis()
@@ -239,7 +242,7 @@ class SummonStore(private val app: Context) {
         return remote + pendingMessages.filter { it.roomID == id && it.clientID !in confirmed }.map(SummonPendingMessage::message)
     }
 
-    fun room(id: String): SummonRoom? = rooms.firstOrNull { it.id == id }
+    fun room(id: String): SummonRoom? = rooms.firstOrNull { it.id == id } ?: archivedRooms.firstOrNull { it.id == id }
     fun bot(id: String): SummonBot? = bots.firstOrNull { it.id == id }
     fun name(id: String): String = when (id) {
         "user" -> settings.userName
@@ -429,6 +432,18 @@ class SummonStore(private val app: Context) {
         removeLocalRoom(room.id)
     }
 
+    suspend fun archiveRoom(room: SummonRoom) {
+        val revision = room.revision ?: throw SummonApiException.invalidResponse
+        request(roomPath(room.id) + "/archive", "POST", SummonJson.obj("revision" to revision.numOrNull()))
+        refresh()
+    }
+
+    suspend fun restoreRoom(room: SummonRoom) {
+        val revision = room.revision ?: throw SummonApiException.invalidResponse
+        request(roomPath(room.id) + "/restore", "POST", SummonJson.obj("revision" to revision.numOrNull()))
+        refresh()
+    }
+
     suspend fun deleteGroup(room: SummonRoom) {
         val revision = room.revision ?: throw SummonApiException.invalidResponse
         request(roomPath(room.id), "DELETE", SummonJson.obj("revision" to revision.numOrNull()))
@@ -437,6 +452,7 @@ class SummonStore(private val app: Context) {
 
     private fun removeLocalRoom(id: String) {
         rooms = rooms.filterNot { it.id == id }
+        archivedRooms = archivedRooms.filterNot { it.id == id }
         if (activeRoomID == id) activeRoomID = null
         schedulePersistence()
     }
@@ -778,7 +794,7 @@ class SummonStore(private val app: Context) {
     }
 
     private fun clearServerState() {
-        bots = emptyList(); rooms = emptyList(); messageHistory = emptyMap(); deliveries = emptyMap(); messageSummaries = emptyMap(); cursors = emptyMap(); roomExecutions = emptyMap()
+        bots = emptyList(); rooms = emptyList(); archivedRooms = emptyList(); messageHistory = emptyMap(); deliveries = emptyMap(); messageSummaries = emptyMap(); cursors = emptyMap(); roomExecutions = emptyMap()
         roomActivities = emptyMap(); roomSuspendedRuns = emptyMap(); roomMessageStates = emptyMap()
         pendingMessages = emptyList(); drafts = emptyMap(); draftAttachments = emptyMap(); draftMentions = emptyMap()
         draftReplies = emptyMap(); draftReferences = emptyMap(); activeRoomID = null; historyEpoch = null; lastSyncAt = null

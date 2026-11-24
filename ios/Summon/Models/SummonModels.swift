@@ -210,6 +210,8 @@ struct SummonMessage: Codable, Identifiable, Equatable, Sendable {
 
 struct SummonRoom: Codable, Identifiable, Equatable, Sendable {
     var deletable: Bool?
+    var archivable: Bool?
+    var archived_at: String?
     var id: String
     var name: String
     var mode: String?
@@ -221,6 +223,7 @@ struct SummonRoom: Codable, Identifiable, Equatable, Sendable {
     var createdAt: String?
     var updatedAt: String?
 
+    var isArchived: Bool { !(archived_at ?? "").isEmpty }
     var isGroup: Bool {
         if let mode { return mode != "direct" }
         return members.count != 2 || !members.contains("user")
@@ -263,6 +266,7 @@ struct SummonState: Decodable, Sendable {
     var historyEpoch: String?
     var bots: [SummonBot]
     var rooms: [SummonRoom]
+    var archivedRooms: [SummonRoom]?
     var modelSettings: SummonJSONValue?
 }
 

@@ -8,6 +8,7 @@ final class SummonStore {
     private(set) var settings = SummonConnectionSettings()
     private(set) var bots: [SummonBot] = []
     private(set) var rooms: [SummonRoom] = []
+    private(set) var archivedRooms: [SummonRoom] = []
     private(set) var pendingMessages: [SummonPendingMessage] = []
     private(set) var drafts: [String: String] = [:]
     private(set) var draftAttachments: [String: [SummonAttachment]] = [:]
@@ -194,6 +195,7 @@ final class SummonStore {
             historyEpoch = state.historyEpoch
             bots = state.bots
             rooms = state.rooms
+            archivedRooms = state.archivedRooms ?? []
             if let model = state.modelSettings { modelSummary = model }
             errorMessage = nil
             lastSyncAt = Date()
@@ -260,7 +262,7 @@ final class SummonStore {
     }
 
     func bot(id: String) -> SummonBot? { bots.first { $0.id == id } }
-    func room(id: String) -> SummonRoom? { rooms.first { $0.id == id } }
+    func room(id: String) -> SummonRoom? { rooms.first { $0.id == id } ?? archivedRooms.first { $0.id == id } }
     func name(for id: String) -> String {
         switch id {
         case "user": settings.userName
@@ -494,6 +496,18 @@ final class SummonStore {
         removeLocalRoom(room.id)
     }
 
+    func archiveRoom(_ room: SummonRoom) async throws {
+        guard let revision = room.revision else { throw SummonAPIError.invalidResponse }
+        _ = try await request(path: Self.roomPath(room.id) + "/archive", method: "POST", body: .object(["revision": .number(Double(revision))]))
+        await refresh()
+    }
+
+    func restoreRoom(_ room: SummonRoom) async throws {
+        guard let revision = room.revision else { throw SummonAPIError.invalidResponse }
+        _ = try await request(path: Self.roomPath(room.id) + "/restore", method: "POST", body: .object(["revision": .number(Double(revision))]))
+        await refresh()
+    }
+
     func deleteGroup(_ room: SummonRoom) async throws {
         guard let revision = room.revision else { throw SummonAPIError.invalidResponse }
         _ = try await request(path: Self.roomPath(room.id), method: "DELETE", body: .object(["revision": .number(Double(revision))]))
@@ -502,6 +516,7 @@ final class SummonStore {
 
     private func removeLocalRoom(_ id: String) {
         rooms.removeAll { $0.id == id }
+        archivedRooms.removeAll { $0.id == id }
         if activeRoomID == id { activeRoomID = nil }
         if selectedRoomID == id { selectedRoomID = nil }
         schedulePersistence()
@@ -833,7 +848,7 @@ final class SummonStore {
     }
 
     private func clearServerState() {
-        bots = []; rooms = []; messageHistory = [:]; deliveries = [:]; messageSummaries = [:]; cursors = [:]; roomExecutions = [:]
+        bots = []; rooms = []; archivedRooms = []; messageHistory = [:]; deliveries = [:]; messageSummaries = [:]; cursors = [:]; roomExecutions = [:]
         roomActivities = [:]; roomSuspendedRuns = [:]; roomMessageStates = [:]
         pendingMessages = []; drafts = [:]; draftAttachments = [:]; draftMentions = [:]; draftReplies = [:]; draftReferences = [:]
         selectedRoomID = nil; activeRoomID = nil; historyEpoch = nil; lastSyncAt = nil; modelSummary = .null

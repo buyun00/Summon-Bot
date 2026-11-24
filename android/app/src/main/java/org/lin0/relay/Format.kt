@@ -31,6 +31,20 @@ fun formatSummonTime(value: String?): String {
     }
 }
 
+fun formatSummonDividerTime(value: String?): String {
+    val instant = parseSummonDate(value) ?: return ""
+    val zoned = instant.atZone(ZoneId.systemDefault())
+    val hm = fmtTime.format(zoned)
+    val date = zoned.toLocalDate()
+    val today = LocalDate.now()
+    return when {
+        date == today -> hm
+        date == today.minusDays(1) -> "昨天 $hm"
+        date.isAfter(today.minusDays(7)) -> "${fmtWeekday.format(zoned)} $hm"
+        else -> "${fmtMonthDay.format(zoned)} $hm"
+    }
+}
+
 fun formatSummonDate(value: String?, full: Boolean = false): String {
     val instant = parseSummonDate(value) ?: return value ?: "—"
     val zoned = instant.atZone(ZoneId.systemDefault())
